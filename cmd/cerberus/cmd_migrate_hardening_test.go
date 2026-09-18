@@ -150,7 +150,10 @@ groups:
 // while a rule is previewed as an INSTANT query — so the two emit different SQL
 // for the same expr, and a panel no longer previews SQL the server never runs.
 func TestDryRunExplainer_PanelExplainedAsRange(t *testing.T) {
-	ex := newDryRunExplainer(cfgWithBudget())
+	ex, err := newDryRunExplainer(cfgWithBudget())
+	if err != nil {
+		t.Fatalf("newDryRunExplainer: %v", err)
+	}
 	const expr = "sum(rate(http_requests_total[5m]))"
 
 	instant := ex.Explain(context.Background(), migrate.HarvestedQuery{Expr: expr, Kind: migrate.KindRecord})

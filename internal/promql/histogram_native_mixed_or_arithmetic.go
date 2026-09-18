@@ -110,7 +110,7 @@ func arithmeticOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ct
 // sample — mirrors [mathFnValueExpr]'s callers and
 // [lowerVectorScalar]'s own projection.
 func lowerArithmeticOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar float64, scalarOnLeft bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	inner, err := lowerArithmeticRoot(func() (chplan.Node, error) {
+	inner, err := lowerUnderMixedOperandPolicy(mixedArithmeticFamily, mixedRootAdmission, mixedFloatOnly, func() (chplan.Node, error) {
 		return lowerMixedExpHistogramSetOp(setOp, s, ctx)
 	})
 	if err != nil {

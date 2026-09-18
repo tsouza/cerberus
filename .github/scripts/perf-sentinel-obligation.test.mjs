@@ -147,7 +147,87 @@ const FAKE_RULES = [
   '',
 ].join('\n');
 
-const FAKE = { [TRIGGER_FILES[0]]: FAKE_RULES, [TRIGGER_FILES[1]]: FAKE_SPILL };
+// The facts record and its single inspection (plan_shape.go's shape): one
+// field a bound reads, one field only a neutral rule reads, and the walk that
+// fills both, tagged as the mechanism it is.
+const FAKE_SHAPE = [
+  '// facts is everything the rules read off a plan.',
+  'type facts struct {',
+  '	// hasCompare gates the thread cap.',
+  '	hasCompare bool',
+  '	// hasFilter gates the condition cache.',
+  '	hasFilter bool',
+  '}',
+  '',
+  '// inspect gathers facts in one walk.',
+  '//',
+  '// perf-sentinel: memory-bounding — the single walk every bound reads.',
+  'func inspect(plan chplan.Node) facts {',
+  '	var f facts',
+  '	f.record(plan)',
+  '	return f',
+  '}',
+  '',
+  '// record sets the facts for one node.',
+  'func (f *facts) record(n chplan.Node) {',
+  '	switch n.(type) {',
+  '	case *chplan.MetricsCompare:',
+  '		f.hasCompare = true',
+  '	case *chplan.Filter:',
+  '		f.hasFilter = true',
+  '	}',
+  '}',
+  '',
+].join('\n');
+
+// The seam (engine.go's shape): a composition naming the bound AND the
+// neutral rule, a bound that reads a fact, a neutral rule that reads a fact,
+// and a dispatch wrapper one hop further up.
+const FAKE_SEAM = [
+  '// applyThreads caps read threads on a compare() plan.',
+  '//',
+  '// perf-sentinel: memory-bounding — bounds concurrent read buffers.',
+  'const settingThreads = "max_threads"',
+  '',
+  '// applyThreads stamps the thread cap.',
+  'func applyThreads(ctx context.Context, f facts) context.Context {',
+  '	if !f.hasCompare {',
+  '		return ctx',
+  '	}',
+  '	return chclient.WithQuerySetting(ctx, settingThreads, 4)',
+  '}',
+  '',
+  '// applyCache stamps the condition cache on a filtered plan.',
+  'func applyCache(ctx context.Context, f facts) context.Context {',
+  '	if !f.hasFilter {',
+  '		return ctx',
+  '	}',
+  '	return chclient.WithQuerySetting(ctx, settingTag, 1)',
+  '}',
+  '',
+  '// applyAll composes every rule.',
+  'func applyAll(ctx context.Context, plan chplan.Node, maxMemory int64) context.Context {',
+  '	f := inspect(plan)',
+  '	ctx = applyCap(ctx, maxMemory)',
+  '	ctx = applyThreads(ctx, f)',
+  '	ctx = applyCache(ctx, f)',
+  '	return applyTag(ctx, plan)',
+  '}',
+  '',
+  '// dispatch runs the plan.',
+  'func dispatch(ctx context.Context, plan chplan.Node) error {',
+  '	ctx = applyAll(ctx, plan, 0)',
+  '	return run(ctx, plan)',
+  '}',
+  '',
+].join('\n');
+
+const FAKE = {
+  [TRIGGER_FILES[0]]: FAKE_RULES,
+  [TRIGGER_FILES[1]]: FAKE_SPILL,
+  [TRIGGER_FILES[2]]: FAKE_SHAPE,
+  [TRIGGER_FILES[3]]: FAKE_SEAM,
+};
 
 function unifiedDiff(file, lines) {
   return [`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -1,1 +1,1 @@', ...lines].join('\n');
@@ -170,22 +250,40 @@ test('a grouped const member inherits the group doc when it has none of its own'
 
 test('the surface is the bounding const AND everything deriving or stamping it', () => {
   const surface = memoryBoundingSurface(FAKE);
-  for (const want of ['settingCap', 'applyCap', 'threshold', 'capDenominator']) {
+  for (const want of [
+    'settingCap', 'applyCap', 'threshold', 'capDenominator',
+    // the fact a bound reads, the walk that fills it, and the composition
+    // that wires the bound in
+    'settingThreads', 'applyThreads', 'hasCompare', 'inspect', 'record', 'applyAll',
+  ]) {
     assert.ok(surface.has(want), `${want} is part of the memory-bounding mechanism`);
   }
 });
 
 test('the surface does NOT leak into the neutral rules sharing the same files', () => {
   const surface = memoryBoundingSurface(FAKE);
-  for (const nope of ['settingTag', 'applyTag', 'shapeID']) {
+  for (const nope of [
+    'settingTag', 'applyTag', 'shapeID',
+    // a neutral rule reading a fact no bound reads, the fact itself, the
+    // facts TYPE, and the dispatch wrapper one hop above the composition
+    'applyCache', 'hasFilter', 'facts', 'dispatch',
+  ]) {
     assert.ok(!surface.has(nope), `${nope} bounds nothing and must stay outside the surface`);
   }
 });
 
+test('parseGoDecls returns struct fields as declarations of kind field', () => {
+  const decls = parseGoDecls(FAKE_SHAPE);
+  assert.deepEqual(
+    decls.map((d) => [d.name, d.kind]),
+    [['hasCompare', 'field'], ['hasFilter', 'field'], ['facts', 'type'], ['inspect', 'func'], ['record', 'func']],
+  );
+});
+
 test('an unclassified setting const FAILS the gate rather than being assumed harmless', () => {
   const problems = surfaceViolations({
+    ...FAKE,
     [TRIGGER_FILES[0]]: 'const settingMystery = "some_knob"\n',
-    [TRIGGER_FILES[1]]: FAKE_SPILL,
   });
   assert.equal(problems.length, 1);
   assert.match(problems[0], /settingMystery carries no .*perf-sentinel/);
@@ -193,6 +291,7 @@ test('an unclassified setting const FAILS the gate rather than being assumed har
 
 test('a memory bound stamped through a bare string literal FAILS the gate', () => {
   const problems = surfaceViolations({
+    ...FAKE,
     [TRIGGER_FILES[0]]: [
       '// perf-sentinel: neutral — classified, but the stamp below dodges it.',
       'const settingTag = "log_comment"',
@@ -200,14 +299,13 @@ test('a memory bound stamped through a bare string literal FAILS the gate', () =
       '\treturn chclient.WithQuerySetting(ctx, "max_memory_usage", 1)',
       '}',
     ].join('\n'),
-    [TRIGGER_FILES[1]]: FAKE_SPILL,
   });
   assert.equal(problems.length, 1);
   assert.match(problems[0], /bare literal "max_memory_usage"/);
 });
 
 test('an unreadable trigger file FAILS the gate instead of narrowing the surface', () => {
-  const problems = surfaceViolations({ [TRIGGER_FILES[0]]: FAKE_RULES, [TRIGGER_FILES[1]]: null });
+  const problems = surfaceViolations({ ...FAKE, [TRIGGER_FILES[1]]: null });
   assert.equal(problems.length, 1);
   assert.match(problems[0], /could not be read at HEAD/);
 });
@@ -222,7 +320,7 @@ test('changedCodeLines reads REMOVALS as well as additions — #2364 was a delet
 });
 
 test('changedCodeLines ignores files outside the trigger set', () => {
-  const diff = unifiedDiff('internal/engine/engine.go', ['+\tctx = applyCap(ctx, maxMemory)']);
+  const diff = unifiedDiff('internal/engine/route_outcome.go', ['+\tctx = applyCap(ctx, maxMemory)']);
   assert.deepEqual(changedCodeLines(diff, TRIGGER_FILES), []);
 });
 
@@ -272,6 +370,34 @@ test('DOES NOT FIRE: renaming a neutral helper owes nothing', () => {
   assert.deepEqual(edits, []);
 });
 
+test('FIRES: deleting the call that wires a bound into the seam obligates a sentinel', () => {
+  // The composition names the bound; removing the one line that wires it in
+  // is the #2364 shape exactly, one hop above the stamp.
+  const diff = unifiedDiff(TRIGGER_FILES[3], ['-\tctx = applyCap(ctx, maxMemory)']);
+  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(FAKE));
+  assert.equal(edits.length, 1);
+  assert.equal(needsObligation([TRIGGER_FILES[3]], edits), true);
+});
+
+test('FIRES: deleting the walk arm that records a fact a bound reads obligates a sentinel', () => {
+  const diff = unifiedDiff(TRIGGER_FILES[2], ['-\t\tf.hasCompare = true']);
+  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(FAKE));
+  assert.equal(edits.length, 1);
+  assert.equal(needsObligation([TRIGGER_FILES[2]], edits), true);
+});
+
+test('DOES NOT FIRE: editing the neutral rule beside the bound in the seam owes nothing', () => {
+  const diff = unifiedDiff(TRIGGER_FILES[3], ['-\tctx = applyCache(ctx, f)', '+\tctx = applyCache(ctx, f) // condition cache']);
+  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(FAKE));
+  assert.deepEqual(edits, []);
+});
+
+test('DOES NOT FIRE: editing the walk arm for a fact only a neutral rule reads owes nothing', () => {
+  const diff = unifiedDiff(TRIGGER_FILES[2], ['-\t\tf.hasFilter = true', '+\t\tf.hasFilter = n != nil']);
+  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(FAKE));
+  assert.deepEqual(edits, []);
+});
+
 // --- the REAL trigger files, so the synthetic fixtures cannot drift away ------
 
 const REAL = Object.fromEntries(TRIGGER_FILES.map((p) => [p, readFileSync(resolve(p), 'utf8')]));
@@ -291,12 +417,27 @@ test('the real surface holds every spill/thread bound and none of the neutral kn
     'settingMaxBytesBeforeExternalSort',
     'settingMaxBytesBeforeExternalJoin',
     'settingMaxThreads',
+    'settingMaxBlockSize',
+    'settingGroupByTwoLevelThresholdBytes',
     'spillThreshold',
     'spillThresholdBytes',
     'spillCapDenominator',
     'applySpillSettings',
     'applyJoinSpillSettings',
     'applyCompareMemoryBound',
+    'applySortedSlabOverTimeMemoryBound',
+    'applyExpHistogramTwoLevelBound',
+    // the facts the bounds read, and the walk that fills them
+    'hasCompare',
+    'hasJoin',
+    'sortedSlabOverTime',
+    'expHistogramWindowGrouping',
+    'inspectPlanShape',
+    'recordNode',
+    // the seams that wire the bounds in — deleting a call there is #2364
+    'applySharedQuerySettings',
+    'routeAQuerySettings',
+    'routeBExecCtx',
   ]) {
     assert.ok(surface.has(want), `${want} must stay inside the memory-bounding surface`);
   }
@@ -307,11 +448,59 @@ test('the real surface holds every spill/thread bound and none of the neutral kn
     'settingLogComment',
     'settingQueryPlanOptimizeLazyMaterialization',
     'settingMinTableRowsToUseProjectionIndex',
-    'apply',
+    'applyFacts',
+    'applyNativeHistogramAnalyzerFix',
     'eligibleForResultCache',
+    'eligibleForAggregationInOrder',
+    'predicateStableForConditionCache',
+    // facts only neutral rules read
+    'nativeHistogramAnalyzerHazard',
+    'spineHasFilter',
+    'hasNowExpr',
+    // the facts type itself, and the dispatch path above the seams
+    'planShapeFacts',
+    'SettingsRules',
+    'execContext',
+    'ProbeQuerySettings',
+    'QueryPlan',
+    'QueryPlanCursor',
   ]) {
     assert.ok(!surface.has(nope), `${nope} bounds no memory and must stay outside the surface`);
   }
+});
+
+test('FIRES on the real seam: deleting the spill call from applySharedQuerySettings', () => {
+  const diff = unifiedDiff('internal/engine/engine.go', ['-\tctx = applySpillSettings(ctx, memCap)']);
+  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(REAL));
+  assert.equal(edits.length, 1);
+  assert.equal(needsObligation(['internal/engine/engine.go'], edits), true);
+});
+
+test('FIRES on the real walk: deleting the compare arm from recordNode', () => {
+  const diff = unifiedDiff('internal/engine/plan_shape.go', ['-\t\tf.hasCompare = true']);
+  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(REAL));
+  assert.equal(edits.length, 1);
+  assert.equal(needsObligation(['internal/engine/plan_shape.go'], edits), true);
+});
+
+test('DOES NOT FIRE on the real seam: an edit to the dispatch path beside it', () => {
+  const diff = unifiedDiff('internal/engine/engine.go', [
+    '-\te.observeQuery(queryID, plan, language, decision)',
+    '+\te.observeQuery(queryID, plan, language, decision) // corpus',
+    '-\tctx = applyActualsCapture(ctx, e.Actuals, decision)',
+    '+\tctx = applyActualsCapture(ctx, e.Actuals, decision) // #2789',
+  ]);
+  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(REAL));
+  assert.deepEqual(edits, []);
+});
+
+test('DOES NOT FIRE on the real rules: an edit to a neutral rule reading a neutral fact', () => {
+  const diff = unifiedDiff('internal/engine/query_settings_rules.go', [
+    '-\treturn f.spineHasFilter && f.spineHasScan',
+    '+\treturn f.spineHasFilter',
+  ]);
+  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(REAL));
+  assert.deepEqual(edits, []);
 });
 
 test('every real setting const is classified exactly one of the two classes', () => {

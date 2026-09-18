@@ -382,7 +382,10 @@ export function computeAllFingerprints({ root = process.cwd() } = {}) {
       fingerprints[fingerprintKey(id, entry.contract_id)] = computeEntryFingerprint(entry, { root });
     }
   }
-  return { schema_version: FINGERPRINT_SCHEMA_VERSION, generated_at: new Date().toISOString(), fingerprints };
+  // A pure function of the tree — no timestamp — so two refreshes from the
+  // same checkout are byte-identical and `--update-fingerprints` produces
+  // a diff only when a fingerprint actually moved.
+  return { schema_version: FINGERPRINT_SCHEMA_VERSION, fingerprints };
 }
 
 export function writeFingerprints(path = DEFAULT_FINGERPRINTS_PATH, { root = process.cwd() } = {}) {

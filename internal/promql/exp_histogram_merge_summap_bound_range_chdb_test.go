@@ -249,17 +249,23 @@ func TestExpHistogramMergeSumMapBudget_ChDB_RangeScaleDivergenceCompactsRatherTh
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n")
+	const farOffset = 4000
 	tuples := []string{
 		fmt.Sprintf("('%s', map('series', 'near'), toDateTime64('%s', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
 			histogramMergeBoundMetric, ts0),
-		fmt.Sprintf("('%s', map('series', 'far'), toDateTime64('%s', 9), 1, 1.0, 0, 0, 4000, [1], 0, [])",
-			histogramMergeBoundMetric, ts0),
+		fmt.Sprintf("('%s', map('series', 'far'), toDateTime64('%s', 9), 1, 1.0, 0, 0, %d, [1], 0, [])",
+			histogramMergeBoundMetric, ts0, farOffset),
 	}
 	b.WriteString("    " + strings.Join(tuples, ",\n    ") + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
 	query := fmt.Sprintf("sum(%s)", histogramMergeBoundMetric)
-	if err := runExpHistSumMapRangeBoundQuery(t, fixture, query, steps); err != nil {
+	shapes, err := readMergedHistogramShapes(t, fixture, query, start, end, expHistSumMapRangeBoundStep, promql.LowerOpts{Lowerers: expHistSumMapBoundNativeLowerers})
+	if err != nil {
 		t.Fatalf("a scale-divergent two-series range-mode sumMap merge must be compacted to a bounded width, not rejected: %v", err)
 	}
+	if len(shapes) != steps {
+		t.Fatalf("got %d merged rows, want one per step (%d)", len(shapes), steps)
+	}
+	assertCompactedMerge(t, shapes[0], 0, farOffset+1, 2)
 }

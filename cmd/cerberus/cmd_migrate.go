@@ -1063,7 +1063,10 @@ func runExplainReport(w io.Writer, src migrate.CorpusSource) error {
 	if err != nil {
 		return fmt.Errorf("load config from environment: %w", err)
 	}
-	ex := newDryRunExplainer(cfg)
+	ex, err := newDryRunExplainer(cfg)
+	if err != nil {
+		return fmt.Errorf("resolve resource bounds: %w", err)
+	}
 	rep, err := migrate.BuildReport(context.Background(), src, ex)
 	if err != nil {
 		return fmt.Errorf("build explain report: %w", err)
@@ -1078,7 +1081,10 @@ func runClassifyReport(w io.Writer, src migrate.CorpusSource, asJSON bool) error
 	if err != nil {
 		return fmt.Errorf("load config from environment: %w", err)
 	}
-	ex := newDryRunExplainer(cfg)
+	ex, err := newDryRunExplainer(cfg)
+	if err != nil {
+		return fmt.Errorf("resolve resource bounds: %w", err)
+	}
 	rep, err := migrate.BuildReport(context.Background(), src, ex)
 	if err != nil {
 		return fmt.Errorf("build classify report: %w", err)
@@ -1187,24 +1193,33 @@ func newExplainEngine(cfg config.Config) *engine.Engine {
 // deterministic. The TraceQL head has a single lang: a search query and a
 // metrics-pipeline query are distinguished by the query shape, not by rule-vs-
 // panel kind, so its Parse routes internally.
-func newDryRunExplainer(cfg config.Config) dryRunExplainer {
+func newDryRunExplainer(cfg config.Config) (dryRunExplainer, error) {
 	// Taken from the loaded config rather than re-read from the environment:
 	// cfg already resolved these through the same env-then-cerberus.yaml path
 	// the server uses, and a second read here would answer differently for an
 	// operator who configured the schema shape in a file.
 	metrics, logs, traces := cfg.Schema, cfg.Logs, cfg.Traces
+	// The SAME resolved resource bounds the server lowers under
+	// (resolveBoundOverrides is the boot path's own call): the
+	// exponential-histogram window budget is derived from the configured
+	// memory cap, so a preview without them bound every deployment's SQL to
+	// the 1 GiB default while claiming byte-identical SQL.
+	_, promBounds, err := resolveBoundOverrides(cfg)
+	if err != nil {
+		return dryRunExplainer{}, err
+	}
 	evalTime := time.Unix(explainEvalUnix, 0).UTC()
 	rangeStart := evalTime.Add(-explainRangeWindow)
 	return dryRunExplainer{
 		eng:          newExplainEngine(cfg),
-		promInstant:  prom.NewExplainLang(metrics, evalTime),
-		promRange:    prom.NewExplainLangRange(metrics, rangeStart, evalTime, explainRangeStep),
+		promInstant:  prom.NewExplainLang(metrics, evalTime, promBounds),
+		promRange:    prom.NewExplainLangRange(metrics, rangeStart, evalTime, explainRangeStep, promBounds),
 		logqlInstant: &logql.Lang{Schema: logs, Start: evalTime, End: evalTime},
 		logqlRange:   &logql.Lang{Schema: logs, Start: rangeStart, End: evalTime, Step: explainRangeStep},
 		traceqlLang:  tempo.NewExplainLang(traces, explainRangeStep),
 		traceStart:   rangeStart,
 		traceEnd:     evalTime,
-	}
+	}, nil
 }
 
 // dryRunExplainer adapts engine.DryRunSQL to migrate.Explainer. The SQL it

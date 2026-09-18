@@ -91,7 +91,7 @@ already collapsed all of them onto the one shared helper
 `RangeWindowStaleResample` shares that identical formula too (same helper,
 same field shape as `RangeLWR`) but was excluded from #2840's original count
 purely for not being one of that PR's four additions — a circular basis
-corrected once noticed, in a later ACPR pass. The issue's own
+corrected once noticed, in a later review pass. The issue's own
 bracketed-optional third stat (`avg(length(ExplicitBounds))`, a
 classic-histogram bucket-width bias signal) stayed out for the same reason
 it started out: no consumer reads it, and #2840's own text names it the

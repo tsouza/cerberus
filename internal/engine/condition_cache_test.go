@@ -75,10 +75,10 @@ func TestApply_ConditionCache_NotStampedWithoutPredicate(t *testing.T) {
 // directly: a Filter-over-Scan qualifies; a bare Scan or a predicate-less plan
 // does not.
 func TestPredicateStableForConditionCache(t *testing.T) {
-	if !predicateStableForConditionCache(filterScan("otel_traces")) {
+	if !predicateStableForConditionCache(shapeOf(filterScan("otel_traces"))) {
 		t.Error("Filter over Scan: want predicate-stable")
 	}
-	if predicateStableForConditionCache(&chplan.Scan{Table: "otel_traces"}) {
+	if predicateStableForConditionCache(shapeOf(&chplan.Scan{Table: "otel_traces"})) {
 		t.Error("bare Scan: want NOT predicate-stable")
 	}
 }

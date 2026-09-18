@@ -5,6 +5,7 @@ package profile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/test/spec"
@@ -123,6 +124,57 @@ SELECT a FROM flat WHERE a >= 90
 	}
 	if *rec.FanFactor != 1 {
 		t.Errorf("FanFactor = %.2f, want 1.0 (no fan-out)", *rec.FanFactor)
+	}
+}
+
+// TestProfileFixture_FoldCostGuardCTEIsMeasured profiles the corpus
+// fixtures whose emitted SQL wraps a RangeBucketFanout collapse in the
+// fold-cost guard's `WITH _rbf_group_N AS (…)` head — the groupArray-family
+// histogram range shapes — and asserts the profiler measures their fan-out
+// through the CTE: no uncountable level, a real fan factor. These are the
+// exact shapes whose fan-out the release perf gate exists to watch, so an
+// unmeasured fan factor there is a hole in the gate, not a null.
+func TestProfileFixture_FoldCostGuardCTEIsMeasured(t *testing.T) {
+	specDir := filepath.Join("..", "..", "spec")
+	p, err := NewProfiler()
+	if err != nil {
+		t.Fatalf("NewProfiler: %v", err)
+	}
+	defer p.Close()
+
+	for _, fixture := range []string{
+		"promql/exp_histogram_rate_range",
+		"promql/histogram_quantile_classic_agg_offset_range",
+		"promql/histogram_quantile_native_ladder_offset",
+	} {
+		t.Run(fixture, func(t *testing.T) {
+			path := filepath.Join(specDir, fixture+".txtar")
+			c, err := spec.Load(path)
+			if err != nil {
+				t.Fatalf("load %s: %v", path, err)
+			}
+			prep, ok, err := spec.PrepareRoundTrip(c)
+			if err != nil || !ok {
+				t.Fatalf("prepare %s: ok=%v err=%v", fixture, ok, err)
+			}
+			if !strings.Contains(prep.Query, "_rbf_group_") {
+				t.Fatalf("%s no longer emits the fold-cost guard CTE; pick a fixture that does", fixture)
+			}
+			rec := p.ProfileFixture(fixture, prep)
+			if rec.Err != "" {
+				t.Fatalf("profile error: %s", rec.Err)
+			}
+			if rec.UncountableLevels != 0 {
+				t.Errorf("UncountableLevels = %d, want 0: %v", rec.UncountableLevels, rec.UncountableReasons)
+			}
+			if rec.FanFactor == nil {
+				t.Fatalf("FanFactor = nil, want a measured value")
+			}
+			if *rec.FanFactor < 1 {
+				t.Errorf("FanFactor = %.2f, want >= 1", *rec.FanFactor)
+			}
+			t.Logf("%s: fan_factor=%.2f scan_rows=%d peak_intermediate=%d", fixture, *rec.FanFactor, rec.ScanRows, rec.PeakIntermediate)
+		})
 	}
 }
 

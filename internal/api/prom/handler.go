@@ -783,6 +783,20 @@ func (h *Handler) respondRangeRetry(
 // param via the shared [reqctx.ApplyQueryTimeout]. A malformed ?timeout=
 // is a 400 bad_data (matching upstream Prometheus); ok=false signals the
 // caller already wrote the error and must return.
+// metadataContext derives the context a metadata endpoint's (or
+// /query_exemplars') ClickHouse round trip runs under: the request context
+// with the configured QueryTimeout installed (reqctx.WithQueryBudget) — the
+// same Go-side watchdog /query and /query_range install through
+// applyQueryTimeout, so a hung backend answers 503 errorType=timeout at
+// the deadline and the handler returns, releasing its admit slot and
+// pooled connection, instead of blocking until the driver's own read
+// timeout fires. Only the default is installed: reference Prometheus reads
+// no `?timeout=` on /labels, /series or /metadata. The caller MUST defer
+// cancel.
+func (h *Handler) metadataContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return reqctx.WithQueryBudget(r.Context(), h.QueryTimeout)
+}
+
 func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (context.Context, context.CancelFunc, bool) {
 	ctx, cancel, err := reqctx.ApplyQueryTimeout(r, h.QueryTimeout)
 	if err != nil {
@@ -1209,22 +1223,8 @@ func queryCanceledAPIError() *apiError {
 // never recorded against the chclient circuit breaker — this mapping is
 // purely a wire-shape concern.
 func classifyDrainError(err error) error {
-	if errors.Is(err, chclient.ErrTooManySamples) {
-		return tooManySamplesAPIError()
-	}
-	var byteBudget *chclient.DrainByteBudgetError
-	if errors.As(err, &byteBudget) {
-		return drainBytesAPIError(byteBudget)
-	}
-	var memLimit *chclient.MemoryLimitError
-	if errors.As(err, &memLimit) {
-		return memoryLimitAPIError(memLimit)
-	}
-	if isQueryTimeout(err) {
-		return queryTimeoutAPIError(err)
-	}
-	if isQueryCanceled(err) {
-		return queryCanceledAPIError()
+	if ae := classifySentinelError(err); ae != nil {
+		return ae
 	}
 	// query_range's cursor drain is where every throwIf-planted guard
 	// (info() conflicting labels, duplicate labelset, many-to-many match,
@@ -1488,6 +1488,79 @@ func classifyEngineError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if ae := classifySentinelError(err); ae != nil {
+		return ae
+	}
+	var ps *parseStageError
+	if errors.As(err, &ps) {
+		switch ps.stage {
+		case "parse":
+			return &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
+		case "lower":
+			return &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
+		}
+	}
+	// A failed value-domain guard is reference Prometheus's own
+	// evaluation error — an out-of-domain topk K, an out-of-domain
+	// smoothing factor — reached by running the parameter's query first.
+	// It carries reference's wording verbatim and lands where reference
+	// puts it: 422 errorType=execution, never the 502 bucket the guard's
+	// own ClickHouse round trip would otherwise fall into.
+	var ge *engine.GuardError
+	if errors.As(err, &ge) {
+		return &apiError{Kind: ErrExecution, Err: errors.New(ge.Error()), Status: http.StatusUnprocessableEntity}
+	}
+	if ae := classifyThrowIfGuardError(err); ae != nil {
+		return ae
+	}
+	// A query whose plan composes to more SQL than ClickHouse will parse
+	// (issue #2733). Nothing is broken — the shape is valid and lowers
+	// cleanly, the emitter simply cannot express it in one statement the
+	// server would accept — so it belongs in the same 422 errorType=execution
+	// "cannot be served" class as the resource-bound guards above rather than
+	// in the emit-stage 500 bucket below, which would report a user's exotic
+	// query as a cerberus fault. It is also the status this exact query had
+	// before issue #2728 opened the composition arm it now rides: back then it
+	// was refused at LOWERING, which this function already maps to 422.
+	if errors.Is(err, chsql.ErrEmittedSQLTooLarge) {
+		return &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
+	}
+	msg := err.Error()
+	switch {
+	case errContainsStage(msg, "emit"):
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	case errContainsStage(msg, "execute"):
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	}
+	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+}
+
+// classifyMetadataError maps an error from a metadata query (/labels,
+// /label/<name>/values, /series, /metadata — h.Client round trips that
+// bypass the engine) onto the Prometheus error vocabulary. Every classified
+// sentinel answers exactly what the query path answers for it
+// (classifySentinelError): a Grafana label-browser cancel on /api/v1/labels
+// is a 503 errorType=canceled here as it is on /query, the way reference
+// Prometheus routes both through one returnAPIError — never a 502 that reads
+// as a backend fault. A metadata query never carries an `engine: execute:`
+// marker, so an UNCLASSIFIED failure is the upstream transport fault that
+// marker would have named: 502.
+func classifyMetadataError(err error) error {
+	if ae := classifySentinelError(err); ae != nil {
+		return ae
+	}
+	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+}
+
+// classifySentinelError maps every classified sentinel — the errors a
+// ClickHouse round trip can surface that are NOT a backend fault — onto the
+// Prometheus error vocabulary, and returns nil for anything else. It is the
+// ONE list the three classifiers read (classifyEngineError for the instant
+// path, classifyDrainError for the query_range cursor drain,
+// classifyMetadataError for the metadata endpoints), so a sentinel answers
+// the same status, errorType and telemetry reason on every endpoint of the
+// head; only the unclassified remainder differs between them.
+func classifySentinelError(err error) *apiError {
 	// Circuit-breaker fast-fail short-circuit: when the chclient
 	// breaker is OPEN, surface 503 + Retry-After directly without
 	// dressing it as a 5xx "execute" failure. This is the wire
@@ -1551,48 +1624,7 @@ func classifyEngineError(err error) error {
 	if isQueryCanceled(err) {
 		return queryCanceledAPIError()
 	}
-	var ps *parseStageError
-	if errors.As(err, &ps) {
-		switch ps.stage {
-		case "parse":
-			return &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
-		case "lower":
-			return &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
-		}
-	}
-	// A failed value-domain guard is reference Prometheus's own
-	// evaluation error — an out-of-domain topk K, an out-of-domain
-	// smoothing factor — reached by running the parameter's query first.
-	// It carries reference's wording verbatim and lands where reference
-	// puts it: 422 errorType=execution, never the 502 bucket the guard's
-	// own ClickHouse round trip would otherwise fall into.
-	var ge *engine.GuardError
-	if errors.As(err, &ge) {
-		return &apiError{Kind: ErrExecution, Err: errors.New(ge.Error()), Status: http.StatusUnprocessableEntity}
-	}
-	if ae := classifyThrowIfGuardError(err); ae != nil {
-		return ae
-	}
-	// A query whose plan composes to more SQL than ClickHouse will parse
-	// (issue #2733). Nothing is broken — the shape is valid and lowers
-	// cleanly, the emitter simply cannot express it in one statement the
-	// server would accept — so it belongs in the same 422 errorType=execution
-	// "cannot be served" class as the resource-bound guards above rather than
-	// in the emit-stage 500 bucket below, which would report a user's exotic
-	// query as a cerberus fault. It is also the status this exact query had
-	// before issue #2728 opened the composition arm it now rides: back then it
-	// was refused at LOWERING, which this function already maps to 422.
-	if errors.Is(err, chsql.ErrEmittedSQLTooLarge) {
-		return &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
-	}
-	msg := err.Error()
-	switch {
-	case errContainsStage(msg, "emit"):
-		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
-	case errContainsStage(msg, "execute"):
-		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
-	}
-	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
+	return nil
 }
 
 // errContainsStage reports whether msg starts with `engine: <stage>:`.
@@ -2177,26 +2209,18 @@ func (h *Handler) respondError(ctx context.Context, w http.ResponseWriter, err e
 		writeError(w, apiErr.Status, apiErr.Kind, apiErr.Err)
 		return
 	}
-	// A bare per-query resource-limit rejection — the sample budget (now
-	// enforced on metadata drains too, chclient.drainBudgetExceeded) or the CH
-	// memory cap — maps to the same Prom 422 the matrix path gives via
-	// classifyDrainError, rather than the generic 500 below. A callsite that
-	// pre-wrapped its own *apiError already returned above, so this only
-	// reclassifies the raw sentinels.
-	if errors.Is(err, chclient.ErrTooManySamples) {
-		ae := tooManySamplesAPIError()
-		writeError(w, ae.Status, ae.Kind, ae.Err)
-		return
-	}
-	var byteBudget *chclient.DrainByteBudgetError
-	if errors.As(err, &byteBudget) {
-		ae := drainBytesAPIError(byteBudget)
-		writeError(w, ae.Status, ae.Kind, ae.Err)
-		return
-	}
-	var memLimit *chclient.MemoryLimitError
-	if errors.As(err, &memLimit) {
-		ae := memoryLimitAPIError(memLimit)
+	// A bare classified sentinel — a per-query resource-limit rejection (the
+	// sample budget, now enforced on metadata drains too,
+	// chclient.drainBudgetExceeded; the CH memory cap), a wall-clock
+	// timeout, a caller cancellation, a Distributed shard outage — answers
+	// exactly what every other classifier of this head answers for it
+	// (classifySentinelError), rather than the generic 500 below. A callsite
+	// that pre-wrapped its own *apiError already returned above, so this
+	// only reclassifies the raw sentinels.
+	if ae := classifySentinelError(err); ae != nil {
+		if ae.RetryAfterSeconds > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(ae.RetryAfterSeconds))
+		}
 		writeError(w, ae.Status, ae.Kind, ae.Err)
 		return
 	}

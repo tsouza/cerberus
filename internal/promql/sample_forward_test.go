@@ -1,6 +1,7 @@
 package promql
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -110,7 +111,7 @@ func TestLegacySampleProjectionLayoutUsesTemporalRoles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := legacySampleProjectionLayout(sampleForwardTestInput(tc.columns...)); got != tc.want {
+			if got := derivedSampleProjectionLayout(sampleForwardTestInput(tc.columns...)); got != tc.want {
 				t.Fatalf("layout = %#v, want %#v", got, tc.want)
 			}
 		})
@@ -139,7 +140,7 @@ func TestLegacySampleProjectionLayoutPreservesCanonicalAnchorWithoutGridProvenan
 	}
 
 	want := sampleProjectionLayout{canonical: true, anchored: true}
-	if got := legacySampleProjectionLayout(inner); got != want {
+	if got := derivedSampleProjectionLayout(inner); got != want {
 		t.Fatalf("layout = %#v, want %#v", got, want)
 	}
 }
@@ -196,7 +197,7 @@ func TestLegacySampleProjectionLayoutDistinguishesCanonicalAndDerivedProjects(t 
 				},
 				Roles: canonicalRoles,
 			}
-			if got := legacySampleProjectionLayout(canonical); got != (sampleProjectionLayout{canonical: true, anchored: true}) {
+			if got := derivedSampleProjectionLayout(canonical); got != (sampleProjectionLayout{canonical: true, anchored: true}) {
 				t.Fatalf("canonical project layout = %#v, want canonical plus anchor", got)
 			}
 
@@ -222,7 +223,7 @@ func TestLegacySampleProjectionLayoutDistinguishesCanonicalAndDerivedProjects(t 
 			nested := projectGrid(transparent)
 			for label, project := range map[string]*chplan.Project{"transparent": transparent, "nested": nested} {
 				t.Run(label, func(t *testing.T) {
-					if got := legacySampleProjectionLayout(project); got != (sampleProjectionLayout{anchored: true}) {
+					if got := derivedSampleProjectionLayout(project); got != (sampleProjectionLayout{anchored: true}) {
 						t.Fatalf("derived project layout = %#v, want anchored", got)
 					}
 				})
@@ -241,7 +242,7 @@ func TestLegacySampleProjectionLayoutKeepsDeclaredAnchorWithoutGridSpine(t *test
 	for _, column := range columns {
 		project.Projections = append(project.Projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}})
 	}
-	if got := legacySampleProjectionLayout(project); got != (sampleProjectionLayout{canonical: true, anchored: true}) {
+	if got := derivedSampleProjectionLayout(project); got != (sampleProjectionLayout{canonical: true, anchored: true}) {
 		t.Fatalf("layout = %#v, want canonical plus anchor", got)
 	}
 }
@@ -279,7 +280,7 @@ func TestLegacySampleProjectionLayoutAcceptsReducedWindowSpine(t *testing.T) {
 			{Name: s.ValueColumn, Role: chplan.RoleValue},
 		},
 	}
-	if got := legacySampleProjectionLayout(project); got != (sampleProjectionLayout{}) {
+	if got := derivedSampleProjectionLayout(project); got != (sampleProjectionLayout{}) {
 		t.Fatalf("reduced window projection layout = %#v, want reduced", got)
 	}
 }
@@ -306,7 +307,7 @@ func TestLegacySampleProjectionLayoutRejectsInvalidRoles(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			capturePanic(t, func() {
-				legacySampleProjectionLayout(sampleForwardTestInput(tc.columns...))
+				derivedSampleProjectionLayout(sampleForwardTestInput(tc.columns...))
 			})
 		})
 	}
@@ -681,6 +682,41 @@ func TestSampleForwardMissingNameAdmissionIsClosedFloatOnly(t *testing.T) {
 					return nil
 				})
 			})
+		})
+	}
+}
+
+// A sampleProjectionPolicy a caller forgot to fill must not silently read
+// as drop-name / float-only: both enums start above zero, so the zero
+// value names no policy and the forwarder's explicit-policy guard panics.
+func TestProjectSampleRolesZeroPolicyPanics(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	input := sampleForwardTestInput(
+		chplan.Column{Name: "source_name", Role: chplan.RoleMetricName},
+		chplan.Column{Name: "source_attrs", Role: chplan.RoleAttributes},
+		chplan.Column{Name: "source_time", Role: chplan.RoleTimestamp},
+		chplan.Column{Name: "source_value", Role: chplan.RoleValue},
+	)
+	rewrite := func(refs sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{value: refs.Value} }
+	for _, tc := range []struct {
+		name   string
+		policy sampleProjectionPolicy
+		want   string
+	}{
+		{"zero name policy", sampleProjectionPolicy{payload: floatSamplePayload}, "explicit name policy"},
+		{"zero payload policy", sampleProjectionPolicy{name: dropSampleName}, "explicit payload policy"},
+		{"zero value", sampleProjectionPolicy{}, "explicit name policy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			msg := capturePanic(t, func() {
+				projectSampleRoles(input, s, tc.policy, sampleProjectionLayout{canonical: true}, rewrite)
+			})
+			if !strings.Contains(msg, tc.want) {
+				t.Fatalf("panic = %q, want the %s guard", msg, tc.want)
+			}
 		})
 	}
 }

@@ -53,6 +53,11 @@ import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { capture, error, log, notice } from './lib/gh.mjs';
+import { filterImages, matchesAnyExcludePattern } from './lib/image-globs.mjs';
+
+// The exclusion glob lives in lib/image-globs.mjs (pull-images.mjs applies
+// the same one); re-exported so the contract stays testable from here.
+export { filterImages, matchesAnyExcludePattern };
 
 const defaultAttempts = 5;
 const defaultBackoffStepSeconds = 2;
@@ -70,34 +75,6 @@ export function normalizeRef(img) {
   if (slash !== -1 && looksLikeRegistryHost) return img;
   if (slash !== -1) return `docker.io/${img}`;
   return `docker.io/library/${img}`;
-}
-
-// globToRegExp — a minimal single-`*` image-ref glob: `*` matches any run
-// of characters EXCLUDING `/` (so a pattern never accidentally spans a
-// repository-path boundary it didn't ask to). Deliberately separate from
-// ci-lane-contract.mjs's own `matchesGlob` (file-path globs, `**` included):
-// an image ref's `/`-and-`:`-delimited shape is a different domain, and the
-// one pattern this needs (`clickhouse/clickhouse-server:*-alpine`) is
-// simple enough that borrowing a bigger, unrelated gate script's glob
-// engine would be a needless coupling for one function.
-function globToRegExp(glob) {
-  const escaped = glob.replace(/[|\\{}()[\]^$+?.]/g, '\\$&').replace(/\*/g, '[^/]*');
-  return new RegExp(`^${escaped}$`);
-}
-
-// matchesAnyExcludePattern — true when `img` (the argv literal, e.g.
-// `clickhouse/clickhouse-server:26.3-alpine`) matches at least one of
-// `patterns`.
-export function matchesAnyExcludePattern(img, patterns) {
-  return patterns.some((p) => globToRegExp(p).test(img));
-}
-
-// filterImages — argv images minus every one matching an exclude pattern,
-// preserving order. Pure so the exclusion-filter contract is unit-testable
-// without a k3d cluster.
-export function filterImages(images, excludePatterns) {
-  if (excludePatterns.length === 0) return [...images];
-  return images.filter((img) => !matchesAnyExcludePattern(img, excludePatterns));
 }
 
 // containerdHasImage — true when `ref` is present in the k3d server node's

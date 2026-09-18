@@ -1,16 +1,16 @@
 # Native ClickHouse: what cerberus uses
 
-This note records the native ClickHouse capability cerberus exploits
-**today**. Cerberus is a consumer of ClickHouse's shipped native features,
-not a contributor of new ones: no cerberus aggregate is proposed upstream.
+This note records the native ClickHouse capabilities cerberus exploits.
+Cerberus is a consumer of ClickHouse's shipped native features, not a
+contributor of new ones: no cerberus aggregate is proposed upstream.
 
-## What cerberus uses today
+## What cerberus uses
 
 Cerberus opportunistically lowers PromQL/LogQL/TraceQL to ClickHouse's
 *shipped* native aggregates and engine features whenever the connected
 server supports them. Each lowering is version-floored and feature-gated,
 so an older or differently-configured server transparently falls back to
-the portable SQL path. What it currently exploits:
+the portable SQL path. The capabilities:
 
 - **`timeSeriesRateToGrid`** (`rate`, ClickHouse 25.6; auto-enabled at 25.9,
   the left-open window fix) — computes a whole PromQL grid in one columnar pass
@@ -20,8 +20,7 @@ the portable SQL path. What it currently exploits:
   adjacent-pair counters.
 - **`timeSeriesDerivToGrid` / `timeSeriesPredictLinearToGrid`**
   (`deriv` / `predict_linear`, ClickHouse 25.8, registry-pinned to the family's
-  25.9 floor) — the last members of the family to adopt the native path: a
-  per-window least-squares fit whose slope is `deriv` and whose `slope*t +
+  25.9 floor) — a per-window least-squares fit whose slope is `deriv` and whose `slope*t +
   intercept` projection is `predict_linear`, retiring the
   `simpleLinearRegression`/`arrayReduce` fan-out. `predict_linear` threads its
   whole-second horizon `t` as the aggregate's 5th parametric arg; a computed or
@@ -37,10 +36,11 @@ the portable SQL path. What it currently exploits:
   `range_window_predict_linear_chdb_test.go`): the substrate is ClickHouse 26.5,
   above the 25.9 floor, so it ships the aggregates and the native half genuinely
   fires in the `chdb` lane.
-  - **Known limitation (the native regression path is experimental maturity,
-    auto-enabled only on a capable server — ClickHouse >= 25.9 and the server
-    permits `allow_experimental_time_series_aggregate_functions`):**
-    the aggregate
+  - **Known limitation (the native regression path carries the registry's
+    experimental maturity label, mirroring ClickHouse's own
+    `allow_experimental_time_series_aggregate_functions` gate, and is
+    auto-enabled on ClickHouse >= 25.9 where the server permits that
+    setting):** the aggregate
     accepts only a `DateTime`/`DateTime64` timestamp (it rejects `Float64` /
     `Decimal`), so its single ts argument drives both the regression x-axis *and*
     the window-membership bucketing — there is no way to keep a whole-second
@@ -49,9 +49,9 @@ the portable SQL path. What it currently exploits:
     floored second while the fan-out (and Prometheus) decide membership on the raw
     timestamp, so a boundary sample can land in a different grid window between the
     two paths. This gap is characterised and pinned by
-    `range_window_regression_subsecond_chdb_test.go`. Closing (or formally
-    accepting) that gap is the gate before the path is promoted beyond
-    experimental maturity;
+    `range_window_regression_subsecond_chdb_test.go`, and it is the scope of
+    the native regression path: whole-second-aligned samples are
+    bit-identical to the fan-out, sub-second boundary samples are not.
     [`native-clickhouse.background.md`](native-clickhouse.background.md) carries
     the per-function analysis of why a raw-nanosecond axis is not the way out.
 - **`timeSeriesResampleToGridWithStaleness`** — native instant-vector

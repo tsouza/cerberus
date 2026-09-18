@@ -1,56 +1,108 @@
-// compat-step-summary.mjs — emit the one-row parity-score markdown table
-// to $GITHUB_STEP_SUMMARY, extracted from the THREE identical "Append
-// score to step summary" steps in .github/workflows/compatibility.yml
-// (prometheus / tempo / loki).
+// compat-step-summary.mjs — the per-head housekeeping after a compatibility
+// harness ran: log the tally of the raw report (prometheus lanes) and append
+// the one-row parity-score markdown table to $GITHUB_STEP_SUMMARY.
 //
-// Reproduces the original bash exactly: read percent / passed / total
-// from the head's compat-score.json (when present) and append a markdown
-// table; when the file is absent, print the same "no compat-score.json"
-// notice and exit 0 (the step ran under `if: always()` and must not fail
-// the job — the separate "Fail job" step re-raises the real failure).
+// One script for every lane in .github/workflows/compatibility.yml. The three
+// prometheus lanes (prometheus, prometheus-forced-route, prometheus-floor)
+// used to carry an identical inline `jq` "Summarise report" step, and the
+// forced-route / floor lanes an inline bash copy of the table this script
+// already rendered for the other heads — invariant 15 (no inline parsing or
+// branching in a workflow step) and one copy of the table shape.
 //
 // Env contract:
-//   HEAD    head name for the table row + section heading (prometheus|tempo|loki)
-//   SCORE   path to that head's compat-score.json
+//   HEAD    (required) the head name: the table row label unless LABEL is set,
+//           and the section heading unless TITLE is set (prometheus|tempo|loki)
+//   SCORE   (required) path to that head's compat-score.json
+//   TITLE   (optional) the section heading, for a lane that is a variant of a
+//           head (`compatibility/prometheus-floor (ClickHouse 24.8)`)
+//   LABEL   (optional) the table row label (`prometheus (floor)`)
+//   REPORT  (optional) path to the upstream tester's raw report.json; when
+//           set, its tally — total / passed / diffs / unexpected failures —
+//           is logged, or a notice when the file is absent
 //
-// Exit codes: always 0 (housekeeping step; never gates).
+// Exit codes: always 0 (housekeeping step; never gates — the separate "Fail
+// job" step re-raises the harness's real failure).
 
 import { existsSync, readFileSync } from 'node:fs';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+
 import { appendStepSummary, error, log } from './lib/gh.mjs';
 
-const head = process.env.HEAD || '';
-const scorePath = process.env.SCORE || '';
-
-if (!head || !scorePath) {
-  error('compat-step-summary.mjs: HEAD and SCORE env vars are required');
-  // Match the housekeeping contract: do not fail the job on a wiring slip.
-  process.exit(0);
+// reportTally — the upstream compatibility tester's report, partitioned.
+// The tester encodes "no error" as an EMPTY STRING, not JSON null (`"diff":
+// ""` / `"unexpectedFailure": ""` for a passing query); both are read as
+// "nothing", so a pass is a result with neither.
+export function reportTally(report) {
+  const results = Array.isArray(report?.results) ? report.results : [];
+  const text = (v) => (v == null ? '' : String(v));
+  const failed = (r) => text(r?.unexpectedFailure) !== '';
+  const differs = (r) => text(r?.diff) !== '';
+  return {
+    total: results.length,
+    passed: results.filter((r) => !failed(r) && !differs(r)).length,
+    diffs: results.filter(differs).length,
+    unexpected_failures: results.filter(failed).length,
+  };
 }
 
-if (!existsSync(scorePath)) {
-  log('no compat-score.json produced (harness step likely failed before scorer ran)');
-  process.exit(0);
+// summaryTable — the markdown block appended to the step summary.
+export function summaryTable({ title, label, passed, total, percent }) {
+  return [
+    `### ${title}`,
+    '',
+    '| head | passed/total | percent |',
+    '|------|--------------|---------|',
+    `| ${label} | ${passed}/${total} | ${percent}% |`,
+    '',
+  ].join('\n');
 }
 
-let score;
-try {
-  score = JSON.parse(readFileSync(scorePath, 'utf8'));
-} catch (e) {
-  log(`could not parse ${scorePath}: ${e.message}`);
-  process.exit(0);
+function main() {
+  const head = process.env.HEAD || '';
+  const scorePath = process.env.SCORE || '';
+  const title = process.env.TITLE || `compatibility/${head}`;
+  const label = process.env.LABEL || head;
+  const reportPath = process.env.REPORT || '';
+
+  if (!head || !scorePath) {
+    error('compat-step-summary.mjs: HEAD and SCORE env vars are required');
+    // Match the housekeeping contract: do not fail the job on a wiring slip.
+    return;
+  }
+
+  if (reportPath) {
+    if (!existsSync(reportPath)) {
+      log('no report produced (harness step likely failed before tester ran)');
+    } else {
+      try {
+        log(JSON.stringify(reportTally(JSON.parse(readFileSync(reportPath, 'utf8'))), null, 2));
+      } catch (e) {
+        log(`could not parse ${reportPath}: ${e.message}`);
+      }
+    }
+  }
+
+  if (!existsSync(scorePath)) {
+    log('no compat-score.json produced (harness step likely failed before scorer ran)');
+    return;
+  }
+
+  let score;
+  try {
+    score = JSON.parse(readFileSync(scorePath, 'utf8'));
+  } catch (e) {
+    log(`could not parse ${scorePath}: ${e.message}`);
+    return;
+  }
+
+  const { percent, passed, total } = score;
+  appendStepSummary(summaryTable({ title, label, passed, total, percent }));
 }
 
-const { percent, passed, total } = score;
-
-const summary = [
-  `### compatibility/${head}`,
-  '',
-  '| head | passed/total | percent |',
-  '|------|--------------|---------|',
-  `| ${head} | ${passed}/${total} | ${percent}% |`,
-  '',
-].join('\n');
-
-appendStepSummary(summary);
-process.exit(0);
+const invokedDirectly = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (invokedDirectly) {
+  main();
+  process.exit(0);
+}

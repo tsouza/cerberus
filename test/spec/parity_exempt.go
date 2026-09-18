@@ -9,12 +9,14 @@
 // half; this file is what keeps the declared reason honest rather than a
 // free-form excuse.
 //
-// What nothing yet re-checks is whether a declared reason is still TRUE.
-// Three of the reasons below name a gap that will be closed rather than a
-// permanent boundary, so their fixtures become enrollable the day the gap
-// lands, and today that transition is invisible. #3261 tracks the check
-// that would catch it: run every exempt fixture against its oracle and
-// fail if the oracle agrees.
+// Whether a declared reason is still TRUE is re-checked on every chdb run:
+// RunParity (parity_chdb.go) runs every exempt fixture against the full
+// contract its query language would carry, and exemptionVerdict accepts
+// only the evidence that proves the DECLARED reason — the comparator
+// refusal class, or the actual disagreement, that
+// exemptionEvidenceByReason pairs with it. Agreement means the gap the
+// reason names has closed and the fixture must enrol; a refusal or
+// disagreement of another kind means the fixture cites the wrong reason.
 //
 // # Why a new section rather than a new value inside `parity:`
 //
@@ -356,28 +358,38 @@ const (
 	// disagreement about them is an ordinary bug to fix at the source.
 	ReasonDuplicateSpanSeed = "duplicate-span-seed"
 
-	// ReasonOracleUntypedAttributes covered a TraceQL fixture whose query
-	// compared an attribute against a NON-STRING literal — a boolean, a
-	// bare integer, a float — before #3259's attrTypeHints mechanism
-	// (test/spec/parityoracle/traceql/oracle.go) closed the general case:
-	// the oracle now reads such an attribute's stored string as the type
-	// the QUERY's own literal implies, the same per-comparison coercion
-	// cerberus's own lowering performs on the identical Map(String,
-	// String) column, rather than always handing the reference engine a
-	// String static no typed literal could ever match. No fixture wears
-	// this reason any more (bool_attr.txtar / unscoped_bool_attr.txtar /
-	// unscoped_bool_attr_false.txtar were its only three, and are now
-	// enrolled for real against `oracle: tempo`).
+	// ReasonOracleUntypedAttributes covers a TraceQL fixture whose query
+	// needs an attribute read as a NUMBER (or boolean, or duration) in a
+	// shape the in-process oracle's attrTypeHints mechanism
+	// (test/spec/parityoracle/traceql/oracle.go's collectAttrTypeHints,
+	// #3259) cannot see. The oracle reads a Map(String, String) attribute
+	// as the type the QUERY's own literal implies — the same per-comparison
+	// coercion cerberus's lowering performs on the identical column — but
+	// only for an attribute that is itself ONE OPERAND of a comparison
+	// whose other operand is a coercible literal. Every other route to a
+	// typed reading leaves the attribute a String static:
 	//
-	// The reason stays declared, not removed, because attrTypeHints is
-	// sound rather than complete: it only recovers a type the fixture's
-	// OWN query states directly in a comparison its AST walk reaches. An
-	// attribute whose non-string nature is observable only some other
-	// way — through a metrics pipeline stage the walk does not cover, or
-	// a comparison shape it does not recognize — would still reach the
-	// reference engine as a plain string, and a fixture exercising that
-	// residual gap earns this reason again with a `detail` naming
-	// specifically what attrTypeHints could not see.
+	//   - an attribute reached through arithmetic (`span.a + span.b > 10`,
+	//     attribute_arithmetic_add.txtar), where the literal is compared
+	//     against the sum, not the attribute;
+	//   - an attribute reached through a unary minus (`-span.x > -3`,
+	//     unary_minus_attr.txtar; `-(span.a + span.b) < -10`,
+	//     unary_minus_arith.txtar), where the reference engine's own
+	//     evaluator then fails with "expected a numeric, but got
+	//     TypeString";
+	//   - an attribute compared against an INTRINSIC rather than a literal
+	//     (`duration > span.budget_ns`,
+	//     duration_gt_attr_type_mismatch.txtar).
+	//
+	// Those four are the wearers today; a plain literal comparison
+	// (bool_attr.txtar, unscoped_bool_attr.txtar) is enrolled for real, and
+	// so are the `.name` / `.duration` / `.status` collision fixtures, whose
+	// STRING literals never needed this reason. The `detail` must name the
+	// exact shape attrTypeHints could not see, never restate the reason.
+	//
+	// This is NOT a reason for a comparison against a string literal
+	// (nothing needs coercing) nor for an intrinsic-only query (intrinsics
+	// arrive typed from their own columns).
 	ReasonOracleUntypedAttributes = "oracle-untyped-attributes"
 
 	// ReasonReferenceIntrinsicUnsupported covers a fixture whose query
@@ -395,6 +407,23 @@ const (
 	// It is also not ReasonReferenceFetchLayer: nothing outside the
 	// pipeline supplies the answer, because there is no answer.
 	ReasonReferenceIntrinsicUnsupported = "reference-intrinsic-unsupported"
+
+	// ReasonReferenceRejectedQuery covers a fixture whose query TEXT the
+	// reference engine's own parser refuses while cerberus accepts it —
+	// Loki's grammar rejects `{service_name=~".*"}` ("queries require at
+	// least one regexp or equality matcher that does not have an
+	// empty-compatible value") where cerberus's permissive parser admits
+	// it. There is no reference answer whatever the data, because the
+	// reference never gets past the text.
+	//
+	// It is the sibling of ReasonReferenceIntrinsicUnsupported, and the two
+	// must not be confused: that one names a feature upstream declares
+	// "not yet supported" — a gap upstream will close, after which the
+	// fixture becomes enrollable — while this one names a shape upstream's
+	// grammar refuses by design, a boundary cerberus deliberately sits
+	// outside of. Both are the engine's own verdict, so both are proven by
+	// the same refusal.
+	ReasonReferenceRejectedQuery = "reference-rejected-query"
 
 	// ReasonReferencePipelineError covers a LogQL fixture whose seed
 	// deliberately provokes a PIPELINE ERROR — a line the unwrap stage
@@ -435,6 +464,7 @@ var parityExemptReasons = []string{
 	ReasonDuplicateSpanSeed,
 	ReasonOracleUntypedAttributes,
 	ReasonReferenceIntrinsicUnsupported,
+	ReasonReferenceRejectedQuery,
 	ReasonReferencePipelineError,
 }
 

@@ -54,7 +54,7 @@ func TestEligibleForAggregationInOrder_Positive(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			plan := aggOverScan(tc.table, tc.cols...)
-			if !r.eligibleForAggregationInOrder(plan) {
+			if !r.eligibleForAggregationInOrder(shapeOf(plan)) {
 				t.Errorf("GROUP BY %v on %s: want eligible", tc.cols, tc.table)
 			}
 		})
@@ -99,7 +99,7 @@ func TestEligibleForAggregationInOrder_Negative(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if r.eligibleForAggregationInOrder(tc.plan) {
+			if r.eligibleForAggregationInOrder(shapeOf(tc.plan)) {
 				t.Errorf("%s: want NOT eligible", tc.name)
 			}
 		})
@@ -262,7 +262,7 @@ func TestApplyCompareMemoryBound_CompareStampsBoth(t *testing.T) {
 	// threshold the coupled compare() bound was validated against on prod.
 	const validatedCompareSpillBytes int64 = 1 << 30
 
-	ctx := applyCompareMemoryBound(context.Background(), compareOverScan(), testQueryMemoryCap)
+	ctx := applyCompareMemoryBound(context.Background(), shapeOf(compareOverScan()), testQueryMemoryCap)
 
 	if got, want := settingValue(ctx, settingMaxBytesBeforeExternalGroupBy), validatedCompareSpillBytes; got != want {
 		t.Errorf("max_bytes_before_external_group_by = %v; want %v (half the %d-byte cap)", got, want, testQueryMemoryCap)
@@ -281,7 +281,7 @@ func TestApplyCompareMemoryBound_NonCompareStampsNeither(t *testing.T) {
 	// MetricsCompare node anywhere in the tree.
 	plan := &chplan.RangeWindow{Input: aggOverScan("otel_metrics_sum", "MetricName")}
 
-	ctx := applyCompareMemoryBound(context.Background(), plan, testQueryMemoryCap)
+	ctx := applyCompareMemoryBound(context.Background(), shapeOf(plan), testQueryMemoryCap)
 
 	if got := settingValue(ctx, settingMaxThreads); got != nil {
 		t.Errorf("non-compare plan: max_threads = %v; want absent", got)
@@ -311,7 +311,7 @@ func TestApplySortedSlabOverTimeMemoryBound_SortedSlabStampsMaxBlockSize(t *test
 		SortedSlabOverTime: true,
 	}
 
-	ctx := applySortedSlabOverTimeMemoryBound(context.Background(), plan)
+	ctx := applySortedSlabOverTimeMemoryBound(context.Background(), shapeOf(plan))
 
 	if got, want := settingValue(ctx, settingMaxBlockSize), wantSortedSlabMaxBlockSize; got != want {
 		t.Errorf("max_block_size = %v; want %v", got, want)
@@ -326,7 +326,7 @@ func TestApplySortedSlabOverTimeMemoryBound_SortedSlabStampsMaxBlockSize(t *test
 func TestApplySortedSlabOverTimeMemoryBound_NonSortedSlabStampsNothing(t *testing.T) {
 	plan := &chplan.RangeWindow{Input: &chplan.Scan{Table: "otel_metrics_sum"}}
 
-	ctx := applySortedSlabOverTimeMemoryBound(context.Background(), plan)
+	ctx := applySortedSlabOverTimeMemoryBound(context.Background(), shapeOf(plan))
 
 	if got := settingValue(ctx, settingMaxBlockSize); got != nil {
 		t.Errorf("non-sorted-slab plan: max_block_size = %v; want absent", got)
@@ -355,7 +355,7 @@ func TestApplySortedSlabOverTimeMemoryBound_NestedStampsMaxBlockSize(t *testing.
 		}},
 	}
 
-	ctx := applySortedSlabOverTimeMemoryBound(context.Background(), plan)
+	ctx := applySortedSlabOverTimeMemoryBound(context.Background(), shapeOf(plan))
 
 	if got, want := settingValue(ctx, settingMaxBlockSize), wantSortedSlabMaxBlockSize; got != want {
 		t.Errorf("max_block_size = %v; want %v", got, want)
@@ -371,7 +371,7 @@ func TestApplySortedSlabOverTimeMemoryBound_NestedStampsMaxBlockSize(t *testing.
 func TestApplyNativeHistogramAnalyzerFix_QuantileStampsDisabled(t *testing.T) {
 	plan := &chplan.HistogramQuantileNative{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -385,7 +385,7 @@ func TestApplyNativeHistogramAnalyzerFix_QuantileStampsDisabled(t *testing.T) {
 func TestApplyNativeHistogramAnalyzerFix_ProjectionStampsDisabled(t *testing.T) {
 	plan := &chplan.HistogramProjection{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -406,7 +406,7 @@ func TestApplyNativeHistogramAnalyzerFix_NestedStampsDisabled(t *testing.T) {
 		}},
 	}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -419,7 +419,7 @@ func TestApplyNativeHistogramAnalyzerFix_NestedStampsDisabled(t *testing.T) {
 func TestApplyNativeHistogramAnalyzerFix_NonHistogramStampsNothing(t *testing.T) {
 	plan := &chplan.RangeWindow{Input: aggOverScan("otel_metrics_sum", "MetricName")}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
 
 	if got := settingValue(ctx, settingEnableAnalyzer); got != nil {
 		t.Errorf("non-histogram plan: enable_analyzer = %v; want absent", got)
@@ -433,7 +433,7 @@ func TestApplyNativeHistogramAnalyzerFix_NonHistogramStampsNothing(t *testing.T)
 // no HistogramQuantileNative/HistogramProjection wrapper ever covers — see
 // planHasNativeHistogramAnalyzerHazard, this fix's other trigger.
 func TestApplyNativeHistogramAnalyzerFix_ValueFnFanoutStampsDisabled(t *testing.T) {
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), expHistogramValueFnFanoutPlan())
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(expHistogramValueFnFanoutPlan()))
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -461,7 +461,7 @@ func TestApplyNativeHistogramAnalyzerFix_ClassicFanoutStampsNothing(t *testing.T
 		}},
 	}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
 
 	if got := settingValue(ctx, settingEnableAnalyzer); got != nil {
 		t.Errorf("classic fan-out: enable_analyzer = %v; want absent", got)
@@ -526,7 +526,7 @@ func TestApplyExpHistogramTwoLevelBound_WindowedExpHistogramStampsThreshold(t *t
 	// whole rule a no-op while the test stayed green.
 	const wantThresholdBytes = 1
 
-	ctx := applyExpHistogramTwoLevelBound(context.Background(), expHistogramWindowPlan(), true)
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), shapeOf(expHistogramWindowPlan()), true)
 
 	if got, want := settingValue(ctx, settingGroupByTwoLevelThresholdBytes), wantThresholdBytes; got != want {
 		t.Errorf("group_by_two_level_threshold_bytes = %v; want %v", got, want)
@@ -538,7 +538,7 @@ func TestApplyExpHistogramTwoLevelBound_WindowedExpHistogramStampsThreshold(t *t
 // (an operator who listed CERBERUS_CH_OPTIMIZATIONS without it), the same plan
 // carries no stamp.
 func TestApplyExpHistogramTwoLevelBound_DisabledStampsNothing(t *testing.T) {
-	ctx := applyExpHistogramTwoLevelBound(context.Background(), expHistogramWindowPlan(), false)
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), shapeOf(expHistogramWindowPlan()), false)
 
 	if got := settingValue(ctx, settingGroupByTwoLevelThresholdBytes); got != nil {
 		t.Errorf("feature disabled: group_by_two_level_threshold_bytes = %v; want absent", got)
@@ -558,7 +558,7 @@ func TestApplyExpHistogramTwoLevelBound_ClassicBucketLadderStampsNothing(t *test
 		PeakIndependentOfGrid: true,
 	}
 
-	ctx := applyExpHistogramTwoLevelBound(context.Background(), plan, true)
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), shapeOf(plan), true)
 
 	if got := settingValue(ctx, settingGroupByTwoLevelThresholdBytes); got != nil {
 		t.Errorf("classic bucket ladder: group_by_two_level_threshold_bytes = %v; want absent", got)
@@ -577,7 +577,7 @@ func TestApplyExpHistogramTwoLevelBound_BareExpHistogramSelectorStampsNothing(t 
 		Input: &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
 	}
 
-	ctx := applyExpHistogramTwoLevelBound(context.Background(), plan, true)
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), shapeOf(plan), true)
 
 	if got := settingValue(ctx, settingGroupByTwoLevelThresholdBytes); got != nil {
 		t.Errorf("bare exp-histogram selector: group_by_two_level_threshold_bytes = %v; want absent", got)
@@ -603,7 +603,7 @@ func TestApplyExpHistogramTwoLevelBound_NestedStampsThreshold(t *testing.T) {
 		}},
 	}
 
-	ctx := applyExpHistogramTwoLevelBound(context.Background(), plan, true)
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), shapeOf(plan), true)
 
 	if got, want := settingValue(ctx, settingGroupByTwoLevelThresholdBytes), wantThresholdBytes; got != want {
 		t.Errorf("nested: group_by_two_level_threshold_bytes = %v; want %v", got, want)
@@ -622,7 +622,7 @@ func TestApplyExpHistogramTwoLevelBound_ValueFnFanoutStampsThreshold(t *testing.
 	// own wantThresholdBytes for why.
 	const wantThresholdBytes = 1
 
-	ctx := applyExpHistogramTwoLevelBound(context.Background(), expHistogramValueFnFanoutPlan(), true)
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), shapeOf(expHistogramValueFnFanoutPlan()), true)
 
 	if got, want := settingValue(ctx, settingGroupByTwoLevelThresholdBytes), wantThresholdBytes; got != want {
 		t.Errorf("value-fn fan-out: group_by_two_level_threshold_bytes = %v; want %v", got, want)

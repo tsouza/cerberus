@@ -693,3 +693,41 @@ func TestMetadata_LimitBadValue(t *testing.T) {
 		})
 	}
 }
+
+// TestLabelValues_ScanCountIsIndependentOfCandidateSpellings pins the
+// property the collapsed map arm (attrmap.CollapsedValues, cerberus issue
+// #3168) exists for: the number of times a metric table is scanned for
+// /api/v1/label/<name>/values must not grow with the number of OTel
+// spellings the name expands to. `job` has one candidate; `k8s_pod_name`
+// has two rewritable underscores and expands to seven. A finite window is
+// requested so the attrs arm takes the WHERE-bounded raw-table shape rather
+// than the now-anchored projection route. The Loki head pins the same
+// property over its logs table.
+func TestLabelValues_ScanCountIsIndependentOfCandidateSpellings(t *testing.T) {
+	t.Parallel()
+
+	scans := func(name, table string) int {
+		q := &stubQuerier{strings: []string{"a"}}
+		srv := newServer(q)
+		t.Cleanup(srv.Close)
+		resp, err := http.Get(srv.URL + "/api/v1/label/" + name + "/values?start=1717995600&end=1717999200")
+		if err != nil {
+			t.Fatalf("GET %s: %v", name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status=%d", name, resp.StatusCode)
+		}
+		return strings.Count(q.lastSQL, "FROM `"+table+"`")
+	}
+
+	for _, table := range []string{"otel_metrics_gauge", "otel_metrics_sum", "otel_metrics_histogram"} {
+		one := scans("job", table)
+		if one < 1 {
+			t.Fatalf("a one-candidate label scanned %s %d times; the comparison below would be vacuous", table, one)
+		}
+		if many := scans("k8s_pod_name", table); many != one {
+			t.Errorf("k8s_pod_name (seven candidate spellings) scans %s %d times; job (one spelling) scans it %d — the scan count must not grow with the candidate set", table, many, one)
+		}
+	}
+}

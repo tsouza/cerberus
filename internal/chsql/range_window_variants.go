@@ -348,7 +348,7 @@ func (e *emitter) emitRangeWindowVariantsMatrix(r *chplan.RangeWindow) error {
 	outer := NewQuery().From(mid.Frag())
 	outer.Select(groupFrags...)
 	outer.Select(Col("anchor_ts"))
-	if r.TimestampColumn != "anchor_ts" {
+	if r.TimestampColumn != RangeWindowAnchorAlias {
 		outer.Select(As(gridAnchorFrag(r), r.TimestampColumn))
 	}
 	outer.Select(Col(r.ValueColumn))

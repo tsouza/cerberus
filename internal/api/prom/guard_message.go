@@ -2,6 +2,7 @@ package prom
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -48,14 +49,22 @@ func decodedGuardMessage(msg string) string {
 	return msg
 }
 
+// stripGuardExceptionEnvelope cuts ClickHouse's text envelope,
+// `Code: <n>. DB::Exception: `, off a guard message for each code an
+// emitted guard can raise (chclient.EmittedGuardCodes — the same set
+// chclient wraps into a ThrowIfError on the typed path), so the two paths
+// cannot recognise different code sets.
 func stripGuardExceptionEnvelope(raw string) (string, bool) {
-	for _, prefix := range []string{
-		"Code: 395. DB::Exception: ",
-		"Code: 768. DB::Exception: ",
-	} {
-		if msg, ok := strings.CutPrefix(raw, prefix); ok {
+	for _, code := range chclient.EmittedGuardCodes() {
+		if msg, ok := strings.CutPrefix(raw, guardExceptionEnvelopePrefix(code)); ok {
 			return msg, true
 		}
 	}
 	return "", false
+}
+
+// guardExceptionEnvelopePrefix renders the text envelope ClickHouse puts in
+// front of an exception's message for the given error code.
+func guardExceptionEnvelopePrefix(code int32) string {
+	return "Code: " + strconv.Itoa(int(code)) + ". DB::Exception: "
 }

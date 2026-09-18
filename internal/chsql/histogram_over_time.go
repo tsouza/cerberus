@@ -57,14 +57,14 @@ func (e *emitter) emitMetricsHistogramOverTime(m *chplan.MetricsHistogramOverTim
 
 	bucketAlias := m.BucketAlias
 	if bucketAlias == "" {
-		bucketAlias = "__bucket"
+		bucketAlias = chplan.MetricsBucketColumn
 	}
 	sb.SelectAs(histogramBucketFrag(m.Attr, m.IsDuration), bucketAlias)
 
 	// count(1) AS <ValueAlias>.
 	valueAlias := m.ValueAlias
 	if valueAlias == "" {
-		valueAlias = "Value"
+		valueAlias = chplan.DefaultSampleValueColumn
 	}
 	countFunc := chplan.AggFunc{
 		Fn:    chplan.FnCount,
@@ -230,11 +230,11 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 
 	bucketAlias := m.BucketAlias
 	if bucketAlias == "" {
-		bucketAlias = "__bucket"
+		bucketAlias = chplan.MetricsBucketColumn
 	}
 	valueAlias := m.ValueAlias
 	if valueAlias == "" {
-		valueAlias = "Value"
+		valueAlias = chplan.DefaultSampleValueColumn
 	}
 
 	// Sample arm: group-by cols, bucket, attr filter, sample-side

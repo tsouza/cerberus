@@ -33,8 +33,7 @@ Two architectural invariants frame the whole approach:
   pushed into ClickHouse — the leaf scan, the windowing, the aggregation all
   happen server-side, where CH parallelises a single MergeTree scan across
   cores. Route A bounds memory with `max_memory_usage`, the sample budget, an
-  11k-point resolution cap, and a streaming cursor; it is byte-identical to the
-  pipeline cerberus has always shipped.
+  11k-point resolution cap, and a streaming cursor.
 - **The sharded-pushdown solver is the exception — ON by default (`auto`),
   narrow by construction.** Route A holds one CH statement per request for the
   overwhelming majority of traffic; the solver handles the single class route A
@@ -112,8 +111,9 @@ the plan before any rule runs.
 
 ### Optimizer (`internal/optimizer`)
 
-A Catalyst-/DataFusion-style rule engine (Analyzer → Once → FixedPoint
-batches) over the shared IR. The performance-relevant rules push filters and
+A Catalyst-/DataFusion-style rule engine (two must-run Analyzer batches,
+then three FixedPoint batches — the table in `engine.md` lists each) over
+the shared IR. The performance-relevant rules push filters and
 projections toward the scan so ClickHouse does less work:
 
 - **Predicate pushdown** moves filters below aggregates / range windows so the
@@ -130,7 +130,8 @@ IO past an `ORDER BY … LIMIT N` on Tempo's search shapes — see
 [`clickhouse-optimizations.md`](clickhouse-optimizations.md).
 
 The optimizer carries **no cost model** — it is a deterministic rewrite engine,
-and every rule must earn its place: it carries only rules that fire.
+and every rule must earn its place: each either fires on the real corpus or
+is retained as named correctness insurance (`engine.md` says which).
 The exhaustive, current rule table lives in
 [`engine.md`](engine.md#a-real-rule-based-optimiser--internaloptimizer); it is
 the source of truth and is not duplicated here precisely so it cannot drift.
@@ -171,7 +172,7 @@ metrics tables are sorted **`MetricName`-first** (via the
 `tsouza/opentelemetry-collector-contrib:cerberus-ddl` fork) rather than
 `ServiceName`-first. A metric-only query (no service matcher) then binary-
 searches the primary key instead of scanning most of the part — measured at
-**8–17× fewer granules read** on representative queries, while a
+**17× fewer granules read** on the representative query in `benchmarks.md`, while a
 service-pinned query costs only a couple of extra granules. See
 [`operations.md`](operations.md) for the runtime memory/scaling contract.
 
@@ -196,8 +197,8 @@ every PR) to *broad* (corpus-wide, nightly).
    read-side harness was blind to.
 3. **Corpus-wide fan-out profiler** — `test/perf/profile`, the release-gate
    `profile` job: it posts a green no-op check on every ordinary PR, and does the
-   real profiling on push-to-main / nightly / dispatch / release PRs. Profiles all
-   1,023 executable fixtures via in-process chDB `EXPLAIN` + per-subquery `count()`, ranks them
+   real profiling on push-to-main / nightly / dispatch / release PRs. Profiles every
+   executable `test/spec` fixture via in-process chDB `EXPLAIN` + per-subquery `count()`, ranks them
    by fan factor, and surfaces the worst as a job step-summary. The wide net
    for a fan-out in a construct nobody thought to write a guard for.
 4. **Cardinality ratchet** — `test/perf/cardinality_ratchet_test.go`, in the
@@ -253,7 +254,7 @@ every PR) to *broad* (corpus-wide, nightly).
    existing sentinel's calibrated baseline moves when a newer-floor mechanism
    gains coverage. Both this corpus and `test/perf/nightly`'s build their
    handlers with the SAME boot-resolved `engine.SettingsRules` a real
-   deployment carries (`chopttest.BuildSettingsRules` from a live
+   deployment carries (`choptwire.SettingsRules` from a live
    probe-and-resolve), because `prom.New` / `tempo.New` leave `Engine.Settings`
    at its zero value, which applies nothing at all.
 
@@ -331,14 +332,12 @@ in `internal/chsql/set_op.go` is the current example, reached only by the
 arm shapes the single-pass window gate cannot fuse) and, structurally via
 `EXPLAIN`, on any `RECURSIVE` CTE step. `profile.Record.FanFactor` is
 a `*float64`: nil (JSON `null`) whenever `UncountableLevels` is
-nonzero, never a fabricated `1.00`. The ratchet is null-aware rather than
-null-blind: a fixture whose current run is `null` must match what the
-committed baseline already says — `null` on both sides passes (already
-honestly acknowledged), a fixture that regresses from measured to `null`
-fails (a human has to look and re-baseline on purpose), and a fixture that
-becomes measurable is always allowed. See the "fan_factor can be
+nonzero. The ratchet is null-aware: a fixture whose current run is `null`
+must match what the committed baseline already says — `null` on both sides
+passes, a fixture that regresses from measured to `null` fails, and a
+fixture that becomes measurable is always allowed. The "fan_factor can be
 unmeasured" section of `test/perf/cardinality_ratchet_test.go`'s file doc
-for the full truth table.
+holds the full truth table.
 
 A separate structural win holds the slicer's copy-on-write off-spine sharing in
 place. `chplan.ReanchorRange` shares the immutable off-spine subtree across the
@@ -377,44 +376,32 @@ Prometheus's `extrapolatedRate`. Its peak memory therefore grows with
 `series × anchors`, while its wall time is dominated by the per-anchor
 extrapolation arithmetic rather than by the scan.
 
-The fan-out is the default for the bounded majority of rate-range traffic. See
-[`performance.background.md`](performance.background.md) for the measurement
-campaign behind that choice: the scale curve, the alternatives that were built
-and rejected, and the crossover past which the asymptotically optimal
-single-pass finally wins.
+The fan-out is the path for servers below the native floor and for
+deployments that pin the native path off.
 
 ## Native rate: exactness vs. scale (should I enable it?)
 
 The rate-range story has two implementations — the `arrayJoin` fan-out and the
-native `timeSeriesRateToGrid` aggregate (`ts_grid_range`) — and on a modern
-ClickHouse the auto-picker now picks the native one for you. You only have to
-think about it for `rate(...)` range queries (the `sum(rate(...[5m]))` panel
-shape); everything else is unaffected. For almost every deployment the default
-behaviour is the right answer and you can stop reading here. The rest of this
-section explains *why* the native path is the default on capable servers, and
-when you might pin it off.
-
-`ts_grid_range` keeps an **experimental maturity** label, but it is
-**auto-selected by version**: under `CERBERUS_CH_OPTIMIZATIONS=auto` (the
-default) the auto-picker enables it on any server `>= 25.9`, alongside the
-result-equivalent stable wins `aggregation_in_order` (24.8+) and
-`condition_cache` (25.3+). A prod-data validation proved the native path
-result-correct — for `rate` it is in fact *more* correct than the fan-out (which
-carries a known extrapolation bug) — at flat memory, which is why auto picks it
-rather than leaving it as an opt-in. To go back to the fan-out, pin an explicit
-list that omits it (or set `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE=false`). See
-[`clickhouse-optimizations.md`](clickhouse-optimizations.md) for the auto-picker.
+native `timeSeriesRateToGrid` aggregate (`ts_grid_range`). Under
+`CERBERUS_CH_OPTIMIZATIONS=auto` (the default) the auto-picker enables the
+native path on any server `>= 25.9`, alongside the result-equivalent stable
+wins `aggregation_in_order` (24.8+) and `condition_cache` (25.3+). It carries
+the registry's **experimental** maturity label because it rides ClickHouse's
+own `allow_experimental_time_series_aggregate_functions` setting. To go back
+to the fan-out, pin an explicit list that omits it (or set
+`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE=false`). See
+[`clickhouse-optimizations.md`](clickhouse-optimizations.md) for the
+auto-picker.
 
 ### The fan-out path (servers below 25.9, or pinned off): exact, Prometheus-identical, sub-second at realistic scale
 
-On a server below 25.9 — or when you pin the native path off — cerberus computes
-the rate the way it always has: the
-`arrayJoin` fan-out described above, applying Prometheus's own
-`extrapolatedRate` to each `(series, anchor)` window. This is the path the
-differential compatibility suite proves against a *reference Prometheus engine*
-on the same seeded data — the `compatibility/prometheus` gate, a required check
-on every merge. **The fan-out path is the one that gate signs off on, so its
-results match Prometheus exactly.**
+On a server below 25.9 — or when the native path is pinned off — cerberus
+computes the rate with the `arrayJoin` fan-out described above, applying
+Prometheus's own `extrapolatedRate` to each `(series, anchor)` window. This
+is the path the differential compatibility suite proves against a *reference
+Prometheus engine* on the same seeded data — the `compatibility/prometheus`
+lane, a release gate. **The fan-out path is the one that lane signs off on,
+so its results match Prometheus exactly.**
 
 It is also fast at the scale real dashboards run. A normal 1h panel
 (~1000 series × 15s ≈ 200–500k samples) is comfortably **sub-second** on the
@@ -450,13 +437,15 @@ pass. There is no
 the memory — stays **flat** instead of growing with the grid. On the canonical
 500k-row rate-range query the difference is stark:
 
-| path                       | how the rate is computed         | wall    | modeled peak memory |
-| -------------------------- | -------------------------------- | ------- | ------------------- |
-| fan-out (pinned / < 25.9)  | `arrayJoin` fan-out (Prom-exact) | ~658 ms | ~216 MiB            |
-| native (default on 25.9+)  | native `timeSeriesRateToGrid`    | ~87 ms  | ~11 MiB             |
+| path                       | how the rate is computed         | wall     | modeled peak memory |
+| -------------------------- | -------------------------------- | -------- | ------------------- |
+| fan-out (pinned / < 25.9)  | `arrayJoin` fan-out (Prom-exact) | 1.12 s   | 216 MiB             |
+| native (default on 25.9+)  | native `timeSeriesRateToGrid`    | 156.2 ms | 11 MiB              |
 
-(Measured on the 500k-row seed; full methodology and the three rate-range
-strategies are in [benchmarks.md](benchmarks.md#the-expensive-shape-rate-range-query--three-strategies).)
+(The figures are `benchmarks.md`'s, measured on the 500k-row seed; timings are
+machine-dependent and the ratio is what carries. Full methodology and the
+three rate-range strategies are in
+[benchmarks.md](benchmarks.md#the-expensive-shape-rate-range-query--three-strategies).)
 The fan-out's memory scales with the data; the native path's stays roughly flat
 no matter how many series or anchors you ask for — which is precisely what lets
 it serve the million-row queries that would otherwise hit the cap.
@@ -475,17 +464,18 @@ format and Grafana both render `0.12` either way. The test pins this exactly
 (every cell within 1 ULP, no more than the documented two cells diverging, none
 by more than 1 ULP) rather than papering over it with a tolerance.
 
-The native path keeps an **experimental maturity** label for one honest reason,
-not because the rounding matters: it rides ClickHouse's own experimental
-`allow_experimental_time_series_aggregate_functions` setting, which is
-ClickHouse's confidence signal, not cerberus's. A prod-data validation has since
-exercised it against a real (non-chDB) server with that setting enforced and
-found it result-correct at flat memory — which is why `auto` now selects it on
-`>= 25.9` rather than leaving it opt-in. Scope is still **`rate` only** for this
-particular fan-out story — `increase` / `delta` / `deriv` / `predict_linear`
-stay on the fan-out until each native sibling is differentially proven against
-Prometheus (the `staleness` / `changes` / `resets` shapes have their own native
-aggregates and are likewise auto-enabled).
+The native path's **experimental** maturity label is ClickHouse's
+confidence signal, not cerberus's: the aggregate is gated by ClickHouse's
+`allow_experimental_time_series_aggregate_functions` setting, and the label
+mirrors that. The same native family covers the sibling range functions —
+`increase`, `delta`, `deriv`, `predict_linear`, `irate`, `idelta`, `resets`
+and the stale-resample and histogram shapes each lower to their own
+`timeSeries*ToGrid` aggregate under their own registry feature
+(`ts_grid_increase`, `ts_grid_delta`, …), auto-selected on the same
+`>= 25.9` floor; `changes`, the vector-aggregate fold and the instant arm
+are opt-in. The generated feature table in
+[`clickhouse-optimizations.md`](clickhouse-optimizations.md) is the source
+of truth for which is auto-selected.
 
 ### The decision rule
 

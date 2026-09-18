@@ -12,8 +12,8 @@
   "transformation": {
     "target_path": "internal/chsql/builder.go",
     "patch_path": "test/semantic/mutants/patches/logql-label-matcher-unanchored.patch",
-    "source_fingerprint": "7a3e52ada0ef6d6062a85942075a653ef25c37e5409e6659ac47bd7ed595ef7d",
-    "expected_mutated_fingerprint": "b5f551fbc9e85fb307b95851943055e0d8b62ea0916098cc23e15a0649010690"
+    "source_fingerprint": "bdcc0c8283f68e9a94c227342cb5b6ec8ed80d9f0de2bee51a0a7f17fbe2292b",
+    "expected_mutated_fingerprint": "83186bcd52aa1cd103c11ef5021b429cd034652a11b5b0e1d77896b5096f0b56"
   },
   "detectors": [
     {
@@ -21,14 +21,16 @@
       "package": "./internal/logql",
       "test_run": "^TestLower$/^stream_regex_no_overmatch$",
       "build_tags": [],
-      "timeout_seconds": 30
+      "timeout_seconds": 30,
+      "evidence_kind": "golden-text"
     },
     {
       "id": "promql-regex-unanchored-no-overmatch-supplementary",
       "package": "./internal/promql",
       "test_run": "^TestLower$/^regex_unanchored_no_overmatch$",
       "build_tags": [],
-      "timeout_seconds": 30
+      "timeout_seconds": 30,
+      "evidence_kind": "golden-text"
     }
   ],
   "expected_detection": "killed",
@@ -38,6 +40,6 @@
     "memory_max": "1GiB",
     "memory_hold": "1s"
   },
-  "notes": "Blanks anchoredRegexPattern's anchorPrefix/anchorSuffix constants (internal/chsql/builder.go:847-848) from \"^(?:\" / \")$\" to \"\", reopening issue #1741: job=~\"ap\" (or, here, LogQL's env=~\"prod|stg\" stream selector) would again match \"production\" as a substring instead of rejecting it, since ClickHouse's match() is a substring search and Prometheus/Loki/Tempo regex matchers are always fully anchored. Scoped to the label-matcher path deliberately: anchoredRegexPattern is called only from chplan.OpMatch/OpNotMatch sites (internal/chsql/builder.go's exprBinary and exprNestedArrayExists) — LogQL line filters (`|~`/`!~` against the log line) lower to a distinct chplan.LineContent node in internal/logql/lower.go's lineFilterPart and never call this function, so their already-unanchored (Loki-correct) substring semantics are untouched by this mutation, preserving the stream-selector/line-filter distinction the grounding issue calls out. THIS MUTATION IS NOT LOGQL-ONLY: anchoredRegexPattern is the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL (see LOGQL-LABEL-MATCHER-REGEX-ANCHORING's and PROMQL-LABEL-MATCHER-REGEX-ANCHORING's own blind_spots, and the cross-head SIGNAL-LABEL-MATCHER-CONSISTENCY contract) — the primary detector is the LogQL fixture (test/spec/logql/stream_regex_no_overmatch.txtar, the regression fixture #1741 itself added), and the second detector is PromQL's own regression twin (test/spec/promql/regex_unanchored_no_overmatch.txtar) included as SUPPLEMENTARY, disclosed evidence of the same shared-emitter blast radius rather than a second independent bug — both are expected to report killed for the identical root cause, not two uncorrelated findings. Both detectors share test/spec's generic spec.Walk/spec.Match golden-comparison harness (structural sql/args/chplan text diffing) — that harness is head-agnostic plumbing, not part of either head's own independent evidence; what differs per detector is the head-specific Lower() entry point and its own fixture corpus. Neither detector needs the chdb build tag or a live ClickHouse: the kill is a static sql/args/chplan text mismatch against the golden, verified before chDB round-trip execution is even reached (see internal/logql/lower_test.go's TestLower and internal/promql/lower_test.go's TestLower, both gated on no build tag). Independent real-Loki confirmation that the CONTROL behavior (anchored, no over-match) matches reference Loki lives in compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml, run via `just compat-logql` — that lane cannot itself execute against a mutated overlay (it needs a live docker-compose Loki + ClickHouse stack, not go test -overlay), so it is evidence for the control's correctness, not a third mutation detector.",
+  "notes": "Blanks anchoredRegexPattern's anchorPrefix/anchorSuffix constants (internal/chsql/builder.go:847-848) from \"^(?:\" / \")$\" to \"\", reopening issue #1741: job=~\"ap\" (or, here, LogQL's env=~\"prod|stg\" stream selector) would again match \"production\" as a substring instead of rejecting it, since ClickHouse's match() is a substring search and Prometheus/Loki/Tempo regex matchers are always fully anchored. Scoped to the label-matcher path deliberately: anchoredRegexPattern is called only from chplan.OpMatch/OpNotMatch sites (internal/chsql/builder.go's exprBinary and exprNestedArrayExists) \u2014 LogQL line filters (`|~`/`!~` against the log line) lower to a distinct chplan.LineContent node in internal/logql/lower.go's lineFilterPart and never call this function, so their already-unanchored (Loki-correct) substring semantics are untouched by this mutation, preserving the stream-selector/line-filter distinction the grounding issue calls out. THIS MUTATION IS NOT LOGQL-ONLY: anchoredRegexPattern is the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL (see LOGQL-LABEL-MATCHER-REGEX-ANCHORING's and PROMQL-LABEL-MATCHER-REGEX-ANCHORING's own blind_spots, and the cross-head SIGNAL-LABEL-MATCHER-CONSISTENCY contract) \u2014 the primary detector is the LogQL fixture (test/spec/logql/stream_regex_no_overmatch.txtar, the regression fixture #1741 itself added), and the second detector is PromQL's own regression twin (test/spec/promql/regex_unanchored_no_overmatch.txtar) included as SUPPLEMENTARY, disclosed evidence of the same shared-emitter blast radius rather than a second independent bug \u2014 both are expected to report killed for the identical root cause, not two uncorrelated findings. Both detectors share test/spec's generic spec.Walk/spec.Match golden-comparison harness (structural sql/args/chplan text diffing) \u2014 that harness is head-agnostic plumbing, not part of either head's own independent evidence; what differs per detector is the head-specific Lower() entry point and its own fixture corpus. Neither detector needs the chdb build tag or a live ClickHouse: the kill is a static sql/args/chplan text mismatch against the golden, verified before chDB round-trip execution is even reached (see internal/logql/lower_test.go's TestLower and internal/promql/lower_test.go's TestLower, both gated on no build tag). Independent real-Loki confirmation that the CONTROL behavior (anchored, no over-match) matches reference Loki lives in compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml, run via `just compat-logql` \u2014 that lane cannot itself execute against a mutated overlay (it needs a live docker-compose Loki + ClickHouse stack, not go test -overlay), so it is evidence for the control's correctness, not a third mutation detector.",
   "linked_issue": null
 }

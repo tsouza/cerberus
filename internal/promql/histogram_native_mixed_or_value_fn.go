@@ -73,14 +73,20 @@ func splitMixedExpHistogramSetOpByType(b *parser.BinaryExpr, s schema.Metrics, c
 	return wrapMixedHistogramPartition(mixed, s), wrapMixedFloatPartition(mixed, s), nil
 }
 
-// mixedDiscriminatorFilter narrows mixed's rows to the one side of its
-// per-row [chplan.MixedDiscriminatorColumn] want names.
+// mixedDiscriminatorFilter narrows mixed's rows to the one side its per-row
+// discriminator names with `want`. The discriminator is resolved by ROLE
+// ([chplan.RoleDiscriminator]), never by the canonical
+// [chplan.MixedDiscriminatorColumn] name: a wrapper that re-projects the
+// mixed relation under its own column names still carries the role, and a
+// predicate against the canonical name would reference a column such a
+// relation does not have. This is the one spelling of the predicate;
+// [mixedRowsFloatOnly] and the sum/avg partition both go through it.
 func mixedDiscriminatorFilter(mixed chplan.Node, want int64) *chplan.Filter {
 	return &chplan.Filter{
 		Input: mixed,
 		Predicate: &chplan.Binary{
 			Op:    chplan.OpEq,
-			Left:  &chplan.ColumnRef{Name: chplan.MixedDiscriminatorColumn},
+			Left:  requireSampleRole(mixed.RowType(), chplan.RoleDiscriminator),
 			Right: &chplan.LitInt{V: want},
 		},
 	}

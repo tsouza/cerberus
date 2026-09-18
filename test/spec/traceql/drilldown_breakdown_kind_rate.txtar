@@ -7,6 +7,7 @@ SELECT lower(`SpanKind`) AS `kind`, toFloat64(count(?)) AS `Value` FROM (SELECT 
 [1] string = ""
 -- seed --
 CREATE TABLE otel_traces (
+    TraceId String DEFAULT 't1',
     SpanId String,
     ParentSpanId String,
     SpanKind LowCardinality(String)

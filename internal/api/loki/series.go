@@ -62,7 +62,9 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus loki series", "selectors", len(selectorGroups), "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
-	rows, err := h.Client.QueryLabelSets(r.Context(), sqlStr, args...)
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
+	rows, err := h.Client.QueryLabelSets(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki series CH query failed", "err", err, "sql", sqlStr)
 		h.respondError(r.Context(), w, classifyMetadataErr(err))

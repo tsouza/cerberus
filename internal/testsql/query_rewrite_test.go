@@ -39,6 +39,30 @@ func TestRewriteMapProjections(t *testing.T) {
 			want: "SELECT `MetricName`, `TimeUnix`, `Value` FROM `otel_metrics_gauge`",
 		},
 		{
+			// The spanset-intersect shape: an explicit column list over a bare
+			// table whose QUALIFY reads the Map column it also projects. An
+			// in-place wrap would bind the QUALIFY reference to the String
+			// alias, so the wrap moves to an outer projection instead.
+			name: "map column referenced by the same select's trailer is wrapped one level up",
+			in:   "SELECT `TraceId`, `SpanId`, `ResourceAttributes`, `Duration` FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) QUALIFY max((`ResourceAttributes`[?] = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`",
+			want: "SELECT `TraceId`, `SpanId`, toJSONString(`ResourceAttributes`) AS `ResourceAttributes`, `Duration` FROM (SELECT `TraceId`, `SpanId`, `ResourceAttributes`, `Duration` FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) QUALIFY max((`ResourceAttributes`[?] = ?)) OVER (PARTITION BY `TraceId`) LIMIT 1 BY `TraceId`, `SpanId`)",
+		},
+		{
+			name: "trailer referencing a different map column keeps the in-place wrap",
+			in:   "SELECT `TraceId`, `ResourceAttributes` FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)",
+			want: "SELECT `TraceId`, toJSONString(`ResourceAttributes`) AS `ResourceAttributes` FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)",
+		},
+		{
+			name: "aliased expression beside the referenced map column still nests by alias",
+			in:   "SELECT `TraceId`, `ResourceAttributes`, toFloat64(`Duration`) AS `Value` FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)",
+			want: "SELECT `TraceId`, toJSONString(`ResourceAttributes`) AS `ResourceAttributes`, `Value` FROM (SELECT `TraceId`, `ResourceAttributes`, toFloat64(`Duration`) AS `Value` FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))",
+		},
+		{
+			name: "unaliased expression beside the referenced map column keeps the in-place wrap",
+			in:   "SELECT `TraceId`, `ResourceAttributes`, count() FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) GROUP BY `TraceId`, `ResourceAttributes`",
+			want: "SELECT `TraceId`, toJSONString(`ResourceAttributes`) AS `ResourceAttributes`, count() FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?) GROUP BY `TraceId`, `ResourceAttributes`",
+		},
+		{
 			// EmitQueryExemplars projects `attrs_arr[i] AS \`ExemplarAttributes\``
 			// — a Map(LowCardinality(String),String) Subscript at the outer
 			// SELECT. Without the toJSONString wrap chDB's parquet driver

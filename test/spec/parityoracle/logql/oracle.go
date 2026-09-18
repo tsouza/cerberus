@@ -75,6 +75,7 @@ import (
 	"github.com/grafana/dskit/user"
 	"github.com/grafana/loki/v3/pkg/logproto"
 	"github.com/grafana/loki/v3/pkg/logql"
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/grafana/loki/v3/pkg/logqlmodel"
 	"github.com/grafana/loki/v3/pkg/util/validation"
 	"github.com/prometheus/prometheus/model/labels"
@@ -92,6 +93,11 @@ import (
 // (test/spec's evaluateLokiParity) classifies it as a parity refusal rather
 // than an unclassified harness failure.
 var ErrReferenceEvaluation = errors.New("reference engine evaluation failed")
+
+// ErrReferenceRejectedQuery marks the upstream parser's own verdict on the
+// query text: it does not parse as LogQL at all (a cerberus extension, say),
+// so there is no reference answer whatever the data.
+var ErrReferenceRejectedQuery = errors.New("reference engine rejected the query")
 
 // ErrLogStreamShape marks [flatten]'s rejection of a log query's answer
 // (logqlmodel.Streams — lines, not samples). The shape mismatch is
@@ -208,6 +214,26 @@ type Query struct {
 // IsRange reports whether this is a range query.
 func (q Query) IsRange() bool { return q.Step > 0 }
 
+// IsLogQuery reports whether expr is a LOG query — one the reference
+// engine answers with logqlmodel.Streams (lines grouped by stream) rather
+// than samples — as decided by the upstream parser itself: syntax.ParseExpr
+// yields a syntax.LogSelectorExpr for a log query and a syntax.SampleExpr
+// for a metric one, the same classification the engine makes when it picks
+// which answer shape to build. A parse failure is returned as such; the
+// caller must not read it as either answer.
+func IsLogQuery(expr string) (bool, error) {
+	parsed, err := syntax.ParseExpr(expr)
+	if err != nil {
+		return false, fmt.Errorf("%w: %w", ErrReferenceRejectedQuery, err)
+	}
+	// A literal (`42`) satisfies both interfaces; the engine answers it as
+	// a scalar sample, so only a selector that is NOT also a SampleExpr is
+	// a log query here.
+	_, isLog := parsed.(syntax.LogSelectorExpr)
+	_, isSample := parsed.(syntax.SampleExpr)
+	return isLog && !isSample, nil
+}
+
 // Evaluate runs q against the real Loki engine over streams, and returns
 // the resulting samples sorted deterministically.
 //
@@ -231,7 +257,7 @@ func Evaluate(tb testing.TB, streams []Stream, q Query) ([]Result, error) {
 		q.Expr, q.Start, q.End, step, interval, logproto.FORWARD, entryLimit, nil, nil,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("reference engine rejected the query: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrReferenceRejectedQuery, err)
 	}
 
 	ctx := user.InjectOrgID(context.Background(), referenceTenant)

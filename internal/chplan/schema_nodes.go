@@ -203,7 +203,7 @@ func (r *RangeWindow) RowType() Schema {
 		if r.TimestampColumn != "" {
 			timestamp := r.TimestampColumn
 			if timestamp == RangeWindowAnchorColumn {
-				timestamp = "TimeUnix"
+				timestamp = DefaultSampleTimestampColumn
 			}
 			out.Columns = append(out.Columns, Column{Name: timestamp, Role: RoleTimestamp})
 		}

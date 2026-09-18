@@ -88,7 +88,7 @@ func lowerSortFloatOperand(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	// lowerCall reaches this recognizer at every nesting depth, unlike a
 	// root-only histogram dispatch entry; outer wrappers share this path.
 	if b, ok := sortOverMixedExpHistogramSetOp(c, s, ctx); ok {
-		return prepareSortOperand(mixedOperandAdmission, func() (chplan.Node, error) {
+		return lowerFloatOnlyMixedOperand(mixedSortFamily, mixedOperandAdmission, func() (chplan.Node, error) {
 			return shadowResolveFloatArmChecked(b, s, ctx)
 		})
 	}
@@ -96,22 +96,7 @@ func lowerSortFloatOperand(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	if err != nil || !mixedRowsNeedPreparation(inner) {
 		return inner, err
 	}
-	return prepareSortOperand(mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })
-}
-
-// prepareSortOperand executes the declared payload policy before the ordering
-// kernel. Direct unions retain their checked shadow-resolved float arm; hidden
-// mixed operands are narrowed only after the complete operand is resolved.
-func prepareSortOperand(site mixedAdmissionSite, load func() (chplan.Node, error)) (chplan.Node, error) {
-	key := mixedWrapperKey{family: mixedSortFamily, site: site}
-	if mixedOperandPolicies[key] != mixedFloatOnly {
-		return nil, fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
-	}
-	inner, err := load()
-	if err != nil {
-		return nil, err
-	}
-	return mixedRowsFloatOnly(inner), nil
+	return lowerFloatOnlyMixedOperand(mixedSortFamily, mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })
 }
 
 // lowerSortByLabel implements PromQL `sort_by_label(v, label, …)` /
@@ -168,10 +153,11 @@ func prepareSortOperand(site mixedAdmissionSite, load func() (chplan.Node, error
 // catch-all rejection instead of ever reaching label-sort logic at all
 // (#2462). Once recognised, the histogram-valued plan is ordered by the
 // exact same natural-sort-key machinery the float arm uses — the row
-// shape underneath the sort keys never enters the comparison — and
-// [chplan.RowShapeOf]'s OrderBy arm forwards [chplan.HistogramRowShape]
-// through unchanged so the wire layer keeps every histogram column
-// instead of re-projecting down to the canonical float quartet.
+// shape underneath the sort keys never enters the comparison — and an
+// OrderBy's row type is its input's, so the histogram fields (and
+// [chplan.LiveSampleKind]'s histogram answer) pass through unchanged and
+// the wire layer keeps every histogram column instead of re-projecting
+// down to the canonical float quartet.
 // lowerSortByLabelArg resolves sort_by_label/sort_by_label_desc's first
 // (vector) argument, split out of [lowerSortByLabel] to keep that
 // function's cyclomatic complexity in check (nestif). Tries, in order: a

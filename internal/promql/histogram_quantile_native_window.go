@@ -480,7 +480,7 @@ func expHistogramWindowReshape(
 		Projections: append(
 			projs,
 			chplan.Projection{
-				Expr:  expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
+				Expr:  expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
 				Alias: s.PositiveOffsetColumn,
 			},
 			chplan.Projection{
@@ -488,7 +488,7 @@ func expHistogramWindowReshape(
 				Alias: s.PositiveBucketCountsColumn,
 			},
 			chplan.Projection{
-				Expr:  expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
+				Expr:  expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
 				Alias: s.NegativeOffsetColumn,
 			},
 			chplan.Projection{
@@ -724,9 +724,9 @@ func expHistogramMergeProjections(s schema.Metrics) []chplan.Projection {
 		})
 	}
 	return append(projs, []chplan.Projection{
-		{Expr: expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveOffsetColumn},
+		{Expr: expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveOffsetColumn},
 		{Expr: expHistogramMergeBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveBucketCountsColumn},
-		{Expr: expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeOffsetColumn},
+		{Expr: expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeOffsetColumn},
 		{Expr: expHistogramMergeBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeBucketCountsColumn},
 	}...)
 }

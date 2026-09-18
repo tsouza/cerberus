@@ -26,10 +26,11 @@
 //   GITHUB_STEP_SUMMARY             optional summary destination
 
 import process from "node:process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
+import { appendStepSummary, errorStderr } from "./lib/gh.mjs";
 import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
 import { validatePolicySnapshot } from "./lib/semantic-lane-adapter.mjs";
 import { loadRegistry } from "./ci-lane-contract.mjs";
@@ -56,14 +57,14 @@ const MUTANTS_DIR = process.env.SEMANTIC_MUTANTS_DIR || DEFAULT_MUTANTS_DIR;
 const MUTANT_EXECUTIONS_PATH =
   process.env.SEMANTIC_MUTANT_EXECUTIONS_PATH ?? DEFAULT_MUTANT_EXECUTIONS_PATH;
 
+const ANNOTATION_TITLE = "Semantic conformance report";
+
 function appendSummary(body) {
-  const path = process.env.GITHUB_STEP_SUMMARY;
-  if (path) appendFileSync(path, body);
+  appendStepSummary(body, { quiet: true });
 }
 
 function errorAnnotation(message) {
-  const oneLine = message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
-  process.stderr.write(`::error title=Semantic conformance report::${oneLine}\n`);
+  errorStderr(message, { title: ANNOTATION_TITLE });
 }
 
 function readIfExists(path) {
@@ -84,7 +85,13 @@ function readIfExists(path) {
 // shared with semantic-guide.mjs's CLI rather than reimplemented here, per
 // CLAUDE.md's DRY invariant.
 
-export function generate(root = process.cwd()) {
+// loadReport builds the report object every generated semantic document
+// projects from — the model, the lane registry and policy snapshot, and the
+// mutation pilot corpus with its ledger, all from the same env-driven
+// paths. semantic-guide.mjs imports it rather than repeating the loading,
+// so the guide can never be built from a different input set than the
+// report it is a view over.
+export function loadReport(root = process.cwd()) {
   const model = loadSemanticModel(MODEL_DIR, { root });
   const registry = loadRegistry(REGISTRY_PATH);
   const snapshot = validatePolicySnapshot(JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8")));
@@ -94,6 +101,11 @@ export function generate(root = process.cwd()) {
     mutantIds: new Set(mutants.keys()),
   });
   const report = buildReport(model, { registry, snapshot, mutants, mutantExecutions });
+  return { model, registry, snapshot, report };
+}
+
+export function generate(root = process.cwd()) {
+  const { report } = loadReport(root);
   const markdown = lintFixMarkdown(renderMarkdown(report), root);
   return { report, markdown, json: renderJSON(report) };
 }

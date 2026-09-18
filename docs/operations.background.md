@@ -8,7 +8,7 @@ self-sufficient for that.
 
 ## Why the composed cursor carries its own longer teardown budget
 
-Because the cancel `CloseCursor` holds there is an ANCESTOR of
+Because the cancel `CloseCursor` holds is an ANCESTOR of
 every per-shard query context, a composed cursor reports its own longer budget
 through `chclient.ComposedCursor`: nesting its teardown inside a single
 connection's drain budget would fire the ancestor cancel at exactly the moment
@@ -55,10 +55,15 @@ cerberus invariant.
 
 ## Why cerberus ships no authentication
 
-That is a deliberate scope decision — the same one the
-listener makes about TLS — but it is load-bearing for how you deploy
-the process, so it is spelled out here rather than left to be inferred
-from the absence of a `CERBERUS_AUTH_*` knob.
+The recorded reason is scope, the same scope decision the listener makes
+about TLS: cerberus is a stateless query gateway that sits behind an
+operator's ingress, and authentication, authorization and tenant
+separation are properties of that boundary rather than of the gateway —
+one implementation at the ingress covers every head, whereas a
+cerberus-side implementation would be a second authn surface to keep
+consistent with it. The decision is load-bearing for how the process is
+deployed, so `operations.md` spells it out rather than leaving it to be
+inferred from the absence of a `CERBERUS_AUTH_*` knob.
 
 ## Why the tail budget is sized separately from the Loki request budget
 
@@ -203,9 +208,10 @@ scheduling both matters more (bigger ingest win) and costs about the same
 
 ## Why `perShardMemoryBytes` divides by `DataShardCount`
 
-That last sentence is the whole reason the formula divides by
-`DataShardCount`: the setting name forwards to every shard UNCHANGED (per the
-two source facts above), but its enforcement is **per shard, independently**
+The formula divides by `DataShardCount` because the setting name forwards to
+every shard UNCHANGED (per the two source-level facts `operations.md`'s
+Distributed-settings section anchors on), but its enforcement is **per shard,
+independently**
 — each of the `DataShardCount` shards a fan-out touches gets its OWN,
 separate `max_memory_usage` budget at the SAME value, not one budget shared
 across them. Sending the un-apportioned `cap` value would let a `K`-way
@@ -457,9 +463,10 @@ fields by re-running the query path's own `| logfmt` / `| json` parser-stage
 extractions over a row peek — replicating that inside a materialized view
 would mean embedding the parser cascade in SQL and maintaining a second
 declaration of it, a substantially larger and riskier change than the
-label-key catalog above. See cerberus issue
-[#2844](https://github.com/tsouza/cerberus/issues/2844) for tracking a
-dedicated design pass on that, independent of this feature.
+label-key catalog in `operations.md`. A dedicated design pass on a
+refresh-scheduled `/detected_fields` catalog was considered and declined
+(cerberus issue [#2844](https://github.com/tsouza/cerberus/issues/2844),
+closed not planned): the endpoint stays on the live path.
 
 ## The Loki label-cardinality catalog's measured cost
 
@@ -493,20 +500,21 @@ Instrumentation scope (`ScopeAttributes`) remains excluded — the upstream
 schema carries no such column by default, so a stock deployment has
 nothing to catalog there; a custom schema that populates it stays on the
 live path for that bucket, and `?scope=none` steps off the catalog fast
-path entirely on such a schema (see above) rather than silently omit it.
+path entirely on such a schema (`operations.md`'s catalog section) rather
+than silently omit it.
 Service-name keying (a third `(Scope, ServiceName, TagKey)` catalog
 dimension) was considered and not pursued: neither `/search/tags` nor
 `/search/tag/{name}/values` accepts a service-scoped narrowing parameter
-in any request shape this codebase or upstream Tempo's own API defines
-today, so a service-keyed catalog would pay service-cardinality× more
+in any request shape this codebase or upstream Tempo's own API defines,
+so a service-keyed catalog would pay service-cardinality× more
 rows for zero present read-side consumer — a decision the request shape
 itself, not this repository's schedule, would prompt reopening. A
 separate, narrower bug this investigation found — `resolveTagName`
 silently routing an explicit `instrumentation.x` tag-values lookup to the
 auto-scope (resource/span) union instead of the configured
-`ScopeAttributesColumn`, on schemas that configure one — is tracked as
-cerberus issue #3010; it does not block this feature (the catalog never
-served that bucket either way).
+`ScopeAttributesColumn`, on schemas that configure one — was fixed
+separately as cerberus issue #3010; the catalog never served that bucket
+either way.
 
 **Measured before/after cost** (2,000,000 synthetic `otel_traces` rows
 spread across a trailing 1h window, 5 resource-attribute keys + 10
@@ -540,7 +548,7 @@ fraction of the 5-minute refresh period either way.
 **Only two of the issue's proposed candidates survived measurement.** Every
 candidate was benchmarked — not just reasoned about — against real
 production-shaped sample data (`test/perf/nightly/testdata/samples/`,
-issue #2411) or, where no real sample exists (span Duration — traces are
+PR #2411) or, where no real sample exists (span Duration — traces are
 outside that sample set's scope), representative synthetic data, via a real
 MergeTree engine (chDB), comparing whole-table compressed bytes before/after
 the codec swap:
@@ -681,8 +689,8 @@ substring shape cerberus's line-filter prefilter emits that it cannot
 answer. `idx_body_text` alone already accounts for the FULL pruning benefit
 in the "both" row; `idx_lower_body` contributes nothing incremental once
 `idx_body_text` exists. This confirms both #2839's own "zero query-time
-benefit" claim and this document's "harmless (if pointless) no-op" sentence
-above hold up under a real-server check, not just as a re-stated assumption
+benefit" claim and `operations.md`'s "harmless (if pointless) no-op"
+sentence hold up under a real-server check, not just as a re-stated assumption
 — `idx_lower_body` is confirmed dead weight on an upgraded deployment: real
 write-path bloom-filter-maintenance cost on every insert/merge, for zero
 read-path benefit on the one predicate shape it was built to accelerate.
@@ -812,3 +820,21 @@ matrix that feeds the darwin ones. Because the release binaries are
 neither Apple-signed nor notarised, the cask carries a post-install hook that
 strips the `com.apple.quarantine` xattr, without which the first run on macOS
 dies with "cerberus is damaged and can't be opened".
+
+## Why these lanes are advisory on the publish path
+
+`release.yml`'s preflight de-gates a lane from its registry `release_posture`
+alone (`docs/operations.md` § "De-gated lanes on the publish path"). Before that
+derivation the workflow carried a hand-maintained `RELEASE_INFORMATIONAL_CHECKS`
+list, and a lane the registry already called advisory still blocked a publish
+until someone added its name — `datashard-replica-affinity` did exactly that to
+v1.20.0 (#3155), and `chaos`, `datashard (N=…)`, `startup-bench`, both compat
+probes and a dozen others were in the same state when the list was retired. The
+reasons recorded for the lanes that WERE listed are kept here, because each is
+the argument for its registry posture:
+
+- `mutation` — The diff-scoped aggregate runs on every PR and merge-group entry for early author-time signal, but it is not a required status check on `main` or the publish path (it is required on a `release/*.x` maintenance-line PR — see [maintenance lines](operations.md#maintenance-lines-hotfix-backports)), and it is not re-run by the publish preflight. Full mutation runs after landing on `main`, nightly, or by manual dispatch rather than on a release PR. The individual `gremlins …` legs remain implementation details of the aggregate.
+- `drought` — `chaos-not-applicable-rate.yml`'s Wednesday-cron detector for the chaos lane's silent not-applicable outcomes. It mines chaos-job run HISTORY, not the commit it happens to post against, so a red run says nothing about the commit being released — its own header comment already excludes it from PR gating for the identical reason. Left required, an unlucky coincidence between the cron and a release push would hold a release hostage to accumulated chaos-lane drift the release itself did not cause.
+- `update-golden-guard` — Structural, not a cost trade. It guards a PULL REQUEST against merging while an `update-golden.yml` dispatch is still regenerating its head branch (#2350). A publish commit has no head branch to strand and no pull request to hold back, and `update-golden-guard.yml` triggers on `pull_request` / `merge_group` / `workflow_run` only — with no push trigger on `main` or a maintenance line, a release commit can never carry that check-run, so requiring it would make the preflight wait out its window and abort every publish. It is not currently a required status check anywhere: absent from `main`'s sixteen-check ruleset (`docs/test-strategy.md`'s "CI gates" section) and from the separate `release/*.x` maintenance-line ruleset alike, so today a pending or red run does not by itself block a merge or a queue entry — it still runs and reports on every PR and merge-group entry, and stays out of `RELEASE_REQUIRED_CHECKS` for the structural reason above regardless of that.
+- `datashard-replica-affinity` — Sharding is EXPERIMENTAL and off by default; `.github/ci-lanes.json`'s `e2e.datashard-replica-affinity` entry already declares `release_posture: advisory`, and `notify-nightly-failure.mjs`'s `EXPERIMENTAL_LANES` lists it alongside `datashard` for the same reason. It was not in this set until it blocked v1.20.0's publish (#3155): unlisted in both `RELEASE_REQUIRED_CHECKS` and `RELEASE_INFORMATIONAL_CHECKS`, it fell into the preflight's own documented "gates by default" fallback despite its declared posture saying it should not gate.
+- `brew-verify` — Verifies the ALREADY-PUBLISHED Homebrew cask (`.github/ci-lanes.json`'s `release.brew-verify` entry: `main_posture: never`, `release_posture: post_publish`) — there is nothing meaningful to check pre-publish. `brew-verify.yml` runs on a `schedule`, independent of any push to main, so its check-run attaches to whatever main HEAD happens to be when the cron fires — the same "unlucky coincidence" `drought` above is de-gated against. v1.20.0's own publish was blocked this way: a nightly `brew-migration` run (that job has since been removed — see #3156) landed on the release merge commit by pure timing and reported a bug unrelated to the commit being released.

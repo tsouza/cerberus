@@ -101,3 +101,19 @@ test('waitForClusterHealth rejects with dirty-row detail once deadlineMs elapses
     /shard=0 replica=0 errors_count=7; shard=1 replica=0 errors_count=2/,
   );
 });
+
+test('the default cluster-health deadline spans enough half-lives to clear a startup-race errors_count', async () => {
+  const { clusterHealthDefaultDeadlineSeconds, clusterHealthSettleHalfLives, distributedReplicaErrorHalfLifeSeconds } =
+    await import('./k8s.mjs');
+  // ClickHouse halves errors_count once per half-life; a count of N clears
+  // after ceil(log2(N + 1)) of them. The startup race leaves up to 3 refused
+  // dials per target, so one half-life (the old default) could never observe
+  // a clean cluster from a count of 2 or 3.
+  const maxStartupRaceErrors = 3;
+  const halfLivesToClear = Math.ceil(Math.log2(maxStartupRaceErrors + 1));
+  assert.ok(
+    clusterHealthSettleHalfLives >= halfLivesToClear,
+    `default deadline spans ${clusterHealthSettleHalfLives} half-lives; ${halfLivesToClear} are needed to decay errors_count=${maxStartupRaceErrors} to 0`,
+  );
+  assert.equal(clusterHealthDefaultDeadlineSeconds, clusterHealthSettleHalfLives * distributedReplicaErrorHalfLifeSeconds);
+});

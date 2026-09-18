@@ -25,7 +25,7 @@ schema:
   ttl: "2w"
   replicated:
     enabled: true
-    zookeeperPath: "/clickhouse/databases/otel/{shard}/{replica}"
+    zookeeperPath: "/clickhouse/databases/otel"
 
 prom:
   resourceLabels:

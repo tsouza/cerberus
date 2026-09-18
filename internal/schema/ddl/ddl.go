@@ -723,6 +723,14 @@ func Apply(ctx context.Context, conn driver.Conn, signals []Signal) error {
 	return ApplyWithConfig(ctx, conn, Config{}, signals)
 }
 
+// replicatedZooPathCarriesMacro reports whether a Replicated-database path
+// embeds one of the two macros the engine already takes as its own shard and
+// replica arguments. The check is by substring because ClickHouse expands
+// `{name}` anywhere in the path string, not only as a whole path segment.
+func replicatedZooPathCarriesMacro(path string) bool {
+	return strings.Contains(path, "{shard}") || strings.Contains(path, "{replica}")
+}
+
 // Validate rejects the config combinations that would render DDL doing
 // something other than what the operator asked for. It is pure — it never
 // touches a connection — so both the applying path (ApplyWithConfig), the
@@ -739,6 +747,14 @@ func Apply(ctx context.Context, conn driver.Conn, signals []Signal) error {
 func (c Config) Validate() error {
 	if !c.SkipDatabaseCreate && c.DatabaseEngine.Replicated && c.DatabaseEngine.ReplicatedZooPath == "" {
 		return fmt.Errorf("ddl: replicated database engine requires a ZooKeeper/Keeper path (DatabaseEngine.ReplicatedZooPath)")
+	}
+	if c.DatabaseEngine.Replicated && replicatedZooPathCarriesMacro(c.DatabaseEngine.ReplicatedZooPath) {
+		return fmt.Errorf(
+			"ddl: DatabaseEngine.ReplicatedZooPath %q must not contain {shard} or {replica}: ClickHouse expands macros "+
+				"inside the path, so every replica would register its own single-replica database under a distinct "+
+				"root and nothing would replicate — the shard and replica names are the engine's separate arguments",
+			c.DatabaseEngine.ReplicatedZooPath,
+		)
 	}
 	if c.DataShardCount > 1 {
 		if c.Cluster == "" {

@@ -2,7 +2,8 @@
 
 `clickhouse.bundled.enabled` (`deploy/helm/cerberus/templates/clickhouse/`) renders a
 self-contained ClickHouse StatefulSet — plus its Services, plus a Keeper
-ensemble once `bundled.replicas > 1` — and defaults cerberus to point at it.
+ensemble once `bundled.replicas > 1` or `dataShards.count > 1` (or
+`keeper.enabled: true` explicitly) — and defaults cerberus to point at it.
 This is the **data tier** and is orthogonal to `mode` (monolith / split) — the
 gateway topology is unchanged. With the default `clickhouse.bundled.enabled:
 false` the chart renders byte-for-byte as if this whole block did not exist.
@@ -24,12 +25,13 @@ Two independent toggles pick the storage tier — **both default `true`**, so
 ## ClickHouse's own metrics
 
 The bundled ClickHouse serves ClickHouse's Prometheus endpoint on port 9363 at
-`/metrics`, enabled by default (`clickhouse.bundled.metrics`). It is a separate
-scrape target from cerberus's own `/metrics`, and it is the only place the data
-tier's health is visible: parts count, merge activity, replication lag,
-background pool depth, and cache hit rates all live in `system.*` and are
-exported here. cerberus's own metrics describe the query-serving side and say
-nothing about the storage beneath it.
+`/metrics`, enabled by default (`clickhouse.bundled.metrics`). Cerberus itself
+exposes no `/metrics` endpoint — its self-metrics are pushed over OTLP
+([`observability.md`](observability.md)) — so this endpoint is the only
+place the data tier's health is visible: parts count, merge activity,
+replication lag, background pool depth, and cache hit rates all live in
+`system.*` and are exported here. Cerberus's own metrics describe the
+query-serving side and say nothing about the storage beneath it.
 
 The port is exposed on the ClickHouse container and on both the ClusterIP and
 headless Services, and on every per-shard Service pair when
@@ -48,17 +50,16 @@ scrape_configs:
         regex: metrics
 ```
 
-`metrics.enabled: false` renders exactly as the chart did before the endpoint
-existed — no `<prometheus>` block, no container port, no Service entry — so an
-operator who scrapes ClickHouse another way, or who does not want the port open,
-opts out and gets a byte-identical render.
+`metrics.enabled: false` renders no `<prometheus>` block, no container port
+and no Service entry, for an operator who scrapes ClickHouse another way or
+does not want the port open.
 
 ## The four-cell matrix
 
 | `hotVolume.enabled`  | `objectStorage.enabled`  | Mode                     | `storage_policy`    | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | -------------------- | ------------------------ | ------------------------ | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `true` (default)     | `true` (default)         | **Hot/cold**             | `bwc_hot_cold`      | The chart's DEFAULT. Two-volume policy: `hot` (local disk, listed first so new inserts land there) + `cold` (the object-store disk/cache chain). Parts age off `hot` onto `cold` via a `TTL ... TO VOLUME` clause driven by `schema.tierVolume`/`tierAfter*` once they cross that age; `move_factor` (`hotVolume.moveFactor`, default `0.2`) is a separate, free-space-triggered backstop move, independent of that age-based one. Backend-agnostic by construction — the object-store disk block is reused verbatim from object-store mode below. |
-| `false`              | `true`                   | **Object-store**         | `bwc_object_store`  | The chart's ONLY mode before #3075, still fully supported — set `hotVolume.enabled: false` explicitly to get it. One object-store disk fronted by a local cache disk, single-volume policy. Every write round-trips through the cache to object storage. **Set this explicitly to preserve current behavior across an upgrade** — see below.                                                                                                                                                                                                       |
+| `false`              | `true`                   | **Object-store**         | `bwc_object_store`  | Single-volume object storage — set `hotVolume.enabled: false` explicitly to get it. One object-store disk fronted by a local cache disk, single-volume policy. Every write round-trips through the cache to object storage. **A deployment provisioned in this mode must pin it before upgrading** — see below.                                                                                                                                                                                                                                    |
 | `true`               | `false`                  | **Hot-only**             | `bwc_hot_only`      | Pure local-disk ClickHouse, no object-store dependency at all — no object disk, no Secret, no credential env. Requires `schema.ttl` to be set explicitly (see below).                                                                                                                                                                                                                                                                                                                                                                              |
 | `false`              | `false`                  | *(invalid)*              | —                   | **Fails the render**, naming both `hotVolume.enabled` and `objectStorage.enabled` — a bundled ClickHouse with no storage tier at all is never silently rendered.                                                                                                                                                                                                                                                                                                                                                                                   |
 
@@ -67,13 +68,12 @@ The policy name is mode-derived automatically; an explicit
 
 ## Upgrading into the hot/cold default
 
-**This chart's bundled ClickHouse changed its DEFAULT storage mode** from
-single-volume object-storage-only to hot/cold (#3075). That is a genuine
-storage-layout change, not just a values default: a fresh install still just
-works, but an **existing** `clickhouse.bundled.enabled: true` deployment that
-upgrades to a chart version carrying this change — without itself pinning
-`hotVolume.enabled` — silently asks for a `bwc_hot_cold` policy where its
-ClickHouse only has `bwc_object_store` on disk.
+The chart's default storage mode is hot/cold; chart versions before 0.16.0
+defaulted to single-volume object storage. A fresh install just works, but
+an **existing** `clickhouse.bundled.enabled: true` deployment provisioned
+under the object-store-only default that upgrades without itself pinning
+`hotVolume.enabled` asks for a `bwc_hot_cold` policy where its ClickHouse
+only has `bwc_object_store` on disk.
 
 ClickHouse's own startup validation catches this loudly rather than
 corrupting anything: each mode's `storage_policy` has a distinct name (see the
@@ -86,12 +86,10 @@ upgrade` of a `bundled.enabled: true` release that resolves to hot/cold mode,
 naming the fix.
 
 **The fix: pin `clickhouse.bundled.hotVolume.enabled: false` in your own
-values BEFORE upgrading past the chart version that introduced this default**,
-if you are relying on (or unsure whether you're relying on) the previous
-single-volume, object-storage-only behavior. That one line reproduces the
-exact pre-#3075 chart behavior indefinitely, regardless of any future default
-change. A genuinely fresh hot/cold install needs no action — the default is
-exactly what you want.
+values BEFORE upgrading**, if you are relying on (or unsure whether you're
+relying on) single-volume, object-storage-only behavior. That one line keeps
+the object-store mode indefinitely, regardless of any future default change.
+A fresh hot/cold install needs no action.
 
 **Hot-only requires `schema.ttl`.** A bounded local disk with no cold tier and
 unset `schema.ttl` (infinite retention) would fill unboundedly, so the chart
@@ -150,8 +148,8 @@ ClickHouse's `remote()` table function or `INSERT SELECT` into a
 freshly-installed release in the new mode — not something the chart automates.
 This is exactly the mechanism behind the ["Upgrading into the hot/cold
 default"](#upgrading-into-the-hotcold-default) hazard above: it fails loudly
-for the same additive-only-policy reason, it just now happens by DEFAULT
-rather than only on a deliberate mode change.
+for the same additive-only-policy reason, by default rather than only on a
+deliberate mode change.
 
 This loud-failure claim is codified as a repeatable `bwc-minio` e2e check:
 the lane's `mode-toggle` scenario installs and seeds a real object-storage
@@ -159,9 +157,8 @@ cluster, `helm upgrade`s it into hot-cold mode without pinning
 `hotVolume.enabled: false`, and asserts the bundled ClickHouse pod's own
 startup validation refuses with `Unknown storage policy ...
 (UNKNOWN_POLICY)` — never a silent success, a generic non-ready pod, or a
-plain timeout. See the
-[Support / validation matrix](#support--validation-matrix) below for its
-exact status pending this leg's first `bwc-minio` CI run.
+plain timeout. The [Support / validation matrix](#support--validation-matrix)
+below records it as runtime-proven.
 
 ## Multi-replica consistency
 
@@ -169,12 +166,9 @@ exact status pending this leg's first `bwc-minio` CI run.
 `ReplicatedMergeTree`.
 
 The bundled chart defaults `CERBERUS_CH_ADDR` to a **single-element** address
-list (the ClusterIP Service name), which makes
-`CERBERUS_CH_CONN_OPEN_STRATEGY` mathematically irrelevant regardless of
-value — both of the driver's dial strategies resolve to the same single
-address. The actual determinant of which backend pod a connection reaches is
-**kube-proxy's per-new-TCP-connection Service DNAT**, which no client-side
-setting controls.
+list (the ClusterIP Service name). Which backend pod a connection reaches is
+then decided by **kube-proxy's per-new-TCP-connection Service DNAT**, which
+no client-side setting controls.
 
 The bundled ClickHouse's ClusterIP Service therefore carries
 `sessionAffinity: ClientIP` (default on), with a configurable affinity window
@@ -218,10 +212,10 @@ own bucket/credentials before production use:
 | Multi-replica + Keeper over an object store (zero-copy replication)                              | Render / kubeconform-validated                                                      | `deploy/helm/cerberus/ci/bwc-replicated-values.yaml` renders; the replication axis itself is the row above, but no live run replicates over an object disk, so `allow_remote_fs_zero_copy_replication` is exercised nowhere                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Dedicated hot-volume PVC (`hotVolume.persistence`)                                               | Render / kubeconform-validated                                                      | `deploy/helm/cerberus/ci/bwc-hot-cold-values.yaml` renders a dedicated `hot` volumeClaimTemplate; no live multi-node run                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `dataShards.count: 2` / `4` topology (EXPERIMENTAL, single-replica-per-shard)                    | **Runtime-proven** by an informational lane                                         | The `datashard` e2e lane (`.github/workflows/e2e.yml`: the `datashard` `N=2` / `N=4` matrix + the `datashard-replica-affinity` leg) brings the chart's multi-shard render up on k3d with a built cerberus image, runs the Go e2e suite and a concurrent solver-split burst, and asserts the fan-out ceiling per cerberus process and cluster-wide — see [Validation status](#validation-status-experimental-exercised-by-an-informational-e2e-lane). Never a PR or release gate                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `dataShards.count > 1` + `replicas > 1` (multi-replica per shard, classic `ReplicatedMergeTree`) | Render / kubeconform-validated; cross-shard replica-affinity **runtime-proven**     | `chart-render-assert.mjs`'s replicated+dataShards section renders; no live multi-shard-multi-replica run for general query correctness, but issue #3086's `datashard-replica-affinity` e2e leg (`dataShards.count=2`, `replicas=2`) proves the `load_balancing` pin's specific claim — see the [#3075 compatibility section](#hotcold-default-compatibility-the-object-disk-path-is-shard-agnostic-sessionaffinitys-new-gap) above                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `dataShards.count > 1` + `replicas > 1` (multi-replica per shard, classic `ReplicatedMergeTree`) | Render / kubeconform-validated; cross-shard replica-affinity **runtime-proven**     | `chart-render-assert.mjs`'s replicated+dataShards section renders; no live multi-shard-multi-replica run for general query correctness, but issue #3086's `datashard-replica-affinity` e2e leg (`dataShards.count=2`, `replicas=2`) proves the `load_balancing` pin's specific claim — see the [hot/cold compatibility section](#hotcold-default-compatibility-the-object-disk-path-is-shard-agnostic-sessionaffinitys-new-gap) below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 Only S3/MinIO single-node, in every one of the three storage modes, is proven
-end to end on the CI substrate today (the k3d e2e brings up real MinIO and a
+end to end on the CI substrate (the k3d e2e brings up real MinIO and a
 real ClickHouse and writes / reads / tiers through the real disks), together
 with the mode-toggle migration-safety leg that runs on the same substrate.
 Hot-only two-replica replication is exercised on the same k3d substrate by
@@ -275,16 +269,16 @@ for the DDL side). It is also unrelated to this chart's own
 zookeeperPath`) and to `internal/solver`'s own query-time-range "shard" — see
 `internal/chopt/topology.go`'s terminology table for the full picture.
 
-**`count: 1` (default) renders byte-identical to today's chart** — same
-StatefulSet/Service names, same `cluster.xml` shape — locked in permanently
-by `chart-render-assert.mjs`'s own `dataShards.count=1` assertions.
+**`count: 1` (default) renders the single-shard shape** — unsuffixed
+StatefulSet/Service names, the single-shard `cluster.xml` — pinned by
+`chart-render-assert.mjs`'s own `dataShards.count=1` assertions.
 
 **`count > 1` renders every shard, INCLUDING index 0**, via a `range` —
 `<fullname>-datashard-<i>` StatefulSets, `<headlessName>-datashard-<i>`
 headless Services, a `<fullname>-datashard-<i>` ClusterIP Service, each with
 its own `macros-datashard-<i>.xml` ConfigMap key — aliased to `macros.xml`
-via the `config` ConfigMap volume's own `items[].path` list — replacing
-today's single hardcoded `<shard>01</shard>` literal — never a silent partial rename. `remote_servers.xml` (in the shared, cluster-global
+via the `config` ConfigMap volume's own `items[].path` list — never a
+silent partial rename. `remote_servers.xml` (in the shared, cluster-global
 `cluster.xml` key) lists every shard's every replica identically on every
 pod, and carries a `<secret>` read from the environment so a Distributed
 query forwards the ORIGINATING user's identity to its peers. That secret is
@@ -294,8 +288,10 @@ deployment whose `default` user has a real password, while direct client
 connections to each node keep working and hide the cause. Supply it with
 `clickhouse.bundled.interserverSecret`, or name your own Secret with
 `interserverExistingSecret`; the render refuses `dataShards.count > 1`
-without one. A single shard with `replicas > 1` forwards across replicas the
-same way and should set it too. Keeper auto-enables from `dataShards.count > 1` alone, independent of
+without one. A single shard with `replicas > 1` renders the same `<secret>`
+into its `remote_servers` block when one is supplied, but no `Distributed`
+table exists on that render, so nothing forwards a query across replicas
+and the secret is optional there. Keeper auto-enables from `dataShards.count > 1` alone, independent of
 `replicas`: ClickHouse's own `ON CLUSTER` DDL-coordination mechanism (which
 every per-shard `CREATE ... ON CLUSTER` statement relies on) needs Keeper
 regardless of per-shard replica count. Each per-shard StatefulSet/Service
@@ -371,30 +367,21 @@ fresh install at the target `count` has no such hazard.
 
 `count > 1` is proven at the render/kubeconform layer (every `ci/*.yaml`
 fixture plus the dedicated dataShards assertions in
-`chart-render-assert.mjs`), and the `datashard` e2e lane is its standing
-runtime proof: a built cerberus image inside the cluster, the full Go e2e
-correctness suite, and a real concurrent PromQL/LogQL/TraceQL burst through
-the sharded-pushdown path, at both `count: 2` and `count: 4`. That lane
-asserts correctness, memory apportionment, and the admission-control ceiling
-in both of its scopes — per cerberus process and cluster-wide, the latter
-being `dataShards.fanoutCap` apportioned across the cerberus replica count
-(its current result is stated
-in [`operations.md`'s e2e-hardening section](operations.md#multi-data-shard-e2e-hardening-leg)).
-The feature is EXPERIMENTAL because no production support is offered for it:
-the lane is informational, never a PR or release gate. Every
-compat/migration harness in this repository remains single-shard-only by
-permanent, stated design (see
+`chart-render-assert.mjs`), and the `datashard` e2e lane
+(`.github/workflows/e2e.yml`) is its standing runtime proof: a built
+cerberus image inside the cluster, the full Go e2e correctness suite, and a
+real concurrent PromQL/LogQL/TraceQL burst through the sharded-pushdown
+path, at both `count: 2` and `count: 4`. That lane asserts correctness,
+memory apportionment against `system.query_log`, and the admission-control
+ceiling in both of its scopes — per cerberus process and cluster-wide, the
+latter being `dataShards.fanoutCap` apportioned across the cerberus replica
+count. [`operations.md`'s e2e-hardening section](operations.md#multi-data-shard-e2e-hardening-leg)
+states exactly what it checks and its result. The feature is EXPERIMENTAL
+because no production support is offered for it: the lane is informational,
+never a PR or release gate. Every compat/migration harness in this
+repository remains single-shard-only by permanent, stated design (see
 [`operations.md`'s scoping section](operations.md#compat-and-migration-lane-scope-single-clickhouse-data-shard)).
-
-The lane lives in `.github/workflows/e2e.yml` and runs exactly this
-combination — a built cerberus image, a real concurrent PromQL/LogQL/TraceQL
-load burst through the solver's sharded-pushdown path, at both
-`dataShards.count: 2` and `dataShards.count: 4` — in CI, and asserts the real
-ClickHouse-side admission-control ceiling and memory apportionment against
-`system.query_log`. See
-[`operations.md`'s own section](operations.md#multi-data-shard-e2e-hardening-leg)
-for exactly what it checks, and
-[`helm-clickhouse.background.md`](helm-clickhouse.background.md) for the
+[`helm-clickhouse.background.md`](helm-clickhouse.background.md) records the
 manual k3d run that preceded the lane.
 
 ### Hot/cold default compatibility: the object-disk path is shard-agnostic; sessionAffinity's new gap
@@ -459,44 +446,26 @@ and the runtime proof is the `datashard` e2e lane
 above). The path remains EXPERIMENTAL by design — an informational lane, no
 production support.
 
-One boundary is permanent by design: `internal/schema/ddl`'s
-`Config.DataShardCount` wires the local/`Distributed` split for the base
-signal tables only. The four opt-in auxiliary features — DELTA prefix
-(`DeltaPrefixEnabled`), downsample tier (`DownsampleTierEnabled`), Loki label
-catalog (`LokiLabelCatalogEnabled`) and Tempo tag catalog
-(`TempoTagCatalogEnabled`) — each introduce a separately-named table plus its
-own materialized view, and none of them is wired for the split. Combining
-`DataShardCount > 1` with any of them is rejected at config-validation time
-(`Config.Validate`), so a multi-shard deployment fails loudly at boot rather
-than silently under-provisioning one of those tables. That carve-out is the
-EXPERIMENTAL mode's design boundary: the four features are
-single-data-shard-only.
+`internal/schema/ddl`'s `Config.DataShardCount` wires the local/`Distributed`
+split for the base signal tables only. The four opt-in auxiliary features —
+DELTA prefix (`DeltaPrefixEnabled`), downsample tier
+(`DownsampleTierEnabled`), Loki label catalog (`LokiLabelCatalogEnabled`) and
+Tempo tag catalog (`TempoTagCatalogEnabled`) — are single-data-shard-only:
+combining `DataShardCount > 1` with any of them is rejected at
+config-validation time (`Config.Validate`).
 
 The router-calibration corpus (`cerberus_router_corpus`,
-`CERBERUS_CH_OPT_CORPUS_SINK_MODE=chtable`) is deliberately NOT in that
-carve-out. Its table is provisioned by the corpus sink rather than by
-`internal/schema/ddl`, and the sink stamps `ON CLUSTER
+`CERBERUS_CH_OPT_CORPUS_SINK_MODE=chtable`) is NOT in that carve-out. Its
+table is provisioned by the corpus sink, which stamps `ON CLUSTER
 <CERBERUS_SCHEMA_CLUSTER>` on its own `CREATE` and `ALTER` statements — which
 the chart always sets under `dataShards.count > 1` — so the table exists on
-every node and an INSERT is correct wherever it lands. It also resolves its
-ENGINE from the two knobs that decide whether the SIGNAL tables replicate —
-`CERBERUS_SCHEMA_DATABASE_REPLICATED` on the single-shard `replicas > 1` path,
-where the chart makes `otel` a `Replicated` database, and
-`schema.TABLE_ENGINE` on the classic `ON CLUSTER` path, which is what
-`dataShards.count > 1` renders. Wherever either says this deployment
-replicates, the corpus table is created with a bare `ReplicatedMergeTree` and
-its rows replicate instead of accumulating per replica.
-
-What the corpus never does is reuse `schema.TABLE_ENGINE`'s own expression. It
-reads that knob as a declaration and emits its own bare form, which needs no
-path of its own: the server derives one per table from
-`default_replica_path`.
-
-Under `dataShards.count > 1` one gap remains, and it IS this boundary rather
-than a defect. The corpus gets no `Distributed` wrapper, so rows never leave
-the shard they were written on — the same local/Distributed split that is
-base-signal-tables-only. It costs nothing on the query path, which never reads
-the corpus. Within each shard's replica set the corpus does replicate.
+every node and an INSERT is correct wherever it lands. Wherever
+`CERBERUS_SCHEMA_DATABASE_REPLICATED` (the single-shard `replicas > 1` path)
+or `schema.TABLE_ENGINE` (the `ON CLUSTER` path) says the deployment
+replicates, the corpus table is created with a bare `ReplicatedMergeTree`
+and its rows replicate within each shard's replica set. The corpus gets no
+`Distributed` wrapper: rows never leave the shard they were written on, and
+the query path never reads them.
 
 ---
 

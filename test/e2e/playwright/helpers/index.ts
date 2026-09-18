@@ -20,3 +20,5 @@ export * from './variables.js';
 export * from './depth.js';
 export * from './reconcile.js';
 export * from './resource-bounds.js';
+export * from './ds-query.js';
+export * from './excerpt.js';

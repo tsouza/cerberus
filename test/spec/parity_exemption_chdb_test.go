@@ -4,9 +4,12 @@ package spec
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,19 +26,30 @@ func TestExemptionVerdict(t *testing.T) {
 			t.Fatal("agreement accepted, want stale-exemption error")
 		}
 	})
-	for _, tt := range []struct {
-		name string
-		err  error
-	}{
-		{name: "disagreement", err: parityDisagreement(errors.New("values differ"))},
-		{name: "refusal", err: parityRefusal(errors.New("shape has no comparator"))},
-	} {
-		t.Run(tt.name+" remains live", func(t *testing.T) {
-			if err := exemptionVerdict(c, exemption, p, tt.err); err != nil {
-				t.Fatalf("verdict = %v, want live exemption", err)
-			}
-		})
-	}
+	t.Run("the refusal the reason names remains live", func(t *testing.T) {
+		err := parityRefusal(refusalEmptySeedForSelector, errors.New("seed produced no readable series"))
+		if err := exemptionVerdict(c, exemption, p, err); err != nil {
+			t.Fatalf("verdict = %v, want live exemption", err)
+		}
+	})
+	t.Run("a disagreement for a reason that promises a refusal cites the wrong reason", func(t *testing.T) {
+		err := exemptionVerdict(c, exemption, p, parityDisagreement(errors.New("values differ")))
+		if err == nil || !strings.Contains(err.Error(), "cites the wrong reason") {
+			t.Fatalf("verdict = %v, want wrong-reason failure", err)
+		}
+	})
+	t.Run("a refusal of another kind cites the wrong reason", func(t *testing.T) {
+		err := exemptionVerdict(c, exemption, p, parityRefusal(refusalNonSampleProjection, errors.New("no Value column")))
+		if err == nil || !strings.Contains(err.Error(), "cites the wrong reason") {
+			t.Fatalf("verdict = %v, want wrong-reason failure", err)
+		}
+	})
+	t.Run("a disagreement for a reason about the engines answering differently remains live", func(t *testing.T) {
+		fetch := &ParityExempt{Reason: ReasonReferenceFetchLayer, Detail: "NOT operand"}
+		if err := exemptionVerdict(c, fetch, p, parityDisagreement(errors.New("matched 0, cerberus 1"))); err != nil {
+			t.Fatalf("verdict = %v, want live exemption", err)
+		}
+	})
 
 	for _, tt := range []struct {
 		name string
@@ -49,6 +63,69 @@ func TestExemptionVerdict(t *testing.T) {
 				t.Fatalf("verdict = %v, want propagated harness failure", err)
 			}
 		})
+	}
+}
+
+// Every declared reason must name the evidence that proves it, and every
+// refusal class must prove at least one reason: an entry on one side with
+// no partner on the other is a reason nothing can keep live, or a refusal
+// no exemption may cite.
+func TestParityExemptReasonsAllHaveEvidence(t *testing.T) {
+	for _, reason := range ParityExemptReasons() {
+		evidence, ok := exemptionEvidenceByReason[reason]
+		if !ok {
+			t.Errorf("reason %q has no exemptionEvidenceByReason entry", reason)
+			continue
+		}
+		if !evidence.disagreement && len(evidence.refusals) == 0 {
+			t.Errorf("reason %q declares no evidence at all: nothing could keep it live", reason)
+		}
+	}
+	for reason := range exemptionEvidenceByReason {
+		if !slices.Contains(ParityExemptReasons(), reason) {
+			t.Errorf("exemptionEvidenceByReason names %q, which is not a declared reason", reason)
+		}
+	}
+	claimed := map[refusalClass]bool{}
+	for _, evidence := range exemptionEvidenceByReason {
+		for _, class := range evidence.refusals {
+			claimed[class] = true
+		}
+	}
+	for _, class := range []refusalClass{
+		refusalNoRoundTrip, refusalNonSampleProjection, refusalConflictingDuplicateTimestamp,
+		refusalEmptySeedForSelector, refusalOrderSensitiveReference, refusalReferenceEvaluation,
+		refusalLogStreamAnswer, refusalSeedNotStreams, refusalOpaqueColumn, refusalNarrowingSection,
+		refusalEmptySpanSeed, refusalSeedWithoutSpanIdentity, refusalDuplicateSpanIdentity,
+		refusalReferenceRejectedQuery, refusalUnrepresentableSpan, refusalNonSpanProjection,
+	} {
+		switch class {
+		case refusalSeedNotStreams, refusalEmptySpanSeed, refusalSeedWithoutSpanIdentity:
+			// A seed the comparator cannot read at all proves no exemption:
+			// it is a fixture deficiency to fix (add the columns, seed a
+			// row), not an obstacle any reason names.
+			if claimed[class] {
+				t.Errorf("refusal %q is a fixture deficiency and must prove no reason", class)
+			}
+		default:
+			if !claimed[class] {
+				t.Errorf("refusal %q proves no declared reason", class)
+			}
+		}
+	}
+}
+
+func TestRefusalClassOf(t *testing.T) {
+	wrapped := fmt.Errorf("fixture x: %w", parityRefusal(refusalNarrowingSection, errors.New("search_limit")))
+	class, ok := refusalClassOf(wrapped)
+	if !ok || class != refusalNarrowingSection {
+		t.Fatalf("refusalClassOf = %q, %t; want %q, true", class, ok, refusalNarrowingSection)
+	}
+	if !errors.Is(wrapped, errParityRefusal) {
+		t.Fatal("a classed refusal must still satisfy errors.Is(err, errParityRefusal)")
+	}
+	if _, ok := refusalClassOf(parityDisagreement(errors.New("x"))); ok {
+		t.Fatal("a disagreement is not a refusal")
 	}
 }
 
@@ -219,24 +296,45 @@ func TestTempoSpanIdentityErrorClassification(t *testing.T) {
 		name        string
 		rows        [][]any
 		wantRefusal bool
+		wantClass   refusalClass
 	}{
-		{name: "non-span projection", rows: [][]any{{1}}, wantRefusal: true},
-		{name: "missing identity", rows: [][]any{{"span", map[string]any{}, "timestamp", 1}}, wantRefusal: true},
+		{name: "non-span projection", rows: [][]any{{1}}, wantRefusal: true, wantClass: refusalNonSpanProjection},
+		{
+			name: "aggregate projection without identity keys", rows: [][]any{{"span", map[string]any{}, "timestamp", 1}},
+			wantRefusal: true, wantClass: refusalNonSpanProjection,
+		},
+		{
+			name: "span row with empty identity", rows: [][]any{{"span", map[string]any{
+				spanIdentityTraceIDKey: "", spanIdentitySpanIDKey: "",
+			}, "timestamp", 1}},
+			wantRefusal: true, wantClass: refusalSeedWithoutSpanIdentity,
+		},
 		{name: "duplicate identity", rows: [][]any{
 			{"span", identity, "timestamp", 1},
 			{"span", identity, "timestamp", 1},
-		}, wantRefusal: true},
+		}, wantRefusal: true, wantClass: refusalDuplicateSpanIdentity},
 		{name: "malformed attributes remain hard", rows: [][]any{{"span", "not-an-object", "timestamp", 1}}},
+		{
+			name: "empty answer from a non-span projection is a shape refusal, not an empty span set",
+			rows: [][]any{}, wantRefusal: true, wantClass: refusalNonSpanProjection,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := spanIdentitiesOfExpectedRows(&RoundTripSections{ExpectedRows: tt.rows})
+			_, err := spanIdentitiesOfExpectedRows(&RoundTripSections{ExpectedRows: tt.rows}, false)
 			if err == nil {
 				t.Fatal("spanIdentitiesOfExpectedRows returned nil error")
 			}
 			if got := errors.Is(err, errTempoSpanIdentityUnavailable); got != tt.wantRefusal {
 				t.Fatalf("errors.Is(err, errTempoSpanIdentityUnavailable) = %t, want %t: %v", got, tt.wantRefusal, err)
+			}
+			var identityErr *tempoSpanIdentityError
+			if errors.As(err, &identityErr) != tt.wantRefusal {
+				t.Fatalf("errors.As tempoSpanIdentityError = %t, want %t: %v", !tt.wantRefusal, tt.wantRefusal, err)
+			}
+			if tt.wantRefusal && identityErr.class != tt.wantClass {
+				t.Fatalf("class = %q, want %q", identityErr.class, tt.wantClass)
 			}
 		})
 	}
@@ -253,4 +351,57 @@ func loadSyntheticParityCase(t *testing.T, body string) *Case {
 		t.Fatalf("Load: %v", err)
 	}
 	return c
+}
+
+// TestEmptySeedSelectorQueryIsARefusal_LogQL pins the LogQL side of the
+// empty-seed classification: a query that reads a stream selector over a
+// seed that landed zero streams is a structural [parityRefusal] — the
+// evidence a `vacuous-empty-input` exemption needs to stay live — and not
+// an unclassified error [exemptionVerdict] would report as "liveness
+// check could not run". evaluatePrometheusParity classifies the identical
+// fact the same way for PromQL.
+func TestEmptySeedSelectorQueryIsARefusal_LogQL(t *testing.T) {
+	db := OpenChDB(t)
+	if _, err := db.Exec("CREATE OR REPLACE TABLE " + logsTable + " (" +
+		colTimestamp + " DateTime64(9), " + colBody + " String, " +
+		colResourceAttributes + " Map(String, String)) ENGINE = Memory"); err != nil {
+		t.Fatalf("create empty logs table: %v", err)
+	}
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := evaluateLokiParity(t, db, &Case{Name: "empty_seed"}, parityQuery{
+		Expr: `count_over_time({job="api"}[1m])`, Start: at, End: at,
+	})
+	if err == nil {
+		t.Fatal("an empty seed under a selector-reading query was compared instead of refused")
+	}
+	if !errors.Is(err, errParityRefusal) {
+		t.Fatalf("empty seed was reported as an unclassified error, not a refusal: %v", err)
+	}
+}
+
+// An empty canonical span answer stays comparable: the projection writes a
+// span identity, so zero matched spans is a real (empty) set, not a shape gap.
+func TestSpanIdentitiesOfExpectedRowsEmptySpanAnswerIsComparable(t *testing.T) {
+	want, err := spanIdentitiesOfExpectedRows(&RoundTripSections{ExpectedRows: [][]any{}}, true)
+	if err != nil {
+		t.Fatalf("empty span-shaped answer refused: %v", err)
+	}
+	if len(want) != 0 {
+		t.Fatalf("want = %v, want empty", want)
+	}
+}
+
+// projectionIdentifiesSpans reads the executed argument list, so a span
+// search (whose wrap binds the __cerberus_spanID key) and a per-trace
+// aggregate (which binds only the trace-level keys) are told apart
+// without a single row.
+func TestProjectionIdentifiesSpans(t *testing.T) {
+	search := loadSyntheticParityCase(t, "-- query.traceql --\n{}\n-- args_optimized --\n[0] string = \"__cerberus_traceID\"\n[1] string = \"__cerberus_parentSpanID\"\n[2] string = \"__cerberus_spanID\"\n")
+	if !projectionIdentifiesSpans(search) {
+		t.Fatal("a wrap binding __cerberus_spanID must identify spans")
+	}
+	aggregate := loadSyntheticParityCase(t, "-- query.traceql --\n{} | count() > 0\n-- args_optimized --\n[0] string = \"__cerberus_traceID\"\n[1] string = \"__cerberus_parentSpanID\"\n[2] string = \"__cerberus_traceDurationNs\"\n")
+	if projectionIdentifiesSpans(aggregate) {
+		t.Fatal("a per-trace aggregate wrap must not identify spans")
+	}
 }

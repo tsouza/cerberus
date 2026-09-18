@@ -351,7 +351,7 @@
     },
     {
       "id": "LOGQL-STRUCTURED-EXTRACTION-METRIC-AGGREGATION-SCOPE",
-      "statement": "LogQL's structured-extraction stages (`| json`, `| logfmt`, `| unpack`, `| pattern` as a parser) and its metric-form surface (`| unwrap` and every range/vector aggregation) are evidenced by TXTAR chDB round-trip execution across the full spec corpus and, for the subset of fixtures that are not parity_exempt, the in-process reference-differential oracle — but carry NO property-oracle evidence at all. The from-scratch property oracle's top-level Evaluate rejects every expression that is not a bare *syntax.MatchersExpr or *syntax.PipelineExpr outright, and even within a PipelineExpr its applyStage switch recognizes only *syntax.LineFilterExpr and *syntax.LabelFmtExpr — every parser stage, `| unwrap`, `| drop`, and `| keep` fails closed as an unsupported oracle shape rather than being silently accepted.",
+      "statement": "LogQL's structured-extraction stages (`| json`, `| logfmt`, `| unpack`, `| pattern` as a parser) and its metric-form surface (`| unwrap` and every range/vector aggregation) are evidenced by TXTAR chDB round-trip execution across the full spec corpus, by the in-process reference evaluator for the subset of fixtures that are not parity_exempt, and by the live-Loki differential harness over upstream's exhaustive/aggregations.yaml corpus (unwrap plus every range aggregation) — but carry NO property-oracle evidence at all. The from-scratch property oracle's top-level Evaluate rejects every expression that is not a bare *syntax.MatchersExpr or *syntax.PipelineExpr outright, and even within a PipelineExpr its applyStage switch recognizes only *syntax.LineFilterExpr and *syntax.LabelFmtExpr — every parser stage, `| unwrap`, `| drop`, and `| keep` fails closed as an unsupported oracle shape rather than being silently accepted.",
       "scope": "head",
       "applicable_heads": ["HEAD-LOGQL"],
       "applicable_capabilities": [],
@@ -360,7 +360,7 @@
       "required_independence_groups": ["structured-extraction-fixture-roundtrip", "range-aggregation-reference-differential"],
       "blind_spots": [
         "Zero property-oracle evidence exists for this entire surface — see this contract's own required_evidence_classes, deliberately excluding \"property\"; LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE's own blind_spots names the exact two-kind (LineFilterExpr/LabelFmtExpr) ceiling this scope sits below.",
-        "Most structured-extraction and metric-aggregation TXTAR fixtures are parity_exempt for the same log-query-answer reason LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY documents; range_agg_without_grouping_unwrap.txtar (a metric-form, non-log-answer query) is one of the few unwrap fixtures with a real `-- parity --` section, so this contract's reference evidence is real but narrow — it does not generalize to every unwrap/range-aggregation shape the spec corpus otherwise pins only via chDB execution."
+        "Most structured-extraction and metric-aggregation TXTAR fixtures are parity_exempt for the same log-query-answer reason LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY documents; range_agg_without_grouping_unwrap.txtar (a metric-form, non-log-answer query) is one of the few unwrap fixtures with a real `-- parity --` section, so this contract's in-process evidence is real but narrow. The live-Loki differential covers upstream's own aggregation corpus, not the spec corpus's shapes — neither generalizes to every unwrap/range-aggregation shape the spec corpus otherwise pins only via chDB execution."
       ],
       "related_contracts": ["LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE", "LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY"],
       "inherits_from": null,
@@ -398,16 +398,16 @@
       "applicable_heads": ["HEAD-TRACEQL"],
       "applicable_capabilities": ["CAP-SPAN-ATTRIBUTE-FILTER"],
       "authority": "reference-implementation",
-      "required_evidence_classes": ["reference"],
-      "required_independence_groups": ["reference-differential"],
+      "required_evidence_classes": ["execution", "reference"],
+      "required_independence_groups": ["in-process-reference-evaluator"],
       "blind_spots": [
         "Coercion of array-valued attributes is entirely unexercised — Map(String, String) cannot represent an array-typed OTel attribute at all in this schema.",
-        "The differential evidence (bool_attr.txtar, unscoped_bool_attr.txtar, unscoped_bool_attr_false.txtar) exercises Boolean coercion only; an Int/Float/Duration attribute compared against a typed literal has property evidence (TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE's duration comparisons) but no dedicated LIVE differential fixture of its own — see TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY for the coercion mechanism itself, which this contract's own evidence corroborates only for the boolean case."
+        "The in-process evidence (bool_attr.txtar, unscoped_bool_attr.txtar, unscoped_bool_attr_false.txtar) exercises Boolean coercion only; an Int/Float/Duration attribute compared against a typed literal has property evidence (TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE's duration comparisons) but no dedicated parity fixture of its own — see TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY for the coercion mechanism itself, which this contract's own evidence corroborates only for the boolean case."
       ],
       "related_contracts": ["TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY"],
       "inherits_from": null,
-      "status": "active",
-      "deficit_reason": null,
+      "status": "explicit_deficit",
+      "deficit_reason": "No live Tempo differential exercises typed-attribute coercion: compatibility/tempo/driver/corpus/smoke.txtar compares no span attribute against a boolean, number or duration literal, so the only reference-implementation evidence bound here is the in-process forked evaluator over bool_attr.txtar#parity, which proves agreement with Tempo's source code, not with a live Tempo's output. The `reference` class this contract requires is unbound until a compat corpus case compares a typed attribute against a typed literal.",
       "owner": "cerberus-core",
       "replaces": null,
       "replaced_by": null
@@ -588,7 +588,7 @@
       "applicable_heads": ["HEAD-TRACEQL"],
       "applicable_capabilities": ["CAP-SPAN-ATTRIBUTE-FILTER"],
       "authority": "operational-invariant",
-      "required_evidence_classes": ["reference"],
+      "required_evidence_classes": ["execution"],
       "required_independence_groups": ["attr-type-hint-query-driven-coercion"],
       "blind_spots": [
         "attrTypeHints only recovers a type from a comparison shape collectAttrTypeHints's AST walk reaches (a BinaryOperation or UnaryOperation inside a SpansetFilter's own Expression); an attribute compared only inside a pipeline stage the walk does not traverse still reaches the reference engine as a plain string, which could understate what cerberus's own lowering actually does there.",
@@ -697,7 +697,7 @@
       "required_evidence_classes": ["static-analysis"],
       "required_independence_groups": ["forbid-skip-scan"],
       "blind_spots": [
-        "forbid-skip.mjs is a fixed regex/perl pattern set (documented in docs/forbid-skip.md, pinned byte-identical by scripts/test-forbid-skip.sh) — it recognizes exactly the CANONICAL spellings of each pattern it was written against. A functionally equivalent skip dressed in an unrecognized shape (a helper function wrapping t.Skip, a differently-named escape-hatch constant, a soft assertion built from a different matcher) is not detected.",
+        "forbid-skip.mjs is a fixed regex/perl pattern set (documented in docs/forbid-skip.md; .github/scripts/forbid-skip.test.mjs drives every arm through the real CLI) — it recognizes exactly the CANONICAL spellings of each pattern it was written against. A functionally equivalent skip dressed in an unrecognized shape (a helper function wrapping t.Skip, a differently-named escape-hatch constant, a soft assertion built from a different matcher) is not detected.",
         "The 'escape-hatch' scan's token list (EXPECTED_EMPTY, EXPECTED_TOLERATED, isKnownTolerated, tolerated404, expect.soft, should_tolerate, skipReason, SkipReason, and two named dashboard-noise constants) is the CURRENT enumerated vocabulary, not a closed grammar — a new escape-hatch idiom under a name not on this list ships clean until the list is extended.",
         "The one legitimate pinned exception this repo carries — compatibility/loki/upstream-skip-baseline.txt, the corpus entries upstream itself marks skip: true — sits outside this scan's pathspecs by design (CLAUDE.md invariant 7); this contract does not itself distinguish a new, illegitimate tolerance file from that one sanctioned exception."
       ],
@@ -843,15 +843,15 @@
     },
     {
       "id": "ARCH-HEAD-WIRE-001",
-      "statement": "Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/tempo) projects its optimized, chDB-executed plan into its own wire response contract without altering the answer: a fixture carrying a parity section is additionally evaluated by the real upstream engine in-process (test/spec/parity.go's RunParity, invoked from each head's own lower_test.go) over the same seeded data, and the two answers are compared.",
+      "statement": "Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/tempo) projects its optimized, chDB-executed plan into its own wire response contract without altering the answer. Two mechanisms evidence it: a fixture carrying a parity section is additionally evaluated by the real upstream engine in-process (test/spec/parity.go's RunParity, invoked from each head's own lower_test.go) over the same seeded data and the two answers are compared, and each head's compatibility harness (compatibility/{prometheus,loki,tempo}) diffs the head's live wire response against a separately-started reference backend over shared seed data.",
       "scope": "architecture",
       "applicable_heads": "universal",
       "applicable_capabilities": [],
       "authority": "reference-implementation",
-      "required_evidence_classes": ["reference"],
+      "required_evidence_classes": ["execution", "reference"],
       "required_independence_groups": ["promql-wire-parity", "logql-wire-parity", "traceql-wire-parity"],
       "blind_spots": [
-        "test/spec's parity section evaluates the answer the reference engine's IN-PROCESS evaluator computes for the same query; it is complementary to, and does not imply, the separate compatibility/{prometheus,loki,tempo} differential harness's own corpus (just compat-promql / compat-logql / compat-traceql) — neither mechanism's coverage stands in for the other.",
+        "test/spec's parity section evaluates the answer the reference engine's IN-PROCESS evaluator computes for the same query and never crosses the HTTP boundary; the wire boundary itself is only exercised by the compatibility/{prometheus,loki,tempo} differential harness's own corpus (just compat-promql / compat-logql / compat-traceql) — neither mechanism's coverage stands in for the other, and the harness corpus is not the spec corpus.",
         "Tempo's parity evidence requires the chdb_agpl_oracle build tag combination (parity_tempo_chdb_agpl_oracle.go); a plain chdb-tagged run compiles in parity_tempo_absent.go instead, which fails loudly rather than silently skipping (per that file's own doc) — so Tempo assurance for this contract is only real when the tagged lane actually runs, not merely when a fixture carries a parity section. LogQL's loki oracle carries the identical AGPL gating.",
         "A fixture's parity section may declare scope: full or the single named ScopeExceptZeroBucket exclusion (test/spec/parity.go) — an excluded axis is a documented, machine-checked carve-out, not a hidden gap, but it means 'wire contract preserved' is proven up to that fixture's own declared scope, not unconditionally for every fixture."
       ],
@@ -926,12 +926,7 @@
       "applicable_capabilities": [],
       "authority": "design-decision",
       "required_evidence_classes": ["execution"],
-      "required_independence_groups": [
-        "promql-resource-fixture",
-        "logql-resource-fixture",
-        "traceql-resource-fixture",
-        "resource-config-projection"
-      ],
+      "required_independence_groups": ["promql-resource-fixture", "logql-resource-fixture", "traceql-resource-fixture", "resource-config-projection"],
       "blind_spots": [
         "The fixture pins ONE resource (two attribute keys, one timestamp) seeded independently into three separately-typed tables; it is not a combinatorial sweep of every OTel resource-attribute shape or custom-schema layout, and passing it certifies only the one table/column override each head's own test exercises, not an arbitrary custom schema.",
         "This contract covers RESOURCE-scoped attribute projection specifically (each signal's ResourceAttributes map); PromQL's own per-datapoint Attributes map, LogQL's per-line LogAttributes/structured-metadata scope, and TraceQL's span-attribute scope are each a distinct, already-covered surface (see TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION) — this contract makes no claim about them.",
@@ -945,8 +940,7 @@
       "owner": "cerberus-core",
       "replaces": null,
       "replaced_by": null
-    }
-,
+    },
     {
       "id": "ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001",
       "statement": "A handler holding a streaming ClickHouse cursor owns closing it through chclient.CloseCursor before cancelling that query's own context — never the reverse — and that close completes within chclient.CursorDrainBudget regardless of how much of the result set went unread. Closing before cancelling is what lets clickhouse-go release the pooled connection back to the idle pool instead of destroying the socket outright; bounding the drain is what stops a client that walks away mid-stream from pinning a pool slot for as long as ClickHouse takes to finish streaming an abandoned result set.",
@@ -977,7 +971,13 @@
       "applicable_capabilities": [],
       "authority": "operational-invariant",
       "required_evidence_classes": ["execution"],
-      "required_independence_groups": ["goroutine-leak-normal-request", "goroutine-leak-error-path", "goroutine-leak-concurrent-path", "goroutine-leak-route-memo-retry", "panic-recovery-releases-admission-slot"],
+      "required_independence_groups": [
+        "goroutine-leak-normal-request",
+        "goroutine-leak-error-path",
+        "goroutine-leak-concurrent-path",
+        "goroutine-leak-route-memo-retry",
+        "panic-recovery-releases-admission-slot"
+      ],
       "blind_spots": [
         "goleak's own ignore-list (opts, test/regression/goleak_test.go) excludes known persistent runtime goroutines such as Go's HTTP idle-connection cleaner; a leak that happens to match one of those signatures is not caught.",
         "This contract proves absence of a LEAKED GOROUTINE, never absence of a leaked non-goroutine resource — a held ClickHouse connection is ARCH-CH-CURSOR-TEARDOWN-OWNERSHIP-001's claim, not this one's.",
@@ -1045,7 +1045,7 @@
       "required_evidence_classes": ["execution"],
       "required_independence_groups": ["corpus-decode-differential", "query-log-exit-status-enum-reconciliation"],
       "blind_spots": [
-        "Tempo search-row decoders have no strict-scan recipe of their own yet (cerberus issue #1635, which has a hidden pipeline stage to reproduce) — this contract's coverage of the Tempo head is narrower than its universal applicable_heads scope might suggest.",
+        "Tempo search rows are strict-scanned through traceqlWrapForStrictScan; the Tempo metrics pipeline (metricsLang) is the one TraceQL shape strict-scan does not wrap and is covered by compat-traceql instead, so this contract's coverage of the Tempo head is narrower than its universal applicable_heads scope might suggest.",
         "This contract catches TYPE/SCHEMA coercion divergence only; a row that scans successfully but carries the WRONG value is Layer 6a-c's (chDB roundtrip) job, never this one's — a green strict-scan result says nothing about row-level correctness.",
         "strict-scan's real-CH evidence rides the required strict-scan CI lane exclusively; it needs testcontainers and Docker, so — per CLAUDE.md invariant 5 — a red result is reproduced by reading the CI log for the exact rule/assertion, never chased with a local speculative pre-flight run."
       ],

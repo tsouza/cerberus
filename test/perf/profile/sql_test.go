@@ -83,9 +83,14 @@ func TestFromSourceLevels(t *testing.T) {
 			},
 		},
 		{
-			name:  "WITH-prefixed kept at depth 0 only",
+			name:  "relational WITH at depth 0 is inlined and descended",
 			query: "WITH c AS (SELECT 1) SELECT * FROM c",
-			want:  []string{"WITH c AS (SELECT 1) SELECT * FROM c"},
+			want:  []string{"SELECT * FROM (SELECT 1)", "SELECT 1"},
+		},
+		{
+			name:  "scalar WITH alias kept at depth 0 only",
+			query: "WITH (SELECT 1) AS m SELECT * FROM (SELECT m)",
+			want:  []string{"WITH (SELECT 1) AS m SELECT * FROM (SELECT m)"},
 		},
 		{
 			name:  "FROM source is a table function, not a subquery",
@@ -93,9 +98,13 @@ func TestFromSourceLevels(t *testing.T) {
 			want:  []string{"SELECT a FROM merge(currentDatabase(), '^t$') WHERE a > 1"},
 		},
 		{
-			name:  "stops descending at a CTE-prefixed inner level",
+			name:  "inlines a relational CTE at an inner level and keeps descending",
 			query: "SELECT x FROM (WITH c AS (SELECT 1) SELECT n AS x FROM c)",
-			want:  []string{"SELECT x FROM (WITH c AS (SELECT 1) SELECT n AS x FROM c)"},
+			want: []string{
+				"SELECT x FROM (WITH c AS (SELECT 1) SELECT n AS x FROM c)",
+				"SELECT n AS x FROM (SELECT 1)",
+				"SELECT 1",
+			},
 		},
 		{
 			name:  "descends every UNION ALL arm",
@@ -163,16 +172,37 @@ func TestLevelsWithReasons(t *testing.T) {
 			wantReasons: nil,
 		},
 		{
-			name:        "non-recursive WITH at depth 0",
+			name:        "non-recursive relational WITH at depth 0 — inlined and descended",
 			query:       "WITH c AS (SELECT 1) SELECT * FROM c",
-			wantLevels:  []string{"WITH c AS (SELECT 1) SELECT * FROM c"},
-			wantReasons: []string{uncountableCTEReason(0)},
+			wantLevels:  []string{"SELECT * FROM (SELECT 1)", "SELECT 1"},
+			wantReasons: nil,
 		},
 		{
-			name:        "non-recursive WITH nested at depth 1",
+			name:        "non-recursive relational WITH nested at depth 1 — inlined and descended",
 			query:       "SELECT x FROM (WITH c AS (SELECT 1) SELECT n AS x FROM c)",
-			wantLevels:  []string{"SELECT x FROM (WITH c AS (SELECT 1) SELECT n AS x FROM c)"},
-			wantReasons: []string{uncountableCTEReason(1)},
+			wantLevels:  []string{"SELECT x FROM (WITH c AS (SELECT 1) SELECT n AS x FROM c)", "SELECT n AS x FROM (SELECT 1)", "SELECT 1"},
+			wantReasons: nil,
+		},
+		{
+			// RangeBucketFanout's fold-cost guard: the collapse is named
+			// once and referenced from the guarded read AND from the probe's
+			// scalar subquery. The leftmost descent must reach the collapse
+			// body through the name.
+			name: "fold-cost guard shape — the CTE body reached through its reference",
+			query: "WITH _rbf_group_1 AS (SELECT k, groupArray(v) AS vs FROM (SELECT k, v FROM t) GROUP BY k) " +
+				"SELECT * FROM _rbf_group_1 WHERE throwIf((SELECT sum(length(vs)) FROM _rbf_group_1) > 5, 'x') = 0",
+			wantLevels: []string{
+				"SELECT * FROM (SELECT k, groupArray(v) AS vs FROM (SELECT k, v FROM t) GROUP BY k) WHERE throwIf((SELECT sum(length(vs)) FROM (SELECT k, groupArray(v) AS vs FROM (SELECT k, v FROM t) GROUP BY k)) > 5, 'x') = 0",
+				"SELECT k, groupArray(v) AS vs FROM (SELECT k, v FROM t) GROUP BY k",
+				"SELECT k, v FROM t",
+			},
+			wantReasons: nil,
+		},
+		{
+			name:        "scalar WITH alias at depth 0 — still uncountable",
+			query:       "WITH (SELECT max(a) FROM t) AS m SELECT * FROM (SELECT a FROM t WHERE a < m)",
+			wantLevels:  []string{"WITH (SELECT max(a) FROM t) AS m SELECT * FROM (SELECT a FROM t WHERE a < m)"},
+			wantReasons: []string{uncountableCTEReason(0)},
 		},
 		{
 			name:        "recursive WITH at depth 0 — no reason from this function",
@@ -195,6 +225,71 @@ func TestLevelsWithReasons(t *testing.T) {
 			}
 			if !reflect.DeepEqual(gotReasons, tc.wantReasons) {
 				t.Errorf("reasons mismatch\n got = %#v\nwant = %#v", gotReasons, tc.wantReasons)
+			}
+		})
+	}
+}
+
+// TestInlineRelationalCTEs pins the substitution [decomposeQuery] relies
+// on: every whole-word reference (outside string literals, in later bodies
+// and in the tail) is replaced by the parenthesised body, in declaration
+// order, and the shapes the inliner cannot rewrite faithfully are refused
+// untouched.
+func TestInlineRelationalCTEs(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  string
+		ok    bool
+	}{
+		{
+			name:  "single CTE, two references",
+			query: "WITH c AS (SELECT 1 AS n) SELECT * FROM c WHERE (SELECT count() FROM c) > 0",
+			want:  "SELECT * FROM (SELECT 1 AS n) WHERE (SELECT count() FROM (SELECT 1 AS n)) > 0",
+			ok:    true,
+		},
+		{
+			name:  "chained CTEs — the later body references the earlier name",
+			query: "WITH a AS (SELECT 1 AS n), b AS (SELECT n FROM a) SELECT * FROM b",
+			want:  "SELECT * FROM (SELECT n FROM (SELECT 1 AS n))",
+			ok:    true,
+		},
+		{
+			name:  "a string literal spelling the name is not a reference",
+			query: "WITH c AS (SELECT 1) SELECT 'c' FROM c",
+			want:  "SELECT 'c' FROM (SELECT 1)",
+			ok:    true,
+		},
+		{
+			name:  "a longer identifier containing the name is not a reference",
+			query: "WITH c AS (SELECT 1) SELECT cc FROM c",
+			want:  "SELECT cc FROM (SELECT 1)",
+			ok:    true,
+		},
+		{
+			name:  "recursive head refused",
+			query: "WITH RECURSIVE c AS (SELECT 1 AS n UNION ALL SELECT n+1 FROM c WHERE n<5) SELECT * FROM c",
+			want:  "WITH RECURSIVE c AS (SELECT 1 AS n UNION ALL SELECT n+1 FROM c WHERE n<5) SELECT * FROM c",
+			ok:    false,
+		},
+		{
+			name:  "scalar alias refused",
+			query: "WITH (SELECT 1) AS m SELECT m",
+			want:  "WITH (SELECT 1) AS m SELECT m",
+			ok:    false,
+		},
+		{
+			name:  "no WITH head refused",
+			query: "SELECT 1",
+			want:  "SELECT 1",
+			ok:    false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := inlineRelationalCTEs(tc.query)
+			if ok != tc.ok || got != tc.want {
+				t.Errorf("inlineRelationalCTEs(%q)\n got = %q, %v\nwant = %q, %v", tc.query, got, ok, tc.want, tc.ok)
 			}
 		})
 	}

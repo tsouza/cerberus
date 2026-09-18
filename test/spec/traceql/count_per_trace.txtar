@@ -3,18 +3,19 @@
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
+    SpanId String,
     SpanName String,
     Timestamp DateTime64(9),
     ResourceAttributes Map(String, String),
     Duration UInt64
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    ('t1', 'GET /a',    toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'frontend'), 10000000),
-    ('t1', 'GET /a',    toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'frontend'), 20000000),
-    ('t1', 'db.query',  toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'backend'),  30000000),
-    ('t2', 'GET /b',    toDateTime64('2024-01-01 00:00:03', 9), map('service.name', 'checkout'), 10000000),
-    ('t2', 'cache.get', toDateTime64('2024-01-01 00:00:04', 9), map('service.name', 'cache'),    20000000),
-    ('t3', 'POST /c',   toDateTime64('2024-01-01 00:00:05', 9), map('service.name', 'orders'),   10000000);
+    ('t1', 's1', 'GET /a', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'frontend'), 10000000),
+    ('t1', 's2', 'GET /a', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'frontend'), 20000000),
+    ('t1', 's3', 'db.query', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'backend'), 30000000),
+    ('t2', 's4', 'GET /b', toDateTime64('2024-01-01 00:00:03', 9), map('service.name', 'checkout'), 10000000),
+    ('t2', 's5', 'cache.get', toDateTime64('2024-01-01 00:00:04', 9), map('service.name', 'cache'), 20000000),
+    ('t3', 's6', 'POST /c', toDateTime64('2024-01-01 00:00:05', 9), map('service.name', 'orders'), 10000000);
 -- args --
 [0] int64 = 1
 [1] string = "service.name"

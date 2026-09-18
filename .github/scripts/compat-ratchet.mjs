@@ -71,9 +71,12 @@
 // never from wall-clock-derived values, so a corpus that did not change
 // yields a byte-identical roster. Pass/fail per case comes from the
 // same success predicate that feeds compat-score.json, over
-// canonical-key-sorted result sets compared with absolute + relative
-// epsilon (1e-9) against a deterministic seed. There is no float,
-// timing or ordering surface left to jitter.
+// canonical-key-sorted result sets compared under each head's own
+// numeric tolerance against a deterministic seed — tempo's driver uses
+// 1e-9 absolute + relative (DefaultDiffOptions), loki's the 1e-5 its
+// `-tolerance` flag defaults to (run-loki-compatibility.mjs), and
+// prometheus the upstream compliance tester's own comparer epsilon. There
+// is no float, timing or ordering surface left to jitter.
 //
 // Moving the baseline: when the corpus legitimately grows, or a case is
 // deliberately renamed or retired, sync heads.<head> in

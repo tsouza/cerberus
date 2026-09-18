@@ -7,10 +7,12 @@ upstream" rather than "what does it use" — nothing here is needed to read the
 capability list, the version floors, or the feature gates;
 `native-clickhouse.md` is self-sufficient for that.
 
-## Why the native regression path is default-off
+## Why the native regression path keeps the experimental label despite auto-select
 
-The sub-second window-membership gap characterised in `native-clickhouse.md`
-has a different outlook per function:
+The auto-picker selects `ts_grid_deriv` and `ts_grid_predict_linear` on any
+server `>= 25.9`, yet the registry keeps them at experimental maturity. The
+sub-second window-membership gap characterised in `native-clickhouse.md` has
+a different outlook per function, and that is what fixes the label:
 
 - `deriv`: feeding the raw `DateTime64(9)` axis and scaling the slope by 1e9
   is actually **more** correct (raw-ts membership + fractional-second x =
@@ -26,8 +28,10 @@ has a different outlook per function:
 
 Because `allow_experimental_time_series_aggregate_functions` gates the whole
 family, that inherent `predict_linear` limitation is what keeps the native
-regression path default-off: the one function that cannot be fixed sets the
-maturity of the family it shares a flag with.
+regression path at experimental maturity even though it is auto-selected: the
+one function that cannot be made sub-second-correct sets the maturity of the
+family it shares a flag with, while the whole-second-aligned parity proven on
+the chDB substrate is what earns the auto-select.
 
 ## Upstream positioning
 

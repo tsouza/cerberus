@@ -40,11 +40,10 @@
 //                                 raw-write primitive in the project lives
 //                                 here BY DESIGN. Excluded by the pathspec
 //                                 itself rather than listed.
-//   internal/chsql/emit_node.go — three approved sites:
-//     1. e.b = strings.Builder{} (emitter field reset in subqueryFrag)
-//     2. b.sb.WriteString(sql)   (pre-rendered subquery splice)
-//     3. var out strings.Builder (regex builder in regexQuoteMeta — not SQL)
-//        plus e.b.WriteString / e.args splicing via emitSelect/splice
+//   internal/chsql/emit_node.go — two pattern hits, both approved; the
+//                                 file is exempted whole, not per line:
+//     1. e.b = strings.Builder{} (emitter output-buffer reset in renderNode)
+//     2. var out strings.Builder (regex builder in regexQuoteMeta — not SQL)
 //   internal/chsql/emit.go      — b strings.Builder field declaration
 //                                 (the emitter's output-buffer field).
 //

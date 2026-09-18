@@ -86,7 +86,7 @@ func TestPrometheusCompatHarnessWidensCompareTimeout(t *testing.T) {
 			compatHarnessScriptPath, compatComparerTimeoutOriginal, compatComparerRelPath)
 	}
 
-	replacement := findReplacementTimeoutSeconds(t, body)
+	replacement := findReplacementTimeoutSeconds(t, body, "COMPARER_TIMEOUT_SECONDS")
 	const compatComparerMinTimeoutSeconds = 10
 	if replacement <= compatComparerMinTimeoutSeconds {
 		t.Fatalf("%s patches comparer.go's ref+test compare timeout to %ds, which is not wider "+
@@ -96,16 +96,31 @@ func TestPrometheusCompatHarnessWidensCompareTimeout(t *testing.T) {
 			"headroom, not just restate the same deadline that already flips at random.",
 			compatHarnessScriptPath, replacement, compatComparerMinTimeoutSeconds)
 	}
+
+	// The second widening (#3556 / #3560) is for the FLOOR lane's fallback SQL
+	// only. The per-comparison deadline is the compat lanes' only wall-clock
+	// bound, so the 26.5 lanes must keep the tighter one: a real 46-90s
+	// regression on the native path has to fail there.
+	floor := findReplacementTimeoutSeconds(t, body, "FLOOR_COMPARER_TIMEOUT_SECONDS")
+	if floor <= replacement {
+		t.Fatalf("%s declares FLOOR_COMPARER_TIMEOUT_SECONDS = %ds, not wider than the %ds every "+
+			"26.5 lane gets; the floor lane's un-optimized fallback is the thing that needs the extra "+
+			"headroom", compatHarnessScriptPath, floor, replacement)
+	}
+	if !strings.Contains(body, "comparerTimeoutSeconds(process.env.CH_IMAGE") {
+		t.Fatalf("%s no longer chooses the comparer deadline from CH_IMAGE (comparerTimeoutSeconds); "+
+			"the floor widening must not reach the 26.5 lanes", compatHarnessScriptPath)
+	}
 }
 
 // findReplacementTimeoutSeconds extracts the N in "N*time.Second" from the
-// script's own `const COMPARER_TIMEOUT_SECONDS = N;` declaration, so this
-// test fails loudly — rather than silently passing on a stale marker — if
-// that declaration is ever renamed or removed without updating this pin.
-func findReplacementTimeoutSeconds(t *testing.T, scriptBody string) int {
+// script's own `const <name> = N;` declaration, so this test fails loudly —
+// rather than silently passing on a stale marker — if that declaration is
+// ever renamed or removed without updating this pin.
+func findReplacementTimeoutSeconds(t *testing.T, scriptBody, name string) int {
 	t.Helper()
 
-	const assignPrefix = "const COMPARER_TIMEOUT_SECONDS = "
+	assignPrefix := "const " + name + " = "
 	idx := strings.Index(scriptBody, assignPrefix)
 	if idx < 0 {
 		t.Fatalf("%s no longer declares %s; the compare-timeout patch this test pins reads its "+

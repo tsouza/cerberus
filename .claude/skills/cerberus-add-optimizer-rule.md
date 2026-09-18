@@ -68,7 +68,7 @@ One positional argument (prompt if missing):
 
 3. **`test/spec/optimizer/<snake_name>.txtar`** — empty file. The matching entry in `internal/optimizer/optimizer_test.go` `inputs` map is what generates the `unoptimized` / `optimized` sections via `GOLDEN_UPDATE=1`. The skill creates the empty file and tells the user to add the input plan in Go.
 
-4. **Register the rule** — add the rule to `optimizer.Default()` in `internal/optimizer/rule.go`. Find the existing call (e.g., `New(ConstantFold{}, FilterFusion{}, ProjectionPushdown{})`) and append the new rule **after** any rule it depends on (constant folding usually runs first; pushdowns later).
+4. **Register the rule** — add the rule to `optimizer.Default()` in `internal/optimizer/rule.go`. `Default()` calls `NewWithBatches(...)` with named batches — `AnalyzerBatch("analyzer.constant-fold-semantic", ConstantFoldSemantic{})`, then `Batch{Name: "optimizer.predicate-pushdown", Strategy: FixedPoint(defaultMaxIterations), Rules: []Rule{ConstantFoldHeuristic{}, FilterFusion{}, …}}`, and so on. Append the new rule to the batch whose strategy fits it, **after** any rule it depends on, or add a new `Batch`. The pipeline table in `docs/engine.md` is pinned to `Default()` by `test/regression/engine_doc_optimizer_pipeline_test.go`, so update the table in the same change.
 
 ## What to do
 

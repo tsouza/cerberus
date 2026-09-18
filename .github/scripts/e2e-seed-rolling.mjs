@@ -60,6 +60,10 @@ const portWaitAttempts = 10;
 const portWaitIntervalMs = 1000;
 const initialSeedWaitAttempts = 15;
 const initialSeedWaitIntervalMs = 2000;
+// The rolling cadence. One Go source — test/e2e/seed/cadence — is what the
+// seeder's own tests and test/regression reason against; this literal and
+// docker-compose.yml's seed `command` are pinned to it by
+// test/regression/e2e_hand_copied_literals_test.go.
 const reseedIntervalFlag = '--re-seed-interval=30s';
 
 function spawnDetached(cmd, args, logPath, pidPath) {

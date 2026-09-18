@@ -644,16 +644,15 @@ func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) c
 				// query has no time axis to carry and rate() drops __name__
 				// either way. A wrapping Project here would therefore be pure
 				// output-shape overhead, AND would actively mis-classify:
-				// chplan.RowShapeOf's *Project case always
-				// answers SampleRowShape by default (it cannot see through to
-				// a schema-specific column list), so a forwarder placed
-				// directly over a WRAPPED union (e.g. `abs(rate(...))`) would
-				// wrongly take the four-column branch and reference a
-				// Timestamp column neither arm exposes — a live ClickHouse
-				// code 47. Returning the raw UnionAll instead lets
-				// chplan.RowShapeOf's own *UnionAll case (row_shape.go)
-				// recurse into the first arm and answer the correct
-				// ReducedWindowRowShape, exactly mirroring
+				// a Project's row type is its own projection list, and one
+				// that re-declares the canonical four columns would read as
+				// a full Sample, so a forwarder placed directly over a
+				// WRAPPED union (e.g. `abs(rate(...))`) would wrongly take
+				// the four-column branch and reference a Timestamp column
+				// neither arm exposes — a live ClickHouse code 47. Returning
+				// the raw UnionAll instead lets a UnionAll's row type — its
+				// first arm's — answer the correct reduced (attributes +
+				// value, no timestamp) layout, exactly mirroring
 				// nativeTSGridInstantNode's own un-unioned answer — see that
 				// case's doc for the full reasoning, which chplan.IsDerivedShape
 				// mirrors for the HTTP layer's plan-root wrapping.
@@ -1102,18 +1101,12 @@ func (n NativeStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.No
 }
 
 func closedStaleResampleInput(input chplan.Node, metricName, attributes, timestamp, value string) chplan.Node {
-	names := []string{metricName, attributes, timestamp, value}
-	roles := []chplan.Column{
+	return closeToColumns(input, []chplan.Column{
 		{Name: metricName, Role: chplan.RoleMetricName},
 		{Name: attributes, Role: chplan.RoleAttributes},
 		{Name: timestamp, Role: chplan.RoleTimestamp},
 		{Name: value, Role: chplan.RoleValue},
-	}
-	projections := make([]chplan.Projection, len(names))
-	for i, name := range names {
-		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: name}}
-	}
-	return &chplan.Project{Input: input, Projections: projections, Roles: roles}
+	})
 }
 
 // FanoutChangesLowerer is the concrete DEFAULT ChangesLowerer: it returns the

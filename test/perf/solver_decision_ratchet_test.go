@@ -131,7 +131,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chopt"
-	"github.com/tsouza/cerberus/internal/chopttest"
+	"github.com/tsouza/cerberus/internal/choptwire"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -189,7 +189,7 @@ func decisionKey(id, lowering string) string {
 // nativeLowerers builds the promql.RangeLowerers table production wires on a
 // fully capable ClickHouse server: every AutoSelect feature in
 // chopt.Registry() resolved to its native strategy. The COMPOSITION is
-// chopttest.BuildRangeLowerers — the one test-side copy of
+// choptwire.RangeLowerers — the one test-side copy of
 // cmd/cerberus/main.go's nativeRangeLowerers, shared with the integration
 // lanes — fed the set chopt.Resolve itself produces for "auto" on a server
 // above every version floor with every capability canary green, so this
@@ -219,7 +219,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			chopt.FeatureTSGridIdelta, chopt.FeatureTSGridHistogram, chopt.FeatureTSGridRecollapse,
 			chopt.FeatureLagInFrameAdjacency:
 			// A RangeLowerers dispatch strategy (or a modifier on one) —
-			// composed by chopttest.BuildRangeLowerers from the resolved set.
+			// composed by choptwire.RangeLowerers from the resolved set.
 		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
@@ -271,7 +271,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 		default:
 			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know whether it is a "+
 				"RangeLowerers strategy or an emit-time setting — update this helper and, if it is a "+
-				"strategy, chopttest.BuildRangeLowerers (see issue #2120)", f.ID)
+				"strategy, choptwire.RangeLowerers (see issue #2120)", f.ID)
 		}
 	}
 
@@ -289,7 +289,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 	if !set.Has(chopt.FeatureTSGridRange) {
 		t.Fatalf("auto set on a fully capable server lacks %s: %v — the native classification would silently degrade to fan-out", chopt.FeatureTSGridRange, set.IDs())
 	}
-	return chopttest.BuildRangeLowerers(set)
+	return choptwire.RangeLowerers(set)
 }
 
 // fullyCapableServer is a ClickHouse version above every registry floor, so

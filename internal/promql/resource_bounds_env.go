@@ -57,6 +57,16 @@ const (
 	// same reasoning CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS
 	// carries. Setting a positive value pins it and opts out of the
 	// derivation.
+	//
+	// One deliberate difference from that sibling: an EXPLICIT `0` is
+	// rejected at startup here (envInt64's non-positive check, the rule
+	// every CERBERUS_PROMQL_*_MAX_COST_UNITS knob in this file shares —
+	// docs/configuration.md's "all seven reject a non-positive override"),
+	// where the density-units sibling reads `0` as "derive". Only an UNSET
+	// variable derives here. The two are not aligned because the rule is
+	// per-file: the sibling's loader treats 0 as its documented default,
+	// this file's treats every non-positive value as a mistake, and a knob
+	// that alone accepted 0 would be the odd one out of its own family.
 	EnvExpHistogramWindowMaxCostUnits = "CERBERUS_PROMQL_EXP_HISTOGRAM_WINDOW_MAX_COST_UNITS"
 )
 
@@ -67,9 +77,13 @@ const (
 // EXCEEDS the configured ceiling, so a zero-valued field rejects nearly
 // every real merge rather than admitting every one. Callers should build a
 // ResourceBounds through [DefaultResourceBounds] or
-// [ResourceBoundsFromEnv] — both fully populated — rather than a bare
-// literal; [ResourceBounds.withDefaults] is the safety net every lowering
-// entry point in lower.go applies regardless.
+// [ResourceBoundsFromEnv] rather than a bare literal. Neither fills
+// ExpHistogramWindowMaxCostUnits — that field is derived from
+// CHQueryMaxMemory, not shipped as a constant — so every lowering entry
+// point ([Lower] / [LowerAt] / [LowerAtRange] / [LowerAtRangeOpts] /
+// [LowerMetadataRange] and the metadata catalog path) resolves whatever it
+// was handed through [ResourceBounds.withDefaults] before any guard reads
+// it; no guard defaults a zero ceiling on its own.
 type ResourceBounds struct {
 	// HistogramMergeMaxCostUnits bounds `rows x (posWidth^2 + negWidth^2)`
 	// for the native-histogram across-series merge

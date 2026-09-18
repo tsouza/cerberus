@@ -121,8 +121,8 @@ test('the CLI rejects an unknown CHECK rather than passing silently', () => {
 // The arms that had NO test proving they can go red (#3182).
 //
 // Three of the six CHECK arms — should-skip, escape-hatch and playwright-skip
-// — were exercised nowhere: not here, not in scripts/test-forbid-skip.sh, not
-// in test/regression. docs/forbid-skip.md described that state as a design and
+// — were exercised nowhere: not here, not in the since-deleted shell regex
+// harness, not in test/regression. docs/forbid-skip.md described that state as a design and
 // said their regexes were "pinned by the CI and lefthook copies alone", which
 // pins nothing: those two are RUNNERS of the regex, not assertions about it.
 // Neither can fail on a clean tree, so a regex mutated to match nothing stays

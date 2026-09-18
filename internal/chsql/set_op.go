@@ -2,6 +2,7 @@ package chsql
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -111,8 +112,8 @@ func (e *emitter) emitSetOperation(s *chplan.SetOperation) error {
 	// both arms, and would advance the shared CTE counter that any
 	// structural closure inside them draws from.
 	if s.Op == chplan.SetIntersect {
-		if scan, arms, ok := fusableIntersect(s, traceIDColumn, spanIDColumn); ok {
-			return e.emitFusedIntersect(scan, arms, traceIDColumn, spanIDColumn)
+		if fused, ok := fusableIntersect(s, traceIDColumn, spanIDColumn); ok {
+			return e.emitFusedIntersect(fused, traceIDColumn, spanIDColumn)
 		}
 	}
 
@@ -274,10 +275,21 @@ func intersectQuery(traceIDColumn, spanIDColumn string, leftFrag, rightFrag Frag
 		LimitBy(Col(traceIDColumn), Col(spanIDColumn))
 }
 
+// fusedIntersect is what [fusableIntersect] hands [emitter.emitFusedIntersect]:
+// the one Scan every arm reads, the arms' predicates in left-to-right
+// order, and the column list the arms project (nil when every arm is a
+// bare Filter/Scan chain and the fused SELECT lists the Scan's own
+// columns).
+type fusedIntersect struct {
+	scan       *chplan.Scan
+	arms       []chplan.Expr
+	projection []string
+}
+
 // fusableIntersect decides whether an `&&` tree can be served by the
 // single-pass window gate instead of the union-gated CTE shape, and if
 // so returns the one Scan every arm reads plus the arms' predicates in
-// left-to-right order.
+// left-to-right order and the column list they project.
 //
 // THE DECISION. The gate rewrites "traces where every arm matched at
 // least one span, carrying every span any arm matched" from a union of
@@ -318,19 +330,29 @@ func intersectQuery(traceIDColumn, spanIDColumn string, leftFrag, rightFrag Frag
 // fusable falls back at the level that fails and still fuses below it,
 // because the fallback renders its arms through the ordinary recursive
 // emit.
-func fusableIntersect(s *chplan.SetOperation, traceIDColumn, spanIDColumn string) (*chplan.Scan, []chplan.Expr, bool) {
-	var scan *chplan.Scan
-	var arms []chplan.Expr
-	if !collectIntersectArms(s, traceIDColumn, spanIDColumn, &scan, &arms) {
-		return nil, nil, false
+//
+// Every arm must also project the SAME column list (see
+// [filterChainOverScan]): the fused SELECT lists those columns once, so the
+// statement's width is exactly the width [chplan.SetOperation.RowType]
+// reports — the Left arm's — and a `||` aligning its other arm to that
+// width composes. Arms that project different lists fall back to
+// [intersectQuery], whose per-arm subqueries carry each arm's own list.
+func fusableIntersect(s *chplan.SetOperation, traceIDColumn, spanIDColumn string) (fusedIntersect, bool) {
+	var fused fusedIntersect
+	first := true
+	if !collectIntersectArms(s, traceIDColumn, spanIDColumn, &fused, &first) {
+		return fusedIntersect{}, false
 	}
-	return scan, arms, true
+	return fused, true
 }
 
 // collectIntersectArms walks the `&&` chain rooted at root, appending one
-// predicate per leaf arm and pinning the single Scan they must share.
-// Reports false the moment any arm disqualifies.
-func collectIntersectArms(n chplan.Node, traceIDColumn, spanIDColumn string, scan **chplan.Scan, arms *[]chplan.Expr) bool {
+// predicate per leaf arm and pinning the single Scan and the single
+// projected column list they must share. first reports whether no leaf
+// has been collected yet (a nil projection is a legitimate shared value,
+// so the Scan pointer cannot double as the "seen an arm" flag). Reports
+// false the moment any arm disqualifies.
+func collectIntersectArms(n chplan.Node, traceIDColumn, spanIDColumn string, fused *fusedIntersect, first *bool) bool {
 	if inner, ok := n.(*chplan.SetOperation); ok {
 		// Only an `&&` on the SAME identity key flattens. A nested `||`
 		// is a different operator, and a nested `&&` keyed on a different
@@ -341,38 +363,58 @@ func collectIntersectArms(n chplan.Node, traceIDColumn, spanIDColumn string, sca
 			innerTraceIDColumn != traceIDColumn || innerSpanIDColumn != spanIDColumn {
 			return false
 		}
-		return collectIntersectArms(inner.Left, traceIDColumn, spanIDColumn, scan, arms) &&
-			collectIntersectArms(inner.Right, traceIDColumn, spanIDColumn, scan, arms)
+		return collectIntersectArms(inner.Left, traceIDColumn, spanIDColumn, fused, first) &&
+			collectIntersectArms(inner.Right, traceIDColumn, spanIDColumn, fused, first)
 	}
-	pred, armScan, ok := filterChainOverScan(n)
+	pred, armScan, projection, ok := filterChainOverScan(n)
 	if !ok || !gateSafePredicate(pred) {
 		return false
 	}
-	if *scan == nil {
-		*scan = armScan
-	} else if !(*scan).Equal(armScan) {
+	// A projected arm over a Scan that names its own columns (the
+	// projection-pushdown shape) may only select columns that Scan reads:
+	// the arm's own emit would resolve the Project against the Scan's
+	// list and fail on anything else, so the fused SELECT — which reads
+	// the table directly — must not quietly succeed where the arm would
+	// not.
+	if projection != nil && len(armScan.Columns) > 0 {
+		for _, column := range projection {
+			if !slices.Contains(armScan.Columns, column) {
+				return false
+			}
+		}
+	}
+	if *first {
+		fused.scan = armScan
+		fused.projection = projection
+		*first = false
+	} else if !fused.scan.Equal(armScan) || !slices.Equal(fused.projection, projection) {
 		return false
 	}
-	*arms = append(*arms, pred)
+	fused.arms = append(fused.arms, pred)
 	return true
 }
 
 // filterChainOverScan peels a chain of Filters (and pure column-selecting
 // Projects) off a Scan and returns the conjunction of the Filters'
 // predicates (nil for a bare, unfiltered Scan — an arm that matches every
-// span). Reports false for any other node shape.
+// span), the Scan, and the column list the outermost Project selects (nil
+// when the chain carries no Project). Reports false for any other node
+// shape.
 //
 // A Project only qualifies as transparent when isPureColumnProjection holds
 // (see its doc) — traceql's alignUnionArms wraps an otherwise-bare
 // Filter/Scan selector arm in exactly this shape (narrowSpanProjection) to
-// give both `&&`/`||` arms the same positional UNION column list. That
-// reshaping is invisible to fusableIntersect's rewrite: emitFusedIntersect
-// always renders `SELECT * FROM <scan> WHERE …` straight off the Scan and
-// predicates, never off the arm's own projected column list, so a
-// column-selecting Project above the Filter/Scan chain changes nothing the
-// fused shape would emit and must not disqualify the arm.
-func filterChainOverScan(n chplan.Node) (chplan.Expr, *chplan.Scan, bool) {
+// give both `&&`/`||` arms the same positional UNION column list. The
+// Project computes nothing, so the fused shape can read the predicates
+// straight off the Scan; but it DOES fix the arm's output width, which is
+// why its column list is returned rather than discarded: emitFusedIntersect
+// selects exactly that list, so the fused statement is as wide as the
+// arm's RowType and no wider. The outermost Project's list is the arm's
+// output; an inner pure Project can only have narrowed what the outer
+// one reads, so it changes nothing about the output list.
+func filterChainOverScan(n chplan.Node) (chplan.Expr, *chplan.Scan, []string, bool) {
 	var preds []chplan.Expr
+	var projection []string
 	for {
 		switch v := n.(type) {
 		case *chplan.Filter:
@@ -388,16 +430,22 @@ func filterChainOverScan(n chplan.Node) (chplan.Expr, *chplan.Scan, bool) {
 			n = v.Input
 		case *chplan.Project:
 			if !isPureColumnProjection(v.Projections) {
-				return nil, nil, false
+				return nil, nil, nil, false
+			}
+			if projection == nil {
+				projection = make([]string, 0, len(v.Projections))
+				for _, p := range v.Projections {
+					projection = append(projection, p.Expr.(*chplan.ColumnRef).Name)
+				}
 			}
 			n = v.Input
 		case *chplan.Scan:
 			for i, j := 0, len(preds)-1; i < j; i, j = i+1, j-1 {
 				preds[i], preds[j] = preds[j], preds[i]
 			}
-			return conjoinExprs(preds), v, true
+			return conjoinExprs(preds), v, projection, true
 		default:
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 	}
 }
@@ -478,9 +526,11 @@ func gateSafePredicate(pred chplan.Expr) bool {
 // `max(…) OVER (…) AS g` and filtering on `g`, forces the outer SELECT to
 // strip the synthetic column back off with `* EXCEPT (g)`, which changes
 // the statement's projection shape for every downstream consumer. QUALIFY
-// filters on the window value while leaving the projection a bare
-// `SELECT *` over the spans table — the same column set the arm CTEs
-// produce today.
+// filters on the window value while leaving the projection exactly the
+// arms' own: the column list the arms' shared Project selects, or the
+// Scan's own list (a bare `SELECT *` for a column-less Scan) when no arm
+// is projected — the same column set the arm CTEs produce, and the width
+// [chplan.SetOperation.RowType] reports.
 //
 // The trace gate is `max(<pred>)`, not `countIf(<pred>) > 0`, so a
 // Nullable predicate stays correct by CH's own three-valued rules: an arm
@@ -492,8 +542,19 @@ func gateSafePredicate(pred chplan.Expr) bool {
 // left arm then all of the right, while one pass emits table order. Both
 // are unordered results feeding the same `LIMIT 1 BY` span-identity dedup
 // — TraceQL's own contract fixes the SET of spans, never their order.
-func (e *emitter) emitFusedIntersect(scan *chplan.Scan, arms []chplan.Expr, traceIDColumn, spanIDColumn string) error {
-	common, residuals := splitCommonConjuncts(arms)
+func (e *emitter) emitFusedIntersect(fused fusedIntersect, traceIDColumn, spanIDColumn string) error {
+	scan := fused.scan
+	if fused.projection != nil {
+		// The arms' projected list IS the fused SELECT list, in the arms'
+		// order — the width and order [chplan.SetOperation.RowType]
+		// reports. Rendering it through the Scan's own Columns keeps the
+		// PREWHERE split (filterScanQuery reads the column list to decide
+		// what the statement touches) in step with what it selects.
+		projected := *scan
+		projected.Columns = slices.Clone(fused.projection)
+		scan = &projected
+	}
+	common, residuals := splitCommonConjuncts(fused.arms)
 	conds := append([]chplan.Expr(nil), common...)
 	if disj := disjoinArms(residuals); disj != nil {
 		conds = append(conds, disj)

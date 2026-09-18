@@ -139,6 +139,7 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import { appendStepSummary, error, git, log, notice } from './lib/gh.mjs';
+import { NOT_FOUND_NULL, ghHeaders, ghJSON } from './lib/gh-api.mjs';
 
 // How far a citation may sit from its marker in a diff. A marker and the issue
 // that tracks it belong to the same comment block; three lines spans a short
@@ -150,7 +151,6 @@ export const CITATION_WINDOW_LINES = 3;
 // GitHub's "not found" — for a cited number that names nothing AND for one the
 // token may not read. The two are indistinguishable at the issue endpoint by
 // design, which is why issuesReadability() exists.
-const HTTP_NOT_FOUND = 404;
 
 // The capability probe reads the smallest page the list endpoint will serve: it
 // wants the status line, never the payload, and a repository with thousands of
@@ -408,24 +408,30 @@ export function findMarkers(text) {
 //
 // Line-scoped and quote-counting rather than a real tokenizer: the surfaces
 // this gate reads are diff lines, commit messages and pull-request bodies,
-// where a string literal opens and closes on one line. An apostrophe in
-// ordinary prose ("doesn't") leaves an odd single-quote count, so an
-// unquoted marker after one would be skipped — which is why each quote
-// style is counted independently and a marker is only excused when the
-// style that encloses it is balanced-open around it. Prose apostrophes
-// almost never share a line with an unquoted marker word, and the failure
-// direction of a miscount is a missed marker on that one line, never a
-// false accusation.
+// where a string literal opens and closes on one line. A marker is excused
+// only when the quote style that would enclose it is BALANCED on the line —
+// an odd count before it and an even total — so an unclosed quote excuses
+// nothing. Single quotes are the hard case: two prose apostrophes
+// ("doesn't … that's") bracket a marker exactly the way a string literal
+// does, and ordinary commit-message prose does that all the time, so a
+// single-quoted "string" counts only on a line that looks like code
+// (CODE_LINE_HINTS: a call, an assignment, a literal). The failure direction
+// of the heuristic is a missed marker on one prose line that happens to be
+// spelled like code, never a false accusation.
+const CODE_LINE_HINTS = /[(=\[{]/;
+
 function insideQuotedString(src, index) {
   const lineStart = src.lastIndexOf('\n', index - 1) + 1;
   let lineEnd = src.indexOf('\n', index);
   if (lineEnd === -1) lineEnd = src.length;
   const before = src.slice(lineStart, index);
   const after = src.slice(index, lineEnd);
+  const looksLikeCode = CODE_LINE_HINTS.test(before + after);
   for (const q of ['"', "'", '`']) {
+    if (q === "'" && !looksLikeCode) continue;
     const open = countUnescaped(before, q);
     const close = countUnescaped(after, q);
-    if (open % 2 === 1 && close > 0) return true;
+    if (open % 2 === 1 && (open + close) % 2 === 0) return true;
   }
   return false;
 }
@@ -980,28 +986,18 @@ export function diffOf(base, head) {
   return res.stdout;
 }
 
-function apiHeaders(token) {
-  return {
-    Accept: 'application/vnd.github+json',
-    Authorization: `Bearer ${token}`,
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-}
-
 // probeStatus — one GET reduced to its status line. The capability probe asks
 // only whether a read was permitted, so it must not depend on a payload shape.
 async function probeStatus(url, token) {
-  const res = await fetch(url, { headers: apiHeaders(token) });
+  const res = await fetch(url, { headers: ghHeaders(token) });
   return { ok: res.ok, status: res.status, statusText: res.statusText };
 }
 
+// apiJson — a lookup that may legitimately miss: a 404 is `null` (an issue
+// number that names nothing, a commit with no pull request), and the caller
+// decides what a miss means. Every other failure throws.
 export async function apiJson(url, token, what) {
-  const res = await fetch(url, { headers: apiHeaders(token) });
-  if (res.status === HTTP_NOT_FOUND) return null;
-  if (!res.ok) {
-    throw new Error(`${what}: HTTP ${res.status} ${res.statusText} for ${url}`);
-  }
-  return res.json();
+  return ghJSON(url, { token, what, notFound: NOT_FOUND_NULL });
 }
 
 // descriptionSurface — the PR description(s), however this event can reach

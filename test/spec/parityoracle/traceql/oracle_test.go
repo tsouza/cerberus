@@ -398,3 +398,31 @@ func TestUnrelatedKeyNeverCoercesFromAnotherQuery(t *testing.T) {
 	got := evaluate(t, spans, `{ span.http.status_code = 500 && span.account_id = "500" }`)
 	requireResults(t, got, oracle.Result{TraceID: "t", SpanID: "a"})
 }
+
+// TestUnscopedAttributeResolvesUserAttributeBeforeIntrinsic pins the span
+// scope's attribute order. Real Tempo answers `{ .name = "checkout" }` from
+// the span's USER attribute `name`: vparquet4's AttributeFor resolves an
+// unscoped attribute by findName's first hit over the span scope, and the
+// collector emits the fetched user attributes before the intrinsic columns
+// — so a span whose intrinsic name is "checkout-span" and whose user
+// attribute name is "checkout" matches, and where both are present and
+// disagree the user attribute wins.
+func TestUnscopedAttributeResolvesUserAttributeBeforeIntrinsic(t *testing.T) {
+	spans := []oracle.Span{
+		{TraceID: "t", SpanID: "user-attr", Name: "checkout-span", SpanAttrs: map[string]string{"name": "checkout"}},
+		{TraceID: "t", SpanID: "other-attr", Name: "billing-span", SpanAttrs: map[string]string{"name": "billing"}},
+		{TraceID: "t", SpanID: "no-attr", Name: "other-span"},
+	}
+	requireResults(t, evaluate(t, spans, `{ .name = "checkout" }`),
+		oracle.Result{TraceID: "t", SpanID: "user-attr"})
+
+	both := []oracle.Span{
+		{TraceID: "t", SpanID: "both", Name: "checkout", SpanAttrs: map[string]string{"name": "not-checkout"}},
+	}
+	requireResults(t, evaluate(t, both, `{ .name = "checkout" }`))
+	requireResults(t, evaluate(t, both, `{ .name = "not-checkout" }`),
+		oracle.Result{TraceID: "t", SpanID: "both"})
+	// The bare intrinsic spelling is unaffected by the user attribute.
+	requireResults(t, evaluate(t, both, `{ name = "checkout" }`),
+		oracle.Result{TraceID: "t", SpanID: "both"})
+}

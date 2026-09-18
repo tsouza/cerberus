@@ -25,7 +25,9 @@ import assert from 'node:assert/strict';
 
 import {
   evaluate,
+  matchesInformational,
   parseCheckList,
+  registryInformationalMatchers,
   requiredChecksPending,
   allSuitesSettled,
   scopeToRequired,
@@ -145,7 +147,7 @@ test('an informational PREFIX that swallows a required lane is a wiring error, n
   // family, including the required aggregate.
   const r = evaluate(world({ informational: ['migration'] }));
   assert.equal(r.problems.length, 1, `expected exactly one problem, got: ${r.problems.join('; ')}`);
-  assert.match(r.problems[0], /^migration-e2e is both REQUIRED and de-gated by RELEASE_INFORMATIONAL_CHECKS/);
+  assert.match(r.problems[0], /^migration-e2e is both REQUIRED and de-gated \(a RELEASE_INFORMATIONAL_CHECKS prefix/);
   assert.ok(
     !r.problems.some((p) => /posted no check-run/.test(p)),
     'the swallowed lane must be reported as mis-wired, not as merely absent',
@@ -154,6 +156,85 @@ test('an informational PREFIX that swallows a required lane is a wiring error, n
   // An informational prefix that does NOT collide stays a legitimate de-gate.
   const ok = evaluate(world({ informational: ['compose-smoke-shard-info', 'dashboard'] }));
   assert.deepEqual(ok.problems, []);
+});
+
+// The registry-derived half of the de-gated set. Every lane whose
+// `release_posture` is not `required` is informational without being listed
+// in RELEASE_INFORMATIONAL_CHECKS — the hand-maintained list named seven of
+// twenty-seven such lanes and the rest gated a publish by default, against
+// their own declared posture.
+const REGISTRY = {
+  lanes: [
+    { id: 'ci.check', release_posture: 'required', context: { name: 'check', match: 'exact' } },
+    { id: 'e2e.chaos', release_posture: 'advisory', context: { name: 'chaos', match: 'exact' } },
+    { id: 'e2e.datashard', release_posture: 'advisory', context: { name: 'datashard (N=', match: 'prefix' } },
+    { id: 'release.brew-verify', release_posture: 'post_publish', context: { name: 'brew-verify (', match: 'prefix' } },
+  ],
+};
+
+test('registryInformationalMatchers keeps every non-required lane with its own match mode', () => {
+  assert.deepEqual(registryInformationalMatchers(REGISTRY), [
+    { name: 'chaos', match: 'exact' },
+    { name: 'datashard (N=', match: 'prefix' },
+    { name: 'brew-verify (', match: 'prefix' },
+  ]);
+  assert.deepEqual(registryInformationalMatchers({ lanes: [] }), []);
+  assert.deepEqual(registryInformationalMatchers(undefined), []);
+});
+
+test('matchesInformational honours exact vs prefix and the explicit prefix list', () => {
+  const matchers = registryInformationalMatchers(REGISTRY);
+  assert.equal(matchesInformational('chaos', [], matchers), true);
+  assert.equal(matchesInformational('chaos-sleep', [], matchers), false, 'an exact name is not a prefix');
+  assert.equal(matchesInformational('datashard (N=4)', [], matchers), true);
+  assert.equal(matchesInformational('brew-verify (ubuntu-latest)', [], matchers), true);
+  assert.equal(matchesInformational('check', [], matchers), false, 'a required lane never matches');
+  assert.equal(matchesInformational('gremlins phase4-promql-a', ['gremlins'], matchers), true);
+  assert.equal(matchesInformational('gremlins phase4-promql-a', [], undefined), false);
+});
+
+test('a lane the registry declares non-required does not block a release even when unlisted', () => {
+  const matchers = registryInformationalMatchers(REGISTRY);
+  const red = [
+    run('chaos', { conclusion: 'failure' }),
+    run('datashard (N=2)', { conclusion: 'failure' }),
+    run('brew-verify (macos-latest)', { conclusion: 'failure' }),
+  ];
+  const r = evaluate(world({ checkRuns: [...REQUIRED.map((n) => run(n)), ...red], informationalMatchers: matchers }));
+  assert.deepEqual(r.problems, []);
+  assert.equal(r.gated, REQUIRED.length, 'the derived lanes are excluded from the gated count');
+
+  // Negative control: the same world WITHOUT the derivation blocks on all
+  // three — the old "gates by default" hole, and what a derivation rewritten
+  // to return nothing would reproduce.
+  const blocked = evaluate(world({ checkRuns: [...REQUIRED.map((n) => run(n)), ...red] }));
+  assert.equal(blocked.problems.length, 3, blocked.problems.join('; '));
+});
+
+test('a registry lane whose exact name prefixes a required lane does not swallow it', () => {
+  const registry = {
+    lanes: [
+      { id: 'a', release_posture: 'advisory', context: { name: 'compose', match: 'exact' } },
+      { id: 'b', release_posture: 'required', context: { name: 'compose-smoke', match: 'exact' } },
+    ],
+  };
+  const matchers = registryInformationalMatchers(registry);
+  const r = evaluate(
+    world({
+      checkRuns: [...REQUIRED.filter((n) => n !== 'compose-smoke').map((n) => run(n)), run('compose-smoke', { conclusion: 'failure' })],
+      informationalMatchers: matchers,
+    }),
+  );
+  assert.deepEqual(r.problems, ['compose-smoke: failure']);
+});
+
+test('a required lane that the registry also declares non-required is a wiring error', () => {
+  const registry = {
+    lanes: [{ id: 'x', release_posture: 'advisory', context: { name: 'migration-e2e', match: 'exact' } }],
+  };
+  const r = evaluate(world({ informationalMatchers: registryInformationalMatchers(registry) }));
+  assert.equal(r.problems.length, 1, r.problems.join('; '));
+  assert.match(r.problems[0], /^migration-e2e is both REQUIRED and de-gated/);
 });
 
 test('a required lane that is also a self-job is a wiring error', () => {

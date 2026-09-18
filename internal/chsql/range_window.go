@@ -174,7 +174,7 @@ func metricsAggregateCH(m *chplan.MetricsAggregate) (
 // as a decimal string (no trailing zeros) — "0.5" reads "0.5" (not
 // "0.500000"); aligned with Tempo upstream's per-quantile label
 // production in pkg/traceql/engine_metrics.go.
-const metricsMultiQuantilePhiLabel = "__phi__"
+const metricsMultiQuantilePhiLabel = chplan.MetricsMultiQuantilePhiColumn
 
 // RangeWindowAnchorAlias is the SELECT-list alias the matrix-shape
 // RangeWindow emitters give the per-step anchor timestamp column
@@ -899,14 +899,55 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	return e.emitSelect(outer)
 }
 
-// endExprFrag returns a Frag rendering `<End> [- toIntervalNanosecond(<offset>)]`.
-// Shared by every windowed-array emitter; centralises the Offset
-// branch. `r.Offset != 0` so a negative offset (Prom's forward-shift
-// form, `rate(metric[range] offset -5m)`) still emits the subtract —
-// CH interval arithmetic renders `End - toIntervalNanosecond(-N)` as
-// `End + N` so the window shifts forward into the future correctly.
+// endExprFrag returns a Frag rendering `<grid end> [- toIntervalNanosecond(<offset>)]`
+// — the newest anchor every windowed-array emitter walks its grid
+// backward from ([rangeWindowGridEnd]), offset-shifted. Shared by every
+// windowed-array emitter; centralises the Offset branch AND the
+// Start-anchoring of the grid base, so no emitter can walk from the raw
+// End on its own. `r.Offset != 0` so a negative offset (Prom's
+// forward-shift form, `rate(metric[range] offset -5m)`) still emits the
+// subtract — CH interval arithmetic renders `End - toIntervalNanosecond(-N)`
+// as `End + N` so the window shifts forward into the future correctly.
 func endExprFrag(r *chplan.RangeWindow) Frag {
-	return offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
+	return offsetShiftedBaseFrag(timeOrNowFrag(rangeWindowGridEnd(r)), r.Offset)
+}
+
+// rangeWindowGridEnd returns the newest anchor of r's evaluation grid —
+// the base every RangeWindow fan-out walks backward from (`<base> -
+// i*Step`, see anchorBaseAtIdxFrag).
+//
+// On a query_range grid (Start and End set, StepAlign false) that base is
+// the Start-anchored `Start + (numAnchors-1)*Step` of [startAnchoredGridEnd],
+// NOT the raw End: the backward walk then lands on exactly the `Start,
+// Start+Step, …` anchors Prometheus's and Loki's query_range grids name,
+// even when `(End-Start)` is not a multiple of Step. Walking from the raw
+// End instead shifts every reported anchor by `(End-Start) mod Step` and
+// drops the request's own anchors — the same defect
+// [emitter.emitRangeBucketFanout] and [emitRangeLWR] already guard
+// against, applied here once for every RangeWindow shape.
+//
+// The raw End is kept in every case where it is the grid's true base:
+//   - StepAlign (a PromQL subquery's inner epoch-aligned grid): the base is
+//     snapped to a phase-0 multiple of Step by [stepAlignGrid], which
+//     starts from End by contract.
+//   - No Start (an instant evaluation, an `@`-pinned window rendered as an
+//     instant shape, or the now64() fixture shape): a single anchor at End.
+//   - Step <= 0: no grid to anchor.
+//
+// numAnchors is derived by [rangeWindowGridAnchorCount], the same count
+// the emitters fan out with, so the base and the walk agree by
+// construction.
+func rangeWindowGridEnd(r *chplan.RangeWindow) time.Time {
+	if r.StepAlign || r.Step <= 0 || r.Start.IsZero() || r.End.IsZero() {
+		return r.End
+	}
+	numAnchors, err := rangeWindowGridAnchorCount(r, r.Step.Nanoseconds())
+	if err != nil {
+		// Start > End: every emitter rejects the node with the same error
+		// before rendering anything; the base is irrelevant.
+		return r.End
+	}
+	return startAnchoredGridEnd(r.Start, r.End, r.Step.Nanoseconds(), numAnchors)
 }
 
 // gridAnchorFrag renders the OUTPUT timestamp for a matrix anchor. The internal
@@ -950,7 +991,7 @@ func offsetUnshiftAnchorFrag(anchor Frag, offsetNS int64) Frag {
 // a Sample's timestamp — the name every *_over_time / rate / deriv matrix
 // emitter falls back to when its own RangeWindow carries no more specific
 // TimestampColumn override (see projectAnchorAsTimestampColumn).
-const rangeWindowSchemaTimestampColumn = "TimeUnix"
+const rangeWindowSchemaTimestampColumn = chplan.DefaultSampleTimestampColumn
 
 // projectAnchorAsTimestampColumn surfaces the matrix anchor under a named
 // timestamp column, in addition to the bare `anchor_ts` every matrix-shape
@@ -1720,8 +1761,9 @@ func quantileSamplePredicateFrag(isDuration bool) Frag {
 // row stream by a stable name. The Tempo handler holds its own
 // matching constant (`tempoQuantileBucketLabel` in
 // internal/api/tempo/metrics_query_range.go); both must agree on the
-// literal "__bucket".
-const metricsQuantileBucketAlias = "__bucket"
+// literal chplan.MetricsBucketColumn carries, which is also what the
+// node's RowType() publishes.
+const metricsQuantileBucketAlias = chplan.MetricsBucketColumn
 
 // quantileBucketFrag renders the per-row bucket key. Mirrors Tempo's
 // `Log2Bucketize(v) [/ time.Second]` (pkg/traceql/engine_metrics.go).
@@ -2771,7 +2813,7 @@ func outerGroupAliases(groupBy []chplan.Expr, aliases []string) []string {
 			out = append(out, aliases[i])
 			continue
 		}
-		out = append(out, "g"+strconv.Itoa(i))
+		out = append(out, chplan.MetricsGroupKeyName(i))
 	}
 	return out
 }

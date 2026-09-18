@@ -367,9 +367,10 @@ func lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *p
 // histogram,histogram combination (a genuine merge/subtract, see this
 // file's header) for these two ops; float,histogram and histogram,float
 // both drop. The output is therefore the full fourteen-column Mixed
-// shape — [chplan.RowShapeOf] resolves it to [chplan.MixedRowShape] via
-// its *Project case, mirroring [lowerMixedVVScaledArithmetic]'s own
-// shape, unlike this function's own float-only predecessor.
+// shape — the Project republishes the discriminator, so
+// [chplan.LiveSampleKind] answers [chplan.SampleKindMixed] — mirroring
+// [lowerMixedVVScaledArithmetic]'s own shape, unlike this function's own
+// float-only predecessor.
 //
 // Shape:
 //
@@ -580,9 +581,10 @@ func mixedVVHistMergeInputProjections(op chplan.BinaryOp, s schema.Metrics) []ch
 // least(0,0) = 0; merged ZeroThreshold = greatest(0,0) = 0; every
 // plainArraySum over [0, ±0] = 0; and the merged bucket ladder — per
 // [expHistogramMergeBucketsBoundsExpr]'s own documented handling of an
-// empty-array row ("Rows with empty arrays produce (om + 0 - 1) = om - 1
-// — slightly below their start, which is fine since they contribute
-// nothing") — resolves to length 0, i.e. `[]`. That is exactly the SAME
+// empty-array row (an empty ladder holds no bucket position, so it is
+// excluded from the merged start and its end is the below-everything
+// sentinel; a group of only empty rows has length 0) — resolves to
+// length 0, i.e. `[]`. That is exactly the SAME
 // placeholder shape [mixedVectorSetOpHistogramPlaceholderCols] itself
 // uses, so a float,float row's Histogram* output is the correct
 // placeholder regardless of which fold produced it.
@@ -594,7 +596,7 @@ func mixedVVHistMergeOutputProjections() []chplan.Projection {
 		{Expr: &chplan.ColumnRef{Name: mixedVVMergedZeroThresholdAlias}, Alias: chplan.HistogramZeroThresholdColumn},
 		{Expr: plainArraySum(&chplan.ColumnRef{Name: hqMergeZeroCountsArrayAlias}), Alias: chplan.HistogramZeroCountColumn},
 		{
-			Expr:  expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
+			Expr:  expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
 			Alias: chplan.HistogramPositiveOffsetColumn,
 		},
 		{
@@ -602,7 +604,7 @@ func mixedVVHistMergeOutputProjections() []chplan.Projection {
 			Alias: chplan.HistogramPositiveBucketCountsColumn,
 		},
 		{
-			Expr:  expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
+			Expr:  expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias),
 			Alias: chplan.HistogramNegativeOffsetColumn,
 		},
 		{
@@ -615,9 +617,9 @@ func mixedVVHistMergeOutputProjections() []chplan.Projection {
 // lowerMixedVVScaledArithmetic answers `*`/`/`: reference keeps THREE of
 // the four combinations for these two ops (float,float; and, depending on
 // op, float,histogram and/or histogram,float — see this file's header),
-// so the output is the full fourteen-column Mixed shape,
-// [chplan.RowShapeOf] resolving it to [chplan.MixedRowShape] via its
-// *Project case (this Project republishes [mixedDiscriminatorColumn]).
+// so the output is the full fourteen-column Mixed shape: this Project
+// republishes [mixedDiscriminatorColumn], so [chplan.LiveSampleKind]
+// answers [chplan.SampleKindMixed] for it.
 //
 // Value is scaled UNCONDITIONALLY (`L.Value <op> R.Value` on every
 // surviving row) rather than branched per combination — the same
