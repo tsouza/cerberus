@@ -187,11 +187,22 @@ every case traced to an agent using another checkout's path because a briefing h
   CI `lint` gate enforces the extra rules and a plain `gofumpt` leaves formatting CI will reject.
   The hook is scoped to one file and runs no repository-wide linter.
 - **PreToolUse on `Bash`** runs `.claude/hooks/guard-git.mjs` for `git commit` and `git push`
-  invocations. It is a fast guard, not a second validation layer: it blocks a commit or push aimed at
-  `main`, and it blocks when lefthook's git hooks are not installed, because lefthook is the layer
-  that genuinely owns pre-commit and pre-push validation. Setting `CERBERUS_PRECOMMIT_FULL_CI=1`
+  invocations. It is a fast guard, not a second validation layer: it blocks a commit on `main`, a
+  push whose refspec targets `main` (or a bare push from `main`), and a commit or push made with the
+  hooks turned off (`--no-verify`, `commit -n`, `-c core.hooksPath=…`) or not installed, because
+  lefthook is the layer that genuinely owns pre-commit and pre-push validation; `LEFTHOOK=0 git push`
+  stays the visible escape hatch for a WIP push. Setting `CERBERUS_PRECOMMIT_FULL_CI=1`
   additionally runs `just ci` before each commit and push; it is off by default because that
   duplicates a better-targeted layer at a cost of minutes per commit.
+- **PreToolUse on `Bash`** also runs `.claude/hooks/guard-heavy-local.mjs`, which refuses a
+  mutation run (any `just mutate*` recipe, `gremlins`, `mutation-run.mjs`) and a golden regeneration
+  (`just update-golden`, `migration-golden`, `update-parity-ledgers`, any `update-*-baseline`) on the
+  developer host; `CERBERUS_ALLOW_HEAVY_LOCAL=1` lifts it for one command. Both hooks read the
+  command line through `.claude/hooks/shell-words.mjs`, which tokenises it like a shell: quoted
+  strings and heredoc bodies are data, `bash -c` payloads and `xargs` tails are commands, and only
+  the command position of each segment is classified. `test/regression/guard_git_hook_test.go` and
+  `.claude/hooks/guard-heavy-local.test.mjs` (run by `guard_heavy_local_hook_test.go`) drive both
+  end to end.
 
 The guard deliberately does not run the test suite or `golangci-lint`, and neither does
 `lefthook.yml`. A linter invoked from a fresh agent worktree can report a clean tree without having
