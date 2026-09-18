@@ -187,7 +187,7 @@ func TestHasJoin_ReachesJoinNestedInScalarSubquery(t *testing.T) {
 	}
 }
 
-// joinHandledTypes returns the Node type names HasJoin's switch (join.go)
+// joinHandledTypes returns the Node type names IsJoinNode's switch (join.go, the per-node half of HasJoin)
 // dispatches on, read out of the source by parsing it — never by re-typing
 // the case list, which would just be a second hand-maintained copy of the
 // first.
@@ -205,7 +205,7 @@ func joinHandledTypes(t *testing.T) map[string]bool {
 	var arms int
 	ast.Inspect(file, func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "HasJoin" {
+		if !ok || fn.Name.Name != "IsJoinNode" {
 			return true
 		}
 		ast.Inspect(fn, func(inner ast.Node) bool {
@@ -224,7 +224,7 @@ func joinHandledTypes(t *testing.T) map[string]bool {
 		return false
 	})
 	if arms == 0 {
-		t.Fatalf("scanned %s and found no case arms in HasJoin — the scan lost its grip on the "+
+		t.Fatalf("scanned %s and found no case arms in IsJoinNode — the scan lost its grip on the "+
 			"source shape, so this ratchet is vacuous", scannedFile)
 	}
 	return handled
@@ -243,7 +243,7 @@ func joinCaseTypeName(e ast.Expr) string {
 }
 
 // nonJoinKinds is the explicit, hand-maintained roster of every OTHER
-// chplan.Node concrete type — one that HasJoin's switch does NOT treat as
+// chplan.Node concrete type — one that IsJoinNode's switch does NOT treat as
 // join-bearing — paired with the reason its chsql emitter never renders a
 // SQL JOIN. It is never trusted on its own:
 // TestHasJoin_CoversEveryJoinEmittingNode asserts its keys, UNIONED with
@@ -309,7 +309,7 @@ var nonJoinKinds = map[string]string{
 // It partitions every concrete chplan.Node type — derived from the
 // planNode() marker declarations in this package's source, via the same
 // sealedscan machinery every other exhaustiveness ratchet here uses, never
-// hand-counted — into joinHandledTypes (derived from HasJoin's own switch
+// hand-counted — into joinHandledTypes (derived from IsJoinNode's own switch
 // arms in join.go) and nonJoinKinds (hand-classified, with a reason per
 // entry). A Node type landing in NEITHER when a new one is added fails
 // here by name: the author must add it to join.go's switch (if its chsql
@@ -321,7 +321,7 @@ func TestHasJoin_CoversEveryJoinEmittingNode(t *testing.T) {
 	joinKinds := joinHandledTypes(t)
 	for name := range joinKinds {
 		if _, dup := nonJoinKinds[name]; dup {
-			t.Errorf("%s is in BOTH HasJoin's switch and nonJoinKinds — pick one", name)
+			t.Errorf("%s is in BOTH IsJoinNode's switch and nonJoinKinds — pick one", name)
 		}
 	}
 
@@ -333,6 +333,6 @@ func TestHasJoin_CoversEveryJoinEmittingNode(t *testing.T) {
 		covered[name] = true
 	}
 	assertCoversEverySealedKind(t, nodeMarkerMethod, covered, "join.go's HasJoin switch + join_test.go's nonJoinKinds",
-		"add the new Node type to HasJoin's switch in join.go if its chsql emitter renders a SQL "+
+		"add the new Node type to IsJoinNode's switch in join.go if its chsql emitter renders a SQL "+
 			"JOIN, else to nonJoinKinds in join_test.go with the reason it does not")
 }

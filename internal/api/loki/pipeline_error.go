@@ -3,9 +3,8 @@ package loki
 import (
 	"fmt"
 	"net/http"
-	"sort"
-	"strconv"
-	"strings"
+
+	"github.com/prometheus/prometheus/model/labels"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
@@ -80,26 +79,11 @@ func pipelineErrorMessage(kind string, lbls map[string]string) string {
 	)
 }
 
-// promLabelsString renders a label map the way
-// prometheus/model/labels.Labels.String() does — `{a="1", b="2"}`, keys
-// sorted, values quoted with Go syntax — which is what upstream
-// interpolates into the message.
+// promLabelsString renders a label map the way upstream interpolates it
+// into the message — prometheus/model/labels.Labels.String(), `{a="1",
+// b="2"}` with keys sorted and values Go-quoted — by calling that
+// renderer, the same way index_volume.go builds its series-mode rank key,
+// so the message cannot drift from it.
 func promLabelsString(lbls map[string]string) string {
-	keys := make([]string, 0, len(lbls))
-	for k := range lbls {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	b.WriteByte('{')
-	for i, k := range keys {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(strconv.Quote(lbls[k]))
-	}
-	b.WriteByte('}')
-	return b.String()
+	return labels.FromMap(lbls).String()
 }

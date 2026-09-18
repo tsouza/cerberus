@@ -382,23 +382,25 @@ func isPromMetricName(s string) bool {
 // and returns a fresh map. Values pass through unchanged (Prom values
 // are arbitrary strings — only identifiers go through the grammar).
 //
-// Collision policy (per the task brief): when two source keys normalise
-// to the same target — e.g. both `service.name` and `service_name` are
-// present — the ALREADY-NORMALISED form wins. The dotted OTel form is
-// the "telemetry alias" and the underscored form is the user's intended
-// Prom-style identifier; surfacing only the underscored form keeps
-// Grafana panels written against `{service_name="x"}` working without
-// double-counting the same series.
+// Collision policy: when two source keys normalise to the same target —
+// e.g. both `service.name` and `service_name` are present — the
+// ALREADY-NORMALISED form wins. The dotted OTel form is the "telemetry
+// alias" and the underscored form is the user's intended Prom-style
+// identifier; surfacing only the underscored form keeps Grafana panels
+// written against `{service_name="x"}` working without double-counting
+// the same series. Among colliding rewrites where neither side is
+// naturally shaped (`a.b` and `a-b` both → `a_b`), the lexically-first
+// source key wins — first writer, never last: the SQL twin of this
+// function (internal/api/loki's normalizedLabelsFrag) orders the same way,
+// and TestNormalizedLabelsFrag_ChDB_MatchesGoNormalizer holds the two to it.
 //
 // Implementation: iterate keys in sorted order so the result is
 // deterministic regardless of Go's map iteration ordering. For each
 // source key K we compute its normalised form N. If N != K (K needed
 // rewriting) AND the input already contains N, we drop K — the natural
 // form is the authoritative value. Otherwise the (normalised key →
-// value) entry lands in the output. Among colliding rewrites where
-// neither side is naturally-shaped (`a.b` and `a-b` both → `a_b`), the
-// sorted-iteration order picks the lexically-first source — stable but
-// arbitrary; the brief tolerates last-write-wins for this edge case.
+// value) entry lands in the output unless an earlier (lexically smaller)
+// source already claimed N.
 //
 // A nil / empty input returns nil so downstream consumers retain the
 // `len(m) == 0` shortcut without an allocation.

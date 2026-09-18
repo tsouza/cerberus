@@ -16,7 +16,7 @@ func TestBackfillLogsColumns_AddsWireProjectionColumns(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("BackfillLogsColumns returned %d statements, want 2", len(got))
 	}
-	for _, column := range []string{"SeverityText LowCardinality(String)", "LogAttributes Map(String, String)"} {
+	for _, column := range []string{"SeverityText LowCardinality(String)", "SeverityNumber UInt8", "LogAttributes Map(String, String)"} {
 		if !strings.Contains(got[0], column) {
 			t.Errorf("backfilled DDL missing %q:\n%s", column, got[0])
 		}

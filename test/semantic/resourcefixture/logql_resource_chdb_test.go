@@ -31,15 +31,16 @@ const logqlFixtureBody = "checkout request handled"
 // the per-line LogAttributes map this fixture leaves empty, since
 // SIGNAL-RESOURCE-001 covers resource-attribute projection specifically
 // (LogQL's log-attribute scope is a distinct, already-covered surface).
-// SeverityText is unused by this fixture but must exist regardless of
-// which columns the query touches: internal/logql/lang.go's
-// ProjectSamples wrap always selects it (it feeds the response's
-// derived detected_level field).
+// SeverityText and SeverityNumber are unused by this fixture but must
+// exist regardless of which columns the query touches:
+// internal/logql/lang.go's ProjectSamples wrap always selects them (they
+// feed the response's derived detected_level field).
 func logqlFixtureDDL() string {
 	return fmt.Sprintf(`CREATE TABLE %s (
     Timestamp DateTime64(9),
     Body String,
     SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0,
     LogAttributes Map(String, String),
     ResourceAttributes Map(String, String)
 ) ENGINE = Memory;

@@ -119,17 +119,46 @@ func TestApplyQueryTimeout_RequestCapsUncappedDefault(t *testing.T) {
 	budgetInstalled(t, ctx, smallBudget)
 }
 
-// TestApplyQueryTimeout_ZeroRequestKeepsDefault pins the upstream reading
-// of `?timeout=0`: zero means "no cap from this source", so the configured
-// default survives rather than being min'd away to nothing.
-func TestApplyQueryTimeout_ZeroRequestKeepsDefault(t *testing.T) {
-	r := httptest.NewRequest("GET", "/query?timeout=0s", nil)
+// expiredDeadline asserts the shape ApplyQueryTimeout owes for a zero or
+// negative `?timeout=`: no error, and a context whose deadline has ALREADY
+// passed — reference Prometheus's parseDuration accepts both and its
+// handlers install `context.WithDeadline(ctx, now.Add(timeout))` as
+// given, so the query answers 503 errorType=timeout without running.
+func expiredDeadline(t *testing.T, raw string) {
+	t.Helper()
+	r := httptest.NewRequest("GET", "/query?timeout="+raw, nil)
 	ctx, cancel, err := reqctx.ApplyQueryTimeout(r, defBudget)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("timeout=%q: unexpected error %v; reference accepts it", raw, err)
 	}
 	defer cancel()
-	budgetInstalled(t, ctx, defBudget)
+	dl, ok := ctx.Deadline()
+	if !ok {
+		t.Fatalf("timeout=%q: no deadline installed; reference installs the (expired) one it was given", raw)
+	}
+	if !dl.Before(time.Now().Add(deltaSlack)) {
+		t.Fatalf("timeout=%q: deadline %s from now; want one already passed", raw, time.Until(dl))
+	}
+	if ctx.Err() == nil {
+		t.Fatalf("timeout=%q: context is still live under an expired deadline", raw)
+	}
+}
+
+// TestApplyQueryTimeout_ZeroRequestExpiresImmediately: `?timeout=0` is
+// neither an error nor "no cap" — reference Prometheus installs a deadline
+// of now, and the query times out before it runs.
+func TestApplyQueryTimeout_ZeroRequestExpiresImmediately(t *testing.T) {
+	expiredDeadline(t, "0s")
+}
+
+// TestApplyQueryTimeout_NegativeRequestExpiresImmediately: a bare negative
+// NUMBER reaches this path — format.ParseDuration tries
+// strconv.ParseFloat first (which "-1" satisfies) and model.ParseDuration
+// rejects a unit-suffixed negative outright, so "-1s" is the unparseable
+// case below and "-1" is the parsed-negative one. Reference accepts "-1"
+// the same way and installs a deadline in the past.
+func TestApplyQueryTimeout_NegativeRequestExpiresImmediately(t *testing.T) {
+	expiredDeadline(t, "-1")
 }
 
 // rejectTimeout drives the rejection path for one `?timeout=` value and
@@ -167,25 +196,12 @@ func TestApplyQueryTimeout_Unparseable(t *testing.T) {
 	}
 }
 
-// TestApplyQueryTimeout_Negative pins the branch a table lumping both
-// rejection reasons together cannot see: format.ParseDuration accepts
-// "-1" and returns a nil error, so the negative value is rejected on
-// its own merits and must carry its own message.
-//
-// The input is a bare negative NUMBER, not "-1s": format.ParseDuration
-// tries strconv.ParseFloat first (which "-1" satisfies, yielding a clean
-// negative time.Duration with a nil error) and falls back to
-// model.ParseDuration only when that fails. A unit-suffixed negative
-// string ("-1s") used to take the same fallback path with the same
-// nil-error outcome, but model.ParseDuration now rejects a negative
-// duration string outright — it returns a non-nil error instead, so
-// "-1s" silently stopped exercising this branch (both branches produce
-// an error mentioning "-1s", so the assertion below could not tell them
-// apart). "-1" still reaches ApplyQueryTimeout's `case reqTimeout < 0`
-// via the float branch, which is what this test exists to pin.
-func TestApplyQueryTimeout_Negative(t *testing.T) {
-	msg := rejectTimeout(t, "-1")
-	if !strings.Contains(msg, "-1") {
+// TestApplyQueryTimeout_UnitSuffixedNegativeIsUnparseable: model.ParseDuration
+// rejects a unit-suffixed negative duration string outright, so "-1s" is
+// a parse failure (400) rather than the parsed-negative path "-1" takes.
+func TestApplyQueryTimeout_UnitSuffixedNegativeIsUnparseable(t *testing.T) {
+	msg := rejectTimeout(t, "-1s")
+	if !strings.Contains(msg, "-1s") {
 		t.Fatalf("message %q does not name the offending value", msg)
 	}
 }

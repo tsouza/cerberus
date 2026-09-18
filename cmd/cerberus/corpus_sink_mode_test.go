@@ -86,11 +86,15 @@ func TestBuildCorpusSink_JSONLModeIgnoresCHFailure(t *testing.T) {
 // would: the engine it reports back is the one the recorded CREATE asked for,
 // and the column list is the one this binary writes.
 //
-// Deriving the engine from the CREATE rather than hardcoding it is what makes
-// the wiring test below double-discriminating. Drop the config plumbing and the
-// CREATE emits a plain MergeTree, so a `DatabaseReplicated` deployment both
-// fails the DDL assertion AND fails sink construction outright — the server's
-// answer no longer matches what the deployment needs.
+// Deriving the engine from the CREATE rather than hardcoding it keeps the
+// mock faithful to a real server, which is what lets the wiring test below
+// reach its DDL assertion at all: sink construction verifies the deployed
+// engine against the SAME topology the sink was handed, so with the config
+// plumbing dropped both sides say MergeTree, construction succeeds, and the
+// recorded CREATE — a plain MergeTree where a `DatabaseReplicated`
+// deployment needs ReplicatedMergeTree — is the one assertion that fires.
+// A hardcoded ReplicatedMergeTree answer would instead fail construction
+// early, for a reason unrelated to the wiring under test.
 type recordingCorpusConn struct {
 	stmts []string
 }

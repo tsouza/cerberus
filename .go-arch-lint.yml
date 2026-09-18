@@ -168,13 +168,19 @@ components:
   # there would hand every component in the project a transitive edge to
   # the CH driver. Declared explicitly with its own deps block instead.
   api-reqctx:     { in: api/reqctx }
+  # Typed chsql fragments over the OTel attribute Map columns that the heads'
+  # label / tag metadata endpoints share (the subscript, its not-empty
+  # predicate, the one-scan projection of every candidate spelling). NOT a
+  # commonComponent for the same reason api-reqctx is not: it imports chsql,
+  # and listing it there would hand every component a transitive edge to the
+  # emitter. Declared explicitly with its own deps block instead.
+  api-attrmap:    { in: api/attrmap }
   chclienttest:   { in: chclienttest }
   chdbsession:    { in: chdbsession }
   chsqltest:      { in: chsqltest }
   # Real-CH integration-test helper: resolves a live client's chopt.EnabledSet
-  # and builds the same promql.RangeLowerers native dispatch table
-  # cmd/cerberus/main.go's own nativeRangeLowerers builds (unexported,
-  # package main, so it cannot be imported), plus a system.query_log
+  # and hands it to choptwire for the same promql.RangeLowerers native
+  # dispatch table cmd/cerberus's boot path builds, plus a system.query_log
   # activation-proof assertion. Consumed by test/perf/smoke and
   # internal/api/prom's real-CH integration lanes (issue #2487).
   chopttest:      { in: chopttest }
@@ -506,6 +512,7 @@ deps:
     mayDependOn:
       - chplan
       - chsql
+      - api-attrmap
       - chclient
       - engine
       - optimizer
@@ -518,6 +525,7 @@ deps:
     mayDependOn:
       - chplan
       - chsql
+      - api-attrmap
       - chclient
       - engine
       - optimizer
@@ -533,6 +541,8 @@ deps:
       - traceql
       - traceql-ast
       - api-reqctx
+  # api-reqctx: the gRPC RPCs install the same per-query budget every HTTP
+  # entrypoint does (reqctx.WithQueryBudget) on the stream's context.
   api-tempo-grpc:
     mayDependOn:
       - api-tempo
@@ -542,6 +552,7 @@ deps:
       - engine
       - optimizer
       - traceql
+      - api-reqctx
 
   # Utility components — `cerbtrace` pulls in `chplan`, `chclienttest`
   # is a build-tagged (`chdb`) test helper that wraps chclient so each
@@ -564,17 +575,16 @@ deps:
       - chclient
       - testsql
   # chopttest resolves the boot-time chopt.EnabledSet against a live client
-  # (chclient) and builds, from it, BOTH axes cmd/cerberus's own boot path
-  # wires from that set: the full promql.RangeLowerers dispatch table
-  # (promql) and the per-query engine.SettingsRules (engine). Real-CH
-  # integration tests across packages wire a handler the way a real
-  # deployment does instead of inheriting prom.New's permanently
-  # fan-out-only, settings-rules-free zero value.
+  # (chclient) and returns the full promql.RangeLowerers dispatch table
+  # (promql) choptwire builds from it — the same function cmd/cerberus's own
+  # boot path calls. Real-CH integration tests across packages wire a
+  # handler the way a real deployment does instead of inheriting prom.New's
+  # permanently fan-out-only zero value; the settings-rules axis they take
+  # from choptwire.SettingsRules directly.
   chopttest:
     mayDependOn:
       - chclient
       - promql
-      - engine
       - choptwire
   # choptwire composes the boot-resolved capability set onto the query stack:
   # the promql lowering table and the engine settings rules. Those two are its
@@ -591,6 +601,12 @@ deps:
   api-reqctx:
     mayDependOn:
       - chclient
+  # api-attrmap composes chsql Frags and nothing else — it must never reach
+  # chclient, the engine or a QL layer: it builds an expression, it does not
+  # run a query.
+  api-attrmap:
+    mayDependOn:
+      - chsql
   # preflight builds introspection SQL (chsql) and reads CH (chclient);
   # it consults the resolved schema shapes via the schema commonComponent.
   preflight:

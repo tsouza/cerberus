@@ -21,16 +21,19 @@
 // boot (docker-compose / e2e / compose-smoke, none of which assert a
 // specific native family actually activated) — issue #2487.
 //
-// BuildRangeLowerers and BuildSettingsRules are thin delegators to
-// internal/choptwire, the package cmd/cerberus's own boot path composes both
-// tables from. They used to be reviewed DUPLICATES of that formula, on the
-// stated grounds that an unexported `package main` function cannot be
-// imported — true of the function, false of the formula, which depends only
-// on chopt, promql and engine and so always belonged in an importable
-// package. While they were copies, every real-CH activation lane validated
-// the copy rather than the production wiring, so a feature wired in one and
-// forgotten in the other passed every activation test and shipped inert
-// (cerberus issue #3186).
+// The lowering table and the per-query engine.SettingsRules are built from
+// the resolved set by internal/choptwire — the package cmd/cerberus's own
+// boot path composes both from — which integration tests call directly
+// (choptwire.RangeLowerers, choptwire.SettingsRules); this package only
+// resolves the set against the live server and asserts activation. This
+// package used to carry hand-maintained DUPLICATES of that formula, on the stated
+// grounds that an unexported `package main` function cannot be imported —
+// true of the function, false of the formula, which depends only on chopt,
+// promql and engine and so always belonged in an importable package. While
+// they were copies, every real-CH activation lane validated the copy rather
+// than the production wiring, so a feature wired in one and forgotten in the
+// other passed every activation test and shipped inert (cerberus issue
+// #3186).
 //
 // AssertNativeFunctionFired is the activation-proof half: an HTTP 200 alone
 // is indistinguishable from a silent fall-back to the fan-out path, so it

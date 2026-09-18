@@ -6,6 +6,7 @@ CREATE TABLE otel_logs (
     Body String,
     TraceId String DEFAULT '',
     SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0,
     ResourceAttributes Map(String, String),
     LogAttributes Map(String, String)
 ) ENGINE = Memory;

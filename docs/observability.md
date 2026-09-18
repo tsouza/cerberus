@@ -214,19 +214,22 @@ attribute keys are a public contract — dashboards and alert rules
 reference them verbatim, and `internal/telemetry/contract_test.go` pins
 each one so a rename cannot ship silently.
 
-| Metric                                     | Type               | Attributes                                                                                  |
-| ------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------- |
-| `cerberus_queries_total`                   | counter            | `cerberus_ql`, `cerberus_route`, `result`, `cerberus_error_reason`, `cerberus_status_class` |
-| `cerberus_queries_duration_exp_hist`       | histogram (native) | `cerberus_ql`, `cerberus_route`, `result`                                                   |
-| `cerberus_queries_duration_seconds`        | histogram          | `cerberus_ql`, `cerberus_route`, `result`                                                   |
-| `cerberus_pipeline_stage_duration_seconds` | histogram          | `stage`, `cerberus_ql`                                                                      |
-| `cerberus_optimizer_rules_applied`         | histogram          | —                                                                                           |
-| `cerberus_clickhouse_rows_read`            | histogram          | `cerberus_ql`                                                                               |
-| `cerberus_clickhouse_bytes_read`           | histogram          | `cerberus_ql`                                                                               |
-| `cerberus_query_inflight`                  | gauge              | `cerberus_ql`                                                                               |
-| `cerberus_tempo_exemplar_failures_total`   | counter            | `stage`                                                                                     |
+| Metric                                       | Type               | Attributes                                                                                  |
+| -------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------- |
+| `cerberus_queries_total`                     | counter            | `cerberus_ql`, `cerberus_route`, `result`, `cerberus_error_reason`, `cerberus_status_class` |
+| `cerberus_queries_duration_exp_hist`         | histogram (native) | `cerberus_ql`, `cerberus_route`, `result`                                                   |
+| `cerberus_queries_duration_seconds`          | histogram          | `cerberus_ql`, `cerberus_route`, `result`                                                   |
+| `cerberus_pipeline_stage_duration_seconds`   | histogram          | `stage`, `cerberus_ql`                                                                      |
+| `cerberus_optimizer_rules_applied`           | histogram          | —                                                                                           |
+| `cerberus_optimizer_fixpoint_cap_hits_total` | counter            | `cerberus_optimizer_batch`                                                                  |
+| `cerberus_clickhouse_rows_read`              | histogram          | `cerberus_ql`                                                                               |
+| `cerberus_clickhouse_bytes_read`             | histogram          | `cerberus_ql`                                                                               |
+| `cerberus_query_inflight`                    | gauge              | `cerberus_ql`                                                                               |
+| `cerberus_tempo_exemplar_failures_total`     | counter            | `stage`                                                                                     |
 
 `cerberus_tempo_exemplar_failures_total` counts Tempo `/api/metrics/query_range` (and its gRPC `MetricsQueryRange` counterpart) exemplar-enrichment failures, split by which half of the best-effort exemplar attach failed: `stage="emit"` for a `chsql.EmitMetricsExemplars` render failure, `stage="execute"` for a ClickHouse query failure on the rendered SQL. Both failures still return the matrix response with an empty `exemplars` array — the same wire shape as a window with genuinely no exemplars — so this counter is the only way to notice a systematic exemplar outage without reading logs.
+
+`cerberus_optimizer_fixpoint_cap_hits_total` counts optimizer `FixedPoint` batches that exhausted their iteration cap with a rule still reporting change, by batch name. Every production batch converges well inside its cap, so a non-zero rate is a rule bug (two rules undoing each other, or one that always reports a change) that otherwise shows only as a slower `optimize` stage; the same event is logged at WARN as `optimizer: fixpoint batch hit its iteration cap without converging` with the batch name.
 
 `cerberus_queries_duration_seconds` is the name this histogram carried
 through v1.20.0. It is deprecated and emitted alongside the new name for

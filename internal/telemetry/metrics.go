@@ -46,6 +46,9 @@ const (
 	// AttrStage is the pipeline stage: parse / lower / optimize /
 	// emit / execute. Cardinality is fixed at five.
 	AttrStage = attribute.Key("stage")
+	// AttrOptimizerBatch names an optimizer batch (optimizer.Batch.Name).
+	// Cardinality is bounded by the Default() driver's batch list.
+	AttrOptimizerBatch = attribute.Key("cerberus.optimizer_batch")
 	// AttrReason labels a decline/skip event with the specific gate that
 	// declined it (see RouteMemoDecline* below). Bare, not cerberus.* —
 	// internal-only, not mirrored on any cerbtrace span attribute.
@@ -191,6 +194,17 @@ type Instruments struct {
 	// for how much rewriting the optimizer actually did. No
 	// attributes — the optimizer is QL-agnostic.
 	RulesApplied metric.Int64Histogram
+
+	// OptimizerFixpointCapHitsTotal counts optimizer fixpoint batches that
+	// exhausted their iteration cap while a rule was still reporting
+	// change — a batch whose rules do not converge, which every such
+	// batch's own cap is set generously above. The batch's rules are
+	// idempotent by contract, so a hit is a rule bug (two rules undoing
+	// each other, or one that always reports a change) surfacing as a
+	// slower optimize stage rather than a wrong answer; before this
+	// counter the loop returned silently at the cap. Attribute:
+	// cerberus.optimizer_batch.
+	OptimizerFixpointCapHitsTotal metric.Int64Counter
 
 	// ClickHouseRowsRead is the distribution of rows ClickHouse
 	// reported reading per query (sum across Progress events).
@@ -417,6 +431,14 @@ func mustBuild(meter metric.Meter) *Instruments {
 	if err != nil {
 		panic("telemetry: build rules_applied: " + err.Error())
 	}
+	fixpointCapHits, err := meter.Int64Counter(
+		"cerberus_optimizer_fixpoint_cap_hits_total",
+		metric.WithDescription("Optimizer fixpoint batches that hit their iteration cap without converging, by batch."),
+		metric.WithUnit("{batch}"),
+	)
+	if err != nil {
+		panic("telemetry: build optimizer_fixpoint_cap_hits_total: " + err.Error())
+	}
 	chRows, err := meter.Int64Histogram(
 		"cerberus_clickhouse_rows_read",
 		metric.WithDescription("ClickHouse rows read per query (sum of Progress events)."),
@@ -501,21 +523,22 @@ func mustBuild(meter metric.Meter) *Instruments {
 		panic("telemetry: build solver_estimate_drift_alerts_total: " + err.Error())
 	}
 	return &Instruments{
-		QueriesTotal:             queriesTotal,
-		QueryDuration:            queryDuration,
-		QueryDurationLegacy:      queryDurationLegacy,
-		StageDuration:            stageDuration,
-		RulesApplied:             rulesApplied,
-		ClickHouseRowsRead:       chRows,
-		ClickHouseBytesRead:      chBytes,
-		QueryInflight:            queryInflight,
-		RouteMemoHitSkippedTotal: routeMemoHitSkipped,
-		RouteMemoPressureActive:  routeMemoPressureActive,
-		RoutedDispatchInflight:   routedDispatchInflight,
-		RouteABSuccessTotal:      routeABSuccess,
-		ExemplarFailuresTotal:    exemplarFailures,
-		EstimateDriftRatio:       estimateDriftRatio,
-		EstimateDriftAlertsTotal: estimateDriftAlerts,
+		QueriesTotal:                  queriesTotal,
+		QueryDuration:                 queryDuration,
+		QueryDurationLegacy:           queryDurationLegacy,
+		StageDuration:                 stageDuration,
+		RulesApplied:                  rulesApplied,
+		OptimizerFixpointCapHitsTotal: fixpointCapHits,
+		ClickHouseRowsRead:            chRows,
+		ClickHouseBytesRead:           chBytes,
+		QueryInflight:                 queryInflight,
+		RouteMemoHitSkippedTotal:      routeMemoHitSkipped,
+		RouteMemoPressureActive:       routeMemoPressureActive,
+		RoutedDispatchInflight:        routedDispatchInflight,
+		RouteABSuccessTotal:           routeABSuccess,
+		ExemplarFailuresTotal:         exemplarFailures,
+		EstimateDriftRatio:            estimateDriftRatio,
+		EstimateDriftAlertsTotal:      estimateDriftAlerts,
 	}
 }
 
@@ -632,6 +655,13 @@ func (t *QueryTimer) Done(ctx context.Context, out Outcome) {
 // it doesn't need a stopwatch wrapper.
 func RecordRulesApplied(ctx context.Context, n int) {
 	Get().RulesApplied.Record(ctx, int64(n))
+}
+
+// RecordOptimizerFixpointCapHit increments OptimizerFixpointCapHitsTotal for
+// batch. Caller is optimizer.runBatch, at the one point a FixedPoint batch
+// leaves its loop with a rule still reporting change.
+func RecordOptimizerFixpointCapHit(ctx context.Context, batch string) {
+	Get().OptimizerFixpointCapHitsTotal.Add(ctx, 1, metric.WithAttributes(AttrOptimizerBatch.String(batch)))
 }
 
 // ObserveQueryInflight increments the QueryInflight gauge for ql and

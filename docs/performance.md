@@ -253,7 +253,7 @@ every PR) to *broad* (corpus-wide, nightly).
    existing sentinel's calibrated baseline moves when a newer-floor mechanism
    gains coverage. Both this corpus and `test/perf/nightly`'s build their
    handlers with the SAME boot-resolved `engine.SettingsRules` a real
-   deployment carries (`chopttest.BuildSettingsRules` from a live
+   deployment carries (`choptwire.SettingsRules` from a live
    probe-and-resolve), because `prom.New` / `tempo.New` leave `Engine.Settings`
    at its zero value, which applies nothing at all.
 

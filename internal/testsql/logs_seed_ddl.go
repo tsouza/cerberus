@@ -15,6 +15,10 @@ var logsBackfilledColumns = []backfilledColumn{
 	{name: "Timestamp", ddl: "Timestamp DateTime64(9) DEFAULT toDateTime64(0, 9)"},
 	{name: "Body", ddl: "Body String DEFAULT ''"},
 	{name: "SeverityText", ddl: "SeverityText LowCardinality(String) DEFAULT ''"},
+	// UInt8 as the OTel-CH exporter declares it; the detected_level source
+	// reads it as the fallback behind SeverityText, so every log-row
+	// projection references it.
+	{name: "SeverityNumber", ddl: "SeverityNumber UInt8 DEFAULT 0"},
 	{name: "ResourceAttributes", ddl: "ResourceAttributes Map(String, String) DEFAULT map()"},
 	{name: "LogAttributes", ddl: "LogAttributes Map(String, String) DEFAULT map()"},
 }
@@ -97,7 +101,7 @@ func parseLogsCreate(stmt string) (table string, colNames []string, rewritten st
 // value but keeps it visible to the reconstructed outer projection.
 func normalizeLogsColumnDef(def string) string {
 	switch firstToken(strings.TrimSpace(def)) {
-	case "Timestamp", "Body", "SeverityText", "ResourceAttributes", "LogAttributes":
+	case "Timestamp", "Body", "SeverityText", "SeverityNumber", "ResourceAttributes", "LogAttributes":
 		return strings.Replace(def, " MATERIALIZED ", " DEFAULT ", 1)
 	default:
 		return def

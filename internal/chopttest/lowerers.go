@@ -8,6 +8,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
+	"github.com/tsouza/cerberus/internal/choptwire"
 	"github.com/tsouza/cerberus/internal/promql"
 )
 
@@ -63,11 +64,13 @@ func ResolveEnabledSet(ctx context.Context, t testing.TB, client *chclient.Clien
 // WireAllNativeLowerers is the one-call convenience an integration test
 // wants: resolve every native ts_grid_* family against client's real
 // connected server (AllNativeOptimizations) and build the full lowering
-// table from the result. Returns the EnabledSet too so a caller can assert
-// which families the server's own probed version actually enabled before
-// trusting a per-family activation assertion against it.
+// table from the result through choptwire.RangeLowerers — the SAME function
+// cmd/cerberus's boot path calls, so the table under test is the production
+// one. Returns the EnabledSet too so a caller can assert which families the
+// server's own probed version actually enabled before trusting a per-family
+// activation assertion against it.
 func WireAllNativeLowerers(ctx context.Context, t testing.TB, client *chclient.Client) (promql.RangeLowerers, chopt.EnabledSet) {
 	t.Helper()
 	set := ResolveEnabledSet(ctx, t, client, AllNativeOptimizations)
-	return BuildRangeLowerers(set), set
+	return choptwire.RangeLowerers(set), set
 }

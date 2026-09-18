@@ -105,6 +105,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/chopttest"
+	"github.com/tsouza/cerberus/internal/choptwire"
 	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -212,7 +213,7 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	// max_bytes_before_external_join) was unreachable in this corpus no
 	// matter which server it ran against, so no sentinel here could ever
 	// have measured one.
-	rules := chopttest.BuildSettingsRules(set, metricsSchema, schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
+	rules := choptwire.SettingsRules(set, metricsSchema, schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
 	if rules.ResultCache {
 		t.Fatalf("the resolved set enabled chopt.FeatureResultCache — a query RESULT cache would serve "+
 			"repeats 1..%d of every sentinel from cache, so the max-of-N ceiling would stop measuring the "+

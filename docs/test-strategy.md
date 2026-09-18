@@ -218,14 +218,19 @@ open-issue `PERF-SENTINEL-WAIVER:` citation — when a change adds or alters a
 memory-bounding mechanism. The mechanism is derived, not declared here: every
 ClickHouse setting const in `internal/engine/query_settings_rules.go` and
 `internal/engine/spill.go` carries a `perf-sentinel:` doc classification of
-`memory-bounding` or `neutral`, and the gate closes over those files' own
-reference graph from the memory-bounding ones in both directions — what stamps
-a bound, and what computes or gates it. A change obligates only when one of its
-own changed lines, added or removed and with comments stripped, names something
-in that closure. A comment fix, a rename, or a result-equivalent optimizer knob
-living in the same file therefore owes nothing. An unclassified setting const,
-or a `WithQuerySetting` stamping a bare string literal, fails the gate rather
-than being assumed harmless.
+`memory-bounding` or `neutral` (the engine's single plan inspection,
+`internal/engine/plan_shape.go`, carries the same tag as a function), and the
+gate closes over those files' and `internal/engine/engine.go`'s reference graph
+from the memory-bounding ones: what stamps a bound, what it reaches to compute
+or gate it (including the plan-shape facts a bound reads), and — one hop up,
+never expanded further — the seam that composes the bounds, so deleting the call
+that wires one in owes a sentinel while the neutral rules the same seam names do
+not join. A change obligates only when one of its own changed lines, added or
+removed and with comments stripped, names something in that closure. A comment
+fix, a rename, or a result-equivalent optimizer knob living in the same file
+therefore owes nothing. An unclassified setting const, or a `WithQuerySetting`
+stamping a bare string literal, fails the gate rather than being assumed
+harmless.
 
 `merge-risk.mjs` answers the other half: what this pull request's green does not
 prove. It REJECTS a stale-base golden race — both the change and `main` writing

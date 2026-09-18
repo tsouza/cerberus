@@ -101,14 +101,19 @@ func TestResourceBoundsFromEnv_MalformedFailsFast(t *testing.T) {
 // operator intent (see envInt64's own doc), so this must not be conflated
 // with leaving the var unset.
 func TestResourceBoundsFromEnv_NonPositiveFailsFast(t *testing.T) {
-	for _, v := range []string{"0", "-1"} {
-		t.Run(v, func(t *testing.T) {
-			t.Setenv(EnvHistogramMergeMaxCostUnits, v)
-			t.Setenv(EnvClassicBucketMergeMaxCostUnits, v)
-			if _, err := ResourceBoundsFromEnv(); err == nil {
-				t.Fatalf("ResourceBoundsFromEnv() error = nil for value %q, want a non-positive rejection", v)
-			}
-		})
+	// Each knob is set ALONE, so the rejection is attributable to it — the
+	// exp-histogram window knob in particular, whose density-units sibling
+	// in internal/config reads an explicit 0 as "derive" while this file
+	// rejects it (see EnvExpHistogramWindowMaxCostUnits' own doc).
+	for _, key := range []string{EnvHistogramMergeMaxCostUnits, EnvClassicBucketMergeMaxCostUnits, EnvExpHistogramWindowMaxCostUnits} {
+		for _, v := range []string{"0", "-1"} {
+			t.Run(key+"="+v, func(t *testing.T) {
+				t.Setenv(key, v)
+				if _, err := ResourceBoundsFromEnv(); err == nil {
+					t.Fatalf("ResourceBoundsFromEnv() error = nil with %s=%q, want a non-positive rejection", key, v)
+				}
+			})
+		}
 	}
 }
 

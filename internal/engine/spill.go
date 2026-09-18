@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/tsouza/cerberus/internal/chclient"
-	"github.com/tsouza/cerberus/internal/chplan"
 )
 
 // settingMaxBytesBeforeExternalGroupBy / settingMaxBytesBeforeExternalSort are
@@ -130,18 +129,19 @@ func applySpillSettings(ctx context.Context, maxMemory int64) context.Context {
 //     to stamp unconditionally: the setting itself does not exist before
 //     26.4, and an unknown setting name errors the whole query rather than
 //     no-op'ing.
-//   - plan contains a join-bearing node (chplan.HasJoin) — join memory is
-//     otherwise protected only by throwIf cardinality guards and structural
-//     shape restrictions, never a memory backstop, so any plan that lowers
-//     to a real ClickHouse JOIN can build an unbounded hash table.
+//   - the plan contains a join-bearing node (f.hasJoin, chplan.HasJoin's
+//     answer) — join memory is otherwise protected only by throwIf
+//     cardinality guards and structural shape restrictions, never a memory
+//     backstop, so any plan that lowers to a real ClickHouse JOIN can build
+//     an unbounded hash table.
 //
 // Like its group_by/sort sibling this is RESULT-EQUIVALENT and
 // THRESHOLD-GATED: a join whose build side stays under spillThreshold(cap)
 // never spills, so an ordinary join query is byte-for-byte unaffected; only
 // a join approaching the cap spills-and-completes instead of aborting with
 // MEMORY_LIMIT_EXCEEDED (code 241).
-func applyJoinSpillSettings(ctx context.Context, plan chplan.Node, maxMemory int64, joinSpillEnabled bool) context.Context {
-	if !joinSpillEnabled || !chplan.HasJoin(plan) {
+func applyJoinSpillSettings(ctx context.Context, f planShapeFacts, maxMemory int64, joinSpillEnabled bool) context.Context {
+	if !joinSpillEnabled || !f.hasJoin {
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalJoin, spillThreshold(maxMemory))

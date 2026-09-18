@@ -94,6 +94,17 @@ func isEmittedGuardCode(code int32) bool {
 	return code == chCodeThrowIf || code == chCodeTimeSeriesThrowDuplicateSeriesIf
 }
 
+// EmittedGuardCodes returns the ClickHouse error codes cerberus's own
+// emitted guards raise — the exact set isEmittedGuardCode recognises — for
+// the consumers that have to parse a guard's message back out of a
+// "Code: <n>. DB::Exception: " text envelope (the Prometheus head's
+// decodeGuardMessage on chDB's text-only error path). Exposed as values
+// rather than as pre-rendered prefixes so this package stays the one place
+// the codes are spelled.
+func EmittedGuardCodes() []int32 {
+	return []int32{chCodeThrowIf, chCodeTimeSeriesThrowDuplicateSeriesIf}
+}
+
 // wrapThrowIf converts a raw driver error into a *ThrowIfError when (and
 // only when) the error chain carries a ClickHouse exception with a code
 // [isEmittedGuardCode] recognises. Every other error passes through

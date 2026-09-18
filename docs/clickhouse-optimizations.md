@@ -460,7 +460,12 @@ Notes:
   mirroring the group_by/sort stamps it narrows: the setting is
   result-equivalent and threshold-gated (a join whose build stays under
   `spillThreshold(cap)` never spills), so there is no downside to auto-
-  enabling a pure availability win on every server that carries it. Known
+  enabling a pure availability win on every server that carries it. Every
+  spill threshold — `group_by`, `sort`, `join` — is half the statement's own
+  memory cap (`spillThreshold`, `internal/engine/spill.go`); with no cap
+  configured (`CERBERUS_CH_QUERY_MAX_MEMORY=0`) it is 512 MiB, half the
+  1 GiB default cap, so an uncapped deployment spills exactly where a
+  default-capped one does rather than never. Known
   cost (verified, from the issue): on 26.4-26.7, configuring join spill loses
   some post-build join optimisations (`tryRerangeRightTableData`,
   `FixedHashMap` conversion, shared runtime filters) — a cost the ratio-

@@ -166,8 +166,9 @@ type Handler struct {
 	ExternalTraceIDPush bool
 
 	// QueryTimeout is the default per-request wall-clock budget every query
-	// entrypoint installs via applyQueryTimeout, wired from
-	// Config.ClickHouse.QueryTimeout — the same knob prom and loki draw
+	// entrypoint installs — the HTTP handlers via applyQueryTimeout, the
+	// gRPC RPCs via Service.queryContext — wired from
+	// Config.ClickHouse.QueryTimeout, the same knob prom and loki draw
 	// theirs from. It is the Go-side watchdog that unblocks a hung handler
 	// and releases its admit slot + pooled connection even if the
 	// server-side ClickHouse cap somehow doesn't fire. Zero disables the
@@ -450,9 +451,11 @@ func (h *Handler) withSpanDrainBudget(ctx context.Context) context.Context {
 	return chclient.WithDrainByteBudget(ctx, chclient.NewTempoSpanDrainBudget())
 }
 
-// applyQueryTimeout derives the request context every Tempo query
+// applyQueryTimeout derives the request context every Tempo HTTP query
 // entrypoint runs under, via the shared [reqctx.ApplyQueryTimeout] — the
-// same helper prom and loki call. Tempo's wire format has no `?timeout=`
+// same helper prom and loki call (the gRPC RPCs install the same budget on
+// their stream context through reqctx.WithQueryBudget). Tempo's wire
+// format has no `?timeout=`
 // convention of its own (unlike Prometheus's `?timeout=<duration>`), so in
 // practice this installs only the configured QueryTimeout default as a
 // context deadline; a `?timeout=` sent anyway is still honoured by the

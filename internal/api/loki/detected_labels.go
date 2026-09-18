@@ -76,8 +76,10 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 	// provisioned, catalog query error, or an empty/not-yet-refreshed
 	// snapshot) falls straight through to the SAME per-request path every
 	// other request already takes — that path is untouched below.
+	ctx, cancel := h.metadataContext(r)
+	defer cancel()
 	if h.LabelCatalogEnabled && labelCatalogEligible(matchers, windowless) {
-		if out, ok := h.detectedLabelsFromCatalog(r.Context()); ok {
+		if out, ok := h.detectedLabelsFromCatalog(ctx); ok {
 			writeJSON(w, http.StatusOK, DetectedLabelsData{DetectedLabels: out})
 			return
 		}
@@ -90,7 +92,7 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Debug("cerberus loki detected_labels", "sql", sqlStr, "args", telemetry.SanitizeArgsForLog(args))
 
-	rows, err := h.Client.QueryLabelSets(r.Context(), sqlStr, args...)
+	rows, err := h.Client.QueryLabelSets(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki detected_labels CH query failed", "err", err, "sql", sqlStr)
 		h.respondError(r.Context(), w, classifyMetadataErr(err))
