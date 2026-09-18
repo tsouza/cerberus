@@ -53,6 +53,16 @@ const (
 	// same reasoning CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS
 	// carries. Setting a positive value pins it and opts out of the
 	// derivation.
+	//
+	// One deliberate difference from that sibling: an EXPLICIT `0` is
+	// rejected at startup here (envInt64's non-positive check, the rule
+	// every CERBERUS_PROMQL_*_MAX_COST_UNITS knob in this file shares —
+	// docs/configuration.md's "all seven reject a non-positive override"),
+	// where the density-units sibling reads `0` as "derive". Only an UNSET
+	// variable derives here. The two are not aligned because the rule is
+	// per-file: the sibling's loader treats 0 as its documented default,
+	// this file's treats every non-positive value as a mistake, and a knob
+	// that alone accepted 0 would be the odd one out of its own family.
 	EnvExpHistogramWindowMaxCostUnits = "CERBERUS_PROMQL_EXP_HISTOGRAM_WINDOW_MAX_COST_UNITS"
 )
 
