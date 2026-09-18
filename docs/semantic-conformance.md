@@ -1730,12 +1730,22 @@ denominator (killed+survived): **6** — **SMALL SAMPLE**, treat the percentages
 - escape rate: **0.0%** (0/6)
 - excluded: equivalent **0**, invalid **0**, incomplete **0**
 
+#### By detector evidence kind
+
+A `golden-text` detector kills by comparing a TXTAR fixture's emitted sql/args/chplan text against its stored golden (every head's TestLower checks those sections before the chDB round trip is reached), so it fires on any change to the emitted SQL — a semantics-preserving refactor as readily as a wrong answer — and its kill says nothing about whether a semantic verifier would have caught the bug. An `execution` detector executes the mutated code and asserts on values. The rates below are kept apart by kind; the blended rate above is the union.
+
+| evidence kind | records                                                                                                                                                          | denominator | kill rate                    | escape rate                  |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ---------------------------- | ---------------------------- |
+| golden-text   | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`, `MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED`                                                                       | 2           | 100.0% (2/2)                 | 0.0% (0/2)                   |
+| execution     | `MUTANT-PROMQL-COUNTER-RESET-COMPENSATION`, `MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT`, `MUTANT-TRACEQL-DESCENDANT-AS-CHILD`, `MUTANT-TRACEQL-SCOPE-SWAP` | 4           | 100.0% (4/4)                 | 0.0% (0/4)                   |
+| mixed         | (none)                                                                                                                                                           | 0           | n/a (zero denominator) (0/0) | n/a (zero denominator) (0/0) |
+
 #### HEAD-LOGQL
 
-| id                                         | disposition | bucket      | source                                          | detector(s)                                                                           | target                      |
-| ------------------------------------------ | ----------- | ----------- | ----------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------------- |
-| MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741 | killed      | denominator | observed (2026-09-16T15:50:15Z, `e5c87585bef0`) | `logql-stream-regex-no-overmatch, promql-regex-unanchored-no-overmatch-supplementary` | `internal/chsql/builder.go` |
-| MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED | killed      | denominator | observed (2026-09-16T15:50:17Z, `e5c87585bef0`) | `logql-logfmt-then-numeric-filter-order`                                              | `internal/logql/lower.go`   |
+| id                                         | disposition | bucket      | source                                          | detector(s)                                                                                                       | target                      |
+| ------------------------------------------ | ----------- | ----------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741 | killed      | denominator | observed (2026-09-16T15:50:15Z, `e5c87585bef0`) | `logql-stream-regex-no-overmatch (golden-text), promql-regex-unanchored-no-overmatch-supplementary (golden-text)` | `internal/chsql/builder.go` |
+| MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED | killed      | denominator | observed (2026-09-16T15:50:17Z, `e5c87585bef0`) | `logql-logfmt-then-numeric-filter-order (golden-text)`                                                            | `internal/logql/lower.go`   |
 
 | status               | count |
 | -------------------- | ----- |
@@ -1756,11 +1766,11 @@ denominator (killed+survived): **2** — **SMALL SAMPLE**, treat the percentages
 
 #### HEAD-PROMQL
 
-| id                                              | disposition | bucket      | source                                          | detector(s)                                                                           | target                           |
-| ----------------------------------------------- | ----------- | ----------- | ----------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------- |
-| MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741      | killed      | denominator | observed (2026-09-16T15:50:15Z, `e5c87585bef0`) | `logql-stream-regex-no-overmatch, promql-regex-unanchored-no-overmatch-supplementary` | `internal/chsql/builder.go`      |
-| MUTANT-PROMQL-COUNTER-RESET-COMPENSATION        | killed      | denominator | observed (2026-09-16T15:50:26Z, `e5c87585bef0`) | `counter-reset-mid-window-compensation`                                               | `internal/chsql/builder.go`      |
-| MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT | killed      | denominator | observed (2026-09-16T15:50:29Z, `e5c87585bef0`) | `range-window-boundary-exact-sample`                                                  | `internal/chsql/range_window.go` |
+| id                                              | disposition | bucket      | source                                          | detector(s)                                                                                                       | target                           |
+| ----------------------------------------------- | ----------- | ----------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741      | killed      | denominator | observed (2026-09-16T15:50:15Z, `e5c87585bef0`) | `logql-stream-regex-no-overmatch (golden-text), promql-regex-unanchored-no-overmatch-supplementary (golden-text)` | `internal/chsql/builder.go`      |
+| MUTANT-PROMQL-COUNTER-RESET-COMPENSATION        | killed      | denominator | observed (2026-09-16T15:50:26Z, `e5c87585bef0`) | `counter-reset-mid-window-compensation (execution)`                                                               | `internal/chsql/builder.go`      |
+| MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT | killed      | denominator | observed (2026-09-16T15:50:29Z, `e5c87585bef0`) | `range-window-boundary-exact-sample (execution)`                                                                  | `internal/chsql/range_window.go` |
 
 | status               | count |
 | -------------------- | ----- |
@@ -1781,10 +1791,10 @@ denominator (killed+survived): **3** — **SMALL SAMPLE**, treat the percentages
 
 #### HEAD-TRACEQL
 
-| id                                 | disposition | bucket      | source                                          | detector(s)                                                          | target                      |
-| ---------------------------------- | ----------- | ----------- | ----------------------------------------------- | -------------------------------------------------------------------- | --------------------------- |
-| MUTANT-TRACEQL-DESCENDANT-AS-CHILD | killed      | denominator | observed (2026-09-16T15:50:39Z, `e5c87585bef0`) | `structural-branching-http, structural-branching-grpc`               | `internal/traceql/lower.go` |
-| MUTANT-TRACEQL-SCOPE-SWAP          | killed      | denominator | observed (2026-09-16T15:50:51Z, `e5c87585bef0`) | `scope-collision-conjunction-http, scope-collision-conjunction-grpc` | `internal/traceql/lower.go` |
+| id                                 | disposition | bucket      | source                                          | detector(s)                                                                                  | target                      |
+| ---------------------------------- | ----------- | ----------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------- |
+| MUTANT-TRACEQL-DESCENDANT-AS-CHILD | killed      | denominator | observed (2026-09-16T15:50:39Z, `e5c87585bef0`) | `structural-branching-http (execution), structural-branching-grpc (execution)`               | `internal/traceql/lower.go` |
+| MUTANT-TRACEQL-SCOPE-SWAP          | killed      | denominator | observed (2026-09-16T15:50:51Z, `e5c87585bef0`) | `scope-collision-conjunction-http (execution), scope-collision-conjunction-grpc (execution)` | `internal/traceql/lower.go` |
 
 | status               | count |
 | -------------------- | ----- |

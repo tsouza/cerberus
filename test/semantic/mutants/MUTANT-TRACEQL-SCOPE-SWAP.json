@@ -19,14 +19,16 @@
       "package": "./test/property",
       "test_run": "^TestTraceQL_PropertyShapeRoster$/^traceql\\.selector\\.scope-collision-conjunction$",
       "build_tags": ["chdb"],
-      "timeout_seconds": 60
+      "timeout_seconds": 60,
+      "evidence_kind": "execution"
     },
     {
       "id": "scope-collision-conjunction-grpc",
       "package": "./internal/api/tempo/grpc",
       "test_run": "^TestTraceQLScopeCollisionConjunction_GRPC$",
       "build_tags": ["chdb"],
-      "timeout_seconds": 60
+      "timeout_seconds": 60,
+      "evidence_kind": "execution"
     }
   ],
   "expected_detection": "killed",

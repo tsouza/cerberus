@@ -19,14 +19,16 @@
       "package": "./test/property",
       "test_run": "^TestTraceQLBranchingTreeStructuralRelations$",
       "build_tags": ["chdb"],
-      "timeout_seconds": 60
+      "timeout_seconds": 60,
+      "evidence_kind": "execution"
     },
     {
       "id": "structural-branching-grpc",
       "package": "./internal/api/tempo/grpc",
       "test_run": "^TestTraceQLBranchingTreeStructuralRelations_GRPC$",
       "build_tags": ["chdb"],
-      "timeout_seconds": 60
+      "timeout_seconds": 60,
+      "evidence_kind": "execution"
     }
   ],
   "expected_detection": "killed",

@@ -58,7 +58,7 @@
 // by ID). buildMutationCohortReport() is a pure function of its inputs,
 // exactly like lib/semantic-report.mjs's own buildReport().
 
-import { CLASSIFICATIONS, sha256Hex } from "./semantic-mutation.mjs";
+import { CLASSIFICATIONS, DETECTOR_EVIDENCE_KINDS, sha256Hex } from "./semantic-mutation.mjs";
 import { CANONICAL_HEAD_IDS } from "./semantic-model.mjs";
 
 export const MUTATION_COHORT_SCHEMA_VERSION = 1;
@@ -191,6 +191,24 @@ function emptyBucketCounts() {
   return Object.fromEntries(CLASSIFICATIONS.map((c) => [c, 0]));
 }
 
+// A record whose detectors do not all share one evidence kind: its single
+// disposition cannot be attributed to either kind, so it is reported
+// under its own bucket rather than counted under both or under neither.
+export const MIXED_EVIDENCE_KIND = "mixed";
+export const RECORD_EVIDENCE_KINDS = Object.freeze([...DETECTOR_EVIDENCE_KINDS, MIXED_EVIDENCE_KIND]);
+
+/**
+ * The evidence kind of one record: the kind every detector shares, or
+ * "mixed". A record's disposition is one verdict over all its detectors
+ * (aggregateClassifications), so a kill on a record with one golden-text
+ * and one execution detector cannot be credited to execution evidence
+ * alone.
+ */
+export function recordEvidenceKind(detectors) {
+  const kinds = new Set(detectors.map((d) => d.evidence_kind));
+  return kinds.size === 1 ? [...kinds][0] : MIXED_EVIDENCE_KIND;
+}
+
 /**
  * Aggregates a list of resolved dispositions ({status, ...}) into the rate
  * report shape: raw per-status counts (every CLASSIFICATIONS value, always
@@ -261,8 +279,10 @@ export function buildMutationCohortReport(mutantRecords, { contracts = new Map()
         test_run: d.test_run,
         build_tags: [...d.build_tags],
         timeout_seconds: d.timeout_seconds,
+        evidence_kind: d.evidence_kind,
         requires_chdb: record.isolation.requires_chdb,
       })),
+      evidence_kind: recordEvidenceKind(record.detectors),
       isolation: { ...record.isolation },
       declared_status: record.expected_detection,
       disposition,
@@ -282,6 +302,20 @@ export function buildMutationCohortReport(mutantRecords, { contracts = new Map()
     byHead[headId] = {
       record_ids: inHead.map((r) => r.id),
       rates: dispositionRates(inHead.map((r) => r.disposition)),
+    };
+  }
+
+  // The semantic cohort's rate, split by what kind of evidence produced
+  // each record's verdict (this module's header: a golden-text kill says
+  // the emitted SQL changed, an execution kill says the answer did). Every
+  // kind is always present, at zero if empty, so a cohort with no
+  // execution-backed detector reads as "0 of 0", never as an omitted row.
+  const byEvidenceKind = {};
+  for (const kind of RECORD_EVIDENCE_KINDS) {
+    const ofKind = semanticRecords.filter((r) => r.evidence_kind === kind);
+    byEvidenceKind[kind] = {
+      record_ids: ofKind.map((r) => r.id),
+      rates: dispositionRates(ofKind.map((r) => r.disposition)),
     };
   }
 
@@ -332,6 +366,7 @@ export function buildMutationCohortReport(mutantRecords, { contracts = new Map()
         "escape_rate/kill_rate below is computed over.",
       record_ids: semanticRecords.map((r) => r.id),
       rates: dispositionRates(semanticRecords.map((r) => r.disposition)),
+      by_evidence_kind: byEvidenceKind,
     },
     by_head: byHead,
     by_contract: byContract,
@@ -386,8 +421,33 @@ function renderRatesTable(rates) {
   return lines.join("\n");
 }
 
+const MUTATION_EVIDENCE_KIND_DISCLAIMER =
+  "A `golden-text` detector kills by comparing a TXTAR fixture's emitted " +
+  "sql/args/chplan text against its stored golden (every head's TestLower " +
+  "checks those sections before the chDB round trip is reached), so it " +
+  "fires on any change to the emitted SQL — a semantics-preserving refactor " +
+  "as readily as a wrong answer — and its kill says nothing about whether a " +
+  "semantic verifier would have caught the bug. An `execution` detector " +
+  "executes the mutated code and asserts on values. The rates below are " +
+  "kept apart by kind; the blended rate above is the union.";
+
+function renderEvidenceKindTable(byEvidenceKind) {
+  const lines = [];
+  lines.push("| evidence kind | records | denominator | kill rate | escape rate |");
+  lines.push("| --- | --- | --- | --- | --- |");
+  for (const kind of RECORD_EVIDENCE_KINDS) {
+    const entry = byEvidenceKind[kind];
+    lines.push(
+      `| ${kind} | ${entry.record_ids.map((id) => `\`${id}\``).join(", ") || "(none)"} | ${entry.rates.denominator} | ` +
+        `${pct(entry.rates.kill_rate)} (${entry.rates.killed}/${entry.rates.denominator}) | ` +
+        `${pct(entry.rates.escape_rate)} (${entry.rates.survived}/${entry.rates.denominator}) |`,
+    );
+  }
+  return lines.join("\n");
+}
+
 function renderMutantRow(record) {
-  const detectorIds = record.detectors.map((d) => d.id).join(", ");
+  const detectorIds = record.detectors.map((d) => `${d.id} (${d.evidence_kind})`).join(", ");
   const observed =
     record.disposition.source === "observed"
       ? `observed (${record.disposition.observed_at ?? "?"}${record.disposition.source_sha ? `, \`${record.disposition.source_sha.slice(0, 12)}\`` : ""})`
@@ -433,6 +493,10 @@ export function renderMutationCohortMarkdown(report) {
   parts.push("### Semantic cohort (real per-head domain mutations)\n");
   parts.push(`${report.semantic_cohort.description}\n`);
   parts.push(renderRatesTable(report.semantic_cohort.rates));
+  parts.push("");
+  parts.push("#### By detector evidence kind\n");
+  parts.push(`${MUTATION_EVIDENCE_KIND_DISCLAIMER}\n`);
+  parts.push(renderEvidenceKindTable(report.semantic_cohort.by_evidence_kind));
   parts.push("");
 
   for (const headId of CANONICAL_HEADS) {

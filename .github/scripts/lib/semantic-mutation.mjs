@@ -21,7 +21,9 @@
 // touches that computation.
 //
 // THE SEVEN OUTCOMES (CLASSIFICATIONS below) are a closed, ordered set and
-// are never collapsed into one another:
+// are never collapsed into one another (a multi-detector record reports
+// the harness outcome of any detector whose harness never adjudicated
+// ahead of its siblings' verdicts — see aggregateClassifications):
 //
 //   killed               a detector's own go test run failed with a
 //                         well-formed FAIL — the suite caught the mutation.
@@ -179,7 +181,31 @@ const DETECTOR_KEYS = new Set([
   "test_run",
   "build_tags",
   "timeout_seconds",
+  "evidence_kind",
 ]);
+
+// What a detector's kill actually says about the mutation:
+//   golden-text   the detector compares emitted text (a TXTAR fixture's
+//                 sql/args/chplan sections) against a stored golden, so it
+//                 fires on ANY change to the emitted SQL — a
+//                 semantics-preserving refactor as readily as a wrong
+//                 answer. A kill here proves the text moved, not that a
+//                 semantic verifier would have caught the bug.
+//   execution     the detector executes the mutated code (a property
+//                 test, a chDB round trip, a behavioural unit test) and
+//                 asserts on values; a kill here is a wrong answer.
+// The cohort report keeps the two kill rates apart (lib/semantic-mutation-
+// report.mjs), which is only possible if every detector says which it is.
+export const DETECTOR_EVIDENCE_KINDS = Object.freeze(["golden-text", "execution"]);
+const DETECTOR_EVIDENCE_KIND_SET = new Set(DETECTOR_EVIDENCE_KINDS);
+
+// Every head's TestLower (internal/<head>/lower_test.go) calls spec.Match
+// over the golden sections BEFORE spec.RunRoundTripSQL, and spec.Match
+// fails the subtest on a text mismatch — so a detector selecting a
+// TestLower fixture can only ever kill on the golden text; the round trip
+// is never reached for a mutant that changed the SQL. Declaring such a
+// detector "execution" would be false, and is rejected.
+const GOLDEN_TEXT_ONLY_TEST_RUN_RE = /^\^TestLower\$/;
 
 const EQUIVALENCE_REVIEW_KEYS = new Set([
   "reviewer",
@@ -226,6 +252,19 @@ function validateDetector(raw, at, problems, seenIds) {
   stringValue(raw.test_run, `${at}.test_run`, problems);
   stringArray(raw.build_tags, `${at}.build_tags`, problems, { allowEmpty: true });
   positiveIntegerValue(raw.timeout_seconds, `${at}.timeout_seconds`, problems);
+  if (
+    enumValue(raw.evidence_kind, DETECTOR_EVIDENCE_KIND_SET, `${at}.evidence_kind`, problems) &&
+    raw.evidence_kind !== "golden-text" &&
+    typeof raw.test_run === "string" &&
+    GOLDEN_TEXT_ONLY_TEST_RUN_RE.test(raw.test_run)
+  ) {
+    fail(
+      problems,
+      "schema",
+      `${at}.evidence_kind must be "golden-text" for a TestLower fixture detector (${raw.test_run}): ` +
+        "spec.Match compares the golden sections before the chDB round trip is reached, so its kill is a text mismatch",
+    );
+  }
 }
 
 function validateIsolation(raw, at, problems) {
@@ -686,16 +725,32 @@ export function classifyGoTestOutput({ exitCode, signal, stdout, timedOut }) {
   return /^--- FAIL: /m.test(text) ? "killed" : "infrastructure-error";
 }
 
+// The three outcomes in which a detector's harness never adjudicated the
+// mutation at all. A record carrying one of these on ANY detector is an
+// incomplete measurement, whatever its other detectors said.
+const HARNESS_OUTCOMES = Object.freeze(["build-failed", "timeout", "infrastructure-error"]);
+
 // aggregateClassifications folds one mutant's per-detector verdicts into one
-// overall verdict. `killed` from ANY detector wins outright — one detector
-// catching the mutation is enough to call it caught. Otherwise the first
-// non-terminal verdict found, in CLASSIFICATIONS order, wins; an all-equal
-// set collapses to that one value trivially under the same rule.
+// overall verdict, in this precedence:
+//   1. a harness outcome (build-failed / timeout / infrastructure-error,
+//      in CLASSIFICATIONS order) on ANY detector wins — an unadjudicated
+//      detector is a broken measurement, and folding it under a sibling's
+//      `survived` (which a non-null equivalence_review then promotes to
+//      equivalent-reviewed, exit 0) or `killed` would hide a detector that
+//      never compiled or never finished behind a green run;
+//   2. `killed` from any detector — one detector catching the mutation is
+//      enough to call it caught, once every detector actually ran;
+//   3. the first remaining verdict in CLASSIFICATIONS order.
+// An all-equal set collapses to that one value trivially under the same
+// rule.
 export function aggregateClassifications(verdicts) {
   if (verdicts.length === 0) throw new Error("aggregateClassifications: no verdicts");
+  for (const c of HARNESS_OUTCOMES) {
+    if (verdicts.includes(c)) return c;
+  }
   if (verdicts.includes("killed")) return "killed";
   for (const c of CLASSIFICATIONS) {
-    if (c !== "killed" && verdicts.includes(c)) return c;
+    if (verdicts.includes(c)) return c;
   }
   throw new Error(`aggregateClassifications: unrecognised verdict(s) ${JSON.stringify(verdicts)}`);
 }

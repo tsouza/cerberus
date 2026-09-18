@@ -15434,6 +15434,7 @@
             "test_run": "^TestLower$/^stream_regex_no_overmatch$",
             "build_tags": [],
             "timeout_seconds": 30,
+            "evidence_kind": "golden-text",
             "requires_chdb": false
           },
           {
@@ -15442,9 +15443,11 @@
             "test_run": "^TestLower$/^regex_unanchored_no_overmatch$",
             "build_tags": [],
             "timeout_seconds": 30,
+            "evidence_kind": "golden-text",
             "requires_chdb": false
           }
         ],
+        "evidence_kind": "golden-text",
         "isolation": {
           "requires_chdb": false,
           "memory_max": "1GiB",
@@ -15499,9 +15502,11 @@
             "test_run": "^TestLower$/^filter_numeric$",
             "build_tags": [],
             "timeout_seconds": 30,
+            "evidence_kind": "golden-text",
             "requires_chdb": false
           }
         ],
+        "evidence_kind": "golden-text",
         "isolation": {
           "requires_chdb": false,
           "memory_max": "1GiB",
@@ -15553,9 +15558,11 @@
               "chdb"
             ],
             "timeout_seconds": 90,
+            "evidence_kind": "execution",
             "requires_chdb": true
           }
         ],
+        "evidence_kind": "execution",
         "isolation": {
           "requires_chdb": true,
           "memory_max": "2GiB",
@@ -15607,9 +15614,11 @@
               "chdb"
             ],
             "timeout_seconds": 90,
+            "evidence_kind": "execution",
             "requires_chdb": true
           }
         ],
+        "evidence_kind": "execution",
         "isolation": {
           "requires_chdb": true,
           "memory_max": "2GiB",
@@ -15655,9 +15664,11 @@
             "test_run": "^TestClampUpperCatchesInversion$",
             "build_tags": [],
             "timeout_seconds": 15,
+            "evidence_kind": "execution",
             "requires_chdb": false
           }
         ],
+        "evidence_kind": "execution",
         "isolation": {
           "requires_chdb": false,
           "memory_max": "1GiB",
@@ -15697,9 +15708,11 @@
             "test_run": "^TestCommutativeSumMatchesOperandOrder$",
             "build_tags": [],
             "timeout_seconds": 15,
+            "evidence_kind": "execution",
             "requires_chdb": false
           }
         ],
+        "evidence_kind": "execution",
         "isolation": {
           "requires_chdb": false,
           "memory_max": "1GiB",
@@ -15744,9 +15757,11 @@
             "test_run": "^TestExitAbruptlyReturnsInput$",
             "build_tags": [],
             "timeout_seconds": 15,
+            "evidence_kind": "execution",
             "requires_chdb": false
           }
         ],
+        "evidence_kind": "execution",
         "isolation": {
           "requires_chdb": false,
           "memory_max": "1GiB",
@@ -15786,9 +15801,11 @@
             "test_run": "^TestClampUpperCatchesInversion$",
             "build_tags": [],
             "timeout_seconds": 15,
+            "evidence_kind": "execution",
             "requires_chdb": false
           }
         ],
+        "evidence_kind": "execution",
         "isolation": {
           "requires_chdb": false,
           "memory_max": "1GiB",
@@ -15828,9 +15845,11 @@
             "test_run": "^TestClampUpperCatchesInversion$",
             "build_tags": [],
             "timeout_seconds": 15,
+            "evidence_kind": "execution",
             "requires_chdb": false
           }
         ],
+        "evidence_kind": "execution",
         "isolation": {
           "requires_chdb": false,
           "memory_max": "1GiB",
@@ -15870,9 +15889,11 @@
             "test_run": "^TestPreallocCapacityAtLeastN$",
             "build_tags": [],
             "timeout_seconds": 15,
+            "evidence_kind": "execution",
             "requires_chdb": false
           }
         ],
+        "evidence_kind": "execution",
         "isolation": {
           "requires_chdb": false,
           "memory_max": "1GiB",
@@ -15912,9 +15933,11 @@
             "test_run": "^TestSpinUntilTerminates$",
             "build_tags": [],
             "timeout_seconds": 3,
+            "evidence_kind": "execution",
             "requires_chdb": false
           }
         ],
+        "evidence_kind": "execution",
         "isolation": {
           "requires_chdb": false,
           "memory_max": "256MiB",
@@ -15960,6 +15983,7 @@
               "chdb"
             ],
             "timeout_seconds": 60,
+            "evidence_kind": "execution",
             "requires_chdb": true
           },
           {
@@ -15970,9 +15994,11 @@
               "chdb"
             ],
             "timeout_seconds": 60,
+            "evidence_kind": "execution",
             "requires_chdb": true
           }
         ],
+        "evidence_kind": "execution",
         "isolation": {
           "requires_chdb": true,
           "memory_max": "2GiB",
@@ -16029,6 +16055,7 @@
               "chdb"
             ],
             "timeout_seconds": 60,
+            "evidence_kind": "execution",
             "requires_chdb": true
           },
           {
@@ -16039,9 +16066,11 @@
               "chdb"
             ],
             "timeout_seconds": 60,
+            "evidence_kind": "execution",
             "requires_chdb": true
           }
         ],
+        "evidence_kind": "execution",
         "isolation": {
           "requires_chdb": true,
           "memory_max": "2GiB",
@@ -16142,6 +16171,97 @@
         "escape_rate": 0,
         "kill_rate": 1,
         "small_sample": true
+      },
+      "by_evidence_kind": {
+        "golden-text": {
+          "record_ids": [
+            "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+            "MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED"
+          ],
+          "rates": {
+            "total": 2,
+            "by_status": {
+              "killed": 2,
+              "survived": 0,
+              "equivalent-reviewed": 0,
+              "invalid-transform": 0,
+              "build-failed": 0,
+              "timeout": 0,
+              "infrastructure-error": 0
+            },
+            "by_bucket": {
+              "denominator": 2,
+              "equivalent": 0,
+              "incomplete": 0,
+              "invalid": 0
+            },
+            "denominator": 2,
+            "killed": 2,
+            "survived": 0,
+            "escape_rate": 0,
+            "kill_rate": 1,
+            "small_sample": true
+          }
+        },
+        "execution": {
+          "record_ids": [
+            "MUTANT-PROMQL-COUNTER-RESET-COMPENSATION",
+            "MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT",
+            "MUTANT-TRACEQL-DESCENDANT-AS-CHILD",
+            "MUTANT-TRACEQL-SCOPE-SWAP"
+          ],
+          "rates": {
+            "total": 4,
+            "by_status": {
+              "killed": 4,
+              "survived": 0,
+              "equivalent-reviewed": 0,
+              "invalid-transform": 0,
+              "build-failed": 0,
+              "timeout": 0,
+              "infrastructure-error": 0
+            },
+            "by_bucket": {
+              "denominator": 4,
+              "equivalent": 0,
+              "incomplete": 0,
+              "invalid": 0
+            },
+            "denominator": 4,
+            "killed": 4,
+            "survived": 0,
+            "escape_rate": 0,
+            "kill_rate": 1,
+            "small_sample": true
+          }
+        },
+        "mixed": {
+          "record_ids": [],
+          "rates": {
+            "total": 0,
+            "by_status": {
+              "killed": 0,
+              "survived": 0,
+              "equivalent-reviewed": 0,
+              "invalid-transform": 0,
+              "build-failed": 0,
+              "timeout": 0,
+              "infrastructure-error": 0
+            },
+            "by_bucket": {
+              "denominator": 0,
+              "equivalent": 0,
+              "incomplete": 0,
+              "invalid": 0
+            },
+            "denominator": 0,
+            "killed": 0,
+            "survived": 0,
+            "escape_rate": null,
+            "kill_rate": null,
+            "small_sample": false
+          }
+        }
       }
     },
     "by_head": {

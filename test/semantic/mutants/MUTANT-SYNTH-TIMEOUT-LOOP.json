@@ -19,7 +19,8 @@
       "package": "./test/semantic/mutants/testdata/fixtures",
       "test_run": "^TestSpinUntilTerminates$",
       "build_tags": [],
-      "timeout_seconds": 3
+      "timeout_seconds": 3,
+      "evidence_kind": "execution"
     }
   ],
   "expected_detection": "timeout",
