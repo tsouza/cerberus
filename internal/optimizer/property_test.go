@@ -20,19 +20,22 @@
 //     ProjectionPushdown) and the FilterAggregateTranspose rule all
 //     have shots at firing without needing aggregates or windows.
 //
-// Wider node coverage (Aggregate, RangeWindow, joins) is future work —
-// the property test catches the high-traffic shapes today, and the
-// existing TXTAR fixtures already exercise the wide shapes in
-// text-equality mode.
+// The stage nodes (Aggregate, the RangeWindow family, set-op chains) are
+// generated in property_stage_gen_test.go, the two joins in
+// property_join_gen_test.go and TopK in property_topk_gen_test.go, each
+// over a seed built for the shape; property_coverage_test.go is the
+// ledger that fails when a kind the optimizer can act on stops being
+// round-tripped.
 //
 // chDB quirks the comparison code papers over:
 //
 //   - Float64 precision: every value in the seed is exact in IEEE-754
 //     (no irrational-arithmetic surprises). Comparison is on raw
 //     float64 bits.
-//   - Map columns: the test never projects Attributes directly; the
-//     row-set comparison normalises everything through JSON so the
-//     toJSONString shim's output round-trips to the same Go value.
+//   - Map columns: runPlan routes the emitted SQL through the same
+//     testsql rewrite pipeline test/spec's runner uses, so every Map
+//     column that reaches the outermost SELECT is wrapped in
+//     toJSONString and decoded back into a Go map before comparison.
 //   - ORDER BY determinism: the comparison sorts both row sets before
 //     reflect.DeepEqual so the optimizer is free to reorder reads
 //     (today no rule does, but a future TopK pushdown might).
@@ -107,6 +110,45 @@ INSERT INTO otel_metrics_histogram VALUES
     ('latency_bucket', map('job', 'api',     'host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 6,  12.0, [1, 2, 3], [1.0, 2.0, 3.0]),
     ('latency_bucket', map('job', 'api',     'host', 'b'), toDateTime64('2026-01-01 00:00:01', 9), 10, 30.0, [4, 3, 3], [1.0, 2.0, 3.0]),
     ('size_bucket',    map('job', 'sensors', 'host', 'a'), toDateTime64('2026-01-01 00:00:02', 9), 4,  8.0,  [2, 1, 1], [0.5, 1.5, 2.5]);
+CREATE OR REPLACE TABLE otel_metrics_gauge_join (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);
+INSERT INTO otel_metrics_gauge_join VALUES
+    ('requests', map('job', 'api', 'host', 'a'),    toDateTime64('2026-01-01 00:01:00', 9), 1.0),
+    ('requests', map('job', 'api', 'host', 'b'),    toDateTime64('2026-01-01 00:01:01', 9), 2.0),
+    ('requests', map('job', 'web', 'host', 'a'),    toDateTime64('2026-01-01 00:01:02', 9), 3.0),
+    ('requests', map('job', 'web', 'host', 'c'),    toDateTime64('2026-01-01 00:01:03', 9), 4.0),
+    ('errors',   map('job', 'api', 'host', 'a'),    toDateTime64('2026-01-01 00:01:04', 9), 5.0),
+    ('errors',   map('job', 'api', 'host', 'b'),    toDateTime64('2026-01-01 00:01:05', 9), 6.0),
+    ('errors',   map('job', 'web', 'host', 'a'),    toDateTime64('2026-01-01 00:01:06', 9), 7.0),
+    ('errors',   map('job', 'web', 'host', 'c'),    toDateTime64('2026-01-01 00:01:07', 9), 8.0),
+    ('capacity', map('job', 'api', 'tier', 'gold'), toDateTime64('2026-01-01 00:01:08', 9), 9.0),
+    ('capacity', map('job', 'web', 'tier', 'silver'), toDateTime64('2026-01-01 00:01:09', 9), 10.0),
+    ('quota',    map('job', 'api', 'tier', 'gold'), toDateTime64('2026-01-01 00:01:10', 9), 11.0),
+    ('quota',    map('job', 'web', 'tier', 'silver'), toDateTime64('2026-01-01 00:01:11', 9), 12.0);
+CREATE OR REPLACE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String,
+    SpanKind String,
+    Duration UInt64,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String)
+) ENGINE = MergeTree() ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces VALUES
+    ('t1', 's1', '',        'GET /',     'Server', 100, toDateTime64('2026-01-01 00:00:00', 9), map('service.name', 'frontend')),
+    ('t1', 's2', 's1',      'GET /api',  'Server', 80,  toDateTime64('2026-01-01 00:00:01', 9), map('service.name', 'api')),
+    ('t1', 's3', 's2',      'SELECT',    'Client', 30,  toDateTime64('2026-01-01 00:00:02', 9), map('service.name', 'db')),
+    ('t1', 's4', 's2',      'GET',       'Client', 20,  toDateTime64('2026-01-01 00:00:03', 9), map('service.name', 'cache')),
+    ('t2', 'r1', '',        'POST /api', 'Server', 50,  toDateTime64('2026-01-02 00:00:00', 9), map('service.name', 'api')),
+    ('t2', 'r2', 'r1',      'INSERT',    'Client', 40,  toDateTime64('2026-01-02 00:00:01', 9), map('service.name', 'db')),
+    ('t3', 'o1', '',        'GET /',     'Server', 60,  toDateTime64('2026-01-03 00:00:00', 9), map('service.name', 'frontend')),
+    ('t3', 'o2', 'missing', 'GET /api',  'Server', 45,  toDateTime64('2026-01-03 00:00:01', 9), map('service.name', 'api')),
+    ('t3', 'o3', 'o2',      'SELECT',    'Client', 15,  toDateTime64('2026-01-03 00:00:02', 9), map('service.name', 'db'));
 `
 
 // propertyHistogramTable is the classic-histogram seed the
@@ -114,6 +156,36 @@ INSERT INTO otel_metrics_histogram VALUES
 // BucketCounts / ExplicitBounds arrays, so that shape cannot be
 // generated over it.
 const propertyHistogramTable = "otel_metrics_histogram"
+
+// propertyJoinTable is the seed built for VectorJoin, and the one TopK
+// ranks over. Its series come in two shapes so every matching the join
+// generator draws is well-defined by construction rather than by accident:
+//
+//   - `requests` and `errors` carry the SAME four (job, host) series, so
+//     a full-Attributes match pairs them one-to-one, and `job` repeats
+//     across hosts so they are the "many" side of a group_left/right.
+//   - `capacity` and `quota` carry ONE series per job (with a `tier`
+//     label to carry through group_left(tier)), so they are the "one"
+//     side under on(job) / ignoring(host, tier) and pair one-to-one with
+//     each other under every matching the generator draws.
+//
+// Every Value is a distinct small integer: distinct so a TopK ranking
+// over any partition the generator can draw has no tie for ClickHouse to
+// break arbitrarily (the optimized plan is a different query, and a tie
+// broken the other way would flake rather than report), small integers
+// so every binary-op result is exact in IEEE-754. Every TimeUnix is
+// distinct too, so the join's per-side argMax has no tie either.
+const propertyJoinTable = "otel_metrics_gauge_join"
+
+// propertySpansTable is the spans seed StructuralJoin reads. Three traces
+// give every structural relation something to match and something to
+// refuse: t1 is a rooted four-span tree (frontend → api → {db, cache}, so
+// the leaves are siblings), t2 a rooted two-span chain, and t3 a root
+// beside an ORPHAN chain (o2's parent is missing, so o2 and o3 are
+// unrooted) — the rows the rootedness gate on the left side must never
+// let through. Timestamps fall on three different days so a request
+// window can exclude a whole trace.
+const propertySpansTable = "otel_traces"
 
 // propertySessionSettings are executed once against the session before
 // any plan runs.
@@ -205,6 +277,9 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 			// not what the property checks.
 			dropped++
 			lastDropErr = errPre
+			if testing.Verbose() {
+				t.Logf("dropped plan (pre-optimizer run failed): %v\n%s", errPre, dumpPlan(plan))
+			}
 			if dropped > dropBudget {
 				t.Fatalf("drop budget exhausted: %d generated plans failed their PRE-optimizer "+
 					"run after verifying only %d of %d (budget %d = %d x maxDroppedPlansPerVerified). "+
@@ -271,12 +346,16 @@ const maxDroppedPlansPerVerified = 2
 //
 // and the stage arm covers ProjectionPushdown's own shapes (3)–(9),
 // each generated directly over Scan or Filter(Scan) because that is the
-// adjacency applyStageScan matches. See generateStagePlan.
+// adjacency applyStageScan matches. See generateStagePlan. The last arm
+// draws one of the shapes that read a seed of their own — VectorJoin,
+// StructuralJoin and TopK — with the same weight as the whole stage
+// family, so that each of the three is drawn often enough per run for
+// the coverage ledger to pin it rather than depend on the seed's luck.
 func generatePlan(rng *rand.Rand, depth int) chplan.Node {
 	if depth >= 3 {
 		return makeScan()
 	}
-	switch rng.Intn(6) {
+	switch rng.Intn(7) {
 	case 0:
 		return makeScan()
 	case 1:
@@ -305,8 +384,23 @@ func generatePlan(rng *rand.Rand, depth int) chplan.Node {
 		}
 	case 4, 5:
 		return generateStagePlan(rng)
+	case 6:
+		return generateSeededShape(rng)
 	}
 	return makeScan()
+}
+
+// generateSeededShape draws one of the shapes that cannot be generated
+// over the leaf grammar's gauge seed and read a seed of their own.
+func generateSeededShape(rng *rand.Rand) chplan.Node {
+	switch rng.Intn(3) {
+	case 0:
+		return generateVectorJoin(rng)
+	case 1:
+		return generateStructuralJoin(rng, 0)
+	default:
+		return generateTopK(rng)
+	}
 }
 
 func makeScan() chplan.Node {
@@ -404,17 +498,32 @@ func generateLeafPredicate(rng *rand.Rand) chplan.Expr {
 	}
 }
 
+// propertySeedColumns is the seed's table → column catalog, the fallback
+// the star expansion below resolves a bare `SELECT * FROM <table>`
+// against.
+var propertySeedColumns = testsql.SeedTableColumns(propertyDDL)
+
 // runPlan emits the plan, applies the Map-column rewrite, and returns
 // the result row set as a [][]any. Map columns surface as
 // map[string]any (decoded from toJSONString output); time columns
 // surface as RFC3339Nano strings. Numeric cells stay as int64/float64
 // per chdb-go's parquet driver.
+//
+// The rewrite is the same four-pass pipeline test/spec's runner applies
+// (testsql), not a local copy: chdb-go cannot decode a Map cell, and
+// hands back NULL for it AND for every column after it, so a Map that
+// reaches the outermost SELECT raw silently blanks the rest of the row
+// on both sides of the comparison. The star expansion is what makes the
+// leaf grammar's `SELECT *` shapes compare their whole row.
 func runPlan(ctx context.Context, db *sql.DB, plan chplan.Node) ([][]any, error) {
 	sqlStr, args, err := chsql.Emit(ctx, plan)
 	if err != nil {
 		return nil, fmt.Errorf("emit: %w", err)
 	}
-	rewritten := rewriteMapProjectionsLocal(sqlStr)
+	rewritten := testsql.ExpandStarProjection(sqlStr, propertySeedColumns)
+	rewritten = testsql.RewriteMapProjections(rewritten)
+	rewritten = testsql.NestMapOrderBy(rewritten)
+	rewritten = testsql.NestMapWhere(rewritten)
 
 	rows, err := db.QueryContext(ctx, rewritten, args...)
 	if err != nil {
@@ -509,118 +618,6 @@ func openPropertyChDB(t *testing.T) *sql.DB {
 		t.Fatalf("ping chdb: %v", err)
 	}
 	return db
-}
-
-// rewriteMapProjectionsLocal wraps every top-level SELECT projection
-// whose alias is "Attributes" in toJSONString(...). The transform is
-// keyed off the alias only because the generator never picks the
-// Attributes column for an explicit Project — the only path it can
-// reach the outer SELECT is via the implicit `SELECT *` Scan, where
-// the column carries its base name as its alias.
-func rewriteMapProjectionsLocal(query string) string {
-	const sel = "SELECT "
-	upper := strings.ToUpper(query)
-	if !strings.HasPrefix(upper, sel) {
-		return query
-	}
-	// Find the first depth-0 " FROM " — that bounds the projection list.
-	rest := query[len(sel):]
-	depth := 0
-	fromAt := -1
-	for i := 0; i < len(rest); i++ {
-		switch rest[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		}
-		if depth == 0 && i+6 <= len(rest) && strings.EqualFold(rest[i:i+6], " FROM ") {
-			fromAt = i
-			break
-		}
-	}
-	if fromAt < 0 {
-		return query
-	}
-	head := rest[:fromAt]
-	tail := rest[fromAt:]
-	projs := splitTopLevelCommas(head)
-	for i, p := range projs {
-		expr, alias := splitOuterAlias(p)
-		bare := alias
-		if bare == "" {
-			bare = strings.Trim(strings.TrimSpace(expr), "`")
-		}
-		if bare != "Attributes" {
-			continue
-		}
-		projs[i] = "toJSONString(" + expr + ") AS `Attributes`"
-	}
-	return sel + strings.Join(projs, ", ") + tail
-}
-
-func splitTopLevelCommas(s string) []string {
-	var (
-		out   []string
-		buf   strings.Builder
-		depth int
-		inStr byte
-	)
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case inStr != 0:
-			if c == inStr {
-				inStr = 0
-			}
-			buf.WriteByte(c)
-		case c == '\'' || c == '`':
-			inStr = c
-			buf.WriteByte(c)
-		case c == '(':
-			depth++
-			buf.WriteByte(c)
-		case c == ')':
-			depth--
-			buf.WriteByte(c)
-		case c == ',' && depth == 0:
-			out = append(out, strings.TrimSpace(buf.String()))
-			buf.Reset()
-		default:
-			buf.WriteByte(c)
-		}
-	}
-	if buf.Len() > 0 {
-		out = append(out, strings.TrimSpace(buf.String()))
-	}
-	return out
-}
-
-func splitOuterAlias(s string) (expr, alias string) {
-	lower := strings.ToLower(s)
-	depth := 0
-	inStr := byte(0)
-	for i := 0; i+4 <= len(s); i++ {
-		c := s[i]
-		switch {
-		case inStr != 0:
-			if c == inStr {
-				inStr = 0
-			}
-		case c == '\'' || c == '`':
-			inStr = c
-		case c == '(':
-			depth++
-		case c == ')':
-			depth--
-		}
-		if depth == 0 && inStr == 0 && lower[i:i+4] == " as " {
-			a := strings.TrimSpace(s[i+4:])
-			a = strings.Trim(a, "`")
-			return strings.TrimSpace(s[:i]), a
-		}
-	}
-	return s, ""
 }
 
 // decodeCellLocal mirrors decodeCell in test/spec/runner_chdb.go.
