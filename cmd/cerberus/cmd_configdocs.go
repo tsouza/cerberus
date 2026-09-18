@@ -451,11 +451,13 @@ instead (` + "`internal/engine/resource_bound_env.go`" + `,
   because the units it counts are a proxy for bytes and the byte budget is
   itself configurable - the same reasoning
   ` + "`CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS`" + ` carries. Setting a
-  positive value pins it and opts out of the derivation. On a sharded
-  (route-B) dispatch each shard's copy of this ceiling, and of the three
-  fan-out row ceilings above and below, is divided by the shard's memory
-  share, ` + "`min(K, CERBERUS_SHARD_PARALLEL, gate/2) x CERBERUS_CH_DATA_SHARDS`" + `,
-  so a shard's guard matches the memory the shard actually runs under.
+  positive value pins it and opts out of the derivation. Every statement's
+  copy of this ceiling, and of the three fan-out row ceilings above and
+  below, is divided by the statement's memory divisor so the guard matches
+  the memory the statement actually runs under: ` + "`CERBERUS_CH_DATA_SHARDS`" + `
+  for an ordinary (route-A) query, and
+  ` + "`min(K, CERBERUS_SHARD_PARALLEL, gate/2) x CERBERUS_CH_DATA_SHARDS`" + ` for
+  each shard of a sharded (route-B) dispatch.
 - **` + "`CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS`" + `** (int64, default ` + "`2800000`" + `) -
   the windowed-array-extrapolated-matrix regroup GROUP BY row ceiling
   (` + "`internal/chsql/rate_window_fanout_bound.go`" + `, ` + "`maxRateWindowFanoutRows`" + `).

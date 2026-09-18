@@ -638,30 +638,33 @@ Verified against a real ClickHouse instance in
 
 ### Per-shard resource-bound ceilings
 
-Every emitter-planted resource-bound ceiling a shard's SQL carries is
-apportioned to the shard's memory share, never threaded verbatim
-(`routeBExecCtx`, `internal/engine/engine.go`). A whole-query ceiling is
-calibrated against the whole-query cap; a shard runs under
-`cap / (kEff x DataShardCount)`; so the shard's guard is that ceiling divided
-by the same factor, and a shard that passes its guard fits the memory it
-actually runs under. Route A keeps the whole-query ceiling. `kEff` is not
-known when the shard SQL is emitted (the `Executor` admits after it emits),
-so each guard divides by an upper bound on `kEff x DataShardCount` — never
-looser than the shard's real allowance:
+Every emitter-planted resource-bound ceiling a statement's SQL carries is
+apportioned to the statement's memory share, never threaded verbatim, and the
+rule is the same on both routes (`apportionFanoutBounds`,
+`internal/engine/engine.go`): a whole-query ceiling `R` is calibrated against
+the configured cap, a statement runs under `cap / divisor`, and its guard is
+`R / divisor`. Route A's divisor is `DataShardCount` (`D`) — its one
+statement runs under `cap / D`, the cap `EffectiveMaxQueryMemoryBytes`
+reports (`Engine.routeAResourceBounds`; at `D = 1` this is the whole-query
+ceiling). Route B's is `kEff x D` — the divisor `perShardMemoryBytes` applies
+(`routeBExecCtx`). A statement that passes its guard fits the memory it
+actually runs under. `kEff` is not known when the shard SQL is emitted (the
+`Executor` admits after it emits), so each shard guard divides by an upper
+bound on `kEff x D` — never looser than the shard's real allowance:
 
 - The four fan-out ceilings (`CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS`,
   `CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS`,
   `CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS`,
   `CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS`) divide by
-  `min(K, Parallel, gate/2) x DataShardCount` (`Executor.ShardMemoryDivisor`,
-  the tightest bound the emit seam can know). These are the guards whose
+  `min(K, Parallel, gate/2) x D` (`Executor.ShardMemoryDivisor`, the
+  tightest bound the emit seam can know). These are the guards whose
   rejection the route memo treats as evidence for an A->B escalation
   (`timeSliceableResourceBoundMessages`): a route-A rejection at
-  `rows in (R, K x R]` splits into shards of `rows/K`, and the shard guard
-  admits exactly the shards whose rows fit their share,
-  `rows <= K x R / divisor`. That rescue window is non-empty whenever
-  `K > divisor` (at the defaults, `Parallel=3` against `K=8`, it is
-  `(R, 2.67R]`); a shard outside it is refused pre-flight rather than
+  `rows in (R/D, K x R/D]` splits into shards of `rows/K`, and the shard
+  guard admits exactly the shards whose rows fit their share,
+  `rows <= K x R / (kEff x D)`. That rescue window is non-empty whenever
+  `K > kEff` (at the defaults, `Parallel=3` against `K=8`, it is
+  `(R/D, 2.67R/D]`); a shard outside it is refused pre-flight rather than
   admitted and aborted.
 - The two `RangeBucketGridNative` ceilings divide by `K`. Their rejection is
   not escalation evidence (a `groups`-dominated classic histogram is not

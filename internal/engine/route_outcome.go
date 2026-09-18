@@ -122,22 +122,25 @@ func classifyRouteOutcomeAfter(route routememo.Route, err error, elapsed time.Du
 // Every one of these counts a cost that scales with the request's own anchor
 // grid or with the raw rows its scan window admits, both of which a shard
 // divides: a shard of a K-way split carries about 1/K of the whole query's
-// fan-out rows. What makes the escalation able to SUCCEED is how the shard's
-// ceiling is apportioned. routeBExecCtx threads each of these four ceilings
-// to a shard divided by the shard's memory share — min(K, Parallel, gate/2)
-// x DataShardCount, the upper bound on the kEff x DataShardCount the shard's
-// max_memory_usage is actually cut by (apportionFanoutBounds,
-// solver.Executor.ShardMemoryDivisor) — never by K itself and never
-// verbatim. A route-A rejection at rows in (R, K x R] therefore splits into
-// shards of rows/K judged against R/divisor: the shard passes exactly when
-// its rows fit the memory it runs under, rows <= K x R/divisor, and a shard
+// fan-out rows. What makes the escalation able to SUCCEED is how each
+// ceiling is apportioned, and both routes follow one rule — a guard is the
+// whole-query ceiling R divided by the statement's memory divisor
+// (apportionFanoutBounds): D = DataShardCount on route A, whose statement
+// runs under cap/D (Engine.routeAResourceBounds), and min(K, Parallel,
+// gate/2) x D on route B, the upper bound on the kEff x D a shard's
+// max_memory_usage is actually cut by (routeBExecCtx,
+// solver.Executor.ShardMemoryDivisor) — never K itself and never verbatim.
+// A route-A rejection at rows in (R/D, K x R/D] therefore splits into shards
+// of rows/K judged against R/(kEff x D): the shard passes exactly when its
+// rows fit the memory it runs under, rows <= K x R/(kEff x D), and a shard
 // that passes its guard never dies on ClickHouse's code 241 for memory the
 // guard already knew about. That rescue window is non-empty whenever
-// K > divisor — the default Parallel=3 against K=8 keeps rows in (R, 2.67R]
-// — which is what makes a rejection here evidence worth a route-B dispatch.
-// The two ways of getting this wrong each empty the window: threading the
-// whole-query ceiling verbatim admits shards that then OOM, and dividing by K
-// judges rows/K against R/K, the inequality route A already failed.
+// K > kEff — the default Parallel=3 against K=8 keeps rows in
+// (R/D, 2.67R/D] — which is what makes a rejection here evidence worth a
+// route-B dispatch. The two ways of getting this wrong each empty the
+// window: threading the whole-query ceiling verbatim admits statements that
+// then OOM, and dividing by K judges rows/K against R/(K x D), the
+// inequality route A already failed.
 //
 // Deliberately EXCLUDED, and the exclusion is the load-bearing half.
 //

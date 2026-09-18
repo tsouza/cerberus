@@ -48,6 +48,15 @@ func fanoutGuardTestPlan() *chplan.RangeBucketFanout {
 
 var fanoutLimitLiteral = regexp.MustCompile(`LIMIT (\d+)`)
 
+// dataShardedQuerier is a Querier that exposes only the data-shard count —
+// the D statementMemoryDivisor reads for a route-A statement.
+type dataShardedQuerier struct{ shards int64 }
+
+func (dataShardedQuerier) Query(context.Context, string, ...any) ([]chclient.Sample, error) {
+	return nil, nil
+}
+func (q dataShardedQuerier) DataShardCount() int64 { return q.shards }
+
 // emittedFanoutCeiling emits fanoutGuardTestPlan under ctx and returns the
 // RangeBucketFanoutMaxRows ceiling the SQL carries. Every LIMIT literal in
 // the statement is the same guard (rendered once per read of the fan-out),
@@ -77,22 +86,26 @@ func emittedFanoutCeiling(t *testing.T, ctx context.Context) int64 {
 }
 
 // TestRouteB_FanoutGuardVerdictMatchesShardMemoryShare is the class test for
-// the un-apportioned route-B ceiling: for every (K, Parallel, D, rows) the
-// verdict a shard's fan-out guard reaches must equal "the shard's rows fit
-// in the shard's memory share", and route A's verdict must be unchanged.
+// an un-apportioned fan-out ceiling on either route: for every (K,
+// Parallel, D, rows) the verdict a statement's fan-out guard reaches must
+// equal "the statement's rows fit in the statement's memory share" — a
+// route-A statement runs under cap/D, a route-B shard under cap/(kEff x D)
+// — and at D=1 route A's verdict must be the whole-query one it always was.
 //
 // The model is the one the guards are calibrated on: a whole-query ceiling
-// R admits rows <= R under the whole cap, so a shard running under
-// cap/(kEff x D) — kEff = min(K, Parallel) here, no gate — fits its rows/K
-// exactly when rows/K <= R/(kEff x D). A shard guard that admits more than
-// that hands ClickHouse a query it will abort on code 241; one that admits
-// less empties the rescue window the A->B escalation exists for.
+// R admits rows <= R under the whole cap, so a statement under cap/divisor
+// fits its rows exactly when rows <= R/divisor — kEff = min(K, Parallel)
+// here, no gate. A guard that admits more than that hands ClickHouse a query
+// it will abort on code 241; one that admits less empties the rescue window
+// the A->B escalation exists for.
 //
 // The (Parallel=3, K=8) rows dominate the table because they are the
 // shipped defaults: a route-A rejection there splits into shards of rows/8
 // that a whole-query ceiling admits up to rows = 8R while the shard's
 // memory holds only rows <= 2.67R — every escalation in (2.67R, 8R] used to
-// pass the guard and die.
+// pass the guard and die. The D=2 rows are the same defect on the other
+// axis: route A's own statement runs under cap/2 there, and a whole-query
+// ceiling admitted rows in (R/2, R] that could not fit.
 func TestRouteB_FanoutGuardVerdictMatchesShardMemoryShare(t *testing.T) {
 	t.Parallel()
 
@@ -121,18 +134,21 @@ func TestRouteB_FanoutGuardVerdictMatchesShardMemoryShare(t *testing.T) {
 	for _, sh := range shapes {
 		e := &Engine{
 			RangeBucketFanoutMaxRows: wholeQueryCeiling,
+			Client:                   dataShardedQuerier{shards: int64(sh.dataShards)},
 			Solver: &solver.Solver{Executor: &solver.Executor{
 				Cfg: solver.Config{Parallel: sh.parallel, DataShardCount: sh.dataShards},
 			}},
 		}
 		decision := &solver.Decision{K: sh.k}
 		kEff := min(sh.k, sh.parallel)
+		statementShare := wholeQueryCeiling / int64(sh.dataShards)
 		shardShare := wholeQueryCeiling / int64(kEff*sh.dataShards)
 
-		routeACtx := applyResourceBoundOverrides(context.Background(), e.resourceBoundOverrides())
-		if got := emittedFanoutCeiling(t, routeACtx); got != wholeQueryCeiling {
-			t.Fatalf("K=%d P=%d D=%d: route A's ceiling = %d, want the whole-query ceiling %d unchanged",
-				sh.k, sh.parallel, sh.dataShards, got, wholeQueryCeiling)
+		routeACtx := applyResourceBoundOverrides(context.Background(), e.routeAResourceBounds())
+		routeACeiling := emittedFanoutCeiling(t, routeACtx)
+		if sh.dataShards == 1 && routeACeiling != wholeQueryCeiling {
+			t.Fatalf("K=%d P=%d D=1: route A's ceiling = %d, want the whole-query ceiling %d unchanged",
+				sh.k, sh.parallel, routeACeiling, wholeQueryCeiling)
 		}
 		shardCtx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, decision,
 			fanoutGuardTestPlan(), 0, SettingsRules{}, 0, false,
@@ -140,6 +156,10 @@ func TestRouteB_FanoutGuardVerdictMatchesShardMemoryShare(t *testing.T) {
 		shardCeiling := emittedFanoutCeiling(t, shardCtx)
 
 		for _, rows := range rowsSweep {
+			if routeAAdmits, fits := rows <= routeACeiling, rows <= statementShare; routeAAdmits != fits {
+				t.Errorf("D=%d rows=%.2fR: route A's guard admits=%v (ceiling %d) but the rows fit the statement's memory share %d = %v",
+					sh.dataShards, float64(rows)/float64(wholeQueryCeiling), routeAAdmits, routeACeiling, statementShare, fits)
+			}
 			shardRows := rows / int64(sh.k)
 			guardAdmits := shardRows <= shardCeiling
 			fits := shardRows <= shardShare

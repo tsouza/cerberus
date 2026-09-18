@@ -1503,6 +1503,20 @@ func (c *Client) MaxQuerySamples() int64 {
 	return c.maxSamples
 }
 
+// DataShardCount is the number of ClickHouse DATA shards every statement this
+// Client dispatches fans out across — Config.DataShardCount floored at 1, the
+// same D EffectiveMaxQueryMemoryBytes divides the cap by. The engine divides
+// its whole-query resource-bound ceilings by it for the same reason it sizes
+// its spill thresholds from the effective cap: a route-A statement runs under
+// cap/D, so a guard calibrated against the whole cap has to be scaled by the
+// same factor.
+func (c *Client) DataShardCount() int64 {
+	if c.dataShardCount < 1 {
+		return 1
+	}
+	return c.dataShardCount
+}
+
 // DataShardFanoutCap returns the resolved size of this Client's data-shard
 // fan-out admission gate (cerberus issues #3081, #3128) — NewDataShardFanoutGate's
 // resolved cap, regardless of whether the gate itself was allocated

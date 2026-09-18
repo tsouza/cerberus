@@ -252,8 +252,12 @@ func applyResourceBoundOverrides(ctx context.Context, bounds ResourceBoundOverri
 // ceilings — RangeBucketFanoutMaxRows, RangeLWRFanoutMaxRows,
 // RateWindowFanoutMaxRows and RangeBucketFanoutFoldCostMaxUnits — resolved
 // to its whole-query value (override or default, chsql's Resolve… family)
-// and divided by divisor, the factor a route-B shard's memory is smaller
-// than the whole query's (Engine.shardMemoryDivisor). MaxEmittedSQLBytes
+// and divided by divisor, the factor the statement's memory is smaller than
+// the configured cap: D for a route-A statement
+// (Engine.statementMemoryDivisor), kEff x D for a route-B shard
+// (Engine.shardMemoryDivisor). One seam for both routes, so the rule "guard
+// = whole-query ceiling / the statement's memory divisor" cannot be applied
+// on one route and not the other. MaxEmittedSQLBytes
 // and CHQueryMaxMemory pass through: a statement-size bound is not a
 // memory bound, and the cap is the input the fold-cost default was resolved
 // from, not a ceiling. Every result is > 0, so applyResourceBoundOverrides
@@ -272,11 +276,11 @@ func apportionFanoutBounds(bounds ResourceBoundOverrides, divisor int64) Resourc
 
 // resourceBoundOverrides packages e's own RangeBucketFanoutMaxRows /
 // RangeLWRFanoutMaxRows / RateWindowFanoutMaxRows fields into the
-// ResourceBoundOverrides applyResourceBoundOverrides consumes — the single
-// conversion point every emitForHead / routeBExecCtx call site below uses,
-// so an Engine that never wired these three fields (Engine{} in a test, or
-// the Tempo head) passes the zero ResourceBoundOverrides that threads
-// nothing. CHQueryMaxMemory rides along from the Client's configured cap
+// ResourceBoundOverrides apportionFanoutBounds resolves for both routes
+// (routeAResourceBounds, routeBExecCtx) — the single conversion point, so
+// an Engine that never wired these fields (Engine{} in a test, or the Tempo
+// head) resolves every ceiling to chsql's own calibrated default.
+// CHQueryMaxMemory rides along from the Client's configured cap
 // (configuredMemoryCap) so the fold-cost ceiling's cap-derived default
 // tracks the deployment; an Engine with no Client passes 0, the "no cap"
 // input that resolves to the 1 GiB calibration.
@@ -961,6 +965,16 @@ type effectiveMemoryCapQuerier interface {
 	EffectiveMaxQueryMemoryBytes() int64
 }
 
+// dataShardCounter is the accessor a Client exposes for the D that
+// effectiveMemoryCapQuerier's cap is apportioned by
+// (chclient.Client.DataShardCount). It is the route-A statement's memory
+// divisor (statementMemoryDivisor): the factor every whole-query fan-out
+// ceiling is scaled by so the guard matches the cap/D the statement runs
+// under.
+type dataShardCounter interface {
+	DataShardCount() int64
+}
+
 // queryMemoryCap returns the per-query memory cap (bytes) the engine Client
 // stamps on a data-plane statement, or 0 when the Client doesn't expose one.
 // A 0 cap means "no max_memory_usage configured", which spillThreshold treats
@@ -991,6 +1005,30 @@ func (e *Engine) configuredMemoryCap() int64 {
 		return mc.MaxQueryMemoryBytes()
 	}
 	return 0
+}
+
+// statementMemoryDivisor is the factor a route-A statement's memory is
+// smaller than the configured cap: the Client's DataShardCount, D, the same
+// divisor EffectiveMaxQueryMemoryBytes applies (a Client that exposes none
+// fans out to one shard, D=1). routeAResourceBounds divides every fan-out
+// ceiling by it; route B's counterpart is shardMemoryDivisor, which carries
+// the same D multiplied by the shard's kEff ceiling.
+func (e *Engine) statementMemoryDivisor() int64 {
+	if dc, ok := e.Client.(dataShardCounter); ok {
+		return dc.DataShardCount()
+	}
+	return 1
+}
+
+// routeAResourceBounds is the ResourceBoundOverrides every route-A emit
+// threads (emitForHead): resourceBoundOverrides with the four fan-out
+// ceilings apportioned to the statement's memory share,
+// apportionFanoutBounds by statementMemoryDivisor. At D=1 the apportioned
+// ceilings are the resolved whole-query ones, so a single-data-shard
+// deployment emits exactly what it did when the overrides were threaded
+// raw.
+func (e *Engine) routeAResourceBounds() ResourceBoundOverrides {
+	return apportionFanoutBounds(e.resourceBoundOverrides(), e.statementMemoryDivisor())
 }
 
 // Engine owns the shared dependencies (optimizer, ClickHouse client)
@@ -1517,7 +1555,7 @@ func (e *Engine) runGuards(ctx context.Context, lang Lang, meta Meta) error {
 			return err
 		}
 		guardCtx, _ := e.execContext(ctx, plan, lang.Name(), nil)
-		sql, args, physicalScans, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
+		sql, args, physicalScans, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.routeAResourceBounds(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 		if err != nil {
 			return fmt.Errorf("engine: emit: guard %s: %w", g.Name, err)
 		}
@@ -1659,7 +1697,7 @@ func (e *Engine) DryRunSQL(ctx context.Context, lang Lang, query string) (DryRun
 		return dr, err
 	}
 
-	sql, args, _, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
+	sql, args, _, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.routeAResourceBounds(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 	if err != nil {
 		return dr, fmt.Errorf("engine: emit: %w", err)
 	}
@@ -1740,7 +1778,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 
 	// Emit.
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, physicalScans, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
+	sql, args, physicalScans, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.routeAResourceBounds(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 	emitT.Done(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("engine: emit: %w", err)
@@ -1846,7 +1884,7 @@ func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*so
 				sql, args, _, err := emitForHead(
 					ctx, lang, plan,
 					e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
-					e.resourceBoundOverrides(),
+					e.routeAResourceBounds(),
 					e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits,
 				)
 				return sql, args, err
@@ -1942,14 +1980,16 @@ func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*so
 //
 // Every resource-bound ceiling this function threads to a shard is
 // APPORTIONED to the shard's memory share, never threaded verbatim. The one
-// rule: a whole-query ceiling is calibrated against the whole-query cap, and
-// a shard runs under cap/(kEff x DataShardCount) (executor.go's
-// perShardMemoryBytes), so the shard's guard is that ceiling divided by the
-// same factor. A shard that passes its guard then fits in the memory it
-// actually runs under, and never dies on ClickHouse's code 241 for memory
-// its guard already knew about — the "sailed past the guard and died on
-// ClickHouse's own limit" mode #2677/#2681 closed for route A. Route A keeps
-// the whole-query ceiling: its one statement runs under the whole cap.
+// rule, on both routes: a whole-query ceiling is calibrated against the
+// configured cap, a statement runs under cap / its memory divisor, and its
+// guard is the ceiling divided by that same divisor — D = DataShardCount for
+// a route-A statement (Engine.routeAResourceBounds, the cap
+// EffectiveMaxQueryMemoryBytes reports), kEff x D for a route-B shard
+// (executor.go's perShardMemoryBytes). A statement that passes its guard
+// then fits in the memory it actually runs under, and never dies on
+// ClickHouse's code 241 for memory its guard already knew about — the
+// "sailed past the guard and died on ClickHouse's own limit" mode
+// #2677/#2681 closed for route A at D=1.
 //
 // kEff itself is not known here — solver.Executor computes it strictly
 // AFTER the emit loop this ctx feeds (internal/solver cannot import
@@ -1959,20 +1999,22 @@ func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*so
 // bounds are in use, and which one a guard gets follows from whether the
 // route memo escalates on it:
 //
-//   - The four FAN-OUT ceilings (apportionFanoutBounds:
-//     RangeBucketFanoutMaxRows, RangeLWRFanoutMaxRows,
-//     RateWindowFanoutMaxRows, RangeBucketFanoutFoldCostMaxUnits) divide by
+//   - The four FAN-OUT ceilings (apportionFanoutBounds, the same seam route
+//     A divides by D through: RangeBucketFanoutMaxRows,
+//     RangeLWRFanoutMaxRows, RateWindowFanoutMaxRows,
+//     RangeBucketFanoutFoldCostMaxUnits) divide by
 //     shardMemoryDivisor = min(K, Parallel, gate/2) x DataShardCount
 //     (solver.Executor.ShardMemoryDivisor), the tightest bound the emit seam
 //     can know. These guards ARE the A->B escalation
 //     (timeSliceableResourceBoundMessages): a route-A rejection at
-//     rows in (R, K x R] splits into shards of rows/K, and the shard guard
-//     R/divisor admits exactly the shards whose rows fit their share —
+//     rows in (R/D, K x R/D] splits into shards of rows/K, and the shard
+//     guard R/divisor admits exactly the shards whose rows fit their share —
 //     rows <= K x R/divisor. That rescue window is non-empty whenever
-//     K > divisor (the default Parallel=3 against K=8: rows in (R, 2.67R]),
+//     K > kEff (the default Parallel=3 against K=8: rows in (R/D, 2.67R/D]),
 //     and it is the window the guard can keep; dividing by K instead
-//     (rows/K against R/K, the inequality route A already failed) would
-//     empty it and make every escalation a dispatch spent to fail again.
+//     (rows/K against R/(K x D), the inequality route A already failed)
+//     would empty it and make every escalation a dispatch spent to fail
+//     again.
 //   - The two RangeBucketGridNative ceilings
 //     (apportionRangeBucketGridNativeBounds, issue #2705) divide by
 //     decision.K, which is >= kEff and so is also safe. Those guards are
@@ -2515,7 +2557,7 @@ func (e *Engine) dispatchRouteACursor(
 	}
 
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, physicalScans, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
+	sql, args, physicalScans, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.routeAResourceBounds(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 	emitT.Done(ctx)
 	if err != nil {
 		return routeACursorAttempt{}, fmt.Errorf("engine: emit: %w", err)
