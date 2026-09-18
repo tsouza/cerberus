@@ -4098,19 +4098,18 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     branch movement, missing/duplicate patches, unexpected paths and unsafe refs
     fail closed before the push.
 
-- **`update-golden-guard.mjs`** — `update-golden-guard.yml`, the required PR
-  check that closes issue #2350: PR #2347 merged (deleting its branch, per this
-  repo's `--delete-branch` convention) while its own `update-golden.yml`
-  dispatch was still regenerating, and the publish job's `assertTargetUnmoved`
-  correctly refused to push into a branch that no longer existed — silently
-  losing the already-computed, correct regenerated diff. This check blocks a
-  PR's merge for exactly as long as an `update-golden.yml` run against its own
-  branch is `queued` or `in_progress`, polling from inside the one job run so
-  the same check clears itself the moment the hazard is gone, with no second
-  push needed to re-trigger it. It never reads the run's CONCLUSION — a
-  dispatch that finished, however it concluded, is no longer a race hazard;
-  a golden that came out stale is what the ordinary golden-drift checks on the
-  resulting push are for.
+- **`update-golden-guard.mjs`** — `update-golden-guard.yml`, the PR check
+  (Info-only today — see `docs/test-strategy.md`'s CI-gate inventory) that
+  closes issue #2350: PR #2347 merged (deleting its branch, per this repo's
+  `--delete-branch` convention) while its own `update-golden.yml` dispatch was
+  still regenerating, and the publish job's `assertTargetUnmoved` correctly
+  refused to push into a branch that no longer existed — silently losing the
+  already-computed, correct regenerated diff. On `pull_request` the check takes
+  ONE snapshot of the `update-golden.yml` runs `requested`/`queued`/
+  `in_progress` against the PR's own branch and fails fast if one targets it,
+  never reading that run's conclusion — a dispatch that finished, however it
+  concluded, is no longer a race hazard for the snapshot. The `workflow_run`
+  trigger is what flips the failed-fast check back without a new push.
   - Finding which branch an in-flight run targets at all needs a workaround:
     the Actions run-list API never exposes `workflow_dispatch` inputs, only
     `head_branch` — which for a dispatch is the ref the workflow was
@@ -4118,29 +4117,41 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `update-golden.yml` stamps `run-name: update-golden[${{ inputs.branch }}]`
     for exactly this reason; the API surfaces that as `display_title`, and
     `runTargetsBranch()` is the one place that shape is parsed.
-  - Three triggers, one question. `pull_request` is the poll above.
-    `workflow_run` (on `update-golden` itself) covers a dispatch made after the
-    PR's check already went green, which fires no new `pull_request` event: it
-    pushes the same context onto the PR's head SHA through the Statuses API.
-    `merge_group` covers the merge queue, where the merge no longer happens on
-    the pull request at all — a required context that never posts there leaves
-    the queue entry unresolved forever, and a context that posts a free pass
-    would REGRESS #2350, since a queued PR sits between "last green" and
-    "merged" for the whole duration of merge-group CI. So the queue run repeats
-    the poll: it resolves the pull request from the group's own
-    `gh-readonly-queue/<base>/pr-<n>-<sha>` ref (GitHub builds one such branch
-    per queued PR, so that resolution is complete rather than a sample of a
-    batch), reads its head branch through the Pulls API, and gates on that. A
-    ref it cannot parse fails the check — an unresolved merge group is exactly
-    the state in which the guard has verified nothing.
+  - Three triggers, one question. `pull_request` is the snapshot above.
+    `workflow_run` (requested/completed, on `update-golden` itself) covers a
+    dispatch made after the PR's check already went green — or already failed
+    fast — which fires no new `pull_request` event: it finds the open PR(s)
+    whose head branch the dispatch targets and CREATES a fresh
+    `update-golden-guard` check-run on each head SHA through the Checks API —
+    the same object, name and app as the `pull_request` job's own check-run,
+    so GitHub's newest-check-run-wins rule supersedes it (a commit status under
+    the same name would not: statuses and check-runs are distinct objects, and
+    a `success` status leaves a `failure` check-run red). That check-run is
+    `in_progress` while any run still targets the branch, `failure` naming
+    the run when the dispatch that just completed did not conclude `success`
+    (a cancelled or failed regeneration pushed nothing, so the goldens are
+    still stale), and `success` otherwise. `merge_group` covers the merge
+    queue, where the merge no longer happens on the pull request at all — a
+    required context that never posts there leaves the queue entry unresolved
+    forever, and a context that posts a free pass would REGRESS #2350, since a
+    queued PR sits between "last green" and "merged" for the whole duration of
+    merge-group CI. So the queue run repeats the snapshot: it resolves the pull
+    request from the group's own `gh-readonly-queue/<base>/pr-<n>-<sha>` ref
+    (GitHub builds one such branch per queued PR, so that resolution is
+    complete rather than a sample of a batch), reads its head branch through
+    the Pulls API, and gates on that. A ref it cannot parse fails the check —
+    an unresolved merge group is exactly the state in which the guard has
+    verified nothing.
   - Env: `GH_TOKEN`, `REPO` (all paths); `BRANCH` (`pull_request`);
     `MERGE_GROUP_HEAD_REF`, `MERGE_GROUP_BASE_REF` (`merge_group`);
+    `WORKFLOW_RUN_ACTION`, `WORKFLOW_RUN_CONCLUSION`,
     `WORKFLOW_RUN_DISPLAY_TITLE`, `WORKFLOW_RUN_HTML_URL` (`workflow_run`);
-    `API_URL`, `POLL_INTERVAL_MS`, `MAX_WAIT_MS` (optional).
-  - Exit: `0` once no matching run is `queued`/`in_progress`; `1` if one still
-    is after `MAX_WAIT_MS` (default 60 minutes — `update-golden.yml`'s own
-    regenerate legs are capped at 45), if a merge group's head ref cannot be
-    resolved to a pull request, or if the API calls themselves failed.
+    `API_URL` (optional).
+  - Exit: `0` when the snapshot finds no matching run, or once a
+    `workflow_run` event was reflected onto its PR(s) whatever check-run it
+    produced; `1` if the snapshot finds one in flight, if a merge group's head
+    ref cannot be resolved to a pull request, or if the API calls themselves
+    failed.
 
 - **`cardinality-baseline-update.mjs`** — three callers. Unmoded (default), it
   is the script a contributor runs by hand, through `just update-cardinality-

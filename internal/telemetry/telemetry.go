@@ -284,11 +284,10 @@ const (
 // no wire-format way to tell a native histogram from a classic one by
 // type; it routes purely on that suffix
 // (schema.Metrics.ExpHistogramSuffix, internal/schema/otel.go). Overriding
-// only the Aggregation here while leaving the instrument named
-// `cerberus_queries_duration_seconds` would collect the data correctly
-// but leave every PromQL query against it silently resolving to nothing,
-// since the read path would still look for a `_bucket` series that no
-// longer exists.
+// only the Aggregation here while leaving the instrument under a name
+// without that suffix would collect the data correctly but leave every
+// PromQL query against it silently resolving to nothing, since the read
+// path would still look for a `_bucket` series that no longer exists.
 //
 // StageDuration and the other histograms in metrics.go stay classic for now
 // — this metric is the one with a real prior incident and the one queried

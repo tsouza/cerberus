@@ -74,8 +74,8 @@ func TestConformance_MetricNameCatalogMatchesQuerySurface(t *testing.T) {
 				"http_server_request_duration_count", // collides with histogram expansion
 			},
 			"otel_metrics_histogram": {
-				"cerberus_queries_duration_seconds", // underscored histogram base
-				"http.server.request.duration",      // dotted histogram base
+				"cerberus_pipeline_stage_duration_seconds", // underscored histogram base
+				"http.server.request.duration",             // dotted histogram base
 			},
 		},
 	}
@@ -102,9 +102,9 @@ func TestConformance_MetricNameCatalogMatchesQuerySurface(t *testing.T) {
 	}
 
 	want := []string{
-		"cerberus_queries_duration_seconds_bucket",
-		"cerberus_queries_duration_seconds_count",
-		"cerberus_queries_duration_seconds_sum",
+		"cerberus_pipeline_stage_duration_seconds_bucket",
+		"cerberus_pipeline_stage_duration_seconds_count",
+		"cerberus_pipeline_stage_duration_seconds_sum",
 		"cerberus_queries_total",
 		"http_server_request_duration_bucket",
 		"http_server_request_duration_count",
@@ -124,7 +124,7 @@ func TestConformance_MetricNameCatalogMatchesQuerySurface(t *testing.T) {
 	for _, n := range env.Data {
 		got[n] = struct{}{}
 	}
-	for _, bare := range []string{"cerberus_queries_duration_seconds", "http_server_request_duration"} {
+	for _, bare := range []string{"cerberus_pipeline_stage_duration_seconds", "http_server_request_duration"} {
 		if _, ok := got[bare]; ok {
 			t.Errorf("bare classic-histogram base name %q advertised — only the _bucket/_count/_sum companions are queryable", bare)
 		}

@@ -104,9 +104,11 @@ test('expectedByKeys subtracts le when histogram_quantile is the top-level call'
   // `cerberus_ql` only. The raw `extractByKeys` is therefore
   // mathematically-impossible-to-satisfy on the response; the
   // semantic `expectedByKeys` is what the spec must use.
+  // cerberus_pipeline_stage_duration_seconds is a classic histogram
+  // cerberus still emits, so the `_bucket` / `le` shape is real.
   expect(
     expectedByKeys(
-      'histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_queries_duration_seconds_bucket[5m])))',
+      'histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_pipeline_stage_duration_seconds_bucket[5m])))',
     ),
   ).toEqual(['cerberus_ql']);
   expect(
@@ -114,6 +116,18 @@ test('expectedByKeys subtracts le when histogram_quantile is the top-level call'
       'histogram_quantile(0.95, sum by (le) (rate(foo_bucket[5m])))',
     ),
   ).toEqual([]);
+});
+
+test('expectedByKeys passes a native histogram_quantile by-set through unchanged', () => {
+  // The cerberus dashboard's P95 panel reads the native histogram
+  // cerberus_queries_duration_exp_hist: no `_bucket` series, no `le`
+  // label, so there is nothing to subtract and the response series
+  // carry exactly the by-keys the expression names.
+  expect(
+    expectedByKeys(
+      'histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))',
+    ),
+  ).toEqual(['cerberus_ql']);
 });
 
 test('expectedByKeys leaves le alone when histogram_quantile is NOT the top-level call', () => {
@@ -459,15 +473,29 @@ test('addLabelFilter walks through aggregation wrappers untouched', () => {
   );
 });
 
-test('addLabelFilter handles histogram_quantile + inner by(le, k)', () => {
+test('addLabelFilter handles the native histogram_quantile panel shape', () => {
+  // The cerberus dashboard's P95 panel: a native histogram selector
+  // with no `_bucket` suffix and no `le` in the by-set.
   expect(
     addLabelFilter(
-      'histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_queries_duration_seconds_bucket[5m])))',
+      'histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))',
       'cerberus_ql',
       'promql',
     ),
   ).toBe(
-    'histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_queries_duration_seconds_bucket{cerberus_ql="promql"}[5m])))',
+    'histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist{cerberus_ql="promql"}[5m])))',
+  );
+});
+
+test('addLabelFilter handles histogram_quantile + inner by(le, k)', () => {
+  expect(
+    addLabelFilter(
+      'histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_pipeline_stage_duration_seconds_bucket[5m])))',
+      'cerberus_ql',
+      'promql',
+    ),
+  ).toBe(
+    'histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(cerberus_pipeline_stage_duration_seconds_bucket{cerberus_ql="promql"}[5m])))',
   );
 });
 

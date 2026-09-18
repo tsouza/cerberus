@@ -217,7 +217,6 @@ so a rename there cannot ship silently.
 | --------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------- |
 | `cerberus_queries_total`                      | counter            | `cerberus_ql`, `cerberus_route`, `result`, `cerberus_error_reason`, `cerberus_status_class` |
 | `cerberus_queries_duration_exp_hist`          | histogram (native) | `cerberus_ql`, `cerberus_route`, `result`                                                   |
-| `cerberus_queries_duration_seconds`           | histogram          | `cerberus_ql`, `cerberus_route`, `result`                                                   |
 | `cerberus_pipeline_stage_duration_seconds`    | histogram          | `stage`, `cerberus_ql`                                                                      |
 | `cerberus_optimizer_rules_applied`            | histogram          | —                                                                                           |
 | `cerberus_optimizer_fixpoint_cap_hits_total`  | counter            | `cerberus_optimizer_batch`                                                                  |
@@ -248,13 +247,11 @@ whose shard parallelism was clamped below the configured `P`.
 
 `cerberus_optimizer_fixpoint_cap_hits_total` counts optimizer `FixedPoint` batches that exhausted their iteration cap with a rule still reporting change, by batch name. Every production batch converges well inside its cap, so a non-zero rate is a rule bug (two rules undoing each other, or one that always reports a change) that otherwise shows only as a slower `optimize` stage; the same event is logged at WARN as `optimizer: fixpoint batch hit its iteration cap without converging` with the batch name.
 
-`cerberus_queries_duration_seconds` is the legacy name of the
 query-duration histogram. It is deprecated and emitted alongside
 `cerberus_queries_duration_exp_hist`, with its original classic
 explicit-bucket aggregation, so an existing dashboard or alert rule keeps
 working across the upgrade. Move queries to the new name; the removal of
 the legacy instrument is tracked in cerberus issue #3569.
-
 `cerberus_queries_duration_exp_hist` is collected as a native/exponential
 histogram (cerberus issue #3170), not the classic explicit-bucket shape
 `cerberus_pipeline_stage_duration_seconds` and the other histograms above
@@ -442,14 +439,11 @@ added to one is a failure until it is added to all three.
 
 `cerberus_queries_duration_exp_hist` is aggregated as a base-2
 exponential histogram by an SDK view (`internal/telemetry/telemetry.go`),
-so it has no explicit ladder. The classic histograms — the legacy
-`cerberus_queries_duration_seconds`,
-`cerberus_pipeline_stage_duration_seconds`, and the rows/bytes/rules
-instruments — carry explicit boundaries (`QueryDurationBoundaries`,
-`StageDurationBoundaries`, … in `internal/telemetry/metrics.go`); both
-duration ladders reach the minute scale, and the stage ladder reaches as
-far up as the query ladder because `execute` carries the ClickHouse round
-trip.
+so it has no explicit ladder. The classic histograms —
+`cerberus_pipeline_stage_duration_seconds` and the rows/bytes/rules
+instruments — carry explicit boundaries (`StageDurationBoundaries`, … in
+`internal/telemetry/metrics.go`); the stage ladder reaches the minute
+scale because `execute` carries the ClickHouse round trip.
 
 #### Stage attribution
 

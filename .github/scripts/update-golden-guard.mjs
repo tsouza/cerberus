@@ -14,11 +14,12 @@
 // goldens.
 //
 // Nothing in the merge path saw that dispatch coming. This script is the
-// thing that does — never opining on whether an in-flight run SUCCEEDED,
-// only on whether it is still touching the branch. A run that finished
-// (however it concluded) is no longer a race hazard; a golden that came out
-// stale is a job for the ordinary golden-drift checks that run on the
-// resulting push, not this one. It runs in three triggers:
+// thing that does. The `pull_request` and `merge_group` snapshots never opine
+// on whether an in-flight run SUCCEEDED, only on whether it is still touching
+// the branch; the `workflow_run` handler, which is the one place a dispatch's
+// own outcome is known, additionally refuses to clear the guard for a
+// dispatch that did not conclude `success` (see the trigger list). It runs in
+// three triggers:
 //
 //   - `pull_request` (opened/synchronize/reopened/ready_for_review): takes
 //     ONE snapshot of the update-golden.yml runs currently requested,
@@ -34,20 +35,25 @@
 //     event — GitHub does not re-poll an already-green required check on
 //     its own, and a `pull_request` run that already failed fast has no
 //     later event of its own to re-evaluate on. This trigger reacts to the
-//     dispatch directly instead: `requested` sets the guard context to
-//     `pending` on every open PR whose head branch the dispatch targets
-//     (found via the Pulls API, since a `workflow_run` job runs in the
-//     default branch's context, not the PR's — the check has to be pushed
-//     onto the PR's head SHA explicitly via the Statuses API), and
-//     `completed` re-checks and flips it to `success` once no run remains
-//     in flight against that branch (handling a second, serialised dispatch
-//     via the same in-flight query the snapshot path uses). Because this
-//     status is pushed under the exact same `STATUS_CONTEXT` the
-//     `pull_request`-triggered check-run uses, branch protection's combined
-//     status for that SHA takes whichever of the two reported LAST — the
-//     same mechanism the "dispatch starts after check went green" case
-//     already depended on, now doing double duty for "check failed fast,
-//     dispatch later completes" too.
+//     dispatch directly instead. It finds every open PR whose head branch
+//     the dispatch targets via the Pulls API (a `workflow_run` job runs in
+//     the default branch's context, not the PR's, so it has no check-run of
+//     its own on the PR) and CREATES a new check-run named `CHECK_NAME` on
+//     each PR's head SHA through the Checks API: `in_progress` while any run
+//     is still in flight against that branch (`requested`, and a second,
+//     serialised dispatch still queued at `completed` time — the same
+//     in-flight query the snapshot path uses), `failure` when the run that
+//     just completed concluded anything other than `success` (a cancelled
+//     or failed regeneration pushed nothing, so the goldens the PR asked to
+//     refresh are still stale — the check-run names that run), and
+//     `success` otherwise. Every source of this check — the
+//     `pull_request`-triggered job and this handler — is the GitHub Actions
+//     app writing check-runs under one name, and GitHub reads the NEWEST
+//     check-run of a given name on a SHA as that check's state (the same
+//     rule that lets "Re-run failed jobs" turn a required check green). A
+//     commit STATUS under the same name would not do: statuses and
+//     check-runs are distinct objects, and a `success` status leaves a
+//     `failure` check-run of the same name exactly as red as it was.
 //   - `merge_group`: the merge queue's own copy of the snapshot, with one
 //     asymmetry from the `pull_request` path. See the section below.
 //
@@ -85,8 +91,8 @@
 // merge group is precisely the state in which the guard has verified nothing.
 //
 // Unlike the `pull_request` path, a fast-failed `merge_group` snapshot does
-// NOT self-heal in place: `workflow_run`'s `completed` handler pushes its
-// status onto the pull request's own head SHA (see above), never onto the
+// NOT self-heal in place: `workflow_run`'s `completed` handler creates its
+// check-run on the pull request's own head SHA (see above), never onto the
 // queue's own ephemeral `gh-readonly-queue/…` commit — GitHub tears that
 // branch down once the group resolves, and by `completed` time there is no
 // stable API handle from a branch name back to "the projected commit some
@@ -96,7 +102,7 @@
 // guards against), and GitHub dequeues that entry the same way it would for
 // any other genuinely failing required check. The pull request itself is not
 // left red, though: `workflow_run`'s `completed` handler still flips the
-// SAME context back to `success` on the PR's own head SHA the moment the
+// SAME check back to `success` on the PR's own head SHA the moment the
 // dispatch clears, exactly as in the `pull_request` case — what does not
 // happen automatically is the PR re-entering the merge queue, which needs a
 // fresh "add to merge queue" the same as any other dequeue. This is judged an
@@ -107,7 +113,7 @@
 // the `pull_request` path's own trigger frequency (every push, and every
 // update-golden.yml dispatch made during active iteration on an open PR —
 // the actual source of the sustained-poll cost this snapshot replaces), and
-// building a second status-push target for an ephemeral queue commit would
+// building a second check-run target for an ephemeral queue commit would
 // be new machinery for a narrow, self-recovering window, not a closure of
 // #2350's own race. (As of this writing this check is Info-only — not in
 // `main`'s required_status_checks ruleset — so a merge_group failure has no
@@ -147,10 +153,11 @@
 // existed: the `workflow_run` trigger's `completed` handler, which was
 // already relied on to flip this same check from green to pending on a
 // dispatch that starts AFTER the PR's last push (see above). That handler
-// does not care which event last reported to `STATUS_CONTEXT`, only what the
-// CURRENT in-flight state is — so it is equally able to flip a check that
-// failed fast back to `success` once the dispatch it flagged finishes,
-// closing the loop this file used to close by blocking. The `pull_request`
+// does not care which event last wrote a `CHECK_NAME` check-run, only what
+// the CURRENT in-flight state and the finished dispatch's own conclusion are
+// — so it is equally able to flip a check that failed fast back to `success`
+// once the dispatch it flagged finishes, closing the loop this file used to
+// close by blocking. The `pull_request`
 // (and `merge_group`) step therefore takes exactly ONE snapshot of the
 // in-flight list and reports on it immediately: clear now → pass now; not
 // clear now → fail now, and rely on `workflow_run`'s `completed` event (which
@@ -174,18 +181,23 @@
 //     API_URL as for pull_request.
 //   workflow_run:
 //     GH_TOKEN                   (required) a token with `actions: read`,
-//                                 `pull-requests: read` and `statuses: write`.
+//                                 `pull-requests: read` and `checks: write`.
 //     REPO                        (required) `owner/repo`.
+//     WORKFLOW_RUN_ACTION         (required) github.event.action: `requested`
+//                                 or `completed`.
+//     WORKFLOW_RUN_CONCLUSION     (required on `completed`, empty on
+//                                 `requested`) github.event.workflow_run.conclusion.
 //     WORKFLOW_RUN_DISPLAY_TITLE  (required) github.event.workflow_run.display_title.
 //     WORKFLOW_RUN_HTML_URL       (optional) github.event.workflow_run.html_url,
-//                                 used as the status's target_url.
+//                                 used as the check-run's details_url and
+//                                 named in its summary.
 //     API_URL                     (optional) GitHub REST API base.
 //
 // Exit codes:
 //   0  no update-golden.yml run is queued, requested or in_progress against
 //      the guarded branch (pull_request, merge_group) at the moment of this
 //      check's one snapshot, or the workflow_run event was handled (whatever
-//      state it resulted in — the Statuses API call failing is the only
+//      check-run it resulted in — the Checks API call failing is the only
 //      workflow_run failure mode).
 //   1  one was in flight at snapshot time, the merge group's head ref could
 //      not be resolved to a pull request, or the API calls themselves
@@ -205,9 +217,10 @@ const DEFAULT_API_URL = 'https://api.github.com';
 const WORKFLOW_FILE = 'update-golden.yml';
 
 // The Actions API run states that mean "still touching the branch". A
-// `completed` run — success, failure, or cancelled — is no longer a hazard,
-// whatever its conclusion: see the file header on why this check does not
-// read conclusion at all. `requested` is included alongside `in_progress`
+// `completed` run — success, failure, or cancelled — is no longer a RACE
+// hazard, whatever its conclusion; only the workflow_run handler, which is
+// told the conclusion by the event itself, reads it (see the file header).
+// `requested` is included alongside `in_progress`
 // and `queued`: it is the transient status a workflow_dispatch run briefly
 // reports between being created and being picked up by a runner, and a
 // snapshot (whether from the pull_request/merge_group path or a workflow_run
@@ -215,17 +228,35 @@ const WORKFLOW_FILE = 'update-golden.yml';
 // than reporting a false-clear.
 const IN_FLIGHT_STATUSES = ['requested', 'in_progress', 'queued'];
 
-// The context name this script publishes to when it sets a commit status
-// directly (the workflow_run path — see the file header). Kept identical to
-// the job name update-golden-guard.yml uses for its pull_request-triggered
-// check-run so branch protection's single required-check entry is satisfied
-// by either source.
-const STATUS_CONTEXT = 'update-golden-guard';
+// The check-run name this script creates directly (the workflow_run path —
+// see the file header). Kept identical to the job name update-golden-guard.yml
+// uses for its pull_request-triggered check-run: GitHub reads the newest
+// check-run of a given name on a SHA as that check's state, so a check-run
+// created here supersedes the job's own under branch protection's single
+// required-check entry.
+const CHECK_NAME = 'update-golden-guard';
 
 // The two non-default `GITHUB_EVENT_NAME` values main() branches on. The
 // default — anything else — is the pull_request snapshot path.
 const WORKFLOW_RUN_EVENT = 'workflow_run';
 const MERGE_GROUP_EVENT = 'merge_group';
+
+// The `github.event.action` value of the one workflow_run event that carries
+// a conclusion; on `requested` the run has none yet.
+const WORKFLOW_RUN_COMPLETED = 'completed';
+// The one workflow_run conclusion that means the regeneration actually
+// landed. Anything else — cancelled, failure, timed_out, … — pushed nothing,
+// so the goldens the dispatch was asked to refresh are still stale.
+const CONCLUSION_SUCCESS = 'success';
+
+// The Checks API vocabulary this script writes — a separate enum from the
+// workflow_run conclusion read above, even where the spellings coincide. A
+// check-run is either still running (`status: in_progress`, no conclusion)
+// or finished (`status: completed`, with a conclusion).
+const CHECK_STATUS_IN_PROGRESS = 'in_progress';
+const CHECK_STATUS_COMPLETED = 'completed';
+const CHECK_CONCLUSION_SUCCESS = 'success';
+const CHECK_CONCLUSION_FAILURE = 'failure';
 
 // The merge-queue branch shape GitHub stamps on a merge group's head ref:
 //   refs/heads/gh-readonly-queue/<base branch>/pr-<number>-<base sha>
@@ -327,8 +358,8 @@ export async function resolveGuardedBranch({
   return branch;
 }
 
-// Every resource this guard reads must exist — a PR by number, this
-// workflow's runs, a commit to post a status on — so a 404 is a failure,
+// Every resource this guard touches must exist — a PR by number, this
+// workflow's runs, a commit to create a check-run on — so a 404 is a failure,
 // never an empty answer.
 async function ghJSON(url, token, init = {}) {
   return ghRequest(url, { token, init, notFound: NOT_FOUND_THROW });
@@ -414,7 +445,7 @@ export async function checkBranchClear({ listRuns, branch }) {
  * Every open PR (in this repo) whose head branch is exactly `branch`. Used
  * only from the workflow_run path: that job runs in the default branch's
  * context, with no PR of its own, so it has to look the PR up by branch name
- * to know which head SHA to push a commit status onto.
+ * to know which head SHA to create a check-run on.
  */
 export async function findOpenPRsForBranch({ api, repo, token, branch, fetchPages = ghPages }) {
   const owner = repo.split('/')[0];
@@ -428,33 +459,83 @@ export async function findOpenPRsForBranch({ api, repo, token, branch, fetchPage
 }
 
 /**
- * Push a commit status onto `sha` under the STATUS_CONTEXT context. This is
+ * Create a check-run named CHECK_NAME on `sha` through the Checks API. This is
  * what lets a workflow_run-triggered job — which has no check-run of its own
- * on the PR, since it did not run FROM the PR — gate that PR's merge anyway,
- * the same way the pull_request-triggered job's own check-run does.
+ * on the PR, since it did not run FROM the PR — gate that PR's merge anyway:
+ * it writes the same object, under the same name and from the same app, as
+ * the pull_request-triggered job's own check-run, and GitHub reads the newest
+ * one (see the file header). `verdict` is what guardVerdict() returns.
  */
-export async function setCommitStatus({ api, repo, token, sha, state, description, targetUrl, postJSON = ghJSON }) {
-  const url = `${api}/repos/${repo}/statuses/${sha}`;
+export async function createCheckRun({ api, repo, token, sha, verdict, detailsUrl, postJSON = ghJSON }) {
+  const url = `${api}/repos/${repo}/check-runs`;
   await postJSON(url, token, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      state,
-      // The Statuses API caps description at 140 characters and rejects a
-      // longer one outright.
-      description: description.slice(0, 140),
-      context: STATUS_CONTEXT,
-      target_url: targetUrl || undefined,
+      name: CHECK_NAME,
+      head_sha: sha,
+      status: verdict.status,
+      // A check-run may carry a conclusion only once it is completed; the API
+      // rejects one on an in_progress run.
+      conclusion: verdict.conclusion,
+      details_url: detailsUrl || undefined,
+      output: { title: verdict.title, summary: verdict.summary },
     }),
   });
 }
 
 /**
+ * What the guard says about `branch` after one update-golden.yml run against
+ * it transitioned. Pure, so the three outcomes are pinned directly:
+ *
+ *   - any run still in flight against the branch (a second, serialised
+ *     dispatch queued behind the one that just completed, or the `requested`
+ *     run itself) → `in_progress`: the race hazard is live.
+ *   - nothing in flight, and the run that just `completed` concluded
+ *     anything other than `success` → `failure`, naming that run: a
+ *     cancelled or failed regeneration pushed nothing, so the goldens the
+ *     dispatch was asked to refresh are exactly as stale as before it. A
+ *     fresh dispatch (or a push, which re-snapshots) is what clears this.
+ *   - nothing in flight and the run succeeded → `success`.
+ *
+ * `runUrl` is the transitioning run's html_url (may be undefined);
+ * `inFlight` is the list of runs still targeting the branch.
+ */
+export function guardVerdict({ branch, action, conclusion, inFlight, runUrl }) {
+  if (inFlight.length > 0) {
+    const urls = inFlight.map((r) => r.html_url).join(', ');
+    return {
+      status: CHECK_STATUS_IN_PROGRESS,
+      title: `update-golden.yml dispatch in flight against ${branch}`,
+      summary: `An update-golden.yml dispatch against ${branch} is in flight: ${urls}.`,
+    };
+  }
+  if (action === WORKFLOW_RUN_COMPLETED && conclusion !== CONCLUSION_SUCCESS) {
+    return {
+      status: CHECK_STATUS_COMPLETED,
+      conclusion: CHECK_CONCLUSION_FAILURE,
+      title: `update-golden.yml dispatch against ${branch} concluded ${conclusion}`,
+      summary:
+        `The update-golden.yml dispatch against ${branch} concluded ${conclusion} ` +
+        `(${runUrl ?? 'run URL unavailable'}), so it pushed no regenerated goldens and the ones on this ` +
+        'branch are still the ones it was asked to refresh. Dispatch it again to clear this check.',
+    };
+  }
+  return {
+    status: CHECK_STATUS_COMPLETED,
+    conclusion: CHECK_CONCLUSION_SUCCESS,
+    title: `no update-golden.yml dispatch in flight against ${branch}`,
+    summary: `No update-golden.yml dispatch is in flight against ${branch}.`,
+  };
+}
+
+/**
  * The workflow_run path: given the display_title of an update-golden.yml
  * run that just transitioned (requested or completed), find every open PR
- * that run targets and push a commit status reflecting the CURRENT in-flight
- * state for that branch — not merely this one run's own state, since a
- * second, serialised dispatch can still be in flight after the first
+ * that run targets and create a check-run on each head SHA carrying
+ * guardVerdict() for that branch — the CURRENT in-flight state plus the
+ * transitioning run's own conclusion, not merely this one run's state, since
+ * a second, serialised dispatch can still be in flight after the first
  * completes. A display_title that doesn't have the `update-golden[branch]`
  * shape, or that names a branch with no open PR, is a no-op: there is
  * nothing to gate.
@@ -466,10 +547,12 @@ export async function runForWorkflowRunEvent({
   api,
   listRuns = listInFlightRuns,
   findPRs = findOpenPRsForBranch,
-  pushStatus = setCommitStatus,
+  postCheck = createCheckRun,
 }) {
   const displayTitle = required(env, 'WORKFLOW_RUN_DISPLAY_TITLE');
-  const targetUrl = env.WORKFLOW_RUN_HTML_URL || undefined;
+  const action = required(env, 'WORKFLOW_RUN_ACTION');
+  const conclusion = action === WORKFLOW_RUN_COMPLETED ? required(env, 'WORKFLOW_RUN_CONCLUSION') : undefined;
+  const runUrl = env.WORKFLOW_RUN_HTML_URL || undefined;
   const branch = parseTargetBranch(displayTitle);
   if (branch === null) {
     notice(
@@ -487,17 +570,14 @@ export async function runForWorkflowRunEvent({
 
   const runs = await listRuns({ api, repo, token });
   const inFlight = runs.filter((r) => runTargetsBranch(r.display_title, branch));
-  const state = inFlight.length > 0 ? 'pending' : 'success';
-  const description =
-    inFlight.length > 0
-      ? `An update-golden.yml dispatch against ${branch} is in flight.`
-      : `No update-golden.yml dispatch is in flight against ${branch}.`;
+  const verdict = guardVerdict({ branch, action, conclusion, inFlight, runUrl });
+  const state = verdict.conclusion ?? verdict.status;
 
   for (const pr of prs) {
-    log(`  setting ${STATUS_CONTEXT}=${state} on PR #${pr.number} (${pr.head.sha})`);
-    await pushStatus({ api, repo, token, sha: pr.head.sha, state, description, targetUrl });
+    log(`  creating ${CHECK_NAME}=${state} check-run on PR #${pr.number} (${pr.head.sha})`);
+    await postCheck({ api, repo, token, sha: pr.head.sha, verdict, detailsUrl: runUrl });
   }
-  notice(`update-golden-guard: ${description} (${prs.length} open PR(s) updated).`);
+  notice(`update-golden-guard: ${verdict.summary} (${prs.length} open PR(s) updated).`);
 }
 
 export async function main(env = process.env) {
@@ -538,11 +618,11 @@ export async function main(env = process.env) {
   const recovery =
     eventName === MERGE_GROUP_EVENT
       ? 'This dequeues the entry; the pull request itself will flip back to a green ' +
-        `${STATUS_CONTEXT} check automatically once the dispatch finishes (the workflow_run trigger ` +
+        `${CHECK_NAME} check automatically once the dispatch succeeds (the workflow_run trigger ` +
         're-checks and reports on its head SHA), but it will need to be re-added to the merge queue.'
       : 'This check will flip back to success on its own, with no new push needed, once the ' +
-        `workflow_run trigger sees that dispatch finish (see the file header's "why this fails fast ` +
-        'instead of blocking").';
+        'workflow_run trigger sees that dispatch succeed; a cancelled or failed dispatch leaves it ' +
+        `red until a later one lands (see the file header's "why this fails fast instead of blocking").`;
   error(
     `update-golden-guard: an update-golden.yml dispatch against ${branch} is in flight: ${urls}. ` +
       recovery,

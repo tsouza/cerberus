@@ -15,16 +15,19 @@
  *   - N5 (`<name>_bucket` series MUST exist when the panel is meant
  *     to render). The cerberus dashboard's "P95 latency by language"
  *     panel — which at the time read the classic
- *     `cerberus_queries_duration_seconds_bucket`; it reads the native
- *     `cerberus_queries_duration_exp_hist` today (#3171/#3174) and is
- *     judged by the native branch below — went flat at 0 because the
- *     underlying bucket series were emitted under a sibling metric
- *     root (cerberus_pipeline vs cerberus_queries_duration_seconds),
- *     and `histogram_quantile` over an absent bucket resolved to
- *     nothing visible on the wire (no tunneled error, just 200 +
- *     empty). The pin: probe `/api/v1/series?match[]=<name>_bucket`
- *     returns ≥ 1 series; AND when the buckets exist, the
- *     `histogram_quantile` response itself is non-empty.
+ *     `cerberus_queries_duration_seconds_bucket`, removed in v1.21.0 —
+ *     went flat at 0 because the underlying bucket series were
+ *     emitted under a sibling metric root (cerberus_pipeline vs the
+ *     query-duration histogram's own `_bucket`), and
+ *     `histogram_quantile` over an absent bucket resolved to nothing
+ *     visible on the wire (no tunneled error, just 200 + empty).
+ *     The pin: probe `/api/v1/series?match[]=<name>_bucket` returns
+ *     ≥ 1 series; AND when the buckets exist, the
+ *     `histogram_quantile` response itself is non-empty. That panel
+ *     now reads the native cerberus_queries_duration_exp_hist, which
+ *     has no `_bucket` series by design and takes the native branch
+ *     below instead; the N5 pin stays for every classic histogram
+ *     panel.
  *
  *   - N6 (`histogram_quantile` over a non-bucket metric used to
  *     fabricate a value). Typing `histogram_quantile(0.95, foo_total)`

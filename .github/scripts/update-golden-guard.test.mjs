@@ -9,15 +9,16 @@ import { fileURLToPath } from 'node:url';
 import {
   UnresolvableMergeGroupError,
   checkBranchClear,
+  createCheckRun,
   findOpenPRsForBranch,
   findPRHeadBranch,
+  guardVerdict,
   listInFlightRuns,
   parseQueuedPRNumber,
   parseTargetBranch,
   resolveGuardedBranch,
   runForWorkflowRunEvent,
   runTargetsBranch,
-  setCommitStatus,
 } from './update-golden-guard.mjs';
 
 function run(overrides = {}) {
@@ -190,37 +191,111 @@ test('findOpenPRsForBranch rejects a non-array response', async () => {
   );
 });
 
-test('setCommitStatus POSTs to the Statuses API with the fixed context and a truncated description', async () => {
+test('createCheckRun POSTs a check-run named update-golden-guard to the Checks API, never a commit status', async () => {
   let seenURL;
   let seenInit;
-  await setCommitStatus({
+  await createCheckRun({
     api: 'https://api.github.com',
     repo: 'tsouza/cerberus',
     token: 't',
     sha: 'deadbeef',
-    state: 'pending',
-    description: 'x'.repeat(200),
-    targetUrl: 'https://…/run/1',
+    verdict: { status: 'completed', conclusion: 'success', title: 'clear', summary: 'nothing in flight' },
+    detailsUrl: 'https://…/run/1',
     postJSON: async (url, token, init) => {
       seenURL = url;
       seenInit = init;
-      return null;
+      return { id: 1 };
     },
   });
-  assert.equal(seenURL, 'https://api.github.com/repos/tsouza/cerberus/statuses/deadbeef');
+  assert.equal(seenURL, 'https://api.github.com/repos/tsouza/cerberus/check-runs');
   assert.equal(seenInit.method, 'POST');
   const body = JSON.parse(seenInit.body);
-  assert.equal(body.state, 'pending');
-  assert.equal(body.context, 'update-golden-guard');
-  assert.equal(body.description.length, 140);
-  assert.equal(body.target_url, 'https://…/run/1');
+  assert.equal(body.name, 'update-golden-guard');
+  assert.equal(body.head_sha, 'deadbeef');
+  assert.equal(body.status, 'completed');
+  assert.equal(body.conclusion, 'success');
+  assert.equal(body.details_url, 'https://…/run/1');
+  assert.deepEqual(body.output, { title: 'clear', summary: 'nothing in flight' });
+});
+
+test('createCheckRun sends no conclusion on an in_progress check-run (the API rejects one)', async () => {
+  let body;
+  await createCheckRun({
+    api: 'https://api.github.com',
+    repo: 'tsouza/cerberus',
+    token: 't',
+    sha: 'deadbeef',
+    verdict: { status: 'in_progress', title: 'busy', summary: 'in flight' },
+    postJSON: async (_url, _token, init) => {
+      body = JSON.parse(init.body);
+      return { id: 1 };
+    },
+  });
+  assert.equal(body.status, 'in_progress');
+  assert.equal('conclusion' in body, false);
+  assert.equal('details_url' in body, false);
+});
+
+test('guardVerdict is in_progress while any run still targets the branch, whatever the completed run concluded', () => {
+  const verdict = guardVerdict({
+    branch: 'fix/example',
+    action: 'completed',
+    conclusion: 'success',
+    inFlight: [run({ html_url: 'https://…/run/2', status: 'queued' })],
+    runUrl: 'https://…/run/1',
+  });
+  assert.equal(verdict.status, 'in_progress');
+  assert.equal(verdict.conclusion, undefined);
+  assert.match(verdict.summary, /https:\/\/…\/run\/2/, 'must name the run still in flight');
+});
+
+test('guardVerdict is success once nothing is in flight and the completed run succeeded', () => {
+  const verdict = guardVerdict({
+    branch: 'fix/example',
+    action: 'completed',
+    conclusion: 'success',
+    inFlight: [],
+    runUrl: 'https://…/run/1',
+  });
+  assert.deepEqual([verdict.status, verdict.conclusion], ['completed', 'success']);
+});
+
+test('guardVerdict FAILS, naming the run, when the completed dispatch was cancelled — the goldens are still stale', () => {
+  // Before this pinned the conclusion, the completed handler cleared the guard
+  // on ANY completed run: a dispatch cancelled mid-regeneration pushed nothing,
+  // yet the PR went green as though its goldens had been refreshed.
+  for (const conclusion of ['cancelled', 'failure', 'timed_out']) {
+    const verdict = guardVerdict({
+      branch: 'fix/example',
+      action: 'completed',
+      conclusion,
+      inFlight: [],
+      runUrl: 'https://…/run/1',
+    });
+    assert.deepEqual([verdict.status, verdict.conclusion], ['completed', 'failure'], conclusion);
+    assert.match(verdict.summary, new RegExp(conclusion), 'must say how the dispatch ended');
+    assert.match(verdict.summary, /https:\/\/…\/run\/1/, 'must name the dispatch that did not land');
+  }
+});
+
+test('guardVerdict does not read a conclusion on `requested` — the run has none yet', () => {
+  // A `requested` event with a momentarily empty in-flight list (the run is
+  // the one being requested) must not be mistaken for a failed completion.
+  const verdict = guardVerdict({
+    branch: 'fix/example',
+    action: 'requested',
+    conclusion: undefined,
+    inFlight: [],
+    runUrl: 'https://…/run/1',
+  });
+  assert.deepEqual([verdict.status, verdict.conclusion], ['completed', 'success']);
 });
 
 test('runForWorkflowRunEvent is a no-op when the display_title does not match the update-golden[<branch>] shape', async () => {
   let findCalled = false;
   let pushCalled = false;
   await runForWorkflowRunEvent({
-    env: { WORKFLOW_RUN_DISPLAY_TITLE: 'some other workflow' },
+    env: { WORKFLOW_RUN_ACTION: 'completed', WORKFLOW_RUN_CONCLUSION: 'success', WORKFLOW_RUN_DISPLAY_TITLE: 'some other workflow' },
     token: 't',
     repo: 'tsouza/cerberus',
     api: 'https://api.github.com',
@@ -228,7 +303,7 @@ test('runForWorkflowRunEvent is a no-op when the display_title does not match th
       findCalled = true;
       return [];
     },
-    pushStatus: async () => {
+    postCheck: async () => {
       pushCalled = true;
     },
   });
@@ -240,7 +315,7 @@ test('runForWorkflowRunEvent is a no-op when no open PR has the targeted branch'
   let listCalled = false;
   let pushCalled = false;
   await runForWorkflowRunEvent({
-    env: { WORKFLOW_RUN_DISPLAY_TITLE: 'update-golden[fix/example]' },
+    env: { WORKFLOW_RUN_ACTION: 'completed', WORKFLOW_RUN_CONCLUSION: 'success', WORKFLOW_RUN_DISPLAY_TITLE: 'update-golden[fix/example]' },
     token: 't',
     repo: 'tsouza/cerberus',
     api: 'https://api.github.com',
@@ -249,7 +324,7 @@ test('runForWorkflowRunEvent is a no-op when no open PR has the targeted branch'
       listCalled = true;
       return [];
     },
-    pushStatus: async () => {
+    postCheck: async () => {
       pushCalled = true;
     },
   });
@@ -257,10 +332,11 @@ test('runForWorkflowRunEvent is a no-op when no open PR has the targeted branch'
   assert.equal(pushCalled, false);
 });
 
-test('runForWorkflowRunEvent pushes a pending status to every matching open PR while a run is in flight', async () => {
-  const pushed = [];
+test('runForWorkflowRunEvent creates an in_progress check-run on every matching open PR while a run is in flight', async () => {
+  const created = [];
   await runForWorkflowRunEvent({
     env: {
+      WORKFLOW_RUN_ACTION: 'requested',
       WORKFLOW_RUN_DISPLAY_TITLE: 'update-golden[fix/example]',
       WORKFLOW_RUN_HTML_URL: 'https://…/run/9',
     },
@@ -272,43 +348,73 @@ test('runForWorkflowRunEvent pushes a pending status to every matching open PR w
       { number: 2, head: { sha: 'sha2' } },
     ],
     listRuns: async () => [run({ display_title: 'update-golden[fix/example]', status: 'in_progress' })],
-    pushStatus: async (args) => pushed.push(args),
+    postCheck: async (args) => created.push(args),
   });
-  assert.equal(pushed.length, 2);
-  assert.equal(pushed[0].state, 'pending');
-  assert.equal(pushed[0].sha, 'sha1');
-  assert.equal(pushed[1].sha, 'sha2');
-  assert.equal(pushed[0].targetUrl, 'https://…/run/9');
+  assert.equal(created.length, 2);
+  assert.equal(created[0].verdict.status, 'in_progress');
+  assert.equal(created[0].sha, 'sha1');
+  assert.equal(created[1].sha, 'sha2');
+  assert.equal(created[0].detailsUrl, 'https://…/run/9');
 });
 
-test('runForWorkflowRunEvent pushes success once no run remains in flight against the branch', async () => {
-  const pushed = [];
+test('runForWorkflowRunEvent creates a success check-run once no run remains in flight and the dispatch succeeded', async () => {
+  const created = [];
   await runForWorkflowRunEvent({
-    env: { WORKFLOW_RUN_DISPLAY_TITLE: 'update-golden[fix/example]' },
+    env: {
+      WORKFLOW_RUN_ACTION: 'completed',
+      WORKFLOW_RUN_CONCLUSION: 'success',
+      WORKFLOW_RUN_DISPLAY_TITLE: 'update-golden[fix/example]',
+    },
     token: 't',
     repo: 'tsouza/cerberus',
     api: 'https://api.github.com',
     findPRs: async () => [{ number: 1, head: { sha: 'sha1' } }],
     // A DIFFERENT branch's run is still in flight; must not count against ours.
     listRuns: async () => [run({ display_title: 'update-golden[other-branch]', status: 'in_progress' })],
-    pushStatus: async (args) => pushed.push(args),
+    postCheck: async (args) => created.push(args),
   });
-  assert.equal(pushed.length, 1);
-  assert.equal(pushed[0].state, 'success');
+  assert.equal(created.length, 1);
+  assert.deepEqual([created[0].verdict.status, created[0].verdict.conclusion], ['completed', 'success']);
 });
 
-test('runForWorkflowRunEvent stays pending when a serialised second dispatch is still queued behind the first', async () => {
-  const pushed = [];
+test('runForWorkflowRunEvent leaves the guard RED when the completed dispatch was cancelled', async () => {
+  const created = [];
   await runForWorkflowRunEvent({
-    env: { WORKFLOW_RUN_DISPLAY_TITLE: 'update-golden[fix/example]' },
+    env: {
+      WORKFLOW_RUN_ACTION: 'completed',
+      WORKFLOW_RUN_CONCLUSION: 'cancelled',
+      WORKFLOW_RUN_DISPLAY_TITLE: 'update-golden[fix/example]',
+      WORKFLOW_RUN_HTML_URL: 'https://…/run/9',
+    },
+    token: 't',
+    repo: 'tsouza/cerberus',
+    api: 'https://api.github.com',
+    findPRs: async () => [{ number: 1, head: { sha: 'sha1' } }],
+    listRuns: async () => [],
+    postCheck: async (args) => created.push(args),
+  });
+  assert.equal(created.length, 1);
+  assert.deepEqual([created[0].verdict.status, created[0].verdict.conclusion], ['completed', 'failure']);
+  assert.match(created[0].verdict.summary, /cancelled/);
+  assert.match(created[0].verdict.summary, /https:\/\/…\/run\/9/);
+});
+
+test('runForWorkflowRunEvent stays in_progress when a serialised second dispatch is still queued behind the first', async () => {
+  const created = [];
+  await runForWorkflowRunEvent({
+    env: {
+      WORKFLOW_RUN_ACTION: 'completed',
+      WORKFLOW_RUN_CONCLUSION: 'success',
+      WORKFLOW_RUN_DISPLAY_TITLE: 'update-golden[fix/example]',
+    },
     token: 't',
     repo: 'tsouza/cerberus',
     api: 'https://api.github.com',
     findPRs: async () => [{ number: 1, head: { sha: 'sha1' } }],
     listRuns: async () => [run({ display_title: 'update-golden[fix/example]', status: 'queued' })],
-    pushStatus: async (args) => pushed.push(args),
+    postCheck: async (args) => created.push(args),
   });
-  assert.equal(pushed[0].state, 'pending');
+  assert.equal(created[0].verdict.status, 'in_progress');
 });
 
 // --- merge_group: the queue's own copy of the poll (see the mjs header) ---
@@ -517,26 +623,48 @@ function resolveExpression(expression, context) {
 
 const QUEUED_PR = 2951;
 const QUEUED_PR_BRANCH = 'fix/queued-example';
+const HTTP_CREATED = 201;
 
-/** A stub GitHub API serving just the two endpoints the queue path calls. */
-async function withStubAPI(inFlightRuns, body) {
+/**
+ * A stub GitHub API serving the read endpoints the three paths call — the
+ * queued PR by number, the open-PR list by head branch, the in-flight run
+ * list — and accepting any write with 201. Every request is recorded (method,
+ * path, parsed JSON body) and handed to `body` alongside the base URL, so a
+ * test can assert on what the script WROTE, not only on its exit code.
+ */
+async function withStubAPI(inFlightRuns, body, { openPRs = [] } = {}) {
+  const requests = [];
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://stub');
-    res.setHeader('content-type', 'application/json');
-    if (url.pathname.endsWith(`/pulls/${QUEUED_PR}`)) {
-      res.end(JSON.stringify({ number: QUEUED_PR, head: { ref: QUEUED_PR_BRANCH } }));
-      return;
-    }
-    if (url.pathname.endsWith('/actions/workflows/update-golden.yml/runs')) {
-      res.end(JSON.stringify({ workflow_runs: inFlightRuns }));
-      return;
-    }
-    res.statusCode = 404;
-    res.end(JSON.stringify({ message: `unstubbed ${url.pathname}` }));
+    let raw = '';
+    req.on('data', (chunk) => (raw += chunk));
+    req.on('end', () => {
+      requests.push({ method: req.method, path: url.pathname, body: raw === '' ? null : JSON.parse(raw) });
+      res.setHeader('content-type', 'application/json');
+      if (req.method === 'POST') {
+        res.statusCode = HTTP_CREATED;
+        res.end(JSON.stringify({ id: requests.length }));
+        return;
+      }
+      if (url.pathname.endsWith(`/pulls/${QUEUED_PR}`)) {
+        res.end(JSON.stringify({ number: QUEUED_PR, head: { ref: QUEUED_PR_BRANCH } }));
+        return;
+      }
+      if (url.pathname.endsWith('/pulls')) {
+        res.end(JSON.stringify(openPRs));
+        return;
+      }
+      if (url.pathname.endsWith('/actions/workflows/update-golden.yml/runs')) {
+        res.end(JSON.stringify({ workflow_runs: inFlightRuns }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ message: `unstubbed ${url.pathname}` }));
+    });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
-    return await body(`http://127.0.0.1:${server.address().port}`);
+    return await body(`http://127.0.0.1:${server.address().port}`, requests);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -621,4 +749,117 @@ test('pull_request: the guard still FAILS (exit 1) immediately while a dispatch 
   assert.match(result.stdout, /is in flight/);
   assert.match(result.stdout, /flip back to success on its own/, 'must name the self-heal path, not tell the reader to wait');
   assert.ok(Date.now() - started < 5_000, 'must fail on one snapshot, not block waiting for the dispatch');
+});
+
+// --- workflow_run end-to-end: the guard writes a CHECK-RUN, not a commit status ---
+//
+// On PR #3557 (head 371f84db) the pull_request job's check-run failed fast
+// while a dispatch was in flight; the completed handler then posted a commit
+// STATUS `success` under the same name, and the check-run stayed `failure`:
+// statuses and check-runs are distinct objects, and nothing in GitHub makes
+// one supersede the other. These tests run the real script with the env block
+// the workflow actually exports for `workflow_run` and assert on the recorded
+// API calls: a successful dispatch yields a `success` check-run named
+// `update-golden-guard` on the PR's head SHA, a cancelled one leaves the guard
+// red and names the run, and no request ever reaches the Statuses API.
+
+const TARGET_PR = { number: 3557, head: { sha: '371f84db' } };
+const TARGET_BRANCH = 'fix/example';
+const DISPATCH_URL = 'https://github.com/tsouza/cerberus/actions/runs/1';
+
+/** The env the workflow_run step actually exports, against a synthetic payload. */
+function workflowRunEnv(api, { action, conclusion }) {
+  const context = {
+    github: {
+      token: 'stub-token',
+      repository: 'tsouza/cerberus',
+      event: {
+        action,
+        workflow_run: {
+          conclusion,
+          display_title: `update-golden[${TARGET_BRANCH}]`,
+          html_url: DISPATCH_URL,
+        },
+      },
+    },
+  };
+  const declared = workflowStepEnv('workflow_run');
+  assert.deepEqual(Object.keys(declared).sort(), [
+    'GH_TOKEN',
+    'REPO',
+    'WORKFLOW_RUN_ACTION',
+    'WORKFLOW_RUN_CONCLUSION',
+    'WORKFLOW_RUN_DISPLAY_TITLE',
+    'WORKFLOW_RUN_HTML_URL',
+  ]);
+  const env = {};
+  for (const [name, expression] of Object.entries(declared)) {
+    env[name] = resolveExpression(expression, context);
+  }
+  return { ...env, GITHUB_EVENT_NAME: 'workflow_run', API_URL: api };
+}
+
+function checkRunWrites(requests) {
+  return requests.filter((r) => r.method === 'POST' && r.path.endsWith('/check-runs'));
+}
+
+/** The recorded requests that hit the Statuses API — matched on a path SEGMENT, not a substring. */
+function statusWrites(requests) {
+  return requests.filter((r) => r.path.split('/').some((segment) => segment === 'statuses'));
+}
+
+/** The whole URLs a check-run summary names, as the tokens between whitespace and parentheses. */
+function urlsNamedIn(summary) {
+  return summary.split(/[\s()]+/).filter((token) => URL.canParse(token));
+}
+
+test('workflow_run: a SUCCESSFUL completed dispatch yields a success check-run on the PR head, and no commit status', async () => {
+  const { result, requests } = await withStubAPI(
+    [],
+    async (api, requests) => ({ result: await runGuard(workflowRunEnv(api, { action: 'completed', conclusion: 'success' })), requests }),
+    { openPRs: [TARGET_PR] },
+  );
+  assert.equal(result.code, 0, `guard exited ${result.code}\n${result.stdout}\n${result.stderr}`);
+  const created = checkRunWrites(requests);
+  assert.equal(created.length, 1, `expected exactly one check-run create, saw ${JSON.stringify(requests)}`);
+  assert.equal(created[0].path, '/repos/tsouza/cerberus/check-runs');
+  assert.equal(created[0].body.name, 'update-golden-guard');
+  assert.equal(created[0].body.head_sha, TARGET_PR.head.sha);
+  assert.equal(created[0].body.status, 'completed');
+  assert.equal(created[0].body.conclusion, 'success');
+  assert.equal(created[0].body.details_url, DISPATCH_URL);
+  assert.deepEqual(statusWrites(requests), [], 'a commit status cannot flip the failed check-run; none may be posted');
+});
+
+test('workflow_run: a CANCELLED completed dispatch leaves the guard red, naming the run, and posts no commit status', async () => {
+  const { result, requests } = await withStubAPI(
+    [],
+    async (api, requests) => ({ result: await runGuard(workflowRunEnv(api, { action: 'completed', conclusion: 'cancelled' })), requests }),
+    { openPRs: [TARGET_PR] },
+  );
+  assert.equal(result.code, 0, `guard exited ${result.code}\n${result.stdout}\n${result.stderr}`);
+  const created = checkRunWrites(requests);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].body.head_sha, TARGET_PR.head.sha);
+  assert.equal(created[0].body.conclusion, 'failure', 'a cancelled regeneration pushed nothing — the goldens are still stale');
+  assert.match(created[0].body.output.summary, /cancelled/);
+  assert.ok(
+    urlsNamedIn(created[0].body.output.summary).some((u) => u === DISPATCH_URL),
+    'must name the cancelled run',
+  );
+  assert.deepEqual(statusWrites(requests), []);
+});
+
+test('workflow_run: a REQUESTED dispatch yields an in_progress check-run with no conclusion', async () => {
+  const { result, requests } = await withStubAPI(
+    [{ display_title: `update-golden[${TARGET_BRANCH}]`, status: 'requested', html_url: DISPATCH_URL }],
+    async (api, requests) => ({ result: await runGuard(workflowRunEnv(api, { action: 'requested', conclusion: '' })), requests }),
+    { openPRs: [TARGET_PR] },
+  );
+  assert.equal(result.code, 0, `guard exited ${result.code}\n${result.stdout}\n${result.stderr}`);
+  const created = checkRunWrites(requests);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].body.status, 'in_progress');
+  assert.equal('conclusion' in created[0].body, false);
+  assert.deepEqual(statusWrites(requests), []);
 });
