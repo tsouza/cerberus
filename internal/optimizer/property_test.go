@@ -143,7 +143,7 @@ var (
 // N randomly generated plans, assert that the optimizer preserves the
 // row set when both plans are executed against the same chDB session.
 //
-// N defaults to 100; -short halves it to 10 so a `go test -short -tags
+// N defaults to 100; -short cuts it to 10 so a `go test -short -tags
 // chdb ./...` run stays under a minute. Each iteration logs the plan
 // shape on failure so reproducing locally is just a matter of rerunning
 // with the same -seed value.

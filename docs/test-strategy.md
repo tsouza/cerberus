@@ -48,7 +48,12 @@ sixteen **required** status checks on `main` — `check`, `lint`, `forbid-skip`,
 `config-docs`, `link-check`, `schema-ddl`, `coverage`, `strict-scan`,
 `quickstart`, `CodeQL`, and `property (PromQL + LogQL +
 TraceQL, rapid N=500)`. This is a small, fixed set chosen for speed and
-build/correctness coverage, not a per-diff selection.
+build/correctness coverage, not a per-diff selection. One member of it is
+inert on an ordinary pull request: `property (…)` posts an unconditional
+green no-op there (`property.yml`; a context must post on every PR to be
+requirable on `release/*`) and does its real work only as a release gate
+below, so its green on a merge means the workflow ran, not that the
+property suite did.
 
 Everything else in this section's table — `roundtrip (<head>)`,
 `compatibility/<head>` (all four required-posture heads), `perf-guards`,

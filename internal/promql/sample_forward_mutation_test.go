@@ -150,19 +150,20 @@ func TestResolveSampleRoleRefs_MissingNameSynthesisGuardDisjuncts(t *testing.T) 
 //     them regardless of which one it actually matches.
 //
 //  2. `if publicHistogram || discriminated {` (INVERT_LOGICAL, rewritten
-//     to `&&`). [chplan.Schema.SampleKind] additionally enforces that a
-//     RoleHistogramField column present at all means ALL NINE canonical
-//     fields are present (a partial set is itself SampleKindInvalid),
-//     and that a RoleDiscriminator column present without a complete
-//     histogram payload is SampleKindInvalid too. Given bullet 1 above,
-//     `publicHistogram` and `completeHistogram` (this function's own
-//     `row.HasHistogramPayload()`) always agree on any row that reaches
-//     this guard, and `discriminated` true always implies
-//     `publicHistogram` true. The one shape `||` and `&&` disagree on —
-//     exactly one of the two operands true — cannot occur, so neither
-//     the guard's own entry nor the `!completeHistogram` panic inside it
-//     is reachable on any input this function has not already rejected
-//     one line earlier.
+//     to `&&`). The shape `||` and `&&` disagree on — exactly one operand
+//     true — DOES occur: every plain native-histogram row is
+//     (publicHistogram=true, discriminated=false), since
+//     [chplan.Schema.SampleKind] admits the nine histogram-field columns
+//     with no RoleDiscriminator column at all. Under `&&` that row skips
+//     the guard where `||` entered it; the mutant is equivalent anyway
+//     because the guarded block is UNOBSERVABLE on every row SampleKind
+//     admits: `completeHistogram` (`row.HasHistogramPayload()`) is
+//     already true whenever `publicHistogram` is (SampleKind rejects a
+//     partial payload), so the `!completeHistogram` panic never fires;
+//     `requireUniqueNamedColumn` cannot panic after SampleKind's own
+//     `nameCount != 1` rejection of a duplicated column name; and the
+//     `if discriminated` branch is exactly as reachable under both
+//     operators. Entering or skipping the block changes nothing.
 //
 // Both are reachable only by handing validateSamplePayload a Schema that
 // violates its own SampleKind precondition, which is not a shape any
