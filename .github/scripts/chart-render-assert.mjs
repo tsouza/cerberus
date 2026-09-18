@@ -20,6 +20,7 @@
 //   17. objectStorage.enabled with nothing to mount: an empty bucket / container / account URL, or the static-credential route with no credential source, fails the render instead of rendering a cold tier that can never attach.
 //   18. affinityPresets.colocateWithClickHouse targets the bundled ClickHouse pods' own labels when the selector is the shipped default; an operator-set selector is used verbatim.
 //   19. Every ClickHouse container port carries its own protocol, with and without the metrics port, in both the single and the per-shard StatefulSet.
+//   20. bundled replicas>1 wires CERBERUS_SCHEMA_CLUSTER alongside the Replicated-database env, so cerberus's CREATE DATABASE runs ON CLUSTER and every replica attaches the database; an operator-set schema.CLUSTER wins.
 //
 // Env contract:
 //   CHART_DIR   chart directory (default: deploy/helm/cerberus)
@@ -454,17 +455,17 @@ function count(haystack, needle) {
 
   // bundled.replicas>1 (multi-replica PER SHARD) TOGETHER with
   // dataShards.count>1 — the shared {shard}/{replica} macro combination
-  // (cerberus issue #3077's own acceptance criterion). docs/operations.md's
-  // "Auto-create schema" guidance calls a Replicated-database engine and an
-  // ON CLUSTER cluster "mutually exclusive — pick one", so this combination
-  // does NOT reuse the plain replicas>1 Replicated-database default —
-  // instead it defaults the CLASSIC explicit ReplicatedMergeTree engine
-  // string, still sharing the same {shard}/{replica} macro slot.
+  // (cerberus issue #3077's own acceptance criterion). A Replicated database
+  // spanning several data shards is not a topology this chart has verified
+  // on a real cluster, so this combination does NOT reuse the plain
+  // replicas>1 Replicated-database default — instead it defaults the
+  // CLASSIC explicit ReplicatedMergeTree engine string, still sharing the
+  // same {shard}/{replica} macro slot.
   const replicatedPlusShards = tpl([
     '-f', `${CHART_DIR}/ci/bwc-replicated-values.yaml`,
     ...SHARD_OPT_IN,
   ])
-  check(!replicatedPlusShards.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED'), 'replicated+dataShards: the plain Replicated-DATABASE env is NOT wired (mutually exclusive with ON CLUSTER)')
+  check(!replicatedPlusShards.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED'), 'replicated+dataShards: the plain Replicated-DATABASE env is NOT wired (the classic ON CLUSTER engine path is)')
   check(replicatedPlusShards.includes("CERBERUS_SCHEMA_TABLE_ENGINE: \"ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')\""), 'replicated+dataShards: classic explicit ReplicatedMergeTree engine defaulted instead')
   check(replicatedPlusShards.includes('CERBERUS_SCHEMA_CLUSTER: "bwc_cluster"'), 'replicated+dataShards: CERBERUS_SCHEMA_CLUSTER wired')
   check(replicatedPlusShards.includes('CERBERUS_CH_DATA_SHARDS: "2"'), 'replicated+dataShards: CERBERUS_CH_DATA_SHARDS still wired')
@@ -873,6 +874,28 @@ function count(haystack, needle) {
     const noMetrics = tpl([...args, '--set', 'clickhouse.bundled.metrics.enabled=false'])
     check(PORT('interserver', 9009).test(noMetrics) && !noMetrics.includes('name: metrics'), `${label} + metrics.enabled=false: interserver still carries its protocol, no metrics port`)
   }
+}
+
+// --- 20. bundled replicas>1: CERBERUS_SCHEMA_CLUSTER rides along the ---------
+// Replicated-database env (cerberus issue #3581). A Replicated database
+// replicates DDL only to the hosts that have ATTACHED it, and cerberus issues
+// its CREATE DATABASE once, through the sessionAffinity-pinned Service — on
+// one replica. With the cluster named, cerberus puts ON CLUSTER on that one
+// statement (and on no table statement, which ClickHouse would reject inside
+// a Replicated database), so every replica attaches the database before the
+// first table is created. The bwc-replicated e2e lane proves the live
+// behaviour; this pins the wiring that makes it possible.
+{
+  const twoReplicas = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.replicas=2', '-s', 'templates/configmap-env.yaml'])
+  check(twoReplicas.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED: "true"'), 'replicas=2: CERBERUS_SCHEMA_DATABASE_REPLICATED defaulted on')
+  check(twoReplicas.includes('CERBERUS_SCHEMA_CLUSTER: "bwc_cluster"'), 'replicas=2: CERBERUS_SCHEMA_CLUSTER defaulted to the chart\'s own cluster.xml <cluster> name, so the CREATE DATABASE attaches every replica')
+
+  const operatorCluster = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.replicas=2', '--set', 'schema.CLUSTER=mine', '-s', 'templates/configmap-env.yaml'])
+  check(operatorCluster.includes('CERBERUS_SCHEMA_CLUSTER: "mine"'), 'replicas=2: an operator-set schema.CLUSTER wins over the default')
+  check(!operatorCluster.includes('bwc_cluster'), 'replicas=2 + operator schema.CLUSTER: the chart default is not rendered as well')
+
+  const oneReplica = tpl([...OBJECT_STORE, '-s', 'templates/configmap-env.yaml'])
+  check(!oneReplica.includes('CERBERUS_SCHEMA_CLUSTER'), 'replicas=1: no CERBERUS_SCHEMA_CLUSTER (single node, nothing to fan out over)')
 }
 
 process.exit(ok ? 0 : 1)

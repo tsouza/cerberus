@@ -48,7 +48,7 @@ E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.6-alpine ghcr.io/open-te
 # test/e2e/k3s/cerberus-values-bwc.yaml (clickhouse.bundled.image) — the chart
 # maps the CH container's pullPolicy to .Values.image.pullPolicy (Never in the
 # e2e values), so the exact bundled-CH tag MUST be imported here.
-E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.2025-08-13T08-35-41Z clickhouse/clickhouse-server:26.3"
+E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.2025-08-13T08-35-41Z clickhouse/clickhouse-server:26.6"
 
 # The bundled ClickHouse image the two hot-only chart lanes deploy: the
 # multi-data-shard lane (cerberus issue #3079, `e2e-datashard-up`) and the
@@ -58,10 +58,10 @@ E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.202
 # which would pull two MinIO images these lanes never run.
 #
 # Pinned to the chart's OWN bundled default (deploy/helm/cerberus/values.yaml
-# `clickhouse.bundled.image`, which tracks versions.yaml `quickstart_clickhouse`)
-# rather than the older tag E2E_BWC_IMAGES carries, so what these lanes observe
-# is what a default bundled install runs. docs/operations.md's Distributed
-# settings table is verified against that version, and its highest floor —
+# `clickhouse.bundled.image`, which tracks versions.yaml `quickstart_clickhouse`),
+# the same tag E2E_BWC_IMAGES carries, so every chart lane observes what a
+# default bundled install runs. docs/operations.md's Distributed settings
+# table is verified against that version, and its highest floor —
 # `join_spill` at 26.4 — is only reachable under fan-out when the datashard
 # lane's server clears it; on the 26.3 this used to pin the setting did not
 # exist server-side, so the row was never observed live.

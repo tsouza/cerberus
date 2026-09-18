@@ -30,8 +30,8 @@ import (
 // backtick-quoted (embedded backticks doubled, via Col → Builder.Ident) —
 // the ClickHouse distributed-DDL clause. name must be non-empty; a
 // single-node deployment omits the clause by not emitting this Frag at
-// all. Mutually exclusive with a Replicated database engine, which
-// replicates DDL itself.
+// all. Inside a Replicated database only the CREATE DATABASE carries it
+// (the database replicates table DDL itself and rejects the clause there).
 func OnCluster(name string) Frag {
 	return func(b *Builder) {
 		ddlToken("ON CLUSTER ")(b)
@@ -263,9 +263,12 @@ func (c *CreateDatabaseBuilder) IfNotExists() *CreateDatabaseBuilder {
 	return c
 }
 
-// OnCluster adds an `ON CLUSTER <name>` clause. Mutually exclusive with a
-// Replicated database engine (a Replicated database replicates DDL
-// itself) — pick one. An empty name leaves the clause off.
+// OnCluster adds an `ON CLUSTER <name>` clause. It combines with a
+// Replicated database Engine on purpose: a Replicated database replicates
+// DDL only to the hosts that have attached it, so the CREATE DATABASE is the
+// one statement that has to run on every host, and ON CLUSTER is what runs
+// it there (internal/schema/ddl's renderCreateDatabase). An empty name
+// leaves the clause off.
 func (c *CreateDatabaseBuilder) OnCluster(name string) *CreateDatabaseBuilder {
 	c.cluster = name
 	return c
