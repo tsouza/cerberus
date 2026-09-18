@@ -16,7 +16,10 @@
 //   13. storagePolicyName operator override wins in every storage mode.
 //   14. ClickHouse Service sessionAffinity default-on / opt-out.
 //   15. dataShards.count (EXPERIMENTAL): count==1 byte-identical to the bare default; count>1 per-shard objects and env wiring, PDB split, keeper guard, fanoutCap apportionment, the experimental opt-in gate.
-//   16. schema.replicated.enabled requires a non-empty zookeeperPath (values.schema.json if/then), instead of rendering a config that crash-loops at cerberus's own boot-time validation.
+//   16. schema.replicated.zookeeperPath: required once enabled (instead of a config that crash-loops at cerberus's own boot-time validation), defaulted to the shared root for the bundled replicas>1 tier, and refused whenever it carries {shard}/{replica} — swept over every ci/*.yaml fixture.
+//   17. objectStorage.enabled with nothing to mount: an empty bucket / container / account URL, or the static-credential route with no credential source, fails the render instead of rendering a cold tier that can never attach.
+//   18. affinityPresets.colocateWithClickHouse targets the bundled ClickHouse pods' own labels when the selector is the shipped default; an operator-set selector is used verbatim.
+//   19. Every ClickHouse container port carries its own protocol, with and without the metrics port, in both the single and the per-shard StatefulSet.
 //
 // Env contract:
 //   CHART_DIR   chart directory (default: deploy/helm/cerberus)
@@ -25,6 +28,7 @@
 // Exit 1 on any failed assertion, 0 when all pass.
 
 import { execFileSync } from 'node:child_process'
+import { readdirSync } from 'node:fs'
 import { error as ghError, notice as ghNotice } from './lib/gh.mjs'
 
 const CHART_DIR = process.env.CHART_DIR || 'deploy/helm/cerberus'
@@ -36,12 +40,17 @@ const MiB = 1048576
 const GiB = 1073741824
 
 // Shared `--set` prefixes, spread into every render below:
-//   BUNDLED      — the bundled ClickHouse data tier on (bare default: hot/cold storage mode).
+//   BUNDLED      — the bundled ClickHouse data tier on (bare default: hot/cold storage mode),
+//                  with the bucket and credential source the object-store tier refuses to render without (section 17).
 //   OBJECT_STORE — BUNDLED pinned to the pre-#3075 single-volume object-store mode.
 //   HOT_ONLY     — BUNDLED pinned to hot-only mode, with the schema.ttl that mode requires.
 //   SHARD_OPT_IN — the EXPERIMENTAL two-data-shard topology + its values-level consent, on top of any bundled base.
 //   SHARDED      — OBJECT_STORE + SHARD_OPT_IN.
-const BUNDLED = ['--set', 'clickhouse.bundled.enabled=true']
+const BUNDLED = [
+  '--set', 'clickhouse.bundled.enabled=true',
+  '--set', 'clickhouse.bundled.objectStorage.bucket=render-assert-bucket',
+  '--set', 'clickhouse.bundled.objectStorage.s3.useEnvironmentCredentials=true',
+]
 const OBJECT_STORE = [...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=false']
 const HOT_ONLY = [
   ...BUNDLED,
@@ -499,7 +508,7 @@ function count(haystack, needle) {
   // cross-shard query fails AUTHENTICATION_FAILED while direct connections to
   // each node keep working. The render refuses count>1 without one.
   const shardsNoSecret = tplFail([
-    '--set', 'clickhouse.bundled.enabled=true',
+    ...BUNDLED,
     '--set', 'clickhouse.bundled.objectStorage.enabled=true',
     '--set', 'clickhouse.bundled.objectStorage.backend=s3',
     '--set', 'schema.ttl=30d',
@@ -569,7 +578,10 @@ function count(haystack, needle) {
   check(!noMetrics.includes('9363'), 'metrics.enabled=false renders no endpoint, port or Service entry')
   check(!noMetrics.includes('metrics.xml'), 'metrics.enabled=false renders no metrics.xml ConfigMap key')
 
-  // Every per-shard Service pair gets it too, not just shard 0.
+  // Every per-shard Service pair gets it too, not just shard 0 — and every
+  // per-shard pod receives metrics.xml itself. The per-shard "config" volume
+  // enumerates its ConfigMap keys explicitly (items[]), so a key the list
+  // omits never reaches the pod: a declared port with nothing listening.
   const shardedMetrics = tpl(SHARDED)
   check(
     count(shardedMetrics, 'targetPort: metrics') === 4,
@@ -579,6 +591,12 @@ function count(haystack, needle) {
     count(shardedMetrics, 'containerPort: 9363') === 2,
     'dataShards.count=2: both per-shard StatefulSets expose the metrics port',
   )
+  check(
+    count(shardedMetrics, 'key: metrics.xml\n') === 2 && count(shardedMetrics, 'path: metrics.xml\n') === 2,
+    'dataShards.count=2: metrics.xml is projected into BOTH per-shard config volumes (items[] key + path)',
+  )
+  const shardedNoMetrics = tpl([...SHARDED, '--set', 'clickhouse.bundled.metrics.enabled=false'])
+  check(!shardedNoMetrics.includes('metrics.xml'), 'dataShards.count=2 + metrics.enabled=false: no metrics.xml key or projection anywhere')
 
   const keeperOffWithShards = tplFail([...SHARDED, '--set', 'clickhouse.bundled.keeper.enabled=false'])
   check(keeperOffWithShards !== null, 'keeper.enabled=false + dataShards.count=2: render FAILS')
@@ -664,14 +682,24 @@ function count(haystack, needle) {
   check(pdbBareDefault === pdbExplicitOne, 'PodDisruptionBudget: dataShards.count=1 renders BYTE-IDENTICAL to the bare default')
 }
 
-// --- 16. schema.replicated.enabled requires a non-empty zookeeperPath --------
-// (cerberus issue #3176). Without the values.schema.json `if`/`then`
-// conditional this section pins, `schema.replicated.enabled: true` with the
-// chart's own default empty zookeeperPath renders CERBERUS_SCHEMA_DATABASE_
-// REPLICATED="true" with no ..._PATH — internal/schema/ddl.Config.Validate()
-// correctly rejects that at cerberus's own boot time, but only as a crash-
-// loop; the whole point of this schema addition is catching it here instead,
-// at `helm template`/`--dry-run`/`lint` time.
+// --- 16. schema.replicated.zookeeperPath ---------------------------------
+// (cerberus issue #3176 for the required-once-enabled half.) Without the
+// render-time refusal, `schema.replicated.enabled: true` with an empty
+// zookeeperPath renders CERBERUS_SCHEMA_DATABASE_REPLICATED="true" with no
+// ..._PATH — internal/schema/ddl.Config.Validate() correctly rejects that at
+// cerberus's own boot time, but only as a crash-loop; the point is catching it
+// at `helm template`/`--dry-run`/`lint` time. The check runs AFTER
+// cerberus.bundled.apply's defaulting, so a bundled replicas>1 tier that
+// derives the path is not refused for a value it is about to fill in.
+//
+// The {shard}/{replica} half: the Replicated database engine takes those two
+// as its own separate arguments (ENGINE = Replicated(path, '{shard}',
+// '{replica}')) and expands macros inside the path as well, so a path that
+// carries them roots every replica at a DIFFERENT node — N unrelated
+// single-replica databases that never replicate, with cerberus's auto-create
+// DDL landing on whichever one its connection hits. Refused for every
+// source of the value (operator-set, fixture, bundled default), and swept
+// over every ci/*.yaml fixture so no shipped example carries the macros.
 {
   const missingPath = tplFail(['--set', 'schema.replicated.enabled=true', '-s', 'templates/configmap-env.yaml'])
   check(missingPath !== null, 'schema.replicated.enabled=true with the default empty zookeeperPath: render FAILS')
@@ -679,17 +707,172 @@ function count(haystack, needle) {
 
   const withPath = tpl([
     '--set', 'schema.replicated.enabled=true',
-    '--set', 'schema.replicated.zookeeperPath=/clickhouse/databases/otel/{shard}/{replica}',
+    '--set', 'schema.replicated.zookeeperPath=/clickhouse/databases/otel',
     '-s', 'templates/configmap-env.yaml',
   ])
   check(withPath.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED: "true"'), 'schema.replicated.enabled=true + zookeeperPath set: renders CERBERUS_SCHEMA_DATABASE_REPLICATED')
   check(
-    withPath.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH: "/clickhouse/databases/otel/{shard}/{replica}"'),
+    withPath.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH: "/clickhouse/databases/otel"'),
     'schema.replicated.enabled=true + zookeeperPath set: renders CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH',
   )
 
   const bareDefault = tpl(['-s', 'templates/configmap-env.yaml'])
   check(!bareDefault.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED'), 'schema.replicated left at its default (disabled): still renders clean, no REPLICATED keys at all')
+
+  // Either macro, anywhere in the path, from an operator-set value.
+  const MACRO = /\{shard\}|\{replica\}/
+  for (const bad of [
+    '/clickhouse/databases/otel/{shard}/{replica}',
+    '/clickhouse/databases/{shard}/otel',
+    '/clickhouse/{replica}/databases/otel',
+  ]) {
+    const out = tplFail([
+      '--set', 'schema.replicated.enabled=true',
+      '--set-string', `schema.replicated.zookeeperPath=${bad}`,
+      '-s', 'templates/configmap-env.yaml',
+    ])
+    check(out !== null, `zookeeperPath=${bad}: render FAILS`)
+    check(out !== null && /zookeeperPath/.test(out) && MACRO.test(out), `zookeeperPath=${bad}: the rejection names zookeeperPath and the macro`)
+  }
+
+  // The bundled replicas>1 default is the SHARED root derived from
+  // clickhouse.database — never a per-replica one.
+  const bundledDefault = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.replicas=2', '--set', 'clickhouse.database=metrics', '-s', 'templates/configmap-env.yaml'])
+  check(
+    bundledDefault.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH: "/clickhouse/databases/metrics"'),
+    'bundled replicas=2: zookeeperPath defaults to the shared root /clickhouse/databases/<database>',
+  )
+  // An operator who enables the schema explicitly under that same tier and
+  // leaves the path empty gets the same default, not a refusal — the check
+  // runs after the defaulting.
+  const explicitEnabledEmpty = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.replicas=2', '--set', 'schema.replicated.enabled=true', '-s', 'templates/configmap-env.yaml'])
+  check(
+    explicitEnabledEmpty.includes('CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH: "/clickhouse/databases/otel"'),
+    'bundled replicas=2 + schema.replicated.enabled=true with an empty path: defaulted, not refused',
+  )
+  // ...while the same explicit enable with an empty path under
+  // dataShards.count>1 (where the chart does NOT default the Replicated
+  // database) is still refused.
+  const shardsExplicitEnabledEmpty = tplFail([...SHARDED, '--set', 'clickhouse.bundled.replicas=2', '--set', 'schema.replicated.enabled=true'])
+  check(shardsExplicitEnabledEmpty !== null && /zookeeperPath/.test(shardsExplicitEnabledEmpty), 'dataShards.count=2 + schema.replicated.enabled=true with an empty path: render FAILS naming zookeeperPath (no default applies there)')
+
+  // Sweep: every shipped ci/*.yaml fixture renders, and no rendered
+  // Replicated path anywhere carries a macro. At least two fixtures must
+  // actually render a path (ha-values, bwc-replicated-values) or the sweep
+  // proves nothing.
+  const PATH_LINE = /CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH: "([^"]*)"/g
+  let fixturesWithPath = 0
+  for (const f of readdirSync(`${CHART_DIR}/ci`).sort()) {
+    if (!f.endsWith('.yaml') && !f.endsWith('.yml')) continue
+    const out = tpl(['-f', `${CHART_DIR}/ci/${f}`])
+    const paths = [...out.matchAll(PATH_LINE)].map((m) => m[1])
+    if (paths.length > 0) fixturesWithPath += 1
+    for (const p of paths) {
+      check(!MACRO.test(p), `ci/${f}: rendered Replicated path ${JSON.stringify(p)} carries no {shard}/{replica} macro`)
+    }
+  }
+  check(fixturesWithPath >= 2, `at least two ci fixtures render a Replicated path (saw ${fixturesWithPath}), so the macro sweep is not vacuous`)
+}
+
+// --- 17. objectStorage.enabled with nothing to mount --------------------------
+// The object-store disk's <endpoint> is built from objectStorage.bucket (s3 /
+// gcs) or the azure account URL + container, and the static-credential route
+// renders secretKeyRefs against a Secret that only exists when a
+// credentialsSecret is named or inline keys are given. The bare
+// `clickhouse.bundled.enabled=true` used to render `https://.s3.us-east-1.
+// amazonaws.com/data/` and a secretKeyRef to a Secret nothing rendered — a
+// ClickHouse whose cold tier could never attach, with no render-time signal.
+{
+  const bareBundled = tplFail(['--set', 'clickhouse.bundled.enabled=true'])
+  check(bareBundled !== null && /objectStorage\.bucket/.test(bareBundled), 'clickhouse.bundled.enabled=true alone (s3, empty bucket): render FAILS naming objectStorage.bucket')
+
+  const s3NoCreds = tplFail(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.objectStorage.bucket=b'])
+  check(s3NoCreds !== null && /credentialsSecret/.test(s3NoCreds) && /useEnvironmentCredentials/.test(s3NoCreds), 's3 with a bucket but no credential source: render FAILS naming credentialsSecret and useEnvironmentCredentials')
+
+  for (const [label, args] of [
+    ['s3 + useEnvironmentCredentials', ['--set', 'clickhouse.bundled.objectStorage.s3.useEnvironmentCredentials=true']],
+    ['s3 + credentialsSecret', ['--set', 'clickhouse.bundled.objectStorage.s3.credentialsSecret=mine']],
+    ['s3 + inline keys', ['--set', 'clickhouse.bundled.objectStorage.s3.accessKeyId=a', '--set', 'clickhouse.bundled.objectStorage.s3.secretAccessKey=s']],
+  ]) {
+    const out = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.objectStorage.bucket=b', ...args])
+    check(out.includes('<endpoint>https://b.s3.us-east-1.amazonaws.com/data/</endpoint>'), `${label}: renders the bucket endpoint`)
+  }
+  const s3InlineOnlyOneKey = tplFail(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.objectStorage.bucket=b', '--set', 'clickhouse.bundled.objectStorage.s3.accessKeyId=a'])
+  check(s3InlineOnlyOneKey !== null && /credentialsSecret/.test(s3InlineOnlyOneKey), 's3 with only accessKeyId (no secretAccessKey): render FAILS — half a credential is no credential')
+
+  const gcsBase = ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.objectStorage.backend=gcs']
+  const gcsNoBucket = tplFail([...gcsBase, '--set', 'clickhouse.bundled.objectStorage.gcs.credentialsSecret=mine'])
+  check(gcsNoBucket !== null && /objectStorage\.bucket/.test(gcsNoBucket), 'gcs with an empty bucket: render FAILS naming objectStorage.bucket')
+  const gcsNoCreds = tplFail([...gcsBase, '--set', 'clickhouse.bundled.objectStorage.bucket=b'])
+  check(gcsNoCreds !== null && /gcs\.credentialsSecret/.test(gcsNoCreds), 'gcs with a bucket but no credential source: render FAILS naming gcs.credentialsSecret')
+  const gcsOk = tpl([...gcsBase, '--set', 'clickhouse.bundled.objectStorage.bucket=b', '--set', 'clickhouse.bundled.objectStorage.gcs.credentialsSecret=mine'])
+  check(gcsOk.includes('<endpoint>https://storage.googleapis.com/b/data/</endpoint>'), 'gcs with bucket + credentialsSecret: renders')
+
+  const azBase = ['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.objectStorage.backend=azure', '--set', 'clickhouse.bundled.objectStorage.azure.useManagedIdentity=true']
+  const azNoUrl = tplFail([...azBase, '--set', 'clickhouse.bundled.objectStorage.azure.container=c'])
+  check(azNoUrl !== null && /storageAccountUrl/.test(azNoUrl), 'azure with an empty storageAccountUrl: render FAILS naming it')
+  const azNoContainer = tplFail([...azBase, '--set', 'clickhouse.bundled.objectStorage.azure.storageAccountUrl=https://x.blob.core.windows.net'])
+  check(azNoContainer !== null && /azure\.container/.test(azNoContainer), 'azure with an empty container: render FAILS naming it')
+  const azNoCreds = tplFail([
+    '--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.objectStorage.backend=azure',
+    '--set', 'clickhouse.bundled.objectStorage.azure.storageAccountUrl=https://x.blob.core.windows.net', '--set', 'clickhouse.bundled.objectStorage.azure.container=c',
+  ])
+  check(azNoCreds !== null && /azure\.credentialsSecret/.test(azNoCreds) && /useManagedIdentity/.test(azNoCreds), 'azure with URL + container but no credential source: render FAILS naming azure.credentialsSecret and useManagedIdentity')
+  const azOk = tpl([...azBase, '--set', 'clickhouse.bundled.objectStorage.azure.storageAccountUrl=https://x.blob.core.windows.net', '--set', 'clickhouse.bundled.objectStorage.azure.container=c'])
+  check(azOk.includes('<container_name>c</container_name>') && azOk.includes('<use_managed_identity>true</use_managed_identity>'), 'azure with URL + container + managed identity: renders')
+
+  // Hot-only mode has no object-store tier and needs none of the above.
+  const hotOnlyBare = tpl(['--set', 'clickhouse.bundled.enabled=true', '--set', 'clickhouse.bundled.objectStorage.enabled=false', '--set', 'schema.ttl=30d'])
+  check(hotOnlyBare.includes('<bwc_hot_only>'), 'hot-only mode with no bucket or credentials: renders (no object-store tier to validate)')
+}
+
+// --- 18. affinityPresets.colocateWithClickHouse vs the bundled pods -----------
+// The shipped podSelector default (app.kubernetes.io/name: clickhouse) names
+// an external ClickHouse's conventional label; the bundled pods carry
+// `<name>-clickhouse` (a distinct name so the gateway Service never
+// over-selects them), which that default can never match — a `preferred`
+// term that silently never fires, a `required` term that leaves every
+// cerberus pod Pending.
+{
+  const PRESET = ['--set', 'affinityPresets.colocateWithClickHouse.enabled=true']
+  const bundledSelector = 'app.kubernetes.io/name: cerberus-clickhouse'
+  const external = tpl([...PRESET, '-s', 'templates/deployment.yaml'])
+  check(external.includes('app.kubernetes.io/name: clickhouse\n') && !external.includes(bundledSelector), 'external ClickHouse (bundled off): the shipped default selector is used as is')
+
+  for (const mode of ['preferred', 'required']) {
+    const bundled = tpl([...BUNDLED, ...PRESET, '--set', `affinityPresets.colocateWithClickHouse.mode=${mode}`, '-s', 'templates/deployment.yaml'])
+    const term = bundled.slice(bundled.indexOf(`${mode}DuringSchedulingIgnoredDuringExecution`))
+    check(
+      term.includes(bundledSelector) && term.includes('app.kubernetes.io/component: clickhouse') && term.includes('app.kubernetes.io/instance: rn') && !term.includes('app.kubernetes.io/name: clickhouse\n'),
+      `bundled + shipped default selector (${mode}): the term targets the bundled pods' own selector labels`,
+    )
+  }
+  const bundledSts = tpl([...BUNDLED, '-s', 'templates/clickhouse/statefulset.yaml'])
+  check(bundledSts.includes(bundledSelector), 'the substituted selector is exactly the label the bundled StatefulSet pods carry')
+
+  const custom = tpl([...BUNDLED, ...PRESET, '--set', 'affinityPresets.colocateWithClickHouse.podSelector.matchLabels.app=my-ch', '-s', 'templates/deployment.yaml'])
+  check(custom.includes('app: my-ch') && !custom.includes(bundledSelector), 'bundled + operator-set selector: used verbatim, never substituted')
+
+  const split = tpl([...BUNDLED, ...PRESET, '-f', `${CHART_DIR}/ci/split-pdb-values.yaml`, '-s', 'templates/split.yaml'])
+  check(count(split, bundledSelector) === 3, 'mode=split: every head Deployment gets the substituted selector')
+}
+
+// --- 19. Container port protocols ---------------------------------------------
+// The metrics port block used to be spliced between the interserver port's
+// containerPort and its protocol line, so `interserver` rendered with no
+// protocol and `metrics` inherited it.
+{
+  const PORT = (name, port) => new RegExp(`- name: ${name}\\n\\s+containerPort: ${port}\\n\\s+protocol: TCP\\n`)
+  for (const [label, args] of [
+    ['single StatefulSet', [...OBJECT_STORE, '-s', 'templates/clickhouse/statefulset.yaml']],
+    ['per-shard StatefulSets', [...SHARDED, '-s', 'templates/clickhouse/statefulset.yaml']],
+  ]) {
+    const out = tpl(args)
+    check(PORT('interserver', 9009).test(out), `${label}: interserver port carries its own protocol`)
+    check(PORT('metrics', 9363).test(out), `${label}: metrics port carries its own protocol`)
+    const noMetrics = tpl([...args, '--set', 'clickhouse.bundled.metrics.enabled=false'])
+    check(PORT('interserver', 9009).test(noMetrics) && !noMetrics.includes('name: metrics'), `${label} + metrics.enabled=false: interserver still carries its protocol, no metrics port`)
+  }
 }
 
 process.exit(ok ? 0 : 1)

@@ -46,8 +46,6 @@ annotations:
   artifacthub.io/images: |
     - name: cerberus
       image: ghcr.io/tsouza/cerberus:v1.20.0
-  # Bump the `1.0.0` floor here when the chart raises its minimum supported
-  # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
     - kind: added
       description: "perf: gate releases on regressions against the last shipped version (#3151)"

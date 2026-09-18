@@ -68,11 +68,12 @@ spec:
               protocol: TCP
             - name: interserver
               containerPort: 9009
+              protocol: TCP
             {{- if $b.metrics.enabled }}
             - name: metrics
               containerPort: {{ $b.metrics.port }}
-            {{- end }}
               protocol: TCP
+            {{- end }}
           env:
             # The users config is mounted from a (read-only) ConfigMap at
             # /etc/clickhouse-server/users.d. The server image entrypoint
@@ -254,11 +255,12 @@ spec:
               protocol: TCP
             - name: interserver
               containerPort: 9009
+              protocol: TCP
             {{- if $b.metrics.enabled }}
             - name: metrics
               containerPort: {{ $b.metrics.port }}
-            {{- end }}
               protocol: TCP
+            {{- end }}
           env:
             # The users config is mounted from a (read-only) ConfigMap at
             # /etc/clickhouse-server/users.d. The server image entrypoint
@@ -341,6 +343,10 @@ spec:
                 path: tuning.xml
               - key: cluster.xml
                 path: cluster.xml
+              {{- if $b.metrics.enabled }}
+              - key: metrics.xml
+                path: metrics.xml
+              {{- end }}
               - key: {{ include "cerberus.clickhouse.macrosKeyForDataShard" $shard }}
                 path: macros.xml
               {{- with $b.configOverrides }}
