@@ -139,6 +139,7 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import { appendStepSummary, error, git, log, notice } from './lib/gh.mjs';
+import { NOT_FOUND_NULL, ghHeaders, ghJSON } from './lib/gh-api.mjs';
 
 // How far a citation may sit from its marker in a diff. A marker and the issue
 // that tracks it belong to the same comment block; three lines spans a short
@@ -150,7 +151,6 @@ export const CITATION_WINDOW_LINES = 3;
 // GitHub's "not found" — for a cited number that names nothing AND for one the
 // token may not read. The two are indistinguishable at the issue endpoint by
 // design, which is why issuesReadability() exists.
-const HTTP_NOT_FOUND = 404;
 
 // The capability probe reads the smallest page the list endpoint will serve: it
 // wants the status line, never the payload, and a repository with thousands of
@@ -980,28 +980,18 @@ export function diffOf(base, head) {
   return res.stdout;
 }
 
-function apiHeaders(token) {
-  return {
-    Accept: 'application/vnd.github+json',
-    Authorization: `Bearer ${token}`,
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-}
-
 // probeStatus — one GET reduced to its status line. The capability probe asks
 // only whether a read was permitted, so it must not depend on a payload shape.
 async function probeStatus(url, token) {
-  const res = await fetch(url, { headers: apiHeaders(token) });
+  const res = await fetch(url, { headers: ghHeaders(token) });
   return { ok: res.ok, status: res.status, statusText: res.statusText };
 }
 
+// apiJson — a lookup that may legitimately miss: a 404 is `null` (an issue
+// number that names nothing, a commit with no pull request), and the caller
+// decides what a miss means. Every other failure throws.
 export async function apiJson(url, token, what) {
-  const res = await fetch(url, { headers: apiHeaders(token) });
-  if (res.status === HTTP_NOT_FOUND) return null;
-  if (!res.ok) {
-    throw new Error(`${what}: HTTP ${res.status} ${res.statusText} for ${url}`);
-  }
-  return res.json();
+  return ghJSON(url, { token, what, notFound: NOT_FOUND_NULL });
 }
 
 // descriptionSurface — the PR description(s), however this event can reach

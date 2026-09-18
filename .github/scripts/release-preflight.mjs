@@ -204,6 +204,7 @@
 import process from 'node:process';
 
 import { DEFAULT_REGISTRY_PATH, loadRegistry } from './ci-lane-contract.mjs';
+import { DEFAULT_API_BASE, GITHUB_PER_PAGE, NOT_FOUND_THROW, ghHeaders, ghJSON, ghPaginate } from './lib/gh-api.mjs';
 import { resolveSourcePR } from './lib/resolve-source-pr.mjs';
 
 // A maintenance line is `release/<major>.<minor>.x` — `release/1.4.x`,
@@ -1096,7 +1097,7 @@ async function main() {
   const repo = process.env.GITHUB_REPOSITORY;
   const pushedSha = process.env.GITHUB_SHA;
   const branch = process.env.GITHUB_REF_NAME ?? '';
-  const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
+  const apiBase = process.env.GITHUB_API_URL || DEFAULT_API_BASE;
   const token = process.env.GITHUB_TOKEN;
   const runId = process.env.GITHUB_RUN_ID;
   const selfJobs = new Set(parseCheckList(process.env.RELEASE_SELF_JOBS));
@@ -1134,18 +1135,13 @@ async function main() {
     process.exit(1);
   }
 
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-
+  // Every read below is a resource the gate needs to exist (the branch, the
+  // commit's check-runs and suites, the tag list, this run): a 404 blocks.
   async function getJSON(url) {
-    const res = await fetch(url, { headers });
-    if (!res.ok) {
-      throw new Error(`GET ${url} -> ${res.status} ${res.statusText}`);
-    }
-    return res.json();
+    return ghJSON(url, { token, notFound: NOT_FOUND_THROW });
+  }
+  async function getPages(url, pick) {
+    return ghPaginate({ url, token, pick });
   }
 
   // The pushed commit must be the current tip of the maintenance branch.
@@ -1158,53 +1154,25 @@ async function main() {
   // the source-PR credit below (tsouza/cerberus#2394) is the only caller that
   // passes an explicit sha (the resolved PR's tip commit).
   async function allCheckRuns(sha = pushedSha) {
-    const out = [];
-    let page = 1;
-    for (;;) {
-      const data = await getJSON(`${apiBase}/repos/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`);
-      const runs = data.check_runs ?? [];
-      out.push(...runs);
-      if (runs.length < 100) break;
-      page += 1;
-    }
-    return out;
+    return getPages(`${apiBase}/repos/${repo}/commits/${sha}/check-runs`, (data) => data.check_runs);
   }
 
   async function combinedStatus(sha = pushedSha) {
-    return getJSON(`${apiBase}/repos/${repo}/commits/${sha}/status?per_page=100`);
+    return getJSON(`${apiBase}/repos/${repo}/commits/${sha}/status?per_page=${GITHUB_PER_PAGE}`);
   }
 
   // Every tag name — the support-window gate derives the current minor from the
   // stable `v<major>.<minor>.<patch>` subset. Listed via the API (not git) so
   // the preflight job needs no fetch-depth.
   async function allTags() {
-    const out = [];
-    let page = 1;
-    for (;;) {
-      const data = await getJSON(`${apiBase}/repos/${repo}/tags?per_page=100&page=${page}`);
-      const names = (data ?? []).map((t) => t.name);
-      out.push(...names);
-      if (names.length < 100) break;
-      page += 1;
-    }
-    return out;
+    const tags = await getPages(`${apiBase}/repos/${repo}/tags`);
+    return tags.map((t) => t.name);
   }
 
   // All check-suites on the pushed commit. The wait phase polls this until every
   // suite EXCEPT this release run's own is `completed`.
   async function allCheckSuites() {
-    const out = [];
-    let page = 1;
-    for (;;) {
-      const data = await getJSON(
-        `${apiBase}/repos/${repo}/commits/${pushedSha}/check-suites?per_page=100&page=${page}`,
-      );
-      const suites = data.check_suites ?? [];
-      out.push(...suites);
-      if (suites.length < 100) break;
-      page += 1;
-    }
-    return out;
+    return getPages(`${apiBase}/repos/${repo}/commits/${pushedSha}/check-suites`, (data) => data.check_suites);
   }
 
   // suite id -> workflow run name, for the wait loop's progress message. Every
@@ -1213,17 +1181,12 @@ async function main() {
   // resolve a name degrades the message to the app slug, never the gate.
   async function workflowNamesBySuite() {
     const names = new Map();
-    let page = 1;
-    for (;;) {
-      const data = await getJSON(
-        `${apiBase}/repos/${repo}/actions/runs?head_sha=${pushedSha}&per_page=100&page=${page}`,
-      );
-      const runs = data.workflow_runs ?? [];
-      for (const r of runs) {
-        if (r.check_suite_id != null && r.name) names.set(r.check_suite_id, r.name);
-      }
-      if (runs.length < 100) break;
-      page += 1;
+    const runs = await getPages(
+      `${apiBase}/repos/${repo}/actions/runs?head_sha=${pushedSha}`,
+      (data) => data.workflow_runs,
+    );
+    for (const r of runs) {
+      if (r.check_suite_id != null && r.name) names.set(r.check_suite_id, r.name);
     }
     return names;
   }
@@ -1440,35 +1403,21 @@ async function retireLine() {
   const repo = process.env.GITHUB_REPOSITORY;
   const token = process.env.GITHUB_TOKEN;
   const version = process.env.RELEASE_APP_VERSION ?? '';
-  const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
+  const apiBase = process.env.GITHUB_API_URL || DEFAULT_API_BASE;
 
   if (!repo || !token) {
     ghError('eol-retire-line: GITHUB_REPOSITORY and GITHUB_TOKEN are required');
     process.exit(1);
   }
 
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
+  const headers = ghHeaders(token);
 
   // All tags — the window anchors to the highest released stable minor. Fetched
   // via the API so the step needs no fetch-depth. Fail-open: if we cannot list
   // tags we cannot safely compute the window, so we retire nothing and return.
   async function allTags() {
-    const out = [];
-    let page = 1;
-    for (;;) {
-      const res = await fetch(`${apiBase}/repos/${repo}/tags?per_page=100&page=${page}`, { headers });
-      if (!res.ok) throw new Error(`GET tags -> ${res.status} ${res.statusText}`);
-      const data = await res.json();
-      const names = (data ?? []).map((t) => t.name);
-      out.push(...names);
-      if (names.length < 100) break;
-      page += 1;
-    }
-    return out;
+    const tags = await ghPaginate({ url: `${apiBase}/repos/${repo}/tags`, headers, what: 'GET tags' });
+    return tags.map((t) => t.name);
   }
 
   let tags;

@@ -533,6 +533,13 @@ jobs:
       - name: resolve-source-pr self-test (fail-closed PR-match guard)
         run: node --test .github/scripts/lib/resolve-source-pr.test.mjs
 
+      # The one GitHub REST client every API-reading script shares. What it
+      # pins is the behaviour the per-script copies used to disagree on: a
+      # caller must state whether a 404 is `null` or an error, and pagination
+      # never returns a silent prefix.
+      - name: gh-api self-test (404 policy + pagination)
+        run: node --test .github/scripts/lib/gh-api.test.mjs
+
       # tsouza/cerberus#2361's fix: release.yml's preflight re-reads the
       # release-staging PR's OWN `dashboard` check-run (the only run that ever
       # exercises the k3d crawl leg for a release commit) instead of trusting

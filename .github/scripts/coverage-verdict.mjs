@@ -103,6 +103,7 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { DEFAULT_PROFILE, laneRecordPath, resolveUpdateLanes } from './coverage-summary.mjs';
 import { appendStepSummary, error, log, notice, warning } from './lib/gh.mjs';
+import { NOT_FOUND_THROW, ghJSON } from './lib/gh-api.mjs';
 
 // The workflow file whose runs answer "when was the trunk last measured".
 const COVERAGE_WORKFLOW_FILE = 'coverage.yml';
@@ -344,16 +345,11 @@ export function describeTrunk(trunk, { trunkBranch, scanned = TRUNK_RUN_SCAN_PAG
   };
 }
 
+// A 404 is a failure here: the caller (fetchTrunkMeasurement) already turns
+// every error into `{ error }`, and a missing run or artifact list is exactly
+// the "could not read the trunk" case it reports as degraded.
 async function getJSON(url, token, fetchImpl) {
-  const res = await fetchImpl(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
-  return res.json();
+  return ghJSON(url, { token, notFound: NOT_FOUND_THROW, fetchImpl });
 }
 
 /**

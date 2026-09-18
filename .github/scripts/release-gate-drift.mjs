@@ -100,6 +100,7 @@ import { resolve } from 'node:path';
 
 import { DEFAULT_REGISTRY_PATH, loadRegistry } from './ci-lane-contract.mjs';
 import { error, notice, log, appendStepSummary } from './lib/gh.mjs';
+import { GITHUB_PER_PAGE, NOT_FOUND_THROW, ghHeaders, ghJSON, ghPaginate } from './lib/gh-api.mjs';
 import { matchesInformational, registryInformationalMatchers } from './release-preflight.mjs';
 
 // How far back the lane-drift scan looks. A single commit is not enough: lanes
@@ -110,7 +111,7 @@ const defaultHistoryCommits = 20;
 
 // GitHub caps `per_page` at 100 for the commit list, the check-run list and the
 // combined-status list.
-const maxPerPage = 100;
+const maxPerPage = GITHUB_PER_PAGE;
 
 // A busy commit on `main` carries far more than one page of check-runs — 146 on
 // 2733b38c7, across 26 check suites — so a single-page read is a TRUNCATED
@@ -272,41 +273,21 @@ export function laneDrift({ required, observed }) {
     );
 }
 
+// Every read here is a resource that must exist (the branch rules, the
+// commit list, each commit's check-runs), so a 404 is a failure.
 export async function apiJson(url, headers, what, fetchImpl = globalThis.fetch) {
-  const res = await fetchImpl(url, { headers });
-  if (!res.ok) {
-    throw new Error(`${what}: HTTP ${res.status} ${res.statusText} for ${url}`);
-  }
-  return res.json();
+  return ghJSON(url, { headers, what, notFound: NOT_FOUND_THROW, fetchImpl });
 }
 
-// apiPaged — every item across every page, not just the first. `pick` pulls the
-// item array out of a page body, because the check-run and combined-status
-// endpoints wrap theirs under different keys. A short page ends the walk; a
+// apiPaged — every item across every page, bounded by maxObservationPages: a
 // walk that never shortens throws rather than silently returning a prefix,
-// since a prefix is exactly the truncation this function exists to remove.
+// since a prefix is exactly the truncation this detector exists to remove.
 export async function apiPaged({ url, headers, what, pick, fetchImpl = globalThis.fetch }) {
-  const join = url.includes('?') ? '&' : '?';
-  const items = [];
-  for (let page = 1; page <= maxObservationPages; page++) {
-    const body = await apiJson(`${url}${join}per_page=${maxPerPage}&page=${page}`, headers, what, fetchImpl);
-    const batch = pick(body) ?? [];
-    items.push(...batch);
-    if (batch.length < maxPerPage) return items;
-  }
-  throw new Error(
-    `${what}: still returning full pages after ${maxObservationPages} of them ` +
-      `(${maxObservationPages * maxPerPage} items) — the observation set would be truncated, ` +
-      `which reports healthy lanes as dead`,
-  );
+  return ghPaginate({ url, headers, what, pick, maxPages: maxObservationPages, fetchImpl });
 }
 
 export function tokenHeaders(token) {
-  return {
-    Accept: 'application/vnd.github+json',
-    Authorization: `Bearer ${token}`,
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
+  return ghHeaders(token);
 }
 
 // The one rule type this script models. Everything else the rules endpoint

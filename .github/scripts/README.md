@@ -25,6 +25,22 @@ files. `setOutput` and `exportEnv` differ by consumer, not by mechanism: a step
 output has to be named by whoever reads it, while `$GITHUB_ENV` carries a
 decision that changes how the REST of the job behaves and has no single reader.
 
+`lib/gh-api.mjs` is the one GitHub REST client: `ghHeaders(token)` (the
+`Accept` / `Authorization` / `X-GitHub-Api-Version` block), `ghJSON(url,
+{ token, what, notFound, init, fetchImpl })` (one request, parsed; `notFound`
+is REQUIRED — `NOT_FOUND_NULL` for a lookup that may legitimately miss,
+`NOT_FOUND_THROW` for a resource that must exist — so every caller states
+what a 404 means to it instead of inheriting one of eleven pasted copies that
+disagreed), and `ghPaginate({ url, token, pick, maxPages })` (every item across
+every `per_page=100` page, stopping on the first short one; with `maxPages`, a
+walk that never shortens throws instead of returning a silent prefix).
+`GITHUB_PER_PAGE` is the one named copy of the page size. Used by every
+script that reads the API: `forbid-deferral`, `rejection-parity-divergence-
+liveness`, `update-golden-guard`, `issue-label`, `chaos-not-applicable-rate`,
+`release-gate-drift`, `coverage-verdict`, `release-source-pr-dashboard-gate`,
+`release-preflight`, `brew-smoke`, `lib/resolve-source-pr`. Tested by
+`lib/gh-api.test.mjs`.
+
 `lib/k8s.mjs` (started as `lib/bwc-k8s.mjs`, promoted and renamed once a
 third consumer outside the bwc lane showed up — cerberus issue #3096) holds
 the k8s + in-cluster-ClickHouse lookups the e2e Node scripts share: a namespaced

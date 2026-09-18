@@ -50,6 +50,8 @@
 // resolved. Returns `{ number, headSha, headRef, baseRef }` for the single
 // exact match, or `null` for none / more than one (ambiguous is a refusal,
 // not a guess).
+import { DEFAULT_API_BASE, ghPaginate } from './gh-api.mjs';
+
 export function selectSourcePR(pulls, sha) {
   const candidates = (pulls ?? []).filter(
     (p) => p && p.merged_at != null && p.merge_commit_sha === sha && p.head?.sha,
@@ -71,25 +73,14 @@ export function selectSourcePR(pulls, sha) {
 // non-2xx response or a transport failure — the caller decides what
 // "could not resolve" means for its own gate; this module never silently
 // swallows a real error into a `null` that looks identical to "no PR found".
-export async function resolveSourcePR({ repo, sha, apiBase = 'https://api.github.com', token, fetchImpl = fetch }) {
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-  const out = [];
-  let page = 1;
-  for (;;) {
-    const res = await fetchImpl(`${apiBase}/repos/${repo}/commits/${sha}/pulls?per_page=100&page=${page}`, {
-      headers,
-    });
-    if (!res.ok) {
-      throw new Error(`GET commits/${sha}/pulls -> ${res.status} ${res.statusText}`);
-    }
-    const data = await res.json();
-    out.push(...data);
-    if (data.length < 100) break;
-    page += 1;
-  }
+export async function resolveSourcePR({ repo, sha, apiBase = DEFAULT_API_BASE, token, fetchImpl = fetch }) {
+  // The commit must exist: a 404 is a failure the caller sees, never an
+  // empty candidate list that reads as "no PR".
+  const out = await ghPaginate({
+    url: `${apiBase}/repos/${repo}/commits/${sha}/pulls`,
+    token,
+    what: `GET commits/${sha}/pulls`,
+    fetchImpl,
+  });
   return selectSourcePR(out, sha);
 }
