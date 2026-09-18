@@ -68,6 +68,7 @@
 
 import { classifyBindingEvidenceSystem, resolveBindingObligations } from "./semantic-report.mjs";
 import { resolveBindingLanes } from "./semantic-lane-adapter.mjs";
+import { byId } from "./semantic-model.mjs";
 import { declaredGlobs, laneAffectedGlobs } from "./lane-closure.mjs";
 import { matchesGlob } from "../ci-lane-contract.mjs";
 
@@ -170,10 +171,6 @@ export function touchedLanes(files, lanes, declared, closures) {
 }
 
 // --- Contract fan-out --------------------------------------------------------
-
-function byId(a, b) {
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
 
 /**
  * The real (non-synthetic) mutant records targeting `contractId`, each with

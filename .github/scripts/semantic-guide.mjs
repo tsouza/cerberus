@@ -20,10 +20,11 @@
 // deliberately not a second, guide-specific set of names.
 
 import process from "node:process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
+import { appendStepSummary, errorStderr } from "./lib/gh.mjs";
 import { lintFixMarkdown } from "./lib/markdown-lintfix.mjs";
 import { loadReport } from "./semantic-report.mjs";
 import {
@@ -34,14 +35,14 @@ import {
   renderMarkdown,
 } from "./lib/semantic-guide.mjs";
 
+const ANNOTATION_TITLE = "Semantic guide";
+
 function appendSummary(body) {
-  const path = process.env.GITHUB_STEP_SUMMARY;
-  if (path) appendFileSync(path, body);
+  appendStepSummary(body, { quiet: true });
 }
 
 function errorAnnotation(message) {
-  const oneLine = message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
-  process.stderr.write(`::error title=Semantic guide::${oneLine}\n`);
+  errorStderr(message, { title: ANNOTATION_TITLE });
 }
 
 function readIfExists(path) {

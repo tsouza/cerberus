@@ -50,6 +50,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 
 // Bumped 1 -> 2 by issue #3459: executions.json's EXECUTION_KEYS gained ten
 // new revision-binding fields (source_sha and friends, see their own
@@ -266,6 +267,33 @@ export function stringValue(value, path, problems, { pattern, allowEmpty = false
 export function nullableStringValue(value, path, problems, opts = {}) {
   if (value === null) return true;
   return stringValue(value, path, problems, opts);
+}
+
+export function positiveIntegerValue(value, path, problems) {
+  if (!Number.isInteger(value) || value <= 0) {
+    fail(problems, "schema", `${path} must be a positive integer; got ${JSON.stringify(value)}`);
+    return false;
+  }
+  return true;
+}
+
+// The one sort every semantic module emits its arrays in: ascending by
+// record `id`, so two builds from the same input are byte-identical.
+export function byId(a, b) {
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** sha256 hex digest of raw bytes — the one hash the semantic family fingerprints with. */
+export function sha256Hex(buffer) {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+// A timestamped record id: `<PREFIX>-<subject>-<YYYYMMDDTHHMMSS>`, the
+// scheme both executions.json (EXEC-<binding>-…) and mutant-executions.json
+// (MUTEXEC-<mutant>-…) ids follow.
+export function stampedRecordId(prefix, subject, observedAt) {
+  const stamp = observedAt.replaceAll(/[-:]/g, "").slice(0, 15); // YYYYMMDDTHHMMSS
+  return `${prefix}-${subject}-${stamp}`;
 }
 
 export function enumValue(value, allowed, path, problems) {

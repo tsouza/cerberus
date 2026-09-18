@@ -95,7 +95,6 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -109,9 +108,17 @@ import {
   isObject,
   nullableStringValue,
   parseJSONFile,
+  positiveIntegerValue,
+  sha256Hex,
   stringArray,
   stringValue,
 } from "./semantic-model.mjs";
+
+// Re-exported for the callers that fingerprint through this module's own
+// name (lib/semantic-mutation-report.mjs, the runner's tests); the
+// implementation is lib/semantic-model.mjs's, shared with the execution
+// adapter's corpus fingerprints.
+export { sha256Hex };
 import { byteSize, goDurationSeconds } from "../mutant-memory-guard.mjs";
 
 export const MUTANT_SCHEMA_VERSION = 1;
@@ -219,14 +226,6 @@ const ISOLATION_KEYS = new Set(["requires_chdb", "memory_max", "memory_hold"]);
 function booleanValue(value, path, problems) {
   if (typeof value !== "boolean") {
     fail(problems, "schema", `${path} must be a boolean; got ${JSON.stringify(value)}`);
-    return false;
-  }
-  return true;
-}
-
-function positiveIntegerValue(value, path, problems) {
-  if (!Number.isInteger(value) || value <= 0) {
-    fail(problems, "schema", `${path} must be a positive integer; got ${JSON.stringify(value)}`);
     return false;
   }
   return true;
@@ -652,10 +651,6 @@ export function loadMutantExecutions(
 // ---------------------------------------------------------------------------
 // Execution engine
 // ---------------------------------------------------------------------------
-
-export function sha256Hex(buffer) {
-  return createHash("sha256").update(buffer).digest("hex");
-}
 
 // GO_TEST_TIMEOUT_PANIC_RE matches the exact signature Go's own `-timeout`
 // watchdog prints when it fires: `panic: test timed out after <duration>`,

@@ -19,7 +19,6 @@ import {
   compatExecutionRecord,
   defaultRunRef,
   githubRunContext,
-  hashBytes,
   hashCorpus,
   hashFile,
   parseCaseSet,
@@ -27,6 +26,7 @@ import {
   propertyShapeObservation,
   toExecutionRecord,
 } from "./lib/semantic-execution-adapter.mjs";
+import { sha256Hex } from "./lib/semantic-model.mjs";
 
 const SCRIPT_DIR = fileURLToPath(new URL(".", import.meta.url));
 const REPO_ROOT = process.cwd();
@@ -175,17 +175,17 @@ test("toExecutionRecord: a non-evidence record carries result error and the clas
 
 // --- Hashing -----------------------------------------------------------------
 
-test("hashBytes is a 64-char lowercase hex sha256 digest", () => {
-  const h = hashBytes(Buffer.from("hello"));
+test("sha256Hex is a 64-char lowercase hex sha256 digest", () => {
+  const h = sha256Hex(Buffer.from("hello"));
   assert.match(h, /^[0-9a-f]{64}$/);
 });
 
-test("hashFile matches hashBytes over the same content", () => {
+test("hashFile matches sha256Hex over the same content", () => {
   const dir = tempDir("semantic-exec-hash-");
   try {
     const path = join(dir, "corpus.txtar");
     writeFileSync(path, "-- case one --\nquery\n");
-    assert.equal(hashFile(path), hashBytes(Buffer.from("-- case one --\nquery\n")));
+    assert.equal(hashFile(path), sha256Hex(Buffer.from("-- case one --\nquery\n")));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

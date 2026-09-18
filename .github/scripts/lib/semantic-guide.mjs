@@ -42,6 +42,7 @@
 // own acceptance criterion, restated once there rather than here).
 
 import { WORKED_EXAMPLE_CONTRACT_ID, mdEscapeProse } from "./semantic-report.mjs";
+import { byId } from "./semantic-model.mjs";
 import { classifyTestRef } from "./semantic-evidence-adapter.mjs";
 import { MERGE_RELEASE_CAVEAT } from "./semantic-impact.mjs";
 import { matchesGlob } from "../ci-lane-contract.mjs";
@@ -141,10 +142,6 @@ const HOW_TO_USE_STEPS = [
       MERGE_RELEASE_CAVEAT,
   },
 ];
-
-function byId(a, b) {
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
 
 /** GitHub's Markdown heading slug for a contract ID: plain uppercase + hyphens, so lowercasing is the whole transform. */
 function anchor(id) {

@@ -26,10 +26,11 @@
 //   GITHUB_STEP_SUMMARY             optional summary destination
 
 import process from "node:process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
+import { appendStepSummary, errorStderr } from "./lib/gh.mjs";
 import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
 import { validatePolicySnapshot } from "./lib/semantic-lane-adapter.mjs";
 import { loadRegistry } from "./ci-lane-contract.mjs";
@@ -56,14 +57,14 @@ const MUTANTS_DIR = process.env.SEMANTIC_MUTANTS_DIR || DEFAULT_MUTANTS_DIR;
 const MUTANT_EXECUTIONS_PATH =
   process.env.SEMANTIC_MUTANT_EXECUTIONS_PATH ?? DEFAULT_MUTANT_EXECUTIONS_PATH;
 
+const ANNOTATION_TITLE = "Semantic conformance report";
+
 function appendSummary(body) {
-  const path = process.env.GITHUB_STEP_SUMMARY;
-  if (path) appendFileSync(path, body);
+  appendStepSummary(body, { quiet: true });
 }
 
 function errorAnnotation(message) {
-  const oneLine = message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
-  process.stderr.write(`::error title=Semantic conformance report::${oneLine}\n`);
+  errorStderr(message, { title: ANNOTATION_TITLE });
 }
 
 function readIfExists(path) {

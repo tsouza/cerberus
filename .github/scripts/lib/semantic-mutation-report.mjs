@@ -59,7 +59,7 @@
 // exactly like lib/semantic-report.mjs's own buildReport().
 
 import { CLASSIFICATIONS, DETECTOR_EVIDENCE_KINDS, sha256Hex } from "./semantic-mutation.mjs";
-import { CANONICAL_HEAD_IDS } from "./semantic-model.mjs";
+import { CANONICAL_HEAD_IDS, byId } from "./semantic-model.mjs";
 
 export const MUTATION_COHORT_SCHEMA_VERSION = 1;
 
@@ -345,7 +345,7 @@ export function buildMutationCohortReport(mutantRecords, { contracts = new Map()
   const dispositionDisagreements = records
     .filter((r) => r.disposition.source === "observed" && r.disposition.status !== r.declared_status)
     .map((r) => ({ id: r.id, declared_status: r.declared_status, observed_status: r.disposition.status }))
-    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    .sort(byId);
 
   return {
     schema_version: MUTATION_COHORT_SCHEMA_VERSION,
@@ -382,7 +382,8 @@ function pct(rate) {
   return rate === null ? "n/a (zero denominator)" : `${(rate * 100).toFixed(1)}%`;
 }
 
-function mdEscape(text) {
+/** Escapes the one character that breaks a GFM table cell; shared with lib/semantic-report.mjs's binding rows. */
+export function mdEscapeTableCell(text) {
   return String(text).replaceAll("|", "\\|");
 }
 
@@ -454,7 +455,7 @@ function renderMutantRow(record) {
       : "declared (no ledger observation)";
   return (
     `| ${record.id} | ${record.disposition.status} | ${record.bucket} | ${observed} | ` +
-    `\`${mdEscape(detectorIds)}\` | \`${mdEscape(record.target_path)}\` |`
+    `\`${mdEscapeTableCell(detectorIds)}\` | \`${mdEscapeTableCell(record.target_path)}\` |`
   );
 }
 

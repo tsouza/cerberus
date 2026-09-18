@@ -54,8 +54,13 @@
 
 import { classifyTestRef, EVIDENCE_SYSTEMS } from "./semantic-evidence-adapter.mjs";
 import { classifyLaneRequiredness, resolveBindingLanes } from "./semantic-lane-adapter.mjs";
+import { byId } from "./semantic-model.mjs";
 import { matchesGlob } from "../ci-lane-contract.mjs";
-import { buildMutationCohortReport, renderMutationCohortMarkdown } from "./semantic-mutation-report.mjs";
+import {
+  buildMutationCohortReport,
+  mdEscapeTableCell,
+  renderMutationCohortMarkdown,
+} from "./semantic-mutation-report.mjs";
 
 export const REPORT_SCHEMA_VERSION = 1;
 export const DEFAULT_REPORT_MD_PATH = "docs/semantic-conformance.md";
@@ -72,10 +77,6 @@ export const DEFAULT_REPORT_JSON_PATH = "docs/semantic-conformance.json";
 export const WORKED_EXAMPLE_CONTRACT_ID = "TRACEQL-STRUCTURAL-RELATION-SEMANTICS";
 
 const OBSERVED_EXECUTION_RESULTS = new Set(["pass", "fail"]);
-
-function byId(a, b) {
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
 
 function sortedValues(map) {
   return [...map.values()].sort(byId);
@@ -500,10 +501,6 @@ const DISCLAIMER_REVISION_BOUND =
   "binding with no observation on record shows an unknown ACHIEVED assurance " +
   "rather than a silently assumed one.";
 
-function mdEscape(text) {
-  return String(text).replaceAll("|", "\\|");
-}
-
 // Contract statements, blind spots and verifier detects/cannot_detect are
 // free-text data from test/semantic/*.json, never markdown source. Rendered
 // bare, a substring like "__name__" (Prometheus's real reserved label,
@@ -540,7 +537,7 @@ function renderBindingRow(binding) {
   const revisionBound = binding.observed.revision_bound
     ? `yes (\`${binding.observed.source_sha}\`)`
     : "no";
-  return `| ${binding.id} | ${verifierId} | ${binding.evidence_class} | ${binding.independence_group} | \`${mdEscape(binding.test_ref)}\` | ${binding.observed.status} | ${revisionBound} | ${obligations} |`;
+  return `| ${binding.id} | ${verifierId} | ${binding.evidence_class} | ${binding.independence_group} | \`${mdEscapeTableCell(binding.test_ref)}\` | ${binding.observed.status} | ${revisionBound} | ${obligations} |`;
 }
 
 function renderWorkedExample(report) {

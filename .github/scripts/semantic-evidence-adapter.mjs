@@ -22,10 +22,10 @@
 // otherwise.
 
 import process from "node:process";
-import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
+import { appendStepSummary, errorStderr } from "./lib/gh.mjs";
 import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
 import {
   EVIDENCE_SYSTEMS,
@@ -36,14 +36,14 @@ import {
   loadSurfaceParityInventory,
 } from "./lib/semantic-evidence-adapter.mjs";
 
+const ANNOTATION_TITLE = "Semantic evidence adapter";
+
 function appendSummary(body) {
-  const path = process.env.GITHUB_STEP_SUMMARY;
-  if (path) appendFileSync(path, body);
+  appendStepSummary(body, { quiet: true });
 }
 
 function errorAnnotation(message) {
-  const oneLine = message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
-  process.stderr.write(`::error title=Semantic evidence adapter::${oneLine}\n`);
+  errorStderr(message, { title: ANNOTATION_TITLE });
 }
 
 function main() {
