@@ -344,6 +344,50 @@ func TestNoJustfileRecipePushesAReleaseTag(t *testing.T) {
 	}
 }
 
+// The release perf baseline — test/perf/release-baseline/<version>/, the
+// FROZEN reference TestReleasePerfRegression judges the NEXT release
+// against — moves at exactly one moment: the cut. Both ways of cutting a
+// tip-of-main release must capture it into the release commit, or the
+// released tree ships judged against the release before last and the
+// "standing drift clears at the cut" contract in docs/operations.md never
+// fires. `just release-prep` did; the primary path, prepare-release.yml,
+// staged only the chart and changelog.
+const (
+	releasePrepRecipe         = "release-prep"
+	perfBaselineCaptureRecipe = "capture-release-perf-baseline"
+	perfBaselineDir           = "test/perf/release-baseline/"
+)
+
+func TestBothReleasePathsStageThePerfBaseline(t *testing.T) {
+	t.Parallel()
+
+	recipe := justDump(t).recipe(t, releasePrepRecipe).bodyText(t)
+	assertStagesPerfBaseline(t, "Justfile recipe "+releasePrepRecipe, recipe)
+
+	job := workflowJobBody(t, readFileString(t, prepareReleaseWorkflowPath), prepareReleaseJob)
+	assertStagesPerfBaseline(t, prepareReleaseWorkflowPath+" job "+prepareReleaseJob, job)
+}
+
+// assertStagesPerfBaseline requires a release path to both capture the
+// baseline and `git add` its directory into the release commit.
+func assertStagesPerfBaseline(t *testing.T, where, body string) {
+	t.Helper()
+	if !strings.Contains(body, perfBaselineCaptureRecipe) {
+		t.Errorf("%s never runs `just %s`; the release commit would ship without freezing the baseline "+
+			"the next release is judged against", where, perfBaselineCaptureRecipe)
+	}
+	staged := false
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "git add") && strings.Contains(line, perfBaselineDir) {
+			staged = true
+		}
+	}
+	if !staged {
+		t.Errorf("%s has no `git add` line naming %s<version>/; a captured baseline that is not staged "+
+			"into the release commit is not a release reference", where, perfBaselineDir)
+	}
+}
+
 // nodeScriptInvocationRE matches a `node .github/scripts/<name>.mjs` delegate
 // call inside a recipe body — the shape every extraction under CLAUDE.md
 // invariant 15 uses (see just/chdb.just's `chdb-install`, just/release.just's

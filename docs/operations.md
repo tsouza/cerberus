@@ -3233,10 +3233,12 @@ point of auditing at all.
 the cut is what clears it.** `TestReleasePerfRegression` compares the corpus
 against `test/perf/release-baseline/<version>/`, a FROZEN snapshot of the
 previous release. That reference moves at exactly one moment — the cut —
-because `just release-prep <version>` runs `just capture-release-perf-baseline
-<version>` and stages `test/perf/release-baseline/<version>/` into the release
-commit itself, sourced byte-for-byte from the working tree's own rolling
-`test/perf/cardinality-baseline/`. The gate resolves the SEMVER-HIGHEST
+because both ways of cutting a release, `prepare-release.yml` and `just
+release-prep <version>`, run `just capture-release-perf-baseline <version>`
+and stage `test/perf/release-baseline/<version>/` into the release commit
+itself, sourced byte-for-byte from the working tree's own rolling
+`test/perf/cardinality-baseline/`
+(`TestBothReleasePathsStageThePerfBaseline` holds the two to that shape). The gate resolves the SEMVER-HIGHEST
 subdirectory present, so the release commit is judged against a copy of the
 rolling baseline it is shipping — which clears the lane exactly when
 `TestCardinalityRatchet` was already green on those fixtures. A fixture drifting
@@ -3319,7 +3321,9 @@ a raw tag is pushed (release-please-style). The flow:
 1. **Open a release PR.** Apply a `release:*` label to any issue (or run the
    `prepare-release` workflow manually). `prepare-release.yml` bumps the chart
    `version:` and/or `appVersion:`, rewrites the CHANGELOG, regenerates the
-   chart README, and opens a PR from a `release/v<app>-chart-<chart>` branch.
+   chart README, freezes the release perf baseline
+   (`test/perf/release-baseline/<version>/`), and opens a PR from a
+   `release/v<app>-chart-<chart>` branch.
 2. **The PR runs the release gate.** Because the head branch starts with
    `release/`, every release-gate lane above (the e2e `split` + `crawl` legs
    included) does its real work instead of short-circuiting to a no-op, so a
