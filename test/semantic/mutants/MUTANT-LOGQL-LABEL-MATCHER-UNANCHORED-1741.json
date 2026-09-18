@@ -21,14 +21,16 @@
       "package": "./internal/logql",
       "test_run": "^TestLower$/^stream_regex_no_overmatch$",
       "build_tags": [],
-      "timeout_seconds": 30
+      "timeout_seconds": 30,
+      "evidence_kind": "golden-text"
     },
     {
       "id": "promql-regex-unanchored-no-overmatch-supplementary",
       "package": "./internal/promql",
       "test_run": "^TestLower$/^regex_unanchored_no_overmatch$",
       "build_tags": [],
-      "timeout_seconds": 30
+      "timeout_seconds": 30,
+      "evidence_kind": "golden-text"
     }
   ],
   "expected_detection": "killed",

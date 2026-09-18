@@ -18,10 +18,9 @@
       "id": "range-window-boundary-exact-sample",
       "package": "./test/property",
       "test_run": "^TestPromQL_RangeWindowBoundaryExactSample$",
-      "build_tags": [
-        "chdb"
-      ],
-      "timeout_seconds": 90
+      "build_tags": ["chdb"],
+      "timeout_seconds": 90,
+      "evidence_kind": "execution"
     }
   ],
   "expected_detection": "killed",

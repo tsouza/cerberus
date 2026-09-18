@@ -19,7 +19,8 @@
       "package": "./test/semantic/mutants/testdata/fixtures",
       "test_run": "^TestCommutativeSumMatchesOperandOrder$",
       "build_tags": [],
-      "timeout_seconds": 15
+      "timeout_seconds": 15,
+      "evidence_kind": "execution"
     }
   ],
   "expected_detection": "equivalent-reviewed",

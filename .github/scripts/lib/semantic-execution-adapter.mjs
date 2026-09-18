@@ -66,7 +66,9 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
 
-import { EXECUTION_EVENTS, EXECUTION_SELECTIONS } from "./semantic-model.mjs";
+import {
+  sha256Hex,
+  stampedRecordId, EXECUTION_EVENTS, EXECUTION_SELECTIONS } from "./semantic-model.mjs";
 
 const EXECUTION_EVENTS_SET = new Set(EXECUTION_EVENTS);
 const EXECUTION_SELECTIONS_SET = new Set(EXECUTION_SELECTIONS);
@@ -86,14 +88,9 @@ function fail(problems) {
 
 // --- Hashing (dataset/corpus fingerprint) -----------------------------------
 
-/** sha256 hex digest of raw bytes — the one hash algorithm this module uses. */
-export function hashBytes(buf) {
-  return createHash("sha256").update(buf).digest("hex");
-}
-
 /** sha256 hex digest of a file's current on-disk content. */
 export function hashFile(path) {
-  return hashBytes(readFileSync(path));
+  return sha256Hex(readFileSync(path));
 }
 
 /**
@@ -224,8 +221,7 @@ export function sharedContext(env = process.env) {
 
 /** Deterministic execution id: EXEC-<binding, BINDING- prefix stripped>-<YYYYMMDDTHHMMSS>. */
 export function execIdFor(bindingId, observedAt) {
-  const stamp = observedAt.replaceAll(/[-:]/g, "").slice(0, 15); // YYYYMMDDTHHMMSS
-  return `EXEC-${bindingId.replace(/^BINDING-/, "")}-${stamp}`;
+  return stampedRecordId("EXEC", bindingId.replace(/^BINDING-/, ""), observedAt);
 }
 
 // --- Revision-binding classification (acceptance criterion 1) --------------

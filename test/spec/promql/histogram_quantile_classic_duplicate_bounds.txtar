@@ -17,7 +17,7 @@ INSERT INTO otel_metrics_histogram VALUES
 ]
 -- parity_exempt --
 reason: duplicate-timestamp-seed
-detail: the one histogram row's ExplicitBounds [1.0, 1.0, 5.0] read back as two le="1" bucket samples (cumulative 2 and 5) at one timestamp; cerberus keeps the first rung of the duplicate run and answers 1.5, and the reference engine's appender keeps whichever le="1" sample it ingests first, a survivor neither engine promises.
+detail: the seed's ExplicitBounds [1.0, 1.0, 5.0] deliberately repeat a bound, so the classic-histogram flattening yields two `le="1.0"` samples for one series at one timestamp with DIFFERENT cumulative counts — Prometheus's appender keeps whichever arrives first while ClickHouse keeps both, so the reference has no stable survivor for cerberus to agree with; what this fixture pins is cerberus's own treatment of the repeated bound
 -- args --
 [0] string = ""
 [1] int64 = 9

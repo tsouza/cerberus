@@ -9,6 +9,8 @@ SELECT * FROM `otel_traces` PREWHERE (`ParentSpanId` != ?) WHERE (`ResourceAttri
 -- seed --
 CREATE TABLE otel_traces (
     _idx UInt64,
+    TraceId String MATERIALIZED 't1',
+    SpanId String MATERIALIZED concat('s', toString(_idx)),
     ParentSpanId String MATERIALIZED if(_idx = 0, '', '0000000000000001'),
     ResourceAttributes Map(String, String) MATERIALIZED map('service.name', if(_idx = 2, 'frontend', 'api'))
 ) ENGINE = MergeTree ORDER BY _idx;

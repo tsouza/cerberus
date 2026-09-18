@@ -18,10 +18,9 @@
       "id": "counter-reset-mid-window-compensation",
       "package": "./test/property",
       "test_run": "^TestPromQL_CounterResetMidWindowCompensation$",
-      "build_tags": [
-        "chdb"
-      ],
-      "timeout_seconds": 90
+      "build_tags": ["chdb"],
+      "timeout_seconds": 90,
+      "evidence_kind": "execution"
     }
   ],
   "expected_detection": "killed",

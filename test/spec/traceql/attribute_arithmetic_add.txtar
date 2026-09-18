@@ -29,7 +29,7 @@ Filter predicate=((FnIf(FnMapContainsKey(SpanAttributes, "a"), FnToFloat64OrNull
   Scan(otel_traces)
 -- parity_exempt --
 reason: oracle-untyped-attributes
-detail: `{ .a + .b > 10 }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)
+detail: `{ span.a + span.b > 10 }` compares the SUM of two attributes against the literal, so neither attribute is itself an operand of a comparison with a literal and collectAttrTypeHints (test/spec/parityoracle/traceql/oracle.go) records no type for either; the reference engine adds two String statics, gets nil, and matches nothing where cerberus casts both through toFloat64OrNull
 -- args_optimized --
 [0] string = "__cerberus_traceID"
 [1] string = "__cerberus_parentSpanID"

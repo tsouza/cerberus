@@ -366,7 +366,13 @@ type Outcome struct {
 // same wire contract (Tempo's TraceSummary.TraceID), so
 // CompareTraceIdentityOutcomes can catch a run that matched the wrong
 // trace at the same row count — something the default label-keyed
-// comparator, which never inspects TraceID, cannot.
+// comparator, which never inspects TraceID, cannot. SpanID carries the
+// matched SPAN's identity for the shapes whose answer is a set of spans
+// (selector, structural, select()) — the wire's SpanSetSpan.SpanID and
+// the oracle's own span id — so the same comparator also catches the
+// wrong sibling span inside the right trace at the same count; a
+// trace-scoped aggregate row (count()/avg|min|max|sum(duration)) is one
+// row per trace with no span identity, and leaves SpanID empty.
 //
 // Exactly one of Histogram, Line, Value, or TraceID is the identity a row's
 // family compares on. The comparator checks histogram structure and every
@@ -383,6 +389,7 @@ type OutcomeRow struct {
 	Histogram   *Histogram
 	Line        string
 	TraceID     string
+	SpanID      string
 }
 
 // Histogram is the decoded Prometheus HTTP representation of one native-
@@ -1030,17 +1037,27 @@ func compareOutcomeRows(want, got Outcome) string {
 
 // CompareTraceIdentityOutcomes is the TraceQL-specific CompareFn plugged in
 // through Config.Compare / RunShapeExamplesWithComparator. It replaces the
-// default per-label-key ROW COUNT comparison with a per-TraceID multiset
-// comparison, so two outcomes with the same total row count but a
-// substituted, missing, duplicated, or scope-swapped trace identity are
-// caught — something an empty-label row count can never distinguish (the
-// gap TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY's evidence closes).
+// default per-label-key ROW COUNT comparison with an identity comparison,
+// so two outcomes with the same total row count but a substituted,
+// missing, duplicated, or scope-swapped identity are caught — something an
+// empty-label row count can never distinguish (the gap
+// TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY's evidence closes).
 //
-// Every TraceQL /api/search projection this repo generates — selector,
-// structural, select(), and trace-scoped count()/avg|min|max|sum(duration)
-// pipeline rows alike — carries a real TraceID (see
-// test/property/oracle/traceql.Evaluate and traceql_test.go's
-// runCerberusTraceQL); an empty TraceID on either side is therefore a
+// Which identity depends on the shape, and both sides must agree on it:
+//
+//   - a selector, structural or select() answer is a SET of matched spans,
+//     every row carrying a TraceID and a SpanID (the wire's
+//     SpanSetSpan.SpanID; the oracle's own span id). The two sides'
+//     (TraceID, SpanID) sets must be equal, so the wrong sibling span
+//     inside the right trace fails even at the same per-trace count, and
+//     a span reported twice is a mismatch rather than a count.
+//   - a trace-scoped aggregate answer (count()/avg|min|max|sum(duration))
+//     is one row per satisfying trace with no span identity; the two
+//     sides' per-TraceID multisets must be equal.
+//
+// Every row carries a real TraceID (see test/property/oracle/traceql.
+// Evaluate and traceql_test.go's runCerberusTraceQL); an empty TraceID, or
+// a SpanID present on one side's rows and absent on the other's, is a
 // comparator-usage bug, not a legitimate "no identity" outcome, and is
 // reported as a mismatch rather than silently grouped under "".
 func CompareTraceIdentityOutcomes(oracle, system Outcome) string {
@@ -1053,6 +1070,22 @@ func CompareTraceIdentityOutcomes(oracle, system Outcome) string {
 	}
 	if diag.Len() > 0 {
 		return diag.String()
+	}
+
+	oracleSpans, systemSpans := rowsCarrySpanIDs(oracle.Rows), rowsCarrySpanIDs(system.Rows)
+	switch {
+	case oracleSpans && systemSpans:
+		return compareSpanIdentitySets(oracle.Rows, system.Rows)
+	case oracleSpans:
+		return fmt.Sprintf("system: row[%d] has an empty SpanID while the oracle rows carry one\n", firstEmptySpanID(system.Rows))
+	case systemSpans:
+		return fmt.Sprintf("oracle: row[%d] has an empty SpanID while the system rows carry one\n", firstEmptySpanID(oracle.Rows))
+	}
+	if rowsMixSpanIDs(oracle.Rows) {
+		return fmt.Sprintf("oracle: row[%d] has an empty SpanID while other oracle rows carry one\n", firstEmptySpanID(oracle.Rows))
+	}
+	if rowsMixSpanIDs(system.Rows) {
+		return fmt.Sprintf("system: row[%d] has an empty SpanID while other system rows carry one\n", firstEmptySpanID(system.Rows))
 	}
 
 	wantCounts := traceIDCounts(oracle.Rows)
@@ -1086,6 +1119,102 @@ func CompareTraceIdentityOutcomes(oracle, system Outcome) string {
 	return diff.String()
 }
 
+// rowsCarrySpanIDs reports whether rows are span-shaped: non-empty and
+// every row carries a SpanID. A mixed set (some rows with, some without)
+// is neither shape and is reported by the caller as a usage bug.
+func rowsCarrySpanIDs(rows []OutcomeRow) bool {
+	return len(rows) > 0 && firstEmptySpanID(rows) < 0
+}
+
+// rowsMixSpanIDs reports whether rows carry a SpanID on some rows but not
+// on others.
+func rowsMixSpanIDs(rows []OutcomeRow) bool {
+	withID := false
+	for _, r := range rows {
+		if strings.TrimSpace(r.SpanID) != "" {
+			withID = true
+			break
+		}
+	}
+	return withID && firstEmptySpanID(rows) >= 0
+}
+
+// firstEmptySpanID returns the index of the first row with an empty
+// SpanID, or -1.
+func firstEmptySpanID(rows []OutcomeRow) int {
+	for i, r := range rows {
+		if strings.TrimSpace(r.SpanID) == "" {
+			return i
+		}
+	}
+	return -1
+}
+
+// spanIdentity is the (TraceID, SpanID) pair a span-shaped row identifies.
+type spanIdentity struct{ traceID, spanID string }
+
+func (s spanIdentity) String() string { return s.traceID + "/" + s.spanID }
+
+// compareSpanIdentitySets compares two span-shaped outcomes as SETS of
+// (TraceID, SpanID). A pair reported more than once on either side is a
+// mismatch in its own right: a span matches a query once, and a set
+// cannot express "the same span twice".
+func compareSpanIdentitySets(oracle, system []OutcomeRow) string {
+	var diff strings.Builder
+	want := spanIdentityCounts(oracle)
+	got := spanIdentityCounts(system)
+	for _, side := range []struct {
+		name   string
+		counts map[spanIdentity]int
+	}{{"oracle", want}, {"system", got}} {
+		for _, id := range sortedSpanIdentities(side.counts) {
+			if n := side.counts[id]; n > 1 {
+				fmt.Fprintf(&diff, "%s: span %s reported %d times\n", side.name, id, n)
+			}
+		}
+	}
+	all := make(map[spanIdentity]struct{}, len(want)+len(got))
+	for id := range want {
+		all[id] = struct{}{}
+	}
+	for id := range got {
+		all[id] = struct{}{}
+	}
+	for _, id := range sortedSpanIdentities(all) {
+		_, inWant := want[id]
+		_, inGot := got[id]
+		switch {
+		case !inWant:
+			fmt.Fprintf(&diff, "extra span in system: %s\n", id)
+		case !inGot:
+			fmt.Fprintf(&diff, "missing span in system: %s\n", id)
+		}
+	}
+	return diff.String()
+}
+
+func spanIdentityCounts(rows []OutcomeRow) map[spanIdentity]int {
+	out := make(map[spanIdentity]int, len(rows))
+	for _, r := range rows {
+		out[spanIdentity{traceID: r.TraceID, spanID: r.SpanID}]++
+	}
+	return out
+}
+
+func sortedSpanIdentities[V any](m map[spanIdentity]V) []spanIdentity {
+	ids := make([]spanIdentity, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		if ids[i].traceID != ids[j].traceID {
+			return ids[i].traceID < ids[j].traceID
+		}
+		return ids[i].spanID < ids[j].spanID
+	})
+	return ids
+}
+
 // invalidTraceIDRows reports the first row (if any) whose TraceID is empty
 // — every TraceQL outcome this comparator is used for stamps a real
 // dataset-generated TraceID on every row, so an empty one means the caller
@@ -1100,12 +1229,11 @@ func invalidTraceIDRows(rows []OutcomeRow) string {
 	return ""
 }
 
-// traceIDCounts multiset-counts rows by TraceID. A selector/structural/
-// select() shape's rows carry one entry per matched span (so a trace with
-// N matching spans counts N times); a trace-scoped aggregate pipeline shape
-// carries exactly one row per satisfying trace (see oracle/traceql.Evaluate
-// and runCerberusTraceQL's traceIdentityRows) — the same counting logic
-// serves both, since the row-emission side is what encodes the distinction.
+// traceIDCounts multiset-counts rows by TraceID — the comparison for a
+// trace-scoped aggregate pipeline shape, which carries exactly one row per
+// satisfying trace and no span identity (see oracle/traceql.Evaluate and
+// runCerberusTraceQL's traceIdentityRows). A span-shaped outcome is
+// compared by compareSpanIdentitySets instead.
 func traceIDCounts(rows []OutcomeRow) map[string]int {
 	out := make(map[string]int, len(rows))
 	for _, r := range rows {

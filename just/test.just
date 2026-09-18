@@ -115,8 +115,10 @@ semantic-lane-check:
 
 # Resolves every semantic binding's test_ref against the property-shape
 # rosters, the TXTAR spec corpus, the surface-parity/rejection-parity
-# ledgers and the QL feature inventory, and reports any that dangle (issue
-# #3428). Wired into the required `forbid-skip` job (issue #3436), enrolled
+# ledgers, the QL feature inventory and — for a plain path, `file:TestName`
+# or `file#token` reference — the source tree itself, and reports any that
+# dangle, including a test_ref no scheme can parse (issue #3428). Wired
+# into the required `forbid-skip` job (issue #3436), enrolled
 # in .github/ci-lanes.json as lane `ci.semantic-conformance` — also always
 # safe to run locally.
 

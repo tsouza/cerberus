@@ -31,10 +31,9 @@ Filter predicate=(Value = 0)
 SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) GROUP BY `TraceId`) WHERE (`Value` = ?)
 -- expected_rows --
 []
--- parity --
-oracle: tempo
-endpoint: /api/search
-scope: full
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ resource.service.name = "frontend" } | count() = 0` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares; its answer is empty by design, and an empty aggregate answer agreeing with an empty reference span set proved nothing
 -- args_optimized --
 [0] string = "__cerberus_traceID"
 [1] string = "__cerberus_parentSpanID"

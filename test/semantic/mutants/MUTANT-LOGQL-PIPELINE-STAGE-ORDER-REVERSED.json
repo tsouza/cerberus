@@ -19,7 +19,8 @@
       "package": "./internal/logql",
       "test_run": "^TestLower$/^filter_numeric$",
       "build_tags": [],
-      "timeout_seconds": 30
+      "timeout_seconds": 30,
+      "evidence_kind": "golden-text"
     }
   ],
   "expected_detection": "killed",

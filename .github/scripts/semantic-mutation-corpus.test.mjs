@@ -7,6 +7,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { runCorpus } from "./semantic-mutation-corpus.mjs";
 import { DEFAULT_MUTANTS_DIR } from "./lib/semantic-mutation.mjs";
@@ -45,4 +48,20 @@ test("runCorpus: collects every failing id rather than stopping at the first", (
 
 test("runCorpus: a load/validation failure throws rather than silently reporting zero records", () => {
   assert.throws(() => runCorpus({ root: REPO_ROOT, dir: "test/semantic/mutants/does-not-exist" }));
+});
+
+// A corpus with zero records must never pass: an empty SEMANTIC_MUTANTS_DIR
+// (a typo, an emptied directory) would otherwise print "all 0 record(s)
+// matched" and exit green, exactly the vacuous-on-empty shape selectDetectors
+// refuses for a record with zero detectors.
+test("runCorpus: a directory with zero records throws rather than reporting all 0 matched", () => {
+  const dir = mkdtempSync(join(tmpdir(), "semantic-mutants-empty-"));
+  try {
+    assert.throws(
+      () => runCorpus({ root: REPO_ROOT, dir, spawnFn: () => ({ status: 0 }) }),
+      /zero mutant records/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
