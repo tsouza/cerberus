@@ -1085,7 +1085,7 @@ func isColumnReference(expr string) bool {
 		for i, c := range part {
 			isAlpha := c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 			isDigit := c >= '0' && c <= '9'
-			if !isAlpha && !(isDigit && i > 0) {
+			if !isAlpha && (!isDigit || i == 0) {
 				return false
 			}
 		}
