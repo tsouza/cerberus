@@ -364,3 +364,17 @@ test("every contract entry in the real committed cohort has a fresh, matching re
     assert.equal(check.status, "ok", `${id}#${contractId}: fingerprint ${check.status}`);
   }
 });
+
+// Every other generated artefact in this lane is a pure function of the
+// tree (lib/semantic-report.mjs's determinism contract); a wall-clock
+// timestamp in the fingerprint snapshot made two refreshes from the same
+// tree differ, so a `--update-fingerprints` run always produced a diff.
+test("computeAllFingerprints is a pure function of the tree: two snapshots are byte-identical and carry no timestamp", async () => {
+  const { computeAllFingerprints } = await import("./lib/semantic-replay.mjs");
+  const a = computeAllFingerprints();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const b = computeAllFingerprints();
+  assert.deepEqual(a, b);
+  assert.equal("generated_at" in a, false);
+  assert.deepEqual(Object.keys(a).sort(), ["fingerprints", "schema_version"]);
+});
