@@ -546,7 +546,7 @@ const tempoQuantileLabel = "p"
 // (...)` shell, so the outer SELECT-list shape this Project reads is
 // identical either way.
 func wrapMetricsForSample(inner chplan.Node, m *chplan.MetricsAggregate) chplan.Node {
-	attrAliases := metricsOuterGroupAliases(m.GroupBy, m.GroupByAliases)
+	attrAliases := chplan.OuterGroupNames(m.GroupBy, m.GroupByAliases)
 	labelNames := metricsLabelNames(m)
 	isQuantile := m.Op == chplan.MetricsOpQuantileOverTime
 
@@ -768,26 +768,6 @@ func postProcessQuantileBuckets(samples []chclient.Sample, m *chplan.MetricsAggr
 				Value:     value,
 			})
 		}
-	}
-	return out
-}
-
-// metricsOuterGroupAliases mirrors the unexported chsql.outerGroupAliases:
-// the SELECT-list alias used by emitRangeWindowMetrics for each
-// MetricsAggregate.GroupBy entry, falling back to "g0", "g1", ... for
-// missing aliases (same rule the chsql emitter applies — the two must
-// stay in lockstep).
-func metricsOuterGroupAliases(groupBy []chplan.Expr, aliases []string) []string {
-	if len(groupBy) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(groupBy))
-	for i := range groupBy {
-		if i < len(aliases) && aliases[i] != "" {
-			out = append(out, aliases[i])
-			continue
-		}
-		out = append(out, "g"+strconv.Itoa(i))
 	}
 	return out
 }

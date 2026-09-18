@@ -87,11 +87,11 @@ type hqClassicHelperColumns struct {
 // GroupByAliases, then the interpolated quantile as the `Value` column,
 // matching the Sample contract the lowering's wrapping Project consumes.
 func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
-	counts, err := quantileHistogramField("HistogramQuantile", h.Input, chplan.HistogramFieldBucketCounts, false)
+	counts, err := histogramFieldChildColumn("HistogramQuantile", h.Input, chplan.HistogramFieldBucketCounts, false)
 	if err != nil {
 		return err
 	}
-	bounds, err := quantileHistogramField("HistogramQuantile", h.Input, chplan.HistogramFieldExplicitBounds, false)
+	bounds, err := histogramFieldChildColumn("HistogramQuantile", h.Input, chplan.HistogramFieldExplicitBounds, false)
 	if err != nil {
 		return err
 	}

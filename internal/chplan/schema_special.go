@@ -55,15 +55,7 @@ func (m *MetricsAggregate) RowType() Schema {
 	aliases := m.GroupByAliases
 	multi := m.Op == MetricsOpQuantileOverTime && len(m.Quantiles) > 1
 	if multi {
-		aliases = make([]string, len(m.GroupBy))
-		for i := range aliases {
-			if i < len(m.GroupByAliases) {
-				aliases[i] = m.GroupByAliases[i]
-			}
-			if aliases[i] == "" {
-				aliases[i] = MetricsGroupKeyName(i)
-			}
-		}
+		aliases = OuterGroupNames(m.GroupBy, m.GroupByAliases)
 	}
 	out := groupSchema(m.Inner.RowType(), m.GroupBy, aliases, nil)
 	if multi {
@@ -75,41 +67,21 @@ func (m *MetricsAggregate) RowType() Schema {
 
 func (m *MetricsHistogramOverTime) RowType() Schema {
 	out := groupSchema(m.Inner.RowType(), m.GroupBy, m.GroupByAliases, nil)
-	out.Columns = append(out.Columns, Column{Name: outputDefault(m.BucketAlias, MetricsBucketColumn)}, Column{Name: outputDefault(m.ValueAlias, DefaultSampleValueColumn), Role: RoleValue})
+	out.Columns = append(out.Columns, Column{Name: OutputDefault(m.BucketAlias, MetricsBucketColumn)}, Column{Name: OutputDefault(m.ValueAlias, DefaultSampleValueColumn), Role: RoleValue})
 	return out
 }
 
 func (m *MetricsCompare) RowType() Schema {
 	return Schema{Columns: []Column{
-		{Name: outputDefault(m.SelAlias, MetricsCompareSelectionColumn)},
-		{Name: outputDefault(m.AttrAlias, MetricsCompareAttrColumn)},
-		{Name: outputDefault(m.ValAlias, MetricsCompareValColumn)},
-		{Name: outputDefault(m.ValueAlias, DefaultSampleValueColumn), Role: RoleValue},
+		{Name: OutputDefault(m.SelAlias, MetricsCompareSelectionColumn)},
+		{Name: OutputDefault(m.AttrAlias, MetricsCompareAttrColumn)},
+		{Name: OutputDefault(m.ValAlias, MetricsCompareValColumn)},
+		{Name: OutputDefault(m.ValueAlias, DefaultSampleValueColumn), Role: RoleValue},
 	}}
 }
 
-func outputDefault(name, fallback string) string {
-	if name == "" {
-		return fallback
-	}
-	return name
-}
-
-func outerGroupNames(keys []Expr, aliases []string) []string {
-	names := make([]string, len(keys))
-	for i := range names {
-		if i < len(aliases) {
-			names[i] = aliases[i]
-		}
-		if names[i] == "" {
-			names[i] = MetricsGroupKeyName(i)
-		}
-	}
-	return names
-}
-
 func metricsWindowSchema(m *MetricsAggregate) Schema {
-	out := groupSchema(m.Inner.RowType(), m.GroupBy, outerGroupNames(m.GroupBy, m.GroupByAliases), nil)
+	out := groupSchema(m.Inner.RowType(), m.GroupBy, OuterGroupNames(m.GroupBy, m.GroupByAliases), nil)
 	out.Columns = append(out.Columns, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor})
 	if m.Op == MetricsOpQuantileOverTime {
 		out.Columns = append(out.Columns, Column{Name: MetricsBucketColumn})
@@ -119,8 +91,8 @@ func metricsWindowSchema(m *MetricsAggregate) Schema {
 }
 
 func histogramWindowSchema(m *MetricsHistogramOverTime) Schema {
-	out := groupSchema(m.Inner.RowType(), m.GroupBy, outerGroupNames(m.GroupBy, m.GroupByAliases), nil)
-	out.Columns = append(out.Columns, Column{Name: outputDefault(m.BucketAlias, MetricsBucketColumn)}, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor}, Column{Name: outputDefault(m.ValueAlias, DefaultSampleValueColumn), Role: RoleValue})
+	out := groupSchema(m.Inner.RowType(), m.GroupBy, OuterGroupNames(m.GroupBy, m.GroupByAliases), nil)
+	out.Columns = append(out.Columns, Column{Name: OutputDefault(m.BucketAlias, MetricsBucketColumn)}, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor}, Column{Name: OutputDefault(m.ValueAlias, DefaultSampleValueColumn), Role: RoleValue})
 	return out
 }
 
