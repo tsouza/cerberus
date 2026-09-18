@@ -100,6 +100,39 @@ test("real model: every contract index row with a resolvable lane carries a `jus
   }
 });
 
+test("real model: a contract's canonical execution is the lane that runs its evidence, never a tree-wide lane such as lint", () => {
+  const { guide } = generateAgainstRealRepo();
+  const byId = new Map(guide.contract_index.map((r) => [r.id, r]));
+  for (const row of guide.contract_index) {
+    if (!row.execution) continue;
+    assert.doesNotMatch(row.execution.command, /just lint/, `${row.id}: ${row.execution.command}`);
+    assert.doesNotMatch(row.execution.lane_id, /^(ci\.lint|governance\.|ci\.link-check|security\.codeql)/, row.id);
+  }
+  // Range-vector alignment binds a TXTAR fixture, a property shape and the
+  // Prometheus differential harness; none of those is verified by lint.
+  const alignment = byId.get("PROMQL-RANGE-VECTOR-ALIGNMENT");
+  assert.ok(alignment?.execution, "PROMQL-RANGE-VECTOR-ALIGNMENT must resolve to a lane");
+  assert.match(alignment.execution.lane_id, /^(chdb\.roundtrip-promql|quality\.property|compatibility\.prometheus|ci\.check)$/);
+  // Per-evidence-system routing over the real model.
+  for (const contract of guide.worked_examples.map((e) => e.contract.id)) {
+    assert.ok(byId.has(contract));
+  }
+  const counterReset = byId.get("PROMQL-COUNTER-RESET-EXTRAPOLATION");
+  assert.notEqual(counterReset.execution.lane_id, "ci.forbid-skip", counterReset.execution.command);
+});
+
+test("real model: a binding at a compatibility harness directory obligates that head's compat lane", () => {
+  const { report } = generateAgainstRealRepo();
+  const alignment = report.contracts.find((c) => c.id === "PROMQL-RANGE-VECTOR-ALIGNMENT");
+  const compat = alignment.bindings.find((b) => b.test_ref === "compatibility/prometheus");
+  assert.ok(compat, "the compat binding must still exist in the real model");
+  assert.ok(
+    compat.obligations.some((o) => o.lane_id === "compatibility.prometheus"),
+    JSON.stringify(compat.obligations),
+  );
+  assert.ok(!compat.obligations.some((o) => o.lane_id === "ci.lint"));
+});
+
 // --- Architectural rules ---------------------------------------------------
 
 test("real model: architectural rules are exactly the active architecture-scope contracts", () => {

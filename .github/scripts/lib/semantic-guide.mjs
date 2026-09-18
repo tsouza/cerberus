@@ -39,7 +39,9 @@
 // own acceptance criterion, restated once there rather than here).
 
 import { WORKED_EXAMPLE_CONTRACT_ID, mdEscapeProse } from "./semantic-report.mjs";
+import { classifyTestRef } from "./semantic-evidence-adapter.mjs";
 import { ADVERSARIAL_NOTE, MERGE_RELEASE_CAVEAT } from "./semantic-impact.mjs";
+import { matchesGlob } from "../ci-lane-contract.mjs";
 
 export const GUIDE_SCHEMA_VERSION = 1;
 export const DEFAULT_GUIDE_MD_PATH = "docs/semantic-guide.md";
@@ -142,40 +144,135 @@ function anchor(id) {
   return id.toLowerCase();
 }
 
+// Which lane actually RUNS a binding's evidence, by the evidence system its
+// test_ref names (lib/semantic-evidence-adapter.mjs's classifyTestRef):
+// the property lane runs the property-shape rosters; a TXTAR fixture is
+// executed by its head's chDB round trip (and by `check`'s unit suite,
+// which also carries the fixtures that have no round-trip lane, such as
+// test/spec/optimizer); the parity ledgers are ratcheted by `check`; a
+// compatibility harness directory is run by its head's compat lane; any
+// other Go test runs under `check`. A binding's obligations are already
+// free of tree-wide lanes (resolveBindingLanes), so a lane named here is
+// only ever chosen when the binding's own obligations actually contain
+// it — this list ranks, it never invents.
+const COMPAT_LANE_BY_HARNESS_DIR = Object.freeze({
+  "compatibility/prometheus": "compatibility.prometheus",
+  "compatibility/loki": "compatibility.loki",
+  "compatibility/tempo": "compatibility.tempo",
+});
+const UNIT_SUITE_LANE = "ci.check";
+// `just coverage-default` + `coverage-chdb` run every default- and
+// chdb-tagged test under ./..., including packages `ci.check`'s own
+// package_globs do not name (test/semantic/resourcefixture,
+// test/consumer-corpus). When a Go test's most specific owning globs tie —
+// which in this registry means two lanes both claiming `test/**`, one of
+// them a scan that runs no Go test at all — the lane that runs every Go
+// test wins the tie.
+const WHOLE_TREE_COVERAGE_LANE = "quality.coverage-measured";
+const PROPERTY_LANE = "quality.property";
+
+function preferredLaneIds(binding) {
+  const classified = classifyTestRef(binding.test_ref);
+  switch (classified.system) {
+    case "property-shape":
+      return [PROPERTY_LANE];
+    case "txtar-fixture": {
+      const [, , head] = classified.path.split("/");
+      return [`chdb.roundtrip-${head}`, UNIT_SUITE_LANE];
+    }
+    case "source-path": {
+      const harness = Object.keys(COMPAT_LANE_BY_HARNESS_DIR).find(
+        (dir) => classified.path === dir || classified.path.startsWith(`${dir}/`),
+      );
+      if (harness) return [COMPAT_LANE_BY_HARNESS_DIR[harness]];
+      if (classified.path.startsWith("test/property/")) return [PROPERTY_LANE, UNIT_SUITE_LANE];
+      // A gate script is run by the lane whose registry `command` names it
+      // (ci.agpl-clean -> agpl-clean.mjs); that join is made in
+      // resolveBindingLanes and lands in the obligations. Nothing to rank
+      // here beyond the unit suite — the specificity tiebreak below picks
+      // the lane whose declared scope names the file most narrowly
+      // (migration.e2e for test/e2e/migration/**, chdb.perf-guards for
+      // test/perf/**).
+      return [UNIT_SUITE_LANE];
+    }
+    default:
+      return [UNIT_SUITE_LANE];
+  }
+}
+
+// The static prefix of a glob (everything before its first wildcard) is
+// how narrowly the lane declared its interest in a path: `test/e2e/
+// migration/**` is a stronger claim to own test/e2e/migration/tier1_
+// parity_test.go than `test/**` is. Used only as the tiebreak when no
+// evidence-system preference applies.
+function globSpecificity(glob) {
+  const wildcard = glob.indexOf("*");
+  return wildcard === -1 ? glob.length : wildcard;
+}
+
+function laneSpecificityFor(lane, binding) {
+  const classified = classifyTestRef(binding.test_ref);
+  const candidates = [binding.test_ref];
+  if (classified.system === "source-path") candidates.push(classified.path, `${classified.path}/`);
+  let best = -1;
+  for (const glob of lane.package_globs ?? []) {
+    if (candidates.some((c) => matchesGlob(c, glob))) best = Math.max(best, globSpecificity(glob));
+  }
+  if (typeof lane.command === "string" && classified.system === "source-path" && lane.command.includes(classified.path)) {
+    best = Math.max(best, classified.path.length);
+  }
+  return best;
+}
+
+function laneCommand(lane) {
+  // Prefer the lane's own `just` recipe(s) — a literally runnable command —
+  // over its `command` field, which for several lanes (ci.check) is a
+  // prose SUMMARY of several recipes rather than a single invocation.
+  // `command` remains the fallback for a lane with no just recipe at all
+  // (ci.forbid-skip, chdb.roundtrip-* run a bare `node .github/scripts/
+  // *.mjs`, itself already runnable).
+  return lane.recipes?.length ? lane.recipes.map((r) => `just ${r}`).join(" && ") : (lane.command ?? null);
+}
+
 /**
- * The canonical (first, deterministic) execution recipe for a contract's
- * active bindings: the lowest-sorted binding's lowest-sorted lane
- * obligation, resolved to that lane's OWN command/recipe text via the
- * registry — never a second copy of the command, looked up fresh every
- * build. A contract with no active binding, or whose bindings resolve to no
- * lane (a non-file-shaped test_ref such as a property-shape ID), reports
- * `null` rather than a placeholder.
+ * The canonical execution recipe for a contract's active bindings: for the
+ * lowest-sorted binding with any lane obligation, the obligation whose lane
+ * runs that binding's evidence system (preferredLaneIds above); when none
+ * of the preferred lanes is among them, the obligation whose lane declared
+ * the binding's path most narrowly (laneSpecificityFor), lowest lane ID on
+ * a tie — resolved to that lane's OWN command/recipe text via the registry,
+ * never a second copy of the command. A contract with no active binding,
+ * or whose bindings resolve to no lane (a surface-parity symbol, or a
+ * config file only a tree-wide lane covers), reports `null` rather than a
+ * placeholder.
  */
 function canonicalExecution(contractRecord, registry) {
   const lanesById = new Map((registry.lanes ?? []).map((l) => [l.id, l]));
   for (const binding of contractRecord.bindings) {
-    for (const obligation of binding.obligations) {
-      const lane = lanesById.get(obligation.lane_id);
-      if (!lane) continue;
-      // Prefer the lane's own `just` recipe(s) — a literally runnable
-      // command — over its `command` field, which for several lanes
-      // (ci.lint, ci.check) is a prose SUMMARY of several recipes rather
-      // than a single invocation. `command` remains the fallback for a lane
-      // with no just recipe at all (ci.forbid-skip, ci.agpl-clean run a
-      // bare `node .github/scripts/*.mjs`, itself already runnable).
-      const command = lane.recipes?.length
-        ? lane.recipes.map((r) => `just ${r}`).join(" && ")
-        : (lane.command ?? null);
-      if (command) {
-        return {
-          binding_id: binding.id,
-          lane_id: lane.id,
-          command,
-          merge_required: obligation.merge_required,
-          release_required: obligation.release_required,
-        };
-      }
-    }
+    const runnable = binding.obligations.filter((o) => {
+      const lane = lanesById.get(o.lane_id);
+      return lane && laneCommand(lane);
+    });
+    if (runnable.length === 0) continue;
+    const preferred = preferredLaneIds(binding)
+      .map((id) => runnable.find((o) => o.lane_id === id))
+      .find(Boolean);
+    const mostSpecific = [...runnable].sort((a, b) => {
+      const diff = laneSpecificityFor(lanesById.get(b.lane_id), binding) - laneSpecificityFor(lanesById.get(a.lane_id), binding);
+      if (diff !== 0) return diff;
+      if (a.lane_id === WHOLE_TREE_COVERAGE_LANE) return -1;
+      if (b.lane_id === WHOLE_TREE_COVERAGE_LANE) return 1;
+      return a.lane_id < b.lane_id ? -1 : a.lane_id > b.lane_id ? 1 : 0;
+    })[0];
+    const obligation = preferred ?? mostSpecific;
+    const lane = lanesById.get(obligation.lane_id);
+    return {
+      binding_id: binding.id,
+      lane_id: lane.id,
+      command: laneCommand(lane),
+      merge_required: obligation.merge_required,
+      release_required: obligation.release_required,
+    };
   }
   return null;
 }
@@ -399,9 +496,12 @@ export function renderMarkdown(guide) {
   parts.push("## Contract index\n");
   parts.push(
     "Every ACTIVE enrolled contract, one row each. `Canonical execution` is the " +
-      "first active binding's resolved CI-lane recipe, deterministically chosen — " +
-      "a contract may bind more than one verifier; see its full card for the " +
-      "rest.\n",
+      "recipe of the CI lane that runs the first active binding's evidence — the " +
+      "property lane for a property shape, the head's chDB round trip (or `check`) " +
+      "for a TXTAR fixture, the head's compat lane for a compatibility harness, " +
+      "`check` for any other Go test — deterministically chosen; tree-wide lanes " +
+      "(lint, governance) are never an obligation of a binding. A contract may " +
+      "bind more than one verifier; see its full card for the rest.\n",
   );
   parts.push(renderIndexTable(guide.contract_index));
   parts.push("");

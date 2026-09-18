@@ -50,6 +50,39 @@
   "lane_inventory": {
     "lanes": [
       {
+        "lane_id": "ci.agpl-clean",
+        "context_name": "agpl-clean",
+        "merge_required": true,
+        "release_required": true,
+        "binding_ids": [
+          "BINDING-ARCH-AGPL-REACHABILITY-SCAN",
+          "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE",
+          "BINDING-ARCH-CANCELLATION-CLEANUP-PANIC",
+          "BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT",
+          "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
+          "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
+          "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
+          "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
+          "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
+          "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
+          "BINDING-ARCH-NO-CACHING-STATIC",
+          "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
+          "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+          "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
+          "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
+          "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
+          "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION",
+          "BINDING-SIGNAL-ADMISSION-GRPC-TRANSPORT",
+          "BINDING-SIGNAL-ADMISSION-LOGQL-WIRING",
+          "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
+          "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
+          "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
+        ],
+        "id": "ci.agpl-clean"
+      },
+      {
         "lane_id": "ci.forbid-skip",
         "context_name": "forbid-skip",
         "merge_required": true,
@@ -139,133 +172,6 @@
           "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC"
         ],
         "id": "ci.forbid-skip"
-      },
-      {
-        "lane_id": "ci.lint",
-        "context_name": "lint",
-        "merge_required": true,
-        "release_required": true,
-        "binding_ids": [
-          "BINDING-ARCH-AGPL-REACHABILITY-SCAN",
-          "BINDING-ARCH-BREAKER-RESILIENCE-LIVE-FAULT",
-          "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE",
-          "BINDING-ARCH-CANCELLATION-CLEANUP-CONCURRENT",
-          "BINDING-ARCH-CANCELLATION-CLEANUP-ERROR",
-          "BINDING-ARCH-CANCELLATION-CLEANUP-NORMAL",
-          "BINDING-ARCH-CANCELLATION-CLEANUP-PANIC",
-          "BINDING-ARCH-CANCELLATION-CLEANUP-ROUTE-MEMO",
-          "BINDING-ARCH-CAP-FILTER-LABEL-MATCHER",
-          "BINDING-ARCH-CAP-FILTER-LINE",
-          "BINDING-ARCH-CAP-FILTER-SPAN-ATTR",
-          "BINDING-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET",
-          "BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT",
-          "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
-          "BINDING-ARCH-CURSOR-TEARDOWN-PROM-BOUND",
-          "BINDING-ARCH-CURSOR-TEARDOWN-PROM-ORDER",
-          "BINDING-ARCH-DEPENDENCY-COVERAGE-FLOOR",
-          "BINDING-ARCH-DEPENDENCY-GO-ARCH-LINT",
-          "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
-          "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
-          "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
-          "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
-          "BINDING-ARCH-GOLDEN-MERGE-GATE",
-          "BINDING-ARCH-GOLDEN-SHARD-COVERAGE",
-          "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
-          "BINDING-ARCH-HEAD-EMIT-STRUCTURAL",
-          "BINDING-ARCH-HEAD-LOWER-LOGQL",
-          "BINDING-ARCH-HEAD-LOWER-PROMQL",
-          "BINDING-ARCH-HEAD-LOWER-TRACEQL",
-          "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
-          "BINDING-ARCH-HEAD-OPTIMIZE-SNAPSHOT-PAIR",
-          "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
-          "BINDING-ARCH-HEAD-WIRE-LOGQL",
-          "BINDING-ARCH-HEAD-WIRE-PROMQL",
-          "BINDING-ARCH-HEAD-WIRE-TRACEQL",
-          "BINDING-ARCH-NO-CACHING-STATIC",
-          "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
-          "BINDING-ARCH-NO-SKIP-SCAN",
-          "BINDING-ARCH-PARSER-ACCESSOR-FORBIDIGO",
-          "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
-          "BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING",
-          "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
-          "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
-          "BINDING-ARCH-TYPED-SQL-RAW-SCAN",
-          "BINDING-ARCH-TYPED-SQL-VERBATIM-SCAN",
-          "BINDING-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY",
-          "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
-          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT",
-          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
-          "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
-          "BINDING-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW",
-          "BINDING-LOGQL-ORACLE-BOUNDARY-LINE-FILTERS-REVIEW",
-          "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
-          "BINDING-LOGQL-PIPELINE-STAGE-ORDER-UNPACK-FORMAT",
-          "BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE",
-          "BINDING-LOGQL-STATUS-CODE-DIFFERENTIAL",
-          "BINDING-LOGQL-STREAM-PIPELINE-RANDOM-PROPERTY",
-          "BINDING-LOGQL-STREAM-PIPELINE-SHAPE-ROSTER-PROPERTY",
-          "BINDING-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW",
-          "BINDING-LOGQL-STREAM-ROW-REFERENCE-DIFFERENTIAL",
-          "BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE",
-          "BINDING-LOGQL-UNWRAP-FIXTURE",
-          "BINDING-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW",
-          "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY",
-          "BINDING-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY",
-          "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN",
-          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT",
-          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC",
-          "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
-          "BINDING-PROMQL-NATIVE-HISTOGRAM-COMPAT",
-          "BINDING-PROMQL-NATIVE-HISTOGRAM-PROPERTY",
-          "BINDING-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN",
-          "BINDING-PROMQL-PARSER-SINGLE-SOURCE-SCAN",
-          "BINDING-PROMQL-RANGE-ALIGNMENT-COMPAT",
-          "BINDING-PROMQL-RANGE-ALIGNMENT-RANGE-PROPERTY",
-          "BINDING-PROMQL-RANGE-ALIGNMENT-SPEC",
-          "BINDING-PROMQL-THIRD-PARTY-CORPUS-PROVENANCE-REVIEW",
-          "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
-          "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
-          "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION",
-          "BINDING-SIGNAL-ADMISSION-GRPC-TRANSPORT",
-          "BINDING-SIGNAL-ADMISSION-LOGQL-WIRING",
-          "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
-          "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
-          "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO",
-          "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB",
-          "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
-          "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
-          "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY",
-          "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-SUBSTRATE",
-          "BINDING-SIGNAL-MIGRATION-WIRE-TIER2-FIRING",
-          "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
-          "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
-          "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE",
-          "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE",
-          "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
-          "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY",
-          "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
-          "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
-          "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE",
-          "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
-          "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
-          "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
-          "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
-          "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
-          "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
-          "BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY",
-          "BINDING-TRACEQL-STRUCTURAL-CHILD-SPEC",
-          "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY",
-          "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-SPEC",
-          "BINDING-TRACEQL-TRACE-SCOPED-COUNT-PROPERTY",
-          "BINDING-TRACEQL-TRACE-SCOPED-COUNT-SPEC",
-          "BINDING-TRACEQL-TRACE-SCOPED-DURATION-AGGREGATE-PROPERTY",
-          "BINDING-TRACEQL-TRANSPORT-ARM-GRPC",
-          "BINDING-TRACEQL-TRANSPORT-ARM-HTTP",
-          "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC"
-        ],
-        "id": "ci.lint"
       },
       {
         "lane_id": "compatibility.gate",
@@ -380,180 +286,6 @@
           "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC"
         ],
         "id": "compatibility.gate"
-      },
-      {
-        "lane_id": "governance.forbid-deferral",
-        "context_name": "forbid-deferral",
-        "merge_required": true,
-        "release_required": true,
-        "binding_ids": [
-          "BINDING-ARCH-AGPL-REACHABILITY-SCAN",
-          "BINDING-ARCH-BREAKER-RESILIENCE-LIVE-FAULT",
-          "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE",
-          "BINDING-ARCH-CANCELLATION-CLEANUP-CONCURRENT",
-          "BINDING-ARCH-CANCELLATION-CLEANUP-ERROR",
-          "BINDING-ARCH-CANCELLATION-CLEANUP-NORMAL",
-          "BINDING-ARCH-CANCELLATION-CLEANUP-PANIC",
-          "BINDING-ARCH-CANCELLATION-CLEANUP-ROUTE-MEMO",
-          "BINDING-ARCH-CAP-FILTER-LABEL-MATCHER",
-          "BINDING-ARCH-CAP-FILTER-LINE",
-          "BINDING-ARCH-CAP-FILTER-SPAN-ATTR",
-          "BINDING-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET",
-          "BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT",
-          "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
-          "BINDING-ARCH-CURSOR-TEARDOWN-PROM-BOUND",
-          "BINDING-ARCH-CURSOR-TEARDOWN-PROM-ORDER",
-          "BINDING-ARCH-DEPENDENCY-COVERAGE-FLOOR",
-          "BINDING-ARCH-DEPENDENCY-GO-ARCH-LINT",
-          "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
-          "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
-          "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
-          "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
-          "BINDING-ARCH-GOLDEN-MERGE-GATE",
-          "BINDING-ARCH-GOLDEN-SHARD-COVERAGE",
-          "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
-          "BINDING-ARCH-HEAD-EMIT-STRUCTURAL",
-          "BINDING-ARCH-HEAD-LOWER-LOGQL",
-          "BINDING-ARCH-HEAD-LOWER-PROMQL",
-          "BINDING-ARCH-HEAD-LOWER-TRACEQL",
-          "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
-          "BINDING-ARCH-HEAD-OPTIMIZE-SNAPSHOT-PAIR",
-          "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
-          "BINDING-ARCH-HEAD-WIRE-LOGQL",
-          "BINDING-ARCH-HEAD-WIRE-PROMQL",
-          "BINDING-ARCH-HEAD-WIRE-TRACEQL",
-          "BINDING-ARCH-NO-CACHING-STATIC",
-          "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
-          "BINDING-ARCH-NO-SKIP-SCAN",
-          "BINDING-ARCH-PARSER-ACCESSOR-FORBIDIGO",
-          "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
-          "BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING",
-          "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
-          "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
-          "BINDING-ARCH-TYPED-SQL-RAW-SCAN",
-          "BINDING-ARCH-TYPED-SQL-VERBATIM-SCAN",
-          "BINDING-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY",
-          "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
-          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT",
-          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
-          "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
-          "BINDING-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW",
-          "BINDING-LOGQL-ORACLE-BOUNDARY-LINE-FILTERS-REVIEW",
-          "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
-          "BINDING-LOGQL-PIPELINE-STAGE-ORDER-UNPACK-FORMAT",
-          "BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE",
-          "BINDING-LOGQL-STATUS-CODE-DIFFERENTIAL",
-          "BINDING-LOGQL-STREAM-PIPELINE-RANDOM-PROPERTY",
-          "BINDING-LOGQL-STREAM-PIPELINE-SHAPE-ROSTER-PROPERTY",
-          "BINDING-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW",
-          "BINDING-LOGQL-STREAM-ROW-REFERENCE-DIFFERENTIAL",
-          "BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE",
-          "BINDING-LOGQL-UNWRAP-FIXTURE",
-          "BINDING-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW",
-          "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY",
-          "BINDING-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY",
-          "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN",
-          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT",
-          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC",
-          "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
-          "BINDING-PROMQL-NATIVE-HISTOGRAM-COMPAT",
-          "BINDING-PROMQL-NATIVE-HISTOGRAM-PROPERTY",
-          "BINDING-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN",
-          "BINDING-PROMQL-PARSER-SINGLE-SOURCE-SCAN",
-          "BINDING-PROMQL-RANGE-ALIGNMENT-COMPAT",
-          "BINDING-PROMQL-RANGE-ALIGNMENT-RANGE-PROPERTY",
-          "BINDING-PROMQL-RANGE-ALIGNMENT-SPEC",
-          "BINDING-PROMQL-THIRD-PARTY-CORPUS-PROVENANCE-REVIEW",
-          "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
-          "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
-          "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION",
-          "BINDING-SIGNAL-ADMISSION-GRPC-TRANSPORT",
-          "BINDING-SIGNAL-ADMISSION-LOGQL-WIRING",
-          "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
-          "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
-          "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO",
-          "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB",
-          "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
-          "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
-          "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY",
-          "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-SUBSTRATE",
-          "BINDING-SIGNAL-MIGRATION-WIRE-TIER2-FIRING",
-          "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
-          "BINDING-SIGNAL-RESOURCE-LOGQL-FIXTURE",
-          "BINDING-SIGNAL-RESOURCE-PROMQL-FIXTURE",
-          "BINDING-SIGNAL-RESOURCE-TRACEQL-FIXTURE",
-          "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
-          "BINDING-TRACEQL-ATTRIBUTE-SCOPE-SPAN-PROPERTY",
-          "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
-          "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
-          "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE",
-          "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
-          "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
-          "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
-          "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
-          "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
-          "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
-          "BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY",
-          "BINDING-TRACEQL-STRUCTURAL-CHILD-SPEC",
-          "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-PROPERTY",
-          "BINDING-TRACEQL-STRUCTURAL-DESCENDANT-SPEC",
-          "BINDING-TRACEQL-TRACE-SCOPED-COUNT-PROPERTY",
-          "BINDING-TRACEQL-TRACE-SCOPED-COUNT-SPEC",
-          "BINDING-TRACEQL-TRACE-SCOPED-DURATION-AGGREGATE-PROPERTY",
-          "BINDING-TRACEQL-TRANSPORT-ARM-GRPC",
-          "BINDING-TRACEQL-TRANSPORT-ARM-HTTP",
-          "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC"
-        ],
-        "id": "governance.forbid-deferral"
-      },
-      {
-        "lane_id": "governance.pr-body",
-        "context_name": "pr-body",
-        "merge_required": true,
-        "release_required": true,
-        "binding_ids": [
-          "BINDING-ARCH-AGPL-REACHABILITY-SCAN",
-          "BINDING-ARCH-BREAKER-RESILIENCE-LIVE-FAULT",
-          "BINDING-ARCH-DEPENDENCY-COVERAGE-FLOOR",
-          "BINDING-ARCH-NO-SKIP-SCAN",
-          "BINDING-ARCH-TYPED-SQL-RAW-SCAN",
-          "BINDING-ARCH-TYPED-SQL-VERBATIM-SCAN"
-        ],
-        "id": "governance.pr-body"
-      },
-      {
-        "lane_id": "security.codeql",
-        "context_name": "CodeQL",
-        "merge_required": true,
-        "release_required": true,
-        "binding_ids": [
-          "BINDING-ARCH-AGPL-REACHABILITY-SCAN",
-          "BINDING-ARCH-DEPENDENCY-COVERAGE-FLOOR",
-          "BINDING-ARCH-GOLDEN-MERGE-GATE",
-          "BINDING-ARCH-GOLDEN-SHARD-COVERAGE",
-          "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
-          "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
-          "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
-          "BINDING-ARCH-NO-SKIP-SCAN",
-          "BINDING-ARCH-TYPED-SQL-RAW-SCAN",
-          "BINDING-ARCH-TYPED-SQL-VERBATIM-SCAN",
-          "BINDING-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW",
-          "BINDING-LOGQL-ORACLE-BOUNDARY-LINE-FILTERS-REVIEW",
-          "BINDING-LOGQL-STATUS-CODE-DIFFERENTIAL",
-          "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN",
-          "BINDING-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN",
-          "BINDING-PROMQL-PARSER-SINGLE-SOURCE-SCAN",
-          "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
-          "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE",
-          "BINDING-TRACEQL-ORACLE-AUTHORITY-LOCAL-PROPERTY",
-          "BINDING-TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY-SWEEP",
-          "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
-          "BINDING-TRACEQL-TRANSPORT-ARM-GRPC",
-          "BINDING-TRACEQL-TRANSPORT-ARM-HTTP"
-        ],
-        "id": "security.codeql"
       },
       {
         "lane_id": "chdb.perf-guards",
@@ -716,38 +448,6 @@
           "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC"
         ],
         "id": "chdb.strict-scan"
-      },
-      {
-        "lane_id": "ci.agpl-clean",
-        "context_name": "agpl-clean",
-        "merge_required": true,
-        "release_required": true,
-        "binding_ids": [
-          "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE",
-          "BINDING-ARCH-CANCELLATION-CLEANUP-PANIC",
-          "BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT",
-          "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
-          "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
-          "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
-          "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
-          "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
-          "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
-          "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
-          "BINDING-ARCH-NO-CACHING-STATIC",
-          "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
-          "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
-          "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
-          "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
-          "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
-          "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION",
-          "BINDING-SIGNAL-ADMISSION-GRPC-TRANSPORT",
-          "BINDING-SIGNAL-ADMISSION-LOGQL-WIRING",
-          "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
-          "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
-        ],
-        "id": "ci.agpl-clean"
       },
       {
         "lane_id": "ci.check",
@@ -1089,6 +789,7 @@
           "BINDING-ARCH-CANCELLATION-CLEANUP-PANIC",
           "BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT",
           "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
+          "BINDING-ARCH-DEPENDENCY-COVERAGE-FLOOR",
           "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
@@ -1335,6 +1036,7 @@
           "BINDING-ARCH-CAP-FILTER-LINE",
           "BINDING-ARCH-HEAD-LOWER-LOGQL",
           "BINDING-ARCH-HEAD-WIRE-LOGQL",
+          "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
           "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
           "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
@@ -1471,6 +1173,7 @@
         "binding_ids": [
           "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT",
           "BINDING-LOGQL-STATUS-CODE-DIFFERENTIAL",
+          "BINDING-LOGQL-STREAM-ROW-REFERENCE-DIFFERENTIAL",
           "BINDING-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW",
           "BINDING-SIGNAL-ADMISSION-LOGQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
@@ -1487,6 +1190,7 @@
           "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-PROMQL-NATIVE-HISTOGRAM-COMPAT",
+          "BINDING-PROMQL-RANGE-ALIGNMENT-COMPAT",
           "BINDING-PROMQL-THIRD-PARTY-CORPUS-PROVENANCE-REVIEW",
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING"
         ],
@@ -1501,6 +1205,7 @@
           "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-PROMQL-NATIVE-HISTOGRAM-COMPAT",
+          "BINDING-PROMQL-RANGE-ALIGNMENT-COMPAT",
           "BINDING-PROMQL-THIRD-PARTY-CORPUS-PROVENANCE-REVIEW"
         ],
         "id": "compatibility.prometheus-floor"
@@ -1514,6 +1219,7 @@
           "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-PROMQL-NATIVE-HISTOGRAM-COMPAT",
+          "BINDING-PROMQL-RANGE-ALIGNMENT-COMPAT",
           "BINDING-PROMQL-THIRD-PARTY-CORPUS-PROVENANCE-REVIEW",
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING"
         ],
@@ -1613,7 +1319,10 @@
         "id": "migration.e2e"
       }
     ],
-    "unresolved": []
+    "unresolved": [
+      "BINDING-ARCH-DEPENDENCY-GO-ARCH-LINT",
+      "BINDING-ARCH-PARSER-ACCESSOR-FORBIDIGO"
+    ]
   },
   "heads": {
     "HEAD-PROMQL": [
@@ -1774,14 +1483,14 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.forbid-skip",
-              "context_name": "forbid-skip",
+              "lane_id": "ci.agpl-clean",
+              "context_name": "agpl-clean",
               "merge_required": true,
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
+              "lane_id": "ci.forbid-skip",
+              "context_name": "forbid-skip",
               "merge_required": true,
               "release_required": true
             },
@@ -1790,24 +1499,6 @@
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.pr-body",
-              "context_name": "pr-body",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
-              "release_required": true
             }
           ]
         }
@@ -1966,22 +1657,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -2069,22 +1748,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -2172,22 +1839,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -2336,28 +1991,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.pr-body",
-              "context_name": "pr-body",
-              "merge_required": true,
-              "release_required": true
             }
           ]
         },
@@ -2427,12 +2064,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -2467,12 +2098,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -2645,12 +2270,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -2685,12 +2304,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -2770,22 +2383,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -2847,22 +2448,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -3030,12 +2619,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -3070,12 +2653,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -3168,12 +2745,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -3208,12 +2779,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -3306,12 +2871,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -3346,12 +2905,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -3444,12 +2997,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -3484,12 +3031,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -3635,6 +3176,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.roundtrip-logql",
+              "context_name": "roundtrip (logql)",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -3653,22 +3200,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -3754,12 +3289,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -3782,12 +3311,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -3954,22 +3477,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -4052,12 +3563,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -4080,12 +3585,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -4251,22 +3750,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -4345,22 +3832,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -4537,22 +4012,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -4640,22 +4103,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -4743,22 +4194,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -4941,12 +4380,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -4969,12 +4402,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -5005,12 +4432,6 @@
               "context_name": "mutation",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
-              "release_required": true
             }
           ]
         },
@@ -5072,22 +4493,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -5172,12 +4581,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -5200,12 +4603,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -5236,12 +4633,6 @@
               "context_name": "mutation",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
-              "release_required": true
             }
           ]
         }
@@ -5396,22 +4787,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -5496,22 +4875,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -5596,22 +4963,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -5774,12 +5129,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -5802,12 +5151,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -5892,12 +5235,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -5922,12 +5259,6 @@
               "release_required": false
             },
             {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "performance.benchmark",
               "context_name": "benchstat diff (baseline vs ref)",
               "merge_required": false,
@@ -5948,12 +5279,6 @@
             {
               "lane_id": "quality.coverage-measured",
               "context_name": "coverage",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
               "merge_required": true,
               "release_required": true
             }
@@ -6059,34 +5384,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.pr-body",
-              "context_name": "pr-body",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
-              "release_required": true
             }
           ]
         }
@@ -6200,32 +5501,14 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
             },
             {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.pr-body",
-              "context_name": "pr-body",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
+              "lane_id": "quality.coverage-enrollment",
+              "context_name": "coverage",
               "merge_required": true,
               "release_required": true
             }
@@ -6262,20 +5545,7 @@
             "source_sha": null,
             "revision_bound": false
           },
-          "obligations": [
-            {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            }
-          ]
+          "obligations": []
         }
       ],
       "complement_gaps": []
@@ -6370,20 +5640,7 @@
             "source_sha": null,
             "revision_bound": false
           },
-          "obligations": [
-            {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            }
-          ]
+          "obligations": []
         }
       ],
       "complement_gaps": []
@@ -6504,22 +5761,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "perf-nightly-selfcheck.perf-nightly-selfcheck",
@@ -6622,22 +5867,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "perf-nightly-selfcheck.perf-nightly-selfcheck",
@@ -6819,32 +6052,14 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
             },
             {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "quality.coverage-measured",
               "context_name": "coverage",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
               "merge_required": true,
               "release_required": true
             }
@@ -6901,32 +6116,14 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
             },
             {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "quality.coverage-measured",
               "context_name": "coverage",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
               "merge_required": true,
               "release_required": true
             }
@@ -7088,22 +6285,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -7167,22 +6352,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -7246,22 +6419,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -7334,12 +6495,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -7380,12 +6535,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -7467,22 +6616,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -7608,34 +6745,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.pr-body",
-              "context_name": "pr-body",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
-              "release_required": true
             }
           ]
         },
@@ -7676,34 +6789,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.pr-body",
-              "context_name": "pr-body",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
-              "release_required": true
             }
           ]
         }
@@ -7826,22 +6915,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -7923,22 +7000,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -8088,21 +7153,9 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.loki",
               "context_name": "compatibility/loki",
               "merge_required": false,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
               "release_required": true
             }
           ]
@@ -8173,22 +7226,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -8344,22 +7385,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -8496,22 +7525,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -8522,12 +7539,6 @@
             {
               "lane_id": "quality.property",
               "context_name": "property (PromQL + LogQL + TraceQL, rapid N=500)",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
               "merge_required": true,
               "release_required": true
             }
@@ -8576,22 +7587,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -8602,12 +7601,6 @@
             {
               "lane_id": "quality.property",
               "context_name": "property (PromQL + LogQL + TraceQL, rapid N=500)",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
               "merge_required": true,
               "release_required": true
             }
@@ -8746,22 +7739,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -8849,22 +7830,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -9007,22 +7976,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -9079,22 +8036,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -9240,27 +8185,9 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.loki",
               "context_name": "compatibility/loki",
               "merge_required": false,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
               "release_required": true
             }
           ]
@@ -9326,22 +8253,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -9396,15 +8311,9 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
+              "lane_id": "compatibility.loki",
+              "context_name": "compatibility/loki",
+              "merge_required": false,
               "release_required": true
             }
           ]
@@ -9560,22 +8469,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -9663,22 +8560,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -9766,22 +8651,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -9903,21 +8776,9 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.loki",
               "context_name": "compatibility/loki",
               "merge_required": false,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
               "release_required": true
             }
           ]
@@ -10032,22 +8893,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -10104,22 +8953,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -10298,12 +9135,6 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.prometheus",
               "context_name": "compatibility/prometheus",
               "merge_required": false,
@@ -10319,12 +9150,6 @@
               "lane_id": "compatibility.prometheus-forced-route",
               "context_name": "compatibility/prometheus-forced-route",
               "merge_required": false,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
               "release_required": true
             }
           ]
@@ -10395,22 +9220,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -10568,12 +9381,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -10620,12 +9427,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -10774,12 +9575,6 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.prometheus",
               "context_name": "compatibility/prometheus",
               "merge_required": false,
@@ -10795,12 +9590,6 @@
               "lane_id": "compatibility.prometheus-forced-route",
               "context_name": "compatibility/prometheus-forced-route",
               "merge_required": false,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
               "release_required": true
             }
           ]
@@ -10846,22 +9635,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -10995,32 +9772,14 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
             },
             {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "quality.coverage-measured",
               "context_name": "coverage",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
               "merge_required": true,
               "release_required": true
             }
@@ -11137,32 +9896,14 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
             },
             {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "quality.coverage-measured",
               "context_name": "coverage",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
               "merge_required": true,
               "release_required": true
             }
@@ -11280,15 +10021,21 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
+              "lane_id": "compatibility.prometheus",
+              "context_name": "compatibility/prometheus",
+              "merge_required": false,
               "release_required": true
             },
             {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
+              "lane_id": "compatibility.prometheus-floor",
+              "context_name": "compatibility/prometheus-floor",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "compatibility.prometheus-forced-route",
+              "context_name": "compatibility/prometheus-forced-route",
+              "merge_required": false,
               "release_required": true
             }
           ]
@@ -11334,22 +10081,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -11431,22 +10166,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -11584,32 +10307,14 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
             },
             {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "quality.coverage-measured",
               "context_name": "coverage",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
               "merge_required": true,
               "release_required": true
             }
@@ -11709,12 +10414,6 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.prometheus",
               "context_name": "compatibility/prometheus",
               "merge_required": false,
@@ -11730,12 +10429,6 @@
               "lane_id": "compatibility.prometheus-forced-route",
               "context_name": "compatibility/prometheus-forced-route",
               "merge_required": false,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
               "release_required": true
             }
           ]
@@ -11933,12 +10626,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -11979,12 +10666,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -12074,12 +10755,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -12114,12 +10789,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -12210,12 +10879,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -12256,12 +10919,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -12352,12 +11009,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -12398,12 +11049,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -12497,12 +11142,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -12549,12 +11188,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -12648,12 +11281,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -12706,12 +11333,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -12805,12 +11426,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -12857,12 +11472,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -12956,12 +11565,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -13008,12 +11611,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -13107,12 +11704,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -13159,12 +11750,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -13306,22 +11891,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -13371,22 +11944,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -13535,22 +12096,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -13638,22 +12187,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -13805,12 +12342,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -13851,12 +12382,6 @@
               "context_name": "nightly-health-notify",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "migration.e2e",
@@ -13913,12 +12438,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -13959,12 +12478,6 @@
               "context_name": "nightly-health-notify",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "migration.e2e",
@@ -14021,12 +12534,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -14067,12 +12574,6 @@
               "context_name": "nightly-health-notify",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "migration.e2e",
@@ -14221,22 +12722,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -14287,22 +12776,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -14353,22 +12830,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -14419,22 +12884,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -14579,22 +13032,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -14651,22 +13092,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -14748,22 +13177,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -14960,22 +13377,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -14994,12 +13399,6 @@
               "context_name": "drift",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
-              "release_required": true
             }
           ]
         },
@@ -15036,27 +13435,9 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.tempo",
               "context_name": "compatibility/tempo",
               "merge_required": false,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
               "release_required": true
             }
           ]
@@ -15102,22 +13483,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -15128,12 +13497,6 @@
             {
               "lane_id": "quality.property",
               "context_name": "property (PromQL + LogQL + TraceQL, rapid N=500)",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
               "merge_required": true,
               "release_required": true
             }
@@ -15250,22 +13613,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -15276,12 +13627,6 @@
             {
               "lane_id": "quality.property",
               "context_name": "property (PromQL + LogQL + TraceQL, rapid N=500)",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
               "merge_required": true,
               "release_required": true
             }
@@ -15400,22 +13745,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -15426,12 +13759,6 @@
             {
               "lane_id": "quality.property",
               "context_name": "property (PromQL + LogQL + TraceQL, rapid N=500)",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
               "merge_required": true,
               "release_required": true
             }
@@ -15556,22 +13883,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -15653,22 +13968,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -15831,22 +14134,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -15996,22 +14287,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -16093,22 +14372,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -16171,22 +14438,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -16268,22 +14523,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -16440,22 +14683,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -16537,22 +14768,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -16615,22 +14834,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -16762,27 +14969,9 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.tempo",
               "context_name": "compatibility/tempo",
               "merge_required": false,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
               "release_required": true
             }
           ]
@@ -16820,27 +15009,9 @@
           },
           "obligations": [
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.tempo",
               "context_name": "compatibility/tempo",
               "merge_required": false,
-              "release_required": true
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
               "release_required": true
             }
           ]
@@ -16980,22 +15151,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",

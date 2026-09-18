@@ -36,8 +36,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-AGPL-REACHABILITY-SCAN",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "ci.agpl-clean",
+        "command": "node .github/scripts/agpl-clean.mjs",
         "merge_required": true,
         "release_required": true
       }
@@ -50,8 +50,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-CAP-FILTER-LABEL-MATCHER",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "lane_id": "chdb.roundtrip-promql",
+        "command": "node .github/scripts/chdb-roundtrip.mjs",
         "merge_required": false,
         "release_required": true
       }
@@ -78,9 +78,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
-        "merge_required": false,
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
         "release_required": true
       }
     },
@@ -92,9 +92,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
-        "merge_required": false,
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
         "release_required": true
       }
     },
@@ -106,9 +106,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
-        "merge_required": false,
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
         "release_required": true
       }
     },
@@ -134,8 +134,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "lane_id": "chdb.roundtrip-promql",
+        "command": "node .github/scripts/chdb-roundtrip.mjs",
         "merge_required": false,
         "release_required": true
       }
@@ -148,8 +148,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-HEAD-LOWER-LOGQL",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "lane_id": "chdb.roundtrip-logql",
+        "command": "node .github/scripts/chdb-roundtrip.mjs",
         "merge_required": false,
         "release_required": true
       }
@@ -162,9 +162,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
-        "merge_required": false,
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
         "release_required": true
       }
     },
@@ -176,8 +176,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-HEAD-WIRE-LOGQL",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "lane_id": "chdb.roundtrip-logql",
+        "command": "node .github/scripts/chdb-roundtrip.mjs",
         "merge_required": false,
         "release_required": true
       }
@@ -190,9 +190,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-NO-CACHING-STATIC",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
-        "merge_required": false,
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
         "release_required": true
       }
     },
@@ -218,8 +218,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-DEPENDENCY-COVERAGE-FLOOR",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "quality.coverage-enrollment",
+        "command": "node .github/scripts/coverage-package-floor.mjs",
         "merge_required": true,
         "release_required": true
       }
@@ -230,13 +230,7 @@
       "scope_label": "architecture (universal)",
       "authority": "operational-invariant",
       "assured": true,
-      "execution": {
-        "binding_id": "BINDING-ARCH-PARSER-ACCESSOR-FORBIDIGO",
-        "lane_id": "ci.lint",
-        "command": "just lint && just lint-actions && just lint-md",
-        "merge_required": true,
-        "release_required": true
-      }
+      "execution": null
     },
     {
       "id": "ARCH-PERF-BASELINE-MEASURED-EVIDENCE-001",
@@ -246,10 +240,10 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "lane_id": "perf-nightly-selfcheck.perf-nightly-selfcheck",
+        "command": "just perf-nightly-selfcheck",
         "merge_required": false,
-        "release_required": true
+        "release_required": false
       }
     },
     {
@@ -260,10 +254,10 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-GOLDEN-MERGE-GATE",
-        "lane_id": "agpl.oracle",
-        "command": "just test-agpl-oracle",
-        "merge_required": false,
-        "release_required": false
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
+        "release_required": true
       }
     },
     {
@@ -274,10 +268,10 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-ARCH-CANCELLATION-CLEANUP-CONCURRENT",
-        "lane_id": "agpl.oracle",
-        "command": "just test-agpl-oracle",
-        "merge_required": false,
-        "release_required": false
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
+        "release_required": true
       }
     },
     {
@@ -302,8 +296,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "quality.property",
+        "command": "just property",
         "merge_required": true,
         "release_required": true
       }
@@ -316,9 +310,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT",
-        "lane_id": "ci.lint",
-        "command": "just lint && just lint-actions && just lint-md",
-        "merge_required": true,
+        "lane_id": "compatibility.loki",
+        "command": "just compat-logql",
+        "merge_required": false,
         "release_required": true
       }
     },
@@ -330,8 +324,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "lane_id": "chdb.roundtrip-logql",
+        "command": "node .github/scripts/chdb-roundtrip.mjs",
         "merge_required": false,
         "release_required": true
       }
@@ -344,10 +338,10 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW",
-        "lane_id": "agpl.oracle",
-        "command": "just test-agpl-oracle",
-        "merge_required": false,
-        "release_required": false
+        "lane_id": "quality.property",
+        "command": "just property",
+        "merge_required": true,
+        "release_required": true
       }
     },
     {
@@ -358,8 +352,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "lane_id": "chdb.roundtrip-logql",
+        "command": "node .github/scripts/chdb-roundtrip.mjs",
         "merge_required": false,
         "release_required": true
       }
@@ -372,8 +366,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-LOGQL-STREAM-PIPELINE-RANDOM-PROPERTY",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "quality.property",
+        "command": "just property",
         "merge_required": true,
         "release_required": true
       }
@@ -386,9 +380,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-LOGQL-STATUS-CODE-DIFFERENTIAL",
-        "lane_id": "ci.lint",
-        "command": "just lint && just lint-actions && just lint-md",
-        "merge_required": true,
+        "lane_id": "compatibility.loki",
+        "command": "just compat-logql",
+        "merge_required": false,
         "release_required": true
       }
     },
@@ -400,8 +394,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "lane_id": "chdb.roundtrip-logql",
+        "command": "node .github/scripts/chdb-roundtrip.mjs",
         "merge_required": false,
         "release_required": true
       }
@@ -414,9 +408,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-LOGQL-UPSTREAM-SKIP-BASELINE-REVIEW",
-        "lane_id": "ci.lint",
-        "command": "just lint && just lint-actions && just lint-md",
-        "merge_required": true,
+        "lane_id": "compatibility.loki",
+        "command": "just compat-logql",
+        "merge_required": false,
         "release_required": true
       }
     },
@@ -428,8 +422,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "quality.property",
+        "command": "just property",
         "merge_required": true,
         "release_required": true
       }
@@ -442,9 +436,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT",
-        "lane_id": "ci.lint",
-        "command": "just lint && just lint-actions && just lint-md",
-        "merge_required": true,
+        "lane_id": "compatibility.prometheus",
+        "command": "just compat-promql",
+        "merge_required": false,
         "release_required": true
       }
     },
@@ -456,9 +450,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-PROMQL-NATIVE-HISTOGRAM-COMPAT",
-        "lane_id": "ci.lint",
-        "command": "just lint && just lint-actions && just lint-md",
-        "merge_required": true,
+        "lane_id": "compatibility.prometheus",
+        "command": "just compat-promql",
+        "merge_required": false,
         "release_required": true
       }
     },
@@ -470,10 +464,10 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN",
-        "lane_id": "agpl.oracle",
-        "command": "just test-agpl-oracle",
-        "merge_required": false,
-        "release_required": false
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
+        "release_required": true
       }
     },
     {
@@ -484,10 +478,10 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-PROMQL-PARSER-SINGLE-SOURCE-SCAN",
-        "lane_id": "agpl.oracle",
-        "command": "just test-agpl-oracle",
-        "merge_required": false,
-        "release_required": false
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
+        "release_required": true
       }
     },
     {
@@ -498,9 +492,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-PROMQL-RANGE-ALIGNMENT-COMPAT",
-        "lane_id": "ci.lint",
-        "command": "just lint && just lint-actions && just lint-md",
-        "merge_required": true,
+        "lane_id": "compatibility.prometheus",
+        "command": "just compat-promql",
+        "merge_required": false,
         "release_required": true
       }
     },
@@ -512,10 +506,10 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN",
-        "lane_id": "agpl.oracle",
-        "command": "just test-agpl-oracle",
-        "merge_required": false,
-        "release_required": false
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
+        "release_required": true
       }
     },
     {
@@ -526,9 +520,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-PROMQL-THIRD-PARTY-CORPUS-PROVENANCE-REVIEW",
-        "lane_id": "ci.lint",
-        "command": "just lint && just lint-actions && just lint-md",
-        "merge_required": true,
+        "lane_id": "compatibility.prometheus",
+        "command": "just compat-promql",
+        "merge_required": false,
         "release_required": true
       }
     },
@@ -540,9 +534,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
-        "merge_required": false,
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
         "release_required": true
       }
     },
@@ -554,8 +548,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "quality.coverage-measured",
+        "command": "just coverage-default && just coverage-chdb && just coverage-merge",
         "merge_required": true,
         "release_required": true
       }
@@ -568,8 +562,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "lane_id": "chdb.roundtrip-logql",
+        "command": "node .github/scripts/chdb-roundtrip.mjs",
         "merge_required": false,
         "release_required": true
       }
@@ -582,9 +576,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
-        "merge_required": true,
+        "lane_id": "migration.e2e",
+        "command": "just migration-tier1 && just migration-tier2",
+        "merge_required": false,
         "release_required": true
       }
     },
@@ -596,8 +590,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-SIGNAL-RESOURCE-CONFIG-PROJECTION",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "quality.coverage-measured",
+        "command": "just coverage-default && just coverage-chdb && just coverage-merge",
         "merge_required": true,
         "release_required": true
       }
@@ -610,8 +604,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-TRACEQL-ATTRIBUTE-SCOPE-RESOURCE-PROPERTY",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "quality.property",
+        "command": "just property",
         "merge_required": true,
         "release_required": true
       }
@@ -624,10 +618,10 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
-        "lane_id": "agpl.oracle",
-        "command": "just test-agpl-oracle",
-        "merge_required": false,
-        "release_required": false
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
+        "merge_required": true,
+        "release_required": true
       }
     },
     {
@@ -638,8 +632,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-TRACEQL-PROPERTY-EVIDENCE-TRACE-IDENTITY-SWEEP",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "quality.property",
+        "command": "just property",
         "merge_required": true,
         "release_required": true
       }
@@ -652,8 +646,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "quality.property",
+        "command": "just property",
         "merge_required": true,
         "release_required": true
       }
@@ -666,8 +660,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "lane_id": "chdb.roundtrip-traceql",
+        "command": "node .github/scripts/chdb-roundtrip.mjs",
         "merge_required": false,
         "release_required": true
       }
@@ -680,8 +674,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-TRACEQL-STRUCTURAL-CHILD-PROPERTY",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "quality.property",
+        "command": "just property",
         "merge_required": true,
         "release_required": true
       }
@@ -694,8 +688,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-TRACEQL-TRACE-SCOPED-COUNT-PROPERTY",
-        "lane_id": "ci.forbid-skip",
-        "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
+        "lane_id": "quality.property",
+        "command": "just property",
         "merge_required": true,
         "release_required": true
       }
@@ -708,9 +702,9 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-TRACEQL-TRANSPORT-ARM-GRPC",
-        "lane_id": "ci.lint",
-        "command": "just lint && just lint-actions && just lint-md",
-        "merge_required": true,
+        "lane_id": "compatibility.tempo",
+        "command": "just compat-traceql",
+        "merge_required": false,
         "release_required": true
       }
     },
@@ -722,8 +716,8 @@
       "assured": true,
       "execution": {
         "binding_id": "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC",
-        "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "lane_id": "chdb.roundtrip-traceql",
+        "command": "node .github/scripts/chdb-roundtrip.mjs",
         "merge_required": false,
         "release_required": true
       }
@@ -895,22 +889,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -951,22 +933,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -1057,22 +1027,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -1147,22 +1105,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -1227,22 +1173,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -1289,22 +1223,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "quality.coverage-measured",
@@ -1369,22 +1291,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -1492,12 +1402,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -1520,12 +1424,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -1556,12 +1454,6 @@
               "context_name": "mutation",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
-              "release_required": true
             }
           ],
           "verifier": {
@@ -1607,22 +1499,10 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.profile",
@@ -1692,12 +1572,6 @@
               "release_required": true
             },
             {
-              "lane_id": "ci.lint",
-              "context_name": "lint",
-              "merge_required": true,
-              "release_required": true
-            },
-            {
               "lane_id": "compatibility.gate",
               "context_name": "gate",
               "merge_required": false,
@@ -1720,12 +1594,6 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "governance.forbid-deferral",
-              "context_name": "forbid-deferral",
-              "merge_required": true,
-              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",
@@ -1756,12 +1624,6 @@
               "context_name": "mutation",
               "merge_required": false,
               "release_required": false
-            },
-            {
-              "lane_id": "security.codeql",
-              "context_name": "CodeQL",
-              "merge_required": true,
-              "release_required": true
             }
           ],
           "verifier": {
