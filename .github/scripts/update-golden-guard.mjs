@@ -199,6 +199,7 @@
 import process from 'node:process';
 
 import { error, log, notice } from './lib/gh.mjs';
+import { NOT_FOUND_THROW, ghJSON as ghRequest, ghPaginate } from './lib/gh-api.mjs';
 
 const DEFAULT_API_URL = 'https://api.github.com';
 const WORKFLOW_FILE = 'update-golden.yml';
@@ -326,21 +327,16 @@ export async function resolveGuardedBranch({
   return branch;
 }
 
-function apiHeaders(token) {
-  return {
-    accept: 'application/vnd.github+json',
-    authorization: `Bearer ${token}`,
-    'x-github-api-version': '2022-11-28',
-    'user-agent': 'cerberus-update-golden-guard',
-  };
+// Every resource this guard reads must exist — a PR by number, this
+// workflow's runs, a commit to post a status on — so a 404 is a failure,
+// never an empty answer.
+async function ghJSON(url, token, init = {}) {
+  return ghRequest(url, { token, init, notFound: NOT_FOUND_THROW });
 }
 
-async function ghJSON(url, token, init = {}) {
-  const res = await fetch(url, { ...init, headers: { ...apiHeaders(token), ...(init.headers ?? {}) } });
-  if (!res.ok) {
-    throw new Error(`${init.method ?? 'GET'} ${url} -> ${res.status} ${res.statusText}: ${await res.text()}`);
-  }
-  return res.status === 204 ? null : res.json();
+// The paged form of the same policy, for the two list endpoints below.
+async function ghPages(url, token, pick) {
+  return ghPaginate({ url, token, pick });
 }
 
 const RUN_NAME_PREFIX = 'update-golden[';
@@ -384,15 +380,17 @@ export function runTargetsBranch(displayTitle, branch) {
  * fresh dispatch briefly reports before a runner picks it up (see
  * IN_FLIGHT_STATUSES above) — so the hazard window spans all three.
  */
-export async function listInFlightRuns({ api, repo, token, fetchJSON = ghJSON }) {
+export async function listInFlightRuns({ api, repo, token, fetchPages = ghPages }) {
   const runs = [];
   for (const status of IN_FLIGHT_STATUSES) {
-    const url = `${api}/repos/${repo}/actions/workflows/${WORKFLOW_FILE}/runs?status=${status}&per_page=100`;
-    const page = await fetchJSON(url, token);
-    if (!Array.isArray(page?.workflow_runs)) {
-      throw new Error(`unexpected response listing ${status} runs of ${WORKFLOW_FILE}: ${JSON.stringify(page)}`);
-    }
-    runs.push(...page.workflow_runs);
+    const url = `${api}/repos/${repo}/actions/workflows/${WORKFLOW_FILE}/runs?status=${status}`;
+    const page = await fetchPages(url, token, (body) => {
+      if (!Array.isArray(body?.workflow_runs)) {
+        throw new Error(`unexpected response listing ${status} runs of ${WORKFLOW_FILE}: ${JSON.stringify(body)}`);
+      }
+      return body.workflow_runs;
+    });
+    runs.push(...page);
   }
   return runs;
 }
@@ -418,14 +416,15 @@ export async function checkBranchClear({ listRuns, branch }) {
  * context, with no PR of its own, so it has to look the PR up by branch name
  * to know which head SHA to push a commit status onto.
  */
-export async function findOpenPRsForBranch({ api, repo, token, branch, fetchJSON = ghJSON }) {
+export async function findOpenPRsForBranch({ api, repo, token, branch, fetchPages = ghPages }) {
   const owner = repo.split('/')[0];
-  const url = `${api}/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=100`;
-  const prs = await fetchJSON(url, token);
-  if (!Array.isArray(prs)) {
-    throw new Error(`unexpected response listing open PRs for branch ${branch}: ${JSON.stringify(prs)}`);
-  }
-  return prs;
+  const url = `${api}/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}`;
+  return fetchPages(url, token, (prs) => {
+    if (!Array.isArray(prs)) {
+      throw new Error(`unexpected response listing open PRs for branch ${branch}: ${JSON.stringify(prs)}`);
+    }
+    return prs;
+  });
 }
 
 /**
