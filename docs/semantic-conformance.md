@@ -21,13 +21,13 @@ A verifier's `substrate` is never collapsed into one meaning. `chdb` and `real-c
 
 | status           | count  |
 | ---------------- | ------ |
-| active           | 50     |
+| active           | 49     |
 | draft            | 0      |
 | superseded       | 2      |
-| explicit_deficit | 1      |
+| explicit_deficit | 2      |
 | **total**        | **53** |
 
-Of the 50 active contracts, **50** are structurally assured (bound evidence covers every required class and independence group).
+Of the 49 active contracts, **49** are structurally assured (bound evidence covers every required class and independence group).
 
 ### Verifiers
 
@@ -42,9 +42,9 @@ Of the 50 active contracts, **50** are structurally assured (bound evidence cove
 
 | status    | count   |
 | --------- | ------- |
-| active    | 118     |
+| active    | 122     |
 | draft     | 0       |
-| **total** | **118** |
+| **total** | **122** |
 
 Executions on record: **0**.
 
@@ -59,7 +59,7 @@ Active bindings, classified by which existing identity system their `test_ref` n
 | surface-parity-symbol | 0               |
 | rejection-parity-site | 1               |
 | oracle-inventory-case | 0               |
-| source-path           | 71              |
+| source-path           | 75              |
 | unclassified          | 0               |
 
 ## Lane inventory (merge / release obligations)
@@ -89,19 +89,19 @@ Active bindings, classified by which existing identity system their `test_ref` n
 | chdb.roundtrip-logql                                        | false          | true             | 14                    |
 | chdb.roundtrip-traceql                                      | false          | true             | 10                    |
 | quality.mutation                                            | false          | false            | 3                     |
+| compatibility.loki                                          | false          | true             | 9                     |
+| compatibility.prometheus                                    | false          | true             | 7                     |
+| compatibility.prometheus-floor                              | false          | false            | 6                     |
+| compatibility.prometheus-forced-route                       | false          | true             | 7                     |
+| compatibility.tempo                                         | false          | true             | 5                     |
 | perf-nightly-selfcheck.perf-nightly-selfcheck               | false          | false            | 2                     |
 | perf-nightly-selfcheck.perf-nightly-selfcheck-health-notify | false          | false            | 2                     |
 | perf-nightly.perf-nightly                                   | false          | true             | 2                     |
 | perf-nightly.perf-nightly-health-notify                     | false          | false            | 2                     |
 | perf-nightly.ts-grid-instant-memory                         | false          | true             | 2                     |
 | quality.property                                            | true           | true             | 20                    |
-| compatibility.loki                                          | false          | true             | 7                     |
-| compatibility.prometheus                                    | false          | true             | 6                     |
-| compatibility.prometheus-floor                              | false          | false            | 5                     |
-| compatibility.prometheus-forced-route                       | false          | true             | 6                     |
 | chdb.integration-promql                                     | false          | false            | 1                     |
 | compatibility.promql-surface                                | false          | false            | 1                     |
-| compatibility.tempo                                         | false          | true             | 4                     |
 | e2e.bwc-minio                                               | false          | false            | 3                     |
 | e2e.datashard                                               | false          | false            | 3                     |
 | e2e.datashard-replica-affinity                              | false          | false            | 3                     |
@@ -610,7 +610,7 @@ For a log-stream (non-metric) LogQL query, cerberus's own in-process reference-d
 
 ### LOGQL-STRUCTURED-EXTRACTION-METRIC-AGGREGATION-SCOPE
 
-LogQL's structured-extraction stages (\`| json\`, \`| logfmt\`, \`| unpack\`, \`| pattern\` as a parser) and its metric-form surface (\`| unwrap\` and every range/vector aggregation) are evidenced by TXTAR chDB round-trip execution across the full spec corpus and, for the subset of fixtures that are not parity\_exempt, the in-process reference-differential oracle — but carry NO property-oracle evidence at all. The from-scratch property oracle's top-level Evaluate rejects every expression that is not a bare \*syntax.MatchersExpr or \*syntax.PipelineExpr outright, and even within a PipelineExpr its applyStage switch recognizes only \*syntax.LineFilterExpr and \*syntax.LabelFmtExpr — every parser stage, \`| unwrap\`, \`| drop\`, and \`| keep\` fails closed as an unsupported oracle shape rather than being silently accepted.
+LogQL's structured-extraction stages (\`| json\`, \`| logfmt\`, \`| unpack\`, \`| pattern\` as a parser) and its metric-form surface (\`| unwrap\` and every range/vector aggregation) are evidenced by TXTAR chDB round-trip execution across the full spec corpus, by the in-process reference evaluator for the subset of fixtures that are not parity\_exempt, and by the live-Loki differential harness over upstream's exhaustive/aggregations.yaml corpus (unwrap plus every range aggregation) — but carry NO property-oracle evidence at all. The from-scratch property oracle's top-level Evaluate rejects every expression that is not a bare \*syntax.MatchersExpr or \*syntax.PipelineExpr outright, and even within a PipelineExpr its applyStage switch recognizes only \*syntax.LineFilterExpr and \*syntax.LabelFmtExpr — every parser stage, \`| unwrap\`, \`| drop\`, and \`| keep\` fails closed as an unsupported oracle shape rather than being silently accepted.
 
 - scope: `head` · applicable heads: `HEAD-LOGQL`
 - authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
@@ -620,21 +620,22 @@ LogQL's structured-extraction stages (\`| json\`, \`| logfmt\`, \`| unpack\`, \`
 
 **Observed evidence** (from executions.json, revision-scoped): overall **unknown**.
 
-- class `execution`: **unknown** (BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE, BINDING-LOGQL-UNWRAP-FIXTURE)
-- class `reference`: **unknown** (BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE)
+- class `execution`: **unknown** (BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE, BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE, BINDING-LOGQL-UNWRAP-FIXTURE)
+- class `reference`: **unknown** (BINDING-LOGQL-RANGE-AGGREGATION-COMPAT)
 - group `structured-extraction-fixture-roundtrip`: **unknown** (BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE, BINDING-LOGQL-UNWRAP-FIXTURE)
-- group `range-aggregation-reference-differential`: **unknown** (BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE)
+- group `range-aggregation-reference-differential`: **unknown** (BINDING-LOGQL-RANGE-AGGREGATION-COMPAT)
 
-| binding                                     | verifier                        | evidence class | independence group                       | test_ref                                                         | observed | revision-bound | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                       |
-| ------------------------------------------- | ------------------------------- | -------------- | ---------------------------------------- | ---------------------------------------------------------------- | -------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE   | VERIFIER-REFERENCE-DIFFERENTIAL | reference      | range-aggregation-reference-differential | `test/spec/logql/range_agg_without_grouping_unwrap.txtar#parity` | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
-| BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | structured-extraction-fixture-roundtrip  | `test/spec/logql/parser_logfmt.txtar#expected_rows`              | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
-| BINDING-LOGQL-UNWRAP-FIXTURE                | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | structured-extraction-fixture-roundtrip  | `test/spec/logql/unwrap_sum_over_time.txtar#expected_rows`       | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+| binding                                     | verifier                                       | evidence class | independence group                       | test_ref                                                                      | observed | revision-bound | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------- | ---------------------------------------------- | -------------- | ---------------------------------------- | ----------------------------------------------------------------------------- | -------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-LOGQL-RANGE-AGGREGATION-COMPAT      | VERIFIER-REFERENCE-DIFFERENTIAL                | reference      | range-aggregation-reference-differential | `compatibility/loki/upstream/loki-bench/queries/exhaustive/aggregations.yaml` | unknown  | no             | compatibility.loki (release-required)                                                                                                                                                                                                                                                                                                                                                     |
+| BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE   | VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR | execution      | range-aggregation-in-process-parity      | `test/spec/logql/range_agg_without_grouping_unwrap.txtar#parity`              | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+| BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE | VERIFIER-SPEC-FIXTURE-ROUNDTRIP                | execution      | structured-extraction-fixture-roundtrip  | `test/spec/logql/parser_logfmt.txtar#expected_rows`                           | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+| BINDING-LOGQL-UNWRAP-FIXTURE                | VERIFIER-SPEC-FIXTURE-ROUNDTRIP                | execution      | structured-extraction-fixture-roundtrip  | `test/spec/logql/unwrap_sum_over_time.txtar#expected_rows`                    | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
 
 **Blind spots:**
 
 - Zero property-oracle evidence exists for this entire surface — see this contract's own required\_evidence\_classes, deliberately excluding "property"; LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE's own blind\_spots names the exact two-kind (LineFilterExpr/LabelFmtExpr) ceiling this scope sits below.
-- Most structured-extraction and metric-aggregation TXTAR fixtures are parity\_exempt for the same log-query-answer reason LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY documents; range\_agg\_without\_grouping\_unwrap.txtar (a metric-form, non-log-answer query) is one of the few unwrap fixtures with a real \`-- parity --\` section, so this contract's reference evidence is real but narrow — it does not generalize to every unwrap/range-aggregation shape the spec corpus otherwise pins only via chDB execution.
+- Most structured-extraction and metric-aggregation TXTAR fixtures are parity\_exempt for the same log-query-answer reason LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY documents; range\_agg\_without\_grouping\_unwrap.txtar (a metric-form, non-log-answer query) is one of the few unwrap fixtures with a real \`-- parity --\` section, so this contract's in-process evidence is real but narrow. The live-Loki differential covers upstream's own aggregation corpus, not the spec corpus's shapes — neither generalizes to every unwrap/range-aggregation shape the spec corpus otherwise pins only via chDB execution.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -829,28 +830,31 @@ The randomized TraceQL property sweep's /api/search comparator (test/property/tr
 A TraceQL attribute comparison against a typed literal (boolean, duration, number) coerces the stored Map(String, String) attribute the same way Tempo does, rather than silently failing to match.
 
 - scope: `head` · applicable heads: `HEAD-TRACEQL`
-- authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
+- authority: `reference-implementation` · status: `explicit_deficit` · owner: `cerberus-core`
+- deficit reason: No live Tempo differential exercises typed-attribute coercion: compatibility/tempo/driver/corpus/smoke.txtar compares no span attribute against a boolean, number or duration literal, so the only reference-implementation evidence bound here is the in-process forked evaluator over bool\_attr.txtar#parity, which proves agreement with Tempo's source code, not with a live Tempo's output. The \`reference\` class this contract requires is unbound until a compat corpus case compares a typed attribute against a typed literal.
 - related contracts: `TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY`
 
-**Bound evidence** (structural — assured: **true**): required classes `reference`, required independence groups `reference-differential`.
+**Bound evidence** (structural — assured: **false**): required classes `execution, reference`, required independence groups `in-process-reference-evaluator`.
+Missing: classes `reference`, groups `none`.
 
 **Observed evidence** (from executions.json, revision-scoped): overall **unknown**.
 
-- class `reference`: **unknown** (BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL)
-- group `reference-differential`: **unknown** (BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL)
+- class `execution`: **unknown** (BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL)
+- class `reference`: **unknown** (no active binding)
+- group `in-process-reference-evaluator`: **unknown** (BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL)
 
-| binding                                                        | verifier                        | evidence class | independence group     | test_ref                                   | observed | revision-bound | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                         |
-| -------------------------------------------------------------- | ------------------------------- | -------------- | ---------------------- | ------------------------------------------ | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL | VERIFIER-REFERENCE-DIFFERENTIAL | reference      | reference-differential | `test/spec/traceql/bool_attr.txtar#parity` | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+| binding                                                        | verifier                                       | evidence class | independence group             | test_ref                                   | observed | revision-bound | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------------------------------------------------- | ---------------------------------------------- | -------------- | ------------------------------ | ------------------------------------------ | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL | VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR | execution      | in-process-reference-evaluator | `test/spec/traceql/bool_attr.txtar#parity` | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
 
 **Blind spots:**
 
 - Coercion of array-valued attributes is entirely unexercised — Map(String, String) cannot represent an array-typed OTel attribute at all in this schema.
-- The differential evidence (bool\_attr.txtar, unscoped\_bool\_attr.txtar, unscoped\_bool\_attr\_false.txtar) exercises Boolean coercion only; an Int/Float/Duration attribute compared against a typed literal has property evidence (TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE's duration comparisons) but no dedicated LIVE differential fixture of its own — see TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY for the coercion mechanism itself, which this contract's own evidence corroborates only for the boolean case.
+- The in-process evidence (bool\_attr.txtar, unscoped\_bool\_attr.txtar, unscoped\_bool\_attr\_false.txtar) exercises Boolean coercion only; an Int/Float/Duration attribute compared against a typed literal has property evidence (TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE's duration comparisons) but no dedicated parity fixture of its own — see TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY for the coercion mechanism itself, which this contract's own evidence corroborates only for the boolean case.
 
 **Complement gaps** (informational — does not change assurance above):
 
-- verifier `VERIFIER-REFERENCE-DIFFERENTIAL` documents complement(s) not in active use here: `VERIFIER-SPEC-FIXTURE-ROUNDTRIP`
+- verifier `VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### TRACEQL-STRUCTURAL-RELATION-SEMANTICS
 
@@ -955,16 +959,16 @@ OTel-ClickHouse stores every ordinary span/resource attribute as Map(String, Str
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
 - related contracts: `TRACEQL-ORACLE-AUTHORITY-SEPARATION`, `TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION`
 
-**Bound evidence** (structural — assured: **true**): required classes `reference`, required independence groups `attr-type-hint-query-driven-coercion`.
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `attr-type-hint-query-driven-coercion`.
 
 **Observed evidence** (from executions.json, revision-scoped): overall **unknown**.
 
-- class `reference`: **unknown** (BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC)
+- class `execution`: **unknown** (BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC)
 - group `attr-type-hint-query-driven-coercion`: **unknown** (BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC)
 
-| binding                                                | verifier                        | evidence class | independence group                   | test_ref                                   | observed | revision-bound | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------------------------------ | ------------------------------- | -------------- | ------------------------------------ | ------------------------------------------ | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC | VERIFIER-REFERENCE-DIFFERENTIAL | reference      | attr-type-hint-query-driven-coercion | `test/spec/traceql/bool_attr.txtar#parity` | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+| binding                                                | verifier                                       | evidence class | independence group                   | test_ref                                   | observed | revision-bound | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------ | ---------------------------------------------- | -------------- | ------------------------------------ | ------------------------------------------ | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC | VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR | execution      | attr-type-hint-query-driven-coercion | `test/spec/traceql/bool_attr.txtar#parity` | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
 
 **Blind spots:**
 
@@ -973,7 +977,7 @@ OTel-ClickHouse stores every ordinary span/resource attribute as Map(String, Str
 
 **Complement gaps** (informational — does not change assurance above):
 
-- verifier `VERIFIER-REFERENCE-DIFFERENTIAL` documents complement(s) not in active use here: `VERIFIER-SPEC-FIXTURE-ROUNDTRIP`
+- verifier `VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ## Cross-head contracts
 
@@ -1439,29 +1443,33 @@ internal/optimizer's rewrites never change a query's observable outcome: every r
 
 ### ARCH-HEAD-WIRE-001
 
-Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/tempo) projects its optimized, chDB-executed plan into its own wire response contract without altering the answer: a fixture carrying a parity section is additionally evaluated by the real upstream engine in-process (test/spec/parity.go's RunParity, invoked from each head's own lower\_test.go) over the same seeded data, and the two answers are compared.
+Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/tempo) projects its optimized, chDB-executed plan into its own wire response contract without altering the answer. Two mechanisms evidence it: a fixture carrying a parity section is additionally evaluated by the real upstream engine in-process (test/spec/parity.go's RunParity, invoked from each head's own lower\_test.go) over the same seeded data and the two answers are compared, and each head's compatibility harness (compatibility/{prometheus,loki,tempo}) diffs the head's live wire response against a separately-started reference backend over shared seed data.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `reference-implementation` · status: `active` · owner: `cerberus-core`
 
-**Bound evidence** (structural — assured: **true**): required classes `reference`, required independence groups `promql-wire-parity, logql-wire-parity, traceql-wire-parity`.
+**Bound evidence** (structural — assured: **true**): required classes `execution, reference`, required independence groups `promql-wire-parity, logql-wire-parity, traceql-wire-parity`.
 
 **Observed evidence** (from executions.json, revision-scoped): overall **unknown**.
 
-- class `reference`: **unknown** (BINDING-ARCH-HEAD-WIRE-LOGQL, BINDING-ARCH-HEAD-WIRE-PROMQL, BINDING-ARCH-HEAD-WIRE-TRACEQL)
-- group `promql-wire-parity`: **unknown** (BINDING-ARCH-HEAD-WIRE-PROMQL)
-- group `logql-wire-parity`: **unknown** (BINDING-ARCH-HEAD-WIRE-LOGQL)
-- group `traceql-wire-parity`: **unknown** (BINDING-ARCH-HEAD-WIRE-TRACEQL)
+- class `execution`: **unknown** (BINDING-ARCH-HEAD-WIRE-LOGQL, BINDING-ARCH-HEAD-WIRE-PROMQL, BINDING-ARCH-HEAD-WIRE-TRACEQL)
+- class `reference`: **unknown** (BINDING-ARCH-HEAD-WIRE-LOGQL-COMPAT, BINDING-ARCH-HEAD-WIRE-PROMQL-COMPAT, BINDING-ARCH-HEAD-WIRE-TRACEQL-COMPAT)
+- group `promql-wire-parity`: **unknown** (BINDING-ARCH-HEAD-WIRE-PROMQL-COMPAT)
+- group `logql-wire-parity`: **unknown** (BINDING-ARCH-HEAD-WIRE-LOGQL-COMPAT)
+- group `traceql-wire-parity`: **unknown** (BINDING-ARCH-HEAD-WIRE-TRACEQL-COMPAT)
 
-| binding                        | verifier                        | evidence class | independence group  | test_ref                                                     | observed | revision-bound | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------ | ------------------------------- | -------------- | ------------------- | ------------------------------------------------------------ | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| BINDING-ARCH-HEAD-WIRE-LOGQL   | VERIFIER-REFERENCE-DIFFERENTIAL | reference      | logql-wire-parity   | `test/spec/logql/absent_over_time_instant.txtar#parity`      | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift   |
-| BINDING-ARCH-HEAD-WIRE-PROMQL  | VERIFIER-REFERENCE-DIFFERENTIAL | reference      | promql-wire-parity  | `test/spec/promql/absent_aggregate_with_series.txtar#parity` | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-promql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift  |
-| BINDING-ARCH-HEAD-WIRE-TRACEQL | VERIFIER-REFERENCE-DIFFERENTIAL | reference      | traceql-wire-parity | `test/spec/traceql/and_two_attrs.txtar#parity`               | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+| binding                               | verifier                                       | evidence class | independence group        | test_ref                                                     | observed | revision-bound | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------- | ---------------------------------------------- | -------------- | ------------------------- | ------------------------------------------------------------ | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-ARCH-HEAD-WIRE-LOGQL          | VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR | execution      | logql-in-process-parity   | `test/spec/logql/absent_over_time_instant.txtar#parity`      | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift   |
+| BINDING-ARCH-HEAD-WIRE-LOGQL-COMPAT   | VERIFIER-REFERENCE-DIFFERENTIAL                | reference      | logql-wire-parity         | `compatibility/loki`                                         | unknown  | no             | compatibility.loki (release-required)                                                                                                                                                                                                                                                                                                                                                       |
+| BINDING-ARCH-HEAD-WIRE-PROMQL         | VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR | execution      | promql-in-process-parity  | `test/spec/promql/absent_aggregate_with_series.txtar#parity` | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-promql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift  |
+| BINDING-ARCH-HEAD-WIRE-PROMQL-COMPAT  | VERIFIER-REFERENCE-DIFFERENTIAL                | reference      | promql-wire-parity        | `compatibility/prometheus`                                   | unknown  | no             | compatibility.prometheus (release-required); compatibility.prometheus-floor; compatibility.prometheus-forced-route (release-required)                                                                                                                                                                                                                                                       |
+| BINDING-ARCH-HEAD-WIRE-TRACEQL        | VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR | execution      | traceql-in-process-parity | `test/spec/traceql/and_two_attrs.txtar#parity`               | unknown  | no             | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+| BINDING-ARCH-HEAD-WIRE-TRACEQL-COMPAT | VERIFIER-REFERENCE-DIFFERENTIAL                | reference      | traceql-wire-parity       | `compatibility/tempo`                                        | unknown  | no             | compatibility.tempo (release-required)                                                                                                                                                                                                                                                                                                                                                      |
 
 **Blind spots:**
 
-- test/spec's parity section evaluates the answer the reference engine's IN-PROCESS evaluator computes for the same query; it is complementary to, and does not imply, the separate compatibility/{prometheus,loki,tempo} differential harness's own corpus (just compat-promql / compat-logql / compat-traceql) — neither mechanism's coverage stands in for the other.
+- test/spec's parity section evaluates the answer the reference engine's IN-PROCESS evaluator computes for the same query and never crosses the HTTP boundary; the wire boundary itself is only exercised by the compatibility/{prometheus,loki,tempo} differential harness's own corpus (just compat-promql / compat-logql / compat-traceql) — neither mechanism's coverage stands in for the other, and the harness corpus is not the spec corpus.
 - Tempo's parity evidence requires the chdb\_agpl\_oracle build tag combination (parity\_tempo\_chdb\_agpl\_oracle.go); a plain chdb-tagged run compiles in parity\_tempo\_absent.go instead, which fails loudly rather than silently skipping (per that file's own doc) — so Tempo assurance for this contract is only real when the tagged lane actually runs, not merely when a fixture carries a parity section. LogQL's loki oracle carries the identical AGPL gating.
 - A fixture's parity section may declare scope: full or the single named ScopeExceptZeroBucket exclusion (test/spec/parity.go) — an excluded axis is a documented, machine-checked carve-out, not a hidden gap, but it means 'wire contract preserved' is proven up to that fixture's own declared scope, not unconditionally for every fixture.
 
@@ -1693,7 +1701,7 @@ Excluded from the assured count above by design — a draft is not yet load-bear
 
 - draft: (none)
 - superseded: `PROMQL-INSTANT-VECTOR-LOOKBACK-LEGACY`, `TRACEQL-PROPERTY-EVIDENCE-COUNT-ONLY`
-- explicit deficit: `PROMQL-LABEL-REPLACE-CAPTURE-GROUP-PARTICIPATION`
+- explicit deficit: `PROMQL-LABEL-REPLACE-CAPTURE-GROUP-PARTICIPATION`, `TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION`
 
 ## Semantic mutation pilot
 

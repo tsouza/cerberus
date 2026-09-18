@@ -393,9 +393,9 @@
       "authority": "reference-implementation",
       "assured": true,
       "execution": {
-        "binding_id": "BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE",
-        "lane_id": "chdb.roundtrip-logql",
-        "command": "node .github/scripts/chdb-roundtrip.mjs",
+        "binding_id": "BINDING-LOGQL-RANGE-AGGREGATION-COMPAT",
+        "lane_id": "compatibility.loki",
+        "command": "just compat-logql",
         "merge_required": false,
         "release_required": true
       }
@@ -653,20 +653,6 @@
       }
     },
     {
-      "id": "TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION",
-      "status": "active",
-      "scope_label": "HEAD-TRACEQL",
-      "authority": "reference-implementation",
-      "assured": true,
-      "execution": {
-        "binding_id": "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
-        "lane_id": "chdb.roundtrip-traceql",
-        "command": "node .github/scripts/chdb-roundtrip.mjs",
-        "merge_required": false,
-        "release_required": true
-      }
-    },
-    {
       "id": "TRACEQL-STRUCTURAL-RELATION-SEMANTICS",
       "status": "active",
       "scope_label": "HEAD-TRACEQL",
@@ -796,7 +782,7 @@
     },
     {
       "id": "ARCH-HEAD-WIRE-001",
-      "statement": "Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/tempo) projects its optimized, chDB-executed plan into its own wire response contract without altering the answer: a fixture carrying a parity section is additionally evaluated by the real upstream engine in-process (test/spec/parity.go's RunParity, invoked from each head's own lower_test.go) over the same seeded data, and the two answers are compared.",
+      "statement": "Each head's HTTP endpoint (internal/api/prom, internal/api/loki, internal/api/tempo) projects its optimized, chDB-executed plan into its own wire response contract without altering the answer. Two mechanisms evidence it: a fixture carrying a parity section is additionally evaluated by the real upstream engine in-process (test/spec/parity.go's RunParity, invoked from each head's own lower_test.go) over the same seeded data and the two answers are compared, and each head's compatibility harness (compatibility/{prometheus,loki,tempo}) diffs the head's live wire response against a separately-started reference backend over shared seed data.",
       "authority": "reference-implementation",
       "claude_md_invariant": null,
       "anchor": "arch-head-wire-001"
