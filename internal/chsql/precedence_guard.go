@@ -129,19 +129,27 @@ func depthZeroOperatorsIn(text string) []string {
 		case ')', ']':
 			depth--
 		default:
-			if depth != 0 {
-				continue
-			}
-			for _, tok := range depthZeroOperators {
-				if strings.HasPrefix(text[i:], tok) {
+			if depth == 0 {
+				if tok := operatorAt(text[i:]); tok != "" {
 					found = append(found, tok)
 					i += len(tok) - 2 // leave the trailing space for the next token's leading one
-					break
 				}
 			}
 		}
 	}
 	return found
+}
+
+// operatorAt returns the depthZeroOperators token that text begins with, or
+// "" when none does. The table is ordered longest first, so the first match
+// is the only one: no shorter token is a prefix of the same text.
+func operatorAt(text string) string {
+	for _, tok := range depthZeroOperators {
+		if strings.HasPrefix(text, tok) {
+			return tok
+		}
+	}
+	return ""
 }
 
 // precedenceGuard collects violations from an installed operandObserver.
@@ -151,11 +159,10 @@ type precedenceGuard struct {
 }
 
 func (g *precedenceGuard) observe(op string, operands []string) {
-	if vs := precedenceViolations(op, operands); len(vs) > 0 {
-		g.mu.Lock()
-		g.violations = append(g.violations, vs...)
-		g.mu.Unlock()
-	}
+	vs := precedenceViolations(op, operands)
+	g.mu.Lock()
+	g.violations = append(g.violations, vs...)
+	g.mu.Unlock()
 }
 
 // InstallPrecedenceGuard installs the render-time precedence observer and
