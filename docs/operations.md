@@ -901,8 +901,13 @@ the upstream OTel ClickHouse exporter templates; only the database engine,
   replica count: a Keeper path that differs per node (one carrying the
   `{shard}`/`{replica}` macros, which the engine expands) registers every
   replica as its own single-replica database, with `count() > 0` on each.
-  For the bundled chart's `clickhouse.bundled.replicas > 1` path this is
-  what the `bwc-replicated` e2e lane (`.github/workflows/e2e.yml`,
+  A Replicated database replicates DDL only to the hosts that have
+  **attached** it — `CREATE DATABASE ... ENGINE = Replicated(<path>, ...)`
+  has to run on every replica — and cerberus issues that statement once,
+  over whichever address it dialled; a replica it did not dial gets no
+  database and no tables. For the bundled chart's
+  `clickhouse.bundled.replicas > 1` path this is what the `bwc-replicated`
+  e2e lane (`.github/workflows/e2e.yml`,
   `.github/scripts/e2e-bwc-replicated-verify.mjs`) asserts on every replica
   pod, together with a row written through one replica and read back from
   the other — see [helm-clickhouse.md](helm-clickhouse.md#support--validation-matrix).
