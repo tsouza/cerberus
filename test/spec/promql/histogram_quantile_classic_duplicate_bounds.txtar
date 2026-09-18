@@ -15,10 +15,9 @@ INSERT INTO otel_metrics_histogram VALUES
 [
   ["", {"host": "a"}, "2026-01-01T00:00:01Z", 1.5]
 ]
--- parity --
-oracle: prometheus
-endpoint: /api/v1/query
-scope: full
+-- parity_exempt --
+reason: duplicate-timestamp-seed
+detail: the seed's ExplicitBounds [1.0, 1.0, 5.0] deliberately repeat a bound, so the classic-histogram flattening yields two `le="1.0"` samples for one series at one timestamp with DIFFERENT cumulative counts — Prometheus's appender keeps whichever arrives first while ClickHouse keeps both, so the reference has no stable survivor for cerberus to agree with; what this fixture pins is cerberus's own treatment of the repeated bound
 -- args --
 [0] string = ""
 [1] int64 = 9
