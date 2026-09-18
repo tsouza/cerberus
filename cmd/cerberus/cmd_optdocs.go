@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/template"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -91,26 +93,40 @@ const (
 // a fixed width so the emitted markdown is MD060-aligned; optdocWidthsFor computes
 // the padding from the actual rows so the block stays lint-clean as ids grow.
 const optdocTableBody = "{{.Begin}}\n" +
-	"| {{pad \"id\" .W.ID}} | {{pad \"minVersion\" .W.MinVersion}} | {{pad \"stability\" .W.Stability}} | {{pad \"autoSelect\" .W.AutoSelect}} |\n" +
-	"| {{dash .W.ID}} | {{dash .W.MinVersion}} | {{dash .W.Stability}} | {{dash .W.AutoSelect}} |\n" +
-	"{{range .Rows}}| {{pad .ID $.W.ID}} | {{pad .MinVersion $.W.MinVersion}} | {{pad .Stability $.W.Stability}} | {{pad .AutoSelect $.W.AutoSelect}} |\n{{end}}" +
+	"| {{pad \"id\" .W.ID}} | {{pad \"minVersion\" .W.MinVersion}} | {{pad \"stability\" .W.Stability}} | {{pad \"autoSelect\" .W.AutoSelect}} | {{pad \"experimental setting\" .W.ExperimentalSetting}} | {{pad \"doc\" .W.Doc}} |\n" +
+	"| {{dash .W.ID}} | {{dash .W.MinVersion}} | {{dash .W.Stability}} | {{dash .W.AutoSelect}} | {{dash .W.ExperimentalSetting}} | {{dash .W.Doc}} |\n" +
+	"{{range .Rows}}| {{pad .ID $.W.ID}} | {{pad .MinVersion $.W.MinVersion}} | {{pad .Stability $.W.Stability}} | {{pad .AutoSelect $.W.AutoSelect}} | {{pad .ExperimentalSetting $.W.ExperimentalSetting}} | {{pad .Doc $.W.Doc}} |\n{{end}}" +
 	"{{.End}}"
+
+// optdocExperimentalTSGridSetting is the ClickHouse server setting every
+// RequiresExperimentalTSGrid feature needs the engine to co-stamp; rendered
+// in the table so the set of features that need it is read from the
+// registry flag, never counted by hand.
+const optdocExperimentalTSGridSetting = "`allow_experimental_time_series_aggregate_functions`"
+
+// optdocNoExperimentalSetting is the cell for a feature that needs no
+// experimental server setting.
+const optdocNoExperimentalSetting = "(none)"
 
 // optdocRow is the rendered, structurally-derived view of a registry Feature:
 // only the columns a Feature determines on its own, already stringified.
 type optdocRow struct {
-	ID         string
-	MinVersion string
-	Stability  string
-	AutoSelect string
+	ID                  string
+	MinVersion          string
+	Stability           string
+	AutoSelect          string
+	ExperimentalSetting string
+	Doc                 string
 }
 
 // optdocWidths holds the per-column render width (header included).
 type optdocWidths struct {
-	ID         int
-	MinVersion int
-	Stability  int
-	AutoSelect int
+	ID                  int
+	MinVersion          int
+	Stability           int
+	AutoSelect          int
+	ExperimentalSetting int
+	Doc                 int
 }
 
 // optdocRenderBlock builds the marker-delimited generated table from
@@ -120,16 +136,18 @@ func optdocRenderBlock() (string, error) {
 	rows := make([]optdocRow, 0, len(features))
 	for _, f := range features {
 		rows = append(rows, optdocRow{
-			ID:         "`" + f.ID + "`",
-			MinVersion: optdocRenderMinVersion(f.MinVersion),
-			Stability:  optdocRenderStability(f.Stability),
-			AutoSelect: optdocRenderAutoSelect(f.AutoSelect),
+			ID:                  "`" + f.ID + "`",
+			MinVersion:          optdocRenderMinVersion(f.MinVersion),
+			Stability:           optdocRenderStability(f.Stability),
+			AutoSelect:          optdocRenderAutoSelect(f.AutoSelect),
+			ExperimentalSetting: optdocRenderExperimentalSetting(f.RequiresExperimentalTSGrid),
+			Doc:                 optdocRenderDoc(f.Doc),
 		})
 	}
 
 	w := optdocWidthsFor(rows)
 	funcs := template.FuncMap{
-		"pad":  func(s string, n int) string { return s + optdocSpaces(n-len(s)) },
+		"pad":  func(s string, n int) string { return s + optdocSpaces(n-optdocWidth(s)) },
 		"dash": func(n int) string { return optdocDashes(n) },
 	}
 
@@ -178,6 +196,21 @@ func optdocRenderAutoSelect(auto bool) string {
 	return "no"
 }
 
+// optdocRenderExperimentalSetting names the server setting a feature needs
+// co-stamped, from the registry's RequiresExperimentalTSGrid flag.
+func optdocRenderExperimentalSetting(requiresExperimentalTSGrid bool) string {
+	if requiresExperimentalTSGrid {
+		return optdocExperimentalTSGridSetting
+	}
+	return optdocNoExperimentalSetting
+}
+
+// optdocRenderDoc renders a feature's registry Doc as one table cell: a
+// pipe would end the cell early, so it is escaped for the markdown table.
+func optdocRenderDoc(doc string) string {
+	return strings.ReplaceAll(doc, "|", "\\|")
+}
+
 // optdocReplaceBlock swaps the content between the BEGIN/END markers for block.
 // It is an error for the markers to be missing or out of order: the generator
 // owns an existing block, it does not invent the surrounding section.
@@ -205,22 +238,38 @@ func optdocReplaceBlock(doc []byte, block string) ([]byte, error) {
 // optdocWidthsFor computes per-column render widths from the max of the header
 // label and each cell, so columns align under MD060.
 func optdocWidthsFor(rows []optdocRow) optdocWidths {
-	w := optdocWidths{ID: len("id"), MinVersion: len("minVersion"), Stability: len("stability"), AutoSelect: len("autoSelect")}
+	w := optdocWidths{
+		ID: len("id"), MinVersion: len("minVersion"), Stability: len("stability"), AutoSelect: len("autoSelect"),
+		ExperimentalSetting: len("experimental setting"), Doc: len("doc"),
+	}
 	for _, r := range rows {
-		if n := len(r.ID); n > w.ID {
+		if n := optdocWidth(r.ID); n > w.ID {
 			w.ID = n
 		}
-		if n := len(r.MinVersion); n > w.MinVersion {
+		if n := optdocWidth(r.MinVersion); n > w.MinVersion {
 			w.MinVersion = n
 		}
-		if n := len(r.Stability); n > w.Stability {
+		if n := optdocWidth(r.Stability); n > w.Stability {
 			w.Stability = n
 		}
-		if n := len(r.AutoSelect); n > w.AutoSelect {
+		if n := optdocWidth(r.AutoSelect); n > w.AutoSelect {
 			w.AutoSelect = n
+		}
+		if n := optdocWidth(r.ExperimentalSetting); n > w.ExperimentalSetting {
+			w.ExperimentalSetting = n
+		}
+		if n := optdocWidth(r.Doc); n > w.Doc {
+			w.Doc = n
 		}
 	}
 	return w
+}
+
+// optdocWidth is a cell's width as markdownlint's MD060 measures it: in
+// characters, not bytes. A doc cell carrying an em dash or an arrow is
+// three bytes per character, and byte-based padding leaves its pipe short.
+func optdocWidth(s string) int {
+	return utf8.RuneCountInString(s)
 }
 
 func optdocSpaces(n int) string {
