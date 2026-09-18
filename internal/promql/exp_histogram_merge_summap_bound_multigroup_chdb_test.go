@@ -214,20 +214,23 @@ func TestExpHistogramMergeSumMapBudget_ChDB_MultiGroupWithinBudget(t *testing.T)
 // multi-group path even with only one group present). The query must
 // succeed with a compacted merge, not reject.
 func TestExpHistogramMergeSumMapBudget_ChDB_MultiGroupScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
+	const farOffset = 4000
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n")
 	tuples := []string{
 		fmt.Sprintf("('%s', map('route', 'r0', 'series', 'near'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
 			histogramMergeBoundMetric),
-		fmt.Sprintf("('%s', map('route', 'r0', 'series', 'far'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 4000, [1], 0, [])",
-			histogramMergeBoundMetric),
+		fmt.Sprintf("('%s', map('route', 'r0', 'series', 'far'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, %d, [1], 0, [])",
+			histogramMergeBoundMetric, farOffset),
 	}
 	b.WriteString("    " + strings.Join(tuples, ",\n    ") + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
 	query := fmt.Sprintf("sum by(route) (%s)", histogramMergeBoundMetric)
-	if err := runExpHistSumMapMultiGroupBoundQuery(t, fixture, query); err != nil {
+	got, err := readMergedHistogramShape(t, fixture, query, promql.LowerOpts{Lowerers: expHistSumMapBoundNativeLowerers})
+	if err != nil {
 		t.Fatalf("a scale-divergent two-series multi-group sumMap merge must be compacted to a bounded width, not rejected: %v", err)
 	}
+	assertCompactedMerge(t, got, 0, farOffset+1, 2)
 }

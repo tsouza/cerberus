@@ -253,89 +253,88 @@ const (
 	maxHistogramMergeRowCountOverflowGuard = 4096
 
 	// maxHistogramMergeOutputWidth bounds the per-ladder bucket-range WIDTH
-	// [refinedMergeScaleExpr] downscales a merge onto, closing cerberus
-	// issue #3558: two of this guard's SIBLING merge paths —
-	// [histogramBinopBucketWidthBudgetGuardExpr]'s two-operand binop merge
-	// and the sumMap-based sum()/avg() merge
-	// (exp_histogram_merge_summap.go) — compute their own shared merge
-	// scale as min(Scale) across contributing rows with no further
-	// downscale to bound the merged range's WIDTH, exactly the gap
-	// cerberus issue #3555 found and fixed for the histogram_quantile()/
-	// histogram-valued sum() cross-series fold path: two rows that are
-	// each individually narrow (their OWN samples cluster tightly, so
-	// neither ever had a reason to pick a coarser Scale) but differ in
-	// TYPICAL MAGNITUDE still merge into an astronomically wide range —
-	// min(Scale) alone only guarantees every row CAN be downscaled onto
-	// the merge, never that the result is narrow. Cerberus issue #3555's
-	// own live measurement against the `cerberus-self` e2e dashboard's
-	// real ClickHouse data is the concrete case: `histogram_quantile(0.95,
-	// sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))`
-	// tripped [maxHistogramMergeCostUnits] with as few as 4 contributing
-	// series (four cerberus.route values under the SAME cerberus.ql), none
+	// [refinedMergeScaleExpr] downscales a merge onto, for every merge path
+	// in this package: the cross-series groupArray fold behind
+	// histogram_quantile() and histogram-valued sum() (cerberus issue #3555,
+	// [expHistogramMergeSortStage]), the two-operand binop merge
+	// (histogram_native_binop.go, histogram_native_binop_card.go,
+	// histogram_native_mixed_or_vector_arithmetic.go) and the sumMap-based
+	// sum()/avg() merge (exp_histogram_merge_summap.go), the last two
+	// closed by cerberus issue #3558. All of them compute their shared merge
+	// scale as min(Scale) across contributing rows, and min(Scale) alone
+	// only guarantees every row CAN be downscaled onto the merge, never that
+	// the result is narrow: two rows that are each individually narrow
+	// (their OWN samples cluster tightly, so neither ever had a reason to
+	// pick a coarser Scale) but differ in TYPICAL MAGNITUDE still merge
+	// into an astronomically wide range. Cerberus issue #3555's own live
+	// measurement against the `cerberus-self` e2e dashboard's real
+	// ClickHouse data is the concrete case: `histogram_quantile(0.95, sum by
+	// (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))` tripped
+	// [maxHistogramMergeCostUnits] with as few as 4 contributing series
+	// (four cerberus.route values under the SAME cerberus.ql), none
 	// individually wide — every row stayed at Scale 20 (the OTel SDK never
 	// had a reason to narrow a single series whose OWN samples cluster
-	// tightly) — because two rows with merely DIFFERENT typical
-	// magnitudes (a ~0.34ms route and a ~50ms route, under 150x apart)
-	// produced a merged width of ~7.6 MILLION buckets at Scale 20: Scale
-	// 20's own bucket boundaries are only a factor of 1.0000007 apart, and
-	// nothing coarsened the group's shared scale to account for the
-	// SPREAD BETWEEN rows' central values, only for each row's OWN
-	// internal spread. Real exponential-histogram merge implementations
-	// (the OTel SDK's own accumulator, Prometheus's
-	// FloatHistogram.Add/Compact) downscale FURTHER than min(existing
-	// scale) whenever the merged range itself would exceed a bucket-count
-	// budget — the same "auto-narrow" step a single series already
-	// performs against [queryDurationExpoHistogramMaxSize]
-	// (internal/telemetry/telemetry.go, this package cannot import it per
-	// .go-arch-lint.yml, hence restating the value here): 160 is the OTel
-	// exponential-histogram spec's own documented default MaxSize, the
-	// same value every major OTel SDK ships unconfigured. Capping the
-	// MERGED output at that same width — for every merge path, not just
-	// one — means cross-series/cross-operand merging never throws away
-	// more resolution than a single series already tolerates by default,
-	// while turning an unbounded, data-shape-dependent width into a fixed
-	// one: at 160, [histogramMergeCostOverBudgetExpr]'s own
-	// `rows x width^2` formula admits rows up to maxHistogramMergeCostUnits
-	// / (160^2) = 2,343 before the fold path's own guard fires on
-	// width-capped input, comfortably above the handful of series a
-	// `sum by(cerberus_ql)` (or any similarly-shaped production query)
-	// actually needs. This is a resolution FLOOR shared across every
-	// histogram-merge path in this package (the two-operand binop merge,
-	// the sumMap merge, and the groupArray fold merge #3555 itself fixed):
+	// tightly) — because two rows with merely DIFFERENT typical magnitudes
+	// (a ~0.34ms route and a ~50ms route, under 150x apart) produced a
+	// merged width of ~7.6 MILLION buckets at Scale 20: Scale 20's own
+	// bucket boundaries are only a factor of 1.0000007 apart, and nothing
+	// coarsened the group's shared scale to account for the SPREAD BETWEEN
+	// rows' central values, only for each row's OWN internal spread.
+	//
+	// The cap is an OTel-SDK-style bucket budget: the OTel exponential
+	// histogram SDK accumulator auto-narrows a SINGLE series' scale whenever
+	// its range would exceed MaxSize, and
+	// [chplan.OTelExpoHistogramDefaultMaxSize] is the spec's documented
+	// default for that budget, the value every major SDK ships unconfigured
+	// (internal/telemetry collects cerberus's own duration histogram with
+	// it). Capping the MERGED output at that same width means cross-series
+	// and cross-operand merging never throws away more resolution than a
+	// single series already tolerates by default, while turning an
+	// unbounded, data-shape-dependent width into a fixed one: at 160,
+	// [histogramMergeCostOverBudgetExpr]'s own `rows x width^2` formula
+	// admits rows up to maxHistogramMergeCostUnits / (160^2) = 2,343 before
+	// the fold path's own guard fires on width-capped input, comfortably
+	// above the handful of series a `sum by(cerberus_ql)` (or any
+	// similarly-shaped production query) actually needs.
+	//
+	// This is a deliberate DIVERGENCE from reference Prometheus, not a
+	// mirror of it. Prometheus's FloatHistogram.Add merges at the minimum of
+	// the two operands' schemas and stores the result as sparse spans, so a
+	// wide merged range costs it nothing and it never applies a bucket
+	// budget; cerberus stores a merged ladder as one dense array per ladder,
+	// whose width is the memory the cost guard bounds, so a merge whose
+	// natural width exceeds the cap is answered at a coarser scale than
+	// Prometheus computes (docs/compatibility.md, "PromQL" divergences, and
+	// the exp_histogram_sum_wide_merge_compaction_count parity fixture,
+	// which pins the count both engines agree on across that gap). The
+	// alternative — rejecting such a merge outright — was what every path
+	// did before #3555, and it refused real production queries.
+	//
+	// This is a resolution FLOOR shared across every histogram-merge path:
 	// the justification (never coarser than what a single series already
-	// tolerates) is about the WIDTH definition itself, independent of
-	// which algorithm produced it, not a per-path memory-cost calibration
-	// — those stay separate, already-calibrated per-path constants
+	// tolerates) is about the WIDTH definition itself, independent of which
+	// algorithm produced it, not a per-path memory-cost calibration — those
+	// stay separate, already-calibrated per-path constants
 	// ([maxHistogramMergeCostUnits], [sumMapMergeCostMultiplier] in
 	// exp_histogram_merge_summap_bound.go). Recalibrate only alongside a
 	// real measurement showing 160 buckets of resolution is insufficient
-	// for a real quantile/sum computation's accuracy — this is a
-	// resolution floor, not an arbitrary knob.
-	maxHistogramMergeOutputWidth = 160
+	// for a real quantile/sum computation's accuracy — this is a resolution
+	// floor, not an arbitrary knob.
+	maxHistogramMergeOutputWidth = chplan.OTelExpoHistogramDefaultMaxSize
 )
 
 // refinedMergeScaleExpr computes a merge scale downscaled far enough that
 // the merged bucket-range WIDTH — at rawScale, i.e. the natural
-// min(Scale)-only merge every caller below started from — never exceeds
-// [maxHistogramMergeOutputWidth], closing cerberus issue #3558 for the
-// two-operand binop merge (histogram_native_binop.go,
+// min(Scale)-only merge every caller started from — stays within
+// [maxHistogramMergeOutputWidth] (plus one, see [extraDownscaleStepsExpr]).
+// Its callers are the cross-series groupArray fold
+// ([expHistogramMergeSortStage], cerberus issue #3555 — the path this
+// function was written for), the two-operand binop merge
+// ([wrapExpHistogramMergeScaleRefinement] below, histogram_native_binop.go,
 // histogram_native_binop_card.go, histogram_native_mixed_or_vector_arithmetic.go)
-// and the sumMap-based sum()/avg() merge (exp_histogram_merge_summap.go).
-//
-// extraDownscaleSteps is computed from the NATURAL width (the merge at
-// rawScale) via ceil(log2(naturalWidth / maxHistogramMergeOutputWidth)):
-// each extra downscale step HALVES the merged width (one more bit of
-// bitShiftRight), so this is the minimum step count that brings the width
-// under the cap. greatest(1, naturalWidth) keeps log2's argument positive
-// (an empty-both-ladders group has naturalWidth 0, which needs no
-// downscale — log2(0) would otherwise render -inf) and greatest(0, ...)
-// around the final step count discards a negative value (naturalWidth
-// already under the cap needs no further downscale). Float64 arithmetic is
-// exact enough here: naturalWidth is bounded by the same Int32 offset range
-// [maxHistogramMergeClampedWidth] bounds downstream, so log2 of it is a
-// small, exactly-representable value; a stray rounding error could only
-// push extraDownscaleSteps one step higher than strictly necessary, which
-// only makes the result SAFER (narrower), never wrong.
+// and the sumMap-based sum()/avg() merge's single-group pass 1
+// (exp_histogram_merge_summap.go), the last two closed by cerberus issue
+// #3558. See [extraDownscaleStepsExpr] for the step arithmetic.
 //
 // scalesArr/posOff/posBuc/negOff/negBuc must be the SAME shape
 // [mergedLengthExpr] expects: either the groupArray-collected arrays
@@ -359,11 +358,22 @@ func refinedMergeScaleExpr(rawScale, scalesArr, posOff, posBuc, negOff, negBuc c
 	return subExpr(rawScale, extraDownscaleStepsExpr(naturalWidth))
 }
 
-// extraDownscaleStepsExpr computes the minimum number of additional
-// downscale steps — each one HALVES the merged width (one more bit of
-// bitShiftRight) — needed to bring naturalWidth (the merge's width at
-// whatever raw scale it started from) under [maxHistogramMergeOutputWidth]:
+// extraDownscaleStepsExpr computes the number of additional downscale
+// steps needed to bring naturalWidth (the merge's width at whatever raw
+// scale it started from) down to [maxHistogramMergeOutputWidth]:
 // ceil(log2(naturalWidth / maxHistogramMergeOutputWidth)), floored at 0.
+//
+// The bound the step count actually delivers is cap + 1, not cap. A
+// downscale step maps absolute bucket index i to i >> 1 (floor), so k steps
+// turn the range [lo, hi] into [lo >> k, hi >> k], whose width is
+// floor(hi / 2^k) - floor(lo / 2^k) + 1 — at most (hi - lo + 1) / 2^k + 1,
+// one more than a pure halving, when lo and hi sit on opposite sides of a
+// 2^k boundary (lo = -1, hi = 318: width 320, one step, [-1, 159] = 161
+// buckets). The step count is the minimum that halves the natural width
+// under the cap; the extra bucket is the alignment slack of the floor,
+// which the cost guard's width clamp absorbs without effect (161^2 against
+// 160^2 in a budget of 60,000,000).
+//
 // greatest(1, naturalWidth) keeps log2's argument positive (an
 // empty-both-ladders group has naturalWidth 0, which needs no downscale —
 // log2(0) would otherwise render -inf) and the outer greatest(0, ...)
@@ -398,13 +408,16 @@ func extraDownscaleStepsExpr(naturalWidth chplan.Expr) chplan.Expr {
 }
 
 // wrapExpHistogramMergeScaleRefinement further downscales merged — a raw
-// two-operand binop merge (the [chplan.Aggregate] or two-element-array
-// [chplan.Project] shapes histogram_native_binop.go /
-// histogram_native_binop_card.go / histogram_native_mixed_or_vector_arithmetic.go
-// build) — so hqAggMergedScaleAlias holds a scale that ALSO bounds the
+// merge carrying the [expHistogramMergeAggs] groupArray aliases: the
+// cross-series fold's own Aggregate ([expHistogramMergeSortStage],
+// cerberus issue #3555) or the two-operand binop merge (the
+// [chplan.Aggregate] or two-element-array [chplan.Project] shapes
+// histogram_native_binop.go / histogram_native_binop_card.go /
+// histogram_native_mixed_or_vector_arithmetic.go build, cerberus issue
+// #3558) — so hqAggMergedScaleAlias holds a scale that ALSO bounds the
 // merged bucket-range width to [maxHistogramMergeOutputWidth], not just
-// min(Scale) across the two operands (cerberus issue #3558). See
-// [refinedMergeScaleExpr]'s doc for the downscale arithmetic itself.
+// min(Scale) across the contributing rows. See [refinedMergeScaleExpr]'s
+// doc for the downscale arithmetic itself.
 //
 // Rendered as a passthrough Project with a single Replacement — the same
 // `* REPLACE` idiom this package already uses elsewhere for an in-place

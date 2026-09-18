@@ -1,0 +1,41 @@
+-- query.promql --
+histogram_count(sum(http_server_duration_exp_hist))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Two Scale-8 series (schema 8 is the finest resolution Prometheus's
+-- native histograms accept) whose bucket positions sit ~1,850 indices
+-- apart: a ~0.34ms route and a ~50ms route, under 150x apart in value,
+-- and Scale 8's bucket boundaries are a factor of 2^(1/256) apart, so
+-- log2(150) * 256 of them separate the two. Each series is narrow on its
+-- own; the MERGED range is not. Reference Prometheus adds the two at
+-- schema 8 as sparse spans and keeps every bucket. Cerberus stores a
+-- merged ladder as one dense array, so it caps the merged width at the
+-- OTel default bucket budget (160) and answers the merge at Scale 8 -
+-- ceil(log2(1,845 / 160)) = Scale 4 — a documented divergence
+-- (docs/compatibility.md, PromQL). histogram_count() reads the merged
+-- Count, which is exact at any scale, so the oracle can pin this merge
+-- while the divergence lives in the bucket ladder it does not compare;
+-- the ladder itself is pinned by the chDB merge-bound tests
+-- (internal/promql/histogram_merge_bound_chdb_test.go and siblings), which
+-- read the merged Scale and width back and check them against the cap.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('route', 'fast'), toDateTime64('2026-01-01 00:00:00', 9), 10, 0.0034, 8, 0, -2950, [1, 2, 3, 4], 0, []),
+    ('http_server_duration_exp_hist', map('route', 'slow'), toDateTime64('2026-01-01 00:00:00', 9), 6, 0.3, 8, 0, -1106, [2, 4], 0, []);
+-- expected_rows --
+[]

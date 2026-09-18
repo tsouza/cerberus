@@ -263,7 +263,7 @@ func projectExpHistogramEvalInstant(hist chplan.Node, s schema.Metrics, ctx lowe
 // collision guard runs over that normalized time: distinct source sample times
 // must not separate duplicate output label sets into different guard groups.
 func lowerTimestampOverMixedPlan(inner chplan.Node, arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if err := requireMixedPlanPolicy(inner, mixedTimestampFamily); err != nil {
+	if err := requireMixedPlanPolicy(inner, mixedTimestampFamily, mixedBespoke); err != nil {
 		return nil, err
 	}
 	row := inner.RowType()

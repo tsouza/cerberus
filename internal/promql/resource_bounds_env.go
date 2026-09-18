@@ -63,9 +63,13 @@ const (
 // EXCEEDS the configured ceiling, so a zero-valued field rejects nearly
 // every real merge rather than admitting every one. Callers should build a
 // ResourceBounds through [DefaultResourceBounds] or
-// [ResourceBoundsFromEnv] — both fully populated — rather than a bare
-// literal; [ResourceBounds.withDefaults] is the safety net every lowering
-// entry point in lower.go applies regardless.
+// [ResourceBoundsFromEnv] rather than a bare literal. Neither fills
+// ExpHistogramWindowMaxCostUnits — that field is derived from
+// CHQueryMaxMemory, not shipped as a constant — so every lowering entry
+// point ([Lower] / [LowerAt] / [LowerAtRange] / [LowerAtRangeOpts] /
+// [LowerMetadataRange] and the metadata catalog path) resolves whatever it
+// was handed through [ResourceBounds.withDefaults] before any guard reads
+// it; no guard defaults a zero ceiling on its own.
 type ResourceBounds struct {
 	// HistogramMergeMaxCostUnits bounds `rows x (posWidth^2 + negWidth^2)`
 	// for the native-histogram across-series merge
