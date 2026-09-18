@@ -1310,7 +1310,7 @@ Every type/schema-coercion, offline-corpus write+read, and query\_log/enum-recon
 
 **Blind spots:**
 
-- Tempo search-row decoders have no strict-scan recipe of their own yet (cerberus issue #1635, which has a hidden pipeline stage to reproduce) — this contract's coverage of the Tempo head is narrower than its universal applicable\_heads scope might suggest.
+- Tempo search rows are strict-scanned through traceqlWrapForStrictScan; the Tempo metrics pipeline (metricsLang) is the one TraceQL shape strict-scan does not wrap and is covered by compat-traceql instead, so this contract's coverage of the Tempo head is narrower than its universal applicable\_heads scope might suggest.
 - This contract catches TYPE/SCHEMA coercion divergence only; a row that scans successfully but carries the WRONG value is Layer 6a-c's (chDB roundtrip) job, never this one's — a green strict-scan result says nothing about row-level correctness.
 - strict-scan's real-CH evidence rides the required strict-scan CI lane exclusively; it needs testcontainers and Docker, so — per CLAUDE.md invariant 5 — a red result is reproduced by reading the CI log for the exact rule/assertion, never chased with a local speculative pre-flight run.
 
