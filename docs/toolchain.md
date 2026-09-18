@@ -49,52 +49,33 @@ of two ways, both ending in the same command:
   run's `coverage-profile` artifact into the repository root — all of it, not just the profile — and
   run `just update-coverage-floor` against the `cover-merged.out` it contains. The upload happens
   even when the floor gate itself is red, which is what makes an unenrolled package recoverable at
-  all (tsouza/cerberus#2987: the enrollment check used to run inside `coverage-plan`, whose failure
-  skipped every lane that could have measured the remedy).
+  all.
 
-Either way, the floors come from a profile carrying BOTH lanes or they are not recorded at all. A
-floor measured without the chdb-tagged lane under-records every package that lane reaches, and
-because the ratchet only ever raises a floor, nothing corrects one written too low — it passes
-enrollment and passes the gate indefinitely. `just coverage-merge` therefore stamps the lane set it
-merged onto the profile as `cover-merged.out.lanes.json`, bound to that profile's own SHA-256, and
-`just update-coverage-floor` refuses a profile whose record is missing, narrower than
-`default+chdb`, or bound to different bytes. That record is part of the `coverage-profile` artifact,
-which is why the whole artifact is what gets downloaded; a run whose lane jobs did not all succeed
-produces no record naming both lanes, so the recipe declines it rather than relying on the reader to
-have checked.
+Either way, the floors come from a profile carrying BOTH lanes or they are not recorded at all.
+`just coverage-merge` stamps the lane set it merged onto the profile as `cover-merged.out.lanes.json`,
+bound to that profile's own SHA-256, and `just update-coverage-floor` refuses a profile whose record
+is missing, narrower than `default+chdb`, or bound to different bytes. That record is part of the
+`coverage-profile` artifact, which is why the whole artifact is what gets downloaded; a run whose
+lane jobs did not all succeed produces no record naming both lanes, so the recipe declines it.
 
 `just update-coverage-floor` only ratchets up. It refuses to lower a floor to match a coverage drop
 and never records a `0`, so both of those stay hand-edited, reviewable lines in a diff. It also
-refuses to DELETE one. The recipe rewrites the whole ledger from the profile in hand, so a floored
-package the profile never measured would simply lose its entry — the deepest lowering available,
-since a ratchet has nothing that ever restores a floor that is gone. The two ways that happens look
-identical from inside the profile, so the recipe reads the tree instead: a package whose directory
-still holds non-test Go files should have been measured, and its absence is a refusal naming it,
-while a package whose directory is gone is one the module no longer has and its floor is dropped
-with a notice. Removing a package therefore stays a plain `just update-coverage-floor` away, and
-enrolling from an artifact older than a package in the tree fails loudly instead of quietly undoing
-that package's gate.
+refuses to DELETE one: the recipe rewrites the whole ledger from the profile in hand and reads the
+tree to tell the two ways an entry can go missing apart — a package whose directory still holds
+non-test Go files should have been measured, and its absence is a refusal naming it, while a package
+whose directory is gone is one the module no longer has and its floor is dropped with a notice.
+Removing a package therefore stays a plain `just update-coverage-floor` away, and enrolling from an
+artifact older than a package in the tree fails loudly.
 
 The margin a floor grants — the slack between the measurement and the floor it justifies — is the
-wider of one percentage point and one statement. A point alone means whatever the package's size
-makes it mean: on a 70-statement package it is 0.70 statements, so the floor tolerates no jitter at
-all and a single statement flipping reds a required check, while on a 4600-statement package the
-same point is 46 statements. One statement is the quantum the measurement moves in, so it is the
-narrowest honest margin; the statement term binds only below 100 statements, which is exactly where
-a point is worth less than one. Widening a slack can only lower the floor a fresh measurement
-justifies, and the ratchet keeps the greater of that and the committed value, so this never moves an
-entry already in the ledger.
+wider of one percentage point and one statement. Widening a slack can only lower the floor a fresh
+measurement justifies, and the ratchet keeps the greater of that and the committed value, so this
+never moves an entry already in the ledger.
 
-Slack absorbs jitter; it cannot absorb a random variable, so the coverage lanes remove the largest
-source of one. Property tests draw through `pgregory.net/rapid`, whose `-rapid.seed` defaults to a
-random value, and which branches of a generator-driven test execute moves a package by whole
-statements between two runs of an identical tree: `test/property/oracle/traceql` drew 242, 243, 244
-and 245 of its 272 statements across fifteen full-lane profiles (tsouza/cerberus#3000). No slack
-narrow enough to catch a real regression is wide enough to cover that, and a ratchet fed a lucky
-draw never corrects itself. So both lanes export `CERBERUS_RAPID_SEED` from the Justfile's
-`COVERAGE_RAPID_SEED`, and every test binary that links rapid honours it in an `init` that pins the
-flag before `flag.Parse` — per binary, because rapid registers that flag from its own `init`, so a
-lane-wide `go test -rapid.seed=N ./...` would abort every package that does not link it.
+Both coverage lanes export `CERBERUS_RAPID_SEED` from the Justfile's `COVERAGE_RAPID_SEED`, and every
+test binary that links `pgregory.net/rapid` honours it in an `init` that pins `-rapid.seed` before
+`flag.Parse` — per binary, because rapid registers that flag from its own `init`, so a lane-wide
+`go test -rapid.seed=N ./...` would abort every package that does not link it.
 `test/regression/rapid_seed_pin_test.go` derives the set of packages owing a pin from the import
 graph, so a new rapid-driven package cannot rejoin the unpinned set. `just property` and
 `property.yml` deliberately leave the variable unset: that lane SEARCHES for counterexamples and
@@ -114,20 +95,12 @@ leaving a clean-looking run that still fails the lint.
 
 The engine version is declared exactly once, as `PINNED_CLI2_VERSION` in
 `.github/scripts/markdownlint-run.mjs`, and all three callers route through that module: the
-`lint-md` / `fmt-md` recipes, lefthook's `markdownlint` hook, and the `lint` job. They used to
-resolve to three different engines — a Justfile pin, a bundled action, and whatever binary was on a
-developer's `$PATH`. Because markdownlint IGNORES a config key naming a rule it does not implement
-rather than rejecting it, the `MD060` key configured nothing under the older local pin: `just
-lint-md` reported success on a table CI then failed on. The failure mode is silent and in the
-dangerous direction, and it generalises past MD060 — any rule the repo configures ahead of the
-local pin is enforced in CI and invisible locally, so invariant 5's "reproduce the red check
-locally" cannot be satisfied for it.
-
-Bumping the engine is one literal, and the bump belongs in the same change as whatever the newer
-engine surfaces. The hook is the one caller that cannot use `npm exec` — npm's startup alone is
-~4s against a sub-second `pre-commit` budget — so it prefers a `$PATH` binary, but only at exactly
-the pinned version, and otherwise falls back to the pinned `npm exec`. `just install-tools`
-installs the matching binary so that fast path is the default.
+`lint-md` / `fmt-md` recipes, lefthook's `markdownlint` hook, and the `lint` job. Bumping the engine
+is one literal, and the bump belongs in the same change as whatever the newer engine surfaces. The
+hook is the one caller that cannot use `npm exec` — npm's startup alone is ~4s against a sub-second
+`pre-commit` budget — so it prefers a `$PATH` binary, but only at exactly the pinned version, and
+otherwise falls back to the pinned `npm exec`. `just install-tools` installs the matching binary so
+that fast path is the default.
 
 ## Mutation testing — the gremlins fork
 
@@ -137,140 +110,70 @@ installs the matching binary so that fast path is the default.
 go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-workdir-fd-leak-consume
 ```
 
-The fixes it carries defend one thing between them: that the number a run reports is a number the
-tests earned. A run that dies mid-flight reports nothing at all; a run that credits the compiler
-reports something worse than nothing.
+The fork carries these behaviours on top of upstream; each is what the lane relies on.
 
-**`--on-shutdown-status`, for mutants cancelled in flight.** Upstream's signal handler closes the
-channel that `os/signal` still writes to, so a second signal — the typical CI runner sequence of
-SIGTERM then SIGKILL — panics with `send on closed channel` from `signal.process`. Worse, a mutant
-whose `go test` subprocess is still running at cancellation time falls through `runTests` to the
-default `return mutator.Lived` branch, because the per-test context is rooted in `context.Background()`
-and only `DeadlineExceeded` is checked. Untested mutants recorded as LIVED deflate `test_efficacy`.
-The fork stops the handler self-closing and threads the engine's run context into the per-test
-context, so a cancelled-in-flight mutant is reported with the status from the new flag. Cerberus
-passes `--on-shutdown-status=not-run`, which lands those mutants in `NOT_COVERED`, outside the
-`KILLED / (KILLED + LIVED)` efficacy formula entirely. Upstream pull request:
-<https://github.com/go-gremlins/gremlins/pull/283>.
+**`--on-shutdown-status`.** A mutant whose `go test` child is still running when the run is
+cancelled (SIGTERM then SIGKILL, the CI runner sequence) is reported with the status named by this
+flag instead of `LIVED`, and a second signal no longer panics the handler. Cerberus passes
+`--on-shutdown-status=not-run`, which lands those mutants in `NOT_COVERED`, outside the
+`KILLED / (KILLED + LIVED)` efficacy formula entirely.
 
-**`--timeout-max`, for runaway mutants that kill the runner.** Upstream derives a mutant's test
-timeout as `timeout-coefficient × the package's baseline test duration`, which scales the leash by how
-slow a package's tests are — a quantity unrelated to how much damage a runaway mutant does in that
-time. A mutant that inverts a scanner's loop advance (`i++` to `i--`) never terminates and allocates
-per iteration, so on a slow-baseline package it gets minutes to exhaust the runner's memory; the OOM
-killer then reaps the runner and the job ends with no verdict. Measured across 91 heavy runs, all 55
-runner deaths were stalled on a lexer or scanner mutant. `--timeout-max` bounds exposure absolutely,
-independent of the baseline; cerberus derives its value per leg and clamps it into
-`[MUTANT_TIMEOUT_MIN, MUTANT_TIMEOUT_MAX]`, declared in `mutation.yml`.
+**`--timeout-max`.** An absolute upper bound on a mutant's test timeout, independent of upstream's
+`timeout-coefficient × baseline duration` derivation. Cerberus derives its value per leg and clamps
+it into `[MUTANT_TIMEOUT_MIN, MUTANT_TIMEOUT_MAX]`, declared in `mutation.yml`. A runaway mutant is
+bounded by this flag, never by excluding the file the log names: excluding a file relocates its
+runaway mutants into whichever leg still owns it and burns real mutation coverage.
+`test/regression/mutation_timeout_max_test.go` pins the flag and the fork tag together.
 
-A recurrence is not fixed by excluding the file the log names. Excluding a file relocates its runaway
-mutants into whichever leg still owns it and burns real mutation coverage at the same time.
-`test/regression/mutation_timeout_max_test.go` pins the flag and the fork tag together, because the
-failure mode it prevents presents as flake rather than as a missing bound.
+**`--compile-allowance`, and verdicts read from the output.** The run bound is handed to `go test
+-timeout`, whose clock starts when the test binary starts; the context deadline over compile and run
+— widened by `--compile-allowance` — stays as the backstop for a compile that has hung. The verdict
+is read from the child's output rather than its exit status: the `panic: test timed out after` line
+maps to `RUN TIMED OUT`, `[build failed]` and `[setup failed]` map to `NOT VIABLE`, and anything else
+is left to the exit status. The scan is streaming and retains only enough bytes to recognise a marker
+split across two writes.
 
-**`--compile-allowance`, and verdicts read from the output rather than the exit status.** Upstream
-bounds a mutant with one number, a context deadline wrapping the whole `go test` child, and sets
-`go test`'s own run-only `-timeout` two seconds ABOVE it — so the run leash is structurally
-unreachable and compile time is charged to the budget meant to bound execution. Measured on cerberus:
-12.7-15.8s of compile against a 15s budget while the test itself reaches a verdict in 0.3-2.1s, so
-mutants were recorded `TIMED OUT` having never run. The fork hands the bound to `go test -timeout`,
-whose clock starts when the test binary starts, and keeps the context deadline — widened by
-`--compile-allowance` — as the backstop for a compile that has hung, since no `-timeout` can bound
-one.
-
-Letting Go's `-timeout` win that race is only safe with the second half. `go test` collapses a
-failing test, a package that does not build and a test that ran past its `-timeout` into its own exit
-status 1; only the test *binary* exits 2, and what gremlins spawns is `go`. Reading that 1 at face
-value credits a timeout as a KILL and books a mutant that never compiled as one too. The fork scans
-the child's output instead — the `panic: test timed out after` line maps to `RUN TIMED OUT`,
-`[build failed]` and `[setup failed]` map to `NOT VIABLE`, and anything else is left to the exit
-status. The scan is streaming and retains only enough bytes to recognise a marker split across two
-writes, so a mutant that prints without bound cannot exhaust memory.
-
-**The two bounds report which of them claimed a mutant.** Splitting the leash gave the run bound and
-the backstop different meanings, but both still produced one status, so a mutant that genuinely does
-not terminate stayed indistinguishable from a compile that hung. The fork now reports them apart:
+**The two bounds report which of them claimed a mutant:**
 
 | status          | what fired                                                         | what it proves                                               |
 | --------------- | ------------------------------------------------------------------ | ------------------------------------------------------------ |
 | `RUN TIMED OUT` | the test binary's own `-timeout` watchdog, which printed the panic | the suite did not finish inside a bound no compile can spend |
 | `TIMED OUT`     | the context deadline over compile **and** run                      | nothing — a hung compile and a hung run reach it identically |
 
-The marker is read before either deadline, because a large goroutine dump can still be draining when
-the backstop expires, and it is guarded on the child having failed, so a suite that passes while
-printing those bytes stays `LIVED`. gremlins takes no position on which status is a detection —
-neither appears in its own `test_efficacy` — so the policy lives one layer up, in
+The marker is read before either deadline and is guarded on the child having failed, so a suite that
+passes while printing those bytes stays `LIVED`. gremlins takes no position on which status is a
+detection — neither appears in its own `test_efficacy` — so the policy lives one layer up, in
 `.github/scripts/gremlins-threshold.mjs`, which counts `RUN TIMED OUT` as a detection and leaves
-`TIMED OUT` in the denominator crediting nobody. A slow compiler still cannot buy a score.
+`TIMED OUT` in the denominator crediting nobody.
 
-**Prefix operators read as prefix operators.** gremlins maps each `token.Token` to the mutations
-that make sense for it, and that table describes the operator's *infix* meaning — but the same walk
-reads `*ast.UnaryExpr` too. Go spells four operators identically in both positions and means
-something different by each, so two of them were mutated against the wrong meaning: `&x` is
-address-of rather than bitwise AND, and `INVERT_BITWISE` rewrote it to `|x`, which does not parse;
-`^x` is bitwise complement rather than XOR, and the same rule rewrote it to `&x`, which no longer has
-the operand's type. On this tree, whose plan-building code is largely `&chplan.Foo{...}` composite
-literals, that was most of a package's mutants — and every one of them arrived as exit status 1 and
-was booked `KILLED`, so each leg was paid efficacy for work the compiler did. The fork consults the
-table only for the prefix operators whose infix mutations carry over unchanged, `+x` and `-x`.
+**Prefix operators read as prefix operators.** The mutation table is consulted for a
+`*ast.UnaryExpr` only for the prefix operators whose infix mutations carry over unchanged, `+x` and
+`-x`; `&x` (address-of) and `^x` (complement) are not mutated against their infix meanings. The
+`NOT VIABLE` classification stays for a genuine build failure from any other source.
 
-Removing those mutants rather than reclassifying them is what makes a mutant set mean something: a
-leg's honest score is identical either way, since `NOT VIABLE` leaves both sides of the ratio, but a
-set padded with entries no compiler accepts measures nothing. The `NOT VIABLE` classification stays
-for a genuine build failure from any other source.
+**A candidate mutant is type-checked before it is emitted.** The fork type-checks the candidate's
+whole **package** and drops a candidate the checker rejects; generation runs on its own goroutine
+behind the executor pool. A package that cannot be loaded and type-checked as it stands is not used
+as an oracle: its mutants are generated and left to the compiler, and a log line names the package.
 
-**A candidate mutant is type-checked before it is emitted.** Reading a prefix operator as a prefix
-operator is one instance of a wider gap: the mutation table describes what a rewrite *means* for a
-token read on its own, and whether the result is a program depends on the operand types, on the
-constant values around it, and on what statements the enclosing function admits — none of which is
-in the token. Three shapes of that survived on this tree. `hint.Name + "=" + hint.Value.String()`
-became `operator - not defined on ... (variable of type string)`, since Go defines `+` on strings
-and nothing else; `const week = 7 * 24 * time.Hour` became a legal constant expression whose `d /
-week` three lines down is a division by zero; and `INVERT_LOOPCTRL` turned the `continue` that keeps
-a `for {}` from terminating into a `break` (`missing return`), and a `break` inside a `switch` no
-loop encloses into a `continue` that is not in a loop.
-
-The fork type-checks the candidate's whole **package** before emitting it — the package, because the
-error a mutation causes need not appear where the mutation is, as the constant case shows. One
-type-check (~100ms on `internal/promql`) buys back a whole recompile-link-run cycle (~10s) whenever
-it rejects, and generation runs on its own goroutine behind the executor pool, so the lane pays
-nothing for it. A package that cannot be loaded and type-checked as it stands is not used as an
-oracle at all: its mutants are generated and left to the compiler exactly as before, and a log line
-names the package. Dropping a mutant nobody proved illegal would shrink the set a score is measured
-against, which is the one direction a mutation tool must not move in.
-
-**`go vet` does not decide whether a mutant may be adjudicated.** `go test` runs a subset of `go
-vet` before it builds anything and reports a finding as `FAIL pkg [build failed]` — from the outside
-indistinguishable from source that does not compile. Its `bools` analyzer rejects exactly what
-`INVERT_LOGICAL` produces from `name == a || name == b`: a conjunction of equalities against
-distinct constants, which it calls "suspect and". Those mutants are legal Go and a real change of
-behaviour — the predicate becomes unsatisfiable, and any test exercising either operand kills it —
-so the fork keeps generating them and runs the mutated tests with `-vet=off`. This is the one fix in
-this list that can MOVE a leg's number rather than only correct its meaning: mutants that used to
-leave the ratio as `NOT VIABLE` now get a real verdict, and one that nothing kills is a genuine gap
-in the suite rather than an artefact.
+**Mutated tests run with `-vet=off`.** `go test`'s built-in vet subset would otherwise report a legal
+`INVERT_LOGICAL` mutant as `[build failed]`; with vet off those mutants get a real verdict.
 
 `.gremlins.yaml`'s `exclude-files` paths are interpreted relative to the run's scope, not the repo
 root, and the matcher is RE2 with no lookahead. A path in the wrong form silently excludes nothing.
 
-**`workdir.CachedDealer` closes both copy handles.** Every worker's working-directory setup
-(`CachedDealer.Get`) walks the whole source tree once and copies every regular file, but `doCopy`
-never closed either the source or destination `os.File` it opened — two leaked file descriptors per
-copied file, for the process's lifetime, on every run. Invisible until a consuming repo's tree size,
-times concurrent workers, times two, crosses the runner's open-file ulimit: cerberus's own CI first
-hit `open ...: too many open files` panics after a release added ~2,300 files to its source tree
-(cerberus #3154). Fixed with `defer s.Close()` / `defer d.Close()` in `doCopy`.
+**`workdir.CachedDealer` closes both copy handles** in `doCopy`, so a run's open-file count does not
+grow with the tree size times the worker count.
 
-The fork ships two branches on purpose. `cerberus-sigterm-fix` at tag
-`v0.6.0-cerberus-workdir-fd-leak` is the branch the upstream pull request is built from, and keeps
-the upstream module path `github.com/go-gremlins/gremlins` so the diff stays reviewable.
-`cerberus-sigterm-fix-consume` at tag `v0.6.0-cerberus-workdir-fd-leak-consume` is the branch
-`mutation.yml` installs; it adds one commit renaming the `go.mod` module path to
-`github.com/tsouza/gremlins` and rewriting the internal imports, because `go install` otherwise
-rejects the module with `module declares its path as: github.com/go-gremlins/gremlins`. The fixes
-themselves are identical across the two. Both branches carry every fix documented above them in
-this section — each new fix fast-forwards both branches and gets its own pair of tags, so a tag name
-here always names the LATEST fix landed, not a snapshot frozen at that fix alone.
+The fork ships two branches. `cerberus-sigterm-fix` at tag `v0.6.0-cerberus-workdir-fd-leak` keeps
+the upstream module path `github.com/go-gremlins/gremlins` and is the branch the upstream pull
+requests are built from. `cerberus-sigterm-fix-consume` at tag
+`v0.6.0-cerberus-workdir-fd-leak-consume` is the branch `mutation.yml` installs; it adds one commit
+renaming the `go.mod` module path to `github.com/tsouza/gremlins` and rewriting the internal imports,
+because `go install` otherwise rejects the module with `module declares its path as:
+github.com/go-gremlins/gremlins`. The fixes themselves are identical across the two. Both branches
+carry every fix listed above — each new fix fast-forwards both branches and gets its own pair of
+tags, so a tag name here always names the LATEST fix landed, not a snapshot frozen at that fix alone.
 
 Unlike the module forks, this one sits outside the Dependabot watch flow: it is a build-time tool
 rather than a Go module dependency.
@@ -278,13 +181,22 @@ rather than a Go module dependency.
 ## chDB
 
 The chdb-tagged lanes — the `-- expected_rows --` roundtrip cells in `test/spec/`, the property
-tests, and the cardinality baseline — link `libchdb.so`, installed by `just chdb-install`. Without
-it, `just update-golden` refuses to run any chdb-tagged shard rather than regenerating a partial
-corpus.
+tests, and the cardinality baseline — link `libchdb.so`, installed by `just chdb-install`. Generated
+artefacts are regenerated by dispatching `update-golden.yml` against the topic branch
+(`docs/agent-workflow.md`); the workflow installs `libchdb.so` itself. A local `just update-golden`
+is blocked by the `guard-heavy-local.mjs` hook and, when run with the escape hatch, refuses to run
+any chdb-tagged shard without `libchdb.so` rather than regenerating a partial corpus.
 
 chDB and a production ClickHouse server differ in scan strictness: chDB coerces some column types
 that the server rejects outright. An emit-type bug can therefore pass every chDB lane and fail
-against a real server, which is why `compose-smoke` runs against a server. It does not scope to a
-diff's touched paths, though: an ordinary PR omits it entirely (the required `quickstart` context
-covers the published-startup contract with one stack instead), and it runs the full sweep only on
-`release/*` PRs, `push`, and `schedule` — see `.github/scripts/compose-smoke-scope.mjs`.
+against a real server, which is why three lanes run against a real ClickHouse: the required
+`strict-scan` and `schema-ddl` contexts (testcontainers, one narrow seam each) and the release-gate
+`compose-smoke` (the whole quickstart stack). `compose-smoke` does not scope to a diff's touched
+paths: an ordinary PR omits it entirely (the required `quickstart` context covers the
+published-startup contract with one stack instead), and it runs the full sweep only on `release/*`
+PRs, `push`, and `schedule` — see `.github/scripts/compose-smoke-scope.mjs`.
+
+---
+
+For the rationale behind these choices — alternatives considered, incidents,
+measurements — see [toolchain.background.md](toolchain.background.md).
