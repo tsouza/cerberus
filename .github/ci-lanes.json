@@ -721,7 +721,7 @@
       "description": "LogQL differential against Loki plus exact parity-ratchet roster.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["loki"],
+        "jobs": ["loki", "semantic-observations-loki"],
         "producer_jobs": [],
         "context_job": "loki"
       },
@@ -758,7 +758,7 @@
       "description": "PromQL differential against Prometheus plus exact parity-ratchet roster.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["prometheus"],
+        "jobs": ["prometheus", "semantic-observations-prometheus"],
         "producer_jobs": [],
         "context_job": "prometheus"
       },
@@ -903,7 +903,7 @@
       "description": "TraceQL HTTP and gRPC differentials against Tempo plus exact parity rosters.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["tempo"],
+        "jobs": ["tempo", "semantic-observations-tempo"],
         "producer_jobs": [],
         "context_job": "tempo"
       },
@@ -2014,7 +2014,7 @@
       "description": "Rapid PromQL, LogQL, and TraceQL oracle properties; required context is a no-op on ordinary PRs.",
       "owner": {
         "workflow": ".github/workflows/property.yml",
-        "jobs": ["property"],
+        "jobs": ["property", "semantic-observations"],
         "producer_jobs": [],
         "context_job": "property"
       },

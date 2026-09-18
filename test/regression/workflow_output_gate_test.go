@@ -30,14 +30,21 @@ import (
 // `needs.N.result == 'success'` buried inside an `||` disjunction gates
 // nothing.
 //
-// The one shape that needs no gating is the fail-open selector — `needs.N
-// .result != 'success' || needs.N.outputs.x == 'true'` — where the job RUNS
-// whenever the producer failed: its outputs then only decide anything for a
-// producer that succeeded.
+// Two shapes need no gating. The fail-open selector — `needs.N.result !=
+// 'success' || needs.N.outputs.x == 'true'` — RUNS the job whenever the
+// producer failed, so its outputs only decide anything for a producer that
+// succeeded. And an output that IS a step outcome (`${{ steps.x.outcome }}`)
+// is the opposite of a plan: it exists precisely to be read after the job
+// failed, so an evidence job can run on "the harness step succeeded" even
+// when a later ratchet step failed the producer.
 
 // workflowOutputSelectorRE finds every `needs.<job>.outputs.<name> == '…'`
 // positive selector in a job's `if:` expression.
-var workflowOutputSelectorRE = regexp.MustCompile(`needs\.([A-Za-z0-9_-]+)\.outputs\.[A-Za-z0-9_-]+\s*==\s*'`)
+var workflowOutputSelectorRE = regexp.MustCompile(`needs\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)\s*==\s*'`)
+
+// workflowStepOutcomeRE matches a job output whose whole value is one step's
+// outcome or conclusion.
+var workflowStepOutcomeRE = regexp.MustCompile(`^\$\{\{\s*steps\.[A-Za-z0-9_-]+\.(outcome|conclusion)\s*\}\}$`)
 
 // workflowNeedSuccessRE matches one whole conjunct of the shape
 // `needs.<job>.result == 'success'`.
@@ -126,8 +133,15 @@ func jobRunsOnProducerFailure(expr, need string) bool {
 }
 
 type workflowGateJob struct {
-	needs  []string
-	ifExpr string
+	needs   []string
+	ifExpr  string
+	outputs map[string]string
+}
+
+// outputIsStepOutcome reports whether a job publishes `name` as one of its
+// steps' outcome — a value meant to be read whatever the job's own result.
+func outputIsStepOutcome(job workflowGateJob, name string) bool {
+	return workflowStepOutcomeRE.MatchString(strings.TrimSpace(job.outputs[name]))
 }
 
 // jobIsSuccessGatedOn reports whether `job` can only run if `need` succeeded:
@@ -177,8 +191,9 @@ func TestAlwaysJobsSelectingOnAnOutputRequireTheProducersSuccess(t *testing.T) {
 		jobs := map[string]workflowGateJob{}
 		for jobID, job := range workflow.Jobs {
 			jobs[jobID] = workflowGateJob{
-				needs:  ciLaneNeeds(t, workflowPath, jobID, job.Needs),
-				ifExpr: ciLaneScalarValue(job.If),
+				needs:   ciLaneNeeds(t, workflowPath, jobID, job.Needs),
+				ifExpr:  ciLaneScalarValue(job.If),
+				outputs: job.Outputs,
 			}
 		}
 		jobIDs := make([]string, 0, len(jobs))
@@ -194,7 +209,11 @@ func TestAlwaysJobsSelectingOnAnOutputRequireTheProducersSuccess(t *testing.T) {
 			}
 			producers := map[string]bool{}
 			for _, m := range workflowOutputSelectorRE.FindAllStringSubmatch(job.ifExpr, -1) {
-				producers[m[1]] = true
+				producer, output := m[1], m[2]
+				if outputIsStepOutcome(jobs[producer], output) {
+					continue
+				}
+				producers[producer] = true
 			}
 			for producer := range producers {
 				if jobIsSuccessGatedOn(jobs, jobID, producer, map[string]bool{}) ||
@@ -249,6 +268,31 @@ func TestWorkflowIfConjuncts(t *testing.T) {
 			got := successGatedNeeds(test.expr)
 			if strings.Join(got, ",") != strings.Join(test.wantGated, ",") {
 				t.Errorf("successGatedNeeds(%q) = %v, want %v", test.expr, got, test.wantGated)
+			}
+		})
+	}
+}
+
+func TestOutputIsStepOutcome(t *testing.T) {
+	t.Parallel()
+
+	job := workflowGateJob{outputs: map[string]string{
+		"harness": "${{ steps.compat.outcome }}",
+		"spaced":  "${{steps.fanout.conclusion}}",
+		"plan":    "${{ steps.plan.outputs.matrix }}",
+		"mixed":   "${{ steps.compat.outcome }}-${{ steps.plan.outputs.x }}",
+	}}
+	for name, want := range map[string]bool{
+		"harness": true,
+		"spaced":  true,
+		"plan":    false,
+		"mixed":   false,
+		"absent":  false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := outputIsStepOutcome(job, name); got != want {
+				t.Errorf("outputIsStepOutcome(%q) = %v, want %v", name, got, want)
 			}
 		})
 	}

@@ -51,12 +51,21 @@ type ciLaneRegistry struct {
 }
 
 type ciLaneWorkflowStep struct {
-	Name            string    `yaml:"name"`
-	If              yaml.Node `yaml:"if"`
-	Run             string    `yaml:"run"`
-	Shell           yaml.Node `yaml:"shell"`
-	ContinueOnError yaml.Node `yaml:"continue-on-error"`
+	Name            string            `yaml:"name"`
+	If              yaml.Node         `yaml:"if"`
+	Run             string            `yaml:"run"`
+	Shell           yaml.Node         `yaml:"shell"`
+	ContinueOnError yaml.Node         `yaml:"continue-on-error"`
+	Env             map[string]string `yaml:"env"`
 }
+
+// softFailEnv is the env switch a script can honour to turn its own failure
+// into a warning and exit 0. On a gating job it is `continue-on-error` moved
+// one layer down — the same "failed evidence reported as success" the ban on
+// that flag exists to prevent — so it is banned in the same place. A step
+// that must not fail a gating job does not belong in that job: it moves to a
+// non-gating job that `needs:` the gating one and reads its artifacts.
+const softFailEnv = "SOFT_FAIL"
 
 type ciLaneWorkflowDefaults struct {
 	Run struct {
@@ -67,6 +76,7 @@ type ciLaneWorkflowDefaults struct {
 type ciLaneWorkflowJob struct {
 	Name            string                 `yaml:"name"`
 	Needs           yaml.Node              `yaml:"needs"`
+	Outputs         map[string]string      `yaml:"outputs"`
 	If              yaml.Node              `yaml:"if"`
 	ContinueOnError yaml.Node              `yaml:"continue-on-error"`
 	Defaults        ciLaneWorkflowDefaults `yaml:"defaults"`
@@ -304,6 +314,19 @@ func TestCILaneRegistry(t *testing.T) {
 				"continue-on-error; "+
 				"failed evidence could be reported as a successful protected context",
 				ciLaneSortedKeys(laneIDs), identity, stepIndex+1, stepName)
+		}
+		for stepIndex, step := range job.Steps {
+			if _, soft := step.Env[softFailEnv]; !soft {
+				continue
+			}
+			stepName := step.Name
+			if stepName == "" {
+				stepName = "unnamed"
+			}
+			t.Errorf("protected or release-required registry lanes %v job %s step %d (%s) sets %s, which "+
+				"is continue-on-error moved into the script: a failed step reports green on a gating "+
+				"context. Move the step into a non-gating job that needs this one and reads its artifacts",
+				ciLaneSortedKeys(laneIDs), identity, stepIndex+1, stepName, softFailEnv)
 		}
 	}
 
