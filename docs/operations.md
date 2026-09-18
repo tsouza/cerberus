@@ -897,7 +897,15 @@ the upstream OTel ClickHouse exporter templates; only the database engine,
   (`database_replicated_allow_replicated_engine_arguments` defaults to `0`).
   Verify the data is genuinely replicated after deploy with
   `SELECT count() FROM system.replicas WHERE database = '<db>'` — it must be
-  `> 0`.
+  `> 0` on **every** replica, and each row's `total_replicas` must equal the
+  replica count: a Keeper path that differs per node (one carrying the
+  `{shard}`/`{replica}` macros, which the engine expands) registers every
+  replica as its own single-replica database, with `count() > 0` on each.
+  For the bundled chart's `clickhouse.bundled.replicas > 1` path this is
+  what the `bwc-replicated` e2e lane (`.github/workflows/e2e.yml`,
+  `.github/scripts/e2e-bwc-replicated-verify.mjs`) asserts on every replica
+  pod, together with a row written through one replica and read back from
+  the other — see [helm-clickhouse.md](helm-clickhouse.md#support--validation-matrix).
 - **Classic `ON CLUSTER` cluster.** Set `CERBERUS_SCHEMA_CLUSTER=<name>` and,
   if the engine isn't replicated by the cluster default, an explicit
   `CERBERUS_SCHEMA_TABLE_ENGINE=ReplicatedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')`.
@@ -1132,8 +1140,11 @@ No `internal/chopt`-stamped setting was found to be unsafe or produce wrong
 results under `Distributed`, at any version — every row above is
 **forwards-as-is**, and the taxonomy has no `disabled-until-fixed` row.
 All seven feature rows, plus the five unconditional distributed-query pins,
-are reachable against the bundled 26.6 image, so the table describes live
-behavior end to end. If a future ClickHouse version changes any of the
+are reachable against the bundled 26.6 image, and the `datashard` lane runs
+that same image (`test/e2e/k3s/cerberus-values-datashard.yaml`,
+`E2E_BUNDLED_CH_IMAGES` in `just/e2e.just`), so every row — the `join_spill`
+row at its 26.4 floor included — is observed live under fan-out, not only
+verified at the source. If a future ClickHouse version changes any of the
 above, `just gen-opt-docs`'s own registry table
 (`docs/clickhouse-optimizations.md`) and this table are the two places to
 re-verify.
@@ -1262,7 +1273,13 @@ image, and the chart's bundled ClickHouse at `dataShards.count: 2` and
 `dataShards.count: 4` (deliberately exceeding `internal/solver`'s own
 unmodified `defaultParallel` of 3 — epic #3074's admission-control section
 names this exact regime), running the full Go e2e correctness suite plus a
-concurrent PromQL/LogQL/TraceQL load burst.
+concurrent PromQL/LogQL/TraceQL load burst. The lane runs the chart's own
+bundled image (`clickhouse/clickhouse-server:26.6`,
+`test/e2e/k3s/cerberus-values-datashard.yaml`), so the settings table above
+describes the server the lane fans out to; its highest floor, `join_spill`
+at 26.4, is a setting that does not exist server-side below that version and
+is therefore only observed under `Distributed` because the lane's server
+clears it.
 
 `.github/scripts/e2e-datashard-verify.mjs` asserts, directly from
 `system.query_log` rather than from cerberus's own HTTP responses: a genuine

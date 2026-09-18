@@ -231,11 +231,12 @@ clickhouse:
   # Secrets (the ClickHouse user password + static object-store credentials)
   # NEVER land in a ConfigMap — they ride a Secret injected as env and are
   # referenced from the ClickHouse XML via `from_env`. NOT every backend is
-  # equally proven: only S3/MinIO single-node (in every storage mode) is
-  # runtime-proven (k3d e2e); GCS, Azure, cloud workload-identity and
-  # multi-replica+Keeper are render/kubeconform-validated only and need a
-  # real-cloud validation pass before production. See the support/validation
-  # matrix in docs/helm-clickhouse.md.
+  # equally proven: S3/MinIO single-node (in every storage mode) and hot-only
+  # `replicas: 2` + Keeper are runtime-proven (k3d e2e: the `bwc-minio` and
+  # `bwc-replicated` lanes); GCS, Azure, cloud workload-identity and
+  # multi-replica over an object store are render/kubeconform-validated only
+  # and need a real-cloud validation pass before production. See the
+  # support/validation matrix in docs/helm-clickhouse.md.
   bundled:
     # -- Render the bundled ClickHouse data tier and default cerberus at it.
     enabled: false

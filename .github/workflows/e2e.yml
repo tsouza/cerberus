@@ -1974,6 +1974,103 @@ jobs:
         if: always()
         run: just e2e-datashard-down
 
+  # bwc-replicated — cerberus issue #3566. The chart's SUPPORTED replication
+  # path, `clickhouse.bundled.replicas: 2` at the default `dataShards.count:
+  # 1`, stood up on k3d with a built cerberus image and asked whether it
+  # actually replicates. Every other replication claim in the tree is
+  # render-only (`chart-render-assert.mjs`, `chart-validate`) or single-node
+  # (the optcorpus `-tags=integration` tests prove a table REGISTERS as a
+  # replica on ONE server); this is the one place a second ClickHouse replica
+  # runs and is read from. It is NOT a variant of `datashard-replica-affinity`
+  # above: that leg's `replicas=2` sits under the EXPERIMENTAL multi-shard
+  # topology, where the chart defaults the classic
+  # `ReplicatedMergeTree(path, '{replica}')` engine under an ON CLUSTER
+  # database, and its verifier reads query-routing determinism, never
+  # whether the schema and the rows reached the second pod. This leg is the
+  # Replicated-DATABASE path a single-shard `replicas > 1` install gets —
+  # the chart's `cerberus.bundled.apply` flips `schema.replicated.enabled`
+  # and defaults `zookeeperPath` — with nothing pinned in the lane values
+  # that would mask a wrong default (the `{shard}/{replica}` path default
+  # that once shipped registered every replica as its own single-replica
+  # database, with every static check green).
+  #
+  # Deliberately LIGHT: no fixtures, no seeder, no Go e2e suite. `just
+  # e2e-bwc-replicated-up` installs the chart and waits for cerberus to
+  # auto-create the schema; `just e2e-bwc-replicated-verify`
+  # (.github/scripts/e2e-bwc-replicated-verify.mjs) then reads EACH
+  # ClickHouse pod directly — the StatefulSet's replica count read back
+  # (never vacuous), the table set identical on every pod, every
+  # MergeTree-family table a Replicated* engine registered in
+  # `system.replicas` at total_replicas = active_replicas = the pod count,
+  # and a marker row written through each pod read back from every other.
+  #
+  # INFORMATIONAL, never a PR gate — SAME trigger posture as `bwc-minio`:
+  # push-to-main + nightly + manual dispatch ONLY. Unlike `datashard` /
+  # `datashard-replica-affinity` it is a SUPPORTED-path lane, so its verdict
+  # counts toward the nightly's clean pass (it is NOT in
+  # notify-nightly-failure.mjs's EXPERIMENTAL_LANES). Own concurrency +
+  # timeout; a separate single-cluster lane.
+  bwc-replicated:
+    name: bwc-replicated
+    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !inputs.datashard_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: e2e-bwc-replicated-${{ github.run_id }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      # ---- free runner disk BEFORE k3d + the stack boot (infra-flake fix) ----
+      # Two ClickHouse pods + the 3-node Keeper ensemble `replicas > 1`
+      # auto-enables + one cerberus pod on ONE k3d node — fewer pods than
+      # `datashard`'s N=2 leg already runs reliably.
+      - uses: ./.github/actions/free-disk-space
+
+      - uses: ./.github/actions/setup-go
+
+      # node for .github/scripts/e2e-bwc-replicated-verify.mjs (node:
+      # builtins only — no npm install).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
+        with:
+          tool: just@1.46.0
+
+      # cerberus + the bundled ClickHouse data tier are deployed via the Helm
+      # chart in `just e2e-bwc-replicated-up` (dogfooding the chart, same as
+      # `bwc-minio`), so the runner needs helm.
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
+        with:
+          version: v3.21.1
+
+      - name: Install k3d
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - name: Bring up k3d + bundled-ClickHouse stack (replicas=2, Replicated database)
+        run: just e2e-bwc-replicated-up
+
+      - name: Verify the auto-created schema and rows replicate across both ClickHouse pods
+        run: just e2e-bwc-replicated-verify
+
+      - name: Dump cluster state on failure
+        if: failure()
+        env:
+          NAMESPACE: cerberus
+        run: node .github/scripts/dump-cluster-state.mjs
+
+      - name: Tear down
+        if: always()
+        run: just e2e-bwc-replicated-down
+
   # #1861 acceptance criterion #2. Reaching a real terminal `failure` instead
   # of `cancelled` (crawl-terminal / dashboard-crawl-terminal, above) is not
   # the same as anyone SEEING that failure: the `schedule` trigger has no PR,
@@ -1993,13 +2090,13 @@ jobs:
   # never rot into a permanent false alarm. `needs` lists every job whose
   # result actually matters for "did the nightly pass": the two required
   # aggregates (`compose-smoke`, `dashboard`), the two crawl-terminality
-  # readers, and the five informational-but-schedule-run leaf jobs. `always()`
+  # readers, and the six informational-but-schedule-run leaf jobs. `always()`
   # so it still runs (and can still notify) when an upstream job failed rather
   # than being skipped by GitHub's default `success()` gate.
   nightly-health-notify:
     name: nightly-health-notify
     needs:
-      [compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio, datashard, datashard-replica-affinity]
+      [compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio, datashard, datashard-replica-affinity, bwc-replicated]
     if: always() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -2027,4 +2124,5 @@ jobs:
           RESULT_BWC_MINIO: ${{ needs.bwc-minio.result }}
           RESULT_DATASHARD: ${{ needs.datashard.result }}
           RESULT_DATASHARD_REPLICA_AFFINITY: ${{ needs.datashard-replica-affinity.result }}
+          RESULT_BWC_REPLICATED: ${{ needs.bwc-replicated.result }}
         run: node .github/scripts/notify-nightly-failure.mjs
