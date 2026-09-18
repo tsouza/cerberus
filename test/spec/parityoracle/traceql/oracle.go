@@ -438,23 +438,34 @@ func traceMetaOf(t trace, roots []Span) traceMeta {
 
 // newEngineSpan constructs the vparquet4 span the engine will evaluate,
 // populating the same attribute scopes upstream's own parquet decoder does.
+//
+// The span scope lists the USER attributes first and the intrinsics after
+// them, in the order upstream's own collector emits: spanCollector.KeepGroup
+// (tempodb/encoding/vparquet4/block_traceql.go) appends the fetched
+// OtherEntries — the user attributes — before the intrinsic columns. Order
+// matters because vparquet4's AttributeFor resolves an UNSCOPED attribute
+// (`.name`, `.duration`, `.status`) by findName's first hit over spanAttrs:
+// with the intrinsics first, `{ .name = "checkout" }` was answered from the
+// span's intrinsic name and never from its user attribute `name`, which is
+// the one both real Tempo and cerberus read for that spelling.
 func newEngineSpan(s Span, meta traceMeta, parentLeft, left, right int32, hints attrTypeHints) tempotraceql.Span {
-	spanAttrs := []vparquet4.SpanAttr{
-		{Attr: tempotraceql.IntrinsicSpanIDAttribute, Value: tempotraceql.NewStaticString(s.SpanID)},
-		{Attr: tempotraceql.IntrinsicParentIDAttribute, Value: tempotraceql.NewStaticString(s.ParentSpanID)},
-		{Attr: tempotraceql.IntrinsicNameAttribute, Value: tempotraceql.NewStaticString(s.Name)},
-		{
+	spanAttrs := appendScoped(nil, tempotraceql.AttributeScopeSpan, s.SpanAttrs, hints)
+	spanAttrs = append(
+		spanAttrs,
+		vparquet4.SpanAttr{Attr: tempotraceql.IntrinsicSpanIDAttribute, Value: tempotraceql.NewStaticString(s.SpanID)},
+		vparquet4.SpanAttr{Attr: tempotraceql.IntrinsicParentIDAttribute, Value: tempotraceql.NewStaticString(s.ParentSpanID)},
+		vparquet4.SpanAttr{Attr: tempotraceql.IntrinsicNameAttribute, Value: tempotraceql.NewStaticString(s.Name)},
+		vparquet4.SpanAttr{
 			Attr:  tempotraceql.IntrinsicDurationAttribute,
 			Value: tempotraceql.NewStaticDuration(time.Duration(s.DurationNanos)), //nolint:gosec // nanosecond count, not a conversion between signed domains.
 		},
-		{Attr: tempotraceql.IntrinsicStatusAttribute, Value: tempotraceql.NewStaticStatus(statusFromColumn(s.StatusCode))},
-		{Attr: tempotraceql.IntrinsicStatusMessageAttribute, Value: tempotraceql.NewStaticString(s.StatusMessage)},
-		{Attr: tempotraceql.IntrinsicKindAttribute, Value: tempotraceql.NewStaticKind(kindFromColumn(s.Kind))},
-		{Attr: tempotraceql.IntrinsicNestedSetParentAttribute, Value: tempotraceql.NewStaticInt(int(parentLeft))},
-		{Attr: tempotraceql.IntrinsicNestedSetLeftAttribute, Value: tempotraceql.NewStaticInt(int(left))},
-		{Attr: tempotraceql.IntrinsicNestedSetRightAttribute, Value: tempotraceql.NewStaticInt(int(right))},
-	}
-	spanAttrs = appendScoped(spanAttrs, tempotraceql.AttributeScopeSpan, s.SpanAttrs, hints)
+		vparquet4.SpanAttr{Attr: tempotraceql.IntrinsicStatusAttribute, Value: tempotraceql.NewStaticStatus(statusFromColumn(s.StatusCode))},
+		vparquet4.SpanAttr{Attr: tempotraceql.IntrinsicStatusMessageAttribute, Value: tempotraceql.NewStaticString(s.StatusMessage)},
+		vparquet4.SpanAttr{Attr: tempotraceql.IntrinsicKindAttribute, Value: tempotraceql.NewStaticKind(kindFromColumn(s.Kind))},
+		vparquet4.SpanAttr{Attr: tempotraceql.IntrinsicNestedSetParentAttribute, Value: tempotraceql.NewStaticInt(int(parentLeft))},
+		vparquet4.SpanAttr{Attr: tempotraceql.IntrinsicNestedSetLeftAttribute, Value: tempotraceql.NewStaticInt(int(left))},
+		vparquet4.SpanAttr{Attr: tempotraceql.IntrinsicNestedSetRightAttribute, Value: tempotraceql.NewStaticInt(int(right))},
+	)
 
 	resourceAttrs := appendScoped(nil, tempotraceql.AttributeScopeResource, s.resourceAttributes(), hints)
 

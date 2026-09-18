@@ -12,6 +12,9 @@ duration_gt_compound_unit.txtar
 duration_lt.txtar
 edge_attr_default_ge.txtar
 edge_attr_default_regex.txtar
+edge_attr_dotted_duration_collision.txtar
+edge_attr_dotted_name_collision.txtar
+edge_attr_dotted_status_collision.txtar
 edge_attr_resource_le.txtar
 edge_attr_resource_not_regex.txtar
 edge_attr_span_gt.txtar
