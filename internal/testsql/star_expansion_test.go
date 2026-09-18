@@ -176,6 +176,48 @@ func TestExpandStarProjection_BareTableResolvesFromSeedDDL(t *testing.T) {
 	}
 }
 
+// TestExpandStarProjection_TopLevelBareTableResolvesFromSeedDDL pins the
+// leaf shape a Scan or Filter(Scan) plan emits with no Project above it:
+// `SELECT * FROM <table> [PREWHERE …] [WHERE …]`, a star straight over a
+// physical table at the OUTERMOST level. There is no subquery to borrow
+// names from, so without the seed-DDL fallback the star rode through
+// unexpanded, the Map column reached the driver raw, and chdb-go handed
+// back NULL for it AND for every column after it — a `SELECT *` over the
+// gauge layout compared nothing past MetricName.
+func TestExpandStarProjection_TopLevelBareTableResolvesFromSeedDDL(t *testing.T) {
+	t.Parallel()
+
+	const seed = "CREATE OR REPLACE TABLE otel_metrics_gauge (\n" +
+		"    MetricName String,\n" +
+		"    Attributes Map(String, String),\n" +
+		"    TimeUnix DateTime64(9),\n" +
+		"    Value Float64\n" +
+		") ENGINE = MergeTree() ORDER BY (MetricName, TimeUnix);"
+	for _, query := range []string{
+		"SELECT * FROM `otel_metrics_gauge`",
+		"SELECT * FROM `otel_metrics_gauge` PREWHERE (`MetricName` = ?) WHERE (`Value` > ?)",
+	} {
+		got := ExpandStarProjection(query, SeedTableColumns(seed))
+		head, tail := splitOuterSelect(got)
+		if want := "`MetricName`, `Attributes`, `TimeUnix`, `Value`"; strings.TrimSpace(head) != want {
+			t.Errorf("%s\nexpanded projection = %q, want %q", query, strings.TrimSpace(head), want)
+		}
+		if wantTail := strings.TrimPrefix(query, "SELECT *"); tail != wantTail {
+			t.Errorf("%s\nFROM tail was altered: %q, want %q", query, tail, wantTail)
+		}
+		if full := RewriteMapProjections(got); !strings.Contains(full, "toJSONString(`Attributes`) AS `Attributes`") {
+			t.Errorf("%s\nMap column Attributes was not wrapped after expansion:\n%s", query, full)
+		}
+	}
+
+	// A qualified star over a bare table is not a shape any emitter
+	// produces at the top level; it keeps bailing rather than guessing.
+	qualified := "SELECT s.* FROM `otel_metrics_gauge` AS s"
+	if got := ExpandStarProjection(qualified, SeedTableColumns(seed)); got != qualified {
+		t.Errorf("qualified star over a bare table was rewritten:\n%s", got)
+	}
+}
+
 // TestExpandStarProjection_BareTableWithoutSeedStillBails asserts the
 // pre-#1431 fallback behaviour is preserved when no seed-derived column
 // map is available (tableCols == nil): a qualified star over a bare
