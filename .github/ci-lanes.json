@@ -729,7 +729,7 @@
       "description": "LogQL differential against Loki plus exact parity-ratchet roster.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["loki", "semantic-observations-loki"],
+        "jobs": ["loki"],
         "producer_jobs": [],
         "context_job": "loki"
       },
@@ -766,7 +766,7 @@
       "description": "PromQL differential against Prometheus plus exact parity-ratchet roster.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["prometheus", "semantic-observations-prometheus"],
+        "jobs": ["prometheus"],
         "producer_jobs": [],
         "context_job": "prometheus"
       },
@@ -911,7 +911,7 @@
       "description": "TraceQL HTTP and gRPC differentials against Tempo plus exact parity rosters.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["tempo", "semantic-observations-tempo"],
+        "jobs": ["tempo"],
         "producer_jobs": [],
         "context_job": "tempo"
       },
@@ -2051,7 +2051,7 @@
       "description": "Rapid PromQL, LogQL, and TraceQL oracle properties; required context is a no-op on ordinary PRs.",
       "owner": {
         "workflow": ".github/workflows/property.yml",
-        "jobs": ["property", "semantic-observations"],
+        "jobs": ["property"],
         "producer_jobs": [],
         "context_job": "property"
       },
@@ -2082,41 +2082,6 @@
       "applicability": { "source": true, "artifact": false },
       "timeout_minutes": 30,
       "slo_minutes": 30,
-      "accountable_owner": "query-quality"
-    },
-    {
-      "id": "quality.semantic-mutation-pilot",
-      "description": "Scheduled, informational re-run of the real (non-synthetic) domain-semantic mutation pilot cohort — issue #3452, distinct from both the required ci.check corpus step and the traditional quality.mutation (gremlins) lane.",
-      "owner": {
-        "workflow": ".github/workflows/semantic-mutation-pilot.yml",
-        "jobs": ["pilot"],
-        "producer_jobs": [],
-        "context_job": "pilot"
-      },
-      "executions": ["default"],
-      "context": { "match": "exact", "name": "pilot", "protected": false },
-      "purpose": "quality",
-      "layers": ["2b", "3", "5"],
-      "oracle_class": "mutation",
-      "recipes": [],
-      "command": "node .github/scripts/semantic-mutation-pilot-report.mjs",
-      "build_tags": ["chdb"],
-      "package_globs": [
-        ".github/scripts/lib/semantic-mutation.mjs",
-        ".github/scripts/semantic-mutation-pilot-report.mjs",
-        ".github/workflows/semantic-mutation-pilot.yml",
-        "test/semantic/mutant-executions.json",
-        "test/semantic/mutants/*.json"
-      ],
-      "substrate": "chdb",
-      "risk_domains": ["logql", "mutation", "promql", "traceql"],
-      "merge_posture": "never",
-      "main_posture": "never",
-      "release_posture": "advisory",
-      "determinism": "deterministic",
-      "applicability": { "source": true, "artifact": false },
-      "timeout_minutes": 20,
-      "slo_minutes": 20,
       "accountable_owner": "query-quality"
     },
     {

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "MUTANT-PROMQL-COUNTER-RESET-COMPENSATION",
   "title": "chsql.CounterDelta's reset-detection comparison is neutered so it never fires",
   "synthetic": false,
@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "internal/chsql/builder.go",
     "patch_path": "test/semantic/mutants/patches/counter-reset-compensation.patch",
-    "source_fingerprint": "bdcc0c8283f68e9a94c227342cb5b6ec8ed80d9f0de2bee51a0a7f17fbe2292b",
-    "expected_mutated_fingerprint": "2e3041e8da5cf1fe8891160e7a0b2bdc6ed76750532c1b622372456c70a60016"
+    "pre_image_fingerprint": "bcf7624f185c93cb2b74dec09633254594b6b9f68221e2a287cde467e4f83bfa",
+    "post_image_fingerprint": "a90d9bf3c1f78e993f0d39f64e8ed0a2cb95d7f3cb376843651e1aeeadb69d85"
   },
   "detectors": [
     {
@@ -30,6 +30,5 @@
     "memory_max": "2GiB",
     "memory_hold": "2s"
   },
-  "notes": "Real production seam, not a textual stand-in: chsql.CounterDelta (internal/chsql/builder.go, the typed compound-idiom behind counterDeltaFrag in internal/chsql/range_window.go ~2690-2707) renders `arrayMap((p, c) -> if(c < p, c, c - p), ...)` -- the counter-reset-aware pairwise delta rate()/increase() reduce over. The patch changes the comparison's second operand from `p` to `c` (`Lt(BareIdent(\"c\"), BareIdent(\"p\"))` -> `Lt(BareIdent(\"c\"), BareIdent(\"c\"))`), which is always false, so the emitted SQL always takes the `c - p` branch and the reset-compensation arm never fires: this is a disable, not merely an inversion. gen.CounterResetCase (test/property/gen/counter_reset.go) seeds a genuine mid-window reset (20 -> 5 between adjacent samples, not a duplicate timestamp -- see that file's header on why test/property/rate_dup_timestamp_test.go's duplicate-timestamp dataset does not exercise this). Locally reproduced end to end: the unmutated code returns the Prometheus-correct increase() = 33.333... (100/3); with this patch applied to a scratch copy the same query returns 6.666... (20/3, i.e. last-first with no reset added back), and TestPromQL_CounterResetMidWindowCompensation fails with exactly that drift. TestPromQL_RangeWindowBoundaryExactSample (the sibling MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT's own detector) was re-run against this same patch and still passes, confirming the two mutants are independently attributable.",
-  "linked_issue": null
+  "notes": "Real production seam, not a textual stand-in: chsql.CounterDelta (internal/chsql/builder.go, the typed compound-idiom behind counterDeltaFrag in internal/chsql/range_window.go ~2690-2707) renders `arrayMap((p, c) -> if(c < p, c, c - p), ...)` -- the counter-reset-aware pairwise delta rate()/increase() reduce over. The patch changes the comparison's second operand from `p` to `c` (`Lt(BareIdent(\"c\"), BareIdent(\"p\"))` -> `Lt(BareIdent(\"c\"), BareIdent(\"c\"))`), which is always false, so the emitted SQL always takes the `c - p` branch and the reset-compensation arm never fires: this is a disable, not merely an inversion. gen.CounterResetCase (test/property/gen/counter_reset.go) seeds a genuine mid-window reset (20 -> 5 between adjacent samples, not a duplicate timestamp -- see that file's header on why test/property/rate_dup_timestamp_test.go's duplicate-timestamp dataset does not exercise this). Locally reproduced end to end: the unmutated code returns the Prometheus-correct increase() = 33.333... (100/3); with this patch applied to a scratch copy the same query returns 6.666... (20/3, i.e. last-first with no reset added back), and TestPromQL_CounterResetMidWindowCompensation fails with exactly that drift. TestPromQL_RangeWindowBoundaryExactSample (the sibling MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT's own detector) was re-run against this same patch and still passes, confirming the two mutants are independently attributable."
 }

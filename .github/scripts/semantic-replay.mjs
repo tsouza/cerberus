@@ -9,15 +9,15 @@
 //
 // Usage:
 //   node .github/scripts/semantic-replay.mjs <counterexample-id>
-//   node .github/scripts/semantic-replay.mjs --update-fingerprints
 //
-// `just semantic-replay id:` wraps the first form.
+// `just semantic-replay id:` wraps it; `just semantic-replay-repin`
+// (semantic-repin.mjs) regenerates test/semantic/replay-fingerprints.json.
 //
 // Exit codes (lib/semantic-replay.mjs's EXIT_CODES, repeated here so this
 // is discoverable from `--help`/a misuse without reading the library):
 //   0  every resolved mechanism passed.
 //   1  at least one mechanism genuinely FAILED, ERRORED, or was STALE
-//      (a stale source-fingerprint reference) — a real, actionable problem.
+//      (a stale region-fingerprint reference) — a real, actionable problem.
 //   2  the counterexample id does not resolve to a record.
 //   3  nothing FAILED/ERRORED/STALE, but at least one mechanism was
 //      SUBSTRATE-UNAVAILABLE (e.g. libchdb.so not installed, docker
@@ -35,7 +35,6 @@ import {
   REPLAY_STATUS,
   classifyOverallExit,
   replayCounterexample,
-  writeFingerprints,
 } from "./lib/semantic-replay.mjs";
 
 function indent(text, prefix = "      ") {
@@ -65,19 +64,9 @@ function printResult(result) {
 
 function main() {
   const args = process.argv.slice(2);
-
-  if (args.includes("--update-fingerprints")) {
-    const snapshot = writeFingerprints();
-    const count = Object.keys(snapshot.fingerprints).length;
-    console.log(`::notice::wrote test/semantic/replay-fingerprints.json (${count} contract-entry fingerprint(s))`);
-    return;
-  }
-
   const id = args.find((a) => !a.startsWith("--"));
   if (!id) {
-    console.log(
-      "::error::semantic-replay: usage: node .github/scripts/semantic-replay.mjs <counterexample-id> | --update-fingerprints",
-    );
+    console.log("::error::semantic-replay: usage: node .github/scripts/semantic-replay.mjs <counterexample-id>");
     process.exit(EXIT_CODES.FAILURE);
   }
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "MUTANT-SYNTH-KILLED-INVERT",
   "title": "ClampUpper's upper-bound comparison is inverted",
   "synthetic": true,
@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
     "patch_path": "test/semantic/mutants/patches/killed-invert.patch",
-    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
-    "expected_mutated_fingerprint": "8f2155010033f16f00e0a9d48821ec4f049e5ea33064c250bb947ee4f9eada01"
+    "pre_image_fingerprint": "f24e296eeb5d6422c1915ecac05eb83bdfa86e7296c91a8f13bb27801153eae6",
+    "post_image_fingerprint": "21f3469db6cc16757c2320d0ab892a3db725d66f7215e325cb1466da083cc1da"
   },
   "detectors": [
     {
@@ -30,6 +30,5 @@
     "memory_max": "1GiB",
     "memory_hold": "1s"
   },
-  "notes": null,
-  "linked_issue": null
+  "notes": null
 }

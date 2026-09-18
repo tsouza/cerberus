@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "MUTANT-SYNTH-BUILD-BREAK",
   "title": "ClampUpper's return statement is left as a dangling expression",
   "synthetic": true,
@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "test/semantic/mutants/testdata/fixtures/arith.go",
     "patch_path": "test/semantic/mutants/patches/build-break.patch",
-    "source_fingerprint": "1cbe80fcd1c993cbfe7ac048bfc8bb24aa63076b564903e373a4c781fb87a039",
-    "expected_mutated_fingerprint": "17e0ff0ac22c0b4ea745026c35ec5300df65d3ffb500f4b332b7fbf780ce50c4"
+    "pre_image_fingerprint": "0fd4ea5e26f8e1827b6d37f8ed06c7a8bf747d3221e49f71bf50b4f9cf22b035",
+    "post_image_fingerprint": "ed2d0ca066024c0979286b22c4386f8b9191c2c2c9164665d2bf1832e478a397"
   },
   "detectors": [
     {
@@ -30,6 +30,5 @@
     "memory_max": "1GiB",
     "memory_hold": "1s"
   },
-  "notes": null,
-  "linked_issue": null
+  "notes": null
 }

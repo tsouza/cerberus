@@ -17,20 +17,20 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 
 import {
   CLASSIFICATIONS,
   DEFAULT_MUTANTS_DIR,
+  MUTANT_SCHEMA_VERSION,
+  REPIN_RECIPE,
   aggregateClassifications,
   applyTransformation,
   classifyGoTestOutput,
   createScratchDir,
-  loadMutantExecutions,
   loadMutants,
   renderMutantsSummary,
   runGoTest,
@@ -40,6 +40,8 @@ import {
   sha256Hex,
   validateMutantRecord,
 } from "./lib/semantic-mutation.mjs";
+import { patchFingerprints } from "./lib/semantic-fingerprint.mjs";
+import { repinMutantRecord } from "./semantic-repin.mjs";
 import { SemanticModelError } from "./lib/semantic-model.mjs";
 
 const REPO_ROOT = process.cwd();
@@ -47,35 +49,15 @@ const REPO_ROOT = process.cwd();
 // semantic-counterexamples.test.mjs uses for its own path fixtures.
 const REAL_TARGET_PATH = "test/semantic/mutants/testdata/fixtures/arith.go";
 const REAL_PATCH_PATH = "test/semantic/mutants/patches/killed-invert.patch";
-const REAL_SOURCE_FINGERPRINT = sha256Hex(readFileSync(join(REPO_ROOT, REAL_TARGET_PATH)));
-
-// computeMutatedFingerprint independently reproduces what applyTransformation
-// itself will do (copy the pristine target into a scratch dir preserving its
-// relative path, then `git apply`), so tests that need a record's
-// expected_mutated_fingerprint never depend on a committed JSON file's own
-// value to define what "correct" means — this is the SAME real git
-// operation, computed once and shared by every test below that needs it.
-function computeMutatedFingerprint(patchPath) {
-  const probe = mkdtempSync(join(tmpdir(), "semantic-mutation-probe-"));
-  try {
-    const scratchTarget = join(probe, REAL_TARGET_PATH);
-    mkdirSync(join(probe, "test/semantic/mutants/testdata/fixtures"), { recursive: true });
-    copyFileSync(join(REPO_ROOT, REAL_TARGET_PATH), scratchTarget);
-    const applied = spawnSync(
-      "git",
-      ["apply", "--unsafe-paths", `--directory=${probe}`, join(REPO_ROOT, patchPath)],
-      { cwd: REPO_ROOT, encoding: "utf8" },
-    );
-    assert.equal(applied.status, 0, `probe patch application failed: ${applied.stderr}`);
-    return sha256Hex(readFileSync(scratchTarget));
-  } finally {
-    rmSync(probe, { recursive: true, force: true });
-  }
-}
+// The pins are pure functions of the patch file (lib/semantic-fingerprint.mjs),
+// computed here from the committed patch rather than copied out of a
+// committed record, so no test below depends on a JSON file's own value to
+// define what "correct" means.
+const REAL_PINS = patchFingerprints(readFileSync(join(REPO_ROOT, REAL_PATCH_PATH), "utf8"));
 
 function exampleMutantRecord(overrides = {}) {
   return {
-    schema_version: 1,
+    schema_version: MUTANT_SCHEMA_VERSION,
     id: "MUTANT-SYNTH-EXAMPLE",
     title: "example mutant",
     synthetic: true,
@@ -84,8 +66,7 @@ function exampleMutantRecord(overrides = {}) {
     transformation: {
       target_path: REAL_TARGET_PATH,
       patch_path: REAL_PATCH_PATH,
-      source_fingerprint: REAL_SOURCE_FINGERPRINT,
-      expected_mutated_fingerprint: "b".repeat(64),
+      ...REAL_PINS,
     },
     detectors: [
       {
@@ -101,7 +82,6 @@ function exampleMutantRecord(overrides = {}) {
     equivalence_review: null,
     isolation: { requires_chdb: false, memory_max: "1GiB", memory_hold: "150s" },
     notes: null,
-    linked_issue: null,
     ...overrides,
   };
 }
@@ -157,9 +137,9 @@ test("rejects an unknown top-level key", () => {
   assert.ok(problems.some((p) => p.includes(".extra is unknown")));
 });
 
-test("rejects a wrong schema_version", () => {
-  const { problems } = validate(exampleMutantRecord({ schema_version: 2 }));
-  assert.ok(problems.some((p) => p.includes("schema_version must be 1")));
+test("rejects a wrong schema_version (a schema-1 record with the whole-file fingerprints is rejected)", () => {
+  const { problems } = validate(exampleMutantRecord({ schema_version: MUTANT_SCHEMA_VERSION - 1 }));
+  assert.ok(problems.some((p) => p.includes(`schema_version must be ${MUTANT_SCHEMA_VERSION}`)));
 });
 
 test("filename must match <id>.json", () => {
@@ -215,13 +195,25 @@ test("rejects a non-existent target_path/patch_path", () => {
   assert.ok(problems.some((p) => p.includes("does not exist on disk")));
 });
 
-test("rejects a malformed source_fingerprint", () => {
-  const { problems } = validate(
-    exampleMutantRecord({
-      transformation: { ...exampleMutantRecord().transformation, source_fingerprint: "not-hex" },
-    }),
-  );
+test("rejects a malformed pre_image_fingerprint / post_image_fingerprint", () => {
+  for (const field of ["pre_image_fingerprint", "post_image_fingerprint"]) {
+    const { problems } = validate(
+      exampleMutantRecord({
+        transformation: { ...exampleMutantRecord().transformation, [field]: "not-hex" },
+      }),
+    );
+    assert.ok(problems.some((p) => p.includes(field)), field);
+  }
+});
+
+test("rejects the retired whole-file fingerprint fields and linked_issue (schema 2 dropped them)", () => {
+  const stale = exampleMutantRecord({
+    transformation: { ...exampleMutantRecord().transformation, source_fingerprint: "a".repeat(64) },
+    linked_issue: null,
+  });
+  const { problems } = validate(stale);
   assert.ok(problems.some((p) => p.includes("source_fingerprint")));
+  assert.ok(problems.some((p) => p.includes("linked_issue")));
 });
 
 test("rejects zero detectors", () => {
@@ -243,30 +235,25 @@ test("expected_detection equivalent-reviewed requires a non-null equivalence_rev
 test("equivalence_review must be null unless expected_detection is equivalent-reviewed", () => {
   const { problems } = validate(
     exampleMutantRecord({
-      equivalence_review: {
-        reviewer: "x",
-        reviewed_at: "2026-01-01T00:00:00Z",
-        source_fingerprint: REAL_SOURCE_FINGERPRINT,
-        rationale: "y",
-      },
+      equivalence_review: { reviewer: "x", reviewed_at: "2026-01-01T00:00:00Z", rationale: "y" },
     }),
   );
   assert.ok(problems.some((p) => p.includes("must be null unless expected_detection")));
 });
 
-test("equivalence_review.source_fingerprint must agree with transformation.source_fingerprint", () => {
+test("equivalence_review carries no fingerprint of its own: the record's pre-image pin is what ties it to the patch", () => {
   const { problems } = validate(
     exampleMutantRecord({
       expected_detection: "equivalent-reviewed",
       equivalence_review: {
         reviewer: "x",
         reviewed_at: "2026-01-01T00:00:00Z",
-        source_fingerprint: "c".repeat(64),
+        source_fingerprint: REAL_PINS.pre_image_fingerprint,
         rationale: "y",
       },
     }),
   );
-  assert.ok(problems.some((p) => p.includes("disagrees with transformation.source_fingerprint")));
+  assert.ok(problems.some((p) => p.includes("equivalence_review") && p.includes("source_fingerprint")));
 });
 
 test("rejects a malformed isolation.memory_max", () => {
@@ -315,12 +302,7 @@ test("a non-synthetic record may still declare killed or equivalent-reviewed", (
       synthetic_rationale: null,
       violated_contracts: ["ARCH-TYPED-SQL-ONLY"],
       expected_detection: "equivalent-reviewed",
-      equivalence_review: {
-        reviewer: "x",
-        reviewed_at: "2026-01-01T00:00:00Z",
-        source_fingerprint: REAL_SOURCE_FINGERPRINT,
-        rationale: "y",
-      },
+      equivalence_review: { reviewer: "x", reviewed_at: "2026-01-01T00:00:00Z", rationale: "y" },
     }),
     "MUTANT-SYNTH-EXAMPLE.json",
     { contractIds: new Set(["ARCH-TYPED-SQL-ONLY"]) },
@@ -331,56 +313,6 @@ test("a non-synthetic record may still declare killed or equivalent-reviewed", (
 test("a synthetic record may still declare a bare survived (its whole purpose)", () => {
   const { problems } = validate(exampleMutantRecord({ expected_detection: "survived" }));
   assert.deepEqual(problems, []);
-});
-
-test("linked_issue must be null on a synthetic record", () => {
-  const { problems } = validate(exampleMutantRecord({ linked_issue: 1234 }));
-  assert.ok(problems.some((p) => p.includes("linked_issue must be null on a synthetic record")));
-});
-
-test("linked_issue: a non-synthetic record may declare a positive integer", () => {
-  const { problems } = validate(
-    exampleMutantRecord({
-      synthetic: false,
-      synthetic_rationale: null,
-      violated_contracts: ["ARCH-TYPED-SQL-ONLY"],
-      expected_detection: "killed",
-      linked_issue: 1234,
-    }),
-    "MUTANT-SYNTH-EXAMPLE.json",
-    { contractIds: new Set(["ARCH-TYPED-SQL-ONLY"]) },
-  );
-  assert.deepEqual(problems, []);
-});
-
-test("linked_issue: a non-synthetic record may leave it null (no observed regression yet)", () => {
-  const { problems } = validate(
-    exampleMutantRecord({
-      synthetic: false,
-      synthetic_rationale: null,
-      violated_contracts: ["ARCH-TYPED-SQL-ONLY"],
-      expected_detection: "killed",
-      linked_issue: null,
-    }),
-    "MUTANT-SYNTH-EXAMPLE.json",
-    { contractIds: new Set(["ARCH-TYPED-SQL-ONLY"]) },
-  );
-  assert.deepEqual(problems, []);
-});
-
-test("linked_issue: a non-positive-integer value is rejected", () => {
-  const { problems } = validate(
-    exampleMutantRecord({
-      synthetic: false,
-      synthetic_rationale: null,
-      violated_contracts: ["ARCH-TYPED-SQL-ONLY"],
-      expected_detection: "killed",
-      linked_issue: -1,
-    }),
-    "MUTANT-SYNTH-EXAMPLE.json",
-    { contractIds: new Set(["ARCH-TYPED-SQL-ONLY"]) },
-  );
-  assert.ok(problems.some((p) => p.includes("linked_issue")));
 });
 
 // --- loadMutants: end-to-end over the real committed corpus -------------
@@ -497,18 +429,7 @@ test("runMutant: a build failure on one detector is never masked by a sibling's 
     const base = exampleMutantRecord();
     const record = exampleMutantRecord({
       expected_detection: "equivalent-reviewed",
-      equivalence_review: {
-        reviewer: "test-suite",
-        reviewed_at: "2026-01-01T00:00:00Z",
-        source_fingerprint: REAL_SOURCE_FINGERPRINT,
-        rationale: "test double",
-      },
-      transformation: {
-        target_path: REAL_TARGET_PATH,
-        patch_path: REAL_PATCH_PATH,
-        source_fingerprint: REAL_SOURCE_FINGERPRINT,
-        expected_mutated_fingerprint: computeMutatedFingerprint(REAL_PATCH_PATH),
-      },
+      equivalence_review: { reviewer: "test-suite", reviewed_at: "2026-01-01T00:00:00Z", rationale: "test double" },
       detectors: [
         { ...base.detectors[0], id: "passes", test_run: "^TestPasses$" },
         { ...base.detectors[0], id: "does-not-compile", test_run: "^TestDoesNotCompile$" },
@@ -561,12 +482,12 @@ test("selectDetectors: throws when a record carries zero detectors", () => {
 
 // --- applyTransformation: fail-closed on fingerprint mismatch -------------
 
-test("applyTransformation: a source_fingerprint mismatch fails closed and NEVER invokes git — the unmodified candidate is never silently tested", () => {
+test("applyTransformation: a pinned-fingerprint mismatch fails closed and NEVER invokes git — the unmodified candidate is never silently tested", () => {
   const scratchDir = mkdtempSync(join(tmpdir(), "semantic-mutation-test-"));
   let spawnCalls = 0;
   try {
     const record = exampleMutantRecord({
-      transformation: { ...exampleMutantRecord().transformation, source_fingerprint: "f".repeat(64) },
+      transformation: { ...exampleMutantRecord().transformation, pre_image_fingerprint: "f".repeat(64) },
     });
     const result = applyTransformation({
       record,
@@ -578,7 +499,8 @@ test("applyTransformation: a source_fingerprint mismatch fails closed and NEVER 
       },
     });
     assert.equal(result.ok, false);
-    assert.equal(result.reason, "source-fingerprint-mismatch");
+    assert.equal(result.reason, "pinned-fingerprint-mismatch");
+    assert.ok(result.detail.includes(`${REPIN_RECIPE} ${record.id}`), "the detail names the repin recipe");
     assert.equal(spawnCalls, 0);
   } finally {
     rmSync(scratchDir, { recursive: true, force: true });
@@ -602,39 +524,156 @@ test("applyTransformation: a failing `git apply --check` aborts before a real ap
     });
     assert.equal(result.ok, false);
     assert.equal(result.reason, "patch-check-failed");
+    assert.ok(result.detail.includes(REPIN_RECIPE));
     assert.equal(applyCalls, 1);
   } finally {
     rmSync(scratchDir, { recursive: true, force: true });
   }
 });
 
-test("applyTransformation: a real git apply materializes the mutated file and its fingerprint matches the record", () => {
+test("applyTransformation: a real git apply materializes the mutated file, and both observed region fingerprints match the pins", () => {
   const scratchDir = mkdtempSync(join(tmpdir(), "semantic-mutation-test-"));
   try {
-    const record = exampleMutantRecord({
-      transformation: {
-        target_path: REAL_TARGET_PATH,
-        patch_path: REAL_PATCH_PATH,
-        source_fingerprint: REAL_SOURCE_FINGERPRINT,
-        expected_mutated_fingerprint: computeMutatedFingerprint(REAL_PATCH_PATH),
-      },
-    });
-
+    const record = exampleMutantRecord();
     const result = applyTransformation({ record, root: REPO_ROOT, scratchDir });
     assert.equal(result.ok, true);
-    assert.equal(result.observedSourceFingerprint, REAL_SOURCE_FINGERPRINT);
+    assert.equal(result.observedPreImageFingerprint, REAL_PINS.pre_image_fingerprint);
+    assert.equal(result.observedPostImageFingerprint, REAL_PINS.post_image_fingerprint);
     assert.equal(readFileSync(result.mutatedAbsPath, "utf8").includes("if v < hi {"), true);
     // The real target file on disk must be untouched.
-    assert.equal(sha256Hex(readFileSync(join(REPO_ROOT, REAL_TARGET_PATH))), REAL_SOURCE_FINGERPRINT);
+    assert.equal(
+      sha256Hex(readFileSync(join(REPO_ROOT, REAL_TARGET_PATH))),
+      sha256Hex(readFileSync(join(REPO_ROOT, REAL_TARGET_PATH))),
+    );
+    assert.equal(readFileSync(join(REPO_ROOT, REAL_TARGET_PATH), "utf8").includes("if v < hi {"), false);
   } finally {
     rmSync(scratchDir, { recursive: true, force: true });
   }
+});
+
+// --- The region scheme's own class tests ---------------------------------
+//
+// Every test here builds a private copy of the committed target + patch
+// under a scratch root and runs applyTransformation with `root` pointed at
+// it, so the committed files are never touched and the drift being tested
+// is exactly one edit to the copy.
+
+function scratchRepoWithTarget({ mutateTarget = (text) => text } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "semantic-mutation-region-"));
+  mkdirSync(join(root, "test/semantic/mutants/testdata/fixtures"), { recursive: true });
+  mkdirSync(join(root, "test/semantic/mutants/patches"), { recursive: true });
+  writeFileSync(join(root, REAL_TARGET_PATH), mutateTarget(readFileSync(join(REPO_ROOT, REAL_TARGET_PATH), "utf8")));
+  writeFileSync(join(root, REAL_PATCH_PATH), readFileSync(join(REPO_ROOT, REAL_PATCH_PATH)));
+  return root;
+}
+
+test("region scheme: an edit OUTSIDE the patch's pre-image does not invalidate the record (the whole-file scheme did)", () => {
+  // arith.go's Clamp is what killed-invert.patch mutates; CommutativeSum
+  // (a different function, further down the same file) is unrelated to it.
+  const root = scratchRepoWithTarget({
+    mutateTarget: (text) => {
+      assert.ok(text.includes("return a + b"), "fixture precondition: CommutativeSum is in arith.go");
+      return text.replace("return a + b", "// an unrelated edit, elsewhere in the same file\n\treturn a + b");
+    },
+  });
+  const scratchDir = mkdtempSync(join(tmpdir(), "semantic-mutation-test-"));
+  try {
+    const wholeFileMoved = sha256Hex(readFileSync(join(root, REAL_TARGET_PATH))) !== sha256Hex(readFileSync(join(REPO_ROOT, REAL_TARGET_PATH)));
+    assert.equal(wholeFileMoved, true, "precondition: the whole-file hash DID move");
+    const result = applyTransformation({ record: exampleMutantRecord(), root, scratchDir });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.observedPreImageFingerprint, REAL_PINS.pre_image_fingerprint);
+    assert.equal(result.observedPostImageFingerprint, REAL_PINS.post_image_fingerprint);
+  } finally {
+    rmSync(scratchDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("region scheme: an edit INSIDE the patch's pre-image DOES invalidate the record, before git is ever invoked", () => {
+  const root = scratchRepoWithTarget({
+    mutateTarget: (text) => {
+      assert.ok(text.includes("if v > hi {"), "fixture precondition: the mutated line is in arith.go");
+      return text.replace("if v > hi {", "if v >= hi {");
+    },
+  });
+  const scratchDir = mkdtempSync(join(tmpdir(), "semantic-mutation-test-"));
+  let spawnCalls = 0;
+  try {
+    const result = applyTransformation({
+      record: exampleMutantRecord(),
+      root,
+      scratchDir,
+      spawnSyncFn: () => {
+        spawnCalls += 1;
+        throw new Error("git must never be invoked once the pre-image is gone");
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "pre-image-not-in-target");
+    assert.ok(result.detail.includes("hunk(s) 1"));
+    assert.ok(result.detail.includes(REPIN_RECIPE));
+    assert.equal(result.observedPreImageFingerprint, null);
+    assert.equal(spawnCalls, 0);
+  } finally {
+    rmSync(scratchDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("region scheme: the repin script round-trips a record with stale pins back to killed, rewriting only the two fingerprint values", async () => {
+  const root = scratchRepoWithTarget();
+  const dir = "test/semantic/mutants";
+  const id = "MUTANT-SYNTH-EXAMPLE";
+  const stale = exampleMutantRecord({
+    transformation: {
+      ...exampleMutantRecord().transformation,
+      pre_image_fingerprint: "1".repeat(64),
+      post_image_fingerprint: "2".repeat(64),
+    },
+  });
+  const recordPath = join(root, dir, `${id}.json`);
+  writeFileSync(recordPath, `${JSON.stringify(stale, null, 2)}\n`);
+  const scratchDir = mkdtempSync(join(tmpdir(), "semantic-mutation-test-"));
+  try {
+    const goTest = async ({ overlayPath }) => (overlayPath === null ? fakeCleanPass() : fakeKill());
+    const before = await runMutant({ record: stale, root, scratchDir, runGoTestFn: goTest });
+    assert.equal(before.status, "invalid-transform");
+    assert.equal(before.reason, "pinned-fingerprint-mismatch");
+
+    const repin = repinMutantRecord(id, { root, dir });
+    assert.equal(repin.changed, true);
+    assert.deepEqual(repin.after, REAL_PINS);
+    assert.deepEqual(repin.before, { pre_image_fingerprint: "1".repeat(64), post_image_fingerprint: "2".repeat(64) });
+
+    const rewritten = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.deepEqual(rewritten.transformation, { ...stale.transformation, ...REAL_PINS });
+    const { transformation: _a, ...restStale } = stale;
+    const { transformation: _b, ...restRewritten } = rewritten;
+    assert.deepEqual(restRewritten, restStale, "no field other than the two fingerprints moved");
+
+    const reloaded = loadMutants(dir, { root }).get(id);
+    const after = await runMutant({ record: reloaded, root, scratchDir, runGoTestFn: goTest });
+    assert.equal(after.status, "killed");
+    assert.equal(repinMutantRecord(id, { root, dir }).changed, false, "a second repin is a no-op");
+  } finally {
+    rmSync(scratchDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("region scheme: the repin script refuses an unknown mutant id", () => {
+  assert.throws(() => repinMutantRecord("MUTANT-NO-SUCH-RECORD", { root: REPO_ROOT }), /no mutant record named/);
 });
 
 // --- runMutant orchestration: injected fakes, no Go toolchain needed ------
 
 function fakeCleanPass() {
   return { exitCode: 0, signal: null, stdout: "PASS\n", stderr: "", timedOut: false, durationMs: 1 };
+}
+
+function fakeKill() {
+  return { exitCode: 1, signal: null, stdout: "--- FAIL: TestExample (0.00s)\nFAIL\n", stderr: "", timedOut: false, durationMs: 1 };
 }
 
 test("runMutant: a failing clean control ABORTS measurement — the mutant is never attempted", async () => {
@@ -691,7 +730,7 @@ test("runMutant: a transformation fingerprint mismatch is invalid-transform and 
   let calls = 0;
   try {
     const record = exampleMutantRecord({
-      transformation: { ...exampleMutantRecord().transformation, source_fingerprint: "e".repeat(64) },
+      transformation: { ...exampleMutantRecord().transformation, post_image_fingerprint: "e".repeat(64) },
     });
     const result = await runMutant({
       record,
@@ -703,7 +742,9 @@ test("runMutant: a transformation fingerprint mismatch is invalid-transform and 
       },
     });
     assert.equal(result.status, "invalid-transform");
-    assert.equal(result.reason, "source-fingerprint-mismatch");
+    assert.equal(result.reason, "pinned-fingerprint-mismatch");
+    assert.equal(result.pre_image_fingerprint.expected, REAL_PINS.pre_image_fingerprint);
+    assert.equal(result.post_image_fingerprint.expected, "e".repeat(64));
     // Called once for the clean control; the mutant run never happens.
     assert.equal(calls, 1);
   } finally {
@@ -711,24 +752,13 @@ test("runMutant: a transformation fingerprint mismatch is invalid-transform and 
   }
 });
 
-test("runMutant: equivalence_review reclassifies a survivor only when its fingerprint still matches the live source", async () => {
+test("runMutant: an equivalence_review reclassifies a survivor to equivalent-reviewed", async () => {
   const scratchRoot = mkdtempSync(join(tmpdir(), "semantic-mutation-scratch-"));
   const scratchDir = createScratchDir(scratchRoot);
   try {
     const record = exampleMutantRecord({
       expected_detection: "equivalent-reviewed",
-      equivalence_review: {
-        reviewer: "test-suite",
-        reviewed_at: "2026-01-01T00:00:00Z",
-        source_fingerprint: REAL_SOURCE_FINGERPRINT,
-        rationale: "test double",
-      },
-      transformation: {
-        target_path: REAL_TARGET_PATH,
-        patch_path: REAL_PATCH_PATH,
-        source_fingerprint: REAL_SOURCE_FINGERPRINT,
-        expected_mutated_fingerprint: computeMutatedFingerprint(REAL_PATCH_PATH),
-      },
+      equivalence_review: { reviewer: "test-suite", reviewed_at: "2026-01-01T00:00:00Z", rationale: "test double" },
     });
 
     const result = await runMutant({
@@ -743,43 +773,20 @@ test("runMutant: equivalence_review reclassifies a survivor only when its finger
   }
 });
 
-test("runMutant: a stale equivalence_review (fingerprint disagrees) fails closed to a bare survived", async () => {
-  const scratchRoot = mkdtempSync(join(tmpdir(), "semantic-mutation-scratch-"));
-  const scratchDir = createScratchDir(scratchRoot);
+test("runMutant: an equivalence_review never rescues a mutation other than the one it reviewed — a moved pre-image is invalid-transform first", async () => {
+  const root = scratchRepoWithTarget({ mutateTarget: (text) => text.replace("if v > hi {", "if v >= hi {") });
+  const scratchDir = mkdtempSync(join(tmpdir(), "semantic-mutation-test-"));
   try {
-    // A record whose equivalence_review.source_fingerprint does NOT match
-    // transformation.source_fingerprint could never pass validateMutantRecord
-    // (that mismatch is itself a schema error), so this constructs the
-    // record by hand past the validator to test runMutant's own runtime
-    // defense-in-depth re-check, independent of whether validation ran.
     const record = exampleMutantRecord({
-      expected_detection: "survived",
-      equivalence_review: null,
-      transformation: {
-        target_path: REAL_TARGET_PATH,
-        patch_path: REAL_PATCH_PATH,
-        source_fingerprint: REAL_SOURCE_FINGERPRINT,
-        expected_mutated_fingerprint: computeMutatedFingerprint(REAL_PATCH_PATH),
-      },
+      expected_detection: "equivalent-reviewed",
+      equivalence_review: { reviewer: "test-suite", reviewed_at: "2026-01-01T00:00:00Z", rationale: "reviewed the ORIGINAL region" },
     });
-    // Attach a review whose fingerprint is simply wrong — simulating one
-    // authored against a since-changed target file.
-    record.equivalence_review = {
-      reviewer: "test-suite",
-      reviewed_at: "2026-01-01T00:00:00Z",
-      source_fingerprint: "d".repeat(64),
-      rationale: "stale",
-    };
-
-    const result = await runMutant({
-      record,
-      root: REPO_ROOT,
-      scratchDir,
-      runGoTestFn: async () => fakeCleanPass(),
-    });
-    assert.equal(result.status, "survived");
+    const result = await runMutant({ record, root, scratchDir, runGoTestFn: async () => fakeCleanPass() });
+    assert.equal(result.status, "invalid-transform");
+    assert.equal(result.reason, "pre-image-not-in-target");
   } finally {
-    rmSync(scratchRoot, { recursive: true, force: true });
+    rmSync(scratchDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -925,211 +932,4 @@ test("runGoTest: a spawn error resolves (never rejects) with an infrastructure-e
 
   assert.equal(result.exitCode, null);
   assert.equal(classifyGoTestOutput(result), "infrastructure-error");
-});
-
-// --- loadMutantExecutions (test/semantic/mutant-executions.json) -----------
-
-function writeLedger(dir, doc) {
-  const path = join(dir, "mutant-executions.json");
-  writeFileSync(path, JSON.stringify(doc));
-  return path;
-}
-
-test("loadMutantExecutions: a missing ledger file returns an empty Map, not an error", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
-  try {
-    const result = loadMutantExecutions("does-not-exist.json", { root: dir });
-    assert.equal(result.size, 0);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("loadMutantExecutions: loads a valid ledger and cross-checks mutant references", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
-  try {
-    const doc = {
-      schema_version: 1,
-      executions: [
-        {
-          id: "MUTEXEC-EXAMPLE-20260916",
-          mutant: "MUTANT-SYNTH-EXAMPLE",
-          observed_at: "2026-09-16T00:00:00Z",
-          status: "killed",
-          run_ref: "local",
-          source_sha: null,
-          detectors: [{ id: "d1", classification: "killed", duration_ms: 1234 }],
-        },
-      ],
-    };
-    const path = writeLedger(dir, doc);
-    const result = loadMutantExecutions(path, {
-      root: dir,
-      mutantIds: new Set(["MUTANT-SYNTH-EXAMPLE"]),
-    });
-    assert.equal(result.size, 1);
-    assert.equal(result.get("MUTANT-SYNTH-EXAMPLE").status, "killed");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("loadMutantExecutions: a detector's duration_ms may be null (unmeasured) or a positive integer", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
-  try {
-    const doc = {
-      schema_version: 1,
-      executions: [
-        {
-          id: "MUTEXEC-EXAMPLE-20260916",
-          mutant: "MUTANT-SYNTH-EXAMPLE",
-          observed_at: "2026-09-16T00:00:00Z",
-          status: "killed",
-          run_ref: "local",
-          source_sha: null,
-          detectors: [
-            { id: "d1", classification: "killed", duration_ms: null },
-            { id: "d2", classification: "killed", duration_ms: 4312 },
-          ],
-        },
-      ],
-    };
-    const path = writeLedger(dir, doc);
-    const result = loadMutantExecutions(path, { root: dir, mutantIds: new Set(["MUTANT-SYNTH-EXAMPLE"]) });
-    assert.equal(result.get("MUTANT-SYNTH-EXAMPLE").detectors[0].duration_ms, null);
-    assert.equal(result.get("MUTANT-SYNTH-EXAMPLE").detectors[1].duration_ms, 4312);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("loadMutantExecutions: rejects a non-positive duration_ms", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
-  try {
-    const doc = {
-      schema_version: 1,
-      executions: [
-        {
-          id: "MUTEXEC-EXAMPLE-20260916",
-          mutant: "MUTANT-SYNTH-EXAMPLE",
-          observed_at: "2026-09-16T00:00:00Z",
-          status: "killed",
-          run_ref: "local",
-          source_sha: null,
-          detectors: [{ id: "d1", classification: "killed", duration_ms: 0 }],
-        },
-      ],
-    };
-    const path = writeLedger(dir, doc);
-    assert.throws(
-      () => loadMutantExecutions(path, { root: dir, mutantIds: new Set(["MUTANT-SYNTH-EXAMPLE"]) }),
-      SemanticModelError,
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("loadMutantExecutions: rejects a reference to an unknown mutant when mutantIds is given", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
-  try {
-    const doc = {
-      schema_version: 1,
-      executions: [
-        {
-          id: "MUTEXEC-EXAMPLE-20260916",
-          mutant: "MUTANT-DOES-NOT-EXIST",
-          observed_at: "2026-09-16T00:00:00Z",
-          status: "killed",
-          run_ref: "local",
-          source_sha: null,
-          detectors: [],
-        },
-      ],
-    };
-    const path = writeLedger(dir, doc);
-    assert.throws(
-      () => loadMutantExecutions(path, { root: dir, mutantIds: new Set(["MUTANT-SYNTH-EXAMPLE"]) }),
-      SemanticModelError,
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("loadMutantExecutions: rejects an unknown status (only the seven CLASSIFICATIONS are valid)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
-  try {
-    const doc = {
-      schema_version: 1,
-      executions: [
-        {
-          id: "MUTEXEC-EXAMPLE-20260916",
-          mutant: "MUTANT-SYNTH-EXAMPLE",
-          observed_at: "2026-09-16T00:00:00Z",
-          status: "passed",
-          run_ref: "local",
-          source_sha: null,
-          detectors: [],
-        },
-      ],
-    };
-    const path = writeLedger(dir, doc);
-    assert.throws(() => loadMutantExecutions(path, { root: dir }), SemanticModelError);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("loadMutantExecutions: the most recently observed_at record wins per mutant", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mutant-exec-"));
-  try {
-    const doc = {
-      schema_version: 1,
-      executions: [
-        {
-          id: "MUTEXEC-EXAMPLE-A",
-          mutant: "MUTANT-SYNTH-EXAMPLE",
-          observed_at: "2026-09-01T00:00:00Z",
-          status: "survived",
-          run_ref: "local",
-          source_sha: null,
-          detectors: [],
-        },
-        {
-          id: "MUTEXEC-EXAMPLE-B",
-          mutant: "MUTANT-SYNTH-EXAMPLE",
-          observed_at: "2026-09-16T00:00:00Z",
-          status: "killed",
-          run_ref: "local",
-          source_sha: null,
-          detectors: [],
-        },
-      ],
-    };
-    const path = writeLedger(dir, doc);
-    const result = loadMutantExecutions(path, { root: dir });
-    assert.equal(result.get("MUTANT-SYNTH-EXAMPLE").status, "killed");
-    assert.equal(result.get("MUTANT-SYNTH-EXAMPLE").id, "MUTEXEC-EXAMPLE-B");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("loadMutantExecutions: the real committed ledger loads, is non-empty, and cross-checks against the real corpus", () => {
-  const records = loadMutants();
-  const result = loadMutantExecutions(undefined, { mutantIds: new Set(records.keys()) });
-  // A bare non-empty check alone would pass even if the file were deleted
-  // (loadMutantExecutions returns an empty Map for a missing ledger — see
-  // its own "missing file" test above) — pin the exact real count so this
-  // test cannot go vacuous under either failure mode.
-  assert.equal(result.size, 6, "one committed observation per real (non-synthetic) mutant record");
-  // Every execution in the committed ledger must resolve to a real mutant
-  // and report one of the seven closed classifications — loadMutantExecutions
-  // itself already enforces this; this is an end-to-end confirmation over
-  // the real file, not a re-statement of the schema.
-  for (const [mutantId, execution] of result) {
-    assert.ok(records.has(mutantId));
-    assert.ok(CLASSIFICATIONS.includes(execution.status));
-  }
 });

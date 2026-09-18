@@ -23,7 +23,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { validateSemanticModel } from "./semantic-model.mjs";
+import { SEMANTIC_MODEL_SCHEMA_VERSION, validateSemanticModel } from "./semantic-model.mjs";
 import { loadRegistry } from "../ci-lane-contract.mjs";
 import { validatePolicySnapshot } from "./semantic-lane-adapter.mjs";
 import {
@@ -76,16 +76,16 @@ function fixtureModel() {
   ];
   const documents = {
     heads: {
-      schema_version: 2,
+      schema_version: SEMANTIC_MODEL_SCHEMA_VERSION,
       heads: [head("HEAD-PROMQL", "PromQL"), head("HEAD-LOGQL", "LogQL"), head("HEAD-TRACEQL", "TraceQL")],
     },
-    capabilities: { schema_version: 2, capabilities: [] },
+    capabilities: { schema_version: SEMANTIC_MODEL_SCHEMA_VERSION, capabilities: [] },
     contracts: {
-      schema_version: 2,
+      schema_version: SEMANTIC_MODEL_SCHEMA_VERSION,
       contracts: contracts.map(({ _testRefPrefix, ...c }) => c),
     },
     verifiers: {
-      schema_version: 2,
+      schema_version: SEMANTIC_MODEL_SCHEMA_VERSION,
       verifiers: [
         {
           id: "VERIFIER-EXAMPLE",
@@ -103,7 +103,7 @@ function fixtureModel() {
       ],
     },
     bindings: {
-      schema_version: 2,
+      schema_version: SEMANTIC_MODEL_SCHEMA_VERSION,
       bindings: contracts.map((c) => ({
         id: `BINDING-${c.id}`,
         contract: c.id,
@@ -114,7 +114,7 @@ function fixtureModel() {
         status: "active",
       })),
     },
-    executions: { schema_version: 2, executions: [] },
+    executions: { schema_version: SEMANTIC_MODEL_SCHEMA_VERSION, executions: [] },
   };
   return validateSemanticModel(documents);
 }

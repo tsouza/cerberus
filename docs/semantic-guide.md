@@ -165,7 +165,7 @@ internal/optimizer's rewrites never change a query's observable outcome: every r
 
 ## Adversarial evidence
 
-6 real (non-synthetic) mutant record(s) in the semantic mutation pilot (`test/semantic/mutants/`; the full report's "Semantic mutation pilot" section carries the kill/escape rates and every detector). Per targeted contract, each mutant's resolved disposition and bucket; a contract absent from this table has no adversarial evidence.
+6 real (non-synthetic) mutant record(s) in the semantic mutation pilot (`test/semantic/mutants/`; the full report's "Semantic mutation pilot" section carries the kill/escape rates and every detector). Per targeted contract, each mutant's disposition and bucket; a contract absent from this table has no adversarial evidence.
 
 | Contract                                                                                                 | Mutant                                            | Disposition | Bucket      |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ----------- | ----------- |

@@ -152,20 +152,6 @@ export function bindingObservedStatus(model, binding) {
     run_ref: latest?.run_ref ?? null,
     execution_id: latest?.id ?? null,
     execution_count: executions.length,
-    // Revision-binding (cerberus issue #3459). `selection`/`source_sha` are
-    // the latest execution's own fields, surfaced as-is. `revision_bound`
-    // answers the one question a reader actually has: is this verdict tied
-    // to a NAMED commit? The model's validator (lib/semantic-model.mjs,
-    // validateExecutions) rejects an "executed" record with a null
-    // source_sha and a non-"executed" record is non-evidence by
-    // construction (result must be "error" — see
-    // classifyExecutionObservation above), so on a model that loads at all
-    // every observed pass/fail is revision-bound and every unknown is not.
-    // The field is kept explicit rather than inferred from `status` so the
-    // JSON carries the SHA itself, not just the boolean.
-    selection: latest?.selection ?? null,
-    source_sha: latest?.source_sha ?? null,
-    revision_bound: latest?.selection === "executed" && latest?.source_sha != null,
   };
 }
 
@@ -374,7 +360,7 @@ function statusCounts(map, statuses) {
  * source both renderMarkdown and renderJSON draw from, so the two output
  * formats can never disagree with each other about a fact.
  */
-export function buildReport(model, { registry, snapshot, mutants = new Map(), mutantExecutions = new Map() } = {}) {
+export function buildReport(model, { registry, snapshot, mutants = new Map() } = {}) {
   const counts = {
     contracts: statusCounts(model.contracts, ["draft", "active", "superseded", "explicit_deficit"]),
     verifiers: statusCounts(model.verifiers, ["draft", "active", "superseded"]),
@@ -460,7 +446,7 @@ export function buildReport(model, { registry, snapshot, mutants = new Map(), mu
     heads: headContractIndex(model),
     cross_head: crossHeadContracts(model),
     contracts,
-    mutation_cohort: buildMutationCohortReport(mutants, { contracts: model.contracts, executions: mutantExecutions }),
+    mutation_cohort: buildMutationCohortReport(mutants, { contracts: model.contracts }),
   };
 }
 
@@ -491,15 +477,12 @@ const DISCLAIMER_BOUND_VS_OBSERVED =
   "recorded revision. A binding can be bound with no observation on record " +
   "at all, which reports as `unknown`, never as an assumed pass.";
 
-const DISCLAIMER_REVISION_BOUND =
+const DISCLAIMER_OBSERVATION_RUN_REF =
   "An observed verdict is only as good as the run it points at. Every " +
   "execution record must name a real workflow run (`run_ref`; an all-zero " +
-  "placeholder run is rejected at load time) and, when its selection is " +
-  "\"executed\", the commit it ran against (`source_sha`) — the model's own " +
-  "validator refuses a record that claims a pass without one. `revision_bound` " +
-  "(each binding row below) shows that commit for the latest observation; a " +
-  "binding with no observation on record shows an unknown ACHIEVED assurance " +
-  "rather than a silently assumed one.";
+  "placeholder run is rejected at load time). A binding with no observation " +
+  "on record shows an unknown ACHIEVED assurance rather than a silently " +
+  "assumed one.";
 
 // Contract statements, blind spots and verifier detects/cannot_detect are
 // free-text data from test/semantic/*.json, never markdown source. Rendered
@@ -534,10 +517,7 @@ function renderBindingRow(binding) {
         .map((o) => `${o.lane_id}${o.merge_required ? " (merge-required)" : ""}${o.release_required ? " (release-required)" : ""}`)
         .join("; ")
     : "no owning CI lane resolved";
-  const revisionBound = binding.observed.revision_bound
-    ? `yes (\`${binding.observed.source_sha}\`)`
-    : "no";
-  return `| ${binding.id} | ${verifierId} | ${binding.evidence_class} | ${binding.independence_group} | \`${mdEscapeTableCell(binding.test_ref)}\` | ${binding.observed.status} | ${revisionBound} | ${obligations} |`;
+  return `| ${binding.id} | ${verifierId} | ${binding.evidence_class} | ${binding.independence_group} | \`${mdEscapeTableCell(binding.test_ref)}\` | ${binding.observed.status} | ${obligations} |`;
 }
 
 function renderWorkedExample(report) {
@@ -613,7 +593,7 @@ function renderContractCard(contract) {
   }
   lines.push("");
 
-  lines.push(`**Observed evidence** (from executions.json, revision-scoped): overall **${contract.observed_evidence.overall}**.`);
+  lines.push(`**Observed evidence** (from executions.json): overall **${contract.observed_evidence.overall}**.`);
   lines.push("");
   for (const [cls, v] of Object.entries(contract.observed_evidence.byEvidenceClass)) {
     lines.push(`- class \`${cls}\`: **${v.status}** (${v.binding_ids.join(", ") || "no active binding"})`);
@@ -624,8 +604,8 @@ function renderContractCard(contract) {
   lines.push("");
 
   if (contract.bindings.length > 0) {
-    lines.push("| binding | verifier | evidence class | independence group | test_ref | observed | revision-bound | CI lane obligations |");
-    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+    lines.push("| binding | verifier | evidence class | independence group | test_ref | observed | CI lane obligations |");
+    lines.push("| --- | --- | --- | --- | --- | --- | --- |");
     for (const b of contract.bindings) lines.push(renderBindingRow(b));
     lines.push("");
   }
@@ -698,7 +678,7 @@ export function renderMarkdown(report) {
   parts.push("## Scope and denominator\n");
   parts.push(`${DISCLAIMER_SCOPE}\n`);
   parts.push(`${DISCLAIMER_BOUND_VS_OBSERVED}\n`);
-  parts.push(`${DISCLAIMER_REVISION_BOUND}\n`);
+  parts.push(`${DISCLAIMER_OBSERVATION_RUN_REF}\n`);
   parts.push(`${DISCLAIMER_GOLDEN_VS_REFERENCE}\n`);
 
   parts.push("### Contracts\n");

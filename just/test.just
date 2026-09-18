@@ -79,9 +79,10 @@ semantic-check:
 # protocol issue #3447's spike approved: apply the mutant's unified diff to a
 # scratch copy of its target file, point `go test -overlay` at the swap, and
 # never touch this checkout. A failing clean control aborts before the mutant
-# is ever attempted; a declared source_fingerprint that disagrees with the
-# live target file fails closed (invalid-transform) before `git apply` ever
-# runs. Classifies the result as exactly one of killed / survived /
+# is ever attempted; a record whose pinned pre_image_fingerprint /
+# post_image_fingerprint disagree with its patch, or whose patch's pre-image
+# no longer occurs in the live target, fails closed (invalid-transform)
+# before the patch is ever applied. Classifies the result as exactly one of killed / survived /
 # equivalent-reviewed / invalid-transform / build-failed / timeout /
 # infrastructure-error and exits 0 only when that matches the record's own
 # expected_detection. This is a PARALLEL mechanism to gremlins' own generic
@@ -100,6 +101,24 @@ semantic-check:
 # Run one semantic mutant from test/semantic/mutants/ and classify the result.
 semantic-mutate MUTANT_ID:
     node .github/scripts/semantic-mutation.mjs {{MUTANT_ID}}
+
+# Regenerates one mutant record's transformation.pre_image_fingerprint /
+# post_image_fingerprint from its own patch file (.github/scripts/lib/
+# semantic-fingerprint.mjs's region scheme: the hunks' context + removed
+# lines, and context + added lines — never the whole target file, so an
+# unrelated edit elsewhere in range_window.go or a lowerer is not drift),
+# then re-runs `semantic-mutate` on it so the re-pinned record is verified
+# against its declared expected_detection in the same step. The fingerprints
+# are generated values (CLAUDE.md invariant 9): this recipe is the only way
+# they change. A patch whose pre-image no longer occurs in the target must be
+# re-authored first — re-pinning cannot repair a hunk that no longer applies.
+# MUTANT-SYNTH-INVALID-FINGERPRINT is deliberately mis-pinned and must never
+# be re-pinned (its own notes say why).
+
+# Re-pin one mutant record's patch-region fingerprints, then re-run it.
+semantic-mutant-repin MUTANT_ID:
+    node .github/scripts/semantic-repin.mjs mutant {{MUTANT_ID}}
+    @just semantic-mutate {{MUTANT_ID}}
 
 # Cross-checks each CI lane's self-declared requiredness (context.protected,
 # release_posture) against a captured, offline-readable snapshot of the live
@@ -201,7 +220,7 @@ semantic-impact base head:
 
 # Replays a test/semantic/counterexamples/*.json record's contract entries
 # against their real target test/harness (issue #3446). Structural routing
-# and the source-fingerprint check live in
+# and the region-fingerprint check live in
 # .github/scripts/lib/semantic-replay.mjs; see that file's header and
 # .github/scripts/README.md's "Semantic replay" section for the routing
 # kinds, the fingerprint mechanism, and the exit-code convention. A routing/
@@ -211,6 +230,19 @@ semantic-impact base head:
 # Replay a counterexample record's contract entries: `just semantic-replay CTREX-1741`.
 semantic-replay id:
     node .github/scripts/semantic-replay.mjs {{id}}
+
+# Regenerates test/semantic/replay-fingerprints.json: one region fingerprint
+# per counterexample contract entry, over exactly what its replay mechanism
+# runs (a test function's own source, a fixture file, a compat corpus file
+# — .github/scripts/lib/semantic-fingerprint.mjs, the same scheme
+# `semantic-mutant-repin` uses for mutant patches). A generated artefact
+# (CLAUDE.md invariant 9): this recipe is the only way it changes. Run it
+# after adding a counterexample record or intentionally changing a replay
+# target; `semantic-replay` reports STALE until it is run.
+
+# Re-pin every counterexample replay fingerprint.
+semantic-replay-repin:
+    node .github/scripts/semantic-repin.mjs replay
 
 # SIGNAL-RESOURCE-001's (issue #3457) end-to-end evidence: seeds ONE
 # deterministic OTel resource independently into each head's own

@@ -2,15 +2,15 @@
 // mutation cohort report (lib/semantic-mutation-report.mjs, cerberus issue
 // #3452). Small in-memory fixtures drive the acceptance-criteria-shaped
 // cases directly (empty denominator, an incomplete run, correlated
-// detectors collapsing to one record, a stale equivalence review moving the
-// denominator) — never a real `go test -overlay` invocation, mirroring
+// detectors collapsing to one record) — never a real `go test -overlay`
+// invocation, mirroring
 // semantic-mutation.test.mjs's own discipline. A handful of end-to-end
 // checks run the real committed test/semantic/mutants/ corpus.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { CLASSIFICATIONS, loadMutants } from "./lib/semantic-mutation.mjs";
+import { CLASSIFICATIONS, MUTANT_SCHEMA_VERSION, loadMutants } from "./lib/semantic-mutation.mjs";
 import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
 import {
   CANONICAL_HEADS,
@@ -21,14 +21,13 @@ import {
   dispositionRates,
   mutantHeads,
   renderMutationCohortMarkdown,
-  resolveDisposition,
 } from "./lib/semantic-mutation-report.mjs";
 
 // --- Fixture builders --------------------------------------------------
 
 function mutantRecord(overrides = {}) {
   return {
-    schema_version: 1,
+    schema_version: MUTANT_SCHEMA_VERSION,
     id: "MUTANT-FIXTURE-EXAMPLE",
     title: "fixture mutant",
     synthetic: false,
@@ -37,8 +36,8 @@ function mutantRecord(overrides = {}) {
     transformation: {
       target_path: "internal/fixture/example.go",
       patch_path: "test/semantic/mutants/patches/fixture.patch",
-      source_fingerprint: "a".repeat(64),
-      expected_mutated_fingerprint: "b".repeat(64),
+      pre_image_fingerprint: "a".repeat(64),
+      post_image_fingerprint: "b".repeat(64),
     },
     detectors: [
       {
@@ -54,7 +53,6 @@ function mutantRecord(overrides = {}) {
     equivalence_review: null,
     isolation: { requires_chdb: false, memory_max: "1GiB", memory_hold: "1s" },
     notes: null,
-    linked_issue: null,
     ...overrides,
   };
 }
@@ -156,73 +154,19 @@ test("buildMutationCohortReport: two multi-detector records (correlated within e
   assert.equal(report.semantic_cohort.rates.survived, 1);
 });
 
-// --- Stale equivalence review (observed overrides declared) ---------------
-
-test("resolveDisposition: an actual observation overrides the record's own declared expected_detection", () => {
-  const record = mutantRecord({ id: "MUTANT-STALE-REVIEW", expected_detection: "equivalent-reviewed" });
-  const executions = new Map([
-    [
-      "MUTANT-STALE-REVIEW",
-      {
-        status: "survived",
-        observed_at: "2026-09-16T00:00:00Z",
-        source_sha: "f".repeat(40),
-        run_ref: "https://example.invalid/run/1",
-        detectors: [{ id: "example-detector", classification: "survived" }],
-      },
-    ],
-  ]);
-  const resolved = resolveDisposition(record, executions);
-  assert.equal(resolved.status, "survived", "a fresh observation must win over a stale declared adjudication");
-  assert.equal(resolved.source, "observed");
-});
-
-test("resolveDisposition: with no ledger entry, the declared expected_detection is used and labelled as such", () => {
-  const record = mutantRecord({ expected_detection: "equivalent-reviewed" });
-  const resolved = resolveDisposition(record, new Map());
-  assert.equal(resolved.status, "equivalent-reviewed");
-  assert.equal(resolved.source, "declared");
-  assert.equal(resolved.observed_at, null);
-});
-
-test("buildMutationCohortReport: a stale equivalence review's fresher 'survived' observation moves the denominator, not just the escape count", () => {
-  const records = recordsMap([mutantRecord({ id: "MUTANT-STALE-REVIEW", expected_detection: "equivalent-reviewed" })]);
-
-  const beforeReport = buildMutationCohortReport(records, { contracts: new Map() });
-  assert.equal(beforeReport.semantic_cohort.rates.denominator, 0, "an equivalent-reviewed record is excluded");
-  assert.equal(beforeReport.semantic_cohort.rates.by_bucket.equivalent, 1);
-
-  const executions = new Map([
-    [
-      "MUTANT-STALE-REVIEW",
-      {
-        status: "survived",
-        observed_at: "2026-09-16T00:00:00Z",
-        source_sha: "f".repeat(40),
-        run_ref: "https://example.invalid/run/1",
-        detectors: [],
-      },
-    ],
-  ]);
-  const afterReport = buildMutationCohortReport(records, { contracts: new Map(), executions });
-  assert.equal(afterReport.semantic_cohort.rates.denominator, 1, "the fresh observation must enter the denominator");
-  assert.equal(afterReport.semantic_cohort.rates.by_bucket.equivalent, 0, "no longer excluded as equivalent");
-  assert.equal(afterReport.semantic_cohort.rates.escape_rate, 1, "a real escape must be visible, not silently absorbed");
-});
-
 // --- Cohort revision / fingerprint ------------------------------------------
 //
-// cohortFingerprint takes the already-RESOLVED report records (each
-// {id, synthetic, violated_contracts, disposition: {status}}), never raw
-// mutant records — these fixtures build that shape directly rather than
-// going through buildMutationCohortReport, so the fingerprint's own
-// sensitivity is pinned independent of everything else buildReport does.
+// cohortFingerprint takes the already-built report records (each
+// {id, synthetic, violated_contracts, status}), never raw mutant records —
+// these fixtures build that shape directly rather than going through
+// buildMutationCohortReport, so the fingerprint's own sensitivity is pinned
+// independent of everything else buildReport does.
 
 function reportRecord({ id = "MUTANT-A", synthetic = false, violatedContracts = ["FIXTURE-CONTRACT"], status = "killed" } = {}) {
-  return { id, synthetic, violated_contracts: violatedContracts, disposition: { status } };
+  return { id, synthetic, violated_contracts: violatedContracts, status };
 }
 
-test("cohortFingerprint: changing one record's RESOLVED status changes the fingerprint even when the total count is unchanged", () => {
+test("cohortFingerprint: changing one record's status changes the fingerprint even when the total count is unchanged", () => {
   const before = [reportRecord({ status: "killed" })];
   const after = [reportRecord({ status: "survived" })];
   assert.notEqual(cohortFingerprint(before), cohortFingerprint(after));
@@ -234,17 +178,16 @@ test("cohortFingerprint: identical cohorts fingerprint identically (deterministi
   assert.equal(cohortFingerprint(a), cohortFingerprint(b));
 });
 
-test("cohortFingerprint: a ledger observation overriding a record's DECLARATION moves the fingerprint even though the declared JSON is untouched", () => {
-  // The exact case this fingerprint exists to catch (per its own header):
-  // fingerprinting only the declared expected_detection would leave
-  // cohort_revision unchanged here, while the published rate moves.
-  const records = recordsMap([mutantRecord({ id: "MUTANT-STALE", expected_detection: "equivalent-reviewed" })]);
-  const before = buildMutationCohortReport(records, { contracts: new Map() });
-  const executions = new Map([
-    ["MUTANT-STALE", { status: "survived", observed_at: "2026-09-16T00:00:00Z", source_sha: null, run_ref: "r", detectors: [] }],
-  ]);
-  const after = buildMutationCohortReport(records, { contracts: new Map(), executions });
+test("cohortFingerprint: buildMutationCohortReport's cohort_revision moves when one record's declared expected_detection changes", () => {
+  const before = buildMutationCohortReport(recordsMap([mutantRecord({ id: "MUTANT-A", expected_detection: "killed" })]), { contracts: new Map() });
+  const after = buildMutationCohortReport(
+    recordsMap([mutantRecord({ id: "MUTANT-A", expected_detection: "equivalent-reviewed", equivalence_review: { reviewer: "x", reviewed_at: "2026-01-01T00:00:00Z", rationale: "y" } })]),
+    { contracts: new Map() },
+  );
   assert.notEqual(before.cohort_revision, after.cohort_revision);
+  assert.equal(before.records[0].status, "killed");
+  assert.equal(after.records[0].status, "equivalent-reviewed");
+  assert.equal(after.records[0].bucket, "equivalent");
 });
 
 // --- Head / scope attribution -----------------------------------------------
@@ -299,90 +242,10 @@ test("dispositionRates: small_sample flags a denominator below the documented fl
   assert.equal(atFloor.small_sample, false);
 });
 
-// --- Unresolved survivors ----------------------------------------------------
-
-// A non-synthetic record can never DECLARE expected_detection "survived" —
-// #3520/#3532 (lib/semantic-mutation.mjs's NON_SYNTHETIC_CLASSIFICATIONS)
-// forbid it at the schema level, since a bare non-killed outcome on real
-// evidence would be an expected-failure/tolerance-list entry (invariant 7).
-// So the only way a non-synthetic record's RESOLVED disposition is ever
-// "survived" is a ledger observation overriding its (valid) declared
-// "killed"/"equivalent-reviewed" — every fixture below reflects exactly
-// that, never a declared "survived" a real record could never carry.
-
-test("buildMutationCohortReport: an observed survivor WITH a linked_issue is not flagged as unresolved", () => {
-  const records = recordsMap([
-    mutantRecord({ id: "MUTANT-REAL-SURVIVOR", expected_detection: "killed", linked_issue: 9999 }),
-  ]);
-  const executions = new Map([
-    [
-      "MUTANT-REAL-SURVIVOR",
-      { status: "survived", observed_at: "2026-09-16T00:00:00Z", source_sha: null, run_ref: "r", detectors: [] },
-    ],
-  ]);
-  const report = buildMutationCohortReport(records, { contracts: new Map(), executions });
-  assert.equal(report.records[0].disposition.status, "survived");
-  assert.deepEqual(report.unresolved_survivors, []);
-});
-
-test("buildMutationCohortReport: an observed survivor with NO linked_issue is flagged as unresolved", () => {
-  const records = recordsMap([
-    mutantRecord({ id: "MUTANT-REAL-SURVIVOR", expected_detection: "killed", linked_issue: null }),
-  ]);
-  const executions = new Map([
-    [
-      "MUTANT-REAL-SURVIVOR",
-      { status: "survived", observed_at: "2026-09-16T00:00:00Z", source_sha: null, run_ref: "r", detectors: [] },
-    ],
-  ]);
-  const report = buildMutationCohortReport(records, { contracts: new Map(), executions });
-  assert.deepEqual(report.unresolved_survivors, ["MUTANT-REAL-SURVIVOR"]);
-});
-
-test("buildMutationCohortReport: an observed (not declared) survivor with no linked_issue is flagged even though the record declares 'killed'", () => {
-  const records = recordsMap([mutantRecord({ id: "MUTANT-DRIFTED", expected_detection: "killed", linked_issue: null })]);
-  const executions = new Map([
-    [
-      "MUTANT-DRIFTED",
-      { status: "survived", observed_at: "2026-09-16T00:00:00Z", source_sha: null, run_ref: "r", detectors: [] },
-    ],
-  ]);
-  const report = buildMutationCohortReport(records, { contracts: new Map(), executions });
-  assert.deepEqual(report.unresolved_survivors, ["MUTANT-DRIFTED"]);
-});
-
-// --- Disposition disagreements (declared vs. observed) ----------------------
-
-test("buildMutationCohortReport: an observation that disagrees with the declaration is surfaced in disposition_disagreements", () => {
-  const records = recordsMap([mutantRecord({ id: "MUTANT-DRIFTED", expected_detection: "killed" })]);
-  const executions = new Map([
-    ["MUTANT-DRIFTED", { status: "survived", observed_at: "2026-09-16T00:00:00Z", source_sha: null, run_ref: "r", detectors: [] }],
-  ]);
-  const report = buildMutationCohortReport(records, { contracts: new Map(), executions });
-  assert.deepEqual(report.disposition_disagreements, [
-    { id: "MUTANT-DRIFTED", declared_status: "killed", observed_status: "survived" },
-  ]);
-});
-
-test("buildMutationCohortReport: an observation that CONFIRMS the declaration never appears in disposition_disagreements", () => {
-  const records = recordsMap([mutantRecord({ id: "MUTANT-CONFIRMED", expected_detection: "killed" })]);
-  const executions = new Map([
-    ["MUTANT-CONFIRMED", { status: "killed", observed_at: "2026-09-16T00:00:00Z", source_sha: null, run_ref: "r", detectors: [] }],
-  ]);
-  const report = buildMutationCohortReport(records, { contracts: new Map(), executions });
-  assert.deepEqual(report.disposition_disagreements, []);
-});
-
-test("buildMutationCohortReport: with no ledger entry at all, a record is never reported as a disagreement", () => {
-  const records = recordsMap([mutantRecord({ id: "MUTANT-NO-LEDGER", expected_detection: "killed" })]);
-  const report = buildMutationCohortReport(records, { contracts: new Map() });
-  assert.deepEqual(report.disposition_disagreements, []);
-});
-
 // --- Determinism / rendering --------------------------------------------------
 
 test("buildMutationCohortReport + renderMutationCohortMarkdown: byte-identical across two independent builds", () => {
-  const records = recordsMap([mutantRecord({ id: "MUTANT-A" }), mutantRecord({ id: "MUTANT-B", expected_detection: "survived", linked_issue: 1 })]);
+  const records = recordsMap([mutantRecord({ id: "MUTANT-A" }), mutantRecord({ id: "MUTANT-B", expected_detection: "survived" })]);
   const reportA = buildMutationCohortReport(records, { contracts: new Map() });
   const reportB = buildMutationCohortReport(records, { contracts: new Map() });
   assert.deepEqual(reportA, reportB);
