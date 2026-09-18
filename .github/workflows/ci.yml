@@ -828,6 +828,10 @@ jobs:
       # on the existing PR policy lane without exposing the updater to PR events.
       - name: Validate the manual golden-update controller
         run: node --test .github/scripts/manual-golden-update.test.mjs
+      # The changed-file set every coverage check reads: merge-base, never a
+      # tip, never a silent HEAD.
+      - name: Validate the golden-shard changed-file base
+        run: node --test .github/scripts/lib/golden-shards.test.mjs
       - name: Reject t.Skip in test files
         run: node .github/scripts/forbid-skip.mjs
         env:

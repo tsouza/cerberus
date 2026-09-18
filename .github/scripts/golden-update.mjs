@@ -48,9 +48,11 @@
 //   GOLDEN_SHARDS                (required) space/comma separated shard names,
 //                                or `all`. Empty is an error that prints the
 //                                vocabulary — there is deliberately no default.
-//   GOLDEN_UPDATE_BASE_REF       (optional) git ref the changed-file set is
-//                                computed against. Defaults to the merge-base
-//                                with origin/main, falling back to HEAD.
+//   GOLDEN_UPDATE_BASE_REF       (optional) git ref whose MERGE-BASE with HEAD
+//                                the changed-file set is computed against
+//                                (never the ref's tip). Defaults to
+//                                origin/main; an unresolvable merge-base is
+//                                an error, never a silent fall-back to HEAD.
 //   GOLDEN_UPDATE_CHANGED_FILES  (optional) newline/space separated file list
 //                                that REPLACES the git-derived one. Lets the
 //                                regression pin drive the coverage check over a

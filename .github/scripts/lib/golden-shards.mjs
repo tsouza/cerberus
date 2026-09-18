@@ -66,9 +66,17 @@ function gitLines(repoRoot, args) {
 }
 
 /**
- * Every file `repoRoot`'s current branch has changed relative to `baseRef`
- * (or, when omitted, its merge-base with `defaultBranchRef`, falling back to
- * HEAD when that merge-base cannot be resolved), working tree included.
+ * Every file `repoRoot`'s current branch has changed since it diverged from
+ * `baseRef` (default `defaultBranchRef`), working tree included. The
+ * comparison point is always `git merge-base HEAD <ref>`, never the ref's tip:
+ * diffing against the tip counts every commit the default branch gained after
+ * the branch last merged it as a change OF the branch, so a dispatch that
+ * named exactly the shards the branch touched is refused for shards it never
+ * touched (and the regeneration it would run would rewrite goldens for
+ * changes it does not carry). A ref whose merge-base cannot be resolved is an
+ * error, not a fallback to HEAD — a base of HEAD makes the coverage check
+ * vacuous, and a vacuous check is the #1573 trap this function exists to
+ * close.
  *
  * Shared by `golden-update.mjs` (the local `just update-golden` recipe) and
  * `manual-golden-update.mjs` (the `update-golden.yml` CI dispatch's plan
@@ -79,7 +87,14 @@ function gitLines(repoRoot, args) {
  * working-tree-only check.
  */
 export function changedFilesFrom(repoRoot, { baseRef, defaultBranchRef = 'origin/main' } = {}) {
-  const base = baseRef || (gitLines(repoRoot, ['merge-base', 'HEAD', defaultBranchRef]) ?? ['HEAD'])[0] || 'HEAD';
+  const ref = baseRef || defaultBranchRef;
+  const base = (gitLines(repoRoot, ['merge-base', 'HEAD', ref]) ?? [])[0];
+  if (!base) {
+    throw new Error(
+      `golden-shards: cannot resolve the merge-base of HEAD and ${ref} in ${repoRoot} — ` +
+        'fetch the default branch (or pass GOLDEN_UPDATE_BASE_REF) so the changed-file set has a real base',
+    );
+  }
   const tracked = gitLines(repoRoot, ['diff', '--name-only', base]) ?? [];
   const untracked = gitLines(repoRoot, ['ls-files', '--others', '--exclude-standard']) ?? [];
   return [...tracked, ...untracked];
