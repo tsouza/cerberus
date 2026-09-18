@@ -309,7 +309,6 @@ jobs:
           # compatibility/prometheus/cmd/seed/main.go).
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
-          TESTER_QUERY_PARALLELISM: "2"
         run: node .github/scripts/run-prometheus-compatibility.mjs
 
       - name: Summarise report and append score to step summary
@@ -476,7 +475,6 @@ jobs:
         env:
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
-          TESTER_QUERY_PARALLELISM: "2"
           CERBERUS_EVAL_ROUTE: "sharded"
           FAIL_ON_DIFF: "1"
         run: node .github/scripts/run-prometheus-compatibility.mjs
@@ -490,6 +488,21 @@ jobs:
           REPORT: compatibility/prometheus/report.json
           TITLE: compatibility/prometheus-forced-route (CERBERUS_EVAL_ROUTE=sharded)
           LABEL: prometheus (route B)
+
+      - name: Parity-regression ratchet (vs the same 26.5-lane baseline)
+        # Gates on case IDENTITY against compatibility/parity-baseline/'s
+        # `prometheus` roster — the same corpus, forced down route B.
+        # FAIL_ON_DIFF above already fails any diff; what the ratchet adds
+        # is VANISHED: a recorded case that did not run. Without it a run
+        # that compared nothing (an empty or truncated report) was green
+        # here, since zero diffs is what FAIL_ON_DIFF asks for. Runs only
+        # when the harness itself succeeded.
+        if: steps.compat.outcome == 'success'
+        run: node .github/scripts/compat-ratchet.mjs
+        env:
+          HEAD: prometheus
+          SCORE: compatibility/prometheus/compat-score.json
+          CASES: compatibility/prometheus/compat-cases.json
 
       - name: Upload report
         if: always()
@@ -596,7 +609,8 @@ jobs:
         # floor; everything else matches compatibility/prometheus exactly
         # so the only variable under test is the server version.
         #
-        # TESTER_QUERY_PARALLELISM=2: below the ts_grid_* / native-rate
+        # Query parallelism is the runner's DEFAULT_TESTER_QUERY_PARALLELISM
+        # (2), decided in one place: below the ts_grid_* / native-rate
         # floor (25.9, #1500) the fallback SQL does real per-row
         # rate/quantile/reset aggregation, which is genuinely slower than
         # the native-function path every other lane exercises. That is
@@ -622,15 +636,16 @@ jobs:
         # budget a single unqueued call has already spent
         # (tsouza/cerberus#2707). The actual fix widens that deadline:
         # run-prometheus-compatibility.mjs build-time patches
-        # comparer.go's timeout past every measured floor-lane cost,
-        # the same way it already patches the comparer's matrix-sort
-        # bug. Parallelism stays low here regardless, since it is still
-        # the right lever for genuine queueing contention.
+        # comparer.go's timeout past every measured floor-lane cost —
+        # and only for a CH_IMAGE below the native-rate floor
+        # (FLOOR_COMPARER_TIMEOUT_SECONDS; the 26.5 lanes keep the tight
+        # bound) — the same way it already patches the comparer's
+        # matrix-sort bug. Parallelism stays low here regardless, since
+        # it is still the right lever for genuine queueing contention.
         env:
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
           CH_IMAGE: "clickhouse/clickhouse-server:24.8"
-          TESTER_QUERY_PARALLELISM: "2"
         run: node .github/scripts/run-prometheus-compatibility.mjs
 
       - name: Summarise report and append score to step summary

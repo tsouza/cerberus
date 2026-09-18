@@ -2653,6 +2653,26 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `report.json` to tally).
   - Exit: always `0` (housekeeping; never gates).
   - Tests: `compat-step-summary.test.mjs` (run in `ci.yml`).
+- **`run-prometheus-compatibility.mjs`** — `compatibility.yml`, the
+  `prometheus`, `prometheus-forced-route` and `prometheus-floor` harness
+  steps, and `just compat-promql`. Brings the compose stack up, seeds it,
+  build-time patches the vendored promql-compliance-tester's comparer
+  (symmetric matrix sort; the per-comparison deadline — 45s on the 26.5
+  lanes, 90s only for a `CH_IMAGE` below the native-rate floor, chosen by
+  `comparerTimeoutSeconds()`), runs the tester at
+  `DEFAULT_TESTER_QUERY_PARALLELISM` (2) unless overridden, then the
+  rejection-parity, metadata-parity and scorer passes. A run whose report
+  is unparseable or EMPTY exits non-zero whatever the tester's rc — the
+  tester exits 0 on "every query passed", which an empty report also
+  satisfies. The comparer patch matches `N*time.Second` by shape, so a
+  checkout an earlier run already patched (the submodule is `ignore =
+  dirty`) re-patches instead of failing.
+  - Env: see the script header (`TESTER_*`, `CH_IMAGE`, `FAIL_ON_DIFF`,
+    `COMPOSE_KEEP`).
+  - Exit: `0` on a completed run (parity drift lives in `report.json`, not
+    the exit code, unless `FAIL_ON_DIFF`); non-zero on an infrastructure
+    failure, an unusable report, or (under `FAIL_ON_DIFF`) any drift.
+  - Tests: `run-prometheus-compatibility.test.mjs` (run in `ci.yml`).
 - **`compat-ratchet.mjs`** — `compatibility.yml`, the three
   `Parity-regression ratchet` steps. The GATE that makes the required
   `compatibility/{prometheus,loki,tempo}` checks fail on a parity

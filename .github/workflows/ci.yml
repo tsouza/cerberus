@@ -1277,6 +1277,13 @@ jobs:
       - name: Assert the parity ratchet gates on per-case identity
         run: node --test .github/scripts/compat-ratchet.test.mjs
 
+      # The prometheus runner's pure decisions: the comparer deadline a
+      # server version gets (the floor widening must not reach the 26.5
+      # lanes), the idempotent comparer patch, and that a run with no usable
+      # report never exits 0.
+      - name: Assert the prometheus runner's deadline choice and report gate
+        run: node --test .github/scripts/run-prometheus-compatibility.test.mjs
+
       # The lanes' shared housekeeping step: the tester-report tally and the
       # one-row parity table every compatibility lane appends.
       - name: Assert the compatibility step summary renders the tally and table
