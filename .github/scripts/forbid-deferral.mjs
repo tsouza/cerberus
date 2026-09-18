@@ -408,24 +408,30 @@ export function findMarkers(text) {
 //
 // Line-scoped and quote-counting rather than a real tokenizer: the surfaces
 // this gate reads are diff lines, commit messages and pull-request bodies,
-// where a string literal opens and closes on one line. An apostrophe in
-// ordinary prose ("doesn't") leaves an odd single-quote count, so an
-// unquoted marker after one would be skipped — which is why each quote
-// style is counted independently and a marker is only excused when the
-// style that encloses it is balanced-open around it. Prose apostrophes
-// almost never share a line with an unquoted marker word, and the failure
-// direction of a miscount is a missed marker on that one line, never a
-// false accusation.
+// where a string literal opens and closes on one line. A marker is excused
+// only when the quote style that would enclose it is BALANCED on the line —
+// an odd count before it and an even total — so an unclosed quote excuses
+// nothing. Single quotes are the hard case: two prose apostrophes
+// ("doesn't … that's") bracket a marker exactly the way a string literal
+// does, and ordinary commit-message prose does that all the time, so a
+// single-quoted "string" counts only on a line that looks like code
+// (CODE_LINE_HINTS: a call, an assignment, a literal). The failure direction
+// of the heuristic is a missed marker on one prose line that happens to be
+// spelled like code, never a false accusation.
+const CODE_LINE_HINTS = /[(=\[{]/;
+
 function insideQuotedString(src, index) {
   const lineStart = src.lastIndexOf('\n', index - 1) + 1;
   let lineEnd = src.indexOf('\n', index);
   if (lineEnd === -1) lineEnd = src.length;
   const before = src.slice(lineStart, index);
   const after = src.slice(index, lineEnd);
+  const looksLikeCode = CODE_LINE_HINTS.test(before + after);
   for (const q of ['"', "'", '`']) {
+    if (q === "'" && !looksLikeCode) continue;
     const open = countUnescaped(before, q);
     const close = countUnescaped(after, q);
-    if (open % 2 === 1 && close > 0) return true;
+    if (open % 2 === 1 && (open + close) % 2 === 0) return true;
   }
   return false;
 }
