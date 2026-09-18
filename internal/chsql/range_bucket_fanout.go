@@ -102,46 +102,9 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	stepNS := r.Step.Nanoseconds()
 	lookbackNS := r.Lookback.Nanoseconds()
 
-	var numAnchors int64
-	var gridBase Frag
-	// Membership base (offset-shifted newest anchor) and value base
-	// (unshifted grid anchor). Offset folds onto the membership base only.
-	// Reassigned below in the (Start, End) branch to the Start-anchored
-	// grid end — see [startAnchoredGridEnd].
-	shiftBase := offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
-	if r.OuterRange > 0 {
-		// Independent-subquery-grid mode (cerberus issue #2726): the anchor
-		// grid is derived from (End, OuterRange, Step) — mirrors
-		// emitWindowedArrayMatrix's own OuterRange arithmetic exactly,
-		// including StepAlign's epoch-floor snap, rather than the
-		// (Start, End) span above. shiftBase is ALREADY the offset-shifted
-		// base stepAlignGridFor expects to align; the aligned result IS the
-		// membership base used below, and the reported gridBase un-shifts it
-		// back by Offset — the same shift/unshift split the (Start, End)
-		// branch keeps below, just applied AFTER alignment instead of
-		// before.
-		numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1
-		shiftBase, numAnchors = stepAlignGridFor(r.StepAlign, shiftBase, r.End, r.Offset, r.OuterRange, stepNS, numAnchors)
-		gridBase = shiftBase
-		if r.Offset != 0 {
-			gridBase = offsetUnshiftAnchorFrag(shiftBase, r.Offset.Nanoseconds())
-		}
-	} else {
-		// End-inclusive anchor count across the [Start, End] grid. When the
-		// grid bounds are absent (the now64(9) fixture shape) a single
-		// anchor is the only deterministic choice; the bounded fanout still
-		// applies.
-		numAnchors = 1
-		if !r.Start.IsZero() && !r.End.IsZero() {
-			span := r.End.Sub(r.Start).Nanoseconds()
-			if span < 0 {
-				return fmt.Errorf("%w: RangeBucketFanout.Start > End", ErrUnsupported)
-			}
-			numAnchors = span/stepNS + 1
-		}
-		gridEnd := startAnchoredGridEnd(r.Start, r.End, stepNS, numAnchors)
-		shiftBase = offsetShiftedBaseFrag(timeOrNowFrag(gridEnd), r.Offset)
-		gridBase = timeOrNowFrag(gridEnd)
+	numAnchors, gridBase, shiftBase, err := rangeBucketFanoutGrid(r, stepNS)
+	if err != nil {
+		return err
 	}
 
 	inner, err := e.subqueryFrag(r.Input)
@@ -318,6 +281,53 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	}
 
 	return e.emitSelect(collapse)
+}
+
+// rangeBucketFanoutGrid resolves the anchor count and the two grid bases for
+// the fan-out: gridBase is the unshifted anchor the output reports, shiftBase
+// the offset-shifted membership base the window arithmetic keys off.
+func rangeBucketFanoutGrid(r *chplan.RangeBucketFanout, stepNS int64) (numAnchors int64, gridBase, shiftBase Frag, err error) {
+	// Membership base (offset-shifted newest anchor) and value base
+	// (unshifted grid anchor). Offset folds onto the membership base only.
+	// Reassigned below in the (Start, End) branch to the Start-anchored
+	// grid end — see [startAnchoredGridEnd].
+	shiftBase = offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
+	if r.OuterRange > 0 {
+		// Independent-subquery-grid mode (cerberus issue #2726): the anchor
+		// grid is derived from (End, OuterRange, Step) — mirrors
+		// emitWindowedArrayMatrix's own OuterRange arithmetic exactly,
+		// including StepAlign's epoch-floor snap, rather than the
+		// (Start, End) span above. shiftBase is ALREADY the offset-shifted
+		// base stepAlignGridFor expects to align; the aligned result IS the
+		// membership base used below, and the reported gridBase un-shifts it
+		// back by Offset — the same shift/unshift split the (Start, End)
+		// branch keeps below, just applied AFTER alignment instead of
+		// before.
+		numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1
+		shiftBase, numAnchors = stepAlignGridFor(r.StepAlign, shiftBase, r.End, r.Offset, r.OuterRange, stepNS, numAnchors)
+		gridBase = shiftBase
+		if r.Offset != 0 {
+			gridBase = offsetUnshiftAnchorFrag(shiftBase, r.Offset.Nanoseconds())
+		}
+	} else {
+		// End-inclusive anchor count across the [Start, End] grid. When the
+		// grid bounds are absent (the now64(9) fixture shape) a single
+		// anchor is the only deterministic choice; the bounded fanout still
+		// applies.
+		numAnchors = 1
+		if !r.Start.IsZero() && !r.End.IsZero() {
+			span := r.End.Sub(r.Start).Nanoseconds()
+			if span < 0 {
+				return 0, nil, nil, fmt.Errorf("%w: RangeBucketFanout.Start > End", ErrUnsupported)
+			}
+			numAnchors = span/stepNS + 1
+		}
+		gridEnd := startAnchoredGridEnd(r.Start, r.End, stepNS, numAnchors)
+		shiftBase = offsetShiftedBaseFrag(timeOrNowFrag(gridEnd), r.Offset)
+		gridBase = timeOrNowFrag(gridEnd)
+	}
+
+	return numAnchors, gridBase, shiftBase, nil
 }
 
 // rangeBucketFanoutGroupGuardedQuery wraps collapse in the SAME LIMIT-plus-

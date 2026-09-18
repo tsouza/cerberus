@@ -422,23 +422,7 @@ func mustBuild(meter metric.Meter) *Instruments {
 	if err != nil {
 		panic("telemetry: build stage_duration: " + err.Error())
 	}
-	rulesApplied, err := meter.Int64Histogram(
-		"cerberus_optimizer_rules_applied",
-		metric.WithDescription("Optimizer rule invocations that changed the plan."),
-		metric.WithUnit("{rule}"),
-		metric.WithExplicitBucketBoundaries(RulesAppliedBoundaries...),
-	)
-	if err != nil {
-		panic("telemetry: build rules_applied: " + err.Error())
-	}
-	fixpointCapHits, err := meter.Int64Counter(
-		"cerberus_optimizer_fixpoint_cap_hits_total",
-		metric.WithDescription("Optimizer fixpoint batches that hit their iteration cap without converging, by batch."),
-		metric.WithUnit("{batch}"),
-	)
-	if err != nil {
-		panic("telemetry: build optimizer_fixpoint_cap_hits_total: " + err.Error())
-	}
+	rulesApplied, fixpointCapHits := mustBuildOptimizerInstruments(meter)
 	chRows, err := meter.Int64Histogram(
 		"cerberus_clickhouse_rows_read",
 		metric.WithDescription("ClickHouse rows read per query (sum of Progress events)."),
@@ -540,6 +524,29 @@ func mustBuild(meter metric.Meter) *Instruments {
 		EstimateDriftRatio:            estimateDriftRatio,
 		EstimateDriftAlertsTotal:      estimateDriftAlerts,
 	}
+}
+
+// mustBuildOptimizerInstruments builds the two optimizer instruments; split
+// from mustBuild only to keep that constructor within the lint length budget.
+func mustBuildOptimizerInstruments(meter metric.Meter) (metric.Int64Histogram, metric.Int64Counter) {
+	rulesApplied, err := meter.Int64Histogram(
+		"cerberus_optimizer_rules_applied",
+		metric.WithDescription("Optimizer rule invocations that changed the plan."),
+		metric.WithUnit("{rule}"),
+		metric.WithExplicitBucketBoundaries(RulesAppliedBoundaries...),
+	)
+	if err != nil {
+		panic("telemetry: build rules_applied: " + err.Error())
+	}
+	fixpointCapHits, err := meter.Int64Counter(
+		"cerberus_optimizer_fixpoint_cap_hits_total",
+		metric.WithDescription("Optimizer fixpoint batches that hit their iteration cap without converging, by batch."),
+		metric.WithUnit("{batch}"),
+	)
+	if err != nil {
+		panic("telemetry: build optimizer_fixpoint_cap_hits_total: " + err.Error())
+	}
+	return rulesApplied, fixpointCapHits
 }
 
 // Install replaces the process-global MeterProvider with mp. Passing
