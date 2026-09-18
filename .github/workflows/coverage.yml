@@ -310,8 +310,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Run default-tag coverage lane
         run: just coverage-default
 
@@ -353,8 +352,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Install libchdb.so
         run: just chdb-install
 
@@ -438,8 +436,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Install libchdb.so
         run: just chdb-install
 
@@ -506,8 +503,7 @@ jobs:
       - if: env.RUN_HEAVY == 'true'
         uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # No `pattern:`-per-name repetition and no explicit `path:` needed:
       # `coverage-profile-*` already matches coverage-profile-default,
       # coverage-profile-chdb AND both coverage-profile-chdb-ratchet-{2,3}

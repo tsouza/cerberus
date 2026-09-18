@@ -175,8 +175,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Install libchdb.so
         if: matrix.needs_chdb
         working-directory: target
@@ -324,8 +323,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Deliberately NOT cached, unlike perf-guards-shard's identical-looking
       # step in chdb.yml: THIS job runs the TARGET branch's own (unreviewed)
       # `just chdb-install` recipe (`working-directory: target`, no write
@@ -440,8 +438,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Deliberately NOT cached — same read-only trust-boundary reasoning as
       # `cardinality-leg`'s identical step above.
       - name: Install libchdb.so

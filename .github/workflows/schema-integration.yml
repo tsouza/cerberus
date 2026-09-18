@@ -117,8 +117,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - uses: ./.github/actions/registry-login
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}

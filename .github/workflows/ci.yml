@@ -89,8 +89,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: test
         run: |
           just test-chaos-sleep
@@ -117,8 +116,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: build + type-check the tagged lanes
         run: |
           just build
@@ -321,9 +319,10 @@ jobs:
       # "invalid workflow file" failure runs, which silently prevents
       # required pull_request checks from ever being scheduled — the
       # #749 secrets-in-step-if incident left a PR BLOCKED on four
-      # required contexts that could never report. Version pinned in
-      # lock-step with Justfile's ACTIONLINT_VERSION; no first-party
-      # Action exists, `go install` reuses setup-go's module cache
+      # required contexts that could never report. The version is held to
+      # Justfile's ACTIONLINT_VERSION by test/regression/tool_version_pins_
+      # test.go (as is golangci-lint's below and every `tool: just@` pin); no
+      # first-party Action exists, `go install` reuses setup-go's module cache
       # (same pattern as go-arch-lint above).
       - name: install actionlint
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
@@ -635,7 +634,7 @@ jobs:
         run: node --test .github/scripts/docs-only-filter.test.mjs
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
+          tool: just@1.46.0
       # The four steps below are cerberus issue #3436's merge fence: the
       # Semantic Conformance Framework's structural model, lane-policy,
       # evidence-liveness and generated-report validators, enrolled in

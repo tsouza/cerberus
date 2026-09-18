@@ -22,7 +22,7 @@ name: compatibility
 #     empty and the cold module fetch is retried.
 #   * ./.github/actions/setup-buildx — buildkit-backed compose build, with
 #     the BuildKit bootstrap image acquired through a retry.
-#   * taiki-e/install-action@v2.85.5     — installs `just`.
+#   * taiki-e/install-action (v2.87.11) — installs `just` at Justfile's JUST_VERSION.
 #   * actions/upload-artifact@v7    — per-head report upload.
 #
 # Registry logins are deliberately NOT an Action: `docker/login-action` has no
@@ -291,8 +291,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - uses: ./.github/actions/registry-login
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -479,8 +478,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - uses: ./.github/actions/registry-login
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -628,8 +626,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - uses: ./.github/actions/registry-login
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}

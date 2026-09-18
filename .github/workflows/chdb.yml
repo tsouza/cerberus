@@ -218,8 +218,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Cache the pinned libchdb.so so the install step is a no-op cache
       # hit on the common path (the recipe is idempotent — it skips the
       # download when the file already exists at CHDB_INSTALL_PATH). The
@@ -269,8 +268,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Install libchdb.so
         run: just chdb-install
 
@@ -357,8 +355,7 @@ jobs:
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Install libchdb.so
         if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         run: just chdb-install
@@ -499,8 +496,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Cache the pinned libchdb.so, same key as `chdb-build`'s and
       # `perf-guards-shard`'s step, and for the same reason: fanning out to N
       # runners would otherwise mean N downloads of a ~500 MB shared library
@@ -676,8 +672,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Cache the pinned libchdb.so, same key as `chdb-build`'s step. This
       # matters more here than anywhere else in the file: fanning out to 8 legs
       # would otherwise mean 8 downloads of a ~500 MB shared library per run,
@@ -768,8 +763,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:
@@ -804,8 +798,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:
@@ -840,8 +833,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:

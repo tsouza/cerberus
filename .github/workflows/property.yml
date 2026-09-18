@@ -171,8 +171,7 @@ jobs:
       - if: steps.run_heavy.outputs.run_heavy == 'true'
         uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Install libchdb.so
         if: steps.run_heavy.outputs.run_heavy == 'true'
         run: just chdb-install
