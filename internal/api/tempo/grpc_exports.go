@@ -27,11 +27,11 @@ import (
 //    of empty matrix anchors lives in the SQL emitter — see
 //    internal/chsql/range_window.go.)
 //
-// Keeping every export in a single file means PR 2 (gRPC Search),
-// PR 3 (gRPC tags), and PR 4 (gRPC metrics) each touch one new gRPC
-// file plus this one — the parallel rollout doesn't fan into the
-// handler.go diff. See .claude/plans/tempo-grpc-streaming-design.md
-// §3 + §6 for the single-frame strategy the metrics helpers enable.
+// Keeping every export in a single file means each gRPC RPC file
+// (search, tags, metrics) reaches the handler through this one seam
+// rather than fanning into handler.go. The helpers each return the
+// complete, post-processed result the HTTP handler would have written,
+// which is what lets every RPC answer in a single frame.
 
 // TagScope is the canonical scope keyword the V2 endpoint partitions
 // results on; aliased here so the grpc handler doesn't need to import
