@@ -25,6 +25,10 @@ files. `setOutput` and `exportEnv` differ by consumer, not by mechanism: a step
 output has to be named by whoever reads it, while `$GITHUB_ENV` carries a
 decision that changes how the REST of the job behaves and has no single reader.
 
+`lib/image-globs.mjs` is the one image-ref glob (`*` never crosses a `/`)
+behind every "skip these images" filter: `k3d-image-import.mjs`'s
+`IMAGE_IMPORT_EXCLUDE` and `pull-images.mjs`'s `IMAGE_PULL_EXCLUDE`.
+
 `lib/gh-api.mjs` is the one GitHub REST client: `ghHeaders(token)` (the
 `Accept` / `Authorization` / `X-GitHub-Api-Version` block), `ghJSON(url,
 { token, what, notFound, init, fetchImpl })` (one request, parsed; `notFound`
@@ -2168,6 +2172,37 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     failure, or zero mutants surviving the full fallback.
   - Tests: `node --test .github/scripts/mutation-run.test.mjs` (run by the
     `forbid-skip` job).
+- **`release-tag.mjs`** — `release.yml`, the `goreleaser` job's `Create +
+  push v<appVersion> tag at merge commit` step. Creates the annotated release
+  tag at `GITHUB_SHA` and pushes it; a re-run that finds the tag already at
+  that commit is a no-op, and a tag at a DIFFERENT commit is a hard error (a
+  moved release tag is never correct). Invoked only from release.yml — never
+  from a Justfile recipe, because release-version-gate.mjs reads an existing
+  tag as "already released" (`TestNoJustfileRecipePushesAReleaseTag`).
+  - Env: `TAG`, `GITHUB_SHA` (required); `REMOTE` (default `origin`).
+  - Exit: `0` when the tag exists at `GITHUB_SHA`; `1` otherwise.
+  - Tests: `release-tag.test.mjs` (run in `ci.yml`, against a throwaway
+    repository with a bare remote).
+- **`release-is-latest.mjs`** — `release.yml`, the `goreleaser` job's
+  `Compute RELEASE_IS_LATEST` step. Whether the tag being released is the
+  highest STABLE `vX.Y.Z` (prereleases never count): the one signal that
+  decides the rolling `:latest` images, the Homebrew cask and the GitHub
+  `Latest` pointer, so a stable backport cut after a newer minor takes none
+  of them. Writes `RELEASE_IS_LATEST` to `$GITHUB_ENV` and `is_latest` to
+  `$GITHUB_OUTPUT`; replaced an inline `git tag -l | awk | sed | sort -V`
+  pipeline.
+  - Env: `TAG` (required); reads the checkout's tags (`fetch-depth: 0`).
+  - Exit: `0`; `1` on a missing `TAG`.
+  - Tests: `release-is-latest.test.mjs` (run in `ci.yml`).
+- **`go-mod-tidy-check.mjs`** — `ci.yml`, the `check-build` job's `go.mod is
+  tidy` step. Runs `go mod tidy` in every module (the root and the nested
+  `test/oracle`, which drifts the same way) and fails with the diff when
+  go.mod / go.sum changed — goreleaser's `before` hook tidies on every
+  release, so an untidy module means the release mutates the tree it cuts
+  from. Replaced an inline loop plus diff branch.
+  - Env: `MODULES` (optional; default `. test/oracle`).
+  - Exit: `0` when tidy changed nothing; `1` with the diff otherwise.
+  - Tests: `go-mod-tidy-check.test.mjs` (run in `ci.yml`, with a stub `go`).
 - **`release-version-gate.mjs`** — `release.yml`, the `gate` job (app side).
   The publish-on-merge pipeline ships when a validated `release/*` PR is MERGED
   to main (not on a raw pushed tag — that trigger is retired). On the resulting
@@ -2605,11 +2640,19 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   nothing.
   - Env: `CHART_DIR` (default `deploy/helm/cerberus`).
   - Exit: `0` when every assertion holds; `1` on the first failure.
-- **`compat-step-summary.mjs`** — `compatibility.yml`, the three
-  `Append score to step summary` steps.
+- **`compat-step-summary.mjs`** — `compatibility.yml`, every lane's
+  `Summarise report and append score to step summary` / `Append score to step
+  summary` step. Logs the upstream tester's raw report tally (the three
+  prometheus lanes — the tester encodes "no error" as an empty string, not
+  null, and the tally partitions on that; this replaced an inline `jq` copied
+  three times) and appends the one-row parity table to the step summary (the
+  forced-route and floor lanes used to carry an inline bash copy of it).
   - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SCORE` (path to that
-    head's `compat-score.json`).
+    head's `compat-score.json`), `TITLE` / `LABEL` (optional heading and row
+    label for a variant lane), `REPORT` (optional path to the tester's
+    `report.json` to tally).
   - Exit: always `0` (housekeeping; never gates).
+  - Tests: `compat-step-summary.test.mjs` (run in `ci.yml`).
 - **`compat-ratchet.mjs`** — `compatibility.yml`, the three
   `Parity-regression ratchet` steps. The GATE that makes the required
   `compatibility/{prometheus,loki,tempo}` checks fail on a parity
@@ -3727,8 +3770,25 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   failure ends the run: the lane cannot start without the image, and a second
   pull into a spent quota only deepens the deficit for every concurrent job.
   - Args: the image refs to acquire.
-  - Env: `IMAGE_PULL_BACKOFF_SECONDS` (optional; default `3`).
-  - Exit: `0` when every ref is in the local daemon, `1` as soon as one is not.
+  - Env: `IMAGE_PULL_BACKOFF_SECONDS` (optional; default `3`);
+    `IMAGE_PULL_EXCLUDE` (optional; whitespace-separated `lib/image-globs.mjs`
+    patterns to skip — the bwc / datashard recipes pass the standalone
+    `clickhouse/clickhouse-server:*-alpine` image their kustomization never
+    applies, the same pattern `k3d-image-import.mjs` takes as
+    `IMAGE_IMPORT_EXCLUDE`, instead of a hand-rolled `case … continue` loop
+    around `_pull-retry`).
+  - Exit: `0` when every non-excluded ref is in the local daemon, `1` as soon
+    as one is not.
+- **`wait-container-ready.mjs`** — `e2e.yml`, the `startup-bench` job's `Wait
+  for ClickHouse` step. Polls `docker exec <container> wget --spider <url>`
+  through `lib/poll.mjs` until the endpoint answers inside the container, and
+  prints the container's log tail on the deadline; replaced an inline
+  `for i in $(seq …)` loop.
+  - Env: `CONTAINER`, `URL` (required); `DEADLINE_SECONDS` (default `120`),
+    `POLL_INTERVAL_SECONDS` (default `5`).
+  - Exit: `0` once the probe answers; `1` on the deadline or a missing input.
+  - Tests: `wait-container-ready.test.mjs` (run in `ci.yml`, with a stub
+    `docker` on PATH).
 - **`assert-image-jobs-authenticate.mjs`** — the required `check` lane. Fails
   when a job that acquires an image has not logged in to the registry it
   acquires from. An anonymous pull is not an error: it succeeds until the shared

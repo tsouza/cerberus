@@ -159,15 +159,7 @@ jobs:
       # cmd/cerberus imported it directly. Both modules, since the nested
       # oracle module drifts the same way and the root suite never reaches it.
       - name: go.mod is tidy
-        run: |
-          for mod in . test/oracle; do
-            (cd "$mod" && go mod tidy)
-          done
-          if ! git diff --quiet -- '**/go.mod' '**/go.sum' go.mod go.sum; then
-            echo "::error::go mod tidy changed go.mod/go.sum — commit the result:"
-            git --no-pager diff -- '**/go.mod' '**/go.sum' go.mod go.sum
-            exit 1
-          fi
+        run: node .github/scripts/go-mod-tidy-check.mjs
 
   # The AGGREGATOR, and the only branch-protection context of the three: one
   # rolled-up verdict over both halves, so the required check name survives the
@@ -502,6 +494,20 @@ jobs:
       - name: gh-api self-test (404 policy + pagination)
         run: node --test .github/scripts/lib/gh-api.test.mjs
 
+      # The two release.yml steps that used to be inline shell: the tag cut
+      # (idempotent at the merge commit, refuses to move a tag) and the
+      # "highest stable release" signal. Same rationale as the preflight
+      # suites above — release.yml has no pull_request trigger.
+      - name: release tag + is-latest self-tests
+        run: |
+          node --test .github/scripts/release-tag.test.mjs
+          node --test .github/scripts/release-is-latest.test.mjs
+
+      # The `go.mod is tidy` gate in check-build; the suite drives it with a
+      # stub `go` so both verdicts run on every PR.
+      - name: go-mod-tidy-check self-test
+        run: node --test .github/scripts/go-mod-tidy-check.test.mjs
+
       # tsouza/cerberus#2361's fix: release.yml's preflight re-reads the
       # release-staging PR's OWN `dashboard` check-run (the only run that ever
       # exercises the k3d crawl leg for a release commit) instead of trusting
@@ -779,6 +785,7 @@ jobs:
           node --test .github/scripts/lib/poll.test.mjs
           node --test .github/scripts/lib/k8s.test.mjs
           node --test .github/scripts/k3d-image-import.test.mjs
+          node --test .github/scripts/wait-container-ready.test.mjs
           node --test .github/scripts/e2e-datasource-sync.test.mjs
           node --test .github/scripts/e2e-wait-otel.test.mjs
           node --test .github/scripts/e2e-seed.test.mjs
@@ -1269,6 +1276,11 @@ jobs:
       # count satisfied, and the gate must still fail.
       - name: Assert the parity ratchet gates on per-case identity
         run: node --test .github/scripts/compat-ratchet.test.mjs
+
+      # The lanes' shared housekeeping step: the tester-report tally and the
+      # one-row parity table every compatibility lane appends.
+      - name: Assert the compatibility step summary renders the tally and table
+        run: node --test .github/scripts/compat-step-summary.test.mjs
 
       # The ratchet, updater, doc-count gate, and structural guard all trust
       # one shard loader. These pins prove its manifest/bucket roster fails

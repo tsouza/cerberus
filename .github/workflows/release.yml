@@ -447,21 +447,7 @@ jobs:
       - name: Create + push v<appVersion> tag at merge commit
         env:
           TAG: ${{ needs.gate.outputs.app_tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            existing="$(git rev-list -n1 "${TAG}")"
-            if [ "${existing}" != "${GITHUB_SHA}" ]; then
-              echo "::error::tag ${TAG} already exists at ${existing}, not the merge commit ${GITHUB_SHA} — refusing to move a release tag"
-              exit 1
-            fi
-            echo "tag ${TAG} already at ${GITHUB_SHA} — nothing to do"
-          else
-            git tag -a "${TAG}" -m "release ${TAG}" "${GITHUB_SHA}"
-            git push origin "refs/tags/${TAG}"
-            echo "created + pushed ${TAG} at ${GITHUB_SHA}"
-          fi
+        run: node .github/scripts/release-tag.mjs
 
       # Whether THIS tag is the highest stable release — the single "is this the
       # newest line?" signal every downstream owner-of-a-shared-resource decision
@@ -481,17 +467,7 @@ jobs:
         id: is_latest
         env:
           TAG: ${{ needs.gate.outputs.app_tag }}
-        run: |
-          tag="${TAG#v}"
-          highest=$(git tag -l 'v*.*.*' | awk '!/-/' | sed 's/^v//' | sort -V | tail -1)
-          if [ "$tag" = "$highest" ]; then
-            is_latest=true
-          else
-            is_latest=false
-          fi
-          echo "RELEASE_IS_LATEST=${is_latest}" >> "$GITHUB_ENV"
-          echo "is_latest=${is_latest}" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag highest_stable=$highest RELEASE_IS_LATEST=${is_latest}"
+        run: node .github/scripts/release-is-latest.mjs
 
       - id: goreleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7

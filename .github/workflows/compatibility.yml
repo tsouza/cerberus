@@ -312,37 +312,19 @@ jobs:
           TESTER_QUERY_PARALLELISM: "2"
         run: node .github/scripts/run-prometheus-compatibility.mjs
 
-      - name: Summarise report
-        if: always()
-        run: |
-          # Compatibility-tester results encode "no error" as an empty
-          # string, not JSON null — the JSON shape is `"diff": ""` and
-          # `"unexpectedFailure": ""` for a passing query. The earlier
-          # `== null` checks counted passes as failures and vice versa.
-          # `// ""` normalises both null + empty to "" so the partition
-          # is consistent.
-          if [ -f compatibility/prometheus/report.json ]; then
-            jq '{
-              total: ([.results[]?] | length),
-              passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "")] | length),
-              diffs: ([.results[]? | select((.diff // "") != "")] | length),
-              unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length)
-            }' compatibility/prometheus/report.json
-          else
-            echo "no report produced (harness step likely failed before tester ran)"
-          fi
-
-      - name: Append score to step summary
-        # Mirrors the loki / tempo jobs: emits a one-row markdown table
-        # row to $GITHUB_STEP_SUMMARY so the workflow's summary page shows
-        # the at-a-glance parity score next to the per-job log link. The
-        # three jobs format identically (head / passed-over-total /
-        # percent) via compat-step-summary.mjs so the rendered summary is
-        # readable when all three rows land together.
+      - name: Summarise report and append score to step summary
+        # Mirrors the loki / tempo jobs: logs the tester report's tally
+        # (REPORT — the tester encodes "no error" as an empty string, not
+        # null, and the script partitions on that) and emits a one-row
+        # markdown table to $GITHUB_STEP_SUMMARY so the workflow's summary
+        # page shows the at-a-glance parity score next to the per-job log
+        # link. Every lane formats through compat-step-summary.mjs so the
+        # rendered summary is readable when all rows land together.
         if: always()
         run: node .github/scripts/compat-step-summary.mjs
         env:
           HEAD: prometheus
+          REPORT: compatibility/prometheus/report.json
           SCORE: compatibility/prometheus/compat-score.json
 
       - name: Parity-regression ratchet
@@ -499,39 +481,15 @@ jobs:
           FAIL_ON_DIFF: "1"
         run: node .github/scripts/run-prometheus-compatibility.mjs
 
-      - name: Summarise report
+      - name: Summarise report and append score to step summary
         if: always()
-        run: |
-          if [ -f compatibility/prometheus/report.json ]; then
-            jq '{
-              total: ([.results[]?] | length),
-              passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "")] | length),
-              diffs: ([.results[]? | select((.diff // "") != "")] | length),
-              unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length)
-            }' compatibility/prometheus/report.json
-          else
-            echo "no report produced (harness step likely failed before tester ran)"
-          fi
-
-      - name: Append score to step summary
-        if: always()
-        run: |
-          set -euo pipefail
-          score="compatibility/prometheus/compat-score.json"
-          if [ -f "$score" ]; then
-            percent=$(jq -r .percent "$score")
-            passed=$(jq -r .passed "$score")
-            total=$(jq -r .total "$score")
-            {
-              echo "### compatibility/prometheus-forced-route (CERBERUS_EVAL_ROUTE=sharded)"
-              echo ""
-              echo "| head | passed/total | percent |"
-              echo "|------|--------------|---------|"
-              echo "| prometheus (route B) | ${passed}/${total} | ${percent}% |"
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "no compat-score.json produced (harness step likely failed before scorer ran)"
-          fi
+        run: node .github/scripts/compat-step-summary.mjs
+        env:
+          HEAD: prometheus
+          SCORE: compatibility/prometheus/compat-score.json
+          REPORT: compatibility/prometheus/report.json
+          TITLE: compatibility/prometheus-forced-route (CERBERUS_EVAL_ROUTE=sharded)
+          LABEL: prometheus (route B)
 
       - name: Upload report
         if: always()
@@ -675,39 +633,15 @@ jobs:
           TESTER_QUERY_PARALLELISM: "2"
         run: node .github/scripts/run-prometheus-compatibility.mjs
 
-      - name: Summarise report
+      - name: Summarise report and append score to step summary
         if: always()
-        run: |
-          if [ -f compatibility/prometheus/report.json ]; then
-            jq '{
-              total: ([.results[]?] | length),
-              passed: ([.results[]? | select((.unexpectedFailure // "") == "" and (.diff // "") == "")] | length),
-              diffs: ([.results[]? | select((.diff // "") != "")] | length),
-              unexpected_failures: ([.results[]? | select((.unexpectedFailure // "") != "")] | length)
-            }' compatibility/prometheus/report.json
-          else
-            echo "no report produced (harness step likely failed before tester ran)"
-          fi
-
-      - name: Append score to step summary
-        if: always()
-        run: |
-          set -euo pipefail
-          score="compatibility/prometheus/compat-score.json"
-          if [ -f "$score" ]; then
-            percent=$(jq -r .percent "$score")
-            passed=$(jq -r .passed "$score")
-            total=$(jq -r .total "$score")
-            {
-              echo "### compatibility/prometheus-floor (ClickHouse 24.8)"
-              echo ""
-              echo "| head | passed/total | percent |"
-              echo "|------|--------------|---------|"
-              echo "| prometheus (floor) | ${passed}/${total} | ${percent}% |"
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "no compat-score.json produced (harness step likely failed before scorer ran)"
-          fi
+        run: node .github/scripts/compat-step-summary.mjs
+        env:
+          HEAD: prometheus
+          SCORE: compatibility/prometheus/compat-score.json
+          REPORT: compatibility/prometheus/report.json
+          TITLE: compatibility/prometheus-floor (ClickHouse 24.8)
+          LABEL: prometheus (floor)
 
       - name: Parity-regression ratchet (vs the same 26.5-lane baseline)
         # Gates on case IDENTITY against compatibility/parity-baseline/'s
