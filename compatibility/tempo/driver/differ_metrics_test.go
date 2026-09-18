@@ -302,14 +302,19 @@ func TestCompareMetrics_LabelOrderInvariant(t *testing.T) {
 
 func TestCompareMetrics_ExemplarCountInformational(t *testing.T) {
 	t.Parallel()
-	// Exemplar count divergence is reported but does NOT drive
-	// Equal=false (see CompareMetrics doc-comment).
+	// Exemplar count divergence between two POPULATED sides is reported but
+	// does NOT drive Equal=false (see CompareMetrics doc-comment). A test side
+	// with none at all is the presence mismatch
+	// TestCompareMetrics_ExemplarAbsenceAgainstAPopulatedReferenceIsAMismatch
+	// pins — this case used to spell exactly that shape and call it a count.
 	a := []byte(`{"series":[
 		{"labels":[{"key":"k","value":"v"}],"samples":[{"timestampMs":1000,"value":1}],
-		 "exemplars":[{"timestampMs":1500,"value":1.2,"labels":[{"key":"k","value":"v"}]}]}
+		 "exemplars":[{"timestampMs":1500,"value":1.2,"labels":[{"key":"k","value":"v"}]},
+		              {"timestampMs":1600,"value":1.3,"labels":[{"key":"k","value":"v"}]}]}
 	]}`)
 	b := []byte(`{"series":[
-		{"labels":[{"key":"k","value":"v"}],"samples":[{"timestampMs":1000,"value":1}]}
+		{"labels":[{"key":"k","value":"v"}],"samples":[{"timestampMs":1000,"value":1}],
+		 "exemplars":[{"timestampMs":1500,"value":1.2,"labels":[{"key":"k","value":"v"}]}]}
 	]}`)
 	d, err := CompareMetrics(a, b, "tempo", "cerberus", DefaultDiffOptions())
 	if err != nil {
