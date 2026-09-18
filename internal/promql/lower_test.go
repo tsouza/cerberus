@@ -32,6 +32,18 @@ var fixtureDir = filepath.Join("..", "..", "test", "spec", "promql")
 func TestLower(t *testing.T) {
 	t.Parallel()
 
+	// Every statement the walk renders passes under chsql's render-time
+	// precedence guard; a fixture that renders an operand ClickHouse would
+	// re-associate fails the walk even though its golden matched (the golden
+	// would have recorded the re-association). The report runs from Cleanup so
+	// it sees every subtest, parallel or not.
+	report := chsql.InstallPrecedenceGuard()
+	t.Cleanup(func() {
+		if violations := report(); len(violations) > 0 {
+			t.Errorf("%d operand(s) ClickHouse would re-associate:\n%s", len(violations), strings.Join(violations, "\n"))
+		}
+	})
+
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 

@@ -32,7 +32,7 @@ const fixedAccumCounterDeltaShape = "((last_val - first_val) + `reset_sum`) *"
 // render this strategy (its fixtures are chdb-only), so this is the
 // untagged pin for it.
 func TestFixedAccumulator_CounterDeltaIsParenthesised(t *testing.T) {
-	report := chsql.InstallPrecedenceGuardForTest()
+	report := chsql.InstallPrecedenceGuard()
 	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
