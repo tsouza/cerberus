@@ -61,7 +61,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
-import { errorStderr, warning } from "./lib/gh.mjs";
+import { errorStderr } from "./lib/gh.mjs";
 import { DEFAULT_SEMANTIC_MODEL_DIR, loadSemanticModel } from "./lib/semantic-model.mjs";
 import { classifyTestRef } from "./lib/semantic-evidence-adapter.mjs";
 import {

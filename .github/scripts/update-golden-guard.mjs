@@ -199,7 +199,7 @@
 import process from 'node:process';
 
 import { error, log, notice } from './lib/gh.mjs';
-import { GITHUB_PER_PAGE, NOT_FOUND_THROW, ghJSON as ghRequest, ghPaginate } from './lib/gh-api.mjs';
+import { NOT_FOUND_THROW, ghJSON as ghRequest, ghPaginate } from './lib/gh-api.mjs';
 
 const DEFAULT_API_URL = 'https://api.github.com';
 const WORKFLOW_FILE = 'update-golden.yml';

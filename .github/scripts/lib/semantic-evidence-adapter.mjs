@@ -427,11 +427,16 @@ export function resolveSourcePathEvidence(testRef, repoRoot) {
     return fail([`test_ref ${JSON.stringify(testRef)} is not a source-path reference`]);
   }
   const abs = join(repoRoot, path);
-  if (!existsSync(abs)) {
-    return fail([`${path} referenced by test_ref ${JSON.stringify(testRef)} does not exist on disk`]);
+  let stat;
+  try {
+    stat = statSync(abs);
+  } catch (err) {
+    if (err?.code === "ENOENT" || err?.code === "ENOTDIR") {
+      return fail([`${path} referenced by test_ref ${JSON.stringify(testRef)} does not exist on disk`]);
+    }
+    throw err;
   }
-  const isDirectory = statSync(abs).isDirectory();
-  if (isDirectory) {
+  if (stat.isDirectory()) {
     if (symbol !== null || token !== null) {
       return fail([
         `${path} (test_ref ${JSON.stringify(testRef)}) is a directory, so a :${symbol ?? ""}${token !== null ? `#${token}` : ""} suffix names nothing inside it`,
