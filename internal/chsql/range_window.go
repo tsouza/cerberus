@@ -43,11 +43,11 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 
 	sb := NewQuery().From(sub)
 	// For the multi-phi path the outer SELECTs need to reference each
-	// group column by a stable alias. Use outerGroupAliases (which
+	// group column by a stable alias. Use chplan.OuterGroupNames (which
 	// falls back to "g0", "g1", ... for un-aliased groups) so the
 	// outer SELECT-list can pluck the values regardless of whether
 	// the source GroupByAliases was set.
-	multiGroupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
+	multiGroupAliases := chplan.OuterGroupNames(m.GroupBy, m.GroupByAliases)
 	// The aliases the SELECT list actually projects — and therefore the
 	// names GROUP BY refers to below.
 	selectedAliases := m.GroupByAliases
@@ -174,7 +174,7 @@ func metricsAggregateCH(m *chplan.MetricsAggregate) (
 // as a decimal string (no trailing zeros) — "0.5" reads "0.5" (not
 // "0.500000"); aligned with Tempo upstream's per-quantile label
 // production in pkg/traceql/engine_metrics.go.
-const metricsMultiQuantilePhiLabel = "__phi__"
+const metricsMultiQuantilePhiLabel = chplan.MultiQuantilePhiColumn
 
 // RangeWindowAnchorAlias is the SELECT-list alias the matrix-shape
 // RangeWindow emitters give the per-step anchor timestamp column
@@ -324,27 +324,18 @@ func validateRangeWindowTemporality(r *chplan.RangeWindow) error {
 	return validateRangeWindowTemporalitySchema(r.Input.RowType())
 }
 
+// validateRangeWindowTemporalitySchema accepts a child with no temporality
+// column at all (a gauge input has none) and otherwise requires it to be the
+// one named column carrying the role in a closed schema.
 func validateRangeWindowTemporalitySchema(row chplan.Schema) error {
-	var found chplan.Column
-	count := 0
-	for _, column := range row.Columns {
-		if column.Role == chplan.RoleTemporality {
-			found = column
-			count++
-		}
-	}
-	if count == 0 {
+	if !row.Has(chplan.RoleTemporality) {
 		return nil
 	}
-	if row.Open || count != 1 || found.Name == "" {
-		return fmt.Errorf("%w: RangeWindow input has invalid temporality schema", ErrUnsupported)
+	if row.Open {
+		return fmt.Errorf("%w: RangeWindow requires a closed child schema to carry temporality", ErrUnsupported)
 	}
-	for _, column := range row.Columns {
-		if column.Name == found.Name && column.Role != chplan.RoleTemporality {
-			return fmt.Errorf("%w: RangeWindow input has conflicting temporality schema", ErrUnsupported)
-		}
-	}
-	return nil
+	_, err := roleColumnName("RangeWindow", row, chplan.RoleTemporality)
+	return err
 }
 
 // metricsMultiQuantileFanoutFrag returns a Frag rendering the per-(group,
@@ -859,7 +850,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	}
 	fanout.Select(RawAs(
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
-		"anchor_ts",
+		RangeWindowAnchorAlias,
 	))
 	// Restrict the input scan to the offset-shifted
 	// (Start - Offset - range, End - Offset] window the anchor grid
@@ -873,25 +864,25 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	// extrapolated matrix path (see emitWindowedArrayExtrapolatedMatrix).
 	regroup := NewQuery().From(fanout.Frag())
 	regroup.Select(groupFrags...)
-	regroup.Select(Col("anchor_ts"))
+	regroup.Select(Col(RangeWindowAnchorAlias))
 	if hasTemporality {
 		regroup.Select(As(Call("any", Col(rangeWindowTemporalityColumn(r))), windowTemporalityAlias))
 	}
 	regroup.Select(RawAs(windowSamplePairsFrag(r, srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
-	regroupKeys = append(regroupKeys, Col("anchor_ts"))
+	regroupKeys = append(regroupKeys, Col(RangeWindowAnchorAlias))
 	regroup.GroupBy(regroupKeys...)
 
 	// Outer SELECT — per-(series, anchor) row.
 	outer := NewQuery().From(regroup.Frag())
 	outer.Select(groupFrags...)
-	outer.Select(Col("anchor_ts"))
+	outer.Select(Col(RangeWindowAnchorAlias))
 	// See projectAnchorAsTimestampColumn for the rationale: surface
 	// anchor_ts under the schema timestamp column so a wrapping
 	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves.
 	projectAnchorAsTimestampColumn(outer, r)
-	outer.Select(RawAs(valueWriterFor(verbatim("anchor_ts")), r.ValueColumn))
+	outer.Select(RawAs(valueWriterFor(verbatim(RangeWindowAnchorAlias)), r.ValueColumn))
 	if minWindowSize > 0 {
 		outer.Where(windowLenAtLeastFrag("window_pairs", minWindowSize))
 	}
@@ -950,7 +941,7 @@ func offsetUnshiftAnchorFrag(anchor Frag, offsetNS int64) Frag {
 // a Sample's timestamp — the name every *_over_time / rate / deriv matrix
 // emitter falls back to when its own RangeWindow carries no more specific
 // TimestampColumn override (see projectAnchorAsTimestampColumn).
-const rangeWindowSchemaTimestampColumn = "TimeUnix"
+const rangeWindowSchemaTimestampColumn = chplan.MatrixTimestampColumn
 
 // projectAnchorAsTimestampColumn surfaces the matrix anchor under a named
 // timestamp column, in addition to the bare `anchor_ts` every matrix-shape
@@ -1252,7 +1243,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	// expression was a bare ColumnRef or a Map lookup. The fanout
 	// predicate IS the window predicate, so no per-row `(anchor_ts -
 	// range, anchor_ts]` re-check survives downstream.
-	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
+	groupAliases := chplan.OuterGroupNames(m.GroupBy, m.GroupByAliases)
 	tsIdent := func(b *Builder) { b.Ident(tsCol) }
 	fanout := NewQuery().From(inner)
 	for i, g := range m.GroupBy {
@@ -1267,7 +1258,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	}
 	fanout.SelectAs(
 		sampleAnchorFanoutFrag(end, tsIdent, stepNS, rangeNS, numAnchors),
-		"anchor_ts",
+		RangeWindowAnchorAlias,
 	)
 	if zeroFill {
 		// Sample rows carry weight 1; the zero-fill generator rows
@@ -1322,7 +1313,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		a := alias
 		outerSb.Select(func(b *Builder) { b.Ident(a) })
 	}
-	outerSb.Select(Col("anchor_ts"))
+	outerSb.Select(Col(RangeWindowAnchorAlias))
 
 	if zeroFill {
 		outerSb.Select(As(metricsSumWeightReducerFrag(m.Op, rangeSeconds), m.ValueAlias))
@@ -1340,7 +1331,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 		a := alias
 		groupFrags = append(groupFrags, func(b *Builder) { b.Ident(a) })
 	}
-	groupFrags = append(groupFrags, Col("anchor_ts"))
+	groupFrags = append(groupFrags, Col(RangeWindowAnchorAlias))
 	outerSb.GroupBy(groupFrags...)
 
 	return e.emitSelect(outerSb)
@@ -1426,7 +1417,7 @@ func (e *emitter) metricsZeroFillGridArm(
 	for _, c := range extraCols {
 		grid.SelectAs(c.frag, c.alias)
 	}
-	grid.SelectAs(anchorFanoutFrag(end, stepNS, numAnchors), "anchor_ts")
+	grid.SelectAs(anchorFanoutFrag(end, stepNS, numAnchors), RangeWindowAnchorAlias)
 	grid.SelectAs(InlineLit(int64(0)), "in_window")
 	return grid.Frag()
 }
@@ -1587,7 +1578,7 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 		return err
 	}
 
-	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
+	groupAliases := chplan.OuterGroupNames(m.GroupBy, m.GroupByAliases)
 	tsIdent := func(b *Builder) { b.Ident(tsCol) }
 
 	// Sample arm — sample-side fanout (≤ range/step + 1 anchors per
@@ -1603,7 +1594,7 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 	fanout.SelectAs(func(b *Builder) { _ = b.Expr(attr) }, "metric_arg")
 	fanout.SelectAs(
 		sampleAnchorFanoutFrag(end, tsIdent, stepNS, rangeNS, numAnchors),
-		"anchor_ts",
+		RangeWindowAnchorAlias,
 	)
 	fanout.SelectAs(InlineLit(int64(1)), "in_window")
 	// Same Start/End pushdown as emitRangeWindowMetrics — see
@@ -1628,7 +1619,7 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 		a := alias
 		outerSb.Select(func(b *Builder) { b.Ident(a) })
 	}
-	outerSb.Select(Col("anchor_ts"))
+	outerSb.Select(Col(RangeWindowAnchorAlias))
 	// Bucket projection is conditional on the sample-arm marker + the
 	// raw-value >= 2 guard: rows that don't satisfy both fall into a
 	// phantom 0-bucket group (matching no real bucket because the
@@ -1651,7 +1642,7 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 		a := alias
 		groupFrags = append(groupFrags, func(b *Builder) { b.Ident(a) })
 	}
-	groupFrags = append(groupFrags, Col("anchor_ts"), Col(metricsQuantileBucketAlias))
+	groupFrags = append(groupFrags, Col(RangeWindowAnchorAlias), Col(metricsQuantileBucketAlias))
 	outerSb.GroupBy(groupFrags...)
 
 	return e.emitSelect(outerSb)
@@ -1721,7 +1712,7 @@ func quantileSamplePredicateFrag(isDuration bool) Frag {
 // matching constant (`tempoQuantileBucketLabel` in
 // internal/api/tempo/metrics_query_range.go); both must agree on the
 // literal "__bucket".
-const metricsQuantileBucketAlias = "__bucket"
+const metricsQuantileBucketAlias = chplan.HistogramBucketColumn
 
 // quantileBucketFrag renders the per-row bucket key. Mirrors Tempo's
 // `Log2Bucketize(v) [/ time.Second]` (pkg/traceql/engine_metrics.go).
@@ -2642,7 +2633,7 @@ func dedupWindowPairsLayer(
 	q := NewQuery().From(upstream)
 	q.Select(groupFrags...)
 	if withAnchor {
-		q.Select(Col("anchor_ts"))
+		q.Select(Col(RangeWindowAnchorAlias))
 	}
 	if withTemporality {
 		q.Select(Col(windowTemporalityAlias))
@@ -2754,26 +2745,6 @@ func metricsReducerFrag(op chplan.MetricsOp, fn chplan.Fn, params, args []chplan
 		aggArgs[i] = &chplan.ColumnRef{Name: "metric_arg"}
 	}
 	return Call("toFloat64", aggFuncFrag(chplan.AggFunc{Fn: fn, Params: params, Args: aggArgs})), nil
-}
-
-// outerGroupAliases returns the SELECT-list aliases used to refer to
-// group-by columns in the outer matrix SELECT. Falls back to a
-// "g0", "g1", ... synthetic alias when the source GroupByAliases is
-// empty (chplan permits unaliased groups; the matrix shape needs a
-// stable handle to thread between subquery and GROUP BY).
-func outerGroupAliases(groupBy []chplan.Expr, aliases []string) []string {
-	if len(groupBy) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(groupBy))
-	for i := range groupBy {
-		if i < len(aliases) && aliases[i] != "" {
-			out = append(out, aliases[i])
-			continue
-		}
-		out = append(out, "g"+strconv.Itoa(i))
-	}
-	return out
 }
 
 // groupKeyFrags renders the GROUP BY key list for a SELECT that projects
@@ -3457,14 +3428,14 @@ func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(As(
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
-		"anchor_ts",
+		RangeWindowAnchorAlias,
 	))
 	maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
 
 	// Regroup SELECT — direct aggregate per (series, anchor). No array.
 	regroup := NewQuery().From(fanout.Frag())
 	regroup.Select(groupFrags...)
-	regroup.Select(Col("anchor_ts"))
+	regroup.Select(Col(RangeWindowAnchorAlias))
 	// Surface anchor_ts under the schema timestamp column so a wrapping
 	// Aggregate's per-step GROUP BY (ColumnRef{TimestampColumn}) resolves
 	// — mirrors emitWindowedArrayMatrix's outer projection. See
@@ -3479,7 +3450,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg
 	regroup.Select(As(agg.Build(srcTs), r.ValueColumn))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
-	regroupKeys = append(regroupKeys, Col("anchor_ts"))
+	regroupKeys = append(regroupKeys, Col(RangeWindowAnchorAlias))
 	regroup.GroupBy(regroupKeys...)
 
 	return e.emitSelect(regroup)
@@ -4429,21 +4400,21 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 func deltaMatrixLevelSource(regroupSource Frag, groupFrags []Frag, deltaPrefixAlreadyDeduped bool) Frag {
 	increments := NewQuery().From(regroupSource)
 	increments.Select(groupFrags...)
-	increments.Select(Col("anchor_ts"))
+	increments.Select(Col(RangeWindowAnchorAlias))
 	increments.Select(Col(windowTemporalityAlias))
 	increments.Select(Col("window_pairs"))
 	increments.Select(As(deltaPrefixSumFrag(Col(deltaPrefixPairsAlias), deltaPrefixAlreadyDeduped), deltaPrefixStepAlias))
 
 	levels := NewQuery().From(increments.Frag())
 	levels.Select(groupFrags...)
-	levels.Select(Col("anchor_ts"))
+	levels.Select(Col(RangeWindowAnchorAlias))
 	levels.Select(Col(windowTemporalityAlias))
 	levels.Select(Col("window_pairs"))
 	levels.Select(As(
 		Window(
 			Call("sum", Col(deltaPrefixStepAlias)),
 			groupFrags,
-			[]OrderKey{{Expr: Col("anchor_ts")}},
+			[]OrderKey{{Expr: Col(RangeWindowAnchorAlias)}},
 		),
 		deltaAnchorLevelsAlias,
 	))
@@ -4569,7 +4540,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregateDailyFanout(
 		Call("arrayJoin", deltaPrefixAggregateBucketAnchorArrayFrag(
 			end, Col(deltaPrefixAggregateBucketColumn), stepNS, rangeNS, numAnchors,
 		)),
-		"anchor_ts",
+		RangeWindowAnchorAlias,
 	))
 	aggFanout.Select(As(Col("day_sum"), deltaPrefixAggregateMatrixStepAlias))
 
@@ -4584,11 +4555,11 @@ func (e *emitter) deltaMatrixLevelSourceAggregateDailyFanout(
 		aggFanoutKeyCols[i] = Col(key)
 		aggFanoutSummed.Select(Col(key))
 	}
-	aggFanoutSummed.Select(Col("anchor_ts"))
+	aggFanoutSummed.Select(Col(RangeWindowAnchorAlias))
 	aggFanoutSummed.Select(As(Call("sum", Col(deltaPrefixAggregateMatrixStepAlias)), deltaPrefixAggregateMatrixStepAlias))
 	aggFanoutGroupBy := make([]Frag, 0, len(aggFanoutKeyCols)+1)
 	aggFanoutGroupBy = append(aggFanoutGroupBy, aggFanoutKeyCols...)
-	aggFanoutGroupBy = append(aggFanoutGroupBy, Col("anchor_ts"))
+	aggFanoutGroupBy = append(aggFanoutGroupBy, Col(RangeWindowAnchorAlias))
 	aggFanoutSummed.GroupBy(aggFanoutGroupBy...)
 
 	return aggFanoutSummed, aggDailyKeys, nil
@@ -4633,12 +4604,12 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	// window resets at every day boundary.
 	increments := NewQuery().From(regroupSource)
 	increments.Select(groupFrags...)
-	increments.Select(Col("anchor_ts"))
+	increments.Select(Col(RangeWindowAnchorAlias))
 	increments.Select(Col(windowTemporalityAlias))
 	selectPassthrough(increments)
 	increments.Select(As(deltaPrefixSumFrag(Col(deltaPrefixPairsAlias), deltaPrefixAlreadyDeduped), deltaPrefixStepAlias))
 	increments.Select(As(
-		deltaPrefixBucketStartFrag(rangeStartFrag(Col("anchor_ts"), rangeNS)),
+		deltaPrefixBucketStartFrag(rangeStartFrag(Col(RangeWindowAnchorAlias), rangeNS)),
 		deltaPrefixAnchorDayAlias,
 	))
 
@@ -4647,14 +4618,14 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	rawPartition = append(rawPartition, Col(deltaPrefixAnchorDayAlias))
 	rawLevels := NewQuery().From(increments.Frag())
 	rawLevels.Select(groupFrags...)
-	rawLevels.Select(Col("anchor_ts"))
+	rawLevels.Select(Col(RangeWindowAnchorAlias))
 	rawLevels.Select(Col(windowTemporalityAlias))
 	selectPassthrough(rawLevels)
 	rawLevels.Select(As(
 		Window(
 			Call("sum", Col(deltaPrefixStepAlias)),
 			rawPartition,
-			[]OrderKey{{Expr: Col("anchor_ts")}},
+			[]OrderKey{{Expr: Col(RangeWindowAnchorAlias)}},
 		),
 		deltaPrefixRawDayLevelAlias,
 	))
@@ -4681,7 +4652,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	for _, col := range groupColumns {
 		preJoin.Select(As(Qual("w", col), col))
 	}
-	preJoin.Select(As(Qual("w", "anchor_ts"), "anchor_ts"))
+	preJoin.Select(As(Qual("w", RangeWindowAnchorAlias), RangeWindowAnchorAlias))
 	preJoin.Select(As(Qual("w", windowTemporalityAlias), windowTemporalityAlias))
 	selectPassthroughQualified(preJoin, "w")
 	preJoin.Select(As(Qual("w", deltaPrefixRawDayLevelAlias), deltaPrefixRawDayLevelAlias))
@@ -4690,7 +4661,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 		deltaPrefixAggregateMatrixStepAlias,
 	))
 	onConds := make([]Frag, 0, len(groupColumns)+1)
-	onConds = append(onConds, Eq(Qual("w", "anchor_ts"), Qual("af", "anchor_ts")))
+	onConds = append(onConds, Eq(Qual("w", RangeWindowAnchorAlias), Qual("af", RangeWindowAnchorAlias)))
 	for i, col := range groupColumns {
 		onConds = append(onConds, Eq(Qual("w", col), Qual("af", aggDailyKeys[i])))
 	}
@@ -4700,7 +4671,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	for _, col := range groupColumns {
 		aggLevels.Select(Col(col))
 	}
-	aggLevels.Select(Col("anchor_ts"))
+	aggLevels.Select(Col(RangeWindowAnchorAlias))
 	aggLevels.Select(Col(windowTemporalityAlias))
 	selectPassthrough(aggLevels)
 	aggLevels.Select(Col(deltaPrefixRawDayLevelAlias))
@@ -4712,7 +4683,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 		Window(
 			Call("sum", Col(deltaPrefixAggregateMatrixStepAlias)),
 			partition,
-			[]OrderKey{{Expr: Col("anchor_ts")}},
+			[]OrderKey{{Expr: Col(RangeWindowAnchorAlias)}},
 		),
 		deltaPrefixAggregateMatrixLevelAlias,
 	))
@@ -4728,7 +4699,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	for _, col := range groupColumns {
 		final.Select(Col(col))
 	}
-	final.Select(Col("anchor_ts"))
+	final.Select(Col(RangeWindowAnchorAlias))
 	final.Select(Col(windowTemporalityAlias))
 	selectPassthrough(final)
 	final.Select(As(
@@ -4880,7 +4851,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// End-inclusive anchor count. Truncating division matches Prom.
 	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
 	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
-	anchor := verbatim("anchor_ts")
+	anchor := verbatim(RangeWindowAnchorAlias)
 	rangeStart := rangeStartFrag(anchor, rangeNS)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
@@ -4913,7 +4884,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	}
 	fanout.Select(As(
 		windowedMatrixFanoutAnchorTsFrag(r, end, srcTs, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel, useAggregateDeltaPrefix),
-		"anchor_ts",
+		RangeWindowAnchorAlias,
 	))
 	// Restrict the input scan to the offset-shifted
 	// (Start - Offset - range, End - Offset] window the anchor grid
@@ -4949,12 +4920,12 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// so any() over the (series, anchor) group's rows is exact.
 	regroup := NewQuery().From(fanoutSource)
 	regroup.Select(groupFrags...)
-	regroup.Select(Col("anchor_ts"))
+	regroup.Select(Col(RangeWindowAnchorAlias))
 	if hasTemporality {
 		regroup.Select(As(Call("any", Col(rangeWindowTemporalityColumn(r))), windowTemporalityAlias))
 	}
 	if needsDeltaFirstLevel {
-		windowStart := rangeStartFrag(Col("anchor_ts"), rangeNS)
+		windowStart := rangeStartFrag(Col(RangeWindowAnchorAlias), rangeNS)
 		regroup.Select(As(
 			seriesArrayPairIfFrag(r, srcTs, r.ValueColumn, Gt(Col(srcTs), windowStart)),
 			"window_pairs",
@@ -4968,7 +4939,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	}
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
-	regroupKeys = append(regroupKeys, Col("anchor_ts"))
+	regroupKeys = append(regroupKeys, Col(RangeWindowAnchorAlias))
 	regroup.GroupBy(regroupKeys...)
 	extraColumns := make([]string, 0, 1)
 	if needsDeltaFirstLevel {
@@ -5000,7 +4971,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	temporalityRef := windowTemporalityRef(r)
 	mid := NewQuery().From(regroupSource)
 	mid.Select(groupFrags...)
-	mid.Select(Col("anchor_ts"))
+	mid.Select(Col(RangeWindowAnchorAlias))
 	mid.Select(As(windowValsFrag(), "window_vals"))
 	mid.Select(As(CounterOrDeltaSum(BareIdent("window_pairs"), temporalityRef), "counter_delta"))
 	mid.Select(As(firstTsFrag(), "first_ts"))
@@ -5018,7 +4989,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// Extrap SELECT — Prom-side scalars derived per-(series, anchor).
 	extrap := NewQuery().From(mid.Frag())
 	extrap.Select(groupFrags...)
-	extrap.Select(Col("anchor_ts"))
+	extrap.Select(Col(RangeWindowAnchorAlias))
 	extrap.Select(Col("window_vals"))
 	extrap.Select(Col("counter_delta"))
 	extrap.Select(Col("first_val"))
@@ -5029,7 +5000,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// Outer SELECT — per-(series, anchor) row.
 	outer := NewQuery().From(extrap.Frag())
 	outer.Select(groupFrags...)
-	outer.Select(Col("anchor_ts"))
+	outer.Select(Col(RangeWindowAnchorAlias))
 	// Also surface anchor_ts under the schema timestamp column name so an
 	// outer Aggregate that injected `ColumnRef{TimestampColumn}` into its
 	// per-step GROUP BY (see internal/promql/lower.go `bucket_ts` branch)
@@ -5533,7 +5504,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 	fanout.Select(Col(r.ValueColumn))
 	fanout.Select(As(
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
-		"anchor_ts",
+		RangeWindowAnchorAlias,
 	))
 	// Restrict the input scan to the offset-shifted
 	// (Start - Offset - range, End - Offset] window the anchor grid
@@ -5549,24 +5520,24 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 	// Regroup SELECT — rebuild the per-(series, anchor) window array.
 	regroup := NewQuery().From(fanout.Frag())
 	regroup.Select(groupFrags...)
-	regroup.Select(Col("anchor_ts"))
+	regroup.Select(Col(RangeWindowAnchorAlias))
 	regroup.Select(As(windowSamplePairsFrag(r, srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
-	regroupKeys = append(regroupKeys, Col("anchor_ts"))
+	regroupKeys = append(regroupKeys, Col(RangeWindowAnchorAlias))
 	regroup.GroupBy(regroupKeys...)
 
 	// Middle SELECT — window_vals + counter_delta per (series, anchor).
 	mid := NewQuery().From(regroup.Frag())
 	mid.Select(groupFrags...)
-	mid.Select(Col("anchor_ts"))
+	mid.Select(Col(RangeWindowAnchorAlias))
 	mid.Select(As(windowValsFrag(), "window_vals"))
 	mid.Select(As(counterDeltaFrag(), "counter_delta"))
 
 	// Outer SELECT — per-(series, anchor) row.
 	outer := NewQuery().From(mid.Frag())
 	outer.Select(groupFrags...)
-	outer.Select(Col("anchor_ts"))
+	outer.Select(Col(RangeWindowAnchorAlias))
 	// See emitWindowedArrayExtrapolatedMatrix and
 	// projectAnchorAsTimestampColumn for the rationale: surface anchor_ts
 	// under the schema timestamp column so a wrapping Aggregate's

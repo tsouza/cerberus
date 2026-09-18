@@ -117,7 +117,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 // emitAggregateRangeLWRFused (aggregate_range_lwr_fusion.go) reads it
 // directly off both the fan-out and collapse Frags it reuses from
 // [emitter.rangeLWRFanoutFrag] / [emitter.rangeLWRCollapseFrag].
-const rangeLWRAnchorColumn = "anchor_ts"
+const rangeLWRAnchorColumn = RangeWindowAnchorAlias
 
 // rangeLWRValueAlias is the collapse stage's synthetic argMax-picked
 // value column — see rangeLWRAnchorColumn's doc for why this is a named
@@ -140,45 +140,24 @@ type rangeLWRInputColumns struct {
 }
 
 func resolveRangeLWRInputColumns(input chplan.Node) (rangeLWRInputColumns, error) {
-	if input == nil {
-		return rangeLWRInputColumns{}, fmt.Errorf("%w: RangeLWR.Input is nil", ErrUnsupported)
+	const owner = "RangeLWR"
+	row, err := closedChildSchema(owner, input)
+	if err != nil {
+		return rangeLWRInputColumns{}, err
 	}
-	row := input.RowType()
-	if row.Open {
-		return rangeLWRInputColumns{}, fmt.Errorf("%w: RangeLWR requires a closed child schema", ErrUnsupported)
-	}
-
 	var columns rangeLWRInputColumns
-	seenNames := make(map[string]chplan.ColumnRole, len(row.Columns))
-	for _, column := range row.Columns {
-		if column.Name == "" {
-			continue
+	for _, slot := range []struct {
+		role   chplan.ColumnRole
+		target *string
+	}{
+		{chplan.RoleMetricName, &columns.metricName},
+		{chplan.RoleAttributes, &columns.attributes},
+		{chplan.RoleTimestamp, &columns.timestamp},
+		{chplan.RoleValue, &columns.value},
+	} {
+		if *slot.target, err = roleColumnName(owner, row, slot.role); err != nil {
+			return rangeLWRInputColumns{}, err
 		}
-		if role, ok := seenNames[column.Name]; ok && role != column.Role {
-			return rangeLWRInputColumns{}, fmt.Errorf("%w: RangeLWR child column %q has ambiguous roles", ErrUnsupported, column.Name)
-		}
-		seenNames[column.Name] = column.Role
-		slot := (*string)(nil)
-		switch column.Role {
-		case chplan.RoleMetricName:
-			slot = &columns.metricName
-		case chplan.RoleAttributes:
-			slot = &columns.attributes
-		case chplan.RoleTimestamp:
-			slot = &columns.timestamp
-		case chplan.RoleValue:
-			slot = &columns.value
-		}
-		if slot == nil {
-			continue
-		}
-		if *slot != "" {
-			return rangeLWRInputColumns{}, fmt.Errorf("%w: RangeLWR child schema has duplicate role %d", ErrUnsupported, column.Role)
-		}
-		*slot = column.Name
-	}
-	if columns.metricName == "" || columns.attributes == "" || columns.timestamp == "" || columns.value == "" {
-		return rangeLWRInputColumns{}, fmt.Errorf("%w: RangeLWR child schema requires named metric-name, attributes, timestamp, and value roles", ErrUnsupported)
 	}
 	return columns, nil
 }

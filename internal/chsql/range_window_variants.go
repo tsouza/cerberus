@@ -318,27 +318,27 @@ func (e *emitter) emitRangeWindowVariantsMatrix(r *chplan.RangeWindow) error {
 	}
 	fanout.Select(As(
 		sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
-		"anchor_ts",
+		RangeWindowAnchorAlias,
 	))
 	maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
 
 	// Regroup SELECT — the shared per-(series, anchor) sample array.
 	regroup := NewQuery().From(fanout.Frag())
 	regroup.Select(groupFrags...)
-	regroup.Select(Col("anchor_ts"))
+	regroup.Select(Col(RangeWindowAnchorAlias))
 	regroup.Select(As(
 		groupArrayVariantTupleFrag(srcTs, valueColumns),
 		"window_pairs",
 	))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
-	regroupKeys = append(regroupKeys, Col("anchor_ts"))
+	regroupKeys = append(regroupKeys, Col(RangeWindowAnchorAlias))
 	regroup.GroupBy(regroupKeys...)
 
 	// Middle SELECT — per-arm values arrays per (series, anchor).
 	mid := NewQuery().From(regroup.Frag())
 	mid.Select(groupFrags...)
-	mid.Select(Col("anchor_ts"))
+	mid.Select(Col(RangeWindowAnchorAlias))
 	mid.Select(Col("window_pairs"))
 	selectVariantVals(mid, r, armSlots)
 
@@ -347,8 +347,8 @@ func (e *emitter) emitRangeWindowVariantsMatrix(r *chplan.RangeWindow) error {
 	// per-step GROUP BY resolves, exactly as the single-arm matrix does.
 	outer := NewQuery().From(mid.Frag())
 	outer.Select(groupFrags...)
-	outer.Select(Col("anchor_ts"))
-	if r.TimestampColumn != "anchor_ts" {
+	outer.Select(Col(RangeWindowAnchorAlias))
+	if r.TimestampColumn != RangeWindowAnchorAlias {
 		outer.Select(As(gridAnchorFrag(r), r.TimestampColumn))
 	}
 	outer.Select(Col(r.ValueColumn))

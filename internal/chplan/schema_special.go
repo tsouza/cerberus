@@ -1,16 +1,14 @@
 package chplan
 
-import "strconv"
-
 func (h *HistogramQuantile) RowType() Schema {
 	out := groupSchema(h.Input.RowType(), h.GroupBy, h.GroupByAliases, nil)
-	out.Columns = append(out.Columns, Column{Name: "Value", Role: RoleValue})
+	out.Columns = append(out.Columns, Column{Name: DefaultValueColumn, Role: RoleValue})
 	return out
 }
 
 func (h *HistogramQuantileNative) RowType() Schema {
 	out := groupSchema(h.Input.RowType(), h.GroupBy, h.GroupByAliases, nil)
-	out.Columns = append(out.Columns, Column{Name: "Value", Role: RoleValue})
+	out.Columns = append(out.Columns, Column{Name: DefaultValueColumn, Role: RoleValue})
 	return out
 }
 
@@ -57,19 +55,11 @@ func (m *MetricsAggregate) RowType() Schema {
 	aliases := m.GroupByAliases
 	multi := m.Op == MetricsOpQuantileOverTime && len(m.Quantiles) > 1
 	if multi {
-		aliases = make([]string, len(m.GroupBy))
-		for i := range aliases {
-			if i < len(m.GroupByAliases) {
-				aliases[i] = m.GroupByAliases[i]
-			}
-			if aliases[i] == "" {
-				aliases[i] = "g" + strconv.Itoa(i)
-			}
-		}
+		aliases = OuterGroupNames(m.GroupBy, m.GroupByAliases)
 	}
 	out := groupSchema(m.Inner.RowType(), m.GroupBy, aliases, nil)
 	if multi {
-		out.Columns = append(out.Columns, Column{Name: "__phi__"})
+		out.Columns = append(out.Columns, Column{Name: MultiQuantilePhiColumn})
 	}
 	out.Columns = append(out.Columns, Column{Name: m.ValueAlias, Role: RoleValue})
 	return out
@@ -77,52 +67,32 @@ func (m *MetricsAggregate) RowType() Schema {
 
 func (m *MetricsHistogramOverTime) RowType() Schema {
 	out := groupSchema(m.Inner.RowType(), m.GroupBy, m.GroupByAliases, nil)
-	out.Columns = append(out.Columns, Column{Name: outputDefault(m.BucketAlias, "__bucket")}, Column{Name: outputDefault(m.ValueAlias, "Value"), Role: RoleValue})
+	out.Columns = append(out.Columns, Column{Name: OutputDefault(m.BucketAlias, HistogramBucketColumn)}, Column{Name: OutputDefault(m.ValueAlias, DefaultValueColumn), Role: RoleValue})
 	return out
 }
 
 func (m *MetricsCompare) RowType() Schema {
 	return Schema{Columns: []Column{
-		{Name: outputDefault(m.SelAlias, "is_selection")},
-		{Name: outputDefault(m.AttrAlias, "attr")},
-		{Name: outputDefault(m.ValAlias, "val")},
-		{Name: outputDefault(m.ValueAlias, "Value"), Role: RoleValue},
+		{Name: OutputDefault(m.SelAlias, CompareSelectionColumn)},
+		{Name: OutputDefault(m.AttrAlias, CompareAttrColumn)},
+		{Name: OutputDefault(m.ValAlias, CompareValColumn)},
+		{Name: OutputDefault(m.ValueAlias, DefaultValueColumn), Role: RoleValue},
 	}}
 }
 
-func outputDefault(name, fallback string) string {
-	if name == "" {
-		return fallback
-	}
-	return name
-}
-
-func outerGroupNames(keys []Expr, aliases []string) []string {
-	names := make([]string, len(keys))
-	for i := range names {
-		if i < len(aliases) {
-			names[i] = aliases[i]
-		}
-		if names[i] == "" {
-			names[i] = "g" + strconv.Itoa(i)
-		}
-	}
-	return names
-}
-
 func metricsWindowSchema(m *MetricsAggregate) Schema {
-	out := groupSchema(m.Inner.RowType(), m.GroupBy, outerGroupNames(m.GroupBy, m.GroupByAliases), nil)
+	out := groupSchema(m.Inner.RowType(), m.GroupBy, OuterGroupNames(m.GroupBy, m.GroupByAliases), nil)
 	out.Columns = append(out.Columns, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor})
 	if m.Op == MetricsOpQuantileOverTime {
-		out.Columns = append(out.Columns, Column{Name: "__bucket"})
+		out.Columns = append(out.Columns, Column{Name: HistogramBucketColumn})
 	}
 	out.Columns = append(out.Columns, Column{Name: m.ValueAlias, Role: RoleValue})
 	return out
 }
 
 func histogramWindowSchema(m *MetricsHistogramOverTime) Schema {
-	out := groupSchema(m.Inner.RowType(), m.GroupBy, outerGroupNames(m.GroupBy, m.GroupByAliases), nil)
-	out.Columns = append(out.Columns, Column{Name: outputDefault(m.BucketAlias, "__bucket")}, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor}, Column{Name: outputDefault(m.ValueAlias, "Value"), Role: RoleValue})
+	out := groupSchema(m.Inner.RowType(), m.GroupBy, OuterGroupNames(m.GroupBy, m.GroupByAliases), nil)
+	out.Columns = append(out.Columns, Column{Name: OutputDefault(m.BucketAlias, HistogramBucketColumn)}, Column{Name: RangeWindowAnchorColumn, Role: RoleAnchor}, Column{Name: OutputDefault(m.ValueAlias, DefaultValueColumn), Role: RoleValue})
 	return out
 }
 

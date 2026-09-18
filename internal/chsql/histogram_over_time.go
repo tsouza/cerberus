@@ -55,17 +55,11 @@ func (e *emitter) emitMetricsHistogramOverTime(m *chplan.MetricsHistogramOverTim
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
 
-	bucketAlias := m.BucketAlias
-	if bucketAlias == "" {
-		bucketAlias = "__bucket"
-	}
+	bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.HistogramBucketColumn)
 	sb.SelectAs(histogramBucketFrag(m.Attr, m.IsDuration), bucketAlias)
 
 	// count(1) AS <ValueAlias>.
-	valueAlias := m.ValueAlias
-	if valueAlias == "" {
-		valueAlias = "Value"
-	}
+	valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultValueColumn)
 	countFunc := chplan.AggFunc{
 		Fn:    chplan.FnCount,
 		Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
@@ -228,18 +222,12 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 		return err
 	}
 
-	bucketAlias := m.BucketAlias
-	if bucketAlias == "" {
-		bucketAlias = "__bucket"
-	}
-	valueAlias := m.ValueAlias
-	if valueAlias == "" {
-		valueAlias = "Value"
-	}
+	bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.HistogramBucketColumn)
+	valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultValueColumn)
 
 	// Sample arm: group-by cols, bucket, attr filter, sample-side
 	// anchor fanout, `1 AS in_window` marker.
-	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
+	groupAliases := chplan.OuterGroupNames(m.GroupBy, m.GroupByAliases)
 	innerSb := NewQuery().From(inner)
 	for i, g := range m.GroupBy {
 		expr := g
@@ -249,7 +237,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	innerSb.SelectAs(histogramBucketFrag(m.Attr, m.IsDuration), bucketAlias)
 	innerSb.SelectAs(
 		sampleAnchorFanoutFrag(end, func(b *Builder) { b.Ident(tsCol) }, stepNS, rangeNS, numAnchors),
-		"anchor_ts",
+		RangeWindowAnchorAlias,
 	)
 	innerSb.SelectAs(InlineLit(int64(1)), "in_window")
 	// Push the <attr> >= 2 filter into the inner SELECT so the anchor
@@ -284,7 +272,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 		outerSb.Select(func(b *Builder) { b.Ident(a) })
 	}
 	outerSb.Select(Col(bucketAlias))
-	outerSb.Select(Col("anchor_ts"))
+	outerSb.Select(Col(RangeWindowAnchorAlias))
 	outerSb.SelectAs(Call("toFloat64", Call("sum", BareIdent("in_window"))), valueAlias)
 
 	// GROUP BY group aliases + bucket + anchor_ts.
@@ -293,7 +281,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 		a := alias
 		groupFrags = append(groupFrags, func(b *Builder) { b.Ident(a) })
 	}
-	groupFrags = append(groupFrags, Col(bucketAlias), Col("anchor_ts"))
+	groupFrags = append(groupFrags, Col(bucketAlias), Col(RangeWindowAnchorAlias))
 	outerSb.GroupBy(groupFrags...)
 
 	return e.emitSelect(outerSb)
@@ -350,7 +338,7 @@ func histogramZeroFillGridArm(a histogramZeroFillArgs) Frag {
 		grid.Select(func(b *Builder) { b.Ident(al) })
 	}
 	grid.Select(Col(a.bucketAlias))
-	grid.SelectAs(anchorFanoutFrag(a.end, a.stepNS, a.numAnchors), "anchor_ts")
+	grid.SelectAs(anchorFanoutFrag(a.end, a.stepNS, a.numAnchors), RangeWindowAnchorAlias)
 	grid.SelectAs(InlineLit(int64(0)), "in_window")
 	return grid.Frag()
 }

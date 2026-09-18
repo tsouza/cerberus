@@ -1,6 +1,7 @@
 package chsql
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -202,25 +203,12 @@ func nestedSetInputIdentities(input chplan.Node) (string, string, error) {
 		return "", "", fmt.Errorf("%w: NestedSetAnnotate input is nil", ErrUnsupported)
 	}
 	schema := input.RowType()
-	findUnique := func(role chplan.ColumnRole) (string, bool) {
-		name := ""
-		for _, column := range schema.Columns {
-			if column.Role != role {
-				continue
-			}
-			if name != "" || column.Name == "" {
-				return "", false
-			}
-			name = column.Name
-		}
-		return name, name != ""
+	traceID, traceErr := schema.UniqueNamedRole(chplan.RoleTraceID)
+	spanID, spanErr := schema.UniqueNamedRole(chplan.RoleSpanID)
+	if traceErr != nil || spanErr != nil {
+		return "", "", fmt.Errorf("%w: NestedSetAnnotate input requires distinct trace-id and span-id roles: %w", ErrUnsupported, errors.Join(traceErr, spanErr))
 	}
-	traceID, traceOK := findUnique(chplan.RoleTraceID)
-	spanID, spanOK := findUnique(chplan.RoleSpanID)
-	if !traceOK || !spanOK || traceID == spanID {
-		return "", "", fmt.Errorf("%w: NestedSetAnnotate input requires distinct trace-id and span-id roles", ErrUnsupported)
-	}
-	return traceID, spanID, nil
+	return traceID.Name, spanID.Name, nil
 }
 
 // buildNestedSetNumbering assembles the numbering subquery: the

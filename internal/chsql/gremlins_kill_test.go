@@ -3,7 +3,6 @@ package chsql
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -712,66 +711,9 @@ func TestEmitMetricsAggregate_GroupByBoundary(t *testing.T) {
 	}
 }
 
-// TestOuterGroupAliases_AliasFallback kills the boundary and negation
-// mutants at
-// range_window.go:outerGroupAliases:`i < len(aliases) && aliases[i] != ""`.
-// The function falls back to `g<i>` when either the slice runs out OR
-// the alias is empty.
-func TestOuterGroupAliases_AliasFallback(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name    string
-		groupBy []chplan.Expr
-		aliases []string
-		want    []string
-	}{
-		{
-			name:    "all aliases present",
-			groupBy: []chplan.Expr{&chplan.ColumnRef{Name: "A"}, &chplan.ColumnRef{Name: "B"}},
-			aliases: []string{"a", "b"},
-			want:    []string{"a", "b"},
-		},
-		{
-			name:    "aliases slice shorter than groupBy",
-			groupBy: []chplan.Expr{&chplan.ColumnRef{Name: "A"}, &chplan.ColumnRef{Name: "B"}},
-			aliases: []string{"a"},
-			want:    []string{"a", "g1"},
-		},
-		{
-			name:    "empty alias entry → fallback",
-			groupBy: []chplan.Expr{&chplan.ColumnRef{Name: "A"}, &chplan.ColumnRef{Name: "B"}},
-			aliases: []string{"", "b"},
-			want:    []string{"g0", "b"},
-		},
-		{
-			name:    "nil groupBy → nil result",
-			groupBy: nil,
-			aliases: []string{"a"},
-			want:    nil,
-		},
-		{
-			name:    "empty groupBy → nil result",
-			groupBy: []chplan.Expr{},
-			aliases: []string{"a"},
-			want:    nil,
-		},
-	}
-	for _, c := range cases {
-		c := c
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			got := outerGroupAliases(c.groupBy, c.aliases)
-			if !reflect.DeepEqual(got, c.want) {
-				t.Errorf("outerGroupAliases(%v, %v) = %v, want %v", c.groupBy, c.aliases, got, c.want)
-			}
-		})
-	}
-}
-
 // TestEmitMetricsExemplars_GroupAliasFallback_Iter1039 hits the
-// INVERT_LOOPCTRL on the `continue` in
-// range_window.go:outerGroupAliases:`i < len(aliases) && aliases[i] != ""`
-// by exercising the second branch — empty alias →
+// alias-fallback branch of chplan.OuterGroupNames (output_names.go)
+// through the exemplars emitter: empty alias →
 // fallback to "g<i>". A break-mutant would terminate the loop early
 // and leave the second entry unfilled (panic on out-of-range slice
 // access in the caller).

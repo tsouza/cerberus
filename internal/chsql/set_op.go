@@ -162,29 +162,12 @@ func setOperationChildIdentity(row chplan.Schema) (string, string, bool) {
 	if row.Open {
 		return "", "", false
 	}
-	roleName := func(role chplan.ColumnRole) (string, bool) {
-		name := ""
-		count := 0
-		for _, column := range row.Columns {
-			if column.Role == role {
-				name = column.Name
-				count++
-			}
-		}
-		return name, count == 1 && name != ""
-	}
-	traceID, traceOK := roleName(chplan.RoleTraceID)
-	spanID, spanOK := roleName(chplan.RoleSpanID)
-	if !traceOK || !spanOK || traceID == spanID {
+	traceID, traceErr := row.UniqueNamedRole(chplan.RoleTraceID)
+	spanID, spanErr := row.UniqueNamedRole(chplan.RoleSpanID)
+	if traceErr != nil || spanErr != nil {
 		return "", "", false
 	}
-	for _, column := range row.Columns {
-		if (column.Name == traceID && column.Role != chplan.RoleTraceID) ||
-			(column.Name == spanID && column.Role != chplan.RoleSpanID) {
-			return "", "", false
-		}
-	}
-	return traceID, spanID, true
+	return traceID.Name, spanID.Name, true
 }
 
 // intersectQuery assembles the `&&` fallback shape described in
