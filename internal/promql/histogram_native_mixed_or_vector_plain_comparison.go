@@ -106,13 +106,12 @@ func comparisonVectorPlainOverMixedExpHistogramSetOp(expr parser.Expr, s schema.
 // lowerComparisonVectorPlainOverMixedExpHistogramSetOp lowers the shape
 // [comparisonVectorPlainOverMixedExpHistogramSetOp] recognised: lower the
 // mixed side, lower+widen the plain side
-// ([lowerPlainOperandForMixedJoin]), place them on
-// [chplan.MixedVectorJoin]'s Left/Right per mixedOnLeft (comparisons read
-// L's own fields unconditionally for the non-`bool` output — see
-// [lowerMixedVVCompareFilter]'s own doc for why that must be the
-// operator's syntactic LHS regardless of which side is mixed), and
-// dispatch to the SAME two fold functions
-// [lowerComparisonVectorVectorOverMixedExpHistogramSetOp] already uses.
+// ([lowerPlainOperandForMixedJoin]), place them on the join's Left/Right
+// per mixedOnLeft (comparisons read L's own fields unconditionally for
+// the non-`bool` output — see [lowerMixedVVCompareFilter]'s own doc for
+// why that must be the operator's syntactic LHS regardless of which side
+// is mixed), and fold through the SAME [lowerMixedVectorJoinBinary] the
+// both-mixed shape uses.
 func lowerComparisonVectorPlainOverMixedExpHistogramSetOp(
 	mixedSetOp *parser.BinaryExpr, plainExpr parser.Expr, mixedOnLeft bool, op chplan.BinaryOp,
 	match chplan.VectorMatch, card chplan.VectorCard, include []string, returnBool bool,
@@ -131,22 +130,5 @@ func lowerComparisonVectorPlainOverMixedExpHistogramSetOp(
 	if mixedOnLeft {
 		leftNode, rightNode = mixedNode, plainNode
 	}
-
-	join := &chplan.MixedVectorJoin{
-		Left:             leftNode,
-		Right:            rightNode,
-		Match:            match,
-		Card:             card,
-		Include:          include,
-		StepAligned:      ctx.step > 0,
-		MetricNameColumn: s.MetricNameColumn,
-		AttributesColumn: s.AttributesColumn,
-		TimestampColumn:  s.TimestampColumn,
-		ValueColumn:      s.ValueColumn,
-	}
-
-	if returnBool {
-		return lowerMixedVVCompareBool(join, op, s), nil
-	}
-	return lowerMixedVVCompareFilter(join, op, s), nil
+	return lowerMixedVectorJoinBinary(newMixedVectorJoin(leftNode, rightNode, match, card, include, s, ctx), op, returnBool, s, ctx)
 }

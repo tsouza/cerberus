@@ -42,15 +42,24 @@ func infoArgOverMixedExpHistogramSetOp(v parser.Expr, s schema.Metrics, ctx lowe
 }
 
 // lowerInfoOverMixedExpHistogramSetOp lowers the shape
-// [infoArgOverMixedExpHistogramSetOp] recognised: c's second argument (the
-// label-selector matchers) is resolved once and applied to both of b's
-// histogram/float partitions independently, then the two enriched results
-// are recombined into a single Mixed-shaped node.
+// [infoArgOverMixedExpHistogramSetOp] recognised: b's mixed union is built
+// and handed to [lowerInfoOverMixedPlan].
 func lowerInfoOverMixedExpHistogramSetOp(c *parser.Call, b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	histPart, floatPart, err := splitMixedExpHistogramSetOpByType(b, s, ctx)
+	mixed, err := lowerMixedExpHistogramSetOp(b, s, ctx)
 	if err != nil {
 		return nil, err
 	}
+	return lowerInfoOverMixedPlan(c, mixed, s, ctx)
+}
+
+// lowerInfoOverMixedPlan enriches a LIVE mixed relation — the direct `or`
+// above, or one an intermediate wrapper already lowered (cerberus issue
+// #3562: `info(sort_by_label(h or f, l))`): c's second argument (the
+// label-selector matchers) is resolved once and applied to the relation's
+// histogram and float partitions independently, then the two enriched
+// results are recombined into a single Mixed-shaped node.
+func lowerInfoOverMixedPlan(c *parser.Call, mixed chplan.Node, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	histPart, floatPart := wrapMixedHistogramPartition(mixed, s), wrapMixedFloatPartition(mixed, s)
 
 	nameMatchers, dataMatchers, err := infoSecondArgMatchers(c)
 	if err != nil {

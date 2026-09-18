@@ -1,0 +1,28 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_vector_join.go:lowerMixedVectorJoinBinary#1a222946",
+      "message": "promql: binary op %s over a mixed float/histogram operand is unsupported",
+      "class": "internal",
+      "rationale": "every caller's op comes from promBinaryOp: its six comparison ops take the isComparison arm and its seven arithmetic ops (ADD, SUB, MUL, DIV, POW, MOD, ATAN2) are enumerated by the three switch arms, so the default arm is reachable only by a chplan.BinaryOp promBinaryOp never produces.",
+      "evidence": {
+        "guard": [
+          "past returning if isComparison(op)",
+          "default of switch op over [case chplan.OpAdd, chplan.OpSub; case chplan.OpMul, chplan.OpDiv; case chplan.OpPow, chplan.OpMod, chplan.OpAtan2; default]"
+        ],
+        "callers": [
+          "lowerComparisonVectorPlainOverMixedExpHistogramSetOp",
+          "lowerComparisonVectorVectorOverMixedExpHistogramSetOp",
+          "lowerVectorPlainArithmeticOverMixedExpHistogramSetOp",
+          "lowerVectorVectorArithmeticOverMixedExpHistogramSetOp",
+          "lowerVectorVectorOverMixedPlan"
+        ],
+        "cited": [
+          "isComparison",
+          "promBinaryOp"
+        ]
+      }
+    }
+  ]
+}

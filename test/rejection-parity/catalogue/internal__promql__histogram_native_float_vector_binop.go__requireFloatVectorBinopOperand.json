@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_float_vector_binop.go:requireFloatVectorBinopOperand#bfc5df2d",
+      "message": "promql: internal invariant violated: a mixed float/histogram operand reached a histogram-vs-float-vector lowering",
+      "class": "internal",
+      "rationale": "expHistogramDroppingVectorBinop and expHistogramFloatVectorScalingBinop decline statically whenever isMixedRelationShape holds for either operand, and TestMixedRelationShapeAgreesWithEveryPolicyConsumer holds that predicate to the lowerings over every mixed-producing consumer the policy dispatch inventory names, so the float side of the two lowerings above lowers to a live mixed relation only for a producer that predicate does not name — an internal producer/predicate disagreement, not a query shape.",
+      "evidence": {
+        "guard": [
+          "if mixedRowsNeedPreparation(node)"
+        ],
+        "callers": [
+          "lowerExpHistogramDroppingVectorBinop",
+          "lowerExpHistogramFloatVectorScalingBinop"
+        ],
+        "cited": [
+          "expHistogramDroppingVectorBinop",
+          "expHistogramFloatVectorScalingBinop",
+          "isMixedRelationShape"
+        ]
+      }
+    }
+  ]
+}

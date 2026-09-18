@@ -72,12 +72,15 @@ func lowerUnary(u *parser.UnaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Nod
 	}
 	switch u.Op {
 	case parser.ADD:
-		// Unary `+` is the identity — lower the operand directly.
+		// Unary `+` is the identity — lower the operand directly. A live
+		// mixed operand (a mixed `or` an intermediate wrapper already
+		// lowered) is forwarded unchanged, the bespoke rule this family
+		// applies to it at its operand site too.
 		inner, err := lower(u.Expr, s, ctx)
 		if err != nil {
 			return nil, err
 		}
-		if err := requireMixedPlanPolicy(inner, mixedUnaryFamily, mixedPreserve); err != nil {
+		if err := requireMixedPlanPolicy(inner, mixedUnaryFamily, mixedBespoke); err != nil {
 			return nil, err
 		}
 		return inner, nil
@@ -85,6 +88,16 @@ func lowerUnary(u *parser.UnaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Nod
 		inner, err := lower(u.Expr, s, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("promql: unary operand: %w", err)
+		}
+		// A live mixed operand one level down (cerberus issue #3562:
+		// `-sort_by_label(h or f, l)`, `-limitk(k, h or f)`) is the same
+		// `* -1` scale fold the direct mixed-or case above applies —
+		// negating every histogram row in place rather than dropping it.
+		if mixedRowsNeedPreparation(inner) {
+			if err := requireMixedPlanPolicy(inner, mixedUnaryFamily, mixedBespoke); err != nil {
+				return nil, err
+			}
+			return scaleMixedPlan(inner, chplan.OpMul, &chplan.LitFloat{V: -1}, true, s)
 		}
 		return guardedValueProjection(inner, u.Expr, s, ctx, mixedUnaryFamily, func(refs sampleRoleRefs) chplan.Expr {
 			return &chplan.Binary{

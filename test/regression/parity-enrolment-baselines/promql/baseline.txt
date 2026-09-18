@@ -459,6 +459,7 @@ mixed_wrapper_clamp_nan.txtar
 mixed_wrapper_comparison_bool.txtar
 mixed_wrapper_date_mirror.txtar
 mixed_wrapper_date_shadow.txtar
+mixed_wrapper_histogram_count_shadow.txtar
 mixed_wrapper_min_grouped.txtar
 mixed_wrapper_min_mirror.txtar
 mixed_wrapper_quantile_phi.txtar
@@ -466,6 +467,9 @@ mixed_wrapper_round_computed.txtar
 mixed_wrapper_scalar_empty.txtar
 mixed_wrapper_scalar_mirror.txtar
 mixed_wrapper_scalar_shadow.txtar
+mixed_wrapper_scale_div_subquery.txtar
+mixed_wrapper_scale_left_limitk.txtar
+mixed_wrapper_scale_shadow.txtar
 mixed_wrapper_sort_by_label.txtar
 mixed_wrapper_sort_by_label_mirror.txtar
 mixed_wrapper_sort_mirror.txtar
@@ -474,6 +478,12 @@ mixed_wrapper_timestamp.txtar
 mixed_wrapper_timestamp_mirror.txtar
 mixed_wrapper_topk_computed.txtar
 mixed_wrapper_topk_mirror.txtar
+mixed_wrapper_unary_minus_shadow.txtar
+mixed_wrapper_vector_add_histogram_shadow.txtar
+mixed_wrapper_vector_add_self_shadow.txtar
+mixed_wrapper_vector_add_shadow.txtar
+mixed_wrapper_vector_compare_bool_shadow.txtar
+mixed_wrapper_vector_mul_histogram_shadow.txtar
 mod_arithmetic.txtar
 month_default.txtar
 month_of_vector.txtar

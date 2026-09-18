@@ -108,16 +108,18 @@ type mixedWrapperKey struct {
 // existing plan). Float aggregates are bespoke at the root, where their mixed
 // union still needs shadow resolution, and float-only at an existing plan.
 //
-// The unary existing-plan row is mixedPreserve for unary `+`, the identity
-// over an already-lowered mixed plan. Unary `-` over one is NOT admitted: it
-// would narrow to float rows and drop every histogram, whereas Prometheus
-// negates histograms in place. The scale, vector-arithmetic and
-// vector-comparison families likewise have no existing-plan row — their
-// generic float consumers would drop histogram rows (`* k`, `/ k`) or
-// fabricate a float sample from a histogram's placeholder Value (`+ up`,
-// `> bool up`). Lowering those nested mixed plans through the
-// discriminator-aware folds their direct roots already use is cerberus issue
-// #3562; until then they reject with the not-admitted error.
+// The unary, scale, vector-arithmetic and vector-comparison families are
+// bespoke at an existing plan exactly as at their root: a mixed relation an
+// intermediate wrapper already lowered scales in place under `* k`, `/ k`
+// and unary `-` ([scaleMixedPlan]), forwards unchanged under unary `+`, and
+// joins through the discriminator-aware fold under a vector-vector operator
+// ([lowerMixedVectorJoinBinary]) — never through the generic float
+// consumers, which would drop every histogram row or fabricate a float
+// sample from a histogram's placeholder Value.
+//
+// Every row is load-bearing by construction: the dispatch test removes each
+// row in turn and requires a real consumer to reject with that row's key, so
+// a row no consumer cites — a policy with no handler — cannot exist.
 var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedLeafFamily, mixedRootAdmission}:              mixedBespoke,
 	{mixedSumAvgFamily, mixedRootAdmission}:            mixedBespoke,
@@ -148,7 +150,10 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedMathFamily, mixedPlanAdmission}:              mixedFloatOnly,
 	{mixedDateFamily, mixedPlanAdmission}:              mixedFloatOnly,
 	{mixedTimestampFamily, mixedPlanAdmission}:         mixedBespoke,
-	{mixedUnaryFamily, mixedPlanAdmission}:             mixedPreserve,
+	{mixedUnaryFamily, mixedPlanAdmission}:             mixedBespoke,
+	{mixedScaleFamily, mixedPlanAdmission}:             mixedBespoke,
+	{mixedVectorArithmeticFamily, mixedPlanAdmission}:  mixedBespoke,
+	{mixedVectorComparisonFamily, mixedPlanAdmission}:  mixedBespoke,
 	{mixedArithmeticFamily, mixedPlanAdmission}:        mixedFloatOnly,
 	{mixedComparisonFamily, mixedPlanAdmission}:        mixedFloatOnly,
 	{mixedLabelFamily, mixedPlanAdmission}:             mixedPreserve,
@@ -181,8 +186,7 @@ func mixedOperandNotAdmitted(key mixedWrapperKey) error {
 // the caller names in `expected` — the rule that caller's own code applies.
 // The table is consulted for agreement only: a missing row, a row that names
 // a different rule, or a request for the fail-closed sentinels (mixedReject,
-// mixedPolicyClosed) rejects. Making the table SELECT the transform, so a row
-// can never disagree with the consumer that cites it, is cerberus issue #3562.
+// mixedPolicyClosed) rejects.
 func requireMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, expected mixedOperandPolicy) error {
 	key := mixedWrapperKey{family: family, site: site}
 	policy, ok := mixedOperandPolicies[key]

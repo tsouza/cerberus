@@ -101,6 +101,11 @@ func expHistogramFloatVectorScalingBinop(expr parser.Expr, s schema.Metrics, ctx
 	if err != nil {
 		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
+	// A mixed float/histogram relation on the other side is not a float
+	// vector — see [expHistogramDroppingVectorBinop]'s identical decline.
+	if isMixedRelationShape(b.LHS, s, ctx) || isMixedRelationShape(b.RHS, s, ctx) {
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
+	}
 	lhsHist := isExpHistogramValuedShape(b.LHS, s, ctx)
 	rhsHist := isExpHistogramValuedShape(b.RHS, s, ctx)
 
@@ -184,6 +189,9 @@ func lowerExpHistogramFloatVectorScalingBinop(histSide, floatSide parser.Expr, o
 	}
 	floatNode, err := lower(floatSide, s, ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireFloatVectorBinopOperand(floatNode); err != nil {
 		return nil, err
 	}
 	join := &chplan.HistogramFloatVectorJoin{

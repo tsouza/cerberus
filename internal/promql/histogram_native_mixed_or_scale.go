@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"fmt"
+
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -81,12 +83,13 @@ import (
 // — the issue's own suggested mechanism for a fully general passthrough
 // forwarder — because the two column sets this recognizer touches
 // (Value; the nine Histogram*Column fields) are already disjoint in which
-// row-shape reads them for real. A discriminator-keyed conditional would
-// still be needed for a wrapper whose transform reads the SAME output
-// column under two different real interpretations depending on payload
-// (vector-vector arithmetic/comparisons — #2449's other remaining piece,
-// deliberately not attempted here; see this issue's own tracking in
-// test/rejection-parity/catalogue).
+// row-shape reads them for real. A discriminator-keyed conditional IS
+// needed for a wrapper whose transform reads the SAME output column under
+// two different real interpretations depending on payload — the
+// vector-vector arithmetic and comparison folds
+// (histogram_native_mixed_or_vector_arithmetic.go /
+// histogram_native_mixed_or_vector_comparison.go) key on both sides'
+// discriminators for exactly that reason.
 func mulOrDivScaleOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar float64, scalarOnLeft, ok bool) {
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || (b.Op != parser.MUL && b.Op != parser.DIV) {
@@ -132,34 +135,66 @@ func mulOrDivScaleOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics,
 // lowerMulOrDivScaleOverMixedExpHistogramSetOp lowers the shape
 // [mulOrDivScaleOverMixedExpHistogramSetOp] recognised: build the same
 // Mixed [chplan.VectorSetOp] node the root-only leaf case does
-// ([lowerMixedExpHistogramSetOp]), then re-project ALL fourteen of its
-// columns in the exact order [internal/chclient/cursor.go]'s
-// shapeSampleMixed scan pins — MetricName, Attributes, Timestamp, Value,
-// the nine Histogram*Column fields, the discriminator — scaling Value by
-// `scalar OP Value` / `Value OP scalar` (mirrors [lowerVectorScalar]) and
-// the nine histogram fields by [scaleHistogramScalarExpr] /
-// [scaleHistogramLadderExpr]'s five-vs-four field split (mirrors
-// [scaleHistogramProjection]), and forwarding Attributes, Timestamp and
-// the discriminator unchanged.
-//
-// MetricName is forced to "" rather than forwarded: reference's
-// `changesMetricSchema` answers true for MUL and DIV, so Prom's own
-// DropName rule always strips `__name__` from an arithmetic-derived
-// sample — mirrors [lowerArithmeticOverMixedExpHistogramSetOp]'s
-// identical projection.
+// ([lowerMixedExpHistogramSetOp]), then scale it through
+// [scaleMixedPlan] — the one fold every scaling consumer of a live mixed
+// relation applies, whether the relation is this direct root or a plan an
+// intermediate wrapper already lowered (cerberus issue #3562).
 func lowerMulOrDivScaleOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar float64, scalarOnLeft bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	inner, err := lowerMixedExpHistogramSetOp(setOp, s, ctx)
 	if err != nil {
 		return nil, err
 	}
+	return scaleMixedPlan(inner, op, &chplan.LitFloat{V: scalar}, scalarOnLeft, s)
+}
 
-	scale := chplan.Expr(&chplan.LitFloat{V: scalar})
-	valueRef := chplan.Expr(&chplan.ColumnRef{Name: s.ValueColumn})
+// scaleMixedPlan scales a LIVE mixed relation by `scale` under `op` (MUL,
+// or histogram-left DIV): it re-projects ALL fourteen of the relation's
+// columns in the exact order [internal/chclient/cursor.go]'s
+// shapeSampleMixed scan pins — MetricName, Attributes, Timestamp, Value,
+// the nine Histogram*Column fields, the discriminator — scaling Value by
+// `scale OP Value` / `Value OP scale` (mirrors [lowerVectorScalar]) and
+// the nine histogram fields by [scaleHistogramScalarExpr] /
+// [scaleHistogramLadderExpr]'s five-vs-four field split (mirrors
+// [scaleHistogramProjection]), and forwarding Attributes, Timestamp and
+// the discriminator unchanged. See this file's header for why applying
+// the scale to BOTH arms unconditionally needs no discriminator-keyed
+// conditional.
+//
+// `scale` is any row-level expression: a literal for `<mixed> * 2`, `-1`
+// for unary minus, or a synthetic-scalar leg's own per-row value
+// (`<mixed> * scalar(...)`, `<mixed> * time()`).
+//
+// The relation's identity columns are resolved by ROLE, not by the
+// canonical names: a wrapper that re-projects a mixed relation under its
+// own column names still carries the roles ([mixedDiscriminatorFilter]'s
+// own contract), and the nine Histogram*Column fields are canonical by
+// construction ([chplan.Schema.HasHistogramPayload] admits no other
+// spelling). A live mixed schema carries the Attributes, Timestamp, Value
+// and discriminator roles exactly once — [chplan.Schema.SampleKind]
+// answers Mixed on no other shape — so each role is required outright.
+//
+// MetricName is forced to "" rather than forwarded: reference's
+// `changesMetricSchema` answers true for MUL and DIV, so Prom's own
+// DropName rule always strips `__name__` from an arithmetic-derived
+// sample — mirrors [lowerArithmeticOverMixedExpHistogramSetOp]'s
+// identical projection. No label-set collision guard is needed for the
+// drop: a mixed relation is the shadow-resolved union of two arms, so no
+// two of its rows share a label set at one step regardless of name.
+func scaleMixedPlan(inner chplan.Node, op chplan.BinaryOp, scale chplan.Expr, scalarOnLeft bool, s schema.Metrics) (chplan.Node, error) {
+	if kind := liveSampleKind(inner); kind != chplan.SampleKindMixed {
+		return nil, fmt.Errorf("promql: mixed scale operand has %s sample schema", kind)
+	}
+	row := inner.RowType()
+	attributes := requireSampleRole(row, chplan.RoleAttributes)
+	timestamp := requireSampleRole(row, chplan.RoleTimestamp)
+	value := requireSampleRole(row, chplan.RoleValue)
+	discriminator := requireSampleRole(row, chplan.RoleDiscriminator)
+
 	var valueExpr chplan.Expr
 	if scalarOnLeft {
-		valueExpr = &chplan.Binary{Op: op, Left: scale, Right: valueRef}
+		valueExpr = &chplan.Binary{Op: op, Left: scale, Right: value}
 	} else {
-		valueExpr = &chplan.Binary{Op: op, Left: valueRef, Right: scale}
+		valueExpr = &chplan.Binary{Op: op, Left: value, Right: scale}
 	}
 
 	scalarField := func(col string) chplan.Projection {
@@ -183,8 +218,8 @@ func lowerMulOrDivScaleOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op c
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			forwarded(s.AttributesColumn),
-			forwarded(s.TimestampColumn),
+			{Expr: attributes, Alias: s.AttributesColumn},
+			{Expr: timestamp, Alias: s.TimestampColumn},
 			{Expr: valueExpr, Alias: s.ValueColumn},
 			scalarField(chplan.HistogramCountColumn),
 			scalarField(chplan.HistogramSumColumn),
@@ -195,7 +230,7 @@ func lowerMulOrDivScaleOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op c
 			ladderField(chplan.HistogramPositiveBucketCountsColumn),
 			forwarded(chplan.HistogramNegativeOffsetColumn),
 			ladderField(chplan.HistogramNegativeBucketCountsColumn),
-			forwarded(mixedDiscriminatorColumn),
+			{Expr: discriminator, Alias: mixedDiscriminatorColumn},
 		},
 	}, nil
 }

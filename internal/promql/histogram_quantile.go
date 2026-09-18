@@ -317,12 +317,21 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		// idioms therefore provably holds no bucket data: lower the
 		// argument (preserving its own rejection/typing errors) and fold
 		// to zero rows, matching the reference's empty result.
+		//
+		// A mixed relation an intermediate wrapper already lowered
+		// (cerberus issue #3562: `histogram_quantile(0.9,
+		// sort_by_label(h or f, l))`) is not such a pipeline: its
+		// histogram partition is interpolated exactly as the direct mixed
+		// `or`'s is above.
 		inner, err := lower(c.Args[1], s, ctx)
 		if err != nil {
 			return nil, err
 		}
 		if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily, mixedBespoke); err != nil {
 			return nil, err
+		}
+		if mixedRowsNeedPreparation(inner) {
+			return lowerHistogramQuantileNativeOverProjection(wrapMixedHistogramPartition(inner, s), phi, s), nil
 		}
 		return &chplan.Filter{
 			Input:     inner,
