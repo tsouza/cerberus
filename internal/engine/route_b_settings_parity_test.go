@@ -38,7 +38,7 @@ func TestRouteBExecCtx_AppliesSettingsRules(t *testing.T) {
 
 	rules := routeBParityRules()
 	ctx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix,
-		&solver.Decision{K: 4}, routeBTestPlan(), 0, rules, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
+		&solver.Decision{K: 4}, routeBTestPlan(), 0, rules, 0, false, ResourceBoundOverrides{}, 1, 0, 0, nil, nil)
 	settings := chclient.QuerySettingsFromContext(ctx)
 
 	if got := settings[chclient.SettingWorkload]; got != rules.QueryWorkload {
@@ -99,7 +99,7 @@ func TestRouteBExecCtx_SettingsMatchRouteAAtK1(t *testing.T) {
 			routeA := chclient.QuerySettingsFromContext(routeACtx)
 
 			routeBCtx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix,
-				decision, p.plan, 0, rules, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
+				decision, p.plan, 0, rules, 0, false, ResourceBoundOverrides{}, 1, 0, 0, nil, nil)
 			routeB := chclient.QuerySettingsFromContext(routeBCtx)
 
 			if len(routeA) == 0 {
@@ -181,7 +181,7 @@ func TestRouteBExecCtx_ExpHistogramTwoLevelStampedOnBothRoutes(t *testing.T) {
 	e := &Engine{Settings: rules}
 	routeACtx, _ := e.execContext(context.Background(), plan, "promql", &solver.Decision{K: 1})
 	routeBCtx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, &solver.Decision{K: 1},
-		plan, memCap, rules, 0, false, ResourceBoundOverrides{}, 0, 0, nil, nil)
+		plan, memCap, rules, 0, false, ResourceBoundOverrides{}, 1, 0, 0, nil, nil)
 
 	routeA := chclient.QuerySettingsFromContext(routeACtx)
 	routeB := chclient.QuerySettingsFromContext(routeBCtx)

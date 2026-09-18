@@ -218,12 +218,6 @@ func TestConfigDocsPreambleDefaultsMatchBinary(t *testing.T) {
 	assertDocumented(t, doc, "CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS", goIntConst(t, lwrFanoutBoundFile, "maxRangeLWRFanoutRows"))
 	assertDocumented(t, doc, "CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS", goIntConst(t, rateWindowBoundFile, "maxRateWindowFanoutRows"))
 	assertDocumented(t, doc, "CERBERUS_CH_MAX_EMITTED_SQL_BYTES", goIntConst(t, emitSizeBoundFile, "maxEmittedSQLBytes"))
-	// The fold-cost ceiling is parsed by the same env file but has no
-	// preamble bullet of its own; pinned the moment the generator adds one,
-	// so the bullet cannot land with a stale literal.
-	if _, documented := doc["CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS"]; documented {
-		assertDocumented(t, doc, "CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS", goIntConst(t, lwrFanoutBoundFile, "maxRangeBucketFanoutFoldCostUnits"))
-	}
 
 	for name, d := range doc {
 		t.Errorf("%s: preamble documents (%s, default `%s`) but this test has no live source to pin it to — add one", name, d.kind, d.value)

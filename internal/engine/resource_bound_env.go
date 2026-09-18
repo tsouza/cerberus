@@ -28,10 +28,13 @@ import (
 //     nobody else needs to touch it. Issue #2733.
 //   - CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS — the fold cost
 //     of RangeBucketFanout's whole collapse OUTPUT
-//     (internal/chsql/lwr_fanout_bound.go,
-//     maxRangeBucketFanoutFoldCostUnits, default 15,000,000) — a second,
-//     independent axis from CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS' own
-//     pre-collapse sample fanout. Issues #3468, #3514.
+//     (internal/chsql/lwr_fanout_bound.go) — a second, independent axis
+//     from CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS' own pre-collapse
+//     sample fanout. Unlike the row ceilings its default is not a
+//     constant: unset, it is derived from CERBERUS_CH_QUERY_MAX_MEMORY
+//     (chsql.RangeBucketFanoutFoldCostUnitsForMemory, 15,000,000 units per
+//     GiB of cap), because the units it counts are a proxy for bytes.
+//     Issues #3468, #3514.
 //
 // Each constant is a compile-time resource-bound safety ceiling gating
 // query execution/plan shape that has already cost this repo two real
@@ -71,10 +74,10 @@ const (
 	EnvRateWindowFanoutMaxRows = "CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS"
 	// EnvMaxEmittedSQLBytes overrides maxEmittedSQLBytes.
 	EnvMaxEmittedSQLBytes = "CERBERUS_CH_MAX_EMITTED_SQL_BYTES"
-	// EnvRangeBucketFanoutFoldCostMaxUnits overrides
-	// maxRangeBucketFanoutFoldCostUnits (issues #3468, #3514) — the fold cost
-	// of RangeBucketFanout's whole collapse OUTPUT, a second, independent
-	// axis from EnvRangeBucketFanoutMaxRows' own pre-collapse sample fanout.
+	// EnvRangeBucketFanoutFoldCostMaxUnits pins the fold cost of
+	// RangeBucketFanout's whole collapse OUTPUT (issues #3468, #3514) — a
+	// second, independent axis from EnvRangeBucketFanoutMaxRows' own
+	// pre-collapse sample fanout — and opts out of its cap-derived default.
 	EnvRangeBucketFanoutFoldCostMaxUnits = "CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS"
 )
 
@@ -95,6 +98,16 @@ type ResourceBoundOverrides struct {
 	RateWindowFanoutMaxRows           int64
 	MaxEmittedSQLBytes                int64
 	RangeBucketFanoutFoldCostMaxUnits int64
+
+	// CHQueryMaxMemory is the deployment's configured ClickHouse per-query
+	// memory cap in bytes, and it is an INPUT to this struct rather than an
+	// override of its own — the same role it plays on
+	// promql.ResourceBounds: it is what RangeBucketFanoutFoldCostMaxUnits
+	// resolves from when unset (chsql.RangeBucketFanoutFoldCostUnitsForMemory).
+	// ResourceBoundsFrom leaves it 0; Engine.resourceBoundOverrides fills it
+	// from the Client's configured cap. 0 means no cap is configured, which
+	// resolves to the 1 GiB calibration.
+	CHQueryMaxMemory int64
 }
 
 // ResourceBoundsFromEnv is [ResourceBoundsFrom] over the process

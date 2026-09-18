@@ -121,17 +121,23 @@ func classifyRouteOutcomeAfter(route routememo.Route, err error, elapsed time.Du
 //
 // Every one of these counts a cost that scales with the request's own anchor
 // grid or with the raw rows its scan window admits, both of which a shard
-// divides. Sharding a query that tripped one of them genuinely lowers each
-// shard's cost below the same bound, which is exactly what makes the memo's
-// A->B escalation the right response.
-//
-// The three that remain are the FANOUT guards, and what qualifies them is not
-// that their cost shrinks — it is that their CEILING does not. routeBExecCtx
-// threads RangeBucketFanoutMaxRows / RangeLWRFanoutMaxRows /
-// RateWindowFanoutMaxRows to the shards verbatim (applyResourceBoundOverrides),
-// un-apportioned, while each shard's cost falls with its narrower window. Cost
-// down, ceiling unchanged: a shard really can pass a bound the whole query
-// failed, so the escalation can succeed.
+// divides: a shard of a K-way split carries about 1/K of the whole query's
+// fan-out rows. What makes the escalation able to SUCCEED is how the shard's
+// ceiling is apportioned. routeBExecCtx threads each of these four ceilings
+// to a shard divided by the shard's memory share — min(K, Parallel, gate/2)
+// x DataShardCount, the upper bound on the kEff x DataShardCount the shard's
+// max_memory_usage is actually cut by (apportionFanoutBounds,
+// solver.Executor.ShardMemoryDivisor) — never by K itself and never
+// verbatim. A route-A rejection at rows in (R, K x R] therefore splits into
+// shards of rows/K judged against R/divisor: the shard passes exactly when
+// its rows fit the memory it runs under, rows <= K x R/divisor, and a shard
+// that passes its guard never dies on ClickHouse's code 241 for memory the
+// guard already knew about. That rescue window is non-empty whenever
+// K > divisor — the default Parallel=3 against K=8 keeps rows in (R, 2.67R]
+// — which is what makes a rejection here evidence worth a route-B dispatch.
+// The two ways of getting this wrong each empty the window: threading the
+// whole-query ceiling verbatim admits shards that then OOM, and dividing by K
+// judges rows/K against R/K, the inequality route A already failed.
 //
 // Deliberately EXCLUDED, and the exclusion is the load-bearing half.
 //
@@ -146,10 +152,9 @@ func classifyRouteOutcomeAfter(route routememo.Route, err error, elapsed time.Du
 // The two RangeBucketGridNative budgets are excluded for a THIRD reason, and
 // it is a reason that did not exist when this list was written (cerberus issue
 // #3184). Since #2705, routeBExecCtx apportions BOTH RBGN ceilings by K
-// (apportionRangeBucketGridNativeBounds) — it has to, or a shard would be
-// guarded against a whole-query ceiling while running under 1/K of the memory.
-// But that makes the pass/fail verdict K-INVARIANT, because the ceiling now
-// shrinks in lockstep with the cost:
+// (apportionRangeBucketGridNativeBounds) — a coarser upper bound on kEff than
+// the fan-out ceilings above use, and the one that makes the pass/fail
+// verdict K-INVARIANT, because the ceiling shrinks in lockstep with the cost:
 //
 //	route A rejects iff   groups x anchors       >  maxRows
 //	a shard rejects iff   groups x anchors / K   >  maxRows / K
@@ -160,17 +165,15 @@ func classifyRouteOutcomeAfter(route routememo.Route, err error, elapsed time.Du
 // is purely 1/K. The density bound behaves the same way — both its terms scale
 // ~1/K against a ceiling that scales exactly 1/K — and is if anything worse on
 // route B, since each shard's scan is widened by Offset+Range so its raw rows
-// exceed a clean 1/K share.
-//
-// So every RBGN escalation is a guaranteed re-failure that spends one of
+// exceed a clean 1/K share. Route B is not an escape valve for a
+// `groups`-dominated classic histogram (cerberus issue #3165), so that guard
+// keeps the coarser proxy and stays off this list: every RBGN escalation
+// would be a guaranteed re-failure that spends one of
 // maxConcurrentRoutedDispatches to reproduce the verdict route A just
-// produced. That is precisely the "escalation that cannot succeed, spending a
-// dispatch to fail again" this exclusion list exists to prevent — the same
-// test the merge budgets were excluded under, applied to a bound that only
-// became K-invariant later. engine.go's own apportionment doc reaches the
-// identical conclusion ("the pass/fail verdict is mathematically invariant to
-// K ... for that shape sharding is not an escape valve"); the two statements
-// disagreed until this exclusion landed.
+// produced — precisely the "escalation that cannot succeed, spending a
+// dispatch to fail again" this exclusion list exists to prevent. engine.go's
+// apportionment doc on routeBExecCtx states the same rule from the other
+// side.
 //
 // The operator remedy is unchanged and is not routing: size
 // CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_{ROWS,DENSITY_UNITS} for the metric's
@@ -192,11 +195,9 @@ var timeSliceableResourceBoundMessages = []string{
 	// RangeBucketFanoutGroupBudgetMessage (issue #3468) counts a cost —
 	// (series, anchor) group count feeding a groupArray-accumulating
 	// window fold — that scales with the request's own anchor grid
-	// exactly like its three siblings above, and a time-sliced shard's
-	// narrower grid genuinely lowers it while the ceiling stays whole-query
-	// (routeBExecCtx threads RangeBucketFanoutFoldCostMaxUnits to every
-	// shard verbatim, via applyResourceBoundOverrides) — the same qualifying
-	// reasoning this list's own doc comment gives for the other three.
+	// exactly like its three siblings above, and its ceiling is
+	// apportioned to the shard's memory share exactly like theirs
+	// (apportionFanoutBounds), so the same rescue window applies.
 	chsql.RangeBucketFanoutGroupBudgetMessage,
 }
 

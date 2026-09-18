@@ -220,6 +220,15 @@ func emitForHead(
 // compiled-in, calibrated default exactly as if this function were never
 // called. Shared by emitForHead (route A) and routeBExecCtx (route B) so
 // both dispatch the identical resolved bound for the same Engine.
+//
+// The fold-cost ceiling is the one exception: it is ALWAYS threaded, as the
+// RESOLVED value — the operator's override when set, else the ceiling
+// chsql.RangeBucketFanoutFoldCostUnitsForMemory derives from
+// bounds.CHQueryMaxMemory. Its default is a function of the deployment's
+// memory cap, which chsql cannot see (it may not import internal/config
+// and reads no Client), so leaving it unthreaded would not select "the
+// default" — it would select the 1 GiB calibration regardless of the cap
+// the query actually runs under.
 func applyResourceBoundOverrides(ctx context.Context, bounds ResourceBoundOverrides) context.Context {
 	if bounds.RangeBucketFanoutMaxRows > 0 {
 		ctx = chsql.WithRangeBucketFanoutMaxRows(ctx, bounds.RangeBucketFanoutMaxRows)
@@ -233,10 +242,32 @@ func applyResourceBoundOverrides(ctx context.Context, bounds ResourceBoundOverri
 	if bounds.MaxEmittedSQLBytes > 0 {
 		ctx = chsql.WithMaxEmittedSQLBytes(ctx, bounds.MaxEmittedSQLBytes)
 	}
-	if bounds.RangeBucketFanoutFoldCostMaxUnits > 0 {
-		ctx = chsql.WithRangeBucketFanoutFoldCostMaxUnits(ctx, bounds.RangeBucketFanoutFoldCostMaxUnits)
-	}
+	ctx = chsql.WithRangeBucketFanoutFoldCostMaxUnits(ctx, chsql.ResolveRangeBucketFanoutFoldCostMaxUnits(
+		bounds.RangeBucketFanoutFoldCostMaxUnits, bounds.CHQueryMaxMemory,
+	))
 	return ctx
+}
+
+// apportionFanoutBounds returns bounds with each of the four fan-out
+// ceilings — RangeBucketFanoutMaxRows, RangeLWRFanoutMaxRows,
+// RateWindowFanoutMaxRows and RangeBucketFanoutFoldCostMaxUnits — resolved
+// to its whole-query value (override or default, chsql's Resolve… family)
+// and divided by divisor, the factor a route-B shard's memory is smaller
+// than the whole query's (Engine.shardMemoryDivisor). MaxEmittedSQLBytes
+// and CHQueryMaxMemory pass through: a statement-size bound is not a
+// memory bound, and the cap is the input the fold-cost default was resolved
+// from, not a ceiling. Every result is > 0, so applyResourceBoundOverrides
+// threads all four; resolving BEFORE dividing is what keeps a zero
+// ("unset") field from dividing to a zero chsql reads back as "unset" — the
+// same contract apportionRangeBucketGridNativeBounds carries.
+func apportionFanoutBounds(bounds ResourceBoundOverrides, divisor int64) ResourceBoundOverrides {
+	bounds.RangeBucketFanoutMaxRows = apportionBound(chsql.ResolveRangeBucketFanoutMaxRows(bounds.RangeBucketFanoutMaxRows), divisor)
+	bounds.RangeLWRFanoutMaxRows = apportionBound(chsql.ResolveRangeLWRFanoutMaxRows(bounds.RangeLWRFanoutMaxRows), divisor)
+	bounds.RateWindowFanoutMaxRows = apportionBound(chsql.ResolveRateWindowFanoutMaxRows(bounds.RateWindowFanoutMaxRows), divisor)
+	bounds.RangeBucketFanoutFoldCostMaxUnits = apportionBound(
+		chsql.ResolveRangeBucketFanoutFoldCostMaxUnits(bounds.RangeBucketFanoutFoldCostMaxUnits, bounds.CHQueryMaxMemory), divisor,
+	)
+	return bounds
 }
 
 // resourceBoundOverrides packages e's own RangeBucketFanoutMaxRows /
@@ -245,7 +276,10 @@ func applyResourceBoundOverrides(ctx context.Context, bounds ResourceBoundOverri
 // conversion point every emitForHead / routeBExecCtx call site below uses,
 // so an Engine that never wired these three fields (Engine{} in a test, or
 // the Tempo head) passes the zero ResourceBoundOverrides that threads
-// nothing.
+// nothing. CHQueryMaxMemory rides along from the Client's configured cap
+// (configuredMemoryCap) so the fold-cost ceiling's cap-derived default
+// tracks the deployment; an Engine with no Client passes 0, the "no cap"
+// input that resolves to the 1 GiB calibration.
 func (e *Engine) resourceBoundOverrides() ResourceBoundOverrides {
 	return ResourceBoundOverrides{
 		RangeBucketFanoutMaxRows:          e.RangeBucketFanoutMaxRows,
@@ -253,6 +287,7 @@ func (e *Engine) resourceBoundOverrides() ResourceBoundOverrides {
 		RateWindowFanoutMaxRows:           e.RateWindowFanoutMaxRows,
 		MaxEmittedSQLBytes:                e.MaxEmittedSQLBytes,
 		RangeBucketFanoutFoldCostMaxUnits: e.RangeBucketFanoutFoldCostMaxUnits,
+		CHQueryMaxMemory:                  e.configuredMemoryCap(),
 	}
 }
 
@@ -943,6 +978,21 @@ func (e *Engine) queryMemoryCap() int64 {
 	return 0
 }
 
+// configuredMemoryCap returns CERBERUS_CH_QUERY_MAX_MEMORY as configured —
+// the whole-query cap, before any DataShardCount apportionment — or 0 when
+// the Client exposes none. It is the cap a cap-derived resource-bound
+// ceiling is scaled from (ResourceBoundOverrides.CHQueryMaxMemory: the
+// ceilings are calibrated against the configured cap, exactly as
+// internal/config derives the RangeBucketGridNative density bound from it),
+// as distinct from queryMemoryCap, the per-statement cap the spill
+// thresholds are sized from.
+func (e *Engine) configuredMemoryCap() int64 {
+	if mc, ok := e.Client.(memoryCapQuerier); ok {
+		return mc.MaxQueryMemoryBytes()
+	}
+	return 0
+}
+
 // Engine owns the shared dependencies (optimizer, ClickHouse client)
 // and runs the pipeline loop. One Engine instance lives in each
 // handler; the per-language differences are supplied by the Lang
@@ -1089,11 +1139,16 @@ type Engine struct {
 	// independent axis from RangeBucketFanoutMaxRows above (that one bounds
 	// the PRE-collapse sample fanout; this one bounds what the whole collapse
 	// output costs the groupArray-accumulating downstream fold — see
-	// chsql.maxRangeBucketFanoutFoldCostUnits' own doc). PromQL-only, for the
-	// identical reason RangeBucketFanoutMaxRows is: only internal/promql
-	// ever lowers a chplan.RangeBucketFanout. The zero Go value (0) is the
-	// same "operator did not override this one" sentinel the other three
-	// fields above use.
+	// chsql.rangeBucketFanoutFoldCostUnitsPerGiB's own doc). PromQL-only,
+	// for the identical reason RangeBucketFanoutMaxRows is: only
+	// internal/promql ever lowers a chplan.RangeBucketFanout. The zero Go
+	// value (0) is the same "operator did not override this one" sentinel
+	// the other three fields above use — but what an unset value resolves
+	// to differs: not a compiled-in constant, but the ceiling
+	// chsql.RangeBucketFanoutFoldCostUnitsForMemory derives from the
+	// Client's configured CERBERUS_CH_QUERY_MAX_MEMORY (resourceBoundOverrides
+	// supplies the cap; applyResourceBoundOverrides resolves and threads it
+	// on every emit).
 	RangeBucketFanoutFoldCostMaxUnits int64
 
 	// MaxEmittedSQLBytes mirrors the operator override for chsql's
@@ -1885,57 +1940,58 @@ func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*so
 // plan it is emitted for, so on a shard it bounds that shard's real cost —
 // which is the per-query-cap question route B exists to answer here.
 //
-// APPORTIONED BY decision.K (issue #2705), not threaded verbatim. Every
-// shard used to receive the WHOLE-QUERY ceiling unchanged while running
-// against only 1/kEff of the memory (executor.go's perShardMemoryBytes
-// divides that cap by kEff before stamping it per-shard) — so a shard's
-// density guard could be up to K times too permissive relative to what the
-// shard is actually allowed to use, and a shard could pass its own
-// pre-flight guard and still be aborted by ClickHouse's real memory limit:
-// the exact "sailed past the guard and died on ClickHouse's own limit" mode
-// #2677/#2681 closed for route A, reopened here for route B.
+// Every resource-bound ceiling this function threads to a shard is
+// APPORTIONED to the shard's memory share, never threaded verbatim. The one
+// rule: a whole-query ceiling is calibrated against the whole-query cap, and
+// a shard runs under cap/(kEff x DataShardCount) (executor.go's
+// perShardMemoryBytes), so the shard's guard is that ceiling divided by the
+// same factor. A shard that passes its guard then fits in the memory it
+// actually runs under, and never dies on ClickHouse's code 241 for memory
+// its guard already knew about — the "sailed past the guard and died on
+// ClickHouse's own limit" mode #2677/#2681 closed for route A. Route A keeps
+// the whole-query ceiling: its one statement runs under the whole cap.
 //
-// decision.K rather than the executor's exact kEff: kEff is computed inside
-// solver.Executor strictly AFTER the emit loop that needs the apportioned
-// ceiling (internal/solver cannot import internal/chsql to cross that
-// boundary earlier), while decision.K is already materialized on the
-// Decision this function receives — and K is always >= kEff (kEff =
-// min(K, pEff, gate/2)), so dividing by K is a SAFE, never-looser-than-
-// correct apportionment: it can only make the guard MORE conservative than
-// the shard's real allowance, never less. The residual cost is a possible
-// over-rejection when admission throttles pEff/gate below K, which falls
-// back through the failure-driven route memo exactly as a real resource
-// rejection does — acceptable for a guard whose whole purpose is refusing
-// early rather than dying mid-scan.
+// kEff itself is not known here — solver.Executor computes it strictly
+// AFTER the emit loop this ctx feeds (internal/solver cannot import
+// internal/chsql to cross that boundary earlier) — so each guard divides by
+// an UPPER bound on kEff x DataShardCount, which can only make it more
+// conservative than the shard's real allowance, never less. Two upper
+// bounds are in use, and which one a guard gets follows from whether the
+// route memo escalates on it:
 //
-// Resolved via chsql.ResolveRangeBucketGridNativeMaxRows/
-// …MaxDensityUnits BEFORE dividing, not divided raw: a caller's 0 means
-// "no override, use chsql's compiled-in default" (see those constants' own
-// doc), not "unlimited" — unlike the memory cap's genuine unlimited-at-0
-// sentinel (executor.go's own comment), so dividing 0 by K here would
-// silently ask WithRangeBucketGridNativeMax{Rows,DensityUnits} to fall
-// back to the FULL, un-apportioned default instead of an apportioned one.
+//   - The four FAN-OUT ceilings (apportionFanoutBounds:
+//     RangeBucketFanoutMaxRows, RangeLWRFanoutMaxRows,
+//     RateWindowFanoutMaxRows, RangeBucketFanoutFoldCostMaxUnits) divide by
+//     shardMemoryDivisor = min(K, Parallel, gate/2) x DataShardCount
+//     (solver.Executor.ShardMemoryDivisor), the tightest bound the emit seam
+//     can know. These guards ARE the A->B escalation
+//     (timeSliceableResourceBoundMessages): a route-A rejection at
+//     rows in (R, K x R] splits into shards of rows/K, and the shard guard
+//     R/divisor admits exactly the shards whose rows fit their share —
+//     rows <= K x R/divisor. That rescue window is non-empty whenever
+//     K > divisor (the default Parallel=3 against K=8: rows in (R, 2.67R]),
+//     and it is the window the guard can keep; dividing by K instead
+//     (rows/K against R/K, the inequality route A already failed) would
+//     empty it and make every escalation a dispatch spent to fail again.
+//   - The two RangeBucketGridNative ceilings
+//     (apportionRangeBucketGridNativeBounds, issue #2705) divide by
+//     decision.K, which is >= kEff and so is also safe. Those guards are
+//     deliberately NOT escalated on (timeSliceableResourceBoundMessages'
+//     own doc, cerberus issues #3165/#3184): route B is not an escape valve
+//     for a `groups`-dominated classic histogram, so the coarser proxy
+//     costs nothing there and keeps the verdict K-invariant.
 //
-// This apportionment does NOT relieve a `groups`-dominated query (a
-// wide-bucket classic histogram at high series cardinality) — investigated
-// and confirmed correct, not a bug, in cerberus issue #3165. The density
-// bound is itself derived linearly from the memory cap
-// (rbgnDensityUnitsForMemory), so dividing the whole-query bound by K is
-// arithmetically the same as re-deriving it from the shard's own real,
-// apportioned cap (memCap/K) — self-consistent, not a drift. `groups`
-// (series x rung cardinality) does not shrink under TIME-based sharding
-// the way `anchors` (window/step) does, so a shard's real cost and its
-// apportioned budget shrink by the same 1/K factor: the pass/fail verdict
-// is mathematically invariant to K. For that shape sharding is not an
-// escape valve, unlike the row-count/anchor-dominated case the "routes to
-// a sharded execution rather than failing it outright" framing above
-// describes — the operator has to size CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS
-// for the metric's real, un-apportioned cost instead.
+// Resolved via chsql's Resolve… family BEFORE dividing, not divided raw: a
+// caller's 0 means "no override, use chsql's compiled-in default" (see those
+// constants' own doc), not "unlimited" — unlike the memory cap's genuine
+// unlimited-at-0 sentinel (executor.go's own comment), so dividing 0 here
+// would silently ask the With… setters to fall back to the FULL,
+// un-apportioned default instead of an apportioned one.
 func routeBExecCtx(
 	ctx context.Context, langName, responseShape string, decision *solver.Decision,
 	plan chplan.Node, memCap int64, rules SettingsRules,
 	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
-	bounds ResourceBoundOverrides,
+	bounds ResourceBoundOverrides, shardMemoryDivisor int64,
 	rangeBucketGridNativeMaxRows, rangeBucketGridNativeMaxDensityUnits int64,
 	actualsTracker *actuals.Tracker,
 	attrStrategies chsql.AttrStrategies,
@@ -1992,7 +2048,7 @@ func routeBExecCtx(
 	// reason DeltaPrefixLookback is above — see Engine.DeltaPrefixReadEnabled's
 	// doc and emitForHead's matching call.
 	ctx = chsql.WithDeltaPrefixReadEnabled(ctx, deltaPrefixReadEnabled)
-	ctx = applyResourceBoundOverrides(ctx, bounds)
+	ctx = applyResourceBoundOverrides(ctx, apportionFanoutBounds(bounds, shardMemoryDivisor))
 	apportionedRows, apportionedDensityUnits := apportionRangeBucketGridNativeBounds(
 		rangeBucketGridNativeMaxRows, rangeBucketGridNativeMaxDensityUnits, decisionK(decision),
 	)
@@ -2036,23 +2092,37 @@ func decisionK(decision *solver.Decision) int64 {
 	return int64(decision.K)
 }
 
-// apportionRangeBucketGridNativeBounds divides the resolved (override-or-
-// default, see chsql.ResolveRangeBucketGridNativeMaxRows's own doc)
-// whole-query RangeBucketGridNative ceilings by k, flooring each at 1 so a
-// pathological k > ceiling configuration stamps a real (if tiny) bound
-// rather than 0 — which chsql's own ctx lookup would read back as "absent,
-// use the un-apportioned default" (see WithRangeBucketGridNativeMaxRows's
-// doc), the opposite of what apportioning means.
-func apportionRangeBucketGridNativeBounds(rows, densityUnits, k int64) (int64, int64) {
-	apportion := func(resolved int64) int64 {
-		v := resolved / k
-		if v < 1 {
-			v = 1
-		}
+// shardMemoryDivisor is the factor every fan-out ceiling threaded to a
+// route-B shard is divided by (routeBExecCtx, apportionFanoutBounds): the
+// Executor's ShardMemoryDivisor for decision's K — min(K, Parallel, gate/2)
+// x DataShardCount, the upper bound on kEff x DataShardCount the emit seam
+// can know. Only reached from the four routed dispatch sites, each of which
+// hands the ctx straight to e.Solver.Executor.Execute, so the Executor is
+// non-nil here by the same construction.
+func (e *Engine) shardMemoryDivisor(decision *solver.Decision) int64 {
+	return e.Solver.Executor.ShardMemoryDivisor(int(decisionK(decision)))
+}
+
+// apportionBound divides a RESOLVED whole-query ceiling by divisor, flooring
+// at 1 so a pathological divisor > ceiling configuration stamps a real (if
+// tiny) bound rather than 0 — which chsql's ctx readers and emitter
+// accessors would read back as "absent, use the un-apportioned default",
+// the opposite of what apportioning means. Shared by
+// apportionRangeBucketGridNativeBounds and apportionFanoutBounds so the two
+// carry one floor.
+func apportionBound(resolved, divisor int64) int64 {
+	if v := resolved / divisor; v > 0 {
 		return v
 	}
-	return apportion(chsql.ResolveRangeBucketGridNativeMaxRows(rows)),
-		apportion(chsql.ResolveRangeBucketGridNativeMaxDensityUnits(densityUnits))
+	return 1
+}
+
+// apportionRangeBucketGridNativeBounds divides the resolved (override-or-
+// default, see chsql.ResolveRangeBucketGridNativeMaxRows's own doc)
+// whole-query RangeBucketGridNative ceilings by k (apportionBound).
+func apportionRangeBucketGridNativeBounds(rows, densityUnits, k int64) (int64, int64) {
+	return apportionBound(chsql.ResolveRangeBucketGridNativeMaxRows(rows), k),
+		apportionBound(chsql.ResolveRangeBucketGridNativeMaxDensityUnits(densityUnits), k)
 }
 
 // decisionHasTSGridNative reports whether ANY shard plan of decision carries a
@@ -2094,7 +2164,8 @@ func (e *Engine) executeRouted(
 		routeBExecCtx(
 			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings(),
 			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
-			e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
+			e.resourceBoundOverrides(), e.shardMemoryDivisor(decision),
+			e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
 			attrStrategiesForLang(lang),
 		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
@@ -2634,7 +2705,8 @@ func (e *Engine) executeRoutedCursor(
 		routeBExecCtx(
 			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings(),
 			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
-			e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
+			e.resourceBoundOverrides(), e.shardMemoryDivisor(decision),
+			e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
 			attrStrategiesForLang(lang),
 		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)

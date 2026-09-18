@@ -29,13 +29,17 @@ func throwIfErr(msg string) error {
 // would be strictly worse than the loose one: terminal for exactly the queries
 // route B can answer.
 //
-// That argument holds for exactly the guards whose CEILING route B leaves
-// alone. routeBExecCtx threads these three fan-out ceilings to the shards
-// un-apportioned while each shard's window shrinks, so a shard can genuinely
-// pass a bound the whole query failed. The two RangeBucketGridNative budgets
-// used to be in this list and are NOT any more — #2705 made their ceilings
-// K-apportioned, which makes their verdict K-invariant; see the sibling test
-// below and timeSliceableResourceBoundMessages' own doc.
+// That argument holds for exactly the guards whose ceiling route B
+// apportions to the shard's MEMORY SHARE rather than to K. routeBExecCtx
+// divides these four fan-out ceilings by min(K, Parallel, gate/2) x
+// DataShardCount (apportionFanoutBounds) while each shard's window shrinks
+// by 1/K, so a shard can genuinely pass a bound the whole query failed and
+// still fit the memory it runs under — see
+// TestRouteB_FanoutGuardVerdictMatchesShardMemoryShare. The two
+// RangeBucketGridNative budgets used to be in this list and are NOT any
+// more — #2705 made their ceilings K-apportioned, which makes their verdict
+// K-invariant; see the sibling test below and
+// timeSliceableResourceBoundMessages' own doc.
 func TestClassifyRouteOutcome_TimeSliceableBoundsAreResourceFailures(t *testing.T) {
 	t.Parallel()
 
@@ -43,6 +47,7 @@ func TestClassifyRouteOutcome_TimeSliceableBoundsAreResourceFailures(t *testing.
 		chsql.RangeBucketFanoutBudgetMessage,
 		chsql.RangeLWRFanoutBudgetMessage,
 		chsql.RateWindowFanoutBudgetMessage,
+		chsql.RangeBucketFanoutGroupBudgetMessage,
 	} {
 		got := classifyRouteOutcome(routememo.RouteA, throwIfErr(msg))
 		if got != routememo.OutcomeResourceFailure {
