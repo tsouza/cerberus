@@ -82,6 +82,39 @@ branch as shields.io badge JSON; the README shows them live. On
   buckets. Count, sum and zero-count are exact at any scale; only the
   bucket ladder, and any quantile read from it, is coarser. Prometheus
   merges at the minimum scale with sparse spans and applies no budget.
+- **Native-grid duplicate-timestamp NaN survivor**: when a query lowers
+  onto a `timeSeries*ToGrid` aggregate (the auto-enabled `ts_grid_*`
+  features on a server >= 25.9 — see
+  [`clickhouse-optimizations.md`](clickhouse-optimizations.md)) and one
+  series carries two samples at the SAME timestamp, one of them `NaN`, the
+  sample that survives depends on the order the rows reach the aggregate,
+  not on the sample multiset. Prometheus, and cerberus's own array-fold
+  fan-out, always answer from the same survivor (`arraySort` ranks `NaN`
+  greatest). Reproduced on chDB 26.5.1.1 directly against the aggregate,
+  isolated from cerberus's lowering:
+
+  ```sql
+  SELECT gv FROM (
+    SELECT
+      timeSeriesDeltaToGrid(toDateTime(60), toDateTime(60), 60, 60)(ts, val) AS grid,
+      timeSeriesRange(toDateTime(60), toDateTime(60), 60) AS grid_ts
+    FROM (
+      SELECT toDateTime(20) AS ts, nan AS val
+      UNION ALL SELECT toDateTime(20), 25.0
+      UNION ALL SELECT toDateTime(50), 40.0
+    )
+  ) ARRAY JOIN grid AS gv, grid_ts AS gt
+  SETTINGS allow_experimental_time_series_aggregate_functions = 1
+  -- NaN inserted first: returns nan. Swap the first two rows: returns 30.
+  ```
+
+  `timeSeriesRateToGrid` over the same rows answers `nan` / `0.5` the same
+  way; the two instant members (`timeSeriesInstantRateToGrid`,
+  `timeSeriesInstantDeltaToGrid`) invert which order keeps the finite sample.
+  The shape needs two samples at one series' exact timestamp with one of
+  them `NaN`; a window without such a duplicate is unaffected, and
+  `CERBERUS_CH_OPTIMIZATIONS=off` (or a list omitting the `ts_grid_*` ids)
+  keeps every query on the order-independent fan-out.
 - **Posture**: every case passes; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
   a real reference. (Parity drift is report-only in CI; the score is a
