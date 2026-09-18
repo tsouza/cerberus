@@ -110,7 +110,7 @@ func evaluateLokiParity(
 			return nil, fmt.Errorf("fixture %s: %w", c.Name, rerr)
 		}
 		if reads {
-			return nil, parityRefusal(fmt.Errorf(
+			return nil, parityRefusal(refusalEmptySeedForSelector, fmt.Errorf(
 				"fixture %s: seed produced no readable streams, so the reference engine would "+
 					"trivially agree with any answer", c.Name,
 			))
