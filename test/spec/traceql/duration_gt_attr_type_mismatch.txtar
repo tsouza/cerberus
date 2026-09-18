@@ -24,7 +24,7 @@ Filter predicate=(Duration > FnToFloat64OrNull(SpanAttributes["budget_ns"]))
 SELECT * FROM `otel_traces` WHERE (`Duration` > toFloat64OrNull(`SpanAttributes`[?]))
 -- parity_exempt --
 reason: oracle-untyped-attributes
-detail: `{ duration > span.budget_ns }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)
+detail: `{ duration > span.budget_ns }` compares the attribute against the `duration` INTRINSIC, not a literal, so collectAttrTypeHints records no type for span.budget_ns and the reference engine compares a Duration static against a String static (never equal, never ordered) where cerberus casts the attribute through toFloat64OrNull
 -- args_optimized --
 [0] string = "__cerberus_traceID"
 [1] string = "__cerberus_parentSpanID"

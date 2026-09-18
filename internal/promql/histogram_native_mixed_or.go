@@ -37,7 +37,7 @@ import (
 // Histogram*Column outputs, and a trailing per-row discriminator — with
 // the arm that doesn't natively have one half of that shape publishing
 // placeholders for it (see [chplan.VectorSetOp.Mixed]'s doc comment).
-// [chplan.RowShapeOf] answers [chplan.MixedRowShape] for the result;
+// [chplan.LiveSampleKind] answers [chplan.SampleKindMixed] for the result;
 // internal/chsql/vector_set_op.go's emitMixedVectorSetOp is the SQL
 // shape and internal/chclient/cursor.go's shapeSampleMixed is the decode
 // side that reads the discriminator per row.

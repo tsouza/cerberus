@@ -1027,8 +1027,7 @@ jobs:
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         if: env.RUN_SHARD == 'true'
         with:
-          tool: just
-
+          tool: just@1.46.0
       # cerberus is deployed via its Helm chart in `just e2e-up` (dogfooding
       # the published chart), so the runner needs helm.
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
@@ -1430,8 +1429,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - uses: ./.github/actions/registry-login
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -1458,20 +1456,14 @@ jobs:
             "$CH_IMAGE"
 
       - name: Wait for ClickHouse
-        run: |
-          # Poll for up to 2 minutes — Ubuntu-base CH typically opens
-          # 8123 within 10–20s. wget runs inside the container
-          # (busybox-style is fine; full Ubuntu wget is also fine).
-          for i in $(seq 1 24); do
-            if docker exec clickhouse wget -q --spider http://localhost:8123/ping; then
-              echo "ClickHouse ready after $((i*5))s"
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "ClickHouse failed to become ready after 2 minutes"
-          docker logs --tail 100 clickhouse
-          exit 1
+        # Polls for up to 2 minutes — Ubuntu-base CH typically opens 8123
+        # within 10–20s. The probe (wget --spider) runs inside the container.
+        env:
+          CONTAINER: clickhouse
+          URL: http://localhost:8123/ping
+          DEADLINE_SECONDS: "120"
+          POLL_INTERVAL_SECONDS: "5"
+        run: node .github/scripts/wait-container-ready.mjs
 
       - name: Run startup benchmark
         env:
@@ -1533,8 +1525,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # cerberus is deployed via its Helm chart in `just e2e-up` (dogfooding
       # the published chart), so the runner needs helm.
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
@@ -1697,8 +1688,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # cerberus + the bundled ClickHouse data tier are deployed via the Helm
       # chart in `just e2e-bwc-up` (dogfooding the chart), so the runner needs
       # helm.
@@ -1833,8 +1823,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # cerberus + the bundled ClickHouse data tier are deployed via the Helm
       # chart in `just e2e-datashard-up` (dogfooding the chart, same as
       # `bwc-minio`), so the runner needs helm.
@@ -1936,8 +1925,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # cerberus + the bundled ClickHouse data tier are deployed via the Helm
       # chart in `just e2e-datashard-up` (dogfooding the chart, same as
       # `datashard`), so the runner needs helm.

@@ -95,13 +95,29 @@ type mixedWrapperKey struct {
 // function and its step grid; lowerHistogramOrMixedSubqueryOuterFnInput and its
 // call-subquery sibling are the established SELECT/FOLD continuation contracts.
 //
-// Bespoke entries select a family-specific payload transformation. Sum/avg, for
-// example, partitions and recombines a mixed plan; count/group instead preserve
-// that plan for their payload-neutral reduction. Float aggregates remain bespoke
-// at the root, where their mixed union needs shadow resolution, while their
-// existing-plan entries execute the shared float-only transform after that
-// resolution. Scalar arithmetic follows the same policy-driven narrowing while
-// preserving each projection boundary.
+// A row AUTHORIZES; it never selects. Each consumer names the payload rule
+// its own code applies and [requireMixedOperandPolicy] checks that the row
+// agrees, so the table is a registry of which (family, site) pairs carry a
+// live mixed relation into which kind of consumer: bespoke rows mark a
+// family-specific lowering (sum/avg partitions and recombines a mixed plan;
+// the subquery and set-op seams carry it through their own continuations),
+// preserve rows mark payload-neutral consumers (count/group, label rewrites,
+// sort_by_label, limitk), and float-only rows mark consumers that narrow to
+// float rows after union shadowing has resolved (math, date, scalar(), sort,
+// topk, scalar arithmetic and comparison, the float aggregates at an
+// existing plan). Float aggregates are bespoke at the root, where their mixed
+// union still needs shadow resolution, and float-only at an existing plan.
+//
+// The unary existing-plan row is mixedPreserve for unary `+`, the identity
+// over an already-lowered mixed plan. Unary `-` over one is NOT admitted: it
+// would narrow to float rows and drop every histogram, whereas Prometheus
+// negates histograms in place. The scale, vector-arithmetic and
+// vector-comparison families likewise have no existing-plan row — their
+// generic float consumers would drop histogram rows (`* k`, `/ k`) or
+// fabricate a float sample from a histogram's placeholder Value (`+ up`,
+// `> bool up`). Lowering those nested mixed plans through the
+// discriminator-aware folds their direct roots already use is cerberus issue
+// #3562; until then they reject with the not-admitted error.
 var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedLeafFamily, mixedRootAdmission}:              mixedBespoke,
 	{mixedSumAvgFamily, mixedRootAdmission}:            mixedBespoke,
@@ -132,10 +148,9 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedMathFamily, mixedPlanAdmission}:              mixedFloatOnly,
 	{mixedDateFamily, mixedPlanAdmission}:              mixedFloatOnly,
 	{mixedTimestampFamily, mixedPlanAdmission}:         mixedBespoke,
-	{mixedUnaryFamily, mixedPlanAdmission}:             mixedBespoke,
+	{mixedUnaryFamily, mixedPlanAdmission}:             mixedPreserve,
 	{mixedArithmeticFamily, mixedPlanAdmission}:        mixedFloatOnly,
 	{mixedComparisonFamily, mixedPlanAdmission}:        mixedFloatOnly,
-	{mixedScaleFamily, mixedPlanAdmission}:             mixedBespoke,
 	{mixedLabelFamily, mixedPlanAdmission}:             mixedPreserve,
 	{mixedScalarFamily, mixedPlanAdmission}:            mixedFloatOnly,
 	{mixedSubqueryFamily, mixedPlanAdmission}:          mixedBespoke,
@@ -146,8 +161,6 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 	{mixedSetOperandFamily, mixedPlanAdmission}:        mixedBespoke,
 	{mixedAbsentFamily, mixedPlanAdmission}:            mixedBespoke,
 	{mixedHistogramValueFamily, mixedPlanAdmission}:    mixedBespoke,
-	{mixedVectorArithmeticFamily, mixedPlanAdmission}:  mixedBespoke,
-	{mixedVectorComparisonFamily, mixedPlanAdmission}:  mixedBespoke,
 	{mixedSumAvgFamily, mixedPlanAdmission}:            mixedBespoke,
 	{mixedCountGroupFamily, mixedPlanAdmission}:        mixedPreserve,
 	{mixedFloatAggregateFamily, mixedPlanAdmission}:    mixedFloatOnly,
@@ -157,36 +170,62 @@ var mixedOperandPolicies = map[mixedWrapperKey]mixedOperandPolicy{
 
 type mixedPlanTransform func(chplan.Node) chplan.Node
 
-func lowerWithMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, expected mixedOperandPolicy) (mixedPlanTransform, error) {
+// mixedOperandNotAdmitted is the one rejection every policy check returns:
+// the (family, site) pair has no registered payload rule for the transform
+// its consumer is about to apply.
+func mixedOperandNotAdmitted(key mixedWrapperKey) error {
+	return fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
+}
+
+// requireMixedOperandPolicy authorizes (family, site) for the payload rule
+// the caller names in `expected` — the rule that caller's own code applies.
+// The table is consulted for agreement only: a missing row, a row that names
+// a different rule, or a request for the fail-closed sentinels (mixedReject,
+// mixedPolicyClosed) rejects. Making the table SELECT the transform, so a row
+// can never disagree with the consumer that cites it, is cerberus issue #3562.
+func requireMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, expected mixedOperandPolicy) error {
 	key := mixedWrapperKey{family: family, site: site}
 	policy, ok := mixedOperandPolicies[key]
-	if !ok {
-		return nil, requireMixedBespokePolicy(key, mixedReject)
+	if !ok || expected == mixedReject || expected == mixedPolicyClosed || policy != expected {
+		return mixedOperandNotAdmitted(key)
 	}
-	if expected == mixedPolicyClosed {
-		return nil, requireMixedBespokePolicy(key, mixedReject)
-	}
-	if policy != expected {
-		return nil, requireMixedBespokePolicy(key, mixedReject)
-	}
-	if expected == mixedBespoke {
-		if err := requireMixedBespokePolicy(key, policy); err != nil {
-			return nil, err
-		}
+	return nil
+}
+
+func lowerWithMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, expected mixedOperandPolicy) (mixedPlanTransform, error) {
+	if err := requireMixedOperandPolicy(family, site, expected); err != nil {
+		return nil, err
 	}
 	return mixedPlanTransformForPolicy(expected), nil
 }
 
+// lowerUnderMixedOperandPolicy authorizes (family, site) for `expected`
+// BEFORE running the operand loader, so a rejected pair never lowers its
+// operand, and returns the loaded plan unchanged: bespoke and preserve
+// consumers keep the loader's payload roles and union shadowing, and
+// float-only root consumers narrow later, after shadow resolution.
+func lowerUnderMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, expected mixedOperandPolicy, load func() (chplan.Node, error)) (chplan.Node, error) {
+	if err := requireMixedOperandPolicy(family, site, expected); err != nil {
+		return nil, err
+	}
+	return load()
+}
+
 func lowerWithBespokeMixedOperandPolicy(family mixedWrapperFamily, site mixedAdmissionSite, build func() (chplan.Node, error)) (chplan.Node, error) {
-	transform, err := lowerWithMixedOperandPolicy(family, site, mixedBespoke)
+	return lowerUnderMixedOperandPolicy(family, site, mixedBespoke, build)
+}
+
+// lowerFloatOnlyMixedOperand authorizes (family, site) for the float-only
+// rule, loads the operand, and narrows the COMPLETE operand to its float
+// rows — after the loader's own union shadowing has resolved, so a
+// histogram on one arm still shadows a colliding float on the other before
+// the histogram rows are dropped.
+func lowerFloatOnlyMixedOperand(family mixedWrapperFamily, site mixedAdmissionSite, load func() (chplan.Node, error)) (chplan.Node, error) {
+	inner, err := lowerUnderMixedOperandPolicy(family, site, mixedFloatOnly, load)
 	if err != nil {
 		return nil, err
 	}
-	inner, err := build()
-	if err != nil {
-		return inner, err
-	}
-	return transform(inner), nil
+	return mixedRowsFloatOnly(inner), nil
 }
 
 func preserveMixedPlanTransform(inner chplan.Node) chplan.Node { return inner }
@@ -222,59 +261,30 @@ func prepareMixedAggregatePlan(inner chplan.Node, family mixedWrapperFamily) (ch
 	return mixedPlanTransformForPolicy(expected)(inner), nil
 }
 
-func requireMixedBespokePolicy(key mixedWrapperKey, policy mixedOperandPolicy) error {
-	if policy != mixedBespoke {
-		return fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
-	}
-	return nil
-}
-
 // lowerWithMixedPreservePolicy authorizes a payload-neutral consumer before
 // loading its operand. Identity preserves payload roles and union shadowing.
 func lowerWithMixedPreservePolicy(family mixedWrapperFamily, site mixedAdmissionSite, load func() (chplan.Node, error)) (chplan.Node, error) {
-	key := mixedWrapperKey{family: family, site: site}
-	if mixedOperandPolicies[key] != mixedPreserve {
-		return nil, fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
-	}
-	return load()
+	return lowerUnderMixedOperandPolicy(family, site, mixedPreserve, load)
 }
 
 func preserveMixedPlan(inner chplan.Node, family mixedWrapperFamily) (chplan.Node, error) {
-	if !mixedRowsNeedPreparation(inner) {
-		return inner, nil
+	if err := requireMixedPlanPolicy(inner, family, mixedPreserve); err != nil {
+		return nil, err
 	}
-	return lowerWithMixedPreservePolicy(family, mixedPlanAdmission, func() (chplan.Node, error) { return inner, nil })
+	return inner, nil
 }
 
 // requireMixedPlanPolicy authorizes a wrapper's consumption of an already
-// lowered mixed operand. Physical role resolution alone cannot authorize it.
-// Ordinary float and histogram-only operands retain their existing path.
-func requireMixedPlanPolicy(inner chplan.Node, family mixedWrapperFamily, expectedPolicy ...mixedOperandPolicy) error {
-	expected := mixedBespoke
-	if len(expectedPolicy) == 0 {
-		if !mixedRowsNeedPreparation(inner) {
-			return nil
-		}
-	} else if len(expectedPolicy) == 1 {
-		expected = expectedPolicy[0]
-	} else {
-		expected = mixedPolicyClosed
+// lowered mixed operand for the payload rule named in `expected`. Physical
+// role resolution alone cannot authorize it. Ordinary float and
+// histogram-only operands retain their existing path: a non-nil `inner`
+// that is not a live mixed relation is admitted without consulting the
+// table. A nil `inner` is a caller that has already established mixed-ness.
+func requireMixedPlanPolicy(inner chplan.Node, family mixedWrapperFamily, expected mixedOperandPolicy) error {
+	if inner != nil && !mixedRowsNeedPreparation(inner) {
+		return nil
 	}
-	key := mixedWrapperKey{family: family, site: mixedPlanAdmission}
-	policy, ok := mixedOperandPolicies[key]
-	if !ok {
-		return requireMixedBespokePolicy(key, mixedReject)
-	}
-	if expected == mixedPolicyClosed {
-		return requireMixedBespokePolicy(key, mixedReject)
-	}
-	if policy != expected {
-		return requireMixedBespokePolicy(key, mixedReject)
-	}
-	if expected == mixedBespoke {
-		return requireMixedBespokePolicy(key, policy)
-	}
-	return nil
+	return requireMixedOperandPolicy(family, mixedPlanAdmission, expected)
 }
 
 func mixedVectorBinaryFamily(op chplan.BinaryOp) mixedWrapperFamily {

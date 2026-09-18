@@ -59,11 +59,12 @@ type lang struct {
 	// ResourceBounds carries the operator-tunable histogram cross-series
 	// merge cost ceilings (cerberus issue #2667), threaded from
 	// Handler.ResourceBounds (built once at boot in cmd/cerberus from
-	// promql.ResourceBoundsFromEnv). The zero value resolves to
-	// promql.DefaultResourceBounds() at promql.LowerAtRangeOpts's own
-	// entry seam, so a lang built without it (NewExplainLang /
-	// NewExplainLangRange) keeps the shipped, calibrated defaults —
-	// mirroring how a zero Lowerers keeps the all-fan-out default.
+	// promql.ResourceBoundsFromEnv) and into the offline explain langs
+	// (NewExplainLang / NewExplainLangRange) from the same resolution, so
+	// the preview lowers under the bounds the server does. The zero value
+	// resolves to promql.DefaultResourceBounds() at
+	// promql.LowerAtRangeOpts's own entry seam — mirroring how a zero
+	// Lowerers keeps the all-fan-out default.
 	ResourceBounds promql.ResourceBounds
 
 	// TagGroups threads chopt.FeatureTSGridTagGroups's resolved verdict

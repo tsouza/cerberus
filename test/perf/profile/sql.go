@@ -50,12 +50,19 @@ func planHasRecursiveCTE(plan string) bool {
 // and its leaf is marked as a scan source. Join RHS and scalar/IN subqueries
 // remain represented only by the level's own count.
 //
-// A WITH-prefixed query (CTE chain, recursive or set-op CSE) is kept
-// intact at depth 0 and not descended, because its inner SELECTs
-// reference CTE names that are only in scope at the outer level — running
-// `count()` on a stripped inner level would fail (caught + excluded by the
-// caller). The outer count() still measures the post-CTE result, and the
-// EXPLAIN plan flags still detect the recursive/cross operators.
+// A non-recursive relational WITH head (`WITH n AS (<body>) SELECT …`,
+// the shape the emitters use to name a subplan once and reference it
+// several times — RangeBucketFanout's fold-cost guard, the set-op CSE) is
+// INLINED before the descent: every reference to `n` is replaced by
+// `(<body>)`, which is exactly what ClickHouse itself does with a
+// non-recursive CTE (a name, not a materialisation), so the inlined
+// statement counts the same rows at every level and the descent sees
+// through the wrap. A recursive WITH, and a scalar `(<body>) AS n` CTE,
+// are kept intact at their level and not descended: the recursion's
+// closure has no standalone per-level count, and a scalar alias binds a
+// value rather than a relation. The outer count() still measures the
+// post-CTE result, and the EXPLAIN plan flags still detect the
+// recursive/cross operators.
 // FromSourceLevels is the exported wrapper over [fromSourceLevels] for
 // callers outside the corpus profiler that need the same per-level
 // decomposition — notably the scale-wall pin (test/perf), which counts
@@ -119,13 +126,14 @@ const maxFromSourceDepth = 64
 // only for the fraction of cases the leftmost chain happens to pass
 // through, would both double-count some fixtures and miss others.
 //
-// The non-recursive case (a plain `WITH c AS (...) SELECT ...` CTE, e.g.
-// emitSetOperation's `&&` arms in internal/chsql/set_op.go) has no such
-// structural EXPLAIN signal, so it is reported here — this is the
-// "CTE reference" / "pre-rendered subquery splice" category from issue
-// #1519: the CTE body is exactly the pre-rendered SQL text
-// [subqueryFrag]-family emitters splice into a WITH clause, and once
-// spliced there this function cannot see through it.
+// The non-recursive RELATIONAL case (a plain `WITH c AS (...) SELECT ...`
+// CTE — RangeBucketFanout's fold-cost guard in
+// internal/chsql/range_bucket_fanout.go, the set-op CSE) is inlined by
+// [inlineRelationalCTEs] before the walk, so it neither stops the descent
+// nor produces a reason. What remains reported here is the WITH head this
+// function cannot inline — a scalar `(<body>) AS name` alias, which binds a
+// value, not a relation — the "CTE reference" / "pre-rendered subquery
+// splice" category from issue #1519.
 func levelsWithReasons(query string) ([]string, []string) {
 	decomposition := decomposeQuery(query, 0)
 	levels := make([]string, 0, len(decomposition.levels))
@@ -151,13 +159,18 @@ func decomposeQuery(query string, depth int) queryDecomposition {
 		decomposition.levels[0].scanSource = true
 		return decomposition
 	}
-	// A non-recursive WITH-prefixed top-level query: 1 level, and a
-	// reason — descending into the CTE bodies would reference
-	// out-of-scope CTE names.
+	// A non-recursive WITH-prefixed top-level query: inline its relational
+	// CTEs and walk the result. A head the inliner cannot rewrite (a
+	// scalar alias) stays as 1 level, with a reason.
 	if hasWithPrefix(query) {
-		decomposition.levels[0].scanSource = true
-		decomposition.reasons = []string{uncountableCTEReason(depth)}
-		return decomposition
+		inlined, ok := inlineRelationalCTEs(query)
+		if !ok {
+			decomposition.levels[0].scanSource = true
+			decomposition.reasons = []string{uncountableCTEReason(depth)}
+			return decomposition
+		}
+		query = inlined
+		decomposition.levels[0].query = query
 	}
 
 	if arms := splitTopLevelUnionAll(query); len(arms) > 1 {
@@ -186,9 +199,13 @@ func decomposeQuery(query string, depth int) queryDecomposition {
 		return decomposition
 	}
 	if hasWithPrefix(inner) {
-		decomposition.levels[0].scanSource = true
-		decomposition.reasons = []string{uncountableCTEReason(depth + 1)}
-		return decomposition
+		inlined, ok := inlineRelationalCTEs(inner)
+		if !ok {
+			decomposition.levels[0].scanSource = true
+			decomposition.reasons = []string{uncountableCTEReason(depth + 1)}
+			return decomposition
+		}
+		inner = inlined
 	}
 
 	innerDecomposition := decomposeQuery(inner, depth+1)
@@ -279,12 +296,115 @@ func trimEnclosingParens(query string) string {
 
 // uncountableCTEReason renders the human-readable line recorded in
 // [Record.UncountableReasons] when the descent stops on a non-recursive
-// WITH-prefixed subquery at the given depth.
+// WITH-prefixed subquery at the given depth that [inlineRelationalCTEs]
+// could not rewrite.
 func uncountableCTEReason(depth int) string {
 	return fmt.Sprintf(
-		"depth %d: WITH-prefixed subquery (CTE reference / pre-rendered subquery splice) not descended — "+
+		"depth %d: WITH-prefixed subquery (scalar CTE alias / pre-rendered subquery splice) not descended — "+
 			"its body's inner row counts are out of scope to measure standalone", depth,
 	)
+}
+
+// inlineRelationalCTEs rewrites a non-recursive `WITH n1 AS (<b1>)[, n2 AS
+// (<b2>)…] <select>` statement into `<select>` with every whole-word
+// reference to each name — in the tail and in every later CTE body —
+// replaced by the parenthesised body. That is the substitution ClickHouse
+// performs itself for a non-recursive CTE, so the rewritten statement
+// counts the same rows at every level; it only makes the levels visible
+// to [leftmostFromSubquery]'s descent, which cannot otherwise see past a
+// name whose body lives in the WITH head.
+//
+// Reports false, leaving the statement untouched, for anything it cannot
+// rewrite faithfully: a scalar `(<body>) AS name` entry (a value alias,
+// not a relation), a recursive head, or a head whose shape does not parse
+// as `name AS (<balanced body>)` entries. The emitters render CTE names
+// as bare synthetic tokens (`_rbf_group_N`, `_struct_closure`), so a
+// whole-word match outside string literals is the name's every
+// reference and nothing else.
+func inlineRelationalCTEs(query string) (string, bool) {
+	query = strings.TrimSpace(query)
+	if hasWithRecursivePrefix(query) || !hasWithPrefix(query) {
+		return query, false
+	}
+	rest := strings.TrimSpace(query[len("WITH "):])
+	type cte struct{ name, body string }
+	var ctes []cte
+	for {
+		if rest == "" || rest[0] == '(' {
+			// A scalar `(<body>) AS name` entry, or a malformed head.
+			return query, false
+		}
+		nameEnd := 0
+		for nameEnd < len(rest) && isSQLWordByte(rest[nameEnd]) {
+			nameEnd++
+		}
+		name := rest[:nameEnd]
+		after := skipSQLSpace(rest, nameEnd)
+		if name == "" || !sqlWordAt(rest, after, "AS") {
+			return query, false
+		}
+		bodyStart := skipSQLSpace(rest, after+len("AS"))
+		if bodyStart >= len(rest) || rest[bodyStart] != '(' {
+			return query, false
+		}
+		body, ok := balancedParen(rest[bodyStart:])
+		if !ok {
+			return query, false
+		}
+		ctes = append(ctes, cte{name: name, body: body})
+		rest = strings.TrimSpace(rest[bodyStart+len(body)+2:])
+		if strings.HasPrefix(rest, ",") {
+			rest = strings.TrimSpace(rest[1:])
+			continue
+		}
+		break
+	}
+	if rest == "" {
+		return query, false
+	}
+	// Substitute in declaration order: a later body may reference an
+	// earlier name, and the tail may reference any of them.
+	for i, c := range ctes {
+		replacement := "(" + c.body + ")"
+		for j := i + 1; j < len(ctes); j++ {
+			ctes[j].body = replaceSQLWord(ctes[j].body, c.name, replacement)
+		}
+		rest = replaceSQLWord(rest, c.name, replacement)
+	}
+	return rest, true
+}
+
+// replaceSQLWord replaces every whole-word occurrence of word in s that
+// sits outside single-quoted string literals with replacement.
+func replaceSQLWord(s, word, replacement string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inStr := false
+	for i := 0; i < len(s); {
+		c := s[i]
+		if inStr {
+			b.WriteByte(c)
+			if c == '\'' {
+				inStr = false
+			}
+			i++
+			continue
+		}
+		if c == '\'' {
+			inStr = true
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if sqlWordAt(s, i, word) {
+			b.WriteString(replacement)
+			i += len(word)
+			continue
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
 }
 
 // recursiveCTEUncountableReason is the single reason [ProfileFixture]

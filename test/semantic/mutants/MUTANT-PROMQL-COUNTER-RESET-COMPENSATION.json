@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "internal/chsql/builder.go",
     "patch_path": "test/semantic/mutants/patches/counter-reset-compensation.patch",
-    "source_fingerprint": "7a3e52ada0ef6d6062a85942075a653ef25c37e5409e6659ac47bd7ed595ef7d",
-    "expected_mutated_fingerprint": "c682ae488705ad80b0a42b68caf82bb28a815174f12c38bb78e06e49906b194c"
+    "source_fingerprint": "bdcc0c8283f68e9a94c227342cb5b6ec8ed80d9f0de2bee51a0a7f17fbe2292b",
+    "expected_mutated_fingerprint": "2e3041e8da5cf1fe8891160e7a0b2bdc6ed76750532c1b622372456c70a60016"
   },
   "detectors": [
     {
@@ -19,7 +19,8 @@
       "package": "./test/property",
       "test_run": "^TestPromQL_CounterResetMidWindowCompensation$",
       "build_tags": ["chdb"],
-      "timeout_seconds": 90
+      "timeout_seconds": 90,
+      "evidence_kind": "execution"
     }
   ],
   "expected_detection": "killed",

@@ -44,13 +44,34 @@
 //      classification — `memory-bounding` or `neutral` — stating which class
 //      it belongs to and why. That comment is the single source of truth; a
 //      const with no classification FAILS this gate rather than being assumed
-//      harmless, so a new setting cannot slip in unclassified.
-//   2. `memoryBoundingSurface` closes over the file's own reference graph
-//      from those memory-bounding consts: a declaration that STAMPS one is
-//      part of the mechanism, and so is every declaration it reaches to
-//      compute or gate that stamp (`spillThreshold`, its two byte constants,
-//      the plan predicates). Nothing here is a hand-maintained list — repoint
-//      the code and the surface follows it.
+//      harmless, so a new setting cannot slip in unclassified. A FUNCTION may
+//      carry the `memory-bounding` tag too, for a mechanism that stamps no
+//      const of its own but every bound reads — the engine's single plan
+//      inspection (inspectPlanShape), whose facts decide which bound fires.
+//   2. `memoryBoundingSurface` closes over the trigger files' own reference
+//      graph from those tagged declarations. The closure is DIRECTIONAL:
+//
+//        - a `memory-bounding` CONST is a stamped value, so every declaration
+//          naming it STAMPS a bound and is part of the mechanism (the
+//          stampers: `applySpillSettings`, `applyCompareMemoryBound`, …);
+//        - a `memory-bounding` FUNCTION is the mechanism itself;
+//        - everything a stamper or a tagged function reaches, transitively,
+//          computes or gates a bound and is part of it too (`spillThreshold`,
+//          its two byte constants, the inspection's own walk, and the
+//          struct FIELDS a stamper reads — `hasCompare`, `hasJoin`, …);
+//        - a declaration that merely NAMES a member of that core is a
+//          COMPOSITION (`applySharedQuerySettings`, the two route seams,
+//          `recordNode` writing a field a bound reads). It joins the surface,
+//          so deleting the call that wires a bound in owes a sentinel, but
+//          it is NOT expanded downward: a composition also names the neutral
+//          rules beside the bounds, and following it would splice every
+//          result-equivalent knob into the surface — the #2893 misfire again,
+//          just one hop removed.
+//
+//      Type declarations are never graph members: a struct type is a data
+//      shape whose consumers span both classes; the walk that fills it and
+//      the fields a bound reads are what carry the mechanism. Nothing here is
+//      a hand-maintained list — repoint the code and the surface follows it.
 //   3. A change obligates when one of its own changed lines — added OR
 //      removed, code only, comments stripped — names something in that
 //      surface. A comment-only edit, a neutral-setting edit and a rename of
@@ -110,9 +131,19 @@ import {
 // Touching one is necessary but no longer sufficient (#2893): the changed
 // lines must also name something in the surface those files declare.
 // Repo-root-relative paths, exactly as `git diff` reports them.
+//
+// engine.go and plan_shape.go are here because the mechanism does not end
+// at the stamping functions: engine.go composes them into the two dispatch
+// seams (applySharedQuerySettings, routeAQuerySettings, routeBExecCtx) —
+// deleting one call there removes a bound from every query exactly as
+// deleting the stamp would, and that deletion used to owe nothing — and
+// plan_shape.go is the single inspection whose facts decide which bound
+// fires at all.
 export const TRIGGER_FILES = Object.freeze([
   'internal/engine/query_settings_rules.go',
   'internal/engine/spill.go',
+  'internal/engine/plan_shape.go',
+  'internal/engine/engine.go',
 ]);
 
 // SENTINEL_FILES — touching either satisfies the obligation directly, no
@@ -157,7 +188,7 @@ export function touchesTriggerFile(files) {
 
 // SETTING_CONST_PATTERN — the identifier shape every ClickHouse setting name
 // in the trigger files is bound to. The `setting` prefix is the convention
-// those files already follow for all eleven of them; requiring it is what
+// those files already follow for every one of them; requiring it is what
 // makes "did anyone add a setting without classifying it?" answerable.
 export const SETTING_CONST_PATTERN = /^setting[A-Z]/;
 
@@ -185,10 +216,21 @@ const TOP_LEVEL_DECL_PATTERN = /^(?:func|type|const|var)\b/;
 // declaration in their own right.
 const GROUPED_DECL_OPEN_PATTERN = /^(?:const|var)\s*\($/;
 
+// STRUCT_DECL_OPEN_PATTERN — `type X struct {`, whose FIELDS are each a
+// declaration in their own right (the type itself is not: see the header).
+const STRUCT_DECL_OPEN_PATTERN = /^type\s+[A-Za-z_][A-Za-z0-9_]*\s+struct\s*\{$/;
+
 // A Go identifier, for the reference scan. Package-qualified names such as
 // `chplan.WalkDeep` still yield `chplan` and `WalkDeep` as separate words;
 // neither is a local declaration, so neither joins the graph.
 const IDENTIFIER_PATTERN = /[A-Za-z_][A-Za-z0-9_]*/g;
+
+// A field access, `f.hasCompare` -> hasCompare. Struct fields join the graph
+// ONLY through this form: a bare identifier that happens to spell a field
+// name is a parameter or a local (`plan`, `limit`), not the field, and
+// matching it would make every function taking a `plan` a composition of
+// the facts record.
+const FIELD_ACCESS_PATTERN = /\.([A-Za-z_][A-Za-z0-9_]*)/g;
 
 // stripComments — the code half of a Go line. Everything from `//` onward is
 // prose: it can mention `spillThreshold` all it likes without being part of
@@ -201,20 +243,23 @@ export function stripComments(line) {
 function declName(header) {
   // `func (r SettingsRules) apply(` -> apply; `func spillThreshold(` -> spillThreshold
   const method = /^func\s*\([^)]*\)\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(header);
-  if (method) return method[1];
+  if (method) return { name: method[1], kind: 'func' };
   const fn = /^func\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(header);
-  if (fn) return fn[1];
-  const other = /^(?:type|const|var)\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(header);
-  if (other) return other[1];
+  if (fn) return { name: fn[1], kind: 'func' };
+  const other = /^(type|const|var)\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(header);
+  if (other) return { name: other[2], kind: other[1] };
   return null;
 }
 
 /**
  * parseGoDecls — every top-level declaration in one gofumpt-formatted Go
- * source, as `{ name, doc, body }`. `doc` is the contiguous run of `//` lines
- * immediately above the declaration; `body` is its code text with comments
- * stripped. Members of a `const (` / `var (` group are returned individually,
- * each with the doc comment written directly above it inside the group.
+ * source, as `{ name, kind, doc, body }`. `kind` is `func`, `const`, `var`,
+ * `type` or `field`; `doc` is the contiguous run of `//` lines immediately
+ * above the declaration; `body` is its code text with comments stripped.
+ * Members of a `const (` / `var (` group are returned individually, each with
+ * the doc comment written directly above it inside the group, and so are the
+ * fields of a `type X struct {` block (kind `field`, the type itself with
+ * kind `type`).
  *
  * This is deliberately a line grammar rather than a Go parser: the two files
  * it reads are formatted by `just fmt` on every commit, and a full parser
@@ -266,6 +311,7 @@ export function parseGoDecls(src) {
           if (name) {
             decls.push({
               name,
+              kind: 'const',
               doc: memberDoc.length > 0 ? memberDoc : groupDoc,
               body: stripComments(member),
             });
@@ -275,6 +321,33 @@ export function parseGoDecls(src) {
         i += 1;
       }
       i += 1;
+      continue;
+    }
+
+    if (STRUCT_DECL_OPEN_PATTERN.test(line)) {
+      const header = line;
+      const declDoc = flushDoc();
+      const named = declName(header);
+      i += 1;
+      let fieldDoc = [];
+      while (i < lines.length && lines[i] !== '}') {
+        const member = lines[i];
+        if (/^\s*\/\//.test(member)) {
+          fieldDoc.push(member);
+        } else if (member.trim() === '') {
+          fieldDoc = [];
+        } else {
+          // `\thasCompare bool` / `\tspineScanTable   string` — the first
+          // identifier is the field name. An embedded field or a `}` of a
+          // nested literal type never occurs in the trigger files.
+          const name = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s/.exec(member)?.[1] ?? null;
+          if (name) decls.push({ name, kind: 'field', doc: fieldDoc, body: stripComments(member) });
+          fieldDoc = [];
+        }
+        i += 1;
+      }
+      i += 1;
+      if (named) decls.push({ name: named.name, kind: 'type', doc: declDoc, body: stripComments(header) });
       continue;
     }
 
@@ -291,8 +364,8 @@ export function parseGoDecls(src) {
         }
       }
       i += 1;
-      const name = declName(header);
-      if (name) decls.push({ name, doc: declDoc, body: body.join('\n') });
+      const named = declName(header);
+      if (named) decls.push({ name: named.name, kind: named.kind, doc: declDoc, body: body.join('\n') });
       continue;
     }
 
@@ -351,67 +424,95 @@ export function surfaceViolations(sources) {
 
 /**
  * memoryBoundingSurface — the set of identifiers that ARE the memory-bounding
- * mechanism, derived from the trigger files' own reference graph.
+ * mechanism, derived from the trigger files' own reference graph. The
+ * closure rule is the header's item 2:
  *
- * Seeded with the setting consts classified `memory-bounding`, then closed in
- * BOTH directions until it stops growing:
+ *   - bounds: the consts classified `memory-bounding` (stamped values);
+ *   - stampers: every function whose body names a bound;
+ *   - mechanisms: the functions classified `memory-bounding`;
+ *   - the struct fields a STAMPER reads (`f.hasCompare`): the facts that
+ *     decide whether its bound fires. Fields are reached from stampers only,
+ *     never through the mechanism's own walk — the inspection also records
+ *     the facts the neutral rules read, and following those would pull every
+ *     neutral rule in as a composition;
+ *   - derived: every function, const or var a stamper or a mechanism reaches,
+ *     transitively — `spillThreshold` from `applySpillSettings`, then
+ *     `spillCapDenominator` and `spillThresholdBytes` from it; the
+ *     inspection's own walk from `inspectPlanShape`;
+ *   - compositions: every function whose body names a member of the core
+ *     above. One hop only, and never expanded downward — a composition also
+ *     names the neutral rules beside the bounds.
  *
- *   - upward: a declaration whose body names something already in the surface
- *     STAMPS a memory bound, so it is part of the mechanism (`applySpillSettings`
- *     naming `settingMaxBytesBeforeExternalGroupBy`);
- *   - downward: a declaration named BY something in the surface computes or
- *     gates that bound, so it is part of the mechanism too (`spillThreshold`,
- *     reached from `applySpillSettings`, then `spillCapDenominator` and
- *     `spillThresholdBytes` reached from it).
- *
- * Both directions are needed and neither over-reaches: the neutral rules stamp
- * neutral consts and share no helper with the bounding ones, so the closure
- * terminates well short of the whole file. `surfaceIsNeutralOf` in the test
- * suite pins exactly that.
+ * Types are not graph members (a struct type is a data shape whose consumers
+ * span both classes). The neutral rules stamp neutral consts, read facts no
+ * bound reads, and share no helper with the bounding ones, so the closure
+ * terminates well short of the whole file set; the test suite pins that on
+ * the real sources.
  */
 export function memoryBoundingSurface(sources) {
   const decls = [];
   for (const path of TRIGGER_FILES) {
-    for (const d of parseGoDecls(sources?.[path] ?? '')) decls.push(d);
+    for (const d of parseGoDecls(sources?.[path] ?? '')) {
+      if (d.kind !== 'type') decls.push(d);
+    }
   }
-  const byName = new Map(decls.map((d) => [d.name, d]));
-  const refs = new Map(
-    decls.map((d) => [
-      d.name,
-      new Set([...String(d.body).matchAll(IDENTIFIER_PATTERN)]
-        .map((m) => m[0])
-        .filter((w) => w !== d.name && byName.has(w))),
-    ]),
-  );
+  const fieldNames = new Set(decls.filter((d) => d.kind === 'field').map((d) => d.name));
+  const declNames = new Set(decls.filter((d) => d.kind !== 'field').map((d) => d.name));
+  // refs: the local functions/consts/vars a declaration names as bare
+  // identifiers; fieldRefs: the local struct fields it accesses as `x.field`.
+  const refs = new Map();
+  const fieldRefs = new Map();
+  for (const d of decls) {
+    const body = String(d.body);
+    refs.set(d.name, new Set(
+      [...body.matchAll(IDENTIFIER_PATTERN)].map((m) => m[0]).filter((w) => w !== d.name && declNames.has(w)),
+    ));
+    fieldRefs.set(d.name, new Set(
+      [...body.matchAll(FIELD_ACCESS_PATTERN)].map((m) => m[1]).filter((w) => fieldNames.has(w)),
+    ));
+  }
 
-  const surface = new Set(
+  const bounds = new Set(
     decls
       .filter((d) => SETTING_CONST_PATTERN.test(d.name) && classificationOf(d) === CLASS_MEMORY_BOUNDING)
       .map((d) => d.name),
   );
+  const mechanisms = new Set(
+    decls
+      .filter((d) => d.kind === 'func' && classificationOf(d) === CLASS_MEMORY_BOUNDING)
+      .map((d) => d.name),
+  );
 
+  const core = new Set([...bounds, ...mechanisms]);
+  // Stampers: one hop up from the bounds, plus the fields each one reads.
+  for (const d of decls) {
+    if (d.kind === 'field' || ![...refs.get(d.name)].some((r) => bounds.has(r))) continue;
+    core.add(d.name);
+    for (const f of fieldRefs.get(d.name)) core.add(f);
+  }
+  // Derived: downward over functions/consts/vars, transitively, from every
+  // stamper and mechanism (a bound const names nothing, so seeding from the
+  // whole core is the same). Fields are not followed here — see the doc.
   for (let grew = true; grew; ) {
     grew = false;
-    for (const d of decls) {
-      if (surface.has(d.name)) {
-        for (const r of refs.get(d.name)) {
-          if (!surface.has(r)) {
-            surface.add(r);
-            grew = true;
-          }
-        }
-        continue;
-      }
-      for (const r of refs.get(d.name)) {
-        if (surface.has(r)) {
-          surface.add(d.name);
+    for (const name of [...core]) {
+      for (const r of refs.get(name) ?? []) {
+        if (!core.has(r)) {
+          core.add(r);
           grew = true;
-          break;
         }
       }
     }
   }
-
+  // Compositions: one hop up from the core (a function naming a core
+  // function, const or var, or accessing a core field), not expanded further.
+  const surface = new Set(core);
+  for (const d of decls) {
+    if (d.kind === 'field' || surface.has(d.name)) continue;
+    if ([...refs.get(d.name)].some((r) => core.has(r)) || [...fieldRefs.get(d.name)].some((f) => core.has(f))) {
+      surface.add(d.name);
+    }
+  }
   return surface;
 }
 

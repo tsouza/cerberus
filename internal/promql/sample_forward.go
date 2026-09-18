@@ -7,17 +7,21 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+// sampleNamePolicy and samplePayloadPolicy both start at 1 so that a
+// zero-valued sampleProjectionPolicy — a caller that forgot to choose —
+// names no policy at all and trips projectSampleRoles's explicit-policy
+// guard instead of silently reading as drop-name / float-only.
 type sampleNamePolicy uint8
 
 const (
-	dropSampleName sampleNamePolicy = iota
+	dropSampleName sampleNamePolicy = iota + 1
 	preserveSampleName
 )
 
 type samplePayloadPolicy uint8
 
 const (
-	floatSamplePayload samplePayloadPolicy = iota
+	floatSamplePayload samplePayloadPolicy = iota + 1
 	preserveMixedSamplePayload
 )
 
@@ -227,33 +231,17 @@ func projectSampleRoles(
 
 // validateSamplePayload checks the wire contract before a float-row proof may
 // discard its columns. Private histogram working columns may accompany a real
-// float Value; public histogram-role fields or a discriminator claim the payload.
-func validateSamplePayload(row chplan.Schema) (bool, bool) {
+// float Value; public histogram-role fields or a discriminator claim the
+// payload. [chplan.Schema.SampleKind] is the whole contract: it rejects a
+// histogram-role column outside the canonical nine, a partial payload, a
+// discriminator without a complete payload, and any duplicated or
+// ambiguous public column, so on a schema it accepts the two answers below
+// need no further checking.
+func validateSamplePayload(row chplan.Schema) (completeHistogram, discriminated bool) {
 	if row.SampleKind() == chplan.SampleKindInvalid {
 		panic("promql: sample forwarder received an invalid public sample schema")
 	}
-	completeHistogram := row.HasHistogramPayload()
-	discriminated := row.Has(chplan.RoleDiscriminator)
-	publicHistogram := false
-	for _, field := range chplan.HistogramPayloadColumns() {
-		for _, column := range row.Columns {
-			if column.Name == field.Name && column.Role == chplan.RoleHistogramField {
-				publicHistogram = true
-			}
-		}
-	}
-	if publicHistogram || discriminated {
-		if !completeHistogram {
-			panic("promql: sample forwarder received incomplete public histogram payload")
-		}
-		for _, field := range chplan.HistogramPayloadColumns() {
-			requireUniqueNamedColumn(row, field)
-		}
-		if discriminated {
-			requireSampleRole(row, chplan.RoleDiscriminator)
-		}
-	}
-	return completeHistogram, discriminated
+	return row.HasHistogramPayload(), row.Has(chplan.RoleDiscriminator)
 }
 
 func resolveSampleRoleRefs(row chplan.Schema, s schema.Metrics, policy sampleProjectionPolicy, layout sampleProjectionLayout) sampleRoleRefs {

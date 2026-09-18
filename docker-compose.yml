@@ -118,6 +118,13 @@ services:
     # cerberus dependency below is sufficient; the OTel demo's compose
     # stack uses the same pattern.
     image: otel/opentelemetry-collector-contrib:0.152.1
+    # Bounded, not `always` (#3384): this collector is the sole schema
+    # authority, so a crash loop must surface as `exited` rather than mask
+    # a broken config as "still starting". Docker's restart delay starts at
+    # 100 ms and doubles per attempt, so 5 attempts span ~3 s of backoff —
+    # enough to outlast a ClickHouse that is healthy but not yet accepting
+    # DDL, and short enough that the tier-1 contract test's own table wait
+    # reports a genuinely broken collector as a crash instead of a timeout.
     restart: "on-failure:5"
     networks: [cerberus-dev]
     command: ["--config=/etc/otel/config.yaml"]

@@ -392,7 +392,7 @@ func lowerSumOrAvgMixedOrSubqueryFoldFnRange(shape sumOrAvgMixedOrSubqueryShape,
 // [lowerFloatFoldOverPureSubqueryBranch]'s single-window sibling, which
 // leaves Start/End/Step/OuterRange all zero) is what switches the emitter
 // from one REDUCED row per series ([chplan.ReducedWindowRowShape] — a
-// single-anchor instant fold, [chplan.RowShapeOf]'s own doc) to one row per
+// single-anchor instant fold, see [chplan.RowShape]'s own doc) to one row per
 // (series, output anchor): [chplan.RangeWindow.OuterRange] is what actually
 // selects the matrix emission path, not Start/End/Step alone — the SAME
 // helper lowerRangeVectorCall (lower.go) uses to fan an ORDINARY,

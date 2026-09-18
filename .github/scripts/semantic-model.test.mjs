@@ -337,6 +337,75 @@ test("an execution referencing an unknown binding fails validation", () => {
   assert.ok(problems.some((p) => p.startsWith("[reference]") && p.includes("references unknown binding BINDING-DOES-NOT-EXIST")));
 });
 
+// --- Execution records must be real observations, never typed-in ----------
+
+function exampleExecution(overrides = {}) {
+  return {
+    id: "EXEC-EXAMPLE",
+    binding: "BINDING-EXAMPLE-A",
+    observed_at: "2026-09-10T00:00:00Z",
+    result: "pass",
+    run_ref: "https://github.com/tsouza/cerberus/actions/runs/1234567890",
+    selection: "executed",
+    selection_reason: null,
+    source_sha: "0123456789abcdef0123456789abcdef01234567",
+    run_id: "1234567890",
+    run_attempt: "1",
+    job: "check",
+    event: "push",
+    substrate: "chdb",
+    reference_version: null,
+    dataset_fingerprint: null,
+    ...overrides,
+  };
+}
+
+test("an executed record naming a real run and a real commit validates", () => {
+  const docs = validDocs();
+  docs.executions.executions.push(exampleExecution());
+  const model = validateSemanticModel(docs);
+  assert.equal(model.executions.size, 1);
+});
+
+test("an executed record whose run_ref is an all-zero placeholder run fails validation", () => {
+  for (const runRef of [
+    "https://github.com/tsouza/cerberus/actions/runs/0000000000",
+    "https://github.com/tsouza/cerberus/actions/runs/0",
+  ]) {
+    const docs = validDocs();
+    docs.executions.executions.push(exampleExecution({ run_ref: runRef }));
+    const problems = problemsOf(() => validateSemanticModel(docs));
+    assert.ok(
+      problems.some((p) => p.startsWith("[schema]") && p.includes("run_ref") && p.includes("placeholder")),
+      `${runRef}: ${problems.join("; ")}`,
+    );
+  }
+});
+
+test("an executed record with no source_sha fails validation: an observation must name the commit it ran against", () => {
+  const docs = validDocs();
+  docs.executions.executions.push(exampleExecution({ source_sha: null }));
+  const problems = problemsOf(() => validateSemanticModel(docs));
+  assert.ok(
+    problems.some((p) => p.startsWith("[schema]") && p.includes("source_sha") && p.includes("executed")),
+    problems.join("; "),
+  );
+});
+
+test("a non-executed selection may still carry a null source_sha (it is non-evidence by construction)", () => {
+  const docs = validDocs();
+  docs.executions.executions.push(
+    exampleExecution({
+      result: "error",
+      selection: "unavailable",
+      selection_reason: "report could not be resolved",
+      source_sha: null,
+    }),
+  );
+  const model = validateSemanticModel(docs);
+  assert.equal(model.executions.size, 1);
+});
+
 test("a related_contracts reference to an unknown contract fails validation", () => {
   const docs = validDocs();
   docs.contracts.contracts[0].related_contracts = ["PROMQL-DOES-NOT-EXIST"];

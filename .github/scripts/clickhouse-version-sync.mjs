@@ -427,8 +427,8 @@ function main() {
 
 // ---------------------------------------------------------------------------
 // self-test - pins the parse / compare / drift-detection logic against
-// synthetic fixtures, the same contract scripts/test-forbid-skip.sh provides
-// for forbid-skip.mjs. Asserts a consistent fixture passes and that each of
+// synthetic fixtures, the same contract forbid-skip.test.mjs provides for
+// forbid-skip.mjs. Asserts a consistent fixture passes and that each of
 // the checks (a)/(b)/(c)/(d)/(e)/(f)/(g) FAILS when its source is deliberately
 // drifted - so a future refactor that breaks a reader is caught here.
 // ---------------------------------------------------------------------------

@@ -115,9 +115,10 @@ jobs:
         run: node .github/scripts/rejection-parity-divergence-liveness.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # #2370's same-PR obligation gate: a change to a memory-bounding
-      # settings file (internal/engine/query_settings_rules.go,
-      # internal/engine/spill.go) must add sentinel coverage or cite an
+      # #2370's same-PR obligation gate: a change to the memory-bounding
+      # mechanism (the stamps in internal/engine/query_settings_rules.go
+      # and spill.go, the plan inspection in plan_shape.go, the seams
+      # composing them in engine.go) must add sentinel coverage or cite an
       # open-issue waiver — the same #2364 postmortem this whole lane
       # traces back to. Reuses forbid-deferral.mjs's own citation-
       # resolution machinery, so it rides this same job/workflow rather

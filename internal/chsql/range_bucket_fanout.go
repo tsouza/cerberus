@@ -102,46 +102,9 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	stepNS := r.Step.Nanoseconds()
 	lookbackNS := r.Lookback.Nanoseconds()
 
-	var numAnchors int64
-	var gridBase Frag
-	// Membership base (offset-shifted newest anchor) and value base
-	// (unshifted grid anchor). Offset folds onto the membership base only.
-	// Reassigned below in the (Start, End) branch to the Start-anchored
-	// grid end — see [startAnchoredGridEnd].
-	shiftBase := offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
-	if r.OuterRange > 0 {
-		// Independent-subquery-grid mode (cerberus issue #2726): the anchor
-		// grid is derived from (End, OuterRange, Step) — mirrors
-		// emitWindowedArrayMatrix's own OuterRange arithmetic exactly,
-		// including StepAlign's epoch-floor snap, rather than the
-		// (Start, End) span above. shiftBase is ALREADY the offset-shifted
-		// base stepAlignGridFor expects to align; the aligned result IS the
-		// membership base used below, and the reported gridBase un-shifts it
-		// back by Offset — the same shift/unshift split the (Start, End)
-		// branch keeps below, just applied AFTER alignment instead of
-		// before.
-		numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1
-		shiftBase, numAnchors = stepAlignGridFor(r.StepAlign, shiftBase, r.End, r.Offset, r.OuterRange, stepNS, numAnchors)
-		gridBase = shiftBase
-		if r.Offset != 0 {
-			gridBase = offsetUnshiftAnchorFrag(shiftBase, r.Offset.Nanoseconds())
-		}
-	} else {
-		// End-inclusive anchor count across the [Start, End] grid. When the
-		// grid bounds are absent (the now64(9) fixture shape) a single
-		// anchor is the only deterministic choice; the bounded fanout still
-		// applies.
-		numAnchors = 1
-		if !r.Start.IsZero() && !r.End.IsZero() {
-			span := r.End.Sub(r.Start).Nanoseconds()
-			if span < 0 {
-				return fmt.Errorf("%w: RangeBucketFanout.Start > End", ErrUnsupported)
-			}
-			numAnchors = span/stepNS + 1
-		}
-		gridEnd := startAnchoredGridEnd(r.Start, r.End, stepNS, numAnchors)
-		shiftBase = offsetShiftedBaseFrag(timeOrNowFrag(gridEnd), r.Offset)
-		gridBase = timeOrNowFrag(gridEnd)
+	numAnchors, gridBase, shiftBase, err := rangeBucketFanoutGrid(r, stepNS)
+	if err != nil {
+		return err
 	}
 
 	inner, err := e.subqueryFrag(r.Input)
@@ -155,12 +118,23 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// the bounded grid anchor. `*` is required so the AggFunc source
 	// columns + group-key source columns + TimeUnix all reach the collapse
 	// SELECT without enumerating the (schema-dependent) column set here.
-	fanout := NewQuery().From(inner)
-	fanout.Select(Star())
-	fanout.Select(RawAs(
-		lwrAnchorFanoutFrag(gridBase, shiftBase, tsIdent, stepNS, lookbackNS, numAnchors),
-		r.AnchorAlias,
-	))
+	//
+	// Built twice from the same parts: `fanout` is the read the collapse
+	// consumes, `probeFanout` is the row-count probe's copy of it (see
+	// lwrFanoutBoundedSourceFrag). The probe only counts fanned rows, so it
+	// carries none of the hoisted group-key materialisations below — they
+	// are per-row projections that change no count, and leaving them out is
+	// what keeps each hoisted key's expression rendered ONCE in the
+	// statement rather than once per embedded copy of the fan-out.
+	anchorFrag := lwrAnchorFanoutFrag(gridBase, shiftBase, tsIdent, stepNS, lookbackNS, numAnchors)
+	newFanout := func() *QueryBuilder {
+		sb := NewQuery().From(inner)
+		sb.Select(Star())
+		sb.Select(RawAs(anchorFrag, r.AnchorAlias))
+		return sb
+	}
+	fanout := newFanout()
+	probeFanout := newFanout()
 
 	// Issue #3551: materialize every ALIASED GroupBy entry here too, under
 	// its own synthetic per-index column ([rangeBucketFanoutGroupKeyAlias]),
@@ -185,6 +159,12 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// while the expression's TEXT still renders exactly once in the whole
 	// query, same as the alias-reference form it replaces: no new
 	// duplication for the emitted-SQL size bound (issue #2733) to absorb.
+	// "Once" holds only because the hoist goes into `fanout` alone and not
+	// into `probeFanout`: the fan-out is embedded twice by the row bound
+	// below, and a hoist rendered into both copies doubles every aliased
+	// key's expression — measured at +6,368 placeholder bytes on the
+	// level-2 mixed subquery composition, enough to push that statement
+	// past ClickHouse's default max_query_size once its args are inlined.
 	hoistedGroupKeys := make([]string, len(r.GroupBy))
 	for i, g := range r.GroupBy {
 		if i >= len(r.GroupByAliases) || r.GroupByAliases[i] == "" {
@@ -200,8 +180,10 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// `(Start - Offset - Lookback, End - Offset]` before the SELECT-list
 	// arrayJoin fans each source row across its anchors — same granule-
 	// prune contract as emitRangeLWR. Gated on Start/End so the
-	// now64()/@-pinned/zero-grid fixtures stay byte-identical.
+	// now64()/@-pinned/zero-grid fixtures stay byte-identical. The probe
+	// reads the same pruned span, or its count would not be the read's.
 	maybePushRangeScanTimeBound(fanout, inputTimestamp, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
+	maybePushRangeScanTimeBound(probeFanout, inputTimestamp, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
 	// #2447: cap how many (series, anchor) fanout rows can ever reach the
 	// collapse GROUP BY below via a genuine LIMIT + truncation probe — that
@@ -213,7 +195,7 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// real calibration numbers.
 	// #2667: e.rangeBucketFanoutRowBound() resolves the operator override
 	// (or maxRangeBucketFanoutRows's own default) once per Emit call.
-	fanoutSource := lwrFanoutBoundedSourceFrag(fanout.Frag(), inputTimestamp, e.rangeBucketFanoutRowBound(), RangeBucketFanoutBudgetMessage)
+	fanoutSource := lwrFanoutBoundedSourceFrag(fanout.Frag(), probeFanout.Frag(), inputTimestamp, e.rangeBucketFanoutRowBound(), RangeBucketFanoutBudgetMessage)
 
 	// Collapse SELECT: GROUP BY (<user-keys>, anchor) with the configured
 	// AggFuncs. The user group keys are projected first (under their
@@ -299,6 +281,53 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	}
 
 	return e.emitSelect(collapse)
+}
+
+// rangeBucketFanoutGrid resolves the anchor count and the two grid bases for
+// the fan-out: gridBase is the unshifted anchor the output reports, shiftBase
+// the offset-shifted membership base the window arithmetic keys off.
+func rangeBucketFanoutGrid(r *chplan.RangeBucketFanout, stepNS int64) (numAnchors int64, gridBase, shiftBase Frag, err error) {
+	// Membership base (offset-shifted newest anchor) and value base
+	// (unshifted grid anchor). Offset folds onto the membership base only.
+	// Reassigned below in the (Start, End) branch to the Start-anchored
+	// grid end — see [startAnchoredGridEnd].
+	shiftBase = offsetShiftedBaseFrag(timeOrNowFrag(r.End), r.Offset)
+	if r.OuterRange > 0 {
+		// Independent-subquery-grid mode (cerberus issue #2726): the anchor
+		// grid is derived from (End, OuterRange, Step) — mirrors
+		// emitWindowedArrayMatrix's own OuterRange arithmetic exactly,
+		// including StepAlign's epoch-floor snap, rather than the
+		// (Start, End) span above. shiftBase is ALREADY the offset-shifted
+		// base stepAlignGridFor expects to align; the aligned result IS the
+		// membership base used below, and the reported gridBase un-shifts it
+		// back by Offset — the same shift/unshift split the (Start, End)
+		// branch keeps below, just applied AFTER alignment instead of
+		// before.
+		numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1
+		shiftBase, numAnchors = stepAlignGridFor(r.StepAlign, shiftBase, r.End, r.Offset, r.OuterRange, stepNS, numAnchors)
+		gridBase = shiftBase
+		if r.Offset != 0 {
+			gridBase = offsetUnshiftAnchorFrag(shiftBase, r.Offset.Nanoseconds())
+		}
+	} else {
+		// End-inclusive anchor count across the [Start, End] grid. When the
+		// grid bounds are absent (the now64(9) fixture shape) a single
+		// anchor is the only deterministic choice; the bounded fanout still
+		// applies.
+		numAnchors = 1
+		if !r.Start.IsZero() && !r.End.IsZero() {
+			span := r.End.Sub(r.Start).Nanoseconds()
+			if span < 0 {
+				return 0, nil, nil, fmt.Errorf("%w: RangeBucketFanout.Start > End", ErrUnsupported)
+			}
+			numAnchors = span/stepNS + 1
+		}
+		gridEnd := startAnchoredGridEnd(r.Start, r.End, stepNS, numAnchors)
+		shiftBase = offsetShiftedBaseFrag(timeOrNowFrag(gridEnd), r.Offset)
+		gridBase = timeOrNowFrag(gridEnd)
+	}
+
+	return numAnchors, gridBase, shiftBase, nil
 }
 
 // rangeBucketFanoutGroupGuardedQuery wraps collapse in the SAME LIMIT-plus-

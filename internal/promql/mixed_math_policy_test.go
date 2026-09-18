@@ -20,7 +20,7 @@ func TestMixedMathPolicyDrivesPreparation(t *testing.T) {
 			for _, policy := range []mixedOperandPolicy{mixedReject, mixedBespoke, mixedPreserve, unknownPolicy} {
 				mixedOperandPolicies[key] = policy
 				called := false
-				plan, err := prepareMixedMathOperand(site, func() (chplan.Node, error) {
+				plan, err := lowerFloatOnlyMixedOperand(mixedMathFamily, site, func() (chplan.Node, error) {
 					called = true
 					return &chplan.VectorSetOp{Mixed: true}, nil
 				})
@@ -30,7 +30,7 @@ func TestMixedMathPolicyDrivesPreparation(t *testing.T) {
 			}
 			delete(mixedOperandPolicies, key)
 			called := false
-			plan, err := prepareMixedMathOperand(site, func() (chplan.Node, error) {
+			plan, err := lowerFloatOnlyMixedOperand(mixedMathFamily, site, func() (chplan.Node, error) {
 				called = true
 				return &chplan.OneRow{}, nil
 			})
@@ -46,7 +46,7 @@ func TestMixedMathPolicyDrivesPreparation(t *testing.T) {
 				ValueColumn:      s.ValueColumn,
 			}
 			calls := 0
-			plan, err = prepareMixedMathOperand(site, func() (chplan.Node, error) {
+			plan, err = lowerFloatOnlyMixedOperand(mixedMathFamily, site, func() (chplan.Node, error) {
 				calls++
 				return originalUnion, nil
 			})
@@ -55,13 +55,13 @@ func TestMixedMathPolicyDrivesPreparation(t *testing.T) {
 				t.Fatalf("float-only mode must narrow original union once: plan=%#v calls=%d err=%v", plan, calls, err)
 			}
 			sentinel := errors.New("math operand sentinel")
-			plan, err = prepareMixedMathOperand(site, func() (chplan.Node, error) {
+			plan, err = lowerFloatOnlyMixedOperand(mixedMathFamily, site, func() (chplan.Node, error) {
 				return nil, sentinel
 			})
 			if plan != nil || err != sentinel {
 				t.Fatalf("loader error changed: plan=%v err=%v", plan, err)
 			}
-			again, err := prepareMixedMathOperand(site, func() (chplan.Node, error) { return narrow, nil })
+			again, err := lowerFloatOnlyMixedOperand(mixedMathFamily, site, func() (chplan.Node, error) { return narrow, nil })
 			if err != nil || again != narrow {
 				t.Fatalf("prepared input narrowed twice: plan=%v err=%v", again, err)
 			}

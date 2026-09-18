@@ -231,3 +231,39 @@ func TestLabelValues_BadInput(t *testing.T) {
 		})
 	}
 }
+
+// TestLabelValues_ScanCountIsIndependentOfCandidateSpellings pins the shape
+// that keeps /label/<name>/values usable on a real logs table: the number of
+// times the emitted SQL scans the logs table must not grow with the number
+// of OTel spellings a label name expands to. `job` has one candidate;
+// `k8s_pod_name` has two rewritable underscores and expands to seven
+// (format.PromLabelToOTelCandidates). One full scan per candidate is the
+// shape that timed out at 120s on the Prometheus head (cerberus issue
+// #3168); the Loki head fanned out the same way with no projection to fall
+// back on.
+func TestLabelValues_ScanCountIsIndependentOfCandidateSpellings(t *testing.T) {
+	t.Parallel()
+
+	scans := func(name string) int {
+		q := &stubQuerier{stringRows: []string{"a"}}
+		srv := newServer(q)
+		t.Cleanup(srv.Close)
+		resp, err := http.Get(srv.URL + "/loki/api/v1/label/" + name + "/values?start=1717995600&end=1717999200")
+		if err != nil {
+			t.Fatalf("GET %s: %v", name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status=%d", name, resp.StatusCode)
+		}
+		return strings.Count(q.LastSQL(), "FROM `otel_logs`")
+	}
+
+	one := scans("job")
+	if one < 1 {
+		t.Fatalf("a one-candidate label scanned the logs table %d times; the comparison below would be vacuous", one)
+	}
+	if many := scans("k8s_pod_name"); many != one {
+		t.Errorf("k8s_pod_name (seven candidate spellings) scans `otel_logs` %d times; job (one spelling) scans it %d — the scan count must not grow with the candidate set", many, one)
+	}
+}

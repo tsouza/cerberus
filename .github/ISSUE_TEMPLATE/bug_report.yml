@@ -15,7 +15,7 @@ body:
     attributes:
       label: Cerberus version
       description: Output of `cerberus --version` or the Docker tag.
-      placeholder: v1.0.0-RC1 (or `dev` / commit SHA)
+      placeholder: v1.20.0 (or `dev` / commit SHA)
     validations:
       required: true
   - type: input

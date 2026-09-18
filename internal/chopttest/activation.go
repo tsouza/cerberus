@@ -71,11 +71,18 @@ func AssertQuerySettingStamped(ctx context.Context, t testing.TB, conn driver.Co
 // all. Fatal when no such row exists, for the same reason queryTextForID is:
 // an absent row would otherwise read as an absent SETTING, conflating "the
 // query never ran" with "the rule never fired".
+//
+// The lookup key is the setting's CANONICAL name: system.query_log.Settings
+// records an alias under the name it aliases (a query sent with
+// `enable_analyzer=0` lands as `allow_experimental_analyzer=0`, on the 24.8
+// floor and on 26.6 alike), so asking the map for the alias itself reads as
+// "never stamped" for a rule that did fire.
 func querySettingForID(ctx context.Context, t testing.TB, conn driver.Conn, queryID, setting string) (string, bool) {
 	t.Helper()
 	if err := conn.Exec(ctx, "SYSTEM FLUSH LOGS"); err != nil {
 		t.Fatalf("chopttest: flush logs: %v", err)
 	}
+	key := canonicalSettingName(ctx, t, conn, setting)
 	var (
 		value   string
 		present bool
@@ -84,12 +91,31 @@ func querySettingForID(ctx context.Context, t testing.TB, conn driver.Conn, quer
 		ctx,
 		"SELECT Settings[?] AS value, mapContains(Settings, ?) AS present FROM system.query_log "+
 			"WHERE type = 'QueryFinish' AND query_id = ? ORDER BY event_time_microseconds DESC LIMIT 1",
-		setting, setting, queryID,
+		key, key, queryID,
 	).Scan(&value, &present)
 	if err != nil {
 		t.Fatalf("chopttest: no QueryFinish row in system.query_log for query_id %s: %v", queryID, err)
 	}
 	return value, present
+}
+
+// canonicalSettingName resolves setting through system.settings.alias_for:
+// the name query_log records it under. A setting that is not an alias (or
+// that the server does not know at all) resolves to itself, so an unknown
+// name still reads as "not stamped" rather than as a lookup failure.
+func canonicalSettingName(ctx context.Context, t testing.TB, conn driver.Conn, setting string) string {
+	t.Helper()
+	var aliasFor string
+	err := conn.QueryRow(ctx, "SELECT alias_for FROM system.settings WHERE name = ? LIMIT 1", setting).Scan(&aliasFor)
+	if err != nil {
+		// sql.ErrNoRows and its driver equivalents: the server has no such
+		// setting; the map lookup below answers "absent" on the raw name.
+		return setting
+	}
+	if aliasFor == "" {
+		return setting
+	}
+	return aliasFor
 }
 
 // queryTextForID flushes system.query_log and returns the query text of

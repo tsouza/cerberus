@@ -41,8 +41,7 @@ func TestMixedOperandPolicyControlsActualDispatch(t *testing.T) {
 		{`scalar(` + nested + `)`, mixedScalarFamily, mixedPlanAdmission},
 		{`absent(` + nested + `)`, mixedAbsentFamily, mixedPlanAdmission},
 		{`histogram_count(` + nested + `)`, mixedHistogramValueFamily, mixedPlanAdmission},
-		{nested + ` + up`, mixedVectorArithmeticFamily, mixedPlanAdmission},
-		{nested + ` > bool up`, mixedVectorComparisonFamily, mixedPlanAdmission},
+		{`+` + nested, mixedUnaryFamily, mixedPlanAdmission},
 		{`sum(` + nested + `)`, mixedSumAvgFamily, mixedPlanAdmission},
 		{`count(` + nested + `)`, mixedCountGroupFamily, mixedPlanAdmission},
 		{`min(` + nested + `)`, mixedFloatAggregateFamily, mixedPlanAdmission},
@@ -125,18 +124,29 @@ func TestMixedOperandPolicyAlreadyLoweredShape(t *testing.T) {
 		name      string
 		inner     chplan.Node
 		family    mixedWrapperFamily
+		expected  mixedOperandPolicy
 		wantError bool
 	}{
-		{"mixed unknown family", mixed(), "unlisted-wrapper", true},
-		{"mixed root-only family", mixed(), mixedLeafFamily, true},
-		{"mixed known bespoke consumer", mixed(), mixedTimestampFamily, false},
-		{"date must use its payload preparation", mixed(), mixedDateFamily, true},
-		{"math must use its payload preparation", mixed(), mixedMathFamily, true},
-		{"ordinary float unchanged", &chplan.Scan{}, "unlisted-wrapper", false},
-		{"histogram-only unchanged", &chplan.HistogramProjection{Input: &chplan.OneRow{}}, "unlisted-wrapper", false},
+		{"mixed unknown family", mixed(), "unlisted-wrapper", mixedBespoke, true},
+		{"mixed root-only family", mixed(), mixedLeafFamily, mixedBespoke, true},
+		{"mixed known bespoke consumer", mixed(), mixedTimestampFamily, mixedBespoke, false},
+		{"date must use its payload preparation", mixed(), mixedDateFamily, mixedBespoke, true},
+		{"math must use its payload preparation", mixed(), mixedMathFamily, mixedBespoke, true},
+		{"math float-only consumer", mixed(), mixedMathFamily, mixedFloatOnly, false},
+		{"unary identity preserves", mixed(), mixedUnaryFamily, mixedPreserve, false},
+		{"unary float-only consumer drops histograms", mixed(), mixedUnaryFamily, mixedFloatOnly, true},
+		{"scale has no existing-plan rule", mixed(), mixedScaleFamily, mixedFloatOnly, true},
+		{"vector arithmetic has no existing-plan rule", mixed(), mixedVectorArithmeticFamily, mixedBespoke, true},
+		{"vector comparison has no existing-plan rule", mixed(), mixedVectorComparisonFamily, mixedBespoke, true},
+		{"reject sentinel never authorizes", mixed(), mixedTimestampFamily, mixedReject, true},
+		{"closed sentinel never authorizes", mixed(), mixedTimestampFamily, mixedPolicyClosed, true},
+		{"ordinary float unchanged", &chplan.Scan{}, "unlisted-wrapper", mixedBespoke, false},
+		{"ordinary float unchanged under float-only", &chplan.Scan{}, mixedScaleFamily, mixedFloatOnly, false},
+		{"histogram-only unchanged", &chplan.HistogramProjection{Input: &chplan.OneRow{}}, "unlisted-wrapper", mixedBespoke, false},
+		{"nil inner is already-established mixed-ness", nil, "unlisted-wrapper", mixedBespoke, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := requireMixedPlanPolicy(tc.inner, tc.family)
+			err := requireMixedPlanPolicy(tc.inner, tc.family, tc.expected)
 			if (err != nil) != tc.wantError {
 				t.Fatalf("requireMixedPlanPolicy() error = %v, want error %v", err, tc.wantError)
 			}
@@ -192,12 +202,11 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 		},
 		mixedPlanAdmission: {
 			mixedMathFamily, mixedDateFamily, mixedTimestampFamily, mixedUnaryFamily,
-			mixedArithmeticFamily, mixedComparisonFamily, mixedScaleFamily,
+			mixedArithmeticFamily, mixedComparisonFamily,
 			mixedLabelFamily, mixedScalarFamily, mixedSubqueryFamily,
 			mixedSortFamily, mixedSortByLabelFamily, mixedInfoFamily,
 			mixedLimitFamily, mixedSetOperandFamily,
 			mixedAbsentFamily, mixedHistogramValueFamily,
-			mixedVectorArithmeticFamily, mixedVectorComparisonFamily,
 			mixedSumAvgFamily, mixedCountGroupFamily, mixedFloatAggregateFamily,
 			mixedTopKFamily, mixedCountValuesFamily,
 		},
@@ -214,8 +223,11 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 			case mixedLabelFamily, mixedSortByLabelFamily, mixedCountGroupFamily, mixedLimitFamily:
 				wantPolicy = mixedPreserve
 			}
-			if key == (mixedWrapperKey{family: mixedFloatAggregateFamily, site: mixedPlanAdmission}) {
+			switch key {
+			case mixedWrapperKey{family: mixedFloatAggregateFamily, site: mixedPlanAdmission}:
 				wantPolicy = mixedFloatOnly
+			case mixedWrapperKey{family: mixedUnaryFamily, site: mixedPlanAdmission}:
+				wantPolicy = mixedPreserve
 			}
 			if got := mixedOperandPolicies[key]; got != wantPolicy {
 				t.Errorf("admission %v = %v, want %v", key, got, wantPolicy)
@@ -300,11 +312,26 @@ func TestMixedOperandPolicyPreservesBespokeResultAndError(t *testing.T) {
 	}
 }
 
-func TestMixedOperandPolicyDoesNotTreatUnimplementedModesAsBespoke(t *testing.T) {
+// A consumer's requested rule must match the table row exactly; every other
+// mode — including the two fail-closed sentinels, even when a row happens to
+// hold them — is refused.
+func TestMixedOperandPolicyRequiresExactRuleAgreement(t *testing.T) {
 	key := mixedWrapperKey{family: mixedMathFamily, site: mixedRootAdmission}
-	for _, policy := range []mixedOperandPolicy{mixedReject, mixedFloatOnly, mixedPreserve, mixedPolicyClosed} {
-		if err := requireMixedBespokePolicy(key, policy); err == nil {
-			t.Fatalf("policy %v reached an unmigrated bespoke dispatcher", policy)
+	if err := requireMixedOperandPolicy(key.family, key.site, mixedFloatOnly); err != nil {
+		t.Fatalf("registered rule refused: %v", err)
+	}
+	for _, policy := range []mixedOperandPolicy{mixedReject, mixedBespoke, mixedPreserve, mixedPolicyClosed} {
+		if err := requireMixedOperandPolicy(key.family, key.site, policy); err == nil {
+			t.Fatalf("policy %v admitted against a %v row", policy, mixedOperandPolicies[key])
+		}
+	}
+	for _, sentinel := range []mixedOperandPolicy{mixedReject, mixedPolicyClosed} {
+		original := mixedOperandPolicies[key]
+		mixedOperandPolicies[key] = sentinel
+		err := requireMixedOperandPolicy(key.family, key.site, sentinel)
+		mixedOperandPolicies[key] = original
+		if err == nil {
+			t.Fatalf("sentinel %v authorized itself through the table", sentinel)
 		}
 	}
 }

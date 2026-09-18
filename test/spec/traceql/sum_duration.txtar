@@ -3,16 +3,17 @@
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
+    SpanId String,
     SpanName String,
     Timestamp DateTime64(9),
     ResourceAttributes Map(String, String),
     Duration UInt64
 ) ENGINE = Memory;
 INSERT INTO otel_traces VALUES
-    ('t1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'frontend'), 50000000),
-    ('t1', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'frontend'), 80000000),
-    ('t1', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'frontend'), 120000000),
-    ('t2', 'span', toDateTime64('2024-01-01 00:00:03', 9), map('service.name', 'backend'),  900000000);
+    ('t1', 's1', 'span', toDateTime64('2024-01-01 00:00:00', 9), map('service.name', 'frontend'), 50000000),
+    ('t1', 's2', 'span', toDateTime64('2024-01-01 00:00:01', 9), map('service.name', 'frontend'), 80000000),
+    ('t1', 's3', 'span', toDateTime64('2024-01-01 00:00:02', 9), map('service.name', 'frontend'), 120000000),
+    ('t2', 's4', 'span', toDateTime64('2024-01-01 00:00:03', 9), map('service.name', 'backend'), 900000000);
 -- args --
 [0] string = "service.name"
 [1] string = "frontend"

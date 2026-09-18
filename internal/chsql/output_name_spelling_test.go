@@ -22,10 +22,10 @@ import (
 // The names checked are the ones with a chplan constant whose text is
 // distinctive enough to have no other legitimate meaning in this package.
 // Four constants are NOT checked, and their spelling is therefore reviewer
-// discipline rather than this test's: MatrixTimestampColumn ("TimeUnix")
+// discipline rather than this test's: DefaultSampleTimestampColumn ("TimeUnix")
 // is also the OTel-CH physical timestamp column and the Exemplars nested
-// field (query_exemplars.go reads `Exemplars.TimeUnix`); DefaultValueColumn
-// ("Value"), CompareAttrColumn ("attr") and CompareValColumn ("val") likewise
+// field (query_exemplars.go reads `Exemplars.TimeUnix`); DefaultSampleValueColumn
+// ("Value"), MetricsCompareAttrColumn ("attr") and MetricsCompareValColumn ("val") likewise
 // name physical columns and exemplar fields. A literal of any of those is not
 // necessarily a second spelling of the output name, so the walk cannot tell
 // a drift from a physical reference.
@@ -34,9 +34,9 @@ func TestEmittersSpellSharedOutputNamesThroughChplan(t *testing.T) {
 
 	shared := map[string]string{
 		chplan.RangeWindowAnchorColumn:       "chplan.RangeWindowAnchorColumn",
-		chplan.HistogramBucketColumn:         "chplan.HistogramBucketColumn",
-		chplan.MultiQuantilePhiColumn:        "chplan.MultiQuantilePhiColumn",
-		chplan.CompareSelectionColumn:        "chplan.CompareSelectionColumn",
+		chplan.MetricsBucketColumn:           "chplan.MetricsBucketColumn",
+		chplan.MetricsMultiQuantilePhiColumn: "chplan.MetricsMultiQuantilePhiColumn",
+		chplan.MetricsCompareSelectionColumn: "chplan.MetricsCompareSelectionColumn",
 		chplan.RangeLWRSampleTimestampColumn: "chplan.RangeLWRSampleTimestampColumn",
 	}
 	entries, err := os.ReadDir(".")

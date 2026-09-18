@@ -53,6 +53,14 @@ export function error(message, props = {}) {
   process.stdout.write(`::error${renderProps(props)}::${escapeData(message)}\n`);
 }
 
+// ::error:: on STDERR, same escaping as error() above. For a CLI whose
+// stdout is a payload something else parses (semantic-execution-adapter.mjs
+// prints executions.json-shaped records to stdout) or a one-line status a
+// caller matches on; the runner reads workflow commands from either stream.
+export function errorStderr(message, props = {}) {
+  process.stderr.write(`::error${renderProps(props)}::${escapeData(message)}\n`);
+}
+
 // ::notice:: — annotate an informational pass.
 export function notice(message, props = {}) {
   process.stdout.write(`::notice${renderProps(props)}::${escapeData(message)}\n`);
@@ -230,10 +238,13 @@ export function lsFilesRequired(pathspecs, scanName, opts = {}) {
 }
 
 // appendStepSummary() — append markdown to the job summary, when the
-// runner exposes $GITHUB_STEP_SUMMARY. No-op (logged) off-runner.
-export function appendStepSummary(markdown) {
+// runner exposes $GITHUB_STEP_SUMMARY. Off-runner it logs the markdown to
+// stdout, unless `quiet` — for a CLI that is also a local `just` recipe
+// (the semantic-* family) and prints its own one-line status instead.
+export function appendStepSummary(markdown, { quiet = false } = {}) {
   const file = process.env.GITHUB_STEP_SUMMARY;
   if (!file) {
+    if (quiet) return;
     log('[no $GITHUB_STEP_SUMMARY in env; step-summary markdown follows]');
     log(markdown);
     return;

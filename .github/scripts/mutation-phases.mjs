@@ -698,8 +698,16 @@ export const MUTATION_LANE_WORKFLOW = '.github/workflows/mutation.yml';
 // local entry points and do not select CI mutation work.
 export const MUTATION_DATA_PATHS = ['.gremlins.yaml', 'go.mod', 'go.sum'];
 
-// Paths that change the LANE ITSELF rather than a single scope, and therefore
-// force the FULL matrix.
+// Paths that change the LANE ITSELF rather than a single scope. A change to
+// one of them selects NO phase on a pull request: mutation-matrix.mjs consults
+// this set only to keep harness files out of its "unclaimed path" gap report
+// (MUTATION_NON_PHASE_PATHS), and the harness's own Node regression tests run
+// in `check` instead, with the complete matrix sweeping after the change lands
+// on `main` (mutation.yml's own header states the same split). It does not
+// promote a pull request to a full sweep, and a harness edit therefore runs
+// zero mutants before merge; test/regression/gremlins_mutators_enabled_test.go
+// pins the one configuration axis (.gremlins.yaml's mutator set) that could
+// otherwise shrink every leg's population through this gap unnoticed.
 //
 // DERIVED, not listed. The executed half comes from lane-harness.mjs walking
 // mutation.yml's own `node` steps and composite actions into the module graph

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -17,13 +18,18 @@ import (
 // evalTime is pinned to both Start and End with Step left at 0, so the query
 // lowers as an instant evaluation at a single anchor. Lowerers is left at its
 // zero value (the all-fan-out default), matching an instant query on the
-// handler where the native timeSeries*ToGrid table is not threaded.
-func NewExplainLang(s schema.Metrics, evalTime time.Time) engine.Lang {
+// handler where the native timeSeries*ToGrid table is not threaded. bounds
+// are the resource bounds the deployment runs under (Handler.ResourceBounds
+// on the server) — the exponential-histogram window budget is derived from
+// the configured memory cap at the lowering seam, so a preview that left
+// them at the zero value bound every deployment's SQL to the 1 GiB default.
+func NewExplainLang(s schema.Metrics, evalTime time.Time, bounds promql.ResourceBounds) engine.Lang {
 	return &lang{
-		Parser: promparse.New(),
-		Schema: s,
-		Start:  evalTime,
-		End:    evalTime, // Step stays 0 => instant evaluation
+		Parser:         promparse.New(),
+		Schema:         s,
+		Start:          evalTime,
+		End:            evalTime, // Step stays 0 => instant evaluation
+		ResourceBounds: bounds,
 	}
 }
 
@@ -45,12 +51,13 @@ func NewExplainLang(s schema.Metrics, evalTime time.Time) engine.Lang {
 // timeSeries*ToGrid enabled. Unlike the instant/rule preview — where the handler
 // likewise threads no native lowerers, so NewExplainLang stays faithful — the
 // range preview trades that fidelity for offline determinism.
-func NewExplainLangRange(s schema.Metrics, start, end time.Time, step time.Duration) engine.Lang {
+func NewExplainLangRange(s schema.Metrics, start, end time.Time, step time.Duration, bounds promql.ResourceBounds) engine.Lang {
 	return &lang{
-		Parser: promparse.New(),
-		Schema: s,
-		Start:  start,
-		End:    end,
-		Step:   step,
+		Parser:         promparse.New(),
+		Schema:         s,
+		Start:          start,
+		End:            end,
+		Step:           step,
+		ResourceBounds: bounds,
 	}
 }

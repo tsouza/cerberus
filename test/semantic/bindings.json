@@ -148,9 +148,9 @@
     {
       "id": "BINDING-TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION-BOOL-DIFFERENTIAL",
       "contract": "TRACEQL-SPAN-ATTRIBUTE-TYPE-COERCION",
-      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
-      "evidence_class": "reference",
-      "independence_group": "reference-differential",
+      "verifier": "VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR",
+      "evidence_class": "execution",
+      "independence_group": "in-process-reference-evaluator",
       "test_ref": "test/spec/traceql/bool_attr.txtar#parity",
       "status": "active"
     },
@@ -328,8 +328,8 @@
     {
       "id": "BINDING-TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY-SPEC",
       "contract": "TRACEQL-TYPED-ATTRIBUTE-COERCION-BOUNDARY",
-      "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
-      "evidence_class": "reference",
+      "verifier": "VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR",
+      "evidence_class": "execution",
       "independence_group": "attr-type-hint-query-driven-coercion",
       "test_ref": "test/spec/traceql/bool_attr.txtar#parity",
       "status": "active"
@@ -481,10 +481,19 @@
     {
       "id": "BINDING-LOGQL-RANGE-AGGREGATION-REFERENCE",
       "contract": "LOGQL-STRUCTURED-EXTRACTION-METRIC-AGGREGATION-SCOPE",
+      "verifier": "VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR",
+      "evidence_class": "execution",
+      "independence_group": "range-aggregation-in-process-parity",
+      "test_ref": "test/spec/logql/range_agg_without_grouping_unwrap.txtar#parity",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-RANGE-AGGREGATION-COMPAT",
+      "contract": "LOGQL-STRUCTURED-EXTRACTION-METRIC-AGGREGATION-SCOPE",
       "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
       "evidence_class": "reference",
       "independence_group": "range-aggregation-reference-differential",
-      "test_ref": "test/spec/logql/range_agg_without_grouping_unwrap.txtar#parity",
+      "test_ref": "compatibility/loki/upstream/loki-bench/queries/exhaustive/aggregations.yaml",
       "status": "active"
     },
     {
@@ -670,28 +679,55 @@
     {
       "id": "BINDING-ARCH-HEAD-WIRE-PROMQL",
       "contract": "ARCH-HEAD-WIRE-001",
+      "verifier": "VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR",
+      "evidence_class": "execution",
+      "independence_group": "promql-in-process-parity",
+      "test_ref": "test/spec/promql/absent_aggregate_with_series.txtar#parity",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-WIRE-PROMQL-COMPAT",
+      "contract": "ARCH-HEAD-WIRE-001",
       "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
       "evidence_class": "reference",
       "independence_group": "promql-wire-parity",
-      "test_ref": "test/spec/promql/absent_aggregate_with_series.txtar#parity",
+      "test_ref": "compatibility/prometheus",
       "status": "active"
     },
     {
       "id": "BINDING-ARCH-HEAD-WIRE-LOGQL",
       "contract": "ARCH-HEAD-WIRE-001",
+      "verifier": "VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR",
+      "evidence_class": "execution",
+      "independence_group": "logql-in-process-parity",
+      "test_ref": "test/spec/logql/absent_over_time_instant.txtar#parity",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-WIRE-LOGQL-COMPAT",
+      "contract": "ARCH-HEAD-WIRE-001",
       "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
       "evidence_class": "reference",
       "independence_group": "logql-wire-parity",
-      "test_ref": "test/spec/logql/absent_over_time_instant.txtar#parity",
+      "test_ref": "compatibility/loki",
       "status": "active"
     },
     {
       "id": "BINDING-ARCH-HEAD-WIRE-TRACEQL",
       "contract": "ARCH-HEAD-WIRE-001",
+      "verifier": "VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR",
+      "evidence_class": "execution",
+      "independence_group": "traceql-in-process-parity",
+      "test_ref": "test/spec/traceql/and_two_attrs.txtar#parity",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-HEAD-WIRE-TRACEQL-COMPAT",
+      "contract": "ARCH-HEAD-WIRE-001",
       "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
       "evidence_class": "reference",
       "independence_group": "traceql-wire-parity",
-      "test_ref": "test/spec/traceql/and_two_attrs.txtar#parity",
+      "test_ref": "compatibility/tempo",
       "status": "active"
     },
     {

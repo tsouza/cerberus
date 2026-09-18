@@ -72,6 +72,13 @@ jobs:
         with:
           node-version: '20'
 
+      # `just capture-release-perf-baseline` below — the same recipe
+      # `just release-prep` runs, so the two release paths stage the same
+      # artefact the same way.
+      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
+        with:
+          tool: just@1.46.0
+
       # Pin the resolver's + deriver's own logic before either edits anything.
       - name: resolve-release-trigger self-test
         run: node .github/scripts/resolve-release-trigger.mjs --self-test
@@ -151,7 +158,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md
+          # Freeze THIS release's own cardinality baseline as the fixed
+          # reference TestReleasePerfRegression compares the NEXT release
+          # against (cerberus issue #3150) — from the working tree, which is
+          # exactly the dispatched ref's state (prepare-release.mjs never
+          # touches test/perf/cardinality-baseline/), i.e. the version that
+          # ships. Staged into the SAME commit as the version bump, exactly
+          # as `just release-prep` does; test/regression's
+          # TestBothReleasePathsStageThePerfBaseline holds the two paths to
+          # the same shape.
+          just capture-release-perf-baseline "$VERSION"
+          git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md "test/perf/release-baseline/${VERSION}/"
           git commit -m "$title"
           git push -u origin "$branch"
           url="$(gh pr create --base "$BASE" --head "$branch" --title "$title" --body-file release-pr-body.md)"

@@ -30,7 +30,8 @@
 // JUST_BIN (optional; default `just`).
 // Exit: 0 when every record's `just semantic-mutate` run exits 0
 // (observed classification matches its own declared expected_detection);
-// 1 on the first one that does not, or on a load/validation failure.
+// 1 on the first one that does not, on a load/validation failure, or on a
+// corpus directory holding zero records (never a vacuous "all 0 matched").
 
 import { spawnSync } from "node:child_process";
 import process from "node:process";
@@ -49,6 +50,12 @@ export function runCorpus({
   spawnFn = spawnSync,
 } = {}) {
   const records = loadMutants(dir, { root });
+  if (records.size === 0) {
+    // Mirrors selectDetectors' refusal to measure with nothing to detect:
+    // an empty SEMANTIC_MUTANTS_DIR (a typo, an emptied directory) would
+    // otherwise report "all 0 record(s) matched" and exit green.
+    throw new Error(`semantic-mutation-corpus: ${dir} holds zero mutant records — refusing to report a vacuous pass`);
+  }
   const failures = [];
   for (const id of [...records.keys()].sort()) {
     const result = group(`just semantic-mutate ${id}`, () =>

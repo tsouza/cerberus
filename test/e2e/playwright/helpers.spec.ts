@@ -9,17 +9,15 @@
  *     including a workstation with no compose stack up.
  *
  *  2. Live-Grafana tests — `dashboard.ts:iterateDashboards`,
- *     `assertions.ts:assertNon200ResponseClass` (against a known-2xx
- *     URL). These guard the I/O surface; the test condition probes
- *     Grafana first and bails out cleanly if the stack isn't up,
- *     so they double as a smoke that the helpers work against the
- *     compose stack the phase specs will run against.
+ *     `drilldown.ts:isAppInstalled`. These guard the I/O surface
+ *     against the stack the spec is scheduled on (the k3d dashboard
+ *     lane, .github/scripts/dashboard-matrix.mjs). An unreachable
+ *     Grafana FAILS them: a helper self-test that passes with no stack
+ *     up has verified nothing, and a lane that lost its Grafana must
+ *     go red here, not green.
  *
- * Run via:
+ * Run via (with a stack up on GRAFANA_BASE_URL):
  *   cd test/e2e/playwright && npx playwright test helpers.spec.ts
- *
- * The full phase specs that will consume these helpers don't exist
- * yet — this is phase 0 of the e2e-enhance plan.
  */
 
 import { expect, test } from '@playwright/test';
@@ -58,6 +56,9 @@ import {
   describeSweepDepth,
   sweepDepth,
   DRILLDOWN_APPS,
+  dsQueryRequestMatchesPanel,
+  panelForDsQueryRequest,
+  parseDsQueryRequest,
 } from './helpers/index.js';
 
 // --- Pure-function tests ----------------------------------------------------
@@ -903,22 +904,148 @@ test('describeSweepDepth documents each depth distinctly', () => {
   expect(describeSweepDepth('lean')).not.toBe(describeSweepDepth('full'));
 });
 
+// --- ds/query request ↔ panel attribution (helpers/ds-query.ts) -------------
+//
+// The self-observability board has five panels that all group by
+// `cerberus_ql`; attribution must come from the REQUEST's own expression,
+// never from a response-body substring, or one panel's assertions are
+// satisfiable by a sibling and a sibling's failure is filed under the
+// wrong name. The fixture below is that board's shape in miniature.
+
+const dsQueryFixtureDashboard: Dashboard = {
+  uid: 'cerberus-self',
+  title: 'Cerberus',
+  templating: { list: [] },
+  panels: [
+    {
+      id: 1,
+      title: 'Query rate by language',
+      type: 'timeseries',
+      targets: [
+        {
+          refId: 'A',
+          expr: 'sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))',
+          datasource: { type: 'prometheus', uid: 'cerberus-prometheus' },
+        },
+      ],
+      gridPos: { x: 0, y: 0, w: 12, h: 8 },
+    },
+    {
+      id: 2,
+      title: 'P95 latency by language',
+      type: 'timeseries',
+      targets: [
+        {
+          refId: 'A',
+          expr: 'histogram_quantile(0.95, sum by (cerberus_ql) (rate(cerberus_queries_duration_exp_hist[5m])))',
+          datasource: { type: 'prometheus', uid: 'cerberus-prometheus' },
+        },
+      ],
+      gridPos: { x: 12, y: 0, w: 12, h: 8 },
+    },
+    {
+      id: 3,
+      title: 'Error rate by language',
+      type: 'timeseries',
+      targets: [
+        {
+          refId: 'A',
+          expr: 'sum by (cerberus_ql) (rate(cerberus_queries_total{result="error"}[5m]))',
+          datasource: { type: 'prometheus', uid: 'cerberus-prometheus' },
+        },
+      ],
+      gridPos: { x: 0, y: 8, w: 12, h: 8 },
+    },
+  ],
+};
+
+function dsQueryBody(exprs: string[]): string {
+  return JSON.stringify({
+    queries: exprs.map((expr, i) => ({
+      refId: String.fromCharCode('A'.charCodeAt(0) + i),
+      expr,
+      datasource: { type: 'prometheus', uid: 'cerberus-prometheus' },
+      intervalMs: 15000,
+      maxDataPoints: 1000,
+    })),
+    from: '1700000000000',
+    to: '1700003600000',
+  });
+}
+
+test('parseDsQueryRequest reads refId/expr/datasource uid and drops empty or unparseable bodies', () => {
+  const queries = parseDsQueryRequest(dsQueryBody(['up', '  rate(foo[1m])  ']));
+  expect(queries).toEqual([
+    { refId: 'A', expr: 'up', datasourceUid: 'cerberus-prometheus' },
+    { refId: 'B', expr: 'rate(foo[1m])', datasourceUid: 'cerberus-prometheus' },
+  ]);
+  // TraceQL/LogQL targets carry `query`, not `expr`.
+  expect(
+    parseDsQueryRequest(JSON.stringify({ queries: [{ refId: 'A', query: '{ }', datasource: 'cerberus-tempo' }] })),
+  ).toEqual([{ refId: 'A', expr: '{ }', datasourceUid: 'cerberus-tempo' }]);
+  expect(parseDsQueryRequest(null)).toEqual([]);
+  expect(parseDsQueryRequest('')).toEqual([]);
+  expect(parseDsQueryRequest('not json')).toEqual([]);
+  expect(parseDsQueryRequest(JSON.stringify({ queries: [{ refId: 'A', expr: '' }] }))).toEqual([]);
+});
+
+test('ds/query attribution selects only the panel whose own expression the request carries', () => {
+  const rate = dsQueryFixtureDashboard.panels[0]!;
+  const p95 = dsQueryFixtureDashboard.panels[1]!;
+  const errors = dsQueryFixtureDashboard.panels[2]!;
+
+  // Every panel on the board mentions `cerberus_ql`; a substring match on
+  // the group-by key would accept all three. Exact-expression attribution
+  // accepts exactly one.
+  const rateReq = parseDsQueryRequest(dsQueryBody([rate.targets[0]!.expr!]));
+  expect(dsQueryRequestMatchesPanel(rateReq, rate)).toBe(true);
+  expect(dsQueryRequestMatchesPanel(rateReq, p95)).toBe(false);
+  expect(dsQueryRequestMatchesPanel(rateReq, errors)).toBe(false);
+  expect(panelForDsQueryRequest(dsQueryFixtureDashboard, rateReq)?.title).toBe(rate.title);
+
+  const p95Req = parseDsQueryRequest(dsQueryBody([p95.targets[0]!.expr!]));
+  expect(panelForDsQueryRequest(dsQueryFixtureDashboard, p95Req)?.title).toBe(p95.title);
+  expect(dsQueryRequestMatchesPanel(p95Req, rate)).toBe(false);
+
+  // A near-miss expression (same metric, different selector) attributes
+  // to nothing rather than to the closest sibling.
+  const strangerReq = parseDsQueryRequest(
+    dsQueryBody(['sum by (cerberus_ql) (rate(cerberus_queries_total{result="ok"}[5m]))']),
+  );
+  expect(panelForDsQueryRequest(dsQueryFixtureDashboard, strangerReq)).toBeUndefined();
+  for (const p of dsQueryFixtureDashboard.panels) {
+    expect(dsQueryRequestMatchesPanel(strangerReq, p)).toBe(false);
+  }
+
+  // A request with no queries attributes to nothing.
+  expect(panelForDsQueryRequest(dsQueryFixtureDashboard, [])).toBeUndefined();
+});
+
 // --- Live-Grafana tests -----------------------------------------------------
+
+/**
+ * Fail loudly when Grafana is not up. The live tests below exist to
+ * exercise the helpers' I/O surface; returning green without a stack
+ * would be a test that cannot fail (invariant 6).
+ */
+async function expectGrafanaReachable(
+  request: import('@playwright/test').APIRequestContext,
+  baseURL: string,
+): Promise<void> {
+  const probe = await request.get(`${baseURL}/api/health`).catch(() => null);
+  expect(
+    probe?.status() ?? 0,
+    `Grafana at ${baseURL} must be reachable for the live helper tests (GET /api/health); ` +
+      'run this spec against a live stack (GRAFANA_BASE_URL), never without one',
+  ).toBeGreaterThanOrEqual(200);
+  expect(probe?.status() ?? 0, `GET ${baseURL}/api/health`).toBeLessThan(300);
+}
 
 test('iterateDashboards round-trips against a live Grafana', async ({
   request,
 }) => {
   const baseURL = process.env.GRAFANA_BASE_URL ?? 'http://localhost:3000';
-  // Probe Grafana first so the test is informative when the compose
-  // stack isn't up — skip cleanly via test.fail() guard.
-  const probe = await request.get(`${baseURL}/api/health`).catch(() => null);
-  if (!probe || probe.status() < 200 || probe.status() > 299) {
-    test.info().annotations.push({
-      type: 'live-grafana',
-      description: `Grafana at ${baseURL} not reachable; running pure-function tests only`,
-    });
-    return;
-  }
+  await expectGrafanaReachable(request, baseURL);
 
   const dashboards = await iterateDashboards(request, baseURL);
   expect(dashboards.length).toBeGreaterThan(0);
@@ -939,14 +1066,7 @@ test('isAppInstalled distinguishes installed apps from a known-bogus id', async 
   request,
 }) => {
   const baseURL = process.env.GRAFANA_BASE_URL ?? 'http://localhost:3000';
-  const probe = await request.get(`${baseURL}/api/health`).catch(() => null);
-  if (!probe || probe.status() < 200 || probe.status() > 299) {
-    test.info().annotations.push({
-      type: 'live-grafana',
-      description: `Grafana at ${baseURL} not reachable; isAppInstalled smoke skipped`,
-    });
-    return;
-  }
+  await expectGrafanaReachable(request, baseURL);
 
   // A clearly-bogus plugin id must resolve to false (404 → not
   // installed). This is the load-bearing contract — the phase-6 spec

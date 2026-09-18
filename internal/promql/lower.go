@@ -44,7 +44,7 @@ func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node
 	defer span.End()
 	plan, err := lowerRoot(expr, s, lowerCtx{
 		lowerers:       RangeLowerers{}.withDefaults(),
-		resourceBounds: DefaultResourceBounds(),
+		resourceBounds: DefaultResourceBounds().withDefaults(),
 	})
 	if err != nil {
 		span.RecordError(err)
@@ -208,7 +208,7 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 		end:               end,
 		metadataFullRange: true,
 		lowerers:          RangeLowerers{}.withDefaults(),
-		resourceBounds:    DefaultResourceBounds(),
+		resourceBounds:    DefaultResourceBounds().withDefaults(),
 	})
 	if err != nil {
 		span.RecordError(err)
@@ -687,7 +687,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// doc comment for why every comparison op drops the histogram side
 	// unconditionally, regardless of `bool`.
 	if b, op, scalar, scalarOnLeft, returnBool, ok := comparisonOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerComparisonRoot(func() (chplan.Node, error) {
+		plan, err := lowerUnderMixedOperandPolicy(mixedComparisonFamily, mixedRootAdmission, mixedFloatOnly, func() (chplan.Node, error) {
 			return lowerComparisonOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, returnBool, s, ctx)
 		})
 		return plan, true, err
@@ -706,9 +706,9 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// exactly one side to fold to a scalar; this one requires neither
 	// side to). histogram_native_mixed_or_vector_arithmetic.go has the
 	// composition's own doc comment for the four-combination semantics
-	// decision, group_left()/group_right() support (cerberus issue
-	// #2449's ninth wrapper family), and what remains out of scope
-	// (the histogram-histogram ADD/SUB merge).
+	// decision, including the histogram,histogram `+`/`-` merge
+	// ([lowerMixedVVAdditiveArithmetic]), and group_left()/group_right()
+	// support (cerberus issue #2449's ninth wrapper family).
 	if lhs, rhs, op, match, card, include, ok := vectorVectorArithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
 		plan, err := lowerWithBespokeMixedOperandPolicy(mixedVectorArithmeticFamily, mixedRootAdmission, func() (chplan.Node, error) {
 			return lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhs, rhs, op, match, card, include, s, ctx)
@@ -3790,16 +3790,30 @@ func closeNativeMatrixInput(input chplan.Node, groupBy []chplan.Expr, s schema.M
 	}
 
 	declared := chplan.Schema{Columns: metricRoles(s)}
-	projections := make([]chplan.Projection, len(names))
-	roles := make([]chplan.Column, len(names))
+	columns := make([]chplan.Column, len(names))
 	for i, name := range names {
-		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name}
-		roles[i] = chplan.Column{Name: name}
+		columns[i] = chplan.Column{Name: name}
 		if column, ok := declared.ByName(name); ok {
-			roles[i] = column
+			columns[i] = column
 		}
 	}
-	return &chplan.Project{Input: input, Projections: projections, Roles: roles}, true
+	return closeToColumns(input, columns), true
+}
+
+// closeToColumns wraps input in a Project that re-declares exactly
+// `columns` — each read by name and aliased to itself — so the node above
+// sees a CLOSED schema carrying those columns' roles and nothing else. It
+// is the one spelling of "close a raw Scan / Filter(Scan) to a declared
+// column set": the native matrix and instant grid nodes and the native
+// staleness resample all sit directly on a selector whose custom schema may
+// have left it a raw Scan, and each needs its public sample roles resolvable
+// above any matcher Filter without narrowing the columns that Filter reads.
+func closeToColumns(input chplan.Node, columns []chplan.Column) *chplan.Project {
+	projections := make([]chplan.Projection, len(columns))
+	for i, column := range columns {
+		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name}
+	}
+	return &chplan.Project{Input: input, Projections: projections, Roles: columns}
 }
 
 // nativeTSGridInstantNode returns a chplan.RangeWindowGridNativeInstant when rw
@@ -3881,16 +3895,7 @@ func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.M
 		// a raw Scan. Close its public sample boundary here, above any matcher
 		// Filter, so the native node can resolve the physical value role
 		// without narrowing columns needed by that predicate.
-		input = &chplan.Project{
-			Roles: metricRoles(s),
-			Input: input,
-			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-				{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-				{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-				{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
-			},
-		}
+		input = closeToColumns(input, metricRoles(s))
 	}
 	return &chplan.RangeWindowGridNativeInstant{
 		Input:           input,
@@ -5439,7 +5444,7 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 func wrapQuantilePhiGuard(wrapped chplan.Node, a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if phi, ok := tryScalarLiteral(a.Param); ok {
 		if infValue, outOfRange := outOfRangePhiInf(phi); outOfRange {
-			return projectValueOverInner(wrapped, s, legacySampleProjectionLayout(wrapped), func(sampleRoleRefs) chplan.Expr { return &chplan.LitFloat{V: infValue} }), nil
+			return projectValueOverInner(wrapped, s, derivedSampleProjectionLayout(wrapped), func(sampleRoleRefs) chplan.Expr { return &chplan.LitFloat{V: infValue} }), nil
 		}
 		return wrapped, nil
 	}
@@ -5453,7 +5458,7 @@ func wrapQuantilePhiGuard(wrapped chplan.Node, a *parser.AggregateExpr, s schema
 	if err != nil {
 		return nil, err
 	}
-	return projectValueOverInner(wrapped, s, legacySampleProjectionLayout(wrapped), func(refs sampleRoleRefs) chplan.Expr {
+	return projectValueOverInner(wrapped, s, derivedSampleProjectionLayout(wrapped), func(refs sampleRoleRefs) chplan.Expr {
 		return outOfRangePhiGuardExpr(phiE, refs.Value)
 	}), nil
 }
@@ -5543,7 +5548,7 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 	if err != nil {
 		return nil, err
 	}
-	if err := requireMixedPlanPolicy(input, mixedCountValuesFamily); err != nil {
+	if err := requireMixedPlanPolicy(input, mixedCountValuesFamily, mixedBespoke); err != nil {
 		return nil, err
 	}
 	valueKey := promFixedFloatStringExpr(&chplan.ColumnRef{Name: s.ValueColumn})
@@ -5577,9 +5582,11 @@ func mixedCountValuesValueKey(input chplan.Node, floatKey chplan.Expr, s schema.
 
 // lowerCountValuesOverPlan applies the shared count_values grouping and
 // sample projection to input. valueKey is already the exact string that
-// becomes the synthetic label: ordinary float rows pass toString(Value),
-// while the native-histogram consumer passes Prometheus's histogram String
-// representation built from the published thirteen-column row contract.
+// becomes the synthetic label: ordinary float rows pass
+// [promFixedFloatStringExpr] over Value (Go's 'f' layout, the format
+// reference count_values uses), while the native-histogram consumer passes
+// Prometheus's histogram String representation built from the published
+// thirteen-column row contract.
 func lowerCountValuesOverPlan(
 	a *parser.AggregateExpr,
 	label string,
@@ -6170,9 +6177,11 @@ const (
 	// single-byte form: `v < 255` in encodeSize.
 	stringLabelsShortSizeMax = 255
 	// stringLabelsLongSizeEscape is the marker byte introducing the
-	// four-byte form. It shares encodeSize's boundary value by
-	// coincidence of the encoding, not by derivation from it.
-	stringLabelsLongSizeEscape = 255
+	// four-byte form. It is the boundary value by derivation: the short
+	// form only ever writes bytes below stringLabelsShortSizeMax, so that
+	// value is the first byte the short form can never produce, which is
+	// what lets a reader tell the two forms apart from the first byte.
+	stringLabelsLongSizeEscape = stringLabelsShortSizeMax
 	// stringLabelsSizeAlias binds the encoded string's size once inside
 	// the prefix expression — see [lenPrefixExpr].
 	stringLabelsSizeAlias = "n"

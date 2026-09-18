@@ -123,18 +123,47 @@ func runHistogramBinopMergeBoundQuery(t *testing.T, fixture *chdbFixture) error 
 // scale FIRST so the merged width never exceeds
 // maxHistogramMergeOutputWidth (160), and the guard sees a cost of
 // 2 x 160^2 = 51,200 — comfortably under budget — so the query now
-// SUCCEEDS with a coarser (but still correct) merged distribution instead
-// of refusing outright.
+// SUCCEEDS with a coarser merged distribution instead of refusing
+// outright. The merged row's Scale, width and Count are read back and
+// checked against the cap's own arithmetic (see assertCompactedMerge), so
+// a refinement that over-narrowed would fail here rather than pass as
+// "not rejected".
 func TestHistogramBinopMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
+	const farOffset = 20000
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
 	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricA, "x", 0) + ",\n")
-	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricB, "x", 20000) + ";\n")
+	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricB, "x", farOffset) + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
-	if err := runHistogramBinopMergeBoundQuery(t, fixture); err != nil {
+	query := fmt.Sprintf("%s + %s", histogramBinopMergeBoundMetricA, histogramBinopMergeBoundMetricB)
+	got, err := readMergedHistogramShape(t, fixture, query, promql.LowerOpts{})
+	if err != nil {
 		t.Fatalf("a scale-divergent two-operand binop merge must be compacted to a bounded width, not rejected: %v", err)
+	}
+	assertCompactedMerge(t, got, 0, farOffset+1, 2)
+}
+
+// TestHistogramBinopMergeBudget_ChDB_NarrowMergeKeepsScale pins the other
+// half of the refinement for the binop merge: two operands six buckets
+// apart already fit the cap and keep their own Scale and every bucket.
+func TestHistogramBinopMergeBudget_ChDB_NarrowMergeKeepsScale(t *testing.T) {
+	const farOffset = 5
+	var b strings.Builder
+	b.WriteString(histogramMergeBoundSeedDDL)
+	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
+	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricA, "x", 0) + ",\n")
+	b.WriteString("    " + histogramBinopMergeBoundRow(histogramBinopMergeBoundMetricB, "x", farOffset) + ";\n")
+	fixture := newChDBFixture(t, b.String())
+
+	query := fmt.Sprintf("%s + %s", histogramBinopMergeBoundMetricA, histogramBinopMergeBoundMetricB)
+	got, err := readMergedHistogramShape(t, fixture, query, promql.LowerOpts{})
+	if err != nil {
+		t.Fatalf("a narrow two-operand binop merge must succeed: %v", err)
+	}
+	if got.Scale != 0 || got.Width != farOffset+1 || got.Count != 2 {
+		t.Fatalf("narrow binop merge changed shape: got %+v, want Scale 0, width %d, Count 2", got, farOffset+1)
 	}
 }
 

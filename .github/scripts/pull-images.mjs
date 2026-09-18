@@ -19,12 +19,21 @@
 // Env:
 //   IMAGE_PULL_BACKOFF_SECONDS  (optional; default 3) linear backoff step —
 //                               attempt N sleeps N × this many seconds.
+//   IMAGE_PULL_EXCLUDE          (optional) whitespace-separated image-ref
+//                               globs (lib/image-globs.mjs) to skip — the
+//                               bwc / datashard lanes pass the standalone
+//                               `clickhouse/clickhouse-server:*-alpine` image
+//                               their kustomization never applies, the same
+//                               pattern k3d-image-import.mjs's
+//                               IMAGE_IMPORT_EXCLUDE takes.
 //
-// Exit: 0 when every ref is in the local daemon, 1 as soon as one is not.
+// Exit: 0 when every non-excluded ref is in the local daemon, 1 as soon as
+// one is not.
 
 import process from 'node:process';
 
-import { error } from './lib/gh.mjs';
+import { error, log } from './lib/gh.mjs';
+import { filterImages } from './lib/image-globs.mjs';
 import { pullImageWithRetry, readBackoffStepSeconds } from './lib/registry.mjs';
 
 // Matches the compose pre-pull's step: these lanes pull the same images from the
@@ -39,7 +48,14 @@ if (refs.length === 0) {
 
 const backoffStepSeconds = readBackoffStepSeconds('IMAGE_PULL_BACKOFF_SECONDS', imagePullBackoffStepSeconds);
 
-for (const ref of refs) {
+const excludePatterns = (process.env.IMAGE_PULL_EXCLUDE || '').split(/\s+/).filter(Boolean);
+const toPull = filterImages(refs, excludePatterns);
+const skipped = refs.filter((ref) => !toPull.includes(ref));
+if (skipped.length > 0) {
+  log(`==> excluding ${skipped.length} image(s) matching IMAGE_PULL_EXCLUDE: ${skipped.join(', ')}`);
+}
+
+for (const ref of toPull) {
   // First failure ends the run: the lane that asked for these images cannot
   // start without them, and a second pull into a spent quota only deepens the
   // deficit for every concurrent job.

@@ -25,7 +25,7 @@ Filter predicate=((0 - FnToFloat64OrNull(SpanAttributes["x"])) > -3)
 SELECT * FROM `otel_traces` WHERE ((? - toFloat64OrNull(`SpanAttributes`[?])) > ?)
 -- parity_exempt --
 reason: oracle-untyped-attributes
-detail: `{ -span.x > -3 }` compares an attribute against a non-string literal, and the oracle sees every attribute as a String static (#3259)
+detail: `{ -span.x > -3 }` reaches the attribute only through a unary minus; collectAttrTypeHints records a type only for an attribute that is itself one operand of a comparison with a literal, so span.x stays a String static and the reference engine's unary minus fails with "expected a numeric, but got TypeString" where cerberus casts it through toFloat64OrNull
 -- args_optimized --
 [0] string = "__cerberus_traceID"
 [1] string = "__cerberus_parentSpanID"

@@ -23,8 +23,11 @@
 // -> canonical execution -> counterexample search -> optional adversarial
 // probes -> required evidence flow; it never selects, skips, or approves a
 // CI workflow, exactly like semantic-impact.mjs (issue #3460) whose
-// MERGE_RELEASE_CAVEAT and ADVERSARIAL_NOTE this module reuses verbatim
-// rather than restating. An agent (or a human) cannot self-approve
+// MERGE_RELEASE_CAVEAT this module reuses verbatim rather than restating.
+// The adversarial-evidence section is a projection of the report's own
+// mutation_cohort (lib/semantic-mutation-report.mjs), so the guide and the
+// full report can never disagree about which contracts a committed mutant
+// targets. An agent (or a human) cannot self-approve
 // correctness by editing test/semantic/*.json: those files are
 // hand-authored/reviewed source like any other in this repository, a
 // change to a contract's statement, required evidence class, or binding is
@@ -39,7 +42,10 @@
 // own acceptance criterion, restated once there rather than here).
 
 import { WORKED_EXAMPLE_CONTRACT_ID, mdEscapeProse } from "./semantic-report.mjs";
-import { ADVERSARIAL_NOTE, MERGE_RELEASE_CAVEAT } from "./semantic-impact.mjs";
+import { byId } from "./semantic-model.mjs";
+import { classifyTestRef } from "./semantic-evidence-adapter.mjs";
+import { MERGE_RELEASE_CAVEAT } from "./semantic-impact.mjs";
+import { matchesGlob } from "../ci-lane-contract.mjs";
 
 export const GUIDE_SCHEMA_VERSION = 1;
 export const DEFAULT_GUIDE_MD_PATH = "docs/semantic-guide.md";
@@ -117,10 +123,14 @@ const HOW_TO_USE_STEPS = [
   {
     title: "Optional adversarial probes",
     body:
-      `${ADVERSARIAL_NOTE} A contract with no adversarial evidence bound is not ` +
-      "a gap this guide asks a reader to fill before the four steps around it " +
-      "are usable — mutation testing (`just mutate-pkg <path>`) is available and " +
-      "worth running for extra confidence, never required to complete the flow.",
+      "The Adversarial evidence section below lists, per contract, the " +
+      "hand-authored contract-linked mutants of the semantic mutation pilot " +
+      "(`test/semantic/mutants/`, run with `just semantic-mutate <id>`) and each " +
+      "one's declared disposition. A contract with none listed has no " +
+      "adversarial evidence — not a gap this guide asks a reader to fill before " +
+      "the four steps around it are usable; mutation testing (`just mutate-pkg " +
+      "<path>`) is available and worth running for extra confidence, never " +
+      "required to complete the flow.",
   },
   {
     title: "Required reference/release evidence",
@@ -133,49 +143,140 @@ const HOW_TO_USE_STEPS = [
   },
 ];
 
-function byId(a, b) {
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
-
 /** GitHub's Markdown heading slug for a contract ID: plain uppercase + hyphens, so lowercasing is the whole transform. */
 function anchor(id) {
   return id.toLowerCase();
 }
 
+// Which lane actually RUNS a binding's evidence, by the evidence system its
+// test_ref names (lib/semantic-evidence-adapter.mjs's classifyTestRef):
+// the property lane runs the property-shape rosters; a TXTAR fixture is
+// executed by its head's chDB round trip (and by `check`'s unit suite,
+// which also carries the fixtures that have no round-trip lane, such as
+// test/spec/optimizer); the parity ledgers are ratcheted by `check`; a
+// compatibility harness directory is run by its head's compat lane; any
+// other Go test runs under `check`. A binding's obligations are already
+// free of tree-wide lanes (resolveBindingLanes), so a lane named here is
+// only ever chosen when the binding's own obligations actually contain
+// it — this list ranks, it never invents.
+const COMPAT_LANE_BY_HARNESS_DIR = Object.freeze({
+  "compatibility/prometheus": "compatibility.prometheus",
+  "compatibility/loki": "compatibility.loki",
+  "compatibility/tempo": "compatibility.tempo",
+});
+const UNIT_SUITE_LANE = "ci.check";
+// `just coverage-default` + `coverage-chdb` run every default- and
+// chdb-tagged test under ./..., including packages `ci.check`'s own
+// package_globs do not name (test/semantic/resourcefixture,
+// test/consumer-corpus). When a Go test's most specific owning globs tie —
+// which in this registry means two lanes both claiming `test/**`, one of
+// them a scan that runs no Go test at all — the lane that runs every Go
+// test wins the tie.
+const WHOLE_TREE_COVERAGE_LANE = "quality.coverage-measured";
+const PROPERTY_LANE = "quality.property";
+
+function preferredLaneIds(binding) {
+  const classified = classifyTestRef(binding.test_ref);
+  switch (classified.system) {
+    case "property-shape":
+      return [PROPERTY_LANE];
+    case "txtar-fixture": {
+      const [, , head] = classified.path.split("/");
+      return [`chdb.roundtrip-${head}`, UNIT_SUITE_LANE];
+    }
+    case "source-path": {
+      const harness = Object.keys(COMPAT_LANE_BY_HARNESS_DIR).find(
+        (dir) => classified.path === dir || classified.path.startsWith(`${dir}/`),
+      );
+      if (harness) return [COMPAT_LANE_BY_HARNESS_DIR[harness]];
+      if (classified.path.startsWith("test/property/")) return [PROPERTY_LANE, UNIT_SUITE_LANE];
+      // A gate script is run by the lane whose registry `command` names it
+      // (ci.agpl-clean -> agpl-clean.mjs); that join is made in
+      // resolveBindingLanes and lands in the obligations. Nothing to rank
+      // here beyond the unit suite — the specificity tiebreak below picks
+      // the lane whose declared scope names the file most narrowly
+      // (migration.e2e for test/e2e/migration/**, chdb.perf-guards for
+      // test/perf/**).
+      return [UNIT_SUITE_LANE];
+    }
+    default:
+      return [UNIT_SUITE_LANE];
+  }
+}
+
+// The static prefix of a glob (everything before its first wildcard) is
+// how narrowly the lane declared its interest in a path: `test/e2e/
+// migration/**` is a stronger claim to own test/e2e/migration/tier1_
+// parity_test.go than `test/**` is. Used only as the tiebreak when no
+// evidence-system preference applies.
+function globSpecificity(glob) {
+  const wildcard = glob.indexOf("*");
+  return wildcard === -1 ? glob.length : wildcard;
+}
+
+function laneSpecificityFor(lane, binding) {
+  const classified = classifyTestRef(binding.test_ref);
+  const candidates = [binding.test_ref];
+  if (classified.system === "source-path") candidates.push(classified.path, `${classified.path}/`);
+  let best = -1;
+  for (const glob of lane.package_globs ?? []) {
+    if (candidates.some((c) => matchesGlob(c, glob))) best = Math.max(best, globSpecificity(glob));
+  }
+  if (typeof lane.command === "string" && classified.system === "source-path" && lane.command.includes(classified.path)) {
+    best = Math.max(best, classified.path.length);
+  }
+  return best;
+}
+
+function laneCommand(lane) {
+  // Prefer the lane's own `just` recipe(s) — a literally runnable command —
+  // over its `command` field, which for several lanes (ci.check) is a
+  // prose SUMMARY of several recipes rather than a single invocation.
+  // `command` remains the fallback for a lane with no just recipe at all
+  // (ci.forbid-skip, chdb.roundtrip-* run a bare `node .github/scripts/
+  // *.mjs`, itself already runnable).
+  return lane.recipes?.length ? lane.recipes.map((r) => `just ${r}`).join(" && ") : (lane.command ?? null);
+}
+
 /**
- * The canonical (first, deterministic) execution recipe for a contract's
- * active bindings: the lowest-sorted binding's lowest-sorted lane
- * obligation, resolved to that lane's OWN command/recipe text via the
- * registry — never a second copy of the command, looked up fresh every
- * build. A contract with no active binding, or whose bindings resolve to no
- * lane (a non-file-shaped test_ref such as a property-shape ID), reports
- * `null` rather than a placeholder.
+ * The canonical execution recipe for a contract's active bindings: for the
+ * lowest-sorted binding with any lane obligation, the obligation whose lane
+ * runs that binding's evidence system (preferredLaneIds above); when none
+ * of the preferred lanes is among them, the obligation whose lane declared
+ * the binding's path most narrowly (laneSpecificityFor), lowest lane ID on
+ * a tie — resolved to that lane's OWN command/recipe text via the registry,
+ * never a second copy of the command. A contract with no active binding,
+ * or whose bindings resolve to no lane (a surface-parity symbol, or a
+ * config file only a tree-wide lane covers), reports `null` rather than a
+ * placeholder.
  */
 function canonicalExecution(contractRecord, registry) {
   const lanesById = new Map((registry.lanes ?? []).map((l) => [l.id, l]));
   for (const binding of contractRecord.bindings) {
-    for (const obligation of binding.obligations) {
-      const lane = lanesById.get(obligation.lane_id);
-      if (!lane) continue;
-      // Prefer the lane's own `just` recipe(s) — a literally runnable
-      // command — over its `command` field, which for several lanes
-      // (ci.lint, ci.check) is a prose SUMMARY of several recipes rather
-      // than a single invocation. `command` remains the fallback for a lane
-      // with no just recipe at all (ci.forbid-skip, ci.agpl-clean run a
-      // bare `node .github/scripts/*.mjs`, itself already runnable).
-      const command = lane.recipes?.length
-        ? lane.recipes.map((r) => `just ${r}`).join(" && ")
-        : (lane.command ?? null);
-      if (command) {
-        return {
-          binding_id: binding.id,
-          lane_id: lane.id,
-          command,
-          merge_required: obligation.merge_required,
-          release_required: obligation.release_required,
-        };
-      }
-    }
+    const runnable = binding.obligations.filter((o) => {
+      const lane = lanesById.get(o.lane_id);
+      return lane && laneCommand(lane);
+    });
+    if (runnable.length === 0) continue;
+    const preferred = preferredLaneIds(binding)
+      .map((id) => runnable.find((o) => o.lane_id === id))
+      .find(Boolean);
+    const mostSpecific = [...runnable].sort((a, b) => {
+      const diff = laneSpecificityFor(lanesById.get(b.lane_id), binding) - laneSpecificityFor(lanesById.get(a.lane_id), binding);
+      if (diff !== 0) return diff;
+      if (a.lane_id === WHOLE_TREE_COVERAGE_LANE) return -1;
+      if (b.lane_id === WHOLE_TREE_COVERAGE_LANE) return 1;
+      return a.lane_id < b.lane_id ? -1 : a.lane_id > b.lane_id ? 1 : 0;
+    })[0];
+    const obligation = preferred ?? mostSpecific;
+    const lane = lanesById.get(obligation.lane_id);
+    return {
+      binding_id: binding.id,
+      lane_id: lane.id,
+      command: laneCommand(lane),
+      merge_required: obligation.merge_required,
+      release_required: obligation.release_required,
+    };
   }
   return null;
 }
@@ -231,6 +332,31 @@ function findContract(report, id) {
   return report.contracts.find((c) => c.id === id) ?? null;
 }
 
+/**
+ * The adversarial-evidence projection: which contracts the real
+ * (non-synthetic) mutants of the semantic mutation pilot target, each with
+ * its RESOLVED disposition and bucket — read straight from
+ * report.mutation_cohort (lib/semantic-mutation-report.mjs), never
+ * recomputed. `mutant_count` is the size of the semantic cohort, so an
+ * empty corpus reads as a derived zero rather than a hand-written claim.
+ */
+function adversarialEvidence(cohort) {
+  const records = new Map((cohort?.records ?? []).map((r) => [r.id, r]));
+  const byContract = Object.entries(cohort?.by_contract ?? {})
+    .map(([contract, ids]) => ({
+      contract,
+      mutants: [...ids].sort().map((id) => {
+        const record = records.get(id);
+        return { id, disposition: record?.disposition?.status ?? null, bucket: record?.bucket ?? null };
+      }),
+    }))
+    .sort((a, b) => (a.contract < b.contract ? -1 : a.contract > b.contract ? 1 : 0));
+  return {
+    mutant_count: cohort?.semantic_cohort?.record_ids?.length ?? 0,
+    by_contract: byContract,
+  };
+}
+
 function workedExample(report, key, contractId) {
   const contractRecord = findContract(report, contractId);
   if (!contractRecord) return null;
@@ -283,7 +409,7 @@ export function buildGuide(report, registry) {
     source: "the semantic-report.mjs buildReport() output over test/semantic/*.json",
     how_to_use: HOW_TO_USE_STEPS,
     metadata_integrity_note: METADATA_INTEGRITY_NOTE,
-    adversarial_note: ADVERSARIAL_NOTE,
+    adversarial_evidence: adversarialEvidence(report.mutation_cohort),
     merge_release_caveat: MERGE_RELEASE_CAVEAT,
     contract_index: contractIndex,
     architectural_rules: architecturalRules(report),
@@ -322,8 +448,8 @@ function renderIndexTable(rows) {
 // report.mjs) for why a bare "internal/chsql/**" or "__name__" silently
 // corrupts under the house-style autofixer otherwise. Hand-authored prose
 // this module itself writes (HOW_TO_USE_STEPS, METADATA_INTEGRITY_NOTE, the
-// imported ADVERSARIAL_NOTE/MERGE_RELEASE_CAVEAT) is real Markdown source
-// and is never escaped.
+// imported MERGE_RELEASE_CAVEAT) is real Markdown source and is never
+// escaped.
 function renderArchitecturalRules(rules) {
   const lines = [];
   for (const rule of rules) {
@@ -370,6 +496,31 @@ function renderWorkedExample(example) {
   return lines.join("\n");
 }
 
+function renderAdversarialEvidence(evidence) {
+  const lines = [];
+  lines.push(
+    `${evidence.mutant_count} real (non-synthetic) mutant record(s) in the semantic mutation pilot ` +
+      "(`test/semantic/mutants/`; the full report's \"Semantic mutation pilot\" section carries " +
+      "the kill/escape rates and every detector). Per targeted contract, each mutant's resolved " +
+      "disposition and bucket; a contract absent from this table has no adversarial evidence.",
+  );
+  lines.push("");
+  if (evidence.by_contract.length === 0) {
+    lines.push("No committed mutant targets any contract.");
+    return lines.join("\n");
+  }
+  lines.push("| Contract | Mutant | Disposition | Bucket |");
+  lines.push("| --- | --- | --- | --- |");
+  for (const row of evidence.by_contract) {
+    for (const m of row.mutants) {
+      lines.push(
+        `| [\`${row.contract}\`](semantic-conformance.md#${anchor(row.contract)}) | \`${m.id}\` | ${m.disposition} | ${m.bucket} |`,
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
 export function renderMarkdown(guide) {
   const parts = [];
   parts.push(
@@ -399,9 +550,12 @@ export function renderMarkdown(guide) {
   parts.push("## Contract index\n");
   parts.push(
     "Every ACTIVE enrolled contract, one row each. `Canonical execution` is the " +
-      "first active binding's resolved CI-lane recipe, deterministically chosen — " +
-      "a contract may bind more than one verifier; see its full card for the " +
-      "rest.\n",
+      "recipe of the CI lane that runs the first active binding's evidence — the " +
+      "property lane for a property shape, the head's chDB round trip (or `check`) " +
+      "for a TXTAR fixture, the head's compat lane for a compatibility harness, " +
+      "`check` for any other Go test — deterministically chosen; tree-wide lanes " +
+      "(lint, governance) are never an obligation of a binding. A contract may " +
+      "bind more than one verifier; see its full card for the rest.\n",
   );
   parts.push(renderIndexTable(guide.contract_index));
   parts.push("");
@@ -431,7 +585,8 @@ export function renderMarkdown(guide) {
   }
 
   parts.push("## Adversarial evidence\n");
-  parts.push(`${guide.adversarial_note}\n`);
+  parts.push(renderAdversarialEvidence(guide.adversarial_evidence));
+  parts.push("");
 
   parts.push("## See also\n");
   parts.push(

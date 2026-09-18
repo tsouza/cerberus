@@ -129,7 +129,7 @@ jobs:
     name: changes
     runs-on: ubuntu-latest
     outputs:
-      docs_only: ${{ steps.compute.outputs.docs_only }}
+      docs_only: ${{ steps.docs.outputs.docs_only }}
       # run_heavy — the merge/release two-tier split (#2230). `roundtrip`,
       # `integration-*`, `chdb-build` and `perf-guards` are release-gate lanes,
       # not merge-gate ones: they do their real (chDB-heavy) work on push /
@@ -152,40 +152,14 @@ jobs:
       - name: Test the shared run_heavy decider scaffold
         run: node --test .github/scripts/lib/run-heavy.test.mjs
 
-      - id: filter
-        if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4
-        with:
-          # See ci.yml for why `every` is required (the `**` baseline
-          # plus negation patterns would otherwise always be true).
-          predicate-quantifier: 'every'
-          filters: |
-            code:
-              - '**'
-              - '!**/*.md'
-              - '!**/*.markdown'
-              - '!docs/**'
-              - '!LICENSE*'
-              - '!CHANGELOG.md'
-              - '!.markdownlint*'
-              - '!CLAUDE.md'
-              - '!AGENTS.md'
-              - '!README*'
+      # The docs-only verdict comes from the lane registry's non-impact globs,
+      # rendered by ./.github/actions/docs-only — one list for every workflow
+      # that short-circuits on a docs-only pull request.
+      - id: docs
+        uses: ./.github/actions/docs-only
 
-      - id: compute
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
-              echo "docs_only=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Computed as a step output rather than inline in the `compute` step
-      # above: a `push` event needs a network call (resolve the source PR
+      # Computed as a step output of its own rather than folded into the
+      # docs-only step: a `push` event needs a network call (resolve the source PR
       # that produced the pushed commit) to know whether it is redundant with
       # that PR's own run. See chdb-run-heavy.mjs's header for the full
       # decision table; GITHUB_TOKEN is used read-only and only reached on a
@@ -244,8 +218,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Cache the pinned libchdb.so so the install step is a no-op cache
       # hit on the common path (the recipe is idempotent — it skips the
       # download when the file already exists at CHDB_INSTALL_PATH). The
@@ -295,8 +268,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Install libchdb.so
         run: just chdb-install
 
@@ -383,8 +355,7 @@ jobs:
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Install libchdb.so
         if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         run: just chdb-install
@@ -525,8 +496,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Cache the pinned libchdb.so, same key as `chdb-build`'s and
       # `perf-guards-shard`'s step, and for the same reason: fanning out to N
       # runners would otherwise mean N downloads of a ~500 MB shared library
@@ -702,8 +672,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       # Cache the pinned libchdb.so, same key as `chdb-build`'s step. This
       # matters more here than anywhere else in the file: fanning out to 8 legs
       # would otherwise mean 8 downloads of a ~500 MB shared library per run,
@@ -794,8 +763,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:
@@ -830,8 +798,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:
@@ -866,8 +833,7 @@ jobs:
 
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
-          tool: just
-
+          tool: just@1.46.0
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:

@@ -117,6 +117,7 @@ import {
   MEMORY_LIMIT_MESSAGE,
   RESOURCE_BOUND_GUARD_MESSAGES,
 } from './helpers/index.js';
+import { truncate, BODY_EXCERPT_CHARS } from './helpers/index.js';
 
 // Self-traffic warmup duration. The matrix's longest range is 24h —
 // but the seed cannot pre-populate 24h of history in a sane warmup
@@ -432,13 +433,13 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
         const body = await resp.text().catch(() => '<unreadable>');
         if (resp.status() !== 400) {
           failures.push(
-            `[${surface}] grid of ${gridPoints} points exceeds the ${MAX_RESOLUTION_POINTS}-point Prometheus resolution cap but query_range returned ${resp.status()} (want 400)\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+            `[${surface}] grid of ${gridPoints} points exceeds the ${MAX_RESOLUTION_POINTS}-point Prometheus resolution cap but query_range returned ${resp.status()} (want 400)\n  url: ${queryURL}\n  body: ${truncate(body, BODY_EXCERPT_CHARS)}`,
           );
           return;
         }
         if (!body.includes(RESOLUTION_CAP_MESSAGE)) {
           failures.push(
-            `[${surface}] over-cap query_range returned 400 but without the upstream resolution-cap message ${JSON.stringify(RESOLUTION_CAP_MESSAGE)}\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+            `[${surface}] over-cap query_range returned 400 but without the upstream resolution-cap message ${JSON.stringify(RESOLUTION_CAP_MESSAGE)}\n  url: ${queryURL}\n  body: ${truncate(body, BODY_EXCERPT_CHARS)}`,
           );
         }
       } catch (err) {
@@ -487,7 +488,7 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
           }
         }
         failures.push(
-          `[${surface}] query_range returned 422 but NOT a pinned resource-exhausted contract (want errorType=execution + MEMORY_LIMIT_MESSAGE or one of RESOURCE_BOUND_GUARD_MESSAGES)\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+          `[${surface}] query_range returned 422 but NOT a pinned resource-exhausted contract (want errorType=execution + MEMORY_LIMIT_MESSAGE or one of RESOURCE_BOUND_GUARD_MESSAGES)\n  url: ${queryURL}\n  body: ${truncate(body, BODY_EXCERPT_CHARS)}`,
         );
         return;
       }
@@ -495,7 +496,7 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
       if (resp.status() < 200 || resp.status() > 299) {
         const body = await resp.text().catch(() => '<unreadable>');
         failures.push(
-          `[${surface}] cerberus query_range → ${resp.status()}\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+          `[${surface}] cerberus query_range → ${resp.status()}\n  url: ${queryURL}\n  body: ${truncate(body, BODY_EXCERPT_CHARS)}`,
         );
         return;
       }

@@ -237,8 +237,11 @@ export const COMPOSE_STACK: CrawlStackConfig = {
     'uploaded grafana-surface-inventory-compose artifact (tsouza/cerberus#1826).',
   expectedDatasources: CERBERUS_DATASOURCES,
   lints: {
-    // cerberus.json + showcase-promql carry quantile panels; otelcol.json
-    // carries the one multi-quantile (p50/p95/p99) panel.
+    // showcase-promql.json and otelcol.json carry classic `_bucket`
+    // quantile panels (cerberus.json's P95 panel reads the native
+    // cerberus_queries_duration_exp_hist — no classic family for lint 1
+    // to judge); otelcol.json carries the one multi-quantile
+    // (p50/p95/p99) panel.
     minQuantileConsumedFamilies: 1,
     minMultiQuantilePanels: 1,
   },
@@ -290,8 +293,9 @@ export const K3D_STACK: CrawlStackConfig = {
   lints: {
     // test/e2e/grafana/dashboards/cerberus.json carries exactly one
     // histogram_quantile panel — "P95 latency by language" — and since
-    // cerberus issue #3170/#3171 it queries the NATIVE/exponential
-    // histogram cerberus_queries_duration_exp_hist, not a classic
+    // #3171 (native aggregation) and #3174 (the `_exp_hist` name) it
+    // queries the NATIVE/exponential histogram
+    // cerberus_queries_duration_exp_hist, not a classic
     // `_bucket` family (see lints.spec.ts's own doc: a native
     // histogram_quantile has no classic bucket family for lint 1 to
     // judge, by design — cerberus.json carries no OTHER
@@ -299,9 +303,10 @@ export const K3D_STACK: CrawlStackConfig = {
     // Floor 0 on both declares that fact; it is not a tolerance —
     // shrinking BELOW 0 is impossible, and lint 1 / lint 2 still judge
     // any classic-bucket or multi-quantile panel a future k3d dashboard
-    // adds. Raise this floor back to 1 only alongside a real
-    // classic-bucket-consuming panel actually landing in
-    // test/e2e/grafana/dashboards/cerberus.json.
+    // adds (their vacuous-pass guards key on the panels actually
+    // found, not on this floor). Raise this floor back to 1 only
+    // alongside a real classic-bucket-consuming panel actually landing
+    // in test/e2e/grafana/dashboards/cerberus.json.
     minQuantileConsumedFamilies: 0,
     minMultiQuantilePanels: 0,
   },

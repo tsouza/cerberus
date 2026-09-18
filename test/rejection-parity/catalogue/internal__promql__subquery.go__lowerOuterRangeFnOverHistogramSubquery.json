@@ -8,7 +8,7 @@
       "rationale": "the canonical range-function gate admits exactly the names recognized by chplan.IsPromQLRangeWindowFunc. For histogram-bearing rows, lowerHistogramOrMixedSubqueryOuterFnInput handles all SELECT/FOLD names and histogramSubqueryFloatOnlyDropFunc handles the remainder by returning an empty float result. That partition is exhaustive, so this trailing rejection is not wire-reachable.",
       "evidence": {
         "guard": [
-          "past returning if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily); err != nil",
+          "past returning if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily, mixedBespoke); err != nil",
           "past returning if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, kind, outer.Func.Name, sub, s, ctx); matched",
           "if !histogramSubqueryFloatOnlyDropFunc(outer.Func.Name)"
         ],

@@ -104,12 +104,13 @@ contract doc states the counts by reference instead of printing them.
 
 ## Why the spec oracle runs delayed name removal off
 
-"Matches the reference" has exactly one meaning only if both surfaces run
-the reference engine's semantics-affecting options identically.
-[Cerberus issue #3271](https://github.com/tsouza/cerberus/issues/3271)
-found they did not: the spec oracle built its engine via
-`promqltest.NewTestEngine`, which hardcodes `EnableDelayedNameRemoval:
-true`, while `compatibility/prometheus/docker-compose.yml` enables only
+"Matches the reference" has exactly one meaning only if both PromQL
+reference surfaces — the spec lane's in-process oracle and the compat
+lane's real `prom/prometheus` server — run the engine's
+semantics-affecting options identically. Cerberus issue #3271 found they
+did not: the spec oracle built its engine via `promqltest.NewTestEngine`,
+which hardcodes `EnableDelayedNameRemoval: true`, while
+`compatibility/prometheus/docker-compose.yml` enables only
 `promql-experimental-functions` on the real server, leaving delayed name
 removal at Prometheus's own documented default of **off**
 (`docs/feature_flags.md` in the vendored Prometheus source).
@@ -134,22 +135,17 @@ instant-query-only artefact no emitter here can reproduce. See
 mechanism and its bearing on cerberus's own plan shape.
 
 The real server won, and the spec oracle was aligned down to it.
-`promql-delayed-name-removal` is Prometheus's own opt-in, EXPERIMENTAL
-feature — introduced under a feature flag in 3.6.0 (upstream #14477) and
-still opt-in through the v3.11.3 tag the compat lane pins, including two
-rounds of its OWN bugfixes in that span (upstream #17161, #17678 — both
-released well before 3.11.3, neither covering this shape). Nothing in
-that history signals it is close to becoming Prometheus's default, so
-aligning the spec oracle DOWN to the real server's off default is
-aligning to the stable, currently-shipping behaviour, not chasing a
-setting about to change under it. The spec oracle now builds its
-`promql.Engine` explicitly instead of via `promqltest.NewTestEngine`, and
-its `EnableDelayedNameRemoval` constant documents the reasoning above at
-the point where a future reader would otherwise silently flip it back.
-
-The parser-options difference is not held to the same rule because it
-changes which fixtures the oracle can ATTEMPT, never which answers count
-as passing: `Evaluate`'s own doc explains that an upstream parse
-rejection on a cerberus-only extension is a fact about the fixture, not
-a parity failure, so a broader oracle grammar only means fewer fixtures
-go unattempted.
+`promql-delayed-name-removal` is Prometheus's own opt-in,
+EXPERIMENTAL feature — introduced under a feature flag in 3.6.0
+(upstream #14477) and still opt-in through the v3.11.3 tag the compat
+lane pins, including two rounds of its OWN bugfixes in that span
+(upstream #17161, #17678 — both released well before 3.11.3, neither
+covering this shape). Nothing in that history signals it is close to
+becoming Prometheus's default, so aligning the spec oracle DOWN to the
+real server's off default is aligning to the stable, shipping behaviour,
+not chasing a setting about to change under it. The oracle's
+`EnableDelayedNameRemoval` constant documents this reasoning at the point
+where a reader would otherwise silently flip it back, and
+`test/regression/promql_oracle_engine_parity_test.go` turns any future
+disagreement into a CI failure naming both sites instead of a silent
+per-fixture disagreement.

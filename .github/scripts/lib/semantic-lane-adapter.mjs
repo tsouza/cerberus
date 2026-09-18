@@ -48,6 +48,8 @@
 // declared `context.protected: true` after the live ruleset had the check
 // removed and its workflow disabled.
 
+import { classifyTestRef } from "./semantic-evidence-adapter.mjs";
+
 export const TRIGGER_CONTEXTS = Object.freeze([
   "pull_request",
   "merge_group",
@@ -219,6 +221,24 @@ export function classifyObservedEvidence(execution) {
   return { observed: true, reason: null };
 }
 
+// A lane whose declared scope is the whole tree says nothing about WHICH
+// test a binding's evidence runs in: `ci.lint` (`**`), `ci.link-check`
+// (`**/*.md`), `security.codeql` (`**/*.go`) and every `governance.*` lane
+// (PR body, deferral markers, release-gate drift — checks on the change
+// itself, not on any test) match every test_ref string there is. Listing
+// them as an obligation of every binding padded every row of the report
+// with `ci.lint (merge-required)` and, because `ci.lint` sorts first, made
+// `just lint` the "canonical execution" of contracts about range-vector
+// alignment. They are excluded from the join here, at the source.
+const GOVERNANCE_LANE_PREFIX = "governance.";
+const TREE_WIDE_GLOB_PREFIX = "**";
+
+/** True when a lane's scope is the whole tree (a `**`-rooted glob) or it is a governance lane. */
+export function isCatchAllLane(lane) {
+  if (typeof lane?.id === "string" && lane.id.startsWith(GOVERNANCE_LANE_PREFIX)) return true;
+  return (lane?.package_globs ?? []).some((glob) => glob.startsWith(TREE_WIDE_GLOB_PREFIX));
+}
+
 /**
  * Resolves a semantic binding's `test_ref` to the CI lane(s) whose
  * `package_globs` cover it, connecting a contract's evidence trail to the
@@ -226,7 +246,18 @@ export function classifyObservedEvidence(execution) {
  * join" this adapter exists to provide without hand-duplicating lane data.
  * Returns an array (a test_ref can legitimately fall under more than one
  * lane's package_globs, e.g. a file covered by both a spec lane and a
- * mutation lane's package selection).
+ * mutation lane's package selection), never including a catch-all lane
+ * (isCatchAllLane above).
+ *
+ * A source-path test_ref (lib/semantic-evidence-adapter.mjs's sixth
+ * scheme) is matched by its PATH, not the raw string: `file.go:TestName`
+ * matches the globs that name `file.go`, and a bare directory such as
+ * `compatibility/prometheus` matches `compatibility/prometheus/**` — the
+ * lane that runs the harness — rather than nothing. A lane also owns a
+ * source-path binding when its registry `command` names that path
+ * verbatim (`ci.agpl-clean` runs `node .github/scripts/agpl-clean.mjs`):
+ * a gate script's own path is rarely inside the package_globs of the lane
+ * that executes it, since those globs declare what TRIGGERS the lane.
  */
 export function resolveBindingLanes(binding, registry, matchesGlob) {
   if (typeof matchesGlob !== "function") {
@@ -236,7 +267,18 @@ export function resolveBindingLanes(binding, registry, matchesGlob) {
   if (typeof testRef !== "string" || testRef.length === 0) {
     fail([`[schema] binding "${binding?.id}" has no test_ref to resolve`]);
   }
-  return registry.lanes.filter((lane) =>
-    (lane.package_globs ?? []).some((glob) => matchesGlob(testRef, glob)),
+  const candidates = [testRef];
+  const classified = classifyTestRef(testRef);
+  if (classified.system === "source-path") {
+    candidates.push(classified.path, `${classified.path}/`);
+  }
+  const runsPath = (lane) =>
+    classified.system === "source-path" &&
+    typeof lane.command === "string" &&
+    lane.command.includes(classified.path);
+  return registry.lanes.filter(
+    (lane) =>
+      !isCatchAllLane(lane) &&
+      ((lane.package_globs ?? []).some((glob) => candidates.some((c) => matchesGlob(c, glob))) || runsPath(lane)),
   );
 }

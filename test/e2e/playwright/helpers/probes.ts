@@ -21,6 +21,7 @@
 
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { Dashboard, Panel, PanelTarget } from './dashboard.js';
+import { BODY_EXCERPT_CHARS, truncate } from './excerpt.js';
 
 export type JsonResponse = unknown;
 
@@ -47,7 +48,7 @@ export async function fetchAndAssert200(
       body = '<unreadable>';
     }
     throw new Error(
-      `fetchAndAssert200: GET ${url} → ${status}\n  body: ${truncate(body, 600)}`,
+      `fetchAndAssert200: GET ${url} → ${status}\n  body: ${truncate(body, BODY_EXCERPT_CHARS)}`,
     );
   }
   try {
@@ -57,7 +58,7 @@ export async function fetchAndAssert200(
     throw new Error(
       `fetchAndAssert200: GET ${url} → 2xx but body is not valid JSON: ${
         (err as Error).message
-      }\n  body: ${truncate(body, 600)}`,
+      }\n  body: ${truncate(body, BODY_EXCERPT_CHARS)}`,
     );
   }
 }
@@ -97,6 +98,3 @@ export function extractDataSourceProxyURL(
   return `/api/datasources/proxy/uid/${uid}`;
 }
 
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : `${s.slice(0, n)}...<truncated, ${s.length} chars total>`;
-}

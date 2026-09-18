@@ -18,8 +18,10 @@ import (
 // 1 GiB per-query cap. Hardcoded here — not built from the handler's
 // helper — so a drift in the production message fails this pin. The
 // k3d/compose stacks set CERBERUS_CH_QUERY_MAX_MEMORY=1073741824, and
-// test/e2e/playwright/iterate-time-ranges.spec.ts pins this same
-// string as its 422 contract; the three must stay in lock-step.
+// test/e2e/playwright/helpers/resource-bounds.ts (MEMORY_LIMIT_MESSAGE,
+// consumed by iterate-time-ranges.spec.ts and the dashboard sweeps) pins
+// this same string as its 422 contract; the three must stay in lock-step
+// (test/regression/e2e_hand_copied_literals_test.go checks the TS copy).
 const memoryLimitWant = "query processing would use too much memory in query execution (ClickHouse memory limit exceeded; per-query cap 1073741824 bytes)"
 
 // chMemLimitError builds the error chain chclient produces when

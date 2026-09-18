@@ -76,6 +76,7 @@ import process from 'node:process';
 import { readFileSync } from 'node:fs';
 
 import { error, notice, log } from './lib/gh.mjs';
+import { NOT_FOUND_THROW, ghJSON as ghRequest, ghPaginate } from './lib/gh-api.mjs';
 import { labelsForTitle } from './pr-type-label.mjs';
 
 // ---------------------------------------------------------------------------
@@ -594,47 +595,34 @@ export function assertBodyFetched(issue) {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_API_URL = 'https://api.github.com';
-const PER_PAGE = 100;
-
-function apiHeaders(token) {
-  return {
-    accept: 'application/vnd.github+json',
-    authorization: `Bearer ${token}`,
-    'x-github-api-version': '2022-11-28',
-    'user-agent': 'cerberus-issue-label',
-  };
-}
-
-async function ghJSON(url, token, init = {}) {
-  const res = await fetch(url, { ...init, headers: { ...apiHeaders(token), ...(init.headers ?? {}) } });
-  if (!res.ok) {
-    throw new Error(`${init.method ?? 'GET'} ${url} -> ${res.status} ${res.statusText}: ${await res.text()}`);
-  }
-  return res.status === 204 ? null : res.json();
-}
 
 // listOpenIssues paginates /issues?state=open, dropping the pull requests
-// GitHub folds into that endpoint.
+// GitHub folds into that endpoint. The repository's issue list always
+// exists, so a 404 is a failure (a bad token or repo), never "no issues".
 async function listOpenIssues(api, repo, token) {
-  const out = [];
-  for (let page = 1; ; page++) {
-    const url = `${api}/repos/${repo}/issues?state=open&per_page=${PER_PAGE}&page=${page}`;
-    const batch = await ghJSON(url, token);
-    if (!Array.isArray(batch)) throw new Error(`unexpected non-array response from ${url}`);
-    for (const it of batch) {
-      if (it.pull_request) continue;
-      out.push(it);
-    }
-    if (batch.length < PER_PAGE) break;
-  }
-  return out;
+  const url = `${api}/repos/${repo}/issues?state=open`;
+  const all = await ghPaginate({
+    url,
+    token,
+    what: 'list open issues',
+    pick: (batch) => {
+      if (!Array.isArray(batch)) throw new Error(`unexpected non-array response from ${url}`);
+      return batch;
+    },
+  });
+  return all.filter((it) => !it.pull_request);
 }
 
 async function addLabels(api, repo, token, number, labels) {
-  await ghJSON(`${api}/repos/${repo}/issues/${number}/labels`, token, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ labels }),
+  await ghRequest(`${api}/repos/${repo}/issues/${number}/labels`, {
+    token,
+    what: `label issue #${number}`,
+    notFound: NOT_FOUND_THROW,
+    init: {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ labels }),
+    },
   });
 }
 

@@ -54,8 +54,13 @@
 
 import { classifyTestRef, EVIDENCE_SYSTEMS } from "./semantic-evidence-adapter.mjs";
 import { classifyLaneRequiredness, resolveBindingLanes } from "./semantic-lane-adapter.mjs";
+import { byId } from "./semantic-model.mjs";
 import { matchesGlob } from "../ci-lane-contract.mjs";
-import { buildMutationCohortReport, renderMutationCohortMarkdown } from "./semantic-mutation-report.mjs";
+import {
+  buildMutationCohortReport,
+  mdEscapeTableCell,
+  renderMutationCohortMarkdown,
+} from "./semantic-mutation-report.mjs";
 
 export const REPORT_SCHEMA_VERSION = 1;
 export const DEFAULT_REPORT_MD_PATH = "docs/semantic-conformance.md";
@@ -72,10 +77,6 @@ export const DEFAULT_REPORT_JSON_PATH = "docs/semantic-conformance.json";
 export const WORKED_EXAMPLE_CONTRACT_ID = "TRACEQL-STRUCTURAL-RELATION-SEMANTICS";
 
 const OBSERVED_EXECUTION_RESULTS = new Set(["pass", "fail"]);
-
-function byId(a, b) {
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
 
 function sortedValues(map) {
   return [...map.values()].sort(byId);
@@ -95,12 +96,12 @@ export function bindingVerifier(model, binding) {
   return model.verifiers.get(binding.verifier) ?? null;
 }
 
-/** Classifies a binding's test_ref into one of the five known evidence systems, or null. */
+/** Classifies a binding's test_ref into one of the six known evidence systems, or null when no scheme parses it. */
 export function classifyBindingEvidenceSystem(binding) {
   return classifyTestRef(binding.test_ref).system;
 }
 
-/** Active-binding counts per evidence system (the five known ones, plus "unclassified"). */
+/** Active-binding counts per evidence system (the six known ones, plus "unclassified" for a test_ref no scheme parses). */
 export function evidenceSystemCounts(model) {
   const counts = Object.fromEntries(EVIDENCE_SYSTEMS.map((s) => [s, 0]));
   counts.unclassified = 0;
@@ -152,18 +153,16 @@ export function bindingObservedStatus(model, binding) {
     execution_id: latest?.id ?? null,
     execution_count: executions.length,
     // Revision-binding (cerberus issue #3459). `selection`/`source_sha` are
-    // the latest execution's own optional fields, surfaced as-is (null for
-    // every pre-#3459 or hand-authored record — see semantic-model.mjs's
-    // EXECUTION_KEYS comment: absence is always an explicit null, never an
-    // omitted key). `revision_bound` collapses them into the one question
-    // a reader actually has: was this "pass" ever tied to a NAMED commit,
-    // or merely recorded as having happened sometime? A latest execution
-    // whose OWN selection already reads non-"executed" (selected_not_run /
-    // no_op / stale / unavailable) is never revision_bound — that latest
-    // record is non-evidence by construction (see classifyExecutionObservation
-    // above), so it cannot anchor a positive claim either. This field never
-    // changes `status` itself: a non-revision-bound pass is still a real
-    // pass, exactly as it was before this issue existed.
+    // the latest execution's own fields, surfaced as-is. `revision_bound`
+    // answers the one question a reader actually has: is this verdict tied
+    // to a NAMED commit? The model's validator (lib/semantic-model.mjs,
+    // validateExecutions) rejects an "executed" record with a null
+    // source_sha and a non-"executed" record is non-evidence by
+    // construction (result must be "error" — see
+    // classifyExecutionObservation above), so on a model that loads at all
+    // every observed pass/fail is revision-bound and every unknown is not.
+    // The field is kept explicit rather than inferred from `status` so the
+    // JSON carries the SHA itself, not just the boolean.
     selection: latest?.selection ?? null,
     source_sha: latest?.source_sha ?? null,
     revision_bound: latest?.selection === "executed" && latest?.source_sha != null,
@@ -493,21 +492,14 @@ const DISCLAIMER_BOUND_VS_OBSERVED =
   "at all, which reports as `unknown`, never as an assumed pass.";
 
 const DISCLAIMER_REVISION_BOUND =
-  "\"Observed\" is weaker still than it looks: a recorded pass says a " +
-  "verifier ran SOMETIME, not that it ran against the specific candidate a " +
-  "reader actually cares about. `revision_bound` (each binding row below) " +
-  "is a third, narrower claim: the latest recorded execution both carries a " +
-  "real \"executed\" selection and names the commit it ran against " +
-  "(`source_sha`). A pre-existing or hand-authored execution with no " +
-  "`source_sha` reports `revision_bound: false` even while its `observed` " +
-  "status stays a real pass — this display never upgrades or downgrades " +
-  "`observed` itself, and a binding with no revision-bound observation on " +
-  "record shows an unknown ACHIEVED assurance rather than a silently " +
-  "assumed one.";
-
-function mdEscape(text) {
-  return String(text).replaceAll("|", "\\|");
-}
+  "An observed verdict is only as good as the run it points at. Every " +
+  "execution record must name a real workflow run (`run_ref`; an all-zero " +
+  "placeholder run is rejected at load time) and, when its selection is " +
+  "\"executed\", the commit it ran against (`source_sha`) — the model's own " +
+  "validator refuses a record that claims a pass without one. `revision_bound` " +
+  "(each binding row below) shows that commit for the latest observation; a " +
+  "binding with no observation on record shows an unknown ACHIEVED assurance " +
+  "rather than a silently assumed one.";
 
 // Contract statements, blind spots and verifier detects/cannot_detect are
 // free-text data from test/semantic/*.json, never markdown source. Rendered
@@ -545,7 +537,7 @@ function renderBindingRow(binding) {
   const revisionBound = binding.observed.revision_bound
     ? `yes (\`${binding.observed.source_sha}\`)`
     : "no";
-  return `| ${binding.id} | ${verifierId} | ${binding.evidence_class} | ${binding.independence_group} | \`${mdEscape(binding.test_ref)}\` | ${binding.observed.status} | ${revisionBound} | ${obligations} |`;
+  return `| ${binding.id} | ${verifierId} | ${binding.evidence_class} | ${binding.independence_group} | \`${mdEscapeTableCell(binding.test_ref)}\` | ${binding.observed.status} | ${revisionBound} | ${obligations} |`;
 }
 
 function renderWorkedExample(report) {

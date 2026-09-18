@@ -267,8 +267,8 @@ func TestEmitFusedVariants_InstantVsMatrixDispatch(t *testing.T) {
 }
 
 // TestEmitFusedVariantsMatrix_TimestampColumnAnchorTsAlias kills the
-// CONDITIONALS_NEGATION mutant at range_window_variants.go:`r.TimestampColumn != RangeWindowAnchorAlias`.
-// The matrix outer layer always
+// CONDITIONALS_NEGATION mutant at range_window_variants.go:`r.TimestampColumn != RangeWindowAnchorAlias`
+// (`r.TimestampColumn != "anchor_ts"`). The matrix outer layer always
 // selects the raw `anchor_ts` column; it additionally re-projects it
 // under the schema timestamp column's own alias UNLESS that alias
 // would just be "anchor_ts" again, in which case the duplicate
@@ -284,7 +284,7 @@ func TestEmitFusedVariantsMatrix_TimestampColumnAnchorTsAlias(t *testing.T) {
 			t.Fatalf("Emit: %v", err)
 		}
 		if !strings.Contains(sql, "anchor_ts AS `Timestamp`") {
-			t.Errorf("expected the schema-timestamp re-projection `anchor_ts AS `Timestamp`` (range_window_variants.go:`r.TimestampColumn != RangeWindowAnchorAlias` flipped?)\nSQL: %s", sql)
+			t.Errorf("expected the schema-timestamp re-projection `anchor_ts AS `Timestamp`` (range_window_variants.go:`if r.TimestampColumn != RangeWindowAnchorAlias {` flipped?)\nSQL: %s", sql)
 		}
 	})
 
@@ -297,7 +297,7 @@ func TestEmitFusedVariantsMatrix_TimestampColumnAnchorTsAlias(t *testing.T) {
 			t.Fatalf("Emit: %v", err)
 		}
 		if strings.Contains(sql, "anchor_ts AS") {
-			t.Errorf("expected no duplicate anchor_ts re-projection when TimestampColumn==\"anchor_ts\" (range_window_variants.go:`r.TimestampColumn != RangeWindowAnchorAlias` flipped?)\nSQL: %s", sql)
+			t.Errorf("expected no duplicate anchor_ts re-projection when TimestampColumn==\"anchor_ts\" (range_window_variants.go:`if r.TimestampColumn != RangeWindowAnchorAlias {` flipped?)\nSQL: %s", sql)
 		}
 	})
 }

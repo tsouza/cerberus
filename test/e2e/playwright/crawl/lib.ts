@@ -1142,7 +1142,4 @@ export function isSupersededDsQueryFailure(
 // Misc
 // ---------------------------------------------------------------------------
 
-export function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return `${s.slice(0, max)}…<truncated, ${s.length - max} more char(s)>`;
-}
+export { truncate } from '../helpers/excerpt.js';

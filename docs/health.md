@@ -60,6 +60,11 @@ Content-Type: application/json
 - When `CERBERUS_AUTO_CREATE_SCHEMA=true`, also waits for the startup
   hook that bootstraps the OTel ClickHouse tables to have completed at
   least once.
+- Holds readiness while the ClickHouse capability set in force came from a
+  **failed** probe (the process resolved its features against the supported
+  floor because the server was not answering yet); the re-probe lifts it
+  within seconds. A server that answers its probe and resolves honestly to
+  an older version is ready.
 - Reports the live circuit-breaker phase of every head this process serves,
   and goes unready once **all** of them are open (see
   [Per-head readiness](#per-head-readiness)).
@@ -71,18 +76,19 @@ Content-Type: application/json
 
 ### Response shape
 
-| Field        | Type    | Values                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `clickhouse` | string  | `"ok"` on success, `"error: <reason>"` on a failed ping.                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `schema`     | string  | `"ready"` when the schema is provisioned and the auto-create hook is done (or disabled); `"absent: <reason>"` when the boot-time requirements check found the configured schema not yet provisioned — either the tables are absent or the **database** itself does not exist yet (`database "otel" not yet provisioned: …`), both the cerberus + collector startup race where cerberus waits and re-probes, no restart; `"pending"` while the auto-create hook is still running; `"unknown"` when the CH ping itself failed. |
-| `heads`      | object  | Circuit-breaker phase per **enabled** head (`CERBERUS_ENABLED_HEADS`), keyed `prom` / `loki` / `tempo`: `"closed"`, `"open"`, or `"half-open"`. Present on every response, success or failure.                                                                                                                                                                                                                                                                                                                               |
+| Field          | Type    | Values                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clickhouse`   | string  | `"ok"` on success, `"error: <reason>"` on a failed ping.                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `schema`       | string  | `"ready"` when the schema is provisioned and the auto-create hook is done (or disabled); `"absent: <reason>"` when the boot-time requirements check found the configured schema not yet provisioned — either the tables are absent or the **database** itself does not exist yet (`database "otel" not yet provisioned: …`), both the cerberus + collector startup race where cerberus waits and re-probes, no restart; `"pending"` while the auto-create hook is still running; `"unknown"` when the CH ping itself failed. |
+| `capabilities` | string  | Present only on the 503 raised by an unresolved capability set: `"unresolved"` or `"unresolved: <reason>"`. Absent from every other response, so a ready body is unchanged by this condition.                                                                                                                                                                                                                                                                                                                                |
+| `heads`        | object  | Circuit-breaker phase per **enabled** head (`CERBERUS_ENABLED_HEADS`), keyed `prom` / `loki` / `tempo`: `"closed"`, `"open"`, or `"half-open"`. Present on every response, success or failure.                                                                                                                                                                                                                                                                                                                               |
 
 ### HTTP status codes
 
-| Status | Meaning                                                                            |
-| ------ | ---------------------------------------------------------------------------------- |
-| 200    | Both ClickHouse and the schema invariant report healthy.                           |
-| 503    | At least one dependency is not yet ready, or every enabled head's breaker is open. |
+| Status | Meaning                                                                                                              |
+| ------ | -------------------------------------------------------------------------------------------------------------------- |
+| 200    | Both ClickHouse and the schema invariant report healthy.                                                             |
+| 503    | At least one dependency is not yet ready, the capability set is unresolved, or every enabled head's breaker is open. |
 
 ### Per-head readiness
 
@@ -247,8 +253,10 @@ Live fields, re-read on every request:
   snapshot. `configured: false` when the view does not exist.
 - `tempoTagCatalogViewRefresh` — the identical reading for the Tempo
   tag-catalog's refreshable materialized view.
-- `ready` — the same condition `/readyz` uses (CH reachable AND schema
-  present AND schema ready).
+- `ready` — CH reachable AND schema present AND schema ready. This is a
+  subset of what `/readyz` gates on: it does not consult the capability
+  probe or head exhaustion, so `/readyz` can answer 503 while
+  `info.ready` reads `true`.
 
 The capability fields track the ClickHouse
 [re-probe](clickhouse-optimizations.md#re-probe): a scrape taken after a

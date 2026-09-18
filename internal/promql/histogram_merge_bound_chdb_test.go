@@ -166,26 +166,58 @@ func runHistogramMergeBoundQueryWithOpts(t *testing.T, fixture *chdbFixture, opt
 // now downscales the merge's shared scale FIRST so the merged width never
 // exceeds maxHistogramMergeOutputWidth (160), and the guard sees a cost of
 // 2 x 160^2 = 51,200 — comfortably under budget — so the query now
-// SUCCEEDS with a coarser (but still correct — every input bucket still
-// contributes to some output bucket) merged distribution instead of
-// refusing outright, matching how real exponential-histogram merge
-// implementations (the OTel SDK's own accumulator, Prometheus's
-// FloatHistogram.Add) handle the same shape.
+// SUCCEEDS with a coarser merged distribution instead of refusing
+// outright, the way the OTel SDK's own accumulator auto-narrows a single
+// series past its bucket budget (reference Prometheus merges at min
+// schema over sparse spans and never narrows — this is the documented
+// divergence maxHistogramMergeOutputWidth's own doc describes).
+//
+// "Compacted" is asserted, not just "not rejected": the merged row's Scale
+// must be exactly the minimum downscale the cap requires
+// (0 - ceil(log2(6001 / 160)) = -6), its width within the cap, and its
+// Count the sum of both inputs — a refinement that collapsed every merge
+// into one bucket would also pass a bare non-rejection check.
 //
 // Width alone, isolated from row count, is deliberately no longer a
 // rejection axis after this fix — see
 // TestHistogramMergeBudget_ChDB_RowCountExceeded below for proof the guard
 // still meaningfully rejects a genuinely large series-per-group fan-out.
 func TestHistogramMergeBudget_ChDB_ScaleDivergenceCompactsRatherThanRejects(t *testing.T) {
+	const farOffset = 6000
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
 	b.WriteString("    " + histogramMergeBoundRow("near", 0) + ",\n")
-	b.WriteString("    " + histogramMergeBoundRow("far", 6000) + ";\n")
+	b.WriteString("    " + histogramMergeBoundRow("far", farOffset) + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
-	if err := runHistogramMergeBoundQuery(t, fixture); err != nil {
+	got, err := readMergedHistogramShape(t, fixture, fmt.Sprintf("sum(%s)", histogramMergeBoundMetric), promql.LowerOpts{})
+	if err != nil {
 		t.Fatalf("a scale-divergent two-series merge must be compacted to a bounded width, not rejected: %v", err)
+	}
+	assertCompactedMerge(t, got, 0, farOffset+1, 2)
+}
+
+// TestHistogramMergeBudget_ChDB_NarrowMergeKeepsScale is the refinement's
+// other half: two rows six buckets apart already fit the cap, so the merge
+// stays at the rows' own Scale with every bucket position intact. A
+// refinement that downscaled unconditionally would pass every
+// CompactsRatherThanRejects test above and fail here.
+func TestHistogramMergeBudget_ChDB_NarrowMergeKeepsScale(t *testing.T) {
+	const farOffset = 5
+	var b strings.Builder
+	b.WriteString(histogramMergeBoundSeedDDL)
+	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
+	b.WriteString("    " + histogramMergeBoundRow("near", 0) + ",\n")
+	b.WriteString("    " + histogramMergeBoundRow("far", farOffset) + ";\n")
+	fixture := newChDBFixture(t, b.String())
+
+	got, err := readMergedHistogramShape(t, fixture, fmt.Sprintf("sum(%s)", histogramMergeBoundMetric), promql.LowerOpts{})
+	if err != nil {
+		t.Fatalf("a narrow two-series merge must succeed: %v", err)
+	}
+	if got.Scale != 0 || got.Width != farOffset+1 || got.Count != 2 {
+		t.Fatalf("narrow merge changed shape: got %+v, want Scale 0, width %d, Count 2", got, farOffset+1)
 	}
 }
 

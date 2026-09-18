@@ -37,15 +37,19 @@ import (
 
 // grpcSearchTraceQL drives one TraceQL query over the streaming Search RPC
 // and returns the matched TraceIDs, one entry per matched SPAN (a trace
-// whose SpanSet reports Matched=2 contributes its TraceID twice) — the
-// gRPC-wire equivalent of the HTTP side's traceIdentityRows (see
-// traceql_test.go's doc), and deliberately NOT a bare count: two mutations
-// can agree on cardinality while matching the WRONG trace (see
+// whose SpanSet reports Matched=2 contributes its TraceID twice) — a
+// per-trace multiset, deliberately NOT a bare count: two mutations can
+// agree on cardinality while matching the WRONG trace (see
 // TestTraceQLScopeCollisionConjunction_GRPC below), which only an identity
-// comparison — not a count — can catch. Sorted so callers can assert an
-// exact multiset with reflect.DeepEqual / slices.Equal without depending on
-// wire order. A trace with no SpanSet at all (the aggregate-pipeline shape,
-// not used by either case in this file) contributes nothing.
+// comparison — not a count — can catch. The HTTP-side property runner
+// (test/property/traceql_test.go's traceIdentityRows) goes one step
+// further and compares (TraceID, SpanID) sets against its oracle; the fixed
+// cases in this file place no two candidate spans of the same trace at the
+// same count, so the per-trace multiset is already an exact assertion here.
+// Sorted so callers can assert it with reflect.DeepEqual / slices.Equal
+// without depending on wire order. A trace with no SpanSet at all (the
+// aggregate-pipeline shape, not used by either case in this file)
+// contributes nothing.
 func grpcSearchTraceQL(ctx context.Context, t *testing.T, client tempopb.StreamingQuerierClient, query string, start, end time.Time) []string {
 	t.Helper()
 	stream, err := client.Search(ctx, &tempopb.SearchRequest{

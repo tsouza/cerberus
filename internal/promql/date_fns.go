@@ -112,7 +112,7 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// same value projection this function's own non-mixed path builds
 	// below.
 	if b, ok := dateFnOverMixedExpHistogramSetOp(c, s, ctx); ok {
-		prepare, err := datePayloadPreparation(mixedOperandAdmission)
+		prepare, err := lowerWithMixedOperandPolicy(mixedDateFamily, mixedOperandAdmission, mixedFloatOnly)
 		if err != nil {
 			return nil, err
 		}
@@ -150,7 +150,7 @@ func projectDateFnOverInner(c *parser.Call, inner chplan.Node, s schema.Metrics,
 			return lowerTimestampOverMixedPlan(inner, c.Args[0], s, ctx)
 		}
 	} else if mixedRowsNeedPreparation(inner) {
-		prepare, err := datePayloadPreparation(mixedPlanAdmission)
+		prepare, err := lowerWithMixedOperandPolicy(mixedDateFamily, mixedPlanAdmission, mixedFloatOnly)
 		if err != nil {
 			return nil, err
 		}
@@ -160,17 +160,6 @@ func projectDateFnOverInner(c *parser.Call, inner chplan.Node, s schema.Metrics,
 		inputSchema := refs.sourceMetrics(s)
 		return asFloat64(dateFnExpr(c.Func.Name, valueAsDateTime(inputSchema), timestampResultExpr(c.Args[0], inputSchema, ctx)))
 	}, carriedSampleTimestampColumns(c.Func.Name, c.Args[0], ctx)...)
-}
-
-// datePayloadPreparation authorizes the actual date admission site and returns
-// the executable float-only preparation. Direct shadow-resolved float operands
-// remain unchanged; existing Mixed plans are narrowed before value projection.
-func datePayloadPreparation(site mixedAdmissionSite) (func(chplan.Node) chplan.Node, error) {
-	key := mixedWrapperKey{family: mixedDateFamily, site: site}
-	if mixedOperandPolicies[key] != mixedFloatOnly {
-		return nil, fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
-	}
-	return mixedRowsFloatOnly, nil
 }
 
 // dateFnArgCtx returns the ctx the date function's argument is lowered under.

@@ -41,32 +41,50 @@ import (
 //     aborts the query with TIMEOUT_EXCEEDED (code 159) → *QueryTimeoutError.
 //
 // The caller MUST defer the returned cancel (a no-op when no deadline
-// was installed). A `?timeout=` that does not parse, or that parses to a
-// negative duration, yields a non-nil error the caller reports as 400
-// bad_data (matching upstream); the two carry distinct messages. On that
-// path the returned context is the bare request context and cancel is a
-// no-op.
+// was installed). A `?timeout=` that does not parse yields a non-nil
+// error the caller reports as 400 bad_data, as reference Prometheus does
+// (web/api/v1's invalidParamError); on that path the returned context is
+// the bare request context and cancel is a no-op.
+//
+// A `?timeout=` that parses to ZERO or a NEGATIVE duration is not
+// rejected — reference Prometheus's parseDuration accepts both ("0",
+// "-1") and its handlers install the deadline as given,
+// `context.WithDeadline(ctx, now.Add(timeout))`, which has already passed
+// by the time the query runs: the request answers 503 errorType=timeout.
+// The same already-expired deadline is installed here, so the two
+// degenerate inputs answer what the reference answers rather than a 400
+// (negative) or an uncapped query (zero) of cerberus's own.
 func ApplyQueryTimeout(r *http.Request, def time.Duration) (context.Context, context.CancelFunc, error) {
 	ctx := r.Context()
 	budget := def
 	if raw := r.FormValue("timeout"); raw != "" {
 		reqTimeout, err := format.ParseDuration(raw)
-		switch {
-		case err != nil:
+		if err != nil {
 			return ctx, func() {}, fmt.Errorf("invalid parameter 'timeout': %w", err)
-		case reqTimeout < 0:
-			// A cleanly-parsed negative is its own rejection reason:
-			// err is nil here, so folding it into the wrapping branch
-			// renders the %!w(<nil>) bad-verb placeholder into the
-			// client-visible error body.
-			return ctx, func() {}, fmt.Errorf("invalid parameter 'timeout': negative duration %q", raw)
+		}
+		if reqTimeout <= 0 {
+			ctx, cancel := context.WithDeadline(ctx, time.Now().Add(reqTimeout))
+			return ctx, cancel, nil
 		}
 		budget = format.MinPositiveDuration(budget, reqTimeout)
 	}
+	ctx, cancel := WithQueryBudget(ctx, budget)
+	return ctx, cancel, nil
+}
+
+// WithQueryBudget installs budget on ctx the way ApplyQueryTimeout does
+// once the budget is resolved — the context deadline that unblocks a hung
+// handler and releases its admit slot, plus chclient.WithQueryTimeout so
+// the ClickHouse-side max_execution_time is narrowed to the same value —
+// for the entrypoints that have no `?timeout=` to resolve: the Tempo gRPC
+// RPCs (a stream.Context() carries whatever deadline the client set, and
+// Grafana sets none) and the Prom / Loki metadata handlers (reference
+// Prometheus reads no `?timeout=` on /labels). A budget <= 0 installs
+// nothing and returns a no-op cancel; the caller MUST defer cancel.
+func WithQueryBudget(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
 	if budget <= 0 {
-		return ctx, func() {}, nil
+		return ctx, func() {}
 	}
 	ctx = chclient.WithQueryTimeout(ctx, budget)
-	ctx, cancel := context.WithTimeout(ctx, budget)
-	return ctx, cancel, nil
+	return context.WithTimeout(ctx, budget)
 }

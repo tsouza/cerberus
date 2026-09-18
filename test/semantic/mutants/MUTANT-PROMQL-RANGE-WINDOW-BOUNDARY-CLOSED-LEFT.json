@@ -10,8 +10,8 @@
   "transformation": {
     "target_path": "internal/chsql/range_window.go",
     "patch_path": "test/semantic/mutants/patches/range-window-boundary-closed-left.patch",
-    "source_fingerprint": "dff6bad3fa08010cd962e16e2fd0349387fd9429f4b8a5f2c48d5dc9e34c020d",
-    "expected_mutated_fingerprint": "a8e9676e5c2fcc6252234aaad545928a2afb4b09c9de75de4ca77cc1a8871783"
+    "source_fingerprint": "c849bb6785a93fcd9c133a0911f379905c9d52511580e9e1392210e96da6cb8e",
+    "expected_mutated_fingerprint": "c3640728da2709c1b9229e64d54d624dfc683ebeff2ed99bedbe7a429f97d70c"
   },
   "detectors": [
     {
@@ -19,7 +19,8 @@
       "package": "./test/property",
       "test_run": "^TestPromQL_RangeWindowBoundaryExactSample$",
       "build_tags": ["chdb"],
-      "timeout_seconds": 90
+      "timeout_seconds": 90,
+      "evidence_kind": "execution"
     }
   ],
   "expected_detection": "killed",

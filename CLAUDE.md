@@ -115,7 +115,8 @@ per-layer "catches X / misses Y" guidance.
      `go build`, or `markdownlint-cli2` as a ritual over the whole tree. `lefthook.yml` is layered
      and every layer is cheap: `pre-commit` runs sub-second formatters on staged files, `commit-msg`
      runs commitlint on the message being written, and `pre-push` runs the `forbid-skip` and
-     `repo-hygiene` scans plus `actionlint` in about a second. Compilation, whole-tree walks and
+     `repo-hygiene` scans plus `actionlint` in about a second on an idle host (several seconds under
+     heavy load). Compilation, whole-tree walks and
      containers belong to CI, which runs them once on the commit that merges. `LEFTHOOK=0 git push`
      bypasses for WIP branches.
    - *After* CI reports a red check, **reproduce that exact failure locally, narrowed to the thing

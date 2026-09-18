@@ -11,8 +11,8 @@ requests_total{job="api"}
 -- metadata_label_values --
 region
 -- parity_exempt --
-reason: no-comparable-oracle
-detail: The answer is a /api/v1/label/<name>/values-shaped list of label VALUES, not a (Attributes, ts, Value) Sample stream. RunParity's endpoint vocabulary (/api/v1/query, /api/v1/query_range, /api/search) has no label-value-list comparator, so there is nothing for locateSampleColumns/compareAgainstReference to compare this projection against.
+reason: emitted-sql-only
+detail: carries neither `seed:` nor `expected_rows:` — it pins the emitted leaf projection for a /api/v1/label/<name>/values-shaped list of label VALUES, so there is no answer for a reference engine to compare; even seeded, the answer shape has no comparator in RunParity's endpoint vocabulary (/api/v1/query, /api/v1/query_range, /api/search), which is what the metadata fixtures that do execute declare as no-comparable-oracle
 -- sql --
 SELECT coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) AS `value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))
 -- args --

@@ -124,7 +124,7 @@ against that same go.mod pseudo-version commit: the
 `compatibility/tempo/upstream/VERSION` `upstream_commit` field, so the vendored
 snapshot can't drift; and the `replace` directive, which must point at
 `github.com/tsouza/tempo` on a `-cerberus-accessors` tag. That last assertion is
-what keeps the `require` line meaningful now that a `replace` supersedes it —
+what keeps the `require` line meaningful when a `replace` supersedes it —
 without it, tempo could be silently repointed at an arbitrary module while the
 skew table above went on comparing a version nothing compiles against. Keeping
 the fork branch rebased onto that commit is the forks-monitor's job, the same
@@ -136,7 +136,7 @@ into release coordinates before comparing. The two semver heads are checked at
 MAJOR.MINOR — that is the grain at which the query-language grammar and
 evaluation semantics that parity rests on actually change; patch releases are
 bug fixes that don't move the language, and the reference image routinely lags
-the Go library by a patch (loki today: go.mod `v3.7.1`, image `3.7.0` — same
+the Go library by a patch (for example go.mod `v3.7.1` against image `3.7.0` — same
 `3.7` grammar, gate green). Tempo is commit-pinned on every side, so it is
 checked at the exact commit prefix.
 
@@ -157,7 +157,7 @@ gh -R tsouza/cerberus-forks-monitor workflow run daily.yml
 ### Manually rebase a fork (e.g. after a conflict the bot couldn't handle)
 
 ```bash
-git clone git@github.com-tsouza:tsouza/<fork>.git
+git clone git@github.com:tsouza/<fork>.git
 cd <fork>
 git remote add upstream https://github.com/<upstream>.git
 git fetch upstream main
@@ -185,14 +185,40 @@ If a new head introduces an upstream parser/schema dep that warrants a watch bou
 6. Extend the `upstream-parsers` group + the auto-merge allowlist in cerberus's `.github/dependabot.yml` and `.github/workflows/auto-merge-deps.yml`.
 7. Add a `replace` directive in cerberus's `go.mod`.
 
+## Transitive replaces and ignored trees
+
+Two kinds of `go.mod` directive sit outside the `tsouza/*` fork boundary and
+are not watched by the forks-monitor:
+
+- **`replace github.com/hashicorp/memberlist => github.com/grafana/memberlist`.**
+  Loki, Tempo and `dskit` each swap `hashicorp/memberlist` for Grafana's fork
+  through their own `replace` directives, but a `replace` never propagates to
+  a consumer module. Without this entry the root module resolves the upstream
+  `hashicorp/memberlist`, which lacks the `NodeState` / `NodeSelection` /
+  `PushPullNodes` symbols `dskit/kv/memberlist` references, and the build
+  fails on undefined identifiers. The pinned pseudo-version is whatever the
+  Grafana modules in `go.mod` themselves require; bump it alongside them.
+  Dependabot groups `hashicorp/memberlist*` with the `upstream-parsers` group
+  for the same reason.
+- **`ignore ./compatibility/tempo/upstream` and `ignore ./compatibility/loki/upstream`.**
+  Those directories hold vendored snapshots of upstream Go source (Tempo's
+  `pkg/httpclient`, Loki's `pkg/logql/bench`) that the compatibility harnesses
+  read as corpus and reference code. `compatibility/` has no `go.mod` of its
+  own, so without the directives those files would be root-module packages
+  that every `./...` pattern — `go build`, `go vet`, `go test`, `go list` —
+  tries to compile against the root module's dependency graph. The `ignore`
+  directive keeps them out of every `./...` walk while leaving them on disk;
+  the `agpl-clean` gate (`go list -deps ./cmd/cerberus`) is unaffected because
+  nothing under `compatibility/` is reachable from the binary either way.
+
 ## References
 
 - [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor) — the daily cron repo. `README.md` there has the operational detail.
-- `.github/dependabot.yml` — daily-grouped config. Group `upstream-parsers` covers the prometheus, loki, tempo, and collector-contrib modules, plus `dskit`/`memberlist` (grouped alongside them because the four parsers share state through those two packages).
+- `.github/dependabot.yml` — daily-grouped config. Group `upstream-parsers` covers the prometheus, loki, tempo, and collector-contrib modules, plus `dskit`/`memberlist` (grouped alongside them because the three parser modules share state through those two packages).
 - `.github/workflows/auto-merge-deps.yml` — auto-merge on green CI for trusted patch-only bumps.
 - `.github/scripts/agpl-clean.mjs` — the provably-clean-build licence gate (fails if any AGPL package reaches `cmd/cerberus`).
 - `.golangci.yml` — `forbidigo` rule blocking `unsafe.Pointer` / `reflect.Value.FieldByName` from being reintroduced anywhere under `internal/**`.
 - `internal/logql/lsyntax`, `internal/logql/logpattern`, `internal/drain`, `internal/traceql/ast` — the in-house Apache parsers.
 - `internal/schema/ddl/` — consumes the `sqltemplates` API exposed by the collector-contrib fork.
 - `NOTICE` — third-party attribution + the in-house-parser clean-room statement.
-- `CLAUDE.md` § "Transitive-dep gotcha" — the unrelated memberlist replace.
+- `go.mod` — the `replace` / `ignore` directives above; `CLAUDE.md` links here for them.

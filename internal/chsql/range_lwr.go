@@ -256,7 +256,8 @@ func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (Frag, error) {
 	// #2447/#2470: see lwrFanoutBoundedSourceFrag's own doc comment.
 	// #2667: e.rangeLWRFanoutRowBound() resolves the operator override (or
 	// maxRangeLWRFanoutRows's own default) once per Emit call.
-	return lwrFanoutBoundedSourceFrag(fanout.Frag(), inputColumns.timestamp, e.rangeLWRFanoutRowBound(), RangeLWRFanoutBudgetMessage), nil
+	fanoutFrag := fanout.Frag()
+	return lwrFanoutBoundedSourceFrag(fanoutFrag, fanoutFrag, inputColumns.timestamp, e.rangeLWRFanoutRowBound(), RangeLWRFanoutBudgetMessage), nil
 }
 
 // rangeLWRCollapseFrag renders RangeLWR's fan-out + per-series collapse

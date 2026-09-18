@@ -111,6 +111,20 @@ test('a marker inside a quoted string is data, not prose', () => {
   assert.deepEqual(ids(`// ${TODO_MARKER}: still owed`), ['code-work-marker']);
 });
 
+test('prose apostrophes around a marker do not quote it away', () => {
+  // Two contractions bracket the marker: the single-quote count before it is
+  // odd and there is one after, which a bare quote-count read as "inside a
+  // string". Ordinary commit-message prose does this all the time.
+  const prose = `it doesn't handle the empty case; ${TODO_MARKER} fix it later, that's fine`;
+  assert.deepEqual(ids(prose), ['code-work-marker']);
+  assert.deepEqual(ids(`we can't ship this — ${TODO_MARKER} — it's not done`), ['code-work-marker']);
+  // A genuinely unbalanced quote does not excuse the marker either.
+  assert.deepEqual(ids(`const s = "${TODO_MARKER}`), ['code-work-marker']);
+  // A balanced single-quoted string on a line that looks like code still does.
+  assert.deepEqual(ids(`const want = '${TODO_MARKER}';`), []);
+  assert.deepEqual(ids(`  regex: '(skip|${TODO_MARKER.toLowerCase()})'`), []);
+});
+
 test('the marker table is non-empty, uniquely keyed, and compiles', () => {
   assert.ok(DEFERRAL_MARKERS.length > 0, 'an empty table makes every scan vacuous');
   const keys = DEFERRAL_MARKERS.map((m) => m.id);

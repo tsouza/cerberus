@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -645,6 +646,97 @@ func traceRows(ids ...string) []OutcomeRow {
 		rows[i] = OutcomeRow{Labels: map[string]string{}, TraceID: id}
 	}
 	return rows
+}
+
+// spanRows builds selector-shaped rows: each "trace/span" pair is one
+// matched span, the identity the wire and the oracle both carry.
+func spanRows(pairs ...string) []OutcomeRow {
+	rows := make([]OutcomeRow, len(pairs))
+	for i, pair := range pairs {
+		trace, span, _ := strings.Cut(pair, "/")
+		rows[i] = OutcomeRow{Labels: map[string]string{}, TraceID: trace, SpanID: span}
+	}
+	return rows
+}
+
+// TestCompareTraceIdentityOutcomesCatchesWrongSiblingSpan pins the gap a
+// per-trace COUNT comparison leaves open: a lowering that matches the
+// wrong sibling span inside the right trace, at the same count, must fail
+// now that selector/structural/select() rows carry the span identity the
+// wire (SpanSetSpan.SpanID) and the oracle both expose.
+func TestCompareTraceIdentityOutcomesCatchesWrongSiblingSpan(t *testing.T) {
+	oracle := Outcome{Rows: spanRows("t1/s1", "t1/s2", "t2/s7")}
+	system := Outcome{Rows: spanRows("t1/s1", "t1/s3", "t2/s7")}
+
+	got := CompareTraceIdentityOutcomes(oracle, system)
+	if got == "" {
+		t.Fatal("CompareTraceIdentityOutcomes passed a same-count, wrong-sibling-span negative control")
+	}
+	for _, part := range []string{"missing span in system: t1/s2", "extra span in system: t1/s3"} {
+		if !strings.Contains(got, part) {
+			t.Errorf("diff %q does not mention %q", got, part)
+		}
+	}
+
+	// The per-trace counts of the two sides are identical, so the
+	// count-only comparison this replaces would have passed the same pair.
+	if want, have := traceIDCounts(oracle.Rows), traceIDCounts(system.Rows); !reflect.DeepEqual(want, have) {
+		t.Fatalf("negative control is not count-equal: %v vs %v", want, have)
+	}
+}
+
+func TestCompareTraceIdentityOutcomesSpanSets(t *testing.T) {
+	tests := []struct {
+		name       string
+		oracle     Outcome
+		system     Outcome
+		wantPasses bool
+		wantParts  []string
+	}{
+		{
+			name:       "identical span set passes regardless of order",
+			oracle:     Outcome{Rows: spanRows("t1/s1", "t1/s2", "t2/s3")},
+			system:     Outcome{Rows: spanRows("t2/s3", "t1/s2", "t1/s1")},
+			wantPasses: true,
+		},
+		{
+			name:      "a span reported twice is never a set",
+			oracle:    Outcome{Rows: spanRows("t1/s1")},
+			system:    Outcome{Rows: spanRows("t1/s1", "t1/s1")},
+			wantParts: []string{"system: span t1/s1 reported 2 times"},
+		},
+		{
+			name:      "span identity on one side only is a comparator-usage bug",
+			oracle:    Outcome{Rows: spanRows("t1/s1")},
+			system:    Outcome{Rows: traceRows("t1")},
+			wantParts: []string{"system: row[0] has an empty SpanID while the oracle rows carry one"},
+		},
+		{
+			name:      "aggregate rows (no span identity on either side) still compare per trace",
+			oracle:    Outcome{Rows: traceRows("t1", "t2")},
+			system:    Outcome{Rows: traceRows("t1", "t3")},
+			wantParts: []string{"missing trace in system: t2", "extra trace in system: t3"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CompareTraceIdentityOutcomes(tc.oracle, tc.system)
+			if tc.wantPasses {
+				if got != "" {
+					t.Fatalf("CompareTraceIdentityOutcomes() = %q, want success", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatal("CompareTraceIdentityOutcomes() passed a fail-closed negative control")
+			}
+			for _, part := range tc.wantParts {
+				if !strings.Contains(got, part) {
+					t.Errorf("diff %q does not mention %q", got, part)
+				}
+			}
+		})
+	}
 }
 
 // TestCompareTraceIdentityOutcomesCatchesSubstitutedIdentity pins the exact

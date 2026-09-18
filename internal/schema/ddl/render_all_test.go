@@ -2,6 +2,7 @@ package ddl
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -109,5 +110,30 @@ func TestRenderAll_ReplicatedRequiresZooPath(t *testing.T) {
 	}
 	if _, err := RenderAll(cfg, All); err == nil {
 		t.Fatal("expected error: Replicated engine without a ZooKeeper/Keeper path must be rejected")
+	}
+}
+
+// TestRenderAll_ReplicatedRejectsMacroInZooPath pins that a Replicated-database
+// path carrying {shard} or {replica} is refused at validation: ClickHouse
+// expands the macros inside the path, so each replica would register its own
+// root and never replicate.
+func TestRenderAll_ReplicatedRejectsMacroInZooPath(t *testing.T) {
+	for _, path := range []string{
+		"/clickhouse/databases/otel/{shard}/{replica}",
+		"/clickhouse/databases/{shard}/otel",
+		"/clickhouse/{replica}/otel",
+	} {
+		cfg := Config{Database: "otel", DatabaseEngine: DatabaseEngine{Replicated: true, ReplicatedZooPath: path}}.withDefaults()
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatalf("Validate accepted ReplicatedZooPath %q", path)
+		}
+		if !strings.Contains(err.Error(), "must not contain {shard} or {replica}") {
+			t.Fatalf("Validate(%q) error %q does not name the macro rule", path, err)
+		}
+	}
+	cfg := Config{Database: "otel", DatabaseEngine: DatabaseEngine{Replicated: true, ReplicatedZooPath: "/clickhouse/databases/otel"}}.withDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected the macro-free path: %v", err)
 	}
 }

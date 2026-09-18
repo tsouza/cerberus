@@ -36,11 +36,15 @@ import (
 )
 
 // subqHistDDL is the OTel exponential-histogram table layout every case
-// in this file seeds against — byte-for-byte the same columns
-// histogram_native_mixed_or_scale_chdb_test.go's own seed uses.
+// in this file seeds against — the columns
+// histogram_native_mixed_or_scale_chdb_test.go's own seed uses plus the
+// OTel-CH `AggregationTemporality` column (cumulative by default), which a
+// bare exp-histogram matrix selector projects alongside the histogram
+// fields so its temporality rides through to the consumer.
 const subqHistDDL = "CREATE OR REPLACE TABLE otel_metrics_exponential_histogram (" +
 	"`MetricName` String, `Attributes` Map(String, String), " +
 	"`ResourceAttributes` Map(String, String) DEFAULT map(), `ServiceName` LowCardinality(String) DEFAULT '', " +
+	"`AggregationTemporality` Int32 DEFAULT 2, " +
 	"`TimeUnix` DateTime64(9), " +
 	"`Count` UInt64, `Sum` Float64, `Scale` Int32, `ZeroCount` UInt64, " +
 	"`PositiveOffset` Int32, `PositiveBucketCounts` Array(UInt64), " +

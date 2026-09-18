@@ -16,10 +16,11 @@ This document is the deeper reference. For the runtime contract (knobs,
 modes, the shadow header, memory sizing) see
 [`operations.md`](operations.md#sharded-pushdown-solver); for where route B
 sits relative to route A and the alternatives see
-[`performance.md`](performance.md). This reference covers the four
-reader-facing specifics that live nowhere else: the eligibility signals, the
-slicing geometry, the execution/cursor model, and the failure/cancellation
-contract.
+[`performance.md`](performance.md). This reference covers what lives nowhere
+else: the eligibility signals, the slicing geometry, the execution/cursor
+model, the failure/cancellation contract, the failure-driven route memo, the
+advisory `EXPLAIN ESTIMATE` and cardinality pre-probes, the query-actuals
+drift tracker, and the routing-decision calibration corpus.
 
 ## Eligibility signals
 
@@ -116,7 +117,7 @@ The signals, each gathered in the one pass:
    one whose span has nothing to do with the outer grid — which really would
    multiply `K×` into real extra cost and stays heavy. A `RangeBucketFanout`
    is never admitted here regardless of its bounds — unlike the main spine
-   (signal 2, where it IS now routable), no equality/reanchor argument has
+   (signal 2, where it IS routable), no equality/reanchor argument has
    been built for the Expr-embedded, never-reanchored replication case this
    check governs, so it stays conservatively heavy; a purely row-wise scalar
    interior (no windowed node at all) was always cheap and stays admissible.
@@ -186,7 +187,8 @@ evidence still overrides the model and such a plan can escape to route B; and
 Every classification — routed or not — produces a `Decision` carrying the
 reason (`routed`, `below-threshold`, `anchor-grid-indivisible`, `not-sliceable`,
 `instant`, `instant-join`, `high-D`, `now64`, `grid-mismatch`, `incommensurate`,
-`scalar-heavy`, `routing-disabled`, `extraction-failed`) for the shadow header,
+`scalar-heavy`, `routing-disabled`, `estimate-near-empty`,
+`extraction-failed`) for the shadow header,
 alongside the plan's cost grid (`N`, `F`, `D`, `OuterRange`, `Step`).
 
 The grid is populated on **every** Decision, including the refusals. The signal
@@ -196,7 +198,7 @@ corpus replayable: a refusal recorded with a zero grid says "we declined"
 without saying what we declined, which is indistinguishable from a plan that
 genuinely had no geometry. It also makes one silent failure mode legible — a
 range query whose grid carrier the classifier fails to find looks instant, and
-now records a non-zero `N`/`F`/`OuterRange` next to a zero `Step`, which a
+records a non-zero `N`/`F`/`OuterRange` next to a zero `Step`, which a
 genuine instant query cannot have. Both halves of that signature matter:
 `reason=instant` is also recorded for a range request carrying an unpinned or
 instant-shaped window, and that one has a real grid — it is the zero `Step`
@@ -326,20 +328,17 @@ returned to the handler:
    `Gate` is shared across every concurrently-routed request, shrinking one
    request's own `K_eff` cannot shrink the process-wide total. This gate
    lives in `internal/chclient` (`DataShardFanoutGate`, nil whenever
-   `DataShardCount <= 1`, which is every deployment that predates this
-   mechanism), NOT on this Executor, and bounds route A the same as route B
+   `DataShardCount <= 1`), NOT on this Executor, and bounds route A the same
+   as route B
    (see [`solver.background.md`](solver.background.md) for why it lives
    there). The gate is instead acquired once per ACTUAL ClickHouse dispatch,
    weight `DataShardCount`,
    at the one seam every dispatch this package makes shares
    (`chclient`'s `queryOpen` / `queryCursorColumnar`) — so this Executor's
    own `K_eff` per-shard dispatches each acquire it independently, summing
-   to the same `Σ(K_eff_i x DataShardCount) <= DataShardFanoutCap` ceiling
-   the mechanism enforced when it lived here, with no floor-division
-   degeneracy as `DataShardCount` grows (unlike a naive per-request
-   `P_eff / DataShardCount` divide, which floors to 0, clamped to 1, for
-   every `DataShardCount >= defaultParallel + 1`) — and route A's own
-   single-statement dispatches are now bounded by the identical mechanism.
+   to one `Σ(K_eff_i x DataShardCount) <= DataShardFanoutCap` ceiling with
+   no floor-division degeneracy as `DataShardCount` grows — and route A's
+   own single-statement dispatches are bounded by the identical mechanism.
    `DataShardFanoutCap` defaults to the chclient connection pool's own size
    (`CERBERUS_CH_MAX_OPEN_CONNS`), independently overridable
    (`CERBERUS_SOLVER_DATA_SHARD_FANOUT_CAP` — it sits in the
@@ -568,7 +567,7 @@ configured duration that could drift out of step with it.
 
 Every verdict is stamped with `createdAt` at the transition that created or
 last confirmed it, and expires unconditionally once
-`now - createdAt >= entryTTL` (default 30 minutes, `memoEntryTTL`) — `Lookup`
+`now - createdAt >= entryTTL` (default 30 minutes, `routememo.MemoEntryTTL`) — `Lookup`
 and every internal accessor evict an aged-out entry back to `Unknown` on
 read. A live `PreferB` verdict is additionally re-validated at its TTL
 midpoint (`entryTTL / reValidationFraction`, default fraction 2, i.e. 15
@@ -623,8 +622,8 @@ DATA SHARD's own independent budget once a shard's query reaches a
 `Distributed` table, so reducing `kEff` alone would not bound the
 per-statement memory amplification a multi-data-shard cluster introduces;
 `DataShardCount` defaults to 1 (`internal/chopt.ClusterTopology`'s own
-default), making this an EXACT no-op — `cap/(kEff*1) == cap/kEff` — for every
-deployment that predates this field. This is unconditional — there is no
+default), making this an EXACT no-op — `cap/(kEff*1) == cap/kEff` — on a
+single-shard deployment. This is unconditional — there is no
 config knob to disable it — because closing an accidental resource-amplification
 hole is a correctness property of routing itself, not a togglable safety
 feature; `kEff` is already bounded above by the structural `MaxK` clamp, so
@@ -727,17 +726,12 @@ Four instruments (`internal/telemetry/metrics.go`):
   `classifyRouteOutcome` resolution to `OutcomeSuccess` for a memo-tracked
   dispatch, labeled `cerberus.route_choice` = `"a"` / `"b"`.
 
-### Relationship to the retired route-threshold autotune
+### Relationship to the Planner's thresholds
 
-Route memo is a per-key, per-outcome evidence ledger sitting entirely
-downstream of the Planner's classification, keyed on a request's own cost
-shape; it never modifies the Planner's own cost thresholds (`MinFanout` /
-`MinAnchorPairs`). A plan the Planner misclassifies as route-A-cheap can
-still end up on route B for that specific shape once it has actually failed
-enough times to prove the classification wrong — no threshold anywhere has
-to change for that to happen. See
-[`solver.background.md`](solver.background.md) for how this differs from the
-retired threshold-autotune loop it replaces.
+Route memo never modifies the Planner's own cost thresholds (`MinFanout` /
+`MinAnchorPairs`); it acts per key, downstream of the Planner's
+classification. See [`solver.background.md`](solver.background.md) for how
+this differs from a threshold-fitting loop.
 
 ## Advisory EXPLAIN ESTIMATE: granule-resolution row bounds for K clamping
 
@@ -787,15 +781,14 @@ fully-supported fallback (a nil estimate — the default, until the chopt
    seeded this way — see "Why the failure-driven route memo is NOT seeded"
    below.
 
-### Cost bound (the constraint this issue states as VERIFIED)
+### Cost bound
 
-`per_rung_admission.go`'s own doc already rejected "a new live round-trip on
-every per-rung request" once. `internal/engine/explain_estimate_wiring.go`'s
-`ScanEstimateAdvisor` exists specifically not to reintroduce that, through
-three independent narrowings — see that file's own doc for the exact
-mechanics, and `TestScanEstimateAdvisor_SkipsSecondProbeForSameShape` for the
-pinned proof that a second identical-shape request never re-issues the round
-trip:
+The advisor never adds a live round-trip on every per-rung request.
+`internal/engine/explain_estimate_wiring.go`'s `ScanEstimateAdvisor` holds
+that bound through three independent narrowings — see that file's own doc
+for the exact mechanics, and
+`TestScanEstimateAdvisor_SkipsSecondProbeForSameShape` for the pinned proof
+that a second identical-shape request never re-issues the round trip:
 
 1. **ModeAuto only, and only a plan that reached the cost-grid section** of a
    baseline (no-estimate) classification — a structurally-refused plan
@@ -947,9 +940,8 @@ for the measurement and the incident (issue #2840) that motivated the
 No numeric knobs: `cardinalityProbeUniqUpToCap` (ClickHouse's own hard
 `uniqUpTo` ceiling, not a tuning value), `cardinalityProbeTimeout`, and the
 cache capacity/TTL (reused from `ScanEstimateAdvisor`'s own constants) are
-fixed Go constants pending real-world calibration evidence, mirroring
-`per_rung_admission.go`'s own unexported constants (`perRungCheapRowsPerAnchor`
-et al.) rather than growing a `Config` surface ahead of that evidence.
+fixed Go constants, like `per_rung_admission.go`'s own unexported constants
+(`perRungCheapRowsPerAnchor` et al.). The feature has no `Config` surface.
 
 ## Query actuals: predicted-vs-actual drift detection from ProfileEvents
 
@@ -984,7 +976,7 @@ repeat.
 1. **Native-protocol packets** (`internal/chclient/progress.go`, the FAST
    path) — free, since the production deployment's driver already streams
    both `Progress` (rows/bytes) and `ProfileEvents` packets for every
-   query; cerberus previously parsed only the former.
+   query.
    `MemoryTrackerPeakUsage`, a real ClickHouse `ProfileEvents` counter
    (verified against a live ClickHouse 26.6 server; not documented on
    ClickHouse's own reference, only in `system.query_log`'s column docs),
@@ -1011,7 +1003,7 @@ whether or not the operator separately opted into it.
 
 ### Four consumers
 
-1. **Drift-detection core** (the issue's primary ask): every `RecordActual`
+1. **Drift-detection core**: every `RecordActual`
    call computes `actualEMA / predicted` and flags the shape ALERTING once
    `MinObservations` (default 2) is reached and the ratio falls outside
    `[DriftLowerRatio, DriftUpperRatio]` (default `[0.1, 3.0]` — deliberately
@@ -1093,7 +1085,7 @@ decision.
 To answer it the engine closes the loop the optimization corpus
 (`internal/optcorpus`) already half-built:
 
-- **Decision read-out.** Every `solver.Decision` now carries the RAW classifier
+- **Decision read-out.** Every `solver.Decision` carries the RAW classifier
   scalars (`NAnchors` / `Fanout` / `CumulativeD` / `OuterRange` / `Step`)
   alongside `Strategy` / `K` / `Reason`, populated for **both** routed and
   not-routed decisions. The overlap analysis compares route-A and route-B cost

@@ -59,7 +59,8 @@ func (s *Service) SearchTags(req *tempopb.SearchTagsRequest, stream tempopb.Stre
 	if s.Handler == nil {
 		return status.Error(codes.Internal, "tempo gRPC service not wired to handler")
 	}
-	ctx := stream.Context()
+	ctx, cancel := s.queryContext(stream.Context())
+	defer cancel()
 	scope, err := tempo.ParseTagScope(req.GetScope())
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -98,7 +99,8 @@ func (s *Service) SearchTagsV2(req *tempopb.SearchTagsRequest, stream tempopb.St
 	if s.Handler == nil {
 		return status.Error(codes.Internal, "tempo gRPC service not wired to handler")
 	}
-	ctx := stream.Context()
+	ctx, cancel := s.queryContext(stream.Context())
+	defer cancel()
 	scope, err := tempo.ParseTagScope(req.GetScope())
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -137,8 +139,10 @@ func (s *Service) SearchTagValues(req *tempopb.SearchTagValuesRequest, stream te
 	if name == "" {
 		return status.Error(codes.InvalidArgument, "missing tag name")
 	}
+	ctx, cancel := s.queryContext(stream.Context())
+	defer cancel()
 	values, _, err := s.lookupTagValues(
-		stream.Context(), name, tempo.TagValuesRouteV1, req.GetQuery(), req.GetStart(), req.GetEnd(),
+		ctx, name, tempo.TagValuesRouteV1, req.GetQuery(), req.GetStart(), req.GetEnd(),
 	)
 	if err != nil {
 		return err
@@ -167,8 +171,10 @@ func (s *Service) SearchTagValuesV2(req *tempopb.SearchTagValuesRequest, stream 
 	if name == "" {
 		return status.Error(codes.InvalidArgument, "missing tag name")
 	}
+	ctx, cancel := s.queryContext(stream.Context())
+	defer cancel()
 	values, typ, err := s.lookupTagValues(
-		stream.Context(), name, tempo.TagValuesRouteV2, req.GetQuery(), req.GetStart(), req.GetEnd(),
+		ctx, name, tempo.TagValuesRouteV2, req.GetQuery(), req.GetStart(), req.GetEnd(),
 	)
 	if err != nil {
 		return err

@@ -64,19 +64,19 @@
 //                      the model, so the override reaches both the
 //                      pre-pull and `up`.
 //   TESTER_QUERY_PARALLELISM  passed through to the upstream tester's
-//                      `-query-parallelism` flag (tester default: 20).
-//                      Unset here means the flag is omitted and the
-//                      tester's own default applies. Every Prometheus CI
-//                      lane sets this LOW (see compatibility.yml): below
-//                      25.9 every ts_grid_* native-rate feature resolves
-//                      OFF (#1500), so the floor lane's fallback SQL does
-//                      real per-row rate/quantile/reset aggregation
-//                      instead of ClickHouse's native windowed
-//                      functions — genuinely slower, not incorrect. See
-//                      the former bash script's own header (git history)
-//                      for the full contention/timeout measurement this
-//                      knob and the comparer-timeout patch below both
-//                      answer (tsouza/cerberus#2707).
+//                      `-query-parallelism` flag. Default
+//                      DEFAULT_TESTER_QUERY_PARALLELISM (2) — the ONE
+//                      place the lanes' parallelism is decided; the
+//                      workflow no longer restates it per job. The
+//                      upstream tester's own default is 20, and every
+//                      comparer-timeout measurement below was taken at 2:
+//                      below 25.9 every ts_grid_* native-rate feature
+//                      resolves OFF (#1500), so the floor lane's fallback
+//                      SQL does real per-row rate/quantile/reset
+//                      aggregation instead of ClickHouse's native windowed
+//                      functions — genuinely slower, not incorrect — and
+//                      parallelism is the lever for that queueing
+//                      contention (tsouza/cerberus#2707).
 //   FAIL_ON_DIFF      non-empty: ANY per-case diff or unexpected failure
 //                      in report.json becomes a hard failure (the
 //                      forced-route corpus-wide proof lane).
@@ -115,9 +115,86 @@ const RANGE = process.env.TESTER_RANGE || '3600';
 
 // Upstream's per-comparison deadline this harness build-time patches past:
 // see patchComparer() below for the full rationale (tsouza/cerberus#2707,
-// widened further by tsouza/cerberus#3556).
+// and the floor-only widening from tsouza/cerberus#3556 / #3560).
 const ORIGINAL_COMPARE_TIMEOUT = '10*time.Second';
-const COMPARER_TIMEOUT_SECONDS = 90;
+// COMPARER_TIMEOUT_SECONDS is the deadline every lane on the 26.5 substrate
+// gets: the per-comparison wall-clock bound is the compat lanes' only
+// wall-clock bound, so it stays as tight as the measured floor-lane costs
+// allow. FLOOR_COMPARER_TIMEOUT_SECONDS applies only when CH_IMAGE pins a
+// server below the native-rate floor (NATIVE_RATE_FLOOR_MINOR), where the
+// un-optimized fallback SQL is the thing being measured.
+export const COMPARER_TIMEOUT_SECONDS = 45;
+export const FLOOR_COMPARER_TIMEOUT_SECONDS = 90;
+// NATIVE_RATE_FLOOR_MINOR mirrors versions.yaml's `min_native_rate` (25.9):
+// the ts_grid_* family arrives there, and below it every rate/quantile/
+// reset shape falls through to the per-row fallback (#1500).
+export const NATIVE_RATE_FLOOR_MINOR = [25, 9];
+export const DEFAULT_TESTER_QUERY_PARALLELISM = 2;
+export const DEFAULT_CH_IMAGE = 'clickhouse/clickhouse-server:26.5';
+
+// chImageMinor — the [major, minor] a `clickhouse/clickhouse-server:<tag>`
+// image pins, or null for a tag that carries no version (`latest`, a digest).
+export function chImageMinor(image) {
+  const m = /:(\d+)\.(\d+)(?:[.\-]|$)/.exec(image ?? '');
+  return m ? [Number(m[1]), Number(m[2])] : null;
+}
+
+// comparerTimeoutSeconds — the per-comparison deadline for the server this
+// run pins. A tag without a readable version gets the tight bound: a lane
+// that cannot prove it runs the floor is not given the floor's headroom.
+export function comparerTimeoutSeconds(image) {
+  const v = chImageMinor(image);
+  if (!v) return COMPARER_TIMEOUT_SECONDS;
+  const [major, minor] = v;
+  const [floorMajor, floorMinor] = NATIVE_RATE_FLOOR_MINOR;
+  const belowFloor = major < floorMajor || (major === floorMajor && minor < floorMinor);
+  return belowFloor ? FLOOR_COMPARER_TIMEOUT_SECONDS : COMPARER_TIMEOUT_SECONDS;
+}
+
+// COMPARE_TIMEOUT_LITERAL matches whatever `N*time.Second` the comparer
+// currently carries — upstream's 10, or a value an earlier run of this
+// harness already patched in (a checkout is reused between lanes locally,
+// and `.gitmodules` marks the submodule `ignore = dirty`, so a previous
+// patch is invisible to git). Matching by shape rather than by the current
+// constant is what keeps the patch idempotent across constant changes.
+const COMPARE_TIMEOUT_LITERAL = /(\d+)\*time\.Second/;
+
+// patchComparerSource — the two build-time patches as a pure function of the
+// source; see patchComparer() for the rationale. Throws when the upstream
+// layout no longer carries the lines being patched.
+export function patchComparerSource(src, seconds) {
+  const symmetricSortMarker = 'sort.Sort(refResult.(model.Matrix))';
+  if (!src.includes(symmetricSortMarker)) {
+    const testSortLine = 'sort.Sort(testResult.(model.Matrix))\n';
+    const patched = src.replace(testSortLine, `${testSortLine}\tsort.Sort(refResult.(model.Matrix))\n`);
+    if (patched === src || !patched.includes(symmetricSortMarker)) {
+      throw new Error('symmetric sort (upstream layout changed?)');
+    }
+    src = patched;
+  }
+  const widenedTimeout = `${seconds}*time.Second`;
+  if (!src.includes(widenedTimeout)) {
+    if (!COMPARE_TIMEOUT_LITERAL.test(src)) {
+      throw new Error(`compare timeout: neither ${ORIGINAL_COMPARE_TIMEOUT} nor an earlier patched value found (upstream layout changed?)`);
+    }
+    src = src.replace(COMPARE_TIMEOUT_LITERAL, widenedTimeout);
+  }
+  return src;
+}
+
+// hardFailureExit — the exit code for a run whose report is unusable. The
+// tester exits 0 when every query passed, so its rc alone can be 0 with an
+// empty or truncated report behind it (a failed write, a corpus that
+// assembled to nothing); an unusable report is a failure whatever the rc.
+export function hardFailureExit(testerRc) {
+  return testerRc || 1;
+}
+
+// reportIsUsable — a parsed report with a NON-EMPTY results array. Zero
+// comparisons is not a pass: it is a run that measured nothing.
+export function reportIsUsable(report) {
+  return report !== null && typeof report === 'object' && Array.isArray(report.results) && report.results.length > 0;
+}
 
 // cerberus's own readiness poll: the compose `--wait` healthcheck only
 // proves the distroless `cerberus --version` binary runs, not that it has
@@ -192,51 +269,40 @@ async function waitForCerberusReady() {
 //    legitimately slow floor-lane answer is given before being mistaken for
 //    one changes.
 //
-//    tsouza/cerberus#3556 widened this a second time for the SAME class of
-//    problem on a different query shape: `rate()`/`increase()`/`delta()`
-//    over a multi-name regex selector (e.g. spanning several GAUGE metric
-//    families) reaches the identical un-optimized fallback — below 25.9 the
-//    native ts_grid_range aggregate is unavailable, and the improved
-//    argMin/argMax/sumIf fallback (chopt.FeatureFixedAccumulatorExtrapolated,
-//    #2760) stays opt-in on every server regardless of version (a measured
-//    memory-vs-wall-clock trade #2760/#2894 already decided against
-//    auto-enabling — re-confirmed at #3556's own 2,200-series multi-name-
-//    selector scale, so it is not a lever here either), so this shape falls
-//    through to the heaviest groupArray/arraySort/arrayPopBack/arrayPopFront
-//    array-fold plus a windowed `sum(...) OVER (...)`. #3556's own
-//    measurement: one isolated re-execution of a captured per-anchor batch
-//    took ~3.4s on a 2-vCPU-capped container matching the floor runner, and a
-//    live corpus run at this harness's own TESTER_QUERY_PARALLELISM measured
-//    13.1s wall-clock for the whole query_range request — within the 45s
-//    deadline on that host with little margin, and #3552 independently
-//    observed it exceed 45s on a GH Actions runner's heavier contention.
-function patchComparer() {
-  let src = readFileSync(COMPARER_REL_PATH, 'utf8');
-
+//    tsouza/cerberus#3556 widened this a second time, for the FLOOR lane
+//    only, for the SAME class of problem on a different query shape:
+//    `rate()`/`increase()`/`delta()` over a multi-name regex selector (e.g.
+//    spanning several GAUGE metric families) reaches the identical
+//    un-optimized fallback — below 25.9 the native ts_grid_range aggregate
+//    is unavailable, and the improved argMin/argMax/sumIf fallback
+//    (chopt.FeatureFixedAccumulatorExtrapolated, #2760) stays opt-in on
+//    every server regardless of version (a measured memory-vs-wall-clock
+//    trade #2760/#2894 already decided against auto-enabling — re-confirmed
+//    at #3556's own 2,200-series multi-name-selector scale, so it is not a
+//    lever here either), so this shape falls through to the heaviest
+//    groupArray/arraySort/arrayPopBack/arrayPopFront array-fold plus a
+//    windowed `sum(...) OVER (...)`. What was measured (#3556): one
+//    isolated re-execution of a captured per-anchor batch took ~3.4s on a
+//    2-vCPU-capped container matching the floor runner, and a live corpus
+//    run at DEFAULT_TESTER_QUERY_PARALLELISM (2) measured 13.1s wall-clock
+//    for the whole query_range request on that host — inside 45s, with a
+//    ~3x margin that a loaded GH Actions runner does not reliably keep for
+//    the floor's fallback SQL. The 26.5 lanes never take that path, so
+//    they keep the 45s bound (COMPARER_TIMEOUT_SECONDS); only a run whose
+//    CH_IMAGE is below the native-rate floor gets
+//    FLOOR_COMPARER_TIMEOUT_SECONDS — see comparerTimeoutSeconds().
+function patchComparer(seconds) {
+  const src = readFileSync(COMPARER_REL_PATH, 'utf8');
   log('==> patching promql-compliance-tester comparer (symmetric matrix sort)');
-  const symmetricSortMarker = 'sort.Sort(refResult.(model.Matrix))';
-  if (!src.includes(symmetricSortMarker)) {
-    const testSortLine = 'sort.Sort(testResult.(model.Matrix))\n';
-    const patched = src.replace(testSortLine, `${testSortLine}\tsort.Sort(refResult.(model.Matrix))\n`);
-    if (patched === src || !patched.includes(symmetricSortMarker)) {
-      error(`failed to patch ${COMPARER_REL_PATH} symmetric sort (upstream layout changed?)`);
-      process.exit(2);
-    }
-    src = patched;
+  log(`==> patching promql-compliance-tester comparer (per-comparison deadline ${seconds}s)`);
+  let patched;
+  try {
+    patched = patchComparerSource(src, seconds);
+  } catch (e) {
+    error(`failed to patch ${COMPARER_REL_PATH}: ${e.message}`);
+    process.exit(2);
   }
-
-  log('==> patching promql-compliance-tester comparer (widen the per-comparison deadline)');
-  const widenedTimeout = `${COMPARER_TIMEOUT_SECONDS}*time.Second`;
-  if (!src.includes(widenedTimeout)) {
-    const patched = src.replace(ORIGINAL_COMPARE_TIMEOUT, widenedTimeout);
-    if (patched === src || !patched.includes(widenedTimeout)) {
-      error(`failed to patch ${COMPARER_REL_PATH} compare timeout (upstream layout changed?)`);
-      process.exit(2);
-    }
-    src = patched;
-  }
-
-  writeFileSync(COMPARER_REL_PATH, src);
+  writeFileSync(COMPARER_REL_PATH, patched);
 }
 
 function summarise(report) {
@@ -294,7 +360,7 @@ async function main() {
   log('==> running seeder (go run ./cmd/seed)');
   exitOnSpawnFailure(spawnSync('go', ['run', './compatibility/prometheus/cmd/seed/'], { stdio: 'inherit' }), 'prometheus seeder');
 
-  patchComparer();
+  patchComparer(comparerTimeoutSeconds(process.env.CH_IMAGE || DEFAULT_CH_IMAGE));
 
   log('==> building promql-compliance-tester');
   exitOnSpawnFailure(spawnSync('go', ['build', '-o', 'promql-compliance-tester', '.'], { cwd: TESTER_DIR, stdio: 'inherit' }), 'promql-compliance-tester build');
@@ -321,7 +387,7 @@ async function main() {
   // usable report to score — distinguished below by whether report.json
   // parses as JSON with a non-null results array.
   const testerArgs = ['-config-file', `${ROOT_DIR}/test-cerberus.yml`, '-config-file', queries, '-config-file', overlayPath, '-output-format', 'json'];
-  if (process.env.TESTER_QUERY_PARALLELISM) testerArgs.push('-query-parallelism', process.env.TESTER_QUERY_PARALLELISM);
+  testerArgs.push('-query-parallelism', process.env.TESTER_QUERY_PARALLELISM || String(DEFAULT_TESTER_QUERY_PARALLELISM));
 
   // Read the report back through the SAME fd the tester wrote it through
   // (fstatSync + readSync at position 0) rather than reopening OUTPUT by
@@ -358,11 +424,14 @@ async function main() {
   }
 
   // Hard-error gate: if the tester didn't even produce a parseable JSON
-  // report with a `.results` array, the run is infrastructure-broken. Bail
-  // with the tester's rc so the workflow turns red.
-  if (report === null || !Array.isArray(report.results)) {
-    log('==> report not parseable as JSON with .results array; treating as hard failure');
-    process.exit(testerRc);
+  // report with a NON-EMPTY `.results` array, the run is infrastructure-
+  // broken — a failed write, or a corpus that assembled to nothing. The
+  // tester exits 0 on "every query passed", which an empty report also
+  // satisfies, so the exit code is `testerRc || 1`: never 0 for a run that
+  // measured nothing.
+  if (!reportIsUsable(report)) {
+    log('==> report not parseable as JSON with a non-empty .results array; treating as hard failure');
+    process.exit(hardFailureExit(testerRc));
   }
   log(JSON.stringify(summarise(report)));
 

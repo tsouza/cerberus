@@ -2,8 +2,8 @@
 // PreToolUse hook for Bash. Blocks two classes of heavy local run that belong
 // to CI, not to this machine.
 //
-//   1. MUTATION TESTING (`just mutate`, `just mutate-pkg`, a direct `gremlins`
-//      invocation, or `mutation-run.mjs`).
+//   1. MUTATION TESTING (any `just mutate*` recipe, a direct `gremlins`
+//      invocation, or `node …/mutation-run.mjs`).
 //
 //      A mutation run deliberately executes mutants, and a mutant that inverts
 //      a loop advance never terminates while allocating per iteration. Run
@@ -22,7 +22,8 @@
 //      derivation that lets a runaway outlive its budget is #2903 / #2910. The
 //      lane is the place to run this; a laptop is not.
 //
-//   2. GOLDEN REGENERATION (`just update-golden`, `just update-cardinality-baseline`).
+//   2. GOLDEN REGENERATION (`just update-golden`, `just migration-golden`,
+//      `just update-parity-ledgers`, any `just update-*-baseline`).
 //
 //      Regenerating locally drifts against CI: the goldens are generated with a
 //      pinned toolchain, pinned build tags and `libchdb.so`, and the
@@ -42,17 +43,25 @@
 //   A cgroup kill is contained: the 07:31 run in the log above was
 //   `constraint=CONSTRAINT_MEMCG` and harmed nothing, while the uncapped ones
 //   took down the host.
+//
+// WHAT COUNTS AS RUNNING IT. The line is tokenised like a shell (see
+// shell-words.mjs): quoted strings and heredoc bodies are data, `bash -c`
+// payloads and `xargs` tails are commands, and only the command position of
+// each segment is classified. A commit message that mentions `gremlins`, or
+// a grep for `mutation-run.mjs`, is not a mutation run; `bash -c "just
+// mutate"` and `echo pkg | xargs gremlins unleash` are. The recipe families
+// are read from `just --summary`, so a new `mutate-*` or `update-*-baseline`
+// recipe is guarded without editing this file.
 
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+
+import { segments } from './shell-words.mjs';
 
 const ALLOW = 0;
 const BLOCK = 2;
 
 const OVERRIDE_ENV = 'CERBERUS_ALLOW_HEAVY_LOCAL';
-
-// Command wrappers that may precede the real command on the line. Mirrors
-// guard-git.mjs so `rtk just mutate` and friends are still seen.
-const COMMAND_WRAPPERS = new Set(['rtk', 'proxy', 'command', 'sudo', 'time', 'nice', 'env', 'timeout']);
 
 function readPayload() {
   try {
@@ -60,23 +69,6 @@ function readPayload() {
   } catch {
     return null;
   }
-}
-
-// splitSegments — break a shell line into independently-executed segments so a
-// guarded command buried in an `&&` chain is still seen. Quoting is not
-// modelled; a rare false positive costs one explanatory message, a false
-// negative costs the machine.
-function splitSegments(command) {
-  return command.split(/&&|\|\||[;\n|]/g);
-}
-
-// words — the segment's words with leading wrappers and `VAR=value` prefixes
-// stripped, so `env FOO=1 rtk just mutate` reduces to ['just','mutate'].
-function words(segment) {
-  const out = segment.trim().split(/\s+/).filter(Boolean);
-  let i = 0;
-  while (i < out.length && (COMMAND_WRAPPERS.has(out[i]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(out[i]))) i++;
-  return out.slice(i);
 }
 
 // A `just` recipe invocation, ignoring just's own flags that take a value.
@@ -94,27 +86,72 @@ function justRecipe(w) {
   return null;
 }
 
-// Recipes whose whole purpose is a mutation run.
-const MUTATION_RECIPES = new Set(['mutate', 'mutate-pkg']);
-// Recipes that regenerate a checked-in generated artefact.
-const GOLDEN_RECIPES = new Set(['update-golden', 'update-cardinality-baseline']);
+// The recipe families, by NAME SHAPE rather than by a hand list: every
+// `mutate*` recipe is a gremlins run (`mutate`, `mutate-pkg`, `mutate-chdb` —
+// the last was the heaviest run in the repo and the old list did not name it),
+// and every recipe that rewrites a checked-in generated artefact is one of
+// `update-golden`, `migration-golden`, `update-parity-ledgers` or an
+// `update-*-baseline`. The live set comes from `just --summary` in the
+// session's project directory; when `just` cannot answer, RECIPE_FALLBACK is
+// the last known set, so the guard never degrades to "nothing is heavy".
+const MUTATION_RECIPE = /^mutate(-|$)/;
+const GOLDEN_RECIPE = /^(update-golden|migration-golden|update-parity-ledgers|update-.+-baseline)$/;
+const RECIPE_FALLBACK = [
+  'mutate', 'mutate-chdb', 'mutate-pkg',
+  'migration-golden', 'update-cardinality-baseline', 'update-golden',
+  'update-metadata-query-size-baseline', 'update-nightly-perf-baseline',
+  'update-parity-enrolment-baseline', 'update-parity-ledgers', 'update-perf-smoke-baseline',
+  'update-scale-wall-baseline', 'update-solver-decision-baseline',
+];
 
-function classify(segment) {
-  const w = words(segment);
+function justRecipes(cwd) {
+  try {
+    const out = execFileSync('just', ['--summary'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const names = out.trim().split(/\s+/).filter(Boolean);
+    if (names.length > 0) return names;
+  } catch {
+    // `just` absent, or no Justfile under cwd: fall through to the fallback.
+  }
+  return RECIPE_FALLBACK;
+}
+
+export function recipeSets(names) {
+  return {
+    mutation: new Set(names.filter((n) => MUTATION_RECIPE.test(n))),
+    golden: new Set(names.filter((n) => GOLDEN_RECIPE.test(n))),
+  };
+}
+
+// classify — one executed segment (wrappers already stripped, `bash -c` and
+// `xargs` already unwrapped by shell-words.mjs). Only the COMMAND position
+// decides: a word that merely mentions a runner's file name — a grep for it,
+// a commit message quoting it — is data, not an execution.
+export function classify(w, sets) {
   if (w.length === 0) return null;
 
   const recipe = justRecipe(w);
-  if (recipe && MUTATION_RECIPES.has(recipe)) return 'mutation';
-  if (recipe && GOLDEN_RECIPES.has(recipe)) return 'golden';
+  if (recipe && sets.mutation.has(recipe)) return 'mutation';
+  if (recipe && sets.golden.has(recipe)) return 'golden';
 
-  // A direct gremlins invocation, however it is spelled on PATH.
   const cmd = w[0];
+  // A direct gremlins invocation, however it is spelled on PATH.
   if (cmd === 'gremlins' || cmd.endsWith('/gremlins')) return 'mutation';
 
-  // The lane's own runner, invoked directly.
-  if (w.some((a) => a.includes('mutation-run.mjs'))) return 'mutation';
+  // The lane's own runner, invoked directly (`node .github/scripts/mutation-run.mjs`).
+  const isNode = cmd === 'node' || cmd.endsWith('/node');
+  const script = isNode ? w.slice(1).find((a) => !a.startsWith('-')) : cmd;
+  if (script && /(^|\/)mutation-run\.mjs$/.test(script)) return 'mutation';
 
   return null;
+}
+
+export function kindsOf(command, sets) {
+  const kinds = new Set();
+  for (const w of segments(command)) {
+    const kind = classify(w, sets);
+    if (kind) kinds.add(kind);
+  }
+  return kinds;
 }
 
 function block(lines) {
@@ -173,11 +210,8 @@ function main() {
   // exports it for the session, or prefixes it on the line, both work.
   const overridden = process.env[OVERRIDE_ENV] === '1' || /\bCERBERUS_ALLOW_HEAVY_LOCAL=1\b/.test(command);
 
-  const kinds = new Set();
-  for (const segment of splitSegments(command)) {
-    const kind = classify(segment);
-    if (kind) kinds.add(kind);
-  }
+  const cwd = payload.cwd && typeof payload.cwd === 'string' ? payload.cwd : process.cwd();
+  const kinds = kindsOf(command, recipeSets(justRecipes(cwd)));
   if (kinds.size === 0) return ALLOW;
   if (overridden) return ALLOW;
 
@@ -185,4 +219,8 @@ function main() {
   return block(GOLDEN_MESSAGE);
 }
 
-process.exit(main());
+// Only dispatch when run as the hook — the node:test suite imports the pure
+// classifier without firing it.
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  process.exit(main());
+}

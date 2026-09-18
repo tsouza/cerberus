@@ -55,11 +55,11 @@ func (e *emitter) emitMetricsHistogramOverTime(m *chplan.MetricsHistogramOverTim
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
 
-	bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.HistogramBucketColumn)
+	bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.MetricsBucketColumn)
 	sb.SelectAs(histogramBucketFrag(m.Attr, m.IsDuration), bucketAlias)
 
 	// count(1) AS <ValueAlias>.
-	valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultValueColumn)
+	valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultSampleValueColumn)
 	countFunc := chplan.AggFunc{
 		Fn:    chplan.FnCount,
 		Args:  []chplan.Expr{&chplan.LitInt{V: 1}},
@@ -222,8 +222,8 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 		return err
 	}
 
-	bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.HistogramBucketColumn)
-	valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultValueColumn)
+	bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.MetricsBucketColumn)
+	valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultSampleValueColumn)
 
 	// Sample arm: group-by cols, bucket, attr filter, sample-side
 	// anchor fanout, `1 AS in_window` marker.

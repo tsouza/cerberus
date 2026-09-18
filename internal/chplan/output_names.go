@@ -2,28 +2,45 @@ package chplan
 
 import "strconv"
 
-// Output names a node's RowType() claims and its emitter renders. Each is
-// spelled once, here, so the schema claim and the emitted alias cannot drift
-// apart. RangeWindowAnchorColumn (range_window.go) is the same kind of name.
+// Default output column names shared by a node's RowType() and the chsql
+// emitter that renders it. A node whose alias field is empty publishes
+// the column under the constant here, and the emitter aliases the
+// rendered expression the same way; keeping both on one constant is what
+// lets RowType() describe the emitted statement rather than restate it.
+
+// DefaultSampleTimestampColumn is the wire-projected name of a Sample's
+// timestamp — the column every matrix-shape RangeWindow surfaces its
+// anchor under when its own TimestampColumn names the anchor alias itself.
+const DefaultSampleTimestampColumn = "TimeUnix"
+
+// DefaultSampleValueColumn is the wire-projected name of a Sample's value,
+// the fallback for a metrics node whose ValueAlias is empty.
+const DefaultSampleValueColumn = "Value"
+
+// MetricsBucketColumn is the per-row bucket column the quantile_over_time
+// and histogram_over_time matrix emitters project. It mirrors Tempo's
+// internal `__bucket` label (pkg/traceql/engine_metrics.go,
+// internalLabelBucket) so the Tempo handler can pick the bucket out of
+// the row stream by a stable name.
+const MetricsBucketColumn = "__bucket"
+
+// MetricsMultiQuantilePhiColumn is the synthetic per-phi label a
+// multi-quantile `quantile_over_time(attr, p1, p2, …)` tags each output
+// row with.
+const MetricsMultiQuantilePhiColumn = "__phi__"
+
+// MetricsCompareSelectionColumn / MetricsCompareAttrColumn /
+// MetricsCompareValColumn are the default output names of a
+// MetricsCompare's selection marker, attribute name and attribute value.
 const (
-	// MatrixTimestampColumn is the public timestamp a matrix-shaped
-	// RangeWindow publishes when its TimestampColumn is the anchor itself.
-	MatrixTimestampColumn = "TimeUnix"
-	// DefaultValueColumn is the value output a reducer publishes when its
-	// ValueAlias is unset.
-	DefaultValueColumn = "Value"
-	// MultiQuantilePhiColumn tags each row of a multi-quantile fan-out with
-	// the phi it answers.
-	MultiQuantilePhiColumn = "__phi__"
-	// HistogramBucketColumn is the bucket key quantile_over_time and
-	// histogram_over_time publish when their BucketAlias is unset.
-	HistogramBucketColumn = "__bucket"
-	// CompareSelectionColumn, CompareAttrColumn and CompareValColumn are
-	// MetricsCompare's outputs when the matching alias is unset.
-	CompareSelectionColumn = "is_selection"
-	CompareAttrColumn      = "attr"
-	CompareValColumn       = "val"
+	MetricsCompareSelectionColumn = "is_selection"
+	MetricsCompareAttrColumn      = "attr"
+	MetricsCompareValColumn       = "val"
 )
+
+// MetricsGroupKeyName is the output name of the i-th group-by key of a
+// Tempo metrics node that carries no alias for it.
+func MetricsGroupKeyName(i int) string { return "g" + strconv.Itoa(i) }
 
 // OutputDefault returns name, or fallback when name is unset.
 func OutputDefault(name, fallback string) string {
@@ -33,11 +50,8 @@ func OutputDefault(name, fallback string) string {
 	return name
 }
 
-// outerGroupNamePrefix prefixes the synthetic name of an un-aliased group key.
-const outerGroupNamePrefix = "g"
-
 // OuterGroupNames returns the output name of every group key: its alias when
-// one is set, else the synthetic "g<i>" for its position. Nil when there are
+// one is set, else MetricsGroupKeyName for its position. Nil when there are
 // no keys.
 func OuterGroupNames(keys []Expr, aliases []string) []string {
 	if len(keys) == 0 {
@@ -49,7 +63,7 @@ func OuterGroupNames(keys []Expr, aliases []string) []string {
 			names[i] = aliases[i]
 		}
 		if names[i] == "" {
-			names[i] = outerGroupNamePrefix + strconv.Itoa(i)
+			names[i] = MetricsGroupKeyName(i)
 		}
 	}
 	return names

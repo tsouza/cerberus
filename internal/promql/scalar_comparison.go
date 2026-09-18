@@ -1,8 +1,6 @@
 package promql
 
 import (
-	"fmt"
-
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -18,23 +16,6 @@ const (
 	scalarComparisonGuarded scalarComparisonBoundary = iota
 	scalarComparisonCanonical
 )
-
-func requireFloatComparisonPolicy(site mixedAdmissionSite) error {
-	key := mixedWrapperKey{family: mixedComparisonFamily, site: site}
-	if mixedOperandPolicies[key] != mixedFloatOnly {
-		return fmt.Errorf("promql: mixed operand is not admitted for %s at %s", key.family, key.site)
-	}
-	return nil
-}
-
-// lowerComparisonRoot authorizes the route before the original union loader,
-// preserving its error order and histogram/float shadow resolution.
-func lowerComparisonRoot(build func() (chplan.Node, error)) (chplan.Node, error) {
-	if err := requireFloatComparisonPolicy(mixedRootAdmission); err != nil {
-		return nil, err
-	}
-	return build()
-}
 
 // scalarComparisonValueRef keeps the common fully-declared Project path from
 // allocating a derived schema only to recover a role its projection already
@@ -71,15 +52,12 @@ func scalarComparisonValueRef(inner chplan.Node) *chplan.ColumnRef {
 func finishScalarComparison(inner chplan.Node, arg parser.Expr, s schema.Metrics, ctx lowerCtx,
 	op chplan.BinaryOp, scalar float64, scalarOnLeft, returnBool bool, boundary scalarComparisonBoundary,
 ) (chplan.Node, error) {
-	if boundary != scalarComparisonGuarded && boundary != scalarComparisonCanonical {
-		return nil, fmt.Errorf("promql: unknown scalar comparison projection boundary %d", boundary)
-	}
 	if boundary == scalarComparisonCanonical {
-		if err := requireFloatComparisonPolicy(mixedRootAdmission); err != nil {
+		if err := requireMixedOperandPolicy(mixedComparisonFamily, mixedRootAdmission, mixedFloatOnly); err != nil {
 			return nil, err
 		}
 	} else if mixedRowsNeedPreparation(inner) {
-		if err := requireFloatComparisonPolicy(mixedPlanAdmission); err != nil {
+		if err := requireMixedOperandPolicy(mixedComparisonFamily, mixedPlanAdmission, mixedFloatOnly); err != nil {
 			return nil, err
 		}
 	}
@@ -100,7 +78,7 @@ func finishScalarComparison(inner chplan.Node, arg parser.Expr, s schema.Metrics
 	}
 	if boundary == scalarComparisonGuarded {
 		inner = guardNameDropCollision(inner, arg, s, ctx)
-		layout = legacySampleProjectionLayout(inner)
+		layout = derivedSampleProjectionLayout(inner)
 	}
 	return projectValueOverInner(inner, s, layout, func(refs sampleRoleRefs) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{scalarBinaryValue(refs.Value, op, scalar, scalarOnLeft)}}

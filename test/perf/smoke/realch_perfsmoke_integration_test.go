@@ -36,7 +36,7 @@
 // # Two boot-resolved axes, and two kinds of lane
 //
 // Both handlers carry the per-query engine.SettingsRules a real deployment
-// resolves at boot (chopttest.BuildSettingsRules, cerberus issue #2820) —
+// resolves at boot (choptwire.SettingsRules, cerberus issue #2820) —
 // without it Engine.Settings stays at its zero value, which applies NOTHING,
 // and no sentinel here could measure a settings-rule mechanism at all. The
 // OTHER boot-resolved axis, the native ts_grid_* RangeLowerers table, stays at
@@ -76,6 +76,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopttest"
+	"github.com/tsouza/cerberus/internal/choptwire"
 	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
@@ -409,7 +410,7 @@ func optimizeTableFinal(ctx context.Context, t *testing.T, client *chclient.Clie
 // chopt.EnabledSet.
 //
 // The base ("auto") lane wires only ONE of those two axes — the SettingsRules
-// one (chopttest.BuildSettingsRules). Its RangeLowerers axis stays at
+// one (choptwire.SettingsRules). Its RangeLowerers axis stays at
 // prom.New's zero value, which promql.RangeLowerers.withDefaults normalises
 // to the concrete fan-out impls, exactly as this lane has always run: wiring
 // the native ts_grid_* families into the OTHER real-CH lanes is issue #2487's
@@ -430,8 +431,8 @@ func optimizeTableFinal(ctx context.Context, t *testing.T, client *chclient.Clie
 // version floor at all, so "auto" alone never activates it on ANY server —
 // the only way a sentinel reaches it is an explicit
 // CERBERUS_CH_OPTIMIZATIONS listing, resolved into its OWN chopt.EnabledSet,
-// its OWN chopttest.BuildSettingsRules, and — unlike the base lane — its OWN
-// chopttest.BuildRangeLowerers. Wiring RangeLowerers here does not touch the
+// its OWN choptwire.SettingsRules, and — unlike the base lane — its OWN
+// choptwire.RangeLowerers. Wiring RangeLowerers here does not touch the
 // base lane's own fan-out-only posture or re-calibrate any existing
 // sentinel's baseline: the opt-in lane is a SEPARATE prom.Handler /
 // tempo.Handler pair mounted on its own ServeMux, sharing only the
@@ -515,7 +516,7 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 	// AutoSelect feature the container's own probed version supports resolves
 	// in, join_spill included on the >= 26.4 tier.
 	set := chopttest.ResolveEnabledSet(ctx, t, client, "auto")
-	rules := chopttest.BuildSettingsRules(set, metricsSchema, tracesSchema, schema.DefaultOTelLogs())
+	rules := choptwire.SettingsRules(set, metricsSchema, tracesSchema, schema.DefaultOTelLogs())
 	if rules.ResultCache {
 		t.Fatalf("%s: the resolved set enabled chopt.FeatureResultCache — a query RESULT cache would serve "+
 			"repeats 1..%d of every sentinel from cache, so the max-of-N ceiling would stop measuring the "+
@@ -565,7 +566,7 @@ func optInLaneKeys(sentinels []Sentinel) []string {
 // TestNativeRangeLowerers_RealCH_Integration applies via its own
 // enabled.Has(family.Feature) check), then mounts a SEPARATE prom.Handler /
 // tempo.Handler pair — its own SettingsRules AND its own
-// chopttest.BuildRangeLowerers, both resolved from opt — on a fresh
+// choptwire.RangeLowerers, both resolved from opt — on a fresh
 // ServeMux. Sharing client rather than opening a second connection: opt-in
 // features like chopt.FeatureSortedSlabOverTime carry no version floor, so
 // they need no server capability the base lane's own connection lacks.
@@ -587,8 +588,8 @@ func buildOptInLane(
 		}
 	}
 
-	rules := chopttest.BuildSettingsRules(set, metricsSchema, tracesSchema, schema.DefaultOTelLogs())
-	lowerers := chopttest.BuildRangeLowerers(set)
+	rules := choptwire.SettingsRules(set, metricsSchema, tracesSchema, schema.DefaultOTelLogs())
+	lowerers := choptwire.RangeLowerers(set)
 
 	metricsHandler := prom.New(client, metricsSchema, nil)
 	metricsHandler.Lowerers = lowerers

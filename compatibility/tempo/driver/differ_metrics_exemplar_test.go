@@ -80,3 +80,42 @@ func TestCompareMetrics_ExemplarCountDifferenceStaysInformational(t *testing.T) 
 		t.Errorf("the count divergence must still be reported; reasons=%+v", d.Reasons)
 	}
 }
+
+// Presence is not a count. A count difference stays informational because the
+// two backends SAMPLE exemplars differently; a side that emits NONE where the
+// reference emits some has not sampled differently, it has stopped emitting
+// exemplars — the shape the producer degrades to on an emit or execute failure
+// (internal/api/tempo/metrics_exec.go keeps an empty slice), which a count-only
+// check scored as parity. The #3182 timestamp bug was caught only because at
+// least one exemplar happened to reach the wire; this makes zero-where-some-
+// expected a mismatch in its own right.
+func TestCompareMetrics_ExemplarAbsenceAgainstAPopulatedReferenceIsAMismatch(t *testing.T) {
+	one := `{"value":1,"timestampMs":1700000000000}`
+	d, err := CompareMetrics(metricsBodyWithExemplar(one), metricsBodyWithExemplar(""), "tempo", "cerberus", DiffOptions{})
+	if err != nil {
+		t.Fatalf("CompareMetrics: %v", err)
+	}
+	if d.Equal {
+		t.Fatalf("a reference with exemplars and a cerberus side with none must NOT compare equal; reasons=%+v", d.Reasons)
+	}
+	var named bool
+	for _, r := range d.Reasons {
+		if r.Kind == reasonKindFieldMismatch && strings.Contains(r.Detail, "exemplar presence") && strings.Contains(r.Detail, "cerberus=0") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("the missing side must be named as an exemplar-presence mismatch; reasons=%+v", d.Reasons)
+	}
+
+	// The other direction is a sampling difference in cerberus's favour, not a
+	// gap: the reference having sampled none says nothing about what cerberus
+	// should have emitted.
+	d, err = CompareMetrics(metricsBodyWithExemplar(""), metricsBodyWithExemplar(one), "tempo", "cerberus", DiffOptions{})
+	if err != nil {
+		t.Fatalf("CompareMetrics: %v", err)
+	}
+	if !d.Equal {
+		t.Errorf("exemplars on the cerberus side alone must stay informational; reasons=%+v", d.Reasons)
+	}
+}

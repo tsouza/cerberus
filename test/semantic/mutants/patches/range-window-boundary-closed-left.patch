@@ -2,7 +2,7 @@ diff --git a/internal/chsql/range_window.go b/internal/chsql/range_window.go
 index c5b5496c9..dcb55693a 100644
 --- a/internal/chsql/range_window.go
 +++ b/internal/chsql/range_window.go
-@@ -3375,7 +3375,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectInstant(r *chplan.RangeWindow, ag
+@@ -3416,7 +3416,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectInstant(r *chplan.RangeWindow, ag
  	}
  	winStart := Sub(end, Call("toIntervalNanosecond", InlineLit(rangeNS)))
  	sb.Where(

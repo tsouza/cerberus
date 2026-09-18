@@ -886,9 +886,9 @@ func TestEmitStructuralJoin_RequiredColumnsTriple(t *testing.T) {
 
 // TestEmitMetricsHistogramOverTimeBucketAliasFallback covers the instant
 // path's alias defaults,
-// histogram_over_time.go:emitMetricsHistogramOverTime:`bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.HistogramBucketColumn)`
+// histogram_over_time.go:emitMetricsHistogramOverTime:`bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.MetricsBucketColumn)`
 // and its mirror
-// histogram_over_time.go:emitMetricsHistogramOverTime:`valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultValueColumn)`.
+// histogram_over_time.go:emitMetricsHistogramOverTime:`valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultSampleValueColumn)`.
 // Both resolve through the one guard
 // internal/chplan/output_names.go:`if name == ""`; its negation mutant would
 // skip the default, producing an unquoted empty alias.
@@ -1841,9 +1841,9 @@ func TestEmitVectorJoin_OutputAttrsBareVsMerge(t *testing.T) {
 
 // TestEmitMetricsHistogramOverTimeMatrix_AliasFallbackDistinct pins the
 // matrix path's alias defaults,
-// histogram_over_time.go:emitRangeWindowHistogram:`bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.HistogramBucketColumn)`
+// histogram_over_time.go:emitRangeWindowHistogram:`bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.MetricsBucketColumn)`
 // and
-// histogram_over_time.go:emitRangeWindowHistogram:`valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultValueColumn)`,
+// histogram_over_time.go:emitRangeWindowHistogram:`valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultSampleValueColumn)`,
 // against a CONDITIONALS_NEGATION of the shared guard
 // internal/chplan/output_names.go:`if name == ""`. The pre-existing
 // TestEmitMetricsHistogramOverTimeBucketAliasFallback hits only the
@@ -2716,10 +2716,10 @@ func compareNodeInternal() *chplan.MetricsCompare {
 }
 
 // TestCompareOutAliasFallbacks pins the four output-alias helpers
-// metrics_compare.go:`chplan.OutputDefault(m.SelAlias, chplan.CompareSelectionColumn)`,
-// metrics_compare.go:`chplan.OutputDefault(m.AttrAlias, chplan.CompareAttrColumn)`,
-// metrics_compare.go:`chplan.OutputDefault(m.ValAlias, chplan.CompareValColumn)` and
-// metrics_compare.go:`chplan.OutputDefault(m.ValueAlias, chplan.DefaultValueColumn)`
+// metrics_compare.go:`chplan.OutputDefault(m.SelAlias, chplan.MetricsCompareSelectionColumn)`,
+// metrics_compare.go:`chplan.OutputDefault(m.AttrAlias, chplan.MetricsCompareAttrColumn)`,
+// metrics_compare.go:`chplan.OutputDefault(m.ValAlias, chplan.MetricsCompareValColumn)` and
+// metrics_compare.go:`chplan.OutputDefault(m.ValueAlias, chplan.DefaultSampleValueColumn)`
 // — each falls back to its canonical default name when the alias is empty,
 // through the one guard internal/chplan/output_names.go:`if name == ""`. A
 // CONDITIONALS_NEGATION of that guard would return the (empty) alias instead

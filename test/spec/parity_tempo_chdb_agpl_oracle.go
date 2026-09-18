@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -68,9 +69,35 @@ func outerSelectClaimsAttributesColumn(sql string) bool {
 // expected-row data deliberately does not wrap this sentinel.
 var errTempoSpanIdentityUnavailable = errors.New("tempo span identity unavailable")
 
-func tempoSpanIdentityUnavailable(err error) error {
-	return fmt.Errorf("%w: %w", errTempoSpanIdentityUnavailable, err)
+// tempoSpanIdentityError carries WHICH way the answer shape fails to
+// identify spans — a non-span projection, rows with no identity, or a
+// repeated identity — so runTempoParity can refuse under the matching
+// refusalClass rather than one catch-all.
+type tempoSpanIdentityError struct {
+	class refusalClass
+	err   error
 }
+
+func (e *tempoSpanIdentityError) Error() string {
+	return fmt.Sprintf("%v: %v", errTempoSpanIdentityUnavailable, e.err)
+}
+
+func (e *tempoSpanIdentityError) Unwrap() error { return e.err }
+
+func (e *tempoSpanIdentityError) Is(target error) bool {
+	return target == errTempoSpanIdentityUnavailable
+}
+
+func tempoSpanIdentityUnavailable(class refusalClass, err error) error {
+	return &tempoSpanIdentityError{class: class, err: err}
+}
+
+// errTempoSeedWithoutSpanIdentity marks a traces seed that declares no
+// TraceId or no SpanId column. Such a seed's rows all read back as the
+// same anonymous span, which used to surface as "duplicate identity" — a
+// refusal about a repeat that does not exist, indistinguishable from the
+// deliberate duplicate a ReasonDuplicateSpanSeed fixture provokes.
+var errTempoSeedWithoutSpanIdentity = errors.New("traces seed declares no span identity")
 
 // tracesTable is the one table a TraceQL fixture's seed creates.
 const tracesTable = "otel_traces"
@@ -89,7 +116,26 @@ func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) err
 		return fmt.Errorf("fixture %s: `parity:` with oracle tempo requires a query.traceql section", c.Name)
 	}
 	if err := rejectNarrowingSections(c); err != nil {
-		return parityRefusal(err)
+		return parityRefusal(refusalNarrowingSection, err)
+	}
+
+	// Cerberus's answer shape is a structural fact about the fixture, read
+	// before the seed or the reference engine is ever consulted: a
+	// projection that identifies no span (a per-trace aggregate, a metrics
+	// pipeline) has no comparison to make whatever the seed holds or the
+	// engine would say, so that refusal must not be pre-empted by a seed
+	// fact or an engine verdict on a query it happens not to parse.
+	want, err := spanIdentitiesOfExpectedRows(rt, projectionIdentifiesSpans(c))
+	if err != nil {
+		// These are comparator-shape refusals, not corrupt fixture data: the
+		// expected row decoded successfully, but it cannot identify a set of
+		// spans for the Tempo oracle to compare. Keep JSON/type decode errors
+		// unclassified so a broken harness cannot validate an exemption.
+		var identity *tempoSpanIdentityError
+		if errors.As(err, &identity) {
+			return parityRefusal(identity.class, fmt.Errorf("fixture %s: %w", c.Name, err))
+		}
+		return fmt.Errorf("fixture %s: %w", c.Name, err)
 	}
 
 	// Serialize the whole engine span, same contract RunRoundTrip honours.
@@ -100,33 +146,41 @@ func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) err
 
 	spans, err := readSeededSpans(db)
 	if err != nil {
+		if errors.Is(err, errTempoSeedWithoutSpanIdentity) {
+			return parityRefusal(refusalSeedWithoutSpanIdentity, fmt.Errorf("fixture %s: %w", c.Name, err))
+		}
 		return fmt.Errorf("fixture %s: read seeded spans back: %w", c.Name, err)
 	}
 	if len(spans) == 0 {
-		return parityRefusal(fmt.Errorf(
+		return parityRefusal(refusalEmptySpanSeed, fmt.Errorf(
 			"fixture %s: seed produced no readable spans, so the reference engine would "+
 				"trivially agree with any answer", c.Name,
 		))
 	}
 	if hasDuplicateSpanIdentity(spans) {
-		return parityRefusal(errors.New(
+		return parityRefusal(refusalDuplicateSpanIdentity, errors.New(
 			"seed contains more than one span with the same trace and span identity, so neither engine has a stable row to compare",
 		))
 	}
 
 	got, err := oracle.Evaluate(t, spans, strings.TrimSpace(query))
 	if err != nil {
-		return parityRefusal(fmt.Errorf("fixture %s: %w", c.Name, err))
-	}
-
-	want, err := spanIdentitiesOfExpectedRows(rt)
-	if err != nil {
-		// These are comparator-shape refusals, not corrupt fixture data: the
-		// expected row decoded successfully, but it cannot identify a set of
-		// spans for the Tempo oracle to compare. Keep JSON/type decode errors
-		// unclassified so a broken harness cannot validate an exemption.
-		if errors.Is(err, errTempoSpanIdentityUnavailable) {
-			return parityRefusal(fmt.Errorf("fixture %s: %w", c.Name, err))
+		// The oracle names which of its own boundaries it hit. A reference
+		// engine that rejects the query text is the engine's verdict
+		// (ReasonReferenceIntrinsicUnsupported); one that compiled it but
+		// failed on the spans this oracle built is the oracle's own data
+		// preparation falling short (ReasonOracleUntypedAttributes); a span
+		// its flat model cannot represent is the fetch-layer gap
+		// (ReasonReferenceFetchLayer). Anything else — a span it was never
+		// fed, a trace it cannot number — stays an unclassified harness
+		// error so a broken oracle cannot validate an exemption.
+		switch {
+		case errors.Is(err, oracle.ErrReferenceRejectedQuery):
+			return parityRefusal(refusalReferenceRejectedQuery, fmt.Errorf("fixture %s: %w", c.Name, err))
+		case errors.Is(err, oracle.ErrReferenceEvaluation):
+			return parityRefusal(refusalReferenceEvaluation, fmt.Errorf("fixture %s: %w", c.Name, err))
+		case errors.Is(err, oracle.ErrUnrepresentableSpan):
+			return parityRefusal(refusalUnrepresentableSpan, fmt.Errorf("fixture %s: %w", c.Name, err))
 		}
 		return fmt.Errorf("fixture %s: %w", c.Name, err)
 	}
@@ -299,7 +353,25 @@ func readSeededSpans(db *sql.DB) ([]oracle.Span, error) {
 	if err != nil {
 		return nil, err
 	}
-	return spans, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// The round-trip runner backfills a seed's missing TraceId / SpanId
+	// columns as `DEFAULT ''` (internal/testsql's BackfillTracesColumns) so
+	// the canonical wrap can read them, which is why this is checked on
+	// the rows that came back rather than on DESCRIBE: a seed that never
+	// declared the column reads back as spans with an EMPTY identity.
+	for _, span := range spans {
+		if span.TraceID == "" || span.SpanID == "" {
+			return nil, fmt.Errorf(
+				"%w: a seeded row carries TraceId %q / SpanId %q — the seed declares no such column "+
+					"(or leaves it empty), so its rows read back as the same anonymous span and the "+
+					"comparison over WHICH SPANS matched has no identity to compare",
+				errTempoSeedWithoutSpanIdentity, span.TraceID, span.SpanID,
+			)
+		}
+	}
+	return spans, nil
 }
 
 // describeTable returns the table's column names mapped to their declared
@@ -557,13 +629,27 @@ const (
 // seed with no SpanId column — cannot be parity-checked at this layer, and
 // silently comparing nothing would be the hollow green this mechanism
 // exists to prevent.
-func spanIdentitiesOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error) {
+func spanIdentitiesOfExpectedRows(rt *RoundTripSections, identifiesSpans bool) ([]oracle.Result, error) {
+	// A zero-row answer never reaches the per-row shape check below, so a
+	// non-span projection whose seed happens to match nothing would read
+	// as an empty span set, agree with the reference's empty set, and pass
+	// a comparison its projection cannot support — the exact trap
+	// ReasonNoComparableOracle's own doc warns of. Whether the projection
+	// identifies spans is a fact about the executed query, not its rows
+	// (projectionIdentifiesSpans), so it is decided first.
+	if len(rt.ExpectedRows) == 0 && !identifiesSpans {
+		return nil, tempoSpanIdentityUnavailable(refusalNonSpanProjection, errors.New(
+			"expected_rows is empty and the executed projection never writes the "+
+				spanIdentitySpanIDKey+" key, so it is not the canonical span shape and carries no "+
+				"span identity to compare — its empty answer must not be read as an empty span set",
+		))
+	}
 	out := make([]oracle.Result, 0, len(rt.ExpectedRows))
 	seen := make(map[oracle.Result]bool, len(rt.ExpectedRows))
 
 	for i, row := range rt.ExpectedRows {
 		if len(row) != spanRowArity {
-			return nil, tempoSpanIdentityUnavailable(fmt.Errorf(
+			return nil, tempoSpanIdentityUnavailable(refusalNonSpanProjection, fmt.Errorf(
 				"expected_rows[%d] has %d column(s), not the canonical span shape "+
 					"(SpanName, Attributes, Timestamp, Duration); this fixture's projection "+
 					"carries no span identity and cannot be parity-checked", i, len(row),
@@ -596,7 +682,7 @@ func spanIdentitiesOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error
 		// never manufacture liveness evidence for a stale exemption.
 		if _, ok := row[spanRowAttrsIdx].(map[string]any); !ok {
 			if rt.SQL != "" && !outerSelectClaimsAttributesColumn(rt.SQL) {
-				return nil, tempoSpanIdentityUnavailable(fmt.Errorf(
+				return nil, tempoSpanIdentityUnavailable(refusalNonSpanProjection, fmt.Errorf(
 					"expected_rows[%d] column %d (where the canonical span shape carries Attributes) "+
 						"is %T, not an object; this fixture's projection is not the canonical span shape "+
 						"(SpanName, Attributes, Timestamp, Duration) and carries no span identity to compare",
@@ -614,18 +700,30 @@ func spanIdentitiesOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error
 		}
 		traceID, hasTrace := attrs[spanIdentityTraceIDKey]
 		spanID, hasSpan := attrs[spanIdentitySpanIDKey]
-		if !hasTrace || !hasSpan || traceID == "" || spanID == "" {
-			return nil, tempoSpanIdentityUnavailable(fmt.Errorf(
-				"expected_rows[%d] carries no %s/%s identity. The comparison is over WHICH SPANS "+
-					"matched, so a fixture whose seed declares no TraceId/SpanId columns cannot be "+
-					"enrolled — every row would be the same anonymous span",
+		if !hasTrace || !hasSpan {
+			// A canonical span row always carries BOTH keys (the wrap
+			// writes them from the seeded columns, empty or not). A row
+			// missing one is a per-trace aggregate projection — `| by(...)`,
+			// `| count() > N` — whose Attributes are the trace's, not a
+			// span's: a non-span shape, never an identity-less seed.
+			return nil, tempoSpanIdentityUnavailable(refusalNonSpanProjection, fmt.Errorf(
+				"expected_rows[%d] carries no %s/%s pair; this projection aggregates per trace and "+
+					"identifies no span, so there is no set of matched spans to compare",
+				i, spanIdentityTraceIDKey, spanIdentitySpanIDKey,
+			))
+		}
+		if traceID == "" || spanID == "" {
+			return nil, tempoSpanIdentityUnavailable(refusalSeedWithoutSpanIdentity, fmt.Errorf(
+				"expected_rows[%d] carries an empty %s/%s identity. The comparison is over WHICH SPANS "+
+					"matched, so a fixture whose seed declares no TraceId/SpanId columns (or leaves them "+
+					"empty) cannot be enrolled — every row would be the same anonymous span",
 				i, spanIdentityTraceIDKey, spanIdentitySpanIDKey,
 			))
 		}
 
 		r := oracle.Result{TraceID: traceID, SpanID: spanID}
 		if seen[r] {
-			return nil, tempoSpanIdentityUnavailable(fmt.Errorf(
+			return nil, tempoSpanIdentityUnavailable(refusalDuplicateSpanIdentity, fmt.Errorf(
 				"expected_rows[%d] repeats span %s/%s. Span identity is the comparison key, so a "+
 					"projection that emits one span twice cannot be matched against a set of "+
 					"matched spans", i, traceID, spanID,
@@ -642,6 +740,24 @@ func spanIdentitiesOfExpectedRows(rt *RoundTripSections) ([]oracle.Result, error
 		return out[i].SpanID < out[j].SpanID
 	})
 	return out, nil
+}
+
+// projectionIdentifiesSpans reports whether the query the round trip
+// executed writes a per-span identity into every answer row. The canonical
+// span wrap (internal/api/tempo's ProjectSamples) binds the
+// spanIdentitySpanIDKey map key as a query argument; a per-trace aggregate
+// or metrics projection never does. The fixture's `args_optimized` section
+// is the argument list of exactly the SQL RunRoundTripSQL executed (and
+// spec.Match has already verified it against the live lowering before
+// RunParity runs), which is what makes this a structural fact independent
+// of how many rows the seed happened to match.
+func projectionIdentifiesSpans(c *Case) bool {
+	for _, section := range []string{"args_optimized", "args"} {
+		if body, ok := c.Section(section); ok {
+			return strings.Contains(body, strconv.Quote(spanIdentitySpanIDKey))
+		}
+	}
+	return false
 }
 
 // compareSpanSets is the assertion itself: the reference engine and

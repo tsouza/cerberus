@@ -2,6 +2,7 @@
 { !(kind = server) }
 -- seed --
 CREATE TABLE otel_traces (
+    TraceId String DEFAULT 't1',
     SpanId String,
     SpanKind String
 ) ENGINE = MergeTree ORDER BY SpanId;

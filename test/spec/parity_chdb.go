@@ -105,7 +105,167 @@ var (
 )
 
 func parityDisagreement(err error) error { return fmt.Errorf("%w: %w", errParityDisagreement, err) }
-func parityRefusal(err error) error      { return fmt.Errorf("%w: %w", errParityRefusal, err) }
+
+// refusalClass names the structural obstacle a comparator refusal reports.
+// Every refusal site names one, so exemptionVerdict can check the obstacle
+// that actually stopped the comparison against the obstacle the fixture's
+// `parity_exempt:` reason claims — a refusal of some OTHER kind is not
+// evidence that the declared reason still holds.
+type refusalClass string
+
+const (
+	// refusalNoRoundTrip: the fixture carries no `seed:` + `expected_rows:`,
+	// so there is no answer to compare (ReasonEmittedSQLOnly, and the
+	// rejection-only fixtures whose executable assertion lives elsewhere).
+	refusalNoRoundTrip refusalClass = "no-round-trip"
+	// refusalNonSampleProjection: the driver projection has no
+	// Attributes/Value pair — a label-name list, a label-value list, an
+	// exemplar array — so the Sample comparator has nothing to read.
+	refusalNonSampleProjection refusalClass = "non-sample-projection"
+	// refusalConflictingDuplicateTimestamp: the seed carries two different
+	// samples at one (series, timestamp).
+	refusalConflictingDuplicateTimestamp refusalClass = "conflicting-duplicate-timestamp"
+	// refusalEmptySeedForSelector: the query reads a selector the seed
+	// provisions zero rows for.
+	refusalEmptySeedForSelector refusalClass = "empty-seed-for-selector"
+	// refusalOrderSensitiveReference: the reference answer changed when the
+	// same series were appended in reverse order.
+	refusalOrderSensitiveReference refusalClass = "order-sensitive-reference-answer"
+	// refusalReferenceEvaluation: the reference engine compiled the query
+	// and then failed evaluating it over the data the oracle prepared —
+	// Loki's own Exec error on a well-formed query, or Tempo's type error
+	// on an attribute the in-process oracle handed it as a plain string.
+	refusalReferenceEvaluation refusalClass = "reference-evaluation-error"
+	// refusalLogStreamAnswer: the reference answered a log query with
+	// streams of lines, which have no sample-shaped correspondence.
+	refusalLogStreamAnswer refusalClass = "log-stream-answer"
+	// refusalSeedNotStreams: the logs seed lacks a column every Loki
+	// stream needs (Timestamp, Body, ResourceAttributes).
+	refusalSeedNotStreams refusalClass = "seed-not-loki-streams"
+	// refusalOpaqueColumn: the logs seed populates a column upstream's
+	// in-process querier never shows its engine (LogAttributes,
+	// SeverityText).
+	refusalOpaqueColumn refusalClass = "opaque-column-seeded"
+	// refusalNarrowingSection: the TraceQL fixture carries `search_window:`
+	// or `search_limit:`, which the reference applies in its fetch layer.
+	refusalNarrowingSection refusalClass = "narrowing-section"
+	// refusalEmptySpanSeed: the traces seed produced no readable span.
+	refusalEmptySpanSeed refusalClass = "empty-span-seed"
+	// refusalSeedWithoutSpanIdentity: the traces seed declares no TraceId
+	// or no SpanId column, so no span it produces can be identified.
+	refusalSeedWithoutSpanIdentity refusalClass = "seed-without-span-identity"
+	// refusalDuplicateSpanIdentity: the same (TraceId, SpanId) appears on
+	// more than one seeded row or more than one expected row.
+	refusalDuplicateSpanIdentity refusalClass = "duplicate-span-identity"
+	// refusalReferenceRejectedQuery: the reference engine rejected the
+	// query TEXT before any data (Tempo's compile-time validation of an
+	// intrinsic it does not implement, either upstream parser on a cerberus
+	// extension it does not parse) — the engine's own verdict.
+	refusalReferenceRejectedQuery refusalClass = "reference-rejected-query"
+	// refusalUnrepresentableSpan: a seeded span carries more than one event
+	// or link, which the in-process oracle's flat scope cannot represent
+	// while the reference fetch layer matches per record.
+	refusalUnrepresentableSpan refusalClass = "unrepresentable-span"
+	// refusalNonSpanProjection: the TraceQL fixture's projection is not the
+	// canonical span shape (an aggregate or metrics projection), so it
+	// identifies no set of spans.
+	refusalNonSpanProjection refusalClass = "non-span-projection"
+)
+
+// parityRefusalError is what every comparator refusal returns: the
+// errParityRefusal sentinel (errors.Is still matches it), the class naming
+// the obstacle, and the site's own message.
+type parityRefusalError struct {
+	class refusalClass
+	err   error
+}
+
+func (e *parityRefusalError) Error() string {
+	return fmt.Sprintf("%v [%s]: %v", errParityRefusal, e.class, e.err)
+}
+
+func (e *parityRefusalError) Unwrap() error { return e.err }
+
+func (e *parityRefusalError) Is(target error) bool { return target == errParityRefusal }
+
+func parityRefusal(class refusalClass, err error) error {
+	return &parityRefusalError{class: class, err: err}
+}
+
+// refusalClassOf reports the class a refusal carries; ok is false for any
+// error that is not a comparator refusal.
+func refusalClassOf(err error) (class refusalClass, ok bool) {
+	var refusal *parityRefusalError
+	if errors.As(err, &refusal) {
+		return refusal.class, true
+	}
+	return "", false
+}
+
+// exemptionEvidence is the liveness evidence that proves ONE declared
+// exemption reason still holds: whether an actual comparison disagreement
+// does, and which refusal classes do. A refusal outside the list, or a
+// disagreement for a reason that promises a refusal, is a fixture citing
+// the wrong reason — the obstacle it names is not the one that stopped the
+// comparison — and fails the check rather than keeping the exemption live.
+type exemptionEvidence struct {
+	disagreement bool
+	refusals     []refusalClass
+}
+
+// exemptionEvidenceByReason pairs every reason in parityExemptReasons with
+// the evidence that proves it; TestParityExemptReasonsAllHaveEvidence pins
+// the two vocabularies to each other. Each entry follows from the reason's
+// own doc comment in parity_exempt.go:
+//
+//   - a reason about the SEED (vacuous-empty-input, duplicate-timestamp-seed,
+//     duplicate-span-seed, structured-metadata-unobservable's seeded face)
+//     is proven by the refusal that reads that seed fact back;
+//   - a reason about the COMPARATOR's reach (no-comparable-oracle,
+//     emitted-sql-only, rejection-only, log-query-answer) by the refusal
+//     naming the shape it cannot read;
+//   - a reason about the REFERENCE ENGINE (reference-intrinsic-unsupported,
+//     reference-rejected-query, reference-pipeline-error) by the engine's
+//     own rejection or failed evaluation; oracle-untyped-attributes, whose obstacle is a value the
+//     in-process oracle prepared wrongly, by the type error that value
+//     provokes in the engine as well as by a disagreement;
+//   - a reason whose obstacle is that the two engines answer DIFFERENTLY
+//     (reference-fetch-layer, reference-sharded-path-only,
+//     oracle-untyped-attributes, nondeterministic-selection,
+//     structured-metadata-unobservable's detected_level face) by an actual
+//     disagreement, plus the refusals that same mechanism produces first.
+var exemptionEvidenceByReason = map[string]exemptionEvidence{
+	ReasonNondeterministicSelection: {
+		disagreement: true, refusals: []refusalClass{refusalOrderSensitiveReference},
+	},
+	ReasonNoComparableOracle: {
+		refusals: []refusalClass{refusalNonSampleProjection, refusalNonSpanProjection},
+	},
+	ReasonRejectionOnly:     {refusals: []refusalClass{refusalNoRoundTrip}},
+	ReasonVacuousEmptyInput: {refusals: []refusalClass{refusalEmptySeedForSelector}},
+	ReasonDuplicateTimestampSeed: {
+		refusals: []refusalClass{refusalConflictingDuplicateTimestamp},
+	},
+	ReasonLogQueryAnswer: {refusals: []refusalClass{refusalLogStreamAnswer}},
+	ReasonStructuredMetadataUnobservable: {
+		disagreement: true, refusals: []refusalClass{refusalOpaqueColumn},
+	},
+	ReasonReferenceShardedPathOnly: {disagreement: true},
+	ReasonReferenceFetchLayer: {
+		disagreement: true,
+		refusals:     []refusalClass{refusalNarrowingSection, refusalUnrepresentableSpan},
+	},
+	ReasonEmittedSQLOnly:    {refusals: []refusalClass{refusalNoRoundTrip}},
+	ReasonDuplicateSpanSeed: {refusals: []refusalClass{refusalDuplicateSpanIdentity}},
+	ReasonOracleUntypedAttributes: {
+		disagreement: true, refusals: []refusalClass{refusalReferenceEvaluation},
+	},
+	ReasonReferenceIntrinsicUnsupported: {
+		refusals: []refusalClass{refusalReferenceRejectedQuery},
+	},
+	ReasonReferenceRejectedQuery: {refusals: []refusalClass{refusalReferenceRejectedQuery}},
+	ReasonReferencePipelineError: {refusals: []refusalClass{refusalReferenceEvaluation}},
+}
 
 // RunParity checks a fixture's answer against a REAL reference engine.
 //
@@ -174,11 +334,15 @@ func RunParity(t *testing.T, c *Case, eval ParityEval, roundTrip RoundTripResult
 	}
 }
 
-// exemptionVerdict accepts only an actual comparison disagreement or an
-// explicit comparator refusal as evidence that an exemption remains live.
-// Harness, fixture-handoff, and build-configuration failures are returned:
-// treating those as liveness would let a broken checker preserve every stale
-// exemption indefinitely.
+// exemptionVerdict accepts, as evidence that an exemption remains live,
+// only the disagreement or comparator refusal that proves the DECLARED
+// reason (exemptionEvidenceByReason). Agreement means the exemption has
+// gone stale. A disagreement or refusal of another kind means the fixture
+// cites the wrong reason: some obstacle exists, but not the one it names,
+// so a change that removed the named obstacle would go unnoticed. Harness,
+// fixture-handoff, and build-configuration failures are returned as such:
+// treating those as liveness would let a broken checker preserve every
+// stale exemption indefinitely.
 func exemptionVerdict(c *Case, exemption *ParityExempt, p *Parity, comparisonErr error) error {
 	if comparisonErr == nil {
 		return fmt.Errorf(
@@ -188,8 +352,36 @@ func exemptionVerdict(c *Case, exemption *ParityExempt, p *Parity, comparisonErr
 			c.Name, exemption.Reason, exemption.Detail, p.Oracle, p.Endpoint,
 		)
 	}
-	if errors.Is(comparisonErr, errParityDisagreement) || errors.Is(comparisonErr, errParityRefusal) {
-		return nil
+	evidence, known := exemptionEvidenceByReason[exemption.Reason]
+	if !known {
+		return fmt.Errorf(
+			"fixture %s: exemption reason %q has no liveness evidence declared in exemptionEvidenceByReason",
+			c.Name, exemption.Reason,
+		)
+	}
+	if errors.Is(comparisonErr, errParityDisagreement) {
+		if evidence.disagreement {
+			return nil
+		}
+		return fmt.Errorf(
+			"fixture %s: `parity_exempt:` cites the wrong reason: %s promises a comparator refusal "+
+				"(%v), but the comparison RAN and disagreed — the obstacle this exemption names is not "+
+				"what stops the comparison; declare the reason that does, or fix the divergence: %w",
+			c.Name, exemption.Reason, evidence.refusals, comparisonErr,
+		)
+	}
+	if class, ok := refusalClassOf(comparisonErr); ok {
+		if slices.Contains(evidence.refusals, class) {
+			return nil
+		}
+		return fmt.Errorf(
+			"fixture %s: `parity_exempt:` cites the wrong reason: %s is proven by %v%s, but the "+
+				"comparator refused for %q — the obstacle this exemption names is not what stops "+
+				"the comparison; declare the reason that does, or remove the obstacle: %w",
+			c.Name, exemption.Reason, evidence.refusals,
+			map[bool]string{true: " or an actual disagreement", false: ""}[evidence.disagreement],
+			class, comparisonErr,
+		)
 	}
 	return fmt.Errorf("fixture %s: exemption liveness check could not run: %w", c.Name, comparisonErr)
 }
@@ -238,7 +430,7 @@ func runParity(t *testing.T, c *Case, p *Parity, eval ParityEval, roundTrip Roun
 		return fmt.Errorf("LoadRoundTrip: %w", err)
 	}
 	if !rt.IsRoundTrip() {
-		return parityRefusal(fmt.Errorf(
+		return parityRefusal(refusalNoRoundTrip, fmt.Errorf(
 			"fixture %s carries a `parity:` section but no executable round-trip. "+
 				"The parity check reads the seeded rows back out of chDB, so it needs the same "+
 				"`seed:` + `expected_rows:` opt-in RunRoundTrip needs", c.Name,
@@ -317,7 +509,7 @@ func runParity(t *testing.T, c *Case, p *Parity, eval ParityEval, roundTrip Roun
 		// permanent refusal to compare at the row layer, the same category
 		// [exemptionVerdict] already accepts from an actual disagreement,
 		// not an unclassified harness error.
-		return parityRefusal(err)
+		return parityRefusal(refusalNonSampleProjection, err)
 	}
 
 	// A projection with no TimeUnix column cannot answer a comparison that
@@ -475,7 +667,7 @@ func evaluatePrometheusParity(
 		return nil, fmt.Errorf("read seeded series back: %w", err)
 	}
 	if hasConflictingDuplicateTimestamp(seeded.series) {
-		return nil, parityRefusal(errors.New(
+		return nil, parityRefusal(refusalConflictingDuplicateTimestamp, errors.New(
 			"seed contains different samples for one series timestamp, so neither engine has a stable survivor to compare",
 		))
 	}
@@ -514,7 +706,7 @@ func evaluatePrometheusParity(
 			)
 		}
 		if needsSeries {
-			return nil, parityRefusal(fmt.Errorf(
+			return nil, parityRefusal(refusalEmptySeedForSelector, fmt.Errorf(
 				"fixture %s: seed produced no readable series, so the reference engine would "+
 					"trivially agree with any answer", c.Name,
 			))
@@ -546,7 +738,7 @@ func evaluatePrometheusParity(
 			return nil, fmt.Errorf("evaluate permuted reference input: %w", err)
 		}
 		if !reflect.DeepEqual(got, alternate) {
-			return nil, parityRefusal(errors.New(
+			return nil, parityRefusal(refusalOrderSensitiveReference, errors.New(
 				"reference answer changes when the same input series arrive in reverse order, so there is no stable answer to compare",
 			))
 		}

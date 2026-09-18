@@ -111,10 +111,14 @@ func EmitMetricsExemplars(
 	return sql, e.args, e.physicalScans, nil
 }
 
-// exemplarNumAnchors computes the count of per-step anchors the exemplar
-// fanout materialises: from OuterRange when set, else from the [Start, End]
-// span, else a single instant anchor. A Start > End span is rejected.
-func exemplarNumAnchors(rw *chplan.RangeWindow, stepNS int64) (int64, error) {
+// rangeWindowGridAnchorCount computes the count of per-step anchors a
+// RangeWindow fan-out materialises: from OuterRange when set (`OuterRange/
+// Step + 1`, end-inclusive), else from the [Start, End] span, else a
+// single instant anchor. A Start > End span is rejected. The exemplar
+// fan-out and [rangeWindowGridEnd] (the Start-anchored grid base every
+// windowed emitter walks from) share it so the base and the walk count
+// cannot disagree.
+func rangeWindowGridAnchorCount(rw *chplan.RangeWindow, stepNS int64) (int64, error) {
 	switch {
 	case rw.OuterRange > 0:
 		return rw.OuterRange.Nanoseconds()/stepNS + 1, nil
@@ -144,7 +148,7 @@ func (e *emitter) emitMetricsExemplars(
 	}
 	rangeNS := rangeDur.Nanoseconds()
 
-	numAnchors, err := exemplarNumAnchors(rw, stepNS)
+	numAnchors, err := rangeWindowGridAnchorCount(rw, stepNS)
 	if err != nil {
 		return err
 	}

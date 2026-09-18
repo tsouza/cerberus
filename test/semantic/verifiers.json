@@ -276,7 +276,7 @@
         "a native exp-histogram quantile/columnar-decode/classic-bucket-discovery regression against the REAL upstream clickhouseexporter table shapes"
       ],
       "cannot_detect": [
-        "Tempo search-row decoder bugs (cerberus issue #1635, which needs a hidden pipeline stage to reproduce and is not yet covered by any strict-scan recipe)",
+        "Tempo metrics-pipeline decoder bugs (the metricsLang shape strict-scan does not wrap; the Tempo search row itself is strict-scanned through traceqlWrapForStrictScan, and compat-traceql covers the pipeline)",
         "rows that scan successfully but return the WRONG value — that is Layer 6a-c's (chDB roundtrip) job, not strict-scan's"
       ],
       "complemented_by": ["VERIFIER-SPEC-FIXTURE-ROUNDTRIP", "VERIFIER-OPTIMIZER-PROPERTY-EQUIVALENCE", "VERIFIER-REFERENCE-DIFFERENTIAL"],

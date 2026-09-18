@@ -27,9 +27,9 @@
 // cycle, or assurance violation.
 
 import process from "node:process";
-import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { appendStepSummary, errorStderr } from "./lib/gh.mjs";
 
 import {
   DEFAULT_SEMANTIC_MODEL_DIR,
@@ -42,17 +42,14 @@ import {
   renderCounterexamplesSummary,
 } from "./lib/semantic-counterexamples.mjs";
 
+const ANNOTATION_TITLE = "Semantic contract model";
+
 function appendSummary(body) {
-  const path = process.env.GITHUB_STEP_SUMMARY;
-  if (path) appendFileSync(path, body);
+  appendStepSummary(body, { quiet: true });
 }
 
 function errorAnnotation(message) {
-  const oneLine = message
-    .replaceAll("%", "%25")
-    .replaceAll("\r", "%0D")
-    .replaceAll("\n", "%0A");
-  process.stderr.write(`::error title=Semantic contract model::${oneLine}\n`);
+  errorStderr(message, { title: ANNOTATION_TITLE });
 }
 
 function main() {

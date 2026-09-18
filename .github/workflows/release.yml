@@ -162,9 +162,10 @@ jobs:
   # ABSENCE IS A FAILURE: `RELEASE_REQUIRED_CHECKS` is the EXPECTED set the
   # script does not derive from the API response. Every name in it must have
   # posted a check-run on the commit; an empty value, or a required name that
-  # `RELEASE_INFORMATIONAL_CHECKS` would swallow by prefix, is itself a blocking
-  # problem. test/regression/release_gate_test.go pins this wiring at PR time —
-  # this workflow has no `pull_request:` trigger, so nothing else does.
+  # `RELEASE_INFORMATIONAL_CHECKS` or a non-required registry lane would
+  # swallow, is itself a blocking problem. test/regression/release_gate_test.go
+  # pins this wiring at PR time — this workflow has no `pull_request:` trigger,
+  # so nothing else does.
   preflight:
     name: preflight
     needs: gate
@@ -218,8 +219,9 @@ jobs:
           # The EXPECTED set — exact check-run names that MUST have posted a run
           # on this commit. The invariant is TOTALITY: every branch-protection
           # required context is accounted for here, either by being named below
-          # or by being named in RELEASE_INFORMATIONAL_CHECKS with a reason. A
-          # context in neither list is certified by absence, which is exactly
+          # or by being de-gated (a non-required `release_posture` in the lane
+          # registry, or a RELEASE_INFORMATIONAL_CHECKS entry with a reason). A
+          # context in neither is certified by absence, which is exactly
           # what this gate exists to prevent — and it matters most on the
           # MAINTENANCE path, where there is no PR and therefore no branch
           # protection, leaving this preflight as the only gate.
@@ -266,32 +268,34 @@ jobs:
             migration-e2e
             perf-nightly
             CodeQL
-          # De-gated INFORMATIONAL lanes, matched by name prefix (matrix children
-          # carry a "(shard-…)" suffix). The required `compose-smoke` aggregate
-          # does NOT `needs:` the crawl info shard, so a crawl flake must not
-          # block a release. `mutation` is a test-QUALITY ratchet rather than a
-          # correctness gate on the artifact being shipped; requiring it here
-          # would put its ~11-leg matrix on the critical path of every publish,
-          # including maintenance hotfixes. `gremlins` covers that same matrix's
-          # own per-leg check-runs (e.g. `gremlins phase4-promql-a`) — they do
-          # NOT share the `mutation` aggregate's name, so the `mutation` prefix
-          # above never matched them: v1.16.0's release commit had 6 red
-          # phase4-promql legs (a known, pre-existing, already-tracked coverage
-          # gap in that package) and preflight blocked on them even though the
-          # aggregate they roll into is explicitly de-gated for the identical
-          # reason one line up. `drought` (chaos-not-applicable-rate.yml)
-          # is a Wednesday-cron historical drift detector over chaos-lane run
-          # history, not a property of any specific commit — its own header
-          # comment already excludes it from PR gating for the same reason.
-          # It posts a check-run on whatever main HEAD happens to be when the
-          # cron fires, so an unlucky coincidence (observed directly: the
-          # v1.15.2 release commit) would otherwise hold a release hostage to a
-          # signal about accumulated chaos-job history that release did not
-          # change.
+          # De-gated INFORMATIONAL check-runs, matched by name prefix (matrix
+          # children carry a "(shard-…)" suffix). This list names ONLY check-runs
+          # that are not a registry lane's context. Every lane's own posture is
+          # decided in ONE place — `.github/ci-lanes.json`'s `release_posture`:
+          # release-preflight.mjs reads the registry from this checkout and
+          # treats every lane whose posture is not `required` as informational
+          # (registryInformationalMatchers), so `mutation`, `drought`,
+          # `update-golden-guard`, `datashard-replica-affinity`, `brew-verify`,
+          # `chaos`, `datashard (N=…)`, `startup-bench`, the compat floor /
+          # surface probes and the rest are de-gated by their registry entry,
+          # not by a name here. A lane named here as well would be a second
+          # copy of that decision; test/regression/ci_lane_registry_test.go
+          # refuses one. The two residual entries:
           #
-          # `CodeQL` is NOT here — it is in RELEASE_REQUIRED_CHECKS above.
-          # Advanced setup's own `codeql.yml` (added in #1558 for merge-queue
-          # support) triggers on `release/*.x` pushes directly, so a
+          # `compose-smoke-shard-info`: the required `compose-smoke` aggregate
+          # does NOT `needs:` the crawl info shard, so the shard posts its own
+          # check-run under its own name and a crawl flake must not block a
+          # release. `gremlins`: the `mutation` aggregator's own matrix legs
+          # (e.g. `gremlins phase4-promql-a`) post their OWN check-runs that do
+          # not share the `mutation` context's name, so the aggregate's advisory
+          # posture never covered them: v1.16.0's release commit had 6 red
+          # phase4-promql legs (a known, already-tracked coverage gap in that
+          # package) and preflight blocked on them even though the aggregate
+          # they roll into is advisory for the identical reason.
+          #
+          # `CodeQL` is NOT informational — it is in RELEASE_REQUIRED_CHECKS
+          # above. Advanced setup's own `codeql.yml` (added in #1558 for
+          # merge-queue support) triggers on `release/*.x` pushes directly, so a
           # maintenance-line push DOES produce a CodeQL run (unlike under
           # GitHub's server-side default setup this replaced, which dispatched
           # on the default branch and its pull requests only). #2249 checked
@@ -304,60 +308,13 @@ jobs:
           # finishing in a few minutes. That is fast enough not to meaningfully
           # delay a hotfix, so it gates like every other required lane instead
           # of being carved out.
-          #
-          # `update-golden-guard` is de-gated for a structural reason rather
-          # than a cost one: it guards a PULL REQUEST against merging while an
-          # update-golden.yml dispatch is still regenerating its head branch
-          # (#2350). A publish commit has no head branch to strand and no pull
-          # request to hold back, and update-golden-guard.yml triggers on
-          # `pull_request` / `merge_group` / `workflow_run` only — it has no
-          # push trigger at all, on `main` or on a maintenance line, so a
-          # release commit can never carry that check-run. Requiring it would
-          # make the preflight wait out its whole window and abort every
-          # publish. Its real enforcement points are the merge gate and the
-          # merge queue, both of which a change passes before it can reach a
-          # release commit.
-          #
-          # `datashard-replica-affinity` is de-gated because sharding is
-          # EXPERIMENTAL and off by default (docs/operations.md); its own
-          # `.github/ci-lanes.json` entry (e2e.datashard-replica-affinity)
-          # already declares `release_posture: advisory`, and
-          # notify-nightly-failure.mjs's EXPERIMENTAL_LANES lists it
-          # alongside `datashard` for the same reason. A push-to-main preflight
-          # run has no `RELEASE_INFORMATIONAL_CHECKS` match for it today
-          # (found while shipping v1.20.0, cerberus #3155): it isn't in
-          # RELEASE_REQUIRED_CHECKS either, so it fell into the "gates by
-          # default" branch preflight's own test suite documents for exactly
-          # this situation (evaluate_test.go: "A gating check that is NOT in
-          # the informational list gates by default") — an unlisted lane
-          # blocks a release even though its own declared posture says it
-          # should not.
-          #
-          # `brew-verify` is de-gated for the same missing-entry reason, and
-          # for an additional one: its ci-lanes.json entry
-          # (release.brew-verify) declares `main_posture: never` and
-          # `release_posture: post_publish` — it verifies an
-          # ALREADY-PUBLISHED cask, so there is nothing meaningful for it to
-          # check pre-publish. `brew-verify.yml` runs on a `schedule`,
-          # independent of any push to main, and its check-run attaches to
-          # whatever main HEAD happens to be when the cron fires — the same
-          # "unlucky coincidence" `drought` above is already de-gated
-          # against. v1.20.0's own publish was blocked by exactly this: a
-          # nightly `brew-migration` cron run (that job has since been
-          # removed — see cerberus#3156) landed on the release merge commit
-          # by pure timing and reported a Homebrew tap bug that had nothing
-          # to do with the commit being released.
           RELEASE_INFORMATIONAL_CHECKS: |
             compose-smoke-shard-info
-            mutation
             gremlins
-            drought
-            update-golden-guard
-            datashard-replica-affinity
-            brew-verify
         # On the maintenance path this also enforces the support-window / EOL
-        # policy: a push to a line 3+ minors behind the current minor is refused
-        # (the line is EOL, gets no hotfixes). See docs/operations.md "Release
+        # policy: a push to a line SUPPORTED_MINOR_LINES (release-preflight.mjs)
+        # or more minors behind the current minor is refused (the line is EOL,
+        # gets no hotfixes). See docs/operations.md "Release
         # support window / EOL policy".
         run: node .github/scripts/release-preflight.mjs
 
@@ -491,21 +448,7 @@ jobs:
       - name: Create + push v<appVersion> tag at merge commit
         env:
           TAG: ${{ needs.gate.outputs.app_tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            existing="$(git rev-list -n1 "${TAG}")"
-            if [ "${existing}" != "${GITHUB_SHA}" ]; then
-              echo "::error::tag ${TAG} already exists at ${existing}, not the merge commit ${GITHUB_SHA} — refusing to move a release tag"
-              exit 1
-            fi
-            echo "tag ${TAG} already at ${GITHUB_SHA} — nothing to do"
-          else
-            git tag -a "${TAG}" -m "release ${TAG}" "${GITHUB_SHA}"
-            git push origin "refs/tags/${TAG}"
-            echo "created + pushed ${TAG} at ${GITHUB_SHA}"
-          fi
+        run: node .github/scripts/release-tag.mjs
 
       # Whether THIS tag is the highest stable release — the single "is this the
       # newest line?" signal every downstream owner-of-a-shared-resource decision
@@ -525,17 +468,7 @@ jobs:
         id: is_latest
         env:
           TAG: ${{ needs.gate.outputs.app_tag }}
-        run: |
-          tag="${TAG#v}"
-          highest=$(git tag -l 'v*.*.*' | awk '!/-/' | sed 's/^v//' | sort -V | tail -1)
-          if [ "$tag" = "$highest" ]; then
-            is_latest=true
-          else
-            is_latest=false
-          fi
-          echo "RELEASE_IS_LATEST=${is_latest}" >> "$GITHUB_ENV"
-          echo "is_latest=${is_latest}" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag highest_stable=$highest RELEASE_IS_LATEST=${is_latest}"
+        run: node .github/scripts/release-is-latest.mjs
 
       - id: goreleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7
