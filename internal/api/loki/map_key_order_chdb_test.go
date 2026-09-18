@@ -157,6 +157,11 @@ func splitStreamSeed() []keyOrderSeedRow {
 // rows straight into VectorSample — so a split grouping key surfaces
 // verbatim on the wire as two half-height bars in Grafana's logs-volume
 // panel.
+//
+// The selector names `dc` as well as `job` because the series key is the
+// set of labels the matchers name (upstream's `labelsToMatch`): a bare
+// `{job="api"}` would key both deliveries by `{job}` alone and merge them
+// for a reason that has nothing to do with key order.
 func TestIndexVolume_ChDB_DivergentKeyOrderCollapses(t *testing.T) {
 	srv, _ := seedKeyOrderServer(t, splitStreamSeed())
 	start, end := keyOrderWindow()
@@ -166,7 +171,7 @@ func TestIndexVolume_ChDB_DivergentKeyOrderCollapses(t *testing.T) {
 		Data   loki.QueryData `json:"data"`
 	}
 	getJSON(t, fmt.Sprintf(
-		`%s/loki/api/v1/index/volume?query=%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d`,
+		`%s/loki/api/v1/index/volume?query=%%7Bjob%%3D%%22api%%22%%2C%%20dc%%3D~%%22.%%2B%%22%%7D&start=%d&end=%d`,
 		srv.URL, start, end,
 	), &parsed)
 
@@ -225,8 +230,10 @@ func TestIndexVolume_ChDB_DivergentKeyOrderTopN(t *testing.T) {
 	var parsed struct {
 		Data loki.QueryData `json:"data"`
 	}
+	// `dc` is named in the selector so it is part of the series key —
+	// see TestIndexVolume_ChDB_DivergentKeyOrderCollapses.
 	getJSON(t, fmt.Sprintf(
-		`%s/loki/api/v1/index/volume?query=%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d&limit=1`,
+		`%s/loki/api/v1/index/volume?query=%%7Bjob%%3D%%22api%%22%%2C%%20dc%%3D~%%22.%%2B%%22%%7D&start=%d&end=%d&limit=1`,
 		srv.URL, start, end,
 	), &parsed)
 

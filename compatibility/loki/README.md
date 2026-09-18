@@ -240,6 +240,16 @@ cases are enumerated from the reference's own `/labels` answer, as the
 detected-field values pass is from `/detected_fields`, so every label
 one backend advertises must open on the other.
 
+Every case carries a selector bounded to the corpus — `{cluster=~"cluster-.+"}`
+or a subset of it — never a selector-less request, because upstream's TSDB
+label discovery is bounded by matchers, not by the request window
+(`TSDBIndex.LabelNames` / `LabelValues` discard `from`/`through`): a
+selector-less `/labels`, `/label/{name}/values` or `/detected_labels`
+answers with every stream in every index file overlapping the window, and
+the now-anchored `/patterns` fixture shares the ingester's head index with
+the corpus until that head rotates. The fixture sits in its own
+`live-patterns` cluster so the corpus selector excludes it by construction.
+
 The comparison is set-valued and order-insensitive on the list routes
 because upstream's query frontend merges split responses in encounter
 order — wire order is not part of the reference's contract. Two
@@ -252,7 +262,13 @@ the byte values of `/index/volume`. `/index/stats` grades `streams` and
 carries, and grades the *ranking* through a tie-break case —
 `aggregateBy=labels` over every seeded stream ties every label name at
 the same volume on both backends, so a `limit` below the label count
-selects rows purely by upstream's name-ascending tie-break.
+selects rows purely by upstream's name-ascending tie-break. It also
+grades upstream's series-mode key rule: without `targetLabels` the key is
+the set of label names the selector's matchers name, so
+`{service_name=~".+"}` answers one `{service_name="<svc>"}` row per
+service and `{cluster=~"cluster-.+"}` one row per cluster; projecting
+every advertised label through `targetLabels` is the request that
+answers one row per stream.
 
 ## Status-parity differential pass
 

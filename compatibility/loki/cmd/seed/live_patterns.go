@@ -68,6 +68,11 @@ func buildLivePatternsFixture(now time.Time) livePatternsFixture {
 		counts[strings.ToLower(level)]++
 	}
 
+	// The fixture's cluster / namespace / pod / container / service values
+	// are disjoint from every corpus stream's on purpose: the tester's
+	// metadata pass addresses the corpus through `{cluster=~"cluster-.+"}`
+	// because upstream's label discovery is matcher-bounded rather than
+	// window-bounded, and this now-anchored stream must fall outside it.
 	config := serviceConfig{
 		Name:        livePatternsService,
 		ServiceName: livePatternsService,

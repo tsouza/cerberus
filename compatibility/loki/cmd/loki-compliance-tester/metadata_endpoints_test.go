@@ -33,10 +33,12 @@ type metadataStub struct {
 	status int
 }
 
+// matches understands the three selector shapes the pass sends: the
+// corpus and per-service regexes (every stub stream carries a
+// `cluster-*` cluster and a service_name) and an exact single-label
+// equality.
 func (s *metadataStub) matches(stream map[string]string, selector string) bool {
-	// The stub understands the two selector shapes the pass sends: the
-	// all-streams regex and an exact single-label equality.
-	if selector == "" || selector == metadataAllStreamsSelector {
+	if selector == metadataCorpusSelector || selector == metadataPerServiceSelector {
 		return true
 	}
 	inner := strings.Trim(selector, "{}")
@@ -45,6 +47,24 @@ func (s *metadataStub) matches(stream map[string]string, selector string) bool {
 		return false
 	}
 	return stream[name] == strings.Trim(value, `"`)
+}
+
+// keyLabels reproduces upstream's series-mode key rule: targetLabels
+// when given, else the label names the selector's matchers name.
+func (s *metadataStub) keyLabels(selector, targetLabels string) map[string]struct{} {
+	target := map[string]struct{}{}
+	if targetLabels != "" {
+		for _, k := range strings.Split(targetLabels, ",") {
+			target[k] = struct{}{}
+		}
+		return target
+	}
+	inner := strings.Trim(selector, "{}")
+	for _, m := range strings.Split(inner, ",") {
+		name, _, _ := strings.Cut(strings.TrimSpace(m), "=")
+		target[strings.TrimRight(name, "!~")] = struct{}{}
+	}
+	return target
 }
 
 func (s *metadataStub) selected(selector string) []map[string]string {
@@ -116,21 +136,18 @@ func (s *metadataStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(indexStatsWire{Streams: uint64(len(sel)), Chunks: chunks, Entries: uint64(len(sel)) * 10, Bytes: bytes})
 	case r.URL.Path == "/loki/api/v1/index/volume":
 		sel := s.selected(q.Get("query"))
-		target := map[string]struct{}{}
-		if tl := q.Get("targetLabels"); tl != "" {
-			for _, k := range strings.Split(tl, ",") {
-				target[k] = struct{}{}
-			}
-		}
+		labelsMode := q.Get("aggregateBy") == volumeAggregateByLabels
+		target := s.keyLabels(q.Get("query"), q.Get("targetLabels"))
 		volumes := map[string]map[string]string{}
 		for _, st := range sel {
 			key := map[string]string{}
 			for k, v := range st {
-				if _, ok := target[k]; ok || len(target) == 0 {
+				// Labels mode without targetLabels charges every label.
+				if _, ok := target[k]; ok || (labelsMode && q.Get("targetLabels") == "") {
 					key[k] = v
 				}
 			}
-			if q.Get("aggregateBy") == volumeAggregateByLabels {
+			if labelsMode {
 				for k := range key {
 					volumes[k] = map[string]string{k: ""}
 				}
@@ -216,8 +233,10 @@ func TestCompareMetadataEndpointsAll_AgreementIsOrderInsensitive(t *testing.T) {
 	results := compareMetadataEndpointsAll(&http.Client{Timeout: 5 * time.Second}, flags{addr1: ref.URL, addr2: test.URL}, metadataTestWindow())
 
 	labelCount := len(metadataStubStreams()[0])
-	if want := len(metadataFixedCases(time.Time{}, time.Time{})) + labelCount; len(results) != want {
-		t.Fatalf("results=%d, want %d (fixed cases + one label-values case per advertised label)", len(results), want)
+	// Fixed cases, one label-values case per advertised label, and the
+	// every-label targetLabels volume case.
+	if want := len(metadataFixedCases(time.Time{}, time.Time{})) + labelCount + 1; len(results) != want {
+		t.Fatalf("results=%d, want %d (fixed cases + one label-values case per advertised label + the every-label volume case)", len(results), want)
 	}
 	ids := map[string]struct{}{}
 	kinds := map[string]int{}
@@ -275,22 +294,26 @@ func TestCompareMetadataEndpointsAll_OneLabelValueDiffersFails(t *testing.T) {
 		t.Fatal("a differing label value produced no failing case")
 	}
 	for _, want := range []string{
-		`label values parity: label=namespace selector=<none> => value "ns-1" missing from test endpoint; value "ns-1-renamed" unexpected on test endpoint`,
-		`series parity: selector={service_name=~".+"} => label set {cluster="cluster-0", env="production", namespace="ns-1", service_name="db"} missing from test endpoint; label set {cluster="cluster-0", env="production", namespace="ns-1-renamed", service_name="db"} unexpected on test endpoint`,
+		`label values parity: label=namespace selector={cluster=~"cluster-.+"} => value "ns-1" missing from test endpoint; value "ns-1-renamed" unexpected on test endpoint`,
+		`series parity: selector={cluster=~"cluster-.+"} => label set {cluster="cluster-0", env="production", namespace="ns-1", service_name="db"} missing from test endpoint; label set {cluster="cluster-0", env="production", namespace="ns-1-renamed", service_name="db"} unexpected on test endpoint`,
 		`series parity: selector={cluster="cluster-0"} =>`,
-		`index volume parity (label sets): aggregateBy=series limit=1000 selector={service_name=~".+"} =>`,
-		`index volume parity (label sets): aggregateBy=series limit=1000 targetLabels=cluster,namespace selector={service_name=~".+"} =>`,
+		`index volume parity (label sets): aggregateBy=series limit=1000 targetLabels=cluster,namespace selector={cluster=~"cluster-.+"} =>`,
+		`index volume parity (label sets): aggregateBy=series limit=1000 targetLabels=<every advertised label> selector={cluster=~"cluster-.+"} =>`,
 	} {
 		if !containsPrefix(failed, want) {
 			t.Errorf("expected a failing case starting with %q; failing cases:\n  %s", want, strings.Join(failed, "\n  "))
 		}
 	}
 	for _, want := range []string{
-		"labels parity: selector=<none>",
-		"index stats parity (streams, entries): selector={service_name=~\".+\"}",
-		"index volume parity (label sets): aggregateBy=series limit=1000 targetLabels=cluster selector={service_name=~\".+\"}",
-		"index volume parity (label sets): aggregateBy=labels limit=3 selector={service_name=~\".+\"}",
-		"detected labels parity (label, cardinality): selector=<none>",
+		`labels parity: selector={cluster=~"cluster-.+"}`,
+		`index stats parity (streams, entries): selector={cluster=~"cluster-.+"}`,
+		// The default series key is the matcher's label names — {cluster}
+		// and {service_name} — neither of which is the changed label.
+		`index volume parity (label sets): aggregateBy=series limit=1000 selector={cluster=~"cluster-.+"}`,
+		`index volume parity (label sets): aggregateBy=series limit=1000 selector={service_name=~".+"}`,
+		`index volume parity (label sets): aggregateBy=series limit=1000 targetLabels=cluster selector={cluster=~"cluster-.+"}`,
+		`index volume parity (label sets): aggregateBy=labels limit=3 selector={cluster=~"cluster-.+"}`,
+		`detected labels parity (label, cardinality): selector={cluster=~"cluster-.+"}`,
 	} {
 		if !containsPrefix(passed, want) {
 			t.Errorf("expected %q to pass (it cannot observe the changed value); passing cases:\n  %s", want, strings.Join(passed, "\n  "))
@@ -315,7 +338,7 @@ func TestCompareMetadataOne_StatusArms(t *testing.T) {
 	t.Parallel()
 	window := metadataTestWindow()
 	start, end := window.TimeRange.Start, window.TimeRange.End
-	mc := metadataLabelsCase("", start, end)
+	mc := metadataLabelsCase(metadataCorpusSelector, start, end)
 
 	cases := []struct {
 		name        string

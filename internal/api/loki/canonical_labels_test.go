@@ -61,9 +61,12 @@ func TestMetadataSQL_CanonicalisesWholeMapIdentityKeys(t *testing.T) {
 			// canonical wrap lands on the inner stage's own alias. The
 			// outer stage needs no wrap of its own: normalizedLabelsFrag
 			// rebuilds the Map from a sorted array and re-applies the
-			// same function.
+			// same function. The whole-map key is the labels
+			// aggregation's (series mode keys by the labels the request
+			// names — volumeKeyLabels); the projected key's canonical
+			// wrap is TestIndexVolume_ChDB_TargetLabelsKeyOrder's subject.
 			name:  "index/volume groups by the canonicalised label set",
-			path:  `/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&` + window,
+			path:  `/loki/api/v1/index/volume?query=%7Bjob%3D%22api%22%7D&aggregateBy=labels&` + window,
 			want:  canonicalLabelsCol + " AS `" + loki.StoredLabelsAlias + "`",
 			alias: loki.StoredLabelsAlias,
 		},

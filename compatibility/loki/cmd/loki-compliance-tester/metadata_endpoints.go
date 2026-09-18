@@ -48,7 +48,10 @@ package main
 //     are not compared; a tolerance wide enough to absorb the encoding
 //     overhead would be a tuned threshold, not a grade.
 //   - /index/volume — the SET of metric label sets the response carries,
-//     for both aggregateBy modes and with targetLabels. The byte VALUES
+//     for both aggregateBy modes, with and without targetLabels, and
+//     under selectors naming different labels (upstream's series-mode
+//     key without targetLabels is the set of label names the matchers
+//     name — see metadataPerServiceSelector). The byte VALUES
 //     are the same chunk-KB quantity as /index/stats and are not
 //     compared. The RANKING is graded through the tie-break case:
 //     `aggregateBy=labels` over every seeded stream gives every label
@@ -99,11 +102,36 @@ const (
 	metadataKindDetectedLabels = "detected_labels"
 )
 
-// metadataAllStreamsSelector matches every seeded corpus stream: each
-// one carries `service_name` (cmd/seed/main.go buildStreams), and Loki
-// requires at least one non-empty matcher on every selector-taking
-// route.
-const metadataAllStreamsSelector = `{service_name=~".+"}`
+// metadataCorpusSelector matches every seeded corpus stream and nothing
+// else: the corpus streams sit in `cluster-0` / `cluster-1`
+// (cmd/seed/main.go serviceConfigs) while the now-anchored /patterns
+// fixture sits in its own `live-patterns` cluster (cmd/seed/
+// live_patterns.go). Every case carries a selector — this one or a
+// subset of it — because upstream's TSDB label discovery is bounded by
+// MATCHERS, not by the request window: `TSDBIndex.LabelNames` /
+// `LabelValues` discard `from`/`through` (pkg/storage/stores/shipper/
+// indexshipper/tsdb/single_file_index.go), so a selector-less /labels,
+// /label/{name}/values or /detected_labels answers with every stream in
+// every index file that overlaps the window — and the live fixture,
+// pushed seconds after the corpus, shares the ingester's head index with
+// it until that head rotates. A selector-less case's reference answer
+// would therefore depend on head-rotation timing rather than on the
+// data; a corpus-bounded selector makes it a function of the data on
+// both backends. The window is the full corpus span for the same
+// reason: within an index, upstream does not narrow discovery to the
+// window at all.
+const metadataCorpusSelector = `{cluster=~"cluster-.+"}`
+
+// metadataPerServiceSelector also matches every corpus stream, through
+// a matcher on `service_name` — the one label that takes a distinct
+// value on every seeded stream. Its /index/volume series-mode case pins
+// upstream's key rule: with no `targetLabels`, the series key is the
+// set of label names the MATCHERS name (`PrepareLabelsAndMatchers`,
+// pkg/util/series_volume.go, feeding `labelsToMatch` in the volume
+// walks), so this selector yields one `{service_name="<svc>"}` row per
+// stream while metadataCorpusSelector yields one `{cluster="<c>"}` row
+// per cluster.
+const metadataPerServiceSelector = `{service_name=~".+"}`
 
 // metadataSubsetSelector matches the cluster-0 half of the seeded
 // streams — a proper subset, so a backend ignoring the selector on a
@@ -117,11 +145,19 @@ const metadataSubsetSelector = `{cluster="cluster-0"}`
 const metadataSubsetLabel = "service_name"
 
 // volumeNoTruncationLimit is a /index/volume `limit` above the number
-// of rows any seeded case can produce (15 streams in series mode, 9
-// label names in labels mode), so the byte-volume ranking — which is
-// not comparable across the two backends, see the file comment — never
-// decides which rows the response carries.
+// of rows any seeded case can produce (one per corpus stream at most),
+// so the byte-volume ranking — which is not comparable across the two
+// backends, see the file comment — never decides which rows the
+// response carries.
 const volumeNoTruncationLimit = 1000
+
+// volumeAllLabelsTarget is the roster-facing spelling of the
+// /index/volume case whose `targetLabels` is every label the reference
+// advertises. The names are resolved at run time from the reference's
+// /labels answer (so the case tracks the fixture), but the roster
+// identity must not depend on that answer — it carries this placeholder
+// instead.
+const volumeAllLabelsTarget = "<every advertised label>"
 
 // volumeTieBreakLimit is the `limit` of the aggregateBy=labels ranking
 // case. It must be below the number of labels every seeded stream
@@ -200,11 +236,12 @@ func (b metadataBody) isEmpty() bool {
 }
 
 // compareMetadataEndpointsAll runs every metadata case over the corpus
-// window and returns one Result per case. The label-values cases are
-// driven by the REFERENCE's own /labels answer, as the detected-field
-// values pass is driven by /detected_fields: whatever upstream
-// advertises, cerberus must answer for, so the roster cannot quietly
-// omit a label one backend forgot to advertise.
+// window and returns one Result per case. The label-values cases and
+// the every-label `targetLabels` volume case are driven by the
+// REFERENCE's own /labels answer, as the detected-field values pass is
+// driven by /detected_fields: whatever upstream advertises, cerberus
+// must answer for, so the roster cannot quietly omit a label one
+// backend forgot to advertise.
 func compareMetadataEndpointsAll(c *http.Client, f flags, metadata *bench.DatasetMetadata) []Result {
 	start, end := metadata.TimeRange.Start, metadata.TimeRange.End
 
@@ -213,18 +250,18 @@ func compareMetadataEndpointsAll(c *http.Client, f flags, metadata *bench.Datase
 		results = append(results, compareMetadataOne(c, f, mc, start, end))
 	}
 
-	advertised, err := fetchMetadata(c, f.addr1, metadataLabelsCase("", start, end))
+	advertised, err := fetchMetadata(c, f.addr1, metadataLabelsCase(metadataCorpusSelector, start, end))
 	switch {
 	case err != nil:
 		results = append(results, Result{
-			TestCase: metadataTestCase(metadataLabelValuesCase("*", "", start, end), start, end),
+			TestCase: metadataTestCase(metadataLabelValuesCase("*", metadataCorpusSelector, start, end), start, end),
 			UnexpectedFailure: fmt.Sprintf(
 				"reference (-addr-1) /labels failed, cannot enumerate label names: %v", err,
 			),
 		})
 	case advertised.status != http.StatusOK || len(advertised.body.names) == 0:
 		results = append(results, Result{
-			TestCase: metadataTestCase(metadataLabelValuesCase("*", "", start, end), start, end),
+			TestCase: metadataTestCase(metadataLabelValuesCase("*", metadataCorpusSelector, start, end), start, end),
 			UnexpectedFailure: fmt.Sprintf(
 				"reference (-addr-1) /labels advertised no label names (status=%d body=%s)",
 				advertised.status, errorBodySnippet(advertised.raw),
@@ -238,33 +275,42 @@ func compareMetadataEndpointsAll(c *http.Client, f flags, metadata *bench.Datase
 		names := slices.Clone(advertised.body.names)
 		sort.Strings(names)
 		for _, name := range names {
-			results = append(results, compareMetadataOne(c, f, metadataLabelValuesCase(name, "", start, end), start, end))
+			results = append(results, compareMetadataOne(c, f, metadataLabelValuesCase(name, metadataCorpusSelector, start, end), start, end))
 		}
+		// Projecting every advertised label is the one series-mode
+		// request whose rows carry a stream's FULL label set (the
+		// matcher-derived default key — see metadataPerServiceSelector
+		// — never does), so this is the case that grades one row per
+		// seeded stream.
+		allLabels := metadataIndexVolumeCase(metadataCorpusSelector, volumeAggregateBySeries, volumeNoTruncationLimit, volumeAllLabelsTarget, start, end)
+		allLabels.params.Set("targetLabels", strings.Join(names, ","))
+		results = append(results, compareMetadataOne(c, f, allLabels, start, end))
 	}
 	return results
 }
 
 // metadataFixedCases is the static case table: every route except
 // label values (which is enumerated from the reference at run time),
-// each with an all-streams request and a subset-selector request, plus
-// the /index/volume mode, targetLabels and tie-break cases.
+// each with a corpus-wide request and a subset-selector request, plus
+// the /index/volume mode, key-rule, targetLabels and tie-break cases.
 func metadataFixedCases(start, end time.Time) []metadataCase {
 	return []metadataCase{
-		metadataLabelsCase("", start, end),
+		metadataLabelsCase(metadataCorpusSelector, start, end),
 		metadataLabelsCase(metadataSubsetSelector, start, end),
 		metadataLabelValuesCase(metadataSubsetLabel, metadataSubsetSelector, start, end),
-		metadataSeriesCase(metadataAllStreamsSelector, start, end),
+		metadataSeriesCase(metadataCorpusSelector, start, end),
 		metadataSeriesCase(metadataSubsetSelector, start, end),
-		metadataIndexStatsCase(metadataAllStreamsSelector, start, end),
+		metadataIndexStatsCase(metadataCorpusSelector, start, end),
 		metadataIndexStatsCase(metadataSubsetSelector, start, end),
-		metadataIndexVolumeCase(metadataAllStreamsSelector, volumeAggregateBySeries, volumeNoTruncationLimit, "", start, end),
+		metadataIndexVolumeCase(metadataCorpusSelector, volumeAggregateBySeries, volumeNoTruncationLimit, "", start, end),
+		metadataIndexVolumeCase(metadataPerServiceSelector, volumeAggregateBySeries, volumeNoTruncationLimit, "", start, end),
 		metadataIndexVolumeCase(metadataSubsetSelector, volumeAggregateBySeries, volumeNoTruncationLimit, "", start, end),
-		metadataIndexVolumeCase(metadataAllStreamsSelector, volumeAggregateBySeries, volumeNoTruncationLimit, "cluster", start, end),
-		metadataIndexVolumeCase(metadataAllStreamsSelector, volumeAggregateBySeries, volumeNoTruncationLimit, "cluster,namespace", start, end),
-		metadataIndexVolumeCase(metadataAllStreamsSelector, volumeAggregateByLabels, volumeNoTruncationLimit, "", start, end),
-		metadataIndexVolumeCase(metadataAllStreamsSelector, volumeAggregateByLabels, volumeNoTruncationLimit, "cluster,namespace", start, end),
-		metadataIndexVolumeCase(metadataAllStreamsSelector, volumeAggregateByLabels, volumeTieBreakLimit, "", start, end),
-		metadataDetectedLabelsCase("", start, end),
+		metadataIndexVolumeCase(metadataCorpusSelector, volumeAggregateBySeries, volumeNoTruncationLimit, "cluster", start, end),
+		metadataIndexVolumeCase(metadataCorpusSelector, volumeAggregateBySeries, volumeNoTruncationLimit, "cluster,namespace", start, end),
+		metadataIndexVolumeCase(metadataCorpusSelector, volumeAggregateByLabels, volumeNoTruncationLimit, "", start, end),
+		metadataIndexVolumeCase(metadataCorpusSelector, volumeAggregateByLabels, volumeNoTruncationLimit, "cluster,namespace", start, end),
+		metadataIndexVolumeCase(metadataCorpusSelector, volumeAggregateByLabels, volumeTieBreakLimit, "", start, end),
+		metadataDetectedLabelsCase(metadataCorpusSelector, start, end),
 		metadataDetectedLabelsCase(metadataSubsetSelector, start, end),
 	}
 }
@@ -276,12 +322,10 @@ func windowParams(start, end time.Time) url.Values {
 	return v
 }
 
-// selectorDescription renders the selector half of a case description;
-// an empty selector is the route's "every stream in the window" form.
+// selectorDescription renders the selector half of a case description.
+// Every case carries one — see metadataCorpusSelector for why a
+// selector-less discovery request is not a well-posed differential.
 func selectorDescription(selector string) string {
-	if selector == "" {
-		return "selector=<none>"
-	}
 	return "selector=" + selector
 }
 

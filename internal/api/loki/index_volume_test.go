@@ -57,8 +57,10 @@ func TestIndexVolume_HappyPath(t *testing.T) {
 	}
 
 	// SQL sanity: GROUP BY + ORDER BY bytes DESC + LIMIT must all be
-	// present; bytes column aggregates via length(Body); labels grouping
-	// uses the full ResourceAttributes map when targetLabels is absent.
+	// present; bytes column aggregates via length(Body); the series key
+	// without targetLabels is the projection onto the labels the
+	// selector's matchers name (`job`), not the full attribute map — see
+	// TestIndexVolume_SeriesKeyIsTheMatcherLabels.
 	lastSQL := q.LastSQL()
 	if !strings.Contains(lastSQL, "GROUP BY") {
 		t.Errorf("missing GROUP BY: %q", lastSQL)
@@ -69,8 +71,78 @@ func TestIndexVolume_HappyPath(t *testing.T) {
 	if !strings.Contains(lastSQL, "LIMIT 100") {
 		t.Errorf("default limit absent: %q", lastSQL)
 	}
+	if !strings.Contains(lastSQL, "mapSort(mapFilter((k, v) -> v != ?, map(?, `ResourceAttributes`[?]))) AS `"+loki.StoredLabelsAlias+"`") {
+		t.Errorf("stored-key pre-aggregation should group by the projection onto the matcher labels: %q", lastSQL)
+	}
+}
+
+// TestIndexVolume_SeriesKeyIsTheMatcherLabels pins upstream's default
+// series-mode key: with no targetLabels, `PrepareLabelsAndMatchers`
+// (pkg/util/series_volume.go) builds `labelsToMatch` from the label
+// names the selector's matchers carry and the volume walk keys each row
+// by those labels only — `{service_name=~".+", cluster="a"}` yields
+// `{cluster, service_name}` rows, never a row per full label set. The
+// labels aggregation without targetLabels charges every label the stream
+// carries, so it keeps the full map. Cerberus keyed series mode by the
+// full ResourceAttributes map, answering one row per stream where the
+// reference answers one row per distinct matcher-label projection —
+// caught by the LogQL differential harness's metadata pass.
+func TestIndexVolume_SeriesKeyIsTheMatcherLabels(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	get := func(t *testing.T, query string) string {
+		t.Helper()
+		resp, err := http.Get(srv.URL + "/loki/api/v1/index/volume?" + query)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d", resp.StatusCode)
+		}
+		return q.LastSQL()
+	}
+
+	// series (default and explicit): projected onto {cluster, service_name},
+	// the two matcher labels, deduplicated and sorted; a repeated matcher
+	// on one label counts once.
+	for _, query := range []string{
+		`query=%7Bservice_name%3D~%22.%2B%22%2C%20cluster%3D%22a%22%2C%20cluster!%3D%22b%22%7D`,
+		`query=%7Bservice_name%3D~%22.%2B%22%2C%20cluster%3D%22a%22%2C%20cluster!%3D%22b%22%7D&aggregateBy=series`,
+	} {
+		lastSQL := get(t, query)
+		// The projected key: a two-entry map literal (`cluster` read off
+		// the attribute map, `service_name` through its hoisted-column
+		// resolution), absent labels filtered — never the bare full map.
+		if !strings.Contains(lastSQL, "mapSort(mapFilter((k, v) -> v != ?, map(?, `ResourceAttributes`[?], ?, coalesce(nullIf(`ServiceName`, ?)") {
+			t.Errorf("series key should be the projection onto the matcher labels: %q", lastSQL)
+		}
+		if strings.Contains(lastSQL, "mapSort(`ResourceAttributes`) AS `"+loki.StoredLabelsAlias+"`") {
+			t.Errorf("series key must not be the full attribute map: %q", lastSQL)
+		}
+		// The map literal renders first in the SELECT and binds its keys
+		// in sorted order, so the first key-name args are the
+		// projection's: `cluster` (once as the key, once as the map
+		// lookup — despite two matchers on it) then `service_name`.
+		var keys []string
+		for _, a := range q.LastArgs() {
+			if s, ok := a.(string); ok && (s == "cluster" || s == "service_name") {
+				keys = append(keys, s)
+			}
+		}
+		if len(keys) < 3 || keys[0] != "cluster" || keys[1] != "cluster" || keys[2] != "service_name" {
+			t.Errorf("projected keys should lead the args as cluster (key), cluster (map lookup), service_name; string args=%v", keys)
+		}
+	}
+
+	// labels without targetLabels: every label the stream carries.
+	lastSQL := get(t, `query=%7Bservice_name%3D~%22.%2B%22%7D&aggregateBy=labels`)
 	if !strings.Contains(lastSQL, "mapSort(`ResourceAttributes`) AS `"+loki.StoredLabelsAlias+"`") {
-		t.Errorf("stored-key pre-aggregation should group by the canonicalised full RA map: %q", lastSQL)
+		t.Errorf("labels aggregation without targetLabels should charge every label (full RA map): %q", lastSQL)
 	}
 }
 
