@@ -179,9 +179,9 @@ func comparisonVectorVectorOverMixedExpHistogramSetOp(expr parser.Expr, s schema
 
 // lowerComparisonVectorVectorOverMixedExpHistogramSetOp lowers the shape
 // [comparisonVectorVectorOverMixedExpHistogramSetOp] recognised: build the
-// two Mixed operands, join them ([chplan.MixedVectorJoin]), and answer
-// either the histogram-preserving filter (no `bool`,
-// [lowerMixedVVCompareFilter]) or the always-float `bool` fold
+// two Mixed operands, join them ([newMixedVectorJoin]), and fold through
+// [lowerMixedVectorJoinBinary] — the histogram-preserving filter (no
+// `bool`, [lowerMixedVVCompareFilter]) or the always-float `bool` fold
 // ([lowerMixedVVCompareBool]) — see this file's header for the
 // four-combination semantics each answers.
 func lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *parser.BinaryExpr, op chplan.BinaryOp, match chplan.VectorMatch, card chplan.VectorCard, include []string, returnBool bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
@@ -193,24 +193,7 @@ func lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *p
 	if err != nil {
 		return nil, err
 	}
-
-	join := &chplan.MixedVectorJoin{
-		Left:             leftNode,
-		Right:            rightNode,
-		Match:            match,
-		Card:             card,
-		Include:          include,
-		StepAligned:      ctx.step > 0,
-		MetricNameColumn: s.MetricNameColumn,
-		AttributesColumn: s.AttributesColumn,
-		TimestampColumn:  s.TimestampColumn,
-		ValueColumn:      s.ValueColumn,
-	}
-
-	if returnBool {
-		return lowerMixedVVCompareBool(join, op, s), nil
-	}
-	return lowerMixedVVCompareFilter(join, op, s), nil
+	return lowerMixedVectorJoinBinary(newMixedVectorJoin(leftNode, rightNode, match, card, include, s, ctx), op, returnBool, s, ctx)
 }
 
 // mixedVVEqOrNe reports whether op is `==`/`!=` — the only two comparison

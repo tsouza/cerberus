@@ -231,11 +231,11 @@ func vectorPlainArithmeticOverMixedExpHistogramSetOp(expr parser.Expr, s schema.
 // [vectorPlainArithmeticOverMixedExpHistogramSetOp] recognised: lower the
 // mixed side through [lowerMixedExpHistogramSetOp] (unchanged), lower and
 // widen the plain side through [lowerPlainOperandForMixedJoin], place them
-// on [chplan.MixedVectorJoin]'s Left/Right per mixedOnLeft (preserving the
-// operator's own syntactic LHS/RHS for non-commutative ops and for
-// group_left()/group_right()), and dispatch to the SAME per-op fold
-// [lowerVectorVectorArithmeticOverMixedExpHistogramSetOp] already uses —
-// see this file's header for why that fold needs no change at all for a
+// on the join's Left/Right per mixedOnLeft (preserving the operator's own
+// syntactic LHS/RHS for non-commutative ops and for
+// group_left()/group_right()), and fold through the SAME
+// [lowerMixedVectorJoinBinary] the both-mixed shape uses — see this
+// file's header for why that fold needs no change at all for a
 // statically-float-discriminator side.
 func lowerVectorPlainArithmeticOverMixedExpHistogramSetOp(mixedSetOp *parser.BinaryExpr, plainExpr parser.Expr, mixedOnLeft bool, op chplan.BinaryOp, match chplan.VectorMatch, card chplan.VectorCard, include []string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	mixedNode, err := lowerMixedExpHistogramSetOp(mixedSetOp, s, ctx)
@@ -251,29 +251,5 @@ func lowerVectorPlainArithmeticOverMixedExpHistogramSetOp(mixedSetOp *parser.Bin
 	if mixedOnLeft {
 		leftNode, rightNode = mixedNode, plainNode
 	}
-
-	join := &chplan.MixedVectorJoin{
-		Left:             leftNode,
-		Right:            rightNode,
-		Match:            match,
-		Card:             card,
-		Include:          include,
-		StepAligned:      ctx.step > 0,
-		MetricNameColumn: s.MetricNameColumn,
-		AttributesColumn: s.AttributesColumn,
-		TimestampColumn:  s.TimestampColumn,
-		ValueColumn:      s.ValueColumn,
-	}
-
-	switch op {
-	case chplan.OpAdd, chplan.OpSub:
-		return lowerMixedVVAdditiveArithmetic(join, op, s, ctx.resourceBounds.HistogramMergeMaxCostUnits), nil
-	case chplan.OpMul, chplan.OpDiv:
-		return lowerMixedVVScaledArithmetic(join, op, s), nil
-	default:
-		// POW, MOD, ATAN2: only float,float survives — the plain side's
-		// static discriminator=0 already guarantees the "other" half of
-		// that pair whenever the mixed side's own row resolves float too.
-		return lowerMixedVVFloatOnlyArithmetic(join, op, s), nil
-	}
+	return lowerMixedVectorJoinBinary(newMixedVectorJoin(leftNode, rightNode, match, card, include, s, ctx), op, false, s, ctx)
 }

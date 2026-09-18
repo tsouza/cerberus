@@ -4,16 +4,21 @@
       "head": "promql",
       "site": "internal/promql/mixed_operand_policy.go:mixedOperandNotAdmitted#efa3d4e1",
       "message": "promql: mixed operand is not admitted for %s at %s",
-      "class": "divergence",
-      "trigger_query": "sort_by_label(demo_latency_exp_hist or demo_http_requests_total, \"instance\") * 2",
-      "tracking_issue": 3562,
+      "class": "internal",
+      "rationale": "every consumer cites a (family, site) row the table holds and names the payload rule that row carries, checked through requireMixedOperandPolicy and requireMixedPlanPolicy; TestMixedOperandPolicyControlsActualDispatch proves each row load-bearing in both directions and TestMixedOperandPolicyAdmissionInventory pins the row set, and the two closed dispatchers that can request the fail-closed sentinel (prepareMixedAggregatePlan, executeMixedSelectorPolicy) enumerate every aggregate family mixedAggregateFamily maps. The not-admitted error is therefore reachable only by editing the table or a consumer's literal, never from a wire query.",
       "evidence": {
         "guard": null,
         "callers": [
           "requireMixedOperandPolicy"
+        ],
+        "cited": [
+          "executeMixedSelectorPolicy",
+          "mixedAggregateFamily",
+          "prepareMixedAggregatePlan",
+          "requireMixedOperandPolicy",
+          "requireMixedPlanPolicy"
         ]
-      },
-      "since": "2026-09-17"
+      }
     }
   ]
 }

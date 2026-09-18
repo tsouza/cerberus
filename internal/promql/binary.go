@@ -211,25 +211,23 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		}
 	}
 
-	// A genuine vector-vector join over a live mixed leg has no registered
-	// existing-plan rule (the two synthetic folds above carry their own,
-	// scalar-family admission): the plain VectorJoin below reads the
-	// placeholder Value of a histogram row as a float sample, which is
-	// wrong for every operator. Rejected here until cerberus issue #3562
-	// routes these through the discriminator-aware mixed arithmetic and
-	// comparison lowerings the direct `(h or f) OP v` roots already use.
-	family := mixedVectorBinaryFamily(op)
-	if err := requireMixedPlanPolicy(left, family, mixedBespoke); err != nil {
-		return nil, err
-	}
-	if err := requireMixedPlanPolicy(right, family, mixedBespoke); err != nil {
-		return nil, err
-	}
-
 	match := chplan.VectorMatch{}
 	if b.VectorMatching != nil {
 		match.Labels = append([]string(nil), b.VectorMatching.MatchingLabels...)
 		match.On = b.VectorMatching.On
+	}
+
+	// A live mixed leg — a mixed `or` that an intermediate wrapper
+	// (sort_by_label, limitk, a subquery select, a further set operator)
+	// already lowered, so lowerRoot's own `(h or f) OP v` recognisers
+	// never saw it — cannot go through the plain VectorJoin
+	// below, which reads a histogram row's placeholder Value as a float
+	// sample: reference scales, merges or drops such a pair by its
+	// per-row payload kinds. It joins through the same discriminator-aware
+	// fold the direct roots use instead ([lowerMixedVectorJoinBinary]),
+	// with the other leg widened to the mixed contract.
+	if mixedRowsNeedPreparation(left) || mixedRowsNeedPreparation(right) {
+		return lowerVectorVectorOverMixedPlan(left, right, op, match, card, include, b.ReturnBool, s, ctx)
 	}
 
 	// Range mode (ctx.step > 0): both sides materialise per-step rows
@@ -258,6 +256,30 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		TimestampColumn:  s.TimestampColumn,
 		ValueColumn:      s.ValueColumn,
 	}, nil
+}
+
+// lowerVectorVectorOverMixedPlan is [lowerVectorVector]'s arm for a leg
+// that is an already-lowered live mixed relation (cerberus issue #3562).
+// The vector-arithmetic / vector-comparison family authorizes the site
+// for its bespoke fold, both legs are brought to the fourteen-column
+// contract ([mixedJoinOperand] — the other leg widened whether it is
+// float, histogram-valued or itself mixed), and the operator folds
+// through [lowerMixedVectorJoinBinary] exactly as the direct
+// `(h or f) OP v` roots do.
+func lowerVectorVectorOverMixedPlan(left, right chplan.Node, op chplan.BinaryOp, match chplan.VectorMatch, card chplan.VectorCard, include []string, returnBool bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	family := mixedVectorBinaryFamily(op)
+	if err := requireMixedPlanPolicy(nil, family, mixedBespoke); err != nil {
+		return nil, err
+	}
+	leftNode, err := mixedJoinOperand(left, s)
+	if err != nil {
+		return nil, err
+	}
+	rightNode, err := mixedJoinOperand(right, s)
+	if err != nil {
+		return nil, err
+	}
+	return lowerMixedVectorJoinBinary(newMixedVectorJoin(leftNode, rightNode, match, card, include, s, ctx), op, returnBool, s, ctx)
 }
 
 // isDefaultMatching reports whether the parser's VectorMatching slot
@@ -421,9 +443,9 @@ func foldSyntheticBinary(left, right chplan.Node, op chplan.BinaryOp, returnBool
 // the rest of the non-scaling arithmetic, so the float-only narrowing
 // this fold applies is the reference behaviour for those. The scaling
 // operators (`* k`, `/ k`) are the one place that narrowing would be
-// wrong — Prometheus scales the histogram — and their family has no
-// existing-plan row, so a live mixed vec leg under them is rejected
-// (cerberus issue #3562 lowers it instead of rejecting).
+// wrong — Prometheus scales the histogram — so a live mixed vec leg
+// under them scales through [scaleMixedPlan] with the synthetic leg's
+// per-row value as the scale, exactly as a literal scalar would.
 func foldSyntheticVectorBinary(
 	synth, vec chplan.Node,
 	vecExpr parser.Expr,
@@ -433,6 +455,9 @@ func foldSyntheticVectorBinary(
 	ctx lowerCtx,
 ) (chplan.Node, error) {
 	family := mixedScalarBinaryFamily(op, scalarOnLeft)
+	if family == mixedScaleFamily && mixedRowsNeedPreparation(vec) {
+		return scaleMixedPlanUnderPolicy(vec, op, rewriteAnchorToTimeUnix(syntheticValueExpr(synth), s), scalarOnLeft, s)
+	}
 	if err := requireMixedPlanPolicy(vec, family, mixedFloatOnly); err != nil {
 		return nil, err
 	}
@@ -891,8 +916,29 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	if isComparison(op) {
 		return finishScalarComparison(inner, vec, s, ctx, op, scalar, scalarOnLeft, returnBool, scalarComparisonGuarded)
 	}
-	// Histogram-scaling operators retain their separate family authority.
+	// Histogram-scaling operators retain their separate family authority:
+	// a live mixed operand — a mixed `or` an intermediate wrapper already
+	// lowered, so lowerRoot's `(h or f) * k` recogniser never saw it —
+	// scales both row shapes in place through the root's own fold
+	// (cerberus issue #3562); a float operand takes the derived-sample
+	// projection.
+	if mixedRowsNeedPreparation(inner) {
+		return scaleMixedPlanUnderPolicy(inner, op, &chplan.LitFloat{V: scalar}, scalarOnLeft, s)
+	}
 	return guardedValueProjection(inner, vec, s, ctx, mixedScalarBinaryFamily(op, scalarOnLeft), func(refs sampleRoleRefs) chplan.Expr {
 		return scalarBinaryValue(refs.Value, op, scalar, scalarOnLeft)
 	})
+}
+
+// scaleMixedPlanUnderPolicy authorizes the scalar-scale family's
+// existing-plan rule and scales the live mixed relation `inner` through
+// [scaleMixedPlan]. It is the one entry every scale consumer of an
+// already-lowered mixed plan uses — the literal-scalar arm of
+// [lowerVectorScalar], the synthetic-scalar arm of
+// [foldSyntheticVectorBinary], and unary minus ([lowerUnary], as `* -1`).
+func scaleMixedPlanUnderPolicy(inner chplan.Node, op chplan.BinaryOp, scale chplan.Expr, scalarOnLeft bool, s schema.Metrics) (chplan.Node, error) {
+	if err := requireMixedPlanPolicy(inner, mixedScaleFamily, mixedBespoke); err != nil {
+		return nil, err
+	}
+	return scaleMixedPlan(inner, op, scale, scalarOnLeft, s)
 }

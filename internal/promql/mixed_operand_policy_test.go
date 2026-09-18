@@ -16,38 +16,92 @@ import (
 // Deliberately non-parallel: each case temporarily removes one authorization
 // from the package table, proving the real dispatch consults it before lowering
 // or building its wrapper. Parallel tests run only after this test returns.
+//
+// The inventory is COMPLETE by assertion: every row of the table must be
+// named by at least one query that lowers with the row present and rejects
+// with exactly that row's key once it is removed. A row no consumer cites — a
+// policy with no handler behind it, the shape that let a nested mixed plan
+// reach a float-only consumer under a "bespoke" row (cerberus issue #3562) —
+// fails this test, so the table can only ever hold rows a real consumer
+// selects its transform through.
 func TestMixedOperandPolicyControlsActualDispatch(t *testing.T) {
 	const direct = `(latency_exp_hist or num_cpus)`
 	const nested = `sort_by_label(latency_exp_hist or num_cpus, "job")`
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	s := schema.DefaultOTelMetrics()
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	for _, tc := range []struct {
+	cases := []struct {
 		query  string
 		family mixedWrapperFamily
 		site   mixedAdmissionSite
 	}{
-		{`abs(` + direct + `)`, mixedMathFamily, mixedRootAdmission},
-		{`abs(` + nested + `)`, mixedMathFamily, mixedPlanAdmission},
-		{`clamp(` + nested + `, 2, 1)`, mixedMathFamily, mixedPlanAdmission},
-		{`label_replace(` + nested + `, "dst", "x", "job", ".*")`, mixedLabelFamily, mixedPlanAdmission},
+		{direct, mixedLeafFamily, mixedRootAdmission},
+		{`sum(` + direct + `)`, mixedSumAvgFamily, mixedRootAdmission},
+		{`count(` + direct + `)`, mixedCountGroupFamily, mixedRootAdmission},
+		{`min(` + direct + `)`, mixedFloatAggregateFamily, mixedRootAdmission},
+		{`topk(2, ` + direct + `)`, mixedTopKFamily, mixedRootAdmission},
+		{`count_values("v", ` + direct + `)`, mixedCountValuesFamily, mixedRootAdmission},
 		{`label_replace(` + direct + `, "dst", "x", "job", ".*")`, mixedLabelFamily, mixedRootAdmission},
 		{`label_join(` + direct + `, "dst", "-", "job")`, mixedLabelFamily, mixedRootAdmission},
-		{`label_join(` + nested + `, "dst", "-", "job")`, mixedLabelFamily, mixedPlanAdmission},
-		{`sort(` + direct + `)`, mixedSortFamily, mixedOperandAdmission},
+		{`abs(` + direct + `)`, mixedMathFamily, mixedRootAdmission},
+		{direct + ` * 2`, mixedScaleFamily, mixedRootAdmission},
+		{direct + ` + 1`, mixedArithmeticFamily, mixedRootAdmission},
+		{direct + ` > 1`, mixedComparisonFamily, mixedRootAdmission},
+		{direct + ` + up`, mixedVectorArithmeticFamily, mixedRootAdmission},
+		{direct + ` + ` + direct, mixedVectorArithmeticFamily, mixedRootAdmission},
+		{direct + ` > bool up`, mixedVectorComparisonFamily, mixedRootAdmission},
+		{direct + ` == ` + direct, mixedVectorComparisonFamily, mixedRootAdmission},
+		{`sum(rate(` + direct + `[5m:1m]))`, mixedSubqueryFamily, mixedRootAdmission},
 		{`scalar(` + direct + `)`, mixedScalarFamily, mixedOperandAdmission},
+		{`sort(` + direct + `)`, mixedSortFamily, mixedOperandAdmission},
+		{nested, mixedSortByLabelFamily, mixedOperandAdmission},
+		{`year(` + direct + `)`, mixedDateFamily, mixedOperandAdmission},
+		{`timestamp(` + direct + `)`, mixedTimestampFamily, mixedOperandAdmission},
+		{`info(` + direct + `)`, mixedInfoFamily, mixedOperandAdmission},
+		{`histogram_count(` + direct + `)`, mixedHistogramValueFamily, mixedOperandAdmission},
+		{`limitk(5, ` + direct + `)`, mixedLimitFamily, mixedOperandAdmission},
+		{`-` + direct, mixedUnaryFamily, mixedOperandAdmission},
+		{`+` + direct, mixedUnaryFamily, mixedOperandAdmission},
+		{direct + ` and up`, mixedSetOperandFamily, mixedOperandAdmission},
+		{`last_over_time((sum(` + direct + `))[5m:1m])`, mixedSubqueryFamily, mixedOperandAdmission},
 		{`absent(` + direct + `)`, mixedAbsentFamily, mixedOperandAdmission},
-		{`sort(` + nested + `)`, mixedSortFamily, mixedPlanAdmission},
+		{`abs(` + nested + `)`, mixedMathFamily, mixedPlanAdmission},
+		{`clamp(` + nested + `, 2, 1)`, mixedMathFamily, mixedPlanAdmission},
+		{`year(` + nested + `)`, mixedDateFamily, mixedPlanAdmission},
+		{`timestamp(` + nested + `)`, mixedTimestampFamily, mixedPlanAdmission},
+		{`+` + nested, mixedUnaryFamily, mixedPlanAdmission},
+		{`-` + nested, mixedUnaryFamily, mixedPlanAdmission},
+		{nested + ` * 2`, mixedScaleFamily, mixedPlanAdmission},
+		{`2 * ` + nested, mixedScaleFamily, mixedPlanAdmission},
+		{nested + ` / 2`, mixedScaleFamily, mixedPlanAdmission},
+		{nested + ` * scalar(vector(2))`, mixedScaleFamily, mixedPlanAdmission},
+		{nested + ` + 1`, mixedArithmeticFamily, mixedPlanAdmission},
+		{nested + ` > 1`, mixedComparisonFamily, mixedPlanAdmission},
+		{nested + ` + up`, mixedVectorArithmeticFamily, mixedPlanAdmission},
+		{`up - ` + nested, mixedVectorArithmeticFamily, mixedPlanAdmission},
+		{nested + ` + ` + nested, mixedVectorArithmeticFamily, mixedPlanAdmission},
+		{nested + ` > bool up`, mixedVectorComparisonFamily, mixedPlanAdmission},
+		{nested + ` == ` + nested, mixedVectorComparisonFamily, mixedPlanAdmission},
+		{`label_replace(` + nested + `, "dst", "x", "job", ".*")`, mixedLabelFamily, mixedPlanAdmission},
+		{`label_join(` + nested + `, "dst", "-", "job")`, mixedLabelFamily, mixedPlanAdmission},
 		{`scalar(` + nested + `)`, mixedScalarFamily, mixedPlanAdmission},
+		{`last_over_time(` + direct + `[5m:1m])`, mixedSubqueryFamily, mixedPlanAdmission},
+		{`sort(` + nested + `)`, mixedSortFamily, mixedPlanAdmission},
+		{`sort_by_label(` + nested + `, "instance")`, mixedSortByLabelFamily, mixedPlanAdmission},
+		{`info(` + nested + `)`, mixedInfoFamily, mixedPlanAdmission},
+		{`limitk(5, ` + nested + `)`, mixedLimitFamily, mixedPlanAdmission},
+		{nested + ` and up`, mixedSetOperandFamily, mixedPlanAdmission},
 		{`absent(` + nested + `)`, mixedAbsentFamily, mixedPlanAdmission},
 		{`histogram_count(` + nested + `)`, mixedHistogramValueFamily, mixedPlanAdmission},
-		{`+` + nested, mixedUnaryFamily, mixedPlanAdmission},
 		{`sum(` + nested + `)`, mixedSumAvgFamily, mixedPlanAdmission},
 		{`count(` + nested + `)`, mixedCountGroupFamily, mixedPlanAdmission},
 		{`min(` + nested + `)`, mixedFloatAggregateFamily, mixedPlanAdmission},
 		{`topk(2, ` + nested + `)`, mixedTopKFamily, mixedPlanAdmission},
 		{`count_values("v", ` + nested + `)`, mixedCountValuesFamily, mixedPlanAdmission},
-	} {
+	}
+	covered := map[mixedWrapperKey]bool{}
+	for _, tc := range cases {
+		covered[mixedWrapperKey{family: tc.family, site: tc.site}] = true
 		t.Run(tc.query, func(t *testing.T) {
 			expr, err := p.ParseExpr(tc.query)
 			if err != nil {
@@ -68,6 +122,11 @@ func TestMixedOperandPolicyControlsActualDispatch(t *testing.T) {
 				t.Fatalf("missing authorization did not reject actual dispatch: %v", err)
 			}
 		})
+	}
+	for key := range mixedOperandPolicies {
+		if !covered[key] {
+			t.Errorf("policy row %v has no consumer in this inventory: a row nothing dispatches through is a policy without a handler", key)
+		}
 	}
 }
 
@@ -133,11 +192,14 @@ func TestMixedOperandPolicyAlreadyLoweredShape(t *testing.T) {
 		{"date must use its payload preparation", mixed(), mixedDateFamily, mixedBespoke, true},
 		{"math must use its payload preparation", mixed(), mixedMathFamily, mixedBespoke, true},
 		{"math float-only consumer", mixed(), mixedMathFamily, mixedFloatOnly, false},
-		{"unary identity preserves", mixed(), mixedUnaryFamily, mixedPreserve, false},
+		{"unary bespoke consumer scales or forwards", mixed(), mixedUnaryFamily, mixedBespoke, false},
 		{"unary float-only consumer drops histograms", mixed(), mixedUnaryFamily, mixedFloatOnly, true},
-		{"scale has no existing-plan rule", mixed(), mixedScaleFamily, mixedFloatOnly, true},
-		{"vector arithmetic has no existing-plan rule", mixed(), mixedVectorArithmeticFamily, mixedBespoke, true},
-		{"vector comparison has no existing-plan rule", mixed(), mixedVectorComparisonFamily, mixedBespoke, true},
+		{"scale bespoke consumer scales in place", mixed(), mixedScaleFamily, mixedBespoke, false},
+		{"scale float-only consumer drops histograms", mixed(), mixedScaleFamily, mixedFloatOnly, true},
+		{"vector arithmetic bespoke consumer joins by discriminator", mixed(), mixedVectorArithmeticFamily, mixedBespoke, false},
+		{"vector arithmetic float-only consumer reads the placeholder Value", mixed(), mixedVectorArithmeticFamily, mixedFloatOnly, true},
+		{"vector comparison bespoke consumer joins by discriminator", mixed(), mixedVectorComparisonFamily, mixedBespoke, false},
+		{"vector comparison float-only consumer reads the placeholder Value", mixed(), mixedVectorComparisonFamily, mixedFloatOnly, true},
 		{"reject sentinel never authorizes", mixed(), mixedTimestampFamily, mixedReject, true},
 		{"closed sentinel never authorizes", mixed(), mixedTimestampFamily, mixedPolicyClosed, true},
 		{"ordinary float unchanged", &chplan.Scan{}, "unlisted-wrapper", mixedBespoke, false},
@@ -202,7 +264,8 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 		},
 		mixedPlanAdmission: {
 			mixedMathFamily, mixedDateFamily, mixedTimestampFamily, mixedUnaryFamily,
-			mixedArithmeticFamily, mixedComparisonFamily,
+			mixedScaleFamily, mixedArithmeticFamily, mixedComparisonFamily,
+			mixedVectorArithmeticFamily, mixedVectorComparisonFamily,
 			mixedLabelFamily, mixedScalarFamily, mixedSubqueryFamily,
 			mixedSortFamily, mixedSortByLabelFamily, mixedInfoFamily,
 			mixedLimitFamily, mixedSetOperandFamily,
@@ -223,11 +286,8 @@ func TestMixedOperandPolicyAdmissionInventory(t *testing.T) {
 			case mixedLabelFamily, mixedSortByLabelFamily, mixedCountGroupFamily, mixedLimitFamily:
 				wantPolicy = mixedPreserve
 			}
-			switch key {
-			case mixedWrapperKey{family: mixedFloatAggregateFamily, site: mixedPlanAdmission}:
+			if key == (mixedWrapperKey{family: mixedFloatAggregateFamily, site: mixedPlanAdmission}) {
 				wantPolicy = mixedFloatOnly
-			case mixedWrapperKey{family: mixedUnaryFamily, site: mixedPlanAdmission}:
-				wantPolicy = mixedPreserve
 			}
 			if got := mixedOperandPolicies[key]; got != wantPolicy {
 				t.Errorf("admission %v = %v, want %v", key, got, wantPolicy)

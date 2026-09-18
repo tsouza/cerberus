@@ -322,11 +322,12 @@ func mixedVVOutputAttributesExpr(m chplan.VectorMatch, card chplan.VectorCard, i
 
 // lowerVectorVectorArithmeticOverMixedExpHistogramSetOp lowers the shape
 // [vectorVectorArithmeticOverMixedExpHistogramSetOp] recognised: build the
-// two Mixed VectorSetOp operands, join them
-// ([chplan.MixedVectorJoin]), and answer either the additive fold
-// (`+`/`-`, [lowerMixedVVAdditiveArithmetic]) or the scaled fold
-// (`*`/`/`, [lowerMixedVVScaledArithmetic]) — see this file's header for
-// the four-combination semantics each answers.
+// two Mixed VectorSetOp operands, join them ([newMixedVectorJoin]) and
+// fold the join under op through [lowerMixedVectorJoinBinary] — the
+// additive fold (`+`/`-`, [lowerMixedVVAdditiveArithmetic]), the scaled
+// fold (`*`/`/`, [lowerMixedVVScaledArithmetic]) or the float-only fold
+// (`^`/`%`/`atan2`, [lowerMixedVVFloatOnlyArithmetic]); see this file's
+// header for the four-combination semantics each answers.
 func lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *parser.BinaryExpr, op chplan.BinaryOp, match chplan.VectorMatch, card chplan.VectorCard, include []string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	leftNode, err := lowerMixedExpHistogramSetOp(lhsSetOp, s, ctx)
 	if err != nil {
@@ -336,30 +337,7 @@ func lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *p
 	if err != nil {
 		return nil, err
 	}
-
-	join := &chplan.MixedVectorJoin{
-		Left:             leftNode,
-		Right:            rightNode,
-		Match:            match,
-		Card:             card,
-		Include:          include,
-		StepAligned:      ctx.step > 0,
-		MetricNameColumn: s.MetricNameColumn,
-		AttributesColumn: s.AttributesColumn,
-		TimestampColumn:  s.TimestampColumn,
-		ValueColumn:      s.ValueColumn,
-	}
-
-	switch op {
-	case chplan.OpAdd, chplan.OpSub:
-		return lowerMixedVVAdditiveArithmetic(join, op, s, ctx.resourceBounds.HistogramMergeMaxCostUnits), nil
-	case chplan.OpMul, chplan.OpDiv:
-		return lowerMixedVVScaledArithmetic(join, op, s), nil
-	default:
-		// POW, MOD, ATAN2: see this file's header — only float,float
-		// survives.
-		return lowerMixedVVFloatOnlyArithmetic(join, op, s), nil
-	}
+	return lowerMixedVectorJoinBinary(newMixedVectorJoin(leftNode, rightNode, match, card, include, s, ctx), op, false, s, ctx)
 }
 
 // lowerMixedVVAdditiveArithmetic answers `+`/`-`: reference keeps the
