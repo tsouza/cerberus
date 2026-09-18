@@ -114,8 +114,8 @@ test('the CLI rejects an unknown CHECK rather than passing silently', () => {
 // The arms that had NO test proving they can go red (#3182).
 //
 // Three of the six CHECK arms — should-skip, escape-hatch and playwright-skip
-// — were exercised nowhere: not here, not in scripts/test-forbid-skip.sh, not
-// in test/regression. docs/forbid-skip.md described that state as a design and
+// — were exercised nowhere: not here, not in the since-deleted shell regex
+// harness, not in test/regression. docs/forbid-skip.md described that state as a design and
 // said their regexes were "pinned by the CI and lefthook copies alone", which
 // pins nothing: those two are RUNNERS of the regex, not assertions about it.
 // Neither can fail on a clean tree, so a regex mutated to match nothing stays
@@ -227,4 +227,128 @@ test('CHECK=playwright-skip does not fire on an identifier that merely ends in .
   write('e2e/ok.spec.ts', 'const n = report.latest.skip (0);\nconst m = counters.skip(1);\n');
   const { status, out } = runGate('playwright-skip', dir);
   assert.equal(status, 0, `a non-runner .skip must not trip the scan; got:\n${out}`);
+});
+
+// ---------------------------------------------------------------------------
+// soft-assert and feature-discipline — the two arms whose only "test" used to
+// be scripts/test-forbid-skip.sh, a harness that asserted its OWN literal
+// copies of the regexes and never read forbid-skip.mjs: a registry regex
+// mutated to match nothing left it green. Every canonical match / no-match
+// pair from that harness now drives the real CLI, so the assertion is about
+// the scan that runs, not about a transcription of it.
+// ---------------------------------------------------------------------------
+
+// softAssertCases — one fixture body per canonical shape, with whether the
+// soft-assert arm must reject it.
+const softAssertCases = [
+  { label: 'empty-needle Contains (2-arg)', body: 'assert.Contains(body, "")', reject: true },
+  { label: 'empty-needle Contains (3-arg)', body: 'assert.Contains(t, body, "")', reject: true },
+  { label: 'real-needle Contains (2-arg)', body: 'assert.Contains(body, "error: foo")', reject: false },
+  { label: 'real-needle Contains (3-arg)', body: 'assert.Contains(t, body, "error: foo")', reject: false },
+  { label: 'empty-slice ElementsMatch (2-arg)', body: 'assert.ElementsMatch(got, []string{})', reject: true },
+  { label: 'empty-slice ElementsMatch (3-arg)', body: 'assert.ElementsMatch(t, got, []string{})', reject: true },
+  { label: 'populated ElementsMatch (2-arg)', body: 'assert.ElementsMatch(got, []string{"a", "b"})', reject: false },
+  {
+    label: 'populated ElementsMatch (3-arg)',
+    body: 'assert.ElementsMatch(t, got, []string{"a", "b"})',
+    reject: false,
+  },
+  { label: 'bare defer recover()', body: 'defer recover()', reject: true },
+  { label: 'multi-line silent recover', body: 'defer func() {\n  _ = recover()\n}()', reject: true },
+  {
+    label: 'asserted-panic form',
+    body: 'defer func() {\n  r := recover()\n  if r == nil { t.Fatal("expected panic") }\n}()',
+    reject: false,
+  },
+];
+
+for (const { label, body, reject } of softAssertCases) {
+  test(`CHECK=soft-assert ${reject ? 'FAILS on' : 'passes'} ${label}`, () => {
+    const { dir, write } = newFixtureRepo();
+    write('shape_test.go', `package main\n\nfunc TestShape(t *testing.T) {\n${body}\n}\n`);
+    const { status, out } = runGate('soft-assert', dir);
+    if (reject) {
+      assert.notEqual(status, 0, `${label} must fail the gate; got:\n${out}`);
+      assert.match(out, /shape_test\.go/);
+    } else {
+      assert.equal(status, 0, `${label} must pass the gate; got:\n${out}`);
+    }
+  });
+}
+
+test('CHECK=soft-assert ignores a vendored upstream test file', () => {
+  const { dir, write } = newFixtureRepo();
+  write(
+    'compatibility/promql/upstream/vendored_test.go',
+    'package main\n\nfunc TestV(t *testing.T) { defer recover() }\n',
+  );
+  const { status, out } = runGate('soft-assert', dir);
+  assert.equal(status, 0, `the upstream exclude must apply to the soft-assert corpus too; got:\n${out}`);
+});
+
+// featureTagCases — Gherkin tag lines; the scan is case-insensitive because
+// the tag vocabulary is closed and fixed-case by construction.
+const featureTagCases = [
+  { label: '@wip suffix tag', line: '@MIG-04 @tier0 @wip', reject: true },
+  { label: 'bare @skip tag', line: '@skip', reject: true },
+  { label: 'uppercase @WIP', line: '@WIP', reject: true },
+  { label: 'mixed-case @Skip on an Examples line', line: '    @Skip', reject: true },
+  { label: 'real tag line', line: '@MIG-01 @tier0 @archetype:already-otel', reject: false },
+  { label: 'archetype containing a banned word', line: '@MIG-01 @tier0 @archetype:manual-scrape', reject: false },
+];
+
+// godogRouteCases — harness Go lines under test/e2e/migration.
+const godogRouteCases = [
+  { label: 'godog.ErrSkip', line: 'return godog.ErrSkip', reject: true },
+  { label: 'godog.ErrPending', line: 'return godog.ErrPending', reject: true },
+  { label: 'T(ctx).Skipf', line: 'godog.T(ctx).Skipf("no fixture for %s", archetype)', reject: true },
+  { label: 'local receiver SkipNow', line: 't := godog.T(ctx)\nt.SkipNow()', reject: true },
+  { label: 'Skipped field access', line: 'w.Skipped = corpus.Skipped', reject: false },
+  { label: 'ordinary error return', line: 'return fmt.Errorf("the harvester dropped %d inputs", n)', reject: false },
+];
+
+// Both corpora are seeded in every case: the arm reads two pathspec sets and
+// lsFilesRequired exits 1 on an empty one, so a clean pass has to be a pass
+// over real files in both.
+function seedFeatureCorpus(write, { tagLine, goLine }) {
+  write(
+    'test/e2e/migration/features/story.feature',
+    `${tagLine}\nFeature: story\n  Scenario: runs\n    Given nothing\n`,
+  );
+  write('test/e2e/migration/steps/steps.go', `package steps\n\nfunc step() error {\n${goLine}\n}\n`);
+}
+
+for (const { label, line, reject } of featureTagCases) {
+  test(`CHECK=feature-discipline ${reject ? 'FAILS on' : 'passes'} ${label}`, () => {
+    const { dir, write } = newFixtureRepo();
+    seedFeatureCorpus(write, { tagLine: line, goLine: 'return nil' });
+    const { status, out } = runGate('feature-discipline', dir);
+    if (reject) {
+      assert.notEqual(status, 0, `${label} must fail the gate; got:\n${out}`);
+      assert.match(out, /story\.feature/);
+    } else {
+      assert.equal(status, 0, `${label} must pass the gate; got:\n${out}`);
+    }
+  });
+}
+
+for (const { label, line, reject } of godogRouteCases) {
+  test(`CHECK=feature-discipline ${reject ? 'FAILS on' : 'passes'} ${label}`, () => {
+    const { dir, write } = newFixtureRepo();
+    seedFeatureCorpus(write, { tagLine: '@MIG-01 @tier0', goLine: line });
+    const { status, out } = runGate('feature-discipline', dir);
+    if (reject) {
+      assert.notEqual(status, 0, `${label} must fail the gate; got:\n${out}`);
+      assert.match(out, /steps\.go/);
+    } else {
+      assert.equal(status, 0, `${label} must pass the gate; got:\n${out}`);
+    }
+  });
+}
+
+test('CHECK=t-skip does not fire on a receiver that merely starts with t', () => {
+  const { dir, write } = newFixtureRepo();
+  write('ok2_test.go', 'package main\n\nfunc TestFoo(t *testing.T) { tx.Skipper() }\n');
+  const { status, out } = runGate('t-skip', dir);
+  assert.equal(status, 0, `tx.Skipper() must not trip the t-skip scan; got:\n${out}`);
 });

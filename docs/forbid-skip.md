@@ -24,57 +24,39 @@ The gate **runs** in two places:
 1. `.github/workflows/ci.yml` job `forbid-skip` — required status check
    on `main`. The job holds no regexes of its own: every discipline scan
    is a `run: node .github/scripts/forbid-skip.mjs` step with a `CHECK:`
-   naming the arm to dispatch. The job also carries the regex self-test
-   (`scripts/test-forbid-skip.sh`) and two unrelated assert-from-source
-   gates that ride the same lane — `clickhouse-version-sync.mjs`
-   (`--self-test` + gate) and `doc-counts.mjs` (`--self-test` + gate).
-2. `lefthook.yml` `pre-push` hook — local mirror of the same gate so a
-   push that would have failed CI fails locally first.
+   naming the arm to dispatch. The job also carries the CLI self-test
+   (`node --test .github/scripts/forbid-skip.test.mjs`) and two unrelated
+   assert-from-source gates that ride the same lane —
+   `clickhouse-version-sync.mjs` (`--self-test` + gate) and
+   `doc-counts.mjs` (`--self-test` + gate).
+2. `lefthook.yml` `pre-push` hook — one `forbid-skip-<arm>` command per
+   registry arm, each `run: node .github/scripts/forbid-skip.mjs` with
+   `env: CHECK: <arm>`, so a push that would fail CI fails locally first.
+   `test/regression/lefthook_forbid_skip_mirror_test.go` pins that every
+   arm is mirrored, that every `CHECK:` names a live arm, and that no hook
+   body carries an inline scan.
 
-The regex **text** lives in three files, which MUST stay in lock-step:
+The regex **text** lives in exactly one file: `.github/scripts/forbid-skip.mjs`,
+one `CHECKS` registry entry per scan. Neither runner re-spells a regex.
 
-1. `.github/scripts/forbid-skip.mjs` — the CI source of truth, one
-   `CHECKS` registry entry per scan.
-2. `lefthook.yml` — inline mirror, one command per scan.
-3. `scripts/test-forbid-skip.sh` — its own literal copies, asserted
-   against the match / counter-example pairs documented below.
+`.github/scripts/forbid-skip.test.mjs` is the assertion that the regexes
+still match their canonical positive examples and still reject the matching
+counter-examples below. It drives the real CLI, arm by arm, against a
+throwaway repository seeded with each fixture, so a regex mutated to match
+nothing turns the `forbid-skip` job red. Every row below has such a pair:
 
-`scripts/test-forbid-skip.sh` is the assertion that the regexes still
-match their canonical positive examples and still reject the matching
-counter-examples below. It runs both as a standalone unit-test (invoke
-the script directly) and as a step inside the `forbid-skip` CI job. The
-lefthook `forbid-skip-self-test` command runs the same script on
-pre-push.
+| Row(s) | CI step (`CHECK=`)                                                            | lefthook `pre-push` command      |
+| ------ | ----------------------------------------------------------------------------- | -------------------------------- |
+| 1      | Reject t.Skip in test files (`t-skip`)                                        | `forbid-skip-t-skip`             |
+| 2–4    | Reject soft-assertion / silent-recover patterns (`soft-assert`)               | `forbid-skip-soft-assert`        |
+| 5      | Reject should_skip overlay entries (`should-skip`)                            | `forbid-skip-should-skip`        |
+| 6      | Reject test escape-hatch patterns (`escape-hatch`)                            | `forbid-skip-escape-hatch`       |
+| 7–8    | Reject scenario-suppressing tags and godog skip routes (`feature-discipline`) | `forbid-skip-feature-discipline` |
+| 9      | Reject Playwright spec suppression (`playwright-skip`)                        | `forbid-skip-playwright`         |
 
-Every row is carried by CI, and every row now has a test that proves its
-scan can go RED — in `scripts/test-forbid-skip.sh` (a regex-level harness) or
-in `.github/scripts/forbid-skip.test.mjs` (end-to-end against the real CLI in
-a throwaway git repository), both of which run in the `forbid-skip` job:
-
-| Row(s) | CI step (`CHECK=`)                                                            | lefthook `pre-push` command | red-proving test       |
-| ------ | ----------------------------------------------------------------------------- | --------------------------- | ---------------------- |
-| 1      | Reject t.Skip in test files (`t-skip`)                                        | `forbid-skip-t-skip`        | both                   |
-| 2–4    | Reject soft-assertion / silent-recover patterns (`soft-assert`)               | `forbid-soft-assert`        | `test-forbid-skip.sh`  |
-| 5      | Reject should_skip overlay entries (`should-skip`)                            | `forbid-escape-hatch`       | `forbid-skip.test.mjs` |
-| 6      | Reject test escape-hatch patterns (`escape-hatch`)                            | `forbid-escape-hatch`       | `forbid-skip.test.mjs` |
-| 7–8    | Reject scenario-suppressing tags and godog skip routes (`feature-discipline`) | `forbid-feature-discipline` | `test-forbid-skip.sh`  |
-| 9      | Reject Playwright spec suppression (`playwright-skip`)                        | `forbid-skip-playwright`    | both                   |
-
-Row 5 rejects every non-empty `should_skip:` block in
-`compatibility/**/*.{yml,yaml}` outright. lefthook's
-`forbid-escape-hatch` command carries rows 5 and 6 together: the row-6
-ERE over `*.{ts,tsx,go}` plus the row-5 `perl -0777` slurp over the
-compatibility YAML, which the CI job splits across two `CHECK` arms.
-Rows 5 and 6 are proved end-to-end in
-`.github/scripts/forbid-skip.test.mjs` rather than at the regex level, because
-each reads a corpus (the compatibility YAML, the TS/Go suites) that a fixture
-file expresses more honestly than a bare regex. They used to be proved
-NOWHERE, and this section described that as a design: their regexes were said
-to be "pinned by the CI and lefthook copies alone", which pins nothing. Those
-two are RUNNERS of the regex, not assertions about it — neither can fail on a
-clean tree, so a regex mutated to match nothing stayed green in both, twice
-over (#3182). Row 9 is proved both ways: regex-level cases plus an end-to-end
-pair covering every suppression route and a non-runner counter-example.
+A runner of a regex is not an assertion about it: CI and lefthook cannot fail
+on a clean tree, so they prove nothing about whether a scan still
+discriminates. Only the fixture pairs in `forbid-skip.test.mjs` do (#3182).
 
 ## Patterns vs CHECK categories — the count that the gate pins
 
@@ -93,7 +75,6 @@ from the keys of the `CHECKS` registry in
 | `should-skip`        | 5                           |
 | `escape-hatch`       | 6                           |
 | `feature-discipline` | 7, 8                        |
-| `playwright-skip`    | 9                           |
 
 The `soft-assert` scan runs three regex shapes (the two soft-assertion
 forms plus the silent-recover slurp) inside one CHECK, and
@@ -117,11 +98,10 @@ When a new offender shape is discovered:
    covering the regex, its intent, a match-example, and a
    counter-example.
 3. Add a test that proves the new scan can go RED, covering both
-   directions — a `case_N_*` block in `scripts/test-forbid-skip.sh` for a
-   regex-level shape, or a case in `.github/scripts/forbid-skip.test.mjs`
-   for one whose corpus or file scope makes an end-to-end fixture clearer.
-   A scan with neither is not pinned by having copies of its regex in CI
-   and lefthook: those run it, they do not assert anything about it.
+   directions — a match fixture and a no-match fixture driven through the
+   real CLI in `.github/scripts/forbid-skip.test.mjs`. A scan without that
+   pair is not pinned by being run in CI and lefthook: those run it, they
+   do not assert anything about it.
 4. Record the originating PR number in the summary table's `Origin`
    column — the pattern headings name the shape they reject, not the
    change that added them.

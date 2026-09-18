@@ -642,16 +642,16 @@ jobs:
           fetch-depth: 0
       # The discipline scans below are implemented in
       # .github/scripts/forbid-skip.mjs (one $CHECK per scan) — see
-      # `.github/scripts/README.md` for the convention. The regexes are
-      # kept byte-identical to scripts/test-forbid-skip.sh (the self-test
-      # step at the end of this job pins them).
+      # `.github/scripts/README.md` for the convention. That file holds the
+      # only copy of every regex; lefthook.yml invokes the same script.
       #
       # This CLI-level self-test runs FIRST: it builds a throwaway git repo
-      # and proves each scan fires on an UNTRACKED violating file (present in
-      # the working tree, never `git add`-ed), not only a committed one —
-      # every scan derives its file set from lib/gh.mjs's lsFiles(), which
-      # used to read the git INDEX only and so reported clean on exactly this
-      # shape locally (issue #1938).
+      # and, for every arm, proves the scan fires on each canonical
+      # violating fixture and stays quiet on each canonical counter-example,
+      # including an UNTRACKED violating file (present in the working tree,
+      # never `git add`-ed) — every scan derives its file set from
+      # lib/gh.mjs's lsFiles(), which used to read the git INDEX only and so
+      # reported clean on exactly this shape locally (issue #1938).
       - name: Self-test the forbid-skip CLI
         run: node --test .github/scripts/forbid-skip.test.mjs
       - name: Validate the CI lane registry contract
@@ -893,15 +893,6 @@ jobs:
         run: node .github/scripts/forbid-skip.mjs
         env:
           CHECK: should-skip
-      # Regex self-test for the forbid-skip gate. Every pattern
-      # documented in docs/forbid-skip.md has a canonical match-example
-      # and a counter-example; this step asserts the regexes still
-      # classify both correctly. When a future PR widens or normalises
-      # the gate, update docs/forbid-skip.md AND
-      # scripts/test-forbid-skip.sh in the same change.
-      - name: Self-test forbid-skip regex set
-        run: |
-          scripts/test-forbid-skip.sh
       # Reject test-suite escape-hatch primitives. Each pattern below
       # is a documented anti-pattern that masks real bugs:
       #

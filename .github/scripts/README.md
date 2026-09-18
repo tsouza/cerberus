@@ -4043,11 +4043,12 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
 
 ## Notes
 
-- **`forbid-skip.mjs` regexes are a contract.** They are kept
-  byte-identical to `scripts/test-forbid-skip.sh` (the self-test step
-  that pins the patterns against canonical match / no-match examples) and
-  to `docs/forbid-skip.md`. When widening or normalising a pattern,
-  update all three in the same change.
+- **`forbid-skip.mjs` regexes are a contract.** The script is the only
+  copy of every discipline regex: `ci.yml` and `lefthook.yml` both invoke
+  it with `CHECK: <arm>`, and `forbid-skip.test.mjs` drives the real CLI
+  against a match and a no-match fixture per pattern. When widening or
+  normalising a pattern, update `docs/forbid-skip.md` and
+  `forbid-skip.test.mjs` in the same change.
 - **Local check / behaviour test.** Each script is plain Node — run it
   directly with representative env (e.g.
   `THRESHOLD=95 REPORT=/tmp/g.json node .github/scripts/gremlins-threshold.mjs`)
