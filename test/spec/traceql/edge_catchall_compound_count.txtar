@@ -3,6 +3,7 @@
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String DEFAULT 't1',
+    SpanId String DEFAULT concat('s', toString(Duration)),
     SpanName String DEFAULT 'span',
     Timestamp DateTime64(9) DEFAULT toDateTime64('2024-01-01 00:00:00', 9) + toIntervalSecond(toInt64(Duration)),
     Duration UInt64,

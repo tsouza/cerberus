@@ -9,12 +9,14 @@
 // half; this file is what keeps the declared reason honest rather than a
 // free-form excuse.
 //
-// What nothing yet re-checks is whether a declared reason is still TRUE.
-// Three of the reasons below name a gap that will be closed rather than a
-// permanent boundary, so their fixtures become enrollable the day the gap
-// lands, and today that transition is invisible. #3261 tracks the check
-// that would catch it: run every exempt fixture against its oracle and
-// fail if the oracle agrees.
+// Whether a declared reason is still TRUE is re-checked on every chdb run:
+// RunParity (parity_chdb.go) runs every exempt fixture against the full
+// contract its query language would carry, and exemptionVerdict accepts
+// only the evidence that proves the DECLARED reason — the comparator
+// refusal class, or the actual disagreement, that
+// exemptionEvidenceByReason pairs with it. Agreement means the gap the
+// reason names has closed and the fixture must enrol; a refusal or
+// disagreement of another kind means the fixture cites the wrong reason.
 //
 // # Why a new section rather than a new value inside `parity:`
 //
@@ -396,6 +398,23 @@ const (
 	// pipeline supplies the answer, because there is no answer.
 	ReasonReferenceIntrinsicUnsupported = "reference-intrinsic-unsupported"
 
+	// ReasonReferenceRejectedQuery covers a fixture whose query TEXT the
+	// reference engine's own parser refuses while cerberus accepts it —
+	// Loki's grammar rejects `{service_name=~".*"}` ("queries require at
+	// least one regexp or equality matcher that does not have an
+	// empty-compatible value") where cerberus's permissive parser admits
+	// it. There is no reference answer whatever the data, because the
+	// reference never gets past the text.
+	//
+	// It is the sibling of ReasonReferenceIntrinsicUnsupported, and the two
+	// must not be confused: that one names a feature upstream declares
+	// "not yet supported" — a gap upstream will close, after which the
+	// fixture becomes enrollable — while this one names a shape upstream's
+	// grammar refuses by design, a boundary cerberus deliberately sits
+	// outside of. Both are the engine's own verdict, so both are proven by
+	// the same refusal.
+	ReasonReferenceRejectedQuery = "reference-rejected-query"
+
 	// ReasonReferencePipelineError covers a LogQL fixture whose seed
 	// deliberately provokes a PIPELINE ERROR — a line the unwrap stage
 	// cannot parse, say — in order to pin how that failure is carried.
@@ -435,6 +454,7 @@ var parityExemptReasons = []string{
 	ReasonDuplicateSpanSeed,
 	ReasonOracleUntypedAttributes,
 	ReasonReferenceIntrinsicUnsupported,
+	ReasonReferenceRejectedQuery,
 	ReasonReferencePipelineError,
 }
 

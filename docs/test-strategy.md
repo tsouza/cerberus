@@ -516,7 +516,12 @@ its corpus by appearing in that one place.
 A reason is a claim about what the reference engine can be SHOWN, never about
 what has not been got to yet, and each is established by running the fixture
 against the live oracle and reading the harness's own named refusal rather than
-by inspection. Several reasons name a boundary of the in-process oracles in
+by inspection: every refusal site carries a `refusalClass`, and
+`exemptionVerdict` (`test/spec/parity_chdb.go`) keeps an exemption live only on
+the refusal class or disagreement that `exemptionEvidenceByReason` pairs with
+the DECLARED reason — agreement means the exemption is stale, and a refusal of
+another kind means the fixture cites the wrong reason. Several reasons name a
+boundary of the in-process oracles in
 particular: `reference-fetch-layer` covers a TraceQL answer that upstream
 produces partly in its storage layer — `= nil`, whose absence sentinel only the
 fetch layer writes, and a span with more than one event or link, whose per-record

@@ -69,6 +69,7 @@
 package traceql
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -151,6 +152,25 @@ func (s Span) resourceAttributes() map[string]string {
 	return merged
 }
 
+// ErrReferenceRejectedQuery marks the reference engine's OWN verdict on the
+// query text: Compile rejected it — an intrinsic it does not implement
+// ("intrinsic (parent) not yet supported"), a cerberus extension it does
+// not parse. There is no reference answer, whatever the data.
+var ErrReferenceRejectedQuery = errors.New("reference engine rejected the query")
+
+// ErrReferenceEvaluation marks a query the reference engine compiled but
+// failed to EVALUATE over the spans this oracle built — most often a type
+// error on an attribute the oracle handed it as a string because
+// attrTypeHints recovered no type for it (`-span.x` under a unary minus,
+// say). That is a fact about this oracle's data preparation, not about the
+// query.
+var ErrReferenceEvaluation = errors.New("reference engine evaluation failed")
+
+// ErrUnrepresentableSpan marks a seeded span this in-process oracle's flat
+// event/link model cannot represent faithfully (validateChildRecords):
+// real Tempo's fetch layer matches per record, this evaluator cannot.
+var ErrUnrepresentableSpan = errors.New("span not representable in the in-process oracle")
+
 // Result is one span the reference engine matched, identified the same way
 // cerberus's projection identifies it.
 type Result struct {
@@ -170,7 +190,7 @@ func Evaluate(tb testing.TB, spans []Span, query string) ([]Result, error) {
 
 	root, evaluate, _, _, _, err := tempotraceql.Compile(query)
 	if err != nil {
-		return nil, fmt.Errorf("reference engine rejected the query: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrReferenceRejectedQuery, err)
 	}
 	hints := collectAttrTypeHints(root)
 
@@ -190,7 +210,7 @@ func Evaluate(tb testing.TB, spans []Span, query string) ([]Result, error) {
 			Spans:   built.spans,
 		}})
 		if err != nil {
-			return nil, fmt.Errorf("reference engine evaluation failed on trace %s: %w", trace.id, err)
+			return nil, fmt.Errorf("%w on trace %s: %w", ErrReferenceEvaluation, trace.id, err)
 		}
 
 		for _, ss := range results {
@@ -521,18 +541,18 @@ func validateChildRecords(s Span) error {
 	const maxFlattenableChildRecords = 1
 	if len(s.Events) > maxFlattenableChildRecords {
 		return fmt.Errorf(
-			"span %s carries %d events; the in-process oracle flattens every event's attributes "+
+			"%w: span %s carries %d events; the in-process oracle flattens every event's attributes "+
 				"into one `event.` scope, so a second event's value for the same key would be "+
 				"invisible to it while real Tempo's fetch layer matches on it",
-			s.SpanID, len(s.Events),
+			ErrUnrepresentableSpan, s.SpanID, len(s.Events),
 		)
 	}
 	if len(s.Links) > maxFlattenableChildRecords {
 		return fmt.Errorf(
-			"span %s carries %d links; the in-process oracle flattens every link's attributes "+
+			"%w: span %s carries %d links; the in-process oracle flattens every link's attributes "+
 				"into one `link.` scope, so a second link's value for the same key would be "+
 				"invisible to it while real Tempo's fetch layer matches on it",
-			s.SpanID, len(s.Links),
+			ErrUnrepresentableSpan, s.SpanID, len(s.Links),
 		)
 	}
 	return nil

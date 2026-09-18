@@ -26,8 +26,8 @@ Aggregate groupBy=[TraceId AS TraceId, SpanId AS SpanId] funcs=[FnCount(1) AS Va
   Filter predicate=true
     Scan(otel_traces)
 -- parity_exempt --
-reason: duplicate-span-seed
-detail: seed delivers the same (TraceId, SpanId) on more than one row on purpose, and span identity is the comparison key, so `{} | coalesce()` cannot be matched against a SET of matched spans
+reason: no-comparable-oracle
+detail: `{} | coalesce()` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares (the seed additionally repeats a (TraceId, SpanId) on purpose, which is what coalesce collapses, but the projection shape is what stops the comparison first)
 -- args_optimized --
 [0] string = "__cerberus_traceID"
 [1] string = "__cerberus_parentSpanID"
