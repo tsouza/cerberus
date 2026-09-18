@@ -29,70 +29,33 @@ jobs:
   # `compose-smoke.yml`, and `chdb.yml` for the matching short-circuit
   # in the other PR-gate workflows.
   #
-  # Only computed on `pull_request`. On `push` events (main + tags) the
-  # output is the empty string, so the boolean check `!= 'true'` in
-  # downstream `if:` clauses falls through and the heavy job runs — that
-  # is the safe-by-default behaviour for force-pushes, tag pushes, and
+  # Only decided on `pull_request`. On every other event (push, tags,
+  # schedule, dispatch) the output is `false`, so the boolean check
+  # `!= 'true'` in downstream `if:` clauses falls through and the heavy job
+  # runs — the safe-by-default behaviour for force-pushes, tag pushes, and
   # any other event where the diff isn't a clean two-commit range.
   #
-  # The filter convention: `code` matches "any changed file that is NOT
-  # documentation". If `code == 'false'` we know every changed file was
-  # a doc file → docs_only. If `code == 'true'` at least one non-doc
-  # file changed → full suite.
+  # What counts as documentation is the lane registry's
+  # `impact_selection.known_nonimpact_globs`, rendered into the paths filter
+  # by ./.github/actions/docs-only (see that action and
+  # .github/scripts/docs-only-filter.mjs): `code` matches "any changed file
+  # that is NOT documentation", so `code == 'false'` means every changed
+  # file was a doc file → docs_only.
   changes:
     name: changes
     runs-on: ubuntu-latest
     outputs:
-      docs_only: ${{ steps.compute.outputs.docs_only }}
+      docs_only: ${{ steps.docs.outputs.docs_only }}
     steps:
+      # Unconditional: a `./`-referenced composite action needs the checkout
+      # to exist on every event, not only on a pull request.
       - uses: actions/checkout@v7
-        if: github.event_name == 'pull_request'
 
-      - id: filter
-        if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4
-        with:
-          # `every` makes the negation patterns subtractive: a file is
-          # in `code` iff it matches `**` AND does NOT match any of the
-          # `!`-prefixed doc patterns. Under the default `some`
-          # quantifier, `**` matches everything and the negations never
-          # fire — every PR would be flagged as code-touching.
-          predicate-quantifier: 'every'
-          # `code` matches "any changed file that is NOT documentation".
-          # The `!`-prefixed patterns subtract docs files from the `**`
-          # baseline. If `code == 'false'` after the filter runs, every
-          # changed file was a doc file → docs_only short-circuit. If
-          # `code == 'true'`, at least one non-doc file changed → full
-          # suite.
-          filters: |
-            code:
-              - '**'
-              - '!**/*.md'
-              - '!**/*.markdown'
-              - '!docs/**'
-              - '!LICENSE*'
-              - '!CHANGELOG.md'
-              - '!.markdownlint*'
-              - '!CLAUDE.md'
-              - '!AGENTS.md'
-              - '!README*'
-
-      - id: compute
-        # On non-PR events, leave docs_only as the empty string so the
-        # downstream `!= 'true'` guard falls through and heavy jobs run.
-        # This is the safe-by-default branch for tag pushes, force-
-        # pushes, and any event where the diff isn't a clean two-commit
-        # range.
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
-              echo "docs_only=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-          fi
+      # The docs-only verdict comes from the lane registry's non-impact globs,
+      # rendered by ./.github/actions/docs-only — one list for every workflow
+      # that short-circuits on a docs-only pull request.
+      - id: docs
+        uses: ./.github/actions/docs-only
 
   # `check` is the test + build gate, split across two CONCURRENT jobs plus an
   # aggregator that carries the branch-protection name. Linting is separate
@@ -665,6 +628,11 @@ jobs:
         run: |
           node --test .github/scripts/ci-lane-contract.test.mjs
           MODE=registry node .github/scripts/ci-lane-contract.mjs
+      # The docs-only composite (./.github/actions/docs-only) renders its
+      # paths filter from the registry's known_nonimpact_globs through this
+      # script; the suite pins the rendering and the verdict truth table.
+      - name: Self-test the docs-only filter
+        run: node --test .github/scripts/docs-only-filter.test.mjs
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
           tool: just

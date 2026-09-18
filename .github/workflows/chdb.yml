@@ -129,7 +129,7 @@ jobs:
     name: changes
     runs-on: ubuntu-latest
     outputs:
-      docs_only: ${{ steps.compute.outputs.docs_only }}
+      docs_only: ${{ steps.docs.outputs.docs_only }}
       # run_heavy — the merge/release two-tier split (#2230). `roundtrip`,
       # `integration-*`, `chdb-build` and `perf-guards` are release-gate lanes,
       # not merge-gate ones: they do their real (chDB-heavy) work on push /
@@ -152,40 +152,14 @@ jobs:
       - name: Test the shared run_heavy decider scaffold
         run: node --test .github/scripts/lib/run-heavy.test.mjs
 
-      - id: filter
-        if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4
-        with:
-          # See ci.yml for why `every` is required (the `**` baseline
-          # plus negation patterns would otherwise always be true).
-          predicate-quantifier: 'every'
-          filters: |
-            code:
-              - '**'
-              - '!**/*.md'
-              - '!**/*.markdown'
-              - '!docs/**'
-              - '!LICENSE*'
-              - '!CHANGELOG.md'
-              - '!.markdownlint*'
-              - '!CLAUDE.md'
-              - '!AGENTS.md'
-              - '!README*'
+      # The docs-only verdict comes from the lane registry's non-impact globs,
+      # rendered by ./.github/actions/docs-only — one list for every workflow
+      # that short-circuits on a docs-only pull request.
+      - id: docs
+        uses: ./.github/actions/docs-only
 
-      - id: compute
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
-              echo "docs_only=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Computed as a step output rather than inline in the `compute` step
-      # above: a `push` event needs a network call (resolve the source PR
+      # Computed as a step output of its own rather than folded into the
+      # docs-only step: a `push` event needs a network call (resolve the source PR
       # that produced the pushed commit) to know whether it is redundant with
       # that PR's own run. See chdb-run-heavy.mjs's header for the full
       # decision table; GITHUB_TOKEN is used read-only and only reached on a

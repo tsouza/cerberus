@@ -3284,6 +3284,25 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `run_heavy=true`, logged via `::notice::`, never a hard failure); `1` on an
     unrecognised `MODE`.
 
+- **`docs-only-filter.mjs`** — `./.github/actions/docs-only`, the composite
+  every workflow with a docs-only short-circuit uses for its `changes` job
+  (`ci.yml`, `compatibility.yml`, `chdb.yml`, `schema-integration.yml`,
+  `strict-scan.yml`, `agpl-oracle.yml`). `MODE=filters` renders the
+  `dorny/paths-filter` input — a `code` key matching `**` minus every
+  `impact_selection.known_nonimpact_globs` entry of the lane registry — as the
+  multi-line `filters` output; `MODE=compute` turns the filter's `code`
+  verdict into `docs_only` (`true` only on a `pull_request` whose `code` came
+  back `false`; every other event is `false`, so the heavy jobs run). The six
+  workflows used to carry their own copies of the glob list and had drifted
+  from the registry; `test/regression/docs_only_action_test.go` refuses an
+  inline copy and pins the action's wiring.
+  - Env: `MODE` (`filters` | `compute`), `CI_LANE_REGISTRY` (filters; default
+    `.github/ci-lanes.json`), `EVENT_NAME` + `CODE_CHANGED` (compute),
+    `GITHUB_OUTPUT`.
+  - Exit: `0` with the output written; `1` on an unknown `MODE`, an
+    unreadable registry, or an empty glob list.
+  - Tests: `docs-only-filter.test.mjs` (run in `ci.yml`).
+
 - **`chdb-run-heavy.mjs`** — `chdb.yml`, the `changes` job's `decide run_heavy`
   step. A port of `coverage-run-heavy.mjs`'s #2416 fix to a fourth lane
   (tsouza/cerberus#2426), replacing the inline shell branch the `compute`
