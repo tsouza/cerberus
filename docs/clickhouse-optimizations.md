@@ -23,10 +23,11 @@ auto-enabled on capable servers, because they are validated result-correct
 and run at flat memory — auto picks them once the server meets their floor
 **and** the server permits the experimental setting they need (see
 [Capability probe](#capability-probe-experimental-ts_grid-setting)).
-The `autoSelect: no` features are reachable only by explicit listing —
-`columnar_result_decode` (a perf tradeoff) and `ts_grid_changes` (a
-correctness gap) among them. The generated table below is the authoritative
-per-feature answer; the `autoSelect` column carries it.
+23 of the registry's 44 features are `autoSelect: no` and are reachable only by
+explicit listing — `columnar_result_decode` (a perf tradeoff) and
+`ts_grid_changes` (a correctness gap) among them. The generated table below is
+the authoritative per-feature answer; the `autoSelect` column carries it, and
+the `doc-counts` gate holds the two integers here to the registry.
 
 ## The two configuration knobs
 
