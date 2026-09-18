@@ -2274,10 +2274,13 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   job. Rot detector for the EXPECTED set `release-preflight.mjs` gates on. Reads
   `RELEASE_REQUIRED_CHECKS` + `RELEASE_INFORMATIONAL_CHECKS` out of release.yml
   itself (one copy of the data, one parser; an empty parse throws rather than
-  comparing against nothing) and checks two directions the preflight structurally
-  cannot see from the inside. PROTECTION DRIFT: a live required context in
-  neither list is a lane every PR must pass and the release does not wait for —
-  the dangerous direction, and invisible to an allow-list of names to wait for.
+  comparing against nothing) plus the registry-derived de-gate set
+  (`registryInformationalMatchers`, the same one the preflight applies) and
+  checks two directions the preflight structurally cannot see from the inside.
+  PROTECTION DRIFT: a live required context in neither list, whose registry lane
+  is release-required, is a lane every PR must pass and the release does not
+  wait for — the dangerous direction, and invisible to an allow-list of names to
+  wait for.
   LANE DRIFT: a required name that posted no check-run anywhere in the scanned
   commit window no longer matches a lane, so the next release waits out its full
   window and aborts mid-publish. The window spans many commits because a single
@@ -2395,7 +2398,11 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     self-job names to exclude), `RELEASE_REQUIRED_CHECKS` (newline-separated
     EXPECTED set — every name must have posted a green check-run; empty is a
     hard failure), `RELEASE_INFORMATIONAL_CHECKS` (newline-separated name
-    PREFIXES to observe but not gate on). All three are split on the NEWLINE
+    PREFIXES to observe but not gate on — only for check-runs that are not a
+    registry lane's context; every lane whose `release_posture` in
+    `.github/ci-lanes.json` is not `required` is de-gated by that declaration,
+    via `registryInformationalMatchers`, and `CI_LANE_REGISTRY` overrides the
+    registry path). All three lists are split on the NEWLINE
     and only the newline: check-run names are job display names that may
     contain commas — `property (PromQL + LogQL + TraceQL, rapid N=500)` is a
     branch-protection required context — so a comma-separated value yields

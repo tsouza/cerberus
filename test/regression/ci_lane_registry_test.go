@@ -282,6 +282,7 @@ func TestCILaneRegistry(t *testing.T) {
 	}
 
 	assertCILaneReleaseRequiredContexts(t, releaseRequiredContexts)
+	assertCILaneReleasePostureIsTheOnlyDeGate(t, registry, releaseRequiredContexts)
 
 	for identity, laneIDs := range gatingJobs {
 		workflowPath, jobID, _ := strings.Cut(identity, "#")
@@ -518,6 +519,67 @@ func assertCILaneReleaseRequiredContexts(t *testing.T, registryContexts map[stri
 		"\n  registry only: %v\n  release preflight only: %v",
 		releaseWorkflowPath, preflightJob,
 		ciLaneSetDifference(got, want), ciLaneSetDifference(want, got))
+}
+
+// assertCILaneReleasePostureIsTheOnlyDeGate pins the other half of the
+// release gate. release-preflight.mjs derives its informational set from the
+// registry — every lane whose `release_posture` is not `required` is de-gated
+// by that declaration (registryInformationalMatchers) — and
+// RELEASE_INFORMATIONAL_CHECKS is left for check-runs that are not a lane's
+// context (a matrix child, a per-leg check-run). Two things must then hold at
+// merge time rather than mid-publish:
+//
+//   - no RELEASE_INFORMATIONAL_CHECKS entry covers a registry lane's context:
+//     that would be a second copy of a decision the registry already makes,
+//     and the one the hand-maintained list drifted on for twenty lanes;
+//   - no non-required lane's context swallows a RELEASE_REQUIRED_CHECKS name
+//     (exact contexts by equality, prefix contexts by prefix): the preflight
+//     reports that as a wiring error, but only while a release is being cut.
+func assertCILaneReleasePostureIsTheOnlyDeGate(
+	t *testing.T,
+	registry ciLaneRegistry,
+	releaseRequired map[string]bool,
+) {
+	t.Helper()
+
+	job := workflowJobBody(t, readFileString(t, releaseWorkflowPath), preflightJob)
+	informational := informationalChecksFromPreflight(t, job)
+	if len(informational) == 0 {
+		t.Fatalf("parsed no RELEASE_INFORMATIONAL_CHECKS out of %s job %q", releaseWorkflowPath, preflightJob)
+	}
+	required := requiredChecksFromPreflight(t, job)
+
+	derived := 0
+	for _, lane := range registry.Lanes {
+		if lane.ReleasePosture == "required" {
+			continue
+		}
+		derived++
+		for _, prefix := range informational {
+			if strings.HasPrefix(lane.Context.Name, prefix) {
+				t.Errorf("RELEASE_INFORMATIONAL_CHECKS entry %q covers registry lane %q's context %q; the lane is "+
+					"already de-gated by its release_posture %q (release-preflight.mjs derives that from the "+
+					"registry), so the entry is a second copy of the decision — delete it",
+					prefix, lane.ID, lane.Context.Name, lane.ReleasePosture)
+			}
+		}
+		for _, name := range required {
+			swallowed := lane.Context.Name == name ||
+				(lane.Context.Match == "prefix" && strings.HasPrefix(name, lane.Context.Name))
+			if swallowed {
+				t.Errorf("registry lane %q (release_posture %q, %s context %q) de-gates RELEASE_REQUIRED_CHECKS "+
+					"name %q; the preflight would report the swallowed lane as a wiring error mid-publish",
+					lane.ID, lane.ReleasePosture, lane.Context.Match, lane.Context.Name, name)
+			}
+		}
+	}
+	if derived == 0 {
+		t.Fatalf("%s declares no lane with a non-required release_posture; the derivation would be vacuous",
+			ciLaneRegistryPath)
+	}
+	if len(releaseRequired) == 0 {
+		t.Fatalf("%s declares no release-required lane", ciLaneRegistryPath)
+	}
 }
 
 func ciLaneStringSet(values []string) []string {

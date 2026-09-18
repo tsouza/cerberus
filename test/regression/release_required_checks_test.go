@@ -115,6 +115,7 @@ func TestReleasePreflightCoversEveryBranchProtectionContext(t *testing.T) {
 	job := workflowJobBody(t, readFileString(t, releaseWorkflowPath), preflightJob)
 	required := requiredChecksFromPreflight(t, job)
 	informational := informationalChecksFromPreflight(t, job)
+	registry := readCILaneRegistry(t)
 
 	inRequired := map[string]bool{}
 	for _, name := range required {
@@ -132,15 +133,29 @@ func TestReleasePreflightCoversEveryBranchProtectionContext(t *testing.T) {
 				break
 			}
 		}
+		// The preflight also de-gates every registry lane whose release_posture
+		// is not `required` (registryInformationalMatchers), matching the
+		// context the way the lane declares it is emitted.
+		for _, lane := range registry.Lanes {
+			if lane.ReleasePosture == "required" {
+				continue
+			}
+			if lane.Context.Name == ctx ||
+				(lane.Context.Match == "prefix" && strings.HasPrefix(ctx, lane.Context.Name)) {
+				degated = true
+			}
+		}
 		if !degated {
 			t.Errorf("branch-protection context %q appears in neither RELEASE_REQUIRED_CHECKS nor "+
-				"RELEASE_INFORMATIONAL_CHECKS of %s job %q. On the maintenance path there is no PR "+
-				"and therefore no branch protection, so an unlisted lane is certified by absence: "+
-				"the preflight ignores what it was not told to expect and the release publishes on "+
-				"silence. Either require it, or de-gate it: add it to RELEASE_INFORMATIONAL_CHECKS "+
-				"AND give it a row in the %q table of %s — TestDeGatedLanesAreDocumentedWithAReason "+
-				"holds those two in sync, so the reason is enforced rather than requested.",
-				ctx, releaseWorkflowPath, preflightJob, deGatedLanesHeading, operationsDocPath)
+				"RELEASE_INFORMATIONAL_CHECKS of %s job %q, and no registry lane de-gates it by a "+
+				"non-required release_posture. On the maintenance path there is no PR and therefore "+
+				"no branch protection, so an unlisted lane is certified by absence: the preflight "+
+				"ignores what it was not told to expect and the release publishes on silence. Either "+
+				"require it, or de-gate it: set its lane's release_posture in %s, or — for a "+
+				"check-run that is not a lane's context — add it to RELEASE_INFORMATIONAL_CHECKS AND "+
+				"give it a row in the %q table of %s (TestDeGatedLanesAreDocumentedWithAReason holds "+
+				"those two in sync, so the reason is enforced rather than requested).",
+				ctx, releaseWorkflowPath, preflightJob, ciLaneRegistryPath, deGatedLanesHeading, operationsDocPath)
 		}
 	}
 }

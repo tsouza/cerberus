@@ -3278,8 +3278,11 @@ selection between them:
 - **Release gate** — the full matrix: every merge-gate check plus the
   cost-dominating lanes an ordinary PR does not need to wait on —
   `perf-guards` and `benchstat diff`, the chDB `roundtrip` / `integration` /
-  `chdb-build` lanes, the full `gremlins` mutation sweep, all six `compatibility/*`
-  differential heads, `migration-e2e`, `perf-nightly` (the #2370 real-data
+  `chdb-build` lanes, the full `gremlins` mutation sweep, the four required
+  `compatibility/*` differential heads (`prometheus`, `loki`, `tempo`,
+  `prometheus-forced-route`; the `prometheus-floor` and `promql-surface` probes
+  are `release_posture: advisory` in `.github/ci-lanes.json` and do not gate a
+  publish), `migration-e2e`, `perf-nightly` (the #2370 real-data
   regression gate — like `migration-e2e` it has no `pull_request:` trigger
   at all, only `push: [main, release/*.x]` + `schedule` + manual dispatch,
   so it never runs on an ordinary PR, heavy or otherwise), and the substrate
@@ -3413,30 +3416,36 @@ or a stable backport never drags any of the three backwards.
 
 #### De-gated lanes on the publish path
 
-The preflight's expected set (`RELEASE_REQUIRED_CHECKS`) covers every
-branch-protection context except those below, which are listed in
-`RELEASE_INFORMATIONAL_CHECKS` instead: they run, they report, and their
-verdict does not hold a publish. Each one is a deliberate trade, so each one
-carries its reason here — `TestReleasePreflightCoversEveryBranchProtectionContext`
-and `TestDeGatedLanesAreDocumentedWithAReason` (both in
+A lane's release posture is declared once, in `.github/ci-lanes.json`
+(`release_posture`). `release.yml`'s preflight reads the registry from its
+checkout and treats every lane whose posture is not `required` as
+informational: it runs, it reports, and its verdict does not hold a publish.
+That covers the `advisory` lanes (`chaos`, `datashard (N=…)`, `startup-bench`,
+`mutation`, `drought`, `update-golden-guard`, `datashard-replica-affinity`, the
+`compatibility/prometheus-floor` and `compatibility/promql-surface` probes, the
+chDB `integration (…)` legs, `agpl-oracle`, …) and the `post_publish` ones
+(`brew-verify`, `external-links`). `TestCILaneRegistry` pins that the
+`required` lanes are exactly `RELEASE_REQUIRED_CHECKS`, that no non-required
+lane's context swallows a required name, and that `RELEASE_INFORMATIONAL_CHECKS`
+never restates a lane the registry already de-gates.
+
+`RELEASE_INFORMATIONAL_CHECKS` is left for check-runs that are NOT a lane's
+context — a matrix child or a per-leg check-run posted under its own name —
+and each of those carries its reason here.
+`TestReleasePreflightCoversEveryBranchProtectionContext` and
+`TestDeGatedLanesAreDocumentedWithAReason` (both in
 `test/regression/release_required_checks_test.go`) assert that this table and
-`RELEASE_INFORMATIONAL_CHECKS` name exactly the same lanes, so a lane cannot be
-de-gated without the reason landing here.
+`RELEASE_INFORMATIONAL_CHECKS` name exactly the same entries.
 
-Note the direction of travel: de-gating here is the exception. The substrate
-lanes `compose-smoke`, `dashboard` and `profile` went the OTHER way — they
-stopped gating pull requests and became release-required, so this preflight is
-now the only thing standing between them and a publish.
+Note the direction of travel: de-gating is the exception. The substrate lanes
+`compose-smoke`, `dashboard` and `profile` went the OTHER way — they stopped
+gating pull requests and became release-required, so this preflight is now
+the only thing standing between them and a publish.
 
-| Lane                         | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `compose-smoke-shard-info`   | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `mutation`                   | The diff-scoped aggregate runs on every PR and merge-group entry for early author-time signal, but it is not a required status check on `main` or the publish path (it is required on a `release/*.x` maintenance-line PR — see [maintenance lines](#maintenance-lines-hotfix-backports)), and it is not re-run by the publish preflight. Full mutation runs after landing on `main`, nightly, or by manual dispatch rather than on a release PR. The individual `gremlins …` legs remain implementation details of the aggregate.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `gremlins`                   | The `mutation` aggregator's own matrix legs (e.g. `gremlins phase4-promql-a`) post their OWN check-runs, under their own names — they do not share the `mutation` prefix, so de-gating `mutation` alone never covered them. Same reasoning as that row: a test-quality ratchet, not a property of the artifact. Caught when v1.16.0's release commit blocked on 6 pre-existing, already-tracked red `gremlins phase4-promql-*` legs even though `mutation` itself was already de-gated.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `drought`                    | `chaos-not-applicable-rate.yml`'s Wednesday-cron detector for the chaos lane's silent not-applicable outcomes. It mines chaos-job run HISTORY, not the commit it happens to post against, so a red run says nothing about the commit being released — its own header comment already excludes it from PR gating for the identical reason. Left required, an unlucky coincidence between the cron and a release push would hold a release hostage to accumulated chaos-lane drift the release itself did not cause.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `update-golden-guard`        | Structural, not a cost trade. It guards a PULL REQUEST against merging while an `update-golden.yml` dispatch is still regenerating its head branch (#2350). A publish commit has no head branch to strand and no pull request to hold back, and `update-golden-guard.yml` triggers on `pull_request` / `merge_group` / `workflow_run` only — with no push trigger on `main` or a maintenance line, a release commit can never carry that check-run, so requiring it would make the preflight wait out its window and abort every publish. It is not currently a required status check anywhere: absent from `main`'s sixteen-check ruleset (`docs/test-strategy.md`'s "CI gates" section) and from the separate `release/*.x` maintenance-line ruleset alike, so today a pending or red run does not by itself block a merge or a queue entry — it still runs and reports on every PR and merge-group entry, and stays out of `RELEASE_REQUIRED_CHECKS` for the structural reason above regardless of that. |
-| `datashard-replica-affinity` | Sharding is EXPERIMENTAL and off by default; `.github/ci-lanes.json`'s `e2e.datashard-replica-affinity` entry already declares `release_posture: advisory`, and `notify-nightly-failure.mjs`'s `EXPERIMENTAL_LANES` lists it alongside `datashard` for the same reason. It was not in this set until it blocked v1.20.0's publish (#3155): unlisted in both `RELEASE_REQUIRED_CHECKS` and `RELEASE_INFORMATIONAL_CHECKS`, it fell into the preflight's own documented "gates by default" fallback despite its declared posture saying it should not gate.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `brew-verify`                | Verifies the ALREADY-PUBLISHED Homebrew cask (`.github/ci-lanes.json`'s `release.brew-verify` entry: `main_posture: never`, `release_posture: post_publish`) — there is nothing meaningful to check pre-publish. `brew-verify.yml` runs on a `schedule`, independent of any push to main, so its check-run attaches to whatever main HEAD happens to be when the cron fires — the same "unlucky coincidence" `drought` above is de-gated against. v1.20.0's own publish was blocked this way: a nightly `brew-migration` run (that job has since been removed — see #3156) landed on the release merge commit by pure timing and reported a bug unrelated to the commit being released.                                                                                                                                                                                                                                                                                                                     |
+| Lane                       | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `compose-smoke-shard-info` | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                                                                                                                      |
+| `gremlins`                 | The `mutation` aggregator's own matrix legs (e.g. `gremlins phase4-promql-a`) post their OWN check-runs, under their own names — they do not share the `mutation` prefix, so de-gating `mutation` alone never covered them. Same reasoning as that row: a test-quality ratchet, not a property of the artifact. Caught when v1.16.0's release commit blocked on 6 pre-existing, already-tracked red `gremlins phase4-promql-*` legs even though `mutation` itself was already de-gated. |
 
 #### Homebrew tap
 
@@ -3655,10 +3664,12 @@ is the `admin` RepositoryRole in `always` mode, which is why `eol-retire` needs
 `deletion` rule (GitHub records this as `Bypassed rule violations`), whereas the
 default `GITHUB_TOKEN` acts as `github-actions[bot]` — write, never admin — and
 is refused. The `compatibility/*` lanes are not a status check on either
-branch: on a maintenance line, as on `main`, they are release gates enforced
-by `release.yml`'s preflight (`RELEASE_REQUIRED_CHECKS`) on the commit being
-published, as are the substrate lanes (`compose-smoke`, `dashboard`), which
-gate no pull request anywhere.
+branch: on a maintenance line, as on `main`, the four required heads
+(`prometheus`, `loki`, `tempo`, `prometheus-forced-route`) are release gates
+enforced by `release.yml`'s preflight (`RELEASE_REQUIRED_CHECKS`) on the commit
+being published, as are the substrate lanes (`compose-smoke`, `dashboard`),
+which gate no pull request anywhere; the `prometheus-floor` and
+`promql-surface` probes are advisory there too.
 
 EOL retirement never unpublishes anything: the `v<major>.<minor>.*` git tags and
 their GitHub Releases — and the already-pushed images, charts, and binaries —

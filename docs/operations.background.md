@@ -812,3 +812,21 @@ matrix that feeds the darwin ones. Because the release binaries are
 neither Apple-signed nor notarised, the cask carries a post-install hook that
 strips the `com.apple.quarantine` xattr, without which the first run on macOS
 dies with "cerberus is damaged and can't be opened".
+
+## Why these lanes are advisory on the publish path
+
+`release.yml`'s preflight de-gates a lane from its registry `release_posture`
+alone (`docs/operations.md` § "De-gated lanes on the publish path"). Before that
+derivation the workflow carried a hand-maintained `RELEASE_INFORMATIONAL_CHECKS`
+list, and a lane the registry already called advisory still blocked a publish
+until someone added its name — `datashard-replica-affinity` did exactly that to
+v1.20.0 (#3155), and `chaos`, `datashard (N=…)`, `startup-bench`, both compat
+probes and a dozen others were in the same state when the list was retired. The
+reasons recorded for the lanes that WERE listed are kept here, because each is
+the argument for its registry posture:
+
+- `mutation` — The diff-scoped aggregate runs on every PR and merge-group entry for early author-time signal, but it is not a required status check on `main` or the publish path (it is required on a `release/*.x` maintenance-line PR — see [maintenance lines](operations.md#maintenance-lines-hotfix-backports)), and it is not re-run by the publish preflight. Full mutation runs after landing on `main`, nightly, or by manual dispatch rather than on a release PR. The individual `gremlins …` legs remain implementation details of the aggregate.
+- `drought` — `chaos-not-applicable-rate.yml`'s Wednesday-cron detector for the chaos lane's silent not-applicable outcomes. It mines chaos-job run HISTORY, not the commit it happens to post against, so a red run says nothing about the commit being released — its own header comment already excludes it from PR gating for the identical reason. Left required, an unlucky coincidence between the cron and a release push would hold a release hostage to accumulated chaos-lane drift the release itself did not cause.
+- `update-golden-guard` — Structural, not a cost trade. It guards a PULL REQUEST against merging while an `update-golden.yml` dispatch is still regenerating its head branch (#2350). A publish commit has no head branch to strand and no pull request to hold back, and `update-golden-guard.yml` triggers on `pull_request` / `merge_group` / `workflow_run` only — with no push trigger on `main` or a maintenance line, a release commit can never carry that check-run, so requiring it would make the preflight wait out its window and abort every publish. It is not currently a required status check anywhere: absent from `main`'s sixteen-check ruleset (`docs/test-strategy.md`'s "CI gates" section) and from the separate `release/*.x` maintenance-line ruleset alike, so today a pending or red run does not by itself block a merge or a queue entry — it still runs and reports on every PR and merge-group entry, and stays out of `RELEASE_REQUIRED_CHECKS` for the structural reason above regardless of that.
+- `datashard-replica-affinity` — Sharding is EXPERIMENTAL and off by default; `.github/ci-lanes.json`'s `e2e.datashard-replica-affinity` entry already declares `release_posture: advisory`, and `notify-nightly-failure.mjs`'s `EXPERIMENTAL_LANES` lists it alongside `datashard` for the same reason. It was not in this set until it blocked v1.20.0's publish (#3155): unlisted in both `RELEASE_REQUIRED_CHECKS` and `RELEASE_INFORMATIONAL_CHECKS`, it fell into the preflight's own documented "gates by default" fallback despite its declared posture saying it should not gate.
+- `brew-verify` — Verifies the ALREADY-PUBLISHED Homebrew cask (`.github/ci-lanes.json`'s `release.brew-verify` entry: `main_posture: never`, `release_posture: post_publish`) — there is nothing meaningful to check pre-publish. `brew-verify.yml` runs on a `schedule`, independent of any push to main, so its check-run attaches to whatever main HEAD happens to be when the cron fires — the same "unlucky coincidence" `drought` above is de-gated against. v1.20.0's own publish was blocked this way: a nightly `brew-migration` run (that job has since been removed — see #3156) landed on the release merge commit by pure timing and reported a bug unrelated to the commit being released.
