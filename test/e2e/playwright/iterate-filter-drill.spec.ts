@@ -74,6 +74,7 @@ import {
   iterateDashboards,
   iteratePanels,
 } from './helpers/index.js';
+import { truncate, CONTEXT_EXCERPT_CHARS } from './helpers/index.js';
 
 // Self-traffic warmup. Same envelope as the panel-shape spec — the
 // drill is meaningless against an empty baseline, so we seed first.
@@ -285,7 +286,7 @@ test('filter-drill: every aggregating panel produces a non-empty subset when fil
         if (isPinnedResourceBoundRejection(resp.status(), body)) {
           testInfo.annotations.push({
             type: 'filter-drill-resource-bound-rejection',
-            description: `[${surface}] baseline query took a pinned resource-bound rejection (${resp.status()}) — drill skipped\n  body: ${body.slice(0, 300)}`,
+            description: `[${surface}] baseline query took a pinned resource-bound rejection (${resp.status()}) — drill skipped\n  body: ${truncate(body, CONTEXT_EXCERPT_CHARS)}`,
           });
           continue;
         }
@@ -376,7 +377,7 @@ test('filter-drill: every aggregating panel produces a non-empty subset when fil
           if (isPinnedResourceBoundRejection(resp.status(), body)) {
             testInfo.annotations.push({
               type: 'filter-drill-resource-bound-rejection',
-              description: `[${surface}] filtered query (${key}="${value}") took a pinned resource-bound rejection (${resp.status()})\n  body: ${body.slice(0, 300)}`,
+              description: `[${surface}] filtered query (${key}="${value}") took a pinned resource-bound rejection (${resp.status()})\n  body: ${truncate(body, CONTEXT_EXCERPT_CHARS)}`,
             });
             continue;
           }

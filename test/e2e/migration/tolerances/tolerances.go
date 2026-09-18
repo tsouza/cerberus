@@ -13,7 +13,12 @@
 // quiet widening to make a newly-red scenario pass again.
 package tolerances
 
-import "time"
+import (
+	"fmt"
+	"time"
+
+	"github.com/tsouza/cerberus/test/e2e/migration/seed"
+)
 
 // ExpHistogramQuantileEpsilon bounds the absolute difference between
 // cerberus's histogram_quantile over an OTel exponential (native) histogram
@@ -88,31 +93,58 @@ type Band struct {
 // downsampled into buckets of duration B, that worst case is B / W.
 //
 // MIG-20's Tier-1 scenario runs against the three-signal archetype's live
-// fixture, whose verify window is 20 minutes (seed.Window: VerifyEnd minus
-// VerifyStart). MIG20DownsampleBucket of 2 minutes evenly divides that
-// window into 10 buckets, giving a structural ceiling of 2/20 = 0.10. The
-// declared band adds headroom over that ceiling to absorb the fixture
-// counter's per-step jitter (it does not grow by a perfectly constant amount
-// every sample), rounding 0.10 up to 0.15 rather than shaving it to the exact
-// theoretical minimum.
+// fixture, whose verify window is MIG20VerifyWindow (seed.Window: VerifyEnd
+// minus VerifyStart — the seed window less its range-lookback margin).
+// MIG20DownsampleBucket evenly divides that window, giving the structural
+// ceiling B/W for a counter that grows at a constant rate.
+//
+// The fixture counter does not grow at a constant rate: each step draws its
+// increment uniformly from [0, seed.CounterMaxIncrement) (seed.buildCounter).
+// The leading edge the reconstruction loses is one bucket's growth, so the
+// band is derived for the worst placement of that jitter — a leading bucket
+// growing at the draw's PEAK rate over a window growing at its MEAN rate —
+// which scales the structural ceiling by the draw's peak-to-mean ratio. For
+// a uniform draw over [0, N) that ratio is (N-1) / ((N-1)/2) = 2 for every
+// N > 1, so the band is 2 x B/W. No headroom is added on top: the model
+// already places every unit of jitter where it hurts most.
 //
 // A production deployment comparing against REAL Thanos 5m/1h blocks over a
 // multi-week window would derive a far tighter band from the same formula
 // (B/W shrinks fast as W grows) — this value is declared for the bucket/
 // window pair this Tier-1 scenario actually exercises, not asserted as a
 // general-purpose constant.
+
 // MIG20DownsampleBucket is the downsample bucket width MIG-20's live
 // comparator uses — the number MIG20Downsample's band below is derived from.
 // It is named here, beside the derivation that depends on it, so the two can
 // never drift apart silently.
 const MIG20DownsampleBucket = 2 * time.Minute
 
+// MIG20VerifyWindow is the live fixture's verify window — the W in the B/W
+// derivation — read from the seed geometry rather than restated.
+const MIG20VerifyWindow = seed.SeedWindow - seed.RangeLookbackMargin
+
+// mig20StructuralCeiling is B/W: the share of the window's growth one
+// bucket's leading edge can hold for a constant-rate counter.
+var mig20StructuralCeiling = float64(MIG20DownsampleBucket) / float64(MIG20VerifyWindow)
+
+// mig20CounterPeakToMeanRatio is the fixture counter's per-step increment
+// peak over its mean: the draw is uniform over [0, CounterMaxIncrement), so
+// the peak is CounterMaxIncrement-1 and the mean half of that.
+var mig20CounterPeakToMeanRatio = float64(seed.CounterMaxIncrement-1) /
+	(float64(seed.CounterMaxIncrement-1) / 2)
+
 // MIG20Downsample is MIG-20's declared downsample band. See the package
-// derivation comment above MIG20DownsampleBucket's use in it.
+// derivation comment above MIG20DownsampleBucket.
 var MIG20Downsample = Band{
-	Value: 0.15,
-	Derivation: "counter-aware downsample: worst-case leading-edge loss is one bucket's share of the " +
-		"window's total growth (B/W). Three-signal's live verify window is 20m; MIG20DownsampleBucket's 2m " +
-		"bucket evenly divides it into 10 buckets, giving a structural ceiling of 2/20 = 0.10. The declared " +
-		"0.15 adds headroom over that ceiling for the fixture counter's per-step jitter.",
+	Value: mig20StructuralCeiling * mig20CounterPeakToMeanRatio,
+	Derivation: fmt.Sprintf(
+		"counter-aware downsample: worst-case leading-edge loss is one bucket's share of the window's "+
+			"total growth (B/W). Three-signal's live verify window is %s; MIG20DownsampleBucket's %s bucket "+
+			"gives a structural ceiling of %.2f for a constant-rate counter. The fixture counter's increments "+
+			"are drawn uniformly from [0, %d), whose peak-to-mean ratio is %.0f; a leading bucket at the peak "+
+			"rate over a window at the mean rate scales the ceiling by that ratio, giving %.2f.",
+		MIG20VerifyWindow, MIG20DownsampleBucket, mig20StructuralCeiling, seed.CounterMaxIncrement,
+		mig20CounterPeakToMeanRatio, mig20StructuralCeiling*mig20CounterPeakToMeanRatio,
+	),
 }

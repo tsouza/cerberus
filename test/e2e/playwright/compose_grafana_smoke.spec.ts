@@ -6,11 +6,20 @@ import {
   type APIRequestContext,
 } from '@playwright/test';
 import {
+  type Dashboard,
+  type Panel,
   generateSelfTraffic,
   awaitSelfTelemetryRangeSignal,
   awaitSeedFixtureSignal,
   bodyContainsPinnedResourceBoundMessage,
+  OTLP_EXPORT_INTERVAL_SECONDS,
+  dsQueryRequestMatchesPanel,
+  iterateDashboards,
+  panelForDsQueryRequest,
+  parseDsQueryRequest,
+  PANEL_HEADER_TESTID_PREFIX,
 } from './helpers/index.js';
+import { truncate, WIDE_BODY_EXCERPT_CHARS, BODY_EXCERPT_CHARS, MESSAGE_EXCERPT_CHARS, EXPR_EXCERPT_CHARS } from './helpers/index.js';
 
 /**
  * Compose-stack Grafana catch-net.
@@ -55,12 +64,29 @@ import {
  *   GRAFANA_BASE_URL  default http://localhost:3000
  */
 
-type DashboardEntry = { uid: string; title: string; type: string };
-
 type Surface = {
   kind: string; // 'home' | 'app:<name>' | 'dash:<uid>'
   label: string; // human-readable surface label, used in failure messages
   url: string;
+  /**
+   * The provisioned dashboard this surface renders, when it is one —
+   * what a captured ds/query request is attributed to a panel against.
+   * Home / Explore / app surfaces have none: their queries belong to no
+   * provisioned panel and are reported by URL + refId alone.
+   */
+  dashboard?: Dashboard;
+};
+
+
+// Arguments for the in-page panel-title walk (collectStuckLoadingPanels /
+// collectPanelErrors): a page-context callback cannot close over Node-side
+// constants, so they cross as its argument. `depth` bounds the ancestor
+// climb from a status/spinner node to its panel chrome; `untitled` is the
+// marker for a banner the walk could not attribute — never excused.
+const PANEL_TITLE_WALK = {
+  prefix: PANEL_HEADER_TESTID_PREFIX,
+  depth: 8,
+  untitled: '<untitled panel>',
 };
 
 type DSQueryError = {
@@ -99,12 +125,59 @@ const WARMUP_BEFOREALL_TIMEOUT_MS =
 // capture window has already closed. See driveCerberusQLPartition.
 const PANEL_QUERY_LATE_RESPONSE_TIMEOUT_MS = 60_000;
 
+// seedCerberusSelfTraffic's burst spacing and post-burst settle, both
+// sized as multiples of the export interval (7.5x and 2x): the spacing
+// must exceed one tick so an export lands between the bursts; the settle
+// must exceed one tick so the second burst's sample is flushed before the
+// panel query fires.
+const SEED_BURST_SPACING_MS = 7.5 * OTLP_EXPORT_INTERVAL_SECONDS * 1000;
+const SEED_SETTLE_MS = 2 * OTLP_EXPORT_INTERVAL_SECONDS * 1000;
+
 // The self-observability dashboard's own native-histogram-consuming panel
 // (test/e2e/grafana/compose/dashboards/cerberus.json) — the ONE panel a
-// pinned resource-bound rejection (issue #3468) can legitimately reach.
-// Kept as a literal so a dashboard-title drift breaks this pin instead of
-// silently widening which panel's errors get excused.
+// pinned resource-bound rejection (issue #3468) can legitimately reach. The
+// carve-out is keyed on the DASHBOARD UID and the panel's EXPRESSION
+// SHAPE (a histogram_quantile over the native `_exp_hist` metric), matched
+// against the ds/query request Grafana actually sent — never on a
+// response body mentioning the guard message, which any panel on any
+// board could do. Kept as literals so a dashboard/expression drift breaks
+// this pin instead of silently widening which panel's errors get excused.
+const SELF_OBSERVABILITY_DASHBOARD_UID = 'cerberus-self';
 const P95_LATENCY_PANEL_TITLE = 'P95 latency by language';
+const NATIVE_HISTOGRAM_METRIC_SUFFIX = '_exp_hist';
+
+// The "Query rate by language" panel (same dashboard) — the panel whose
+// dotted-vs-underscored group-by regression driveCerberusQLPartition pins.
+const QUERY_RATE_PANEL_TITLE = 'Query rate by language';
+
+/**
+ * True iff `panel` is the P95 native-histogram quantile panel on the
+ * self-observability board: the one panel a pinned resource-bound
+ * rejection may legitimately reach.
+ */
+function isResourceBoundExcusedPanel(dashboardUid: string, panel: Panel): boolean {
+  if (dashboardUid !== SELF_OBSERVABILITY_DASHBOARD_UID) return false;
+  if (panel.title !== P95_LATENCY_PANEL_TITLE) return false;
+  return panel.targets.some((t) => {
+    const expr = (t.expr ?? t.query ?? '').trim();
+    return expr.includes('histogram_quantile') && expr.includes(NATIVE_HISTOGRAM_METRIC_SUFFIX);
+  });
+}
+
+/**
+ * The provisioned panel a captured ds/query response belongs to, read
+ * from the REQUEST Grafana sent (its `queries[].expr`), or undefined when
+ * the surface has no dashboard or no panel carries that expression.
+ */
+function panelForResponse(surface: Surface, resp: Response): Panel | undefined {
+  if (surface.dashboard === undefined) return undefined;
+  return panelForDsQueryRequest(surface.dashboard, parseDsQueryRequest(resp.request().postData()));
+}
+
+/** `panel "<title>"` (or a no-panel marker) for a failure line. */
+function panelLabel(panel: Panel | undefined): string {
+  return panel === undefined ? 'panel <none>' : `panel "${panel.title}"`;
+}
 
 test.beforeAll(async ({ request }) => {
   test.setTimeout(WARMUP_BEFOREALL_TIMEOUT_MS);
@@ -175,8 +248,9 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
 }, testInfo) => {
   // The drilldown app + multi-surface sweep is heavier than the old
   // dashboard-only loop; bump the overall budget to 8 minutes. The
-  // extra 2 minutes (vs the prior 6m budget) absorbs the ~95s self-
-  // traffic seed `driveCerberusQLPartition` now runs before its
+  // extra 2 minutes (vs the prior 6m budget) absorbs the self-traffic
+  // seed (SEED_BURST_SPACING_MS + SEED_SETTLE_MS, ~95s)
+  // `driveCerberusQLPartition` now runs before its
   // [5m]-rate panel assertion (see seedCerberusSelfTraffic) — without
   // that seed, fresh compose stacks flaked when the lower-volume
   // `traceql` head landed only a single OTel export inside the rate
@@ -185,12 +259,11 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
 
   const baseURL = process.env.GRAFANA_BASE_URL ?? 'http://localhost:3000';
 
-  // 1. Enumerate provisioned dashboards via /api/search. The dashboard
-  //    list is dynamic at run time, so we read it here and stitch it
-  //    into the fixed-surfaces list below.
-  const searchResp = await request.get(`${baseURL}/api/search?type=dash-db`);
-  expect(searchResp.status(), 'grafana /api/search status').toBe(200);
-  const dashboards = (await searchResp.json()) as DashboardEntry[];
+  // 1. Enumerate provisioned dashboards (full JSON, panels flattened).
+  //    The dashboard list is dynamic at run time, so we read it here and
+  //    stitch it into the fixed-surfaces list below; the panel JSON is
+  //    what a captured ds/query request is attributed to a panel against.
+  const dashboards = await iterateDashboards(request, baseURL);
   expect(dashboards.length, 'at least one provisioned dashboard').toBeGreaterThan(0);
 
   // 2. Fixed surfaces the maintainer keeps hitting that the dynamic
@@ -253,6 +326,7 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
     kind: `dash:${d.uid}`,
     label: d.title,
     url: `${baseURL}/d/${d.uid}`,
+    dashboard: d,
   }));
 
   const surfaces: Surface[] = [...fixedSurfaces, ...dashboardSurfaces];
@@ -308,11 +382,27 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
     //     #3468): a `/api/ds/query` response whose body is exactly
     //     cerberus's own documented resource-exhausted rejection (the
     //     same "Memory-limit / resource-bound multi-way contract"
-    //     iterate-time-ranges.spec.ts pins) is the guard working as
-    //     designed for a native-histogram-consuming panel under real,
-    //     organically-seeded traffic density — not a bug to fix at the
-    //     source. Every OTHER failure is still zero-tolerance.
-    let sawPinnedRejection = false;
+    //     iterate-time-ranges.spec.ts pins), AND whose REQUEST is the
+    //     self-observability board's own native-histogram P95 panel
+    //     (isResourceBoundExcusedPanel — dashboard uid + expression
+    //     shape, read from the request Grafana sent), is the guard
+    //     working as designed under real, organically-seeded traffic
+    //     density — not a bug to fix at the source. The same message
+    //     from ANY other panel, or from a surface with no provisioned
+    //     panel to attribute it to, is a hard failure. Every OTHER
+    //     failure is still zero-tolerance. The excused panels' titles
+    //     are what the DOM sweep (3d) compares its error banners to.
+    const excusedPanelTitles = new Set<string>();
+    const isExcusedRejection = (resp: Response, body: string): boolean => {
+      if (!resp.url().includes('/api/ds/query')) return false;
+      if (!bodyContainsPinnedResourceBoundMessage(body)) return false;
+      const panel = panelForResponse(surface, resp);
+      if (panel === undefined || !isResourceBoundExcusedPanel(surface.dashboard?.uid ?? '', panel)) {
+        return false;
+      }
+      excusedPanelTitles.add(panel.title);
+      return true;
+    };
     for (const resp of captured) {
       const status = resp.status();
       if (status < 200 || status > 299) {
@@ -324,12 +414,12 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
         } catch {
           body = '<unreadable>';
         }
-        if (resp.url().includes('/api/ds/query') && bodyContainsPinnedResourceBoundMessage(body)) {
-          sawPinnedRejection = true;
-          continue;
-        }
+        if (isExcusedRejection(resp, body)) continue;
+        const attribution = resp.url().includes('/api/ds/query')
+          ? ` ${panelLabel(panelForResponse(surface, resp))}`
+          : '';
         failures.push(
-          `[${surface.kind}:${surface.label}] http: ${method} ${path} → ${status}\n  body: ${truncate(body, 800)}`,
+          `[${surface.kind}:${surface.label}] http: ${method} ${path} → ${status}${attribution}\n  body: ${truncate(body, WIDE_BODY_EXCERPT_CHARS)}`,
         );
       }
     }
@@ -351,11 +441,9 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
         if (target && typeof target.error === 'string' && target.error.length > 0) {
           // Same pinned resource-bound carve-out as 3a above (issue
           // #3468) — a 200-status ds/query response can still tunnel a
-          // per-target pinned rejection.
-          if (bodyContainsPinnedResourceBoundMessage(target.error)) {
-            sawPinnedRejection = true;
-            continue;
-          }
+          // per-target pinned rejection — and the same attribution
+          // rule: only the excused panel's own request is excused.
+          if (isExcusedRejection(resp, target.error)) continue;
           const dsErr: DSQueryError = {
             url: stripBase(resp.url(), baseURL),
             refId,
@@ -363,7 +451,7 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
             error: target.error,
           };
           failures.push(
-            `[${surface.kind}:${surface.label}] ds-query: refId=${dsErr.refId} url=${dsErr.url}\n  error: ${truncate(dsErr.error, 800)}`,
+            `[${surface.kind}:${surface.label}] ds-query: ${panelLabel(panelForResponse(surface, resp))} refId=${dsErr.refId} url=${dsErr.url}\n  error: ${truncate(dsErr.error, WIDE_BODY_EXCERPT_CHARS)}`,
           );
         }
       }
@@ -393,24 +481,23 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
     //     generic "Panel status", not the underlying error text, so
     //     this sweep cannot itself tell a pinned resource-bound
     //     rejection (issue #3468) from any other panel failure. The
-    //     network-level sweeps above (3a/3b) already identified
-    //     whether THIS surface saw one; the only panel that query can
-    //     legitimately hit is the self-observability dashboard's own
-    //     native-histogram-consuming P95 panel, so an error on that
-    //     ONE known panel, co-occurring with a pinned rejection
-    //     elsewhere on the same page, is annotated rather than failed.
-    //     Any OTHER panel-error stays zero-tolerance.
+    //     network-level sweeps above (3a/3b) attributed every excused
+    //     rejection to the panel whose REQUEST carried it, so a banner
+    //     on exactly one of THOSE panels (by the title Grafana stamps on
+    //     the panel chrome) is annotated rather than failed. Any OTHER
+    //     panel-error — including a banner whose panel the DOM walk
+    //     could not name — stays zero-tolerance.
     const panelErrors = await collectPanelErrors(page);
     for (const { title, message } of panelErrors) {
-      if (sawPinnedRejection && title === P95_LATENCY_PANEL_TITLE) {
+      if (excusedPanelTitles.has(title)) {
         testInfo.annotations.push({
           type: 'compose-smoke-resource-bound-rejection',
-          description: `[${surface.kind}:${surface.label}] panel "${title}" showed an error banner alongside a pinned resource-bound rejection elsewhere on this page — expected (issue #3468)`,
+          description: `[${surface.kind}:${surface.label}] panel "${title}" showed an error banner; its own ds/query request carried a pinned resource-bound rejection — expected (issue #3468)`,
         });
         continue;
       }
       failures.push(
-        `[${surface.kind}:${surface.label}] panel-error: panel "${title}"\n  message: ${truncate(message, 400)}`,
+        `[${surface.kind}:${surface.label}] panel-error: panel "${title}"\n  message: ${truncate(message, MESSAGE_EXCERPT_CHARS)}`,
       );
     }
   }
@@ -437,7 +524,7 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
     const body = await resp.text();
     if (resp.status() < 200 || resp.status() > 299) {
       failures.push(
-        `[health:${ds}] datasource health probe → ${resp.status()}\n  body: ${truncate(body, 600)}`,
+        `[health:${ds}] datasource health probe → ${resp.status()}\n  body: ${truncate(body, BODY_EXCERPT_CHARS)}`,
       );
       continue;
     }
@@ -447,7 +534,7 @@ test('compose: home, drilldown app, and every provisioned dashboard load without
       const parsed = JSON.parse(body) as { status?: string; message?: string };
       if (parsed.status && parsed.status !== 'OK' && parsed.status !== 'success') {
         failures.push(
-          `[health:${ds}] datasource health status=${parsed.status} message=${truncate(parsed.message ?? '', 240)}`,
+          `[health:${ds}] datasource health status=${parsed.status} message=${truncate(parsed.message ?? '', MESSAGE_EXCERPT_CHARS)}`,
         );
       }
     } catch {
@@ -651,7 +738,7 @@ async function driveTraceClick(page: Page, baseURL: string): Promise<string[]> {
         body = '<unreadable>';
       }
       failures.push(
-        `[trace-click] /api/ds/query → ${status}\n  body: ${truncate(body, 800)}`,
+        `[trace-click] /api/ds/query → ${status}\n  body: ${truncate(body, WIDE_BODY_EXCERPT_CHARS)}`,
       );
     }
   }
@@ -671,7 +758,7 @@ async function driveTraceClick(page: Page, baseURL: string): Promise<string[]> {
     for (const [refId, target] of Object.entries(parsed.results ?? {})) {
       if (target && typeof target.error === 'string' && target.error.length > 0) {
         failures.push(
-          `[trace-click] ds-query: refId=${refId}\n  error: ${truncate(target.error, 800)}`,
+          `[trace-click] ds-query: refId=${refId}\n  error: ${truncate(target.error, WIDE_BODY_EXCERPT_CHARS)}`,
         );
       }
     }
@@ -692,7 +779,7 @@ async function driveTraceClick(page: Page, baseURL: string): Promise<string[]> {
       lc.includes('query error') ||
       lc.includes('failed to convert tempo response')
     ) {
-      failures.push(`[trace-click] DOM alert: ${truncate(text, 400)}`);
+      failures.push(`[trace-click] DOM alert: ${truncate(text, MESSAGE_EXCERPT_CHARS)}`);
     }
   }
 
@@ -738,27 +825,52 @@ async function driveCerberusQLPartition(
   // and `rate()` needs ≥ 2 distinct samples per series inside the
   // window. `cerberus_queries_total` is fed by cerberus's OTel SDK
   // `PeriodicReader` (internal/telemetry/telemetry.go), which exports
-  // on its 60s default interval. On a freshly-started compose stack,
-  // the surfaces sweep above hits each head only a handful of times —
-  // enough for the dashboard-load assertions, but borderline for the
-  // ≥ 2-samples-per-cerberus_ql contract. PRs #664/#681/#682 flaked
-  // here exactly when the lower-volume head (`traceql`) landed only a
-  // single export batch inside the rate window.
+  // every OTLP_EXPORT_INTERVAL_SECONDS. On a freshly-started compose
+  // stack, the surfaces sweep above hits each head only a handful of
+  // times — enough for the dashboard-load assertions, but borderline
+  // for the ≥ 2-samples-per-cerberus_ql contract. PRs #664/#681/#682
+  // flaked here exactly when the lower-volume head (`traceql`) landed
+  // only a single export batch inside the rate window.
   //
   // The fix fires two self-traffic bursts straddling an OTel export
   // boundary, guaranteeing the next two exports land monotonically-
   // increasing counter values for promql / logql / traceql:
-  //   t=0    burst 1: 6 hits each to /api/v1/query (prom),
-  //          /loki/api/v1/query (loki), /api/search (tempo)
-  //   t=75s  burst 2: same shape — counter grows, next export
-  //          publishes a sample distinct from burst 1's
-  //   t=95s  proceed: ≥2 samples per cerberus_ql now inside [5m]
+  //   t=0                      burst 1: 6 hits each to /api/v1/query
+  //                            (prom), /loki/api/v1/query (loki),
+  //                            /api/search (tempo)
+  //   t=SEED_BURST_SPACING     burst 2: same shape — counter grows, the
+  //                            next export publishes a sample distinct
+  //                            from burst 1's
+  //   t=+SEED_SETTLE           proceed: ≥2 samples per cerberus_ql now
+  //                            inside [5m]
   //
-  // 95s seed > 60s OTel interval × 1, so even a worst-case "burst 1
-  // landed just before an export tick" still leaves ≥ 1 export between
-  // bursts. The 6-hit count per burst tolerates a single sporadic
+  // The spacing exceeds the export interval several times over, so
+  // even a worst-case "burst 1 landed just before an export tick" still
+  // leaves ≥ 1 export between bursts (see seedCerberusSelfTraffic for
+  // the sizing). The 6-hit count per burst tolerates a single sporadic
   // request failure without dropping a head off the legend.
   await seedCerberusSelfTraffic(request, baseURL);
+
+  // The panel is attributed by the REQUEST Grafana sends for it: a
+  // ds/query POST whose `queries[].expr` is one of the panel's own
+  // target expressions, read from the provisioned dashboard JSON. Five
+  // panels on this board share the `cerberus_ql` group-by key, so a
+  // response-body substring cannot say which panel answered — the
+  // named panel's assertions must not be satisfiable by a sibling, and
+  // a sibling's failure must not be filed under this panel's name.
+  const dashboard = (await iterateDashboards(request, baseURL)).find(
+    (d) => d.uid === SELF_OBSERVABILITY_DASHBOARD_UID,
+  );
+  // The dashboard/panel may not be provisioned in every stack variant.
+  // The dashboard sweep already failed loudly if the dashboard 404s, so
+  // here we just no-op when it (or the panel) isn't present.
+  const panelTitle = QUERY_RATE_PANEL_TITLE;
+  const panel = dashboard?.panels.find((p) => p.title === panelTitle);
+  if (dashboard === undefined || panel === undefined) {
+    return failures;
+  }
+  const isPanelRequest = (postData: string | null): boolean =>
+    dsQueryRequestMatchesPanel(parseDsQueryRequest(postData), panel);
 
   // Capture ds/query responses BEFORE navigation so the panel's
   // initial fetch is in our buffer when the load settles.
@@ -766,6 +878,7 @@ async function driveCerberusQLPartition(
   const onResponse = async (resp: Response) => {
     const url = resp.url();
     if (!url.includes('/api/ds/query')) return;
+    if (!isPanelRequest(resp.request().postData())) return;
     let body = '';
     try {
       body = await resp.text();
@@ -777,7 +890,7 @@ async function driveCerberusQLPartition(
   page.on('response', onResponse);
 
   try {
-    await page.goto(`${baseURL}/d/cerberus-self`, {
+    await page.goto(`${baseURL}/d/${dashboard.uid}`, {
       waitUntil: 'domcontentloaded',
       timeout: 90_000,
     });
@@ -788,23 +901,14 @@ async function driveCerberusQLPartition(
     page.off('response', onResponse);
   }
 
-  // The panel may not be provisioned in every stack variant. The
-  // dashboard sweep already failed loudly if the dashboard 404s, so
-  // here we just no-op when the panel header isn't present.
-  const panelTitle = 'Query rate by language';
   const panelLocator = page.locator(
-    `[data-testid="data-testid Panel header ${panelTitle}"]`,
+    `[data-testid="${PANEL_HEADER_TESTID_PREFIX}${panelTitle}"]`,
   );
   if ((await panelLocator.count()) === 0) {
     return failures;
   }
 
-  // Find a ds/query response whose body references `cerberus_ql`
-  // (the panel's group-by key). Grafana 11.x stringifies the parsed
-  // PromQL into the response envelope alongside the result, so
-  // `body.includes('cerberus_ql')` narrows to the panel's request
-  // without parsing the JSON.
-  let panelResponses = captured.filter((c) => c.body.includes('cerberus_ql'));
+  let panelResponses = captured;
   if (panelResponses.length === 0) {
     // Nothing landed in the passive `captured` buffer during the
     // navigation + networkidle window above. Rather than trust that
@@ -817,14 +921,8 @@ async function driveCerberusQLPartition(
     // between the panel and our capture window.
     const late = await page
       .waitForResponse(
-        async (resp) => {
-          if (!resp.url().includes('/api/ds/query')) return false;
-          try {
-            return (await resp.text()).includes('cerberus_ql');
-          } catch {
-            return false;
-          }
-        },
+        (resp) =>
+          resp.url().includes('/api/ds/query') && isPanelRequest(resp.request().postData()),
         { timeout: PANEL_QUERY_LATE_RESPONSE_TIMEOUT_MS },
       )
       .catch(() => null);
@@ -836,12 +934,12 @@ async function driveCerberusQLPartition(
         body = '';
       }
       captured.push({ url: late.url(), body, status: late.status() });
-      panelResponses = captured.filter((c) => c.body.includes('cerberus_ql'));
+      panelResponses = captured;
     }
   }
   if (panelResponses.length === 0) {
     failures.push(
-      `[partition:${panelTitle}] no /api/ds/query response referenced cerberus_ql within ${PANEL_QUERY_LATE_RESPONSE_TIMEOUT_MS}ms of the panel becoming visible — its backend query never dispatched or its response never resolved`,
+      `[partition:${panelTitle}] no /api/ds/query request carried this panel's own expression within ${PANEL_QUERY_LATE_RESPONSE_TIMEOUT_MS}ms of the panel becoming visible — its backend query never dispatched or its response never resolved`,
     );
     return failures;
   }
@@ -856,7 +954,7 @@ async function driveCerberusQLPartition(
   for (const resp of panelResponses) {
     if (resp.status < 200 || resp.status > 299) {
       failures.push(
-        `[partition:${panelTitle}] /api/ds/query → ${resp.status}\n  url: ${resp.url}\n  body: ${truncate(resp.body, 600)}`,
+        `[partition:${panelTitle}] /api/ds/query → ${resp.status}\n  url: ${resp.url}\n  body: ${truncate(resp.body, BODY_EXCERPT_CHARS)}`,
       );
       continue;
     }
@@ -899,8 +997,8 @@ async function driveCerberusQLPartition(
       failures.push(
         `[partition:${panelTitle}] response body is not valid JSON: ${truncate(
           (err as Error).message,
-          200,
-        )}\n  body: ${truncate(resp.body, 600)}`,
+          EXPR_EXCERPT_CHARS,
+        )}\n  body: ${truncate(resp.body, BODY_EXCERPT_CHARS)}`,
       );
     }
   }
@@ -951,24 +1049,29 @@ async function collectStuckLoadingPanels(page: Page): Promise<string[]> {
         '[aria-label="Loading"]',
       ].join(', '),
     )
-    .evaluateAll((nodes) =>
-      nodes.map((node) => {
-        // Walk up to the panel container and read its title. The
-        // container is identified by a testid that starts with
-        // "data-testid Panel header ". The title text node is the
-        // header h2 / h6 inside the panel chrome.
-        let cur: Element | null = node;
-        for (let i = 0; i < 8 && cur; i++) {
-          const titleEl =
-            cur.querySelector?.('[data-testid="data-testid Panel header title"]') ??
-            cur.querySelector?.('header h6, header h2, .panel-title');
-          if (titleEl && titleEl.textContent) {
-            return titleEl.textContent.trim();
+    .evaluateAll(
+      (nodes, { prefix, depth, untitled }) =>
+        nodes.map((node) => {
+          // Walk up to the panel chrome and read the title Grafana
+          // stamps on it: the container's own testid is
+          // `data-testid Panel header <title>` (the prefix is the
+          // literal part of the value). Falls back to the legacy
+          // header title element for the older chrome.
+          let cur: Element | null = node;
+          for (let i = 0; i < depth && cur; i++) {
+            const testid = cur.getAttribute?.('data-testid') ?? '';
+            if (testid.startsWith(prefix) && testid.length > prefix.length) {
+              return testid.slice(prefix.length).trim();
+            }
+            const titleEl = cur.querySelector?.('header h6, header h2, .panel-title');
+            if (titleEl && titleEl.textContent) {
+              return titleEl.textContent.trim();
+            }
+            cur = cur.parentElement;
           }
-          cur = cur.parentElement;
-        }
-        return '<untitled panel>';
-      }),
+          return untitled;
+        }),
+      PANEL_TITLE_WALK,
     );
   // Deduplicate so the same panel doesn't show up twice when both the
   // spinner and the legacy class match.
@@ -990,27 +1093,34 @@ async function collectPanelErrors(
         '[data-testid="data-testid Panel header error"]',
       ].join(', '),
     )
-    .evaluateAll((nodes) =>
-      nodes.map((node) => {
-        const message =
-          node.getAttribute('aria-label') ??
-          node.getAttribute('title') ??
-          node.textContent?.trim() ??
-          '<no error message>';
-        let cur: Element | null = node;
-        let title = '<untitled panel>';
-        for (let i = 0; i < 8 && cur; i++) {
-          const titleEl =
-            cur.querySelector?.('[data-testid="data-testid Panel header title"]') ??
-            cur.querySelector?.('header h6, header h2, .panel-title');
-          if (titleEl && titleEl.textContent) {
-            title = titleEl.textContent.trim();
-            break;
+    .evaluateAll(
+      (nodes, { prefix, depth, untitled }) =>
+        nodes.map((node) => {
+          const message =
+            node.getAttribute('aria-label') ??
+            node.getAttribute('title') ??
+            node.textContent?.trim() ??
+            '<no error message>';
+          // Same walk as collectStuckLoadingPanels: the panel chrome's
+          // own `data-testid Panel header <title>` names the panel.
+          let cur: Element | null = node;
+          let title = untitled;
+          for (let i = 0; i < depth && cur; i++) {
+            const testid = cur.getAttribute?.('data-testid') ?? '';
+            if (testid.startsWith(prefix) && testid.length > prefix.length) {
+              title = testid.slice(prefix.length).trim();
+              break;
+            }
+            const titleEl = cur.querySelector?.('header h6, header h2, .panel-title');
+            if (titleEl && titleEl.textContent) {
+              title = titleEl.textContent.trim();
+              break;
+            }
+            cur = cur.parentElement;
           }
-          cur = cur.parentElement;
-        }
-        return { title, message };
-      }),
+          return { title, message };
+        }),
+      PANEL_TITLE_WALK,
     );
 }
 
@@ -1020,11 +1130,17 @@ async function collectPanelErrors(
  * monotonically-increasing samples of `cerberus_queries_total` for
  * each `cerberus_ql` label value (promql / logql / traceql).
  *
- * Burst-1 → wait 75s → burst-2 → wait 20s. Total ≈ 95s. With cerberus's
- * SDK default 60s metric export interval, this guarantees at least one
- * export tick lands between the two bursts (so the second sample's
- * counter value is strictly greater than the first), and a final tick
- * has time to flush burst-2 to ClickHouse before the panel query fires.
+ * Burst-1 → wait SEED_BURST_SPACING_MS → burst-2 → wait SEED_SETTLE_MS.
+ * Cerberus's metric export interval is OTLP_EXPORT_INTERVAL_SECONDS
+ * (the CERBERUS_OTLP_EXPORT_INTERVAL default; neither e2e stack
+ * overrides it), so the spacing guarantees several export ticks land
+ * between the two bursts (the second sample's counter value is
+ * strictly greater than the first), and the settle gives a final tick
+ * time to flush burst-2 through the collector into ClickHouse before
+ * the panel query fires. The spacing was sized when the interval was
+ * believed to be 60s; it is kept because the guarantee it buys (≥ 1
+ * tick between bursts) only strengthens at the real cadence and the
+ * [5m] rate window it feeds is unchanged.
  *
  * Errors per individual request are swallowed: the partition assertion
  * downstream needs ≥ 2 of the three heads on the legend, so a single
@@ -1085,19 +1201,15 @@ async function seedCerberusSelfTraffic(
   };
 
   await fireBurst();
-  // Wait long enough that a 60s OTel PeriodicReader export tick lands
-  // between bursts. 75s > 60s × 1, so even a worst-case "burst 1 landed
-  // just before an export" still publishes a sample with the burst-1
-  // counter value before burst 2 grows it.
-  await new Promise<void>((resolve) => setTimeout(resolve, 75_000));
+  // Wait long enough that an OTel PeriodicReader export tick lands
+  // between bursts, so even a worst-case "burst 1 landed just before an
+  // export" still publishes a sample with the burst-1 counter value
+  // before burst 2 grows it.
+  await new Promise<void>((resolve) => setTimeout(resolve, SEED_BURST_SPACING_MS));
   await fireBurst();
   // Give the post-burst-2 export tick + collector flush + CH insert time
   // to settle so the panel's [5m] window sees both samples.
-  await new Promise<void>((resolve) => setTimeout(resolve, 20_000));
-}
-
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : `${s.slice(0, n)}...<truncated, ${s.length} chars total>`;
+  await new Promise<void>((resolve) => setTimeout(resolve, SEED_SETTLE_MS));
 }
 
 function stripBase(url: string, base: string): string {
@@ -1120,8 +1232,8 @@ function stripBase(url: string, base: string): string {
  * dashboard sweeps never open a trace detail through the backend.
  *
  * The trace ID is surfaced via TraceQL search over cerberus's own
- * self-telemetry spans (the compose stack exports them through the
- * OTel collector on a 60s tick), polled with a generous deadline so a
+ * self-telemetry spans (exported through the OTel collector on the
+ * SDK's batch cadence), polled with a generous deadline so a
  * fresh stack has time to land its first export — no hardcoded IDs,
  * no expected-empty escape hatch: if search never surfaces a trace,
  * that's a real failure of the traces pipeline and the test reports
@@ -1131,7 +1243,7 @@ test('compose: tempo trace detail via /api/ds/query (Grafana plugin backend) suc
   request,
 }, testInfo) => {
   // Search polling below tolerates a fresh stack's first OTel export
-  // tick (60s) plus collector flush + CH insert; budget accordingly.
+  // tick plus collector flush + CH insert; budget accordingly.
   testInfo.setTimeout(300_000);
 
   const baseURL = process.env.GRAFANA_BASE_URL ?? 'http://localhost:3000';
@@ -1140,7 +1252,7 @@ test('compose: tempo trace detail via /api/ds/query (Grafana plugin backend) suc
   // 1. Surface a trace ID via search. Each poll iteration also fires a
   //    couple of cerberus queries so a fresh stack generates spans to
   //    find (cerberus traces itself; the queries below land in
-  //    otel_traces once the 60s export tick fires).
+  //    otel_traces once the next export tick fires).
   let traceID = '';
   const deadline = Date.now() + 240_000;
   while (Date.now() < deadline) {

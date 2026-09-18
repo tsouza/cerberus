@@ -86,7 +86,9 @@
 //   BURST_SECONDS           sustained concurrent-load duration  (default 20)
 //   BURST_CONCURRENCY       concurrent requests in flight       (default 6)
 //   FLUSH_WAIT_SECONDS      settle time before SYSTEM FLUSH LOGS (default 10)
-//   HEALTH_POLL_SECONDS     bounded wait for a clean errors_count (default 60)
+//   HEALTH_POLL_SECONDS     bounded wait for a clean errors_count (default:
+//                           lib/k8s.mjs clusterHealthDefaultDeadlineSeconds —
+//                           two errors_count half-lives)
 //
 // Exit 0 = every assertion passed; 1 = any failed (with ::error:: annotation).
 
@@ -94,7 +96,13 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { error, notice, log, capture } from './lib/gh.mjs';
-import { makeKubectl, clickhousePodName, chQuery, waitForClusterHealth } from './lib/k8s.mjs';
+import {
+  makeKubectl,
+  clickhousePodName,
+  chQuery,
+  waitForClusterHealth,
+  clusterHealthDefaultDeadlineSeconds,
+} from './lib/k8s.mjs';
 
 const NS = process.env.NAMESPACE || 'cerberus';
 const CERBERUS_URL = process.env.CERBERUS_URL || 'http://localhost:8080';
@@ -108,7 +116,7 @@ const CERBERUS_ENV_CONFIGMAP = process.env.CERBERUS_ENV_CONFIGMAP || 'cerberus-e
 const BURST_SECONDS = Number(process.env.BURST_SECONDS || '20');
 const BURST_CONCURRENCY = Number(process.env.BURST_CONCURRENCY || '6');
 const FLUSH_WAIT_SECONDS = Number(process.env.FLUSH_WAIT_SECONDS || '10');
-const HEALTH_POLL_SECONDS = Number(process.env.HEALTH_POLL_SECONDS || '60');
+const HEALTH_POLL_SECONDS = Number(process.env.HEALTH_POLL_SECONDS || String(clusterHealthDefaultDeadlineSeconds));
 
 // requireDataShardCount is called from main, NOT at import time: this module
 // is imported by its own test suite for the pure interval arithmetic below,

@@ -30,6 +30,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"github.com/tsouza/cerberus/test/e2e/seed/cadence"
 )
 
 // reseedStabilityTicks is the number of seedAll ticks this test drives
@@ -41,8 +43,7 @@ const reseedStabilityTicks = 3
 // reseedStabilityTickInterval only has to be long enough for
 // ClickHouse's now64(9) to advance measurably between this test's own
 // ticks; it does not need to match the production
-// --re-seed-interval=30s (docker-compose.yml / Justfile's
-// e2e-seed-rolling).
+// cadence (docker-compose.yml / Justfile's e2e-seed-rolling).
 const reseedStabilityTickInterval = 2 * time.Second
 
 // reseedStabilitySentinelSlack pushes a sentinel's backdated Timestamp
@@ -52,15 +53,13 @@ const reseedStabilityTickInterval = 2 * time.Second
 // to catch it.
 const reseedStabilitySentinelSlack = 5 * time.Second
 
-// productionReSeedInterval mirrors the cadence `.github/scripts/
-// e2e-seed-rolling.mjs`'s reseedIntervalFlag passes to the background
-// rolling re-seeder (`--re-seed-interval=30s`) — the SAME process whose
-// ticks this test's own row-count bound (reseedStabilityBoundTicks below)
-// has to stay safely above. Named here because reseed_stability_test.go
-// has no way to read the flag value back from that already-launched
-// process; keep the two literals in sync by hand if the cadence ever
-// changes.
-const productionReSeedInterval = 30 * time.Second
+// productionReSeedInterval is the cadence the background rolling
+// re-seeder runs at (`.github/scripts/e2e-seed-rolling.mjs` passes
+// cadence.ReSeedIntervalFlag) — the SAME process whose ticks this test's
+// own row-count bound (reseedStabilityBoundTicks below) has to stay safely
+// above. This test cannot read the flag back from that already-launched
+// process, so it reads the one Go source the launchers are pinned to.
+const productionReSeedInterval = cadence.RollingReSeedInterval
 
 // reseedStabilityBoundTicks returns the maximum number of re-seed ticks'
 // worth of rows a family with the given stale-row margin (stale.go's
@@ -261,7 +260,7 @@ func TestReSeedRowCountStability(t *testing.T) {
 	}
 
 	// Drive a handful of re-seed ticks with the exact function the
-	// background rolling re-seeder calls every 30s.
+	// background rolling re-seeder calls every productionReSeedInterval.
 	for i := 0; i < reseedStabilityTicks; i++ {
 		if err := seedAll(ctx, conn); err != nil {
 			t.Fatalf("seedAll tick %d: %v", i, err)

@@ -146,7 +146,6 @@ import {
   pinnedStructuralParamCount,
   refIdToExpr,
   succeededDsQuerySignatures,
-  truncate,
   type ScopeRules,
   type SurfaceInventory,
 } from './lib.js';
@@ -169,6 +168,7 @@ import {
   stackByName,
   type CrawlStackConfig,
 } from './stacks.js';
+import { truncate, BODY_EXCERPT_CHARS, MESSAGE_EXCERPT_CHARS } from '../helpers/excerpt.js';
 
 // Self-traffic warmup — same rationale + value as the iterate-* specs:
 // without populated counters/streams/traces, a "No data" panel on a
@@ -2522,7 +2522,7 @@ function evaluateWireOracles(
     }
     fail(
       'http-non-2xx',
-      `${resp.method} ${resp.url} → ${resp.status}\n  body: ${truncate(resp.body, 600)}`,
+      `${resp.method} ${resp.url} → ${resp.status}\n  body: ${truncate(resp.body, BODY_EXCERPT_CHARS)}`,
     );
   }
 
@@ -2545,7 +2545,7 @@ function evaluateWireOracles(
       if (expr !== '' && contracts.errExprsDeclared.has(expr)) continue;
       fail(
         'ds-query-tunneled-error',
-        `refId=${refId} url=${resp.url}\n  error: ${truncate(target.error, 600)}`,
+        `refId=${refId} url=${resp.url}\n  error: ${truncate(target.error, BODY_EXCERPT_CHARS)}`,
       );
     }
   }
@@ -2571,7 +2571,7 @@ async function evaluateDomOracles(
     if (ALERT_ERROR_PATTERNS.some((re) => re.test(banner))) {
       fail(
         'role-alert-banner',
-        `role=alert banner with error text: ${truncate(banner, 400)}`,
+        `role=alert banner with error text: ${truncate(banner, MESSAGE_EXCERPT_CHARS)}`,
       );
     }
   }
@@ -2683,7 +2683,7 @@ async function visitAndAudit(
     fail(
       'console-error',
       `${reportableErrors.length} console error(s):\n${reportableErrors
-        .map((m) => `  - ${truncate(m, 400)}`)
+        .map((m) => `  - ${truncate(m, MESSAGE_EXCERPT_CHARS)}`)
         .join('\n')}`,
     );
   }
@@ -2868,7 +2868,7 @@ async function sweepInteractions(
       fail(
         'console-error',
         `${reportableErrors.length} console error(s):\n${reportableErrors
-          .map((m) => `  - ${truncate(m, 400)}`)
+          .map((m) => `  - ${truncate(m, MESSAGE_EXCERPT_CHARS)}`)
           .join('\n')}`,
       );
     }

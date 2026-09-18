@@ -52,6 +52,11 @@ export const RESOURCE_BOUND_GUARD_MESSAGES = [
   'histogram window fold exceeds the collapsed-payload resource bound',
 ];
 
+// The HTTP status cerberus's Prom head answers a resource-bound rejection
+// with (errorType=execution, HTTP 422 Unprocessable Content) — the status
+// half of the pinned contract, alongside the messages above.
+export const RESOURCE_BOUND_REJECTION_STATUS = 422;
+
 type PinnedErrorEnvelope = {
   status?: string;
   errorType?: string;
@@ -69,7 +74,7 @@ export function isPinnedResourceBoundRejection(
   status: number,
   body: string,
 ): boolean {
-  if (status !== 422) return false;
+  if (status !== RESOURCE_BOUND_REJECTION_STATUS) return false;
   let parsed: PinnedErrorEnvelope | null = null;
   try {
     parsed = JSON.parse(body) as PinnedErrorEnvelope;
@@ -107,3 +112,12 @@ export function bodyContainsPinnedResourceBoundMessage(body: string): boolean {
     RESOURCE_BOUND_GUARD_MESSAGES.some((m) => body.includes(m))
   );
 }
+
+// cerberus's metric export cadence: the CERBERUS_OTLP_EXPORT_INTERVAL
+// default (internal/config's defaultOTLPExportInterval), which neither
+// e2e stack overrides. Specs that seed self-traffic across an export
+// boundary size their waits from it. Pinned against the Go default by
+// test/regression/e2e_hand_copied_literals_test.go, alongside the wire
+// strings above, so a cadence change re-derives those waits instead of
+// silently loosening them.
+export const OTLP_EXPORT_INTERVAL_SECONDS = 10;

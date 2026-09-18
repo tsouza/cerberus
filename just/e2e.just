@@ -374,14 +374,28 @@ startup-bench:
     @echo "==> startup-speed benchmark (target < 2 s to /healthz)"
     go test -tags=startup_bench -v -count=1 -run TestStartupSpeed ./test/e2e/...
 
-# Run the Grafana playwright smoke (lands in M0.2).
+# Run the Grafana Playwright smoke against the running k3d stack (`e2e-up`
+# + `e2e-seed-rolling` + `e2e-wait-otel` already done). The spec set is the
+# ONE manifest CI runs: `dashboard-matrix.mjs list` prints the union of the
+# k3d smoke shards for E2E_MODE (monolith drops the split-only isolation
+# spec; the compose-only specs and the ~50min crawl trio are never in it),
+# so this recipe cannot run a spec that fails by construction on this
+# topology. The env mirrors the `dashboard-shard` smoke step in e2e.yml:
+# CERBERUS_MODE/NAMESPACE let split_isolation scale a head, DASHBOARDS_DIR
+# points iterate-all-dashboards at the k3d provisioning dir. The crawl trio
+# runs on its own lane (`CRAWL_STACK=k3d npx playwright test crawl/…`).
+
+# Run the k3d Playwright smoke: the same mode-aware spec set as the CI matrix.
 e2e-playwright:
-    @echo "==> playwright smoke (lands in M0.2)"
-    @if [ -d test/e2e/playwright ]; then \
-        cd test/e2e/playwright && npm ci && npx playwright test; \
-    else \
-        echo "    (no playwright suite yet — landing in M0.2)"; \
-    fi
+    @echo "==> playwright smoke (E2E_MODE={{E2E_MODE}})"
+    @specs="$(E2E_MODE={{E2E_MODE}} node .github/scripts/dashboard-matrix.mjs list)" && \
+        cd test/e2e/playwright && npm ci && \
+        GRAFANA_URL="${GRAFANA_URL:-http://localhost:3000}" \
+        CERBERUS_URL="${CERBERUS_URL:-http://localhost:8080}" \
+        CERBERUS_MODE={{E2E_MODE}} \
+        CERBERUS_NAMESPACE=cerberus \
+        DASHBOARDS_DIR="{{justfile_directory()}}/test/e2e/grafana/dashboards" \
+        npx playwright test $specs
 
 # Apply the chaos overlay onto the running cerberus Deployment: the
 # resilience knobs in test/e2e/chaos/manifests/chaos-overlay.env (low
