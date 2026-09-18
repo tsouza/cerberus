@@ -97,6 +97,7 @@ select_one_attr.txtar
 select_resource_attrs.txtar
 select_status_filter_attrs.txtar
 service_name_eq.txtar
+set_intersect_inside_union.txtar
 set_intersect_simple.txtar
 set_union_mixed_granularity.txtar
 set_union_simple.txtar
