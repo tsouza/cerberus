@@ -75,7 +75,7 @@ func TestQuantileConsumersResolvePhysicalHistogramFields(t *testing.T) {
 	}
 }
 
-func TestQuantileHistogramFieldRejectsMalformedSchemas(t *testing.T) {
+func TestQuantileConsumersRejectMalformedHistogramSchemas(t *testing.T) {
 	for name, input := range map[string]chplan.Node{
 		"open": &chplan.Scan{Roles: classicQuantileInput().Roles},
 		"missing": &chplan.Project{
@@ -89,7 +89,7 @@ func TestQuantileHistogramFieldRejectsMalformedSchemas(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := quantileHistogramField("test", input, chplan.HistogramFieldBucketCounts, false); err == nil {
+			if _, err := histogramFieldChildColumn("test", input, chplan.HistogramFieldBucketCounts, false); err == nil {
 				t.Fatal("malformed schema accepted")
 			}
 		})

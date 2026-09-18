@@ -41,3 +41,30 @@ const (
 // MetricsGroupKeyName is the output name of the i-th group-by key of a
 // Tempo metrics node that carries no alias for it.
 func MetricsGroupKeyName(i int) string { return "g" + strconv.Itoa(i) }
+
+// OutputDefault returns name, or fallback when name is unset.
+func OutputDefault(name, fallback string) string {
+	if name == "" {
+		return fallback
+	}
+	return name
+}
+
+// OuterGroupNames returns the output name of every group key: its alias when
+// one is set, else MetricsGroupKeyName for its position. Nil when there are
+// no keys.
+func OuterGroupNames(keys []Expr, aliases []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	names := make([]string, len(keys))
+	for i := range names {
+		if i < len(aliases) {
+			names[i] = aliases[i]
+		}
+		if names[i] == "" {
+			names[i] = MetricsGroupKeyName(i)
+		}
+	}
+	return names
+}

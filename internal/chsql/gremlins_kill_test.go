@@ -3,7 +3,6 @@ package chsql
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -712,66 +711,9 @@ func TestEmitMetricsAggregate_GroupByBoundary(t *testing.T) {
 	}
 }
 
-// TestOuterGroupAliases_AliasFallback kills the boundary and negation
-// mutants at
-// range_window.go:outerGroupAliases:`i < len(aliases) && aliases[i] != ""`.
-// The function falls back to `g<i>` when either the slice runs out OR
-// the alias is empty.
-func TestOuterGroupAliases_AliasFallback(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name    string
-		groupBy []chplan.Expr
-		aliases []string
-		want    []string
-	}{
-		{
-			name:    "all aliases present",
-			groupBy: []chplan.Expr{&chplan.ColumnRef{Name: "A"}, &chplan.ColumnRef{Name: "B"}},
-			aliases: []string{"a", "b"},
-			want:    []string{"a", "b"},
-		},
-		{
-			name:    "aliases slice shorter than groupBy",
-			groupBy: []chplan.Expr{&chplan.ColumnRef{Name: "A"}, &chplan.ColumnRef{Name: "B"}},
-			aliases: []string{"a"},
-			want:    []string{"a", "g1"},
-		},
-		{
-			name:    "empty alias entry → fallback",
-			groupBy: []chplan.Expr{&chplan.ColumnRef{Name: "A"}, &chplan.ColumnRef{Name: "B"}},
-			aliases: []string{"", "b"},
-			want:    []string{"g0", "b"},
-		},
-		{
-			name:    "nil groupBy → nil result",
-			groupBy: nil,
-			aliases: []string{"a"},
-			want:    nil,
-		},
-		{
-			name:    "empty groupBy → nil result",
-			groupBy: []chplan.Expr{},
-			aliases: []string{"a"},
-			want:    nil,
-		},
-	}
-	for _, c := range cases {
-		c := c
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			got := outerGroupAliases(c.groupBy, c.aliases)
-			if !reflect.DeepEqual(got, c.want) {
-				t.Errorf("outerGroupAliases(%v, %v) = %v, want %v", c.groupBy, c.aliases, got, c.want)
-			}
-		})
-	}
-}
-
 // TestEmitMetricsExemplars_GroupAliasFallback_Iter1039 hits the
-// INVERT_LOOPCTRL on the `continue` in
-// range_window.go:outerGroupAliases:`i < len(aliases) && aliases[i] != ""`
-// by exercising the second branch — empty alias →
+// alias-fallback branch of chplan.OuterGroupNames (output_names.go)
+// through the exemplars emitter: empty alias →
 // fallback to "g<i>". A break-mutant would terminate the loop early
 // and leave the second entry unfilled (panic on out-of-range slice
 // access in the caller).
@@ -942,12 +884,14 @@ func TestEmitStructuralJoin_RequiredColumnsTriple(t *testing.T) {
 	}
 }
 
-// TestEmitMetricsHistogramOverTimeBucketAliasFallback covers the
-// histogram_over_time.go:emitMetricsHistogramOverTime:`bucketAlias == ""`
-// boundary and its mirror
-// histogram_over_time.go:emitMetricsHistogramOverTime:`valueAlias == ""`.
-// The negation mutant `bucketAlias != ""` would skip the default,
-// producing an unquoted empty alias.
+// TestEmitMetricsHistogramOverTimeBucketAliasFallback covers the instant
+// path's alias defaults,
+// histogram_over_time.go:emitMetricsHistogramOverTime:`bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.MetricsBucketColumn)`
+// and its mirror
+// histogram_over_time.go:emitMetricsHistogramOverTime:`valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultSampleValueColumn)`.
+// Both resolve through the one guard
+// internal/chplan/output_names.go:`if name == ""`; its negation mutant would
+// skip the default, producing an unquoted empty alias.
 func TestEmitMetricsHistogramOverTimeBucketAliasFallback(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1895,11 +1839,13 @@ func TestEmitVectorJoin_OutputAttrsBareVsMerge(t *testing.T) {
 	}
 }
 
-// TestEmitMetricsHistogramOverTimeMatrix_AliasFallbackDistinct kills
-// the two CONDITIONALS_NEGATION mutants at
-// histogram_over_time.go:emitRangeWindowHistogram:`bucketAlias == ""`
-// and histogram_over_time.go:emitRangeWindowHistogram:`valueAlias == ""`
-// inside the matrix path. The pre-existing
+// TestEmitMetricsHistogramOverTimeMatrix_AliasFallbackDistinct pins the
+// matrix path's alias defaults,
+// histogram_over_time.go:emitRangeWindowHistogram:`bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.MetricsBucketColumn)`
+// and
+// histogram_over_time.go:emitRangeWindowHistogram:`valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultSampleValueColumn)`,
+// against a CONDITIONALS_NEGATION of the shared guard
+// internal/chplan/output_names.go:`if name == ""`. The pre-existing
 // TestEmitMetricsHistogramOverTimeBucketAliasFallback hits only the
 // INSTANT path; the matrix mutants survived because no test wraps a
 // MetricsHistogramOverTime in a RangeWindow while supplying
@@ -2769,14 +2715,16 @@ func compareNodeInternal() *chplan.MetricsCompare {
 	}
 }
 
-// TestCompareOutAliasFallbacks kills the four CONDITIONALS_NEGATION
-// mutants at metrics_compare.go:`m.SelAlias != ""`,
-// metrics_compare.go:`m.AttrAlias != ""`,
-// metrics_compare.go:`m.ValAlias != ""` and
-// metrics_compare.go:`m.ValueAlias != ""` — the guards that fall back to the
-// canonical default name when the alias is empty. The mutant `== ""`
-// would return the (empty) alias instead of the default; we assert both
-// the empty→default mapping AND the explicit→passthrough mapping so the
+// TestCompareOutAliasFallbacks pins the four output-alias helpers
+// metrics_compare.go:`chplan.OutputDefault(m.SelAlias, chplan.MetricsCompareSelectionColumn)`,
+// metrics_compare.go:`chplan.OutputDefault(m.AttrAlias, chplan.MetricsCompareAttrColumn)`,
+// metrics_compare.go:`chplan.OutputDefault(m.ValAlias, chplan.MetricsCompareValColumn)` and
+// metrics_compare.go:`chplan.OutputDefault(m.ValueAlias, chplan.DefaultSampleValueColumn)`
+// — each falls back to its canonical default name when the alias is empty,
+// through the one guard internal/chplan/output_names.go:`if name == ""`. A
+// CONDITIONALS_NEGATION of that guard would return the (empty) alias instead
+// of the default and the default instead of an explicit alias; we assert
+// both the empty→default mapping AND the explicit→passthrough mapping so the
 // flip is observable on each helper independently.
 func TestCompareOutAliasFallbacks(t *testing.T) {
 	t.Parallel()

@@ -35,39 +35,39 @@ func (e *emitter) emitHistogramProjection(h *chplan.HistogramProjection) error {
 			"PositiveOffset / PositiveBucketCounts / NegativeOffset / NegativeBucketCounts column names",
 			ErrUnsupported)
 	}
-	countCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldCount, "histogram count")
+	countCol, err := histogramFieldChildColumn("HistogramProjection", h.Input, chplan.HistogramFieldCount, false)
 	if err != nil {
 		return err
 	}
-	sumCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldSum, "histogram sum")
+	sumCol, err := histogramFieldChildColumn("HistogramProjection", h.Input, chplan.HistogramFieldSum, false)
 	if err != nil {
 		return err
 	}
-	scaleCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldScale, "histogram scale")
+	scaleCol, err := histogramFieldChildColumn("HistogramProjection", h.Input, chplan.HistogramFieldScale, false)
 	if err != nil {
 		return err
 	}
-	zeroCountCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldZeroCount, "histogram zero count")
+	zeroCountCol, err := histogramFieldChildColumn("HistogramProjection", h.Input, chplan.HistogramFieldZeroCount, false)
 	if err != nil {
 		return err
 	}
-	positiveOffsetCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldPositiveOffset, "histogram positive offset")
+	positiveOffsetCol, err := histogramFieldChildColumn("HistogramProjection", h.Input, chplan.HistogramFieldPositiveOffset, false)
 	if err != nil {
 		return err
 	}
-	positiveBucketsCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldPositiveBucketCounts, "histogram positive bucket counts")
+	positiveBucketsCol, err := histogramFieldChildColumn("HistogramProjection", h.Input, chplan.HistogramFieldPositiveBucketCounts, false)
 	if err != nil {
 		return err
 	}
-	negativeOffsetCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldNegativeOffset, "histogram negative offset")
+	negativeOffsetCol, err := histogramFieldChildColumn("HistogramProjection", h.Input, chplan.HistogramFieldNegativeOffset, false)
 	if err != nil {
 		return err
 	}
-	negativeBucketsCol, err := histogramChildColumn(h.Input, chplan.HistogramFieldNegativeBucketCounts, "histogram negative bucket counts")
+	negativeBucketsCol, err := histogramFieldChildColumn("HistogramProjection", h.Input, chplan.HistogramFieldNegativeBucketCounts, false)
 	if err != nil {
 		return err
 	}
-	zeroThresholdCol, err := optionalHistogramChildColumn(h.Input, chplan.HistogramFieldZeroThreshold, "histogram zero threshold")
+	zeroThresholdCol, err := histogramFieldChildColumn("HistogramProjection", h.Input, chplan.HistogramFieldZeroThreshold, true)
 	if err != nil {
 		return err
 	}

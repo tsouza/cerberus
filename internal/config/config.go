@@ -632,10 +632,13 @@ type CHOptCorpusConfig struct {
 // cluster, no TTL).
 type SchemaProvisioning struct {
 	// Cluster (CERBERUS_SCHEMA_CLUSTER) renders an ON CLUSTER clause into
-	// every CREATE statement — the classic distributed-DDL model. Mutually
-	// exclusive with DatabaseReplicated (a Replicated database replicates
-	// DDL itself); leave it empty for a single-node or Replicated-database
-	// deployment.
+	// every CREATE statement — the classic distributed-DDL model. With
+	// DatabaseReplicated it fans out the CREATE DATABASE statement alone:
+	// a Replicated database replicates DDL only to the hosts that have
+	// attached it, so that one statement has to run on every host of the
+	// cluster, while the table DDL is replicated by the database itself and
+	// carries no ON CLUSTER (ClickHouse rejects it there). Leave it empty
+	// for a single-node deployment.
 	Cluster string
 
 	// TableEngine (CERBERUS_SCHEMA_TABLE_ENGINE) overrides the SIGNAL tables'
@@ -701,11 +704,13 @@ type SchemaProvisioning struct {
 
 	// DatabaseReplicated (CERBERUS_SCHEMA_DATABASE_REPLICATED) creates the
 	// database with `ENGINE = Replicated(...)`. A Replicated database
-	// auto-replicates all DDL across replicas, so no ON CLUSTER clause is
-	// needed — but it does NOT auto-convert MergeTree tables to
-	// ReplicatedMergeTree, so cerberus emits a bare `ReplicatedMergeTree` table
-	// engine (no args — the database supplies the Keeper coordinates) to
-	// replicate the DATA. Requires DatabaseReplicatedPath.
+	// auto-replicates all DDL across the replicas that have attached it, so
+	// the table DDL needs no ON CLUSTER clause; the CREATE DATABASE itself
+	// reaches every replica only when Cluster names the cluster to run it
+	// on. It does NOT auto-convert MergeTree tables to ReplicatedMergeTree,
+	// so cerberus emits a bare `ReplicatedMergeTree` table engine (no args —
+	// the database supplies the Keeper coordinates) to replicate the DATA.
+	// Requires DatabaseReplicatedPath.
 	DatabaseReplicated bool
 
 	// DatabaseReplicatedPath (CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH) is
@@ -1141,8 +1146,9 @@ const configFileBaseName = "cerberus"
 //	    create the database (over a bootstrap connection to the always-present
 //	    `default` db). Set false to create only the tables (externally-managed db).
 //	CERBERUS_SCHEMA_CLUSTER        default "" — ON CLUSTER clause for auto-create
-//	    DDL (classic distributed-DDL clusters). Mutually exclusive with
-//	    CERBERUS_SCHEMA_DATABASE_REPLICATED.
+//	    DDL (classic distributed-DDL clusters); with
+//	    CERBERUS_SCHEMA_DATABASE_REPLICATED=true it fans out the CREATE DATABASE
+//	    alone, so every host of the cluster attaches the Replicated database.
 //	CERBERUS_SCHEMA_TABLE_ENGINE   default "" → MergeTree(), or the bare
 //	    ReplicatedMergeTree (no args) when CERBERUS_SCHEMA_DATABASE_REPLICATED=true
 //	    (a Replicated database does NOT auto-convert MergeTree, and explicit
@@ -1154,9 +1160,10 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_SCHEMA_TTL_LOGS      default inherits CERBERUS_SCHEMA_TTL; per-signal override
 //	CERBERUS_SCHEMA_TTL_TRACES    default inherits CERBERUS_SCHEMA_TTL; per-signal override
 //	CERBERUS_SCHEMA_DATABASE_REPLICATED default "false" — create the database with
-//	    ENGINE = Replicated(...) so DDL auto-replicates across replicas (no ON
-//	    CLUSTER needed); cerberus emits bare ReplicatedMergeTree tables to
-//	    replicate the DATA (a Replicated database does NOT auto-convert MergeTree)
+//	    ENGINE = Replicated(...) so table DDL auto-replicates across the replicas
+//	    that attached it (set CERBERUS_SCHEMA_CLUSTER so they all do); cerberus
+//	    emits bare ReplicatedMergeTree tables to replicate the DATA (a Replicated
+//	    database does NOT auto-convert MergeTree)
 //	CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH default "" — Keeper path, required when
 //	    CERBERUS_SCHEMA_DATABASE_REPLICATED=true (e.g. "/clickhouse/databases/otel")
 //	CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD   default "{shard}" server macro

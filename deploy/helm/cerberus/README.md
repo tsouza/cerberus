@@ -150,14 +150,16 @@ extraEnv:
 
 ## Production HA (Replicated ClickHouse)
 
-For a multi-replica ClickHouse cluster, enable the Replicated-DB schema and run
-cerberus with several replicas:
+For a multi-replica ClickHouse cluster, enable the Replicated-DB schema, name
+the cluster the `CREATE DATABASE` fans out over, and run cerberus with several
+replicas:
 
 ```yaml
 replicaCount: 3
 requirementsCheck: true               # boot-time CH readiness check
 schema:
   ttl: "2w"
+  CLUSTER: "main"                     # your remote_servers cluster spanning every replica
   replicated:
     enabled: true                     # ReplicatedMergeTree + Replicated database
     zookeeperPath: "/clickhouse/databases/otel"
@@ -175,7 +177,12 @@ registers under. It must **not** contain the `{shard}` / `{replica}` macros —
 the Replicated database engine takes those as its own separate arguments and
 expands macros inside the path as well, so a path carrying them gives every
 replica an unrelated root and nothing replicates. The render refuses a path
-with either macro.
+with either macro. `schema.CLUSTER` is what attaches the database on **every**
+replica: a Replicated database replicates DDL only to the hosts that have
+attached it, and cerberus issues its `CREATE DATABASE` once, so under a
+Replicated database that one statement runs `ON CLUSTER` while the table DDL
+stays bare and replicates through the database. The bundled
+`clickhouse.bundled.replicas > 1` tier defaults both keys.
 
 ### Co-locating with ClickHouse
 
@@ -306,7 +313,7 @@ Kubernetes: `>=1.23.0-0`
 | clickhouse.bundled.podAntiAffinity | bool | `true` | Spread ClickHouse pods across nodes (soft anti-affinity by hostname). |
 | clickhouse.bundled.podDisruptionBudget.enabled | bool | `false` | Create a PodDisruptionBudget for the ClickHouse StatefulSet. |
 | clickhouse.bundled.podDisruptionBudget.minAvailable | int | `1` | Minimum available ClickHouse pods. |
-| clickhouse.bundled.replicas | int | `1` | ClickHouse replica count. `1` (default) renders a single-node plain MergeTree on object storage. `>1` auto-enables a Keeper ensemble + ReplicatedMergeTree + zero-copy replication, and defaults cerberus's `schema.replicated` on (REUSING the existing Replicated-DB env wiring). |
+| clickhouse.bundled.replicas | int | `1` | ClickHouse replica count. `1` (default) renders a single-node plain MergeTree on object storage. `>1` auto-enables a Keeper ensemble + ReplicatedMergeTree + zero-copy replication, and defaults cerberus's `schema.replicated` on (REUSING the existing Replicated-DB env wiring) together with `schema.CLUSTER: bwc_cluster`, so cerberus's `CREATE DATABASE ... ENGINE = Replicated(...)` runs ON CLUSTER and every replica attaches the database (a Replicated database replicates DDL only to the hosts that have attached it). |
 | clickhouse.bundled.resources | object | `{"limits":{"memory":"4Gi"},"requests":{"cpu":"1","memory":"2Gi"}}` | ClickHouse container resources. |
 | clickhouse.bundled.service | object | `{"sessionAffinity":"ClientIP","sessionAffinityTimeoutSeconds":10800}` | The bundled ClickHouse ClusterIP Service. |
 | clickhouse.bundled.service.sessionAffinity | string | `"ClientIP"` | `ClientIP` (default) pins every new connection a given cerberus pod opens to the SAME ClickHouse replica for the affinity window, closing cross-replica divergence within one multi-statement request — INCLUDING every sharded-pushdown fan-out — under `bundled.replicas > 1`. This does NOT eliminate temporal read-skew from concurrent ingestion during a request (ClickHouse has no cross-statement consistent-snapshot mechanism); that residual risk is pre-existing to the sharded-pushdown solver against any target, replicated or not. Set `"None"` to disable (plain round-robin-by-kube-proxy Service routing). |
@@ -395,7 +402,7 @@ Kubernetes: `>=1.23.0-0`
 | requirementsCheck | bool | `false` | Run the startup requirements check (CERBERUS_REQUIREMENTS_CHECK): verify the ClickHouse server version and the deployed schema shape at boot. A too-old server or a table that exists with the wrong shape is FATAL — cerberus exits non-zero and the pod restarts with the precise finding in its log. A schema that is entirely absent (not yet provisioned) or a ClickHouse that is entirely unreachable is transient: cerberus boots NOT READY and re-probes instead of exiting. Emitted into env only when true: `false` (the default) emits nothing, and the binary's own default for the check is ON, so the check runs either way — `true` merely pins it explicitly. To turn it off, set `config.CERBERUS_REQUIREMENTS_CHECK: "false"`. |
 | resources | object | `{"limits":{"memory":"1536Mi"},"requests":{"cpu":"250m","memory":"128Mi"}}` | Pod resource requests/limits. Mirrors the reference k3s manifest: a small request, a generous memory limit, no CPU limit (bursting is fine; probe kills under CPU starvation are the real risk). The chart auto-derives GOMEMLIMIT at ~80% of limits.memory; override it via extraEnv if you need a different value. |
 | schema | object | `{"replicated":{"enabled":false,"zookeeperPath":""},"settings":{},"storagePolicy":"","tierAfter":"","tierVolume":"","ttl":""}` | Schema / DDL configuration (lowered to CERBERUS_SCHEMA_* env). The typed keys (`ttl`, `replicated`) take precedence; any OTHER key is passed through verbatim as CERBERUS_SCHEMA_<KEY> (the long tail — see docs/configuration.md), e.g. `schema: { CLUSTER: "main" }` → CERBERUS_SCHEMA_CLUSTER. |
-| schema.replicated | object | `{"enabled":false,"zookeeperPath":""}` | Replicated-ClickHouse (HA) schema. Emits a Replicated database + ReplicatedMergeTree tables instead of plain MergeTree — required for any multi-replica ClickHouse cluster. |
+| schema.replicated | object | `{"enabled":false,"zookeeperPath":""}` | Replicated-ClickHouse (HA) schema. Emits a Replicated database + ReplicatedMergeTree tables instead of plain MergeTree — required for any multi-replica ClickHouse cluster. Pair it with `CLUSTER: <name>` (the ClickHouse `remote_servers` cluster spanning every replica) so the `CREATE DATABASE` runs ON CLUSTER and every replica attaches the database; the bundled `replicas > 1` tier defaults both. |
 | schema.replicated.enabled | bool | `false` | Enable Replicated-DB schema (CERBERUS_SCHEMA_DATABASE_REPLICATED). |
 | schema.replicated.zookeeperPath | string | `""` | ZooKeeper/Keeper root path for the Replicated database (CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH), e.g. "/clickhouse/databases/otel" — the SAME literal root on every replica. It must NOT contain the `{shard}` / `{replica}` macros: the engine takes those as its own separate arguments (`ENGINE = Replicated(path, '{shard}', '{replica}')`) and expands macros inside the path as well, so a path carrying them gives every replica an unrelated database root and nothing replicates. The render refuses a path with either macro. Left empty, the bundled ClickHouse defaults it to `/clickhouse/databases/<clickhouse.database>` for `clickhouse.bundled.replicas > 1`; every other deployment must set it. |
 | schema.settings | object | `{}` | Extra MergeTree SETTINGS appended to every auto-created table's SETTINGS tail (CERBERUS_SCHEMA_SETTINGS), as a map of setting name -> value, e.g. `{ min_bytes_for_wide_part: 0 }`. Joined sorted into `k=v,k2=v2`. Empty appends nothing (byte-identical default DDL). |

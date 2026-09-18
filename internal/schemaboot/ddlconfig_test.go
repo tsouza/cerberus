@@ -116,11 +116,12 @@ func TestDDLConfig_DeltaPrefixThreaded(t *testing.T) {
 }
 
 // TestDDLConfig_ReplicatedThreaded pins the Replicated database engine knobs
-// flow through to the ddl Config.
+// flow through to the ddl Config, alongside the cluster the CREATE DATABASE
+// fans out over so every replica attaches the database.
 func TestDDLConfig_ReplicatedThreaded(t *testing.T) {
 	cfg := config.Config{
 		SchemaProvisioning: config.SchemaProvisioning{
-			Cluster:                   "", // mutually exclusive with replicated
+			Cluster:                   "bwc_cluster",
 			DatabaseReplicated:        true,
 			DatabaseReplicatedPath:    "/clickhouse/databases/otel",
 			DatabaseReplicatedShard:   "shard0",
@@ -136,6 +137,9 @@ func TestDDLConfig_ReplicatedThreaded(t *testing.T) {
 		got.DatabaseEngine.ReplicatedShard != "shard0" ||
 		got.DatabaseEngine.ReplicatedReplica != "replica0" {
 		t.Errorf("replicated engine not threaded: %+v", got.DatabaseEngine)
+	}
+	if got.Cluster != "bwc_cluster" {
+		t.Errorf("Cluster not threaded alongside the Replicated engine: %q", got.Cluster)
 	}
 }
 
