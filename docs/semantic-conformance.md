@@ -1524,7 +1524,7 @@ No test suite silently skips, soft-asserts, silently recovers, or tolerates an e
 
 **Blind spots:**
 
-- forbid-skip.mjs is a fixed regex/perl pattern set (documented in docs/forbid-skip.md, pinned byte-identical by scripts/test-forbid-skip.sh) — it recognizes exactly the CANONICAL spellings of each pattern it was written against. A functionally equivalent skip dressed in an unrecognized shape (a helper function wrapping t.Skip, a differently-named escape-hatch constant, a soft assertion built from a different matcher) is not detected.
+- forbid-skip.mjs is a fixed regex/perl pattern set (documented in docs/forbid-skip.md; .github/scripts/forbid-skip.test.mjs drives every arm through the real CLI) — it recognizes exactly the CANONICAL spellings of each pattern it was written against. A functionally equivalent skip dressed in an unrecognized shape (a helper function wrapping t.Skip, a differently-named escape-hatch constant, a soft assertion built from a different matcher) is not detected.
 - The 'escape-hatch' scan's token list (EXPECTED\_EMPTY, EXPECTED\_TOLERATED, isKnownTolerated, tolerated404, expect.soft, should\_tolerate, skipReason, SkipReason, and two named dashboard-noise constants) is the CURRENT enumerated vocabulary, not a closed grammar — a new escape-hatch idiom under a name not on this list ships clean until the list is extended.
 - The one legitimate pinned exception this repo carries — compatibility/loki/upstream-skip-baseline.txt, the corpus entries upstream itself marks skip: true — sits outside this scan's pathspecs by design (CLAUDE.md invariant 7); this contract does not itself distinguish a new, illegitimate tolerance file from that one sanctioned exception.
 

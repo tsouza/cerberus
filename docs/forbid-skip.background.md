@@ -28,10 +28,10 @@ throwaway repository rather than asserting a regex copy.
 They used to be proved nowhere, and the contract doc described that as a design: their regexes were
 said to be "pinned by the CI and lefthook copies alone", which pins nothing. Those two are RUNNERS of
 the regex, not assertions about it — neither can fail on a clean tree, so a regex mutated to match
-nothing stayed green in both, twice over (#3182). The same incident is why the contract doc states
-per row which kind of proof it has rather than claiming one for all: a regex-copy proof in
-`scripts/test-forbid-skip.sh` asserts the copy and reaches the gate only through the lock-step rule,
-whereas a CLI-driven proof asserts the regex the gate actually runs.
+nothing stayed green in both, twice over (#3182). The same incident is why every row's proof is
+CLI-driven: a proof that asserts a copy of the regex (as a separate self-test script once did)
+reaches the gate only through a lock-step rule, whereas a proof that drives the real CLI asserts the
+regex the gate actually runs.
 
 ## Why pattern 6 exists
 
