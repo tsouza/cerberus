@@ -884,12 +884,14 @@ func TestEmitStructuralJoin_RequiredColumnsTriple(t *testing.T) {
 	}
 }
 
-// TestEmitMetricsHistogramOverTimeBucketAliasFallback covers the
-// histogram_over_time.go:emitMetricsHistogramOverTime:`bucketAlias == ""`
-// boundary and its mirror
-// histogram_over_time.go:emitMetricsHistogramOverTime:`valueAlias == ""`.
-// The negation mutant `bucketAlias != ""` would skip the default,
-// producing an unquoted empty alias.
+// TestEmitMetricsHistogramOverTimeBucketAliasFallback covers the instant
+// path's alias defaults,
+// histogram_over_time.go:emitMetricsHistogramOverTime:`bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.HistogramBucketColumn)`
+// and its mirror
+// histogram_over_time.go:emitMetricsHistogramOverTime:`valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultValueColumn)`.
+// Both resolve through the one guard
+// internal/chplan/output_names.go:`if name == ""`; its negation mutant would
+// skip the default, producing an unquoted empty alias.
 func TestEmitMetricsHistogramOverTimeBucketAliasFallback(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1837,11 +1839,13 @@ func TestEmitVectorJoin_OutputAttrsBareVsMerge(t *testing.T) {
 	}
 }
 
-// TestEmitMetricsHistogramOverTimeMatrix_AliasFallbackDistinct kills
-// the two CONDITIONALS_NEGATION mutants at
-// histogram_over_time.go:emitRangeWindowHistogram:`bucketAlias == ""`
-// and histogram_over_time.go:emitRangeWindowHistogram:`valueAlias == ""`
-// inside the matrix path. The pre-existing
+// TestEmitMetricsHistogramOverTimeMatrix_AliasFallbackDistinct pins the
+// matrix path's alias defaults,
+// histogram_over_time.go:emitRangeWindowHistogram:`bucketAlias := chplan.OutputDefault(m.BucketAlias, chplan.HistogramBucketColumn)`
+// and
+// histogram_over_time.go:emitRangeWindowHistogram:`valueAlias := chplan.OutputDefault(m.ValueAlias, chplan.DefaultValueColumn)`,
+// against a CONDITIONALS_NEGATION of the shared guard
+// internal/chplan/output_names.go:`if name == ""`. The pre-existing
 // TestEmitMetricsHistogramOverTimeBucketAliasFallback hits only the
 // INSTANT path; the matrix mutants survived because no test wraps a
 // MetricsHistogramOverTime in a RangeWindow while supplying
@@ -2711,14 +2715,16 @@ func compareNodeInternal() *chplan.MetricsCompare {
 	}
 }
 
-// TestCompareOutAliasFallbacks kills the four CONDITIONALS_NEGATION
-// mutants at metrics_compare.go:`m.SelAlias != ""`,
-// metrics_compare.go:`m.AttrAlias != ""`,
-// metrics_compare.go:`m.ValAlias != ""` and
-// metrics_compare.go:`m.ValueAlias != ""` — the guards that fall back to the
-// canonical default name when the alias is empty. The mutant `== ""`
-// would return the (empty) alias instead of the default; we assert both
-// the empty→default mapping AND the explicit→passthrough mapping so the
+// TestCompareOutAliasFallbacks pins the four output-alias helpers
+// metrics_compare.go:`chplan.OutputDefault(m.SelAlias, chplan.CompareSelectionColumn)`,
+// metrics_compare.go:`chplan.OutputDefault(m.AttrAlias, chplan.CompareAttrColumn)`,
+// metrics_compare.go:`chplan.OutputDefault(m.ValAlias, chplan.CompareValColumn)` and
+// metrics_compare.go:`chplan.OutputDefault(m.ValueAlias, chplan.DefaultValueColumn)`
+// — each falls back to its canonical default name when the alias is empty,
+// through the one guard internal/chplan/output_names.go:`if name == ""`. A
+// CONDITIONALS_NEGATION of that guard would return the (empty) alias instead
+// of the default and the default instead of an explicit alias; we assert
+// both the empty→default mapping AND the explicit→passthrough mapping so the
 // flip is observable on each helper independently.
 func TestCompareOutAliasFallbacks(t *testing.T) {
 	t.Parallel()
