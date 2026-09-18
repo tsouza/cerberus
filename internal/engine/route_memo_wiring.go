@@ -278,7 +278,7 @@ func (e *Engine) tryRouteMemoHit(
 	cur, execInfo, err := e.Solver.Executor.Execute(
 		routeBExecCtx(
 			ctx, langName, responseShape, d.decision, plan, e.queryMemoryCap(), e.settings(),
-			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(),
+			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.shardMemoryDivisor(d.decision),
 			e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals, attrStrategies,
 		), langName, d.decision, budget,
 	)
@@ -452,7 +452,7 @@ func (e *Engine) retryOnRouteAResourceFailure(
 	cur, execInfo, dispatchErr := e.Solver.Executor.Execute(
 		routeBExecCtx(
 			ctx, langName, responseShape, d.decision, plan, e.queryMemoryCap(), e.settings(),
-			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(),
+			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.shardMemoryDivisor(d.decision),
 			e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals, attrStrategies,
 		), langName, d.decision, budget,
 	)

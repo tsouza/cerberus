@@ -24,7 +24,7 @@
 // while peaking under 8% of the 1 GiB cap, because a group's real cost
 // moves by more than an order of magnitude with the bucket-ladder width a
 // group count cannot see. The budget is now the payload those groups
-// actually accumulated (maxRangeBucketFanoutFoldCostUnits), so the three
+// actually accumulated (rangeBucketFanoutFoldCostUnitsPerGiB), so the three
 // cases below are parameterised on ladder WIDTH and group count
 // independently: the same group count at two widths must land on opposite
 // sides of the bound, and a group count well past #3468's own 800-group
@@ -127,7 +127,7 @@ const (
 
 // rangeBucketFanoutGroupBoundWideLadder / …NarrowLadder are the two stored
 // positive-bucket widths. The wide one is drawn from
-// maxRangeBucketFanoutFoldCostUnits' own calibration range (real
+// rangeBucketFanoutFoldCostUnitsPerGiB' own calibration range (real
 // exponential histograms at fine scales store ladders of this order); the
 // narrow one is the single-bucket payload the replaced group-count bound
 // charged exactly the same for.
@@ -138,7 +138,7 @@ const (
 
 // TestQueryRange_RangeBucketFanoutFoldCostBound_RejectedAt422_ChDB is the
 // rejection: 30 series x 20 anchors of 300-wide ladders, whose summed fold
-// cost is several times maxRangeBucketFanoutFoldCostUnits. Every group
+// cost is several times the 1 GiB fold-cost ceiling. Every group
 // individually clears exp_histogram_window_sample_bound.go's own per-group
 // ceiling, so this axis is the only one that can refuse it.
 func TestQueryRange_RangeBucketFanoutFoldCostBound_RejectedAt422_ChDB(t *testing.T) {

@@ -190,7 +190,7 @@ const (
 	// doc comment is the retained record.
 	maxRangeLWRFanoutRows = 40_000_000
 
-	// maxRangeBucketFanoutFoldCostUnits bounds a SECOND, independent axis
+	// rangeBucketFanoutFoldCostUnitsPerGiB bounds a SECOND, independent axis
 	// from maxRangeBucketFanoutRows above: not the raw pre-collapse
 	// sample-side fanout (rows x (Lookback/Step + 1), constant in the anchor
 	// grid width per this file's header doc), but what the COLLAPSE's whole
@@ -276,16 +276,34 @@ const (
 	// direction (1,080 groups is 27 MB on the compat corpus and 494 MB at
 	// W=150), which is the whole reason for the change.
 	//
-	// 15,000,000 is the ceiling that leaves the WORST measured rate
-	// (30.0 bytes/unit, the wide-S point) landing at ~450 MB — under half
-	// the cap — while clearing every #3514 query by 30x or more. It admits
-	// ~578 groups of the W=150 shape (~264 MB), ~859 of the S=321 shape
-	// (~450 MB) and ~4,800 of the cheap W=40 shape (~185 MB): the number of
-	// groups now moves with what a group actually costs, which is the point.
-	// Recalibrate by binary search against a real ClickHouse (docker compose
-	// up --wait from the repo root; see CLAUDE.md invariant 5) if this
-	// drifts, sweeping BOTH width and samples-per-group — a sweep that moves
-	// only the group count is what produced the bound this replaces.
+	// 15,000,000 units per GiB of cap is the ceiling that leaves the WORST
+	// measured rate (30.0 bytes/unit, the wide-S point) landing at ~450 MB
+	// per GiB — under half the cap — while clearing every #3514 query by
+	// 30x or more at the 1 GiB default. It admits ~578 groups of the W=150
+	// shape (~264 MB), ~859 of the S=321 shape (~450 MB) and ~4,800 of the
+	// cheap W=40 shape (~185 MB): the number of groups now moves with what a
+	// group actually costs, which is the point. Recalibrate by binary search
+	// against a real ClickHouse (docker compose up --wait from the repo
+	// root; see CLAUDE.md invariant 5) if this drifts, sweeping BOTH width
+	// and samples-per-group — a sweep that moves only the group count is
+	// what produced the bound this replaces.
+	//
+	// # Why a rate per GiB and not a fixed number
+	//
+	// The units count a proxy for BYTES (the 12.4-30.0 bytes/unit band
+	// above), and the byte ceiling is the operator's own
+	// CERBERUS_CH_QUERY_MAX_MEMORY. A ceiling fixed at the 1 GiB
+	// calibration is wrong at every other cap: at 512 MiB it lands the
+	// worst measured rate at 88% of the cap, and any cap below that is
+	// defeated outright — the query the guard exists to refuse dies on
+	// ClickHouse's own code 241 instead. RangeBucketFanoutFoldCostUnitsForMemory
+	// scales this rate by the live cap, the same derivation the
+	// RangeBucketGridNative density bound (internal/config's
+	// rbgnDensityUnitsForMemory) and the exponential-histogram window bound
+	// (internal/promql's ExpHistogramWindowCostUnitsForMemory) already use,
+	// and internal/engine threads the derived value on every emit. This
+	// constant is the rate; the value a deployment runs under is
+	// rate x cap.
 	//
 	// Issue #3468: operator-overridable via
 	// CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS, mirroring
@@ -293,9 +311,79 @@ const (
 	// own "Operator override" reasoning above) — this calibration is newer
 	// and narrower than theirs (one measured shape family, not a
 	// multi-metric production sweep), so the escape hatch matters more
-	// here, not less.
-	maxRangeBucketFanoutFoldCostUnits = 15_000_000
+	// here, not less. A positive override pins the ceiling and opts out of
+	// the derivation.
+	rangeBucketFanoutFoldCostUnitsPerGiB = 15_000_000
 )
+
+// bytesPerGiB is the divisor [RangeBucketFanoutFoldCostUnitsForMemory]
+// reads the cap in. chsql may not import internal/config
+// (.go-arch-lint.yml), so the constant is restated here rather than
+// shared — the same restatement internal/promql carries.
+const bytesPerGiB int64 = 1 << 30
+
+// RangeBucketFanoutFoldCostUnitsForMemory derives the fold-cost ceiling
+// from the ClickHouse per-query memory cap it defends:
+// rangeBucketFanoutFoldCostUnitsPerGiB scaled by the cap, with the
+// sub-GiB remainder credited proportionally so a 1.5 GiB cap is not
+// rounded down to a 1 GiB one, and floored at 1 so an absurd cap can never
+// yield a 0 that the ctx readers below would treat as "absent, use the
+// default" — the opposite of a tiny ceiling.
+//
+// A non-positive cap means CERBERUS_CH_QUERY_MAX_MEMORY is unset — cerberus
+// stamps no max_memory_usage at all then, so ClickHouse's own server limit
+// is the only ceiling and there is no number to scale. The per-GiB rate
+// applied once is the honest answer there: it is the bound a 1 GiB
+// deployment gets, which is the shipped product default, and it is what
+// every caller that threads no cap at all (the spec/golden lane, a direct
+// chsql.Emit in a test) resolves to.
+func RangeBucketFanoutFoldCostUnitsForMemory(chQueryMaxMemory int64) int64 {
+	if chQueryMaxMemory <= 0 {
+		return rangeBucketFanoutFoldCostUnitsPerGiB
+	}
+	units := (chQueryMaxMemory / bytesPerGiB) * rangeBucketFanoutFoldCostUnitsPerGiB
+	rem := chQueryMaxMemory % bytesPerGiB
+	units += (rem * rangeBucketFanoutFoldCostUnitsPerGiB) / bytesPerGiB
+	return max(units, 1)
+}
+
+// ResolveRangeBucketFanoutMaxRows / ResolveRangeLWRFanoutMaxRows /
+// ResolveRangeBucketFanoutFoldCostMaxUnits answer the SAME
+// "override-or-default" question the *FromCtx readers below answer off a
+// context, without needing one — for a caller (internal/engine's
+// routeBExecCtx) that must resolve the effective whole-query bound BEFORE
+// apportioning it to a shard's memory share, which a ctx-keyed lookup
+// cannot do: stamping override/divisor through With… when override is 0
+// would divide down to 0, and 0 reads as "unset" through the emitter's own
+// accessors (rangeBucketFanoutRowBound and siblings), the OPPOSITE of an
+// apportioned bound. The same contract ResolveRangeBucketGridNativeMaxRows
+// established for the RangeBucketGridNative pair. override <= 0 answers the
+// calibrated default; override > 0 is returned unchanged.
+func ResolveRangeBucketFanoutMaxRows(override int64) int64 {
+	if override > 0 {
+		return override
+	}
+	return maxRangeBucketFanoutRows
+}
+
+func ResolveRangeLWRFanoutMaxRows(override int64) int64 {
+	if override > 0 {
+		return override
+	}
+	return maxRangeLWRFanoutRows
+}
+
+// ResolveRangeBucketFanoutFoldCostMaxUnits is the fold-cost member of the
+// Resolve… family above, with one more input: its default is not a
+// constant but [RangeBucketFanoutFoldCostUnitsForMemory] of the
+// deployment's cap, so an unset override resolves to the cap-derived
+// ceiling rather than to the 1 GiB calibration.
+func ResolveRangeBucketFanoutFoldCostMaxUnits(override, chQueryMaxMemory int64) int64 {
+	if override > 0 {
+		return override
+	}
+	return RangeBucketFanoutFoldCostUnitsForMemory(chQueryMaxMemory)
+}
 
 // rangeBucketFanoutMaxRowsKey / rangeLWRFanoutMaxRowsKey are the unexported
 // context keys carrying an operator-configured override for
@@ -307,8 +395,10 @@ type rangeBucketFanoutMaxRowsKey struct{}
 type rangeLWRFanoutMaxRowsKey struct{}
 
 // rangeBucketFanoutFoldCostMaxUnitsKey is the unexported context key carrying
-// an operator-configured override for maxRangeBucketFanoutFoldCostUnits
-// (issue #3468) — see WithRangeBucketFanoutFoldCostMaxUnits /
+// the resolved fold-cost ceiling — the operator's override, or the value
+// derived from the deployment's memory cap (issue #3468,
+// RangeBucketFanoutFoldCostUnitsForMemory) — see
+// WithRangeBucketFanoutFoldCostMaxUnits /
 // rangeBucketFanoutFoldCostMaxUnitsFromCtx below.
 type rangeBucketFanoutFoldCostMaxUnitsKey struct{}
 
@@ -354,12 +444,16 @@ func rangeLWRFanoutMaxRowsFromCtx(ctx context.Context) int64 {
 
 // WithRangeBucketFanoutFoldCostMaxUnits /
 // rangeBucketFanoutFoldCostMaxUnitsFromCtx mirror
-// WithRangeBucketFanoutMaxRows / rangeBucketFanoutMaxRowsFromCtx exactly, for
-// RangeBucketFanout's COLLAPSE OUTPUT fold-cost bound (otherwise
-// maxRangeBucketFanoutFoldCostUnits;
-// CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS) — a different axis
+// WithRangeBucketFanoutMaxRows / rangeBucketFanoutMaxRowsFromCtx, for
+// RangeBucketFanout's COLLAPSE OUTPUT fold-cost bound
+// (CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS) — a different axis
 // from RangeBucketFanoutMaxRows' own pre-collapse sample fanout, see
-// maxRangeBucketFanoutFoldCostUnits' own doc.
+// rangeBucketFanoutFoldCostUnitsPerGiB's own doc. One difference from that
+// sibling: the value threaded is the RESOLVED ceiling, override or
+// cap-derived (ResolveRangeBucketFanoutFoldCostMaxUnits), because the
+// default is a function of the deployment's memory cap that only the
+// caller knows; a caller that threads nothing gets the 1 GiB calibration
+// (RangeBucketFanoutFoldCostUnitsForMemory(0)).
 func WithRangeBucketFanoutFoldCostMaxUnits(ctx context.Context, n int64) context.Context {
 	return context.WithValue(ctx, rangeBucketFanoutFoldCostMaxUnitsKey{}, n)
 }
@@ -368,7 +462,7 @@ func rangeBucketFanoutFoldCostMaxUnitsFromCtx(ctx context.Context) int64 {
 	if n, ok := ctx.Value(rangeBucketFanoutFoldCostMaxUnitsKey{}).(int64); ok {
 		return n
 	}
-	return maxRangeBucketFanoutFoldCostUnits
+	return RangeBucketFanoutFoldCostUnitsForMemory(0)
 }
 
 // rangeBucketFanoutRowBound / rangeLWRFanoutRowBound return e's own resolved
@@ -394,13 +488,14 @@ func (e *emitter) rangeBucketFanoutRowBound() int64 {
 }
 
 // rangeBucketFanoutFoldCostBound mirrors rangeBucketFanoutRowBound exactly,
-// for e.rangeBucketFanoutFoldCostMaxUnits /
-// maxRangeBucketFanoutFoldCostUnits.
+// for e.rangeBucketFanoutFoldCostMaxUnits, falling back to the 1 GiB
+// calibration (RangeBucketFanoutFoldCostUnitsForMemory's unset-cap answer)
+// for a direct &emitter{} construction.
 func (e *emitter) rangeBucketFanoutFoldCostBound() int64 {
 	if e.rangeBucketFanoutFoldCostMaxUnits > 0 {
 		return e.rangeBucketFanoutFoldCostMaxUnits
 	}
-	return maxRangeBucketFanoutFoldCostUnits
+	return RangeBucketFanoutFoldCostUnitsForMemory(0)
 }
 
 func (e *emitter) rangeLWRFanoutRowBound() int64 {

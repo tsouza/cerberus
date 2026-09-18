@@ -477,15 +477,27 @@ instead (`internal/engine/resource_bound_env.go`,
   (`internal/chsql/lwr_fanout_bound.go`, `maxRangeBucketFanoutRows`).
 - **`CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS`** (int64, default `40000000`) -
   RangeLWR's collapse GROUP BY row ceiling (same file, `maxRangeLWRFanoutRows`).
-- **`CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS`** (int64, default
-  `15000000`) - the fold-cost ceiling on RangeBucketFanout's whole collapse
-  OUTPUT (same file, `maxRangeBucketFanoutFoldCostUnits`): a second axis,
-  independent of the row ceiling above, spent as the sum over every
+- **`CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS`** (int64, no
+  fixed default) - the fold-cost ceiling on RangeBucketFanout's whole collapse
+  OUTPUT (same file, `RangeBucketFanoutFoldCostUnitsForMemory`): a second
+  axis, independent of the row ceiling above, spent as the sum over every
   (series, anchor) group of `E + W^2` where `E` is the group's
   accumulated bucket-ladder payload in elements and `W` its ladder width.
   Applies only to a collapse carrying a groupArray-family accumulator (the
   classic and exponential histogram window folds); an argMax/sumForEach
   collapse reduces every group to a fixed-size row and is not charged.
+  Unset, the ceiling is derived from `CERBERUS_CH_QUERY_MAX_MEMORY` at
+  15,000,000 units per GiB of cap (so 15,000,000 at the 1 GiB default),
+  because the units it counts are a proxy for bytes and the byte budget is
+  itself configurable - the same reasoning
+  `CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS` carries. Setting a
+  positive value pins it and opts out of the derivation. Every statement's
+  copy of this ceiling, and of the three fan-out row ceilings above and
+  below, is divided by the statement's memory divisor so the guard matches
+  the memory the statement actually runs under: `CERBERUS_CH_DATA_SHARDS`
+  for an ordinary (route-A) query, and
+  `min(K, CERBERUS_SHARD_PARALLEL, gate/2) x CERBERUS_CH_DATA_SHARDS` for
+  each shard of a sharded (route-B) dispatch.
 - **`CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS`** (int64, default `2800000`) -
   the windowed-array-extrapolated-matrix regroup GROUP BY row ceiling
   (`internal/chsql/rate_window_fanout_bound.go`, `maxRateWindowFanoutRows`).

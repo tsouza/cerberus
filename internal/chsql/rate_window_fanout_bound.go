@@ -162,6 +162,18 @@ func WithRateWindowFanoutMaxRows(ctx context.Context, n int64) context.Context {
 // WithRateWindowFanoutMaxRows set, or maxRateWindowFanoutRows (the
 // compiled-in, calibrated default — see this file's own doc comment) when
 // the caller never threaded one.
+// ResolveRateWindowFanoutMaxRows is the rate-window member of the
+// Resolve… family lwr_fanout_bound.go declares (see
+// ResolveRangeBucketFanoutMaxRows's own doc for the caller and the
+// override-or-default contract): override <= 0 answers
+// maxRateWindowFanoutRows, override > 0 is returned unchanged.
+func ResolveRateWindowFanoutMaxRows(override int64) int64 {
+	if override > 0 {
+		return override
+	}
+	return maxRateWindowFanoutRows
+}
+
 func rateWindowFanoutMaxRowsFromCtx(ctx context.Context) int64 {
 	if n, ok := ctx.Value(rateWindowFanoutMaxRowsKey{}).(int64); ok {
 		return n

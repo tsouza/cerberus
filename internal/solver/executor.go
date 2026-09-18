@@ -129,10 +129,7 @@ func (x *Executor) admitAndGate(ctx context.Context, k int) (kEff, pEff int, rel
 	// already charged weight 1; ask for (P-1) extra units. On a partial /
 	// zero grant we clamp effective P to 1+granted — down to sequential —
 	// and run. We NEVER 503 and NEVER proceed at full P.
-	pCfg := x.Cfg.Parallel
-	if pCfg < 1 {
-		pCfg = 1
-	}
+	pCfg := x.configuredParallelism()
 	pEff = pCfg
 	var admitRelease func()
 	if x.Admit != nil && pCfg > 1 {
@@ -156,22 +153,7 @@ func (x *Executor) admitAndGate(ctx context.Context, k int) (kEff, pEff int, rel
 	// gate/2). The gate/2 cap guarantees >=2 routed requests can always make
 	// progress. Acquire ALL K_eff slots in one call before opening any
 	// cursor; release them all at Close.
-	kEff = k
-	if pEff < kEff {
-		kEff = pEff
-	}
-	if x.Gate != nil && x.GateCap > 0 {
-		half := int(x.GateCap / 2)
-		if half < 1 {
-			half = 1
-		}
-		if half < kEff {
-			kEff = half
-		}
-	}
-	if kEff < 1 {
-		kEff = 1
-	}
+	kEff = x.effectiveShardCount(k, pEff)
 
 	var gateReleased atomic.Bool
 	releaseGate = func() {
@@ -198,6 +180,69 @@ func (x *Executor) admitAndGate(ctx context.Context, k int) (kEff, pEff int, rel
 		pEff = kEff
 	}
 	return kEff, pEff, releaseGate, releaseAdmit, nil
+}
+
+// configuredParallelism is Cfg.Parallel floored at 1 — the P a request
+// starts from before the admission top-up clamps it (admitAndGate).
+func (x *Executor) configuredParallelism() int {
+	if x.Cfg.Parallel < 1 {
+		return 1
+	}
+	return x.Cfg.Parallel
+}
+
+// dataShardCount is Cfg.DataShardCount floored at 1 — the D every per-shard
+// memory divisor in this file multiplies in (Execute's perShardMemoryBytes,
+// ShardMemoryDivisor). Config.Validate already rejects a value below 1; the
+// floor keeps an unvalidated test Config from dividing by zero.
+func (x *Executor) dataShardCount() int64 {
+	if x.Cfg.DataShardCount < 1 {
+		return 1
+	}
+	return int64(x.Cfg.DataShardCount)
+}
+
+// effectiveShardCount is kEff = min(k, pEff, gate/2), floored at 1 — the
+// number of shard cursors this Executor holds gate slots for, and therefore
+// the kEff Execute divides the memory cap by. admitAndGate calls it with the
+// ADMITTED pEff; ShardMemoryDivisor calls it with the configured P, which is
+// pEff's ceiling, so both read one clamp and cannot drift.
+func (x *Executor) effectiveShardCount(k, pEff int) int {
+	kEff := k
+	if pEff < kEff {
+		kEff = pEff
+	}
+	if x.Gate != nil && x.GateCap > 0 {
+		half := int(x.GateCap / 2)
+		if half < 1 {
+			half = 1
+		}
+		if half < kEff {
+			kEff = half
+		}
+	}
+	if kEff < 1 {
+		kEff = 1
+	}
+	return kEff
+}
+
+// ShardMemoryDivisor is the factor by which one shard of a k-way route-B
+// dispatch runs under LESS memory than the whole-query cap, as far as it can
+// be known before the dispatch is admitted: kEff x DataShardCount with kEff
+// at its ceiling, min(k, Cfg.Parallel, gate/2). Execute stamps each shard's
+// max_memory_usage as cap / (kEff x DataShardCount) with the ADMITTED kEff,
+// which the top-up can only clamp BELOW the configured P, so the real
+// divisor is at most this one and a shard's real memory share is at least
+// 1/this. internal/engine divides the whole-query fan-out ceilings it
+// threads to a shard by this value (routeBExecCtx, apportionFanoutBounds),
+// so a shard's guard is never looser than the memory the shard actually
+// runs under — and never tighter than the emit seam can justify: dividing
+// by the structural k instead would judge a shard against 1/k of the
+// ceiling while it runs under as much as 1/(P x D) of the cap, and make
+// every route-B rescue of a route-A rejection fail on its own guard.
+func (x *Executor) ShardMemoryDivisor(k int) int64 {
+	return int64(x.effectiveShardCount(k, x.configuredParallelism())) * x.dataShardCount()
 }
 
 // Execute emits, admits, gates, and dispatches a routed Decision, returning
@@ -326,17 +371,13 @@ func (x *Executor) Execute(
 	// concept.
 	var perShardMemoryBytes int64
 	if cap := x.Client.MaxQueryMemoryBytes(); cap > 0 {
-		dataShardCount := x.Cfg.DataShardCount
-		if dataShardCount < 1 {
-			dataShardCount = 1
-		}
 		// chclient.ApportionMemoryBytes is the SAME formula (divide + floor
 		// to 1) chclient.Client.querySettings applies to route A's own base
 		// cap by DataShardCount alone (cerberus issue #3122) — sharing it
 		// here means the two apportionment sites can never independently
 		// drift. This call site's divisor additionally folds in kEff, the
 		// piece unique to a genuine K-shard fan-out.
-		perShardMemoryBytes = chclient.ApportionMemoryBytes(cap, int64(kEff)*int64(dataShardCount))
+		perShardMemoryBytes = chclient.ApportionMemoryBytes(cap, int64(kEff)*x.dataShardCount())
 	}
 
 	// 4. WALL-CLOCK DEADLINE — a dedicated cancel cause so a solver-timeout

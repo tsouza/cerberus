@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/config"
 )
 
@@ -19,10 +20,11 @@ import (
 // quantile — is the one provisioned panel whose cost grows with the anchor
 // grid Grafana picks for it. Grafana's Prometheus datasource steps a panel
 // with no floor at its default scrape interval, and at the dashboard's own
-// default view that grid put the panel over
-// maxRangeBucketFanoutFoldCostUnits (internal/chsql/lwr_fanout_bound.go), so
-// the board's default view rendered a resource-bound rejection instead of a
-// line (cerberus issues #3402 / #3468 / #3514).
+// default view that grid put the panel over the fold-cost ceiling
+// (internal/chsql/lwr_fanout_bound.go,
+// RangeBucketFanoutFoldCostUnitsForMemory), so the board's default view
+// rendered a resource-bound rejection instead of a line (cerberus issues
+// #3402 / #3468 / #3514).
 //
 // The parity tests beside this one prove the three copies agree; nothing
 // there proves the floor exists or that it still protects what it was set
@@ -36,12 +38,12 @@ const (
 	// floor landed (calculatedMinStep 15000 in the failing nightly runs).
 	grafanaPrometheusDefaultMinStep = 15 * time.Second
 
-	// foldCostBoundSourceFile / foldCostBoundConstName name the bound the
-	// interval protects. The constant is unexported (an operator overrides it
-	// through CERBERUS_CH_RANGE_BUCKET_FANOUT_GROUP_MAX_COST_UNITS, never by
-	// reference), so its value is read from the source it lives in.
-	foldCostBoundSourceFile = "../../internal/chsql/lwr_fanout_bound.go"
-	foldCostBoundConstName  = "maxRangeBucketFanoutFoldCostUnits"
+	// foldCostBoundName names the bound the interval protects in failure
+	// messages. Its value is not a constant but a function of
+	// CERBERUS_CH_QUERY_MAX_MEMORY; both provisioned stacks
+	// (docker-compose.yml, test/e2e/k3s/cerberus-values.yaml) pin that cap
+	// at the shipped default, which is the cap the test derives it from.
+	foldCostBoundName = "RangeBucketFanoutFoldCostUnitsForMemory(CERBERUS_CH_QUERY_MAX_MEMORY)"
 
 	// expHistogramMaxSizeSourceFile / expHistogramMaxSizeConstName name the
 	// OTel exponential-histogram MaxSize cerberus collects the panel's metric
@@ -62,13 +64,16 @@ var grafanaDurationRe = regexp.MustCompile(`^(\d+)(ms|s|m|h|d)$`)
 func TestP95PanelIntervalFloorKeepsTheDefaultViewUnderTheFoldCostBound(t *testing.T) {
 	t.Parallel()
 
-	bound := goConstInt(t, foldCostBoundSourceFile, foldCostBoundConstName)
 	ladderWidth := goConstInt(t, expHistogramMaxSizeSourceFile, expHistogramMaxSizeConstName)
 
 	cfg, err := config.FromEnv()
 	if err != nil {
 		t.Fatalf("config.FromEnv: %v", err)
 	}
+	if cfg.ClickHouse.MaxQueryMemoryBytes <= 0 {
+		t.Fatalf("default CERBERUS_CH_QUERY_MAX_MEMORY = %d; the fold-cost ceiling is derived from a positive cap", cfg.ClickHouse.MaxQueryMemoryBytes)
+	}
+	bound := chsql.RangeBucketFanoutFoldCostUnitsForMemory(cfg.ClickHouse.MaxQueryMemoryBytes)
 	exportInterval := cfg.OTLP.ExportInterval
 	if exportInterval <= 0 {
 		t.Fatalf("default OTLP export interval = %s; the samples-per-window term needs a positive cadence", exportInterval)
@@ -93,7 +98,7 @@ func TestP95PanelIntervalFloorKeepsTheDefaultViewUnderTheFoldCostBound(t *testin
 		}
 		if strings.TrimSpace(rawInterval) == "" {
 			t.Fatalf("%s: the P95 panel (%q) carries no `interval` floor; without one Grafana steps it at %s "+
-				"and the dashboard's default view exceeds %s", path, panel["title"], grafanaPrometheusDefaultMinStep, foldCostBoundConstName)
+				"and the dashboard's default view exceeds %s", path, panel["title"], grafanaPrometheusDefaultMinStep, foldCostBoundName)
 		}
 		interval := parseGrafanaDuration(t, rawInterval)
 		window := parseGrafanaDuration(t, rangeVectorWindow(t, expr))
@@ -114,7 +119,7 @@ func TestP95PanelIntervalFloorKeepsTheDefaultViewUnderTheFoldCostBound(t *testin
 			t.Errorf("%s: at the panel's %s interval floor the default %s view admits %d worst-width series "+
 				"under %s=%d (per-group cost %d units at W=%d, S=%d), fewer than the %d heads on the legend — "+
 				"the panel's own default view would be rejected; raise the interval or recalibrate the bound",
-				path, rawInterval, view, got, foldCostBoundConstName, bound, perGroupCost, ladderWidth, samplesPerWindow, heads)
+				path, rawInterval, view, got, foldCostBoundName, bound, perGroupCost, ladderWidth, samplesPerWindow, heads)
 		}
 		// The floor is load-bearing, not decorative: at the step Grafana
 		// would pick without it, the same view cannot carry one series per
@@ -125,7 +130,7 @@ func TestP95PanelIntervalFloorKeepsTheDefaultViewUnderTheFoldCostBound(t *testin
 			t.Errorf("%s: at Grafana's unfloored %s step the default %s view already admits %d worst-width series "+
 				"(>= %d heads) under %s=%d — the %s interval floor no longer protects the panel; drop it or "+
 				"re-derive what it is for", path, grafanaPrometheusDefaultMinStep, view, got, heads,
-				foldCostBoundConstName, bound, rawInterval)
+				foldCostBoundName, bound, rawInterval)
 		}
 	}
 }

@@ -5,10 +5,83 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 )
+
+// capOnlyQuerier is a Querier that exposes only the configured memory cap —
+// the minimum resourceBoundOverrides needs to fill CHQueryMaxMemory.
+type capOnlyQuerier struct{ cap int64 }
+
+func (capOnlyQuerier) Query(context.Context, string, ...any) ([]chclient.Sample, error) {
+	return nil, nil
+}
+func (q capOnlyQuerier) MaxQueryMemoryBytes() int64 { return q.cap }
+
+// TestEngine_ResourceBoundOverrides_CarriesTheConfiguredCap pins the input
+// the fold-cost ceiling's cap-derived default reads: resourceBoundOverrides
+// fills CHQueryMaxMemory from the Client's CONFIGURED cap (the whole-query
+// value the ceilings are calibrated against), and an Engine with no Client
+// leaves it 0.
+func TestEngine_ResourceBoundOverrides_CarriesTheConfiguredCap(t *testing.T) {
+	const cap = int64(3 << 30)
+	e := &Engine{Client: capOnlyQuerier{cap: cap}}
+	if got := e.resourceBoundOverrides().CHQueryMaxMemory; got != cap {
+		t.Errorf("CHQueryMaxMemory = %d, want the Client's configured cap %d", got, cap)
+	}
+	if got := (&Engine{}).resourceBoundOverrides().CHQueryMaxMemory; got != 0 {
+		t.Errorf("CHQueryMaxMemory with no Client = %d, want 0", got)
+	}
+}
+
+// TestApplyResourceBoundOverrides_DerivesTheFoldCostCeilingFromTheCap pins
+// the engine->chsql seam for the one bound whose default is not a constant:
+// with no override, the fold-cost guard a 512 MiB deployment emits carries
+// half the 1 GiB ceiling; with an override, the override wins whatever the
+// cap; with neither, the 1 GiB calibration is what reaches the guard.
+func TestApplyResourceBoundOverrides_DerivesTheFoldCostCeilingFromTheCap(t *testing.T) {
+	const gib = int64(1 << 30)
+	plan := &chplan.RangeBucketFanout{
+		Input: &chplan.Scan{
+			Table:   "otel_metrics_gauge",
+			Columns: []string{"TimeUnix", "Attributes", "Value"},
+			Roles:   []chplan.Column{{Name: "TimeUnix", Role: chplan.RoleTimestamp}, {Name: "Attributes"}, {Name: "Value"}},
+		},
+		Start:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		End:          time.Date(2026, 1, 1, 0, 5, 0, 0, time.UTC),
+		Step:         30 * time.Second,
+		Lookback:     5 * time.Minute,
+		GroupBy:      []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		AnchorAlias:  "anchor_ts",
+		TimestampCol: "TimeUnix",
+		// groupArray is the growing accumulator that carries the fold-cost
+		// guard at all (chsql's rangeBucketFanoutHasGrowingAccumulator).
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnGroupArray, Alias: "Values", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+	}
+	for _, tc := range []struct {
+		name   string
+		bounds ResourceBoundOverrides
+		want   string
+	}{
+		{name: "512 MiB cap, no override: half the 1 GiB ceiling", bounds: ResourceBoundOverrides{CHQueryMaxMemory: gib / 2}, want: "> 7500000"},
+		{name: "4 GiB cap, no override: four times the 1 GiB ceiling", bounds: ResourceBoundOverrides{CHQueryMaxMemory: 4 * gib}, want: "> 60000000"},
+		{name: "override wins over the cap", bounds: ResourceBoundOverrides{CHQueryMaxMemory: 4 * gib, RangeBucketFanoutFoldCostMaxUnits: 4242}, want: "> 4242"},
+		{name: "no cap, no override: the 1 GiB calibration", bounds: ResourceBoundOverrides{}, want: "> 15000000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sql, _, err := chsql.Emit(applyResourceBoundOverrides(context.Background(), tc.bounds), plan)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			if got := strings.Count(sql, tc.want); got != 1 {
+				t.Errorf("expected the fold-cost guard literal %q exactly once, got %d\nSQL:\n%s", tc.want, got, sql)
+			}
+		})
+	}
+}
 
 // TestResourceBoundsFromEnv_DefaultsToZeroUnset pins the "operator did not
 // override" sentinel: with none of the four CERBERUS_CH_* vars

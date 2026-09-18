@@ -261,7 +261,7 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// OUTPUT's total fold cost, not the pre-collapse sample fanout
 	// `fanoutSource` above already caps. Scoped to collapses whose AggFuncs
 	// include a groupArray-family accumulator (classicBucketWindowAggs,
-	// expHistogramWindowAggs — see maxRangeBucketFanoutFoldCostUnits' own
+	// expHistogramWindowAggs — see rangeBucketFanoutFoldCostUnitsPerGiB' own
 	// doc for why): an argMax/sumForEach collapse reduces every group to a
 	// FIXED-size row regardless of group count, the same already-accepted
 	// risk class as any ordinary Aggregate, so gating this guard on the
@@ -402,7 +402,7 @@ const (
 // `Array(UInt64)` / `Array(Float64)` on every histogram payload column in
 // internal/schema's OTel layout — which is what turns ClickHouse's
 // `byteSize` (a BYTE count over whatever the accumulators happen to hold)
-// into the ELEMENT count maxRangeBucketFanoutFoldCostUnits is calibrated in.
+// into the ELEMENT count rangeBucketFanoutFoldCostUnitsPerGiB is calibrated in.
 const foldCostBytesPerElement int64 = 8
 
 // foldCostMinSamples floors the per-group sample count the width estimate
@@ -416,7 +416,7 @@ const foldCostMinSamples int64 = 1
 // rangeBucketFanoutFoldCostProbe renders the scalar subquery
 // [lwrFanoutGuardFrag] compares against the fold-cost ceiling: the sum, over
 // every group the collapse produced, of that group's own fold cost in the
-// `E + W^2` units maxRangeBucketFanoutFoldCostUnits is calibrated in.
+// `E + W^2` units rangeBucketFanoutFoldCostUnitsPerGiB is calibrated in.
 //
 //	SELECT sum(`_rbf_elems` + intDiv(`_rbf_elems`, `_rbf_samples`)
 //	                       * intDiv(`_rbf_elems`, `_rbf_samples`)) AS `n`
@@ -502,7 +502,7 @@ func rangeBucketFanoutFoldCostAliases(aggFuncs []chplan.AggFunc) (payload []stri
 // TimeUnix trio, expHistogramWindowAggs' bucket-array + timestamp groupArrays
 // — see histogram_quantile_window.go / histogram_quantile_native_window.go),
 // as opposed to a FIXED-size accumulator (argMax, sumForEach, sum, count,
-// …). See maxRangeBucketFanoutFoldCostUnits' own doc for why only the former
+// …). See rangeBucketFanoutFoldCostUnitsPerGiB' own doc for why only the former
 // needs a bound on what the collapse's whole output costs to fold.
 func rangeBucketFanoutHasGrowingAccumulator(aggFuncs []chplan.AggFunc) bool {
 	for _, af := range aggFuncs {

@@ -6,11 +6,15 @@ import (
 	"github.com/tsouza/cerberus/internal/solver"
 )
 
-// TestDecisionK pins the K-vs-kEff choice: routeBExecCtx apportions by the
-// structural shard count on the Decision, which is available at ctx-build
-// time, never by kEff (min(K, pEff, gate/2)), which the executor only
-// derives after the emit loop this ctx feeds. A nil or sub-1 K (a wiring
-// bug — see decisionK's own doc) must floor to 1, never divide by zero.
+// TestDecisionK pins the proxy the RangeBucketGridNative apportionment
+// divides by: the structural shard count on the Decision, available at
+// ctx-build time, never the admitted kEff (min(K, pEff, gate/2)), which the
+// executor only derives after the emit loop this ctx feeds. (The fan-out
+// ceilings divide by a tighter upper bound on kEff instead —
+// Engine.shardMemoryDivisor — because they are the guards the route memo
+// escalates on; routeBExecCtx's own doc has the rule.) A nil or sub-1 K (a
+// wiring bug — see decisionK's own doc) must floor to 1, never divide by
+// zero.
 func TestDecisionK(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -36,8 +40,8 @@ func TestDecisionK(t *testing.T) {
 // override" as an apportioned near-zero bound instead of the un-apportioned
 // default), and each axis floors at 1 independently so a pathological
 // k > resolved configuration still stamps a real, if tiny, bound rather than
-// 0 — which chsql's own ctx lookup treats as "absent" (see
-// apportionRangeBucketGridNativeBounds's own doc).
+// 0 — which chsql's own ctx lookup treats as "absent" (see apportionBound's
+// own doc).
 func TestApportionRangeBucketGridNativeBounds(t *testing.T) {
 	for _, tc := range []struct {
 		name             string

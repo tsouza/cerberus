@@ -335,13 +335,14 @@ type emitter struct {
 
 	// rangeBucketFanoutFoldCostMaxUnits resolves RangeBucketFanout's collapse
 	// OUTPUT fold-cost bound (issue #3468, lwr_fanout_bound.go's
-	// maxRangeBucketFanoutFoldCostUnits) — a second, independent axis from
+	// rangeBucketFanoutFoldCostUnitsPerGiB) — a second, independent axis from
 	// rangeBucketFanoutMaxRows above (that one bounds the PRE-collapse
 	// sample fanout). Seeded and read the identical way: once here from
-	// rangeBucketFanoutFoldCostMaxUnitsFromCtx, accessed only through
-	// rangeBucketFanoutFoldCostBound() so a direct &emitter{} in an
-	// internal round-trip test falls back to the compiled-in default
-	// rather than reading a literal zero.
+	// rangeBucketFanoutFoldCostMaxUnitsFromCtx — which carries the
+	// RESOLVED ceiling, override or derived from the deployment's memory
+	// cap — accessed only through rangeBucketFanoutFoldCostBound() so a
+	// direct &emitter{} in an internal round-trip test falls back to the
+	// 1 GiB calibration rather than reading a literal zero.
 	rangeBucketFanoutFoldCostMaxUnits int64
 
 	// rangeBucketGridNativeMaxRows / rangeBucketGridNativeMaxDensityUnits

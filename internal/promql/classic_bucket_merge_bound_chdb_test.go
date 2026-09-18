@@ -261,7 +261,7 @@ func TestClassicBucketMergeBudget_ChDB_Instant_WithinBudget(t *testing.T) {
 // guard is never the one that fires. The per-(anchor, series) window fold
 // is a RangeBucketFanout whose collapse carries groupArray accumulators, so
 // the collapse-output fold-cost probe (internal/chsql/range_bucket_fanout.go,
-// maxRangeBucketFanoutFoldCostUnits) wraps it — and ClickHouse evaluates
+// rangeBucketFanoutFoldCostUnitsPerGiB) wraps it — and ClickHouse evaluates
 // that probe as a scalar subquery BEFORE the guarded read streams into the
 // cross-series merge the classic guard sits on. The probe's cost is also
 // strictly the tighter of the two for every disjoint-layout seed: per

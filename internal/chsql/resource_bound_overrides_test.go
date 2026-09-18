@@ -52,7 +52,7 @@ func resourceBoundFanoutPlan() *chplan.RangeBucketFanout {
 // resourceBoundFanoutGroupPlan is resourceBoundFanoutPlan's growing-
 // accumulator sibling: the SAME shape, but with a groupArray AggFunc
 // (the collapse shape classicBucketWindowAggs / expHistogramWindowAggs
-// both build — see maxRangeBucketFanoutFoldCostUnits' own doc, issue #3468) in
+// both build — see rangeBucketFanoutFoldCostUnitsPerGiB' own doc, issue #3468) in
 // place of the fixed-size argMax the pre-collapse-only sibling plan uses.
 // This is what actually reaches emitRangeBucketFanout's new
 // rangeBucketFanoutHasGrowingAccumulator branch; resourceBoundFanoutPlan
@@ -204,7 +204,7 @@ func TestWithRangeBucketFanoutMaxRows_GrowingAccumulatorCarriesBothGuards(t *tes
 // term. A probe that kept only the first would be blind to width at a
 // fixed payload, which is the exact blindness the plain group count had:
 // 1,080 groups measured 27 MB on the compat corpus and 494 MB at a
-// 150-wide ladder. See maxRangeBucketFanoutFoldCostUnits' own doc.
+// 150-wide ladder. See rangeBucketFanoutFoldCostUnitsPerGiB' own doc.
 func TestRangeBucketFanoutFoldCostGuard_CostsWidthNotGroups(t *testing.T) {
 	t.Parallel()
 
@@ -239,7 +239,8 @@ func TestRangeBucketFanoutFoldCostGuard_CostsWidthNotGroups(t *testing.T) {
 
 // TestWithRangeBucketFanoutFoldCostMaxUnits_OverridesEmittedCeiling is
 // TestWithRangeBucketFanoutMaxRows_OverridesEmittedLimit's post-collapse
-// sibling — default maxRangeBucketFanoutFoldCostUnits = 15,000,000,
+// sibling — the 1 GiB calibration of rangeBucketFanoutFoldCostUnitsPerGiB
+// (15,000,000, what an unthreaded ctx resolves to),
 // overridden to 999.
 func TestWithRangeBucketFanoutFoldCostMaxUnits_OverridesEmittedCeiling(t *testing.T) {
 	t.Parallel()
