@@ -141,11 +141,17 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		// emitter's "many" aggregation handles by construction).
 	}
 
-	left, err := lowerVectorVectorOperand(b.LHS, s, ctx)
+	// A mixed float/histogram leg ([isMixedRelationShape]) joins its
+	// partner through the discriminator-aware fold below, so a
+	// histogram-valued partner is lowered through its own histogram
+	// lowering rather than the plain path, which has no lowering for a
+	// bare histogram selector at all.
+	mixedPartner := isMixedRelationShape(b.LHS, s, ctx) || isMixedRelationShape(b.RHS, s, ctx)
+	left, err := lowerMixedJoinLeg(b.LHS, mixedPartner, s, ctx)
 	if err != nil {
 		return nil, err
 	}
-	right, err := lowerVectorVectorOperand(b.RHS, s, ctx)
+	right, err := lowerMixedJoinLeg(b.RHS, mixedPartner, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +232,7 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 	// per-row payload kinds. It joins through the same discriminator-aware
 	// fold the direct roots use instead ([lowerMixedVectorJoinBinary]),
 	// with the other leg widened to the mixed contract.
-	if mixedRowsNeedPreparation(left) || mixedRowsNeedPreparation(right) {
+	if isMixedJoinLeg(left) || isMixedJoinLeg(right) {
 		return lowerVectorVectorOverMixedPlan(left, right, op, match, card, include, b.ReturnBool, s, ctx)
 	}
 
@@ -256,6 +262,26 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		TimestampColumn:  s.TimestampColumn,
 		ValueColumn:      s.ValueColumn,
 	}, nil
+}
+
+// lowerMixedJoinLeg lowers one operand of a vector-vector binop. Beside a
+// mixed relation (`mixedPartner`), a histogram-valued (or `and`/`unless`-
+// forwarded histogram) leg lowers through its own histogram lowering;
+// every other leg, and every leg of a binop with no mixed operand, takes
+// the ordinary [lowerVectorVectorOperand].
+func lowerMixedJoinLeg(expr parser.Expr, mixedPartner bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if mixedPartner && isExpHistogramValuedOrForwarded(expr, s, ctx) {
+		return lowerExpHistogramValuedOrForwardedOperand(expr, s, ctx)
+	}
+	return lowerVectorVectorOperand(expr, s, ctx)
+}
+
+// isMixedJoinLeg reports whether a lowered leg forces the mixed join: a
+// live mixed relation, or a histogram-valued one ([lowerMixedJoinLeg]
+// produces it only beside a mixed partner) — the plain [chplan.VectorJoin]
+// would read either's histogram placeholder Value as a float sample.
+func isMixedJoinLeg(node chplan.Node) bool {
+	return mixedRowsNeedPreparation(node) || liveSampleKind(node) == chplan.SampleKindHistogram
 }
 
 // lowerVectorVectorOverMixedPlan is [lowerVectorVector]'s arm for a leg

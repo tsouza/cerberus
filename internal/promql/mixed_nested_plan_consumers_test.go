@@ -24,7 +24,10 @@ import (
 // it. Every such shape must lower through the same discriminator-aware folds
 // its direct root already uses, and its plan must still be a live mixed
 // relation (the histogram rows survive) or, for the comparison and `+`/`-`
-// shapes, a fold over a MixedVectorJoin rather than a plain VectorJoin.
+// shapes, a fold over a MixedVectorJoin rather than a plain VectorJoin. A
+// histogram-valued partner — one lowerRoot's histogram-vs-float-vector
+// recognisers would otherwise claim, reading the nested plan as a float
+// vector — joins through the same fold with its rows stamped histogram.
 func TestNestedMixedPlanAtScaleUnaryAndVectorConsumersLowersLikeItsRoot(t *testing.T) {
 	const direct = `(latency_exp_hist or num_cpus)`
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
@@ -57,6 +60,12 @@ func TestNestedMixedPlanAtScaleUnaryAndVectorConsumersLowersLikeItsRoot(t *testi
 		{"vector_add_both_nested", func(n string) string { return n + ` + ` + n }, true},
 		{"vector_add_forwarded_histogram", func(n string) string { return n + ` + (other_exp_hist and up)` }, true},
 		{"vector_mul_forwarded_histogram", func(n string) string { return `(other_exp_hist and up) * ` + n }, true},
+		{"vector_add_histogram", func(n string) string { return n + ` + other_exp_hist` }, true},
+		{"vector_sub_histogram_left", func(n string) string { return `other_exp_hist - ` + n }, true},
+		{"vector_mul_histogram", func(n string) string { return n + ` * other_exp_hist` }, true},
+		{"vector_div_histogram_group_left", func(n string) string { return `other_exp_hist / on(job) group_left() ` + n }, true},
+		{"compare_histogram_filter", func(n string) string { return n + ` == other_exp_hist` }, true},
+		{"compare_histogram_bool", func(n string) string { return n + ` != bool other_exp_hist` }, false},
 		{"compare_bool", func(n string) string { return n + ` > bool up` }, false},
 		{"compare_filter", func(n string) string { return n + ` == up` }, true},
 		{"compare_both_nested", func(n string) string { return n + ` != ` + n }, true},

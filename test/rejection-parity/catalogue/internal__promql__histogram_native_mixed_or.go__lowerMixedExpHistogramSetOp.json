@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramSetOp#6cdf660e",
       "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
       "class": "internal",
-      "rationale": "Every production caller passes the same BinaryExpr previously matched by mixedExpHistogramSetOp, which requires parser.LOR. The parser permits ReturnBool only on comparison operators, so it cannot set ReturnBool on that or expression. The direct family and operand wrappers do not synthesize a replacement BinaryExpr; comparison wrappers pass their inner mixed-or node rather than the outer comparison. lowerSortByLabelArg follows the same contract: it recognizes the argument with mixedExpHistogramSetOp, then lowerWithMixedPreservePolicy invokes this lowerer through a closure that captures the unchanged node. This guard is therefore reachable only through synthetic malformed-AST construction.",
+      "rationale": "Every production caller passes the same BinaryExpr previously matched by mixedExpHistogramSetOp, which requires parser.LOR. The parser permits ReturnBool only on comparison operators, so it cannot set ReturnBool on that or expression. The direct family and operand wrappers do not synthesize a replacement BinaryExpr; comparison wrappers pass their inner mixed-or node rather than the outer comparison. lowerSortByLabelArg follows the same contract: it recognizes the argument with mixedExpHistogramSetOp, then lowerWithMixedPreservePolicy invokes this lowerer through a closure that captures the unchanged node. This guard is therefore reachable only through synthetic malformed-AST construction. lowerInfoOverMixedExpHistogramSetOp (cerberus issue #3562) passes the BinaryExpr infoArgOverMixedExpHistogramSetOp recognised, which is mixedExpHistogramSetOp's own answer, unchanged.",
       "evidence": {
         "guard": [
           "if b.ReturnBool"
@@ -16,6 +16,7 @@
           "lowerComparisonVectorPlainOverMixedExpHistogramSetOp",
           "lowerComparisonVectorVectorOverMixedExpHistogramSetOp",
           "lowerCountOrGroupOverMixedExpHistogramSetOp",
+          "lowerInfoOverMixedExpHistogramSetOp",
           "lowerLabelCallOverMixedExpHistogramSetOp",
           "lowerLimitKInput",
           "lowerMathCallOverMixedExpHistogramSetOp",
@@ -30,6 +31,8 @@
           "splitMixedExpHistogramSetOpByType"
         ],
         "cited": [
+          "infoArgOverMixedExpHistogramSetOp",
+          "lowerInfoOverMixedExpHistogramSetOp",
           "lowerSortByLabelArg",
           "lowerWithMixedPreservePolicy",
           "mixedExpHistogramSetOp"

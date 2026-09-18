@@ -30,9 +30,10 @@ import (
 )
 
 const (
-	ncHistMetric    = "nc_hist_side_exp_hist"
-	ncFloatMetric   = "nc_float_side_gauge"
-	ncPartnerMetric = "nc_partner_gauge"
+	ncHistMetric        = "nc_hist_side_exp_hist"
+	ncFloatMetric       = "nc_float_side_gauge"
+	ncPartnerMetric     = "nc_partner_gauge"
+	ncPartnerHistMetric = "nc_partner_exp_hist"
 	// ncRowCount is the number of series the mixed `or` answers; limitk at
 	// or above it is the identity.
 	ncRowCount = 4
@@ -41,7 +42,9 @@ const (
 // ncSeed keys two histogram series ("h1", "h2") and two float series ("f1"=3,
 // "f2"=9) on disjoint label sets, plus a partner gauge carrying one row for
 // EVERY one of those four label sets so a vector-vector operator matches
-// each mixed row exactly once and `and` forwards all of them.
+// each mixed row exactly once and `and` forwards all of them, and a partner
+// histogram on "h1" and "f1" so a histogram-valued partner meets one
+// histogram row and one float row.
 var ncSeed = "" +
 	"CREATE OR REPLACE TABLE otel_metrics_exponential_histogram (" +
 	"`MetricName` String, `Attributes` Map(String, String), " +
@@ -54,7 +57,9 @@ var ncSeed = "" +
 	"INSERT INTO otel_metrics_exponential_histogram " +
 	"(MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n" +
 	"    ('" + ncHistMetric + "', map('series', 'h1'), toDateTime64('2026-01-01 00:00:00', 9), 2, 4.0, 0, 0, 0, [6], 0, []),\n" +
-	"    ('" + ncHistMetric + "', map('series', 'h2'), toDateTime64('2026-01-01 00:00:00', 9), 3, 9.0, 0, 0, 0, [7], 0, []);\n" +
+	"    ('" + ncHistMetric + "', map('series', 'h2'), toDateTime64('2026-01-01 00:00:00', 9), 3, 9.0, 0, 0, 0, [7], 0, []),\n" +
+	"    ('" + ncPartnerHistMetric + "', map('series', 'h1'), toDateTime64('2026-01-01 00:00:00', 9), 5, 10.0, 0, 0, 0, [8], 0, []),\n" +
+	"    ('" + ncPartnerHistMetric + "', map('series', 'f1'), toDateTime64('2026-01-01 00:00:00', 9), 7, 14.0, 0, 0, 0, [9], 0, []);\n" +
 	swapGaugeSeedDDL +
 	"INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES\n" +
 	"    ('" + ncFloatMetric + "', map('series', 'f1'), toDateTime64('2026-01-01 00:00:00', 9), 3.0),\n" +
@@ -181,28 +186,52 @@ func TestNestedMixedConsumersAnswerLikeTheirRoots_ChDB(t *testing.T) {
 		}
 		rootRows[c.name] = want
 	}
-	// A histogram-valued partner that lowerRoot's own histogram recognisers
-	// decline (forwarded through `and`) has no direct-root twin to compare
-	// against: reference merges each histogram row with its matching
-	// partner row (Count/Sum/buckets added) and drops the float rows, so
-	// the answer is pinned outright.
-	histogramPartner := "(" + ncHistMetric + " and " + ncPartnerMetric + ")"
+	// A histogram-valued partner has no direct-root twin to compare
+	// against (the root `(h or f) OP <histogram>` is refused), so the
+	// answer is pinned outright from reference's per-row rule: a
+	// histogram row merges with (`+`/`-`) or drops against (`*`, `==`) a
+	// matching histogram partner row, a float row scales a histogram
+	// partner under `*` and drops under everything else. The forwarded
+	// partner (`and`) is the shape lowerRoot's histogram recognisers
+	// decline; the bare partner is the shape they would otherwise claim,
+	// reading the nested plan as a float vector.
+	forwardedPartner := "(" + ncHistMetric + " and " + ncPartnerMetric + ")"
 	histogramPartnerConsumers := []struct {
 		name string
 		wrap func(operand string) string
 		want []ncRow
 	}{
-		{"vector_add_forwarded_histogram", func(o string) string { return o + ` + ` + histogramPartner }, []ncRow{
+		{"vector_add_forwarded_histogram", func(o string) string { return o + ` + ` + forwardedPartner }, []ncRow{
 			{Series: "h1", Disc: 1, Count: 4, Sum: 8, Bucket1: 12},
 			{Series: "h2", Disc: 1, Count: 6, Sum: 18, Bucket1: 14},
 		}},
-		{"vector_sub_forwarded_histogram_left", func(o string) string { return histogramPartner + ` - ` + o }, []ncRow{
+		{"vector_sub_forwarded_histogram_left", func(o string) string { return forwardedPartner + ` - ` + o }, []ncRow{
 			{Series: "h1", Disc: 1},
 			{Series: "h2", Disc: 1},
 		}},
 		// histogram,histogram drops under `*`, and the float rows have no
 		// matching partner row: nothing survives.
-		{"vector_mul_forwarded_histogram", func(o string) string { return o + ` * ` + histogramPartner }, nil},
+		{"vector_mul_forwarded_histogram", func(o string) string { return o + ` * ` + forwardedPartner }, nil},
+		{"vector_add_histogram", func(o string) string { return o + ` + ` + ncPartnerHistMetric }, []ncRow{
+			{Series: "h1", Disc: 1, Count: 7, Sum: 14, Bucket1: 14},
+		}},
+		{"vector_sub_histogram_left", func(o string) string { return ncPartnerHistMetric + ` - ` + o }, []ncRow{
+			{Series: "h1", Disc: 1, Count: 3, Sum: 6, Bucket1: 2},
+		}},
+		// f1=3 scales the partner histogram; h1,h1 drops.
+		{"vector_mul_histogram", func(o string) string { return o + ` * ` + ncPartnerHistMetric }, []ncRow{
+			{Series: "f1", Disc: 1, Count: 21, Sum: 42, Bucket1: 27},
+		}},
+		{"vector_mul_histogram_left", func(o string) string { return ncPartnerHistMetric + ` * ` + o }, []ncRow{
+			{Series: "f1", Disc: 1, Count: 21, Sum: 42, Bucket1: 27},
+		}},
+		{"compare_histogram_filter", func(o string) string { return o + ` == ` + ncPartnerHistMetric }, nil},
+		{"compare_histogram_bool", func(o string) string { return o + ` != bool ` + ncPartnerHistMetric }, []ncRow{
+			{Series: "h1", Value: 1},
+		}},
+		{"sum_over_vector_add_histogram", func(o string) string { return `sum(` + o + ` + ` + ncPartnerHistMetric + `)` }, []ncRow{
+			{Series: "", Disc: 1, Count: 7, Sum: 14, Bucket1: 14},
+		}},
 	}
 	for _, w := range wrappers {
 		for _, c := range consumers {

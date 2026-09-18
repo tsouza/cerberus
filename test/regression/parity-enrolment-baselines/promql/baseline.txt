@@ -478,9 +478,11 @@ mixed_wrapper_timestamp_mirror.txtar
 mixed_wrapper_topk_computed.txtar
 mixed_wrapper_topk_mirror.txtar
 mixed_wrapper_unary_minus_shadow.txtar
+mixed_wrapper_vector_add_histogram_shadow.txtar
 mixed_wrapper_vector_add_self_shadow.txtar
 mixed_wrapper_vector_add_shadow.txtar
 mixed_wrapper_vector_compare_bool_shadow.txtar
+mixed_wrapper_vector_mul_histogram_shadow.txtar
 mod_arithmetic.txtar
 month_default.txtar
 month_of_vector.txtar

@@ -13,6 +13,87 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+const (
+	mixedPolicyDirect = `(latency_exp_hist or num_cpus)`
+	mixedPolicyNested = `sort_by_label(latency_exp_hist or num_cpus, "job")`
+)
+
+// mixedPolicyDispatchInventory names, for every row of the policy table, a
+// query whose lowering consults that row. TestMixedOperandPolicyControlsActualDispatch
+// proves each entry load-bearing in both directions and that no row is left
+// unnamed; TestMixedRelationShapeAgreesWithEveryPolicyConsumer reuses the
+// same queries to hold the static mixed-relation predicate to what the
+// lowerings actually produce.
+var mixedPolicyDispatchInventory = []struct {
+	query  string
+	family mixedWrapperFamily
+	site   mixedAdmissionSite
+}{
+	{mixedPolicyDirect, mixedLeafFamily, mixedRootAdmission},
+	{`sum(` + mixedPolicyDirect + `)`, mixedSumAvgFamily, mixedRootAdmission},
+	{`count(` + mixedPolicyDirect + `)`, mixedCountGroupFamily, mixedRootAdmission},
+	{`min(` + mixedPolicyDirect + `)`, mixedFloatAggregateFamily, mixedRootAdmission},
+	{`topk(2, ` + mixedPolicyDirect + `)`, mixedTopKFamily, mixedRootAdmission},
+	{`count_values("v", ` + mixedPolicyDirect + `)`, mixedCountValuesFamily, mixedRootAdmission},
+	{`label_replace(` + mixedPolicyDirect + `, "dst", "x", "job", ".*")`, mixedLabelFamily, mixedRootAdmission},
+	{`label_join(` + mixedPolicyDirect + `, "dst", "-", "job")`, mixedLabelFamily, mixedRootAdmission},
+	{`abs(` + mixedPolicyDirect + `)`, mixedMathFamily, mixedRootAdmission},
+	{mixedPolicyDirect + ` * 2`, mixedScaleFamily, mixedRootAdmission},
+	{mixedPolicyDirect + ` + 1`, mixedArithmeticFamily, mixedRootAdmission},
+	{mixedPolicyDirect + ` > 1`, mixedComparisonFamily, mixedRootAdmission},
+	{mixedPolicyDirect + ` + up`, mixedVectorArithmeticFamily, mixedRootAdmission},
+	{mixedPolicyDirect + ` + ` + mixedPolicyDirect, mixedVectorArithmeticFamily, mixedRootAdmission},
+	{mixedPolicyDirect + ` > bool up`, mixedVectorComparisonFamily, mixedRootAdmission},
+	{mixedPolicyDirect + ` == ` + mixedPolicyDirect, mixedVectorComparisonFamily, mixedRootAdmission},
+	{`sum(rate(` + mixedPolicyDirect + `[5m:1m]))`, mixedSubqueryFamily, mixedRootAdmission},
+	{`scalar(` + mixedPolicyDirect + `)`, mixedScalarFamily, mixedOperandAdmission},
+	{`sort(` + mixedPolicyDirect + `)`, mixedSortFamily, mixedOperandAdmission},
+	{mixedPolicyNested, mixedSortByLabelFamily, mixedOperandAdmission},
+	{`year(` + mixedPolicyDirect + `)`, mixedDateFamily, mixedOperandAdmission},
+	{`timestamp(` + mixedPolicyDirect + `)`, mixedTimestampFamily, mixedOperandAdmission},
+	{`info(` + mixedPolicyDirect + `)`, mixedInfoFamily, mixedOperandAdmission},
+	{`histogram_count(` + mixedPolicyDirect + `)`, mixedHistogramValueFamily, mixedOperandAdmission},
+	{`limitk(5, ` + mixedPolicyDirect + `)`, mixedLimitFamily, mixedOperandAdmission},
+	{`-` + mixedPolicyDirect, mixedUnaryFamily, mixedOperandAdmission},
+	{`+` + mixedPolicyDirect, mixedUnaryFamily, mixedOperandAdmission},
+	{mixedPolicyDirect + ` and up`, mixedSetOperandFamily, mixedOperandAdmission},
+	{`last_over_time((sum(` + mixedPolicyDirect + `))[5m:1m])`, mixedSubqueryFamily, mixedOperandAdmission},
+	{`absent(` + mixedPolicyDirect + `)`, mixedAbsentFamily, mixedOperandAdmission},
+	{`abs(` + mixedPolicyNested + `)`, mixedMathFamily, mixedPlanAdmission},
+	{`clamp(` + mixedPolicyNested + `, 2, 1)`, mixedMathFamily, mixedPlanAdmission},
+	{`year(` + mixedPolicyNested + `)`, mixedDateFamily, mixedPlanAdmission},
+	{`timestamp(` + mixedPolicyNested + `)`, mixedTimestampFamily, mixedPlanAdmission},
+	{`+` + mixedPolicyNested, mixedUnaryFamily, mixedPlanAdmission},
+	{`-` + mixedPolicyNested, mixedUnaryFamily, mixedPlanAdmission},
+	{mixedPolicyNested + ` * 2`, mixedScaleFamily, mixedPlanAdmission},
+	{`2 * ` + mixedPolicyNested, mixedScaleFamily, mixedPlanAdmission},
+	{mixedPolicyNested + ` / 2`, mixedScaleFamily, mixedPlanAdmission},
+	{mixedPolicyNested + ` * scalar(vector(2))`, mixedScaleFamily, mixedPlanAdmission},
+	{mixedPolicyNested + ` + 1`, mixedArithmeticFamily, mixedPlanAdmission},
+	{mixedPolicyNested + ` > 1`, mixedComparisonFamily, mixedPlanAdmission},
+	{mixedPolicyNested + ` + up`, mixedVectorArithmeticFamily, mixedPlanAdmission},
+	{`up - ` + mixedPolicyNested, mixedVectorArithmeticFamily, mixedPlanAdmission},
+	{mixedPolicyNested + ` + ` + mixedPolicyNested, mixedVectorArithmeticFamily, mixedPlanAdmission},
+	{mixedPolicyNested + ` > bool up`, mixedVectorComparisonFamily, mixedPlanAdmission},
+	{mixedPolicyNested + ` == ` + mixedPolicyNested, mixedVectorComparisonFamily, mixedPlanAdmission},
+	{`label_replace(` + mixedPolicyNested + `, "dst", "x", "job", ".*")`, mixedLabelFamily, mixedPlanAdmission},
+	{`label_join(` + mixedPolicyNested + `, "dst", "-", "job")`, mixedLabelFamily, mixedPlanAdmission},
+	{`scalar(` + mixedPolicyNested + `)`, mixedScalarFamily, mixedPlanAdmission},
+	{`last_over_time(` + mixedPolicyDirect + `[5m:1m])`, mixedSubqueryFamily, mixedPlanAdmission},
+	{`sort(` + mixedPolicyNested + `)`, mixedSortFamily, mixedPlanAdmission},
+	{`sort_by_label(` + mixedPolicyNested + `, "instance")`, mixedSortByLabelFamily, mixedPlanAdmission},
+	{`info(` + mixedPolicyNested + `)`, mixedInfoFamily, mixedPlanAdmission},
+	{`limitk(5, ` + mixedPolicyNested + `)`, mixedLimitFamily, mixedPlanAdmission},
+	{mixedPolicyNested + ` and up`, mixedSetOperandFamily, mixedPlanAdmission},
+	{`absent(` + mixedPolicyNested + `)`, mixedAbsentFamily, mixedPlanAdmission},
+	{`histogram_count(` + mixedPolicyNested + `)`, mixedHistogramValueFamily, mixedPlanAdmission},
+	{`sum(` + mixedPolicyNested + `)`, mixedSumAvgFamily, mixedPlanAdmission},
+	{`count(` + mixedPolicyNested + `)`, mixedCountGroupFamily, mixedPlanAdmission},
+	{`min(` + mixedPolicyNested + `)`, mixedFloatAggregateFamily, mixedPlanAdmission},
+	{`topk(2, ` + mixedPolicyNested + `)`, mixedTopKFamily, mixedPlanAdmission},
+	{`count_values("v", ` + mixedPolicyNested + `)`, mixedCountValuesFamily, mixedPlanAdmission},
+}
+
 // Deliberately non-parallel: each case temporarily removes one authorization
 // from the package table, proving the real dispatch consults it before lowering
 // or building its wrapper. Parallel tests run only after this test returns.
@@ -25,82 +106,11 @@ import (
 // fails this test, so the table can only ever hold rows a real consumer
 // selects its transform through.
 func TestMixedOperandPolicyControlsActualDispatch(t *testing.T) {
-	const direct = `(latency_exp_hist or num_cpus)`
-	const nested = `sort_by_label(latency_exp_hist or num_cpus, "job")`
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	s := schema.DefaultOTelMetrics()
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	cases := []struct {
-		query  string
-		family mixedWrapperFamily
-		site   mixedAdmissionSite
-	}{
-		{direct, mixedLeafFamily, mixedRootAdmission},
-		{`sum(` + direct + `)`, mixedSumAvgFamily, mixedRootAdmission},
-		{`count(` + direct + `)`, mixedCountGroupFamily, mixedRootAdmission},
-		{`min(` + direct + `)`, mixedFloatAggregateFamily, mixedRootAdmission},
-		{`topk(2, ` + direct + `)`, mixedTopKFamily, mixedRootAdmission},
-		{`count_values("v", ` + direct + `)`, mixedCountValuesFamily, mixedRootAdmission},
-		{`label_replace(` + direct + `, "dst", "x", "job", ".*")`, mixedLabelFamily, mixedRootAdmission},
-		{`label_join(` + direct + `, "dst", "-", "job")`, mixedLabelFamily, mixedRootAdmission},
-		{`abs(` + direct + `)`, mixedMathFamily, mixedRootAdmission},
-		{direct + ` * 2`, mixedScaleFamily, mixedRootAdmission},
-		{direct + ` + 1`, mixedArithmeticFamily, mixedRootAdmission},
-		{direct + ` > 1`, mixedComparisonFamily, mixedRootAdmission},
-		{direct + ` + up`, mixedVectorArithmeticFamily, mixedRootAdmission},
-		{direct + ` + ` + direct, mixedVectorArithmeticFamily, mixedRootAdmission},
-		{direct + ` > bool up`, mixedVectorComparisonFamily, mixedRootAdmission},
-		{direct + ` == ` + direct, mixedVectorComparisonFamily, mixedRootAdmission},
-		{`sum(rate(` + direct + `[5m:1m]))`, mixedSubqueryFamily, mixedRootAdmission},
-		{`scalar(` + direct + `)`, mixedScalarFamily, mixedOperandAdmission},
-		{`sort(` + direct + `)`, mixedSortFamily, mixedOperandAdmission},
-		{nested, mixedSortByLabelFamily, mixedOperandAdmission},
-		{`year(` + direct + `)`, mixedDateFamily, mixedOperandAdmission},
-		{`timestamp(` + direct + `)`, mixedTimestampFamily, mixedOperandAdmission},
-		{`info(` + direct + `)`, mixedInfoFamily, mixedOperandAdmission},
-		{`histogram_count(` + direct + `)`, mixedHistogramValueFamily, mixedOperandAdmission},
-		{`limitk(5, ` + direct + `)`, mixedLimitFamily, mixedOperandAdmission},
-		{`-` + direct, mixedUnaryFamily, mixedOperandAdmission},
-		{`+` + direct, mixedUnaryFamily, mixedOperandAdmission},
-		{direct + ` and up`, mixedSetOperandFamily, mixedOperandAdmission},
-		{`last_over_time((sum(` + direct + `))[5m:1m])`, mixedSubqueryFamily, mixedOperandAdmission},
-		{`absent(` + direct + `)`, mixedAbsentFamily, mixedOperandAdmission},
-		{`abs(` + nested + `)`, mixedMathFamily, mixedPlanAdmission},
-		{`clamp(` + nested + `, 2, 1)`, mixedMathFamily, mixedPlanAdmission},
-		{`year(` + nested + `)`, mixedDateFamily, mixedPlanAdmission},
-		{`timestamp(` + nested + `)`, mixedTimestampFamily, mixedPlanAdmission},
-		{`+` + nested, mixedUnaryFamily, mixedPlanAdmission},
-		{`-` + nested, mixedUnaryFamily, mixedPlanAdmission},
-		{nested + ` * 2`, mixedScaleFamily, mixedPlanAdmission},
-		{`2 * ` + nested, mixedScaleFamily, mixedPlanAdmission},
-		{nested + ` / 2`, mixedScaleFamily, mixedPlanAdmission},
-		{nested + ` * scalar(vector(2))`, mixedScaleFamily, mixedPlanAdmission},
-		{nested + ` + 1`, mixedArithmeticFamily, mixedPlanAdmission},
-		{nested + ` > 1`, mixedComparisonFamily, mixedPlanAdmission},
-		{nested + ` + up`, mixedVectorArithmeticFamily, mixedPlanAdmission},
-		{`up - ` + nested, mixedVectorArithmeticFamily, mixedPlanAdmission},
-		{nested + ` + ` + nested, mixedVectorArithmeticFamily, mixedPlanAdmission},
-		{nested + ` > bool up`, mixedVectorComparisonFamily, mixedPlanAdmission},
-		{nested + ` == ` + nested, mixedVectorComparisonFamily, mixedPlanAdmission},
-		{`label_replace(` + nested + `, "dst", "x", "job", ".*")`, mixedLabelFamily, mixedPlanAdmission},
-		{`label_join(` + nested + `, "dst", "-", "job")`, mixedLabelFamily, mixedPlanAdmission},
-		{`scalar(` + nested + `)`, mixedScalarFamily, mixedPlanAdmission},
-		{`last_over_time(` + direct + `[5m:1m])`, mixedSubqueryFamily, mixedPlanAdmission},
-		{`sort(` + nested + `)`, mixedSortFamily, mixedPlanAdmission},
-		{`sort_by_label(` + nested + `, "instance")`, mixedSortByLabelFamily, mixedPlanAdmission},
-		{`info(` + nested + `)`, mixedInfoFamily, mixedPlanAdmission},
-		{`limitk(5, ` + nested + `)`, mixedLimitFamily, mixedPlanAdmission},
-		{nested + ` and up`, mixedSetOperandFamily, mixedPlanAdmission},
-		{`absent(` + nested + `)`, mixedAbsentFamily, mixedPlanAdmission},
-		{`histogram_count(` + nested + `)`, mixedHistogramValueFamily, mixedPlanAdmission},
-		{`sum(` + nested + `)`, mixedSumAvgFamily, mixedPlanAdmission},
-		{`count(` + nested + `)`, mixedCountGroupFamily, mixedPlanAdmission},
-		{`min(` + nested + `)`, mixedFloatAggregateFamily, mixedPlanAdmission},
-		{`topk(2, ` + nested + `)`, mixedTopKFamily, mixedPlanAdmission},
-		{`count_values("v", ` + nested + `)`, mixedCountValuesFamily, mixedPlanAdmission},
-	}
 	covered := map[mixedWrapperKey]bool{}
-	for _, tc := range cases {
+	for _, tc := range mixedPolicyDispatchInventory {
 		covered[mixedWrapperKey{family: tc.family, site: tc.site}] = true
 		t.Run(tc.query, func(t *testing.T) {
 			expr, err := p.ParseExpr(tc.query)
@@ -393,5 +403,35 @@ func TestMixedOperandPolicyRequiresExactRuleAgreement(t *testing.T) {
 		if err == nil {
 			t.Fatalf("sentinel %v authorized itself through the table", sentinel)
 		}
+	}
+}
+
+// The static mixed-relation predicate [isMixedRelationShape] is what keeps
+// the histogram-vs-float-vector recognisers from reading a mixed operand as
+// a float vector. It must agree with the lowerings: over the dispatch
+// inventory, every query whose plan is a live mixed relation is recognised,
+// and every recognised query lowers to one. A disagreement in either
+// direction is a shape that would be answered wrongly or refused although
+// its root answers it.
+func TestMixedRelationShapeAgreesWithEveryPolicyConsumer(t *testing.T) {
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	s := schema.DefaultOTelMetrics()
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range mixedPolicyDispatchInventory {
+		t.Run(tc.query, func(t *testing.T) {
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			live := mixedRowsNeedPreparation(plan)
+			static := isMixedRelationShape(expr, s, lowerCtx{start: at, end: at})
+			if live != static {
+				t.Fatalf("plan is live mixed: %v, isMixedRelationShape: %v", live, static)
+			}
+		})
 	}
 }

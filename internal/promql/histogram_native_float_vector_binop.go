@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"fmt"
+
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -64,6 +66,13 @@ func expHistogramDroppingVectorBinop(expr parser.Expr, s schema.Metrics, ctx low
 	if _, isScalar := tryScalarLiteral(b.RHS); isScalar {
 		return nil, nil, false
 	}
+	// A mixed float/histogram relation on the other side is not a float
+	// vector: its histogram rows merge with or drop against this side per
+	// row, which [lowerVectorVector]'s mixed arm answers (cerberus issue
+	// #3562). Declining keeps that pair off this drop.
+	if isMixedRelationShape(b.LHS, s, ctx) || isMixedRelationShape(b.RHS, s, ctx) {
+		return nil, nil, false
+	}
 	lhsHist := isExpHistogramValuedShape(b.LHS, s, ctx)
 	rhsHist := isExpHistogramValuedShape(b.RHS, s, ctx)
 	switch {
@@ -95,7 +104,11 @@ func lowerExpHistogramDroppingVectorBinop(histSide, floatSide parser.Expr, s sch
 	if err != nil {
 		return nil, err
 	}
-	if _, err := lower(floatSide, s, ctx); err != nil {
+	floatNode, err := lower(floatSide, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireFloatVectorBinopOperand(floatNode); err != nil {
 		return nil, err
 	}
 	// Reference returns keep=false plus an incompatible-types info
@@ -105,4 +118,17 @@ func lowerExpHistogramDroppingVectorBinop(histSide, floatSide parser.Expr, s sch
 	// [lowerExpHistogramDroppingHistogramBinop] use for their own drop
 	// paths.
 	return &chplan.Filter{Input: hp, Predicate: &chplan.LitBool{V: false}}, nil
+}
+
+// requireFloatVectorBinopOperand is the lowering-time backstop behind
+// [isMixedRelationShape]: the recognisers above decline a mixed operand
+// statically, so a "float vector" side that nonetheless lowered to a LIVE
+// mixed relation is a producer the static predicate does not name. It is
+// refused rather than dropped wholesale or joined on its placeholder
+// Value — a rejection is the only answer that is never wrong.
+func requireFloatVectorBinopOperand(node chplan.Node) error {
+	if mixedRowsNeedPreparation(node) {
+		return fmt.Errorf("promql: internal invariant violated: a mixed float/histogram operand reached a histogram-vs-float-vector lowering")
+	}
+	return nil
 }

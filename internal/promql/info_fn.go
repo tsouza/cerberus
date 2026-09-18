@@ -138,6 +138,13 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	if err := requireMixedPlanPolicy(base, mixedInfoFamily, mixedBespoke); err != nil {
 		return nil, err
 	}
+	if mixedRowsNeedPreparation(base) {
+		// A mixed relation an intermediate wrapper already lowered takes
+		// the same per-partition enrichment the direct mixed `or` above
+		// does; the generic join below would publish its histogram rows
+		// as floats.
+		return lowerInfoOverMixedPlan(c, base, s, ctx)
+	}
 	nameMatchers, dataMatchers, err := infoSecondArgMatchers(c)
 	if err != nil {
 		return nil, err
