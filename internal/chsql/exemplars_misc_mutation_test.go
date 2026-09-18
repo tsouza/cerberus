@@ -65,7 +65,7 @@ func TestExemplarsMaxPerSeriesZeroNoLimit(t *testing.T) {
 	// The UNGROUPED shape takes the same branch with an empty alias list, so
 	// the LIMIT BY key list collapses to the anchor alone. The emitter appends
 	// it unconditionally —
-	// exemplars.go:`limitByFrags = append(limitByFrags, Col("anchor_ts"))` —
+	// exemplars.go:`limitByFrags = append(limitByFrags, Col(RangeWindowAnchorAlias))` —
 	// which is what keeps `LIMIT n BY` from rendering an empty key list, which
 	// ClickHouse rejects. The grouped case above cannot show that, because its
 	// aliases would carry the clause on their own.

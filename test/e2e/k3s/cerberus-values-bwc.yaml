@@ -43,11 +43,15 @@ clickhouse:
     # This is the TEST-ONLY open-access posture gotcha #1 calls for, delivered
     # by a dedicated user rather than loosening `default` — and it is
     # version-independent, so the lane is correct on 25.x and 26.x alike.
-    image: clickhouse/clickhouse-server:26.3
+    # The tag is the chart's OWN bundled pin (deploy/helm/cerberus/values.yaml
+    # tracks versions.yaml `quickstart_clickhouse`), the same server the
+    # datashard and bwc-replicated lanes deploy, so what this lane observes
+    # is what a default bundled install runs.
+    image: clickhouse/clickhouse-server:26.6
     # Air-gap-safe: the image is imported into k3d by `just e2e-bwc-up`; the
     # chart maps the CH container's pullPolicy to .Values.image.pullPolicy,
     # which cerberus-values.yaml pins to Never — so this exact tag MUST be in
-    # the cluster's containerd (the import list in the Justfile carries it).
+    # the cluster's containerd (E2E_BWC_IMAGES in just/e2e.just carries it).
 
     replicas: 1
     storagePolicyName: bwc_object_store

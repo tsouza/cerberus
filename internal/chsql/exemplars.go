@@ -158,7 +158,7 @@ func (e *emitter) emitMetricsExemplars(
 		return err
 	}
 
-	groupAliases := outerGroupAliases(m.GroupBy, m.GroupByAliases)
+	groupAliases := chplan.OuterGroupNames(m.GroupBy, m.GroupByAliases)
 	// Attributes-map keys: prefer the lowering's display names (the
 	// Tempo-canonical scope-prefixed form, e.g. `resource.service.name`)
 	// so the exemplar response uses the same wire labels as the matrix
@@ -210,7 +210,7 @@ func (e *emitter) emitMetricsExemplars(
 	// as the previous full-grid + WHERE shape.
 	innerSb.SelectAs(
 		sampleAnchorFanoutFrag(end, func(b *Builder) { b.Ident(tsCol) }, stepNS, rangeNS, numAnchors),
-		"anchor_ts",
+		RangeWindowAnchorAlias,
 	)
 	// Fail closed if the inner is a spans scan with no request window: the
 	// shared maybePushInnerScanTimeBounds silently no-ops on a zero window,
@@ -288,7 +288,7 @@ func (e *emitter) emitMetricsExemplars(
 		Call("map", attrMapFrags...),
 		"Attributes",
 	))
-	outerSb.SelectAs(Col("anchor_ts"), "TimeUnix")
+	outerSb.SelectAs(Col(RangeWindowAnchorAlias), rangeWindowSchemaTimestampColumn)
 
 	// The row-counting ops carry no operand, and an operand-reading op
 	// whose Attr the lowering left unset has nothing to read — both fall
@@ -304,7 +304,7 @@ func (e *emitter) emitMetricsExemplars(
 		a := alias
 		groupFrags = append(groupFrags, func(b *Builder) { b.Ident(a) })
 	}
-	groupFrags = append(groupFrags, Col("anchor_ts"))
+	groupFrags = append(groupFrags, Col(RangeWindowAnchorAlias))
 	outerSb.GroupBy(groupFrags...)
 
 	if maxPerSeries > 0 {
@@ -313,7 +313,7 @@ func (e *emitter) emitMetricsExemplars(
 			a := alias
 			limitByFrags = append(limitByFrags, func(b *Builder) { b.Ident(a) })
 		}
-		limitByFrags = append(limitByFrags, Col("anchor_ts"))
+		limitByFrags = append(limitByFrags, Col(RangeWindowAnchorAlias))
 		outerSb.Limit(maxPerSeries)
 		outerSb.LimitBy(limitByFrags...)
 	}

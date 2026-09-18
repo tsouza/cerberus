@@ -253,7 +253,11 @@ clickhouse:
     # -- ClickHouse replica count. `1` (default) renders a single-node plain
     # MergeTree on object storage. `>1` auto-enables a Keeper ensemble +
     # ReplicatedMergeTree + zero-copy replication, and defaults cerberus's
-    # `schema.replicated` on (REUSING the existing Replicated-DB env wiring).
+    # `schema.replicated` on (REUSING the existing Replicated-DB env wiring)
+    # together with `schema.CLUSTER: bwc_cluster`, so cerberus's
+    # `CREATE DATABASE ... ENGINE = Replicated(...)` runs ON CLUSTER and every
+    # replica attaches the database (a Replicated database replicates DDL only
+    # to the hosts that have attached it).
     replicas: 1
     # -- EXPERIMENTAL opt-in for ClickHouse `Distributed`-table multi-shard
     # routing (`dataShards.count > 1`, epic #3074). OFF by default. The chart
@@ -651,7 +655,10 @@ schema:
   ttl: ""
   # -- Replicated-ClickHouse (HA) schema. Emits a Replicated database +
   # ReplicatedMergeTree tables instead of plain MergeTree — required for any
-  # multi-replica ClickHouse cluster.
+  # multi-replica ClickHouse cluster. Pair it with `CLUSTER: <name>` (the
+  # ClickHouse `remote_servers` cluster spanning every replica) so the
+  # `CREATE DATABASE` runs ON CLUSTER and every replica attaches the
+  # database; the bundled `replicas > 1` tier defaults both.
   replicated:
     # -- Enable Replicated-DB schema (CERBERUS_SCHEMA_DATABASE_REPLICATED).
     enabled: false

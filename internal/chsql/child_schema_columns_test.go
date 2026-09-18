@@ -134,7 +134,7 @@ func TestHistogramChildColumnRejectsIncompatibleIdentityRole(t *testing.T) {
 	child := closedRoleProject(chplan.Column{
 		Name: "count", Role: chplan.RoleValue, HistogramField: chplan.HistogramFieldCount,
 	})
-	if _, err := histogramChildColumn(child, chplan.HistogramFieldCount, "histogram count"); err == nil {
+	if _, err := histogramFieldChildColumn("test", child, chplan.HistogramFieldCount, false); err == nil {
 		t.Fatal("histogram identity carried by an incompatible role was accepted")
 	}
 }

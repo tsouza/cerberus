@@ -1,6 +1,7 @@
 package chsql
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -594,17 +595,20 @@ func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag
 // float-only paths already use, instead of re-deriving it.
 func vectorSetOpCanonicalQuartetFrags(s *chplan.VectorSetOp, arm chplan.Node) ([]Frag, error) {
 	row := arm.RowType()
-	attributes, err := vectorSetOpRequiredRole(row, chplan.RoleAttributes, "attributes")
+	attributes, err := vectorSetOpRequiredRole(row, chplan.RoleAttributes)
 	if err != nil {
 		return nil, err
 	}
-	value, err := vectorSetOpRequiredRole(row, chplan.RoleValue, "value")
+	value, err := vectorSetOpRequiredRole(row, chplan.RoleValue)
 	if err != nil {
 		return nil, err
 	}
 
 	var metricNameFrag Frag
-	metricName, hasMetricName := row.Find(chplan.RoleMetricName)
+	metricName, hasMetricName, err := vectorSetOpOptionalRole(row, chplan.RoleMetricName)
+	if err != nil {
+		return nil, err
+	}
 	if !hasMetricName {
 		metricNameFrag = As(Lit(""), s.MetricNameColumn)
 	} else {
@@ -612,8 +616,14 @@ func vectorSetOpCanonicalQuartetFrags(s *chplan.VectorSetOp, arm chplan.Node) ([
 	}
 
 	var timeFrag Frag
-	timestamp, hasTimestamp := row.Find(chplan.RoleTimestamp)
-	anchor, hasAnchor := row.Find(chplan.RoleAnchor)
+	timestamp, hasTimestamp, err := vectorSetOpOptionalRole(row, chplan.RoleTimestamp)
+	if err != nil {
+		return nil, err
+	}
+	anchor, hasAnchor, err := vectorSetOpOptionalRole(row, chplan.RoleAnchor)
+	if err != nil {
+		return nil, err
+	}
 	if hasTimestamp {
 		timeFrag = vectorSetOpAliasedColumn(timestamp.Name, s.TimestampColumn)
 	} else if hasAnchor {
@@ -645,12 +655,27 @@ func vectorSetOpArmSampleKind(arm chplan.Node) (chplan.SampleKind, error) {
 	}
 }
 
-func vectorSetOpRequiredRole(row chplan.Schema, role chplan.ColumnRole, label string) (chplan.Column, error) {
-	column, ok := row.Find(role)
-	if !ok || column.Name == "" {
-		return chplan.Column{}, fmt.Errorf("%w: VectorSetOp arm is missing %s role", ErrUnsupported, label)
+// vectorSetOpRequiredRole resolves a role every arm must publish.
+func vectorSetOpRequiredRole(row chplan.Schema, role chplan.ColumnRole) (chplan.Column, error) {
+	column, err := row.UniqueNamedRole(role)
+	if err != nil {
+		return chplan.Column{}, fmt.Errorf("%w: VectorSetOp arm: %w", ErrUnsupported, err)
 	}
 	return column, nil
+}
+
+// vectorSetOpOptionalRole resolves a role an arm may omit: an absent role is
+// reported as not present, every other malformed shape is an error.
+func vectorSetOpOptionalRole(row chplan.Schema, role chplan.ColumnRole) (chplan.Column, bool, error) {
+	column, err := row.UniqueNamedRole(role)
+	switch {
+	case err == nil:
+		return column, true, nil
+	case errors.Is(err, chplan.ErrRoleMissing):
+		return chplan.Column{}, false, nil
+	default:
+		return chplan.Column{}, false, fmt.Errorf("%w: VectorSetOp arm: %w", ErrUnsupported, err)
+	}
 }
 
 func vectorSetOpAliasedColumn(source, target string) Frag {
@@ -665,7 +690,7 @@ func vectorSetOpPayloadFrags(row chplan.Schema, discriminator bool) ([]Frag, err
 	if !discriminator {
 		return cols, nil
 	}
-	column, err := vectorSetOpRequiredRole(row, chplan.RoleDiscriminator, "discriminator")
+	column, err := vectorSetOpRequiredRole(row, chplan.RoleDiscriminator)
 	if err != nil {
 		return nil, err
 	}

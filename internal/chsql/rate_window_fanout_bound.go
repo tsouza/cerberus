@@ -222,7 +222,7 @@ func rateWindowFanoutBoundedSourceFrag(
 		if hasTemporality {
 			q.Select(Col(temporalityColumn))
 		}
-		q.Select(Col("anchor_ts"))
+		q.Select(Col(RangeWindowAnchorAlias))
 	}
 
 	// The real short-circuit. No blocking operator sits between this LIMIT

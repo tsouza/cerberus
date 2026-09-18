@@ -79,7 +79,6 @@ export const mirroredImages = [
   // 26.2 is the ts_tag_groups real-CH differential's own pin
   // (timeSeriesThrowDuplicateSeriesIf shipped in 26.2 — see CH_TAG_GROUPS_IMAGE).
   'clickhouse/clickhouse-server:26.2-alpine',
-  'clickhouse/clickhouse-server:26.3',
   'clickhouse/clickhouse-server:26.5',
   'clickhouse/clickhouse-server:26.6',
   'clickhouse/clickhouse-server:26.6-alpine',

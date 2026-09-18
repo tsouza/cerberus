@@ -237,7 +237,7 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		{chplan.HistogramFieldNegativeBucketCounts, &resolved.NegativeBucketCountsColumn, false},
 	}
 	for _, requirement := range fields {
-		column, err := quantileHistogramField("HistogramQuantileNative", h.Input, requirement.field, requirement.optional)
+		column, err := histogramFieldChildColumn("HistogramQuantileNative", h.Input, requirement.field, requirement.optional)
 		if err != nil {
 			return err
 		}
