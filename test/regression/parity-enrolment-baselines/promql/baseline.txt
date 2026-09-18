@@ -459,6 +459,7 @@ mixed_wrapper_clamp_nan.txtar
 mixed_wrapper_comparison_bool.txtar
 mixed_wrapper_date_mirror.txtar
 mixed_wrapper_date_shadow.txtar
+mixed_wrapper_histogram_count_shadow.txtar
 mixed_wrapper_min_grouped.txtar
 mixed_wrapper_min_mirror.txtar
 mixed_wrapper_quantile_phi.txtar

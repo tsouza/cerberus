@@ -106,13 +106,20 @@ func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		// Float pipelines (aggregations, arithmetic, vector(), …)
 		// provably carry no native-histogram samples; the reference
 		// skips float samples, so fold to the empty vector while
-		// preserving the argument's own lowering errors.
+		// preserving the argument's own lowering errors. A mixed
+		// relation an intermediate wrapper already lowered (cerberus
+		// issue #3562: `histogram_count(sort_by_label(h or f, l))`) is
+		// not a float pipeline: its histogram partition is read exactly
+		// as the direct mixed `or`'s is above.
 		inner, err := lower(c.Args[vecIdx], s, ctx)
 		if err != nil {
 			return nil, err
 		}
 		if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily, mixedBespoke); err != nil {
 			return nil, err
+		}
+		if mixedRowsNeedPreparation(inner) {
+			return lowerHistogramValueFnOverProjection(c, wrapMixedHistogramPartition(inner, s), s, ctx)
 		}
 		return &chplan.Filter{
 			Input:     inner,

@@ -171,6 +171,12 @@ func TestNestedMixedConsumersAnswerLikeTheirRoots_ChDB(t *testing.T) {
 		{"compare_filter", func(o string) string { return o + ` < ` + ncPartnerMetric }, nil, 2},
 		{"compare_left", func(o string) string { return ncPartnerMetric + ` > ` + o }, nil, 2},
 		{"compare_self_eq", func(o string) string { return o + ` == ` + o }, nil, 4},
+		{"histogram_count", func(o string) string { return `histogram_count(` + o + `)` }, nil, 2},
+		// A histogram's sum scales linearly, so the root reference reads
+		// the unscaled sum and doubles it.
+		{"histogram_sum_of_scaled", func(o string) string { return `histogram_sum(` + o + ` * 2)` }, func(d string) string { return `histogram_sum(` + d + `) * 2` }, 2},
+		{"histogram_avg", func(o string) string { return `histogram_avg(` + o + `)` }, nil, 2},
+		{"histogram_quantile", func(o string) string { return `histogram_quantile(0.5, ` + o + `)` }, nil, 2},
 	}
 	// Each root answer is executed once and shared by every wrapper that
 	// must reproduce it.

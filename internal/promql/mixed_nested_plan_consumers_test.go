@@ -28,6 +28,9 @@ import (
 // histogram-valued partner — one lowerRoot's histogram-vs-float-vector
 // recognisers would otherwise claim, reading the nested plan as a float
 // vector — joins through the same fold with its rows stamped histogram.
+// The histogram value functions (histogram_count/sum/avg/fraction/
+// quantile) answer floats over the plan's histogram partition rather than
+// folding it to the empty vector as a float pipeline.
 func TestNestedMixedPlanAtScaleUnaryAndVectorConsumersLowersLikeItsRoot(t *testing.T) {
 	const direct = `(latency_exp_hist or num_cpus)`
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
@@ -69,6 +72,11 @@ func TestNestedMixedPlanAtScaleUnaryAndVectorConsumersLowersLikeItsRoot(t *testi
 		{"compare_bool", func(n string) string { return n + ` > bool up` }, false},
 		{"compare_filter", func(n string) string { return n + ` == up` }, true},
 		{"compare_both_nested", func(n string) string { return n + ` != ` + n }, true},
+		{"histogram_count", func(n string) string { return `histogram_count(` + n + `)` }, false},
+		{"histogram_sum_of_scaled", func(n string) string { return `histogram_sum(` + n + ` * 2)` }, false},
+		{"histogram_avg", func(n string) string { return `histogram_avg(` + n + `)` }, false},
+		{"histogram_fraction", func(n string) string { return `histogram_fraction(0, 10, ` + n + `)` }, false},
+		{"histogram_quantile", func(n string) string { return `histogram_quantile(0.5, ` + n + `)` }, false},
 	}
 	for _, nested := range wrappers {
 		for _, c := range consumers {
@@ -88,9 +96,12 @@ func TestNestedMixedPlanAtScaleUnaryAndVectorConsumersLowersLikeItsRoot(t *testi
 						t.Fatalf("consumer dropped the histogram rows: live sample kind %s, want %s", kind, chplan.SampleKindMixed)
 					}
 					if !c.mixed && kind != chplan.SampleKindFloat {
-						t.Fatalf("bool comparison answers floats: live sample kind %s, want %s", kind, chplan.SampleKindFloat)
+						t.Fatalf("float-answering consumer: live sample kind %s, want %s", kind, chplan.SampleKindFloat)
 					}
 					if !c.mixed {
+						if emptied := countConstantFalseFilters(plan); emptied != 0 {
+							t.Fatalf("consumer folded the nested mixed plan to the empty vector %d time(s) instead of reading its histogram rows", emptied)
+						}
 						return
 					}
 					if narrowed := countMixedFloatNarrowing(plan); narrowed != 0 {
@@ -110,6 +121,19 @@ func countMixedFloatNarrowing(plan chplan.Node) int {
 	chplan.Walk(plan, func(node chplan.Node) bool {
 		if chplan.IsMixedFloatNarrowing(node) {
 			n++
+		}
+		return true
+	})
+	return n
+}
+
+func countConstantFalseFilters(plan chplan.Node) int {
+	n := 0
+	chplan.Walk(plan, func(node chplan.Node) bool {
+		if filter, ok := node.(*chplan.Filter); ok {
+			if predicate, ok := filter.Predicate.(*chplan.LitBool); ok && !predicate.V {
+				n++
+			}
 		}
 		return true
 	})
