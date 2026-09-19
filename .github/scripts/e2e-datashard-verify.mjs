@@ -778,10 +778,23 @@ async function main() {
        AND (c.exception_code = 241 OR c.exception ILIKE '%Memory limit%')
        AND c.event_time >= toDateTime(${windowStart}) AND c.event_time <= toDateTime(${windowEnd})`,
   );
-  const exceptionCount = exceptionRows.length;
+  // Direct native-protocol writers share this query_log window with the
+  // burst, but they never pass through Cerberus or DataShardFanoutGate.
+  // Only a SELECT whose trace prefix belongs to a burst dispatch can prove
+  // that the gate's per-shard memory apportionment failed.
+  const gateBoundExceptionRows = exceptionRows.filter((row) => {
+    const [qid, , snippet] = row.split('\t');
+    return kEffByTrace.has((qid || '').slice(0, 32)) &&
+      snippet.trimStart().toUpperCase().startsWith('SELECT');
+  });
+  const ignoredExceptionCount = exceptionRows.length - gateBoundExceptionRows.length;
+  if (ignoredExceptionCount > 0) {
+    log(`ignored ${ignoredExceptionCount} non-Cerberus memory exception(s) from direct writers during the burst (informational only)`);
+  }
+  const exceptionCount = gateBoundExceptionRows.length;
   if (exceptionCount > 0) {
     error(`${exceptionCount} MEMORY_LIMIT_EXCEEDED exception(s) recorded in system.query_log during the burst — perShardMemoryBytes did not bound memory pressure as predicted`);
-    for (const row of exceptionRows) {
+    for (const row of gateBoundExceptionRows) {
       const [qid, mem, snippet] = row.split('\t');
       const kEff = kEffByTrace.get((qid || '').slice(0, 32)) || 1;
       log(`  exception: initial_query_id=${qid}, kEff=${kEff}, configured max_memory_usage=${mem}, query=${snippet}`);
