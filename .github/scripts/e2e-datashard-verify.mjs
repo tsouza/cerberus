@@ -584,10 +584,8 @@ async function main() {
   //     replicas x cap cluster-wide second). The initiator row carries the
   //     client's hostname — clickhouse-go sends os.Hostname() on every
   //     query (lib/proto/query.go), which inside a pod is the pod name —
-  //     joined back over initial_query_id (GLOBAL, so the initiator-side
-  //     subquery is computed once and shipped to every replica the
-  //     clusterAllReplicas scan runs on, instead of being re-issued as a
-  //     double-distributed subquery ClickHouse rejects). The child's own
+  //     attributed back over initial_query_id from the separately collected
+  //     initiator metadata. The child's own
   //     client_hostname is the fallback should an initiator row fall
   //     outside the window; an unresolvable host is an assertion failure
   //     below, never a silent drop.
@@ -596,9 +594,10 @@ async function main() {
   //   - query_snippet is a short, whitespace-flattened prefix of the child's
   //     SQL so a surprising per-dispatch width can be matched against a
   //     known query SHAPE from the log alone.
-  // Fetch parent metadata separately. A GLOBAL JOIN between two distributed
-  // query_log scans materializes a large hash table on every replica and can
-  // OOM this verifier while it is collecting its evidence.
+  // Fetch parent metadata separately so the verifier does not need to join two
+  // distributed query_log scans while collecting its evidence. The joined
+  // collector exceeded the server's total memory limit in release E2E; that
+  // failure did not identify which allocation exhausted the remaining headroom.
   const initiatorRows = chQueryTSV(
     initiatorPod,
     `SELECT query_id, any(client_hostname) AS client_hostname, any(type) AS terminal_type
@@ -803,7 +802,7 @@ async function main() {
     log(`kEff=${kEff}: peak real memory_usage observed=${max} against configured ceiling=${ceiling} (headroom=${(((ceiling - max) / ceiling) * 100).toFixed(1)}%)`);
   }
 
-const rawExceptionRows = chQueryTSV(
+  const rawExceptionRows = chQueryTSV(
     initiatorPod,
     `SELECT c.initial_query_id, c.Settings['max_memory_usage'] AS mem,
             c.client_hostname,
@@ -813,8 +812,8 @@ const rawExceptionRows = chQueryTSV(
        AND (c.exception_code = 241 OR c.exception ILIKE '%Memory limit%')
        AND c.event_time >= toDateTime(${windowStart}) AND c.event_time <= toDateTime(${windowEnd})`,
   );
-const exceptionRows = rawExceptionRows.map((row) => attributeExceptionRow(row, initiatorMeta));
-// Direct native-protocol writers share this query_log window with the
+  const exceptionRows = rawExceptionRows.map((row) => attributeExceptionRow(row, initiatorMeta));
+  // Direct native-protocol writers share this query_log window with the
   // burst, but they never pass through Cerberus or DataShardFanoutGate.
   // Only a SELECT attributed to a Cerberus initiator whose trace prefix
   // belongs to a burst dispatch can prove that the gate's per-shard memory
