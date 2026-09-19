@@ -1,8 +1,10 @@
 package regression
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -276,5 +278,41 @@ func goTestCommands(t *testing.T, recipe string) []string {
 		}
 		out = append(out, trimmed)
 	}
+	// coverage-chdb delegates its process to Node. Read the argv builder
+	// consumed by that process, not a copy of the timeout constant.
+	out = append(out, delegatedGoTestScripts(t, recipe)...)
 	return out
+}
+
+func delegatedGoTestScripts(t *testing.T, recipe string) []string {
+	t.Helper()
+	body := justRecipeBodyWithDeps(t, recipe)
+	if !strings.Contains(body, "node "+coverageChdbExecutionScript) {
+		return nil
+	}
+	source := readFileString(t, filepath.Join("../..", coverageChdbExecutionScript))
+	if !strings.Contains(source, "runMainSweep(mainSweepArgv(coverpkg),") || !strings.Contains(source, "spawn(go, argv,") {
+		t.Fatal("coverage-chdb no longer consumes mainSweepArgv through its Go test process")
+	}
+	cmd := exec.Command("node", "--input-type=module", "-e", `import { mainSweepArgv } from './.github/scripts/coverage-chdb.mjs'; console.log(JSON.stringify(mainSweepArgv('example/package')));`)
+	cmd.Dir = "../.."
+	raw, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("read coverage-chdb Go argv: %v: %s", err, raw)
+	}
+	var argv []string
+	if err := json.Unmarshal(raw, &argv); err != nil || len(argv) == 0 || argv[0] != "test" {
+		t.Fatalf("coverage-chdb did not produce a Go test invocation: %s (%v)", raw, err)
+	}
+	return []string{"go " + strings.Join(argv, " ") + " (delegated by " + coverageChdbExecutionScript + ")"}
+}
+
+func TestGoTestTimeoutDiscoversDelegatedAdapter(t *testing.T) {
+	t.Parallel()
+	for _, command := range goTestCommands(t, "coverage-chdb") {
+		if strings.Contains(command, "delegated by .github/scripts/coverage-chdb.mjs") {
+			return
+		}
+	}
+	t.Fatal("coverage-chdb's delegated go test was not discovered")
 }

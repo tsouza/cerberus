@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/config"
@@ -170,16 +172,59 @@ func tsNumericConst(t *testing.T, src, name string) int64 {
 func yamlEnvValues(t *testing.T, path, env string) []int64 {
 	t.Helper()
 	src := readFileString(t, path)
-	re := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(env) + `:\s*"?([0-9]+)"?\s*$`)
-	var out []int64
-	for _, m := range re.FindAllStringSubmatch(src, -1) {
-		n, err := strconv.ParseInt(m[1], 10, 64)
-		if err != nil {
-			t.Fatalf("%s: parse %s=%q: %v", path, env, m[1], err)
-		}
-		out = append(out, n)
+	values, err := parseYAMLEnvValues(src, env)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
 	}
-	return out
+	return values
+}
+
+func parseYAMLEnvValues(src, env string) ([]int64, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(src), &doc); err != nil {
+		return nil, err
+	}
+	var values []int64
+	var visit func(*yaml.Node) error
+	visit = func(node *yaml.Node) error {
+		if node.Kind == yaml.MappingNode {
+			for i := 0; i < len(node.Content); i += 2 {
+				key, value := node.Content[i], node.Content[i+1]
+				if key.Value != env {
+					continue
+				}
+				n, err := strconv.ParseInt(value.Value, 10, 64)
+				if value.Kind != yaml.ScalarNode || err != nil || n <= 0 {
+					return fmt.Errorf("line %d: %s has malformed positive integer %q", value.Line, env, value.Value)
+				}
+				values = append(values, n)
+			}
+		}
+		for _, child := range node.Content {
+			if err := visit(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := visit(&doc); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func TestYAMLEnvValuesRejectMalformedMemoryCap(t *testing.T) {
+	t.Parallel()
+	for _, malformed := range []string{"not-a-size", "", "0", "-1", "[]", `"1024`} {
+		src := "valid:\n  CERBERUS_CH_QUERY_MAX_MEMORY: '1024'\ninvalid:\n  CERBERUS_CH_QUERY_MAX_MEMORY: " + malformed + "\n"
+		if _, err := parseYAMLEnvValues(src, chQueryMaxMemoryEnv); err == nil {
+			t.Errorf("valid occurrence concealed malformed memory-cap value %q", malformed)
+		}
+	}
+	values, err := parseYAMLEnvValues("env:\n  'CERBERUS_CH_QUERY_MAX_MEMORY': '1024' # bytes\n", chQueryMaxMemoryEnv)
+	if err != nil || len(values) != 1 || values[0] != 1024 {
+		t.Fatalf("valid YAML cap: values=%v err=%v", values, err)
+	}
 }
 
 // goStringLiteralContaining returns the unquoted value of the one string
