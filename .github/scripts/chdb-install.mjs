@@ -38,7 +38,7 @@
 // platform or any curl/tar/install failure.
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
@@ -101,6 +101,17 @@ function main() {
     process.exit(1);
   }
 
+  // GitHub-hosted runners cannot restore an actions/cache archive directly
+  // into /usr/local/lib. Keep the cache in the writable workspace and bridge
+  // it into the system install location here.
+  const workspaceCachePath = process.env.GITHUB_WORKSPACE
+    ? join(process.env.GITHUB_WORKSPACE, '.cache', 'libchdb.so')
+    : null;
+  if (workspaceCachePath && isRegularFile(workspaceCachePath) && !isRegularFile(installPath)) {
+    run('sudo', ['install', '-m', '0755', workspaceCachePath, installPath]);
+    console.log(`==> restored libchdb.so from ${workspaceCachePath}`);
+  }
+
   // Idempotency short-circuit: skip the download entirely once the shared
   // library is already on disk. Deleting the install path is what forces a
   // reinstall (see just/chdb.just for how to override CHDB_VERSION at the
@@ -128,6 +139,10 @@ function main() {
     run('tar', ['-C', tmp, '-xzf', archivePath]);
     console.log(`==> installing to ${installPath} (sudo may prompt)`);
     run('sudo', ['install', '-m', '0755', join(tmp, 'libchdb.so'), installPath]);
+    if (workspaceCachePath) {
+      mkdirSync(join(workspaceCachePath, '..'), { recursive: true });
+      copyFileSync(installPath, workspaceCachePath);
+    }
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

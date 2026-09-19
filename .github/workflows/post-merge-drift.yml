@@ -131,8 +131,8 @@ jobs:
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:
-          path: /usr/local/lib/libchdb.so
-          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
+          path: .cache/libchdb.so
+          key: libchdb-workspace-${{ runner.os }}-${{ runner.arch }}-v26.5.0
 
       - name: Install libchdb.so
         if: matrix.needs_chdb
@@ -207,8 +207,8 @@ jobs:
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:
-          path: /usr/local/lib/libchdb.so
-          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
+          path: .cache/libchdb.so
+          key: libchdb-workspace-${{ runner.os }}-${{ runner.arch }}-v26.5.0
 
       - name: Install libchdb.so
         run: just chdb-install
@@ -276,8 +276,8 @@ jobs:
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:
-          path: /usr/local/lib/libchdb.so
-          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
+          path: .cache/libchdb.so
+          key: libchdb-workspace-${{ runner.os }}-${{ runner.arch }}-v26.5.0
 
       - name: Install libchdb.so
         run: just chdb-install
