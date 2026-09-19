@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramValuedOrForwardedOperand#0d60b83a",
       "message": "promql: internal invariant violated: mixed exp-histogram operand matched neither isExpHistogramValuedShape nor isExpHistogramForwardedThroughSetOp for %v",
       "class": "internal",
-      "rationale": "internal invariant (cerberus issue #2571): lowerExpHistogramValuedOrForwardedOperand's only caller, lowerMixedExpHistogramOperands, selects histExpr (and so the operand passed here) via isExpHistogramValuedOrForwarded(b.LHS) -- literally isExpHistogramValuedShape(b.LHS) || isExpHistogramForwardedThroughSetOp(b.LHS) -- to decide histOnLeft, and picks the OTHER side as histExpr when histOnLeft is false, so whichever side is named histExpr already satisfies that same disjunction by construction. This function returns above (never reaching this guard) when its own isExpHistogramValuedShape(expr) check is true, so the only way to reach this line is for that check to be false -- and by the caller's selection invariant, when the first disjunct is false the second (isExpHistogramForwardedThroughSetOp(expr)) must be true, since mixedExpHistogramSetOp (which lowerMixedExpHistogramOperands's own caller used to accept b in the first place) requires isExpHistogramValuedOrForwarded to hold for exactly one side. So this guard's negation can never hold. lowerMixedJoinLeg (cerberus issue #3562) calls this function only after its own isExpHistogramValuedOrForwarded(expr) check has held, the same disjunction, so it adds no path to this guard.",
+      "rationale": "The mixed-set recognizer proves one of the two accepted histogram-valued shapes before this helper; neither match is an internal recognizer/producer disagreement.",
       "evidence": {
         "guard": [
           "past returning if isExpHistogramValuedShape(expr, s, ctx)",
@@ -14,15 +14,6 @@
         "callers": [
           "lowerMixedExpHistogramOperands",
           "lowerMixedJoinLeg"
-        ],
-        "cited": [
-          "isExpHistogramForwardedThroughSetOp",
-          "isExpHistogramValuedOrForwarded",
-          "isExpHistogramValuedShape",
-          "lowerExpHistogramValuedOrForwardedOperand",
-          "lowerMixedExpHistogramOperands",
-          "lowerMixedJoinLeg",
-          "mixedExpHistogramSetOp"
         ]
       }
     },
@@ -31,7 +22,7 @@
       "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramValuedOrForwardedOperand#3d2079ed",
       "message": "promql: internal invariant violated: exp-histogram-forwarding set-op operand lowering published %s sample kind (%T), want histogram",
       "class": "internal",
-      "rationale": "the direct histogram-valued branch delegates to lowerExpHistogramSetOpOperand, whose successful result is SampleKindHistogram. The only other admitted branch is isExpHistogramForwardedThroughSetOp; lowering its and/unless chain forwards the histogram-valued left side and marks the resulting VectorSetOp histogram-shaped. Thus a non-histogram result is an internal recognizer/lowerer contract violation. lowerMixedJoinLeg (cerberus issue #3562) calls this function only after its own isExpHistogramValuedOrForwarded(expr) check has held, the same disjunction, so it adds no path to this guard.",
+      "rationale": "A matched histogram-valued or forwarding set-op operand must publish the histogram row contract; any other sample kind is an internal lowering invariant failure.",
       "evidence": {
         "guard": [
           "past returning if isExpHistogramValuedShape(expr, s, ctx)",
@@ -41,12 +32,6 @@
         ],
         "callers": [
           "lowerMixedExpHistogramOperands",
-          "lowerMixedJoinLeg"
-        ],
-        "cited": [
-          "isExpHistogramForwardedThroughSetOp",
-          "isExpHistogramValuedOrForwarded",
-          "lowerExpHistogramSetOpOperand",
           "lowerMixedJoinLeg"
         ]
       }
