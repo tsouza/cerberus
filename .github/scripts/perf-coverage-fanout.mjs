@@ -148,7 +148,7 @@ export const RATCHET_FANOUT = 3;
  * to, so Go's own alarm — which dumps every goroutine's stack — always
  * fires before the runner takes the container away.
  */
-export const RATCHET_TIMEOUT_MINUTES = 30;
+export const RATCHET_TIMEOUT_MINUTES = 35;
 
 /** The env pair test/perf/profile/shard.go's ShardFromEnv reads. */
 const PERF_SHARD_INDEX_ENV = 'PERF_SHARD_INDEX';

@@ -406,8 +406,8 @@ jobs:
     needs: coverage-plan
     if: needs.coverage-plan.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
-    # perf-coverage-fanout.mjs's RATCHET_TIMEOUT_MINUTES=30 is this leg's own
-    # internal `go test -timeout`. 45 leaves 15 minutes for checkout, Go
+    # perf-coverage-fanout.mjs's RATCHET_TIMEOUT_MINUTES=35 is this leg's own
+    # internal `go test -timeout`. 45 leaves 10 minutes for checkout, Go
     # module/build caching, `just chdb-install` and the compile itself on top
     # of that — a 1.5x internal-to-wrapper ratio, close to the ~1.4x
     # chdb.yml's `roundtrip-promql-shard` uses (25m internal / 35m wrapper)

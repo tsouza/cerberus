@@ -205,7 +205,7 @@
       "execution": {
         "binding_id": "BINDING-ARCH-COMPUTE-FANOUT-CARDINALITY-RATCHET",
         "lane_id": "chdb.perf-guards",
-        "command": "just perf-chdb",
+        "command": "just perf-chdb && just perf-chdb-release",
         "merge_required": false,
         "release_required": true
       }

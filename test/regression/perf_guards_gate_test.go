@@ -61,9 +61,10 @@ const (
 	// The job branch protection names, the matrix job that does the work, and
 	// the recipe that matrix runs. All three are strings some other system
 	// resolves by exact text.
-	perfGuardsJob      = "perf-guards"
-	perfGuardsShardJob = "perf-guards-shard"
-	perfGuardsRecipe   = "perf-chdb"
+	perfGuardsJob           = "perf-guards"
+	perfGuardsShardJob      = "perf-guards-shard"
+	perfGuardsRecipe        = "perf-chdb"
+	perfGuardsReleaseRecipe = "perf-chdb-release"
 
 	// The aggregator's verdict script. Without it the job is an empty green.
 	perfGuardsAggregateScript = "perf-guards-aggregate.mjs"
@@ -170,6 +171,16 @@ func TestPerfGuardsLaneRunsTheRatchet(t *testing.T) {
 			"`go test` compiles a package with no tests in it and exits 0 — a green lane over an "+
 			"unexecuted gate. Recipe:\n%s",
 			justfilePath, perfGuardsRecipe, chdbBuildTag, recipe)
+	}
+	if strings.Contains(recipe, "release_perf") {
+		t.Errorf("%s recipe %q enables the release-only frozen baseline gate on ordinary main runs; expected release drift would leave trunk CI red. Recipe:\n%s", justfilePath, perfGuardsRecipe, recipe)
+	}
+	releaseRecipe := justRecipeBody(t, perfGuardsReleaseRecipe)
+	if !strings.Contains(shardJob, perfGuardsReleaseRecipe) {
+		t.Errorf("%s job %q no longer runs `just %s` for release branches, so the frozen last-release perf gate is no longer exercised. Body:\n%s", chdbWorkflowPath, perfGuardsShardJob, perfGuardsReleaseRecipe, shardJob)
+	}
+	if !strings.Contains(releaseRecipe, "release_perf") {
+		t.Errorf("%s recipe %q dropped the `release_perf` build tag; release validation would silently run only the rolling ratchet. Recipe:\n%s", justfilePath, perfGuardsReleaseRecipe, releaseRecipe)
 	}
 }
 

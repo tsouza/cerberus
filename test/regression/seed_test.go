@@ -135,6 +135,40 @@ func TestMetricsSeedHasHistogramTable(t *testing.T) {
 	}
 }
 
+// TestSeedMakesDistributedInsertsVisibleBeforeCleanup pins the ordering
+// contract between each fixture INSERT and its immediately-following stale-row
+// cutoff SELECT. In the datashard topology the public tables use the
+// Distributed engine, whose default insert_distributed_sync=0 acknowledges an
+// INSERT while its block may still be queued locally. The seven-row base trace
+// fixture exposed the race: max(Timestamp) saw an empty remote table, resolved
+// to epoch zero minus its 23-second margin, and the DELETE then tried to bind
+// "-23" as DateTime64.
+func TestSeedMakesDistributedInsertsVisibleBeforeCleanup(t *testing.T) {
+	t.Parallel()
+	content := readSeedSource(t)
+
+	const seedAllDeclaration = "func seedAll("
+	seedAllStart := strings.Index(content, seedAllDeclaration)
+	if seedAllStart < 0 {
+		t.Fatalf("%s: %s not found", seedSource, seedAllDeclaration)
+	}
+	seedAllBody := content[seedAllStart:]
+
+	const syncSetting = `"insert_distributed_sync": insertDistributedSync`
+	syncIdx := strings.Index(seedAllBody, syncSetting)
+	insertIdx := strings.Index(seedAllBody, "insertMetrics(ctx, conn)")
+	switch {
+	case !strings.Contains(content, "const insertDistributedSync = 1"):
+		t.Errorf("%s: insertDistributedSync must enable synchronous Distributed INSERT delivery", seedSource)
+	case syncIdx < 0:
+		t.Errorf("%s: seedAll must stamp %s before inserting fixtures", seedSource, syncSetting)
+	case insertIdx < 0:
+		t.Fatalf("%s: seedAll no longer calls insertMetrics(ctx, conn)", seedSource)
+	case syncIdx > insertIdx:
+		t.Errorf("%s: seedAll applies %s after its first INSERT; stale cleanup can still race remote delivery", seedSource, syncSetting)
+	}
+}
+
 // TestLokiBenchTagsImpossibleFilterAsEmptyResult guards against an
 // upstream re-vendor of grafana/loki:pkg/logql/bench/queries/ that
 // drops the `empty-result` tag on the
