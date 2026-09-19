@@ -116,11 +116,13 @@ func TestDocsOnlyActionRendersItsFilterFromTheRegistry(t *testing.T) {
 	}
 
 	rendered := ""
+	filterConsumers := 0
 	for _, step := range action.Runs.Steps {
 		if strings.Contains(step.Run, docsOnlyScript) && step.ID != "" {
 			rendered = step.ID
 		}
 		if strings.HasPrefix(step.Uses, pathsFilterAction) {
+			filterConsumers++
 			if step.With.Predicate != "every" {
 				t.Errorf("%s: the paths filter must use predicate-quantifier: every, or the `**` baseline "+
 					"matches everything and the negations never fire (got %q)", docsOnlyActionPath, step.With.Predicate)
@@ -134,6 +136,9 @@ func TestDocsOnlyActionRendersItsFilterFromTheRegistry(t *testing.T) {
 	}
 	if rendered == "" {
 		t.Fatalf("%s has no step running %s", docsOnlyActionPath, docsOnlyScript)
+	}
+	if filterConsumers == 0 {
+		t.Fatalf("%s has no paths-filter consumer; docs-only wiring would pass vacuously", docsOnlyActionPath)
 	}
 
 	registry := readCILaneRegistryGlobs(t)
