@@ -11,9 +11,27 @@ import test from 'node:test';
 
 import {
   attributeExceptionRow,
+  formatMemoryException,
   isGateBoundMemoryException,
   peakOverlap,
 } from './e2e-datashard-verify.mjs';
+
+test('memory diagnostics retain total and per-query exception evidence through attribution', () => {
+  const trace = 'e'.repeat(32);
+  const qid = `${trace}-child`;
+  const parents = new Map([[qid, { host: 'cerberus-0', terminalType: 'ExceptionWhileProcessing' }]]);
+  const traces = new Map([[trace, 3]]);
+  for (const message of ['(total) memory limit exceeded: maximum 728.56 MiB', '(for query) memory limit exceeded: maximum 170.66 MiB']) {
+    const row = attributeExceptionRow(`${qid}\t178956970\tremote-node\tSELECT metric\t${message}\t2058695`, parents);
+    assert.equal(isGateBoundMemoryException(row, traces, ['cerberus-0']), true);
+    const diagnostic = formatMemoryException(row, traces);
+    assert.ok(diagnostic.includes(`exception=${message}`));
+    assert.ok(diagnostic.includes('recorded memory_usage=2058695'));
+    assert.ok(diagnostic.includes('configured max_memory_usage=178956970'));
+    assert.ok(diagnostic.includes('kEff=3'));
+    assert.ok(diagnostic.includes('query=SELECT metric'));
+  }
+});
 
 test('separate parent lookup preserves terminal attribution and the original SQL kind', () => {
   const qid = `${'a'.repeat(32)}-child`;
