@@ -148,6 +148,18 @@ function chExec(pod, sql) {
   chQuery(kubectl, pod, CH_OPTS, sql);
 }
 
+// A memory exception is evidence against DataShardFanoutGate only when its
+// child belongs to a dispatch whose initiator ran in a Cerberus pod.  The
+// rolling seeder also writes directly to ClickHouse during this window; its
+// query IDs can legitimately appear in the same trace map, but its initiator
+// hostname is the runner, not a Cerberus pod.
+export function isGateBoundMemoryException(row, kEffByTrace, cerberusPods) {
+  const [qid, , host, snippet] = row.split('\t');
+  return kEffByTrace.has((qid || '').slice(0, 32)) &&
+    cerberusPods.includes(host) &&
+    snippet.trimStart().toUpperCase().startsWith('SELECT');
+}
+
 // Every number this script compares against is read back from the LIVE
 // deployment, never from a literal it would have to keep in sync by hand
 // with a values file: a value the chart did not render (unset key) is an
@@ -772,21 +784,28 @@ async function main() {
   const exceptionRows = chQueryTSV(
     initiatorPod,
     `SELECT c.initial_query_id, c.Settings['max_memory_usage'] AS mem,
+            if(i.client_hostname != '', i.client_hostname, c.client_hostname) AS cerberus_host,
             replaceRegexpAll(substring(c.query, 1, 300), '[\\t\\n\\r]+', ' ') AS query_snippet
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log) AS c
+     GLOBAL LEFT JOIN (
+       SELECT query_id, any(client_hostname) AS client_hostname
+       FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
+       WHERE is_initial_query = 1 AND type = 'QueryFinish'
+         AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})
+       GROUP BY query_id
+     ) AS i ON c.initial_query_id = i.query_id
      WHERE c.type = 'ExceptionWhileProcessing'
        AND (c.exception_code = 241 OR c.exception ILIKE '%Memory limit%')
        AND c.event_time >= toDateTime(${windowStart}) AND c.event_time <= toDateTime(${windowEnd})`,
   );
   // Direct native-protocol writers share this query_log window with the
   // burst, but they never pass through Cerberus or DataShardFanoutGate.
-  // Only a SELECT whose trace prefix belongs to a burst dispatch can prove
-  // that the gate's per-shard memory apportionment failed.
-  const gateBoundExceptionRows = exceptionRows.filter((row) => {
-    const [qid, , snippet] = row.split('\t');
-    return kEffByTrace.has((qid || '').slice(0, 32)) &&
-      snippet.trimStart().toUpperCase().startsWith('SELECT');
-  });
+  // Only a SELECT attributed to a Cerberus initiator whose trace prefix
+  // belongs to a burst dispatch can prove that the gate's per-shard memory
+  // apportionment failed.  Matching the trace alone is insufficient because
+  // direct native-protocol writers share this query_log window.
+  const gateBoundExceptionRows = exceptionRows.filter((row) =>
+    isGateBoundMemoryException(row, kEffByTrace, cerberusPods));
   const ignoredExceptionCount = exceptionRows.length - gateBoundExceptionRows.length;
   if (ignoredExceptionCount > 0) {
     log(`ignored ${ignoredExceptionCount} non-Cerberus memory exception(s) from direct writers during the burst (informational only)`);
@@ -795,7 +814,7 @@ async function main() {
   if (exceptionCount > 0) {
     error(`${exceptionCount} MEMORY_LIMIT_EXCEEDED exception(s) recorded in system.query_log during the burst — perShardMemoryBytes did not bound memory pressure as predicted`);
     for (const row of gateBoundExceptionRows) {
-      const [qid, mem, snippet] = row.split('\t');
+      const [qid, mem, , snippet] = row.split('\t');
       const kEff = kEffByTrace.get((qid || '').slice(0, 32)) || 1;
       log(`  exception: initial_query_id=${qid}, kEff=${kEff}, configured max_memory_usage=${mem}, query=${snippet}`);
     }

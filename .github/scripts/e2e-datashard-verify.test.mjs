@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { peakOverlap } from './e2e-datashard-verify.mjs';
+import { isGateBoundMemoryException, peakOverlap } from './e2e-datashard-verify.mjs';
 
 // iv builds one child-statement interval the way the verifier does: a start
 // microsecond, a duration, and the initial_query_id naming the dispatch that
@@ -68,4 +68,22 @@ test('a zero-duration statement still occupies an instant', () => {
 
 test('no intervals is a clean zero rather than a throw', () => {
   assert.deepEqual(peakOverlap([]), { peak: 0, maxDistinctQidsLive: 0 });
+});
+
+test('a matching trace from the rolling seeder is not a gate-bound memory exception', () => {
+  const trace = 'a'.repeat(32);
+  const rows = [`${trace}-seed\t178956970\trunner-host\tSELECT ...`];
+  assert.equal(isGateBoundMemoryException(rows[0], new Map([[trace, 3]]), ['cerberus-0']), false);
+});
+
+test('a SELECT attributed to a Cerberus initiator is gate-bound', () => {
+  const trace = 'b'.repeat(32);
+  const row = `${trace}-child\t178956970\tcerberus-0\tSELECT ...`;
+  assert.equal(isGateBoundMemoryException(row, new Map([[trace, 3]]), ['cerberus-0']), true);
+});
+
+test('non-SELECT exceptions do not prove a gate memory failure', () => {
+  const trace = 'c'.repeat(32);
+  const row = `${trace}-child\t178956970\tcerberus-0\tINSERT ...`;
+  assert.equal(isGateBoundMemoryException(row, new Map([[trace, 3]]), ['cerberus-0']), false);
 });
