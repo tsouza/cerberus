@@ -44,7 +44,11 @@ func TestChartEnvKeysAreReachableFromAConfigFile(t *testing.T) {
 
 	var missing []string
 	seen := make(map[string]bool)
-	for _, key := range chartEnvKeys(string(helper)) {
+	keys := chartEnvKeys(string(helper))
+	if len(keys) == 0 {
+		t.Fatalf("%s contains no concrete CERBERUS_* environment keys; chart/config parity would pass vacuously", helperPath)
+	}
+	for _, key := range keys {
 		if seen[key] || bindable[key] {
 			continue
 		}

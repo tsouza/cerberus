@@ -108,13 +108,23 @@ func TestGoTestTimeoutFitsItsJobBudget(t *testing.T) {
 	justVars := d.resolvedStringAssignments()
 
 	var problems []string
-	for _, job := range workflowJobsRunningJust(t, recipeNames) {
+	jobs := workflowJobsRunningJust(t, recipeNames)
+	if len(jobs) == 0 {
+		t.Fatalf("no workflow job invokes a Justfile recipe; timeout coverage would pass vacuously")
+	}
+	commands := 0
+	for _, job := range jobs {
 		for _, recipe := range job.recipes {
-			for _, cmd := range goTestCommands(t, recipe) {
+			cmds := goTestCommands(t, recipe)
+			commands += len(cmds)
+			for _, cmd := range cmds {
 				problems = append(problems,
 					checkGoTestCommand(t, job, recipe, cmd, justVars)...)
 			}
 		}
+	}
+	if commands == 0 {
+		t.Fatalf("workflow Justfile invocations contain no go test commands; timeout coverage would pass vacuously")
 	}
 
 	if len(problems) > 0 {

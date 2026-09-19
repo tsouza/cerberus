@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import {
   COMPARER_TIMEOUT_SECONDS,
   DEFAULT_CH_IMAGE,
-  DEFAULT_TESTER_QUERY_PARALLELISM,
+  testerParallelismArgs,
   FLOOR_COMPARER_TIMEOUT_SECONDS,
   chImageMinor,
   comparerTimeoutSeconds,
@@ -81,5 +81,7 @@ test('an unusable report is a failure even when the tester exited 0', () => {
 });
 
 test('the lanes default to the parallelism every comparer measurement was taken at', () => {
-  assert.equal(DEFAULT_TESTER_QUERY_PARALLELISM, 2);
+  assert.deepEqual(testerParallelismArgs({}), ['-query-parallelism', '2']);
+  assert.deepEqual(testerParallelismArgs({ TESTER_QUERY_PARALLELISM: '' }), ['-query-parallelism', '2']);
+  assert.deepEqual(testerParallelismArgs({ TESTER_QUERY_PARALLELISM: '4' }), ['-query-parallelism', '4']);
 });

@@ -72,7 +72,12 @@ func TestPlaywrightResourceBoundMessagesMatchProduction(t *testing.T) {
 	// equal it, or the interpolated message never matches the wire.
 	tsCap := tsNumericConst(t, ts, "CH_QUERY_MAX_MEMORY_BYTES")
 	for _, path := range []string{composeFilePath, k3sCerberusValuesPath} {
-		for _, v := range yamlEnvValues(t, path, chQueryMaxMemoryEnv) {
+		values := yamlEnvValues(t, path, chQueryMaxMemoryEnv)
+		if len(values) == 0 {
+			t.Errorf("%s does not set %s; the memory-cap parity check would otherwise pass over no values", path, chQueryMaxMemoryEnv)
+			continue
+		}
+		for _, v := range values {
 			if v != tsCap {
 				t.Errorf("%s sets %s=%d but %s CH_QUERY_MAX_MEMORY_BYTES = %d", path, chQueryMaxMemoryEnv, v, resourceBoundsTSPath, tsCap)
 			}

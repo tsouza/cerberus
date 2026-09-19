@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { tableSetDefects, engineDefects, replicaRegistryDefects, MIN_REPLICAS } from './e2e-bwc-replicated-verify.mjs';
+import { tableSetDefects, engineDefects, replicaRegistryDefects, topologyDefects } from './e2e-bwc-replicated-verify.mjs';
 
 const POD0 = 'cerberus-clickhouse-0';
 const POD1 = 'cerberus-clickhouse-1';
@@ -123,5 +123,8 @@ test('a Replicated* table absent from a pod\'s system.replicas is a defect', () 
 });
 
 test('the topology floor is two replicas', () => {
-  assert.equal(MIN_REPLICAS, 2);
+  assert.match(topologyDefects(1, [POD0])[0], /needs >= 2/);
+  assert.match(topologyDefects(0, [])[0], /needs >= 2/);
+  assert.deepEqual(topologyDefects(2, [POD0, POD1]), []);
+  assert.match(topologyDefects(2, [POD0])[0], /found 1 ClickHouse pod/);
 });

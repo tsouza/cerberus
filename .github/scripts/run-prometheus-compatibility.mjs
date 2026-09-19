@@ -130,6 +130,9 @@ export const FLOOR_COMPARER_TIMEOUT_SECONDS = 90;
 // reset shape falls through to the per-row fallback (#1500).
 export const NATIVE_RATE_FLOOR_MINOR = [25, 9];
 export const DEFAULT_TESTER_QUERY_PARALLELISM = 2;
+export function testerParallelismArgs(env = process.env) {
+  return ['-query-parallelism', env.TESTER_QUERY_PARALLELISM || String(DEFAULT_TESTER_QUERY_PARALLELISM)];
+}
 export const DEFAULT_CH_IMAGE = 'clickhouse/clickhouse-server:26.5';
 
 // chImageMinor — the [major, minor] a `clickhouse/clickhouse-server:<tag>`
@@ -387,7 +390,7 @@ async function main() {
   // usable report to score — distinguished below by whether report.json
   // parses as JSON with a non-null results array.
   const testerArgs = ['-config-file', `${ROOT_DIR}/test-cerberus.yml`, '-config-file', queries, '-config-file', overlayPath, '-output-format', 'json'];
-  testerArgs.push('-query-parallelism', process.env.TESTER_QUERY_PARALLELISM || String(DEFAULT_TESTER_QUERY_PARALLELISM));
+  testerArgs.push(...testerParallelismArgs());
 
   // Read the report back through the SAME fd the tester wrote it through
   // (fstatSync + readSync at position 0) rather than reopening OUTPUT by

@@ -14,6 +14,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   resolvePlan,
@@ -106,7 +107,13 @@ test('a full pair carries the ref and the version through verbatim', () => {
 });
 
 test('the extraction path is the image path the release Dockerfiles write', () => {
-  // Both Dockerfile and Dockerfile.local COPY the binary here and the compose
-  // healthcheck execs it here; a drift would make `docker cp` fail opaquely.
+  // Both Dockerfile variants must copy and launch the binary at this path;
+  // otherwise docker cp can extract a different file while the healthcheck
+  // executes another one.
   assert.equal(IMAGE_BINARY_PATH, '/usr/local/bin/cerberus');
+  for (const path of ['Dockerfile', 'Dockerfile.local']) {
+    const source = readFileSync(path, 'utf8');
+    assert.match(source, new RegExp(`COPY .*${IMAGE_BINARY_PATH.replaceAll('/', '\\/')}$`, 'm'), path);
+    assert.match(source, new RegExp(`ENTRYPOINT \\["${IMAGE_BINARY_PATH.replaceAll('/', '\\/')}"\\]`), path);
+  }
 });
