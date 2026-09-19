@@ -1,1 +1,49 @@
-{"entries":[{"head":"promql","site":"internal/promql/binary.go:lowerVectorSetOp#4924e0ba","message":"promql: 'or' between a float-valued and a histogram-valued operand is not supported; 'and'/'unless' support mixing them","class":"internal","evidence":{"guard":["past returning if err != nil","past returning if b.ReturnBool","past returning if err != nil","past returning if err != nil","past returning if err := requireVectorSetOpSampleKind(\"left\", leftKind); err != nil","past returning if err := requireVectorSetOpSampleKind(\"right\", rightKind); err != nil","if kind == chplan.VectorSetOr","case leftHistogram != rightHistogram of switch"],"callers":["lowerBinary"]},"rationale":"Internal invariant: past returning if err != nil; past returning if b.ReturnBool; past returning if err != nil; past returning if err != nil; past returning if err := requireVectorSetOpSampleKind(\"left\", leftKind); err != nil; past returning if err := requireVectorSetOpSampleKind(\"right\", rightKind); err != nil; if kind == chplan.VectorSetOr; case leftHistogram != rightHistogram of switch; callers: lowerBinary"},{"head":"promql","site":"internal/promql/binary.go:lowerVectorSetOp#6cdf660e","message":"promql: 'bool' modifier is only allowed on comparison binary ops","class":"internal","rationale":"Internal invariant: past returning if err != nil; if b.ReturnBool; callers: lowerBinary","evidence":{"guard":["past returning if err != nil","if b.ReturnBool"],"callers":["lowerBinary"]}}]}
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerVectorSetOp#4924e0ba",
+      "message": "promql: 'or' between a float-valued and a histogram-valued operand is not supported; 'and'/'unless' support mixing them",
+      "class": "internal",
+      "rationale": "Internal invariant: past returning if err != nil; past returning if b.ReturnBool; past returning if err != nil; past returning if err != nil; past returning if err := requireVectorSetOpSampleKind(\"left\", leftKind); err != nil; past returning if err := requireVectorSetOpSampleKind(\"right\", rightKind); err != nil; if kind == chplan.VectorSetOr; case leftHistogram != rightHistogram of switch; callers: lowerBinary",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "past returning if b.ReturnBool",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err := requireVectorSetOpSampleKind(\"left\", leftKind); err != nil",
+          "past returning if err := requireVectorSetOpSampleKind(\"right\", rightKind); err != nil",
+          "if kind == chplan.VectorSetOr",
+          "case leftHistogram != rightHistogram of switch"
+        ],
+        "callers": [
+          "lowerBinary"
+        ],
+        "cited": [
+          "lowerBinary",
+          "requireVectorSetOpSampleKind"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerVectorSetOp#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "Internal invariant: past returning if err != nil; if b.ReturnBool; callers: lowerBinary",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "if b.ReturnBool"
+        ],
+        "callers": [
+          "lowerBinary"
+        ],
+        "cited": [
+          "lowerBinary"
+        ]
+      }
+    }
+  ]
+}
