@@ -76,11 +76,19 @@ func TestFusedSubqueryPeelsRoleOnlyProject(t *testing.T) {
 	inner := fusibleInner()
 	row := inner.RowType()
 	projections := make([]chplan.Projection, len(row.Columns))
+	roles := append([]chplan.Column(nil), row.Columns...)
 	for i, column := range row.Columns {
 		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name}
+		if roles[i].Role == chplan.RoleTimestamp {
+			roles[i].Role = chplan.RoleOpaque
+		}
+		if column.Name == chplan.RangeWindowAnchorColumn {
+			roles[i].Role = chplan.RoleTimestamp
+		}
 	}
 	wrapped := fusedOuter()
-	wrapped.Input = &chplan.Project{Input: inner, Projections: projections, Roles: row.Columns}
+	wrapped.TimestampColumn = chplan.RangeWindowAnchorColumn
+	wrapped.Input = &chplan.Project{Input: inner, Projections: projections, Roles: roles}
 	handled, err := (&emitter{}).tryEmitFusedSubquery(wrapped)
 	if err != nil || !handled {
 		t.Fatalf("role-only project should preserve fusion: handled=%v err=%v", handled, err)
