@@ -3817,7 +3817,7 @@
         "type": "prometheus",
         "uid": "cerberus-prometheus"
       },
-      "description": "absent() over a metric that IS seeded is defined to return no samples. Declared empty so the sweep pins the defined-empty direction; the sibling panel pins the inverse.",
+        "description": "absent() over vector(1) is defined to return no samples. Declared empty so the sweep pins the defined-empty direction; the sibling panel pins the inverse.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3893,17 +3893,17 @@
             "uid": "cerberus-prometheus"
           },
           "editorMode": "code",
-          "expr": "absent(up)",
+          "expr": "absent(vector(1))",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "absent(up) \u2014 defined empty",
+      "title": "absent(vector(1)) \u2014 defined empty",
       "type": "timeseries",
       "cerberus": {
         "expect": "empty",
-        "why": "absent() over the seeded `up` metric is DEFINED to return no samples while the metric keeps reporting; the sibling panel (absent of a never-seeded name) pins the inverse direction, so both sides of the absence contract are enforced."
+        "why": "absent() over vector(1) is DEFINED to return no samples because its input is unconditionally present; the sibling panel (absent of a never-seeded name) pins the inverse direction, so both sides of the absence contract are enforced without depending on fixture timing."
       }
     },
     {
