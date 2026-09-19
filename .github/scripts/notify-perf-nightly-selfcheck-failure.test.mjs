@@ -17,10 +17,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { classifyNightlyHealth } from './lib/nightly-health-notify.mjs';
-import {
-  PERF_NIGHTLY_SELFCHECK_TRACKING_LABELS,
-  PERF_NIGHTLY_SELFCHECK_TRACKING_TITLE,
-} from './notify-perf-nightly-selfcheck-failure.mjs';
+import { main } from './notify-perf-nightly-selfcheck-failure.mjs';
 import { buildFailureBody, buildRecoveryBody } from './lib/nightly-health-notify.mjs';
 
 test('perf-nightly-selfcheck single-job success is a clean run', () => {
@@ -41,17 +38,14 @@ test('a missing/empty result reads as a failure, not a silent pass', () => {
   assert.match(v.failed[0], /perf-nightly-selfcheck: \(missing\)/);
 });
 
-test('the tracking title is distinct from e2e\'s and perf-nightly\'s own', () => {
-  assert.equal(
-    PERF_NIGHTLY_SELFCHECK_TRACKING_TITLE,
-    'perf-nightly self-check found an injected regression was not caught',
-  );
-  assert.notEqual(PERF_NIGHTLY_SELFCHECK_TRACKING_TITLE, 'nightly e2e run did not reach a clean pass');
-  assert.notEqual(PERF_NIGHTLY_SELFCHECK_TRACKING_TITLE, 'nightly perf-nightly run did not reach a clean pass');
-});
-
-test('the tracking labels match the shared automated + area/ci pair', () => {
-  assert.deepEqual(PERF_NIGHTLY_SELFCHECK_TRACKING_LABELS, ['automated', 'area/ci']);
+test('the executable wires the self-check labels and title into the notifier', () => {
+  let options;
+  main({ REPO: 'o/r', RUN_ID: '1', RUN_URL: 'https://x/run/1', RESULT_PERF_NIGHTLY_SELFCHECK: 'failure' }, (got) => {
+    options = got;
+  });
+  assert.deepEqual(options.trackingLabels, ['automated', 'area/ci']);
+  assert.equal(options.trackingTitle, 'perf-nightly self-check found an injected regression was not caught');
+  assert.deepEqual(options.jobResults, { 'perf-nightly-selfcheck': 'failure' });
 });
 
 test('buildFailureBody names the perf-nightly-selfcheck lane, the run, and #2437 (not #2370)', () => {

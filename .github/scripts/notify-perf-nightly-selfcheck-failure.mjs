@@ -52,12 +52,12 @@ function readJobResults(env) {
   };
 }
 
-function main() {
-  runNotifyMain({
-    repo: process.env.REPO ?? '',
-    runId: process.env.RUN_ID ?? '',
-    runUrl: process.env.RUN_URL ?? '',
-    jobResults: readJobResults(process.env),
+export function main(env = process.env, notify = runNotifyMain) {
+  notify({
+    repo: env.REPO ?? '',
+    runId: env.RUN_ID ?? '',
+    runUrl: env.RUN_URL ?? '',
+    jobResults: readJobResults(env),
     trackingLabels: PERF_NIGHTLY_SELFCHECK_TRACKING_LABELS,
     trackingTitle: PERF_NIGHTLY_SELFCHECK_TRACKING_TITLE,
     laneLabel: 'perf-nightly-selfcheck',

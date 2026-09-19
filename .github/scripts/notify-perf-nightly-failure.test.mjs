@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { classifyNightlyHealth } from './lib/nightly-health-notify.mjs';
-import { PERF_NIGHTLY_TRACKING_LABELS, PERF_NIGHTLY_TRACKING_TITLE } from './notify-perf-nightly-failure.mjs';
+import { main } from './notify-perf-nightly-failure.mjs';
 import { buildFailureBody, buildRecoveryBody } from './lib/nightly-health-notify.mjs';
 
 test('perf-nightly single-job success is a clean night', () => {
@@ -38,13 +38,14 @@ test('a missing/empty result reads as a failure, not a silent pass', () => {
   assert.match(v.failed[0], /perf-nightly: \(missing\)/);
 });
 
-test('the tracking title is distinct from e2e\'s own', () => {
-  assert.equal(PERF_NIGHTLY_TRACKING_TITLE, 'nightly perf-nightly run did not reach a clean pass');
-  assert.notEqual(PERF_NIGHTLY_TRACKING_TITLE, 'nightly e2e run did not reach a clean pass');
-});
-
-test('the tracking labels match the shared automated + area/ci pair', () => {
-  assert.deepEqual(PERF_NIGHTLY_TRACKING_LABELS, ['automated', 'area/ci']);
+test('the executable wires the tracking labels and title into the notifier', () => {
+  let options;
+  main({ REPO: 'o/r', RUN_ID: '1', RUN_URL: 'https://x/run/1', RESULT_PERF_NIGHTLY: 'failure' }, (got) => {
+    options = got;
+  });
+  assert.deepEqual(options.trackingLabels, ['automated', 'area/ci']);
+  assert.equal(options.trackingTitle, 'nightly perf-nightly run did not reach a clean pass');
+  assert.deepEqual(options.jobResults, { 'perf-nightly': 'failure' });
 });
 
 test('buildFailureBody names the perf-nightly lane and the run', () => {
