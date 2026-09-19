@@ -57,7 +57,6 @@ func TestLower_ExpHistogram_MixedOrBesideForwardedHistogramSetOp(t *testing.T) {
 	// lowerPlainOperandForMixedJoin's late row-shape guard (whose message
 	// reads "a mixed float/histogram 'or' operand paired with a
 	// %s-shaped operand is not supported" instead).
-	const wantErrSubstring = "'or' between a float-valued and a histogram-valued operand is not supported"
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
