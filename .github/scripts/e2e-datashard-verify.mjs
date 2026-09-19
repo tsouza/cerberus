@@ -167,6 +167,12 @@ export function isGateBoundMemoryException(row, kEffByTrace, cerberusPods) {
     snippet.trimStart().toUpperCase().startsWith('SELECT');
 }
 
+export function attributeExceptionRow(row, initiators) {
+  const [qid, mem, childHost, snippet] = row.split('\t');
+  const parent = initiators.get(qid);
+  return [qid, mem, parent?.host || childHost, parent?.terminalType || '', snippet].join('\t');
+}
+
 // Every number this script compares against is read back from the LIVE
 // deployment, never from a literal it would have to keep in sync by hand
 // with a values file: a value the chart did not render (unset key) is an
@@ -578,10 +584,8 @@ async function main() {
   //     replicas x cap cluster-wide second). The initiator row carries the
   //     client's hostname — clickhouse-go sends os.Hostname() on every
   //     query (lib/proto/query.go), which inside a pod is the pod name —
-  //     joined back over initial_query_id (GLOBAL, so the initiator-side
-  //     subquery is computed once and shipped to every replica the
-  //     clusterAllReplicas scan runs on, instead of being re-issued as a
-  //     double-distributed subquery ClickHouse rejects). The child's own
+  //     attributed back over initial_query_id from the separately collected
+  //     initiator metadata. The child's own
   //     client_hostname is the fallback should an initiator row fall
   //     outside the window; an unresolvable host is an assertion failure
   //     below, never a silent drop.
@@ -590,28 +594,38 @@ async function main() {
   //   - query_snippet is a short, whitespace-flattened prefix of the child's
   //     SQL so a surprising per-dispatch width can be matched against a
   //     known query SHAPE from the log alone.
+  // Fetch parent metadata separately so the verifier does not need to join two
+  // distributed query_log scans while collecting its evidence. The joined
+  // collector exceeded the server's total memory limit in release E2E; that
+  // failure did not identify which allocation exhausted the remaining headroom.
+  const initiatorRows = chQueryTSV(
+    initiatorPod,
+    `SELECT query_id, any(client_hostname) AS client_hostname, any(type) AS terminal_type
+     FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
+     WHERE is_initial_query = 1 AND type IN (${QUERY_LOG_TERMINAL_TYPES_SQL})
+       AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})
+     GROUP BY query_id`,
+  );
+  const initiatorMeta = new Map();
+  for (const row of initiatorRows) {
+    const [queryId, host, terminalType] = row.split('\t');
+    initiatorMeta.set(queryId, { host, terminalType });
+  }
+
   const shardStmtRows = chQueryTSV(
     initiatorPod,
     `SELECT toUnixTimestamp64Micro(c.query_start_time_microseconds) AS start_us, ${durationUsExpr('c.')} AS dur_us,
-            c.query_kind, c.initial_query_id,
-            if(i.client_hostname != '', i.client_hostname, c.client_hostname) AS cerberus_host,
+            c.query_kind, c.initial_query_id, c.client_hostname,
             c.Settings['max_memory_usage'] AS mem,
             c.memory_usage AS mem_used,
             replaceRegexpAll(substring(c.query, 1, 300), '[\\t\\n\\r]+', ' ') AS query_snippet
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log) AS c
-     GLOBAL LEFT JOIN (
-       SELECT query_id, any(client_hostname) AS client_hostname
-       FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
-       WHERE is_initial_query = 1 AND type IN (${QUERY_LOG_TERMINAL_TYPES_SQL})
-         AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})
-       GROUP BY query_id
-     ) AS i ON c.initial_query_id = i.query_id
      WHERE c.is_initial_query = 0 AND c.type = 'QueryFinish'
        AND c.event_time >= toDateTime(${windowStart}) AND c.event_time <= toDateTime(${windowEnd})`,
   );
   const shardStmts = shardStmtRows.map((r) => {
-    const [s, d, kind, qid, host, mem, memUsed, snippet] = r.split('\t');
-    return { startUs: Number(s), durUs: Number(d), kind, qid, host, mem, memUsed: Number(memUsed), snippet };
+    const [s, d, kind, qid, childHost, mem, memUsed, snippet] = r.split('\t');
+    return { startUs: Number(s), durUs: Number(d), kind, qid, host: initiatorMeta.get(qid)?.host || childHost, mem, memUsed: Number(memUsed), snippet };
   });
   const peakConcurrentShardStatements = maxConcurrent(shardStmts);
   const kindCounts = {};
@@ -788,24 +802,17 @@ async function main() {
     log(`kEff=${kEff}: peak real memory_usage observed=${max} against configured ceiling=${ceiling} (headroom=${(((ceiling - max) / ceiling) * 100).toFixed(1)}%)`);
   }
 
-  const exceptionRows = chQueryTSV(
+  const rawExceptionRows = chQueryTSV(
     initiatorPod,
     `SELECT c.initial_query_id, c.Settings['max_memory_usage'] AS mem,
-            if(i.client_hostname != '', i.client_hostname, c.client_hostname) AS cerberus_host,
-            i.terminal_type AS initiator_type,
+            c.client_hostname,
             replaceRegexpAll(substring(c.query, 1, 300), '[\\t\\n\\r]+', ' ') AS query_snippet
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log) AS c
-     GLOBAL LEFT JOIN (
-       SELECT query_id, any(client_hostname) AS client_hostname, any(type) AS terminal_type
-       FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
-       WHERE is_initial_query = 1 AND type IN (${QUERY_LOG_TERMINAL_TYPES_SQL})
-         AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})
-       GROUP BY query_id
-     ) AS i ON c.initial_query_id = i.query_id
      WHERE c.type = 'ExceptionWhileProcessing'
        AND (c.exception_code = 241 OR c.exception ILIKE '%Memory limit%')
        AND c.event_time >= toDateTime(${windowStart}) AND c.event_time <= toDateTime(${windowEnd})`,
   );
+  const exceptionRows = rawExceptionRows.map((row) => attributeExceptionRow(row, initiatorMeta));
   // Direct native-protocol writers share this query_log window with the
   // burst, but they never pass through Cerberus or DataShardFanoutGate.
   // Only a SELECT attributed to a Cerberus initiator whose trace prefix
