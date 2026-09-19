@@ -168,9 +168,15 @@ export function isGateBoundMemoryException(row, kEffByTrace, cerberusPods) {
 }
 
 export function attributeExceptionRow(row, initiators) {
-  const [qid, mem, childHost, snippet] = row.split('\t');
+  const [qid, mem, childHost, ...evidence] = row.split('\t');
   const parent = initiators.get(qid);
-  return [qid, mem, parent?.host || childHost, parent?.terminalType || '', snippet].join('\t');
+  return [qid, mem, parent?.host || childHost, parent?.terminalType || '', ...evidence].join('\t');
+}
+
+export function formatMemoryException(row, kEffByTrace) {
+  const [qid, mem, , , snippet, exception, memoryUsage] = row.split('\t');
+  const kEff = kEffByTrace.get((qid || '').slice(0, 32)) || 1;
+  return `  exception: initial_query_id=${qid}, kEff=${kEff}, configured max_memory_usage=${mem}, recorded memory_usage=${memoryUsage}, exception=${exception}, query=${snippet}`;
 }
 
 // Every number this script compares against is read back from the LIVE
@@ -806,7 +812,9 @@ async function main() {
     initiatorPod,
     `SELECT c.initial_query_id, c.Settings['max_memory_usage'] AS mem,
             c.client_hostname,
-            replaceRegexpAll(substring(c.query, 1, 300), '[\\t\\n\\r]+', ' ') AS query_snippet
+            replaceRegexpAll(substring(c.query, 1, 300), '[\\t\\n\\r]+', ' ') AS query_snippet,
+            replaceRegexpAll(c.exception, '[\\t\\n\\r]+', ' ') AS exception_message,
+            toString(c.memory_usage) AS memory_usage
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log) AS c
      WHERE c.type = 'ExceptionWhileProcessing'
        AND (c.exception_code = 241 OR c.exception ILIKE '%Memory limit%')
@@ -827,11 +835,9 @@ async function main() {
   }
   const exceptionCount = gateBoundExceptionRows.length;
   if (exceptionCount > 0) {
-    error(`${exceptionCount} MEMORY_LIMIT_EXCEEDED exception(s) recorded in system.query_log during the burst — perShardMemoryBytes did not bound memory pressure as predicted`);
+    error(`${exceptionCount} gate-bound MEMORY_LIMIT_EXCEEDED exception(s) recorded in system.query_log during the burst — inspect the exception message for the failing memory tracker`);
     for (const row of gateBoundExceptionRows) {
-      const [qid, mem, , , snippet] = row.split('\t');
-      const kEff = kEffByTrace.get((qid || '').slice(0, 32)) || 1;
-      log(`  exception: initial_query_id=${qid}, kEff=${kEff}, configured max_memory_usage=${mem}, query=${snippet}`);
+      log(formatMemoryException(row, kEffByTrace));
     }
     failures++;
   }
