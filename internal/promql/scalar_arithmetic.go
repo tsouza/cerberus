@@ -23,7 +23,7 @@ func scalarBinaryValue(value chplan.Expr, op chplan.BinaryOp, scalar float64, sc
 }
 
 func scalarBinaryValueExpr(value chplan.Expr, op chplan.BinaryOp, scalar chplan.Expr, scalarOnLeft bool) chplan.Expr {
-	var left, right chplan.Expr = value, scalar
+	left, right := value, scalar
 	if scalarOnLeft {
 		left, right = right, left
 	}
