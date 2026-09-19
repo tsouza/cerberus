@@ -206,6 +206,15 @@ jobs:
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
         with:
           tool: just@1.46.0
+
+      # actions/cache cannot restore directly into /usr/local/lib on hosted
+      # runners. chdb-install bridges this writable workspace cache into the
+      # privileged install path.
+      - name: Cache libchdb.so
+        uses: actions/cache@v6
+        with:
+          path: .cache/libchdb.so
+          key: libchdb-workspace-${{ runner.os }}-${{ runner.arch }}-v26.5.0
       - name: Install libchdb.so
         run: just chdb-install
 
