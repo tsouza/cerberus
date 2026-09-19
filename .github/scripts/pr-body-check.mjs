@@ -40,6 +40,7 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { descriptionSurface } from './forbid-deferral.mjs';
 import { error, notice } from './lib/gh.mjs';
+import { fetchPullRequest } from './lib/pull-request.mjs';
 
 export const MIN_CHARS = 20;
 
@@ -169,13 +170,25 @@ async function main() {
   const eventName = requireEnv('GITHUB_EVENT_NAME', 'the description surface is resolved per event');
   const onPullRequest = eventName === 'pull_request' || eventName === 'pull_request_target';
 
-  const description = await descriptionSurface({
-    eventName,
-    repo: onPullRequest ? '' : requireEnv('GITHUB_REPOSITORY', 'the head commit cannot be resolved without it'),
-    head: onPullRequest ? '' : requireEnv('GITHUB_SHA', 'there is no head commit to resolve a pull request from'),
-    token: onPullRequest ? '' : requireEnv('GITHUB_TOKEN', 'resolving the associated pull request needs pull-requests:read'),
-    apiBase: process.env.GITHUB_API_URL || 'https://api.github.com',
-  });
+  const description = onPullRequest
+    ? {
+        origin: `live pull request #${requireEnv('PR_NUMBER', 'the current pull request must be fetched')}`,
+        text: (
+          await fetchPullRequest({
+            apiUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
+            repository: requireEnv('GITHUB_REPOSITORY', 'the current pull request must be fetched'),
+            number: requireEnv('PR_NUMBER', 'the current pull request must be fetched'),
+            token: requireEnv('GITHUB_TOKEN', 'the current pull request must be fetched'),
+          })
+        ).body,
+      }
+    : await descriptionSurface({
+        eventName,
+        repo: requireEnv('GITHUB_REPOSITORY', 'the head commit cannot be resolved without it'),
+        head: requireEnv('GITHUB_SHA', 'there is no head commit to resolve a pull request from'),
+        token: requireEnv('GITHUB_TOKEN', 'resolving the associated pull request needs pull-requests:read'),
+        apiBase: process.env.GITHUB_API_URL || 'https://api.github.com',
+      });
 
   const { stub, reason, unassociated } = inspect(description);
   if (unassociated) {
