@@ -269,7 +269,18 @@ func missingTables(ctx context.Context, conn driver.Conn, database string, table
 // metrics + logs constants below all use `now64(9)` for their time
 // columns, so re-running this function re-anchors the seed window on
 // the current wall-clock time without any further parameterisation.
+const insertDistributedSync = 1
+
 func seedAll(ctx context.Context, conn driver.Conn) error {
+	// The datashard schema exposes Distributed tables under the public names
+	// below. ClickHouse defaults Distributed INSERTs to asynchronous queueing,
+	// so the INSERT can return before a following max(Timestamp) SELECT sees
+	// the just-written rows on the remote shards. The rolling stale-row cleanup
+	// runs immediately after each family's INSERT and would then derive an
+	// epoch cutoff (for example -23s) and fail to parse it as DateTime64.
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"insert_distributed_sync": insertDistributedSync,
+	}))
 	log.Printf("seed: inserting metrics fixtures")
 	if err := insertMetrics(ctx, conn); err != nil {
 		return fmt.Errorf("insert metrics: %w", err)
