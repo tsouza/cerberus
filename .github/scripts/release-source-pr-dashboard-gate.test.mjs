@@ -15,6 +15,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   DASHBOARD_CHECK_NAME,
@@ -41,7 +42,13 @@ const run = (conclusion, status = 'completed', id = 1, name = DASHBOARD_CHECK_NA
 });
 
 test('RELEASE_HEAD_REF_PREFIX matches dashboard-matrix.mjs / e2e.yml INCLUDE_CRAWL selection', () => {
-  assert.equal(RELEASE_HEAD_REF_PREFIX, 'release/');
+  const workflow = readFileSync('.github/workflows/e2e.yml', 'utf8');
+  const selection = workflow.split('\n').find((line) => /^\s+INCLUDE_CRAWL:/.test(line));
+  assert.ok(selection, 'the workflow must supply INCLUDE_CRAWL');
+  const prefix = /startsWith\(github\.head_ref, '([^']+)'\)/.exec(selection);
+  assert.ok(prefix, 'the crawl selection must recognize release head refs');
+  assert.equal(RELEASE_HEAD_REF_PREFIX, prefix[1]);
+  assert.equal(isReleaseStagingPR(releasePR(1, `${prefix[1]}v1.21.0`)), true);
 });
 
 test('isReleaseStagingPR discriminates on head.ref', () => {

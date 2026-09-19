@@ -62,6 +62,16 @@ import { pollUntil } from './lib/poll.mjs';
 // anything.
 export const MIN_REPLICAS = 2;
 
+export function topologyDefects(expected, pods) {
+  if (expected < MIN_REPLICAS) {
+    return [`statefulset/${STATEFULSET} has .spec.replicas=${expected}; this lane needs >= ${MIN_REPLICAS} to observe replication at all`];
+  }
+  if (pods.length !== expected) {
+    return [`found ${pods.length} ClickHouse pod(s) (${pods.join(', ')}) but statefulset/${STATEFULSET} declares ${expected}`];
+  }
+  return [];
+}
+
 // The MergeTree family, as `system.tables.engine` spells it. Any of these
 // WITHOUT the `Replicated` prefix inside a Replicated database is a table
 // whose rows never leave the replica they were written to.
@@ -229,12 +239,8 @@ async function main() {
   const expected = statefulSetReplicas();
   const pods = clickhousePods();
   log(`bwc-replicated verify: namespace=${NS} db=${DB} statefulset=${STATEFULSET} spec.replicas=${expected} pods=${pods.join(',')}`);
-  if (expected < MIN_REPLICAS) {
-    fail([`statefulset/${STATEFULSET} has .spec.replicas=${expected}; this lane needs >= ${MIN_REPLICAS} to observe replication at all`]);
-  }
-  if (pods.length !== expected) {
-    fail([`found ${pods.length} ClickHouse pod(s) (${pods.join(', ')}) but statefulset/${STATEFULSET} declares ${expected}`]);
-  }
+  const defects = topologyDefects(expected, pods);
+  if (defects.length > 0) fail(defects);
 
   // ---- 2. schema on every replica ----------------------------------------
   let rows = [];
