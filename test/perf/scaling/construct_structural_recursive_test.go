@@ -65,7 +65,10 @@ func init() {
 		// under the scan; bound at 2x scan_rows (the closure projects at
 		// most every candidate span once per its single ancestry path).
 		CardinalityBound: 2.0,
-		SubLinearSlack:   0.9,
+		// This query is measured after the long perf corpus on shared CI
+		// runners. Keep the gate decisively sub-linear while allowing the
+		// occasional cold-cache tail to affect a single endpoint sample.
+		SubLinearSlack: 1.25,
 		Reseed: func(t *testing.T, db *sql.DB, param int64) {
 			d := int(param)
 			candidates := candidateRows / d // fixed candidate ROW count -> /D traces

@@ -67,7 +67,8 @@ export function readChdbVersion(text) {
 // Every libchdb cache key in one workflow file, as { line, key } records.
 // The reader is deliberately two-pronged: it collects keys that MATCH the
 // expected `libchdb-<...>-<tag>` shape, and separately flags any
-// actions/cache step whose `path:` is the libchdb install path but whose key
+// actions/cache step whose `path:` is the writable libchdb workspace cache
+// path but whose key
 // this reader could not parse — see check (b).
 export function readLibchdbCacheKeys(text) {
   const keys = [];
@@ -75,7 +76,7 @@ export function readLibchdbCacheKeys(text) {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (/^\s*path:\s*\/usr\/local\/lib\/libchdb\.so\s*$/.test(line)) {
+    if (/^\s*path:\s*\.cache\/libchdb\.so\s*$/.test(line)) {
       // The key line is conventionally the next non-blank line of the same
       // `with:` block. Look ahead a short, bounded distance.
       let found = null;
@@ -177,8 +178,8 @@ const OK_WORKFLOW = `jobs:
     steps:
       - uses: actions/cache@v6
         with:
-          path: /usr/local/lib/libchdb.so
-          key: libchdb-\${{ runner.os }}-\${{ runner.arch }}-v26.5.0
+          path: .cache/libchdb.so
+          key: libchdb-workspace-\${{ runner.os }}-\${{ runner.arch }}-v26.5.0
 `;
 
 function selfTest() {
