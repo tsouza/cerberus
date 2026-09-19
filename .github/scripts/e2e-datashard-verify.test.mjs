@@ -10,9 +10,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  attributeExceptionRow,
   isGateBoundMemoryException,
   peakOverlap,
 } from './e2e-datashard-verify.mjs';
+
+test('separate parent lookup preserves terminal attribution and the original SQL kind', () => {
+  const qid = `${'a'.repeat(32)}-child`;
+  const parents = new Map([[qid, { host: 'cerberus-0', terminalType: 'ExceptionWhileProcessing' }]]);
+  const traces = new Map([['a'.repeat(32), 3]]);
+  const select = attributeExceptionRow(`${qid}\t100\tremote-node\tSELECT 1`, parents);
+  assert.equal(isGateBoundMemoryException(select, traces, ['cerberus-0']), true);
+  const insert = attributeExceptionRow(`${qid}\t100\tremote-node\tINSERT INTO t VALUES (1)`, parents);
+  assert.equal(isGateBoundMemoryException(insert, traces, ['cerberus-0']), false);
+  assert.equal(attributeExceptionRow(`${qid}\t100\tremote-node\tSELECT 1`, new Map()), `${qid}\t100\tremote-node\t\tSELECT 1`);
+});
 
 // iv builds one child-statement interval the way the verifier does: a start
 // microsecond, a duration, and the initial_query_id naming the dispatch that
