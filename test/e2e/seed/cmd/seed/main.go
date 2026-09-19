@@ -686,6 +686,12 @@ FROM numbers(40)`
 // counter. deleteStaleMetricsSumSQL's MetricName allowlist does not include
 // this metric, so the rolling re-seeder's stale-row cleanup never touches it
 // — verified by reading that allowlist before adding this backfill.
+const (
+	routeMemoProbeBackfillShardCount  = 480
+	routeMemoProbeBackfillShardBatch  = 60
+	routeMemoProbeBackfillSampleCount = 288
+)
+
 const insertRouteMemoProbeBackfillSQL = `INSERT INTO otel_metrics_sum
   (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value, Flags, AggregationTemporality, IsMonotonic)
 SELECT
@@ -703,17 +709,24 @@ SELECT
     true
 FROM
 (
-    SELECT s.number AS shard, t.number AS sample
-    FROM numbers(480) AS s
-    CROSS JOIN numbers(288) AS t
+    SELECT s.number + {shardOffset:UInt32} AS shard, t.number AS sample
+    FROM numbers({shardBatch:UInt32}) AS s
+    CROSS JOIN numbers({sampleCount:UInt32}) AS t
 )`
 
 // seedRouteMemoProbeBackfill runs insertRouteMemoProbeBackfillSQL. Called
 // exactly once from run(), never from the rolling re-seed loop — see the SQL
 // constant's own doc comment for why a second run would only duplicate rows.
 func seedRouteMemoProbeBackfill(ctx context.Context, conn driver.Conn) error {
-	if err := conn.Exec(ctx, insertRouteMemoProbeBackfillSQL); err != nil {
-		return fmt.Errorf("route-memo probe backfill: %w", err)
+	for shardOffset := uint32(0); shardOffset < routeMemoProbeBackfillShardCount; shardOffset += routeMemoProbeBackfillShardBatch {
+		if err := conn.Exec(
+			ctx, insertRouteMemoProbeBackfillSQL,
+			clickhouse.Named("shardOffset", shardOffset),
+			clickhouse.Named("shardBatch", uint32(routeMemoProbeBackfillShardBatch)),
+			clickhouse.Named("sampleCount", uint32(routeMemoProbeBackfillSampleCount)),
+		); err != nil {
+			return fmt.Errorf("route-memo probe backfill (shards %d-%d): %w", shardOffset, shardOffset+routeMemoProbeBackfillShardBatch-1, err)
+		}
 	}
 	return nil
 }
