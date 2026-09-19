@@ -90,20 +90,20 @@ import (
 // (histogram_native_mixed_or_vector_arithmetic.go /
 // histogram_native_mixed_or_vector_comparison.go) key on both sides'
 // discriminators for exactly that reason.
-func mulOrDivScaleOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar float64, scalarOnLeft, ok bool) {
+func mulOrDivScaleOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar chplan.Expr, scalarOnLeft, ok bool) {
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || (b.Op != parser.MUL && b.Op != parser.DIV) {
-		return nil, "", 0, false, false
+		return nil, "", nil, false, false
 	}
 	chOp, err := promBinaryOp(b.Op)
 	if err != nil {
-		return nil, "", 0, false, false
+		return nil, "", nil, false, false
 	}
 
-	lhsScalar, lhsIsScalar := tryScalarLiteral(b.LHS)
-	rhsScalar, rhsIsScalar := tryScalarLiteral(b.RHS)
+	lhsScalar, lhsIsScalar := scalarOperandExpr(b.LHS, s, ctx)
+	rhsScalar, rhsIsScalar := scalarOperandExpr(b.RHS, s, ctx)
 	var vecSide parser.Expr
-	var scalarVal float64
+	var scalarVal chplan.Expr
 	var scalarLeft bool
 	switch {
 	case lhsIsScalar && !rhsIsScalar:
@@ -111,40 +111,28 @@ func mulOrDivScaleOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics,
 	case rhsIsScalar && !lhsIsScalar:
 		vecSide, scalarVal, scalarLeft = b.LHS, rhsScalar, false
 	default:
-		// Neither/both sides fold to a scalar — a vector-vector `*`/`/`
-		// over a mixed `or` is the further, unattempted shape this file's
-		// header names.
-		return nil, "", 0, false, false
+		return nil, "", nil, false, false
 	}
-
 	if b.Op == parser.DIV && scalarLeft {
-		// `<scalar> / (a or b)` — scalar-left DIV is drop-family
-		// (histogram_native_mixed_or_arithmetic.go), not this scaling
-		// shape: DIV only scales when the histogram/vector operand is the
-		// numerator.
-		return nil, "", 0, false, false
+		return nil, "", nil, false, false
 	}
-
 	inner, matched := mixedExpHistogramSetOp(vecSide, s, ctx)
 	if !matched {
-		return nil, "", 0, false, false
+		return nil, "", nil, false, false
 	}
 	return inner, chOp, scalarVal, scalarLeft, true
 }
 
-// lowerMulOrDivScaleOverMixedExpHistogramSetOp lowers the shape
-// [mulOrDivScaleOverMixedExpHistogramSetOp] recognised: build the same
-// Mixed [chplan.VectorSetOp] node the root-only leaf case does
-// ([lowerMixedExpHistogramSetOp]), then scale it through
-// [scaleMixedPlan] — the one fold every scaling consumer of a live mixed
-// relation applies, whether the relation is this direct root or a plan an
-// intermediate wrapper already lowered (cerberus issue #3562).
 func lowerMulOrDivScaleOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar float64, scalarOnLeft bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	return lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr(setOp, op, &chplan.LitFloat{V: scalar}, scalarOnLeft, s, ctx)
+}
+
+func lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr(setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar chplan.Expr, scalarOnLeft bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	inner, err := lowerMixedExpHistogramSetOp(setOp, s, ctx)
 	if err != nil {
 		return nil, err
 	}
-	return scaleMixedPlan(inner, op, &chplan.LitFloat{V: scalar}, scalarOnLeft, s)
+	return scaleMixedPlan(inner, op, scalar, scalarOnLeft, s)
 }
 
 // scaleMixedPlan scales a LIVE mixed relation by `scale` under `op` (MUL,

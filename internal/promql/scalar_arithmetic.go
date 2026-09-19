@@ -19,7 +19,11 @@ const (
 )
 
 func scalarBinaryValue(value chplan.Expr, op chplan.BinaryOp, scalar float64, scalarOnLeft bool) chplan.Expr {
-	var left, right chplan.Expr = value, &chplan.LitFloat{V: scalar}
+	return scalarBinaryValueExpr(value, op, &chplan.LitFloat{V: scalar}, scalarOnLeft)
+}
+
+func scalarBinaryValueExpr(value chplan.Expr, op chplan.BinaryOp, scalar chplan.Expr, scalarOnLeft bool) chplan.Expr {
+	var left, right chplan.Expr = value, scalar
 	if scalarOnLeft {
 		left, right = right, left
 	}
