@@ -2,10 +2,10 @@ package promql_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -33,7 +33,7 @@ import (
 // late, recognizer-specific one — proving the recognizer itself now
 // correctly excludes this shape instead of accepting it and failing
 // downstream.
-func TestLower_ExpHistogram_PlainSideForwardedThroughSetOpRejectsCleanly(t *testing.T) {
+func TestLower_ExpHistogram_MixedOrBesideForwardedHistogramSetOp(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -63,12 +63,12 @@ func TestLower_ExpHistogram_PlainSideForwardedThroughSetOpRejectsCleanly(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			expr := parseExprExp(t, tc.query)
-			_, err := promql.LowerAt(context.Background(), expr, s, end, end)
-			if err == nil {
-				t.Fatalf("Lower(%q): expected an error (this shape is not yet attempted), got success", tc.query)
+			plan, err := promql.LowerAt(context.Background(), expr, s, end, end)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v", tc.query, err)
 			}
-			if !strings.Contains(err.Error(), wantErrSubstring) {
-				t.Fatalf("Lower(%q) error = %q, want it to contain %q (the early, shared rejection — a different message here means the late lowerPlainOperandForMixedJoin guard caught it instead, i.e. the recognizer regressed)", tc.query, err.Error(), wantErrSubstring)
+			if got := chplan.RowShapeOf(plan); got != chplan.MixedRowShape {
+				t.Fatalf("Lower(%q): root publishes %s, want %s", tc.query, got, chplan.MixedRowShape)
 			}
 		})
 	}

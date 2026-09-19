@@ -882,7 +882,18 @@ func lowerScalarBinopOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (
 	if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(expr, s, ctx); ok {
 		return node, err
 	}
+	if node, ok, err := lowerMixedRelationOperand(expr, s, ctx); ok {
+		return node, err
+	}
 	return lower(expr, s, ctx)
+}
+
+func lowerMixedRelationOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	if !isMixedRelationShape(expr, s, ctx) {
+		return nil, false, nil
+	}
+	node, err := lowerRoot(expr, s, ctx)
+	return node, true, err
 }
 
 // lowerVectorVectorOperand lowers one operand of [lowerVectorVector]
@@ -916,6 +927,9 @@ func lowerScalarBinopOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (
 // TestLower_ExpHistogram_FloatVectorScalingBinopStillRejected for the
 // regression this scoping avoids.
 func lowerVectorVectorOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if node, ok, err := lowerMixedRelationOperand(expr, s, ctx); ok {
+		return node, err
+	}
 	if dropped, ok, err := lowerExpHistogramDroppingShape(expr, s, ctx); ok {
 		return dropped, err
 	}

@@ -231,7 +231,7 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorPlainGroupLeftRight(t *testing.T)
 // mixed, not plain) other operand remains unimplemented — a different
 // shape this piece of #2449 deliberately does not attempt (see
 // [lowerPlainOperandForMixedJoin]'s own doc).
-func TestLower_ExpHistogram_MixedSetOpOr_VectorPlain_HistogramOtherStillRejects(t *testing.T) {
+func TestLower_ExpHistogram_MixedSetOpOr_VectorHistogramOther(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -243,8 +243,12 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorPlain_HistogramOtherStillRejects(
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
 	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("LowerAt(%q): want an error (a mixed `or` paired with a genuinely histogram-valued operand is not this piece's scope), got none", query)
+	plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+	if err != nil {
+		t.Fatalf("LowerAt(%q): %v", query, err)
+	}
+	if got := chplan.RowShapeOf(plan); got != chplan.MixedRowShape {
+		t.Fatalf("LowerAt(%q): root publishes %s, want %s", query, got, chplan.MixedRowShape)
 	}
 }
 
