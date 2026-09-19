@@ -23,13 +23,13 @@ const ran = (shardsResult) =>
     changesResult: 'success',
     docsOnly: 'false',
     shardsResult,
-    shardCount: '8',
+      shardCount: '16',
   });
 
 test('every shard green passes', () => {
   const v = ran('success');
   assert.equal(v.ok, true);
-  assert.match(v.message, /8 shard\(s\)/);
+  assert.match(v.message, /16 shard\(s\)/);
 });
 
 test('a rolled-up matrix that is not success fails, whatever the reason', () => {
@@ -48,7 +48,7 @@ test('a docs-only change short-circuits green', () => {
     changesResult: 'success',
     docsOnly: 'true',
     shardsResult: 'skipped',
-    shardCount: '8',
+    shardCount: '16',
   });
   assert.equal(v.ok, true);
   assert.match(v.message, /docs-only/);
@@ -60,7 +60,7 @@ test('an ordinary (non-release) PR short-circuits green via run_heavy=false (#22
     docsOnly: 'false',
     runHeavy: 'false',
     shardsResult: 'skipped',
-    shardCount: '8',
+    shardCount: '16',
   });
   assert.equal(v.ok, true);
   assert.match(v.message, /release-gate/);
@@ -72,7 +72,7 @@ test('a heavy event (run_heavy=true) that skips is still a failure, not a pass',
     docsOnly: 'false',
     runHeavy: 'true',
     shardsResult: 'skipped',
-    shardCount: '8',
+    shardCount: '16',
   });
   assert.equal(v.ok, false);
   assert.match(v.message, /should have run/);
@@ -87,7 +87,7 @@ test('a skipped matrix is NOT green when the changes job failed to decide', () =
       changesResult,
       docsOnly: '',
       shardsResult: 'skipped',
-      shardCount: '8',
+    shardCount: '16',
     });
     assert.equal(v.ok, false, `changesResult=${changesResult} must not pass`);
     assert.match(v.message, /never decided/);
@@ -99,7 +99,7 @@ test('a skipped matrix is NOT green on a code change', () => {
     changesResult: 'success',
     docsOnly: 'false',
     shardsResult: 'skipped',
-    shardCount: '8',
+    shardCount: '16',
   });
   assert.equal(v.ok, false);
   assert.match(v.message, /should have run/);
@@ -110,7 +110,7 @@ test('a successful matrix does not launder a failed changes job', () => {
     changesResult: 'failure',
     docsOnly: 'false',
     shardsResult: 'success',
-    shardCount: '8',
+    shardCount: '16',
   });
   assert.equal(v.ok, false);
   assert.match(v.message, /changes.*did not succeed/);
