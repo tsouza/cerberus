@@ -72,6 +72,50 @@ func fusedOuter() *chplan.RangeWindow {
 	}
 }
 
+func TestFusedSubqueryPeelsRoleOnlyProject(t *testing.T) {
+	inner := fusibleInner()
+	row := inner.RowType()
+	projections := make([]chplan.Projection, len(row.Columns))
+	roles := append([]chplan.Column(nil), row.Columns...)
+	for i, column := range row.Columns {
+		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name}
+		if roles[i].Role == chplan.RoleTimestamp {
+			roles[i].Role = chplan.RoleOpaque
+		}
+		if column.Name == chplan.RangeWindowAnchorColumn {
+			roles[i].Role = chplan.RoleTimestamp
+		}
+	}
+	wrapped := fusedOuter()
+	wrapped.TimestampColumn = chplan.RangeWindowAnchorColumn
+	wrapped.Input = &chplan.Project{Input: inner, Projections: projections, Roles: roles}
+	handled, err := (&emitter{}).tryEmitFusedSubquery(wrapped)
+	if err != nil || !handled {
+		t.Fatalf("role-only project should preserve fusion: handled=%v err=%v", handled, err)
+	}
+	for name, mutate := range map[string]func([]chplan.Projection, *chplan.Project){
+		"computed": func(p []chplan.Projection, _ *chplan.Project) { p[0].Expr = &chplan.LitString{V: "changed"} },
+		"renamed":  func(p []chplan.Projection, _ *chplan.Project) { p[0].Alias = "renamed" },
+		"qualified": func(p []chplan.Projection, _ *chplan.Project) {
+			p[0].Expr = &chplan.ColumnRef{Name: row.Columns[0].Name, Qualifier: "source"}
+		},
+		"partial": func(p []chplan.Projection, project *chplan.Project) { project.Projections = p[:len(p)-1] },
+		"replacement": func(_ []chplan.Projection, project *chplan.Project) {
+			project.Projections = nil
+			project.Replacements = []chplan.Projection{{Expr: &chplan.LitString{V: "changed"}, Alias: row.Columns[0].Name}}
+		},
+	} {
+		p := append([]chplan.Projection(nil), projections...)
+		project := &chplan.Project{Input: inner, Projections: p, Roles: row.Columns}
+		mutate(p, project)
+		wrapped.Input = project
+		handled, err := (&emitter{}).tryEmitFusedSubquery(wrapped)
+		if err != nil || handled {
+			t.Errorf("%s project must not be peeled: handled=%v err=%v", name, handled, err)
+		}
+	}
+}
+
 // TestHoltWintersSmoothingWeightsEmit kills the flips on
 // range_window.go:`InlineLit(sf), InlineLit(1-sf)` and
 // range_window.go:`InlineLit(tf), InlineLit(1-tf)`.

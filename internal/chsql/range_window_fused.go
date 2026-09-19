@@ -123,7 +123,7 @@ func (e *emitter) tryEmitFusedSubquery(r *chplan.RangeWindow) (handled bool, err
 	if !instantOuter && !matrixOuter {
 		return false, nil
 	}
-	inner, ok := r.Input.(*chplan.RangeWindow)
+	inner, ok := fusedSubqueryInput(r.Input)
 	if !ok {
 		return false, nil
 	}
@@ -160,6 +160,27 @@ func (e *emitter) tryEmitFusedSubquery(r *chplan.RangeWindow) (handled bool, err
 		return true, e.emitFusedMatrixSubquery(r, g, reduce)
 	}
 	return true, e.emitFusedInstantSubquery(r, g, reduce)
+}
+
+// fusedSubqueryInput preserves the nested-window fast path across a lowering
+// projection that only declares column roles. Never peel a renamed, computed,
+// qualified, partial, or replacement projection: those change the input data.
+func fusedSubqueryInput(input chplan.Node) (*chplan.RangeWindow, bool) {
+	if project, ok := input.(*chplan.Project); ok {
+		row := project.Input.RowType()
+		if row.Open || len(project.Replacements) != 0 || len(project.Projections) != len(row.Columns) {
+			return nil, false
+		}
+		for i, projection := range project.Projections {
+			column, ok := projection.Expr.(*chplan.ColumnRef)
+			if !ok || column.Qualifier != "" || column.Name != row.Columns[i].Name || projection.Alias != column.Name {
+				return nil, false
+			}
+		}
+		input = project.Input
+	}
+	inner, ok := input.(*chplan.RangeWindow)
+	return inner, ok
 }
 
 // fusedSubqueryGrid holds the inner-subquery sample-grid quantities both fused
