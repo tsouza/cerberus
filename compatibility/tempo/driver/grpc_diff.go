@@ -266,8 +266,12 @@ func runDiffGRPC(args []string) error {
 func diffCaseGRPC(ctx context.Context, tempoClient, cerbClient tempopb.StreamingQuerierClient, tc CorpusCase, opts caseOpts) CaseResult {
 	res := CaseResult{Case: tc}
 
-	tempoBody, terr := fetchGRPCForEndpoint(ctx, tempoClient, tc, opts)
-	cerbBody, cerr := fetchGRPCForEndpoint(ctx, cerbClient, tc, opts)
+	requestCase := tc
+	if tc.Endpoint == endpointMetricsRange || tc.Endpoint == endpointMetricsInstant {
+		requestCase.Query += " with (exemplars = false)"
+	}
+	tempoBody, terr := fetchGRPCForEndpoint(ctx, tempoClient, requestCase, opts)
+	cerbBody, cerr := fetchGRPCForEndpoint(ctx, cerbClient, requestCase, opts)
 
 	// gRPC-side status-parity axis (#1714), the sibling of diff.go's
 	// ExpectedStatus branch: a case declaring -- expect_grpc_code --

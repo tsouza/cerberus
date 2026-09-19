@@ -236,6 +236,32 @@ func TestBuildURL_MetricsRange(t *testing.T) {
 	if !strings.Contains(u, "q=") {
 		t.Fatalf("missing q=: %s", u)
 	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		t.Fatalf("parse built URL: %v", err)
+	}
+	if got := parsed.Query().Get("q"); got != `{ } | rate() with (exemplars = false)` {
+		t.Fatalf("metrics range query = %q, want symmetric exemplar opt-out", got)
+	}
+}
+
+func TestBuildURL_MetricsQueriesAreSymmetric(t *testing.T) {
+	t.Parallel()
+
+	tc := CorpusCase{Query: `{ } | rate()`, Endpoint: "metrics_range", Step: "60s"}
+	tempoURL, err := buildURL("http://tempo:3200", tc, "tempo", time.Unix(1000, 0), time.Unix(2000, 0), 200)
+	if err != nil {
+		t.Fatalf("build Tempo URL: %v", err)
+	}
+	cerberusURL, err := buildURL("http://cerberus:29092", tc, "cerberus", time.Unix(1000, 0), time.Unix(2000, 0), 200)
+	if err != nil {
+		t.Fatalf("build Cerberus URL: %v", err)
+	}
+	tempoParsed, _ := url.Parse(tempoURL)
+	cerberusParsed, _ := url.Parse(cerberusURL)
+	if tempoParsed.Query().Get("q") != cerberusParsed.Query().Get("q") {
+		t.Fatalf("metrics queries differ: Tempo=%q Cerberus=%q", tempoParsed.Query().Get("q"), cerberusParsed.Query().Get("q"))
+	}
 }
 
 func TestBuildURL_MetricsRangeMissingStepFails(t *testing.T) {
@@ -298,6 +324,13 @@ func TestBuildURL_MetricsInstant(t *testing.T) {
 	}
 	if !strings.Contains(u, "q=") {
 		t.Fatalf("missing q=: %s", u)
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		t.Fatalf("parse built URL: %v", err)
+	}
+	if got := parsed.Query().Get("q"); got != `{ } | rate() with (exemplars = false)` {
+		t.Fatalf("metrics instant query = %q, want symmetric exemplar opt-out", got)
 	}
 	if strings.Contains(u, "step=") {
 		t.Fatalf("instant endpoint must not carry step: %s", u)

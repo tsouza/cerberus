@@ -495,11 +495,14 @@ func setTagQuery(q url.Values, tc CorpusCase) {
 //
 // Metrics endpoints (metrics_range + metrics_instant) match Tempo's
 // reference shape — `q` is the TraceQL metrics-pipeline expression,
-// `start` / `end` are unix seconds, `step` is the bucket size (only
-// for query_range), and `exemplars` would gate exemplar emission if
-// the corpus ever needs to bound it (today we leave it unset so each
-// backend returns its default exemplar count and the differ tolerates
-// the divergence under the relative epsilon).
+// `start` / `end` are unix seconds, and `step` is the bucket size (only
+// for query_range). The corpus disables exemplars with Tempo's native
+// TraceQL hint: its cases assert metric labels and samples, while exemplar
+// support is shape-dependent (compare() and histogram_over_time() emit
+// placeholder exemplars upstream). A zero HTTP `exemplars` parameter cannot
+// express this — Tempo treats zero as unspecified and restores its default.
+// The query hint is the upstream-supported explicit opt-out and is sent to
+// both backends, so the compatibility corpus remains symmetric.
 func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Time, searchLimit int) (string, error) {
 	u, err := url.Parse(strings.TrimRight(base, "/"))
 	if err != nil {
@@ -558,7 +561,7 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 		setTagQuery(q, tc)
 	case endpointMetricsRange:
 		u.Path += "/api/metrics/query_range"
-		q.Set("q", tc.Query)
+		q.Set("q", tc.Query+" with (exemplars = false)")
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
 		if tc.Step == "" {
@@ -567,7 +570,7 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 		q.Set("step", tc.Step)
 	case endpointMetricsInstant:
 		u.Path += "/api/metrics/query"
-		q.Set("q", tc.Query)
+		q.Set("q", tc.Query+" with (exemplars = false)")
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
 	default:
