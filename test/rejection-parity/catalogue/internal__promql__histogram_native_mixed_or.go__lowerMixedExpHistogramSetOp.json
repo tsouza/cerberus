@@ -1,1 +1,56 @@
-{"entries":[{"head":"promql","site":"internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramSetOp#6cdf660e","message":"promql: 'bool' modifier is only allowed on comparison binary ops","class":"internal","evidence":{"guard":["if b.ReturnBool"],"callers":["lowerArithmeticOverMixedExpHistogramSetOp","lowerComparisonOverMixedExpHistogramSetOpExpr","lowerComparisonVectorPlainOverMixedExpHistogramSetOp","lowerComparisonVectorVectorOverMixedExpHistogramSetOp","lowerCountOrGroupOverMixedExpHistogramSetOp","lowerInfoOverMixedExpHistogramSetOp","lowerLabelCallOverMixedExpHistogramSetOp","lowerLimitKInput","lowerMathCallOverMixedExpHistogramSetOp","lowerMixedExpHistogramFamily","lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr","lowerSortByLabelArg","lowerTimestampOverMixedExpHistogramSetOp","lowerUnary","lowerVectorPlainArithmeticOverMixedExpHistogramSetOp","lowerVectorSetOpOperand","lowerVectorVectorArithmeticOverMixedExpHistogramSetOp","splitMixedExpHistogramSetOpByType"]},"rationale":"Internal invariant: if b.ReturnBool; callers: lowerArithmeticOverMixedExpHistogramSetOp, lowerComparisonOverMixedExpHistogramSetOpExpr, lowerComparisonVectorPlainOverMixedExpHistogramSetOp, lowerComparisonVectorVectorOverMixedExpHistogramSetOp, lowerCountOrGroupOverMixedExpHistogramSetOp, lowerInfoOverMixedExpHistogramSetOp, lowerLabelCallOverMixedExpHistogramSetOp, lowerLimitKInput, lowerMathCallOverMixedExpHistogramSetOp, lowerMixedExpHistogramFamily, lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr, lowerSortByLabelArg, lowerTimestampOverMixedExpHistogramSetOp, lowerUnary, lowerVectorPlainArithmeticOverMixedExpHistogramSetOp, lowerVectorSetOpOperand, lowerVectorVectorArithmeticOverMixedExpHistogramSetOp, splitMixedExpHistogramSetOpByType"}]}
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramSetOp#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "Internal invariant: if b.ReturnBool; callers: lowerArithmeticOverMixedExpHistogramSetOp, lowerComparisonOverMixedExpHistogramSetOpExpr, lowerComparisonVectorPlainOverMixedExpHistogramSetOp, lowerComparisonVectorVectorOverMixedExpHistogramSetOp, lowerCountOrGroupOverMixedExpHistogramSetOp, lowerInfoOverMixedExpHistogramSetOp, lowerLabelCallOverMixedExpHistogramSetOp, lowerLimitKInput, lowerMathCallOverMixedExpHistogramSetOp, lowerMixedExpHistogramFamily, lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr, lowerSortByLabelArg, lowerTimestampOverMixedExpHistogramSetOp, lowerUnary, lowerVectorPlainArithmeticOverMixedExpHistogramSetOp, lowerVectorSetOpOperand, lowerVectorVectorArithmeticOverMixedExpHistogramSetOp, splitMixedExpHistogramSetOpByType",
+      "evidence": {
+        "guard": [
+          "if b.ReturnBool"
+        ],
+        "callers": [
+          "lowerArithmeticOverMixedExpHistogramSetOp",
+          "lowerComparisonOverMixedExpHistogramSetOpExpr",
+          "lowerComparisonVectorPlainOverMixedExpHistogramSetOp",
+          "lowerComparisonVectorVectorOverMixedExpHistogramSetOp",
+          "lowerCountOrGroupOverMixedExpHistogramSetOp",
+          "lowerInfoOverMixedExpHistogramSetOp",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLimitKInput",
+          "lowerMathCallOverMixedExpHistogramSetOp",
+          "lowerMixedExpHistogramFamily",
+          "lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr",
+          "lowerSortByLabelArg",
+          "lowerTimestampOverMixedExpHistogramSetOp",
+          "lowerUnary",
+          "lowerVectorPlainArithmeticOverMixedExpHistogramSetOp",
+          "lowerVectorSetOpOperand",
+          "lowerVectorVectorArithmeticOverMixedExpHistogramSetOp",
+          "splitMixedExpHistogramSetOpByType"
+        ],
+        "cited": [
+          "lowerArithmeticOverMixedExpHistogramSetOp",
+          "lowerComparisonOverMixedExpHistogramSetOpExpr",
+          "lowerComparisonVectorPlainOverMixedExpHistogramSetOp",
+          "lowerComparisonVectorVectorOverMixedExpHistogramSetOp",
+          "lowerCountOrGroupOverMixedExpHistogramSetOp",
+          "lowerInfoOverMixedExpHistogramSetOp",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLimitKInput",
+          "lowerMathCallOverMixedExpHistogramSetOp",
+          "lowerMixedExpHistogramFamily",
+          "lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr",
+          "lowerSortByLabelArg",
+          "lowerTimestampOverMixedExpHistogramSetOp",
+          "lowerUnary",
+          "lowerVectorPlainArithmeticOverMixedExpHistogramSetOp",
+          "lowerVectorSetOpOperand",
+          "lowerVectorVectorArithmeticOverMixedExpHistogramSetOp",
+          "splitMixedExpHistogramSetOpByType"
+        ]
+      }
+    }
+  ]
+}

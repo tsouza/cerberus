@@ -1,1 +1,27 @@
-{"entries":[{"head":"promql","site":"internal/promql/histogram_native_mixed_or_scale.go:scaleMixedPlan#81fabb24","message":"promql: mixed scale operand has %s sample schema","class":"internal","rationale":"Internal invariant: if kind := liveSampleKind(inner); kind != chplan.SampleKindMixed; callers: lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr, lowerUnary, scaleMixedPlanUnderPolicy","evidence":{"guard":["if kind := liveSampleKind(inner); kind != chplan.SampleKindMixed"],"callers":["lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr","lowerUnary","scaleMixedPlanUnderPolicy"]}}]}
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_scale.go:scaleMixedPlan#81fabb24",
+      "message": "promql: mixed scale operand has %s sample schema",
+      "class": "internal",
+      "rationale": "Internal invariant: if kind := liveSampleKind(inner); kind != chplan.SampleKindMixed; callers: lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr, lowerUnary, scaleMixedPlanUnderPolicy",
+      "evidence": {
+        "guard": [
+          "if kind := liveSampleKind(inner); kind != chplan.SampleKindMixed"
+        ],
+        "callers": [
+          "lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr",
+          "lowerUnary",
+          "scaleMixedPlanUnderPolicy"
+        ],
+        "cited": [
+          "liveSampleKind",
+          "lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr",
+          "lowerUnary",
+          "scaleMixedPlanUnderPolicy"
+        ]
+      }
+    }
+  ]
+}
