@@ -697,7 +697,15 @@ jobs:
       # hand-written 8 left behind after the list changed would silently leave a
       # slice of the corpus profiled by nobody, with every leg still green.
       - name: Run perf regression guards (chDB) — shard ${{ matrix.shard }}/${{ strategy.job-total }}
+        if: ${{ !startsWith(github.head_ref, 'release/') && !startsWith(github.ref, 'refs/heads/release/') }}
         run: just perf-chdb
+        env:
+          PERF_SHARD_INDEX: ${{ matrix.shard }}
+          PERF_SHARD_COUNT: ${{ strategy.job-total }}
+
+      - name: Run perf regression guards (release) — shard ${{ matrix.shard }}/${{ strategy.job-total }}
+        if: ${{ startsWith(github.head_ref, 'release/') || startsWith(github.ref, 'refs/heads/release/') }}
+        run: just perf-chdb-release
         env:
           PERF_SHARD_INDEX: ${{ matrix.shard }}
           PERF_SHARD_COUNT: ${{ strategy.job-total }}

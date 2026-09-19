@@ -3245,7 +3245,10 @@ carries as much weight as the steps themselves:
 3. **Audit the delta.** One last pass over the complete diff since the previous
    release: code against comments against docs, DRY, KISS, soundness. This is
    the final gate — findings are fixed and merged onto `main` here, before any
-   line is backported and before any tag exists. Also glance at `perf-nightly`'s
+   line is backported and before any tag exists. Run `just
+   release-perf-regression` here and review every frozen-baseline difference;
+   expected recorded changes still make that explicit audit command fail, so
+   they cannot be mistaken for a green no-delta result. Also glance at `perf-nightly`'s
    own trend across the cycle's runs, not just its latest pass/fail: the gate
    catches a single run regressing past its committed ceiling, but a slow,
    multi-cycle creep that stays under headroom on every individual night is
@@ -3283,7 +3286,9 @@ merges — nothing lands between it and the tag it clears. A fix merged onto
 point of auditing at all.
 
 **A standing `perf-guards` drift against the previous release is expected, and
-the cut is what clears it.** `TestReleasePerfRegression` compares the corpus
+the cut is what clears it.** Ordinary `main` runs execute the rolling
+`TestCardinalityRatchet`, while release-branch validation runs that ratchet
+together with `TestReleasePerfRegression`, which compares the corpus
 against `test/perf/release-baseline/<version>/`, a FROZEN snapshot of the
 previous release. That reference moves at exactly one moment — the cut —
 because both ways of cutting a release, `prepare-release.yml` and `just
@@ -3299,9 +3304,10 @@ from the rolling baseline at cut time stays red, as it should: the cut copies
 that tree, it does not re-profile.
 
 Between cuts, any correctness fix that legitimately changes a fixture's
-measured cardinality leaves `perf-guards` red on `main` until the next release.
-That is the gate working, not a blocker: it is reporting a real difference
-against what actually shipped. The failure names which of the two cases it is
+measured cardinality is visible in the rolling ratchet while the frozen release
+comparison waits for release-branch validation. That preserves the release
+audit without turning an expected, already-recorded release delta into a
+standing `main` red. The frozen-gate failure names which of the two cases it is
 (cerberus issue #3244) — a value the rolling baseline shows some PR recorded
 since the release, or live drift nothing has looked at. The second is
 root-caused. The first is not a defect hunt: read the recording PR's own

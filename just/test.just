@@ -385,6 +385,19 @@ property:
 perf-chdb:
     go test -timeout 27m -tags chdb -count=1 ./test/perf/...
 
+# Run the perf guards with the frozen-last-release comparison enabled. This is
+# used only by release-branch validation; ordinary main CI intentionally runs
+# the rolling ratchet above because standing release drift is expected between
+# cuts.
+perf-chdb-release:
+    go test -timeout 27m -tags chdb,release_perf -count=1 ./test/perf/...
+
+# Run the frozen-last-release perf gate explicitly. This is a release-only
+# comparison: its standing drift is expected on main between release cuts,
+# while the ordinary perf-chdb recipe must remain green for normal CI.
+release-perf-regression:
+    go test -timeout 27m -tags chdb,release_perf -count=1 -run '^TestReleasePerfRegression$' ./test/perf/...
+
 # Profile the TXTAR corpus for compute fan-out (perf-assessment Component B).
 # Walks every executable fixture under test/spec/** (those with `seed:` +
 # `expected_rows:` + `sql:`) and, per fixture, runs EXPLAIN PLAN actions=1
@@ -1308,4 +1321,3 @@ bench-report:
 gen-config-docs:
     go run ./cmd/cerberus config-docs -out docs/configuration.md
     @node .github/scripts/lib/regen-diff.mjs --label "configuration document" docs/configuration.md
-
