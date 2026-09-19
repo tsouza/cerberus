@@ -72,6 +72,26 @@ func fusedOuter() *chplan.RangeWindow {
 	}
 }
 
+func TestFusedSubqueryPeelsRoleOnlyProject(t *testing.T) {
+	inner := fusibleInner()
+	row := inner.RowType()
+	projections := make([]chplan.Projection, len(row.Columns))
+	for i, column := range row.Columns {
+		projections[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: column.Name}, Alias: column.Name}
+	}
+	wrapped := fusedOuter()
+	wrapped.Input = &chplan.Project{Input: inner, Projections: projections, Roles: row.Columns}
+	handled, err := (&emitter{}).tryEmitFusedSubquery(wrapped)
+	if err != nil || !handled {
+		t.Fatalf("role-only project should preserve fusion: handled=%v err=%v", handled, err)
+	}
+	projections[0].Expr = &chplan.LitString{V: "changed"}
+	wrapped.Input = &chplan.Project{Input: inner, Projections: projections, Roles: row.Columns}
+	if handled, err := (&emitter{}).tryEmitFusedSubquery(wrapped); err != nil || handled {
+		t.Fatalf("computed project must not be peeled: handled=%v err=%v", handled, err)
+	}
+}
+
 // TestHoltWintersSmoothingWeightsEmit kills the flips on
 // range_window.go:`InlineLit(sf), InlineLit(1-sf)` and
 // range_window.go:`InlineLit(tf), InlineLit(1-tf)`.
