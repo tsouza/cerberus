@@ -126,7 +126,7 @@ import { runAllTagged } from './lib/spawn-tagged.mjs';
  * re-running the recipe is idempotent. CARDINALITY_BASELINE_FANOUT is the lever
  * for a smaller machine.
  */
-const BASELINE_FANOUT = 8;
+const BASELINE_FANOUT = 16;
 
 /** Per-leg `go test -timeout` when the recipe passes none. */
 const DEFAULT_LEG_TIMEOUT = '60m';

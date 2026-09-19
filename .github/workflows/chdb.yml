@@ -657,14 +657,14 @@ jobs:
       fail-fast: false
       matrix:
         # The shard count. Sized so each leg stays near two minutes at today's
-        # ~950 fixtures and still has room as the corpus grows: at 8 legs the
+        # ~950 fixtures and still has room as the corpus grows: at 16 legs the
         # corpus can roughly triple before a leg reaches the runtime the whole
         # lane had when it was healthy. Changing this list is the whole knob —
         # PERF_SHARD_COUNT is derived from it below, the partition rebalances
         # itself, and no baseline, branch-protection entry or check name moves.
         # test/regression/perf_guards_gate_test.go pins it against the count the
         # partition's own balance test asserts at.
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     steps:
       - uses: actions/checkout@v7
 
@@ -674,8 +674,8 @@ jobs:
         with:
           tool: just@1.46.0
       # Cache the pinned libchdb.so, same key as `chdb-build`'s step. This
-      # matters more here than anywhere else in the file: fanning out to 8 legs
-      # would otherwise mean 8 downloads of a ~500 MB shared library per run,
+      # matters more here than anywhere else in the file: fanning out to 16 legs
+      # would otherwise mean 16 downloads of a ~500 MB shared library per run,
       # and that fixed setup cost would eat much of the wall-clock the split is
       # buying. The recipe is idempotent — it skips the download when the file
       # is already at CHDB_INSTALL_PATH — so a cache hit makes the next step a

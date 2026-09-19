@@ -30,7 +30,7 @@ const corpusRosterDir = "../cardinality-baseline"
 // meaningful at the count CI actually runs, and
 // test/regression/perf_guards_gate_test.go + perf_profile_gate_test.go each
 // pin their own workflow to this same number from the other side.
-const productionShardCount = 8
+const productionShardCount = 16
 
 // maxShardImbalance is how far the biggest shard may exceed the smallest, as a
 // ratio, over the real corpus at productionShardCount. A hash partition
@@ -55,10 +55,10 @@ const maxShardImbalance = 2.0
 // moves at once and no diff explains it. These are goldens; changing them is
 // the deliberate act of changing the partition.
 var pinnedAssignments = map[string]int{
-	"promql/absent_aggregate_no_series": 5,
-	"logql/agg_by_severity":             5,
-	"traceql/and_two_attrs":             8,
-	"metadata/series_no_bounds":         3,
+	"promql/absent_aggregate_no_series": 13,
+	"logql/agg_by_severity":             13,
+	"traceql/and_two_attrs":             16,
+	"metadata/series_no_bounds":         11,
 }
 
 func TestShardOfIsPinnedToFNV1a(t *testing.T) {
