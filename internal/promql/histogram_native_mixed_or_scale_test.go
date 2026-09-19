@@ -144,3 +144,51 @@ func TestLower_ExpHistogram_MixedSetOpOr_ScaleVectorVectorNowComposes(t *testing
 		t.Fatalf("lower(%q): unexpected error: %v", query, err)
 	}
 }
+
+// TestLower_ExpHistogram_MixedSetOpOr_ScalarTypedOperands pins issue #3590's
+// root-only gap: a scalar-typed AST operand is not necessarily a numeric
+// literal. The scale family must preserve the mixed rows for scalar(), scalar
+// arithmetic, and scalar(vector) alike, both directly and beneath a wrapper
+// that #3562 taught the mixed recogniser to compose.
+func TestLower_ExpHistogram_MixedSetOpOr_ScalarTypedOperands(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	operands := []string{
+		"scalar(vector(2))",
+		"(2 * 3)",
+		"scalar(demo_num_cpus)",
+	}
+	for _, operand := range operands {
+		operand := operand
+		for _, nested := range []bool{false, true} {
+			nested := nested
+			name := operand
+			if nested {
+				name += "/nested"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				mixed := `(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist))`
+				if nested {
+					mixed = `sort_by_label(` + mixed + `, "job")`
+				}
+				query := mixed + " * " + operand
+				expr, err := p.ParseExpr(query)
+				if err != nil {
+					t.Fatalf("ParseExpr(%q): %v", query, err)
+				}
+				plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+				if err != nil {
+					t.Fatalf("LowerAt(%q): %v", query, err)
+				}
+				if shape := chplan.RowShapeOf(plan); shape != chplan.MixedRowShape {
+					t.Fatalf("LowerAt(%q): root shape = %s, want %s", query, shape, chplan.MixedRowShape)
+				}
+			})
+		}
+	}
+}

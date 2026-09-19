@@ -5,24 +5,20 @@
       "site": "internal/promql/histogram_native_mixed_or_scale.go:scaleMixedPlan#81fabb24",
       "message": "promql: mixed scale operand has %s sample schema",
       "class": "internal",
-      "rationale": "lowerMulOrDivScaleOverMixedExpHistogramSetOp hands it the Mixed VectorSetOp lowerMixedExpHistogramSetOp builds, and lowerUnary and scaleMixedPlanUnderPolicy (the entry for lowerVectorScalar and foldSyntheticVectorBinary) reach it only behind a mixedRowsNeedPreparation check, which holds exactly when liveSampleKind answers SampleKindMixed. Another kind is an internal caller-contract violation, not a query shape.",
+      "rationale": "Internal invariant: if kind := liveSampleKind(inner); kind != chplan.SampleKindMixed; callers: lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr, lowerUnary, scaleMixedPlanUnderPolicy",
       "evidence": {
         "guard": [
           "if kind := liveSampleKind(inner); kind != chplan.SampleKindMixed"
         ],
         "callers": [
-          "lowerMulOrDivScaleOverMixedExpHistogramSetOp",
+          "lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr",
           "lowerUnary",
           "scaleMixedPlanUnderPolicy"
         ],
         "cited": [
-          "foldSyntheticVectorBinary",
           "liveSampleKind",
-          "lowerMixedExpHistogramSetOp",
-          "lowerMulOrDivScaleOverMixedExpHistogramSetOp",
+          "lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr",
           "lowerUnary",
-          "lowerVectorScalar",
-          "mixedRowsNeedPreparation",
           "scaleMixedPlanUnderPolicy"
         ]
       }

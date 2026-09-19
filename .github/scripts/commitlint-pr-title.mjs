@@ -57,6 +57,7 @@ import { pathToFileURL } from 'node:url';
 
 import { defaultLintOne } from './commitlint-range.mjs';
 import { error, log, notice } from './lib/gh.mjs';
+import { fetchPullRequest } from './lib/pull-request.mjs';
 
 // landingSubject — the subject GitHub's squash merge will actually write.
 //
@@ -119,8 +120,19 @@ export function run({ title, number, cwd, config = '.commitlintrc.json', lintOne
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
+  let title = process.env.PR_TITLE;
+  if (process.env.GITHUB_EVENT_NAME === 'pull_request') {
+    title = (
+      await fetchPullRequest({
+        apiUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
+        repository: process.env.GITHUB_REPOSITORY,
+        number: process.env.PR_NUMBER,
+        token: process.env.GITHUB_TOKEN,
+      })
+    ).title;
+  }
   const status = run({
-    title: process.env.PR_TITLE,
+    title,
     number: process.env.PR_NUMBER,
     cwd: process.env.GIT_CWD,
     config: process.env.COMMITLINT_CONFIG ?? '.commitlintrc.json',

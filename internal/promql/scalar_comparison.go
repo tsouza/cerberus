@@ -52,6 +52,12 @@ func scalarComparisonValueRef(inner chplan.Node) *chplan.ColumnRef {
 func finishScalarComparison(inner chplan.Node, arg parser.Expr, s schema.Metrics, ctx lowerCtx,
 	op chplan.BinaryOp, scalar float64, scalarOnLeft, returnBool bool, boundary scalarComparisonBoundary,
 ) (chplan.Node, error) {
+	return finishScalarComparisonExpr(inner, arg, s, ctx, op, &chplan.LitFloat{V: scalar}, scalarOnLeft, returnBool, boundary)
+}
+
+func finishScalarComparisonExpr(inner chplan.Node, arg parser.Expr, s schema.Metrics, ctx lowerCtx,
+	op chplan.BinaryOp, scalar chplan.Expr, scalarOnLeft, returnBool bool, boundary scalarComparisonBoundary,
+) (chplan.Node, error) {
 	if boundary == scalarComparisonCanonical {
 		if err := requireMixedOperandPolicy(mixedComparisonFamily, mixedRootAdmission, mixedFloatOnly); err != nil {
 			return nil, err
@@ -66,7 +72,7 @@ func finishScalarComparison(inner chplan.Node, arg parser.Expr, s schema.Metrics
 	layout := sampleProjectionLayout{canonical: true, materializeAliases: true}
 	if !returnBool {
 		valueRef := scalarComparisonValueRef(inner)
-		inner = &chplan.Filter{Input: inner, Predicate: scalarBinaryValue(valueRef, op, scalar, scalarOnLeft)}
+		inner = &chplan.Filter{Input: inner, Predicate: scalarBinaryValueExpr(valueRef, op, scalar, scalarOnLeft)}
 		if boundary == scalarComparisonGuarded {
 			return inner, nil
 		}
@@ -81,6 +87,6 @@ func finishScalarComparison(inner chplan.Node, arg parser.Expr, s schema.Metrics
 		layout = derivedSampleProjectionLayout(inner)
 	}
 	return projectValueOverInner(inner, s, layout, func(refs sampleRoleRefs) chplan.Expr {
-		return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{scalarBinaryValue(refs.Value, op, scalar, scalarOnLeft)}}
+		return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{scalarBinaryValueExpr(refs.Value, op, scalar, scalarOnLeft)}}
 	}), nil
 }

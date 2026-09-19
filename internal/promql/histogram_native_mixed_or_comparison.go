@@ -56,20 +56,20 @@ import (
 // forwarders. This file avoids it the same way its two siblings do: by
 // never reaching a generic forwarder with a Mixed node in the first
 // place.
-func comparisonOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar float64, scalarOnLeft, returnBool, ok bool) {
+func comparisonOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar chplan.Expr, scalarOnLeft, returnBool, ok bool) {
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || !b.Op.IsComparisonOperator() {
-		return nil, "", 0, false, false, false
+		return nil, "", nil, false, false, false
 	}
 	chOp, err := promBinaryOp(b.Op)
 	if err != nil {
-		return nil, "", 0, false, false, false
+		return nil, "", nil, false, false, false
 	}
 
-	lhsScalar, lhsIsScalar := tryScalarLiteral(b.LHS)
-	rhsScalar, rhsIsScalar := tryScalarLiteral(b.RHS)
+	lhsScalar, lhsIsScalar := scalarOperandExpr(b.LHS, s, ctx)
+	rhsScalar, rhsIsScalar := scalarOperandExpr(b.RHS, s, ctx)
 	var vecSide parser.Expr
-	var scalarVal float64
+	var scalarVal chplan.Expr
 	var scalarLeft bool
 	switch {
 	case lhsIsScalar && !rhsIsScalar:
@@ -81,7 +81,7 @@ func comparisonOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ct
 		// comparison over a mixed `or` is a further, unattempted shape,
 		// the same exclusion arithmeticOverMixedExpHistogramSetOp makes
 		// for vector-vector arithmetic.
-		return nil, "", 0, false, false, false
+		return nil, "", nil, false, false, false
 	}
 
 	// expHistogramScalarOpDropsSample's histogramOnLeft parameter means
@@ -91,12 +91,12 @@ func comparisonOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ct
 	// keeps this recognizer from re-deriving the same classification
 	// arithmeticOverMixedExpHistogramSetOp already centralises.
 	if !expHistogramScalarOpDropsSample(b.Op, !scalarLeft) {
-		return nil, "", 0, false, false, false
+		return nil, "", nil, false, false, false
 	}
 
 	inner, matched := mixedExpHistogramSetOp(vecSide, s, ctx)
 	if !matched {
-		return nil, "", 0, false, false, false
+		return nil, "", nil, false, false, false
 	}
 	return inner, chOp, scalarVal, scalarLeft, b.ReturnBool, true
 }
@@ -118,10 +118,14 @@ func comparisonOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ct
 //     Value to `toFloat64(predicate)`, with `__name__` forced to ""
 //     exactly like [lowerVectorScalar]'s own bool-comparison branch.
 func lowerComparisonOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar float64, scalarOnLeft, returnBool bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	return lowerComparisonOverMixedExpHistogramSetOpExpr(setOp, op, &chplan.LitFloat{V: scalar}, scalarOnLeft, returnBool, s, ctx)
+}
+
+func lowerComparisonOverMixedExpHistogramSetOpExpr(setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar chplan.Expr, scalarOnLeft, returnBool bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	inner, err := lowerMixedExpHistogramSetOp(setOp, s, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	return finishScalarComparison(inner, setOp, s, ctx, op, scalar, scalarOnLeft, returnBool, scalarComparisonCanonical)
+	return finishScalarComparisonExpr(inner, setOp, s, ctx, op, scalar, scalarOnLeft, returnBool, scalarComparisonCanonical)
 }

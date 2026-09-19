@@ -658,7 +658,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// chplan.Case is needed to scale both arms safely.
 	if b, op, scalar, scalarOnLeft, ok := mulOrDivScaleOverMixedExpHistogramSetOp(expr, s, ctx); ok {
 		plan, err := lowerWithBespokeMixedOperandPolicy(mixedScaleFamily, mixedRootAdmission, func() (chplan.Node, error) {
-			return lowerMulOrDivScaleOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, s, ctx)
+			return lowerMulOrDivScaleOverMixedExpHistogramSetOpExpr(b, op, scalar, scalarOnLeft, s, ctx)
 		})
 		return plan, true, err
 	}
@@ -688,7 +688,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// unconditionally, regardless of `bool`.
 	if b, op, scalar, scalarOnLeft, returnBool, ok := comparisonOverMixedExpHistogramSetOp(expr, s, ctx); ok {
 		plan, err := lowerUnderMixedOperandPolicy(mixedComparisonFamily, mixedRootAdmission, mixedFloatOnly, func() (chplan.Node, error) {
-			return lowerComparisonOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, returnBool, s, ctx)
+			return lowerComparisonOverMixedExpHistogramSetOpExpr(b, op, scalar, scalarOnLeft, returnBool, s, ctx)
 		})
 		return plan, true, err
 	}
