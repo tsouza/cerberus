@@ -280,9 +280,7 @@ func goTestCommands(t *testing.T, recipe string) []string {
 	}
 	// coverage-chdb delegates its process to Node. Read the argv builder
 	// consumed by that process, not a copy of the timeout constant.
-	for _, script := range delegatedGoTestScripts(t, recipe) {
-		out = append(out, script)
-	}
+	out = append(out, delegatedGoTestScripts(t, recipe)...)
 	return out
 }
 
