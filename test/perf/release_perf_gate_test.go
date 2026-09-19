@@ -1,4 +1,4 @@
-//go:build chdb && release_perf
+//go:build release_perf
 
 // TestReleasePerfRegression is enabled only for release-branch validation.
 // Ordinary main CI runs the rolling ratchet; the frozen comparison is expected

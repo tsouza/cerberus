@@ -131,6 +131,7 @@ run:
     - migration
     - migration_tier1
     - migration_tier2
+    - release_perf
     - remote_correctness
     - startup_bench
 

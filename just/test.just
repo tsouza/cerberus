@@ -385,16 +385,11 @@ property:
 perf-chdb:
     go test -timeout 27m -tags chdb -count=1 ./test/perf/...
 
-# Run the perf guards with the frozen-last-release comparison enabled. This is
-# used only by release-branch validation; ordinary main CI intentionally runs
-# the rolling ratchet above because standing release drift is expected between
-# cuts.
+# Run release-branch perf guards with the frozen-last-release comparison.
 perf-chdb-release:
     go test -timeout 27m -tags chdb,release_perf -count=1 ./test/perf/...
 
-# Run the frozen-last-release perf gate explicitly. This is a release-only
-# comparison: its standing drift is expected on main between release cuts,
-# while the ordinary perf-chdb recipe must remain green for normal CI.
+# Run the frozen-last-release perf gate explicitly.
 release-perf-regression:
     go test -timeout 27m -tags chdb,release_perf -count=1 -run '^TestReleasePerfRegression$' ./test/perf/...
 
