@@ -183,3 +183,35 @@ func TestLower_ExpHistogram_MixedSetOpOr_ComparisonVectorVectorNowComposes(t *te
 		t.Fatalf("lower(%q): unexpected error: %v", query, err)
 	}
 }
+
+// TestLower_ExpHistogram_MixedSetOpOr_ScalarTypedComparisons pins the same
+// scalar-typed admission for the comparison family. A scalar() call is
+// parser-typed as Scalar even though it cannot be folded by TryFoldScalar;
+// it must still be lowered as the scalar side of the mixed comparison rather
+// than as an empty-label vector join.
+func TestLower_ExpHistogram_MixedSetOpOr_ScalarTypedComparisons(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	for _, operand := range []string{"scalar(vector(2))", "(2 * 3)", "scalar(demo_num_cpus)"} {
+		operand := operand
+		t.Run(operand, func(t *testing.T) {
+			t.Parallel()
+			query := `(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist)) > bool ` + operand
+			expr, err := p.ParseExpr(query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): %v", query, err)
+			}
+			if shape := chplan.RowShapeOf(plan); shape != chplan.SampleRowShape {
+				t.Fatalf("LowerAt(%q): root shape = %s, want %s", query, shape, chplan.SampleRowShape)
+			}
+		})
+	}
+}
