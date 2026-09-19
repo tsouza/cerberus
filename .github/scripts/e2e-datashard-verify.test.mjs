@@ -9,7 +9,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isGateBoundMemoryException, peakOverlap } from './e2e-datashard-verify.mjs';
+import {
+  isGateBoundMemoryException,
+  peakOverlap,
+} from './e2e-datashard-verify.mjs';
 
 // iv builds one child-statement interval the way the verifier does: a start
 // microsecond, a duration, and the initial_query_id naming the dispatch that
@@ -72,18 +75,26 @@ test('no intervals is a clean zero rather than a throw', () => {
 
 test('a matching trace from the rolling seeder is not a gate-bound memory exception', () => {
   const trace = 'a'.repeat(32);
-  const rows = [`${trace}-seed\t178956970\trunner-host\tSELECT ...`];
-  assert.equal(isGateBoundMemoryException(rows[0], new Map([[trace, 3]]), ['cerberus-0']), false);
+  const row = `${trace}-seed\t178956970\trunner-host\tQueryFinish\tSELECT ...`;
+  assert.equal(isGateBoundMemoryException(row, new Map([[trace, 3]]), ['cerberus-0']), false);
 });
 
-test('a SELECT attributed to a Cerberus initiator is gate-bound', () => {
-  const trace = 'b'.repeat(32);
-  const row = `${trace}-child\t178956970\tcerberus-0\tSELECT ...`;
-  assert.equal(isGateBoundMemoryException(row, new Map([[trace, 3]]), ['cerberus-0']), true);
+for (const terminalType of ['QueryFinish', 'ExceptionWhileProcessing']) {
+  test(`a SELECT attributed to a Cerberus ${terminalType} initiator is gate-bound`, () => {
+    const trace = 'b'.repeat(32);
+    const row = `${trace}-child\t178956970\tcerberus-0\t${terminalType}\tSELECT ...`;
+    assert.equal(isGateBoundMemoryException(row, new Map([[trace, 3]]), ['cerberus-0']), true);
+  });
+}
+
+test('an unknown initiator terminal type is not gate-bound', () => {
+  const trace = 'd'.repeat(32);
+  const row = `${trace}-child\t178956970\tcerberus-0\tQueryStart\tSELECT ...`;
+  assert.equal(isGateBoundMemoryException(row, new Map([[trace, 3]]), ['cerberus-0']), false);
 });
 
 test('non-SELECT exceptions do not prove a gate memory failure', () => {
   const trace = 'c'.repeat(32);
-  const row = `${trace}-child\t178956970\tcerberus-0\tINSERT ...`;
+  const row = `${trace}-child\t178956970\tcerberus-0\tExceptionWhileProcessing\tINSERT ...`;
   assert.equal(isGateBoundMemoryException(row, new Map([[trace, 3]]), ['cerberus-0']), false);
 });

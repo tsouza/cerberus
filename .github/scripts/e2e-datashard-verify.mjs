@@ -118,6 +118,12 @@ const BURST_CONCURRENCY = Number(process.env.BURST_CONCURRENCY || '6');
 const FLUSH_WAIT_SECONDS = Number(process.env.FLUSH_WAIT_SECONDS || '10');
 const HEALTH_POLL_SECONDS = Number(process.env.HEALTH_POLL_SECONDS || String(clusterHealthDefaultDeadlineSeconds));
 
+// Both terminal shapes carry the initiator hostname and duration needed for
+// attribution. Restricting these lookups to QueryFinish silently loses the
+// parent of the very ExceptionWhileProcessing row the OOM assertion audits.
+export const QUERY_LOG_TERMINAL_TYPES = Object.freeze(['QueryFinish', 'ExceptionWhileProcessing']);
+const QUERY_LOG_TERMINAL_TYPES_SQL = QUERY_LOG_TERMINAL_TYPES.map((type) => `'${type}'`).join(', ');
+
 // requireDataShardCount is called from main, NOT at import time: this module
 // is imported by its own test suite for the pure interval arithmetic below,
 // and a module that exits the process just for being imported cannot be
@@ -154,8 +160,9 @@ function chExec(pod, sql) {
 // query IDs can legitimately appear in the same trace map, but its initiator
 // hostname is the runner, not a Cerberus pod.
 export function isGateBoundMemoryException(row, kEffByTrace, cerberusPods) {
-  const [qid, , host, snippet] = row.split('\t');
-  return kEffByTrace.has((qid || '').slice(0, 32)) &&
+  const [qid, , host, initiatorType, snippet] = row.split('\t');
+  return QUERY_LOG_TERMINAL_TYPES.includes(initiatorType) &&
+    kEffByTrace.has((qid || '').slice(0, 32)) &&
     cerberusPods.includes(host) &&
     snippet.trimStart().toUpperCase().startsWith('SELECT');
 }
@@ -510,7 +517,7 @@ async function main() {
             toUnixTimestamp64Micro(query_start_time_microseconds) AS start_us,
             ${durationUsExpr('')} AS dur_us
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
-     WHERE is_initial_query = 1 AND type = 'QueryFinish'
+     WHERE is_initial_query = 1 AND type IN (${QUERY_LOG_TERMINAL_TYPES_SQL})
        AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})`,
   );
   const traceIntervals = new Map();
@@ -595,7 +602,7 @@ async function main() {
      GLOBAL LEFT JOIN (
        SELECT query_id, any(client_hostname) AS client_hostname
        FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
-       WHERE is_initial_query = 1 AND type = 'QueryFinish'
+       WHERE is_initial_query = 1 AND type IN (${QUERY_LOG_TERMINAL_TYPES_SQL})
          AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})
        GROUP BY query_id
      ) AS i ON c.initial_query_id = i.query_id
@@ -785,12 +792,13 @@ async function main() {
     initiatorPod,
     `SELECT c.initial_query_id, c.Settings['max_memory_usage'] AS mem,
             if(i.client_hostname != '', i.client_hostname, c.client_hostname) AS cerberus_host,
+            i.terminal_type AS initiator_type,
             replaceRegexpAll(substring(c.query, 1, 300), '[\\t\\n\\r]+', ' ') AS query_snippet
      FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log) AS c
      GLOBAL LEFT JOIN (
-       SELECT query_id, any(client_hostname) AS client_hostname
+       SELECT query_id, any(client_hostname) AS client_hostname, any(type) AS terminal_type
        FROM clusterAllReplicas('${CH_CLUSTER}', system.query_log)
-       WHERE is_initial_query = 1 AND type = 'QueryFinish'
+       WHERE is_initial_query = 1 AND type IN (${QUERY_LOG_TERMINAL_TYPES_SQL})
          AND event_time >= toDateTime(${windowStart}) AND event_time <= toDateTime(${windowEnd})
        GROUP BY query_id
      ) AS i ON c.initial_query_id = i.query_id
@@ -814,7 +822,7 @@ async function main() {
   if (exceptionCount > 0) {
     error(`${exceptionCount} MEMORY_LIMIT_EXCEEDED exception(s) recorded in system.query_log during the burst — perShardMemoryBytes did not bound memory pressure as predicted`);
     for (const row of gateBoundExceptionRows) {
-      const [qid, mem, , snippet] = row.split('\t');
+      const [qid, mem, , , snippet] = row.split('\t');
       const kEff = kEffByTrace.get((qid || '').slice(0, 32)) || 1;
       log(`  exception: initial_query_id=${qid}, kEff=${kEff}, configured max_memory_usage=${mem}, query=${snippet}`);
     }
