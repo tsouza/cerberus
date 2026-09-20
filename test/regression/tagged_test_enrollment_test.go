@@ -1285,8 +1285,13 @@ func readCoverageChdbTaggedRun(root string) (taggedTestInvocation, error) {
 	if strings.Contains(source, "'-skip'") {
 		return taggedTestInvocation{}, fmt.Errorf("%s must not carry -skip — it is the sole CI evidence for other chdb-tagged packages", coverageChdbExecutionScript)
 	}
-	if !strings.Contains(source, "mainSweepArgv(coverpkg)") || !strings.Contains(source, "spawn(go, argv,") {
+	if !strings.Contains(source, "mainSweepArgv(coverpkg, plan)") || !strings.Contains(source, "spawn(go, argv,") {
 		return taggedTestInvocation{}, fmt.Errorf("%s no longer executes its main sweep through go test", coverageChdbExecutionScript)
+	}
+	if !strings.Contains(source, "const inventory = parseTestInventory(listed.stdout)") ||
+		!strings.Contains(source, "partitionTests(inventory,") ||
+		!strings.Contains(source, "writePartitionReceipt(cwd, plan, passed,") {
+		return taggedTestInvocation{}, fmt.Errorf("%s must prove complete partition discovery and execution", coverageChdbExecutionScript)
 	}
 	if !taggedCoverageChdbLaneIsFailClosed(source) {
 		return taggedTestInvocation{}, fmt.Errorf("%s no longer fails closed on COVERAGE_REQUIRE_LANES=default+chdb", coverageChdbExecutionScript)
@@ -1486,7 +1491,7 @@ func taggedCoverageJoinIsFailClosed(body string) bool {
 // downstream script call.
 func taggedCoverageChdbLaneIsFailClosed(source string) bool {
 	return strings.Contains(source, `env.COVERAGE_REQUIRE_LANES === 'default+chdb'`) &&
-		strings.Contains(source, "isNonEmptyFile(p(COVERAGE_PROFILE))") &&
+		strings.Contains(source, "isNonEmptyFile(p(producedProfile))") &&
 		strings.Contains(source, "return 1")
 }
 

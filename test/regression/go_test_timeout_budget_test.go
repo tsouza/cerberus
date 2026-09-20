@@ -291,7 +291,7 @@ func delegatedGoTestScripts(t *testing.T, recipe string) []string {
 		return nil
 	}
 	source := readFileString(t, filepath.Join("../..", coverageChdbExecutionScript))
-	if !strings.Contains(source, "runMainSweep(mainSweepArgv(coverpkg),") || !strings.Contains(source, "spawn(go, argv,") {
+	if !strings.Contains(source, "runMainSweep(mainSweepArgv(coverpkg, plan),") || !strings.Contains(source, "spawn(go, argv,") {
 		t.Fatal("coverage-chdb no longer consumes mainSweepArgv through its Go test process")
 	}
 	cmd := exec.Command("node", "--input-type=module", "-e", `import { mainSweepArgv } from './.github/scripts/coverage-chdb.mjs'; console.log(JSON.stringify(mainSweepArgv('example/package')));`)

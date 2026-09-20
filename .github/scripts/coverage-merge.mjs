@@ -55,6 +55,7 @@ import process from 'node:process';
 
 import { error, isNonEmptyFile, log } from './lib/gh.mjs';
 import { writeFoldedProfile } from './lib/coverage-fold.mjs';
+import { COVERAGE_SHARDS, mergeCoveragePartitions } from './lib/coverage-partition.mjs';
 
 const COVERAGE_SUMMARY_MJS = new URL('./coverage-summary.mjs', import.meta.url);
 const RATCHET_SHARD_PATTERN = /^cover-chdb-ratchet-.*\.out$/;
@@ -80,7 +81,11 @@ export function main({ cwd = process.cwd(), env = process.env } = {}) {
     return 1;
   }
 
-  const ratchetFiles = ratchetShardFiles(readdirSync(cwd));
+  const files = readdirSync(cwd);
+  if (env.COVERAGE_REQUIRE_PARTITIONS === '1' || files.some((name) => /^cover-chdb-part-/.test(name))) {
+    mergeCoveragePartitions(cwd, COVERAGE_SHARDS, env.GITHUB_SHA);
+  }
+  const ratchetFiles = ratchetShardFiles(files);
   if (ratchetFiles.length > 0) {
     if (!isNonEmptyFile(p('cover-chdb.out'))) {
       error(`found ratchet shard profile(s) (${ratchetFiles.join(' ')}) but no cover-chdb.out to fold them into`);
