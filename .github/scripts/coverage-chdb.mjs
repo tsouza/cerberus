@@ -77,7 +77,7 @@ export const CHDB_TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle';
 const PERF_SHARD_INDEX = 1;
 
 /** Per CLAUDE.md invariant 13: named rather than a bare `60`. */
-const MAIN_SWEEP_TIMEOUT_MINUTES = 60;
+const MAIN_SWEEP_TIMEOUT_MINUTES = 75;
 
 const COVERAGE_PROFILE = 'cover-chdb.out';
 const FANOUT_SCRIPT = new URL('./perf-coverage-fanout.mjs', import.meta.url);

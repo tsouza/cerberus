@@ -344,7 +344,7 @@ jobs:
     # fanout inline): the first real push-to-main run after this job existed
     # hit the old 50m wrapper exactly, the same corpus growth already
     # documented on the recipe itself.
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -415,7 +415,7 @@ jobs:
     # 3-minute abort-reporting margin a job that does nothing BUT run one
     # `go test` can get away with. perf-coverage-fanout.test.mjs pins
     # RATCHET_TIMEOUT_MINUTES against this number.
-    timeout-minutes: 45
+    timeout-minutes: 55
     strategy:
       # MANDATORY, matching every other multi-leg matrix in this repo: one
       # leg's failure (a real corpus-wide regression usually trips several
