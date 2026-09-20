@@ -48,6 +48,8 @@ annotations:
       image: ghcr.io/tsouza/cerberus:v1.21.1
   artifacthub.io/changes: |
     - kind: fixed
+      description: "ci: preserve staged images across maintenance release commits"
+    - kind: fixed
       description: "schema: enable experimental aggregates for downsample DDL (#3634)"
     - kind: fixed
       description: "schema: avoid duplicate body text index (#3622)"

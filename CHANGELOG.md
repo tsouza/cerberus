@@ -8,6 +8,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ### Fixed
 
+- **ci:** preserve staged images across maintenance release commits
 - **schema:** enable experimental aggregates for downsample DDL (#3634)
 - **schema:** avoid duplicate body text index (#3622)
 
