@@ -66,9 +66,13 @@ func renderDependencyArgSyntax(raw json.RawMessage) (string, bool) {
 // justParameter is one positional parameter a recipe declares
 // (`e2e-bwc-up scenario="object-storage"`, `route-rules *ARGS`).
 type justParameter struct {
-	Name    string  `json:"name"`
-	Kind    string  `json:"kind"` // "singular" | "plus" | "star"
-	Default *string `json:"default"`
+	Name string `json:"name"`
+	Kind string `json:"kind"` // "singular" | "plus" | "star"
+	// Just 1.46 encodes expression defaults (for example
+	// `image=CH_STRICT_SCAN_IMAGE`) as tagged JSON arrays while retaining
+	// literal defaults as strings. Tests only need to distinguish an absent
+	// default from a present one, so retain the encoding without narrowing it.
+	Default *json.RawMessage `json:"default"`
 }
 
 // justRecipeDump is one entry of `just --dump`'s `recipes` map. `Body` is a
