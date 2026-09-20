@@ -1473,7 +1473,7 @@ const (
 	// version floor to probe, matching FeatureClassicBucketMergeSumMap's
 	// own posture.
 	//
-	// AutoSelect is false. Real ClickHouse 26.6 measurements taken for
+	// AutoSelect is true. Real ClickHouse 26.6 measurements taken for
 	// issue #2757, against the actual emitted SQL, found this design wins
 	// 13-43x on memory at realistic OTel-SDK-default bucket width (~160)
 	// once row count reaches the hundreds-to-thousands range — but is
@@ -1485,12 +1485,12 @@ const (
 	// header for the full measured table). Its own budget guard is now
 	// real-ClickHouse-calibrated per shape — single-group, multi-group
 	// instant, and multi-group range mode each have their OWN ceiling
-	// (exp_histogram_merge_summap_bound.go) — but the proven single-series-
+	// (exp_histogram_merge_summap_bound.go). The proven single-series-
 	// wide-layout regression above is a real, permanent property of this
-	// design, not a calibration gap, so this feature stays reachable only
-	// by explicit CERBERUS_CH_OPTIMIZATIONS=exp_histogram_merge_summap
-	// listing, mirroring FeatureClassicBucketMergeSumMap's own posture for
-	// a feature with a proven, real regression on a specific input shape.
+	// design, so its guard rejects that losing shape before execution.
+	// Production issue #3640 supplied the missing ordinary-dashboard evidence:
+	// the fallback consumed 3.36 GiB for 66k source rows on
+	// histogram_quantile(sum(rate(...))), so the bounded path is now default.
 	FeatureExpHistogramMergeSumMap = "exp_histogram_merge_summap"
 
 	// FeatureJoinSpill stamps max_bytes_before_external_join = cap/2 (the
@@ -2513,8 +2513,8 @@ var registry = []Feature{
 		ID:         FeatureExpHistogramMergeSumMap,
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
-		AutoSelect: false,
-		Doc:        "opt the instant, single-group, SUM-fold exponential-histogram cross-series merge onto a two-pass sumMap-keyed reshape (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — regresses a single wide-layout series, #2757)",
+		AutoSelect: true,
+		Doc:        "route exponential-histogram cross-series merge onto the bounded two-pass sumMap-keyed reshape (no version floor, auto-enabled; per-shape guards reject losing wide-layout cases, #3640)",
 	},
 	{
 		ID:         FeatureJoinSpill,
