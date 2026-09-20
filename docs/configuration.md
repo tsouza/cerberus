@@ -312,8 +312,8 @@ Cerberus's own structured logging (stdlib `log/slog`). The same records that pri
 ## Self-telemetry (OTLP export)
 
 The OpenTelemetry exporter configuration. When `CERBERUS_OTLP_ENDPOINT` is empty
-cerberus installs no-op trace, meter, and logger providers and runs as a
-zero-collector-dependency binary. Standard `OTEL_EXPORTER_OTLP_*` env vars are
+cerberus keeps direct export dormant while the always-on Prometheus `/metrics`
+endpoint remains available. Standard `OTEL_EXPORTER_OTLP_*` env vars are
 also honored by the OTel Go SDK and merge with these. See
 [`observability.md`](observability.md) for the full self-observability contract.
 

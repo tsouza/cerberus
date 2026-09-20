@@ -1690,6 +1690,15 @@ func newDefaults() *viper.Viper {
 	setCHOptDefaults(v)
 	v.SetDefault(envLogFormat, defaultLogFormat)
 	v.SetDefault(envLogLevel, defaultLogLevel)
+	setOTLPDefaults(v)
+	setAdmitDefaults(v)
+	v.SetDefault(envEnabledHeads, defaultEnabledHeads)
+	return v
+}
+
+// setOTLPDefaults groups the direct-export destination and per-signal defaults
+// to keep newDefaults below golangci-lint's statement limit.
+func setOTLPDefaults(v *viper.Viper) {
 	v.SetDefault(envOTLPEndpoint, defaultOTLPEndpoint)
 	v.SetDefault(envOTLPInsecure, defaultOTLPInsecure)
 	v.SetDefault(envOTLPHeaders, defaultOTLPHeaders)
@@ -1698,9 +1707,6 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envOTLPMetricsEnabled, defaultOTLPSignalEnabled)
 	v.SetDefault(envOTLPLogsEnabled, defaultOTLPSignalEnabled)
 	v.SetDefault(envOTLPTracesEnabled, defaultOTLPSignalEnabled)
-	setAdmitDefaults(v)
-	v.SetDefault(envEnabledHeads, defaultEnabledHeads)
-	return v
 }
 
 // setLokiDefaults seeds the Loki-head knob defaults together. Extracted

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -75,7 +76,9 @@ type Providers struct {
 	LoggerProvider otellog.LoggerProvider
 	MetricsHandler http.Handler
 
-	shutdown func(context.Context) error
+	shutdown     func(context.Context) error
+	shutdownOnce sync.Once
+	shutdownErr  error
 }
 
 // Shutdown flushes any pending spans / metric batches and tears down
@@ -84,7 +87,10 @@ func (p *Providers) Shutdown(ctx context.Context) error {
 	if p == nil || p.shutdown == nil {
 		return nil
 	}
-	return p.shutdown(ctx)
+	p.shutdownOnce.Do(func() {
+		p.shutdownErr = p.shutdown(ctx)
+	})
+	return p.shutdownErr
 }
 
 // New builds the OTel providers cerberus uses at runtime. The Prometheus meter
