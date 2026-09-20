@@ -379,11 +379,14 @@ Kubernetes: `>=1.23.0-0`
 | networkPolicy.enabled | bool | `false` | Create a NetworkPolicy. Egress auto-allows the ClickHouse port(s) (parsed from `clickhouse.addr`), DNS, and the OTLP endpoint port (parsed from `otlp.endpoint`). |
 | networkPolicy.ingress | list | `[]` | Ingress peer selectors on the gateway port. Empty = allow from anywhere; narrow to e.g. the Grafana namespace. |
 | nodeSelector | object | `{}` | Node selector. |
-| otlp.endpoint | string | `""` | OTLP gRPC endpoint for cerberus self-telemetry export (CERBERUS_OTLP_ENDPOINT). EMPTY disables self-telemetry export entirely. cerberus has NO /metrics endpoint — this is the only observability path. |
+| otlp.endpoint | string | `""` | OTLP gRPC endpoint for cerberus self-telemetry export (CERBERUS_OTLP_ENDPOINT). Empty leaves direct export dormant; /metrics is always available independently. |
 | otlp.exportInterval | string | `""` | Export interval (CERBERUS_OTLP_EXPORT_INTERVAL). |
 | otlp.headers | string | `""` | Comma-separated OTLP headers, e.g. `authorization=Bearer xxx` (CERBERUS_OTLP_HEADERS). |
 | otlp.insecure | bool | `false` | Use an insecure (plaintext) OTLP connection (CERBERUS_OTLP_INSECURE). |
+| otlp.logs | object | `{"enabled":true}` | Direct OTLP structured-log export. stderr logging remains available. |
+| otlp.metrics | object | `{"enabled":true}` | Direct OTLP metric export. The Prometheus /metrics endpoint remains available when this is disabled. |
 | otlp.timeout | string | `""` | Export timeout (CERBERUS_OTLP_TIMEOUT). |
+| otlp.traces | object | `{"enabled":true}` | Direct OTLP trace export. |
 | podAnnotations | object | `{}` | Extra pod annotations (tpl-rendered). Merged with the config/secret checksum annotations. |
 | podDisruptionBudget.enabled | bool | `false` | Create a PodDisruptionBudget. |
 | podDisruptionBudget.maxUnavailable | string | `nil` | Maximum unavailable pods (mutually exclusive with `minAvailable`). |

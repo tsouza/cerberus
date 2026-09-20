@@ -955,6 +955,13 @@ type OTLPConfig struct {
 	// time-to-visibility on the Docker Compose quickstart. Operators
 	// running at scale should raise it via CERBERUS_OTLP_EXPORT_INTERVAL.
 	ExportInterval time.Duration
+
+	// Per-signal direct OTLP export switches. All default true. Endpoint still
+	// names the destination; MetricsEnabled does not control the always-on
+	// Prometheus /metrics endpoint.
+	MetricsEnabled bool
+	LogsEnabled    bool
+	TracesEnabled  bool
 }
 
 // Environment-variable keys. Centralised so the viper SetDefault /
@@ -1073,6 +1080,9 @@ const (
 	envOTLPHeaders                         = "CERBERUS_OTLP_HEADERS"
 	envOTLPTimeout                         = "CERBERUS_OTLP_TIMEOUT"
 	envOTLPExportInterval                  = "CERBERUS_OTLP_EXPORT_INTERVAL"
+	envOTLPMetricsEnabled                  = "CERBERUS_OTLP_METRICS_ENABLED"
+	envOTLPLogsEnabled                     = "CERBERUS_OTLP_LOGS_ENABLED"
+	envOTLPTracesEnabled                   = "CERBERUS_OTLP_TRACES_ENABLED"
 	envAdmitDisabled                       = "CERBERUS_ADMIT_DISABLED"
 	envAdmitProm                           = "CERBERUS_ADMIT_PROM"
 	envAdmitLoki                           = "CERBERUS_ADMIT_LOKI"
@@ -1519,6 +1529,9 @@ var allEnvKeys = []string{
 	envOTLPHeaders,
 	envOTLPTimeout,
 	envOTLPExportInterval,
+	envOTLPMetricsEnabled,
+	envOTLPLogsEnabled,
+	envOTLPTracesEnabled,
 	envAdmitDisabled,
 	envAdmitProm,
 	envAdmitLoki,
@@ -1677,14 +1690,23 @@ func newDefaults() *viper.Viper {
 	setCHOptDefaults(v)
 	v.SetDefault(envLogFormat, defaultLogFormat)
 	v.SetDefault(envLogLevel, defaultLogLevel)
+	setOTLPDefaults(v)
+	setAdmitDefaults(v)
+	v.SetDefault(envEnabledHeads, defaultEnabledHeads)
+	return v
+}
+
+// setOTLPDefaults groups the direct-export destination and per-signal defaults
+// to keep newDefaults below golangci-lint's statement limit.
+func setOTLPDefaults(v *viper.Viper) {
 	v.SetDefault(envOTLPEndpoint, defaultOTLPEndpoint)
 	v.SetDefault(envOTLPInsecure, defaultOTLPInsecure)
 	v.SetDefault(envOTLPHeaders, defaultOTLPHeaders)
 	v.SetDefault(envOTLPTimeout, defaultOTLPTimeout.String())
 	v.SetDefault(envOTLPExportInterval, defaultOTLPExportInterval.String())
-	setAdmitDefaults(v)
-	v.SetDefault(envEnabledHeads, defaultEnabledHeads)
-	return v
+	v.SetDefault(envOTLPMetricsEnabled, defaultOTLPSignalEnabled)
+	v.SetDefault(envOTLPLogsEnabled, defaultOTLPSignalEnabled)
+	v.SetDefault(envOTLPTracesEnabled, defaultOTLPSignalEnabled)
 }
 
 // setLokiDefaults seeds the Loki-head knob defaults together. Extracted
@@ -1844,6 +1866,7 @@ const (
 	defaultOTLPEndpoint       = ""
 	defaultOTLPInsecure       = false
 	defaultOTLPHeaders        = ""
+	defaultOTLPSignalEnabled  = true
 	defaultCHBreakerEnabled   = true
 	defaultCHKeepAliveEnabled = true
 	defaultAdmitDisabled      = false
@@ -2626,12 +2649,27 @@ func otlpFromEnv(v *viper.Viper) (OTLPConfig, error) {
 	if err != nil {
 		return OTLPConfig{}, err
 	}
+	metricsEnabled, err := getBool(v, envOTLPMetricsEnabled)
+	if err != nil {
+		return OTLPConfig{}, err
+	}
+	logsEnabled, err := getBool(v, envOTLPLogsEnabled)
+	if err != nil {
+		return OTLPConfig{}, err
+	}
+	tracesEnabled, err := getBool(v, envOTLPTracesEnabled)
+	if err != nil {
+		return OTLPConfig{}, err
+	}
 	return OTLPConfig{
 		Endpoint:       strings.TrimSpace(v.GetString(envOTLPEndpoint)),
 		Insecure:       insecure,
 		Headers:        headers,
 		Timeout:        timeout,
 		ExportInterval: exportInterval,
+		MetricsEnabled: metricsEnabled,
+		LogsEnabled:    logsEnabled,
+		TracesEnabled:  tracesEnabled,
 	}, nil
 }
 

@@ -7,13 +7,17 @@ Cerberus exposes two HTTP endpoints intended for orchestrator probes
 the graceful-shutdown contract described in factor IX of the
 [12-factor methodology](https://12factor.net/disposability).
 
-Alongside them sits a third, cerberus-native endpoint —
+Alongside them sit two always-on cerberus-native endpoints —
 [`/info`](#info--metadata-fingerprint) — which returns a single JSON
 fingerprint of the build, the enabled heads, the resolved ClickHouse
 optimizations, and the live connection state. It is for humans and
 dashboards, not orchestrator probes.
 
-All three endpoints live on the same HTTP listener as the Prom/Loki/Tempo
+`GET /metrics` exposes the process's Prometheus metrics. It remains available
+whether direct OTLP metric export is enabled or disabled; see
+[`observability.md`](observability.md) for the signal-specific export controls.
+
+All four endpoints live on the same HTTP listener as the Prom/Loki/Tempo
 APIs (`CERBERUS_HTTP_ADDR`, default `:8080`) and are deliberately served
 **outside** the OpenTelemetry middleware so high-frequency probe traffic
 does not flood the trace backend.

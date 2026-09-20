@@ -1,13 +1,9 @@
 // Package telemetry builds the OpenTelemetry tracer- and meter-provider
 // pair cerberus installs as the OTel process globals.
 //
-// When the supplied endpoint is empty, telemetry returns noop providers
-// — the zero-collector-dependency default that keeps cerberus runnable
-// without any OTel infrastructure. When the endpoint is set, telemetry
-// builds gRPC OTLP exporters (one for traces, one for metrics), wraps
-// them in the SDK trace/metric providers, and tags every export with a
-// resource carrying `service.name`, `service.version`, and
-// `service.instance.id`.
+// The meter provider always carries a Prometheus reader for /metrics. Direct
+// OTLP logs, metrics, and traces are independently enabled and require a
+// non-empty endpoint; disabled trace/log signals use noop providers.
 //
 // The OTel Go SDK also reads the standard `OTEL_EXPORTER_OTLP_*` env
 // vars on its own, and buildResource wires in the standard resource
@@ -21,18 +17,22 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	otellog "go.opentelemetry.io/otel/log"
 	lognoop "go.opentelemetry.io/otel/log/noop"
 	"go.opentelemetry.io/otel/metric"
-	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -59,6 +59,9 @@ type Config struct {
 	// stack startup. Production deployments can dial it back up to
 	// reduce collector load.
 	ExportInterval time.Duration
+	MetricsEnabled bool
+	LogsEnabled    bool
+	TracesEnabled  bool
 
 	ServiceName    string
 	ServiceVersion string
@@ -71,8 +74,11 @@ type Providers struct {
 	TracerProvider trace.TracerProvider
 	MeterProvider  metric.MeterProvider
 	LoggerProvider otellog.LoggerProvider
+	MetricsHandler http.Handler
 
-	shutdown func(context.Context) error
+	shutdown     func(context.Context) error
+	shutdownOnce sync.Once
+	shutdownErr  error
 }
 
 // Shutdown flushes any pending spans / metric batches and tears down
@@ -81,24 +87,18 @@ func (p *Providers) Shutdown(ctx context.Context) error {
 	if p == nil || p.shutdown == nil {
 		return nil
 	}
-	return p.shutdown(ctx)
+	p.shutdownOnce.Do(func() {
+		p.shutdownErr = p.shutdown(ctx)
+	})
+	return p.shutdownErr
 }
 
-// New builds the OTel providers cerberus uses at runtime. An empty
-// cfg.Endpoint returns noop providers and a no-op Shutdown — the safe
-// "OTel disabled" default. A non-empty endpoint builds real gRPC OTLP
-// exporters; resource attributes are filled from cfg.ServiceName,
+// New builds the OTel providers cerberus uses at runtime. The Prometheus meter
+// provider is always real; a non-empty endpoint plus each per-signal switch
+// builds that signal's gRPC OTLP exporter. Resource attributes are filled from cfg.ServiceName,
 // cfg.ServiceVersion, the standard OTel resource env vars, and the local
 // hostname (with a random fallback) — see buildResource for precedence.
 func New(ctx context.Context, cfg Config) (*Providers, error) {
-	if cfg.Endpoint == "" {
-		return &Providers{
-			TracerProvider: tracenoop.NewTracerProvider(),
-			MeterProvider:  metricnoop.NewMeterProvider(),
-			LoggerProvider: lognoop.NewLoggerProvider(),
-		}, nil
-	}
-
 	res, err := buildResource(ctx, cfg, os.Hostname)
 	if err != nil {
 		return nil, fmt.Errorf("build resource: %w", err)
@@ -117,7 +117,7 @@ type shutdownFunc func(context.Context) error
 // the rollback paths below would otherwise be unreachable from a test.
 type providerBuilders struct {
 	tracer func(context.Context, Config, *resource.Resource) (trace.TracerProvider, shutdownFunc, error)
-	meter  func(context.Context, Config, *resource.Resource) (metric.MeterProvider, shutdownFunc, error)
+	meter  func(context.Context, Config, *resource.Resource) (metric.MeterProvider, http.Handler, shutdownFunc, error)
 	logger func(context.Context, Config, *resource.Resource) (otellog.LoggerProvider, shutdownFunc, error)
 }
 
@@ -153,17 +153,26 @@ func rollbackProviders(ctx context.Context, cause error, built ...shutdownFunc) 
 func newProviders(
 	ctx context.Context, cfg Config, res *resource.Resource, build providerBuilders,
 ) (*Providers, error) {
-	tp, traceShutdown, err := build.tracer(ctx, cfg, res)
+	tp := trace.TracerProvider(tracenoop.NewTracerProvider())
+	traceShutdown := shutdownFunc(func(context.Context) error { return nil })
+	var err error
+	if cfg.Endpoint != "" && cfg.TracesEnabled {
+		tp, traceShutdown, err = build.tracer(ctx, cfg, res)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("trace exporter: %w", err)
 	}
 
-	mp, metricShutdown, err := build.meter(ctx, cfg, res)
+	mp, metricsHandler, metricShutdown, err := build.meter(ctx, cfg, res)
 	if err != nil {
 		return nil, rollbackProviders(ctx, fmt.Errorf("metric exporter: %w", err), traceShutdown)
 	}
 
-	lp, logShutdown, err := build.logger(ctx, cfg, res)
+	lp := otellog.LoggerProvider(lognoop.NewLoggerProvider())
+	logShutdown := shutdownFunc(func(context.Context) error { return nil })
+	if cfg.Endpoint != "" && cfg.LogsEnabled {
+		lp, logShutdown, err = build.logger(ctx, cfg, res)
+	}
 	if err != nil {
 		return nil, rollbackProviders(
 			ctx, fmt.Errorf("log exporter: %w", err), traceShutdown, metricShutdown,
@@ -174,6 +183,7 @@ func newProviders(
 		TracerProvider: tp,
 		MeterProvider:  mp,
 		LoggerProvider: lp,
+		MetricsHandler: metricsHandler,
 		shutdown: func(ctx context.Context) error {
 			// Best-effort: run all three so one failure never blocks
 			// the others, and join every error so a second or third
@@ -215,34 +225,41 @@ func newTracerProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 }
 
 func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
-	metric.MeterProvider, shutdownFunc, error,
+	metric.MeterProvider, http.Handler, shutdownFunc, error,
 ) {
-	opts := []otlpmetricgrpc.Option{
-		otlpmetricgrpc.WithEndpoint(cfg.Endpoint),
-	}
-	if cfg.Insecure {
-		opts = append(opts, otlpmetricgrpc.WithInsecure())
-	}
-	if len(cfg.Headers) > 0 {
-		opts = append(opts, otlpmetricgrpc.WithHeaders(cfg.Headers))
-	}
-	if cfg.Timeout > 0 {
-		opts = append(opts, otlpmetricgrpc.WithTimeout(cfg.Timeout))
-	}
-	exp, err := otlpmetricgrpc.New(ctx, opts...)
+	registry := prometheus.NewRegistry()
+	promReader, err := otelprom.New(otelprom.WithRegisterer(registry))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	readerOpts := []sdkmetric.PeriodicReaderOption{}
-	if cfg.ExportInterval > 0 {
-		readerOpts = append(readerOpts, sdkmetric.WithInterval(cfg.ExportInterval))
-	}
-	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp, readerOpts...)),
+	providerOpts := []sdkmetric.Option{
+		sdkmetric.WithReader(promReader),
 		sdkmetric.WithResource(res),
 		sdkmetric.WithView(queryDurationNativeHistogramView),
-	)
-	return mp, mp.Shutdown, nil
+	}
+	if cfg.Endpoint != "" && cfg.MetricsEnabled {
+		opts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(cfg.Endpoint)}
+		if cfg.Insecure {
+			opts = append(opts, otlpmetricgrpc.WithInsecure())
+		}
+		if len(cfg.Headers) > 0 {
+			opts = append(opts, otlpmetricgrpc.WithHeaders(cfg.Headers))
+		}
+		if cfg.Timeout > 0 {
+			opts = append(opts, otlpmetricgrpc.WithTimeout(cfg.Timeout))
+		}
+		exp, exportErr := otlpmetricgrpc.New(ctx, opts...)
+		if exportErr != nil {
+			return nil, nil, nil, exportErr
+		}
+		readerOpts := []sdkmetric.PeriodicReaderOption{}
+		if cfg.ExportInterval > 0 {
+			readerOpts = append(readerOpts, sdkmetric.WithInterval(cfg.ExportInterval))
+		}
+		providerOpts = append(providerOpts, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp, readerOpts...)))
+	}
+	mp := sdkmetric.NewMeterProvider(providerOpts...)
+	return mp, promhttp.HandlerFor(registry, promhttp.HandlerOpts{}), mp.Shutdown, nil
 }
 
 // queryDurationExpoHistogramMaxSize and …MaxScale are the OTel exponential

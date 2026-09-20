@@ -259,7 +259,25 @@
         "insecure": { "type": "boolean" },
         "headers": { "type": "string" },
         "exportInterval": { "type": "string" },
-        "timeout": { "type": "string" }
+        "timeout": { "type": "string" },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "enabled": { "type": "boolean" } },
+          "required": ["enabled"]
+        },
+        "logs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "enabled": { "type": "boolean" } },
+          "required": ["enabled"]
+        },
+        "traces": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "enabled": { "type": "boolean" } },
+          "required": ["enabled"]
+        }
       }
     },
     "schema": {

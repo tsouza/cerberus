@@ -103,6 +103,26 @@ function count(haystack, needle) {
   return haystack.split(needle).length - 1
 }
 
+// --- 0. Per-signal direct telemetry controls ---------------------------------
+{
+  const defaults = tpl(['-s', 'templates/configmap-env.yaml'])
+  for (const signal of ['METRICS', 'LOGS', 'TRACES']) {
+    check(
+      defaults.includes(`CERBERUS_OTLP_${signal}_ENABLED: "true"`),
+      `direct OTLP ${signal.toLowerCase()} export defaults on`,
+    )
+  }
+  const mixed = tpl([
+    '--set', 'otlp.metrics.enabled=false',
+    '--set', 'otlp.logs.enabled=true',
+    '--set', 'otlp.traces.enabled=false',
+    '-s', 'templates/configmap-env.yaml',
+  ])
+  check(mixed.includes('CERBERUS_OTLP_METRICS_ENABLED: "false"'), 'OTLP metrics can be disabled independently')
+  check(mixed.includes('CERBERUS_OTLP_LOGS_ENABLED: "true"'), 'OTLP logs remain independently enabled')
+  check(mixed.includes('CERBERUS_OTLP_TRACES_ENABLED: "false"'), 'OTLP traces can be disabled independently')
+}
+
 // --- 1. Split-mode per-head PDBs ----------------------------------------------
 {
   const out = tpl(['-f', `${CHART_DIR}/ci/split-pdb-values.yaml`, '-s', 'templates/poddisruptionbudget.yaml'])

@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const envDocGroupOTLP = "Self-telemetry (OTLP export)"
+
 // EnvDoc is one row of the generated configuration reference. Key is the
 // literal CERBERUS_* environment-variable name (identical to the viper key);
 // Type and Desc are the hand-authored, code-reviewed documentation prose;
@@ -163,10 +165,10 @@ var envDocGroups = []envDocGroup{
 		Intro: "Cerberus's own structured logging (stdlib `log/slog`). The same records that print to stderr also bridge to OTLP when self-telemetry is enabled (see below).",
 	},
 	{
-		Name: "Self-telemetry (OTLP export)",
+		Name: envDocGroupOTLP,
 		Intro: "The OpenTelemetry exporter configuration. When `CERBERUS_OTLP_ENDPOINT` is empty\n" +
-			"cerberus installs no-op trace, meter, and logger providers and runs as a\n" +
-			"zero-collector-dependency binary. Standard `OTEL_EXPORTER_OTLP_*` env vars are\n" +
+			"cerberus keeps direct export dormant while the always-on Prometheus `/metrics`\n" +
+			"endpoint remains available. Standard `OTEL_EXPORTER_OTLP_*` env vars are\n" +
 			"also honored by the OTel Go SDK and merge with these. See\n" +
 			"[`observability.md`](observability.md) for the full self-observability contract.",
 	},
@@ -346,11 +348,14 @@ var envDocs = []EnvDoc{
 	{envLogLevel, "string", "Logging", "Minimum slog level: `debug`, `info`, `warn`, or `error`."},
 
 	// --- Self-telemetry (OTLP export) ---
-	{envOTLPEndpoint, "string", "Self-telemetry (OTLP export)", "gRPC OTLP target for self-telemetry (e.g. `otel-collector.observability.svc:4317`). Empty disables the exporters."},
-	{envOTLPInsecure, "bool", "Self-telemetry (OTLP export)", "Dial the OTLP endpoint without TLS (handy for local dev / k3d)."},
-	{envOTLPHeaders, "string", "Self-telemetry (OTLP export)", "Comma-separated `key=value` gRPC metadata sent on every OTLP request (typically auth bearer tokens)."},
-	{envOTLPTimeout, docTypeDuration, "Self-telemetry (OTLP export)", "Per-request OTLP roundtrip timeout (applies to both the trace and metric exporters). `0` leaves each exporter's own default in place."},
-	{envOTLPExportInterval, docTypeDuration, "Self-telemetry (OTLP export)", "Metric `PeriodicReader` flush interval. The quickstart default is tuned for time-to-first-panel; deployments at scale should raise it (e.g. `60s`) to cut collector load. `0` leaves the `PeriodicReader`'s own default in place."},
+	{envOTLPEndpoint, "string", envDocGroupOTLP, "gRPC OTLP target for self-telemetry (e.g. `otel-collector.observability.svc:4317`). Empty disables the exporters."},
+	{envOTLPInsecure, "bool", envDocGroupOTLP, "Dial the OTLP endpoint without TLS (handy for local dev / k3d)."},
+	{envOTLPHeaders, "string", envDocGroupOTLP, "Comma-separated `key=value` gRPC metadata sent on every OTLP request (typically auth bearer tokens)."},
+	{envOTLPTimeout, docTypeDuration, envDocGroupOTLP, "Per-request OTLP roundtrip timeout (applies to both the trace and metric exporters). `0` leaves each exporter's own default in place."},
+	{envOTLPExportInterval, docTypeDuration, envDocGroupOTLP, "Metric `PeriodicReader` flush interval. The quickstart default is tuned for time-to-first-panel; deployments at scale should raise it (e.g. `60s`) to cut collector load. `0` leaves the `PeriodicReader`'s own default in place."},
+	{envOTLPMetricsEnabled, "bool", envDocGroupOTLP, "Enable direct OTLP metric export. Defaults true. Does not control the always-on Prometheus `/metrics` endpoint."},
+	{envOTLPLogsEnabled, "bool", envDocGroupOTLP, "Enable direct OTLP log export. Defaults true; false keeps stderr logging."},
+	{envOTLPTracesEnabled, "bool", envDocGroupOTLP, "Enable direct OTLP trace export. Defaults true."},
 
 	// --- Schema provisioning ---
 	{envAutoCreateSchema, "bool", groupSchemaProvisioning, "When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins. The knobs below shape that DDL - all are no-ops unless this is `true`."},

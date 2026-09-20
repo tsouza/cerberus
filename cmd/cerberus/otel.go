@@ -53,6 +53,12 @@ func wrapWithOTel(next http.Handler, service string) http.Handler {
 	)
 }
 
+// mountMetrics exposes the Prometheus reader independently of direct OTLP
+// export. It lives on the root mux beside health/info and bypasses otelhttp.
+func mountMetrics(mux *http.ServeMux, handler http.Handler) {
+	mux.Handle("GET /metrics", handler)
+}
+
 // spanNameFromPattern derives a clean span name from the matched mux
 // pattern. http.ServeMux populates r.Pattern with the registered string
 // (e.g. "GET /api/v1/query"); when no pattern matched (404) it's empty

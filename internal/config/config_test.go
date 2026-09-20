@@ -235,6 +235,24 @@ func TestFromEnv_OTLP_Default(t *testing.T) {
 	if got, want := cfg.OTLP.ExportInterval, 10*time.Second; got != want {
 		t.Errorf("OTLP.ExportInterval = %v; want %v", got, want)
 	}
+	if !cfg.OTLP.MetricsEnabled || !cfg.OTLP.LogsEnabled || !cfg.OTLP.TracesEnabled {
+		t.Errorf("OTLP signal defaults = metrics:%v logs:%v traces:%v; want all true",
+			cfg.OTLP.MetricsEnabled, cfg.OTLP.LogsEnabled, cfg.OTLP.TracesEnabled)
+	}
+}
+
+func TestFromEnv_OTLP_PerSignalControls(t *testing.T) {
+	t.Setenv("CERBERUS_OTLP_METRICS_ENABLED", "false")
+	t.Setenv("CERBERUS_OTLP_LOGS_ENABLED", "true")
+	t.Setenv("CERBERUS_OTLP_TRACES_ENABLED", "false")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.OTLP.MetricsEnabled || !cfg.OTLP.LogsEnabled || cfg.OTLP.TracesEnabled {
+		t.Errorf("OTLP controls = metrics:%v logs:%v traces:%v; want false,true,false",
+			cfg.OTLP.MetricsEnabled, cfg.OTLP.LogsEnabled, cfg.OTLP.TracesEnabled)
+	}
 }
 
 // TestFromEnv_OTLP_ExportIntervalOverride covers the operator-facing

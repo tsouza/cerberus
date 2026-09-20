@@ -19,9 +19,9 @@ data:
          chart ships Keeper, hot/cold tiering, replication and multi-shard
          fan-out; parts count, merge activity, replication lag, background
          pool depth and cache hit rates live only in these `system.*`
-         metrics. cerberus itself exposes no /metrics (self-telemetry is
-         pushed over OTLP) and reports only the query-serving side, so this
-         is the data tier's only scrape target. */}}
+         metrics. cerberus's own /metrics reports only the query-serving side,
+         so ClickHouse remains a separate required scrape target for the data
+         tier. */}}
   metrics.xml: |
     <clickhouse>
       <prometheus>

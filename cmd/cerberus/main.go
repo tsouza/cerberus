@@ -420,9 +420,12 @@ func installStage2Logging(cfg config.Config, providers *telemetry.Providers) *sl
 
 	if cfg.OTLP.Endpoint != "" {
 		logger.Info(
-			"OTLP exporters enabled",
+			"OTLP direct export configured",
 			"endpoint", cfg.OTLP.Endpoint,
 			"insecure", cfg.OTLP.Insecure,
+			"metrics", cfg.OTLP.MetricsEnabled,
+			"logs", cfg.OTLP.LogsEnabled,
+			"traces", cfg.OTLP.TracesEnabled,
 		)
 	}
 	return logger
@@ -440,6 +443,9 @@ func newTelemetryProviders(ctx context.Context, cfg config.Config) (*telemetry.P
 		Headers:        cfg.OTLP.Headers,
 		Timeout:        cfg.OTLP.Timeout,
 		ExportInterval: cfg.OTLP.ExportInterval,
+		MetricsEnabled: cfg.OTLP.MetricsEnabled,
+		LogsEnabled:    cfg.OTLP.LogsEnabled,
+		TracesEnabled:  cfg.OTLP.TracesEnabled,
 		ServiceName:    "cerberus",
 		ServiceVersion: Version,
 	})
@@ -670,6 +676,7 @@ func run() error {
 	rootMux := http.NewServeMux()
 	healthHandler.Mount(rootMux)
 	infoHandler.Mount(rootMux)
+	mountMetrics(rootMux, providers.MetricsHandler)
 	maybeMountPProf(rootMux, cfg.DebugPProf, logger)
 	rootMux.Handle("/", tracedAPI)
 

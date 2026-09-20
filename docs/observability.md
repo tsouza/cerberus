@@ -179,11 +179,14 @@ binary.
 
 | Variable                        | Default | Meaning                                                                                          |
 | ------------------------------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `CERBERUS_OTLP_ENDPOINT`        | `""`    | gRPC target, e.g. `otel-collector.observability.svc:4317`. Empty disables both exporters.        |
+| `CERBERUS_OTLP_ENDPOINT`        | `""`    | gRPC target, e.g. `otel-collector.observability.svc:4317`. Empty leaves direct export dormant.   |
 | `CERBERUS_OTLP_INSECURE`        | `false` | When `true`, dial the endpoint without TLS. Use for local dev / k3d only.                        |
 | `CERBERUS_OTLP_HEADERS`         | `""`    | Comma-separated `key=value` list attached as gRPC metadata (e.g. `authorization=Bearer abc...`). |
 | `CERBERUS_OTLP_TIMEOUT`         | `10s`   | Per-request OTLP roundtrip timeout.                                                              |
 | `CERBERUS_OTLP_EXPORT_INTERVAL` | `10s`   | Metric `PeriodicReader` flush interval — how often self-metrics are pushed to the collector.     |
+| `CERBERUS_OTLP_METRICS_ENABLED` | `true`  | Enable direct OTLP metrics. The Prometheus `/metrics` endpoint remains enabled when false.       |
+| `CERBERUS_OTLP_LOGS_ENABLED`    | `true`  | Enable direct OTLP structured logs. stderr logging remains enabled when false.                   |
+| `CERBERUS_OTLP_TRACES_ENABLED`  | `true`  | Enable direct OTLP traces.                                                                       |
 
 Standard OTel SDK env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`,
 `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_RESOURCE_ATTRIBUTES`, …) are read by
@@ -536,11 +539,16 @@ If the collector is unreachable during shutdown the OTLP exporter logs
 the error and returns — cerberus still exits cleanly rather than
 hanging.
 
-### Disabling telemetry
+### Prometheus metrics and direct-export controls
 
-Leave `CERBERUS_OTLP_ENDPOINT` unset (or set to the empty string). The
-process installs no-op providers; otelhttp middleware still wraps the
-mux but every span is silently dropped.
+`GET /metrics` is always available on the main HTTP listener. It uses the same
+instrumentation as OTLP metrics but is independent of the collector endpoint
+and `CERBERUS_OTLP_METRICS_ENABLED`.
+
+Leave `CERBERUS_OTLP_ENDPOINT` unset to keep all direct export dormant, or
+disable individual signals with the three `CERBERUS_OTLP_*_ENABLED` switches.
+When trace export is disabled, otelhttp middleware still wraps the mux but its
+spans are silently dropped.
 
 ---
 
