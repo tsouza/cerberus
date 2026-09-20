@@ -319,6 +319,30 @@ func rewriteBinaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, h
 // MetricsCompare (Inner + optional RootLookup).
 func rewriteIrregularNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, handled bool) {
 	switch v := n.(type) {
+	case *HistogramQuantiles:
+		if v.Histogram == nil || v.Histogram.Input == nil {
+			return v, false, true
+		}
+		newInput, ch := fn(v.Histogram.Input)
+		if !ch {
+			return v, false, true
+		}
+		cp, histogram := *v, *v.Histogram
+		histogram.Input = newInput
+		cp.Histogram = &histogram
+		return &cp, true, true
+	case *HistogramQuantilesNative:
+		if v.Histogram == nil || v.Histogram.Input == nil {
+			return v, false, true
+		}
+		newInput, ch := fn(v.Histogram.Input)
+		if !ch {
+			return v, false, true
+		}
+		cp, histogram := *v, *v.Histogram
+		histogram.Input = newInput
+		cp.Histogram = &histogram
+		return &cp, true, true
 	case *TopK:
 		newInput, newKExpr, ch := rewriteOptionalPair(fn, v.Input, v.KExpr)
 		if !ch {

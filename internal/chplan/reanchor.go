@@ -132,6 +132,18 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		c := *v
 		c.Input = input
 		return &c, nil
+	case *HistogramQuantiles:
+		if v.Histogram == nil {
+			return v, nil
+		}
+		input, err := reanchor(v.Histogram.Input, start, end)
+		if err != nil {
+			return nil, err
+		}
+		c, histogram := *v, *v.Histogram
+		histogram.Input = input
+		c.Histogram = &histogram
+		return &c, nil
 	case *Project:
 		input, err := reanchor(v.Input, start, end)
 		if err != nil {

@@ -88,7 +88,10 @@ func lowerHistogramQuantileClassicFloat(
 	if err != nil {
 		return nil, err
 	}
+	return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), nil
+}
 
+func lowerHistogramQuantileClassicFloatOverPlan(inner chplan.Node, phi phiArg, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	attrs := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 
 	// Prometheus reads each float sample's `le` and skips the sample when
@@ -207,7 +210,7 @@ func lowerHistogramQuantileClassicFloat(
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
-	}, nil
+	}
 }
 
 // hqFloatOverflowRungExpr reports whether the group reported the +Inf

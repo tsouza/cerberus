@@ -4022,10 +4022,21 @@ func nativeLastOverTimeNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.Ra
 // the query to the heavier arrayJoin fan-out (the experimental flag's
 // whole point is the lighter native aggregate).
 func isNativeRateInput(n chplan.Node, s schema.Metrics) bool {
-	if p, ok := n.(*chplan.Project); ok && isCanonicalSampleProject(p, s) {
-		n = p.Input
+	for {
+		switch node := n.(type) {
+		case *chplan.Project:
+			if !isCanonicalSampleProject(node, s) && !isClassicBucketFanoutProject(node, s) {
+				return false
+			}
+			n = node.Input
+		case *chplan.Filter:
+			n = node.Input
+		case *chplan.Scan:
+			return true
+		default:
+			return false
+		}
 	}
-	return isPlainScanFilter(n)
 }
 
 // isCanonicalSampleProject reports whether p is the canonical

@@ -274,6 +274,7 @@ var sliceInvariantKinds = func() map[reflect.Type]struct{} {
 		&RangeBucketFanout{},
 		&RangeBucketGridNative{},
 		&HistogramQuantile{},
+		&HistogramQuantiles{},
 		&StepGrid{},
 		&UnionAll{},
 		&VectorJoin{},

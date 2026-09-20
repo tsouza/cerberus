@@ -248,6 +248,10 @@ func cloneCompositeNode(n Node) Node {
 		return cloneHistogramQuantile(v)
 	case *HistogramQuantileNative:
 		return cloneHistogramQuantileNative(v)
+	case *HistogramQuantiles:
+		return cloneHistogramQuantiles(v)
+	case *HistogramQuantilesNative:
+		return cloneHistogramQuantilesNative(v)
 	case *HistogramProjection:
 		return cloneHistogramProjection(v)
 	case *MetricsAggregate:
@@ -316,6 +320,24 @@ func cloneHistogramQuantileNative(v *HistogramQuantileNative) Node {
 	c.PhiExpr = cloneExpr(v.PhiExpr)
 	c.GroupBy = cloneExprs(v.GroupBy)
 	c.GroupByAliases = cloneStrings(v.GroupByAliases)
+	return &c
+}
+
+func cloneHistogramQuantiles(v *HistogramQuantiles) Node {
+	c := *v
+	if v.Histogram != nil {
+		c.Histogram = cloneHistogramQuantile(v.Histogram).(*HistogramQuantile)
+	}
+	c.Levels = append([]HistogramQuantileLevel(nil), v.Levels...)
+	return &c
+}
+
+func cloneHistogramQuantilesNative(v *HistogramQuantilesNative) Node {
+	c := *v
+	if v.Histogram != nil {
+		c.Histogram = cloneHistogramQuantileNative(v.Histogram).(*HistogramQuantileNative)
+	}
+	c.Levels = append([]HistogramQuantileLevel(nil), v.Levels...)
 	return &c
 }
 

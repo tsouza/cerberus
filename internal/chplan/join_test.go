@@ -279,6 +279,8 @@ var nonJoinKinds = map[string]string{
 	"AbsentOverTime":                 "presence check over its one Input",
 	"HistogramQuantile":              "quantile arithmetic over its one Input",
 	"HistogramQuantileNative":        "quantile arithmetic over its one Input",
+	"HistogramQuantiles":             "shared quantile arithmetic over its one Input",
+	"HistogramQuantilesNative":       "shared quantile arithmetic over its one Input",
 	"HistogramProjection":            "column reshaping over its one Input",
 	"MetricsAggregate":               "GROUP BY over its one Inner",
 	"MetricsHistogramOverTime":       "histogram fold over its one Inner",

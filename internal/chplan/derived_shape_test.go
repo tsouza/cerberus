@@ -68,11 +68,13 @@ var derivedShapeVerdicts = map[string]bool{
 	// sides supply the canonical columns; the real `StepGrid × reducing
 	// node` pairing is derived, and TestIsDerivedShape_Transparency pins
 	// both directions.
-	"CrossJoin":               false,
-	"Filter":                  false,
-	"HistogramQuantile":       false,
-	"HistogramQuantileNative": false,
-	"HistogramProjection":     false,
+	"CrossJoin":                false,
+	"Filter":                   false,
+	"HistogramQuantile":        false,
+	"HistogramQuantileNative":  false,
+	"HistogramQuantiles":       false,
+	"HistogramQuantilesNative": false,
+	"HistogramProjection":      false,
 	// HistogramFloatVectorJoin's own SELECT names a real bare
 	// MetricName column (from its histogram-valued Left side, byte-
 	// identical to HistogramProjection's own output), unlike

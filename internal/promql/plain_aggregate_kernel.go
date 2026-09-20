@@ -42,7 +42,8 @@ func lowerPlainAggregateOverInput(a *parser.AggregateExpr, input chplan.Node, s 
 	// Only an eligible, already-finished per-series native grid can fold the
 	// vector reduction before explosion. Pass user keys before bucket widening;
 	// quantile is not eligible, so its caller-owned domain guard still runs.
-	if layout == ordinaryPlainAggregateLayout && rangeBucketed && ctx.lowerers.VectorAgg {
+	vectorAgg := ctx.lowerers.VectorAgg || (aggFunc.Fn == chplan.FnSum && isClassicBucketRateGrid(input, s))
+	if layout == ordinaryPlainAggregateLayout && rangeBucketed && vectorAgg {
 		if node, ok := tryNativeGridVectorAgg(input, groupBy, labelAliases, aggFunc, s); ok {
 			return wrapAggregateForSample(node, a, s, labelAliases, true, rangeBucketAlias), nil
 		}

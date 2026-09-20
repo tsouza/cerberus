@@ -102,6 +102,8 @@ func allNodeCases() []nodeExhaustivenessCase {
 		{"RangeBucketGridNative", &RangeBucketGridNative{Input: sentinelChild()}, false},
 		{"HistogramQuantile", &HistogramQuantile{Input: sentinelChild(), Phi: 0.5}, false},
 		{"HistogramQuantileNative", &HistogramQuantileNative{Input: sentinelChild(), Phi: 0.5}, false},
+		{"HistogramQuantiles", &HistogramQuantiles{Histogram: &HistogramQuantile{Input: sentinelChild()}, Levels: []HistogramQuantileLevel{{Phi: 0.5}}}, false},
+		{"HistogramQuantilesNative", &HistogramQuantilesNative{Histogram: &HistogramQuantileNative{Input: sentinelChild()}, Levels: []HistogramQuantileLevel{{Phi: 0.5}}}, false},
 		{"HistogramProjection", &HistogramProjection{Input: sentinelChild()}, false},
 		{"MetricsAggregate", &MetricsAggregate{Inner: sentinelChild()}, false},
 		{"MetricsHistogramOverTime", &MetricsHistogramOverTime{Inner: sentinelChild()}, false},

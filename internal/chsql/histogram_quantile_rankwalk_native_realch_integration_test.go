@@ -170,6 +170,7 @@ func TestHistogramQuantile_RankWalkNative_DifferentialRealCH(t *testing.T) {
 			assertHQRankWalkAgree(ctx, t, db, classic, native)
 		})
 	}
+	t.Run("high_cardinality", func(t *testing.T) { assertHQRankWalkCardinality(ctx, t, db) })
 }
 
 // assertQuantilePrometheusHistogramPresent probes system.functions directly
