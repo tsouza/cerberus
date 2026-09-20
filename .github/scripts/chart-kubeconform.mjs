@@ -213,6 +213,14 @@ function gitShow(ref, path) {
   }
 }
 
+// Maintenance lines can receive several commits before their staged version
+// publishes. The previous commit is not the previous release in that case.
+export function stagingBaseRef(baseRef, refName, lastReleaseTag) {
+  if (baseRef) return `origin/${baseRef}`
+  if (/^release\/\d+\.\d+\.x$/.test(refName || '')) return lastReleaseTag
+  return 'HEAD^'
+}
+
 // --- self-test: pins the probe call site and the verdict/exemption logic ---
 //
 // The image guard is a chain — spawn options, classifier, verdict — and only
@@ -409,6 +417,11 @@ function selfTest() {
   check(stagedAppVersion(bumped, base) === '1.13.1', 'a bump stages the new appVersion')
   check(stagedAppVersion(base, base) === null, 'an unchanged appVersion stages nothing')
   check(stagedAppVersion(bumped, null) === null, 'an unresolvable base withholds the exemption')
+  check(stagingBaseRef('', 'release/1.13.x', 'v1.13.0') === 'v1.13.0', 'maintenance compares with the last release, not the preceding staging commit')
+  check(stagingBaseRef('', 'release/1.13.x', null) === null, 'missing maintenance tag fails closed')
+  check(stagingBaseRef('release/1.13.x', 'topic', 'v1.13.0') === 'origin/release/1.13.x', 'PR base remains authoritative')
+  check(stagingBaseRef('', 'main', 'v1.13.0') === 'HEAD^', 'main push still compares with its parent')
+  check(stagedAppVersion(bumped, bumped) === null, 'an already published maintenance version is not staged')
 
   check(isStagedRef('ghcr.io/tsouza/cerberus:1.13.1', '1.13.1'), 'bare staged tag is exempt')
   check(isStagedRef('ghcr.io/tsouza/cerberus:v1.13.1', '1.13.1'), 'v-prefixed staged tag is exempt')
@@ -475,11 +488,21 @@ if (!headAppVersion || !APP_VERSION_RE.test(headAppVersion)) {
   ok = false
 }
 
-// pull_request runs compare against the PR base; push runs against the parent
-// of the pushed commit. Either way the question is the same: does THIS change
-// stage a new appVersion?
-const baseRef = process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : 'HEAD^'
-const staged = stagedAppVersion(headChartYaml, gitShow(baseRef, join(CHART_DIR, 'Chart.yaml')))
+// PRs compare with their base and main pushes with their parent. Maintenance
+// pushes compare with the last reachable release tag in their own minor line,
+// so a corrective commit does not require its still-unpublished image to exist.
+const maintenanceLine = /^release\/(\d+\.\d+)\.x$/.exec(process.env.GITHUB_REF_NAME || '')
+let lastReleaseTag = null
+if (!process.env.GITHUB_BASE_REF && maintenanceLine) {
+  try {
+    lastReleaseTag = execFileSync('git', ['describe', '--tags', '--abbrev=0', '--match', `v${maintenanceLine[1]}.*`],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    // An unresolved release base must not grant a missing-image exemption.
+  }
+}
+const baseRef = stagingBaseRef(process.env.GITHUB_BASE_REF, process.env.GITHUB_REF_NAME, lastReleaseTag)
+const staged = stagedAppVersion(headChartYaml, baseRef ? gitShow(baseRef, join(CHART_DIR, 'Chart.yaml')) : null)
 
 if (!SKIP_IMAGE_CHECK) {
   for (const ref of [...seenImages].sort()) {
