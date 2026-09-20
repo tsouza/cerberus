@@ -43,6 +43,7 @@ const (
 	artifactMigrationJob = "release-artifact-migration"
 	publishJob           = "publish"
 	brewSmokeJob         = "brew-smoke"
+	changelogSyncJob     = "maintenance-changelog-sync"
 	preflightJob         = "preflight"
 	goreleaserJobName    = "goreleaser"
 
@@ -177,12 +178,40 @@ func TestReleasePreflightRequiresTheMigrationLane(t *testing.T) {
 	// lane's check-run posted on a resolved source PR's tip sha. Same rationale
 	// as the other two: release.yml has no pull_request trigger, so without
 	// this it is unverified until a real release is cut.
-	for _, want := range []string{"release-preflight.test.mjs", "brew-smoke.test.mjs", "resolve-source-pr.test.mjs"} {
+	for _, want := range []string{"release-preflight.test.mjs", "maintenance-changelog-sync.test.mjs", "brew-smoke.test.mjs", "resolve-source-pr.test.mjs"} {
 		if !strings.Contains(ci, want) {
 			t.Fatalf("../../.github/workflows/ci.yml does not run %q. release.yml has no pull_request "+
 				"trigger, so without this step the release gate's unit guards execute only while a "+
 				"release is being cut", want)
 		}
+	}
+}
+
+func TestMaintenanceReleaseSyncsChangelogBackByPullRequest(t *testing.T) {
+	t.Parallel()
+	workflow := readFileString(t, releaseWorkflowPath)
+	job := workflowJobBody(t, workflow, changelogSyncJob)
+	for _, want := range []string{
+		"needs: [gate, publish]",
+		"startsWith(github.ref, 'refs/heads/release/')",
+		"endsWith(github.ref, '.x')",
+		"needs.publish.result == 'success'",
+		"pull-requests: write",
+		"maintenance-changelog-sync.mjs",
+		"RELEASE_PAT",
+	} {
+		if !strings.Contains(job, want) {
+			t.Fatalf("%s job %q is missing %q. Body:\n%s", releaseWorkflowPath, changelogSyncJob, want, job)
+		}
+	}
+	if strings.Contains(job, "git push origin main") {
+		t.Fatalf("%s job %q pushes directly to main instead of opening a PR. Body:\n%s",
+			releaseWorkflowPath, changelogSyncJob, job)
+	}
+	preflight := workflowJobBody(t, workflow, preflightJob)
+	if !strings.Contains(preflight, changelogSyncJob) {
+		t.Fatalf("%s job %q is not in RELEASE_SELF_JOBS, so preflight can deadlock on its queued check-run",
+			releaseWorkflowPath, changelogSyncJob)
 	}
 }
 

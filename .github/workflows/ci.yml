@@ -456,7 +456,9 @@ jobs:
       # be observation-derived, so "lane X now gates the release" was satisfiable
       # by changing nothing.
       - name: release-preflight self-test (required-set guard)
-        run: node --test .github/scripts/release-preflight.test.mjs
+        run: |
+          node --test .github/scripts/release-preflight.test.mjs
+          node --test .github/scripts/maintenance-changelog-sync.test.mjs
 
       # Three gate suites that existed but ran nowhere. A .test.mjs no workflow
       # invokes is the same failure as a gate that cannot fail: the file reads

@@ -3648,6 +3648,12 @@ required-set check is the same on both paths — every lane in
 `RELEASE_REQUIRED_CHECKS` must have posted a green check-run on the commit. That
 is why `migration-e2e.yml` push-triggers on `release/*.x` as well as `main`: a
 required lane that never runs on the branch would block every hotfix release.
+After publication, `maintenance-changelog-sync` extracts only the new tagged
+section from the maintenance line's `CHANGELOG.md`, applies it after
+`[Unreleased]` on current `main`, and opens a normal PR. It never copies chart
+or app versions back, never replaces main's unreleased content, and never
+pushes to `main` directly. An identical section is a clean no-op; a conflicting
+section fails visibly instead of rewriting published history.
 
 ### Release support window / EOL policy
 

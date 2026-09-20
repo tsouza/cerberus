@@ -115,8 +115,9 @@
 //      MAINTENANCE only.
 //
 // The ONLY structural exclusion is THIS release run's own jobs (gate /
-// preflight / goreleaser / release-artifact-migration / publish / brew-smoke /
-// chart-release): they are necessarily in-progress while the preflight runs, so
+// preflight / goreleaser / release-artifact-migration / publish /
+// maintenance-changelog-sync / brew-smoke / chart-release): they are
+// necessarily in-progress while the preflight runs, so
 // gating on them would deadlock. They are identified by name via
 // RELEASE_SELF_JOBS — structural, not a flakiness heuristic. A reusable
 // workflow called from one of those jobs posts its children as

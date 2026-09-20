@@ -60,6 +60,7 @@ const SELF_JOBS = new Set([
   'goreleaser',
   'release-artifact-migration',
   'publish',
+  'maintenance-changelog-sync',
   'brew-smoke',
   'chart-release',
 ]);

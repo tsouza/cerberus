@@ -214,6 +214,7 @@ jobs:
             goreleaser
             release-artifact-migration
             publish
+            maintenance-changelog-sync
             brew-smoke
             chart-release
           # The EXPECTED set — exact check-run names that MUST have posted a run
@@ -584,6 +585,33 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_PAT }}
           repository: tsouza/cerberus
           readme-filepath: ./README.md
+
+  # A maintenance release changes history on release/X.Y.x, while main remains
+  # the canonical changelog future release preparation consumes. Reconcile only
+  # the published section through a normal PR; never push directly to main.
+  maintenance-changelog-sync:
+    name: maintenance-changelog-sync
+    needs: [gate, publish]
+    if: |
+      always() &&
+      startsWith(github.ref, 'refs/heads/release/') &&
+      endsWith(github.ref, '.x') &&
+      needs.gate.outputs.app_publish == 'true' &&
+      needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Sync published changelog section to main by PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          RELEASE_TAG: ${{ needs.gate.outputs.app_tag }}
+          RELEASE_BRANCH: ${{ github.ref_name }}
+        run: node .github/scripts/maintenance-changelog-sync.mjs
 
   # Post-publish install smoke: prove `brew install tsouza/tap/cerberus` works
   # for the version that just shipped.
