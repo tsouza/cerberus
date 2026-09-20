@@ -67,13 +67,32 @@ clickhouse:
     cache:
       size: 1Gi
 
-# The base overlay enables the HPA (2..4 replicas). One cerberus pod is all
-# this lane needs: cerberus's job here is to boot, auto-create the schema
-# through the bundled Service, and report ready — the verifier talks to the
-# ClickHouse pods directly, never to cerberus.
+# The base overlay enables the HPA (2..4 replicas). Pin two Cerberus pods so a
+# fresh install exercises concurrent schema reconciliation against the same
+# Replicated database; Helm's wait gate requires both pods to become Ready.
 autoscaling:
   enabled: false
-replicaCount: 1
+replicaCount: 2
+
+# Exercise every registered optimization explicitly. This lane is the fresh,
+# chart-owned ClickHouse deployment contract; leaving opt-in features out would
+# make their startup, schema, and readiness paths invisible. The chopt registry
+# test fails whenever this list drifts, so adding a feature requires deciding
+# how the production-shaped Helm lane covers it in the same change.
+chOptimizations: >-
+  aggregation_in_order,condition_cache,ts_grid_range,ts_grid_resample,
+  columnar_result_decode,ts_grid_changes,ts_grid_resets,ts_grid_deriv,
+  ts_grid_predict_linear,ts_grid_recollapse,ts_grid_vector_agg,ts_grid_instant,
+  ts_grid_increase,ts_grid_histogram,quantile_prom_histogram,ts_grid_delta,
+  ts_grid_irate,ts_grid_idelta,laginframe_adjacency,
+  fixed_accumulator_extrapolated,sorted_slab_over_time,ts_grid_group_array,
+  map_bucketed_serialization,ts_grid_last_over_time,downsample_tier,
+  column_statistics,classic_bucket_merge_summap,exp_histogram_merge_summap,
+  join_spill,trace_id_projection,loki_catalog_mv,tempo_tag_catalog_mv,
+  trace_id_bitmap_filter,arg_and_max_fusion,result_cache,lazy_materialization,
+  explain_estimate,cardinality_probe,full_text_index,text_index_line_filter,
+  trace_id_external_table,ts_tag_groups,ts_throw_duplicate_series_if,
+  exp_histogram_two_level
 
 schema:
   ttl: "7d"

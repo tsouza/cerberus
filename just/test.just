@@ -279,7 +279,7 @@ test-agpl-oracle:
 
 # Run the schema DDL and auto-create integration tests on real ClickHouse. Needs Docker.
 schema-ddl-test:
-    @just _pull-retry {{CH_TEST_IMAGE}} {{CH_TEST_IMAGE_PRIOR}}
+    @just _pull-retry {{CH_TEST_IMAGE}} {{CH_TEST_IMAGE_PRIOR}} {{CH_SCHEMA_TEXT_INDEX_IMAGE}}
     go test -timeout 20m -p=1 -race -tags=integration ./internal/schema/ddl/... ./cmd/cerberus/...
 
 # Run the TXTAR spec suite with the chDB-backed round-trip assertion
