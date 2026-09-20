@@ -989,6 +989,15 @@ func applySignal(ctx context.Context, conn driver.Conn, cfg Config, s Signal) er
 		return err
 	}
 	for _, stmt := range stmts {
+		if s == Logs && cfg.TextIndexEnabled && stmt == renderAddBodyTextIndex(textIndexTargetConfig(cfg)) {
+			hasTextIndex, probeErr := logsBodyTextIndexExists(ctx, conn, cfg)
+			if probeErr != nil {
+				return fmt.Errorf("ddl: inspect logs body text index: %w", probeErr)
+			}
+			if hasTextIndex {
+				continue
+			}
+		}
 		if err := conn.Exec(ctx, stmt); err != nil {
 			// A column-statistics ALTER (issue #2766) can be legitimately
 			// REFUSED by the connected server — ClickHouse Cloud supports no
@@ -1012,6 +1021,46 @@ func applySignal(ctx context.Context, conn driver.Conn, cfg Config, s Signal) er
 		}
 	}
 	return nil
+}
+
+// textIndexTargetConfig returns the physical logs-table config targeted by
+// renderSignal's idx_body_text ALTER. Data-sharded schemas put indexes on the
+// local MergeTree table; the public table is only a Distributed wrapper.
+func textIndexTargetConfig(cfg Config) Config {
+	if cfg.DataShardCount > 1 {
+		localCfg, _ := cfg.dataShardLocalConfig(Logs)
+		return localCfg
+	}
+	return cfg
+}
+
+// logsBodyTextIndexExists reports whether the physical logs table already has
+// a ClickHouse text index over lower(Body), regardless of index name. The probe
+// runs after CREATE TABLE IF NOT EXISTS: a fresh schema therefore finds the
+// CREATE-time idx_lower_body text index and skips the incompatible second text
+// index, while a legacy tokenbf_v1 schema finds none and receives the additive
+// idx_body_text upgrade.
+func logsBodyTextIndexExists(ctx context.Context, conn driver.Conn, cfg Config) (bool, error) {
+	target := textIndexTargetConfig(cfg)
+	query, args := chsql.NewQuery().
+		Select(chsql.Call("count")).
+		From(chsql.Qual("system", "data_skipping_indices")).
+		Where(chsql.And(
+			chsql.Eq(chsql.Col("database"), chsql.Lit(target.Database)),
+			chsql.Eq(chsql.Col("table"), chsql.Lit(target.Tables.Logs)),
+			chsql.Eq(chsql.Col("type"), chsql.Lit("text")),
+			chsql.In(
+				chsql.Col("expr"),
+				chsql.Lit("lower(Body)"),
+				chsql.Lit("lower(`Body`)"),
+			),
+		)).
+		Build()
+	var count uint64
+	if err := conn.QueryRow(ctx, query, args...).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // dataShardTablePair names one BASE physical table's ORIGINAL (Distributed
@@ -1526,15 +1575,12 @@ const (
 // NO-OP — ClickHouse matches on name, not type — so it could never install
 // the text index on an upgraded deployment. Swapping the TYPE of an
 // existing index requires DROP INDEX + ADD INDEX, which is destructive
-// (existing MATERIALIZE'd granules are discarded, forcing a full backfill)
-// and this render-time-only package has no live system.data_skipping_indexes
-// read to tell whether idx_lower_body is ALREADY the text type (in which
-// case dropping and re-adding it on every boot would be pure, repeated,
-// backfill-losing churn). Installing a second, differently-named index is
-// the only additive, idempotent, crash-safe option available here — the
-// SAME reasoning every other ALTER in this package already follows (ADD
-// PROJECTION, ADD STATISTICS, ADD INDEX all install NEW, non-colliding
-// names). Retiring the now-redundant legacy idx_lower_body tokenbf index on
+// (existing MATERIALIZE'd granules are discarded, forcing a full backfill).
+// Apply probes system.data_skipping_indices before executing this statement:
+// an existing text index over lower(Body), under either name, satisfies the
+// feature and skips the ALTER; only an existing legacy tokenbf_v1 table gets
+// this separately-named additive index. Retiring the now-redundant legacy
+// idx_lower_body tokenbf index on
 // an upgraded table is DropLegacyBodyTokenBFIndexSQL below, run deliberately
 // by an operator through the `cerberus schema retire-idx-lower-body` verb
 // (cmd/cerberus/cmd_schema.go) rather than here — dropping an index an

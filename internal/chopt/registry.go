@@ -1777,14 +1777,13 @@ const (
 	// 'splitByNonAlpha')` — the SAME index name, over the SAME `lower(Body)`
 	// expression, in the SAME upstream-template mutually-exclusive branch
 	// HasFullTextSearch already selects (cerberus issue #2773). On an
-	// EXISTING table (which already carries the tokenbf branch from an
-	// earlier boot), the DDL apply path additionally installs a
-	// SEPARATELY-named `idx_body_text` text index via idempotent `ADD INDEX
-	// IF NOT EXISTS` — see renderAddBodyTextIndex's doc comment for why a
-	// second name, not an in-place type swap, is the only additive
-	// (crash-safe, no MATERIALIZE-losing DROP) upgrade path available to a
-	// render-time-only DDL layer with no live system.data_skipping_indexes
-	// read.
+	// EXISTING table carrying the tokenbf branch from an earlier boot, the DDL
+	// apply path installs a SEPARATELY-named `idx_body_text` text index via
+	// `ADD INDEX IF NOT EXISTS`. Before executing it, reconciliation reads
+	// system.data_skipping_indices and treats any existing text index over
+	// lower(Body) as satisfying the feature. Fresh tables therefore keep their
+	// CREATE-time idx_lower_body text index, while legacy tokenbf_v1 tables get
+	// the additive, crash-safe upgrade without a MATERIALIZE-losing DROP.
 	//
 	// VERSION FLOOR: 26.2 — the release the `enable_full_text_index` setting
 	// (gating table-level acceptance of `TYPE text(...)`) flips from
