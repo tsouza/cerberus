@@ -4,6 +4,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.21.1] — 2026-09-20
+
+### Fixed
+
+- **schema:** avoid duplicate body text index (#3622)
+
 ## [v1.21.0] — 2026-09-20
 
 ### BREAKING
