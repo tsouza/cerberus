@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/duplicate_timestamp_identical_value_sum_over_time",
+  "fan_factor": 5.923076923076923,
+  "scan_rows": 13,
+  "peak_intermediate": 77,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
