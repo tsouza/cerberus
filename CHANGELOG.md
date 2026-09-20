@@ -8,6 +8,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ### Fixed
 
+- **schema:** enable experimental aggregates for downsample DDL (#3634)
 - **schema:** avoid duplicate body text index (#3622)
 
 ## [v1.21.0] — 2026-09-20
