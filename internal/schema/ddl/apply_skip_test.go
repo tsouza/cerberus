@@ -14,12 +14,69 @@ import (
 // driver.Conn supplies the rest of the interface (never called here).
 type recordingConn struct {
 	driver.Conn
-	execs []string
+	execs              []string
+	bodyTextIndexCount uint64
+	queryRowErr        error
 }
 
 func (r *recordingConn) Exec(_ context.Context, query string, _ ...any) error {
 	r.execs = append(r.execs, query)
 	return nil
+}
+
+func (r *recordingConn) QueryRow(context.Context, string, ...any) driver.Row {
+	return recordingRow{value: r.bodyTextIndexCount, err: r.queryRowErr}
+}
+
+type recordingRow struct {
+	value uint64
+	err   error
+}
+
+func (r recordingRow) Err() error { return r.err }
+
+func (r recordingRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	*dest[0].(*uint64) = r.value
+	return nil
+}
+
+func (r recordingRow) ScanStruct(any) error { return r.err }
+
+func TestApplyWithConfig_TextIndexReconciliation(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		existingTextIndex uint64
+		wantAdd           bool
+	}{
+		{name: "fresh_or_already_upgraded", existingTextIndex: 1, wantAdd: false},
+		{name: "legacy_tokenbf_only", existingTextIndex: 0, wantAdd: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rc := &recordingConn{bodyTextIndexCount: tt.existingTextIndex}
+			cfg := Config{Database: "otel", TextIndexEnabled: true}
+			if err := ApplyWithConfig(context.Background(), rc, cfg, []Signal{Logs}); err != nil {
+				t.Fatalf("ApplyWithConfig: %v", err)
+			}
+			var gotAdd bool
+			for _, stmt := range rc.execs {
+				gotAdd = gotAdd || strings.Contains(stmt, "ADD INDEX IF NOT EXISTS "+bodyTextIndexName)
+			}
+			if gotAdd != tt.wantAdd {
+				t.Errorf("idx_body_text ADD executed = %v, want %v; statements: %v", gotAdd, tt.wantAdd, rc.execs)
+			}
+		})
+	}
+}
+
+func TestApplyWithConfig_TextIndexProbeFailureStopsReconciliation(t *testing.T) {
+	rc := &recordingConn{queryRowErr: errors.New("probe failed")}
+	err := ApplyWithConfig(context.Background(), rc, Config{TextIndexEnabled: true}, []Signal{Logs})
+	if err == nil || !strings.Contains(err.Error(), "inspect logs body text index: probe failed") {
+		t.Fatalf("ApplyWithConfig error = %v, want probe failure", err)
+	}
 }
 
 // TestApplyWithConfig_CreatesDatabaseFirst pins the default cold-cluster

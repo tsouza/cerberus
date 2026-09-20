@@ -13,6 +13,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
@@ -26,7 +27,7 @@ func startClickHouse(t *testing.T) (driver.Conn, string) {
 
 	container, err := tcclickhouse.Run(
 		ctx,
-		"clickhouse/clickhouse-server:25.9-alpine",
+		"clickhouse/clickhouse-server:26.6-alpine",
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 		tcclickhouse.WithDatabase("otel"),
@@ -262,6 +263,69 @@ func TestApply_Idempotent(t *testing.T) {
 
 	if !sameStringSlice(first, second) {
 		t.Errorf("table list changed after second Apply:\n  before: %v\n  after:  %v", first, second)
+	}
+}
+
+func countBodyIndexes(ctx context.Context, t *testing.T, conn driver.Conn, database, table, indexType string) uint64 {
+	t.Helper()
+	query, args := chsql.NewQuery().
+		Select(chsql.Call("count")).
+		From(chsql.Qual("system", "data_skipping_indices")).
+		Where(chsql.And(
+			chsql.Eq(chsql.Col("database"), chsql.Lit(database)),
+			chsql.Eq(chsql.Col("table"), chsql.Lit(table)),
+			chsql.Eq(chsql.Col("type"), chsql.Lit(indexType)),
+			chsql.In(
+				chsql.Col("expr"),
+				chsql.Lit("lower(Body)"),
+				chsql.Lit("lower(`Body`)"),
+			),
+		)).
+		Build()
+	var count uint64
+	if err := conn.QueryRow(ctx, query, args...).Scan(&count); err != nil {
+		t.Fatalf("query Body indexes: %v", err)
+	}
+	return count
+}
+
+// TestApply_FullTextIndexReconcilesFreshAndLegacySchemas is the ClickHouse
+// 26.6 regression for the v1.21.0 readiness failure. A fresh table already
+// receives idx_lower_body TYPE text from CREATE and must not receive a second
+// text index on the same expression; a legacy tokenbf_v1 table still needs the
+// separately named idx_body_text additive upgrade. Reapplying is idempotent.
+func TestApply_FullTextIndexReconcilesFreshAndLegacySchemas(t *testing.T) {
+	conn, database := startClickHouse(t)
+	ctx := context.Background()
+
+	freshCfg := ddl.Config{Database: database, TextIndexEnabled: true}
+	if err := ddl.ApplyWithConfig(ctx, conn, freshCfg, []ddl.Signal{ddl.Logs}); err != nil {
+		t.Fatalf("fresh full-text schema: %v", err)
+	}
+	if got := countBodyIndexes(ctx, t, conn, database, "otel_logs", "text"); got != 1 {
+		t.Fatalf("fresh Body text indexes = %d, want 1", got)
+	}
+	if err := ddl.ApplyWithConfig(ctx, conn, freshCfg, []ddl.Signal{ddl.Logs}); err != nil {
+		t.Fatalf("repeat full-text reconciliation: %v", err)
+	}
+	if got := countBodyIndexes(ctx, t, conn, database, "otel_logs", "text"); got != 1 {
+		t.Fatalf("Body text indexes after repeat = %d, want 1", got)
+	}
+
+	const legacyTable = "otel_logs_legacy"
+	legacyCfg := ddl.Config{Database: database, Tables: ddl.Tables{Logs: legacyTable}}
+	if err := ddl.ApplyWithConfig(ctx, conn, legacyCfg, []ddl.Signal{ddl.Logs}); err != nil {
+		t.Fatalf("create legacy logs schema: %v", err)
+	}
+	legacyCfg.TextIndexEnabled = true
+	if err := ddl.ApplyWithConfig(ctx, conn, legacyCfg, []ddl.Signal{ddl.Logs}); err != nil {
+		t.Fatalf("upgrade legacy logs schema: %v", err)
+	}
+	if got := countBodyIndexes(ctx, t, conn, database, legacyTable, "text"); got != 1 {
+		t.Fatalf("upgraded legacy Body text indexes = %d, want 1", got)
+	}
+	if got := countBodyIndexes(ctx, t, conn, database, legacyTable, "tokenbf_v1"); got != 1 {
+		t.Fatalf("upgraded legacy Body tokenbf_v1 indexes = %d, want 1", got)
 	}
 }
 

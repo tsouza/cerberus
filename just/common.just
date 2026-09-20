@@ -12,6 +12,7 @@
 # it. TestIntegrationImagePinsMatchTheJustfile holds both against the literals in
 # the test sources.
 CH_TEST_IMAGE := "clickhouse/clickhouse-server:25.9-alpine"
+CH_SCHEMA_TEXT_INDEX_IMAGE := "clickhouse/clickhouse-server:26.6-alpine"
 CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
 
 # CH_STRICT_SCAN_IMAGE is the server the strict-scan differential boots. Unlike
