@@ -83,7 +83,7 @@ func (e *emitter) emitHistogramProjection(h *chplan.HistogramProjection) error {
 		return err
 	}
 
-	sb := NewQuery().From(sub)
+	sb := NewQuery().From(materializeHistogramInput(sub, h.Input.RowType()))
 	for i, g := range h.GroupBy {
 		expr := g
 		alias := ""

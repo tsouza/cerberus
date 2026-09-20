@@ -341,8 +341,8 @@ func histogramLowerers(l *promql.RangeLowerers, optSet chopt.EnabledSet) {
 	} else {
 		l.ClassicBucketMerge = promql.FanoutClassicBucketMergeLowerer{}
 	}
-	// exp_histogram_merge_summap (issues #2757 and #3640) has no version
-	// floor to probe and ships auto-selected: it covers every shape —
+	// exp_histogram_merge_summap (issue #2757) has no version floor to
+	// probe, but ships AutoSelect: false: it now covers every shape —
 	// instant AND range mode (cerberus issue #3027), any by()/without()
 	// grouping (#2865), SUM or AVG fold (#2866) — each with its own
 	// real-ClickHouse-calibrated budget guard rather than a reuse of the

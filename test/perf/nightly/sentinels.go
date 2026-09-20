@@ -280,10 +280,23 @@ var Sentinels = []Sentinel{
 		// own native-histogram sentinel is CI-fixture scale, see
 		// test/perf/smoke/seed.go) reaches today.
 		//
-		// Keep the complete production dashboard construct from issue #3640
-		// together: rate window, cross-series grouping, and quantile. The old
-		// bare-selector surrogate removed every expensive multiplier and let a
-		// 3.36-GiB regression ship despite this sentinel being green.
+		// Params deliberately does NOT wrap nativeHistogramMetric in a
+		// `sum by(...)(...)` aggregation the way the other by-route/by-method
+		// sentinels do. Measured directly against this exact derived data: a
+		// plain `sum by (http_route) (nativeHistogramMetric)` — even with NO
+		// rate()/window wrapper at all, at a SINGLE query anchor — genuinely
+		// exceeds the 1 GiB ClickHouse memory cap
+		// (MEMORY_LIMIT_EXCEEDED, not a clean chsql-level rejection): the
+		// native-histogram merge path has no resource-bound guard of its own
+		// yet (unlike RangeBucketFanout's #2429 fix), tracked as issue #2490.
+		// The bare per-series shape here — one `histogram_quantile` per
+		// original series, no cross-series merge — is a real,
+		// currently-lowerable PromQL construct (see
+		// test/spec/promql/histogram_quantile_native_range.txtar) that still
+		// exercises the SAME native quantile machinery (cum/revcum bucket
+		// walk over each series' own, now-fixed-layout — see loader.go —
+		// PositiveBucketCounts) at real per-series scale, without tripping
+		// the separately-tracked aggregation gap.
 		//
 		// WindowStart/WindowEnd/Step mirror
 		// classic_histogram_quantile_by_route's own narrowed window rather
@@ -317,7 +330,7 @@ var Sentinels = []Sentinel{
 		Step:             time.Minute,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
-				"query": {`histogram_quantile(0.95, sum by (http_route) (rate(` + nativeHistogramMetric + `[5m])))`},
+				"query": {`histogram_quantile(0.95, ` + nativeHistogramMetric + `)`},
 			}
 		},
 	},

@@ -571,6 +571,15 @@ perf-nightly-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -v -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
 
+# Complete dense native rate/aggregate/quantile dashboard: numeric parity and memory.
+native-histogram-dashboard-integration image=CH_STRICT_SCAN_IMAGE:
+    @just _pull-retry {{image}}
+    NATIVE_DASHBOARD_CH_IMAGE={{image}} go test -v -timeout 10m -tags=integration -count=1 -run '^TestNativeDashboardRealCH$' ./test/perf/nightly/...
+
+# Run the same dashboard contract on the oldest supported ClickHouse.
+native-histogram-dashboard-floor-integration:
+    just native-histogram-dashboard-integration {{CH_TEST_IMAGE_PRIOR}}
+
 # Run the ts_grid_instant real-data memory measurement (#2748): reuses this
 # package's own real, trimmed production sample
 # (test/perf/nightly/testdata/samples/svc_http_requests_total.parquet) in a
