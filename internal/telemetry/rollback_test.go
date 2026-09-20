@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -24,6 +25,16 @@ type recorder struct {
 	shutdownErr error
 
 	shutdownCalls int
+	buildCalls    int
+}
+
+func enabledConfig() Config {
+	return Config{
+		Endpoint:       "collector:4317",
+		MetricsEnabled: true,
+		LogsEnabled:    true,
+		TracesEnabled:  true,
+	}
 }
 
 func (r *recorder) shutdown(context.Context) error {
@@ -43,23 +54,42 @@ func builders(tracer, meter, logger *recorder, failAt string, failErr error) pro
 	}
 	return providerBuilders{
 		tracer: func(context.Context, Config, *resource.Resource) (trace.TracerProvider, shutdownFunc, error) {
+			tracer.buildCalls++
 			if err := stage("tracer"); err != nil {
 				return nil, nil, err
 			}
 			return tracenoop.NewTracerProvider(), tracer.shutdown, nil
 		},
-		meter: func(context.Context, Config, *resource.Resource) (metric.MeterProvider, shutdownFunc, error) {
+		meter: func(context.Context, Config, *resource.Resource) (metric.MeterProvider, http.Handler, shutdownFunc, error) {
+			meter.buildCalls++
 			if err := stage("meter"); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
-			return metricnoop.NewMeterProvider(), meter.shutdown, nil
+			return metricnoop.NewMeterProvider(), http.NotFoundHandler(), meter.shutdown, nil
 		},
 		logger: func(context.Context, Config, *resource.Resource) (otellog.LoggerProvider, shutdownFunc, error) {
+			logger.buildCalls++
 			if err := stage("logger"); err != nil {
 				return nil, nil, err
 			}
 			return lognoop.NewLoggerProvider(), logger.shutdown, nil
 		},
+	}
+}
+
+func TestNewProviders_PerSignalDirectExportControls(t *testing.T) {
+	tracer, meter, logger := &recorder{}, &recorder{}, &recorder{}
+	cfg := Config{Endpoint: "collector:4317"}
+	p, err := newProviders(t.Context(), cfg, resource.Empty(), builders(tracer, meter, logger, "", nil))
+	if err != nil {
+		t.Fatalf("newProviders: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Shutdown(t.Context()) })
+	if tracer.buildCalls != 0 || logger.buildCalls != 0 {
+		t.Errorf("disabled exporters built: traces=%d logs=%d", tracer.buildCalls, logger.buildCalls)
+	}
+	if meter.buildCalls != 1 {
+		t.Errorf("meter provider builds = %d, want 1 for always-on /metrics", meter.buildCalls)
 	}
 }
 
@@ -90,7 +120,7 @@ func TestNewProviders_RollsBackEarlierStages(t *testing.T) {
 			t.Parallel()
 
 			tracer, meter, logger := &recorder{}, &recorder{}, &recorder{}
-			p, err := newProviders(t.Context(), Config{Endpoint: "collector:4317"}, resource.Empty(),
+			p, err := newProviders(t.Context(), enabledConfig(), resource.Empty(),
 				builders(tracer, meter, logger, tc.failAt, boom))
 			if p != nil {
 				t.Fatalf("providers returned alongside an error: %#v", p)
@@ -151,7 +181,7 @@ func TestNewProviders_RollbackFailureSurfaces(t *testing.T) {
 			meter := &recorder{shutdownErr: metricStuck}
 			logger := &recorder{}
 
-			_, err := newProviders(t.Context(), Config{Endpoint: "collector:4317"}, resource.Empty(),
+			_, err := newProviders(t.Context(), enabledConfig(), resource.Empty(),
 				builders(tracer, meter, logger, tc.failAt, boom))
 			if err == nil {
 				t.Fatal("newProviders returned no error")
@@ -179,7 +209,7 @@ func TestNewProviders_SuccessKeepsProvidersLive(t *testing.T) {
 
 	tracer, meter, logger := &recorder{}, &recorder{}, &recorder{}
 
-	p, err := newProviders(t.Context(), Config{Endpoint: "collector:4317"}, resource.Empty(),
+	p, err := newProviders(t.Context(), enabledConfig(), resource.Empty(),
 		builders(tracer, meter, logger, "", nil))
 	if err != nil {
 		t.Fatalf("newProviders: %v", err)

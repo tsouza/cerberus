@@ -3,21 +3,20 @@ package telemetry
 import (
 	"context"
 	"net"
+	"net/http/httptest"
 	"testing"
 	"time"
 
-	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
-// TestNew_NoopWhenEndpointEmpty pins the zero-collector-dependency
-// default: an empty endpoint installs noop providers and Shutdown is a
-// no-op. This is the production-safe path that ships when an operator
-// hasn't pointed cerberus at a collector yet.
-func TestNew_NoopWhenEndpointEmpty(t *testing.T) {
+// TestNew_EndpointEmptyStillServesPrometheus pins the zero-collector-dependency
+// default: an empty endpoint keeps direct export dormant while the SDK meter
+// provider continues serving the always-on Prometheus endpoint.
+func TestNew_EndpointEmptyStillServesPrometheus(t *testing.T) {
 	providers, err := New(t.Context(), Config{Endpoint: ""})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -25,12 +24,17 @@ func TestNew_NoopWhenEndpointEmpty(t *testing.T) {
 	if _, isSDK := providers.TracerProvider.(*sdktrace.TracerProvider); isSDK {
 		t.Errorf("TracerProvider is SDK provider; want noop")
 	}
-	if _, isSDK := providers.MeterProvider.(*sdkmetric.MeterProvider); isSDK {
-		t.Errorf("MeterProvider is SDK provider; want noop")
+	if _, isSDK := providers.MeterProvider.(*sdkmetric.MeterProvider); !isSDK {
+		t.Errorf("MeterProvider type = %T; want SDK provider for /metrics", providers.MeterProvider)
 	}
 	// Smoke: both providers can still hand out a tracer/meter.
 	_ = providers.TracerProvider.Tracer("test")
 	_ = providers.MeterProvider.Meter("test")
+	rec := httptest.NewRecorder()
+	providers.MetricsHandler.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	if rec.Code != 200 {
+		t.Errorf("GET /metrics = %d, want 200", rec.Code)
+	}
 
 	if err := providers.Shutdown(t.Context()); err != nil {
 		t.Errorf("Shutdown: %v", err)
@@ -106,6 +110,9 @@ func TestNew_BuildsSDKProvidersWhenEndpointSet(t *testing.T) {
 		ServiceName:    "cerberus",
 		ServiceVersion: "test",
 		Headers:        map[string]string{"x-tenant": "ut"},
+		MetricsEnabled: true,
+		LogsEnabled:    true,
+		TracesEnabled:  true,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -149,7 +156,7 @@ func TestProviders_NoopInterfaceSatisfied(t *testing.T) {
 	if _, ok := providers.TracerProvider.(tracenoop.TracerProvider); !ok {
 		t.Errorf("TracerProvider not noop type: %T", providers.TracerProvider)
 	}
-	if _, ok := providers.MeterProvider.(metricnoop.MeterProvider); !ok {
-		t.Errorf("MeterProvider not noop type: %T", providers.MeterProvider)
+	if _, ok := providers.MeterProvider.(*sdkmetric.MeterProvider); !ok {
+		t.Errorf("MeterProvider type = %T; want SDK provider", providers.MeterProvider)
 	}
 }

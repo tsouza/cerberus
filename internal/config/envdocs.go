@@ -351,6 +351,9 @@ var envDocs = []EnvDoc{
 	{envOTLPHeaders, "string", "Self-telemetry (OTLP export)", "Comma-separated `key=value` gRPC metadata sent on every OTLP request (typically auth bearer tokens)."},
 	{envOTLPTimeout, docTypeDuration, "Self-telemetry (OTLP export)", "Per-request OTLP roundtrip timeout (applies to both the trace and metric exporters). `0` leaves each exporter's own default in place."},
 	{envOTLPExportInterval, docTypeDuration, "Self-telemetry (OTLP export)", "Metric `PeriodicReader` flush interval. The quickstart default is tuned for time-to-first-panel; deployments at scale should raise it (e.g. `60s`) to cut collector load. `0` leaves the `PeriodicReader`'s own default in place."},
+	{envOTLPMetricsEnabled, "bool", "Self-telemetry (OTLP export)", "Enable direct OTLP metric export. Defaults true. Does not control the always-on Prometheus `/metrics` endpoint."},
+	{envOTLPLogsEnabled, "bool", "Self-telemetry (OTLP export)", "Enable direct OTLP log export. Defaults true; false keeps stderr logging."},
+	{envOTLPTracesEnabled, "bool", "Self-telemetry (OTLP export)", "Enable direct OTLP trace export. Defaults true."},
 
 	// --- Schema provisioning ---
 	{envAutoCreateSchema, "bool", groupSchemaProvisioning, "When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins. The knobs below shape that DDL - all are no-ops unless this is `true`."},

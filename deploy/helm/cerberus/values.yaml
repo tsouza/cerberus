@@ -633,8 +633,8 @@ admit:
 
 otlp:
   # -- OTLP gRPC endpoint for cerberus self-telemetry export
-  # (CERBERUS_OTLP_ENDPOINT). EMPTY disables self-telemetry export entirely.
-  # cerberus has NO /metrics endpoint — this is the only observability path.
+  # (CERBERUS_OTLP_ENDPOINT). Empty leaves direct export dormant; /metrics is
+  # always available independently.
   endpoint: ""
   # -- Use an insecure (plaintext) OTLP connection (CERBERUS_OTLP_INSECURE).
   insecure: false
@@ -645,6 +645,16 @@ otlp:
   exportInterval: ""
   # -- Export timeout (CERBERUS_OTLP_TIMEOUT).
   timeout: ""
+  # -- Direct OTLP metric export. The Prometheus /metrics endpoint remains
+  # available when this is disabled.
+  metrics:
+    enabled: true
+  # -- Direct OTLP structured-log export. stderr logging remains available.
+  logs:
+    enabled: true
+  # -- Direct OTLP trace export.
+  traces:
+    enabled: true
 
 # -- Schema / DDL configuration (lowered to CERBERUS_SCHEMA_* env). The typed
 # keys (`ttl`, `replicated`) take precedence; any OTHER key is passed through

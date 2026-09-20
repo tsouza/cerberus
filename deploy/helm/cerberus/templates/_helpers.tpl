@@ -311,6 +311,9 @@ CERBERUS_OTLP_EXPORT_INTERVAL: {{ . | quote }}
 CERBERUS_OTLP_TIMEOUT: {{ . | quote }}
 {{- end }}
 {{- end }}
+CERBERUS_OTLP_METRICS_ENABLED: {{ .Values.otlp.metrics.enabled | quote }}
+CERBERUS_OTLP_LOGS_ENABLED: {{ .Values.otlp.logs.enabled | quote }}
+CERBERUS_OTLP_TRACES_ENABLED: {{ .Values.otlp.traces.enabled | quote }}
 {{- /* autoCreate is tri-state (null/true/false). Unset (null) resolves to the
        documented default — schema true, database false — so an EXPLICIT false
        wins (it is a concrete bool, never coerced) and renders exactly one key.

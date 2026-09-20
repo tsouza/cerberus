@@ -149,6 +149,9 @@ func TestNew_SDKShutdownHonorsContextDeadline(t *testing.T) {
 		Timeout:        50 * time.Millisecond,
 		ServiceName:    "cerberus",
 		ServiceVersion: "test",
+		MetricsEnabled: true,
+		LogsEnabled:    true,
+		TracesEnabled:  true,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -216,10 +219,13 @@ func TestNew_PropagatesHeadersToExporter(t *testing.T) {
 	_ = ln.Close()
 
 	providers, err := New(t.Context(), Config{
-		Endpoint: addr,
-		Insecure: true,
-		Headers:  map[string]string{"authorization": "Bearer abc", "x-tenant": "ut"},
-		Timeout:  500 * time.Millisecond,
+		Endpoint:       addr,
+		Insecure:       true,
+		Headers:        map[string]string{"authorization": "Bearer abc", "x-tenant": "ut"},
+		Timeout:        500 * time.Millisecond,
+		MetricsEnabled: true,
+		LogsEnabled:    true,
+		TracesEnabled:  true,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -248,9 +254,12 @@ func TestNew_SDKConstructorWithoutTimeout(t *testing.T) {
 	_ = ln.Close()
 
 	providers, err := New(t.Context(), Config{
-		Endpoint: addr,
-		Insecure: true,
-		Timeout:  0,
+		Endpoint:       addr,
+		Insecure:       true,
+		Timeout:        0,
+		MetricsEnabled: true,
+		LogsEnabled:    true,
+		TracesEnabled:  true,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

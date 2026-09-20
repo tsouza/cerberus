@@ -137,6 +137,9 @@ var bindings = []binding{
 	{"otlp.headers", envOTLPHeaders, bindScalar},
 	{"otlp.exportInterval", envOTLPExportInterval, bindScalar},
 	{"otlp.timeout", envOTLPTimeout, bindScalar},
+	{"otlp.metrics.enabled", envOTLPMetricsEnabled, bindScalar},
+	{"otlp.logs.enabled", envOTLPLogsEnabled, bindScalar},
+	{"otlp.traces.enabled", envOTLPTracesEnabled, bindScalar},
 
 	// Schema provisioning.
 	{"autoCreate.schema", envAutoCreateSchema, bindScalar},

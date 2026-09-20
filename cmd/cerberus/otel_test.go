@@ -159,3 +159,15 @@ func TestInstallOTel_InstallsPropagator(t *testing.T) {
 		t.Errorf("propagator fields missing baggage: %v", fields)
 	}
 }
+
+func TestMountMetrics(t *testing.T) {
+	mux := http.NewServeMux()
+	mountMetrics(mux, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("GET /metrics = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
