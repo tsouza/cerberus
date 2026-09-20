@@ -53,8 +53,9 @@ name: coverage
 #                      `coverage` aggregator, which reports its verdict.
 #   coverage-default   the default-tag `go test -coverpkg` lane
 #                      (`just coverage-default`), uploads cover.out.
-#   coverage-chdb       the chdb-tagged lane (`just coverage-chdb`), uploads
-#                      cover-chdb.out. Runs only 1/3 of TestCardinalityRatchet's
+#   coverage-chdb       four complete test partitions (`just coverage-chdb`),
+#                      uploading per-partition profiles and execution receipts.
+#                      Together they run 1/3 of TestCardinalityRatchet's
 #                      corpus itself (PERF_SHARD_INDEX=1) — the other two
 #                      shards run on their OWN runners, below.
 #   coverage-chdb-ratchet  tsouza/cerberus#2645: a 2-leg matrix, one runner
@@ -270,6 +271,7 @@ jobs:
           node --test .github/scripts/lib/coverage-fold.test.mjs
           node --test .github/scripts/coverage-merge.test.mjs
           node --test .github/scripts/coverage-chdb.test.mjs
+          node --test .github/scripts/lib/coverage-partition.test.mjs
 
       # Computed as a step output rather than a static job-level `env:` GHA
       # expression: a `push` event needs a network call (resolve the source PR
@@ -326,24 +328,18 @@ jobs:
   # coverage-chdb — the chdb-tagged `-coverpkg` lane, split out the same way
   # as coverage-default above (tsouza/cerberus#2634).
   coverage-chdb:
-    name: coverage-chdb
+    name: coverage-chdb (${{ matrix.shard }})
     needs: coverage-plan
     if: needs.coverage-plan.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
-    # `just coverage-chdb`'s own main-sweep `go test` is capped at
-    # `-timeout 60m`. This job no longer also carries the ratchet fan-out
-    # tail (SKIP_RATCHET_FANOUT below moved that to its own
-    # coverage-chdb-ratchet matrix, tsouza/cerberus#2645), so the 75-minute
-    # wrapper below now has real slack over that 60-minute internal cap —
-    # left unchanged rather than retuned speculatively: the only real
-    # measurement so far (main tip 4c16821f2) is the main sweep ALONE taking
-    # 45m34s, comfortably inside 75m, and a future PR can tighten this once
-    # a run without the fanout tail has actually reported its own timing.
-    #
-    # Bumped from 50 to 75 on 2026-08-26 (before this job stopped running the
-    # fanout inline): the first real push-to-main run after this job existed
-    # hit the old 50m wrapper exactly, the same corpus growth already
-    # documented on the recipe itself.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # Four disjoint groups split serial and parallel top-level tests, not just
+    # TXTAR fixtures. Each retains the 75-minute Go / 90-minute runner budgets.
+    # The unpartitioned PromQL process exhausted its cumulative timeout before
+    # its parallel TestLower corpus could finish (issue #3636).
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -372,14 +368,17 @@ jobs:
         env:
           COVERAGE_REQUIRE_LANES: default+chdb
           SKIP_RATCHET_FANOUT: '1'
+          COVERAGE_SHARD_INDEX: ${{ matrix.shard }}
         run: just coverage-chdb
 
       - name: Upload chdb-tagged coverage profile
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-profile-chdb
-          path: cover-chdb.out
+          name: coverage-profile-chdb-${{ matrix.shard }}
+          path: |
+            cover-chdb-part-${{ matrix.shard }}.out
+            cover-chdb-part-${{ matrix.shard }}.json
           if-no-files-found: warn
           retention-days: 1
 
@@ -506,11 +505,11 @@ jobs:
           tool: just@1.46.0
       # No `pattern:`-per-name repetition and no explicit `path:` needed:
       # `coverage-profile-*` already matches coverage-profile-default,
-      # coverage-profile-chdb AND both coverage-profile-chdb-ratchet-{2,3}
+      # coverage-profile-chdb-{1,2,3,4} AND coverage-profile-chdb-ratchet-{2,3}
       # legs (tsouza/cerberus#2645) without widening, and `merge-multiple:
       # true` drops each artifact's file directly into the checkout root
       # instead of a per-artifact subdirectory, so cover.out,
-      # cover-chdb.out and cover-chdb-ratchet-{2,3}.out all land exactly
+      # cover-chdb-part-{1,2,3,4}.{out,json} and ratchet profiles land exactly
       # where `just coverage-merge` (and a local run of the same recipe)
       # already expects them.
       - name: Download coverage lane profiles
@@ -520,7 +519,8 @@ jobs:
           pattern: coverage-profile-*
           merge-multiple: true
 
-      # `just coverage-merge` folds cover.out + cover-chdb.out into
+      # `just coverage-merge` validates all four partition receipts and folds
+      # their profiles into cover-chdb.out, then combines it with cover.out in
       # cover-merged.out and hands that FULL merged profile to
       # coverage-summary.mjs's floor gate — never a partial, per-lane
       # profile. COVERAGE_REQUIRE_LANES makes the gate refuse to run at all
@@ -533,6 +533,7 @@ jobs:
         if: env.RUN_HEAVY == 'true'
         env:
           COVERAGE_REQUIRE_LANES: default+chdb
+          COVERAGE_REQUIRE_PARTITIONS: '1'
         run: just coverage-merge
 
       - name: Upload merged coverage profile

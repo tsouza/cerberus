@@ -931,6 +931,10 @@ coverage-default:
 coverage-chdb:
     @CHDB_INSTALL_PATH="{{CHDB_INSTALL_PATH}}" CERBERUS_RAPID_SEED={{COVERAGE_RAPID_SEED}} node .github/scripts/coverage-chdb.mjs
 
+# Compile and enumerate the complete tagged coverage partition without executing tests.
+coverage-chdb-plan:
+    @CHDB_INSTALL_PATH="{{CHDB_INSTALL_PATH}}" CERBERUS_RAPID_SEED={{COVERAGE_RAPID_SEED}} node .github/scripts/coverage-chdb.mjs --plan
+
 # Merge cover.out (default-tag lane, required) with cover-chdb.out
 # (chdb-tagged lane, optional) into cover-merged.out and run the floor gate.
 # Reads whatever cover.out / cover-chdb.out already sit on disk, so it works

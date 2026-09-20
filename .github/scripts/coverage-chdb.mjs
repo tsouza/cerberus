@@ -47,6 +47,11 @@
 //   COVERAGE_REQUIRE_LANES (optional) `default+chdb` hard-fails (exit 1)
 //                          unless cover-chdb.out was actually produced.
 //   GO                     go executable; default `go`. Test seam.
+//   COVERAGE_SHARD_INDEX   optional 1-based index into the complete CI test
+//                          partition. Produces cover-chdb-part-N.out/.json;
+//                          absent preserves the complete local sweep.
+//   --plan                 compile/list the real inventory and validate all
+//                          selectors without executing tests or writing profiles.
 //
 // Exit: 0 on a graceful skip or a successful run; 1 on a failed `go test`, a
 // failed fan-out, or COVERAGE_REQUIRE_LANES=default+chdb with no
@@ -60,6 +65,7 @@ import process from 'node:process';
 
 import { capture, error, isNonEmptyFile, log } from './lib/gh.mjs';
 import { RATCHET_FANOUT } from './perf-coverage-fanout.mjs';
+import { COVERAGE_SHARDS, parseTestInventory, partitionTests, shardProfile, writePartitionReceipt } from './lib/coverage-partition.mjs';
 
 /** The composite build-tag set every chdb-tagged package in this lane needs. */
 export const CHDB_TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle';
@@ -76,7 +82,7 @@ export const CHDB_TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle';
  */
 const PERF_SHARD_INDEX = 1;
 
-/** Per CLAUDE.md invariant 13: named rather than a bare `60`. */
+/** Per-process timeout; CI partitions tests without increasing this budget. */
 const MAIN_SWEEP_TIMEOUT_MINUTES = 75;
 
 const COVERAGE_PROFILE = 'cover-chdb.out';
@@ -89,13 +95,14 @@ const FANOUT_SCRIPT = new URL('./perf-coverage-fanout.mjs', import.meta.url);
  * perf-coverage-fanout.mjs's own legCommands() already established, instead
  * of parsing this file's source as unstructured text.
  */
-export function mainSweepArgv(coverpkg) {
+export function mainSweepArgv(coverpkg, plan = null) {
   return [
     'test',
     '-timeout', `${MAIN_SWEEP_TIMEOUT_MINUTES}m`,
     '-tags', CHDB_TAGS,
     '-coverpkg', coverpkg,
-    '-coverprofile', COVERAGE_PROFILE,
+    '-coverprofile', plan ? shardProfile(plan.index) : COVERAGE_PROFILE,
+    ...(plan ? ['-json', '-run', plan.pattern] : []),
     './...',
   ];
 }
@@ -123,28 +130,44 @@ export function filterCoverpkgLine(line) {
  * patching the real process.stdout, which would race other tests' own
  * output under the test runner's default concurrency.
  */
-export function pipeFilteredStdout(child, sink = process.stdout) {
+export function pipeFilteredStdout(child, sink = process.stdout, reportLine = filterCoverpkgLine) {
   let carry = '';
   child.stdout.on('data', (chunk) => {
     carry += chunk.toString();
     const lines = carry.split('\n');
     carry = lines.pop();
-    for (const l of lines) sink.write(`${filterCoverpkgLine(l)}\n`);
+    for (const l of lines) { const report = reportLine(l); if (report) sink.write(`${report}\n`); }
   });
   child.stdout.on('end', () => {
-    if (carry) sink.write(`${filterCoverpkgLine(carry)}\n`);
+    if (carry) { const report = reportLine(carry); if (report) sink.write(`${report}\n`); }
   });
 }
 
 /** Runs the main `go test` sweep, resolving to its exit code. */
-function runMainSweep(argv, env, cwd, go, stdout) {
+function runMainSweep(argv, env, cwd, go, stdout, passed = null) {
   return new Promise((resolve) => {
     const child = spawn(go, argv, {
       cwd,
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
-    pipeFilteredStdout(child, stdout);
+    const recentOutput = [];
+    const failureContextLines = 100;
+    pipeFilteredStdout(child, stdout, passed ? (line) => {
+      const event = JSON.parse(line);
+      if (event.Action === 'pass' && event.Test && !event.Test.includes('/')) {
+        passed.add(`${event.Package}/${event.Test}`);
+        return `${event.Package}/${event.Test}: PASS (${event.Elapsed}s)`;
+      }
+      if (event.Action === 'output') {
+        recentOutput.push(event.Output.trimEnd());
+        if (recentOutput.length > failureContextLines) recentOutput.shift();
+        return event.Test ? '' : filterCoverpkgLine(event.Output.trimEnd());
+      }
+      if (event.Action === 'fail') return recentOutput.join('\n');
+      return '';
+    } : filterCoverpkgLine);
+    child.on('error', () => resolve(1));
     child.on('close', (code) => resolve(code ?? 1));
   });
 }
@@ -155,7 +178,7 @@ function runMainSweep(argv, env, cwd, go, stdout) {
  * entry point below always uses the real ones. Returns the exit status the
  * CLI should use; never throws.
  */
-export async function main({ cwd = process.cwd(), env = process.env, go = env.GO || 'go', stdout = process.stdout } = {}) {
+export async function main({ cwd = process.cwd(), env = process.env, go = env.GO || 'go', stdout = process.stdout, planOnly = false } = {}) {
   const p = (name) => join(cwd, name);
 
   const chdbPath = env.CHDB_INSTALL_PATH;
@@ -182,14 +205,41 @@ export async function main({ cwd = process.cwd(), env = process.env, go = env.GO
     }
     const coverpkg = listResult.stdout.split('\n').filter(Boolean).join(',');
 
+    // A CI matrix partitions the COMPLETE runtime-discovered test inventory,
+    // not just TestLower's corpus. Serial tests can consume most of a package's
+    // cumulative Go timeout before its parallel corpus tests even start (#3636).
+    let plan = null;
+    if (env.COVERAGE_SHARD_INDEX !== undefined || planOnly) {
+      const listed = capture(go, ['test', '-json', '-list', '.', '-tags', CHDB_TAGS, '-coverpkg', coverpkg, './...'],
+        { cwd, env: { ...process.env, ...env } });
+      if (listed.status !== 0) { error(listed.stderr || listed.stdout); return listed.status; }
+      const inventory = parseTestInventory(listed.stdout);
+      if (planOnly) {
+        for (let index = 1; index <= COVERAGE_SHARDS; index++) {
+          const partition = partitionTests(inventory, index);
+          const promql = partition.selected.filter((entry) => entry.package.endsWith('/internal/promql')).length;
+          log(`coverage partition ${index}/${COVERAGE_SHARDS}: ${partition.selected.length}/${inventory.length} tests; ${promql} internal/promql tests; selector ${Buffer.byteLength(partition.pattern)} bytes`);
+        }
+        return 0;
+      }
+      plan = partitionTests(inventory, Number(env.COVERAGE_SHARD_INDEX));
+      log(`==> coverage partition ${plan.index}/${plan.count}: ${plan.selected.length}/${plan.inventory.length} tests`);
+    }
+
     const testEnv = {
       ...env,
       CERBERUS_RAPID_SEED: rapidSeed,
       PERF_SHARD_INDEX: String(PERF_SHARD_INDEX),
       PERF_SHARD_COUNT: String(RATCHET_FANOUT),
     };
-    const code = await runMainSweep(mainSweepArgv(coverpkg), testEnv, cwd, go, stdout);
+    const passed = plan ? new Set() : null;
+    const code = await runMainSweep(mainSweepArgv(coverpkg, plan), testEnv, cwd, go, stdout, passed);
     if (code !== 0) return code;
+    if (plan) {
+      const revision = capture('git', ['rev-parse', 'HEAD'], { cwd });
+      if (revision.status !== 0) { error(revision.stderr); return revision.status; }
+      writePartitionReceipt(cwd, plan, passed, revision.stdout.trim());
+    }
 
     if (env.SKIP_RATCHET_FANOUT === '1') {
       log('==> SKIP_RATCHET_FANOUT=1: shards 2..PERF_SHARD_COUNT run on their own coverage-chdb-ratchet CI matrix legs, not here');
@@ -210,8 +260,9 @@ export async function main({ cwd = process.cwd(), env = process.env, go = env.GO
   // chdb lane MUST have produced real evidence — CI sets this so an install
   // that silently no-ops fails here instead of only surfacing three steps
   // later as a narrower merged profile.
-  if (env.COVERAGE_REQUIRE_LANES === 'default+chdb' && !isNonEmptyFile(p(COVERAGE_PROFILE))) {
-    error(`COVERAGE_REQUIRE_LANES=default+chdb but ${COVERAGE_PROFILE} was not produced (libchdb.so missing?)`);
+  const producedProfile = env.COVERAGE_SHARD_INDEX !== undefined ? shardProfile(Number(env.COVERAGE_SHARD_INDEX)) : COVERAGE_PROFILE;
+  if (env.COVERAGE_REQUIRE_LANES === 'default+chdb' && !isNonEmptyFile(p(producedProfile))) {
+    error(`COVERAGE_REQUIRE_LANES=default+chdb but ${producedProfile} was not produced (libchdb.so missing?)`);
     return 1;
   }
   return 0;
@@ -220,4 +271,4 @@ export async function main({ cwd = process.cwd(), env = process.env, go = env.GO
 // Import-safe: coverage-chdb.test.mjs and perf-coverage-fanout.test.mjs both
 // import mainSweepArgv()/CHDB_TAGS without triggering a real run.
 const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (invokedDirectly) process.exit(await main());
+if (invokedDirectly) process.exit(await main({ planOnly: process.argv.includes('--plan') }));
