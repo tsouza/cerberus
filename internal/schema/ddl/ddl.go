@@ -40,6 +40,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter/sqltemplates"
 
@@ -989,6 +990,16 @@ func applySignal(ctx context.Context, conn driver.Conn, cfg Config, s Signal) er
 		return err
 	}
 	for _, stmt := range stmts {
+		execCtx := ctx
+		if s == Metrics && cfg.DownsampleTierEnabled && isDownsampleTierDDL(cfg, stmt) {
+			// AggregateFunction(timeSeriesLastTwoSamples, ...) needs this
+			// gate even during CREATE, before any data-plane query runs.
+			// Scope it to the opt-in table and its two materialized views;
+			// unrelated DDL must still work on older ClickHouse versions.
+			execCtx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+				downsampleExperimentalSetting: 1,
+			}))
+		}
 		if s == Logs && cfg.TextIndexEnabled && stmt == renderAddBodyTextIndex(textIndexTargetConfig(cfg)) {
 			hasTextIndex, probeErr := logsBodyTextIndexExists(ctx, conn, cfg)
 			if probeErr != nil {
@@ -998,7 +1009,7 @@ func applySignal(ctx context.Context, conn driver.Conn, cfg Config, s Signal) er
 				continue
 			}
 		}
-		if err := conn.Exec(ctx, stmt); err != nil {
+		if err := conn.Exec(execCtx, stmt); err != nil {
 			// A column-statistics ALTER (issue #2766) can be legitimately
 			// REFUSED by the connected server — ClickHouse Cloud supports no
 			// statistics at all — and that refusal must not fail the whole
@@ -1021,6 +1032,14 @@ func applySignal(ctx context.Context, conn driver.Conn, cfg Config, s Signal) er
 		}
 	}
 	return nil
+}
+
+const downsampleExperimentalSetting = "allow_experimental_time_series_aggregate_functions"
+
+func isDownsampleTierDDL(cfg Config, stmt string) bool {
+	return stmt == renderDownsampleTierTable(cfg) ||
+		stmt == renderDownsampleTierView(cfg) ||
+		stmt == renderDownsampleTierGaugeView(cfg)
 }
 
 // textIndexTargetConfig returns the physical logs-table config targeted by

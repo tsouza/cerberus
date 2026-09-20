@@ -5,6 +5,7 @@ package ddl_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -14,12 +15,42 @@ import (
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
-// startClickHouse spins up a real ClickHouse via testcontainers and returns
-// a driver.Conn bound to it plus a cleanup func. The image tracks the same
-// `25-alpine` line used by chclient's integration test.
+func TestApplyWithConfig_DownsampleTierExperimentalGate(t *testing.T) {
+	conn, database := startClickHouse(t)
+	const schemaTimeout = time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), schemaTimeout)
+	defer cancel()
+	cfg := ddl.Config{Database: database, DownsampleTierEnabled: true}
+	settingQuery, settingArgs := chsql.NewQuery().Select(chsql.Call("toUInt64", chsql.Call("getSetting",
+		chsql.InlineLit("allow_experimental_time_series_aggregate_functions")))).Build()
+	assertDefaultSetting := func() {
+		t.Helper()
+		var enabled uint64
+		if err := conn.QueryRow(ctx, settingQuery, settingArgs...).Scan(&enabled); err != nil {
+			t.Fatalf("read experimental setting: %v", err)
+		}
+		if enabled != 0 {
+			t.Fatalf("experimental setting outside downsample DDL = %d, want 0", enabled)
+		}
+	}
+	assertDefaultSetting()
+	for range 2 {
+		if err := ddl.ApplyWithConfig(ctx, conn, cfg, []ddl.Signal{ddl.Metrics}); err != nil {
+			t.Fatalf("apply downsample schema with default server settings: %v", err)
+		}
+	}
+	if tables := listTables(ctx, t, conn, database); !slices.Contains(tables, schema.DownsampleTierTable) {
+		t.Fatalf("downsample table missing after reconciliation: %v", tables)
+	}
+	assertDefaultSetting()
+}
+
+// startClickHouse spins up a real ClickHouse via testcontainers and registers
+// cleanup for the container and its connection.
 func startClickHouse(t *testing.T) (driver.Conn, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
