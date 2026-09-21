@@ -263,6 +263,8 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		return err
 	}
 
+	sub = materializeHistogramInput(sub, h.Input.RowType())
+
 	// Native quantile interpolation reuses the bucket walk, cumulative
 	// counts, stop index, value index, and the first/last populated-bucket
 	// positions many times. Keep each one in its own typed derived-query

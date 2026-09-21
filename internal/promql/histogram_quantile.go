@@ -2816,9 +2816,12 @@ func expHistogramBucketSliceBoundsExpr(
 
 	// ratio = 2^(s - mergedScale): every ratio consecutive absolute
 	// buckets at row scale fold onto one merged-scale bucket.
+	// Widen BEFORE shifting: ClickHouse can shift the literal 1 at UInt8
+	// width even when the result type is Int32. Scale gaps >= 8 then wrap to
+	// zero and silently discard fine-scale bucket contributions.
 	ratio := &chplan.FuncCall{
 		Fn:   chplan.FnBitShiftLeft,
-		Args: []chplan.Expr{&chplan.LitInt{V: 1}, subExpr(rowScale, mergedScale)},
+		Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnToInt64, Args: []chplan.Expr{&chplan.LitInt{V: 1}}}, subExpr(rowScale, mergedScale)},
 	}
 	// target absolute index = mergedStart + t (t is 0-based).
 	targetAbs := addExpr(mergedStart, target)

@@ -312,6 +312,12 @@ jobs:
       - name: Run perf-smoke sentinel differential (real ClickHouse)
         run: just perf-smoke-integration
 
+      - name: Run dense native histogram dashboard correctness and memory regression
+        run: just native-histogram-dashboard-integration
+
+      - name: Run dense native histogram dashboard on the supported ClickHouse floor
+        run: just native-histogram-dashboard-floor-integration
+
       # test/perf/smoke's own TestPerfSmokeRealCH (the step above) also
       # leaves .Lowerers at prom.New's zero value, so it never exercised any
       # native ts_grid_* family either (#2487) — the package-local sibling of

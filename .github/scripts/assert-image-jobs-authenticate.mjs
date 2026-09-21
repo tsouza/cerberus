@@ -492,11 +492,14 @@ function parseJustfile(text) {
     }
     // A recipe header sits at column 0 and its body is indented. Dependencies
     // after the colon are other recipes and are followed too.
-    const r = /^([A-Za-z_][A-Za-z0-9_-]*)((?:\s+[+*]?[A-Za-z_][A-Za-z0-9_]*(?:="[^"]*")?)*)\s*:(.*)$/.exec(line);
+    const parameter = String.raw`[+*]?[A-Za-z_][A-Za-z0-9_]*(?:=(?:"[^"]*"|[A-Za-z_][A-Za-z0-9_]*))?`;
+    const r = new RegExp(`^([A-Za-z_][A-Za-z0-9_-]*)((?:\\s+${parameter})*)\\s*:(.*)$`).exec(line);
     if (!r || line.startsWith(' ') || line.startsWith('\t')) continue;
-    const params = (r[2].match(/[+*]?[A-Za-z_][A-Za-z0-9_]*(?:="[^"]*")?/g) ?? []).map((p) => {
+    const params = (r[2].match(new RegExp(parameter, 'g')) ?? []).map((p) => {
       const [name, dflt] = p.replace(/^[+*]/, '').split('=');
-      return { name, dflt: dflt === undefined ? null : unquote(dflt) };
+      if (dflt === undefined) return { name, dflt: null };
+      const value = dflt.startsWith('"') ? unquote(dflt) : `{{${dflt}}}`;
+      return { name, dflt: value };
     });
     const deps = r[3].trim().split(/\s+/).filter((d) => d !== '' && !d.startsWith('#'));
     const body = [];
@@ -921,7 +924,7 @@ class Resolver {
       // unbound so `expandVars` reports it rather than inventing a value.
       const value = i === recipe.params.length - 1 ? args.slice(i).join(' ') : args[i];
       if (value !== undefined && value !== '') bound[p.name] = value;
-      else if (p.dflt !== null) bound[p.name] = p.dflt;
+      else if (p.dflt !== null) bound[p.name] = expandVars(p.dflt, bound) ?? p.dflt;
     });
     for (const dep of recipe.deps) this.command(['just', dep], scope, findings, depth + 1);
     for (const line of recipe.body) {

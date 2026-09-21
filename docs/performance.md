@@ -497,6 +497,24 @@ established, Prometheus-exact path. The full env-var contract and CH-version
 constraint live in
 [`operations.md`](operations.md#native-rate-timeseriesratetogrid--auto-enabled-on-259).
 
+## Native histogram dashboard regression
+
+`just native-histogram-dashboard-integration` executes the complete native
+`histogram_quantile(sum by (...)(rate(...[5m])))` dashboard expression on real
+ClickHouse. `just native-histogram-dashboard-floor-integration` runs the same
+contract on the oldest supported server. Both run inside the required
+`strict-scan` check on code-changing pull requests and release branches.
+
+The fixture has 96 series, scales 3–20, 100–159 populated positive buckets per
+sample, and 131 samples per series. Tests check instant results and all 121
+anchors of a one-hour range at 30-second resolution against independently merged
+bucket masses, including labels and timestamps. Each query must stay below
+512 MiB of recorded peak memory under a separate 1 GiB server query cap.
+
+A six-series selection uses default admission limits. The full fixture uses an
+explicit test-only fold-work budget; it does not change production defaults or
+the physical memory cap. Query duration is recorded but is not a latency gate.
+
 ## See also
 
 - [`benchmarks.md`](benchmarks.md) — live before/after wins, scaling curves,

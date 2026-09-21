@@ -233,9 +233,14 @@ func runTSGridInstantQuery(t *testing.T, mux *http.ServeMux, query string, ts ti
 // mirroring that function's own shape.
 func startTSGridInstantCH(ctx context.Context, t *testing.T) (*tcclickhouse.ClickHouseContainer, *chclient.Client) {
 	t.Helper()
+	return startNightlyCH(ctx, t, tsGridInstantCHImage)
+}
+
+func startNightlyCH(ctx context.Context, t *testing.T, image string) (*tcclickhouse.ClickHouseContainer, *chclient.Client) {
+	t.Helper()
 	container, err := tcclickhouse.Run(
 		ctx,
-		tsGridInstantCHImage,
+		image,
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 		tcclickhouse.WithDatabase(perfNightlyDB),
