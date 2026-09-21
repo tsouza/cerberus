@@ -244,16 +244,6 @@ func cloneCompositeNode(n Node) Node {
 		return cloneInfoJoin(v)
 	case *NaryVectorSetOp:
 		return cloneNaryVectorSetOp(v)
-	case *HistogramQuantile:
-		return cloneHistogramQuantile(v)
-	case *HistogramQuantileNative:
-		return cloneHistogramQuantileNative(v)
-	case *HistogramQuantiles:
-		return cloneHistogramQuantiles(v)
-	case *HistogramQuantilesNative:
-		return cloneHistogramQuantilesNative(v)
-	case *HistogramProjection:
-		return cloneHistogramProjection(v)
 	case *MetricsAggregate:
 		return cloneMetricsAggregate(v)
 	case *MetricsCompare:
@@ -269,6 +259,23 @@ func cloneCompositeNode(n Node) Node {
 		c := *v
 		c.Input = CloneNode(v.Input)
 		return &c
+	default:
+		return cloneHistogramNode(n)
+	}
+}
+
+func cloneHistogramNode(n Node) Node {
+	switch v := n.(type) {
+	case *HistogramQuantile:
+		return cloneHistogramQuantile(v)
+	case *HistogramQuantileNative:
+		return cloneHistogramQuantileNative(v)
+	case *HistogramQuantiles:
+		return cloneHistogramQuantiles(v)
+	case *HistogramQuantilesNative:
+		return cloneHistogramQuantilesNative(v)
+	case *HistogramProjection:
+		return cloneHistogramProjection(v)
 	default:
 		panic(fmt.Sprintf("chplan.CloneNode: unhandled Node type %T — extend the switch in clone.go", n))
 	}

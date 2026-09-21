@@ -256,8 +256,14 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 			}
 			return lowerHistogramQuantileNativeAgg(shape, phi, s, ctx)
 		}
-		if plan, ok, err := lowerHistogramQuantileNativeBucketRates(c.Args[1], shape, phi, s, ctx); ok {
-			return plan, err
+		if shape.windowFn == "rate" {
+			inner, err := lower(c.Args[1], s, ctx)
+			if err != nil {
+				return nil, err
+			}
+			if plan, ok := lowerHistogramQuantileNativeBucketRates(inner, phi, s, ctx); ok {
+				return plan, nil
+			}
 		}
 		// Range mode: build a per-step plan that fans the bucket
 		// aggregation + quantile interpolation across the request's step
@@ -550,6 +556,7 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 	phiArgs := c.Args[2:]
 	levels := make([]chplan.HistogramQuantileLevel, len(phiArgs))
 	allConstant := len(phiArgs) > 1
+	var shareableKernelPhi parser.Expr
 	for i, phiExpr := range phiArgs {
 		phi, ok := tryScalarLiteral(phiExpr)
 		if !ok {
@@ -560,21 +567,23 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 			Phi:   phi,
 			Label: labels.FormatOpenMetricsFloat(phi),
 		}
+		if shareableKernelPhi == nil && !math.IsNaN(phi) && phi >= 0 && phi <= 1 {
+			shareableKernelPhi = phiExpr
+		}
 	}
-	if allConstant {
+	if allConstant && shareableKernelPhi != nil {
 		kernelCall := &parser.Call{
 			Func: parser.Functions["histogram_quantile"],
-			Args: parser.Expressions{phiArgs[0], vectorArg},
+			Args: parser.Expressions{shareableKernelPhi, vectorArg},
 		}
 		kernel, err := lowerHistogramQuantile(kernelCall, s, ctx)
 		if err != nil {
 			return nil, err
 		}
 		shared, replacements := lowerSharedHistogramQuantileKernels(kernel, labelName, levels)
-		if replacements == 0 {
-			return nil, fmt.Errorf("promql: histogram_quantiles input produced no histogram kernel")
+		if replacements > 0 {
+			return shared, nil
 		}
-		return shared, nil
 	}
 
 	arms := make([]chplan.Node, 0, len(phiArgs))

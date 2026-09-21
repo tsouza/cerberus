@@ -1,8 +1,6 @@
 package promql
 
 import (
-	"github.com/prometheus/prometheus/promql/parser"
-
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -32,14 +30,7 @@ func isClassicBucketRateGrid(input chplan.Node, s schema.Metrics) bool {
 // histogram arrays only AFTER that reduction avoids retaining each source
 // histogram's full ladder inside the cross-series quantile merge.
 // Older servers and non-eligible grids keep their specialized bounded path.
-func lowerHistogramQuantileNativeBucketRates(arg parser.Expr, shape histogramAggShape, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
-	if shape.windowFn != "rate" {
-		return nil, false, nil
-	}
-	inner, err := lower(arg, s, ctx)
-	if err != nil {
-		return nil, true, err
-	}
+func lowerHistogramQuantileNativeBucketRates(inner chplan.Node, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool) {
 	native, fallback := false, false
 	chplan.Walk(inner, func(node chplan.Node) bool {
 		switch node.(type) {
@@ -51,7 +42,7 @@ func lowerHistogramQuantileNativeBucketRates(arg parser.Expr, shape histogramAgg
 		return true
 	})
 	if !native || fallback {
-		return nil, false, nil
+		return nil, false
 	}
-	return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), true, nil
+	return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), true
 }

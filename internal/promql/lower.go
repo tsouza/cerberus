@@ -4066,23 +4066,6 @@ func isCanonicalSampleProject(p *chplan.Project, s schema.Metrics) bool {
 	return len(want) == 0
 }
 
-// isPlainScanFilter reports whether n is a row-shape relation the native
-// timeSeriesRateToGrid emitter can consume directly: a Scan, or a Filter
-// chain bottoming out in a Scan. Anything else (the metrics_* TraceQL
-// families, joins, set-ops) has its own emit branch and is ineligible.
-func isPlainScanFilter(n chplan.Node) bool {
-	for {
-		switch v := n.(type) {
-		case *chplan.Scan:
-			return true
-		case *chplan.Filter:
-			n = v.Input
-		default:
-			return false
-		}
-	}
-}
-
 // counterTemporalityRangeFn reports whether a range function reads its
 // window as a COUNTER — i.e. whether its per-window arithmetic differs
 // between a CUMULATIVE and a DELTA AggregationTemporality, and so needs

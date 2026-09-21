@@ -31,6 +31,14 @@ func PrintChplan(n chplan.Node) string {
 	return b.String()
 }
 
+func printHistogramQuantileLevels(levels []chplan.HistogramQuantileLevel) string {
+	parts := make([]string, len(levels))
+	for i, level := range levels {
+		parts[i] = fmt.Sprintf("%s=%s", level.Label, strconv.FormatFloat(level.Phi, 'g', -1, 64))
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
 // printNode renders one node and its subtree.
 //
 // The per-kind arms below reach their structural children through
@@ -734,6 +742,18 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		}
 		b.WriteString("\n")
 		printChild(b, visited, v.Input, depth+1)
+	case *chplan.HistogramQuantiles:
+		fmt.Fprintf(b, "%sHistogramQuantiles label=%s levels=%s\n", indent, v.LabelName, printHistogramQuantileLevels(v.Levels))
+		if v.Histogram != nil {
+			*visited = append(*visited, v.Histogram.Input)
+			printNode(b, v.Histogram, depth+1)
+		}
+	case *chplan.HistogramQuantilesNative:
+		fmt.Fprintf(b, "%sHistogramQuantilesNative label=%s levels=%s\n", indent, v.LabelName, printHistogramQuantileLevels(v.Levels))
+		if v.Histogram != nil {
+			*visited = append(*visited, v.Histogram.Input)
+			printNode(b, v.Histogram, depth+1)
+		}
 	case *chplan.HistogramProjection:
 		// Only the projection's own output list is printed. The nine
 		// Histogram*Column source names are a mechanical function of the

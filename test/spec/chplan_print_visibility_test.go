@@ -63,6 +63,8 @@ var chplanNodePrototypes = []chplan.Node{
 	(*chplan.HistogramProjection)(nil),
 	(*chplan.HistogramQuantile)(nil),
 	(*chplan.HistogramQuantileNative)(nil),
+	(*chplan.HistogramQuantiles)(nil),
+	(*chplan.HistogramQuantilesNative)(nil),
 	(*chplan.HistogramVectorJoin)(nil),
 	(*chplan.InfoJoin)(nil),
 	(*chplan.Limit)(nil),

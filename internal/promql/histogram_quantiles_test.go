@@ -148,6 +148,43 @@ func TestLower_HistogramQuantiles_PreservesDuplicateLevels(t *testing.T) {
 	}
 }
 
+func TestLower_HistogramQuantiles_SharesWhenFirstLevelIsOutOfDomain(t *testing.T) {
+	t.Parallel()
+	expr, err := newExperimentalParser().ParseExpr(`histogram_quantiles(http_server_request_duration, "q", -1, 0.5, 2)`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := promql.Lower(context.Background(), expr, schema.DefaultOTelMetrics())
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	shared := findSharedHistogramQuantiles(plan)
+	if len(shared) != 1 {
+		t.Fatalf("shared histogram kernels = %d, want 1", len(shared))
+	}
+	if got := len(shared[0].Levels); got != 3 {
+		t.Fatalf("shared levels = %d, want 3", got)
+	}
+}
+
+func TestLower_HistogramQuantiles_AllOutOfDomainFallsBackWithoutRejecting(t *testing.T) {
+	t.Parallel()
+	expr, err := newExperimentalParser().ParseExpr(`histogram_quantiles(http_server_request_duration, "q", -1, 2)`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := promql.Lower(context.Background(), expr, schema.DefaultOTelMetrics())
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	if got := countSharedHistogramKernels(plan); got != 0 {
+		t.Fatalf("shared histogram kernels = %d, want fallback", got)
+	}
+	if _, ok := plan.(*chplan.UnionAll); !ok {
+		t.Fatalf("all-out-of-domain fallback = %T, want *chplan.UnionAll", plan)
+	}
+}
+
 func TestLower_HistogramQuantiles_DynamicLevelDoesNotShare(t *testing.T) {
 	t.Parallel()
 	expr, err := newExperimentalParser().ParseExpr(`histogram_quantiles(http_server_request_duration, "q", 0.5, scalar(http_server_request_duration), 0.99)`)

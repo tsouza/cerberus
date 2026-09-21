@@ -45,10 +45,10 @@ jobs:
     name: perf-nightly
     runs-on: ubuntu-latest
     # Generous: pulls one ClickHouse image, loads ~4.3M real rows across 3
-    # tables, and issues 4 sentinel queries, plus a second dedicated
-    # ClickHouse container + one more real-data load for the ts_grid_instant
-    # memory measurement below (#2748).
-    timeout-minutes: 30
+    # tables, and issues 4 sentinel queries, plus dedicated ClickHouse
+    # containers and real-data loads for the ts_grid_instant memory measurement
+    # (#2748) and the classic-histogram production-report replay below.
+    timeout-minutes: 90
     env:
       # Read by results.go's writeResultsJSON (the test step) and by
       # perf-nightly-step-summary.mjs (the summary step below) — same
@@ -96,6 +96,9 @@ jobs:
       # realch_ts_grid_instant_memory_integration_test.go.
       - name: "Run the ts_grid_instant real-data memory measurement (real ClickHouse)"
         run: just ts-grid-instant-memory-integration
+
+      - name: Run classic-histogram production-report replay
+        run: just histogram-report-lfs-integration
 
       # Renders the per-sentinel verdict as a clear table in the job's
       # Summary tab BEFORE the raw log — see perf-nightly-step-summary.mjs's
