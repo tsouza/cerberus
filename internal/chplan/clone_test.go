@@ -121,6 +121,8 @@ func allNodeKinds() []chplan.Node {
 		},
 		&chplan.HistogramQuantile{Input: leaf, Phi: 0.9, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"}, BucketCountsColumn: "BucketCounts"},
 		&chplan.HistogramQuantileNative{Input: leaf, Phi: 0.9, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"}, ScaleColumn: "Scale"},
+		&chplan.HistogramQuantiles{Histogram: &chplan.HistogramQuantile{Input: leaf}, LabelName: "quantile", Levels: []chplan.HistogramQuantileLevel{{Phi: 0.5, Label: "0.5"}}},
+		&chplan.HistogramQuantilesNative{Histogram: &chplan.HistogramQuantileNative{Input: leaf}, LabelName: "quantile", Levels: []chplan.HistogramQuantileLevel{{Phi: 0.5, Label: "0.5"}}},
 		&chplan.HistogramProjection{
 			Input: leaf, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"},
 			CountColumn: "Count", SumColumn: "Sum", ScaleColumn: "Scale",

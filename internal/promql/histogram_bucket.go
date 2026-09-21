@@ -247,3 +247,26 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 // Project's expressions. Lowercase ASCII / underscore / digit shape
 // satisfies the BareIdent trust contract (see chplan.BareIdent doc).
 const bucketIdxAlias = "le_idx"
+
+// isClassicBucketFanoutProject recognizes the row expansion produced above.
+// It changes one stored histogram into independent cumulative bucket counters,
+// not evaluation anchors. Native rate grids can consume those counters after
+// the enclosing canonical sample projection (and any synthetic le filter).
+func isClassicBucketFanoutProject(p *chplan.Project, s schema.Metrics) bool {
+	for _, projection := range p.Projections {
+		if projection.Alias != bucketIdxAlias {
+			continue
+		}
+		join, ok := projection.Expr.(*chplan.FuncCall)
+		if !ok || join.Fn != chplan.FnArrayJoin || len(join.Args) != 1 {
+			return false
+		}
+		enumerate, ok := join.Args[0].(*chplan.FuncCall)
+		if !ok || enumerate.Fn != chplan.FnArrayEnumerate || len(enumerate.Args) != 1 {
+			return false
+		}
+		column, ok := enumerate.Args[0].(*chplan.ColumnRef)
+		return ok && column.Name == s.BucketCountsColumn
+	}
+	return false
+}

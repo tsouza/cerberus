@@ -128,7 +128,8 @@ func TestEmitHistogramQuantileRankWalkNative_GroupByAliases(t *testing.T) {
 // omitted for a literal one.
 //
 // Kills the CONDITIONALS_NEGATION mutant of
-// histogram_quantile_rankwalk_native.go:`if h.PhiExpr == nil`, which swaps the
+// histogram_quantile_rankwalk_native.go:histogramQuantileRankWalkNativeValueFrag,
+// specifically `if h.PhiExpr == nil`, which swaps the
 // two: a literal-phi plan would gain a guard the existing fixtures do not
 // carry, and a computed-phi plan — the only one that can actually be NaN at
 // runtime — would lose the guard Prometheus's bucketQuantile contract

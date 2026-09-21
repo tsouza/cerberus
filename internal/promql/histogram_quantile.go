@@ -256,6 +256,11 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 			}
 			return lowerHistogramQuantileNativeAgg(shape, phi, s, ctx)
 		}
+		if plan, ok, err := tryLowerHistogramQuantileNativeBucketRates(shape, phi, s, ctx, func() (chplan.Node, error) {
+			return lower(c.Args[1], s, ctx)
+		}); ok {
+			return plan, err
+		}
 		// Range mode: build a per-step plan that fans the bucket
 		// aggregation + quantile interpolation across the request's step
 		// grid, or — under an absolute `@` — evaluate it once at the pin
@@ -545,6 +550,22 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 	}
 
 	phiArgs := c.Args[2:]
+	levels, shareableKernelPhi, allConstant := constantHistogramQuantileLevels(phiArgs)
+	if allConstant && shareableKernelPhi != nil {
+		kernelCall := &parser.Call{
+			Func: parser.Functions["histogram_quantile"],
+			Args: parser.Expressions{shareableKernelPhi, vectorArg},
+		}
+		kernel, err := lowerHistogramQuantile(kernelCall, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		shared, replacements := lowerSharedHistogramQuantileKernels(kernel, labelName, levels)
+		if replacements > 0 {
+			return shared, nil
+		}
+	}
+
 	arms := make([]chplan.Node, 0, len(phiArgs))
 	for _, phiExpr := range phiArgs {
 		// Reuse the singular kernel: synthesise
@@ -607,6 +628,78 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 		return arms[0], nil
 	}
 	return &chplan.UnionAll{Inputs: arms}, nil
+}
+
+// constantHistogramQuantileLevels returns the complete ordered constant-level
+// description and one in-domain phi suitable for lowering the shared kernel.
+// A computed level makes the whole call ineligible: returning immediately
+// avoids leaving a partially initialized Levels slice that no caller may use.
+func constantHistogramQuantileLevels(
+	phiArgs parser.Expressions,
+) ([]chplan.HistogramQuantileLevel, parser.Expr, bool) {
+	if len(phiArgs) <= 1 {
+		return nil, nil, false
+	}
+
+	levels := make([]chplan.HistogramQuantileLevel, len(phiArgs))
+	var shareableKernelPhi parser.Expr
+	for i, phiExpr := range phiArgs {
+		phi, ok := tryScalarLiteral(phiExpr)
+		if !ok {
+			return nil, nil, false
+		}
+		levels[i] = chplan.HistogramQuantileLevel{
+			Phi:   phi,
+			Label: labels.FormatOpenMetricsFloat(phi),
+		}
+		if shareableKernelPhi == nil && !math.IsNaN(phi) && phi >= 0 && phi <= 1 {
+			shareableKernelPhi = phiExpr
+		}
+	}
+	return levels, shareableKernelPhi, true
+}
+
+// lowerSharedHistogramQuantileKernels replaces the singular histogram
+// kernels produced from one histogram_quantiles vector argument with plural
+// kernels. Equivalence is guaranteed by construction: the caller lowers the
+// source vector exactly once, so every kernel reached here is one physical arm
+// of the same PromQL input (for example a range wrapper or temporality split),
+// not an independently matched sibling query.
+//
+// Recursing through plan wrappers makes sharing independent of parser spelling:
+// parentheses and matcher order are already canonicalised, while by/without,
+// instant/range, classic/native and broadcast/fanout shapes keep their normal
+// lowering and differ only in where the histogram kernel sits.
+func lowerSharedHistogramQuantileKernels(
+	n chplan.Node,
+	labelName string,
+	levels []chplan.HistogramQuantileLevel,
+) (chplan.Node, int) {
+	copyLevels := func() []chplan.HistogramQuantileLevel {
+		return append([]chplan.HistogramQuantileLevel(nil), levels...)
+	}
+	switch h := n.(type) {
+	case *chplan.HistogramQuantile:
+		return &chplan.HistogramQuantiles{
+			Histogram: h,
+			LabelName: labelName,
+			Levels:    copyLevels(),
+		}, 1
+	case *chplan.HistogramQuantileNative:
+		return &chplan.HistogramQuantilesNative{
+			Histogram: h,
+			LabelName: labelName,
+			Levels:    copyLevels(),
+		}, 1
+	}
+
+	replacements := 0
+	rewritten, _ := chplan.RewriteChildren(n, func(child chplan.Node) (chplan.Node, bool) {
+		out, count := lowerSharedHistogramQuantileKernels(child, labelName, levels)
+		replacements += count
+		return out, count > 0
+	})
+	return rewritten, replacements
 }
 
 // openMetricsFloatExpr renders Prometheus's

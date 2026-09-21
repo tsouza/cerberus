@@ -29,6 +29,43 @@ func matrixWindow(rang, step, outerRange time.Duration) *chplan.RangeWindow {
 // TestReanchorRange_DoesNotMutateInput asserts the input tree is byte-
 // identical after ReanchorRange — the copy-not-mutate contract the solver
 // depends on (it runs K shards off one optimized plan).
+func TestReanchorRange_HistogramQuantileFamilies(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1000, 0).UTC()
+	end := time.Unix(4600, 0).UTC()
+	tests := map[string]chplan.Node{
+		"classic":        &chplan.HistogramQuantile{Input: matrixWindow(5*time.Minute, time.Minute, 0)},
+		"native":         &chplan.HistogramQuantileNative{Input: matrixWindow(5*time.Minute, time.Minute, 0)},
+		"classic-shared": &chplan.HistogramQuantiles{Histogram: &chplan.HistogramQuantile{Input: matrixWindow(5*time.Minute, time.Minute, 0)}},
+		"native-shared":  &chplan.HistogramQuantilesNative{Histogram: &chplan.HistogramQuantileNative{Input: matrixWindow(5*time.Minute, time.Minute, 0)}},
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			out, err := chplan.ReanchorRange(input, start, end)
+			if err != nil {
+				t.Fatalf("ReanchorRange: %v", err)
+			}
+			var child chplan.Node
+			switch node := out.(type) {
+			case *chplan.HistogramQuantile:
+				child = node.Input
+			case *chplan.HistogramQuantileNative:
+				child = node.Input
+			case *chplan.HistogramQuantiles:
+				child = node.Histogram.Input
+			case *chplan.HistogramQuantilesNative:
+				child = node.Histogram.Input
+			default:
+				t.Fatalf("unexpected output %T", out)
+			}
+			rw := child.(*chplan.RangeWindow)
+			if !rw.Start.Equal(start) || !rw.End.Equal(end) {
+				t.Fatalf("child not re-anchored: [%v,%v]", rw.Start, rw.End)
+			}
+		})
+	}
+}
+
 func TestReanchorRange_DoesNotMutateInput(t *testing.T) {
 	t.Parallel()
 

@@ -46,6 +46,8 @@ func TestRowTypeEveryNode(t *testing.T) {
 		{&HistogramProjection{Input: scan, GroupBy: groups}, Schema{Columns: append([]Column{{Name: "labels", Role: RoleAttributes}}, hist...)}},
 		{&HistogramQuantile{Input: scan, GroupBy: groups}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "Value", Role: RoleValue}}}},
 		{&HistogramQuantileNative{Input: scan, GroupBy: groups}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "Value", Role: RoleValue}}}},
+		{&HistogramQuantiles{Histogram: &HistogramQuantile{Input: scan, GroupBy: groups}}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "Value", Role: RoleValue}}}},
+		{&HistogramQuantilesNative{Histogram: &HistogramQuantileNative{Input: scan, GroupBy: groups}}, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "Value", Role: RoleValue}}}},
 		{&AbsentOverTime{Input: scan, MetricNameColumn: "name", AttributesColumn: "labels", TimestampColumn: "time", ValueColumn: "value"}, canonical},
 		{grid, Schema{Columns: []Column{{Name: "labels", Role: RoleAttributes}, {Name: "anchor_ts", Role: RoleAnchor}, {Name: "time", Role: RoleTimestamp}, {Name: "value", Role: RoleValue}}}},
 		{&RangeWindowGridNativeInstant{Input: scan, GroupBy: groups, ValueColumn: "value"}, groupValue},

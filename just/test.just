@@ -598,6 +598,19 @@ ts-grid-instant-memory-integration:
     @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
     go test -v -timeout 15m -tags=integration -count=1 -run TestTSGridInstantMemory_RealCH_Integration ./test/perf/nightly/...
 
+# Replay the histogram incident queries over the captured LFS production data.
+histogram-report-lfs-integration:
+    @just _pull-retry {{CH_HISTOGRAM_REPORT_IMAGE}} {{CH_STRICT_SCAN_IMAGE}}
+    go test -v -timeout 40m -tags=integration -count=1 -run '^(TestHistogramReportLFSRealCH|TestClassicDashboardRealCH)$' ./test/perf/nightly/...
+
+# Pin the bucket-rate vector reduction and constant-quantile eligibility.
+histogram-dashboard-unit:
+	go test -race -timeout 3m -count=1 -run 'TestClassicBucketRateGrid|TestQuantileRankWalk|TestLower_HistogramQuantiles' ./internal/promql/...
+	go test -race -timeout 3m -count=1 -run 'TestRewriteChildren|TestNodeEqual|TestCloneNode|TestIsDerivedShape|TestHasJoin|TestIsSliceInvariant|TestRowTypeEveryNode|TestReanchorRange_HistogramQuantileFamilies' ./internal/chplan
+	go test -race -timeout 3m -count=1 -run 'TestEmitHistogramQuantiles' ./internal/chsql
+	go test -race -timeout 3m -count=1 -run 'TestResourceBoundClassification_Exhaustive' ./internal/engine
+	go test -race -timeout 3m -count=1 -run 'TestChplanPrint' ./test/spec
+
 # Regenerate nightly-baseline.json: for each #2370 nightly sentinel the
 # calibration-time max-of-N peak memory_usage plus the headroom-multiplied
 # ceiling (nightlyBaselineHeadroom) the gate actually asserts against, and

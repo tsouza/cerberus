@@ -309,9 +309,8 @@ func histogramLowerers(l *promql.RangeLowerers, optSet chopt.EnabledSet) {
 	} else {
 		l.ClassicHistogram = promql.FanoutClassicHistogramWindowLowerer{}
 	}
-	// quantile_prom_histogram has no shape-based fallback (see
-	// promql.QuantileRankWalkLowerer's own doc), so the native strategy is
-	// wired directly with no embedded Fallback field.
+	// The native strategy retains the ordinary rank walk for computed phi;
+	// ClickHouse aggregate parameters must be constant.
 	if optSet.Has(chopt.FeatureQuantilePromHistogram) {
 		l.QuantileRankWalk = promql.NativeQuantileRankWalkLowerer{}
 	} else {

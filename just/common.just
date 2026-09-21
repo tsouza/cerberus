@@ -47,6 +47,10 @@ CH_QUANTILE_PROM_HISTOGRAM_IMAGE := "clickhouse/clickhouse-server:25.10-alpine"
 # the test source.
 CH_TAG_GROUPS_IMAGE := "clickhouse/clickhouse-server:26.2-alpine"
 
+# Exact production-report replay image. Kept separate from CH_STRICT_SCAN_IMAGE
+# because the captured incident records the full patch version it ran against.
+CH_HISTOGRAM_REPORT_IMAGE := "clickhouse/clickhouse-server:26.6.1.1193-alpine"
+
 # k3s node image for the k3d clusters. Pinned (k3d otherwise picks a default tag
 # per k3d version) so we pull ONE known tag with retry and hand it to
 # `k3d cluster create --image` — k3d then boots from the host-cached copy

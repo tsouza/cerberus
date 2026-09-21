@@ -1,11 +1,11 @@
 {
   "query": "histogram_quantile_native_ladder_range_step/native",
   "lowering": "native",
-  "routed": true,
-  "k": 6,
-  "reason": "routed",
+  "routed": false,
+  "k": 0,
+  "reason": "below-threshold",
   "n_anchors": 241,
-  "fanout": 20,
-  "cumulative_d": "10m0s",
+  "fanout": 1,
+  "cumulative_d": "5m0s",
   "outer_range": "1h0m0s"
 }

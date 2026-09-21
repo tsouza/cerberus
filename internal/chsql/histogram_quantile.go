@@ -128,7 +128,7 @@ func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
 			As(rawW.keptBoundIdx(), hqClassicKeptIdxColumn),
 			As(rawW.buckets(), hqClassicBucketsColumn),
 		).
-		From(sub)
+		From(materializeHistogramInput(sub, h.Input.RowType()))
 
 	// Stage 2 — the coalesced bound array and the coalesced cumulative
 	// ladder, both over the staged index walk and the staged bucket array.

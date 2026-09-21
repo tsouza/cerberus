@@ -4022,10 +4022,21 @@ func nativeLastOverTimeNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.Ra
 // the query to the heavier arrayJoin fan-out (the experimental flag's
 // whole point is the lighter native aggregate).
 func isNativeRateInput(n chplan.Node, s schema.Metrics) bool {
-	if p, ok := n.(*chplan.Project); ok && isCanonicalSampleProject(p, s) {
-		n = p.Input
+	for {
+		switch node := n.(type) {
+		case *chplan.Project:
+			if !isCanonicalSampleProject(node, s) && !isClassicBucketFanoutProject(node, s) {
+				return false
+			}
+			n = node.Input
+		case *chplan.Filter:
+			n = node.Input
+		case *chplan.Scan:
+			return true
+		default:
+			return false
+		}
 	}
-	return isPlainScanFilter(n)
 }
 
 // isCanonicalSampleProject reports whether p is the canonical
@@ -4053,23 +4064,6 @@ func isCanonicalSampleProject(p *chplan.Project, s schema.Metrics) bool {
 		delete(want, proj.Alias)
 	}
 	return len(want) == 0
-}
-
-// isPlainScanFilter reports whether n is a row-shape relation the native
-// timeSeriesRateToGrid emitter can consume directly: a Scan, or a Filter
-// chain bottoming out in a Scan. Anything else (the metrics_* TraceQL
-// families, joins, set-ops) has its own emit branch and is ineligible.
-func isPlainScanFilter(n chplan.Node) bool {
-	for {
-		switch v := n.(type) {
-		case *chplan.Scan:
-			return true
-		case *chplan.Filter:
-			n = v.Input
-		default:
-			return false
-		}
-	}
 }
 
 // counterTemporalityRangeFn reports whether a range function reads its

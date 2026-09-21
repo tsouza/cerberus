@@ -108,6 +108,34 @@ func rewriteLeafNode(n Node) (out Node, changed, handled bool) {
 	return n, false, false
 }
 
+func rewriteHistogramQuantiles(v *HistogramQuantiles, fn func(Node) (Node, bool)) (Node, bool, bool) {
+	if v.Histogram == nil || v.Histogram.Input == nil {
+		return v, false, true
+	}
+	newInput, changed := fn(v.Histogram.Input)
+	if !changed {
+		return v, false, true
+	}
+	cp, histogram := *v, *v.Histogram
+	histogram.Input = newInput
+	cp.Histogram = &histogram
+	return &cp, true, true
+}
+
+func rewriteHistogramQuantilesNative(v *HistogramQuantilesNative, fn func(Node) (Node, bool)) (Node, bool, bool) {
+	if v.Histogram == nil || v.Histogram.Input == nil {
+		return v, false, true
+	}
+	newInput, changed := fn(v.Histogram.Input)
+	if !changed {
+		return v, false, true
+	}
+	cp, histogram := *v, *v.Histogram
+	histogram.Input = newInput
+	cp.Histogram = &histogram
+	return &cp, true, true
+}
+
 // rewriteUnaryNode handles every node with exactly one Node-typed child.
 // Most carry it as `Input`; the Metrics* aggregation nodes carry it as
 // `Inner`. Each rebuilds via the shared clone-on-change rewriteSingleInput
@@ -319,6 +347,10 @@ func rewriteBinaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, h
 // MetricsCompare (Inner + optional RootLookup).
 func rewriteIrregularNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, handled bool) {
 	switch v := n.(type) {
+	case *HistogramQuantiles:
+		return rewriteHistogramQuantiles(v, fn)
+	case *HistogramQuantilesNative:
+		return rewriteHistogramQuantilesNative(v, fn)
 	case *TopK:
 		newInput, newKExpr, ch := rewriteOptionalPair(fn, v.Input, v.KExpr)
 		if !ch {

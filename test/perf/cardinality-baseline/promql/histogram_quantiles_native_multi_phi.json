@@ -1,7 +1,7 @@
 {
   "fixture": "promql/histogram_quantiles_native_multi_phi",
-  "fan_factor": 1,
-  "scan_rows": 2,
+  "fan_factor": 2,
+  "scan_rows": 1,
   "peak_intermediate": 2,
   "has_cross_join": false,
   "has_array_join": true,

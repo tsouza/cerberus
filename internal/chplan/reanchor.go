@@ -96,6 +96,53 @@ func ReanchorRange(n Node, start, end time.Time) (Node, error) {
 	return reanchor(n, start.UTC(), end.UTC())
 }
 
+func reanchorHistogramQuantileNode(n Node, start, end time.Time) (Node, error) {
+	switch v := n.(type) {
+	case *HistogramQuantile:
+		input, err := reanchor(v.Input, start, end)
+		if err != nil {
+			return nil, err
+		}
+		c := *v
+		c.Input = input
+		return &c, nil
+	case *HistogramQuantileNative:
+		input, err := reanchor(v.Input, start, end)
+		if err != nil {
+			return nil, err
+		}
+		c := *v
+		c.Input = input
+		return &c, nil
+	case *HistogramQuantiles:
+		if v.Histogram == nil {
+			return v, nil
+		}
+		input, err := reanchor(v.Histogram.Input, start, end)
+		if err != nil {
+			return nil, err
+		}
+		c, histogram := *v, *v.Histogram
+		histogram.Input = input
+		c.Histogram = &histogram
+		return &c, nil
+	case *HistogramQuantilesNative:
+		if v.Histogram == nil {
+			return v, nil
+		}
+		input, err := reanchor(v.Histogram.Input, start, end)
+		if err != nil {
+			return nil, err
+		}
+		c, histogram := *v, *v.Histogram
+		histogram.Input = input
+		c.Histogram = &histogram
+		return &c, nil
+	default:
+		return nil, fmt.Errorf("reanchor histogram quantile: unsupported node %T", n)
+	}
+}
+
 func reanchor(n Node, start, end time.Time) (Node, error) {
 	switch v := n.(type) {
 	case *RangeWindow:
@@ -123,15 +170,8 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		return reanchorRangeBucketFanout(v, start, end)
 	case *RangeBucketGridNative:
 		return reanchorRangeBucketGridNative(v, start, end)
-	case *HistogramQuantile:
-		input, err := reanchor(v.Input, start, end)
-		if err != nil {
-			return nil, err
-		}
-		// Phi / other scalar params are off-grid immutable: share.
-		c := *v
-		c.Input = input
-		return &c, nil
+	case *HistogramQuantile, *HistogramQuantileNative, *HistogramQuantiles, *HistogramQuantilesNative:
+		return reanchorHistogramQuantileNode(v, start, end)
 	case *Project:
 		input, err := reanchor(v.Input, start, end)
 		if err != nil {

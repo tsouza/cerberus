@@ -329,12 +329,9 @@ func (n NativeClassicHistogramWindowLowerer) lowerDeltaComplement(delta classicH
 // node ITSELF is computed, and applies uniformly to every classic-histogram-
 // quantile shape this codebase builds — instant bare selector, instant
 // cross-series merge, range-mode bare and aggregated, and the float-array
-// variant. Unlike every other Lowerer in this file there is no per-shape
-// fallback: the native aggregate reproduces reference Prometheus's
-// bucketQuantile (including its edge cases) for any (BucketCounts,
-// ExplicitBounds) row this node's IR contract accepts, so
-// [NativeQuantileRankWalkLowerer] carries no embedded Fallback field — it
-// always marks the node native.
+// variant. ClickHouse aggregate parameters must be constant, so computed phi
+// expressions retain the ordinary rank walk. The strategy marks literal-phi
+// nodes native without changing the bucket semantics.
 type QuantileRankWalkLowerer interface {
 	// LowerQuantileRankWalk returns hq, with UseNativeQuantileAggregate set
 	// according to the strategy. It never returns nil.
@@ -352,12 +349,12 @@ func (FanoutQuantileRankWalkLowerer) LowerQuantileRankWalk(hq *chplan.HistogramQ
 }
 
 // NativeQuantileRankWalkLowerer is the boot-wired QuantileRankWalkLowerer
-// that marks every HistogramQuantile node native. cmd/cerberus wires it ONLY
+// that marks literal-phi HistogramQuantile nodes native. cmd/cerberus wires it ONLY
 // when chopt resolved the quantile_prom_histogram feature at boot.
 type NativeQuantileRankWalkLowerer struct{}
 
 // LowerQuantileRankWalk sets hq.UseNativeQuantileAggregate and returns hq.
 func (NativeQuantileRankWalkLowerer) LowerQuantileRankWalk(hq *chplan.HistogramQuantile) *chplan.HistogramQuantile {
-	hq.UseNativeQuantileAggregate = true
+	hq.UseNativeQuantileAggregate = hq.PhiExpr == nil
 	return hq
 }

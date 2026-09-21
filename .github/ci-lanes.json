@@ -1730,6 +1730,36 @@
       "accountable_owner": "query-quality"
     },
     {
+      "id": "perf-nightly.classic-histogram-report",
+      "description": "Replays the reported classic-histogram dashboard queries over the captured LFS production dataset, proving exact Prometheus results and bounded ClickHouse rows and peak memory for singular and shared quantiles.",
+      "owner": {
+        "workflow": ".github/workflows/perf-nightly.yml",
+        "jobs": ["perf-nightly"],
+        "producer_jobs": [],
+        "context_job": "perf-nightly"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "perf-nightly", "protected": false },
+      "purpose": "performance",
+      "layers": ["11"],
+      "oracle_class": "performance",
+      "recipes": ["histogram-report-lfs-integration"],
+      "command": "go test -v -timeout 40m -tags=integration -count=1 -run '^(TestHistogramReportLFSRealCH|TestClassicDashboardRealCH)$' ./test/perf/nightly/...",
+      "build_tags": ["integration"],
+      "package_globs": ["test/perf/nightly/**", "internal/chplan/**", "internal/chsql/**", "internal/promql/**"],
+      "substrate": "real-clickhouse",
+      "risk_domains": ["performance", "correctness"],
+      "merge_posture": "never",
+      "main_posture": "coalesced",
+      "release_posture": "required",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 40,
+      "slo_minutes": 40,
+      "accountable_owner": "query-quality"
+    },
+
+    {
       "id": "perf-nightly.perf-nightly",
       "description": "#2370 nightly real-data regression gate: loads the real, trimmed production sample into a real ClickHouse and asserts each sentinel's max-of-5 peak memory (and expected HTTP outcome) against a committed baseline plus an absolute cap-relative ceiling (PR B).",
       "owner": {
