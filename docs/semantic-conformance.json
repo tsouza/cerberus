@@ -414,6 +414,8 @@
           "BINDING-ARCH-HEAD-WIRE-TRACEQL",
           "BINDING-ARCH-NO-CACHING-STATIC",
           "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
+          "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
+          "BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING",
           "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
           "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
@@ -5799,6 +5801,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
               "lane_id": "ci.forbid-skip",
               "context_name": "forbid-skip",
               "merge_required": true,
@@ -5899,6 +5907,12 @@
               "lane_id": "chdb.perf-guards",
               "context_name": "perf-guards",
               "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
               "release_required": true
             },
             {
