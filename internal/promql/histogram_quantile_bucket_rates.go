@@ -30,6 +30,24 @@ func isClassicBucketRateGrid(input chplan.Node, s schema.Metrics) bool {
 // histogram arrays only AFTER that reduction avoids retaining each source
 // histogram's full ladder inside the cross-series quantile merge.
 // Older servers and non-eligible grids keep their specialized bounded path.
+func tryLowerHistogramQuantileNativeBucketRates(
+	shape histogramAggShape,
+	phi phiArg,
+	s schema.Metrics,
+	ctx lowerCtx,
+	lowerInput func() (chplan.Node, error),
+) (chplan.Node, bool, error) {
+	if shape.windowFn != "rate" {
+		return nil, false, nil
+	}
+	inner, err := lowerInput()
+	if err != nil {
+		return nil, true, err
+	}
+	plan, ok := lowerHistogramQuantileNativeBucketRates(inner, phi, s, ctx)
+	return plan, ok, nil
+}
+
 func lowerHistogramQuantileNativeBucketRates(inner chplan.Node, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool) {
 	native, fallback := false, false
 	chplan.Walk(inner, func(node chplan.Node) bool {

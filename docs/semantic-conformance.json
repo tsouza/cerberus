@@ -1186,6 +1186,18 @@
         "id": "perf-nightly-selfcheck.perf-nightly-selfcheck-health-notify"
       },
       {
+        "lane_id": "perf-nightly.classic-histogram-report",
+        "context_name": "perf-nightly",
+        "merge_required": false,
+        "release_required": true,
+        "binding_ids": [
+          "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
+          "BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING",
+          "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY"
+        ],
+        "id": "perf-nightly.classic-histogram-report"
+      },
+      {
         "lane_id": "perf-nightly.perf-nightly",
         "context_name": "perf-nightly",
         "merge_required": false,
@@ -5831,6 +5843,12 @@
               "release_required": false
             },
             {
+              "lane_id": "perf-nightly.classic-histogram-report",
+              "context_name": "perf-nightly",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
               "lane_id": "perf-nightly.perf-nightly",
               "context_name": "perf-nightly",
               "merge_required": false,
@@ -5938,6 +5956,12 @@
               "context_name": "perf-nightly-selfcheck-health-notify",
               "merge_required": false,
               "release_required": false
+            },
+            {
+              "lane_id": "perf-nightly.classic-histogram-report",
+              "context_name": "perf-nightly",
+              "merge_required": false,
+              "release_required": true
             },
             {
               "lane_id": "perf-nightly.perf-nightly",
@@ -9427,6 +9451,12 @@
               "context_name": "startup-bench",
               "merge_required": false,
               "release_required": false
+            },
+            {
+              "lane_id": "perf-nightly.classic-histogram-report",
+              "context_name": "perf-nightly",
+              "merge_required": false,
+              "release_required": true
             },
             {
               "lane_id": "performance.benchmark",

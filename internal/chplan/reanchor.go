@@ -96,39 +96,13 @@ func ReanchorRange(n Node, start, end time.Time) (Node, error) {
 	return reanchor(n, start.UTC(), end.UTC())
 }
 
-func reanchor(n Node, start, end time.Time) (Node, error) {
+func reanchorHistogramQuantileNode(n Node, start, end time.Time) (Node, error) {
 	switch v := n.(type) {
-	case *RangeWindow:
-		return reanchorRangeWindow(v, start, end)
-	case *RangeWindowGridNative:
-		return reanchorRangeWindowGridNative(v, start, end)
-	case *RangeWindowGridNativeVectorAgg:
-		// Re-anchor Input (its own *RangeWindowGridNative) via the shared
-		// dispatch above; GroupBy / GroupByAliases / Fn / AnchorAlias are
-		// off-grid immutable, so share the original slice headers exactly
-		// as the *Aggregate arm below does for the ordinary (non-native)
-		// vector-aggregation shape this node narrows.
-		input, err := reanchor(v.Input, start, end)
-		if err != nil {
-			return nil, err
-		}
-		c := *v
-		c.Input = input
-		return &c, nil
-	case *UnionAll:
-		return reanchorUnionAll(v, start, end)
-	case *RangeLWR:
-		return reanchorRangeLWR(v, start, end)
-	case *RangeBucketFanout:
-		return reanchorRangeBucketFanout(v, start, end)
-	case *RangeBucketGridNative:
-		return reanchorRangeBucketGridNative(v, start, end)
 	case *HistogramQuantile:
 		input, err := reanchor(v.Input, start, end)
 		if err != nil {
 			return nil, err
 		}
-		// Phi / other scalar params are off-grid immutable: share.
 		c := *v
 		c.Input = input
 		return &c, nil
@@ -164,6 +138,40 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		histogram.Input = input
 		c.Histogram = &histogram
 		return &c, nil
+	default:
+		return nil, fmt.Errorf("reanchor histogram quantile: unsupported node %T", n)
+	}
+}
+
+func reanchor(n Node, start, end time.Time) (Node, error) {
+	switch v := n.(type) {
+	case *RangeWindow:
+		return reanchorRangeWindow(v, start, end)
+	case *RangeWindowGridNative:
+		return reanchorRangeWindowGridNative(v, start, end)
+	case *RangeWindowGridNativeVectorAgg:
+		// Re-anchor Input (its own *RangeWindowGridNative) via the shared
+		// dispatch above; GroupBy / GroupByAliases / Fn / AnchorAlias are
+		// off-grid immutable, so share the original slice headers exactly
+		// as the *Aggregate arm below does for the ordinary (non-native)
+		// vector-aggregation shape this node narrows.
+		input, err := reanchor(v.Input, start, end)
+		if err != nil {
+			return nil, err
+		}
+		c := *v
+		c.Input = input
+		return &c, nil
+	case *UnionAll:
+		return reanchorUnionAll(v, start, end)
+	case *RangeLWR:
+		return reanchorRangeLWR(v, start, end)
+	case *RangeBucketFanout:
+		return reanchorRangeBucketFanout(v, start, end)
+	case *RangeBucketGridNative:
+		return reanchorRangeBucketGridNative(v, start, end)
+	case *HistogramQuantile, *HistogramQuantileNative, *HistogramQuantiles, *HistogramQuantilesNative:
+		return reanchorHistogramQuantileNode(v, start, end)
 	case *Project:
 		input, err := reanchor(v.Input, start, end)
 		if err != nil {

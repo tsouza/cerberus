@@ -256,14 +256,10 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 			}
 			return lowerHistogramQuantileNativeAgg(shape, phi, s, ctx)
 		}
-		if shape.windowFn == "rate" {
-			inner, err := lower(c.Args[1], s, ctx)
-			if err != nil {
-				return nil, err
-			}
-			if plan, ok := lowerHistogramQuantileNativeBucketRates(inner, phi, s, ctx); ok {
-				return plan, nil
-			}
+		if plan, ok, err := tryLowerHistogramQuantileNativeBucketRates(shape, phi, s, ctx, func() (chplan.Node, error) {
+			return lower(c.Args[1], s, ctx)
+		}); ok {
+			return plan, err
 		}
 		// Range mode: build a per-step plan that fans the bucket
 		// aggregation + quantile interpolation across the request's step
