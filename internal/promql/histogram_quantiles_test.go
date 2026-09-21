@@ -45,6 +45,16 @@ func TestLower_HistogramQuantiles_SharedKernel(t *testing.T) {
 	if got := len(shared[0].Levels); got != 3 {
 		t.Fatalf("shared levels = %d, want 3", got)
 	}
+	wantLevels := []chplan.HistogramQuantileLevel{
+		{Phi: 0.5, Label: "0.5"},
+		{Phi: 0.9, Label: "0.9"},
+		{Phi: 0.99, Label: "0.99"},
+	}
+	for i, want := range wantLevels {
+		if got := shared[0].Levels[i]; got != want {
+			t.Fatalf("shared level[%d] = %#v, want %#v", i, got, want)
+		}
+	}
 
 	wantPhiStr := []string{"0.5", "0.9", "0.99"}
 	sql, _, err := chsql.Emit(context.Background(), plan)
@@ -164,6 +174,48 @@ func TestLower_HistogramQuantiles_SharesWhenFirstLevelIsOutOfDomain(t *testing.T
 	}
 	if got := len(shared[0].Levels); got != 3 {
 		t.Fatalf("shared levels = %d, want 3", got)
+	}
+}
+
+func TestLower_HistogramQuantiles_SharesWithDomainEndpointKernel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"zero", `histogram_quantiles(http_server_request_duration, "q", -1, 0)`},
+		{"one", `histogram_quantiles(http_server_request_duration, "q", 2, 1)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expr, err := newExperimentalParser().ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan, err := promql.Lower(context.Background(), expr, schema.DefaultOTelMetrics())
+			if err != nil {
+				t.Fatalf("Lower: %v", err)
+			}
+			if got := countSharedHistogramKernels(plan); got != 1 {
+				t.Fatalf("shared histogram kernels = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestLower_HistogramQuantiles_FloatVectorFallsBack(t *testing.T) {
+	t.Parallel()
+	expr, err := newExperimentalParser().ParseExpr(
+		`histogram_quantiles(vector(1), "q", 0.5, 0.9)`,
+	)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	plan, err := promql.Lower(context.Background(), expr, schema.DefaultOTelMetrics())
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	if _, ok := plan.(*chplan.UnionAll); !ok {
+		t.Fatalf("float-vector fallback = %T, want *chplan.UnionAll", plan)
 	}
 }
 

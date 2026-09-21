@@ -550,23 +550,7 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 	}
 
 	phiArgs := c.Args[2:]
-	levels := make([]chplan.HistogramQuantileLevel, len(phiArgs))
-	allConstant := len(phiArgs) > 1
-	var shareableKernelPhi parser.Expr
-	for i, phiExpr := range phiArgs {
-		phi, ok := tryScalarLiteral(phiExpr)
-		if !ok {
-			allConstant = false
-			break
-		}
-		levels[i] = chplan.HistogramQuantileLevel{
-			Phi:   phi,
-			Label: labels.FormatOpenMetricsFloat(phi),
-		}
-		if shareableKernelPhi == nil && !math.IsNaN(phi) && phi >= 0 && phi <= 1 {
-			shareableKernelPhi = phiExpr
-		}
-	}
+	levels, shareableKernelPhi, allConstant := constantHistogramQuantileLevels(phiArgs)
 	if allConstant && shareableKernelPhi != nil {
 		kernelCall := &parser.Call{
 			Func: parser.Functions["histogram_quantile"],
@@ -644,6 +628,35 @@ func lowerHistogramQuantiles(c *parser.Call, s schema.Metrics, ctx lowerCtx) (ch
 		return arms[0], nil
 	}
 	return &chplan.UnionAll{Inputs: arms}, nil
+}
+
+// constantHistogramQuantileLevels returns the complete ordered constant-level
+// description and one in-domain phi suitable for lowering the shared kernel.
+// A computed level makes the whole call ineligible: returning immediately
+// avoids leaving a partially initialized Levels slice that no caller may use.
+func constantHistogramQuantileLevels(
+	phiArgs parser.Expressions,
+) ([]chplan.HistogramQuantileLevel, parser.Expr, bool) {
+	if len(phiArgs) <= 1 {
+		return nil, nil, false
+	}
+
+	levels := make([]chplan.HistogramQuantileLevel, len(phiArgs))
+	var shareableKernelPhi parser.Expr
+	for i, phiExpr := range phiArgs {
+		phi, ok := tryScalarLiteral(phiExpr)
+		if !ok {
+			return nil, nil, false
+		}
+		levels[i] = chplan.HistogramQuantileLevel{
+			Phi:   phi,
+			Label: labels.FormatOpenMetricsFloat(phi),
+		}
+		if shareableKernelPhi == nil && !math.IsNaN(phi) && phi >= 0 && phi <= 1 {
+			shareableKernelPhi = phiExpr
+		}
+	}
+	return levels, shareableKernelPhi, true
 }
 
 // lowerSharedHistogramQuantileKernels replaces the singular histogram
