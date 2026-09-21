@@ -1024,7 +1024,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: 'test/e2e/playwright/package-lock.json'
 
-      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
         if: env.RUN_SHARD == 'true'
         with:
           tool: just@1.46.0
@@ -1427,7 +1427,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
         with:
           tool: just@1.46.0
       - uses: ./.github/actions/registry-login
@@ -1523,7 +1523,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
         with:
           tool: just@1.46.0
       # cerberus is deployed via its Helm chart in `just e2e-up` (dogfooding
@@ -1686,7 +1686,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
         with:
           tool: just@1.46.0
       # cerberus + the bundled ClickHouse data tier are deployed via the Helm
@@ -1821,7 +1821,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
         with:
           tool: just@1.46.0
       # cerberus + the bundled ClickHouse data tier are deployed via the Helm
@@ -1923,7 +1923,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
         with:
           tool: just@1.46.0
       # cerberus + the bundled ClickHouse data tier are deployed via the Helm
@@ -2023,7 +2023,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af  # v2.87.11
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
         with:
           tool: just@1.46.0
 
