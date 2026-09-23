@@ -241,7 +241,7 @@ receivers:
       # it directly: `tupleElement(tuple(*), 'key_values', map())` reads the
       # column when the server has it and an empty map when it does not.
       # docs/observability.md § "ClickHouse asynchronous metrics" is the
-      # series contract; test/e2e/otel-collector's integration test runs
+      # series contract; test/clickhouse-upgrade's integration test runs
       # both queries through this collector against every server shape.
       #
       # Scalar rows. Under `asynchronous_metrics_key_values_mode: both` the

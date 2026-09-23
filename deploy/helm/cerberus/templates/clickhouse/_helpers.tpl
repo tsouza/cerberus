@@ -22,6 +22,18 @@ StatefulSet pods stable per-replica DNS.
 {{- end }}
 
 {{/*
+cerberus.clickhouse.terminationGracePeriodSeconds — the pod grace of every
+bundled ClickHouse pod: the server's own query wait on SIGTERM
+(shutdown.waitUnfinishedSeconds, rendered as shutdown_wait_unfinished) plus
+the shutdown work after it (shutdown.overheadSeconds). Input is the root
+context.
+*/}}
+{{- define "cerberus.clickhouse.terminationGracePeriodSeconds" -}}
+{{- $s := .Values.clickhouse.bundled.shutdown -}}
+{{- add (int $s.waitUnfinishedSeconds) (int $s.overheadSeconds) -}}
+{{- end }}
+
+{{/*
 cerberus.clickhouse.dataShardCount — the number of independent ClickHouse
 DATA shards this chart renders (cerberus issue #3077, epic #3074's THIRD,
 unrelated sense of "shard" — DISAMBIGUATION: not internal/solver's own

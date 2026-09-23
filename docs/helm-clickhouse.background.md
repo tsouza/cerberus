@@ -217,3 +217,84 @@ separately-named table plus its own materialized view, and none of them is
 wired for the local/`Distributed` split — so combining them with
 `DataShardCount > 1` is rejected at config-validation time rather than
 silently under-provisioning one of those tables.
+
+## Why the ClickHouse pods carry their own shutdown budget
+
+The ClickHouse StatefulSets had no `terminationGracePeriodSeconds`, so
+Kubernetes gave them its 30-second default, while ClickHouse 26.8 raised its
+own `shutdown_wait_unfinished` default from 5 to 120 seconds, per ClickHouse
+PR 110838. Upgrading the bundled image alone would have let the kubelet SIGKILL
+a server still inside its own shutdown. Measured against 26.6.8.7 and
+26.8.10.6 in Docker: with `shutdown_wait_unfinished_queries: 1`, a 15-second
+query started before SIGTERM returned its full result and the server exited 0
+after 14.7 s; a 40-second query under a 30-second wait was cut at 30.2 s, the
+server still exiting 0. With the flag at its default `0`, the same query was
+cancelled at SIGTERM (`QUERY_WAS_CANCELLED`) and the server exited in about
+3 s. An idle client connection held shutdown for 5 s on 26.6 and about 8–11 s
+on 26.8 before the server closed it itself.
+
+Draining rather than cancelling is the chosen behaviour because a rolling
+update is routine: a cancelled query surfaces to a Grafana user as an error,
+while a drained one finishes. The wait defaults to cerberus's own query
+timeout (2 minutes, `max_execution_time` on every data-plane query), the
+longest any cerberus query can run, so a drain never has to cut one.
+
+The server's work after the last query — stopping background pools, flushing
+system logs and in-memory buffers — took under a second on an idle server.
+`overheadSeconds: 30` is headroom for the same work on a loaded server over an
+object store, not a measured cost; it is a named value so an operator can
+tune it without touching the wait.
+
+The existing top-level `terminationGracePeriodSeconds` was not reused: it is
+the cerberus process's grace, sized for cerberus's own 10-second shutdown
+context, and tying the two would either kill ClickHouse early or hold every
+cerberus rollout for two and a half minutes. Keeper stops in seconds and has
+no query drain, so it keeps the Kubernetes default rather than inheriting a
+budget sized for queries.
+
+## Why the chart pins `packed_skip_index_max_bytes`
+
+The upgrade contract was drafted around text indexes, where ClickHouse #111803
+added `text_index_serialization_version` (the issue called it
+`text_index_version`). Measured across 26.3.33, 26.5.7, 26.6.8, 26.7.13 and
+26.8.10 with cerberus's own schema, on shared volumes and in a two-replica
+mixed-version cluster:
+
+- 26.6 and 26.7 write text indexes as `v1_with_codec`, 26.8 as
+  `v2_with_positions`. 26.6, 26.7 and 26.8 read all three versions; 26.3 and
+  26.5 read only `v0_initial` and fail with `Unsupported version of sparse
+  index (N)`. On the bundled path, which never shipped a server between 26.2
+  and 26.5 (it went from 25.8, which has no text index, to 26.6), no text-index
+  pin is needed.
+- 26.8 also packs every skip index smaller than 1 MiB into one
+  `skp_idx.packed` archive per part whenever it merges or mutates a part
+  (`packed_skip_index_max_bytes`, default `1048576`; inserted parts were not
+  packed). 26.7 reads the archive; 26.6 fails with `UNKNOWN_FORMAT_VERSION:
+  Unknown format (1) of packed data`, on reads and on replica fetches. In the
+  mixed-version cluster, the 26.6 replica could not fetch the part the 26.8
+  replica produced by `MATERIALIZE INDEX`, so the mutation never completed on
+  it. Every cerberus table carries small `minmax` / `bloom_filter` /
+  `tokenbf_v1` indices, so this affects every signal, not only logs.
+
+26.6 and 26.7 already default the setting to `0`, so the pin changes nothing
+on the bundled line and only takes effect once a newer image is deployed. It
+lives in the default of the existing `settings` pass-through rather than in
+the template so that it is visible, overridable, and advanced by the same
+mechanism an operator already uses for MergeTree settings. The cost of the pin
+is the object count packing saves on object storage; the cost of not pinning is
+a rollback that cannot read its own data.
+
+The profile-level `compatibility` setting, which ClickHouse documents for
+rolling upgrades, also turned packing off for merges run from a client
+session with that profile, but it resets every query-setting default newer
+than the chosen version as well, and whether background merges honour it was
+not established; the MergeTree setting has neither problem.
+
+## The detach-on-startup behaviour behind the rollback table
+
+Rolling 26.8 back to 26.6 after a `MATERIALIZE INDEX` mutation wrote a packed
+part, with the unmutated part still on disk, 26.6 detached the new part as
+broken at startup and served the older one: no read error, but the mutation's
+result silently gone. After `OPTIMIZE ... FINAL` (no covered part left), 26.6
+kept the packed part active and failed every read of it. Both outcomes are why
+the rollback procedure rewrites under the pin before the older image starts.

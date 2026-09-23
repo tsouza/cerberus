@@ -1,10 +1,13 @@
 //go:build integration
 
-// Package otelcollector_test runs the quickstart collector's ClickHouse
-// receiver against real ClickHouse servers on both sides of the 26.8
+// Package clickhouseupgrade_test proves cerberus's compatibility contract
+// with a ClickHouse server upgrade on real servers: the on-disk format across
+// a mixed-version rollout and its rollbacks (docs/helm-clickhouse.md §
+// "On-disk format across ClickHouse upgrades"), and the quickstart
+// collector's ClickHouse receiver on both sides of the 26.8
 // asynchronous-metrics schema change (docs/observability.md § "ClickHouse
 // asynchronous metrics").
-package otelcollector_test
+package clickhouseupgrade_test
 
 import (
 	"bufio"
@@ -41,9 +44,10 @@ const (
 	// system.asynchronous_metrics carries the key_values column.
 	keyedServerImage = "clickhouse/clickhouse-server:26.8-alpine"
 
-	composeFile       = "../../../docker-compose.yml"
-	collectorConfig   = "compose-config.yaml"
-	clickhouseBoard   = "../grafana/compose/dashboards/clickhouse.json"
+	composeFile       = "../../docker-compose.yml"
+	justCommon        = "../../just/common.just"
+	collectorConfig   = "../e2e/otel-collector/compose-config.yaml"
+	clickhouseBoard   = "../e2e/grafana/compose/dashboards/clickhouse.json"
 	receiverID        = "sqlquery/clickhouse"
 	asyncMetricsTable = "system.asynchronous_metrics"
 	asyncMetricName   = "clickhouse_async_metric"
@@ -164,15 +168,26 @@ func TestAsyncMetricsReceiverAcrossKeyedSchema(t *testing.T) {
 	})
 }
 
-// TestPriorServerImageTracksQuickstartPin keeps priorServerImage on the
-// release line docker-compose.yml runs, so "the current pinned server" in the
-// test above means the one the quickstart actually monitors.
-func TestPriorServerImageTracksQuickstartPin(t *testing.T) {
+// TestImagesTrackQuickstartPins keeps priorServerImage on the release line
+// docker-compose.yml runs, so "the current pinned server" in the test above
+// means the one the quickstart actually monitors, and keeps the Justfile's
+// pre-pull of the collector on the image the test actually starts.
+func TestImagesTrackQuickstartPins(t *testing.T) {
 	pinned := quickstartImage(t, "clickhouse/clickhouse-server")
 	tag := strings.TrimPrefix(pinned, "clickhouse/clickhouse-server:")
 	if !strings.HasPrefix(priorServerImage, "clickhouse/clickhouse-server:"+tag+"-") &&
 		priorServerImage != pinned {
 		t.Fatalf("docker-compose.yml pins %s but the receiver test's prior server is %s", pinned, priorServerImage)
+	}
+
+	collector := quickstartImage(t, "otel/opentelemetry-collector-contrib")
+	raw, err := os.ReadFile(justCommon)
+	if err != nil {
+		t.Fatalf("read %s: %v", justCommon, err)
+	}
+	m := regexp.MustCompile(`(?m)^OTEL_COLLECTOR_CONTRIB_IMAGE := "([^"]+)"`).FindSubmatch(raw)
+	if m == nil || string(m[1]) != collector {
+		t.Fatalf("%s pre-pulls OTEL_COLLECTOR_CONTRIB_IMAGE=%q but docker-compose.yml runs %s", justCommon, m, collector)
 	}
 }
 

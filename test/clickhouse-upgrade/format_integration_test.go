@@ -1,6 +1,6 @@
 //go:build integration
 
-package ddl_test
+package clickhouseupgrade_test
 
 import (
 	"context"
@@ -65,7 +65,7 @@ const (
 	textIndexV0Pin        = "v0_initial"
 	// chartValues holds the chart's MergeTree settings pass-through, whose
 	// default carries the rollback pin every 26.8 replica runs with.
-	chartValues = "../../../deploy/helm/cerberus/values.yaml"
+	chartValues = "../../deploy/helm/cerberus/values.yaml"
 
 	textIndexStartTimeout = 5 * time.Minute
 	textIndexStopTimeout  = time.Minute
@@ -343,8 +343,8 @@ func startTextIndexNode(ctx context.Context, t *testing.T, nw *testcontainers.Do
 	defer cancel()
 	label := alias + " " + image
 	opts := []testcontainers.ContainerCustomizer{
-		tcclickhouse.WithUsername("cerberus"),
-		tcclickhouse.WithPassword("cerberus"),
+		tcclickhouse.WithUsername(chUser),
+		tcclickhouse.WithPassword(chPassword),
 		network.WithNetwork([]string{alias}, nw),
 	}
 	if configXML != "" {
@@ -376,7 +376,7 @@ func startTextIndexNode(ctx context.Context, t *testing.T, nw *testcontainers.Do
 	addr := host + ":" + port.Port()
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr:        []string{addr},
-		Auth:        clickhouse.Auth{Database: "default", Username: "cerberus", Password: "cerberus"},
+		Auth:        clickhouse.Auth{Database: "default", Username: chUser, Password: chPassword},
 		ReadTimeout: textIndexReadTimeout,
 	})
 	if err != nil {
@@ -386,7 +386,7 @@ func startTextIndexNode(ctx context.Context, t *testing.T, nw *testcontainers.Do
 	if err := conn.Ping(startCtx); err != nil {
 		t.Fatalf("%s: ping: %v", label, err)
 	}
-	client, err := chclient.New(chclient.Config{Addr: addr, Database: textIndexDatabase, Username: "cerberus", Password: "cerberus"})
+	client, err := chclient.New(chclient.Config{Addr: addr, Database: textIndexDatabase, Username: chUser, Password: chPassword})
 	if err != nil {
 		t.Fatalf("%s: chclient: %v", label, err)
 	}

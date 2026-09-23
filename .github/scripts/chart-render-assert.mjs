@@ -21,6 +21,8 @@
 //   18. affinityPresets.colocateWithClickHouse targets the bundled ClickHouse pods' own labels when the selector is the shipped default; an operator-set selector is used verbatim.
 //   19. Every ClickHouse container port carries its own protocol, with and without the metrics port, in both the single and the per-shard StatefulSet.
 //   20. bundled replicas>1 wires CERBERUS_SCHEMA_CLUSTER alongside the Replicated-database env, so cerberus's CREATE DATABASE runs ON CLUSTER and every replica attaches the database; an operator-set schema.CLUSTER wins.
+//   21. Bundled ClickHouse graceful shutdown: every ClickHouse pod (single, replicated, per-shard) gets terminationGracePeriodSeconds = shutdown.waitUnfinishedSeconds + shutdown.overheadSeconds, the server waits that long for running queries, overrides flow through, Keeper and cerberus pods keep their own grace.
+//   22. The on-disk format pin: packed_skip_index_max_bytes renders 0 by default and disappears when advanced with null.
 //
 // Env contract:
 //   CHART_DIR   chart directory (default: deploy/helm/cerberus)
@@ -916,6 +918,62 @@ function count(haystack, needle) {
 
   const oneReplica = tpl([...OBJECT_STORE, '-s', 'templates/configmap-env.yaml'])
   check(!oneReplica.includes('CERBERUS_SCHEMA_CLUSTER'), 'replicas=1: no CERBERUS_SCHEMA_CLUSTER (single node, nothing to fan out over)')
+}
+
+// --- 21. Bundled ClickHouse graceful shutdown ----------------------------------
+// The server waits shutdown_wait_unfinished seconds for running queries on
+// SIGTERM; a pod grace shorter than that wait lets Kubernetes SIGKILL a server
+// that is still shutting down (26.8 raised the server's own default to 120s,
+// past Kubernetes' 30s default grace).
+{
+  const GRACE = /terminationGracePeriodSeconds: (\d+)/g
+  const graces = (out) => [...out.matchAll(GRACE)].map((m) => Number(m[1]))
+  const WAIT = /<shutdown_wait_unfinished>(\d+)<\/shutdown_wait_unfinished>/
+  const DRAIN = '<shutdown_wait_unfinished_queries>1</shutdown_wait_unfinished_queries>'
+  const STS = ['-s', 'templates/clickhouse/statefulset.yaml']
+  const CONFIG = ['-s', 'templates/clickhouse/configmap-config.yaml']
+  const defaultWait = 120
+  const defaultGrace = 150
+
+  for (const [label, base, statefulSets] of [
+    ['single-shard', OBJECT_STORE, 1],
+    ['replicated (replicas=2)', [...OBJECT_STORE, '--set', 'clickhouse.bundled.replicas=2'], 1],
+    ['multi-shard (dataShards.count=2)', SHARDED, 2],
+  ]) {
+    const sts = graces(tpl([...base, ...STS]))
+    check(sts.length === statefulSets && sts.every((g) => g === defaultGrace), `${label}: every ClickHouse StatefulSet has terminationGracePeriodSeconds ${defaultGrace} (got ${sts})`)
+    const cfg = tpl([...base, ...CONFIG])
+    check(cfg.includes(DRAIN), `${label}: the server waits for running queries on SIGTERM`)
+    check(Number(WAIT.exec(cfg)?.[1]) === defaultWait, `${label}: shutdown_wait_unfinished is ${defaultWait}`)
+    check(sts.every((g) => g > Number(WAIT.exec(cfg)?.[1])), `${label}: the rendered pod grace exceeds the rendered query wait`)
+
+    const override = [...base, '--set', 'clickhouse.bundled.shutdown.waitUnfinishedSeconds=45', '--set', 'clickhouse.bundled.shutdown.overheadSeconds=10']
+    const overridden = graces(tpl([...override, ...STS]))
+    check(overridden.length === statefulSets && overridden.every((g) => g === 55), `${label}: overrides give grace 45 + 10 = 55 on every StatefulSet (got ${overridden})`)
+    check(Number(WAIT.exec(tpl([...override, ...CONFIG]))?.[1]) === 45, `${label}: overridden shutdown_wait_unfinished is 45`)
+  }
+
+  const keeper = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.replicas=2', '-s', 'templates/clickhouse/keeper-statefulset.yaml'])
+  check(keeper.includes('kind: StatefulSet') && graces(keeper).length === 0, 'Keeper pods do not inherit the ClickHouse shutdown budget')
+
+  const cerberus = tpl([...OBJECT_STORE, '-s', 'templates/deployment.yaml'])
+  check(graces(cerberus).length === 1 && graces(cerberus)[0] === 30, 'the cerberus Deployment keeps the top-level terminationGracePeriodSeconds')
+
+  const noOverhead = tplFail([...OBJECT_STORE, '--set', 'clickhouse.bundled.shutdown.overheadSeconds=0'])
+  check(noOverhead !== null && noOverhead.includes('overheadSeconds'), 'shutdown.overheadSeconds=0 is refused (the grace must exceed the wait)')
+}
+
+// --- 22. On-disk format pin -----------------------------------------------------
+// A 26.8 merge packs small skip indices into an archive a 26.6 server cannot
+// read; the default pin keeps a rolling upgrade from 26.6 reversible.
+{
+  const PIN = '<packed_skip_index_max_bytes>0</packed_skip_index_max_bytes>'
+  const CONFIG = ['-s', 'templates/clickhouse/configmap-config.yaml']
+  check(tpl([...OBJECT_STORE, ...CONFIG]).includes(PIN), 'the default renders packed_skip_index_max_bytes 0 inside <merge_tree>')
+  const advanced = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.settings.packed_skip_index_max_bytes=null', ...CONFIG])
+  check(!advanced.includes('packed_skip_index_max_bytes'), 'advancing the pin with null removes it')
+  const textPin = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.settings.text_index_serialization_version=v0_initial', ...CONFIG])
+  check(textPin.includes('<text_index_serialization_version>v0_initial</text_index_serialization_version>') && textPin.includes(PIN), 'an operator text-index pin renders beside the default pin')
 }
 
 process.exit(ok ? 0 : 1)

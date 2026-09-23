@@ -246,6 +246,149 @@ by construction but the cloud round-trip has not been exercised in CI.
   a virtual-hosted endpoint (`https://<bucket>.s3.<region>.amazonaws.com/`) and
   `true` builds the legacy path-style form.
 
+## Graceful shutdown
+
+Every bundled ClickHouse pod, per-shard pods included, shuts down on one
+budget, set under `clickhouse.bundled.shutdown`:
+
+| Value                   | Default | Renders as                                                   |
+| ----------------------- | ------- | ------------------------------------------------------------ |
+| `waitUnfinishedSeconds` | `120`   | `shutdown_wait_unfinished` in `tuning.xml`                   |
+| `overheadSeconds`       | `30`    | added to the wait for the pod's grace, never rendered alone  |
+| (derived)               | `150`   | `terminationGracePeriodSeconds` on every ClickHouse pod      |
+
+The chart also renders `shutdown_wait_unfinished_queries: 1`. On SIGTERM the
+server closes its listening sockets, lets the queries already running finish
+for up to `waitUnfinishedSeconds`, then flushes and exits. A query still
+running when the wait ends is cancelled. The pod grace is always
+`waitUnfinishedSeconds + overheadSeconds`, and `overheadSeconds` is at least 1,
+so the server always finishes its own shutdown before Kubernetes' SIGKILL.
+The default wait equals cerberus's default query timeout (`query.timeout`,
+2m): no query cerberus sends outlives it. A cerberus deployment that raises
+`query.timeout` raises `waitUnfinishedSeconds` to match.
+
+The budget belongs to the ClickHouse pods only:
+
+- Keeper pods carry no `terminationGracePeriodSeconds` and keep Kubernetes'
+  30-second default.
+- The top-level `terminationGracePeriodSeconds` (default `30`) is the grace of
+  the cerberus pods, monolith and split, and does not reach ClickHouse.
+
+A rolling update therefore takes up to `waitUnfinishedSeconds +
+overheadSeconds` per pod while queries are running, and seconds per pod when
+none are.
+
+`chart-render-assert.mjs` pins the rendered budget in the single-shard,
+replicated and multi-shard layouts. The `bwc-replicated` e2e lane
+(`.github/scripts/e2e-bwc-shutdown-verify.mjs`) deletes a ClickHouse pod while
+a bounded query runs against it, asserts the query completes and the pod exits
+before its grace ends, and then rolls the whole StatefulSet.
+
+### Externally managed ClickHouse
+
+The same relationship holds for a ClickHouse server this chart does not
+render: whatever stops the server (a pod's `terminationGracePeriodSeconds`,
+systemd's `TimeoutStopSec`, an operator's own setting) must allow longer than
+the server's `shutdown_wait_unfinished` plus its shutdown work. ClickHouse's
+own default for `shutdown_wait_unfinished` is 5 seconds up to 26.7 and 120
+seconds from 26.8, above Kubernetes' 30-second default grace, so a Kubernetes
+deployment upgraded to 26.8 without either value set can be killed mid-shutdown.
+With `shutdown_wait_unfinished_queries` at its default `0`, running queries are
+cancelled at SIGTERM and the wait covers only closing connections.
+
+## On-disk format across ClickHouse upgrades
+
+A rolling upgrade runs old and new servers side by side over the same data:
+replicas fetch each other's parts (or, with zero-copy replication, read each
+other's object-store blobs), and a rollback restarts the older server on the
+parts the newer one wrote. Two part formats change across the 26.6 to 26.8
+lines:
+
+| Written by | Text indexes (`text_index_serialization_version`) | Small skip indices (`packed_skip_index_max_bytes`) |
+| ---------- | ------------------------------------------------- | -------------------------------------------------- |
+| 26.6, 26.7 | `v1_with_codec`                                   | one file per index (`0`)                           |
+| 26.8       | `v2_with_positions`                               | packed into `skp_idx.packed` (`1048576`)           |
+
+| Server     | Reads text indexes    | Reads the 26.8 `skp_idx.packed` | Knows both settings |
+| ---------- | --------------------- | ------------------------------- | ------------------- |
+| 26.2–26.5  | `v0_initial` only     | no                              | no                  |
+| 26.6       | `v0`, `v1`, `v2`      | no                              | yes                 |
+| 26.7, 26.8 | `v0`, `v1`, `v2`      | yes                             | yes                 |
+
+### The chart's pin
+
+`clickhouse.bundled.settings` defaults to `packed_skip_index_max_bytes: 0`,
+rendered into `<merge_tree>` on every ClickHouse pod. It keeps every part a
+26.7 or 26.8 server writes readable by 26.6, the chart's bundled line, so the
+supported path — 26.6 to 26.7 or 26.8, rolling, with a rollback to 26.6 —
+needs nothing else. The text-index format needs no pin on that path: 26.6
+reads all three versions.
+
+Advance the pin once the rollout is final and no replica will run 26.6
+again: `helm upgrade --set clickhouse.bundled.settings.packed_skip_index_max_bytes=null`.
+Merges from then on pack small skip indices, and a server older than 26.7 can
+no longer open those parts.
+
+A server older than 26.6 knows neither setting and refuses to start with
+either one in its configuration. An image override below 26.6 sets the pin to
+`null`.
+
+The `clickhouse-upgrade` lane proves this path against real servers
+(`test/clickhouse-upgrade/format_integration_test.go`): a 26.6 replica and
+a 26.8 replica running the chart's settings share every cerberus table, the
+26.6 replica fetches and reads every part the 26.8 replica merged, both answer
+the same LogQL queries, and the 26.8 replica restarts and rolls back to 26.6
+on its own disk with no part detached.
+
+### Mixed clusters with a 26.2–26.5 server
+
+Text indexes need both settings when any participant, or the rollback target,
+is 26.2–26.5. On every server at 26.6 or later only:
+
+```yaml
+clickhouse:
+  bundled:
+    settings:
+      packed_skip_index_max_bytes: 0
+      text_index_serialization_version: v0_initial
+```
+
+The same pin applies to an externally managed cluster through each newer
+server's `<merge_tree>` configuration.
+
+### Rolling back past a format
+
+A server that cannot read a part's format either fails every read of that
+part or, when it finds the part at startup with an older covered part still on
+disk, detaches it as broken (`system.detached_parts`) and serves the older part
+in its place:
+
+| Rolled back to | Error                                                                  | Cause                                 |
+| -------------- | ---------------------------------------------------------------------- | ------------------------------------- |
+| 26.6           | `UNKNOWN_FORMAT_VERSION: Unknown format (1) of packed data`            | a 26.8 merge without the chart's pin  |
+| 26.2–26.5      | `CORRUPTED_DATA: Unsupported version of sparse index (1)` or `(2)`     | a text index written by 26.6 or later |
+
+To recover, roll forward to the newer server, set the pin, rewrite the parts,
+and roll back again:
+
+1. Run the newer server with the pin in `clickhouse.bundled.settings`.
+2. Rewrite the affected parts: `ALTER TABLE <table> MATERIALIZE INDEX <index>
+   SETTINGS mutations_sync = 2` for each text index, or `OPTIMIZE TABLE
+   <table> FINAL` to rewrite every part with every skip index.
+3. Roll back. For a target older than 26.6, remove both settings in the same
+   `helm upgrade` that changes the image.
+
+### What the pin does not cover
+
+`text_index_serialization_version` is a preference: an index the requested
+version cannot represent is written in the newest version that can. Cerberus's
+schema creates `text(tokenizer = 'splitByNonAlpha')` indexes, which every
+version represents. Phrase search (`support_phrase_search` from 26.7,
+`positions` on 26.6) stores token positions only `v2_with_positions` can hold,
+so a table with it cannot be rolled back below 26.6 at all. Cerberus never
+creates one, and the text index is a skip-index hint beneath LogQL's own line
+filters, so no format version changes a LogQL answer.
+
 ## ClickHouse cluster DATA-shard topology (`dataShards.count`)
 
 > **EXPERIMENTAL — off by default, not production-supported.**

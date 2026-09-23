@@ -214,6 +214,14 @@
               }
             },
             "podAntiAffinity": { "type": "boolean" },
+            "shutdown": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "waitUnfinishedSeconds": { "type": "integer", "minimum": 0 },
+                "overheadSeconds": { "type": "integer", "minimum": 1 }
+              }
+            },
             "configOverrides": { "type": "string" },
             "settings": {
               "type": "object",

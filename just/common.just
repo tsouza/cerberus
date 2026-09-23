@@ -15,6 +15,18 @@ CH_TEST_IMAGE := "clickhouse/clickhouse-server:25.9-alpine"
 CH_SCHEMA_TEXT_INDEX_IMAGE := "clickhouse/clickhouse-server:26.6-alpine"
 CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
 
+# The ClickHouse upgrade-compatibility tests (`clickhouse-upgrade-test`) roll the
+# bundled server line (CH_SCHEMA_TEXT_INDEX_IMAGE, 26.6) forward to
+# CH_UPGRADE_TARGET_IMAGE and back, and prove the one rollback the text-index
+# format contract refuses on CH_TEXT_INDEX_V0_READER_IMAGE, the newest line
+# that reads only v0_initial text indexes. OTEL_COLLECTOR_CONTRIB_IMAGE is the
+# quickstart collector (docker-compose.yml) whose ClickHouse receiver the
+# same lane runs against both sides of the 26.8 asynchronous-metrics change;
+# test/clickhouse-upgrade holds it equal to the compose pin.
+CH_UPGRADE_TARGET_IMAGE := "clickhouse/clickhouse-server:26.8-alpine"
+CH_TEXT_INDEX_V0_READER_IMAGE := "clickhouse/clickhouse-server:26.5-alpine"
+OTEL_COLLECTOR_CONTRIB_IMAGE := "otel/opentelemetry-collector-contrib:0.152.1"
+
 # CH_STRICT_SCAN_IMAGE is the server the strict-scan differential boots. Unlike
 # the other integration lanes (which pin 25.8 to reproduce a specific
 # strict-scan divergence), this lane must EXECUTE every shape the emitter can

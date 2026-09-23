@@ -282,6 +282,18 @@ schema-ddl-test:
     @just _pull-retry {{CH_TEST_IMAGE}} {{CH_TEST_IMAGE_PRIOR}} {{CH_SCHEMA_TEXT_INDEX_IMAGE}}
     go test -timeout 20m -p=1 -race -tags=integration ./internal/schema/ddl/... ./cmd/cerberus/...
 
+# Run the ClickHouse upgrade-compatibility integration tests against real
+# ClickHouse containers: the on-disk format across a mixed 26.6/26.8 rollout
+# and its rollbacks, with cerberus's own schema, and the quickstart
+# collector's ClickHouse receiver across the 26.8 asynchronous-metrics
+# change. `-p=1` keeps the packages from competing for the same Docker
+# substrate. Requires Docker and is gated behind `integration`.
+
+# Run the ClickHouse upgrade-compatibility integration tests. Needs Docker.
+clickhouse-upgrade-test:
+    @just _pull-retry {{CH_SCHEMA_TEXT_INDEX_IMAGE}} {{CH_UPGRADE_TARGET_IMAGE}} {{CH_TEXT_INDEX_V0_READER_IMAGE}} {{OTEL_COLLECTOR_CONTRIB_IMAGE}}
+    go test -timeout 20m -p=1 -race -tags=integration ./test/clickhouse-upgrade/...
+
 # Run the TXTAR spec suite with the chDB-backed round-trip assertion
 # layer enabled. Requires libchdb.so (see `just chdb-install`). The
 # default `just test` lane stays CGO_ENABLED=0 and never compiles the

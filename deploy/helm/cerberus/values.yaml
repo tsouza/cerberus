@@ -570,6 +570,25 @@ clickhouse:
       minAvailable: 1
     # -- Spread ClickHouse pods across nodes (soft anti-affinity by hostname).
     podAntiAffinity: true
+    # Graceful shutdown of every bundled ClickHouse pod, per-shard pods
+    # included. On SIGTERM the server stops accepting connections, waits up to
+    # `waitUnfinishedSeconds` for the queries already running
+    # (`shutdown_wait_unfinished_queries: 1`, `shutdown_wait_unfinished`),
+    # then flushes and exits. Each pod's `terminationGracePeriodSeconds` is
+    # `waitUnfinishedSeconds + overheadSeconds`, so Kubernetes never kills a
+    # server that is still shutting down. Keeper pods keep Kubernetes' default
+    # grace, and the top-level `terminationGracePeriodSeconds` applies to
+    # cerberus pods only (docs/helm-clickhouse.md § "Graceful shutdown").
+    shutdown:
+      # -- Seconds a terminating server waits for running queries
+      # (`shutdown_wait_unfinished`). Equal to cerberus's default query
+      # timeout (`query.timeout`: 2m), so every query cerberus sends can
+      # finish.
+      waitUnfinishedSeconds: 120
+      # -- Seconds of pod grace beyond `waitUnfinishedSeconds`, for the
+      # server's own shutdown work after the last query (flushing buffers and
+      # system logs, stopping background pools). Must be at least 1.
+      overheadSeconds: 30
     # -- Extra config.d XML appended verbatim inside the `<clickhouse>` root
     # (tpl-rendered) for server-level overrides the typed knobs don't cover.
     configOverrides: ""
