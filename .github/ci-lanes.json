@@ -425,7 +425,8 @@
         "traces-scan-window-integration",
         "ts-grid-group-array-integration",
         "ts-grid-last-over-time-integration",
-        "ts-grid-nan-duplicate-integration"
+        "ts-grid-nan-duplicate-integration",
+        "ts-grid-state-format-integration"
       ],
       "command": "strict-scan and real-ClickHouse integration recipes",
       "build_tags": ["integration"],

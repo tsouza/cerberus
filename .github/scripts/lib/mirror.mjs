@@ -83,6 +83,12 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.6',
   'clickhouse/clickhouse-server:26.6-alpine',
   'clickhouse/clickhouse-server:26.6.1.1193-alpine',
+  // The native time-series state-format boundary: exact builds on either side
+  // of each format bump (see CH_TS_STATE_*_IMAGE).
+  'clickhouse/clickhouse-server:26.6.8.7-alpine',
+  'clickhouse/clickhouse-server:26.7.1.1315-alpine',
+  'clickhouse/clickhouse-server:26.7.13.12-alpine',
+  'clickhouse/clickhouse-server:26.8.1.2041-alpine',
 
   // Reference backends the three heads are diffed against, plus the reference
   // Prometheus the PromQL surface gate probes and the reference Mimir the

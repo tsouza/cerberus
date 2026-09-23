@@ -47,6 +47,21 @@ CH_QUANTILE_PROM_HISTOGRAM_IMAGE := "clickhouse/clickhouse-server:25.10-alpine"
 # the test source.
 CH_TAG_GROUPS_IMAGE := "clickhouse/clickhouse-server:26.2-alpine"
 
+# The native timeSeries*ToGrid aggregate-state format boundary
+# (internal/chsql's TestTSGridStateFormatBoundary_Distributed_RealCH and the
+# duplicate-timestamp survivor pins). Exact builds, because each stands for a
+# measured fact about that build rather than a minor line: 26.6.8.7 writes
+# state format 2; 26.7.1.1315 (the first 26.7 release) and 26.7.13.12 write
+# format 3 and still collapse a NaN-bearing duplicate timestamp by scan order;
+# 26.8.1.2041 (the first 26.8 release) writes format 4 and carries ClickHouse
+# #115920's greatest-value-wins, NaN-loses rule.
+# TestIntegrationImagePinsMatchTheJustfile holds these against the literals in
+# the test sources.
+CH_TS_STATE_V2_IMAGE := "clickhouse/clickhouse-server:26.6.8.7-alpine"
+CH_TS_STATE_V3_FIRST_IMAGE := "clickhouse/clickhouse-server:26.7.1.1315-alpine"
+CH_TS_STATE_V3_IMAGE := "clickhouse/clickhouse-server:26.7.13.12-alpine"
+CH_TS_STATE_V4_IMAGE := "clickhouse/clickhouse-server:26.8.1.2041-alpine"
+
 # Exact production-report replay image. Kept separate from CH_STRICT_SCAN_IMAGE
 # because the captured incident records the full patch version it ran against.
 CH_HISTOGRAM_REPORT_IMAGE := "clickhouse/clickhouse-server:26.6.1.1193-alpine"

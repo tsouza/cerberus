@@ -828,6 +828,20 @@ ts-grid-nan-duplicate-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run '^(TestTSGridFamily_NaNDuplicate|TestFanoutDedup_NaNDuplicate|TestRate_NativeGrid_NaNDuplicate)' ./internal/chsql/...
 
+# Run the native timeSeries*ToGrid state-format boundary suite: two-shard
+# Distributed rigs on every step of a rolling upgrade across the 26.7 and 26.8
+# state-format bumps (both initiator directions, a skipped minor, patch skew,
+# and both homogeneous ends). Proves cerberus's native SQL never ships a
+# partial state between shards, that the persisted timeSeriesLastTwoSamples
+# tier state crosses versions, and that each rig really straddles the boundary
+# it claims. Requires Docker; gated behind the `integration` build tag. See
+# internal/chsql/range_window_grid_native_state_format_realch_integration_test.go.
+
+# Run the native time-series state-format boundary suite. Needs Docker.
+ts-grid-state-format-integration:
+    @just _pull-retry {{CH_TS_STATE_V2_IMAGE}} {{CH_TS_STATE_V3_FIRST_IMAGE}} {{CH_TS_STATE_V3_IMAGE}} {{CH_TS_STATE_V4_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run '^TestTSGridStateFormatBoundary_' ./internal/chsql/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 
