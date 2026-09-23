@@ -585,7 +585,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "cerberus-prometheus"},
           "editorMode": "code",
-          "expr": "max by (name) (clickhouse_async_metric{name=~\"LoadAverage1|LoadAverage5|LoadAverage15|jemalloc.resident|jemalloc.active|MemoryResident|OSMemoryAvailable|FilesystemMainPathFreeBytes|MaxPartCountForPartition|MaxAbsoluteDelayNs|ReplicasMaxRelativeDelay\"})",
+          "expr": "max by (name) (clickhouse_async_metric{name=~\"LoadAverage1|LoadAverage5|LoadAverage15|jemalloc.resident|jemalloc.active|MemoryResident|OSMemoryAvailable|FilesystemMainPathAvailableBytes|MaxPartCountForPartition|ReplicasMaxAbsoluteDelay|ReplicasMaxRelativeDelay\"})",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
