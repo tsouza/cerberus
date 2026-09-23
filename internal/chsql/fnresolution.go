@@ -150,6 +150,8 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnCast:                 {Name: "CAST"},
 	chplan.FnToDateTime:           {Name: "toDateTime"},
 	chplan.FnToDateTime64:         {Name: "toDateTime64"},
+	chplan.FnReinterpretAsFloat64: {Name: "reinterpretAsFloat64"},
+	chplan.FnReinterpretAsUInt64:  {Name: "reinterpretAsUInt64"},
 	chplan.FnToFloat64:            {Name: "toFloat64"},
 	chplan.FnToFloat64OrNull:      {Name: "toFloat64OrNull"},
 	chplan.FnToFloat64OrZero:      {Name: "toFloat64OrZero"},
@@ -186,6 +188,7 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnToYear:           {Name: "toYear"},
 
 	// Math functions.
+	chplan.FnBitAnd:        {Name: "bitAnd"},
 	chplan.FnAbs:           {Name: "abs"},
 	chplan.FnBitShiftLeft:  {Name: "bitShiftLeft"},
 	chplan.FnBitShiftRight: {Name: "bitShiftRight"},

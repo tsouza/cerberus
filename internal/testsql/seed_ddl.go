@@ -79,6 +79,11 @@ var backfilledColumns = []backfilledColumn{
 	// temporality wiring reads from; the gauge table has no such column in
 	// production.
 	{name: "AggregationTemporality", ddl: "AggregationTemporality Int32 DEFAULT 2", tables: temporalityTables},
+	// Flags carries the OTel NoRecordedValue bit that marks a Prometheus
+	// stale marker; every metric selector reads it (internal/promql's
+	// stale_marker.go). DEFAULT 0 is an ordinary sample, which is what every
+	// seed that omits the column declares.
+	{name: "Flags", ddl: "Flags UInt32 DEFAULT 0"},
 }
 
 // temporalityTables are the OTel-CH metric tables rate() / increase()'s
