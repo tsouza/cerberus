@@ -145,7 +145,9 @@ var defectiveCHLines = map[chopt.Version]string{
 // line, naming the version actually connected to (not just the line) so the
 // log line is self-contained. Returns "" when got sits on no defective line.
 func defectNote(raw string, got chopt.Version) string {
-	symptom, bad := defectiveCHLines[got]
+	// The map is keyed by line, so the probed build's patch and build are
+	// dropped before the lookup.
+	symptom, bad := defectiveCHLines[chopt.Version{Major: got.Major, Minor: got.Minor}]
 	if !bad {
 		return ""
 	}
