@@ -934,6 +934,8 @@ function count(haystack, needle) {
   const CONFIG = ['-s', 'templates/clickhouse/configmap-config.yaml']
   const defaultWait = 120
   const defaultGrace = 150
+  const overrideWait = 45
+  const overrideOverhead = 10
 
   for (const [label, base, statefulSets] of [
     ['single-shard', OBJECT_STORE, 1],
@@ -947,10 +949,11 @@ function count(haystack, needle) {
     check(Number(WAIT.exec(cfg)?.[1]) === defaultWait, `${label}: shutdown_wait_unfinished is ${defaultWait}`)
     check(sts.every((g) => g > Number(WAIT.exec(cfg)?.[1])), `${label}: the rendered pod grace exceeds the rendered query wait`)
 
-    const override = [...base, '--set', 'clickhouse.bundled.shutdown.waitUnfinishedSeconds=45', '--set', 'clickhouse.bundled.shutdown.overheadSeconds=10']
+    const override = [...base, '--set', `clickhouse.bundled.shutdown.waitUnfinishedSeconds=${overrideWait}`, '--set', `clickhouse.bundled.shutdown.overheadSeconds=${overrideOverhead}`]
     const overridden = graces(tpl([...override, ...STS]))
-    check(overridden.length === statefulSets && overridden.every((g) => g === 55), `${label}: overrides give grace 45 + 10 = 55 on every StatefulSet (got ${overridden})`)
-    check(Number(WAIT.exec(tpl([...override, ...CONFIG]))?.[1]) === 45, `${label}: overridden shutdown_wait_unfinished is 45`)
+    const overrideGrace = overrideWait + overrideOverhead
+    check(overridden.length === statefulSets && overridden.every((g) => g === overrideGrace), `${label}: overrides give grace ${overrideWait} + ${overrideOverhead} = ${overrideGrace} on every StatefulSet (got ${overridden})`)
+    check(Number(WAIT.exec(tpl([...override, ...CONFIG]))?.[1]) === overrideWait, `${label}: overridden shutdown_wait_unfinished is ${overrideWait}`)
   }
 
   const keeper = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.replicas=2', '-s', 'templates/clickhouse/keeper-statefulset.yaml'])

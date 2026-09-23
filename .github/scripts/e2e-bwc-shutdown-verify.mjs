@@ -43,6 +43,11 @@ import { pollUntil } from './lib/poll.mjs';
 // duration is BOUNDED_QUERY_SECONDS whatever the server's block size.
 export const SLEEP_PER_ROW_SECONDS = 0.5;
 
+// POLL_INTERVAL_MS paces the two sub-second waits: the query appearing in
+// system.processes and the terminating pod disappearing, whose timing is the
+// measurement.
+const POLL_INTERVAL_MS = 500;
+
 // shutdownBudgetDefects checks what the rendered pods and the running server
 // say about the shutdown budget, before anything is terminated.
 export function shutdownBudgetDefects({ grace, wait, drain, querySeconds }) {
@@ -165,7 +170,7 @@ async function main() {
         `SELECT count() FROM system.processes WHERE query LIKE '%${QUERY_MARKER}%' AND query NOT LIKE '%system.processes%'`);
       return res.status === 0 && Number(res.stdout.trim()) > 0;
     },
-    { deadlineMs: BOUNDED_QUERY_SECONDS * 1000, intervalMs: 500, label: 'query running' },
+    { deadlineMs: BOUNDED_QUERY_SECONDS * 1000, intervalMs: POLL_INTERVAL_MS, label: 'query running' },
   );
   if (!running) fail([`the bounded query never showed up in system.processes on ${target}`]);
 
@@ -174,7 +179,7 @@ async function main() {
   if (del.status !== 0) fail([`kubectl delete pod ${target}: ${del.stderr.trim()}`]);
   const gone = await pollUntil(async () => podUID(target) !== oldUID, {
     deadlineMs: (grace + RECOVERY_SECONDS) * 1000,
-    intervalMs: 500,
+    intervalMs: POLL_INTERVAL_MS,
     label: `pod ${target} replaced`,
   });
   const goneAfterSeconds = (Date.now() - deletedAt) / 1000;

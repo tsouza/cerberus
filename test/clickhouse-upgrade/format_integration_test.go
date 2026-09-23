@@ -58,6 +58,8 @@ const (
 	// textIndexMatchEvery: one row in this many carries the token.
 	textIndexMatchEvery = 10
 	textIndexBatchRows  = 100
+	// textIndexBatches is how many parts each table gets per test step.
+	textIndexBatches = 3
 	// textIndexCreateIndex / textIndexUpgradeIndex are the index names
 	// renderLogsTable and renderAddBodyTextIndex install.
 	textIndexCreateIndex  = "idx_lower_body"
@@ -174,8 +176,7 @@ func TestUpgradeFormat_MixedVersionReplicas(t *testing.T) {
 		clickhouse.Settings{"mutations_sync": 2})
 
 	const priorBatches = 2
-	const batches = 3
-	for i := range batches {
+	for i := range textIndexBatches {
 		n := peer
 		if i == 1 {
 			n = old
@@ -193,8 +194,8 @@ func TestUpgradeFormat_MixedVersionReplicas(t *testing.T) {
 		assertFetchedMergedParts(ctx, t, old, table)
 	}
 
-	wantFresh := batches * textIndexBatchRows / textIndexMatchEvery
-	wantLegacy := (priorBatches + batches) * textIndexBatchRows / textIndexMatchEvery
+	wantFresh := textIndexBatches * textIndexBatchRows / textIndexMatchEvery
+	wantLegacy := (priorBatches + textIndexBatches) * textIndexBatchRows / textIndexMatchEvery
 	baseline := map[string][]string{}
 	check := func(stage string, nodes ...*textIndexNode) {
 		t.Helper()
@@ -246,7 +247,7 @@ func TestUpgradeFormat_PackedSkipIndexNeedsThePin(t *testing.T) {
 
 	n := startTextIndexNode(ctx, t, nw, textIndexUpgradeTargetImage, "single", volume, "")
 	applySchema(ctx, t, n, cfg, []ddl.Signal{ddl.Traces})
-	for i := range 3 {
+	for i := range textIndexBatches {
 		insertSpans(ctx, t, n, i)
 	}
 	execOn(ctx, t, n, "OPTIMIZE TABLE "+textIndexDatabase+".otel_traces FINAL", nil)
@@ -277,11 +278,11 @@ func TestUpgradeFormat_TextIndexRollbackBelowReaderFloor(t *testing.T) {
 	nw := textIndexNetwork(ctx, t)
 	volume := textIndexVolume(ctx, t)
 	cfg := ddl.Config{Database: textIndexDatabase, TextIndexEnabled: true}
-	want := 3 * textIndexBatchRows / textIndexMatchEvery
+	want := textIndexBatches * textIndexBatchRows / textIndexMatchEvery
 
 	n := startTextIndexNode(ctx, t, nw, textIndexUpgradeTargetImage, "single", volume, "")
 	applySchema(ctx, t, n, cfg, []ddl.Signal{ddl.Logs})
-	for i := range 3 {
+	for i := range textIndexBatches {
 		insertLogs(ctx, t, n, "otel_logs", i)
 	}
 	execOn(ctx, t, n, "OPTIMIZE TABLE "+textIndexDatabase+".otel_logs FINAL", nil)
