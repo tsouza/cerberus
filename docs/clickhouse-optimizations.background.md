@@ -268,7 +268,12 @@ reference Prometheus on each. The one gap those sweeps found is the family-wide
 duplicate-timestamp NaN survivor (originally
 [#2798](https://github.com/tsouza/cerberus/issues/2798)), which the already
 auto-selected rate / increase / resets / deriv / predict_linear members carry
-identically, so it is not a reason to treat any one member differently. The two
+identically, so it is not a reason to treat any one member differently.
+ClickHouse #115920 made that survivor order-independent from 26.8.1.2041 on
+(the finite sample wins), which removes the nondeterminism but not the
+disagreement with the fan-out, whose rule elects the NaN;
+[#3648](https://github.com/tsouza/cerberus/issues/3648) aligns the fan-out's
+rule. The two
 family members that ARE opt-in carry divergences ordinary data reaches:
 `ts_grid_changes` on any NaN-adjacent window with no duplicate at all, and
 `ts_grid_group_array` because it would import the nondeterminism into paths

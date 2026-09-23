@@ -113,9 +113,9 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //     timestamp) inside the builtin, which is the STRONGER per-timestamp
 //     rule and therefore agrees with this one on an identical-row duplicate.
 //     The two rules part company only on a NaN-bearing duplicate, where the
-//     builtin's survivor follows scan order — the family-wide gap cerberus
-//     tracks at https://github.com/tsouza/cerberus/issues/2798, unchanged by
-//     this file.
+//     builtin's survivor follows scan order before ClickHouse #115920 and is
+//     the finite sample from 26.8.1.2041 on (chsql.nativeTSGridFn's
+//     duplicate-timestamp section), unchanged by this file.
 //   - the downsample tier of cerberus issue #2751 (irate / idelta /
 //     last_over_time), which reads pre-aggregated
 //     timeSeriesLastTwoSamples rollup state rather than raw sample rows.
