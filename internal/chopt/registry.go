@@ -2348,7 +2348,7 @@ func (f Feature) unsafeRange(server Version) (BuildRange, bool) {
 //
 // Each boundary is verified against released images: the last affected and
 // first fixed release of every line reproduce and clear the defect in
-// internal/chclient's condition-cache real-server test, which drives
+// test/chserver's condition-cache real-server test, which drives
 // cerberus-emitted shapes.
 var conditionCacheUnsafeBuilds = []BuildRange{
 	{From: Version{Major: 26, Minor: 1}, Until: Version{Major: 26, Minor: 3, Patch: 13, Build: 13}, Defect: conditionCacheSkipIndexDefect},

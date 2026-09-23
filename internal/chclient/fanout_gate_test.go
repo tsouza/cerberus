@@ -695,3 +695,44 @@ func TestAcquireDataShardFanout_ReleaseIsIdempotent_KillsOnlyOnce(t *testing.T) 
 		t.Fatalf("Exec calls = %d, want exactly 1 across 3 release() calls", len(execs))
 	}
 }
+
+// TestAcquireDataShardFanout_SingleShard_CancelledDispatch_StillKills pins the
+// default single-shard deployment (no fan-out gate at all): a cancelled
+// dispatch's release still issues KILL QUERY for its query_id, because a
+// ClientCancel alone does not interrupt a CPU-bound function call on any
+// ClickHouse build; a normal finish still pays nothing.
+func TestAcquireDataShardFanout_SingleShard_CancelledDispatch_StillKills(t *testing.T) {
+	t.Parallel()
+	for _, shards := range []int{0, 1} {
+		conn := &execRecordingConn{}
+		m, _ := newTestConnMetrics(t)
+		c := assembleClientFromConn(Config{DataShardCount: shards}, conn, m)
+		t.Cleanup(func() { _ = c.Close() })
+		if c.dataShardFanoutGate != nil {
+			t.Fatalf("DataShardCount=%d allocated a fan-out gate", shards)
+		}
+
+		normal, err := c.acquireDataShardFanout(withQueryID(context.Background(), "single-shard-normal"))
+		if err != nil {
+			t.Fatalf("acquireDataShardFanout: %v", err)
+		}
+		normal()
+		if execs := conn.execCalls(); len(execs) != 0 {
+			t.Fatalf("DataShardCount=%d: a normal finish issued %d Exec call(s): %v", shards, len(execs), execs)
+		}
+
+		const queryID = "single-shard-cancelled"
+		ctx, cancel := context.WithCancel(withQueryID(context.Background(), queryID))
+		release, err := c.acquireDataShardFanout(ctx)
+		if err != nil {
+			t.Fatalf("acquireDataShardFanout: %v", err)
+		}
+		cancel()
+		release()
+		release() // idempotent: one KILL only
+		execs := conn.execCalls()
+		if len(execs) != 1 || execs[0].sql != killDataShardQuerySQL || len(execs[0].args) != 1 || execs[0].args[0] != queryID {
+			t.Fatalf("DataShardCount=%d: Exec calls = %v; want exactly one %q for %q", shards, execs, killDataShardQuerySQL, queryID)
+		}
+	}
+}

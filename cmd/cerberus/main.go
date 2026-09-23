@@ -1568,6 +1568,9 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// re-probe re-evaluates this on every capability transition
 	// (chOptConsumers.apply).
 	applyConditionCacheOverride(client, set)
+	if !versionFallback {
+		logCancellationGaps(logger, resolvedVersion)
+	}
 
 	logger.Info(
 		"clickhouse optimizations resolved",

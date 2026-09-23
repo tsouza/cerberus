@@ -23,7 +23,7 @@ import (
 // bounded share of the host, never the whole of it.
 const (
 	serverNanoCPUs    = 2_000_000_000 // two CPUs
-	serverMemoryBytes = 4 << 30       // 4 GiB; ClickHouse sizes its own memory cap from the cgroup limit
+	serverMemoryBytes = 6 << 30       // 6 GiB; ClickHouse sizes its own memory cap from the cgroup limit
 )
 
 // Credentials of the administrative user every container is booted with. It
@@ -51,14 +51,13 @@ type server struct {
 
 // startServer boots image under the package's CPU and memory limits and
 // returns it with an administrative client and its probed build version.
-func startServer(ctx context.Context, t *testing.T, image string) *server {
+// extra customizes the container further (a config file, for example).
+func startServer(ctx context.Context, t *testing.T, image string, extra ...testcontainers.ContainerCustomizer) *server {
 	t.Helper()
 	bootCtx, cancel := context.WithTimeout(ctx, serverBootBudget)
 	defer cancel()
 
-	ctr, err := tcclickhouse.Run(
-		bootCtx,
-		image,
+	opts := append([]testcontainers.ContainerCustomizer{
 		tcclickhouse.WithUsername(adminUser),
 		tcclickhouse.WithPassword(adminPassword),
 		tcclickhouse.WithDatabase(serverDB),
@@ -67,7 +66,8 @@ func startServer(ctx context.Context, t *testing.T, image string) *server {
 			hc.NanoCPUs = serverNanoCPUs
 			hc.Memory = serverMemoryBytes
 		}),
-	)
+	}, extra...)
+	ctr, err := tcclickhouse.Run(bootCtx, image, opts...)
 	if err != nil {
 		t.Fatalf("start %s: %v", image, err)
 	}
@@ -92,11 +92,14 @@ func startServer(ctx context.Context, t *testing.T, image string) *server {
 }
 
 // client opens a cerberus data-plane client for user against s. cfg supplies
-// any extra knobs; its address and credentials are overwritten.
+// any extra knobs; its address and credentials are overwritten, and an empty
+// database defaults to serverDB.
 func (s *server) client(t *testing.T, user, password string, cfg chclient.Config) *chclient.Client {
 	t.Helper()
 	cfg.Addr = s.addr
-	cfg.Database = serverDB
+	if cfg.Database == "" {
+		cfg.Database = serverDB
+	}
 	cfg.Username = user
 	cfg.Password = password
 	cfg.BreakerDisabled = true

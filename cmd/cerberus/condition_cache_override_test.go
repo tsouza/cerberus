@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chclient"
@@ -47,5 +50,28 @@ func TestCHOptConsumers_ConditionCacheOverrideFollowsTheProbedBuild(t *testing.T
 	consumers.apply(cfg, resolutionAt(t, fixedBuild, chopt.FeatureConditionCache))
 	if client.QueryConditionCacheDisabled() || view.QueryConditionCacheDisabled() {
 		t.Fatalf("override still on after a probe answered from fixed %s", fixedBuild)
+	}
+}
+
+// TestLogCancellationGaps pins the operator-facing warning of the bounded-
+// cancellation policy: one WARN per gap the build carries, none on a build
+// with every fix.
+func TestLogCancellationGaps(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		server chopt.Version
+		want   int
+	}{
+		{chopt.Version{Major: 26, Minor: 6, Patch: 1, Build: 1193}, 2},
+		{chopt.Version{Major: 26, Minor: 7, Patch: 13, Build: 12}, 1},
+		{chopt.Version{Major: 26, Minor: 8, Patch: 10, Build: 6}, 0},
+	}
+	for _, tc := range cases {
+		var buf bytes.Buffer
+		logCancellationGaps(slog.New(slog.NewTextHandler(&buf, nil)), tc.server)
+		if got := strings.Count(buf.String(), "level=WARN"); got != tc.want {
+			t.Errorf("%s: %d warnings, want %d:\n%s", tc.server, got, tc.want, buf.String())
+		}
 	}
 }

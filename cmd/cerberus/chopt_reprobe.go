@@ -130,6 +130,24 @@ func applyConditionCacheOverride(client *chclient.Client, set chopt.EnabledSet) 
 	client.SetQueryConditionCacheDisabled(choptwire.ConditionCacheDisabled(set))
 }
 
+// logCancellationGaps warns once per gap the probed build carries: a
+// function cerberus emits whose single call the server does not interrupt, so
+// a timed-out or cancelled query answers the client on time while the server
+// finishes that call. It is the operator-facing half of the supported-version
+// policy for bounded server-side cancellation (chopt.CancellationGaps).
+func logCancellationGaps(logger *slog.Logger, server chopt.Version) {
+	for _, g := range chopt.CancellationGaps(server) {
+		logger.Warn(
+			"clickhouse build does not interrupt a running call of functions cerberus emits; "+
+				"a timed-out or cancelled query keeps using server CPU until that call finishes",
+			"server_version", server.String(),
+			"functions", strings.Join(g.Functions, ","),
+			"upstream_fix", g.Defect,
+			"fixed_in", g.Fixed.String(),
+		)
+	}
+}
+
 // chOptReprobeInterval is the cadence at which cerberus re-reads the connected
 // ClickHouse server's capabilities. It is a compromise between two costs that
 // pull in opposite directions: a shorter interval spends two short-lived
@@ -251,6 +269,9 @@ func reprobeCHOptimizations(
 		// against, which is the direction an operator can act on.
 		live.store(next)
 		consumers.apply(cfg, next)
+		if !next.VersionFallback && next.ResolvedVersion != prev.ResolvedVersion {
+			logCancellationGaps(logger, next.ResolvedVersion)
+		}
 		logger.Info(
 			"clickhouse optimizations re-resolved",
 			"server_version", next.ResolvedVersion.String(),
