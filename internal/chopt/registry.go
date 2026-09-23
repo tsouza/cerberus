@@ -2468,7 +2468,7 @@ var registry = []Feature{
 		Stability:                  Experimental,
 		AutoSelect:                 false,
 		RequiresExperimentalTSGrid: true,
-		Doc:                        "swap groupArray+arraySort(+dedup) window assembly for native timeSeriesGroupArray at sites that already dedup (server >= 25.9, opt-in — on a NaN duplicate the native collapse elects a different sample than the fan-out dedup, so auto never picks it)",
+		Doc:                        "swap groupArray+arraySort(+dedup) window assembly for native timeSeriesGroupArray at sites that already dedup (server >= 25.9, opt-in — on a NaN duplicate the native collapse elects another sample than the fan-out dedup, so auto never picks it)",
 	},
 	{
 		ID:         FeatureMapBucketedSerialization,

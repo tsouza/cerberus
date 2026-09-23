@@ -174,7 +174,7 @@ func nativeTSAggregatesOverTables(sql string) []string {
 		case strings.EqualFold(tok, "SELECT"):
 			flush(top)
 		case strings.EqualFold(tok, "FROM") || strings.EqualFold(tok, "JOIN"):
-			if i+1 < len(tokens) && tokens[i+1] != "(" && !(i+2 < len(tokens) && tokens[i+2] == "(") {
+			if i+1 < len(tokens) && tokens[i+1] != "(" && (i+2 >= len(tokens) || tokens[i+2] != "(") {
 				if top.table == "" {
 					top.table = tokens[i+1]
 				}
