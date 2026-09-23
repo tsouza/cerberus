@@ -574,8 +574,16 @@ clickhouse:
     # (tpl-rendered) for server-level overrides the typed knobs don't cover.
     configOverrides: ""
     # -- Extra MergeTree server settings rendered into `<merge_tree>` (map of
-    # setting -> value), e.g. `{ max_suspicious_broken_parts: 100 }`.
-    settings: {}
+    # setting -> value), e.g. `{ max_suspicious_broken_parts: 100 }`. The
+    # default is the on-disk format pin that keeps every part a 26.7+ server
+    # writes readable by a 26.6 server, so a rolling upgrade from 26.6 can run
+    # mixed-version and roll back (docs/helm-clickhouse.md § "On-disk format
+    # across ClickHouse upgrades"). Advance it with
+    # `packed_skip_index_max_bytes: null` once no replica will run 26.6 again.
+    # A server older than 26.6 does not know the setting and refuses to start
+    # with it; set it to `null` when running such an image.
+    settings:
+      packed_skip_index_max_bytes: 0
     # -- The bundled ClickHouse ClusterIP Service.
     service:
       # -- `ClientIP` (default) pins every new connection a given cerberus pod
