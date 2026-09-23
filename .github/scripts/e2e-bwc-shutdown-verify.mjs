@@ -123,7 +123,10 @@ function podUID(pod) {
 // startBoundedQuery runs the bounded query against target from inside client,
 // asynchronously, and resolves with the client's exit status and output.
 function startBoundedQuery(client, target, rows) {
-  const sql = `SELECT count() FROM (SELECT sleepEachRow(${SLEEP_PER_ROW_SECONDS}) FROM numbers(${rows})) ` +
+  // The sleep sits in WHERE so the server has to evaluate it for every row: a
+  // sleep in a projection that count() never reads is pruned and the query
+  // returns at once.
+  const sql = `SELECT count() FROM numbers(${rows}) WHERE sleepEachRow(${SLEEP_PER_ROW_SECONDS}) = 0 ` +
     `SETTINGS max_block_size = 1, log_comment = '${QUERY_MARKER}'`;
   const child = spawn('kubectl', ['-n', NS, 'exec', client, '--', 'clickhouse-client',
     '--host', `${target}.${HEADLESS}`, '--user', CH_USER, '--password', CH_PASSWORD, '--query', sql]);
@@ -172,7 +175,10 @@ async function main() {
     },
     { deadlineMs: BOUNDED_QUERY_SECONDS * 1000, intervalMs: POLL_INTERVAL_MS, label: 'query running' },
   );
-  if (!running) fail([`the bounded query never showed up in system.processes on ${target}`]);
+  if (!running) {
+    const { status, output } = await query;
+    fail([`the bounded query never showed up in system.processes on ${target}; the client exited ${status}: ${output.trim()}`]);
+  }
 
   const deletedAt = Date.now();
   const del = kubectl(['delete', 'pod', target, '--wait=false']);
