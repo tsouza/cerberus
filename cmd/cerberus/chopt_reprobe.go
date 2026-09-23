@@ -12,6 +12,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
+	"github.com/tsouza/cerberus/internal/choptwire"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
 )
@@ -126,7 +127,7 @@ func (c chOptConsumers) apply(cfg config.Config, res chOptResolution) {
 // re-probe finds a fixed build. It is independent of the selection: the
 // server's own default engages the cache whether or not cerberus asks for it.
 func applyConditionCacheOverride(client *chclient.Client, set chopt.EnabledSet) {
-	client.SetQueryConditionCacheDisabled(set.KnownUnsafe(chopt.FeatureConditionCache))
+	client.SetQueryConditionCacheDisabled(choptwire.ConditionCacheDisabled(set))
 }
 
 // chOptReprobeInterval is the cadence at which cerberus re-reads the connected
