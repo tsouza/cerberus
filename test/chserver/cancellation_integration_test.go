@@ -88,12 +88,12 @@ var cancelShapes = []cancelShape{
 // container's memory and finishes well inside naturalRunBudget.
 const (
 	foldMetric       = "foldprobe"
-	foldSamples      = 400_000
+	foldSamples      = 500_000
 	regexMetric      = "regexprobe"
 	regexKeyChunks   = 100
 	regexChunkChars  = 1_000_000 // repeat()'s own per-call cap
 	cancelDeadline   = time.Second
-	cancelBound      = 2 * time.Second
+	cancelBound      = time.Second
 	handlerSlack     = 3 * time.Second
 	naturalRunBudget = 90 * time.Second
 	runningBudget    = 30 * time.Second
@@ -113,25 +113,24 @@ var cancelEvalTime = time.Date(2026, 5, 14, 11, 0, 0, 0, time.UTC)
 // cancellation proof from cooperative sleeps to the CPU-bound functions
 // cerberus emits. For every pinned build and each shape it drives:
 //
-//   - a request deadline through the production Prometheus handler: the client
-//     is answered 503 errorType=timeout on time on every build, and the
-//     server either stops within cancelBound or — on a build that cannot
-//     interrupt the call — is observed still running after the handler
-//     returned and its admission slot was free again;
-//   - a client disconnect mid-call through the same handler: 503
-//     errorType=canceled, with the same bounded/unbounded split;
+//   - a request deadline through the production Prometheus handler, answered
+//     503 errorType=timeout;
+//   - a client disconnect mid-call through the same handler, answered 503
+//     errorType=canceled;
 //   - routed sibling cancellation: two statements dispatched through a
-//     data-shard client over Distributed tables, cancelled together, closed
-//     through the fan-out gate's KILL QUERY ... SYNC release. On a build that
-//     interrupts the call no statement — initiator or remote child — is left
-//     running when the gate capacity is released; on one that cannot, the
-//     capacity is released while the work still runs.
+//     data-shard client over Distributed tables, cancelled together and
+//     closed through the fan-out gate's release.
 //
-// Every scenario asserts the server eventually cleans the work up, and that
-// the admission slot is free the moment the client is answered while the
-// connection pool and the fan-out gate are usable again afterwards. Which branch a build takes is fixed by the table above and
-// must agree with chopt.CancellationGaps, the version policy cerberus reports
-// at boot.
+// In every scenario the capacity the dispatch held — admission slot or gate
+// weight — is released only after cerberus's KILL QUERY ... SYNC. On a build
+// that interrupts the call no statement, initiator or remote child, still
+// runs at that release, and the server's query_log shows the work ended
+// within cancelBound of the cancellation. On a build that cannot, query_log
+// shows the server kept evaluating past that bound. Every scenario also
+// asserts the work eventually ends, that the connection pool and the fan-out
+// gate are usable again, and that the client is answered within a bounded
+// time. Which branch a build takes is fixed by the table above and must agree
+// with chopt.CancellationGaps, the version policy cerberus reports at boot.
 func TestCancellation_CPUBoundEmittedShapesAcrossBuilds(t *testing.T) {
 	clusterConfig, err := filepath.Abs(filepath.Join("testdata", "cluster.xml"))
 	if err != nil {
@@ -278,13 +277,9 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 		t.Errorf("the client was answered after %s; want within %s", answered, budget)
 	}
 	p.assertAdmissionFree(t)
-	s.assertServerWorkEnds(ctx, t, []string{qid}, bounded)
+	// The server's own max_execution_time is the cancellation here.
+	s.assertServerWorkEnds(ctx, t, []string{qid}, bounded, start.Add(cancelDeadline))
 	p.assertPoolReleased(t)
-	duration := s.finishedDuration(ctx, t, qid)
-	if stopped := duration <= cancelDeadline+cancelBound; stopped != bounded {
-		t.Errorf("server-side duration %s under a %s deadline: stopped within %s = %v; want %v",
-			duration, cancelDeadline, cancelBound, stopped, bounded)
-	}
 }
 
 func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, bounded bool) {
@@ -296,6 +291,7 @@ func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules e
 	go func() { done <- p.serve(reqCtx, shape) }()
 
 	s.waitRunningFor(ctx, t, qid, cancelDeadline)
+	cancelAt := time.Now()
 	disconnect()
 	budget := handlerSlack
 	if !bounded {
@@ -308,7 +304,7 @@ func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules e
 		t.Fatalf("the handler did not return within %s of the client disconnecting", budget)
 	}
 	p.assertAdmissionFree(t)
-	s.assertServerWorkEnds(ctx, t, []string{qid}, bounded)
+	s.assertServerWorkEnds(ctx, t, []string{qid}, bounded, cancelAt)
 	p.assertPoolReleased(t)
 }
 
@@ -340,6 +336,7 @@ func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape can
 		s.waitRunningFor(ctx, t, id, cancelDeadline)
 	}
 
+	cancelAt := time.Now()
 	cancelDispatch()
 	var wg sync.WaitGroup
 	for _, cur := range cursors {
@@ -357,16 +354,8 @@ func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape can
 		t.Fatalf("closing the cancelled siblings did not return within %s", closeBudget)
 	}
 
-	// The gate capacity is released now. On a build that interrupts the
-	// call, KILL QUERY ... SYNC confirmed every statement dead first; on one
-	// that cannot, the capacity is advertised free while the work runs on.
-	if running := s.runningCount(ctx, t, ids); (running == 0) != bounded {
-		t.Errorf("%d statement(s) of the cancelled siblings still run once the fan-out gate released their capacity; "+
-			"want none = %v", running, bounded)
-	}
-	if !s.goneWithin(ctx, t, ids, naturalRunBudget) {
-		t.Fatalf("server work for %v still running after %s", ids, naturalRunBudget)
-	}
+	// The gate capacity is released now.
+	s.assertServerWorkEnds(ctx, t, ids, bounded, cancelAt)
 
 	fctx, cancel := context.WithTimeout(ctx, cancelBound)
 	defer cancel()
@@ -419,22 +408,32 @@ func (s *server) waitRunningFor(ctx context.Context, t *testing.T, qid string, d
 	}
 }
 
-// assertServerWorkEnds runs right after the client was answered and its
-// admission released. On a build that interrupts the call the work for ids
-// must stop within cancelBound; on one that cannot it is still running at
-// that moment — the capacity is free while the server keeps working. Either
-// way it must end on its own within naturalRunBudget.
-func (s *server) assertServerWorkEnds(ctx context.Context, t *testing.T, ids []string, bounded bool) {
+// assertServerWorkEnds runs the moment cerberus has released the capacity a
+// cancelled dispatch held — its admission slot or its fan-out gate weight.
+//
+// On a build that interrupts the call, KILL QUERY ... SYNC confirmed the work
+// dead before that release, so no statement for ids — initiator or remote
+// child — may still run, and the server must have stopped within cancelBound
+// of cancelAt. On a build that cannot, the server keeps evaluating the
+// in-flight call past cancelAt + cancelBound. Which of the two happened is
+// read from the server's own query_log, so the verdict does not depend on how
+// the call's natural length compares with the release's bounded KILL wait.
+// Either way the work must end on its own within naturalRunBudget.
+func (s *server) assertServerWorkEnds(ctx context.Context, t *testing.T, ids []string, bounded bool, cancelAt time.Time) {
 	t.Helper()
 	if bounded {
-		if !s.goneWithin(ctx, t, ids, cancelBound) {
-			t.Errorf("server work for %v still running %s after the client was answered", ids, cancelBound)
+		if running := s.runningCount(ctx, t, ids); running != 0 {
+			t.Errorf("%d statement(s) for %v still run once their capacity was released", running, ids)
 		}
-	} else if s.runningCount(ctx, t, ids) == 0 {
-		t.Errorf("server work for %v already ended when the client was answered, on a build that cannot interrupt the call", ids)
 	}
 	if !s.goneWithin(ctx, t, ids, naturalRunBudget) {
 		t.Fatalf("server work for %v still running after %s", ids, naturalRunBudget)
+	}
+	delay := s.stopDelay(ctx, t, ids, cancelAt)
+	t.Logf("server work for %v ended %s after the cancellation", ids, delay)
+	if stopped := delay <= cancelBound; stopped != bounded {
+		t.Errorf("server work for %v ended %s after the cancellation: within %s = %v; want %v",
+			ids, delay, cancelBound, stopped, bounded)
 	}
 }
 
@@ -453,21 +452,26 @@ func (s *server) goneWithin(ctx context.Context, t *testing.T, ids []string, bud
 	}
 }
 
-// finishedDuration returns how long the server ran qid, from its terminal
-// query_log row.
-func (s *server) finishedDuration(ctx context.Context, t *testing.T, qid string) time.Duration {
+// stopDelay is how long after cancelAt the last statement for ids — or any
+// remote child it dispatched — ended, from the server's own query_log.
+func (s *server) stopDelay(ctx context.Context, t *testing.T, ids []string, cancelAt time.Time) time.Duration {
 	t.Helper()
 	s.flushLogs(ctx, t)
-	var ms, rows uint64
+	var (
+		endMicros int64
+		rows      uint64
+	)
 	err := s.admin.Conn().QueryRow(ctx,
-		"SELECT max(query_duration_ms), count() FROM system.query_log WHERE query_id = ? AND type != 'QueryStart'", qid).Scan(&ms, &rows)
+		"SELECT toInt64(max(toUnixTimestamp64Micro(event_time_microseconds))), count() FROM system.query_log "+
+			"WHERE (has(?, query_id) OR has(?, initial_query_id)) AND type != 'QueryStart'",
+		ids, ids).Scan(&endMicros, &rows)
 	if err != nil {
-		t.Fatalf("read query_log for %s: %v", qid, err)
+		t.Fatalf("read query_log for %v: %v", ids, err)
 	}
 	if rows == 0 {
-		t.Fatalf("query_log has no terminal row for %s", qid)
+		t.Fatalf("query_log has no terminal row for %v", ids)
 	}
-	return time.Duration(ms) * time.Millisecond
+	return time.UnixMicro(endMicros).Sub(cancelAt)
 }
 
 // seedCancellationProbe applies cerberus's metrics DDL to the default
