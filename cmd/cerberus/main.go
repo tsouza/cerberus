@@ -308,7 +308,7 @@ func mountAPIHeads(
 
 	return apiHeads{
 		grpcServer: grpcServer,
-		consumers:  chOptConsumers{engines: engines, prom: promHandler},
+		consumers:  chOptConsumers{client: client, engines: engines, prom: promHandler},
 	}, nil
 }
 
@@ -1562,6 +1562,13 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// is the Config the columnar strategy's second ch-go dial maps off of.
 	client.UseColumnarMatrixDecode(set.Has(chopt.FeatureColumnarResultDecode), cfg.ClickHouse)
 
+	// A server build with a known query-condition-cache wrong-result defect
+	// enables the cache by default, so leaving the setting unstamped would
+	// still expose every query to it: force it off client-wide instead. The
+	// re-probe re-evaluates this on every capability transition
+	// (chOptConsumers.apply).
+	applyConditionCacheOverride(client, set)
+
 	logger.Info(
 		"clickhouse optimizations resolved",
 		"selection", cfg.CHOptimizations,
@@ -1572,6 +1579,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"query_workload", cfg.CHQueryWorkload,
 		"server_query_workload_capability", queryWorkloadCapability.String(),
 		"enabled", strings.Join(set.IDs(), ","),
+		"query_condition_cache_forced_off", client.QueryConditionCacheDisabled(),
 	)
 	return chOptResolution{
 		Set:              set,

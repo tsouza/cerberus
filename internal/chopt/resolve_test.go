@@ -1,6 +1,8 @@
 package chopt
 
 import (
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -8,6 +10,24 @@ import (
 
 // v constructs a Version tersely.
 func v(major, minor int) Version { return Version{Major: major, Minor: minor} }
+
+// conditionCacheFixed is the first released 26.6 build, outside every
+// conditionCacheUnsafeBuilds range: a server on which condition_cache
+// resolves in.
+var conditionCacheFixed = Version{Major: 26, Minor: 6, Patch: 1, Build: 1193}
+
+// warnedFeatures extracts the feature ids named by `ch_opt "<id>" disabled`
+// warnings, in order.
+func warnedFeatures(warns []string) []string {
+	re := regexp.MustCompile(`^ch_opt "([a-z_]+)" disabled`)
+	var out []string
+	for _, w := range warns {
+		if m := re.FindStringSubmatch(w); m != nil {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
 
 func TestParseMode(t *testing.T) {
 	cases := []struct {
@@ -107,8 +127,7 @@ func TestResolve_Off_LegacyFalse_StaysEmpty(t *testing.T) {
 }
 
 func TestResolve_Auto_EnablesAutoSelectByVersion(t *testing.T) {
-	// On 25.9 the stable features (aggregation_in_order 24.8, condition_cache
-	// 25.3) plus ELEVEN of the twelve 25.9-floored ts_grid_* features
+	// On 25.9 the stable feature aggregation_in_order (24.8) plus ELEVEN of the twelve 25.9-floored ts_grid_* features
 	// (ts_grid_range, ts_grid_increase, ts_grid_resample, ts_grid_resets,
 	// ts_grid_deriv, ts_grid_predict_linear, ts_grid_recollapse,
 	// ts_grid_histogram, ts_grid_delta, ts_grid_irate, ts_grid_idelta) are
@@ -123,12 +142,17 @@ func TestResolve_Auto_EnablesAutoSelectByVersion(t *testing.T) {
 	// Capability=Available is the happy-path boot verdict (the server permits
 	// the experimental setting); ResultCacheCapability=Available is the same
 	// happy-path verdict for the SEPARATE result-cache probe, so result_cache
-	// (MinVersion 24.8, met here) also joins the auto set.
+	// (MinVersion 24.8, met here) also joins the auto set. condition_cache
+	// meets its 25.3 floor but 25.9 is a known-unsafe build for it
+	// (conditionCacheUnsafeBuilds), so auto withholds it.
 	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable, ResultCacheCapability: CapabilityAvailable}, v(25, 9))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
+	if !set.KnownUnsafe(FeatureConditionCache) {
+		t.Errorf("25.9 not reported known-unsafe for %q", FeatureConditionCache)
+	}
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache)
@@ -148,7 +172,7 @@ func TestResolve_Auto_NativeAggregatesOffBelow259(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
 	for _, off := range []string{
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
@@ -165,7 +189,7 @@ func TestResolve_Auto_EmptySelectionDefaultsToAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache)
@@ -185,10 +209,14 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 	// the native builtin diverges from reference Prometheus on NaN-adjacent
 	// windows (#1721) — auto must never select either. result_cache's own
 	// 24.8 floor is met by every row here, so it is present in all of them.
+	// Every row from 25.3 on meets condition_cache's floor on a build inside
+	// conditionCacheUnsafeBuilds, so auto withholds it with exactly one WARN
+	// (wantWarned) — a version skip stays silent.
 	cases := []struct {
-		name   string
-		server Version
-		want   []string
+		name       string
+		server     Version
+		want       []string
+		wantWarned []string
 	}{
 		{
 			name:   "24.8 only aggregation_in_order",
@@ -196,29 +224,33 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
 		},
 		{
-			name:   "25.3 adds condition_cache, no native aggregates",
-			server: v(25, 3),
-			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
+			name:       "25.3 meets condition_cache's floor on a known-unsafe build, no native aggregates",
+			server:     v(25, 3),
+			want:       []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
+			wantWarned: []string{FeatureConditionCache},
 		},
 		{
-			name:   "25.6 below the 25.9 native floor (closed-window aggregates)",
-			server: v(25, 6),
-			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
+			name:       "25.6 below the 25.9 native floor (closed-window aggregates)",
+			server:     v(25, 6),
+			want:       []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
+			wantWarned: []string{FeatureConditionCache},
 		},
 		{
-			name:   "25.8 still below the 25.9 native floor",
-			server: v(25, 8),
-			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
+			name:       "25.8 still below the 25.9 native floor",
+			server:     v(25, 8),
+			want:       []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
+			wantWarned: []string{FeatureConditionCache},
 		},
 		{
 			name:   "25.9 adds eleven ts_grid_* features (left-open window; ts_grid_changes stays opt-in)",
 			server: v(25, 9),
 			want: []string{
-				FeatureAggregationInOrder, FeatureExpHistogramTwoLevel, FeatureConditionCache, FeatureLagInFrameAdjacency,
+				FeatureAggregationInOrder, FeatureExpHistogramTwoLevel, FeatureLagInFrameAdjacency,
 				FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 				FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 				FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache,
 			},
+			wantWarned: []string{FeatureConditionCache},
 		},
 	}
 	for _, tc := range cases {
@@ -234,8 +266,8 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 			if set.Has(FeatureTSGridChanges) {
 				t.Error("auto selected ts_grid_changes; it is opt-in only (AutoSelect=false, #1721)")
 			}
-			if len(warns) != 0 {
-				t.Errorf("auto emitted warnings %v; want none (auto is silent on version skips)", warns)
+			if got := warnedFeatures(warns); !slices.Equal(got, tc.wantWarned) || len(warns) != len(tc.wantWarned) {
+				t.Errorf("auto warned %v (%v); want exactly %v (auto is silent on version skips)", got, warns, tc.wantWarned)
 			}
 		})
 	}
@@ -266,8 +298,10 @@ func TestResolve_Auto_JoinSpill_VersionBoundaries(t *testing.T) {
 			if got := set.Has(FeatureJoinSpill); got != tc.want {
 				t.Errorf("server %v: join_spill enabled = %v; want %v", tc.server, got, tc.want)
 			}
-			if len(warns) != 0 {
-				t.Errorf("auto emitted warnings %v; want none (auto is silent on version skips)", warns)
+			// Each bare x.y.0.0 row is also a known-unsafe condition_cache
+			// build, whose one WARN is the only one auto may emit here.
+			if got := warnedFeatures(warns); !slices.Equal(got, []string{FeatureConditionCache}) || len(warns) != 1 {
+				t.Errorf("auto emitted warnings %v; want only the condition_cache unsafe-build one (auto is silent on version skips)", warns)
 			}
 		})
 	}
@@ -293,7 +327,7 @@ func TestResolve_Auto_OldServerExcludesUnsupportedStable(t *testing.T) {
 }
 
 func TestResolve_ExplicitList_SupportedEnabled(t *testing.T) {
-	set, _, err := Resolve(Config{Optimizations: "aggregation_in_order,condition_cache"}, v(25, 8))
+	set, _, err := Resolve(Config{Optimizations: "aggregation_in_order,condition_cache"}, conditionCacheFixed)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -434,7 +468,7 @@ func TestResolve_AutoPlusOptIn_UnionsBoth(t *testing.T) {
 		t.Fatalf("Resolve(auto,columnar_result_decode): %v", err)
 	}
 	assertSet(t, set, FeatureExpHistogramTwoLevel,
-		FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
+		FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache,
@@ -596,7 +630,7 @@ func TestResolve_LegacyUnset_NoEffect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta)
@@ -702,7 +736,19 @@ func TestResolve_Auto_CapabilityForbidden_DropsNativeKeepsStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
+	// 25.9 is also a known-unsafe condition_cache build; its WARN is a
+	// different axis and is set aside before counting the capability ones.
+	var capabilityWarns []string
+	for _, w := range warns {
+		if !strings.HasPrefix(w, `ch_opt "`+FeatureConditionCache+`"`) {
+			capabilityWarns = append(capabilityWarns, w)
+		}
+	}
+	if len(warns)-len(capabilityWarns) != 1 {
+		t.Errorf("want exactly one condition_cache unsafe-build WARN; got %v", warns)
+	}
+	warns = capabilityWarns
 	for _, native := range []string{
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
@@ -730,7 +776,7 @@ func TestResolve_Auto_CapabilityUnreachable_DropsNative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
 	for _, native := range []string{FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets} {
 		if set.Has(native) {
 			t.Errorf("auto enabled %q on an unreachable-capability server; want it dropped", native)
@@ -746,7 +792,7 @@ func TestResolve_Auto_CapabilityUnknown_DropsNative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency)
 }
 
 func TestResolve_ExplicitTSGrid_CapabilityForbidden_EnforcingFatal(t *testing.T) {
@@ -874,7 +920,7 @@ func TestResolve_ExplicitNonExperimental_CapabilityForbidden_StillEnabled(t *tes
 		Optimizations: "condition_cache",
 		Mode:          Enforcing,
 		Capability:    CapabilityForbidden,
-	}, v(25, 8))
+	}, conditionCacheFixed)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -898,7 +944,7 @@ func TestResolve_ResultCache_AutoDropsOnForbiddenCapability_KeepsTSGridAxisIndep
 	if set.Has(FeatureResultCache) {
 		t.Error("auto enabled result_cache on a capability-forbidden server; want it dropped")
 	}
-	if !set.Has(FeatureTSGridRange) || !set.Has(FeatureConditionCache) {
+	if !set.Has(FeatureTSGridRange) || !set.Has(FeatureAggregationInOrder) {
 		t.Errorf("result_cache's own forbidden capability leaked into the ts-grid/stable axes; set = %v", set.IDs())
 	}
 	if !anyContains(warns, "use_query_cache") {
@@ -1073,8 +1119,8 @@ func TestEnabledSetEqual(t *testing.T) {
 	}{
 		{
 			name: "same selection on the same server re-probes to the same set",
-			a:    resolve("aggregation_in_order,condition_cache", v(25, 8)),
-			b:    resolve("aggregation_in_order,condition_cache", v(25, 8)),
+			a:    resolve("aggregation_in_order,condition_cache", conditionCacheFixed),
+			b:    resolve("aggregation_in_order,condition_cache", conditionCacheFixed),
 			want: true,
 		},
 		{
@@ -1085,16 +1131,25 @@ func TestEnabledSetEqual(t *testing.T) {
 		},
 		{
 			name: "different sizes",
-			a:    resolve("aggregation_in_order,condition_cache", v(25, 8)),
-			b:    resolve("aggregation_in_order", v(25, 8)),
+			a:    resolve("aggregation_in_order,condition_cache", conditionCacheFixed),
+			b:    resolve("aggregation_in_order", conditionCacheFixed),
 			want: false,
 		},
 		{
 			// Same cardinality, disjoint ids: the length check passes and only
 			// the membership loop can tell these apart.
 			name: "same size, different ids",
-			a:    resolve("aggregation_in_order", v(25, 8)),
-			b:    resolve("condition_cache", v(25, 8)),
+			a:    resolve("aggregation_in_order", conditionCacheFixed),
+			b:    resolve("condition_cache", conditionCacheFixed),
+			want: false,
+		},
+		{
+			// Identical (empty) ids, but only one build is known-unsafe for
+			// condition_cache: a re-probe across that boundary must still be a
+			// transition, or the client-wide cache override would never flip.
+			name: "same ids, different known-unsafe features",
+			a:    resolve("off", v(25, 8)),
+			b:    resolve("off", conditionCacheFixed),
 			want: false,
 		},
 		{
@@ -1219,5 +1274,111 @@ func TestExplicitlyRequested_IgnoresServerVersionAndAutoSelect(t *testing.T) {
 	if !ExplicitlyRequested(FeatureMapBucketedSerialization, FeatureMapBucketedSerialization) {
 		t.Errorf("ExplicitlyRequested(%q, %q) = false; want true — the version floor must not reach this function",
 			FeatureMapBucketedSerialization, FeatureMapBucketedSerialization)
+	}
+}
+
+// TestConditionCacheUnsafeBuilds_VerifiedBoundaries pins condition_cache's
+// resolution on every released build the real-server reproduction was run
+// against: the supported floor, the last affected and first fixed release of
+// each backported line, the lines that never received a backport, and the
+// first releases carrying both upstream fixes. Each row's expectation is the
+// observed outcome of the cerberus-shaped reproductions, not a restatement of
+// conditionCacheUnsafeBuilds.
+func TestConditionCacheUnsafeBuilds_VerifiedBoundaries(t *testing.T) {
+	cases := []struct {
+		build  string
+		unsafe bool
+	}{
+		{"24.8.14.39", false}, // below the 25.3 floor: nothing to gate
+		{"25.3.14.14", true},  // row-policy poisoning
+		{"25.8.33.6", true},   // row-policy poisoning, latest 25.8 LTS
+		{"25.12.11.4", true},  // row-policy poisoning
+		{"26.1.12.23", true},  // both defects, never backported
+		{"26.2.19.43", true},  // both defects, never backported
+		{"26.3.12.3", true},   // both defects
+		{"26.3.13.31", true},  // skip-index fix only
+		{"26.3.17.4", true},   // skip-index fix only
+		{"26.3.17.56", false}, // both fixes
+		{"26.3.33.24", false},
+		{"26.4.3.37", true},   // both defects
+		{"26.4.4.38", true},   // skip-index fix only
+		{"26.4.5.143", false}, // both fixes
+		{"26.5.1.882", true},  // both defects
+		{"26.5.5.8", true},    // skip-index fix only
+		{"26.5.6.64", false},  // both fixes
+		{"26.6.1.1193", false},
+		{"26.8.10.6", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.build, func(t *testing.T) {
+			server, ok := ParseVersion(tc.build)
+			if !ok {
+				t.Fatalf("ParseVersion(%q) failed", tc.build)
+			}
+			set, warns, err := Resolve(Config{Optimizations: SelectionAuto}, server)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if got := set.KnownUnsafe(FeatureConditionCache); got != tc.unsafe {
+				t.Errorf("KnownUnsafe(condition_cache) = %v; want %v", got, tc.unsafe)
+			}
+			floorMet := server.AtLeast(Version{Major: 25, Minor: 3})
+			if got, want := set.Has(FeatureConditionCache), floorMet && !tc.unsafe; got != want {
+				t.Errorf("auto Has(condition_cache) = %v; want %v", got, want)
+			}
+			warned := slices.Contains(warnedFeatures(warns), FeatureConditionCache)
+			if warned != tc.unsafe {
+				t.Errorf("auto warned about condition_cache = %v; want %v (warns %v)", warned, tc.unsafe, warns)
+			}
+		})
+	}
+}
+
+// TestConditionCacheUnsafeBuilds_ReportedUnderEverySelection pins that the
+// known-unsafe verdict is independent of the selection: "off" and an explicit
+// list without condition_cache still report it, because the server's own
+// default engages the cache whether or not cerberus asks for it.
+func TestConditionCacheUnsafeBuilds_ReportedUnderEverySelection(t *testing.T) {
+	unsafe := Version{Major: 26, Minor: 2, Patch: 19, Build: 43}
+	for _, selection := range []string{"off", "aggregation_in_order", SelectionAuto} {
+		set, _, err := Resolve(Config{Optimizations: selection}, unsafe)
+		if err != nil {
+			t.Fatalf("Resolve(%q): %v", selection, err)
+		}
+		if !set.KnownUnsafe(FeatureConditionCache) {
+			t.Errorf("Resolve(%q) on %s: KnownUnsafe(condition_cache) = false; want true", selection, unsafe)
+		}
+		if set.Has(FeatureConditionCache) {
+			t.Errorf("Resolve(%q) on %s enabled condition_cache", selection, unsafe)
+		}
+	}
+}
+
+// TestConditionCacheUnsafeBuilds_ExplicitRequest pins the explicit-request
+// contract on a known-unsafe build: enforcing refuses it with a reason naming
+// the upstream defect and the fixed build, permissive withholds it with that
+// reason as a WARN.
+func TestConditionCacheUnsafeBuilds_ExplicitRequest(t *testing.T) {
+	unsafe := Version{Major: 26, Minor: 4, Patch: 4, Build: 38}
+
+	_, _, err := Resolve(Config{Optimizations: FeatureConditionCache, Mode: Enforcing}, unsafe)
+	if err == nil {
+		t.Fatal("enforcing explicit condition_cache on a known-unsafe build: want fatal error, got nil")
+	}
+	for _, want := range []string{FeatureConditionCache, "ClickHouse#107145", "26.4.5.134"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v; want it to name %q", err, want)
+		}
+	}
+
+	set, warns, err := Resolve(Config{Optimizations: FeatureConditionCache, Mode: Permissive}, unsafe)
+	if err != nil {
+		t.Fatalf("permissive: unexpected err %v", err)
+	}
+	if set.Has(FeatureConditionCache) {
+		t.Error("permissive enabled condition_cache on a known-unsafe build")
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "ClickHouse#107145") {
+		t.Errorf("permissive warnings = %v; want one naming ClickHouse#107145", warns)
 	}
 }

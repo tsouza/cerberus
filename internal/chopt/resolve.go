@@ -96,8 +96,24 @@ type Config struct {
 // auto-picker decided to enable against the probed server version. It is the
 // single source of truth every consumer reads; nothing downstream re-reads the
 // raw env.
+//
+// It also records which registry features the probed build is KNOWN UNSAFE for
+// (Feature.UnsafeBuilds) — independently of the selection, so even "off" or an
+// explicit opt-out reports them. Withholding such a feature only stops cerberus
+// asking for it; when the server's own default engages the same mechanism, the
+// consumer must turn it off explicitly, and KnownUnsafe is what tells it to.
 type EnabledSet struct {
-	ids map[string]struct{}
+	ids    map[string]struct{}
+	unsafe map[string]struct{}
+}
+
+// KnownUnsafe reports whether the probed server build carries a known
+// wrong-result defect for feature id (it falls inside one of the feature's
+// Feature.UnsafeBuilds ranges). It is independent of Has: a known-unsafe
+// feature is never in the resolved set.
+func (s EnabledSet) KnownUnsafe(id string) bool {
+	_, ok := s.unsafe[id]
+	return ok
 }
 
 // Has reports whether feature id is in the resolved set.
@@ -111,11 +127,16 @@ func (s EnabledSet) Has(id string) bool {
 // and swaps (and logs) only on a genuine transition, so a server whose
 // capabilities have not moved produces no churn and no log noise.
 func (s EnabledSet) Equal(other EnabledSet) bool {
-	if len(s.ids) != len(other.ids) {
+	return sameIDs(s.ids, other.ids) && sameIDs(s.unsafe, other.unsafe)
+}
+
+// sameIDs reports whether a and b hold exactly the same keys.
+func sameIDs(a, b map[string]struct{}) bool {
+	if len(a) != len(b) {
 		return false
 	}
-	for id := range s.ids {
-		if _, ok := other.ids[id]; !ok {
+	for id := range a {
+		if _, ok := b[id]; !ok {
 			return false
 		}
 	}
@@ -230,7 +251,20 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 	}
 	warnings = append(warnings, legacyWarns...)
 
-	return EnabledSet{ids: enabled}, warnings, nil
+	return EnabledSet{ids: enabled, unsafe: knownUnsafe(server)}, warnings, nil
+}
+
+// knownUnsafe collects every registry feature whose UnsafeBuilds cover server.
+// It deliberately ignores the selection: a defect in the server build exists
+// whether or not the operator asked for the feature.
+func knownUnsafe(server Version) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, f := range registry {
+		if _, ok := f.unsafeRange(server); ok {
+			out[f.ID] = struct{}{}
+		}
+	}
+	return out
 }
 
 // resolveTokens walks the parsed selection tokens. An "auto" token unions in
@@ -261,6 +295,14 @@ func resolveTokens(tokens []string, mode Mode, server Version, capability, resul
 				}
 				if !server.AtLeast(f.MinVersion) {
 					// Version too old: silent skip, auto is "best available".
+					continue
+				}
+				if r, unsafe := f.unsafeRange(server); unsafe {
+					// The floor is met but this exact build returns wrong
+					// results through the feature. WARNed, like a capability
+					// skip, because the operator is running a build with a
+					// known defect and can fix it by upgrading.
+					warnings = append(warnings, autoCapabilityWarn(f, unsafeBuildBlockReason(server, r)))
 					continue
 				}
 				if f.RequiresExperimentalTSGrid && !capability.PermitsExperimentalTSGrid() {
@@ -319,6 +361,9 @@ func featureBlockReason(f Feature, server Version, capability, resultCacheCapabi
 	if !server.AtLeast(f.MinVersion) {
 		return fmt.Sprintf("needs ClickHouse >=%s, server is %s", f.MinVersion, server)
 	}
+	if r, unsafe := f.unsafeRange(server); unsafe {
+		return unsafeBuildBlockReason(server, r)
+	}
 	if f.RequiresExperimentalTSGrid && !capability.PermitsExperimentalTSGrid() {
 		return tsGridCapabilityBlockReason(capability)
 	}
@@ -341,6 +386,11 @@ func blockIsInconclusive(f Feature, server Version, capability, resultCacheCapab
 	if !server.AtLeast(f.MinVersion) {
 		return false
 	}
+	if _, unsafe := f.unsafeRange(server); unsafe {
+		// A known-defective build is a definitive verdict, not a probe that
+		// failed to reach one.
+		return false
+	}
 	if f.RequiresExperimentalTSGrid {
 		return capability.Inconclusive()
 	}
@@ -348,6 +398,13 @@ func blockIsInconclusive(f Feature, server Version, capability, resultCacheCapab
 		return resultCacheCapability.Inconclusive()
 	}
 	return false
+}
+
+// unsafeBuildBlockReason renders the reason a feature is withheld on a server
+// build inside one of its Feature.UnsafeBuilds ranges.
+func unsafeBuildBlockReason(server Version, r BuildRange) string {
+	return fmt.Sprintf("ClickHouse %s returns wrong results through this feature (%s; affected builds %s up to but excluding %s)",
+		server, r.Defect, r.From, r.Until)
 }
 
 // tsGridCapabilityBlockReason renders the reason a native ts_grid feature is

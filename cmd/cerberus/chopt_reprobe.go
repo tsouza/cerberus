@@ -10,6 +10,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/health"
 	"github.com/tsouza/cerberus/internal/api/info"
 	"github.com/tsouza/cerberus/internal/api/prom"
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
@@ -71,11 +72,16 @@ func (l *chOptLive) infoState() info.OptState {
 // SettingsRules the set gates, and the prom handler takes the native-lowering
 // dispatch table the set selects.
 //
-// Nothing else in the process reads the set on the query path. The only other
-// set-gated decision, the client-side columnar matrix decode, is off the version
+// The client takes the one client-wide decision the set's KNOWN-UNSAFE half
+// makes: whether every query must carry use_query_condition_cache=0 because
+// the server build returns wrong results through that cache. The only other
+// set-gated client decision, the columnar matrix decode, is off the version
 // axis entirely (columnar_result_decode is AlwaysAvailable and opt-in only), so
 // no server upgrade can move it and it stays a boot-time swap.
 type chOptConsumers struct {
+	// client is the shared data-plane client, or nil in a harness that serves
+	// no queries. Its ForHead views share the override it carries.
+	client *chclient.Client
 	// engines are the built heads' engines, in mount order. A disabled head has
 	// no engine here, so the swap touches exactly what this process serves.
 	engines []*engine.Engine
@@ -99,12 +105,28 @@ type chOptConsumers struct {
 func (c chOptConsumers) apply(cfg config.Config, res chOptResolution) {
 	cfg.CHQueryWorkload = res.QueryWorkload
 	rules := settingsRules(cfg, res.Set)
+	// A floor fallback means the probe could not reach the server, not that
+	// the server changed build: the override stays as the last answered probe
+	// left it, so a transient probe failure cannot re-expose a known-unsafe
+	// build to its cache.
+	if c.client != nil && !res.VersionFallback {
+		applyConditionCacheOverride(c.client, res.Set)
+	}
 	for _, e := range c.engines {
 		e.SetSettings(rules)
 	}
 	if c.prom != nil {
 		c.prom.SetLowerers(nativeRangeLowerers(res.Set))
 	}
+}
+
+// applyConditionCacheOverride forces use_query_condition_cache=0 onto every
+// query client dispatches exactly while set reports the probed build
+// known-unsafe for chopt.FeatureConditionCache, and lifts the override once a
+// re-probe finds a fixed build. It is independent of the selection: the
+// server's own default engages the cache whether or not cerberus asks for it.
+func applyConditionCacheOverride(client *chclient.Client, set chopt.EnabledSet) {
+	client.SetQueryConditionCacheDisabled(set.KnownUnsafe(chopt.FeatureConditionCache))
 }
 
 // chOptReprobeInterval is the cadence at which cerberus re-reads the connected
