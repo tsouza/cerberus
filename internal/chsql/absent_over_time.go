@@ -295,7 +295,7 @@ func synthAttrsMapFrag(labels []chplan.SynthLabel) Frag {
 	if len(labels) == 0 {
 		return Call("CAST", Call("map"), Lit("Map(String,String)"))
 	}
-	args := make([]Frag, 0, len(labels)*2)
+	var args []Frag
 	for _, kv := range labels {
 		args = append(args, Lit(kv.Key), Lit(kv.Value))
 	}
