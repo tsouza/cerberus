@@ -22,10 +22,107 @@ The `aggregation_in_order` entry is the migration of the dark
 `optimize_aggregation_in_order` rule into the registry. The eligibility check
 itself is unchanged; only its enablement now flows from the resolved set.
 
-## Why `condition_cache` is safe under `auto`
+## Why `condition_cache` is withheld on most builds before the 26.x backports
 
-The query condition cache is result-equivalent, so it is safe to ship under
-`auto` for supporting servers.
+The query condition cache is meant to be result-equivalent, which is why the
+feature ships under `auto`. Two upstream defects break that on builds cerberus
+supports, and both were reproduced with cerberus's own DDL and emitted queries
+rather than taken from the changelog:
+
+- **Skip-index attribution (ClickHouse#105686).** With
+  `use_skip_indexes_on_data_read` on (the default from 26.1), the bloom index on
+  `mapValues(ResourceAttributes)` drops whole marks ahead of `PREWHERE`, and the
+  empty read was recorded as "the `PREWHERE` predicate matches nothing here".
+  TraceQL lowers `{ resource.service.name = "s7" && duration > 100ms }` to
+  `PREWHERE (Duration > ?) WHERE (ResourceAttributes[?] = ?)`, so it poisoned the
+  entry every later `PREWHERE (Duration > ?)` read — a broad
+  `{ duration > 100ms && resource.service.name != "none" }` count over 600,000
+  spans came back as 100,288. The reproduction needs enough rows that a whole
+  read batch falls outside the narrow predicate; at 200,000 spans it did not
+  trigger. PromQL label matchers are not exposed to this defect: they lower to
+  `coalesce(nullIf(Attributes[?], ''), nullIf(ResourceAttributes[?], ''), '') = ?`,
+  which no skip index can serve.
+- **Row-policy attribution (ClickHouse#107145).** A row policy is applied ahead
+  of `PREWHERE`, so granules a restricted user cannot see were recorded as
+  non-matching for the predicate itself. A restricted user reading
+  `otel_metrics_gauge` directly with `PREWHERE (MetricName = 'x')` poisons
+  cerberus's PromQL read of the same metric, which goes through
+  `merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$')` with the
+  identical predicate: an instant `max_over_time` over 50 series returned 19.
+  Two narrower shapes did not reproduce: a restricted read *through* `merge()`
+  wrote nothing harmful, and a metric name with OTel-to-Prometheus spelling
+  alternatives lowers to `WHERE MetricName IN (...)`, which ClickHouse moves to
+  `PREWHERE` itself without attributing it.
+
+Every boundary was located on released images, with the cerberus-shaped
+reproductions of both defects run against each:
+
+| Build         | Skip-index defect | Row-policy defect |
+| ------------- | ----------------- | ----------------- |
+| `25.3.14.14`  | clean             | reproduces        |
+| `25.4.13.22`  | clean             | not probed        |
+| `25.6.13.41`  | clean             | not probed        |
+| `25.8.33.6`   | clean             | reproduces        |
+| `25.10.7.6`   | clean             | not probed        |
+| `25.12.11.4`  | clean             | reproduces        |
+| `26.1.12.23`  | reproduces        | reproduces        |
+| `26.2.19.43`  | reproduces        | reproduces        |
+| `26.3.12.3`   | reproduces        | reproduces        |
+| `26.3.13.31`  | clean             | not probed        |
+| `26.3.16.16`  | clean             | reproduces        |
+| `26.3.17.4`   | clean             | reproduces        |
+| `26.3.17.56`  | clean             | clean             |
+| `26.3.33.24`  | clean             | clean             |
+| `26.4.3.37`   | reproduces        | not probed        |
+| `26.4.4.38`   | clean             | reproduces        |
+| `26.4.5.143`  | clean             | clean             |
+| `26.5.1.882`  | reproduces        | not probed        |
+| `26.5.2.39`   | clean             | not probed        |
+| `26.5.5.8`    | clean             | reproduces        |
+| `26.5.6.64`   | clean             | clean             |
+| `26.5.7.64`   | clean             | not probed        |
+| `26.6.1.1193` | clean             | clean             |
+| `26.6.8.7`    | clean             | clean             |
+| `26.7.13.12`  | clean             | not probed        |
+| `26.8.10.6`   | clean             | clean             |
+
+Each range's upper bound is the upstream backport build (`26.3.17.50`,
+`26.4.5.134`, …), which the last-affected and first-fixed released tags above
+bracket; a released build between the two does not exist. `26.3.17.4` and
+`26.3.17.56` share a patch number and differ in the fix, which is why the
+version model carries the build component and not only the patch.
+
+Raising the global floor or dropping the feature would have been the blunt
+alternatives. Neither was needed: the defects are confined to known builds,
+and on every other build the cache stays a result-equivalent win. The row-policy
+defect is also why the gate cannot key on whether cerberus's own user has a
+row policy — the poisoning query can come from any user of the server, and a
+restricted user often cannot see `system.row_policies` to find out.
+
+## Why every cancelled dispatch kills its own statement
+
+The cancellation probes drive a `double_exponential_smoothing` over 400,000
+samples (one `arrayFold` call) and a PromQL selector over a label name of 100
+million characters that all need `replaceRegexpAll` normalization. Under a 1 s
+`max_execution_time`, `26.6.8.7` ran the fold for 9.7 s and `26.7.13.12`
+stopped it at 1.05 s; a 20 MB label name ran 2.3 s on `26.6.1.1193` and
+2.6 s on `26.7.13.12` against a 1 s limit, and stopped at 1.01 s on
+`26.8.1.2041`.
+
+The probes also showed that a client disconnect was not bounded even on the
+fixed builds. A cancelled clickhouse-go dispatch sends `ClientCancel`, which
+ClickHouse notices between pipeline blocks, while the in-function checks the
+upstream fixes added honour `KILL QUERY` and `max_execution_time` only. Before
+cerberus killed every cancelled dispatch, the single-shard path — the default
+deployment — freed the request's admission slot and its connection while the
+fold or replacement ran to completion, on every build; only the data-shard
+fan-out gate already issued `KILL QUERY`. The cost of the kill is one extra
+statement per cancelled dispatch, and on a build that cannot interrupt the call
+a wait bounded by the kill timeout before the release proceeds — the honest
+account of a slot whose work is still running.
+
+`KILL QUERY` on one's own query is allowed under `readonly = 1` and
+`readonly = 2`, so a read-only cerberus user can issue it.
 
 ## Why `ts_grid_range` is auto-enabled, and the scan-order gate that was not shipped
 

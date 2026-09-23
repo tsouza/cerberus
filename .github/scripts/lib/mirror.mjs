@@ -83,6 +83,14 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.6',
   'clickhouse/clickhouse-server:26.6-alpine',
   'clickhouse/clickhouse-server:26.6.1.1193-alpine',
+  // test/chserver's exact builds (CH_SERVER_SAFETY_IMAGES): the condition
+  // cache's floor and backport boundary, and the first releases whose
+  // functions honour cancellation mid-call.
+  'clickhouse/clickhouse-server:25.3.14.14-alpine',
+  'clickhouse/clickhouse-server:26.3.12.3-alpine',
+  'clickhouse/clickhouse-server:26.3.17.56-alpine',
+  'clickhouse/clickhouse-server:26.7.13.12-alpine',
+  'clickhouse/clickhouse-server:26.8.10.6-alpine',
 
   // Reference backends the three heads are diffed against, plus the reference
   // Prometheus the PromQL surface gate probes and the reference Mimir the

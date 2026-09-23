@@ -124,7 +124,7 @@ func TestConditionCache_CerberusShapesAcrossBuilds(t *testing.T) {
 			s := startServer(ctx, t, build.image)
 			seedConditionCacheProbe(ctx, t, s)
 
-			raw := newProbeMux(t, s, s.client(t, adminUser, adminPassword, chclient.Config{}), engine.SettingsRules{})
+			raw := newProbeMux(t, s.client(t, adminUser, adminPassword, chclient.Config{}), engine.SettingsRules{})
 			tenant := s.client(t, tenantUser, tenantPassword, chclient.Config{})
 
 			// --- server behaviour, with the cache pinned per query ---
@@ -179,7 +179,7 @@ func TestConditionCache_CerberusShapesAcrossBuilds(t *testing.T) {
 					}
 					prodClient := s.client(t, adminUser, adminPassword, chclient.Config{})
 					prodClient.SetQueryConditionCacheDisabled(choptwire.ConditionCacheDisabled(set))
-					prod := newProbeMux(t, s, prodClient, rules)
+					prod := newProbeMux(t, prodClient, rules)
 
 					// The effective setting cerberus's query ran under: forced off
 					// on a known-unsafe build under every selection, on where the
@@ -374,7 +374,7 @@ type probeMux struct {
 	mux http.Handler
 }
 
-func newProbeMux(t *testing.T, s *server, client *chclient.Client, rules engine.SettingsRules) probeMux {
+func newProbeMux(t *testing.T, client *chclient.Client, rules engine.SettingsRules) probeMux {
 	t.Helper()
 	mux := http.NewServeMux()
 	ph := prom.New(client, schema.DefaultOTelMetrics(), nil)

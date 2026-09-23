@@ -47,6 +47,14 @@ CH_QUANTILE_PROM_HISTOGRAM_IMAGE := "clickhouse/clickhouse-server:25.10-alpine"
 # the test source.
 CH_TAG_GROUPS_IMAGE := "clickhouse/clickhouse-server:26.2-alpine"
 
+# CH_SERVER_SAFETY_IMAGES are the exact builds test/chserver's real-server
+# probes pin, beyond CH_HISTOGRAM_REPORT_IMAGE (26.6.1.1193, which they share):
+# the condition cache's supported floor and the last-affected / first-fixed
+# releases of a backported line, and the releases whose functions first
+# honour cancellation mid-call. Exact tags rather than floating ones, because
+# each probe asserts what that specific build does.
+CH_SERVER_SAFETY_IMAGES := "clickhouse/clickhouse-server:25.3.14.14-alpine clickhouse/clickhouse-server:26.3.12.3-alpine clickhouse/clickhouse-server:26.3.17.56-alpine clickhouse/clickhouse-server:26.7.13.12-alpine clickhouse/clickhouse-server:26.8.10.6-alpine"
+
 # Exact production-report replay image. Kept separate from CH_STRICT_SCAN_IMAGE
 # because the captured incident records the full patch version it ran against.
 CH_HISTOGRAM_REPORT_IMAGE := "clickhouse/clickhouse-server:26.6.1.1193-alpine"

@@ -109,8 +109,9 @@ jobs:
     # second is the perf-smoke corpus's join-spill tier
     # (test/perf/smoke's perfSmokeJoinSpillCHImage, >= chopt.FeatureJoinSpill's
     # 26.4 floor), which boots and runs its own sentinel in about a minute on
-    # top of everything below.
-    timeout-minutes: 25
+    # top of everything below. test/chserver's probes add about four minutes
+    # of real-server work and five more image pulls.
+    timeout-minutes: 35
     steps:
       - name: gate on the changes job
         if: needs.changes.result != 'success'
@@ -284,6 +285,18 @@ jobs:
       # internal/chclient/conn_teardown_integration_test.go.
       - name: Run chclient connection-teardown differential (real ClickHouse)
         run: just chclient-integration
+
+      # The query condition cache's result equivalence and ClickHouse's
+      # cancellation of CPU-bound expressions are server-side mechanisms
+      # cerberus relies on but cannot implement, and upstream fixes show both
+      # failing on specific builds. This step boots the exact builds that
+      # bracket each fix — under container CPU and memory limits — drives
+      # cerberus-emitted shapes through the production handlers and client,
+      # and requires what each build does to match the version policy
+      # internal/chopt records for it (condition_cache's UnsafeBuilds,
+      # CancellationGaps). See test/chserver/doc.go.
+      - name: Run condition-cache and cancellation probes across pinned builds (real ClickHouse)
+        run: just ch-server-safety-integration
 
       # The perf-smoke sentinel differential (#2370 PR 1): the real-CH
       # memory-bounding guard for the #2364 incident class. PR #2358 disabled

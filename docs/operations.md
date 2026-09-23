@@ -149,6 +149,16 @@ budget cerberus could choose would have saved it. See
 [`observability.md`](observability.md) for how the three outcomes decompose
 overall connection churn.
 
+A dispatch whose context was cancelled before its statement finished — the
+request deadline passing, the client disconnecting, a routed sibling being
+cancelled, or a teardown budget expiring — also issues
+`KILL QUERY WHERE query_id = ? SYNC` for its own `query_id` before its
+connection and admission are released, waiting a bounded time for ClickHouse to
+confirm the statement stopped. The `ClientCancel` alone is noticed only between
+pipeline blocks, not inside a long function call. How promptly the server
+honours the kill depends on its build: see
+[Cancellation of CPU-bound expressions](clickhouse-optimizations.md#cancellation-of-cpu-bound-expressions).
+
 The routed (multi-shard) path applies the same contract one level up: the
 composed cursor signals its producers to STOP STREAMING, each producer tears
 down its own cursor on its own live query context, and cancelling the shared
