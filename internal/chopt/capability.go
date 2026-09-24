@@ -2,7 +2,7 @@ package chopt
 
 // Capability is the boot-time, tri-state verdict on whether the connected
 // ClickHouse server will actually accept a particular setting (or setting
-// family) cerberus wants to stamp. It is a REUSABLE shape: two independent
+// family) cerberus wants to use. It is a REUSABLE shape: three independent
 // registry axes each thread their OWN Capability value through Resolve on
 // their own Config field —
 //
@@ -13,20 +13,26 @@ package chopt
 //   - the query result cache (`use_query_cache` / `query_cache_ttl`), probed
 //     by chclient.ProbeResultCacheCapability and carried on
 //     Config.ResultCacheCapability, gating Feature.RequiresResultCacheCapability
-//     (result_cache).
+//     (result_cache);
+//   - the query-log union table (`system.all_query_log`), probed by
+//     chclient.ProbeQueryLogUnionCapability and carried on
+//     Config.QueryLogUnionCapability, gating
+//     Feature.RequiresQueryLogUnionCapability (query_log_union).
 //
-// Both exist because a server can be new enough — even, for result_cache,
-// simply RUNNING at all, since that setting family predates cerberus's own
-// version floor — yet still REFUSE the specific setting (a hardened profile
-// that pins/constrains it, a readonly user, or the underlying cache disabled
-// server-side), in which case auto-selecting the feature would only earn a
-// SETTING_CONSTRAINT_VIOLATION / READONLY rejection at query time.
+// All three exist because a server can be new enough — even, for
+// result_cache, simply RUNNING at all, since that setting family predates
+// cerberus's own version floor — yet still REFUSE the specific setting or
+// table (a hardened profile that pins/constrains it, a readonly user, the
+// underlying cache disabled server-side, or a union table the operator never
+// configured or granted), in which case using the feature would only earn a
+// typed rejection at query time.
 //
 // The resolver treats "capability not Available" EXACTLY like "version too
 // old" for a feature that requires it: under auto it is a silent skip + a
 // boot WARN, under an explicit list it is FATAL (enforcing) or WARN+skip
-// (permissive) — see PermitsExperimentalTSGrid / PermitsResultCache for the
-// per-axis "does this verdict allow the feature" reading.
+// (permissive) — except on the query-log union axis, whose block always
+// degrades with a WARN (Feature.RequiresQueryLogUnionCapability). Only CapabilityAvailable permits a gated feature on any axis;
+// every other state (Unknown / Forbidden / Unreachable) is conservative.
 type Capability int
 
 const (
@@ -54,22 +60,6 @@ const (
 	// version probe's connectivity fallback.
 	CapabilityUnreachable
 )
-
-// PermitsExperimentalTSGrid reports whether the server verdict allows the native
-// timeSeries*ToGrid family. Only CapabilityAvailable does; every other state
-// (Unknown / Forbidden / Unreachable) is conservative.
-func (c Capability) PermitsExperimentalTSGrid() bool {
-	return c == CapabilityAvailable
-}
-
-// PermitsResultCache reports whether the server verdict allows the
-// result_cache feature to stamp use_query_cache / query_cache_ttl. Only
-// CapabilityAvailable does; every other state (Unknown / Forbidden /
-// Unreachable) is conservative — see the type doc for why a version-new-
-// enough server can still fail this probe.
-func (c Capability) PermitsResultCache() bool {
-	return c == CapabilityAvailable
-}
 
 // Inconclusive reports whether the canary failed to reach a DEFINITIVE verdict:
 // Unreachable (a dial / timeout / breaker-open transport failure) or Unknown

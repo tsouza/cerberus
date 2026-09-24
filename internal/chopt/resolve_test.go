@@ -665,6 +665,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureTSGridTagGroups:              {ID: FeatureTSGridTagGroups, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureTSThrowDuplicateSeriesIf:     {ID: FeatureTSThrowDuplicateSeriesIf, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureExpHistogramTwoLevel:         {ID: FeatureExpHistogramTwoLevel, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureQueryLogUnion:                {ID: FeatureQueryLogUnion, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresQueryLogUnionCapability: true},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))
@@ -676,8 +677,9 @@ func TestRegistry_SeededEntries(t *testing.T) {
 			continue
 		}
 		if f.MinVersion != w.MinVersion || f.Stability != w.Stability || f.AutoSelect != w.AutoSelect ||
-			f.RequiresExperimentalTSGrid != w.RequiresExperimentalTSGrid || f.RequiresResultCacheCapability != w.RequiresResultCacheCapability {
-			t.Errorf("feature %q = %+v; want minVersion/stability/autoSelect/requiresExperimentalTSGrid/requiresResultCacheCapability %+v", f.ID, f, w)
+			f.RequiresExperimentalTSGrid != w.RequiresExperimentalTSGrid || f.RequiresResultCacheCapability != w.RequiresResultCacheCapability ||
+			f.RequiresQueryLogUnionCapability != w.RequiresQueryLogUnionCapability {
+			t.Errorf("feature %q = %+v; want minVersion/stability/autoSelect/capability axes %+v", f.ID, f, w)
 		}
 	}
 }
@@ -1219,5 +1221,100 @@ func TestExplicitlyRequested_IgnoresServerVersionAndAutoSelect(t *testing.T) {
 	if !ExplicitlyRequested(FeatureMapBucketedSerialization, FeatureMapBucketedSerialization) {
 		t.Errorf("ExplicitlyRequested(%q, %q) = false; want true — the version floor must not reach this function",
 			FeatureMapBucketedSerialization, FeatureMapBucketedSerialization)
+	}
+}
+
+// TestRegistry_AtMostOneCapabilityAxis pins the invariant capabilityGateFor
+// relies on: a feature declares at most one probed capability axis, so the
+// resolver never has to choose between two verdicts for one feature.
+func TestRegistry_AtMostOneCapabilityAxis(t *testing.T) {
+	for _, f := range Registry() {
+		axes := 0
+		for _, declared := range []bool{f.RequiresExperimentalTSGrid, f.RequiresResultCacheCapability, f.RequiresQueryLogUnionCapability} {
+			if declared {
+				axes++
+			}
+		}
+		if axes > 1 {
+			t.Errorf("feature %q declares %d capability axes; want at most one", f.ID, axes)
+		}
+	}
+}
+
+// TestResolve_QueryLogUnion_ExplicitAvailable_Enabled: a server whose probe
+// answered the record-selection query enables the explicitly requested
+// feature, on any version (the gate is the probe, never the version).
+func TestResolve_QueryLogUnion_ExplicitAvailable_Enabled(t *testing.T) {
+	set, warns, err := Resolve(Config{Optimizations: FeatureQueryLogUnion, QueryLogUnionCapability: CapabilityAvailable}, v(24, 8))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(warns) != 0 {
+		t.Errorf("warns = %v; want none", warns)
+	}
+	assertSet(t, set, FeatureQueryLogUnion)
+}
+
+// TestResolve_QueryLogUnion_NeverAutoSelected: auto never picks the feature,
+// even on a server whose probe answered, because the operator provisions the
+// server side and chooses the population the reconciler reads.
+func TestResolve_QueryLogUnion_NeverAutoSelected(t *testing.T) {
+	set, _, err := Resolve(Config{Optimizations: selectionAuto, QueryLogUnionCapability: CapabilityAvailable}, v(26, 8))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if set.Has(FeatureQueryLogUnion) {
+		t.Error("auto enabled query_log_union; it is opt-in only")
+	}
+}
+
+// TestResolve_QueryLogUnion_BlockedDegradesUnderEnforcing: an explicit request
+// whose probe was refused (no union table, no grant) or inconclusive degrades
+// to the local log with a WARN in BOTH modes — the one axis whose definitive
+// block is not fatal under enforcing.
+func TestResolve_QueryLogUnion_BlockedDegradesUnderEnforcing(t *testing.T) {
+	for _, tc := range []struct {
+		verdict  Capability
+		wantText string
+	}{
+		{CapabilityForbidden, "system.all_query_log"},
+		{CapabilityUnreachable, "inconclusive"},
+		{CapabilityUnknown, "inconclusive"},
+	} {
+		for _, mode := range []Mode{Enforcing, Permissive} {
+			t.Run(tc.verdict.String()+"/"+mode.String(), func(t *testing.T) {
+				set, warns, err := Resolve(Config{
+					Optimizations:           FeatureQueryLogUnion,
+					Mode:                    mode,
+					QueryLogUnionCapability: tc.verdict,
+				}, v(26, 8))
+				if err != nil {
+					t.Fatalf("blocked query_log_union must degrade, not fail boot; got %v", err)
+				}
+				if set.Has(FeatureQueryLogUnion) {
+					t.Error("blocked query_log_union was enabled")
+				}
+				if len(warns) != 1 || !strings.Contains(warns[0], FeatureQueryLogUnion) ||
+					!strings.Contains(warns[0], tc.wantText) || !strings.Contains(warns[0], "local system.query_log") {
+					t.Errorf("warns = %v; want one naming %s, %q and the local fallback", warns, FeatureQueryLogUnion, tc.wantText)
+				}
+			})
+		}
+	}
+}
+
+// TestResolve_QueryLogUnion_ForbiddenStaysFatalOnOtherAxes guards the
+// degrade-on-block exception against leaking: the same Forbidden verdict on
+// the result-cache axis is still fatal for an explicit request under
+// enforcing when both features are listed.
+func TestResolve_QueryLogUnion_ForbiddenStaysFatalOnOtherAxes(t *testing.T) {
+	_, _, err := Resolve(Config{
+		Optimizations:           FeatureQueryLogUnion + ",result_cache",
+		Mode:                    Enforcing,
+		ResultCacheCapability:   CapabilityForbidden,
+		QueryLogUnionCapability: CapabilityForbidden,
+	}, v(26, 8))
+	if err == nil || !strings.Contains(err.Error(), "result_cache") {
+		t.Fatalf("err = %v; want the result_cache block to stay fatal", err)
 	}
 }
