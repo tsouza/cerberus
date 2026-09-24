@@ -1,6 +1,8 @@
 package logql
 
 import (
+	"time"
+
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -17,40 +19,27 @@ import (
 //
 // and NEVER aborts a query on an unparseable value: the row gets the
 // `__error__` / `__error_details__` labels and flows on (label filters
-// keep the row; unwrap keeps the sample with value 0). ClickHouse's
-// `parseTimeDelta`, in contrast, throws (code 36) on the first value it
-// can't parse — one Go-shaped `291.792µs` in a single row would abort
-// the whole query (e.g. the Logs Drilldown fields tab).
+// keep the row; unwrap keeps the sample with value 0).
 //
-// CH `parseTimeDelta` unit gaps vs Go `time.ParseDuration` (verified
-// empirically against clickhouse-server 24.8.14 and chDB / server 25.8
-// — the k3d, compose and compatibility stacks now all pin 25.8, see the
-// spec fixtures under test/spec/logql/duration-*):
+// ClickHouse's `parseTimeDelta` is not used: it throws (code 36) on the
+// first value it can't parse — one malformed row would abort the whole
+// query (e.g. the Logs Drilldown fields tab) — rejects Go-valid shapes
+// (`µs` on 24.8, a leading sign, the bare `0`, `.5s`, `1.s`), and scales
+// units in floating point, landing one ulp away from Go's
+// `Duration.Seconds()` for `us` / `ns` values. Instead:
 //
-//   - the micro sign `µs` (U+00B5) and Greek mu `μs` (U+03BC) are
-//     rejected by 24.8 ("parse unit failed") though `us` parses; 25.8
-//     accepts both. Normalising to `us` before the call stays
-//     forward-safe — it is a no-op on 25.8 and keeps the emit identical.
-//   - a leading `-` / `+` sign is rejected on both versions. The sign
-//     is stripped before the call and re-applied as a multiplier.
-//   - the bare-zero special case `0` (Go: valid, no unit required) is
-//     rejected on both versions. Short-circuited to 0.
-//   - `.5s` ("number not found") and `1.s` ("number not found after
-//     '.'") are rejected on both versions though Go accepts them
-//     (Go requires digits before OR after the dot, not both).
-//     Normalised to `0.5s` / `1s` before the call.
+//   - validity is decided by a Go-shaped regex (Go's exact unit set: no
+//     `d` / `w` — reference Loki calls `time.ParseDuration` directly at
+//     both sites, NOT the extended `model.ParseDuration` used for query
+//     range literals);
+//   - the value is recomputed from the (number, unit) components with
+//     Go's own integer-nanosecond arithmetic ([goDurationSeconds]),
+//     using only functions that are total over strings, and gated on
+//     validity so an invalid row yields 0.
 //
-// `ns`, `us`, `ms`, `s`, `m`, `h`, fractional values and compound
-// spans (`1h2m3.5s`) parse identically on both CH versions and match
-// Go's unit set exactly (Go has no `d` / `w` — and neither does
-// reference Loki at these two sites, which call `time.ParseDuration`
-// directly, NOT the extended `model.ParseDuration` used for query
-// range literals).
-//
-// Validity is decided by a Go-shaped regex BEFORE `parseTimeDelta`
-// runs; the call itself is wrapped in `if(valid, …)` so CH's
-// short-circuit evaluation (default `short_circuit_function_evaluation
-// = enable`) never feeds it an invalid string.
+// Durations past Go's int64 nanosecond range (~2562047h) are accepted
+// by the regex gate though Go rejects them as overflowing (cerberus
+// issue #3686).
 
 // goDurationNumberRe is one Go duration "number": digits with an
 // optional fraction, or a bare fraction — `time.ParseDuration` accepts
@@ -143,33 +132,11 @@ func newDurationParse(raw chplan.Expr) durationParse {
 		},
 	}
 
-	// normalised = stripped with every CH-vs-Go gap papered over:
-	// µ/μ → u, `.5s` → `0.5s` (zero-fill before a bare leading
-	// fraction), `1.s` → `1s` (drop a trailing dot before the unit).
-	// Only ever evaluated under `valid`, so the rewrites are
-	// value-preserving by construction.
-	micro := &chplan.FuncCall{
-		Fn: chplan.FnReplaceAll,
-		Args: []chplan.Expr{
-			&chplan.FuncCall{
-				Fn:   chplan.FnReplaceAll,
-				Args: []chplan.Expr{stripped, &chplan.LitString{V: "µ"}, &chplan.LitString{V: "u"}},
-			},
-			&chplan.LitString{V: "μ"}, &chplan.LitString{V: "u"},
-		},
-	}
-	leadingDotFixed := &chplan.FuncCall{
-		Fn:   chplan.FnRegexReplaceAll,
-		Args: []chplan.Expr{micro, &chplan.LitString{V: `(^|[a-z])\.([0-9])`}, &chplan.LitString{V: `\10.\2`}},
-	}
-	normalised := &chplan.FuncCall{
-		Fn:   chplan.FnRegexReplaceAll,
-		Args: []chplan.Expr{leadingDotFixed, &chplan.LitString{V: `\.([a-z])`}, &chplan.LitString{V: `\1`}},
-	}
-
-	// seconds: the bare-zero branch sits OUTSIDE the sign multiplier so
-	// "-0" yields +0.0 like Go (a bare `sign * 0.` would emit IEEE -0,
-	// which JSON-marshals differently from reference Loki's 0).
+	// seconds: a zero magnitude sits OUTSIDE the sign multiplier so "-0",
+	// "-0s" and "-0.1ns" yield +0.0 like Go, which negates an integer
+	// nanosecond count (a bare `sign * 0.` would emit IEEE -0, which
+	// JSON-marshals differently from reference Loki's 0). The bare "0"
+	// has no (number, unit) component, so its magnitude is 0 too.
 	sign := &chplan.FuncCall{
 		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
@@ -181,15 +148,12 @@ func newDurationParse(raw chplan.Expr) durationParse {
 	seconds := &chplan.FuncCall{
 		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
-			&chplan.Binary{Op: chplan.OpAnd, Left: valid, Right: notExpr(isZero)},
 			&chplan.Binary{
-				Op:   chplan.OpMul,
-				Left: sign,
-				Right: &chplan.FuncCall{
-					Fn:   chplan.FnParseTimeDelta,
-					Args: []chplan.Expr{normalised},
-				},
+				Op:    chplan.OpAnd,
+				Left:  valid,
+				Right: &chplan.Binary{Op: chplan.OpNe, Left: goDurationSeconds(stripped), Right: &chplan.LitFloat{V: 0}},
 			},
+			&chplan.Binary{Op: chplan.OpMul, Left: sign, Right: goDurationSeconds(stripped)},
 			&chplan.LitFloat{V: 0},
 		},
 	}
@@ -315,5 +279,140 @@ func wrapLabelsWithMarks(labelsExpr chplan.Expr, marks []labelFilterMark) chplan
 	return &chplan.FuncCall{
 		Fn:   chplan.FnMapMerge,
 		Args: []chplan.Expr{labelsExpr, branch},
+	}
+}
+
+// goDurationComponentRe captures one (integer, fraction, unit) component
+// of an already-validated Go duration. Either number half may be empty
+// (`.5s`, `1.s`); an empty half contributes zero, as it does in Go.
+const goDurationComponentRe = `([0-9]*)(?:\.([0-9]*))?(` + goDurationUnitRe + `)`
+
+// goDurationMaxFractionDigits is how many fraction digits the lowering
+// reads per component: the longest digit run that always fits Go's
+// leadingFraction accumulator (a uint64 that stops growing past
+// (1<<63-1)/10) and whose power-of-ten scale intExp10 returns exactly.
+const goDurationMaxFractionDigits = 18
+
+// nanosPerSecond is time.Second in nanoseconds — the divisor
+// time.Duration.Seconds() splits a duration by.
+const nanosPerSecond = int64(time.Second)
+
+// goDurationUnitNames / goDurationUnitNanos are Go's time.unitMap: each
+// unit spelling and its length in nanoseconds.
+var (
+	goDurationUnitNames = []string{"ns", "us", "µs", "μs", "ms", "s", "m", "h"}
+	goDurationUnitNanos = []int64{
+		int64(time.Nanosecond), int64(time.Microsecond), int64(time.Microsecond), int64(time.Microsecond),
+		int64(time.Millisecond), int64(time.Second), int64(time.Minute), int64(time.Hour),
+	}
+)
+
+// goDurationSeconds is time.ParseDuration(stripped).Seconds() for a
+// stripped value the validity regex accepts, computed the way Go
+// computes it rather than through ClickHouse's parseTimeDelta, whose
+// floating-point unit scaling lands one ulp away from Go for `us` and
+// `ns` values (`5us` → 4.9999999999999996e-06, Go 5e-06).
+//
+// Per component, Go's ParseDuration accumulates an integer nanosecond
+// count: `whole * unit + uint64(float64(frac) * (float64(unit) / scale))`
+// with scale = 10^len(frac). The total d is then converted by
+// Duration.Seconds(): `float64(d / 1e9) + float64(d % 1e9) / 1e9`. The
+// expression mirrors both steps operation for operation:
+//
+//	sec  = intDiv(d, 1e9)
+//	secs = toFloat64(sec) + toFloat64(d - sec * 1e9) / 1e9
+//	d    = arraySum(arrayMap((i, f, u) -> <component nanos>, groups…))
+//
+// Every function on this path is total over strings, so the expression
+// never aborts a query. Fraction digits past
+// goDurationMaxFractionDigits are ignored; Go's own accumulator reads
+// at most one more before it saturates.
+func goDurationSeconds(stripped chplan.Expr) chplan.Expr {
+	groups := &chplan.FuncCall{
+		Fn:   chplan.FnRegexExtractAllGroupsHorizontal,
+		Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationComponentRe}},
+	}
+	group := func(n int64) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnArrayElement, Args: []chplan.Expr{groups, &chplan.LitInt{V: n}}}
+	}
+
+	unitNames := make([]chplan.Expr, len(goDurationUnitNames))
+	for i, name := range goDurationUnitNames {
+		unitNames[i] = &chplan.LitString{V: name}
+	}
+	unitNanosLits := make([]chplan.Expr, len(goDurationUnitNanos))
+	for i, n := range goDurationUnitNanos {
+		unitNanosLits[i] = &chplan.LitInt{V: n}
+	}
+	unitNanos := &chplan.FuncCall{
+		Fn: chplan.FnTransform,
+		Args: []chplan.Expr{
+			&chplan.BareIdent{Name: "u"},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: unitNames},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: unitNanosLits},
+			&chplan.LitInt{V: 0},
+		},
+	}
+	whole := &chplan.Binary{
+		Op:    chplan.OpMul,
+		Left:  &chplan.FuncCall{Fn: chplan.FnToUInt64OrZero, Args: []chplan.Expr{&chplan.BareIdent{Name: "i"}}},
+		Right: unitNanos,
+	}
+	frac := &chplan.FuncCall{
+		Fn: chplan.FnSubstring,
+		Args: []chplan.Expr{
+			&chplan.BareIdent{Name: "f"}, &chplan.LitInt{V: 1}, &chplan.LitInt{V: goDurationMaxFractionDigits},
+		},
+	}
+	scale := &chplan.FuncCall{
+		Fn: chplan.FnToFloat64,
+		Args: []chplan.Expr{&chplan.FuncCall{
+			Fn:   chplan.FnIntExp10,
+			Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{frac}}},
+		}},
+	}
+	fracNanos := &chplan.FuncCall{
+		Fn: chplan.FnToUInt64,
+		Args: []chplan.Expr{&chplan.Binary{
+			Op: chplan.OpMul,
+			Left: &chplan.FuncCall{
+				Fn:   chplan.FnToFloat64,
+				Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnToUInt64OrZero, Args: []chplan.Expr{frac}}},
+			},
+			Right: &chplan.Binary{
+				Op:    chplan.OpDiv,
+				Left:  &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{unitNanos}},
+				Right: scale,
+			},
+		}},
+	}
+	nanos := &chplan.FuncCall{
+		Fn: chplan.FnArraySum,
+		Args: []chplan.Expr{&chplan.FuncCall{
+			Fn: chplan.FnArrayMap,
+			Args: []chplan.Expr{
+				&chplan.Lambda{
+					Params: []string{"i", "f", "u"},
+					Body:   &chplan.Binary{Op: chplan.OpAdd, Left: whole, Right: fracNanos},
+				},
+				group(1), group(2), group(3),
+			},
+		}},
+	}
+
+	sec := &chplan.FuncCall{Fn: chplan.FnIntDiv, Args: []chplan.Expr{nanos, &chplan.LitInt{V: nanosPerSecond}}}
+	nsec := &chplan.Binary{
+		Op:    chplan.OpSub,
+		Left:  nanos,
+		Right: &chplan.Binary{Op: chplan.OpMul, Left: sec, Right: &chplan.LitInt{V: nanosPerSecond}},
+	}
+	return &chplan.Binary{
+		Op:   chplan.OpAdd,
+		Left: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{sec}},
+		Right: &chplan.Binary{
+			Op:    chplan.OpDiv,
+			Left:  &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{nsec}},
+			Right: &chplan.LitFloat{V: float64(nanosPerSecond)},
+		},
 	}
 }
