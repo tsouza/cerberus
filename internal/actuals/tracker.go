@@ -248,12 +248,13 @@ func (t *Tracker) SetNowForTest(now func() time.Time) {
 // "helpfully" recording the surviving K-1 per-shard fragments as if each were
 // a whole query.
 //
-// Entries expire after cfg.QueryLogLookback, which is exactly the window in
-// which a row can still be read: the poller advances a watermark and the
-// lookback is sized (3x the poll interval) to give two full missed polls of
-// overlap. Past it, no poll can still be carrying the row, so remembering the
-// id has no purpose. Memory is therefore bounded by the dispatch rate over
-// that window, and the whole map is inert unless actuals capture is on.
+// Entries expire after cfg.PacketMarkTTL(): the poller only reads a row whose
+// query started within cfg.QueryLogLookback of the server's clock, and the
+// TTL adds an allowance for the dispatch-to-start latency and the clock offset
+// between cerberus and the server. Past it, no poll can still admit the row,
+// so remembering the id has no purpose. Memory is therefore bounded by the
+// dispatch rate over that window, and the whole map is inert unless actuals
+// capture is on.
 //
 // No-op on a nil Tracker or an empty id.
 func (t *Tracker) MarkPacketObserved(queryID string) {
@@ -272,13 +273,13 @@ func (t *Tracker) MarkPacketObserved(queryID string) {
 // take one (MarkPacketObserved).
 //
 // Deliberately NON-consuming: the mark stays until it expires with the rest.
-// Consuming it would defeat the purpose, because the poller's watermark
-// windows deliberately OVERLAP (QueryLogLookback is 3x the poll interval, so
-// two full missed polls cannot drop a row) and the same query_log row is
-// therefore expected to be read more than once. A consuming claim would refuse
-// the first read and then admit the second, recording exactly the duplicate it
-// was added to prevent. The mark's lifetime is the same overlap window, so
-// every re-read inside it is refused and nothing outside it can still arrive.
+// The poller's cursor reads each row once within one process, but nothing
+// else is gained by consuming the mark, and a consuming claim would admit any
+// second read of the same row — a cursor rebuilt from the lookback after the
+// poller's own state is lost — recording exactly the duplicate it was added
+// to prevent. The mark's lifetime covers every read the poller can still
+// make, so every read inside it is refused and nothing outside it can still
+// arrive.
 //
 // An empty queryID answers true: a row with no id cannot be matched against
 // anything, and refusing it would silently drop the poller's genuine residual
@@ -301,7 +302,7 @@ func (t *Tracker) ClaimQueryLogRow(queryID string) bool {
 // happen, so amortising the sweep onto the same event keeps it self-limiting
 // with no background goroutine. t.mu must be held.
 func (t *Tracker) evictPacketObservedLocked(now time.Time) {
-	ttl := t.cfg.QueryLogLookback
+	ttl := t.cfg.PacketMarkTTL()
 	if ttl <= 0 {
 		return
 	}

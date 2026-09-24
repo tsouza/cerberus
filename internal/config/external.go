@@ -57,6 +57,7 @@ var externalSettings = []string{
 	"CERBERUS_QUERY_ACTUALS_ENTRY_TTL",
 	"CERBERUS_QUERY_ACTUALS_QUERY_LOG_POLL_INTERVAL",
 	"CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK",
+	"CERBERUS_QUERY_ACTUALS_QUERY_LOG_SETTLE_DELAY",
 }
 
 // knownSettings is every flat CERBERUS_* key a cerberus.yaml may carry: the

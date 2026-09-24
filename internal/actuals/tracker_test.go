@@ -289,11 +289,9 @@ func TestPacketObservedClaim(t *testing.T) {
 		t.Error("an empty query id was refused")
 	}
 
-	// 2. A marked id is refused, and stays refused. The poller's watermark
-	//    windows deliberately overlap (QueryLogLookback is 3x the poll
-	//    interval), so the SAME row is expected to be read more than once — a
-	//    consuming claim would refuse the first read and admit the second,
-	//    recording exactly the duplicate this exists to prevent.
+	// 2. A marked id is refused, and stays refused: a consuming claim would
+	//    refuse the first read of a row and admit any later one, recording
+	//    exactly the duplicate this exists to prevent.
 	tr.MarkPacketObserved("dispatch-1")
 	for i := range 3 {
 		if tr.ClaimQueryLogRow("dispatch-1") {
@@ -303,11 +301,19 @@ func TestPacketObservedClaim(t *testing.T) {
 
 	// 3. The mark expires once no poll could still be carrying the row, so the
 	//    set cannot grow without bound.
+	//    It survives the whole read window first: the reader can still admit a
+	//    row whose query started just inside QueryLogLookback.
 	now = now.Add(cfg.QueryLogLookback + time.Second)
 	tr.MarkPacketObserved("dispatch-2") // marking is what sweeps
-	if !tr.ClaimQueryLogRow("dispatch-1") {
-		t.Errorf("a mark older than QueryLogLookback (%v) survived; the set would grow without bound",
+	if tr.ClaimQueryLogRow("dispatch-1") {
+		t.Errorf("a mark expired at QueryLogLookback (%v); a row still inside the read window would be recorded twice",
 			cfg.QueryLogLookback)
+	}
+	now = now.Add(cfg.PacketMarkTTL())
+	tr.MarkPacketObserved("dispatch-2")
+	if !tr.ClaimQueryLogRow("dispatch-1") {
+		t.Errorf("a mark older than PacketMarkTTL (%v) survived; the set would grow without bound",
+			cfg.PacketMarkTTL())
 	}
 	if tr.ClaimQueryLogRow("dispatch-2") {
 		t.Error("the freshly marked id was swept along with the expired one")

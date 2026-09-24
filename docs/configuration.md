@@ -548,7 +548,12 @@ to avoid an import cycle" reasoning `CERBERUS_SOLVER_*` uses above. It is a
 plain solver-policy config knob, **not** a `CERBERUS_CH_OPTIMIZATIONS` chopt
 feature: ProfileEvents on the native protocol and `system.query_log` are
 both ancient, always-available ClickHouse surfaces with no version floor to
-probe. `CERBERUS_QUERY_ACTUALS_ENABLED` is the master switch (default
+probe. The one exception is WHERE the fallback reads: listing the
+`query_log_union` chopt feature in `CERBERUS_CH_OPTIMIZATIONS` points it at
+`system.all_query_log` (rotated tables and cluster replicas) when the boot
+probe finds that table readable, and at the local `system.query_log`
+otherwise - see [`solver.md`](solver.md#query-log-source).
+`CERBERUS_QUERY_ACTUALS_ENABLED` is the master switch (default
 `false` - the feature ships dark); every other knob below is inert while it
 is unset:
 
@@ -576,9 +581,14 @@ is unset:
 - **`CERBERUS_QUERY_ACTUALS_QUERY_LOG_POLL_INTERVAL`** (duration, default
   `60s`) - how often the `system.query_log` batch/fallback reconciler polls.
 - **`CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK`** (duration, default `180s`)
-  - the overlap margin the reconciler's first poll (and any recovery poll)
-  looks back by, sized well above the poll interval so a slow query_log
-  flush never drops a row between two polls.
+  - the reconciler's read window: it reads only rows whose query started
+  within this much of the server's current time, which bounds a poll's scan
+  and is where the first poll starts. Must exceed the poll interval plus the
+  settle delay.
+- **`CERBERUS_QUERY_ACTUALS_QUERY_LOG_SETTLE_DELAY`** (duration, default
+  `15s`) - rows younger than this (server clock) wait for a later poll, so an
+  asynchronously flushed row is never skipped by the reconciler's forward-only
+  cursor. Must cover the server's query_log `flush_interval_milliseconds`.
 
 ## Dependency matrix
 

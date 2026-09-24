@@ -42,6 +42,13 @@ func (l *chOptLive) get() chOptResolution {
 	return *l.res.Load()
 }
 
+// queryLogUnion reports whether query_log_union is in force right now. The
+// actuals reconciler calls it on every poll, so a re-probe that gains or loses
+// the union table moves the reconciler's source without a restart.
+func (l *chOptLive) queryLogUnion() bool {
+	return l.get().Set.Has(chopt.FeatureQueryLogUnion)
+}
+
 // store publishes res as the resolution in force from now on.
 func (l *chOptLive) store(res chOptResolution) {
 	l.res.Store(&res)
@@ -260,11 +267,12 @@ func resolveCHOptimizationsOnce(ctx context.Context, logger *slog.Logger, cfg co
 	}
 
 	set, _, err := chopt.Resolve(chopt.Config{
-		Optimizations:         cfg.CHOptimizations,
-		Mode:                  cfg.CHOptimizationsMode,
-		LegacyTSGrid:          cfg.LegacyTSGridFlag,
-		Capability:            probeTSGridCapabilityOverBootstrap(ctx, cfg.ClickHouse),
-		ResultCacheCapability: probeResultCacheCapabilityOverBootstrap(ctx, cfg.ClickHouse),
+		Optimizations:           cfg.CHOptimizations,
+		Mode:                    cfg.CHOptimizationsMode,
+		LegacyTSGrid:            cfg.LegacyTSGridFlag,
+		Capability:              probeTSGridCapabilityOverBootstrap(ctx, cfg.ClickHouse),
+		ResultCacheCapability:   probeResultCacheCapabilityOverBootstrap(ctx, cfg.ClickHouse),
+		QueryLogUnionCapability: probeQueryLogUnionCapabilityOverBootstrap(ctx, cfg.ClickHouse, cfg.CHOptimizations),
 	}, resolvedVersion)
 	if err != nil {
 		// Unreachable for a selection that already resolved at boot (the

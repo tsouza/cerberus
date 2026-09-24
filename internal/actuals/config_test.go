@@ -1,6 +1,9 @@
 package actuals
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestConfig_ValidateAcceptsDefault(t *testing.T) {
 	if err := DefaultConfig().Validate(); err != nil {
@@ -25,6 +28,11 @@ func TestConfig_ValidateRejectsBadFields(t *testing.T) {
 		{"non-positive lookback", func(c *Config) { c.QueryLogLookback = 0 }},
 		{"lookback equal to poll interval", func(c *Config) { c.Enabled = true; c.QueryLogLookback = c.QueryLogPollInterval }},
 		{"lookback below poll interval", func(c *Config) { c.Enabled = true; c.QueryLogLookback = c.QueryLogPollInterval / 2 }},
+		{"negative settle delay", func(c *Config) { c.QueryLogSettleDelay = -time.Second }},
+		{"lookback equal to poll interval plus settle delay", func(c *Config) {
+			c.Enabled = true
+			c.QueryLogLookback = c.QueryLogPollInterval + c.QueryLogSettleDelay
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
