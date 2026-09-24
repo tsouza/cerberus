@@ -75,7 +75,17 @@ jobs:
     name: check-test
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: [self-hosted, cerberus]
+    # `cerberus-heavy`, a runner pool dedicated to this job plus
+    # check-build and lint (#3677): PR #3656's first run under real
+    # parallel load on the single shared `cerberus` pool throttled
+    # `check-build` and `lint` into outright failures — every runner
+    # Deployment sharing the ../cirunners node could burst to its own
+    # `limits.cpu` simultaneously, well past the node's real core count,
+    # and this job's `go test -race ./...` is at least as CPU-heavy as
+    # those two. The dedicated pool gives each of the three a real,
+    # scheduler-enforced CPU floor instead of whatever the shared pool's
+    # contention left over.
+    runs-on: [self-hosted, cerberus-heavy]
     # The lane settles around 5m30s. This budget is the outer bound the
     # runner enforces; the inner one is `just test-unit`'s own `-timeout`,
     # deliberately shorter so a hang is a Go panic with every goroutine's
@@ -99,7 +109,17 @@ jobs:
     name: check-build
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: [self-hosted, cerberus]
+    # `cerberus-heavy`, a runner pool dedicated to this job plus check-test
+    # and lint (#3677): on PR #3656's first run under real parallel load on
+    # the single shared `cerberus` pool, `go vet -tags=agpl_oracle` alone
+    # ran 6.5 minutes before the job's own 20-minute timeout cancelled it
+    # (run 36010670762) — every runner Deployment sharing the ../cirunners
+    # node could burst to its own `limits.cpu` simultaneously, well past
+    # the node's real core count, and this job's full build + three tagged
+    # `go vet` passes was CPU-heavy enough to starve under it. The
+    # dedicated pool gives each of the three a real, scheduler-enforced
+    # CPU floor instead of whatever the shared pool's contention left over.
+    runs-on: [self-hosted, cerberus-heavy]
     # Settles around 3 minutes; same budget as `check-test` because the two
     # halves are interchangeable in what a stall costs, and a single number
     # is one fewer thing to keep in sync.
@@ -203,7 +223,17 @@ jobs:
   #   - Markdown (markdownlint-cli2)
   lint:
     name: lint
-    runs-on: [self-hosted, cerberus]
+    # `cerberus-heavy`, a runner pool dedicated to this job plus check-test
+    # and check-build (#3677): on PR #3656's first run under real parallel
+    # load on the single shared `cerberus` pool, golangci-lint's own
+    # internal analysis timeout fired (`Timeout exceeded: try increasing
+    # it by passing --timeout option`) after ~15 minutes on a job that
+    # normally settles in a couple — every runner Deployment sharing the
+    # ../cirunners node could burst to its own `limits.cpu` simultaneously,
+    # well past the node's real core count. The dedicated pool gives each
+    # of the three a real, scheduler-enforced CPU floor instead of
+    # whatever the shared pool's contention left over.
+    runs-on: [self-hosted, cerberus-heavy]
     # Undeclared here defaults to GitHub's 360-minute cap, which is no bound
     # at all and would silently become the tighter constraint once the two
     # golangci-lint steps' own `run.timeout` (.golangci.yml) grew a real
