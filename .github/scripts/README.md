@@ -3609,19 +3609,27 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
     `MODE`.
 - **`dependabot-tidy-nested-modules.mjs`** — `dependabot-tidy-nested-modules.yml`,
-  the `tidy` job. `test/oracle` is a nested Go module carrying
+  a scheduled workflow. `test/oracle` is a nested Go module carrying
   `replace github.com/tsouza/cerberus => ../..`, so its module graph is
   entangled with the root's; a root-only Dependabot bump routinely leaves
   `test/oracle/go.mod`/`go.sum` stale and fails `ci.yml`'s "test oracle
-  module" step. Runs `go mod tidy` in each nested module dir and, only if
-  that produced a diff, commits and pushes a fixup straight to the
-  Dependabot PR branch — closing the loop without a human re-running it by
-  hand (see PR #1211).
-  - Env: `NESTED_MODULE_DIRS` (space-separated, default `test/oracle`),
-    `BRANCH` (required — the branch to push the fixup to), `GIT_USER_NAME` /
-    `GIT_USER_EMAIL` (default `github-actions[bot]` identity).
-  - Exit: `0` nothing to do or fixup pushed; `1` on a `go mod tidy` or git
-    failure.
+  module" and "go.mod is tidy" steps. The script lists the open Dependabot
+  Go-module PRs of this repository and, for each, fetches its branch into a
+  git worktree of the default-branch checkout, runs `go mod tidy` in each
+  nested module and, only if that produced a diff, commits and pushes a fixup.
+  The checkout persists `RELEASE_PAT`, so the push starts the PR's checks
+  without an approval; that secret is present only because a scheduled run is
+  never Dependabot-triggered. A push rejected because the branch moved is left
+  for the next run; one PR's failure does not stop the others. Pinned by
+  `dependabot-tidy-nested-modules.test.mjs`, run from `ci.yml`.
+  - Env: `GITHUB_REPOSITORY`, `GITHUB_TOKEN`, `PUSH_TOKEN_SET` (`"true"`;
+    all required), `GITHUB_API_URL`, `WORKTREE_ROOT` (default `RUNNER_TEMP`),
+    `NESTED_MODULE_DIRS` (space-separated, default `test/oracle`),
+    `GIT_USER_NAME` / `GIT_USER_EMAIL` (default `github-actions[bot]`
+    identity).
+  - Exit: `0` every PR tidy, fixed, or moved since fetched; `1` on a missing
+    input, an empty `RELEASE_PAT`, an API failure, or any PR whose fetch,
+    `go mod tidy`, commit or push failed.
 - **`pull-buildkit-image.mjs`** — `.github/actions/setup-buildx` (the composite
   every image-building job goes through). Acquires the BuildKit bootstrap image
   into the local docker daemon, with retry, before

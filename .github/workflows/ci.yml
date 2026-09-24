@@ -510,6 +510,11 @@ jobs:
       - name: go-mod-tidy-check self-test
         run: node --test .github/scripts/go-mod-tidy-check.test.mjs
 
+      # dependabot-tidy-nested-modules.yml runs only on a schedule, from the
+      # default branch, so its script's logic is pinned here on every PR.
+      - name: dependabot-tidy-nested-modules self-test
+        run: node --test .github/scripts/dependabot-tidy-nested-modules.test.mjs
+
       # tsouza/cerberus#2361's fix: release.yml's preflight re-reads the
       # release-staging PR's OWN `dashboard` check-run (the only run that ever
       # exercises the k3d crawl leg for a release commit) instead of trusting
