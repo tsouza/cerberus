@@ -322,35 +322,6 @@
       "accountable_owner": "query-quality"
     },
     {
-      "id": "chdb.regex-jit",
-      "description": "Real-ClickHouse semantic equality of cerberus-emitted regex shapes with native regex compilation off, on and at the default threshold, against Go-regexp references, across pinned builds.",
-      "owner": {
-        "workflow": ".github/workflows/strict-scan.yml",
-        "jobs": ["changes", "regex-jit"],
-        "producer_jobs": [],
-        "context_job": "regex-jit"
-      },
-      "executions": ["default"],
-      "context": { "match": "exact", "name": "regex-jit", "protected": false },
-      "purpose": "correctness",
-      "layers": ["6e", "6f"],
-      "oracle_class": "execution",
-      "recipes": ["regex-jit-integration"],
-      "command": "just regex-jit-integration",
-      "build_tags": ["integration"],
-      "package_globs": ["internal/**", "test/regexjit/**"],
-      "substrate": "real-clickhouse",
-      "risk_domains": ["clickhouse-client", "clickhouse-floor", "correctness", "sql"],
-      "merge_posture": "always",
-      "main_posture": "coalesced",
-      "release_posture": "advisory",
-      "determinism": "deterministic",
-      "applicability": { "source": true, "artifact": false },
-      "timeout_minutes": 20,
-      "slo_minutes": 10,
-      "accountable_owner": "query-quality"
-    },
-    {
       "id": "chdb.query-log-union",
       "description": "Real-ClickHouse evidence for the query-actuals query-log source: local-log gaps after failover and rotation, native packet coverage, and the system.all_query_log union's single accounting across two data shards and an upgrade.",
       "owner": {
@@ -377,6 +348,35 @@
       "applicability": { "source": true, "artifact": false },
       "timeout_minutes": 20,
       "slo_minutes": 15,
+      "accountable_owner": "query-quality"
+    },
+    {
+      "id": "chdb.regex-jit",
+      "description": "Real-ClickHouse semantic equality of cerberus-emitted regex shapes with native regex compilation off, on and at the default threshold, against Go-regexp references, across pinned builds.",
+      "owner": {
+        "workflow": ".github/workflows/strict-scan.yml",
+        "jobs": ["changes", "regex-jit"],
+        "producer_jobs": [],
+        "context_job": "regex-jit"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "regex-jit", "protected": false },
+      "purpose": "correctness",
+      "layers": ["6e", "6f"],
+      "oracle_class": "execution",
+      "recipes": ["regex-jit-integration"],
+      "command": "just regex-jit-integration",
+      "build_tags": ["integration"],
+      "package_globs": ["internal/**", "test/regexjit/**"],
+      "substrate": "real-clickhouse",
+      "risk_domains": ["clickhouse-client", "clickhouse-floor", "correctness", "sql"],
+      "merge_posture": "always",
+      "main_posture": "coalesced",
+      "release_posture": "advisory",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 20,
+      "slo_minutes": 10,
       "accountable_owner": "query-quality"
     },
     {
