@@ -1,7 +1,7 @@
 -- sql --
 SELECT * FROM `otel_logs` WHERE NOT match(`Body`, ?)
 -- args --
-[0] string = "health.*ok"
+[0] string = "health[^\\n]*ok"
 -- chplan --
 Filter predicate=lineContent(Body, "health.*ok", regex,not)
   Scan(otel_logs)
