@@ -298,7 +298,17 @@ jobs:
     name: coverage-default
     needs: coverage-plan
     if: needs.coverage-plan.outputs.run_heavy == 'true'
-    runs-on: [self-hosted, cerberus]
+    # `cerberus-heavy` (#3677), not the light `cerberus` pool: this job and
+    # its two siblings below run a full coverage-instrumented compile and up
+    # to a 90-minute test budget, and shared the light pool's small runner
+    # count with dozens of trivial jobs (`check`, `changes`, `link-check`)
+    # until a `main`-push coverage run's own 7-way matrix (this job plus
+    # coverage-chdb's 4 shards and coverage-chdb-ratchet's 2) occupied every
+    # light-pool runner simultaneously, starving those trivial jobs for
+    # 20+ minutes on two open PRs. The heavy pool's own contention (lint,
+    # check-test, check-build) is a tolerable queue among equally long jobs;
+    # blocking a job that should complete in seconds is not.
+    runs-on: [self-hosted, cerberus-heavy]
     # `just coverage-default`'s own `go test` is capped at `-timeout 40m`
     # (see the recipe's comment for why); this leaves headroom for checkout,
     # Go module/build caching and the recipe's own fold step on top of that,
@@ -331,7 +341,8 @@ jobs:
     name: coverage-chdb (${{ matrix.shard }})
     needs: coverage-plan
     if: needs.coverage-plan.outputs.run_heavy == 'true'
-    runs-on: [self-hosted, cerberus]
+    # `cerberus-heavy`, not the light pool — see coverage-default's comment.
+    runs-on: [self-hosted, cerberus-heavy]
     strategy:
       fail-fast: false
       matrix:
@@ -404,7 +415,8 @@ jobs:
     name: coverage-chdb-ratchet (${{ matrix.leg }})
     needs: coverage-plan
     if: needs.coverage-plan.outputs.run_heavy == 'true'
-    runs-on: [self-hosted, cerberus]
+    # `cerberus-heavy`, not the light pool — see coverage-default's comment.
+    runs-on: [self-hosted, cerberus-heavy]
     # perf-coverage-fanout.mjs's RATCHET_TIMEOUT_MINUTES=35 is this leg's own
     # internal `go test -timeout`. 45 leaves 10 minutes for checkout, Go
     # module/build caching, `just chdb-install` and the compile itself on top
