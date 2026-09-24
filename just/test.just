@@ -729,6 +729,16 @@ histogram-realexporter-integration:
 # internal/api/prom/handler_native_lowerers_integration_test.go and
 # strict-scan.yml.
 
+# Run the metrics Flags column pins on the pinned real ClickHouse images: a
+# stale marker ends an instant selection, and a metric table without Flags is
+# probed at boot and read as samples instead of failing the query. See
+# internal/api/prom/handler_stale_marker_realch_integration_test.go.
+
+# Run the stale-marker Flags pins against real ClickHouse 25.9 / 26.7 / 26.8. Needs Docker.
+stale-marker-flags-integration:
+    @just _pull-retry clickhouse/clickhouse-server:25.9 clickhouse/clickhouse-server:26.7.13.12 clickhouse/clickhouse-server:26.8.1.2041
+    go test -timeout 20m -tags=integration -count=1 -run TestStaleMarkerFlags_RealCH ./internal/api/prom/...
+
 # Run internal/api/prom's native range-window lowerer activation lane. Needs Docker.
 native-lowerers-prom-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}

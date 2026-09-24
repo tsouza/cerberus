@@ -421,13 +421,23 @@ func TestRunMissingColumnFails(t *testing.T) {
 	}
 }
 
-// TestRunMissingFlagsColumn pins the metrics Flags column's two outcomes:
-// a table without it fails boot, because every metrics selector reads it
-// to recognise a stale marker; a schema that declares no Flags column
-// (FlagsColumn "") does not require one.
+// TestRunMissingFlagsColumn pins the metrics Flags column's probe. A
+// metric table without it still boots, with a warning, and is named in
+// StaleMarkerFlagsMissing so ResolveStaleMarkerFlags clears the column and
+// no query references it; every table carrying it leaves the schema
+// untouched; a schema that declares no Flags column probes for none.
 func TestRunMissingFlagsColumn(t *testing.T) {
 	t.Parallel()
 	m := schema.DefaultOTelMetrics()
+
+	healthy := Run(context.Background(), &stubQuerier{Version: "25.8.2.1", Columns: healthyColumns()}, defaultReq())
+	if healthy.Fatal != nil || healthy.StaleMarkerFlagsMissing != nil {
+		t.Fatalf("every table carries Flags: fatal=%v missing=%v", healthy.Fatal, healthy.StaleMarkerFlagsMissing)
+	}
+	if got := healthy.ResolveStaleMarkerFlags(m).FlagsColumn; got != m.FlagsColumn {
+		t.Fatalf("a schema whose tables carry Flags resolved FlagsColumn to %q, want %q", got, m.FlagsColumn)
+	}
+
 	cols := healthyColumns()
 	pruned := cols[m.SumTable][:0:0]
 	for _, c := range cols[m.SumTable] {
@@ -438,16 +448,28 @@ func TestRunMissingFlagsColumn(t *testing.T) {
 	cols[m.SumTable] = pruned
 	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
 
-	err := Run(context.Background(), q, defaultReq()).Fatal
-	want := "table otel_metrics_sum: missing required column Flags"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("a sum table without Flags must fail with %q, got: %v", want, err)
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal != nil {
+		t.Fatalf("a sum table without Flags must boot, got: %v", res.Fatal)
+	}
+	if len(res.StaleMarkerFlagsMissing) != 1 || res.StaleMarkerFlagsMissing[0] != m.SumTable {
+		t.Fatalf("StaleMarkerFlagsMissing = %v, want [%s]", res.StaleMarkerFlagsMissing, m.SumTable)
+	}
+	if got := res.ResolveStaleMarkerFlags(m).FlagsColumn; got != "" {
+		t.Fatalf("a sum table without Flags resolved FlagsColumn to %q, want empty", got)
+	}
+	warned := false
+	for _, w := range res.Warnings {
+		warned = warned || strings.Contains(w, "table otel_metrics_sum has no Flags column")
+	}
+	if !warned {
+		t.Fatalf("no warning names the table without Flags: %v", res.Warnings)
 	}
 
 	noFlags := defaultReq()
 	noFlags.Metrics.FlagsColumn = ""
-	if err := Run(context.Background(), q, noFlags).Fatal; err != nil {
-		t.Fatalf("a schema with no Flags column must not require one, got: %v", err)
+	if res := Run(context.Background(), q, noFlags); res.Fatal != nil || res.StaleMarkerFlagsMissing != nil {
+		t.Fatalf("a schema with no Flags column must probe for none: fatal=%v missing=%v", res.Fatal, res.StaleMarkerFlagsMissing)
 	}
 }
 

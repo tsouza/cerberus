@@ -92,7 +92,11 @@ branch as shields.io badge JSON; the README shows them live. On
   selector, `absent()`) has no sample for a series whose latest sample in
   the lookback is the marker. Metadata endpoints list the series as usual.
   A schema whose `schema.Metrics.FlagsColumn` is empty reads every row as a
-  sample. The classic `_bucket` and `histogram_quantile` paths, native
+  sample, and so does a deployment whose boot requirements check finds a
+  metric table without the column: the check logs a warning naming the
+  table and clears the column for the process. With the check disabled
+  (`CERBERUS_REQUIREMENTS_CHECK=false`) the configured column is used as
+  is, so every metric table a query scans must carry it. The classic `_bucket` and `histogram_quantile` paths, native
   histograms, an instant function inside a subquery and the downsampled
   long-range tier still read a stale marker as a sample (#3655).
   `internal/promql/stale_marker.go` holds both rules.

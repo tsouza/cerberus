@@ -202,7 +202,7 @@ func mountAPIHeads(
 	logger *slog.Logger,
 	resourceBounds engine.ResourceBoundOverrides,
 	promResourceBounds promql.ResourceBounds,
-	attrStrategies preflightAttrStrategies,
+	attrStrategies preflightProbes,
 ) (apiHeads, error) {
 	// engines accumulates the engines actually built so the corpus reconciler
 	// observes only live heads (a disabled head has no engine to observe), and
@@ -574,10 +574,15 @@ func run() error {
 	// returned schemaPresent func reports NOT READY on /readyz and a
 	// background re-probe flips it ready once an external writer creates the
 	// schema, with no restart. CERBERUS_REQUIREMENTS_CHECK=false skips it.
-	schemaPresent, attrStrategies, err := runRequirementsCheck(ctx, logger, client, cfg)
+	schemaPresent, probes, err := runRequirementsCheck(ctx, logger, client, cfg)
 	if err != nil {
 		return err
 	}
+	// A metric table without the Flags column cannot tell a stale marker
+	// from a sample, and a query naming the column would fail on it: read
+	// every row as a sample instead. preflight has already warned, naming
+	// the table.
+	cfg.Schema = probes.Result.ResolveStaleMarkerFlags(cfg.Schema)
 
 	// Build the admission-control limiters (see newAdmitLimiters).
 	limiters := newAdmitLimiters(cfg, logger)
@@ -625,7 +630,7 @@ func run() error {
 		return err
 	}
 
-	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, limiters, logger, resourceBounds, promResourceBounds, attrStrategies)
+	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, limiters, logger, resourceBounds, promResourceBounds, probes)
 	if err != nil {
 		return err
 	}
@@ -2156,16 +2161,22 @@ func preflightRequirementsFromConfig(cfg config.Config) preflight.Requirements {
 	}
 }
 
-// preflightAttrStrategies carries runRequirementsCheck's per-signal
-// AttrStrategies findings back to the caller. Named — rather than two
+// preflightProbes carries runRequirementsCheck's boot-probe findings — the
+// per-signal AttrStrategies and the probe Result — back to the caller. Named — rather than two
 // positional chsql.AttrStrategies return values — for the identical
 // anti-transposition reason admitLimiters exists (see its own doc): two
 // same-typed values transpose silently at a callsite, and swapping these
 // would silently apply the traces schema's strategy to the logs head (and
 // vice versa) with no compiler diagnostic.
-type preflightAttrStrategies struct {
+type preflightProbes struct {
 	Logs   chsql.AttrStrategies
 	Traces chsql.AttrStrategies
+	// Result is the probe the strategies were read from, kept so the caller
+	// can resolve the metrics schema against it (see
+	// preflight.Result.ResolveStaleMarkerFlags). The zero value — the
+	// check disabled, or the transient not-ready path — resolves every
+	// schema to itself.
+	Result preflight.Result
 }
 
 // runRequirementsCheck also returns the resolved per-signal AttrStrategies
@@ -2190,10 +2201,10 @@ func runRequirementsCheck(
 	logger *slog.Logger,
 	client *chclient.Client,
 	cfg config.Config,
-) (health.SchemaPresentFunc, preflightAttrStrategies, error) {
+) (health.SchemaPresentFunc, preflightProbes, error) {
 	if !cfg.RequirementsCheck {
 		logger.Info("requirements check disabled (CERBERUS_REQUIREMENTS_CHECK=false)")
-		return nil, preflightAttrStrategies{}, nil
+		return nil, preflightProbes{}, nil
 	}
 	req := preflightRequirementsFromConfig(cfg)
 	res := preflight.RunIfEnabled(ctx, cfg.RequirementsCheck, client, req)
@@ -2206,7 +2217,7 @@ func runRequirementsCheck(
 
 	outcome := decideRequirementsOutcome(res, cfg.Schema, cfg.ClickHouse.Database)
 	if outcome.fatalErr != nil {
-		return nil, preflightAttrStrategies{}, outcome.fatalErr
+		return nil, preflightProbes{}, outcome.fatalErr
 	}
 	if outcome.notReadyReason != "" {
 		// Transient: boot but stay NOT READY; the background re-probe (reusing
@@ -2215,7 +2226,7 @@ func runRequirementsCheck(
 		logger.Warn(outcome.logMsg, "reason", outcome.notReadyReason)
 		present := newSchemaPresentSignal(outcome.notReadyReason)
 		go reprobeSchema(ctx, logger, client, req, present, schemaRetryInterval)
-		return present.Func(), preflightAttrStrategies{}, nil
+		return present.Func(), preflightProbes{}, nil
 	}
 
 	logger.Info(
@@ -2223,7 +2234,7 @@ func runRequirementsCheck(
 		"database", cfg.ClickHouse.Database,
 		"native_rate", cfg.ExperimentalTSGridRange,
 	)
-	return nil, preflightAttrStrategies{Logs: res.LogsAttrStrategies, Traces: res.TracesAttrStrategies}, nil
+	return nil, preflightProbes{Logs: res.LogsAttrStrategies, Traces: res.TracesAttrStrategies, Result: res}, nil
 }
 
 // requirementsOutcome is the boot decision decideRequirementsOutcome derives

@@ -182,7 +182,7 @@ func mountedConsumers(t *testing.T, enabledHeads string) chOptConsumers {
 	t.Cleanup(cancel)
 
 	heads, err := mountAPIHeads(ctx, http.NewServeMux(), lazyClient(t), cfg, chopt.EnabledSet{},
-		limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, preflightAttrStrategies{})
+		limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, preflightProbes{})
 	if err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}
