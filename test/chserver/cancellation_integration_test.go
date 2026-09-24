@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/moby/moby/api/types/container"
+	"github.com/testcontainers/testcontainers-go"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
@@ -53,59 +55,100 @@ var cancellationBuilds = []struct {
 }
 
 // cancelShape is one cerberus-emitted query whose evaluation spends seconds
-// inside a single call of function.
+// inside a single call of function. The work in that call scales with a size
+// the shape seeds; calibrateShape picks the size per build and substrate.
 type cancelShape struct {
 	name     string
 	function string
-	query    string
-	bounded  func(foldBounded, regexBounded bool) bool
+	// queryFor is the PromQL the shape sends for the series named metric.
+	queryFor func(metric string) string
+	// seedSQL inserts a series named metric of the given size into the
+	// default database's otel_metrics_gauge.
+	seedSQL func(metric string, size int) string
+	// baseSize is the first size calibration tries; maxSize bounds it, so a
+	// slow substrate cannot grow the seed past the container's memory.
+	baseSize, maxSize int
+	bounded           func(foldBounded, regexBounded bool) bool
+	// query is the calibrated query, set by calibrateShape.
+	query string
 }
 
 var cancelShapes = []cancelShape{
 	{
 		// double_exponential_smoothing lowers to an arrayFold over the
-		// window's samples; one series carrying foldSamples samples makes
-		// that single call the bulk of the query.
+		// window's samples; one series whose size samples all fall inside
+		// the window makes that single call the bulk of the query. The fold
+		// holds about 4 KiB per sample, and the routed-sibling scenario runs
+		// two at once, so maxSize keeps both inside the container's memory.
 		name:     "array_fold",
 		function: "arrayFold",
-		query:    "double_exponential_smoothing(" + foldMetric + "[10m], 0.5, 0.5)",
+		queryFor: func(metric string) string { return "double_exponential_smoothing(" + metric + "[10m], 0.5, 0.5)" },
+		seedSQL: func(metric string, size int) string {
+			return fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge (ServiceName, MetricName, Attributes, TimeUnix, Value)
+SELECT 'svc', '%s', map('host', 'a'), toDateTime64(%d, 9) - toIntervalMicrosecond(1 + number * %d), toFloat64(number %% 97)
+FROM numbers(%d)`, metric, cancelEvalTime.Unix(), foldSampleSpacingMicros, size)
+		},
+		baseSize: 200_000,
+		maxSize:  700_000,
 		bounded:  func(fold, _ bool) bool { return fold },
 	},
 	{
 		// Every PromQL selector normalizes label names with
-		// replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'); a label name of
-		// regexKeyChunks * regexChunkChars characters that all need
-		// replacing makes that single call the bulk of the query.
+		// replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'); a label name of size
+		// chunks of regexChunkChars characters that all need replacing makes
+		// that single call the bulk of the query.
 		name:     "regex_replace",
 		function: "replaceRegexpAll",
-		query:    regexMetric,
+		queryFor: func(metric string) string { return metric },
+		seedSQL: func(metric string, size int) string {
+			return fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge (ServiceName, MetricName, Attributes, TimeUnix, Value)
+SELECT 'svc', '%s', map(arrayStringConcat(arrayMap(x -> repeat('.', %d), range(%d))), 'v'), toDateTime64(%d, 9) - toIntervalSecond(1), 1`,
+				metric, regexChunkChars, size, cancelEvalTime.Unix())
+		},
+		baseSize: 30,
+		maxSize:  200,
 		bounded:  func(_, regex bool) bool { return regex },
 	},
 }
 
-// Seed and budget constants. The seeds are sized so the CPU-bound call runs
-// for several seconds on the CI substrate — far past cancelDeadline plus
-// cancelBound, so an uninterrupted call is unambiguous — yet stays within the
-// container's memory and finishes well inside naturalRunBudget.
+// Seed and budget constants. Calibration grows each shape's seed until its
+// uncancelled run clears calibrationTarget on the substrate at hand, within
+// the shape's maxSize.
 const (
-	foldMetric       = "foldprobe"
-	foldSamples      = 700_000
-	regexMetric      = "regexprobe"
-	regexKeyChunks   = 100
-	regexChunkChars  = 1_000_000 // repeat()'s own per-call cap
-	cancelDeadline   = time.Second
-	cancelBound      = 1500 * time.Millisecond
-	handlerSlack     = 3 * time.Second
-	naturalRunBudget = 90 * time.Second
-	runningBudget    = 30 * time.Second
-	closeBudget      = 30 * time.Second
-	pollInterval     = 50 * time.Millisecond
-	shardedDB        = "sharded"
-	shardCluster     = "chserver"
-	shardCount       = 2
-	siblingCount     = 2
-	shardedPoolConns = shardCount * siblingCount * 2
+	foldSampleSpacingMicros = 100       // 6 million samples fit the 10m window
+	regexChunkChars         = 1_000_000 // repeat()'s own per-call cap
+	calibrationRounds       = 4
+	cancelDeadline          = time.Second
+	settleBudget            = 2 * time.Second
+	handlerSlack            = 3 * time.Second
+	naturalRunBudget        = 120 * time.Second
+	runningBudget           = 30 * time.Second
+	closeBudget             = 30 * time.Second
+	pollInterval            = 50 * time.Millisecond
+	shardedDB               = "sharded"
+	shardCluster            = "chserver"
+	shardCount              = 2
+	siblingCount            = 2
+	shardedPoolConns        = shardCount * siblingCount * 2
 )
+
+// calibrationTarget is the natural run a calibrated shape aims for: the
+// cancellation point plus the widest separation an assertion needs, with half
+// again as headroom for run-to-run variance.
+const calibrationTarget = (cancelDeadline + minRemaining) * 3 / 2
+
+// cancelProbeNanoCPUs throttles the cancellation probes' server to half a
+// CPU. The probed functions are single-threaded, so the throttle stretches
+// one call's wall time without growing its memory. That matters twice: the
+// fold holds about 4 KiB per sample, so reaching calibrationTarget on a fast
+// runner by size alone would exhaust memory once two siblings run at once;
+// and an interrupted call's own teardown — freeing that memory — grows with
+// the size, which would narrow the gap to an uninterrupted one. Measured at
+// 700,000 samples unthrottled, interrupted siblings took 2.5 s to end; at
+// half a CPU with calibrated sizes, every interrupted call ended within 1.4 s.
+const cancelProbeNanoCPUs = 500_000_000
 
 // cancelEvalTime is the instant every probe evaluates at.
 var cancelEvalTime = time.Date(2026, 5, 14, 11, 0, 0, 0, time.UTC)
@@ -126,8 +169,9 @@ var cancelEvalTime = time.Date(2026, 5, 14, 11, 0, 0, 0, time.UTC)
 // weight — is released only after cerberus's KILL QUERY ... SYNC. On a build
 // that interrupts the call no statement, initiator or remote child, still
 // runs at that release, and the server's query_log shows the work ended
-// within cancelBound of the cancellation. On a build that cannot, query_log
-// shows the server kept evaluating past that bound. Every scenario also
+// within a quarter of the work that was left at the cancellation. On a build
+// that cannot, query_log shows the server kept evaluating for at least half of
+// it. Every scenario also
 // asserts the work eventually ends, that the connection pool and the fan-out
 // gate are usable again, and that the client is answered within a bounded
 // time. Which branch a build takes is fixed by the table above and must agree
@@ -141,7 +185,8 @@ func TestCancellation_CPUBoundEmittedShapesAcrossBuilds(t *testing.T) {
 		t.Run(build.image, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
-			s := startServer(ctx, t, build.image, tcclickhouse.WithConfigFile(clusterConfig))
+			s := startServer(ctx, t, build.image, tcclickhouse.WithConfigFile(clusterConfig),
+				testcontainers.WithHostConfigModifier(func(hc *container.HostConfig) { hc.NanoCPUs = cancelProbeNanoCPUs }))
 			seedCancellationProbe(ctx, t, s)
 
 			// The fleet probe's cluster arm reads every replica's build
@@ -157,7 +202,8 @@ func TestCancellation_CPUBoundEmittedShapesAcrossBuilds(t *testing.T) {
 				t.Run(shape.name, func(t *testing.T) {
 					bounded := shape.bounded(build.foldBounded, build.regexBounded)
 					assertCancellationPolicy(t, s.version, shape.function, bounded)
-					want := cancelExpectation{bounded: bounded, natural: s.naturalDuration(ctx, t, shape)}
+					shape, natural := s.calibrateShape(ctx, t, shape)
+					want := cancelExpectation{bounded: bounded, natural: natural}
 
 					t.Run("request_deadline", func(t *testing.T) {
 						probeRequestDeadline(ctx, t, s, rules, shape, want)
@@ -234,7 +280,7 @@ func (p promProbe) assertAdmissionFree(t *testing.T) {
 // assertPoolReleased requires every pooled connection to be back in the pool.
 func (p promProbe) assertPoolReleased(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(cancelBound)
+	deadline := time.Now().Add(settleBudget)
 	for {
 		// clickhouse-go reports Open as the connections currently checked
 		// out of the pool; Idle ones are not counted there.
@@ -365,7 +411,7 @@ func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape can
 	// The gate capacity is released now.
 	s.assertServerWorkEnds(ctx, t, ids, want, cancelAt)
 
-	fctx, cancel := context.WithTimeout(ctx, cancelBound)
+	fctx, cancel := context.WithTimeout(ctx, settleBudget)
 	defer cancel()
 	cur, err := client.QueryCursor(fctx, "SELECT 1")
 	if err != nil {
@@ -424,18 +470,19 @@ type cancelExpectation struct {
 	natural time.Duration
 }
 
-// Separation requirements, in cancelBounds of uncancelled work that must
-// remain at the moment of cancellation. An interrupted call must stop within
-// one cancelBound, which means something only if running the work out would
-// have taken at least boundedSeparation cancelBounds. An uninterrupted call
-// runs out the remainder, of which the assertion requires at least half; with
-// unboundedSeparation cancelBounds remaining that is at least 1.5 cancelBounds,
-// so the two accepted ranges never meet. Observed: an interrupted call stopped
-// within 1.2 s at most, an uninterrupted one ran on for 0.8 or more of the
-// remainder.
+// Separation, relative to the work left at the cancellation (remaining). An
+// interrupted call must end within remaining/interruptedFraction; an
+// uninterrupted one runs the call out and must end no sooner than
+// remaining/uninterruptedFraction. Both scale with the calibrated workload,
+// so neither is tied to a runner's speed, and the band between a quarter and
+// a half of the remainder separates them. Observed under cancelProbeNanoCPUs:
+// interrupted calls ended within 0.14 of the remainder, uninterrupted ones
+// after 0.7 or more of it. minRemaining is the least remainder the probe will
+// judge, so that a quarter of it still stands clear of scheduling noise.
 const (
-	boundedSeparation   = 2
-	unboundedSeparation = 3
+	interruptedFraction   = 4
+	uninterruptedFraction = 2
+	minRemaining          = 6 * time.Second
 )
 
 // assertServerWorkEnds runs the moment cerberus has released the capacity a
@@ -444,14 +491,14 @@ const (
 // The verdict is read from the server's own query_log and anchored on the
 // shape's measured natural duration, not on a fixed threshold: remaining is
 // how much of the shape's work was left when cancelAt came. The probe first
-// requires remaining to clear the separation the expected outcome needs,
-// failing diagnosably when the seed is too small for the substrate. On a build that
+// requires remaining to be at least minRemaining, failing diagnosably when
+// calibration could not reach that on the substrate. On a build that
 // interrupts the call, KILL QUERY ... SYNC confirmed the work dead before
 // the release, so no statement for ids — initiator or remote child — may
-// still run, and the work must have ended within cancelBound of cancelAt. On
-// a build that cannot, the server runs the call out, so the work must have
-// ended at least remaining/2 after cancelAt. Either way it must end on its
-// own within naturalRunBudget.
+// still run, and the work must have ended within remaining/interruptedFraction
+// of cancelAt. On a build that cannot, the server runs the call out, so the
+// work must have ended at least remaining/uninterruptedFraction after
+// cancelAt. Either way it must end on its own within naturalRunBudget.
 func (s *server) assertServerWorkEnds(ctx context.Context, t *testing.T, ids []string, want cancelExpectation, cancelAt time.Time) {
 	t.Helper()
 	if want.bounded {
@@ -466,22 +513,18 @@ func (s *server) assertServerWorkEnds(ctx context.Context, t *testing.T, ids []s
 	remaining := want.natural - cancelAt.Sub(started)
 	delay := ended.Sub(cancelAt)
 	t.Logf("server work for %v: natural %s, %s left at the cancellation, ended %s after it", ids, want.natural, remaining, delay)
-	need := time.Duration(unboundedSeparation) * cancelBound
-	if want.bounded {
-		need = time.Duration(boundedSeparation) * cancelBound
-	}
-	if remaining < need {
+	if remaining < minRemaining {
 		t.Fatalf("only %s of the shape's %s natural run was left at the cancellation; the probe needs at least %s "+
-			"to separate an interrupted call from an uninterrupted one — enlarge the seed for this substrate",
-			remaining, want.natural, need)
+			"to separate an interrupted call from an uninterrupted one — raise the shape's maxSize for this substrate",
+			remaining, want.natural, minRemaining)
 	}
-	if want.bounded && delay > cancelBound {
-		t.Errorf("server work for %v ended %s after the cancellation; want within %s on a build that interrupts the call",
-			ids, delay, cancelBound)
+	if limit := remaining / interruptedFraction; want.bounded && delay > limit {
+		t.Errorf("server work for %v ended %s after the cancellation; want within %s (a quarter of the remaining work) "+
+			"on a build that interrupts the call", ids, delay, limit)
 	}
-	if !want.bounded && delay < remaining/2 {
+	if floor := remaining / uninterruptedFraction; !want.bounded && delay < floor {
 		t.Errorf("server work for %v ended %s after the cancellation; want at least %s (half the remaining work) on a build "+
-			"that cannot interrupt the call", ids, delay, remaining/2)
+			"that cannot interrupt the call", ids, delay, floor)
 	}
 }
 
@@ -550,30 +593,56 @@ func (s *server) naturalDuration(ctx context.Context, t *testing.T, shape cancel
 }
 
 // seedCancellationProbe applies cerberus's metrics DDL to the default
-// database, seeds the two probe series there, and mirrors them into a
-// data-shard layout — Distributed wrappers over *_local tables on a cluster
-// whose one replica is this server — for the routed-sibling probe.
+// database and mirrors it into a data-shard layout — Distributed wrappers over
+// *_local tables on a cluster whose one replica is this server — for the
+// routed-sibling probe. The probe series themselves are seeded by
+// calibrateShape, into both.
 func seedCancellationProbe(ctx context.Context, t *testing.T, s *server) {
 	t.Helper()
 	if err := ddl.Apply(ctx, s.admin.Conn(), []ddl.Signal{ddl.Metrics}); err != nil {
 		t.Fatalf("%s: apply DDL: %v", s.image, err)
 	}
-	evalSec := cancelEvalTime.Unix()
-	s.exec(ctx, t, fmt.Sprintf(`
-INSERT INTO otel_metrics_gauge (ServiceName, MetricName, Attributes, TimeUnix, Value)
-SELECT 'svc', '%s', map('host', 'a'), toDateTime64(%d, 9) - toIntervalMillisecond(1 + number * 2), toFloat64(number %% 97)
-FROM numbers(%d)`, foldMetric, evalSec, foldSamples))
-	s.exec(ctx, t, fmt.Sprintf(`
-INSERT INTO otel_metrics_gauge (ServiceName, MetricName, Attributes, TimeUnix, Value)
-SELECT 'svc', '%s', map(arrayStringConcat(arrayMap(x -> repeat('.', %d), range(%d))), 'v'), toDateTime64(%d, 9) - toIntervalSecond(1), 1`,
-		regexMetric, regexChunkChars, regexKeyChunks, evalSec))
-
 	s.exec(ctx, t, "CREATE DATABASE "+shardedDB)
-	for _, table := range []string{"otel_metrics_gauge", "otel_metrics_sum"} {
+	for _, table := range shardedTables {
 		local := shardedDB + "." + table + ddl.DataShardLocalSuffix
 		s.exec(ctx, t, fmt.Sprintf("CREATE TABLE %s AS %s.%s", local, serverDB, table))
 		s.exec(ctx, t, fmt.Sprintf("CREATE TABLE %s.%s AS %s ENGINE = Distributed(%s, %s, %s)",
 			shardedDB, table, local, shardCluster, shardedDB, table+ddl.DataShardLocalSuffix))
-		s.exec(ctx, t, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s.%s", local, serverDB, table))
 	}
 }
+
+// shardedTables are the metrics tables the PromQL gauge read spans.
+var shardedTables = []string{"otel_metrics_gauge", "otel_metrics_sum"}
+
+// calibrateShape sizes shape's seed to the substrate: it seeds a series at
+// the shape's baseSize, measures the uncancelled run, and re-seeds larger in
+// proportion until the run clears calibrationTarget or the size reaches
+// maxSize, for at most calibrationRounds rounds. It returns the shape with its
+// calibrated query and that query's natural duration. A run still short of the
+// target at maxSize is returned as is: the scenario assertions then fail with
+// the separation they could not get, rather than judging a probe that cannot
+// tell the two outcomes apart.
+func (s *server) calibrateShape(ctx context.Context, t *testing.T, shape cancelShape) (cancelShape, time.Duration) {
+	t.Helper()
+	size := shape.baseSize
+	var natural time.Duration
+	for round := 0; round < calibrationRounds; round++ {
+		metric := fmt.Sprintf("%s_probe_%d", shape.name, size)
+		s.exec(ctx, t, shape.seedSQL(metric, size))
+		local := shardedDB + ".otel_metrics_gauge" + ddl.DataShardLocalSuffix
+		s.exec(ctx, t, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s.otel_metrics_gauge WHERE MetricName = ?", local, serverDB), metric)
+		shape.query = shape.queryFor(metric)
+		natural = s.naturalDuration(ctx, t, shape)
+		t.Logf("calibration round %d: %s at size %d ran %s (target %s)", round, shape.name, size, natural, calibrationTarget)
+		if natural >= calibrationTarget || size >= shape.maxSize {
+			break
+		}
+		next := int(float64(size) * float64(calibrationTarget) / float64(natural) * calibrationOvershoot)
+		size = min(max(next, size+1), shape.maxSize)
+	}
+	return shape, natural
+}
+
+// calibrationOvershoot scales a re-seed a little past the proportional size,
+// since a shape's run is not exactly linear in its size.
+const calibrationOvershoot = 1.2

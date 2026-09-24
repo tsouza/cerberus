@@ -128,9 +128,10 @@ restricted user often cannot see `system.row_policies` to find out.
 
 ## Why every cancelled dispatch kills its own statement
 
-The cancellation probes drive a `double_exponential_smoothing` over 700,000
-samples (one `arrayFold` call) and a PromQL selector over a label name of 100
-million characters that all need `replaceRegexpAll` normalization. Under a 1 s
+The cancellation probes drive a `double_exponential_smoothing` over one series
+whose samples all fall in the window (one `arrayFold` call) and a PromQL
+selector over a label name tens of millions of characters long that all need
+`replaceRegexpAll` normalization. In the exploratory runs, under a 1 s
 `max_execution_time`, `26.6.8.7` ran the fold for 9.7 s and `26.7.13.12`
 stopped it at 1.05 s; a 20 MB label name ran 2.3 s on `26.6.1.1193` and
 2.6 s on `26.7.13.12` against a 1 s limit, and stopped at 1.01 s on
@@ -155,13 +156,24 @@ saturation the kill would queue for the same pool the dispatch was waiting on,
 holding the admission slot for the full timeout to kill a statement that never
 existed.
 
-The probes judge an interrupted call from an uninterrupted one against the
-shape's own measured natural duration, not a fixed threshold, because the same
-seed ran in 5.7 s on one build and 10.9 s on another, and 30–40 % faster on CI
-runners: an interrupted call must stop within 1.5 s of the cancellation, an
-uninterrupted one must run on for at least half the work that was left, and the
-probe fails loudly rather than guessing when too little work was left to tell
-the two apart.
+The probes size their own workload. The same seed ran in 5.7 s on one build
+and 10.9 s on another, and about twice as fast on a CI runner as on a
+developer host, so a fixed seed that suits one substrate starves another: on
+CI a fixed fold left 1.9–3.5 s of work at the cancellation, too little to tell
+the outcomes apart. Each shape is therefore calibrated per build: seeded at a
+base size, run uncancelled, and re-seeded in proportion until the run takes
+about 10 s, within a size bound. The server runs at half a CPU during these
+probes. The functions are single-threaded, so the throttle stretches one call
+without growing it, and growing the fold instead costs about 4 KiB of memory
+per sample — two concurrent siblings at the size a fast runner needs would not
+fit — while its own teardown after an interrupt grows with it: unthrottled at
+700,000 samples, interrupted siblings took 2.5 s to end.
+
+The verdict is relative to the work that was left at the cancellation: an
+interrupted call must end within a quarter of it, an uninterrupted one no
+sooner than half of it. Observed: interrupted calls ended within 0.14 of the
+remainder, uninterrupted ones after 0.7 or more. A fixed threshold would have
+to be retuned per substrate; a relative one scales with the calibrated work.
 
 `KILL QUERY` on one's own query is allowed under `readonly = 1` and
 `readonly = 2`, so a read-only cerberus user can issue it.
