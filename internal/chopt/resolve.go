@@ -120,11 +120,16 @@ func (s EnabledSet) Has(id string) bool {
 // and swaps (and logs) only on a genuine transition, so a server whose
 // capabilities have not moved produces no churn and no log noise.
 func (s EnabledSet) Equal(other EnabledSet) bool {
-	if len(s.ids) != len(other.ids) {
+	return sameIDs(s.ids, other.ids)
+}
+
+// sameIDs reports whether a and b hold exactly the same keys.
+func sameIDs(a, b map[string]struct{}) bool {
+	if len(a) != len(b) {
 		return false
 	}
-	for id := range s.ids {
-		if _, ok := other.ids[id]; !ok {
+	for id := range a {
+		if _, ok := b[id]; !ok {
 			return false
 		}
 	}
@@ -268,6 +273,14 @@ func resolveTokens(tokens []string, cfg Config, server Version, enabled map[stri
 					// Version too old: silent skip, auto is "best available".
 					continue
 				}
+				if ranges := f.unsafeRanges(server); len(ranges) > 0 {
+					// The floor is met but this exact build returns wrong
+					// results through the feature. WARNed, like a capability
+					// skip, because the operator is running a build with a
+					// known defect and can fix it by upgrading.
+					warnings = append(warnings, autoCapabilityWarn(f, unsafeBuildBlockReason(server, ranges)))
+					continue
+				}
 				if gate, ok := capabilityGateFor(f, cfg); ok && gate.verdict != CapabilityAvailable {
 					// Version is fine, but the server will not honour the
 					// capability. Unlike a version skip, this is WARNed at boot
@@ -345,6 +358,9 @@ func featureBlockReason(f Feature, server Version, cfg Config) string {
 	if !server.AtLeast(f.MinVersion) {
 		return fmt.Sprintf("needs ClickHouse >=%s, server is %s", f.MinVersion, server)
 	}
+	if ranges := f.unsafeRanges(server); len(ranges) > 0 {
+		return unsafeBuildBlockReason(server, ranges)
+	}
 	if gate, ok := capabilityGateFor(f, cfg); ok && gate.verdict != CapabilityAvailable {
 		return gate.blockReason(gate.verdict)
 	}
@@ -362,11 +378,31 @@ func blockIsNonFatal(f Feature, server Version, cfg Config) bool {
 	if !server.AtLeast(f.MinVersion) {
 		return false
 	}
+	if len(f.unsafeRanges(server)) > 0 {
+		// A known-defective build is a definitive verdict, not a probe that
+		// failed to reach one.
+		return false
+	}
 	gate, ok := capabilityGateFor(f, cfg)
 	if !ok {
 		return false
 	}
 	return gate.degradesOnBlock || gate.verdict.Inconclusive()
+}
+
+// unsafeBuildBlockReason renders the reason a feature is withheld on a server
+// build inside one or more of its Feature.UnsafeBuilds ranges, naming every
+// defect that applies.
+func unsafeBuildBlockReason(server Version, ranges []BuildRange) string {
+	defects := make([]string, 0, len(ranges))
+	for _, r := range ranges {
+		defects = append(defects, fmt.Sprintf("%s; affected builds %s up to but excluding %s", r.Defect, r.From, r.Until))
+	}
+	subject := "ClickHouse " + server.String()
+	if server.Vendor {
+		subject += " (a non-upstream build, judged by its release line)"
+	}
+	return fmt.Sprintf("%s returns wrong results through this feature (%s)", subject, strings.Join(defects, " | "))
 }
 
 // tsGridCapabilityBlockReason renders the reason a native ts_grid feature is

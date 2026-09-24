@@ -132,6 +132,35 @@
       "accountable_owner": "release-engineering"
     },
     {
+      "id": "chdb.ch-server-safety",
+      "description": "Real-ClickHouse evidence for server mechanisms cerberus relies on: query-condition-cache wrong-result reproductions and CPU-bound cancellation probes across pinned builds.",
+      "owner": {
+        "workflow": ".github/workflows/strict-scan.yml",
+        "jobs": ["changes", "ch-server-safety"],
+        "producer_jobs": [],
+        "context_job": "ch-server-safety"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "ch-server-safety", "protected": false },
+      "purpose": "correctness",
+      "layers": ["6e", "6f"],
+      "oracle_class": "execution",
+      "recipes": ["ch-server-safety-integration"],
+      "command": "just ch-server-safety-integration",
+      "build_tags": ["integration"],
+      "package_globs": ["internal/**", "cmd/cerberus/**", "test/chserver/**"],
+      "substrate": "real-clickhouse",
+      "risk_domains": ["clickhouse-client", "clickhouse-floor", "correctness"],
+      "merge_posture": "always",
+      "main_posture": "coalesced",
+      "release_posture": "advisory",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 25,
+      "slo_minutes": 15,
+      "accountable_owner": "query-quality"
+    },
+    {
       "id": "chdb.integration-logql",
       "description": "Exotic LogQL integration corpus executed through chDB and the AGPL oracle.",
       "owner": {

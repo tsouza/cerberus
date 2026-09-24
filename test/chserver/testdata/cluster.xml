@@ -1,0 +1,18 @@
+<!-- A one-shard cluster whose replica is the server itself, reached with the
+     test's administrative credentials, so a Distributed table dispatches a
+     real remote child query the cancellation probes observe alongside its
+     initiator. -->
+<clickhouse>
+    <remote_servers>
+        <chserver>
+            <shard>
+                <replica>
+                    <host>localhost</host>
+                    <port>9000</port>
+                    <user>cerberus</user>
+                    <password>cerberus</password>
+                </replica>
+            </shard>
+        </chserver>
+    </remote_servers>
+</clickhouse>
