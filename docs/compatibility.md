@@ -107,14 +107,16 @@ branch as shields.io badge JSON; the README shows them live. On
   [`clickhouse-optimizations.md`](clickhouse-optimizations.md)) and one
   series carries two samples at the SAME timestamp, one of them `NaN` (or a
   stale-marker `NaN` payload, which every path treats as an ordinary `NaN`),
-  the native answer and cerberus's array-fold fan-out elect different
-  samples. The fan-out always keeps the `NaN` (`arraySort` ranks `NaN`
-  greatest). The native aggregate keeps the sample the row order favours on
-  a server before 26.8.1.2041, and the finite sample from 26.8.1.2041 on
-  (ClickHouse #115920). Reference Prometheus never holds such a pair: its
-  TSDB refuses a second sample at an existing timestamp unless the bits are
-  identical. Reproduced directly against the aggregate, isolated from
-  cerberus's lowering:
+  the native answer and cerberus's array-fold fan-out can still elect
+  different samples on a server BEFORE 26.8.1.2041. The fan-out always keeps
+  the greatest FINITE sample, surviving `NaN` only when every duplicate is
+  `NaN` (cerberus issue #3648). The native aggregate keeps the sample the
+  row order favours on a server before 26.8.1.2041, and the SAME finite
+  sample the fan-out elects from 26.8.1.2041 on (ClickHouse #115920) — the
+  two paths agree on every current server. Reference Prometheus never holds
+  such a pair: its TSDB refuses a second sample at an existing timestamp
+  unless the bits are identical. Reproduced directly against the aggregate,
+  isolated from cerberus's lowering:
 
   ```sql
   SELECT gv FROM (

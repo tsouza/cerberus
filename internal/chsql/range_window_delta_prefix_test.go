@@ -72,7 +72,8 @@ func TestDeltaPrefixSumDeduplicatesTimestampBeforeSumming(t *testing.T) {
 	got := renderFragToSQL(deltaPrefixSumFrag(Col("prefix_pairs"), false))
 	for _, want := range []string{
 		"arraySum(arrayMap(p -> tupleElement(p, 2)",
-		"arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(`prefix_pairs`)))",
+		"arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(arraySort(p -> (tupleElement(p, 1), " +
+			"NOT isNaN(tupleElement(p, 2)), tupleElement(p, 2)), `prefix_pairs`))))",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("DELTA prefix sum missing %q\nSQL: %s", want, got)

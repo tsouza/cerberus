@@ -34,13 +34,15 @@
 //
 // # Cerberus's fan-out
 //
-// dedupWindowPairsByTsFrag keeps the greatest sample under ClickHouse's total
-// order over Float64, in which NaN ranks GREATEST — on every server, and
-// independent of encounter order. It agrees with both upstream contracts on
-// unequal finite duplicates and on all-NaN duplicates, and disagrees with
-// NaN-loses on every NaN-versus-finite duplicate: the fan-out elects the NaN,
-// a #115920 server elects the finite sample. Against scan order it agrees
-// only when the encounter order happens to favour the NaN.
+// dedupWindowPairsByTsFrag keeps the greatest FINITE sample, surviving NaN
+// only when every duplicate is NaN — cerberus issue #3648's NaN-loses rule,
+// on every server and independent of encounter order. It agrees with both
+// upstream contracts on unequal finite duplicates and on all-NaN duplicates,
+// and it now agrees with NaN-loses on a NaN-versus-finite duplicate too: both
+// elect the finite sample, deterministically, on a #115920 server. Against
+// scan order it can still disagree — the fold there is order-dependent by
+// construction, so there is no single native answer to match before
+// #115920.
 //
 // # What is pinned
 //
@@ -53,13 +55,13 @@
 //     merge orders, asserted against the server's contract.
 //  2. TestFanoutDedup_DuplicateSurvivorIsOrderIndependent_RealCH — the
 //     production dedupWindowPairsByTsFrag Frag, rendered and executed on
-//     every pinned server, elects the same survivor under both encounter
-//     orders for every collision kind.
+//     every pinned server, elects the same NaN-loses survivor under both
+//     encounter orders for every collision kind.
 //  3. TestRate_NativeGrid_NaNDuplicate_AgainstFanout_RealCH — end to end
 //     through cerberus's own lowering and emitter over one MergeTree table
 //     holding two series with the identical sample multiset and opposite
-//     physical row order: order-dependent on a scan-order server,
-//     deterministic but opposite to the fan-out on a NaN-loses server.
+//     physical row order: order-dependent on a scan-order server, and
+//     deterministic AND IN AGREEMENT with the fan-out on a NaN-loses server.
 //
 // Needs Docker; gated behind the `integration` build tag, run by the
 // `ts-grid-nan-duplicate-integration` Justfile recipe. In-package so the sweep
@@ -492,7 +494,8 @@ func TestTSGridFamily_DuplicateSurvivor_RealCH(t *testing.T) {
 // PRODUCTION dedupWindowPairsByTsFrag Frag — rendered from the emitter's own
 // constructor, not transcribed — on every pinned server, over both encounter
 // orders of every collision, and asserts one survivor per collision: the
-// greatest under ClickHouse's total order, in which NaN ranks greatest.
+// greatest FINITE candidate, with NaN surviving only when every candidate is
+// NaN-class (cerberus issue #3648's NaN-loses rule).
 func TestFanoutDedup_DuplicateSurvivorIsOrderIndependent_RealCH(t *testing.T) {
 	dedupSQL, err := Render(dedupWindowPairsByTsFrag(
 		Call("arraySort", Call("groupArray", Tuple(Col("ts"), Col("val")))),
@@ -513,14 +516,16 @@ func TestFanoutDedup_DuplicateSurvivorIsOrderIndependent_RealCH(t *testing.T) {
 				t.Errorf("%s: dedupWindowPairsByTsFrag is insertion-order DEPENDENT: %q vs %q", c.name, ab, ba)
 				continue
 			}
-			// The total order ranks NaN greatest, so the NaN — or, for two
-			// finite values, the greater one — is the survivor.
+			// NaN loses to any other value: the finite candidate survives a
+			// NaN-versus-finite collision, and only an all-NaN-class
+			// collision keeps a NaN. Two finite values still keep the
+			// greater one.
 			survivor := c.b
-			if nanDupIsNaN(c.a) {
+			if nanDupIsNaN(c.b) && !nanDupIsNaN(c.a) {
 				survivor = c.a
 			}
 			if want := run(survivor); ab != want {
-				t.Errorf("%s: kept %q, want %q — one sample per timestamp, the total order's greatest", c.name, ab, want)
+				t.Errorf("%s: kept %q, want %q — one sample per timestamp, the greatest FINITE value (NaN only when every candidate is NaN)", c.name, ab, want)
 			}
 		}
 	})
@@ -556,13 +561,15 @@ const (
 // pinned server, over one table holding two series with the identical sample
 // multiset in opposite physical order:
 //
-//   - the fan-out answers both series NaN on every server — its survivor is a
-//     function of the multiset, and the total order ranks NaN greatest;
+//   - the fan-out answers both series with the finite survivor's rate, on
+//     every server — its survivor is a function of the multiset alone, and
+//     cerberus issue #3648's rule ranks NaN lowest;
 //   - on a scan-order server the native path answers NaN only where the NaN
-//     row is physically first, so it disagrees with itself as well as with
-//     the fan-out;
+//     row is physically first, so it disagrees with itself, and with the
+//     fan-out on that one series (nanFirst);
 //   - on a NaN-loses server the native path answers both series with the
-//     finite survivor's rate — deterministic, and opposite to the fan-out.
+//     SAME finite survivor's rate as the fan-out — deterministic, and now
+//     in agreement.
 //
 // The control series pins that both lowerings agree where no duplicate exists.
 func TestRate_NativeGrid_NaNDuplicate_AgainstFanout_RealCH(t *testing.T) {
@@ -610,10 +617,11 @@ INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
 				nanDupJobPlain, finiteRate, f)
 		}
 
-		if f1, f2 := fanout[nanDupJobNaNFirst], fanout[nanDupJobNaNSecond]; !math.IsNaN(f1) || !math.IsNaN(f2) {
-			t.Fatalf("fan-out answered job=%s %v and job=%s %v — dedupWindowPairsByTsFrag elects the NaN "+
-				"(the total order ranks it greatest), so both windows answer NaN",
-				nanDupJobNaNFirst, f1, nanDupJobNaNSecond, f2)
+		if f1, f2 := fanout[nanDupJobNaNFirst], fanout[nanDupJobNaNSecond]; math.IsNaN(f1) || math.IsNaN(f2) ||
+			math.Abs(f1-finiteRate) > 1e-9 || math.Abs(f2-finiteRate) > 1e-9 {
+			t.Fatalf("fan-out answered job=%s %v and job=%s %v — dedupWindowPairsByTsFrag elects the greatest "+
+				"FINITE sample (cerberus issue #3648), so both windows should answer the finite survivor's rate %v",
+				nanDupJobNaNFirst, f1, nanDupJobNaNSecond, f2, finiteRate)
 		}
 
 		wantFirst, wantSecond := finiteRate, finiteRate

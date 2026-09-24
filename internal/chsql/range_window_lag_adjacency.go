@@ -112,8 +112,8 @@ func lagAdjacencyMatrixShapeCheck(r *chplan.RangeWindow) error {
 //
 // A conflicting-value duplicate is untouched, exactly as at the array gate:
 // the two rows differ in the value column, so DISTINCT keeps both and the
-// (ts, value) ORDER BY below still lands the max-valued row last — the
-// cerberus issue #2905 contract this must not disturb.
+// ORDER BY below still lands the greatest-ranked row last — the cerberus
+// issue #2905 contract this must not disturb.
 func lagAdjacencyDistinctRowsLayer(
 	r *chplan.RangeWindow, innerSub Frag, groupFrags []Frag, srcTs string,
 ) *QueryBuilder {
@@ -137,15 +137,16 @@ func lagAdjacencyDistinctRowsLayer(
 // below sees one row per distinct (timestamp, value) sample.
 //
 // All three window-function calls share ONE `PARTITION BY <groupFrags>
-// ORDER BY <srcTs>, <r.ValueColumn>` — the explicit compound ORDER BY (not
-// CH's default RANGE-frame peer-grouping) numbers every row individually
-// even when it shares its ORDER BY key with a duplicate-timestamp
-// neighbour; the (ts, value) order matches groupArrayPairFrag's own
-// `arraySort(groupArray(Tuple(ts, value)))` tuple order exactly, so a
-// duplicate-timestamp run's max-VALUE row is always the run's LAST row
-// here too — the identical tie-break the array-fold's
-// `window_pairs[length]` / `window_vals[length]` positional pick applies.
-// The explicit ROWS frame differs by DIRECTION: lagInFrame looks behind, so
+// ORDER BY <srcTs>, nanLosesRankFrag(<r.ValueColumn>), <r.ValueColumn>` —
+// the explicit compound ORDER BY (not CH's default RANGE-frame
+// peer-grouping) numbers every row individually even when it shares its
+// ORDER BY key with a duplicate-timestamp neighbour; the order matches
+// dedupWindowPairsByTsFrag's own NaN-loses order exactly (cerberus issue
+// #3648), so a duplicate-timestamp run's greatest-ranked row is always the
+// run's LAST row here too — the identical tie-break the array-fold's
+// `window_pairs[length]` / `window_vals[length]` positional pick applies,
+// now that both sides rank NaN lowest. The explicit ROWS frame differs by
+// DIRECTION: lagInFrame looks behind, so
 // it needs RowsUnboundedPrecedingToCurrentRow (admitting the preceding
 // rows); leadInFrame looks ahead, so it needs the complementary
 // RowsCurrentRowToUnboundedFollowing — a window function can only see rows
@@ -172,7 +173,11 @@ func lagAdjacencyAnnotateLayer(
 	srcTs string,
 	needsSurvivor bool,
 ) *QueryBuilder {
-	orderBy := []OrderKey{{Expr: Col(srcTs)}, {Expr: Col(r.ValueColumn)}}
+	orderBy := []OrderKey{
+		{Expr: Col(srcTs)},
+		{Expr: nanLosesRankFrag(Col(r.ValueColumn))},
+		{Expr: Col(r.ValueColumn)},
+	}
 	// lagInFrame looks BEHIND the current row, so its frame's lower bound must
 	// admit the preceding rows — RowsUnboundedPrecedingToCurrentRow.
 	// leadInFrame looks AHEAD, so it needs the complementary forward frame

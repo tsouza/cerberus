@@ -115,17 +115,19 @@ type nativeTSGridAgg struct {
 // keep NaN when every duplicate is NaN, and treat a stale-marker payload
 // exactly like an ordinary NaN.
 //
-// The fan-out's dedupWindowPairsByTsFrag keeps the greatest sample with NaN
-// ranked GREATEST, independent of order. The two paths therefore differ only
-// on a NaN-versus-finite duplicate: order-dependently before #115920, and
-// deterministically (native finite, fan-out NaN) from 26.8.1.2041 on.
-// Reference Prometheus never holds such a pair — its TSDB refuses a second
-// sample at an existing timestamp unless the bits match — so neither answer is
-// the reference's, and the routing stays as it is: the shape is rare, the
+// The fan-out's dedupWindowPairsByTsFrag keeps the greatest FINITE sample,
+// NaN only when every duplicate is NaN, independent of order — cerberus
+// issue #3648 re-pinned it to that rule specifically so it would agree with
+// #115920's. The two paths therefore now differ only against a PRE-#115920
+// server: the native fold there is order-dependent on a NaN-versus-finite
+// duplicate while the fan-out is not, so they can disagree there by
+// construction (there was no single native answer to align with before
+// #115920), and they agree deterministically from 26.8.1.2041 on. Reference
+// Prometheus never holds such a pair — its TSDB refuses a second sample at
+// an existing timestamp unless the bits match — so neither answer is the
+// reference's, and the routing stays as it is: the shape is rare, the
 // native answer is always one of the collision's own samples, and the only
-// sound gate was measured and rejected below. Aligning the fan-out's rule with
-// #115920's so the two paths agree on a current server is
-// https://github.com/tsouza/cerberus/issues/3648. The per-build survivors are
+// sound gate was measured and rejected below. The per-build survivors are
 // pinned by range_window_grid_native_nan_duplicate_realch_integration_test.go.
 //
 // The obvious emitter-side repair is available mechanically and unsound
