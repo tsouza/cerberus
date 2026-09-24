@@ -92,7 +92,7 @@ var benchQueries = []benchQuery{
 	{
 		name:  "logql-unwrap-duration",
 		logql: true,
-		query: `avg(avg_over_time({service_name="` + benchService + `"} | logfmt | unwrap duration(latency) | __error__="" [5m]))`,
+		query: `avg(avg_over_time({service_name="` + benchService + `"} |= "timeout" | logfmt | unwrap duration(latency) | __error__="" [5m]))`,
 	},
 }
 

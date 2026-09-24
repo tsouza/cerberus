@@ -1023,8 +1023,11 @@ How the emitted shapes fare on 26.7 and 26.8:
 | LogQL `regexp` parser                     | `<re>` in `extractAllGroupsHorizontal`          | never                                                                      |
 | LogQL `unwrap duration()` / `bytes()`     | fixed patterns in `internal/logql`              | always: each conversion binds compilable fixed patterns                    |
 
-The emitter spells two families of patterns so that they stay inside the
-subset without changing meaning (`internal/chsql/regex_pattern.go`):
+Within the subset, a greedy run followed by a literal the run can also
+consume — `(.*)-[0-9]+` — is still left to RE2.
+
+The emitter spells the patterns it binds so that they stay inside the subset
+and cheap without changing meaning (`internal/chsql/regex_pattern.go`):
 
 - **`label_replace`** anchors a regex that parses on its own as
   `(?s)^(?:<re>)$`, the same program as Prometheus's `^(?s:<re>)$`. A regex
@@ -1034,6 +1037,11 @@ subset without changing meaning (`internal/chsql/regex_pattern.go`):
   `match()` does. The rewrite is used only when it parses to the program the
   pattern has under Go's defaults; otherwise the pattern is prefixed with
   `(?-s)`. A pattern with no such `.` is bound unchanged.
+- **LogQL line filters with a literal prefix** — every match of `<re>`
+  starting with the same literal, as `timeout after \d+ms` does — are guarded
+  as `(position(Body, '<prefix>') > 0 AND match(Body, '<re>'))`, or
+  `(position(Body, '<prefix>') = 0 OR NOT match(Body, '<re>'))` for `!~`, so a
+  line without the literal is rejected before a compiled matcher runs on it.
 
 On bytes that are not valid UTF-8 a compiled pattern matches as Go's `regexp`
 does — the reference engines' — and RE2 does not (issue
