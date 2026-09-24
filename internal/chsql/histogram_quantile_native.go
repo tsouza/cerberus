@@ -229,6 +229,10 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		{chplan.HistogramFieldCount, &resolved.CountColumn, false},
 		{chplan.HistogramFieldSum, &resolved.SumColumn, false},
 		{chplan.HistogramFieldScale, &resolved.ScaleColumn, false},
+		// Optional: the upstream OTel-CH exp-histogram DDL does not persist
+		// the OTLP zero_threshold field, so the default schema leaves it
+		// empty and the value fragment renders a constant 0 zero-bucket
+		// width instead (see w.zt in newHQNativeWriters).
 		{chplan.HistogramFieldZeroThreshold, &resolved.ZeroThresholdColumn, true},
 		{chplan.HistogramFieldZeroCount, &resolved.ZeroCountColumn, false},
 		{chplan.HistogramFieldPositiveOffset, &resolved.PositiveOffsetColumn, false},
@@ -246,17 +250,6 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 	h = &resolved
 	if h.Input == nil {
 		return fmt.Errorf("%w: HistogramQuantileNative.Input is nil", ErrUnsupported)
-	}
-	// ZeroThresholdColumn is intentionally NOT required: the upstream
-	// OTel-CH exp-histogram DDL does not persist the OTLP
-	// zero_threshold field, so the default schema leaves it empty and
-	// the value fragment renders a constant 0 zero-bucket width
-	// instead (see writeZt in histogramQuantileNativeValueFrag).
-	if h.PositiveBucketCountsColumn == "" || h.PositiveOffsetColumn == "" ||
-		h.ScaleColumn == "" || h.ZeroCountColumn == "" ||
-		h.NegativeOffsetColumn == "" || h.NegativeBucketCountsColumn == "" ||
-		h.CountColumn == "" || h.SumColumn == "" {
-		return fmt.Errorf("%w: HistogramQuantileNative requires Scale / ZeroCount / PositiveOffset / PositiveBucketCounts / NegativeOffset / NegativeBucketCounts / Count / Sum column names", ErrUnsupported)
 	}
 	sub, err := e.subqueryFrag(h.Input)
 	if err != nil {
@@ -397,15 +390,14 @@ type hqNativeBinding struct {
 // fraction of that input's own analysis cost to every request.
 func hqNativeLet(bindings []hqNativeBinding, body func() Frag) Frag {
 	params := make([]string, len(bindings))
-	args := make([]Frag, 0, len(bindings)+1)
-	args = append(args, nil)
+	values := make([]Frag, len(bindings))
 	for i, binding := range bindings {
 		params[i] = binding.name
-		args = append(args, Array(binding.value))
+		values[i] = Array(binding.value)
 	}
 	bodyFrag := body()
-	args[0] = func(b *Builder) { b.Lambda(params, bodyFrag) }
-	return Subscript(Call("arrayMap", args...), InlineLit(1))
+	lambda := func(b *Builder) { b.Lambda(params, bodyFrag) }
+	return Subscript(Call("arrayMap", append([]Frag{lambda}, values...)...), InlineLit(1))
 }
 
 // isBareIdentifier reports whether name matches `[A-Za-z_][A-Za-z0-9_]*`,

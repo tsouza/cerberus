@@ -101,11 +101,11 @@ func sharedPrometheusQuantilesAggregate(h *chplan.HistogramQuantile, levels []ch
 	w := newHQClassicWriters(h, helpers)
 	nameParts := []Frag{InlineLit("quantilesPrometheusHistogram(")}
 	for i, level := range levels {
-		phi := level.Phi
-		if math.IsNaN(phi) || phi < 0 {
-			phi = 0
-		} else if phi > 1 {
-			phi = 1
+		// The ClickHouse aggregate's levels must lie in [0, 1]; an
+		// out-of-domain or NaN phi is answered by sharedPrometheusQuantilesValues.
+		phi := 0.0
+		if !math.IsNaN(level.Phi) {
+			phi = min(max(level.Phi, 0), 1)
 		}
 		if i > 0 {
 			nameParts = append(nameParts, InlineLit(","))

@@ -257,33 +257,69 @@ func TestEmit_HistogramQuantileNative_FactorsSharedExpressions(t *testing.T) {
 func TestEmit_HistogramQuantileNative_SingleSelectOverBoundary(t *testing.T) {
 	t.Parallel()
 
-	input := nativeQuantileTestInput(true)
-	input.Columns = append([]string{"Attributes"}, input.Columns...)
-	input.Roles = append([]chplan.Column{{Name: "Attributes", Role: chplan.RoleAttributes}}, input.Roles...)
+	withAttributes := func(rename map[string]string) *chplan.Scan {
+		input := nativeQuantileTestInput(true)
+		input.Columns = append([]string{"Attributes"}, input.Columns...)
+		input.Roles = append([]chplan.Column{{Name: "Attributes", Role: chplan.RoleAttributes}}, input.Roles...)
+		for i, name := range input.Columns {
+			if to, ok := rename[name]; ok {
+				input.Columns[i], input.Roles[i].Name = to, to
+			}
+		}
+		return input
+	}
+	attributes := &chplan.ColumnRef{Name: "Attributes"}
 
 	const boundary = "SELECT arrayJoin([(`Attributes`, `Count`, "
 	cases := []struct {
 		name    string
+		input   *chplan.Scan
 		groupBy chplan.Expr
+		aliases []string
 		// wantHeads are the leading text of the outermost SELECTs, from the
 		// quantile's own down to the materialization boundary.
 		wantHeads []string
 	}{
 		{
 			name:    "input column key reads the boundary tuple",
-			groupBy: &chplan.ColumnRef{Name: "Attributes"},
+			input:   withAttributes(nil),
+			groupBy: attributes,
+			aliases: []string{"Attributes"},
 			wantHeads: []string{
 				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, arrayMap((Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts, ZeroThreshold) -> arrayMap((_cerb_hq_buckets) -> ",
 				boundary,
 			},
 		},
 		{
+			name:    "aliased input column key keeps its alias",
+			input:   withAttributes(nil),
+			groupBy: attributes,
+			aliases: []string{"labels"},
+			wantHeads: []string{
+				"SELECT `_cerb_histogram_input`.1 AS `labels`, arrayMap((Count, Sum, ",
+				boundary,
+			},
+		},
+		{
 			name:    "computed key keeps the unpacking query",
-			groupBy: &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}},
+			input:   withAttributes(nil),
+			groupBy: &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{attributes}},
+			aliases: []string{"Attributes"},
 			wantHeads: []string{
 				"SELECT mapSort(`Attributes`) AS `Attributes`, arrayMap((_cerb_hq_buckets) -> ",
 				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, `_cerb_histogram_input`.2 AS `Count`, ",
 				boundary,
+			},
+		},
+		{
+			name:    "non-identifier field keeps the unpacking query",
+			input:   withAttributes(map[string]string{"Sum": "sum.total"}),
+			groupBy: attributes,
+			aliases: []string{"Attributes"},
+			wantHeads: []string{
+				"SELECT `Attributes` AS `Attributes`, arrayMap((_cerb_hq_buckets) -> ",
+				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, `_cerb_histogram_input`.2 AS `Count`, `_cerb_histogram_input`.3 AS `sum.total`, ",
+				"SELECT arrayJoin([(`Attributes`, `Count`, `sum.total`, ",
 			},
 		},
 	}
@@ -291,8 +327,9 @@ func TestEmit_HistogramQuantileNative_SingleSelectOverBoundary(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			plan := hqNativePlan(0.25, nil)
-			plan.Input = input
+			plan.Input = tc.input
 			plan.GroupBy = []chplan.Expr{tc.groupBy}
+			plan.GroupByAliases = tc.aliases
 			sql, _, err := chsql.Emit(context.Background(), plan)
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
