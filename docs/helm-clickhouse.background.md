@@ -235,9 +235,29 @@ on 26.8 before the server closed it itself.
 
 Draining rather than cancelling is the chosen behaviour because a rolling
 update is routine: a cancelled query surfaces to a Grafana user as an error,
-while a drained one finishes. The wait defaults to cerberus's own query
-timeout (2 minutes, `max_execution_time` on every data-plane query), the
-longest any cerberus query can run, so a drain never has to cut one.
+while a drained one finishes. The wait follows cerberus's own query timeout
+(`max_execution_time` on every data-plane query), the longest any cerberus
+query can run, so a drain never has to cut one. A first version rendered a
+literal 120 beside the binary's 2-minute default, and raising `query.timeout`
+left the wait behind; deriving it from the same values, with the binary
+default held equal by `TestChartQueryTimeoutDefaultMatchesBinary`, removes the
+second copy. An explicit shorter wait is refused rather than accepted, since
+it can only mean a rollout that cancels queries cerberus still admits.
+
+## Why the format pin is guarded by the image tag
+
+The pin arrives as a new chart default, so an existing release whose bundled
+image predates 26.6 (25.8, a 26.3 LTS, an Altinity build) would receive it on
+its next `helm upgrade`: the config checksum changes, every ClickHouse pod
+restarts, and each exits at startup with `UNKNOWN_SETTING` (exit 115, measured
+on 26.5.7.64 and 25.3.14.14) — an outage on one replica, a stuck rollout on
+several. Failing the render instead stops the upgrade before anything
+restarts. Dropping the setting silently for an older tag was rejected: the
+same map carries an operator's explicit settings, which Helm cannot tell apart
+from the default, and silently discarding an explicit setting is worse than a
+render error that names it. A tag with no version is rendered unchecked
+because refusing it would break every digest-pinned release, the practice
+most worth keeping.
 
 The server's work after the last query — stopping background pools, flushing
 system logs and in-memory buffers — took under a second on an idle server.

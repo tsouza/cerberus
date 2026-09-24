@@ -37,12 +37,16 @@ import (
 
 const (
 	// priorServerImage is the server line the quickstart stack pins
-	// (docker-compose.yml); TestPriorServerImageTracksQuickstartPin keeps the
-	// two on the same major.minor.
-	priorServerImage = "clickhouse/clickhouse-server:26.6-alpine"
+	// (docker-compose.yml); TestImagesTrackQuickstartPins keeps the two on
+	// the same major.minor.
+	priorServerImage = textIndexRollbackFloorImage
 	// keyedServerImage is the first server line whose
 	// system.asynchronous_metrics carries the key_values column.
-	keyedServerImage = "clickhouse/clickhouse-server:26.8-alpine"
+	keyedServerImage = textIndexUpgradeTargetImage
+	// oldestReceiverImage is cerberus's minimum supported server; with
+	// preFormatSettingsLTSImage it proves the collector's queries run on
+	// server lines long before the key_values column.
+	oldestReceiverImage = "clickhouse/clickhouse-server:24.8.14.39-alpine"
 
 	composeFile       = "../../docker-compose.yml"
 	justCommon        = "../../just/common.just"
@@ -73,7 +77,9 @@ const (
 	// perCoreFamily is present on every Linux host: one key per CPU core, and
 	// the legacy form folds the core number straight into the name.
 	perCoreFamily = "OSUserTimeCPU"
-	legacyMode    = "both"
+	// scalarProbe is a scalar every server line publishes.
+	scalarProbe = "LoadAverage1"
+	legacyMode  = "both"
 )
 
 // legacySpellings are the ways a pre-26.8 server folds a key into a metric
@@ -106,6 +112,10 @@ func TestAsyncMetricsReceiverAcrossKeyedSchema(t *testing.T) {
 	boardNames := dashboardScalarNames(t)
 
 	prior := runScenario(t, scenario{image: priorServerImage}, queries, collectorImage)
+	older := []scenarioResult{
+		runScenario(t, scenario{image: oldestReceiverImage}, queries, collectorImage),
+		runScenario(t, scenario{image: preFormatSettingsLTSImage}, queries, collectorImage),
+	}
 	keyed := runScenario(t, scenario{image: keyedServerImage}, queries, collectorImage)
 	both := runScenario(t, scenario{image: keyedServerImage, keyValuesMode: legacyMode}, queries, collectorImage)
 
@@ -116,6 +126,21 @@ func TestAsyncMetricsReceiverAcrossKeyedSchema(t *testing.T) {
 			}
 			if _, ok := s.scalar[perCoreFamily+"0"]; !ok {
 				t.Fatalf("scrape %s: legacy scalar %s0 missing", s.timestamp, perCoreFamily)
+			}
+		}
+	})
+
+	// Older lines: both queries run (runScenario fails on any receiver error)
+	// and export scalar series only.
+	t.Run("older servers export scalar series and no keyed series", func(t *testing.T) {
+		for _, run := range older {
+			for _, s := range run.scrapes {
+				if len(s.keyed) != 0 {
+					t.Fatalf("%s scrape %s: %d keyed series on a server without key_values", run.label, s.timestamp, len(s.keyed))
+				}
+				if _, ok := s.scalar[scalarProbe]; !ok {
+					t.Fatalf("%s scrape %s: scalar %s missing", run.label, s.timestamp, scalarProbe)
+				}
 			}
 		}
 	})
@@ -175,7 +200,8 @@ func TestAsyncMetricsReceiverAcrossKeyedSchema(t *testing.T) {
 func TestImagesTrackQuickstartPins(t *testing.T) {
 	pinned := quickstartImage(t, "clickhouse/clickhouse-server")
 	tag := strings.TrimPrefix(pinned, "clickhouse/clickhouse-server:")
-	if !strings.HasPrefix(priorServerImage, "clickhouse/clickhouse-server:"+tag+"-") &&
+	if !strings.HasPrefix(priorServerImage, "clickhouse/clickhouse-server:"+tag+".") &&
+		!strings.HasPrefix(priorServerImage, "clickhouse/clickhouse-server:"+tag+"-") &&
 		priorServerImage != pinned {
 		t.Fatalf("docker-compose.yml pins %s but the receiver test's prior server is %s", pinned, priorServerImage)
 	}

@@ -251,21 +251,28 @@ by construction but the cloud round-trip has not been exercised in CI.
 Every bundled ClickHouse pod, per-shard pods included, shuts down on one
 budget, set under `clickhouse.bundled.shutdown`:
 
-| Value                   | Default | Renders as                                                   |
-| ----------------------- | ------- | ------------------------------------------------------------ |
-| `waitUnfinishedSeconds` | `120`   | `shutdown_wait_unfinished` in `tuning.xml`                   |
-| `overheadSeconds`       | `30`    | added to the wait for the pod's grace, never rendered alone  |
-| (derived)               | `150`   | `terminationGracePeriodSeconds` on every ClickHouse pod      |
+| Value                   | Default | Renders as                                                               |
+| ----------------------- | ------- | ------------------------------------------------------------------------ |
+| `waitUnfinishedSeconds` | `null`  | `shutdown_wait_unfinished` in `tuning.xml`: the wait described below     |
+| `overheadSeconds`       | `30`    | added to the wait for the pod's grace, never rendered alone              |
+| (derived)               | `150`   | `terminationGracePeriodSeconds` on every ClickHouse pod, wait + overhead |
+
+With `waitUnfinishedSeconds: null` the wait is the longest per-query timeout
+any cerberus pod of the release runs with: `query.timeout`, and in split mode
+each enabled head's `split.<head>.timeout`. When none is set, or it is `0`
+(no cap), the wait is the binary's default query timeout, 120 seconds. Raising
+`query.timeout` to `5m` therefore renders a 300-second wait and a 330-second
+grace. An explicit `waitUnfinishedSeconds` shorter than that timeout fails the
+render, and a timeout that is not a Go duration (`90s`, `2m`, `1m30s`) fails
+it too. A timeout set only through `config` or `extraEnv` is not seen; set it
+through `query.timeout` or `split.<head>.timeout`.
 
 The chart also renders `shutdown_wait_unfinished_queries: 1`. On SIGTERM the
 server closes its listening sockets, lets the queries already running finish
-for up to `waitUnfinishedSeconds`, then flushes and exits. A query still
-running when the wait ends is cancelled. The pod grace is always
-`waitUnfinishedSeconds + overheadSeconds`, and `overheadSeconds` is at least 1,
-so the server always finishes its own shutdown before Kubernetes' SIGKILL.
-The default wait equals cerberus's default query timeout (`query.timeout`,
-2m): no query cerberus sends outlives it. A cerberus deployment that raises
-`query.timeout` raises `waitUnfinishedSeconds` to match.
+for up to the wait, then flushes and exits. A query still running when the
+wait ends is cancelled. The pod grace is always the wait plus
+`overheadSeconds`, and `overheadSeconds` is at least 1, so the server always
+finishes its own shutdown before Kubernetes' SIGKILL.
 
 The budget belongs to the ClickHouse pods only:
 
@@ -274,9 +281,8 @@ The budget belongs to the ClickHouse pods only:
 - The top-level `terminationGracePeriodSeconds` (default `30`) is the grace of
   the cerberus pods, monolith and split, and does not reach ClickHouse.
 
-A rolling update therefore takes up to `waitUnfinishedSeconds +
-overheadSeconds` per pod while queries are running, and seconds per pod when
-none are.
+A rolling update therefore takes up to the wait plus `overheadSeconds` per
+pod while queries are running, and seconds per pod when none are.
 
 `chart-render-assert.mjs` pins the rendered budget in the single-shard,
 replicated and multi-shard layouts. The `bwc-replicated` e2e lane
@@ -330,8 +336,13 @@ Merges from then on pack small skip indices, and a server older than 26.7 can
 no longer open those parts.
 
 A server older than 26.6 knows neither setting and refuses to start with
-either one in its configuration. An image override below 26.6 sets the pin to
-`null`.
+either one in its configuration (`UNKNOWN_SETTING`, exit code 115). The chart
+reads the server line from the tag of `clickhouse.bundled.image` and fails the
+render when either setting is present for a line below 26.6, naming the value
+to set to `null`, so a `helm upgrade` stops before any pod restarts. A tag
+that carries no version (`latest`, a digest, a custom tag) is not checked: the
+settings render as given, and an operator running such an image below 26.6
+sets them to `null` by hand.
 
 The `clickhouse-upgrade` lane proves this path against real servers
 (`test/clickhouse-upgrade/format_integration_test.go`): a 26.6 replica and

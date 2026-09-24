@@ -291,7 +291,7 @@ schema-ddl-test:
 
 # Run the ClickHouse upgrade-compatibility integration tests. Needs Docker.
 clickhouse-upgrade-test:
-    @just _pull-retry {{CH_SCHEMA_TEXT_INDEX_IMAGE}} {{CH_UPGRADE_TARGET_IMAGE}} {{CH_TEXT_INDEX_V0_READER_IMAGE}} {{OTEL_COLLECTOR_CONTRIB_IMAGE}}
+    @just _pull-retry {{CH_UPGRADE_FLOOR_IMAGE}} {{CH_UPGRADE_TARGET_IMAGE}} {{CH_TEXT_INDEX_V0_READER_IMAGE}} {{CH_PRE_KEYED_IMAGES}} {{OTEL_COLLECTOR_CONTRIB_IMAGE}}
     go test -timeout 20m -p=1 -race -tags=integration ./test/clickhouse-upgrade/...
 
 # Run the TXTAR spec suite with the chDB-backed round-trip assertion

@@ -80,14 +80,16 @@ export const mirroredImages = [
   // (timeSeriesThrowDuplicateSeriesIf shipped in 26.2 — see CH_TAG_GROUPS_IMAGE).
   'clickhouse/clickhouse-server:26.2-alpine',
   'clickhouse/clickhouse-server:26.5',
-  // 26.5 is the newest line that reads only v0_initial text indexes and 26.8
-  // the upgrade target: the clickhouse-upgrade lane's format-compatibility pins (see
-  // CH_TEXT_INDEX_V0_READER_IMAGE / CH_UPGRADE_TARGET_IMAGE).
-  'clickhouse/clickhouse-server:26.5-alpine',
   'clickhouse/clickhouse-server:26.6',
   'clickhouse/clickhouse-server:26.6-alpine',
   'clickhouse/clickhouse-server:26.6.1.1193-alpine',
-  'clickhouse/clickhouse-server:26.8-alpine',
+  // The clickhouse-upgrade lane's exact builds (CH_UPGRADE_FLOOR_IMAGE,
+  // CH_UPGRADE_TARGET_IMAGE, CH_TEXT_INDEX_V0_READER_IMAGE, CH_PRE_KEYED_IMAGES).
+  'clickhouse/clickhouse-server:24.8.14.39-alpine',
+  'clickhouse/clickhouse-server:25.3.14.14-alpine',
+  'clickhouse/clickhouse-server:26.5.7.64-alpine',
+  'clickhouse/clickhouse-server:26.6.8.7-alpine',
+  'clickhouse/clickhouse-server:26.8.10.6-alpine',
 
   // Reference backends the three heads are diffed against, plus the reference
   // Prometheus the PromQL surface gate probes and the reference Mimir the

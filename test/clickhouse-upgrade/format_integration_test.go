@@ -26,6 +26,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 	"github.com/testcontainers/testcontainers-go/network"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"gopkg.in/yaml.v3"
 
 	"github.com/tsouza/cerberus/internal/api/loki"
@@ -36,19 +37,27 @@ import (
 )
 
 // The on-disk format contract for ClickHouse upgrades (docs/helm-clickhouse.md
-// § "On-disk format across ClickHouse upgrades") proved on real servers. The
-// three images are the three reader generations the contract names.
+// § "On-disk format across ClickHouse upgrades") proved on real servers.
+// Exact builds, because each stands for a measured fact about that build
+// rather than a floating minor line; just/common.just pre-pulls the same
+// literals (TestIntegrationImagePinsMatchTheJustfile).
 const (
 	// textIndexRollbackFloorImage is the bundled chart's server line: the
 	// oldest server a bundled rollout rolls back to. It reads every
 	// text-index format but not the packed skip-index archive 26.8 writes.
-	textIndexRollbackFloorImage = "clickhouse/clickhouse-server:26.6-alpine"
+	textIndexRollbackFloorImage = "clickhouse/clickhouse-server:26.6.8.7-alpine"
 	// textIndexUpgradeTargetImage writes v2_with_positions text indexes and
 	// packs small skip indices into skp_idx.packed by default.
-	textIndexUpgradeTargetImage = "clickhouse/clickhouse-server:26.8-alpine"
+	textIndexUpgradeTargetImage = "clickhouse/clickhouse-server:26.8.10.6-alpine"
 	// textIndexV0ReaderImage is the newest server line that reads only
-	// v0_initial text-index parts.
-	textIndexV0ReaderImage = "clickhouse/clickhouse-server:26.5-alpine"
+	// v0_initial text-index parts, and that knows neither format setting.
+	textIndexV0ReaderImage = "clickhouse/clickhouse-server:26.5.7.64-alpine"
+	// preFormatSettingsLTSImage is an older LTS line that knows neither
+	// format setting either.
+	preFormatSettingsLTSImage = "clickhouse/clickhouse-server:25.3.14.14-alpine"
+	// unknownSettingExitCode is ClickHouse's UNKNOWN_SETTING error code, which
+	// the server exits with when its configuration names a setting it lacks.
+	unknownSettingExitCode = 115
 
 	textIndexDatabase    = "otel"
 	textIndexZooPath     = "/clickhouse/databases/otel"
@@ -266,6 +275,52 @@ func TestUpgradeFormat_PackedSkipIndexNeedsThePin(t *testing.T) {
 		t.Fatalf("26.6 reading a 26.8 merge rewritten under the pin: %v", err)
 	}
 	assertNoDetachedParts(ctx, t, n)
+}
+
+// TestUpgradeFormat_PinStopsOlderServers is why the chart refuses to render
+// its format settings for an image older than 26.6: a server that does not
+// know a <merge_tree> setting does not start at all.
+func TestUpgradeFormat_PinStopsOlderServers(t *testing.T) {
+	ctx := context.Background()
+	nw := textIndexNetwork(ctx, t)
+	pinned := "<clickhouse>" + chartMergeTreeSettings(t) + "</clickhouse>"
+	for _, image := range []string{textIndexV0ReaderImage, preFormatSettingsLTSImage} {
+		t.Run(image, func(t *testing.T) {
+			startCtx, cancel := context.WithTimeout(ctx, textIndexStartTimeout)
+			defer cancel()
+			path := filepath.Join(t.TempDir(), "pin.xml")
+			if err := os.WriteFile(path, []byte(pinned), 0o644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			// A plain container, not the ClickHouse module: the module's
+			// database/user bootstrap would hold the entrypoint in its own
+			// init wait instead of letting the server's exit end the container.
+			c, err := testcontainers.Run(startCtx, image,
+				network.WithNetwork(nil, nw),
+				testcontainers.WithFiles(testcontainers.ContainerFile{
+					HostFilePath: path, ContainerFilePath: "/etc/clickhouse-server/config.d/pin.xml", FileMode: 0o644,
+				}),
+				testcontainers.WithWaitStrategy(wait.ForExit().WithExitTimeout(textIndexStartTimeout)))
+			if c != nil {
+				t.Cleanup(func() { _ = c.Terminate(context.Background()) })
+			}
+			if err != nil {
+				t.Fatalf("%s with the chart's format pin did not exit: %v", image, err)
+			}
+			state, err := c.State(startCtx)
+			if err != nil {
+				t.Fatalf("%s: container state: %v", image, err)
+			}
+			if state.ExitCode != unknownSettingExitCode {
+				t.Fatalf("%s with the chart's format pin exited %d, want UNKNOWN_SETTING (%d)", image, state.ExitCode, unknownSettingExitCode)
+			}
+		})
+	}
+	// The same images start without the pin: the failure above is the pin's.
+	n := startTextIndexNode(ctx, t, nw, preFormatSettingsLTSImage, "control", "", "")
+	if err := n.conn.Ping(ctx); err != nil {
+		t.Fatalf("%s without the pin: %v", preFormatSettingsLTSImage, err)
+	}
 }
 
 // TestUpgradeFormat_TextIndexRollbackBelowReaderFloor proves the one unsupported

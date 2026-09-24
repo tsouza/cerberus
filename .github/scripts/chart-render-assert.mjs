@@ -21,8 +21,9 @@
 //   18. affinityPresets.colocateWithClickHouse targets the bundled ClickHouse pods' own labels when the selector is the shipped default; an operator-set selector is used verbatim.
 //   19. Every ClickHouse container port carries its own protocol, with and without the metrics port, in both the single and the per-shard StatefulSet.
 //   20. bundled replicas>1 wires CERBERUS_SCHEMA_CLUSTER alongside the Replicated-database env, so cerberus's CREATE DATABASE runs ON CLUSTER and every replica attaches the database; an operator-set schema.CLUSTER wins.
-//   21. Bundled ClickHouse graceful shutdown: every ClickHouse pod (single, replicated, per-shard) gets terminationGracePeriodSeconds = shutdown.waitUnfinishedSeconds + shutdown.overheadSeconds, the server waits that long for running queries, overrides flow through, Keeper and cerberus pods keep their own grace.
+//   21. Bundled ClickHouse graceful shutdown: every ClickHouse pod (single, replicated, per-shard) gets terminationGracePeriodSeconds = the server's query wait + shutdown.overheadSeconds; the wait follows the longest cerberus query timeout (query.timeout, split.<head>.timeout) unless set, an explicit wait below that timeout fails, Keeper and cerberus pods keep their own grace.
 //   22. The on-disk format pin: packed_skip_index_max_bytes renders 0 by default and disappears when advanced with null.
+//   23. A MergeTree setting the bundled image's server line does not know fails the render instead of crash-looping the rollout; tags without a version are not checked.
 //
 // Env contract:
 //   CHART_DIR   chart directory (default: deploy/helm/cerberus)
@@ -934,7 +935,7 @@ function count(haystack, needle) {
   const CONFIG = ['-s', 'templates/clickhouse/configmap-config.yaml']
   const defaultWait = 120
   const defaultGrace = 150
-  const overrideWait = 45
+  const overrideWait = 300
   const overrideOverhead = 10
 
   for (const [label, base, statefulSets] of [
@@ -964,6 +965,24 @@ function count(haystack, needle) {
 
   const noOverhead = tplFail([...OBJECT_STORE, '--set', 'clickhouse.bundled.shutdown.overheadSeconds=0'])
   check(noOverhead !== null && noOverhead.includes('overheadSeconds'), 'shutdown.overheadSeconds=0 is refused (the grace must exceed the wait)')
+
+  // The wait follows cerberus's own query timeout, so raising one raises the other.
+  const overhead = 30
+  for (const [label, args, wait] of [
+    ['query.timeout=5m', ['--set-string', 'query.timeout=5m'], 300],
+    ['query.timeout=1m30s', ['--set-string', 'query.timeout=1m30s'], 90],
+    ['query.timeout=0 (no cap): the binary default', ['--set-string', 'query.timeout=0'], defaultWait],
+    ['split, split.tempo.timeout=10m', ['--set', 'mode=split', '--set-string', 'split.tempo.timeout=10m'], 600],
+    ['split, the 10m head disabled', ['--set', 'mode=split', '--set-string', 'split.tempo.timeout=10m', '--set', 'split.tempo.enabled=false'], defaultWait],
+  ]) {
+    const cfg = tpl([...OBJECT_STORE, ...args, ...CONFIG])
+    const sts = graces(tpl([...OBJECT_STORE, ...args, ...STS]))
+    check(Number(WAIT.exec(cfg)?.[1]) === wait && sts.length === 1 && sts[0] === wait + overhead, `${label}: shutdown_wait_unfinished ${wait}, grace ${wait + overhead} (got ${WAIT.exec(cfg)?.[1]}, ${sts})`)
+  }
+  const tooShort = tplFail([...OBJECT_STORE, '--set-string', 'query.timeout=5m', '--set', 'clickhouse.bundled.shutdown.waitUnfinishedSeconds=120'])
+  check(tooShort !== null && tooShort.includes('shorter than the longest cerberus query timeout (300s)'), 'an explicit wait below query.timeout is refused')
+  const badDuration = tplFail([...OBJECT_STORE, '--set-string', 'query.timeout=2x'])
+  check(badDuration !== null && badDuration.includes('query.timeout="2x" is not a Go duration'), 'an unreadable query.timeout is refused, not guessed')
 }
 
 // --- 22. On-disk format pin -----------------------------------------------------
@@ -977,6 +996,31 @@ function count(haystack, needle) {
   check(!advanced.includes('packed_skip_index_max_bytes'), 'advancing the pin with null removes it')
   const textPin = tpl([...OBJECT_STORE, '--set', 'clickhouse.bundled.settings.text_index_serialization_version=v0_initial', ...CONFIG])
   check(textPin.includes('<text_index_serialization_version>v0_initial</text_index_serialization_version>') && textPin.includes(PIN), 'an operator text-index pin renders beside the default pin')
+}
+
+// --- 23. MergeTree settings the bundled image does not know ----------------------
+// A server that does not know a <merge_tree> setting refuses to start
+// (UNKNOWN_SETTING, exit 115), so a `helm upgrade` that carried the default
+// pin onto an older pinned image would crash-loop every ClickHouse pod.
+{
+  const CONFIG = ['-s', 'templates/clickhouse/configmap-config.yaml']
+  const PIN = '<packed_skip_index_max_bytes>0</packed_skip_index_max_bytes>'
+  for (const image of ['clickhouse/clickhouse-server:25.8', 'clickhouse/clickhouse-server:26.5.7.64-alpine', 'altinity/clickhouse-server:25.3.6.10034.altinitystable', 'registry.local:5000/clickhouse-server:26.3-alpine', 'clickhouse/clickhouse-server:v24.8']) {
+    const err = tplFail([...OBJECT_STORE, '--set', `clickhouse.bundled.image=${image}`, ...CONFIG])
+    check(err !== null && err.includes('clickhouse.bundled.settings.packed_skip_index_max_bytes needs ClickHouse 26.6 or later') && err.includes('=null'), `${image}: the default pin fails the render and names the fix`)
+    const advanced = tpl([...OBJECT_STORE, '--set', `clickhouse.bundled.image=${image}`, '--set', 'clickhouse.bundled.settings.packed_skip_index_max_bytes=null', ...CONFIG])
+    check(!advanced.includes('packed_skip_index_max_bytes'), `${image} with the pin nulled: renders without it`)
+    const textPin = tplFail([...OBJECT_STORE, '--set', `clickhouse.bundled.image=${image}`, '--set', 'clickhouse.bundled.settings.packed_skip_index_max_bytes=null', '--set', 'clickhouse.bundled.settings.text_index_serialization_version=v0_initial', ...CONFIG])
+    check(textPin !== null && textPin.includes('text_index_serialization_version needs ClickHouse 26.6'), `${image}: a text-index pin fails the same way`)
+  }
+  for (const image of ['clickhouse/clickhouse-server:26.6', 'clickhouse/clickhouse-server:26.8.10.6-alpine', 'clickhouse/clickhouse-server:27.1', 'clickhouse/clickhouse-server:26.6@sha256:0123']) {
+    check(tpl([...OBJECT_STORE, '--set', `clickhouse.bundled.image=${image}`, ...CONFIG]).includes(PIN), `${image}: the pin renders`)
+  }
+  // No version in the tag: nothing to compare, so the settings render as given
+  // (docs/helm-clickhouse.md § "The chart's pin").
+  for (const image of ['clickhouse/clickhouse-server:latest', 'clickhouse/clickhouse-server@sha256:0123', 'my-registry/clickhouse']) {
+    check(tpl([...OBJECT_STORE, '--set', `clickhouse.bundled.image=${image}`, ...CONFIG]).includes(PIN), `${image}: unversioned tag, the pin renders unchecked`)
+  }
 }
 
 process.exit(ok ? 0 : 1)

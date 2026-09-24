@@ -571,20 +571,23 @@ clickhouse:
     # -- Spread ClickHouse pods across nodes (soft anti-affinity by hostname).
     podAntiAffinity: true
     # Graceful shutdown of every bundled ClickHouse pod, per-shard pods
-    # included. On SIGTERM the server stops accepting connections, waits up to
-    # `waitUnfinishedSeconds` for the queries already running
-    # (`shutdown_wait_unfinished_queries: 1`, `shutdown_wait_unfinished`),
-    # then flushes and exits. Each pod's `terminationGracePeriodSeconds` is
-    # `waitUnfinishedSeconds + overheadSeconds`, so Kubernetes never kills a
-    # server that is still shutting down. Keeper pods keep Kubernetes' default
-    # grace, and the top-level `terminationGracePeriodSeconds` applies to
-    # cerberus pods only (docs/helm-clickhouse.md § "Graceful shutdown").
+    # included. On SIGTERM the server stops accepting connections, waits for
+    # the queries already running (`shutdown_wait_unfinished_queries: 1`,
+    # `shutdown_wait_unfinished`), then flushes and exits. Each pod's
+    # `terminationGracePeriodSeconds` is that wait plus `overheadSeconds`, so
+    # Kubernetes never kills a server that is still shutting down. Keeper pods
+    # keep Kubernetes' default grace, and the top-level
+    # `terminationGracePeriodSeconds` applies to cerberus pods only
+    # (docs/helm-clickhouse.md § "Graceful shutdown").
     shutdown:
       # -- Seconds a terminating server waits for running queries
-      # (`shutdown_wait_unfinished`). Equal to cerberus's default query
-      # timeout (`query.timeout`: 2m), so every query cerberus sends can
-      # finish.
-      waitUnfinishedSeconds: 120
+      # (`shutdown_wait_unfinished`). `null` (default) follows the longest
+      # cerberus query timeout this release runs with — `query.timeout`, and
+      # each enabled head's `split.<head>.timeout` in split mode — or the
+      # binary's 2m default when none is set, so every query cerberus sends
+      # can finish. An explicit value shorter than that timeout fails the
+      # render.
+      waitUnfinishedSeconds: null
       # -- Seconds of pod grace beyond `waitUnfinishedSeconds`, for the
       # server's own shutdown work after the last query (flushing buffers and
       # system logs, stopping background pools). Must be at least 1.
@@ -600,7 +603,8 @@ clickhouse:
     # across ClickHouse upgrades"). Advance it with
     # `packed_skip_index_max_bytes: null` once no replica will run 26.6 again.
     # A server older than 26.6 does not know the setting and refuses to start
-    # with it; set it to `null` when running such an image.
+    # with it, so the render fails for an image tag below 26.6 until it is set
+    # to `null`; a tag without a version is not checked.
     settings:
       packed_skip_index_max_bytes: 0
     # -- The bundled ClickHouse ClusterIP Service.
