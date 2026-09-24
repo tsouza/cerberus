@@ -21,34 +21,37 @@
 //   4. ` from <old-version>`  (the target version stays)
 //   5. leading `/`-segments of the dependency name, replaced by `...` and
 //      removed one at a time, so the longest tail that fits survives
-// The Conventional prefix, the dependency and the target version are never
-// removed, so the result is a pure function of (title, number, limit). A title
+// The Conventional prefix and the target version are never removed, and the
+// dependency loses leading path segments only when nothing else fits, keeping
+// at least its last segment. The result is a pure function of (title, number,
+// limit). A title
 // no step can bring under the limit is reported as a failure and left as is:
 // inventing a different subject would hide the dependency the PR bumps.
 //
 // THE LIMIT is read from the repository's commitlint config, the same file the
 // `pr-body` gate lints with, so the two cannot drift apart.
 //
-// THE TOKEN. An edit made with the workflow's GITHUB_TOKEN does not start new
-// workflow runs (GitHub's recursion guard), so the `edited` event that would
-// re-run `pr-hygiene` never fires and `pr-body` stays red on the old title. The
-// edit is therefore made with TITLE_EDIT_TOKEN (the repository's RELEASE_PAT),
-// whose `edited` event re-runs `pr-hygiene` like a human edit does. The live
-// title is read with GITHUB_TOKEN.
+// WHERE IT RUNS. The `dependabot-title` job in pr-hygiene.yml runs this before
+// the `pr-body` job, which waits for it and then reads the live title. The
+// repaired title is therefore linted by the same run, so no second run is
+// needed. A second run could not be relied on anyway: an edit made with
+// GITHUB_TOKEN starts no workflow run that proceeds without a manual approval,
+// and a run triggered by Dependabot
+// sees no Actions secrets, so no personal token is available to make an edit
+// that would.
 //
 // Env contract (only read when invoked as the program):
 //   PR_NUMBER          REQUIRED. The pull request number.
 //   PR_AUTHOR          REQUIRED. The pull request author's login. Anything
 //                      other than `dependabot[bot]` is skipped.
 //   GITHUB_REPOSITORY  REQUIRED. owner/name.
-//   GITHUB_TOKEN       REQUIRED. Reads the live pull request.
-//   TITLE_EDIT_TOKEN   Required only when a rewrite is needed. Edits the title.
+//   GITHUB_TOKEN       REQUIRED. Reads the live pull request and edits its
+//                      title (needs `pull-requests: write`).
 //   GITHUB_API_URL     Default https://api.github.com.
 //   COMMITLINT_CONFIG  Default .commitlintrc.json.
 //
 // Exit codes: 0 = skipped, already compliant, or rewritten; 1 = the title
-// cannot be made compliant, TITLE_EDIT_TOKEN is missing when a rewrite is
-// needed, an input is missing, or the API call failed.
+// cannot be made compliant, an input is missing, or the API call failed.
 
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
@@ -141,13 +144,12 @@ export async function run({
   author,
   repository,
   apiUrl = DEFAULT_API_BASE,
-  readToken,
-  editToken,
+  token,
   maxLength,
   fetchImpl = globalThis.fetch,
 }) {
   number = String(number ?? '').trim();
-  if (!/^[0-9]+$/.test(number) || !author || !repository || !readToken) {
+  if (!/^[0-9]+$/.test(number) || !author || !repository || !token) {
     error('dependabot-pr-title: PR_NUMBER, PR_AUTHOR, GITHUB_REPOSITORY and GITHUB_TOKEN are all required.');
     return 1;
   }
@@ -156,7 +158,7 @@ export async function run({
     return 0;
   }
 
-  const { title } = await fetchPullRequest({ apiUrl, repository, number, token: readToken, fetchImpl });
+  const { title } = await fetchPullRequest({ apiUrl, repository, number, token, fetchImpl });
   const plan = planTitle({ title, number, author, maxLength });
 
   if (plan.action === 'keep') {
@@ -170,16 +172,8 @@ export async function run({
     );
     return 1;
   }
-  if (!editToken) {
-    error(
-      'dependabot-pr-title: TITLE_EDIT_TOKEN (RELEASE_PAT) is empty. An edit made with GITHUB_TOKEN would ' +
-        'not re-run pr-hygiene, leaving pr-body red on the old title.',
-    );
-    return 1;
-  }
-
   const updated = await ghJSON(`${apiUrl}/repos/${repository}/pulls/${number}`, {
-    token: editToken,
+    token,
     what: `edit title of PR #${number}`,
     notFound: NOT_FOUND_THROW,
     init: { method: 'PATCH', body: JSON.stringify({ title: plan.title }) },
@@ -202,8 +196,7 @@ if (isMain) {
       author: process.env.PR_AUTHOR,
       repository: process.env.GITHUB_REPOSITORY,
       apiUrl: process.env.GITHUB_API_URL || DEFAULT_API_BASE,
-      readToken: process.env.GITHUB_TOKEN,
-      editToken: process.env.TITLE_EDIT_TOKEN,
+      token: process.env.GITHUB_TOKEN,
       maxLength: headerMaxLength(config),
     });
     process.exit(status);

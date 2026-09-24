@@ -152,30 +152,29 @@ const runWith = (gh, overrides = {}) =>
     author: DEPENDABOT_LOGIN,
     repository: REPO,
     apiUrl: API,
-    readToken: 'read-token',
-    editToken: 'edit-token',
+    token: 'job-token',
     maxLength: MAX,
     fetchImpl: gh.fetchImpl,
     ...overrides,
   });
 
-test('run rewrites an over-long live title with the edit token', async () => {
+test('run rewrites an over-long live title', async () => {
   const [title, expected] = REWRITES[0];
   const gh = fakeGitHub({ title });
   assert.equal(await runWith(gh), 0);
   assert.deepEqual(
     gh.calls.map(({ method, url, auth }) => [method, url, auth]),
     [
-      ['GET', `${API}/repos/${REPO}/pulls/${NUMBER}`, 'read-token'],
-      ['PATCH', `${API}/repos/${REPO}/pulls/${NUMBER}`, 'edit-token'],
+      ['GET', `${API}/repos/${REPO}/pulls/${NUMBER}`, 'job-token'],
+      ['PATCH', `${API}/repos/${REPO}/pulls/${NUMBER}`, 'job-token'],
     ],
   );
   assert.deepEqual(gh.calls[1].body, { title: expected });
 });
 
-test('run leaves a compliant title alone and needs no edit token', async () => {
+test('run leaves a compliant title alone', async () => {
   const gh = fakeGitHub({ title: 'chore(deps): bump actions/checkout from 6 to 7' });
-  assert.equal(await runWith(gh, { editToken: '' }), 0);
+  assert.equal(await runWith(gh), 0);
   assert.deepEqual(gh.calls.map((c) => c.method), ['GET']);
 });
 
@@ -183,12 +182,6 @@ test('run never reads or edits a non-dependabot PR', async () => {
   const gh = fakeGitHub({ title: REWRITES[0][0] });
   assert.equal(await runWith(gh, { author: 'tsouza' }), 0);
   assert.deepEqual(gh.calls, []);
-});
-
-test('run fails without editing when a rewrite is needed but the edit token is missing', async () => {
-  const gh = fakeGitHub({ title: REWRITES[0][0] });
-  assert.equal(await runWith(gh, { editToken: '' }), 1);
-  assert.deepEqual(gh.calls.map((c) => c.method), ['GET']);
 });
 
 test('run fails without editing on an unfixable title', async () => {
@@ -205,6 +198,7 @@ test('run fails when the edited title does not read back as planned', async () =
 test('run fails on missing inputs', async () => {
   const gh = fakeGitHub({ title: REWRITES[0][0] });
   assert.equal(await runWith(gh, { number: '' }), 1);
-  assert.equal(await runWith(gh, { readToken: '' }), 1);
+  assert.equal(await runWith(gh, { token: '' }), 1);
+  assert.equal(await runWith(gh, { author: '' }), 1);
   assert.deepEqual(gh.calls, []);
 });
