@@ -351,6 +351,35 @@
       "accountable_owner": "query-quality"
     },
     {
+      "id": "chdb.query-log-union",
+      "description": "Real-ClickHouse evidence for the query-actuals query-log source: local-log gaps after failover and rotation, native packet coverage, and the system.all_query_log union's single accounting across two data shards and an upgrade.",
+      "owner": {
+        "workflow": ".github/workflows/strict-scan.yml",
+        "jobs": ["changes", "query-log-union"],
+        "producer_jobs": [],
+        "context_job": "query-log-union"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "query-log-union", "protected": false },
+      "purpose": "correctness",
+      "layers": ["6e"],
+      "oracle_class": "execution",
+      "recipes": ["query-log-integration"],
+      "command": "just query-log-integration",
+      "build_tags": ["integration"],
+      "package_globs": ["internal/actuals/**", "internal/chclient/**", "internal/chopt/**", "internal/engine/**", "test/querylog/**"],
+      "substrate": "real-clickhouse",
+      "risk_domains": ["clickhouse-client", "clickhouse-floor", "correctness"],
+      "merge_posture": "always",
+      "main_posture": "coalesced",
+      "release_posture": "advisory",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 20,
+      "slo_minutes": 15,
+      "accountable_owner": "query-quality"
+    },
+    {
       "id": "chdb.roundtrip-logql",
       "description": "LogQL TXTAR SQL executed against seeded chDB rows.",
       "owner": {

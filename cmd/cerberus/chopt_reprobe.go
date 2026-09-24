@@ -43,6 +43,13 @@ func (l *chOptLive) get() chOptResolution {
 	return *l.res.Load()
 }
 
+// queryLogUnion reports whether query_log_union is in force right now. The
+// actuals reconciler calls it on every poll, so a re-probe that gains or loses
+// the union table moves the reconciler's source without a restart.
+func (l *chOptLive) queryLogUnion() bool {
+	return l.get().Set.Has(chopt.FeatureQueryLogUnion)
+}
+
 // store publishes res as the resolution in force from now on.
 func (l *chOptLive) store(res chOptResolution) {
 	l.res.Store(&res)
@@ -191,9 +198,10 @@ func nextReprobeDelay(res chOptResolution, steady time.Duration) time.Duration {
 // a restart. It runs until ctx is cancelled (SIGTERM / process shutdown).
 //
 // Each tick repeats exactly the boot resolution — probe the server version,
-// run BOTH capability canaries (the experimental-setting one and the
-// result-cache one), and resolve the SAME configured selection against all
-// three — so the running process can never reach a state boot could not have
+// run the capability canaries (the experimental-setting one, the
+// result-cache one, and — when query_log_union is listed — the query-log
+// union one), and resolve the SAME configured selection against them all —
+// so the running process can never reach a state boot could not have
 // produced. What it deliberately does NOT repeat is the boot's
 // fatal-on-config-fault behaviour: a selection naming an unknown or unsupported
 // feature id would have failed startup, and the selection cannot change under a
@@ -285,7 +293,7 @@ func reprobeCHOptimizations(
 // resolveCHOptimizationsOnce runs one probe-and-resolve pass and reports the
 // result, or ok=false when the resolution failed and the caller must keep the
 // set already in force. It is the re-probe's half of resolveCHOptimizations:
-// the same version probe, the same THREE capability canaries, and the same
+// the same version probe, the same capability canaries, and the same
 // resolver against the same configured selection — but with none of boot's side effects
 // (no config back-fill, no columnar-decode swap, no fatal exit), because those
 // are decisions a process makes once and the re-probe must not re-make.
@@ -302,11 +310,12 @@ func resolveCHOptimizationsOnce(ctx context.Context, logger *slog.Logger, cfg co
 	}
 
 	set, _, err := chopt.Resolve(chopt.Config{
-		Optimizations:         cfg.CHOptimizations,
-		Mode:                  cfg.CHOptimizationsMode,
-		LegacyTSGrid:          cfg.LegacyTSGridFlag,
-		Capability:            probeTSGridCapabilityOverBootstrap(ctx, cfg.ClickHouse),
-		ResultCacheCapability: probeResultCacheCapabilityOverBootstrap(ctx, cfg.ClickHouse),
+		Optimizations:           cfg.CHOptimizations,
+		Mode:                    cfg.CHOptimizationsMode,
+		LegacyTSGrid:            cfg.LegacyTSGridFlag,
+		Capability:              probeTSGridCapabilityOverBootstrap(ctx, cfg.ClickHouse),
+		ResultCacheCapability:   probeResultCacheCapabilityOverBootstrap(ctx, cfg.ClickHouse),
+		QueryLogUnionCapability: probeQueryLogUnionCapabilityOverBootstrap(ctx, cfg.ClickHouse, cfg.CHOptimizations),
 	}, resolvedVersion)
 	if err != nil {
 		// The selection resolved at boot, but the server it resolved against

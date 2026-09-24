@@ -11,7 +11,7 @@ import (
 // (fatalOnReject=false) callers both build on: Available always rides
 // unchanged; Forbidden is fatal ONLY for boot under enforcing, and a
 // WARN-and-skip ("") everywhere else; Unreachable (inconclusive) is never
-// fatal in either caller, mirroring blockIsInconclusive's treatment of
+// fatal in either caller, mirroring blockIsNonFatal's treatment of
 // Unreachable elsewhere in the chopt resolver.
 func TestDecideQueryWorkload_AllVerdicts(t *testing.T) {
 	t.Parallel()

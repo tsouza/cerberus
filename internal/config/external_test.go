@@ -50,6 +50,7 @@ func ownedExternalSettings() []string {
 		actuals.EnvEntryTTL,
 		actuals.EnvQueryLogPollInterval,
 		actuals.EnvQueryLogLookback,
+		actuals.EnvQueryLogSettleDelay,
 	}
 }
 

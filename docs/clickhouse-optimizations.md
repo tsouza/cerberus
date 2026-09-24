@@ -23,7 +23,7 @@ auto-enabled on capable servers, because they are validated result-correct
 and run at flat memory — auto picks them once the server meets their floor
 **and** the server permits the experimental setting they need (see
 [Capability probe](#capability-probe-experimental-ts_grid-setting)).
-23 of the registry's 44 features are `autoSelect: no` and are reachable only by
+24 of the registry's 45 features are `autoSelect: no` and are reachable only by
 explicit listing — `columnar_result_decode` (a perf tradeoff) and
 `ts_grid_changes` (a correctness gap) among them. The generated table below is
 the authoritative per-feature answer; the `autoSelect` column carries it, and
@@ -169,6 +169,7 @@ table.
 | `ts_tag_groups`                  | 26.2       | experimental | no         | (none)                                               | group the instant-mode duplicate-labelset guard's name-drop collapse on a UInt64 tag-group id (timeSeriesTagsToGroup), not the raw Attributes Map, rehydrating via timeSeriesGroupToTags in the projection (server >= 26.2, no experimental gate, opt-in -- #2750)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `ts_throw_duplicate_series_if`   | 26.2       | experimental | yes        | (none)                                               | swap the duplicate-labelset guard's HAVING from throwIf(uniqExact(MetricName) > 1, <static message>) to timeSeriesThrowDuplicateSeriesIf, which names the actual colliding tags (server >= 26.2, no experimental gate, no measured downside -- #3038)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `exp_histogram_two_level`        | none       | stable       | yes        | (none)                                               | stamp group_by_two_level_threshold_bytes=1 on a windowed exponential-histogram plan so the aggregator converts to its two-level table at once instead of feeding the array stages one whole-state block (result-equivalent, no version floor, measured 157 -> 27 MiB at 21 anchors and 383 -> 53 MiB at 61 -- #3247)                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `query_log_union`                | none       | experimental | no         | (none)                                               | read query actuals from system.all_query_log (rotated query_log tables and cluster replicas) instead of the local system.query_log (opt-in, probe-gated on the server's create_union_system_log_tables section and SELECT grant, falls back to the local log when blocked)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 <!-- END GENERATED: chopt-feature-table -->
 
 The hand-authored `effect` column below stays OUTSIDE the generated block: it
@@ -789,6 +790,30 @@ Conversely, permitting the setting in the ClickHouse profile (or using a
 non-readonly user) lets `auto` pick the native family back up on the next
 re-probe.
 
+## Capability probe (query-log union)
+
+`query_log_union` points the query-actuals reconciler at
+`system.all_query_log` instead of the local `system.query_log` (see
+[`solver.md`](solver.md#query-log-source)). It is gated on a probe, never on
+the version, and only when the selection lists it: cerberus runs the
+reconciler's own record-selection query against `system.all_query_log` for an
+empty page, over the bootstrap connection, at boot and on every
+[re-probe](#re-probe).
+
+- **available** — the table exists, every union member has the selected
+  columns, and cerberus's user may `SELECT` it: the feature resolves in.
+- **forbidden** — the server answered with an error: the table is absent
+  (ClickHouse older than 26.8, or no `<create_union_system_log_tables>`
+  section), the `SELECT` is not granted, or a member refused.
+- **unreachable** — no server verdict.
+
+Unlike every other capability-gated feature, a non-`available` verdict is
+**never fatal**, in `enforcing` as in `permissive`: the feature resolves out
+with a boot `WARN` (`ch_opt "query_log_union" disabled: ... falling back to
+the local system.query_log`) and the reconciler reads the local log. Only
+`SELECT` on `system.all_query_log` is required; the union table reaches the
+other replicas with the cluster's own configured credentials.
+
 ## Re-probe
 
 The resolved set describes a server, and the server changes: a rolling
@@ -827,6 +852,7 @@ What a transition swaps:
 | PromQL range lowering         | The native `timeSeries*ToGrid` strategy table is replaced, so subsequent `query_range` requests lower to the native shape (or back to fan-out).                                                                                                         |
 | Engine per-query settings     | The whole `SettingsRules` value is swapped in one pointer store, so subsequent queries stamp the settings the current server supports.                                                                                                                  |
 | `/info`                       | `clickhouse.serverVersion`, `optimizations.resolvedAgainstVersion`, and `optimizations.enabled` report the set in force, not the one booted with.                                                                                                       |
+| Query-actuals reconciler      | Reads `query_log_union` from the set in force on every poll, so it moves between `system.all_query_log` and the local `system.query_log`.                                                                                                               |
 | Data-plane client             | Not part of the transition swap: every pass, whether or not its resolution changed or succeeded, re-probes the fleet and engages or lifts the `use_query_condition_cache=0` override ([Known-defective server builds](#known-defective-server-builds)). |
 
 `columnar_result_decode` is deliberately **not** in that list: it is

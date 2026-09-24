@@ -417,6 +417,24 @@
         "id": "chdb.probe"
       },
       {
+        "lane_id": "chdb.query-log-union",
+        "context_name": "query-log-union",
+        "merge_required": false,
+        "release_required": false,
+        "binding_ids": [
+          "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE",
+          "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
+          "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
+          "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
+          "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
+          "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-NO-CACHING-STATIC",
+          "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
+          "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY"
+        ],
+        "id": "chdb.query-log-union"
+      },
+      {
         "lane_id": "chdb.regex-jit",
         "context_name": "regex-jit",
         "merge_required": false,
@@ -2131,6 +2149,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.query-log-union",
+              "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.regex-jit",
               "context_name": "regex-jit",
               "merge_required": false,
@@ -2344,6 +2368,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.query-log-union",
+              "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.regex-jit",
@@ -2698,6 +2728,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.query-log-union",
+              "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.regex-jit",
               "context_name": "regex-jit",
               "merge_required": false,
@@ -2831,6 +2867,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.query-log-union",
+              "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.regex-jit",
@@ -2968,6 +3010,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.query-log-union",
+              "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.regex-jit",
               "context_name": "regex-jit",
               "merge_required": false,
@@ -3101,6 +3149,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.query-log-union",
+              "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.regex-jit",
@@ -5389,6 +5443,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.query-log-union",
+              "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.regex-jit",
               "context_name": "regex-jit",
               "merge_required": false,
@@ -5502,6 +5562,12 @@
               "context_name": "perf-guards",
               "merge_required": false,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.query-log-union",
+              "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.regex-jit",
@@ -10994,6 +11060,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.query-log-union",
+              "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.regex-jit",

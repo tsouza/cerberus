@@ -2205,6 +2205,25 @@ const (
 	// applyExpHistogramTwoLevelBound for the predicate and for the shapes
 	// deliberately left outside it.
 	FeatureExpHistogramTwoLevel = "exp_histogram_two_level"
+
+	// FeatureQueryLogUnion points the query-actuals reconciler (internal/engine's
+	// QueryLogActualsReconciler, active only with
+	// CERBERUS_QUERY_ACTUALS_ENABLED=true) at system.all_query_log instead of
+	// the local system.query_log. That table exists only when the operator
+	// configured the server's <create_union_system_log_tables> section
+	// (ClickHouse 26.8+): with <merge_rotated_tables> it also covers the
+	// query_log_N tables a schema change rotates the log into, and with
+	// <cluster> it also covers every replica of that cluster, reached with the
+	// cluster's own interserver credentials. cerberus's user needs SELECT on
+	// system.all_query_log and nothing cluster-wide.
+	//
+	// Gated on a probe (chclient.ProbeQueryLogUnionCapability runs the
+	// reconciler's own record-selection query against the table), never on the
+	// version: a 26.8 server without the section has no such table, and a
+	// server with it may still deny the SELECT. Opt-in only — the operator
+	// provisions the server side — and never fatal when blocked, because the
+	// local log is a complete fallback for every row it can see.
+	FeatureQueryLogUnion = "query_log_union"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -2286,6 +2305,14 @@ type Feature struct {
 	// query-result-cache capability probe rather than assumed available just
 	// because the version floor is met — see the type doc above.
 	RequiresResultCacheCapability bool
+	// RequiresQueryLogUnionCapability marks a feature (only query_log_union)
+	// gated on the query-log union probe. A block on this axis is never
+	// fatal, even for an explicit request under enforcing: the feature
+	// changes where an advisory observability source reads, the local
+	// system.query_log is its complete fallback, and a union table the
+	// server may drop and re-create at any time makes a definitive
+	// "forbidden" verdict meaningless at boot.
+	RequiresQueryLogUnionCapability bool
 	// UnsafeBuilds lists the ClickHouse builds on which the feature is known to
 	// return WRONG RESULTS even though the version floor is met — an upstream
 	// defect whose fix landed on each maintained release line at its own patch
@@ -2742,6 +2769,15 @@ var registry = []Feature{
 			"converts to its two-level table at once instead of feeding the array stages one whole-state block " +
 			"(result-equivalent, no version floor, measured 157 -> 27 MiB at 21 anchors and 383 -> 53 MiB at 61 -- #3247)",
 	},
+	{
+		ID:                              FeatureQueryLogUnion,
+		MinVersion:                      AlwaysAvailable,
+		Stability:                       Experimental,
+		AutoSelect:                      false,
+		RequiresQueryLogUnionCapability: true,
+		Doc: "read query actuals from system.all_query_log (rotated query_log tables and cluster replicas) instead of the local system.query_log " +
+			"(opt-in, probe-gated on the server's create_union_system_log_tables section and SELECT grant, falls back to the local log when blocked)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -2756,7 +2792,8 @@ var registry = []Feature{
 // trace_id_bitmap_filter, arg_and_max_fusion, result_cache,
 // lazy_materialization, explain_estimate, cardinality_probe,
 // full_text_index, text_index_line_filter, trace_id_external_table,
-// ts_tag_groups, ts_throw_duplicate_series_if, exp_histogram_two_level).
+// ts_tag_groups, ts_throw_duplicate_series_if, exp_histogram_two_level,
+// query_log_union).
 // The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the

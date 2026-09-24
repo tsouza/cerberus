@@ -1,0 +1,25 @@
+<!-- Two data shards, one replica each, addressed by their network aliases
+     and reached with the test's administrative credentials, so a Distributed
+     read on one server runs a real remote child query on the other. -->
+<clickhouse>
+    <remote_servers>
+        <querylog>
+            <shard>
+                <replica>
+                    <host>ch-a</host>
+                    <port>9000</port>
+                    <user>cerberus</user>
+                    <password>cerberus</password>
+                </replica>
+            </shard>
+            <shard>
+                <replica>
+                    <host>ch-b</host>
+                    <port>9000</port>
+                    <user>cerberus</user>
+                    <password>cerberus</password>
+                </replica>
+            </shard>
+        </querylog>
+    </remote_servers>
+</clickhouse>

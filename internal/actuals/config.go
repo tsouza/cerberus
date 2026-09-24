@@ -112,12 +112,34 @@ type Config struct {
 	// for actuals to arrive synchronously with the query that produced them.
 	QueryLogPollInterval time.Duration
 
-	// QueryLogLookback (CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK) is how far
-	// back the FIRST poll looks before any watermark exists, and the overlap
-	// margin used if a poll ever needs to recover after an error — sized well
-	// above QueryLogPollInterval so a slow query_log flush (or one missed poll
-	// tick) never drops a row between two polls.
+	// QueryLogLookback (CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK) is the
+	// reconciler's read window: it never places its cursor further back than
+	// QueryLogLookback before now, so it only reads a query-log row that
+	// finished within that window. That bounds what one poll can scan however
+	// far behind the reconciler has fallen and sets where the first poll
+	// starts. It must exceed QueryLogPollInterval + QueryLogSettleDelay: a row
+	// becomes readable one settle delay after it finishes and is read by the
+	// next poll.
 	QueryLogLookback time.Duration
+
+	// QueryLogSettleDelay (CERBERUS_QUERY_ACTUALS_QUERY_LOG_SETTLE_DELAY) holds
+	// back every query-log row younger than this, on the server's clock. The
+	// reader's cursor only moves forward, and ClickHouse flushes each server's
+	// query log asynchronously, so a row can surface after a row with a later
+	// timestamp was already read — on the same server between two flushes, or
+	// across the members of system.all_query_log. Waiting the flush lag out
+	// before a row becomes readable is what keeps the cursor from skipping one,
+	// as long as the servers' clocks agree to within the settle delay less
+	// the flush interval. It must cover the server's query_log
+	// flush_interval_milliseconds.
+	QueryLogSettleDelay time.Duration
+
+	// MaxQueryDuration is the longest a query this process dispatches can run
+	// on the server — cmd/cerberus sets it from CERBERUS_QUERY_TIMEOUT, which
+	// every data-plane dispatch carries as max_execution_time. Not an env knob
+	// of its own. It extends the packet path's query-id marks (PacketMarkTTL)
+	// by the gap between a dispatch and its query-log row's finish time.
+	MaxQueryDuration time.Duration
 }
 
 // Default tuning constants (this package's own calibration surface — no
@@ -167,12 +189,31 @@ const (
 	// for a system.query_log background reconciler in this codebase.
 	defaultQueryLogPollInterval = 60 * time.Second
 
-	// defaultQueryLogLookback: 3x the poll interval gives two full missed
-	// polls of overlap margin before a row could be dropped between two
-	// watermarks — generous against query_log's own flush lag
-	// (docs/operations.md), which is measured in seconds, not minutes.
+	// defaultQueryLogLookback: 3x the poll interval, so a row stays readable
+	// through two missed polls after the one that should have read it.
 	defaultQueryLogLookback = 3 * defaultQueryLogPollInterval
+
+	// defaultQueryLogSettleDelay is twice ClickHouse's default query_log
+	// flush_interval_milliseconds (7500): one full flush period plus the same
+	// again for the flush itself and for a union member whose timer fired
+	// just after another's.
+	defaultQueryLogSettleDelay = 15 * time.Second
+
+	// packetMarkClockAllowance extends a packet-path query-id mark further.
+	// The mark is taken on cerberus's clock at dispatch; the query-log row's
+	// finish time is written on the server's clock. The allowance covers the
+	// dispatch-to-start latency and the clock offset between the two.
+	packetMarkClockAllowance = time.Minute
 )
+
+// PacketMarkTTL is how long Tracker keeps a packet-path query-id mark. A row
+// stays readable until its finish time leaves the read window
+// (QueryLogLookback), and it finishes at most MaxQueryDuration after the
+// dispatch that took the mark, give or take packetMarkClockAllowance — so no
+// row the reader can still admit outlives the mark that refuses it.
+func (c Config) PacketMarkTTL() time.Duration {
+	return c.QueryLogLookback + c.MaxQueryDuration + packetMarkClockAllowance
+}
 
 // DefaultConfig returns the conservative library defaults. Enabled is false
 // — the feature ships dark, mirroring solver.DefaultConfig's Mode ==
@@ -188,6 +229,7 @@ func DefaultConfig() Config {
 		EntryTTL:             defaultEntryTTL,
 		QueryLogPollInterval: defaultQueryLogPollInterval,
 		QueryLogLookback:     defaultQueryLogLookback,
+		QueryLogSettleDelay:  defaultQueryLogSettleDelay,
 	}
 }
 
@@ -216,18 +258,22 @@ func (c Config) Validate() error {
 	if c.QueryLogLookback <= 0 {
 		return fmt.Errorf("actuals: QueryLogLookback must be > 0, got %s", c.QueryLogLookback)
 	}
-	// QueryLogLookback is the overlap margin between two polls (its own doc
-	// above): a lookback no longer than the poll interval leaves no overlap
-	// at all, so a slow query_log flush or one missed tick drops rows
-	// silently — the exact failure the field exists to prevent.
+	if c.MaxQueryDuration < 0 {
+		return fmt.Errorf("actuals: MaxQueryDuration must be >= 0, got %s", c.MaxQueryDuration)
+	}
+	if c.QueryLogSettleDelay < 0 {
+		return fmt.Errorf("actuals: QueryLogSettleDelay must be >= 0, got %s", c.QueryLogSettleDelay)
+	}
+	// A row becomes readable one settle delay after it finishes and is read
+	// by the next poll, so a lookback no longer than the two together lets a
+	// row leave the read window before any poll could read it — silently.
 	//
-	// Gated on Enabled, unlike the bounds above, because this rule is NEW: an
-	// existing deployment that carries an inverted pair on a tracker it never
-	// turned on boots today, and refusing to start it over a field nothing
-	// reads would be a regression rather than a caught misconfiguration. With
-	// the tracker on, the Reconciler does read it every poll.
-	if c.Enabled && c.QueryLogLookback <= c.QueryLogPollInterval {
-		return fmt.Errorf("actuals: QueryLogLookback (%s) must be > QueryLogPollInterval (%s)", c.QueryLogLookback, c.QueryLogPollInterval)
+	// Gated on Enabled, unlike the bounds above: a deployment that carries
+	// such a pair on a tracker it never turned on must still boot over fields
+	// nothing reads. With the tracker on, the reconciler reads them every poll.
+	if c.Enabled && c.QueryLogLookback <= c.QueryLogPollInterval+c.QueryLogSettleDelay {
+		return fmt.Errorf("actuals: QueryLogLookback (%s) must be > QueryLogPollInterval (%s) + QueryLogSettleDelay (%s)",
+			c.QueryLogLookback, c.QueryLogPollInterval, c.QueryLogSettleDelay)
 	}
 	return nil
 }
