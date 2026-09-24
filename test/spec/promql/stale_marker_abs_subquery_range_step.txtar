@@ -1,0 +1,70 @@
+-- query.promql --
+max_over_time(abs(stale_gauge)[2m:30s])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64,
+    Flags UInt32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value, Flags) VALUES
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:58:00', 9), 40.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:58:15', 9), 41.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:58:30', 9), 42.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:58:45', 9), 43.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:59:00', 9), 44.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:59:15', 9), 40.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 41.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:59:45', 9), 42.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 43.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:00:15', 9), 44.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:00:30', 9), 40.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:00:45', 9), 41.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 42.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:01:15', 9), 43.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:01:30', 9), 44.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:01:45', 9), 40.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 0.0, 1),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:04:00', 9), 7.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:04:15', 9), 8.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:04:30', 9), 9.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:04:45', 9), 10.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:05:00', 9), 11.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:05:15', 9), 12.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:58:00', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:58:15', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:58:30', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:58:45', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:59:00', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:59:15', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:59:30', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:59:45', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:00:15', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:00:30', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:00:45', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:01:00', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:01:15', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:01:30', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:01:45', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:02:00', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:02:15', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:02:30', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:02:45', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:03:00', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:03:15', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:03:30', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:03:45', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:04:00', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:04:15', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:04:30', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:04:45', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:05:00', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:05:15', 9), 58.0, 0);
