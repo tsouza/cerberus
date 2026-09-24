@@ -225,7 +225,7 @@ const killQueryPollInterval = 100 * time.Millisecond
 
 // killQueryCloseBudget bounds how long cur.Close() (and therefore
 // acquireDataShardFanout's release(), including its KILL QUERY ... SYNC
-// round-trip bounded by killDataShardQueryTimeout) is given to return.
+// round-trip bounded by KillDataShardQueryTimeout) is given to return.
 const killQueryCloseBudget = 10 * time.Second
 
 // killQueryProcessCountSQL reads how many currently-running queries carry the

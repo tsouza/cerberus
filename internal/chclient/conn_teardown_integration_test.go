@@ -29,13 +29,16 @@ import (
 //
 //   - close-then-cancel (chclient.CloseCursor) — the connection returns to the
 //     idle pool, the server keeps its session, and the next query reuses it.
-//   - cancel-then-close — the socket is destroyed, the server loses the
-//     session, and the next query pays for a fresh dial.
+//   - cancel-then-close — the socket is destroyed, and the cancelled
+//     dispatch's release dials a fresh connection for its KILL QUERY, which
+//     the next query then runs on.
 //
 // Each arm is asserted from BOTH ends: cerberus's own pool statistic and the
-// server's TCP session census, read over an independent observer client. The
-// client-side view alone is driver bookkeeping; the server-side view makes
-// "the socket was destroyed" a fact rather than an inference.
+// server's own record of which TCP connection ran each statement
+// (system.query_log.port), read over an independent observer client.
+// The client-side view alone is driver bookkeeping; the server-side view makes
+// "the socket was reused" or "the socket was destroyed" a fact rather than an
+// inference.
 //
 // The arms do NOT share a probe, and that is load-bearing rather than
 // incidental — see teardownDrainableProbeSQL / teardownStalledProbeSQL. Each
@@ -71,7 +74,8 @@ func TestCursorTeardown_ReturnsConnectionToPool(t *testing.T) {
 	pooled := serverSessions(ctx, t, fx.observer)
 
 	t.Run("close before cancel keeps the connection pooled", func(t *testing.T) {
-		qctx, qcancel := context.WithCancel(ctx)
+		probeID, followID := teardownQueryID("release-probe"), teardownQueryID("release-follow")
+		qctx, qcancel := context.WithCancel(chclient.WithQueryID(ctx, probeID))
 		cur, err := fx.subject.QueryCursor(qctx, teardownDrainableProbeSQL)
 		if err != nil {
 			qcancel()
@@ -95,16 +99,21 @@ func TestCursorTeardown_ReturnsConnectionToPool(t *testing.T) {
 		waitForSessions(ctx, t, fx.observer, pooled, "after a close-then-cancel teardown")
 
 		// Reuse is the payoff: the follow-up query must run on that same
-		// socket, which shows up as the session census not moving.
-		if _, err := fx.subject.Query(ctx, teardownOneRowSQL); err != nil {
+		// socket, which shows up as the session census not moving and as the
+		// server recording both statements on one client port.
+		if _, err := fx.subject.Query(chclient.WithQueryID(ctx, followID), teardownOneRowSQL); err != nil {
 			t.Fatalf("query on the released connection: %v", err)
 		}
 		waitForIdle(t, conn, 1, "after reusing the released connection")
 		waitForSessions(ctx, t, fx.observer, pooled, "after reusing the released connection")
+		if probe, follow := clientPort(ctx, t, fx.observer, probeID), clientPort(ctx, t, fx.observer, followID); probe != follow {
+			t.Errorf("the follow-up ran on client port %d, the released probe on %d; want the same socket", follow, probe)
+		}
 	})
 
 	t.Run("cancel before close destroys the connection", func(t *testing.T) {
-		qctx, qcancel := context.WithCancel(ctx)
+		probeID, followID := teardownQueryID("destroy-probe"), teardownQueryID("destroy-follow")
+		qctx, qcancel := context.WithCancel(chclient.WithQueryID(ctx, probeID))
 		// The STALLED probe. With the drainable one this arm asserts the
 		// outcome of a race inside clickhouse-go rather than the ordering:
 		// Close() drains, the drain unparks the driver's producer, and if the
@@ -140,24 +149,22 @@ func TestCursorTeardown_ReturnsConnectionToPool(t *testing.T) {
 		qcancel()
 		_ = cur.Close()
 
-		// The server dropping a session is the destruction itself, observed at
-		// the end that cannot be fooled by driver bookkeeping.
-		waitForSessions(ctx, t, fx.observer, pooled-1, "after a cancel-then-close teardown")
-		// And the pool STAYS empty. The positive form (wait for idle == 0)
-		// would be vacuous — the pool is legitimately empty the instant a
-		// connection is checked out, so a poll that returns on the first match
-		// cannot tell a destroyed connection from an in-flight one, and would
-		// pass just as happily if the release arm's ordering were used here.
-		requireIdleStaysEmpty(t, conn, "after a cancel-then-close teardown")
-
-		// The next query therefore pays for a fresh dial — which is the cost
-		// the ordering contract exists to avoid, and the reason a cancelling
-		// gateway churns connections under steady load.
-		if _, err := fx.subject.Query(ctx, teardownOneRowSQL); err != nil {
+		// The cancelled dispatch's release issued KILL QUERY for the probe,
+		// which needed a connection of its own: the destroyed socket's
+		// replacement is a fresh dial, pooled once the KILL returns. The next
+		// query runs on it — on a client port the server never saw the probe
+		// use, which is the destruction observed at the end that cannot be
+		// fooled by driver bookkeeping. The fresh dial is the cost the ordering
+		// contract exists to avoid, and the reason a cancelling gateway churns
+		// connections under steady load.
+		if _, err := fx.subject.Query(chclient.WithQueryID(ctx, followID), teardownOneRowSQL); err != nil {
 			t.Fatalf("query after the destroyed connection: %v", err)
 		}
 		waitForIdle(t, conn, 1, "after redialling")
 		waitForSessions(ctx, t, fx.observer, pooled, "after redialling")
+		if probe, follow := clientPort(ctx, t, fx.observer, probeID), clientPort(ctx, t, fx.observer, followID); probe == follow {
+			t.Errorf("the follow-up ran on client port %d, the same socket as the cancelled probe; want a fresh connection", follow)
+		}
 	})
 }
 
@@ -411,18 +418,28 @@ func waitForIdle(t *testing.T, conn driver.Conn, want int, stage string) {
 	t.Fatalf("Stats().Idle = %d %s; want %d", got, stage, want)
 }
 
-// requireIdleStaysEmpty holds the destroy arm's assertion open for the whole
-// settle budget. Idle is 0 the moment a connection is checked out, so only the
-// DWELL distinguishes a destroyed socket from an in-flight one.
-func requireIdleStaysEmpty(t *testing.T, conn driver.Conn, stage string) {
-	t.Helper()
+// teardownQueryID is a unique query_id for one teardown statement.
+func teardownQueryID(role string) string {
+	return fmt.Sprintf("teardown-%s-%d", role, time.Now().UnixNano())
+}
 
-	deadline := time.Now().Add(poolSettleBudget)
-	for time.Now().Before(deadline) {
-		if got := conn.Stats().Idle; got != 0 {
-			t.Fatalf("Stats().Idle = %d %s; want the pool to stay empty because the socket was destroyed",
-				got, stage)
-		}
-		time.Sleep(poolPollInterval)
+// clientPort is the local TCP port of the connection the server recorded
+// running queryID: two statements share a socket exactly when they share it.
+func clientPort(ctx context.Context, t *testing.T, observer *chclient.Client, queryID string) uint16 {
+	t.Helper()
+	if err := observer.Exec(ctx, "SYSTEM FLUSH LOGS"); err != nil {
+		t.Fatalf("flush logs: %v", err)
 	}
+	var port uint16
+	var rows uint64
+	err := observer.Conn().QueryRow(ctx,
+		"SELECT any(port), count() FROM system.query_log WHERE query_id = ? AND type != 'QueryStart'",
+		queryID).Scan(&port, &rows)
+	if err != nil {
+		t.Fatalf("read query_log for %s: %v", queryID, err)
+	}
+	if rows == 0 {
+		t.Fatalf("query_log has no terminal row for %s", queryID)
+	}
+	return port
 }

@@ -224,7 +224,9 @@ Live fields, re-read on every request:
   `"half-open"`.
 - `clickhouse.schemaReady` — schema provisioned and the auto-create hook
   complete (or disabled).
-- `clickhouse.serverVersion` — resolved server version `<major>.<minor>`.
+- `clickhouse.serverVersion` — resolved server version: the full build
+  `<major>.<minor>.<patch>.<build>` the server reports (`26.3.17.56`), or
+  `<major>.<minor>` for the `fallback` floor (`24.8`).
 - `clickhouse.serverVersionSource` — `"probe"` when read live from the
   server, or `"fallback"` when the probe failed and the supported floor
   (`24.8`) was assumed.
