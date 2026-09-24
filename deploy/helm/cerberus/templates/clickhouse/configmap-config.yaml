@@ -1,5 +1,6 @@
 {{- if .Values.clickhouse.bundled.enabled }}
 {{- $b := .Values.clickhouse.bundled }}
+{{- include "cerberus.clickhouse.assertSettingsSupported" . }}
 {{- $keeper := eq (include "cerberus.clickhouse.keeperEnabled" .) "true" }}
 {{- /* dataShardCount: the number of independent ClickHouse DATA shards
        (cerberus issue #3077) — see cerberus.clickhouse.dataShardCount's own
@@ -39,6 +40,11 @@ data:
     <clickhouse>
       <!-- Accept in-cluster connections (the image default binds localhost). -->
       <listen_host>0.0.0.0</listen_host>
+      <!-- On SIGTERM, let running queries finish for up to
+           shutdown.waitUnfinishedSeconds; the pod's grace period adds
+           shutdown.overheadSeconds on top. -->
+      <shutdown_wait_unfinished_queries>1</shutdown_wait_unfinished_queries>
+      <shutdown_wait_unfinished>{{ include "cerberus.clickhouse.shutdownWaitSeconds" . }}</shutdown_wait_unfinished>
       <merge_tree>
         <!-- TTL drops whole parts (cheap on object storage) rather than rewriting. -->
         <ttl_only_drop_parts>1</ttl_only_drop_parts>

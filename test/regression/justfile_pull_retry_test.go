@@ -274,7 +274,7 @@ func TestIntegrationImagePinsMatchTheJustfile(t *testing.T) {
 	t.Parallel()
 
 	pinned := map[string]bool{}
-	for _, v := range []string{"CH_TEST_IMAGE", "CH_TEST_IMAGE_PRIOR", "CH_STRICT_SCAN_IMAGE", "CH_QUANTILE_PROM_HISTOGRAM_IMAGE", "CH_TAG_GROUPS_IMAGE", "CH_HISTOGRAM_REPORT_IMAGE", "CH_SERVER_SAFETY_IMAGES"} {
+	for _, v := range []string{"CH_TEST_IMAGE", "CH_TEST_IMAGE_PRIOR", "CH_STRICT_SCAN_IMAGE", "CH_QUANTILE_PROM_HISTOGRAM_IMAGE", "CH_TAG_GROUPS_IMAGE", "CH_HISTOGRAM_REPORT_IMAGE", "CH_SERVER_SAFETY_IMAGES", "CH_UPGRADE_FLOOR_IMAGE", "CH_UPGRADE_TARGET_IMAGE", "CH_TEXT_INDEX_V0_READER_IMAGE", "CH_PRE_KEYED_IMAGES"} {
 		for _, img := range justVariableList(t, v) {
 			pinned[img] = true
 		}

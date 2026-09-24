@@ -12,17 +12,11 @@ import (
 // loop-control token without a test going red. Each test names the
 // prewhere.go construct it defends.
 
-// TestOrderedConjunctsSortContinue defends the `continue` inside the stable
-// insertion sort over the sort-prefix bucket
-// (prewhere.go:`if prefix[j-1].rank > prefix[j].rank`).
-//
-// Mutation INVERT_LOOPCTRL turns that `continue` into `break`. The original
-// keeps bubbling the inserted element left until it reaches its rank slot;
-// `break` truncates the bubble after a single swap, so an element that must
-// move two positions left is left mis-ordered. We feed three conjuncts whose
-// sort ranks are [1, 2, 0] in input order: the rank-0 predicate (idx 2) must
-// bubble two slots to the front, which only fully sorts when the loop keeps
-// going (`continue`).
+// TestOrderedConjunctsSortContinue pins that the sort-prefix bucket is fully
+// ordered by ascending rank (prewhere.go:`cmp.Compare(a.rank, b.rank)`), even
+// when an element must move more than one position. We feed three conjuncts
+// whose sort ranks are [1, 2, 0] in input order: the rank-0 predicate (idx 2)
+// must move two slots to the front.
 func TestOrderedConjunctsSortContinue(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{
@@ -34,9 +28,8 @@ func TestOrderedConjunctsSortContinue(t *testing.T) {
 	rank0 := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ServiceName"}, Right: &chplan.LitString{V: "api"}}
 
 	got := orderedConjuncts([]chplan.Expr{rank1, rank2, rank0}, shape)
-	// Original (full bubble): ascending rank → [rank0, rank1, rank2].
-	// Mutant (continue→break): rank-2 swaps once with rank-0 then stops →
-	// [rank1, rank0, rank2], so got[0]/got[1] differ.
+	// Ascending rank → [rank0, rank1, rank2]; a sort that moved rank0 only
+	// one slot would leave [rank1, rank0, rank2].
 	want := []chplan.Expr{rank0, rank1, rank2}
 	if len(got) != 3 {
 		t.Fatalf("orderedConjuncts: len=%d want 3", len(got))
@@ -106,17 +99,11 @@ func TestOrderedConjunctsSingleFastPath(t *testing.T) {
 	}
 }
 
-// TestSortRankForMinimum defends sortRankFor's running-minimum update at
-// prewhere.go:`best < 0`. It pins that sortRankFor returns the LOWEST matching
-// rank across a predicate's columns regardless of the order the columns are
-// discovered — i.e. a later, larger rank never overwrites an earlier rank-0
-// (and would catch the CONDITIONALS_BOUNDARY flip to `best <= 0`, which lets a
-// larger rank clobber an existing rank-0 minimum).
-//
-// The citation names that operand alone. The `||` it sits in carries a SECOND,
-// independent CONDITIONALS_BOUNDARY on the other operand, which this file's
-// own "NOT KILLABLE" footer proves equivalent; a citation spanning both would
-// adjudicate two mutants at once and say nothing definite about either.
+// TestSortRankForMinimum defends sortRankFor's minimum at
+// prewhere.go:`slices.Min(ranks)`. It pins that sortRankFor returns the LOWEST
+// matching rank across a predicate's columns regardless of the order the
+// columns are discovered — a later, larger rank never replaces an earlier
+// rank-0.
 func TestSortRankForMinimum(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName", "SeverityText", "Timestamp"}} // ranks 0,1,2
@@ -236,47 +223,3 @@ func TestIsNarrowIntegerDiscriminatorFinalReturnLogical(t *testing.T) {
 		t.Errorf("isNarrowIntegerDiscriminator(ServiceName = 3) = false, want true")
 	}
 }
-
-// NOT KILLABLE — documented, not defended by a test.
-//
-// The INVERT_LOOPCTRL mutants of the three terminal `break`s in prewhere.go.
-// The first is prewhere.go:classifyPredicate:`break`, guarding the
-// `touchesWide` latch. The other two both sit in orderedConjuncts — the
-// `hitsSkip` latch and the stable-insertion-sort early exit — and are named
-// in prose rather than cited, because the mutated token is a bare `break` and
-// that func contains two of them, so no construct citation can distinguish
-// one from the other. Citing an enclosing line instead would be worse than
-// leaving them uncited: `if prefix[j-1].rank > prefix[j].rank` carries the
-// sort's own comparison mutants, which
-// TestOrderedConjuncts_StableSortLogicalOr kills, so a note about the
-// `break` that cited it would read as adjudicating a mutant it says nothing
-// about. Each mutant swaps its `break`
-// for a `continue`, guarding a "found it, stop" boolean latch (touchesWide /
-// hitsSkip) or the sort's early exit. In
-// every case the flag is set exactly once and never reset, or (for the
-// sort) the insertion-sort invariant guarantees every comparison below the
-// break point is already in order, so scanning further with `continue`
-// instead of `break` can never change the final return value — only the
-// iteration count. No observable-behaviour test can distinguish them.
-//
-// prewhere.go:`!columnOK || !literalOK` (INVERT_LOGICAL, `||`→`&&` in
-// isNarrowIntegerDiscriminator's swap guard) is equivalent for the same
-// structural reason as the min-tracking boundary above: a chplan.Expr value
-// has exactly one concrete type, so whichever of columnOK/literalOK is
-// already true from the direct (Left, Right) orientation is provably
-// unreachable from the swapped (Right, Left) orientation, and vice versa —
-// the branch this condition guards can only ever produce the SAME final
-// (columnOK, literalOK) pair whether or not the swap runs.
-//
-// prewhere.go:`r < best` (CONDITIONALS_BOUNDARY, `r < best` →
-// `r <= best` in
-// sortRankFor's running-minimum update) is equivalent because the boundary
-// (`r == best`) is unreachable for two DISTINCT columns under any
-// TableShape: SortRank(name) returns the index of name's first match in
-// SortColumns, so two different column names can never resolve to the same
-// index — the same name obviously always resolves to the same index too.
-// Either way `r == best` never holds for a fresh comparison, so `best = r`
-// under the mutant is always either skipped (same as the original) or a
-// same-value no-op reassignment. Verified by manual mutation-and-revert:
-// with the mutation applied, the whole internal/chsql suite (not just
-// TestSortRankForMinimum) still passes.
