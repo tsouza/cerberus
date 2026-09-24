@@ -299,6 +299,3 @@ func truncate(ids []string) []string {
 	}
 	return append(ids[:maxListed:maxListed], "…")
 }
-
-//go:fix inline
-func ptr(s string) *string { return new(s) }

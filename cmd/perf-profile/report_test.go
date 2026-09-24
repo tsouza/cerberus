@@ -10,9 +10,6 @@ import (
 	"github.com/tsouza/cerberus/test/perf/profile"
 )
 
-//go:fix inline
-func ptr(f float64) *float64 { return new(f) }
-
 func writeRecordsFile(t *testing.T, path string, recs []profile.Record) {
 	t.Helper()
 	data, err := json.Marshal(recs)

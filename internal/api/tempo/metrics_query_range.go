@@ -308,15 +308,17 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	// issue-detector query omits step entirely.
 	var step time.Duration
 	if stepStr := r.URL.Query().Get("step"); stepStr == "" {
-		ns := min(
-			// DefaultQueryRangeStep targets ~240 points across the window,
-			// so ns is far below MaxInt64 for any representable time range;
-			// clamp anyway so the uint64 → Duration conversion is provably
-			// overflow-free (gosec G115).
-			defaultQueryRangeStep(
-				uint64(start.UnixNano()), uint64(end.UnixNano()),
-			), math.MaxInt64,
+		ns := defaultQueryRangeStep(
+			uint64(start.UnixNano()), uint64(end.UnixNano()),
 		)
+		// DefaultQueryRangeStep targets ~240 points across the window,
+		// so ns is far below MaxInt64 for any representable time range;
+		// clamp anyway so the uint64 → Duration conversion is provably
+		// overflow-free (gosec G115). An explicit branch rather than the
+		// min builtin: gosec proves the bound only from the branch.
+		if ns > math.MaxInt64 {
+			ns = math.MaxInt64
+		}
 		step = time.Duration(ns)
 	} else {
 		var err error

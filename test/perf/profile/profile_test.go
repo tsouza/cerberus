@@ -228,11 +228,6 @@ WITH RECURSIVE walk AS (SELECT n FROM anchor UNION ALL SELECT n + 1 FROM walk WH
 	}
 }
 
-// ff is a small pointer-literal helper for FanFactor test fixtures.
-//
-//go:fix inline
-func ff(v float64) *float64 { return new(v) }
-
 // TestSortByFanFactor pins the descending ordering used by the nightly
 // step-summary, including that an unmeasured (nil) fan_factor sorts
 // first — ahead of every measured value, since an unknown fan-out is at

@@ -353,6 +353,3 @@ func truncate(names []string) []string {
 	}
 	return append(names[:maxListed:maxListed], "…")
 }
-
-//go:fix inline
-func ptr(s string) *string { return new(s) }

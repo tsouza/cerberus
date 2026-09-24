@@ -120,11 +120,11 @@ func seedNumericMatClient(t *testing.T) (*chclienttest.Client, time.Time, time.T
 		if !r.omit {
 			attrs = fmt.Sprintf("map('http.status_code', '%s')", r.statusVal)
 		}
-		seed.WriteString(fmt.Sprintf(
+		fmt.Fprintf(&seed,
 			"\nINSERT INTO otel_traces (TraceId, SpanId, SpanName, SpanKind, Duration, Timestamp, StatusCode, SpanAttributes)"+
 				" VALUES ('%s', '1', 'op', 'Server', 100, toDateTime64('%s', 9), 'Unset', %s);",
 			r.traceID, ts, attrs,
-		))
+		)
 	}
 
 	c := chclienttest.NewChDB(t)
@@ -306,10 +306,10 @@ func TestBuildAutoScopeUnionAttributeValuesSQL_NumericArmUnionsWithMapFallbackAr
 	seed.WriteString(seedTable)
 	for i, r := range rows {
 		ts := windowBase.Add(time.Duration(i) * time.Second).Format(tsFmt)
-		seed.WriteString(fmt.Sprintf(
+		fmt.Fprintf(&seed,
 			"\nINSERT INTO otel_traces (Timestamp, SpanAttributes, ResourceAttributes) VALUES (toDateTime64('%s', 9), %s, %s);",
 			ts, r.spanMapSQL, r.resourceMapSQL,
-		))
+		)
 	}
 
 	c := chclienttest.NewChDB(t)

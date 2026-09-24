@@ -356,12 +356,6 @@ func (w *World) whenPushIngestBridgeBatch() error {
 	return nil
 }
 
-// ptr returns a pointer to v — HistogramDataPoint.Sum and friends are
-// *float64 so an explicit-but-absent sum is distinguishable from zero.
-//
-//go:fix inline
-func ptr[T any](v T) *T { return new(v) }
-
 // bridgeCHConn dials ClickHouse directly with the live stack's own
 // credentials, closing over the caller's defer.
 func (w *World) bridgeCHConn(ctx context.Context) (driver.Conn, error) {

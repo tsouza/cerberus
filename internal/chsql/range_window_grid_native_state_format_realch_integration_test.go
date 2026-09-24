@@ -659,10 +659,10 @@ func runTSStateQuery(ctx context.Context, t *testing.T, node *tsStateNode, query
 
 func queryTSState(ctx context.Context, db *sql.DB, sqlStr string, args []any, extraSettings ...string) (tsStateAnswer, error) {
 	var wrapped strings.Builder
-	wrapped.WriteString(fmt.Sprintf(
+	fmt.Fprintf(&wrapped,
 		"SELECT toJSONString(`Attributes`), toUnixTimestamp(`TimeUnix`), `Value` FROM (%s) SETTINGS %s = 1",
 		sqlStr, chclient.SettingExperimentalTSGridAggregate,
-	))
+	)
 	for _, setting := range extraSettings {
 		wrapped.WriteString(", " + setting)
 	}

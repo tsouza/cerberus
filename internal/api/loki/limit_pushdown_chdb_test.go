@@ -88,13 +88,13 @@ func insertRows(n int, start time.Time, attrs func(i int) map[string]string, bod
 				m.WriteString(", ")
 			}
 			first = false
-			m.WriteString(fmt.Sprintf("'%s', '%s'", k, v))
+			fmt.Fprintf(&m, "'%s', '%s'", k, v)
 		}
 		m.WriteString(")")
 		if i > 0 {
 			stmt.WriteString(",\n")
 		}
-		stmt.WriteString(fmt.Sprintf("    (toDateTime64('%s', 9), '%s', %s)", ts, body(i), m.String()))
+		fmt.Fprintf(&stmt, "    (toDateTime64('%s', 9), '%s', %s)", ts, body(i), m.String())
 	}
 	return stmt.String() + ";"
 }
