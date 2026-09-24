@@ -624,6 +624,7 @@ sort_by_label_no_label.txtar
 sort_desc_descending.txtar
 sort_of_dropping_binop_exp_histogram.txtar
 sqrt_metric.txtar
+stale_marker_abs_subquery_range_step.txtar
 stale_marker_absent_over_time_subquery_range_step.txtar
 stale_marker_absent_range_step.txtar
 stale_marker_bare_instant.txtar

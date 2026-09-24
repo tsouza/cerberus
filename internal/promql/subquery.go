@@ -399,13 +399,10 @@ func lowerSubqueryIdentityMathReorder(
 	rangeCtx.inRangeVector = true
 	load := func() (chplan.Node, error) { return lowerSubqueryOverVectorSelector(sub, vs, step, s, ctx) }
 
-	if chFn, ok := instantFnCH[call.Func.Name]; ok {
-		if len(call.Args) != 1 {
-			return nil, false, nil
-		}
-		plan, err := lowerMathCall(call, s, rangeCtx, chFn, load, ordinaryGuarded)
-		return plan, true, err
-	}
+	// round's 2-arg (to_nearest) form takes this branch first — same
+	// precedence [lowerMathCall] itself gives it over the generic
+	// instantFnCH tail — so it reaches [lowerRoundOverInput] rather than
+	// being rejected by the arity check below.
 	switch call.Func.Name {
 	case "clamp", "clamp_min", "clamp_max":
 		plan, err := lowerClampOverInput(call, s, rangeCtx, load, ordinaryGuarded)
@@ -415,6 +412,13 @@ func lowerSubqueryIdentityMathReorder(
 			plan, err := lowerRoundOverInput(call, s, rangeCtx, load, ordinaryGuarded)
 			return plan, true, err
 		}
+	}
+	if chFn, ok := instantFnCH[call.Func.Name]; ok {
+		if len(call.Args) != 1 {
+			return nil, false, nil
+		}
+		plan, err := lowerMathCall(call, s, rangeCtx, chFn, load, ordinaryGuarded)
+		return plan, true, err
 	}
 	return nil, false, nil
 }
