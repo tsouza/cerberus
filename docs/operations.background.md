@@ -47,6 +47,71 @@ validated against a real (non-chDB) server with that setting enforced — found
 result-correct at flat memory — which is why `auto` now selects it on ≥ 25.9
 rather than leaving it opt-in.
 
+## The native time-series state-format boundary
+
+ClickHouse #106724 (first shipped in 26.7.1.1315) re-aligned the
+`timeSeries*ToGrid` buckets to step and window and bumped the state format
+from 2 to 3 with no migration code, on the grounds that the functions are
+experimental. ClickHouse #115920 (first shipped in 26.8.1.2041, in no 26.7
+release, never backported) moved the format version into the per-function
+traits and wrote format 4. Both were established on pinned builds by reading
+the leading byte of a `timeSeriesRateToGridState` and by deserializing each
+build's state on every other build — 25.9.7.56 and 26.6.8.7 write `02`,
+26.7.1.1315 and 26.7.13.12 write `03`, 26.8.1.2041 writes `04`, and every
+cross-format read fails with `Cannot deserialize data with different format
+version`. The two 26.7 builds order their serialized samples differently and
+still read each other's states, which is why the boundary is a minor, not a
+patch. Which release tags contain each merge commit was read from the
+upstream repository's compare API rather than from the changelog headings,
+which list #115920 under 26.8 without saying which build.
+
+The same byte fails a real `Distributed` query only when the aggregate sits at
+the same query level as the `Distributed` table — the one shape where
+ClickHouse pushes the aggregation to the shards and merges their states on
+the initiator. A two-node rig on a private Docker network confirmed both
+halves: `SELECT timeSeriesRateToGrid(...)(...) FROM dist GROUP BY ...` fails
+with code 117 from either initiator of a 26.6/26.7, 26.7/26.8 or 26.6/26.8
+pair, while the same aggregate over `(SELECT * FROM dist WHERE ...)` answers
+correctly from both. The shards' `system.query_log` shows why: a shard
+receives only the innermost `SELECT` over its local table, with the outer
+predicates pushed into it, and returns rows. That held under every
+`Distributed` setting a profile can change and that decides what a shard
+is sent — `distributed_product_mode`, `prefer_localhost_replica`,
+`optimize_distributed_group_by_sharding_key` with
+`optimize_skip_unused_shards`, `distributed_group_by_no_merge` 1 and 2,
+`distributed_push_down_limit`, `distributed_aggregation_memory_efficient`,
+`prefer_global_in_and_join`. With the old analyzer (`enable_analyzer = 0`)
+the native SQL does not run at all (`Duplicate alias in ARRAY JOIN`), so it
+cannot ship states either.
+
+Parallel replicas is the exception. With it on, each replica runs the
+query's aggregation — through the subquery — and the initiator merges their
+states; on a 26.6/26.7 replica pair with it on in the server profile,
+cerberus's native `rate` (with and without recollapse) and resample SQL
+fails with code 117. Measured on a small table, one pass over three shapes
+and two initiators shipped a state in between 1 and 6 of the 6 queries,
+depending on which replica the coordinator handed each granule to; the
+suite therefore runs four passes. Pinning
+`allow_experimental_parallel_reading_from_replicas = 0` on the native
+queries removes it, and the same queries then answer the fan-out.
+
+That is why the upgrade contract is "no action" rather than a capability
+gate: a gate that switched the native family off whenever the participants
+disagreed on a minor was built and then removed, because it would have cost
+the native path for the length of every rollout to guard against a state
+exchange cerberus does not make. The emitter refuses the table-level shape
+for every emission path (`errNativeTSAggregateOverTable`), and the
+mixed-version suite's control queries prove each rig really straddles the
+boundary and really ships states under parallel replicas, so neither guard
+can pass by not looking.
+
+The persisted `timeSeriesLastTwoSamples` state is not part of the versioned
+family format: its bytes are identical on every build from 25.9 through
+26.8.1.2041, and each build finalizes every other build's state to the same
+answer. The downsample tier is single-data-shard only, so its exposure to a
+rollout is replica part exchange and in-place upgrades, both of which read
+the same bytes.
+
 ## Why the ClickHouse 26.5 defect is not worked around in emitted SQL
 
 Cerberus does not work around this in emitted SQL: the shapes that avoid it do

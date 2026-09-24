@@ -830,37 +830,52 @@ ts-grid-last-over-time-integration:
 # Run the ts_grid_group_array real-CH precondition + regression pin (#2749):
 # verifies timeSeriesGroupArray accepts a DateTime64(9) timestamp losslessly
 # (contrary to the function's own documented UInt32/DateTime/UInt64
-# signature), that a NaN-bearing duplicate timestamp collapses in an
-# insertion-order-DEPENDENT way (the reason
-# chopt.FeatureTSGridGroupArray ships AutoSelect: false), and — end to end
-# through cerberus's own lowering + emitter — that rate()'s native array-fold
-# assembly matches the fan-out exactly on a genuine duplicate, non-NaN
-# timestamp. The feature's own floor (25.9) is the family's usual one, so
-# this pins CH_TEST_IMAGE directly rather than reusing CH_STRICT_SCAN_IMAGE's
-# higher 26.6 pin. Requires Docker; gated behind the `integration` build tag.
-# See internal/chsql/range_window_group_array_realch_integration_test.go.
+# signature), that the -If combinator filters before the duplicate-timestamp
+# collapse, and — end to end through cerberus's own lowering + emitter — that
+# rate()'s native array-fold assembly matches the fan-out exactly on a genuine
+# duplicate, non-NaN timestamp. The NaN-duplicate survivor of both forms is in
+# the ts-grid-nan-duplicate-integration sweep. The feature's own floor (25.9)
+# is the family's usual one, so this pins CH_TEST_IMAGE directly rather than
+# reusing CH_STRICT_SCAN_IMAGE's higher 26.6 pin. Requires Docker; gated
+# behind the `integration` build tag. See
+# internal/chsql/range_window_group_array_realch_integration_test.go.
 
 # Run the ts_grid_group_array precondition and rate() regression pins. Needs Docker.
 ts-grid-group-array-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run '^(TestTimeSeriesGroupArray_|TestRate_NativeGroupArray_)' ./internal/chsql/...
 
-# Run the timeSeries*ToGrid duplicate-timestamp survivor pins (#2798): measures,
-# for every member of the emitter's own nativeTSGridFn registry, which sample
-# survives a NaN-bearing duplicate (series, timestamp) under each encounter
-# order; asserts the production dedupWindowPairsByTsFrag Frag elects the same
-# survivor under both; and reproduces the divergence end to end through
-# cerberus's own lowering + emitter over one MergeTree table holding two series
-# with the identical sample multiset. The family's own floor (25.9) is the
-# usual one, so this pins CH_TEST_IMAGE directly rather than reusing
-# CH_STRICT_SCAN_IMAGE's higher 26.6 pin. Requires Docker; gated behind the
-# `integration` build tag. See
-# internal/chsql/range_window_grid_native_nan_duplicate_realch_integration_test.go.
+# Run the native timeSeries* duplicate-timestamp survivor pins on each side of
+# ClickHouse #115920: for every member of the emitter's nativeTSGridFn registry
+# plus resample, timeSeriesLastTwoSamples and timeSeriesGroupArray(If), on the
+# family's 25.9 floor (CH_TEST_IMAGE), the latest 26.7 build (scan order) and
+# the first 26.8 build (NaN loses), asserts each collision's survivor — NaN,
+# stale marker, all-NaN and unequal finite, under both insertion and both
+# partial-state merge orders — against that build's contract; asserts the
+# production dedupWindowPairsByTsFrag Frag elects one survivor in either order;
+# and reproduces the native-versus-fan-out answer end to end through cerberus's
+# own lowering + emitter. Requires Docker; gated behind the `integration` build
+# tag. See internal/chsql/range_window_grid_native_nan_duplicate_realch_integration_test.go.
 
-# Run the timeSeries*ToGrid duplicate-timestamp survivor pins. Needs Docker.
+# Run the native timeSeries* duplicate-timestamp survivor pins. Needs Docker.
 ts-grid-nan-duplicate-integration:
-    @just _pull-retry {{CH_TEST_IMAGE}}
-    go test -timeout 15m -tags=integration -count=1 -run '^(TestTSGridFamily_NaNDuplicate|TestFanoutDedup_NaNDuplicate|TestRate_NativeGrid_NaNDuplicate)' ./internal/chsql/...
+    @just _pull-retry {{CH_TEST_IMAGE}} {{CH_TS_STATE_V3_IMAGE}} {{CH_TS_STATE_V4_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run '^(TestTSGridFamily_DuplicateSurvivor|TestFanoutDedup_DuplicateSurvivor|TestRate_NativeGrid_NaNDuplicate)' ./internal/chsql/...
+
+# Run the native timeSeries*ToGrid state-format boundary suite: two-shard
+# Distributed rigs on every step of a rolling upgrade across the 26.7 and 26.8
+# state-format bumps (both initiator directions, a skipped minor, patch skew,
+# and both homogeneous ends), under the Distributed settings a profile can
+# change, plus a mixed-version replica pair with parallel replicas on in the
+# server profile. Proves cerberus's native SQL never ships a partial state
+# between servers, that the persisted timeSeriesLastTwoSamples tier state
+# crosses versions, and that each rig really straddles the boundary it claims. Requires Docker; gated behind the `integration` build tag. See
+# internal/chsql/range_window_grid_native_state_format_realch_integration_test.go.
+
+# Run the native time-series state-format boundary suite. Needs Docker.
+ts-grid-state-format-integration:
+    @just _pull-retry {{CH_TS_STATE_V2_IMAGE}} {{CH_TS_STATE_V3_FIRST_IMAGE}} {{CH_TS_STATE_V3_IMAGE}} {{CH_TS_STATE_V4_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run '^TestTSGridStateFormatBoundary_' ./internal/chsql/...
 
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).

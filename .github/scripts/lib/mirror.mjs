@@ -86,6 +86,12 @@ export const mirroredImages = [
   // test/querylog's exact builds (CH_QUERY_LOG_IMAGES): the supported floor
   // and the first line maintaining system.all_query_log.
   'clickhouse/clickhouse-server:24.8.14.39-alpine',
+  // The native time-series state-format boundary: exact builds on either side
+  // of each format bump (see CH_TS_STATE_*_IMAGE).
+  'clickhouse/clickhouse-server:26.6.8.7-alpine',
+  'clickhouse/clickhouse-server:26.7.1.1315-alpine',
+  'clickhouse/clickhouse-server:26.7.13.12-alpine',
+  'clickhouse/clickhouse-server:26.8.1.2041-alpine',
   // test/chserver's exact builds (CH_SERVER_SAFETY_IMAGES): the condition
   // cache's floor and every backport boundary, and the first releases whose
   // functions honour cancellation mid-call.
@@ -101,12 +107,10 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.5.2.39-alpine',
   'clickhouse/clickhouse-server:26.5.5.8-alpine',
   'clickhouse/clickhouse-server:26.5.6.64-alpine',
-  'clickhouse/clickhouse-server:26.7.13.12-alpine',
   // The clickhouse-upgrade lane's exact builds (CH_UPGRADE_FLOOR_IMAGE,
   // CH_UPGRADE_TARGET_IMAGE, CH_TEXT_INDEX_V0_READER_IMAGE, CH_PRE_KEYED_IMAGES)
   // reuse the querylog floor (24.8.14.39) and the chserver floor (25.3.14.14) above.
   'clickhouse/clickhouse-server:26.5.7.64-alpine',
-  'clickhouse/clickhouse-server:26.6.8.7-alpine',
   'clickhouse/clickhouse-server:26.8.10.6-alpine',
 
   // Reference backends the three heads are diffed against, plus the reference

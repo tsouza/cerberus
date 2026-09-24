@@ -41,8 +41,10 @@ const tsGridCapabilityProbeSQL = "SELECT '1'"
 // calls it over the bootstrap/default-DB connection after building the client,
 // then hands the verdict straight to chopt.Resolve as Config.Capability.
 //
-// The probe stamps allow_experimental_time_series_aggregate_functions=1 (via
-// WithTSGridSetting) on a trivial query. The server's response is mapped to a
+// The probe stamps WithTSGridSetting's settings —
+// allow_experimental_time_series_aggregate_functions=1 and the
+// parallel-replicas pin — on a trivial query, so a profile that refuses
+// either one keeps the native family off. The server's response is mapped to a
 // tri-state:
 //
 //   - success                         -> CapabilityAvailable
