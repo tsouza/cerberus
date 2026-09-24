@@ -86,12 +86,21 @@ jobs:
     # scheduler-enforced CPU floor instead of whatever the shared pool's
     # contention left over.
     runs-on: [self-hosted, cerberus-heavy]
-    # The lane settles around 5m30s. This budget is the outer bound the
-    # runner enforces; the inner one is `just test-unit`'s own `-timeout`,
-    # deliberately shorter so a hang is a Go panic with every goroutine's
-    # stack rather than a killed container with no artefact. An undeclared
-    # budget here would be GitHub's 360-minute default, which says nothing.
-    timeout-minutes: 20
+    # The lane settles around 5m30s on GitHub-hosted runners. On the
+    # `cerberus-heavy` pool (#3677) it measurably does not: PR #3678's own
+    # validating run passed all 101 packages (0 failures) but the job's
+    # total wall time reached this cap before the final steps could report,
+    # cancelling a clean result — the pool's real, scheduler-guaranteed 1
+    # CPU per pod is genuinely slower for `go test -race` than a hosted
+    # runner's fixed multi-core box, the same throughput gap `lint` hit
+    # (.golangci.yml's `run.timeout` comment has the fuller measurement).
+    # This budget is the outer bound the runner enforces; the inner one is
+    # `just test-unit`'s own `-timeout` (just/test.just), deliberately
+    # shorter so a hang is a Go panic with every goroutine's stack rather
+    # than a killed container with no artefact — see that recipe's comment
+    # for the value this scales with. An undeclared budget here would be
+    # GitHub's 360-minute default, which says nothing.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
