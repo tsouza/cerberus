@@ -75,119 +75,136 @@ CREATE TABLE otel_metrics_exponential_histogram (
 [6] string = "service_name"
 [7] string = ""
 [8] string = "service_name"
-[9] string = "^(?:cpu_temp|gpu_temp)$"
-[10] string = "[^a-zA-Z0-9_:]"
-[11] string = "_"
+[9] int64 = 1
+[10] int64 = 0
+[11] int64 = 9218868437227405314
 [12] string = "^(?:cpu_temp|gpu_temp)$"
-[13] string = "service_name"
-[14] string = "service.name"
-[15] string = "service_name"
-[16] string = "service.name"
-[17] string = "service_name"
-[18] string = ""
-[19] string = "service_name"
-[20] string = "^(?:cpu_temp|gpu_temp)$"
-[21] string = "[^a-zA-Z0-9_:]"
-[22] string = "_"
-[23] string = "^(?:cpu_temp|gpu_temp)$"
-[24] string = "service_name"
-[25] string = "service.name"
-[26] string = "service_name"
-[27] string = "service.name"
-[28] string = "service_name"
-[29] string = ""
+[13] string = "[^a-zA-Z0-9_:]"
+[14] string = "_"
+[15] string = "^(?:cpu_temp|gpu_temp)$"
+[16] string = "service_name"
+[17] string = "service.name"
+[18] string = "service_name"
+[19] string = "service.name"
+[20] string = "service_name"
+[21] string = ""
+[22] string = "service_name"
+[23] int64 = 1
+[24] int64 = 0
+[25] int64 = 9218868437227405314
+[26] string = "^(?:cpu_temp|gpu_temp)$"
+[27] string = "[^a-zA-Z0-9_:]"
+[28] string = "_"
+[29] string = "^(?:cpu_temp|gpu_temp)$"
 [30] string = "service_name"
-[31] string = "^(?:cpu_temp|gpu_temp)$"
-[32] string = "[^a-zA-Z0-9_:]"
-[33] string = "_"
-[34] string = "^(?:cpu_temp|gpu_temp)$"
-[35] string = "le"
-[36] string = "+Inf"
-[37] float64 = 0
+[31] string = "service.name"
+[32] string = "service_name"
+[33] string = "service.name"
+[34] string = "service_name"
+[35] string = ""
+[36] string = "service_name"
+[37] int64 = 1
 [38] int64 = 0
-[39] int64 = 0
-[40] int64 = 1
-[41] int64 = 1
-[42] int64 = 0
-[43] int64 = 0
-[44] int64 = 1
-[45] int64 = 1
-[46] int64 = 1
+[39] int64 = 9218868437227405314
+[40] string = "^(?:cpu_temp|gpu_temp)$"
+[41] string = "[^a-zA-Z0-9_:]"
+[42] string = "_"
+[43] string = "^(?:cpu_temp|gpu_temp)$"
+[44] string = "le"
+[45] string = "+Inf"
+[46] float64 = 0
 [47] int64 = 0
-[48] int64 = 1
+[48] int64 = 0
 [49] int64 = 1
 [50] int64 = 1
-[51] int64 = 1
-[52] int64 = 1
+[51] int64 = 0
+[52] int64 = 0
 [53] int64 = 1
 [54] int64 = 1
 [55] int64 = 1
-[56] int64 = 1
-[57] int64 = 2
+[56] int64 = 0
+[57] int64 = 1
 [58] int64 = 1
 [59] int64 = 1
 [60] int64 = 1
 [61] int64 = 1
-[62] string = "service_name"
-[63] string = "service.name"
-[64] string = "service_name"
-[65] string = "service.name"
-[66] string = "service_name"
-[67] string = ""
-[68] string = "service_name"
-[69] string = "^(?:cpu_temp|gpu_temp)$"
-[70] string = "[^a-zA-Z0-9_:]"
-[71] string = "_"
-[72] string = "^(?:cpu_temp|gpu_temp)$"
+[62] int64 = 1
+[63] int64 = 1
+[64] int64 = 1
+[65] int64 = 1
+[66] int64 = 2
+[67] int64 = 1
+[68] int64 = 1
+[69] int64 = 1
+[70] int64 = 1
+[71] string = "service_name"
+[72] string = "service.name"
 [73] string = "service_name"
 [74] string = "service.name"
 [75] string = "service_name"
-[76] string = "service.name"
+[76] string = ""
 [77] string = "service_name"
-[78] string = ""
-[79] string = "service_name"
-[80] string = "^(?:cpu_temp|gpu_temp)$"
-[81] string = "[^a-zA-Z0-9_:]"
-[82] string = "_"
-[83] string = "^(?:cpu_temp|gpu_temp)$"
+[78] string = "^(?:cpu_temp|gpu_temp)$"
+[79] string = "[^a-zA-Z0-9_:]"
+[80] string = "_"
+[81] string = "^(?:cpu_temp|gpu_temp)$"
+[82] string = "service_name"
+[83] string = "service.name"
 [84] string = "service_name"
 [85] string = "service.name"
 [86] string = "service_name"
-[87] string = "service.name"
+[87] string = ""
 [88] string = "service_name"
-[89] string = ""
-[90] string = "service_name"
-[91] string = "^(?:cpu_temp|gpu_temp)$"
-[92] string = "[^a-zA-Z0-9_:]"
-[93] string = "_"
-[94] string = "^(?:cpu_temp|gpu_temp)$"
+[89] int64 = 1
+[90] int64 = 0
+[91] int64 = 9218868437227405314
+[92] string = "^(?:cpu_temp|gpu_temp)$"
+[93] string = "[^a-zA-Z0-9_:]"
+[94] string = "_"
+[95] string = "^(?:cpu_temp|gpu_temp)$"
+[96] string = "service_name"
+[97] string = "service.name"
+[98] string = "service_name"
+[99] string = "service.name"
+[100] string = "service_name"
+[101] string = ""
+[102] string = "service_name"
+[103] int64 = 1
+[104] int64 = 0
+[105] int64 = 9218868437227405314
+[106] string = "^(?:cpu_temp|gpu_temp)$"
+[107] string = "[^a-zA-Z0-9_:]"
+[108] string = "_"
+[109] string = "^(?:cpu_temp|gpu_temp)$"
+[110] int64 = 9218868437227405314
 -- chplan --
 Project [MetricName AS MetricName, Attributes AS Attributes, (FnNow64(9) - FnToIntervalNanosecond(5000000000)) AS TimeUnix, Value AS Value]
   RangeWindow func=last_over_time range=10m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes, MetricName] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z distinctSampleRows
     Project [Attributes AS Attributes, MetricName AS MetricName, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
-      RangeWindow func= range=5m0s step=1m0s outerRange=10m0s identity=true ts=TimeUnix value=Value groupBy=[Attributes, MetricName] start=2025-12-31T23:50:01Z end=2026-01-01T00:00:01Z stepAlign
-        UnionAll arms=6
-          Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Filter predicate=(reinterpretAsUInt64(Value) != 9218868437227405314)
+        RangeWindow func= range=5m0s step=1m0s outerRange=10m0s identity=true ts=TimeUnix value=Value groupBy=[Attributes, MetricName] start=2025-12-31T23:50:01Z end=2026-01-01T00:00:01Z stepAlign
+          UnionAll arms=6
+            Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnIf((bitAnd(Flags, 1) != 0), reinterpretAsFloat64(9218868437227405314), Value) AS Value]
+              Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))
+                Scan(merge(otel_metrics_gauge|otel_metrics_sum))
             Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))
-              Scan(merge(otel_metrics_gauge|otel_metrics_sum))
-          Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))
-            Project [FnConcat(MetricName, "_count") AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnToFloat64(Count) AS Value]
-              Scan(otel_metrics_histogram)
-          Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))
-            Project [FnConcat(MetricName, "_sum") AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnToFloat64(Sum) AS Value]
-              Scan(otel_metrics_histogram)
-          Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))
-            Project [FnConcat(MetricName, "_bucket") AS MetricName, FnMapMerge(Attributes, FnMap("le", FnIf((le_idx > FnLength(ExplicitBounds)), "+Inf", FnArrayMap(pffv -> FnArrayMap(pffu -> FnMultiIf(FnIsNaN(pffv), "NaN", (FnIsInfinite(pffv) AND (pffv > 0)), "+Inf", FnIsInfinite(pffv), "-Inf", FnArrayMap(pffs -> FnArrayMap(pffe -> FnIf((pffe = 0), pffu, FnConcat(FnIf(FnStartsWith(pffu, "-"), "-", ""), FnArrayMap(pffm -> FnArrayMap(pffp -> FnArrayMap(pffd -> FnArrayMap(pffn -> FnMultiIf((pffn >= FnToInt64(FnLength(pffd))), FnConcat(pffd, FnLeftPad("", (pffn - FnToInt64(FnLength(pffd))), "0")), (pffn > 0), FnConcat(FnSubstring(pffd, 1, pffn), ".", FnSubstring(pffd, (pffn + 1))), FnConcat("0.", FnLeftPad("", (0 - pffn), "0"), pffd)), FnArray((FnIf((pffp > 0), (pffp - 1), FnToInt64(FnLength(pffm))) + FnToInt64(FnSubstring(pffs, (pffe + 1))))))[1], FnArray(FnIf((pffp > 0), FnConcat(FnSubstring(pffm, 1, (pffp - 1)), FnSubstring(pffm, (pffp + 1))), pffm)))[1], FnArray(FnToInt64(FnStringPosition(pffm, "."))))[1], FnArray(FnSubstring(pffs, 1, (pffe - 1))))[1])), FnArray(FnToInt64(FnStringPosition(pffs, "e"))))[1], FnArray(FnIf(FnStartsWith(pffu, "-"), FnSubstring(pffu, 2), pffu)))[1]), FnArray(FnToString(pffv)))[1], FnArray(ExplicitBounds[le_idx]))[1]))) AS Attributes, TimeUnix AS TimeUnix, FnToFloat64(FnArraySum(FnArraySlice(BucketCounts, 1, le_idx))) AS Value]
-              Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, ExplicitBounds AS ExplicitBounds, BucketCounts AS BucketCounts, FnArrayJoin(FnArrayEnumerate(BucketCounts)) AS le_idx]
+              Project [FnConcat(MetricName, "_count") AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnIf((bitAnd(Flags, 1) != 0), reinterpretAsFloat64(9218868437227405314), FnToFloat64(Count)) AS Value]
                 Scan(otel_metrics_histogram)
-          Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))
-            Project [FnConcat(MetricName, "_count") AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnToFloat64(Count) AS Value]
-              Scan(otel_metrics_exponential_histogram)
-          Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))
-            Project [FnConcat(MetricName, "_sum") AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnToFloat64(Sum) AS Value]
-              Scan(otel_metrics_exponential_histogram)
+            Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))
+              Project [FnConcat(MetricName, "_sum") AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnIf((bitAnd(Flags, 1) != 0), reinterpretAsFloat64(9218868437227405314), FnToFloat64(Sum)) AS Value]
+                Scan(otel_metrics_histogram)
+            Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))
+              Project [FnConcat(MetricName, "_bucket") AS MetricName, FnMapMerge(Attributes, FnMap("le", FnIf((le_idx > FnLength(ExplicitBounds)), "+Inf", FnArrayMap(pffv -> FnArrayMap(pffu -> FnMultiIf(FnIsNaN(pffv), "NaN", (FnIsInfinite(pffv) AND (pffv > 0)), "+Inf", FnIsInfinite(pffv), "-Inf", FnArrayMap(pffs -> FnArrayMap(pffe -> FnIf((pffe = 0), pffu, FnConcat(FnIf(FnStartsWith(pffu, "-"), "-", ""), FnArrayMap(pffm -> FnArrayMap(pffp -> FnArrayMap(pffd -> FnArrayMap(pffn -> FnMultiIf((pffn >= FnToInt64(FnLength(pffd))), FnConcat(pffd, FnLeftPad("", (pffn - FnToInt64(FnLength(pffd))), "0")), (pffn > 0), FnConcat(FnSubstring(pffd, 1, pffn), ".", FnSubstring(pffd, (pffn + 1))), FnConcat("0.", FnLeftPad("", (0 - pffn), "0"), pffd)), FnArray((FnIf((pffp > 0), (pffp - 1), FnToInt64(FnLength(pffm))) + FnToInt64(FnSubstring(pffs, (pffe + 1))))))[1], FnArray(FnIf((pffp > 0), FnConcat(FnSubstring(pffm, 1, (pffp - 1)), FnSubstring(pffm, (pffp + 1))), pffm)))[1], FnArray(FnToInt64(FnStringPosition(pffm, "."))))[1], FnArray(FnSubstring(pffs, 1, (pffe - 1))))[1])), FnArray(FnToInt64(FnStringPosition(pffs, "e"))))[1], FnArray(FnIf(FnStartsWith(pffu, "-"), FnSubstring(pffu, 2), pffu)))[1]), FnArray(FnToString(pffv)))[1], FnArray(ExplicitBounds[le_idx]))[1]))) AS Attributes, TimeUnix AS TimeUnix, FnToFloat64(FnArraySum(FnArraySlice(BucketCounts, 1, le_idx))) AS Value]
+                Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, ExplicitBounds AS ExplicitBounds, BucketCounts AS BucketCounts, FnArrayJoin(FnArrayEnumerate(BucketCounts)) AS le_idx]
+                  Scan(otel_metrics_histogram)
+            Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))
+              Project [FnConcat(MetricName, "_count") AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnIf((bitAnd(Flags, 1) != 0), reinterpretAsFloat64(9218868437227405314), FnToFloat64(Count)) AS Value]
+                Scan(otel_metrics_exponential_histogram)
+            Filter predicate=((MetricName =~ "cpu_temp|gpu_temp") OR (FnRegexReplaceAll(MetricName, "[^a-zA-Z0-9_:]", "_") =~ "cpu_temp|gpu_temp"))
+              Project [FnConcat(MetricName, "_sum") AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnIf((bitAnd(Flags, 1) != 0), reinterpretAsFloat64(9218868437227405314), FnToFloat64(Sum)) AS Value]
+                Scan(otel_metrics_exponential_histogram)
 -- sql --
-SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, (now64(?) - toIntervalNanosecond(?)) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `MetricName`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `MetricName`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(600000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, `MetricName`, arrayCompact(arraySort(groupArray((`anchor_ts`, `Value`)))) AS `series_array` FROM (SELECT `Attributes` AS `Attributes`, `MetricName` AS `MetricName`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `MetricName`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(10, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM ((SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?)))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_count') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_sum') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Sum`) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_bucket') AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, arrayMap(pffv -> arrayMap(pffu -> multiIf(isNaN(pffv), 'NaN', (isInfinite(pffv) AND (pffv > toFloat64(?))), '+Inf', isInfinite(pffv), '-Inf', arrayMap(pffs -> arrayMap(pffe -> if((pffe = ?), pffu, concat(if(startsWith(pffu, '-'), '-', ''), arrayMap(pffm -> arrayMap(pffp -> arrayMap(pffd -> arrayMap(pffn -> multiIf((pffn >= toInt64(length(pffd))), concat(pffd, leftPad('', (pffn - toInt64(length(pffd))), '0')), (pffn > ?), concat(substring(pffd, ?, pffn), '.', substring(pffd, (pffn + ?))), concat('0.', leftPad('', (? - pffn), '0'), pffd)), array((if((pffp > ?), (pffp - ?), toInt64(length(pffm))) + toInt64(substring(pffs, (pffe + ?))))))[?], array(if((pffp > ?), concat(substring(pffm, ?, (pffp - ?)), substring(pffm, (pffp + ?))), pffm)))[?], array(toInt64(position(pffm, '.'))))[?], array(substring(pffs, ?, (pffe - ?))))[?])), array(toInt64(position(pffs, 'e'))))[?], array(if(startsWith(pffu, '-'), substring(pffu, ?), pffu)))[?]), array(toString(pffv)))[?], array(`ExplicitBounds`[le_idx]))[?]))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`BucketCounts`)) AS `le_idx` FROM (SELECT * FROM `otel_metrics_histogram`))) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_count') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT * FROM `otel_metrics_exponential_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_sum') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Sum`) AS `Value` FROM (SELECT * FROM `otel_metrics_exponential_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:50:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9)) GROUP BY `Attributes`, `MetricName`, `anchor_ts`)) WHERE length(`window_vals`) >= 1)) WHERE `anchor_ts` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(600000000000) AND `anchor_ts` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`, `MetricName`))) WHERE length(`window_vals`) >= 1)
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, (now64(?) - toIntervalNanosecond(?)) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `MetricName`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `MetricName`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(600000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, `MetricName`, arrayCompact(arraySort(groupArray((`anchor_ts`, `Value`)))) AS `series_array` FROM (SELECT `Attributes` AS `Attributes`, `MetricName` AS `MetricName`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `MetricName`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(10, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM ((SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?)))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_count') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(`Count`)) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_sum') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(`Sum`)) AS `Value` FROM (SELECT * FROM `otel_metrics_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_bucket') AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, arrayMap(pffv -> arrayMap(pffu -> multiIf(isNaN(pffv), 'NaN', (isInfinite(pffv) AND (pffv > toFloat64(?))), '+Inf', isInfinite(pffv), '-Inf', arrayMap(pffs -> arrayMap(pffe -> if((pffe = ?), pffu, concat(if(startsWith(pffu, '-'), '-', ''), arrayMap(pffm -> arrayMap(pffp -> arrayMap(pffd -> arrayMap(pffn -> multiIf((pffn >= toInt64(length(pffd))), concat(pffd, leftPad('', (pffn - toInt64(length(pffd))), '0')), (pffn > ?), concat(substring(pffd, ?, pffn), '.', substring(pffd, (pffn + ?))), concat('0.', leftPad('', (? - pffn), '0'), pffd)), array((if((pffp > ?), (pffp - ?), toInt64(length(pffm))) + toInt64(substring(pffs, (pffe + ?))))))[?], array(if((pffp > ?), concat(substring(pffm, ?, (pffp - ?)), substring(pffm, (pffp + ?))), pffm)))[?], array(toInt64(position(pffm, '.'))))[?], array(substring(pffs, ?, (pffe - ?))))[?])), array(toInt64(position(pffs, 'e'))))[?], array(if(startsWith(pffu, '-'), substring(pffu, ?), pffu)))[?]), array(toString(pffv)))[?], array(`ExplicitBounds`[le_idx]))[?]))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`BucketCounts`)) AS `le_idx` FROM (SELECT * FROM `otel_metrics_histogram`))) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_count') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(`Count`)) AS `Value` FROM (SELECT * FROM `otel_metrics_exponential_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_sum') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(`Sum`)) AS `Value` FROM (SELECT * FROM `otel_metrics_exponential_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:50:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9)) GROUP BY `Attributes`, `MetricName`, `anchor_ts`)) WHERE length(`window_vals`) >= 1) WHERE (reinterpretAsUInt64(`Value`) != ?))) WHERE `anchor_ts` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(600000000000) AND `anchor_ts` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`, `MetricName`))) WHERE length(`window_vals`) >= 1)
 -- args_optimized --
 [0] int64 = 9
 [1] int64 = 5000000000
@@ -198,92 +215,108 @@ SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, (now64(?) - t
 [6] string = "service_name"
 [7] string = ""
 [8] string = "service_name"
-[9] string = "^(?:cpu_temp|gpu_temp)$"
-[10] string = "[^a-zA-Z0-9_:]"
-[11] string = "_"
+[9] int64 = 1
+[10] int64 = 0
+[11] int64 = 9218868437227405314
 [12] string = "^(?:cpu_temp|gpu_temp)$"
-[13] string = "service_name"
-[14] string = "service.name"
-[15] string = "service_name"
-[16] string = "service.name"
-[17] string = "service_name"
-[18] string = ""
-[19] string = "service_name"
-[20] string = "^(?:cpu_temp|gpu_temp)$"
-[21] string = "[^a-zA-Z0-9_:]"
-[22] string = "_"
-[23] string = "^(?:cpu_temp|gpu_temp)$"
-[24] string = "service_name"
-[25] string = "service.name"
-[26] string = "service_name"
-[27] string = "service.name"
-[28] string = "service_name"
-[29] string = ""
+[13] string = "[^a-zA-Z0-9_:]"
+[14] string = "_"
+[15] string = "^(?:cpu_temp|gpu_temp)$"
+[16] string = "service_name"
+[17] string = "service.name"
+[18] string = "service_name"
+[19] string = "service.name"
+[20] string = "service_name"
+[21] string = ""
+[22] string = "service_name"
+[23] int64 = 1
+[24] int64 = 0
+[25] int64 = 9218868437227405314
+[26] string = "^(?:cpu_temp|gpu_temp)$"
+[27] string = "[^a-zA-Z0-9_:]"
+[28] string = "_"
+[29] string = "^(?:cpu_temp|gpu_temp)$"
 [30] string = "service_name"
-[31] string = "^(?:cpu_temp|gpu_temp)$"
-[32] string = "[^a-zA-Z0-9_:]"
-[33] string = "_"
-[34] string = "^(?:cpu_temp|gpu_temp)$"
-[35] string = "le"
-[36] string = "+Inf"
-[37] float64 = 0
+[31] string = "service.name"
+[32] string = "service_name"
+[33] string = "service.name"
+[34] string = "service_name"
+[35] string = ""
+[36] string = "service_name"
+[37] int64 = 1
 [38] int64 = 0
-[39] int64 = 0
-[40] int64 = 1
-[41] int64 = 1
-[42] int64 = 0
-[43] int64 = 0
-[44] int64 = 1
-[45] int64 = 1
-[46] int64 = 1
+[39] int64 = 9218868437227405314
+[40] string = "^(?:cpu_temp|gpu_temp)$"
+[41] string = "[^a-zA-Z0-9_:]"
+[42] string = "_"
+[43] string = "^(?:cpu_temp|gpu_temp)$"
+[44] string = "le"
+[45] string = "+Inf"
+[46] float64 = 0
 [47] int64 = 0
-[48] int64 = 1
+[48] int64 = 0
 [49] int64 = 1
 [50] int64 = 1
-[51] int64 = 1
-[52] int64 = 1
+[51] int64 = 0
+[52] int64 = 0
 [53] int64 = 1
 [54] int64 = 1
 [55] int64 = 1
-[56] int64 = 1
-[57] int64 = 2
+[56] int64 = 0
+[57] int64 = 1
 [58] int64 = 1
 [59] int64 = 1
 [60] int64 = 1
 [61] int64 = 1
-[62] string = "service_name"
-[63] string = "service.name"
-[64] string = "service_name"
-[65] string = "service.name"
-[66] string = "service_name"
-[67] string = ""
-[68] string = "service_name"
-[69] string = "^(?:cpu_temp|gpu_temp)$"
-[70] string = "[^a-zA-Z0-9_:]"
-[71] string = "_"
-[72] string = "^(?:cpu_temp|gpu_temp)$"
+[62] int64 = 1
+[63] int64 = 1
+[64] int64 = 1
+[65] int64 = 1
+[66] int64 = 2
+[67] int64 = 1
+[68] int64 = 1
+[69] int64 = 1
+[70] int64 = 1
+[71] string = "service_name"
+[72] string = "service.name"
 [73] string = "service_name"
 [74] string = "service.name"
 [75] string = "service_name"
-[76] string = "service.name"
+[76] string = ""
 [77] string = "service_name"
-[78] string = ""
-[79] string = "service_name"
-[80] string = "^(?:cpu_temp|gpu_temp)$"
-[81] string = "[^a-zA-Z0-9_:]"
-[82] string = "_"
-[83] string = "^(?:cpu_temp|gpu_temp)$"
+[78] string = "^(?:cpu_temp|gpu_temp)$"
+[79] string = "[^a-zA-Z0-9_:]"
+[80] string = "_"
+[81] string = "^(?:cpu_temp|gpu_temp)$"
+[82] string = "service_name"
+[83] string = "service.name"
 [84] string = "service_name"
 [85] string = "service.name"
 [86] string = "service_name"
-[87] string = "service.name"
+[87] string = ""
 [88] string = "service_name"
-[89] string = ""
-[90] string = "service_name"
-[91] string = "^(?:cpu_temp|gpu_temp)$"
-[92] string = "[^a-zA-Z0-9_:]"
-[93] string = "_"
-[94] string = "^(?:cpu_temp|gpu_temp)$"
+[89] int64 = 1
+[90] int64 = 0
+[91] int64 = 9218868437227405314
+[92] string = "^(?:cpu_temp|gpu_temp)$"
+[93] string = "[^a-zA-Z0-9_:]"
+[94] string = "_"
+[95] string = "^(?:cpu_temp|gpu_temp)$"
+[96] string = "service_name"
+[97] string = "service.name"
+[98] string = "service_name"
+[99] string = "service.name"
+[100] string = "service_name"
+[101] string = ""
+[102] string = "service_name"
+[103] int64 = 1
+[104] int64 = 0
+[105] int64 = 9218868437227405314
+[106] string = "^(?:cpu_temp|gpu_temp)$"
+[107] string = "[^a-zA-Z0-9_:]"
+[108] string = "_"
+[109] string = "^(?:cpu_temp|gpu_temp)$"
+[110] int64 = 9218868437227405314
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -292,4 +325,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, (now64(?) - toIntervalNanosecond(?)) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `MetricName`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `MetricName`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(600000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, `MetricName`, arrayCompact(arraySort(groupArray((`anchor_ts`, `Value`)))) AS `series_array` FROM (SELECT `Attributes` AS `Attributes`, `MetricName` AS `MetricName`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `MetricName`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(10, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM ((SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?)))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_count') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT `Attributes`, `Count`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_sum') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Sum`) AS `Value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `ServiceName`, `Sum`, `TimeUnix` FROM `otel_metrics_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_bucket') AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, arrayMap(pffv -> arrayMap(pffu -> multiIf(isNaN(pffv), 'NaN', (isInfinite(pffv) AND (pffv > toFloat64(?))), '+Inf', isInfinite(pffv), '-Inf', arrayMap(pffs -> arrayMap(pffe -> if((pffe = ?), pffu, concat(if(startsWith(pffu, '-'), '-', ''), arrayMap(pffm -> arrayMap(pffp -> arrayMap(pffd -> arrayMap(pffn -> multiIf((pffn >= toInt64(length(pffd))), concat(pffd, leftPad('', (pffn - toInt64(length(pffd))), '0')), (pffn > ?), concat(substring(pffd, ?, pffn), '.', substring(pffd, (pffn + ?))), concat('0.', leftPad('', (? - pffn), '0'), pffd)), array((if((pffp > ?), (pffp - ?), toInt64(length(pffm))) + toInt64(substring(pffs, (pffe + ?))))))[?], array(if((pffp > ?), concat(substring(pffm, ?, (pffp - ?)), substring(pffm, (pffp + ?))), pffm)))[?], array(toInt64(position(pffm, '.'))))[?], array(substring(pffs, ?, (pffe - ?))))[?])), array(toInt64(position(pffs, 'e'))))[?], array(if(startsWith(pffu, '-'), substring(pffu, ?), pffu)))[?]), array(toString(pffv)))[?], array(`ExplicitBounds`[le_idx]))[?]))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`BucketCounts`)) AS `le_idx` FROM (SELECT `Attributes`, `BucketCounts`, `ExplicitBounds`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_histogram`))) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_count') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Count`) AS `Value` FROM (SELECT `Attributes`, `Count`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_exponential_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_sum') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Sum`) AS `Value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `ServiceName`, `Sum`, `TimeUnix` FROM `otel_metrics_exponential_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:50:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9)) GROUP BY `Attributes`, `MetricName`, `anchor_ts`)) WHERE length(`window_vals`) >= 1)) WHERE `anchor_ts` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(600000000000) AND `anchor_ts` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`, `MetricName`))) WHERE length(`window_vals`) >= 1)
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, (now64(?) - toIntervalNanosecond(?)) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `MetricName`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `MetricName`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(600000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `Attributes`, `MetricName`, arrayCompact(arraySort(groupArray((`anchor_ts`, `Value`)))) AS `series_array` FROM (SELECT `Attributes` AS `Attributes`, `MetricName` AS `MetricName`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `MetricName`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `MetricName`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)) - 300000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)) - 300000000000, toInt64(60000000000)) < 0) + 1), least(10, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:00:01.000000000', 9)), 60000000000) * 60000000000)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM ((SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?)))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_count') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(`Count`)) AS `Value` FROM (SELECT `Attributes`, `Count`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_sum') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(`Sum`)) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `Sum`, `TimeUnix` FROM `otel_metrics_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_bucket') AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, arrayMap(pffv -> arrayMap(pffu -> multiIf(isNaN(pffv), 'NaN', (isInfinite(pffv) AND (pffv > toFloat64(?))), '+Inf', isInfinite(pffv), '-Inf', arrayMap(pffs -> arrayMap(pffe -> if((pffe = ?), pffu, concat(if(startsWith(pffu, '-'), '-', ''), arrayMap(pffm -> arrayMap(pffp -> arrayMap(pffd -> arrayMap(pffn -> multiIf((pffn >= toInt64(length(pffd))), concat(pffd, leftPad('', (pffn - toInt64(length(pffd))), '0')), (pffn > ?), concat(substring(pffd, ?, pffn), '.', substring(pffd, (pffn + ?))), concat('0.', leftPad('', (? - pffn), '0'), pffd)), array((if((pffp > ?), (pffp - ?), toInt64(length(pffm))) + toInt64(substring(pffs, (pffe + ?))))))[?], array(if((pffp > ?), concat(substring(pffm, ?, (pffp - ?)), substring(pffm, (pffp + ?))), pffm)))[?], array(toInt64(position(pffm, '.'))))[?], array(substring(pffs, ?, (pffe - ?))))[?])), array(toInt64(position(pffs, 'e'))))[?], array(if(startsWith(pffu, '-'), substring(pffu, ?), pffu)))[?]), array(toString(pffv)))[?], array(`ExplicitBounds`[le_idx]))[?]))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`BucketCounts`)) AS `le_idx` FROM (SELECT `Attributes`, `BucketCounts`, `ExplicitBounds`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_histogram`))) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_count') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(`Count`)) AS `Value` FROM (SELECT `Attributes`, `Count`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_exponential_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?))) UNION ALL (SELECT * FROM (SELECT concat(`MetricName`, '_sum') AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(`Sum`)) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `Sum`, `TimeUnix` FROM `otel_metrics_exponential_histogram`)) WHERE (match(`MetricName`, ?) OR match(replaceRegexpAll(`MetricName`, ?, ?), ?)))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:50:01.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9)) GROUP BY `Attributes`, `MetricName`, `anchor_ts`)) WHERE length(`window_vals`) >= 1) WHERE (reinterpretAsUInt64(`Value`) != ?))) WHERE `anchor_ts` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(600000000000) AND `anchor_ts` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`, `MetricName`))) WHERE length(`window_vals`) >= 1)

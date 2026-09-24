@@ -80,49 +80,57 @@ INSERT INTO otel_metrics_gauge VALUES
 [4] string = "service_name"
 [5] string = ""
 [6] string = "service_name"
-[7] string = "demo_memory_usage_bytes"
-[8] string = "demo.memory.usage.bytes"
-[9] string = "demo.memory.usage/bytes"
-[10] string = "demo.memory.usage_bytes"
-[11] string = "demo.memory/usage/bytes"
-[12] string = "demo.memory/usage_bytes"
-[13] string = "demo.memory_usage.bytes"
-[14] string = "demo.memory_usage_bytes"
-[15] string = "demo/memory/usage/bytes"
-[16] string = "demo/memory/usage_bytes"
-[17] string = "demo/memory_usage_bytes"
-[18] string = "demo_memory.usage.bytes"
-[19] string = "demo_memory.usage_bytes"
-[20] string = "demo_memory_usage.bytes"
-[21] string = "service_name"
-[22] string = "service.name"
-[23] string = "service_name"
-[24] string = "service.name"
-[25] string = "service_name"
-[26] string = ""
-[27] string = "service_name"
-[28] string = "demo_memory_usage_bytes"
-[29] string = "demo.memory.usage.bytes"
-[30] string = "demo.memory.usage/bytes"
-[31] string = "demo.memory.usage_bytes"
-[32] string = "demo.memory/usage/bytes"
-[33] string = "demo.memory/usage_bytes"
-[34] string = "demo.memory_usage.bytes"
-[35] string = "demo.memory_usage_bytes"
-[36] string = "demo/memory/usage/bytes"
-[37] string = "demo/memory/usage_bytes"
-[38] string = "demo/memory_usage_bytes"
-[39] string = "demo_memory.usage.bytes"
-[40] string = "demo_memory.usage_bytes"
-[41] string = "demo_memory_usage.bytes"
+[7] int64 = 1
+[8] int64 = 0
+[9] int64 = 9218868437227405314
+[10] string = "demo_memory_usage_bytes"
+[11] string = "demo.memory.usage.bytes"
+[12] string = "demo.memory.usage/bytes"
+[13] string = "demo.memory.usage_bytes"
+[14] string = "demo.memory/usage/bytes"
+[15] string = "demo.memory/usage_bytes"
+[16] string = "demo.memory_usage.bytes"
+[17] string = "demo.memory_usage_bytes"
+[18] string = "demo/memory/usage/bytes"
+[19] string = "demo/memory/usage_bytes"
+[20] string = "demo/memory_usage_bytes"
+[21] string = "demo_memory.usage.bytes"
+[22] string = "demo_memory.usage_bytes"
+[23] string = "demo_memory_usage.bytes"
+[24] string = "service_name"
+[25] string = "service.name"
+[26] string = "service_name"
+[27] string = "service.name"
+[28] string = "service_name"
+[29] string = ""
+[30] string = "service_name"
+[31] int64 = 1
+[32] int64 = 0
+[33] int64 = 9218868437227405314
+[34] string = "demo_memory_usage_bytes"
+[35] string = "demo.memory.usage.bytes"
+[36] string = "demo.memory.usage/bytes"
+[37] string = "demo.memory.usage_bytes"
+[38] string = "demo.memory/usage/bytes"
+[39] string = "demo.memory/usage_bytes"
+[40] string = "demo.memory_usage.bytes"
+[41] string = "demo.memory_usage_bytes"
+[42] string = "demo/memory/usage/bytes"
+[43] string = "demo/memory/usage_bytes"
+[44] string = "demo/memory_usage_bytes"
+[45] string = "demo_memory.usage.bytes"
+[46] string = "demo_memory.usage_bytes"
+[47] string = "demo_memory_usage.bytes"
+[48] int64 = 9218868437227405314
 -- chplan --
 TopK k=5 sort=Value DESC by=[Attributes, TimeUnix] columns=[MetricName, Attributes, TimeUnix, Value]
-  RangeLWR step=30s lookback=5m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
-    Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-      Filter predicate=(MetricName IN ("demo_memory_usage_bytes", "demo.memory.usage.bytes", "demo.memory.usage/bytes", "demo.memory.usage_bytes", "demo.memory/usage/bytes", "demo.memory/usage_bytes", "demo.memory_usage.bytes", "demo.memory_usage_bytes", "demo/memory/usage/bytes", "demo/memory/usage_bytes", "demo/memory_usage_bytes", "demo_memory.usage.bytes", "demo_memory.usage_bytes", "demo_memory_usage.bytes"))
-        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+  Filter predicate=(reinterpretAsUInt64(Value) != 9218868437227405314)
+    RangeLWR step=30s lookback=5m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnIf((bitAnd(Flags, 1) != 0), reinterpretAsFloat64(9218868437227405314), Value) AS Value]
+        Filter predicate=(MetricName IN ("demo_memory_usage_bytes", "demo.memory.usage.bytes", "demo.memory.usage/bytes", "demo.memory.usage_bytes", "demo.memory/usage/bytes", "demo.memory/usage_bytes", "demo.memory_usage.bytes", "demo.memory_usage_bytes", "demo/memory/usage/bytes", "demo/memory/usage_bytes", "demo/memory_usage_bytes", "demo_memory.usage.bytes", "demo_memory.usage_bytes", "demo_memory_usage.bytes"))
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
-SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT * FROM (SELECT * FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001)) > 40000000, 'range LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) ORDER BY `Value` DESC LIMIT 5 BY `Attributes`, `TimeUnix`)
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT * FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT * FROM (SELECT * FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001)) > 40000000, 'range LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) WHERE (reinterpretAsUInt64(`Value`) != ?)) ORDER BY `Value` DESC LIMIT 5 BY `Attributes`, `TimeUnix`)
 -- args_optimized --
 [0] string = "service_name"
 [1] string = "service.name"
@@ -131,41 +139,48 @@ SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT * FROM (SELE
 [4] string = "service_name"
 [5] string = ""
 [6] string = "service_name"
-[7] string = "demo_memory_usage_bytes"
-[8] string = "demo.memory.usage.bytes"
-[9] string = "demo.memory.usage/bytes"
-[10] string = "demo.memory.usage_bytes"
-[11] string = "demo.memory/usage/bytes"
-[12] string = "demo.memory/usage_bytes"
-[13] string = "demo.memory_usage.bytes"
-[14] string = "demo.memory_usage_bytes"
-[15] string = "demo/memory/usage/bytes"
-[16] string = "demo/memory/usage_bytes"
-[17] string = "demo/memory_usage_bytes"
-[18] string = "demo_memory.usage.bytes"
-[19] string = "demo_memory.usage_bytes"
-[20] string = "demo_memory_usage.bytes"
-[21] string = "service_name"
-[22] string = "service.name"
-[23] string = "service_name"
-[24] string = "service.name"
-[25] string = "service_name"
-[26] string = ""
-[27] string = "service_name"
-[28] string = "demo_memory_usage_bytes"
-[29] string = "demo.memory.usage.bytes"
-[30] string = "demo.memory.usage/bytes"
-[31] string = "demo.memory.usage_bytes"
-[32] string = "demo.memory/usage/bytes"
-[33] string = "demo.memory/usage_bytes"
-[34] string = "demo.memory_usage.bytes"
-[35] string = "demo.memory_usage_bytes"
-[36] string = "demo/memory/usage/bytes"
-[37] string = "demo/memory/usage_bytes"
-[38] string = "demo/memory_usage_bytes"
-[39] string = "demo_memory.usage.bytes"
-[40] string = "demo_memory.usage_bytes"
-[41] string = "demo_memory_usage.bytes"
+[7] int64 = 1
+[8] int64 = 0
+[9] int64 = 9218868437227405314
+[10] string = "demo_memory_usage_bytes"
+[11] string = "demo.memory.usage.bytes"
+[12] string = "demo.memory.usage/bytes"
+[13] string = "demo.memory.usage_bytes"
+[14] string = "demo.memory/usage/bytes"
+[15] string = "demo.memory/usage_bytes"
+[16] string = "demo.memory_usage.bytes"
+[17] string = "demo.memory_usage_bytes"
+[18] string = "demo/memory/usage/bytes"
+[19] string = "demo/memory/usage_bytes"
+[20] string = "demo/memory_usage_bytes"
+[21] string = "demo_memory.usage.bytes"
+[22] string = "demo_memory.usage_bytes"
+[23] string = "demo_memory_usage.bytes"
+[24] string = "service_name"
+[25] string = "service.name"
+[26] string = "service_name"
+[27] string = "service.name"
+[28] string = "service_name"
+[29] string = ""
+[30] string = "service_name"
+[31] int64 = 1
+[32] int64 = 0
+[33] int64 = 9218868437227405314
+[34] string = "demo_memory_usage_bytes"
+[35] string = "demo.memory.usage.bytes"
+[36] string = "demo.memory.usage/bytes"
+[37] string = "demo.memory.usage_bytes"
+[38] string = "demo.memory/usage/bytes"
+[39] string = "demo.memory/usage_bytes"
+[40] string = "demo.memory_usage.bytes"
+[41] string = "demo.memory_usage_bytes"
+[42] string = "demo/memory/usage/bytes"
+[43] string = "demo/memory/usage_bytes"
+[44] string = "demo/memory_usage_bytes"
+[45] string = "demo_memory.usage.bytes"
+[46] string = "demo_memory.usage_bytes"
+[47] string = "demo_memory_usage.bytes"
+[48] int64 = 9218868437227405314
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -174,4 +189,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT * FROM (SELECT * FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001)) > 40000000, 'range LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) ORDER BY `Value` DESC LIMIT 5 BY `Attributes`, `TimeUnix`)
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value` FROM (SELECT * FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT * FROM (SELECT * FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001)) > 40000000, 'range LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) WHERE (reinterpretAsUInt64(`Value`) != ?)) ORDER BY `Value` DESC LIMIT 5 BY `Attributes`, `TimeUnix`)
