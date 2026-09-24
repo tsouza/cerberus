@@ -83,10 +83,25 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.6',
   'clickhouse/clickhouse-server:26.6-alpine',
   'clickhouse/clickhouse-server:26.6.1.1193-alpine',
+  // test/chserver's exact builds (CH_SERVER_SAFETY_IMAGES): the condition
+  // cache's floor and every backport boundary, and the first releases whose
+  // functions honour cancellation mid-call.
+  'clickhouse/clickhouse-server:25.3.14.14-alpine',
+  'clickhouse/clickhouse-server:26.3.12.3-alpine',
+  'clickhouse/clickhouse-server:26.3.13.31-alpine',
+  'clickhouse/clickhouse-server:26.3.17.4-alpine',
+  'clickhouse/clickhouse-server:26.3.17.56-alpine',
+  'clickhouse/clickhouse-server:26.4.3.37-alpine',
+  'clickhouse/clickhouse-server:26.4.4.38-alpine',
+  'clickhouse/clickhouse-server:26.4.5.143-alpine',
+  'clickhouse/clickhouse-server:26.5.1.882-alpine',
+  'clickhouse/clickhouse-server:26.5.2.39-alpine',
+  'clickhouse/clickhouse-server:26.5.5.8-alpine',
+  'clickhouse/clickhouse-server:26.5.6.64-alpine',
+  'clickhouse/clickhouse-server:26.7.13.12-alpine',
   // The clickhouse-upgrade lane's exact builds (CH_UPGRADE_FLOOR_IMAGE,
   // CH_UPGRADE_TARGET_IMAGE, CH_TEXT_INDEX_V0_READER_IMAGE, CH_PRE_KEYED_IMAGES).
   'clickhouse/clickhouse-server:24.8.14.39-alpine',
-  'clickhouse/clickhouse-server:25.3.14.14-alpine',
   'clickhouse/clickhouse-server:26.5.7.64-alpine',
   'clickhouse/clickhouse-server:26.6.8.7-alpine',
   'clickhouse/clickhouse-server:26.8.10.6-alpine',

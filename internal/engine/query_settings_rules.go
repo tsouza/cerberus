@@ -24,16 +24,18 @@ const settingOptimizeAggregationInOrder = "optimize_aggregation_in_order"
 // settingUseQueryConditionCache is the ClickHouse setting that turns on the
 // query condition cache: the server caches, per data part, which granules a
 // WHERE predicate already selected, so a later query with the SAME predicate
-// skips re-evaluating it on the cached parts. It is RESULT-EQUIVALENT (a
-// cache, not a result rewrite) and lands in ClickHouse 25.3, gated behind the
-// analyzer. cerberus stamps it only when the condition_cache feature resolved
-// in (server >= 25.3) AND the read path is predicate-stable; below 25.3 the
-// feature is absent from the resolved set, so ConditionCache is false and this
-// is never stamped (version-safe fallback to no-op).
+// skips re-evaluating it on the cached parts. It lands in ClickHouse 25.3,
+// gated behind the analyzer, and is RESULT-EQUIVALENT (a cache, not a result
+// rewrite) on every build outside chopt.FeatureConditionCache's UnsafeBuilds.
+// cerberus stamps it only when the condition_cache feature resolved in (server
+// >= 25.3 and not a known-unsafe build) AND the read path is predicate-stable;
+// otherwise ConditionCache is false and this rule stamps nothing. On a
+// known-unsafe build the client itself forces the setting to 0 on every query
+// (chclient.Client.SetQueryConditionCacheDisabled).
 //
 // perf-sentinel: neutral — a server-side granule cache. It changes how much of
 // a predicate is re-evaluated, never how much state the query builds.
-const settingUseQueryConditionCache = "use_query_condition_cache"
+const settingUseQueryConditionCache = chclient.SettingUseQueryConditionCache
 
 // settingEnableAnalyzer turns on ClickHouse's new query analyzer. The query
 // condition cache is gated behind the analyzer, so cerberus co-stamps
@@ -134,9 +136,10 @@ type SettingsRules struct {
 	// predicate-stable read path so ClickHouse's query condition cache can skip
 	// re-evaluating an already-seen WHERE predicate on cached parts. It is
 	// driven by the condition_cache registry feature, which only resolves in on
-	// server >= 25.3; below that the feature is absent from the resolved set,
-	// so this flag is false and nothing is stamped (24.8-safe no-op). The cache
-	// is result-equivalent, so this is safe whenever it fires; the eligibility
+	// server >= 25.3 outside the feature's known-unsafe builds; otherwise the
+	// feature is absent from the resolved set, so this flag is false and
+	// nothing is stamped. The cache is result-equivalent on every build the
+	// feature resolves on, so this is safe whenever it fires; the eligibility
 	// check (predicateStableForConditionCache) is still conservative. A plan
 	// carrying the native-histogram analyzer hazard is never stamped: the
 	// cache is analyzer-gated and that plan runs under enable_analyzer=0
@@ -856,16 +859,17 @@ func (r SettingsRules) eligibleForAggregationInOrder(f planShapeFacts) bool {
 // predicateStableForConditionCache reports whether plan is a read path the
 // query condition cache can help: it must carry an actual WHERE predicate (a
 // chplan.Filter node over a Scan) so there is a granule-selection result to
-// cache and reuse on a later identical-predicate query. The cache is
-// result-equivalent regardless, so this gate is purely about "is there a
-// predicate worth caching"; it is deliberately conservative — a plan with no
+// cache and reuse on a later identical-predicate query. On the builds the
+// feature resolves on the cache is result-equivalent, so this gate is purely
+// about "is there a predicate worth caching"; it is deliberately conservative — a plan with no
 // Filter (a bare full-table scan) gains nothing from the condition cache, so
 // the setting is not stamped there. A union/multi-table plan still qualifies
 // as long as it filters: the cache is keyed per data part, so it composes
 // across the scanned tables without correctness risk.
 //
 // The whole rule is additionally gated upstream by ConditionCache, which only
-// resolves in on ClickHouse >= 25.3, so this never fires on an older server.
+// resolves in on ClickHouse >= 25.3 outside the known-unsafe builds, so this
+// never fires on an older or known-defective server.
 func predicateStableForConditionCache(f planShapeFacts) bool {
 	return f.spineHasFilter && f.spineHasScan
 }

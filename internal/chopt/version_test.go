@@ -4,21 +4,23 @@ import "testing"
 
 func TestParseVersion(t *testing.T) {
 	cases := []struct {
-		in        string
-		wantMajor int
-		wantMinor int
-		wantOK    bool
+		in     string
+		want   Version
+		wantOK bool
 	}{
-		{"25.8.2.1", 25, 8, true},
-		{"25.8.2.1-lts", 25, 8, true},
-		{"24.8", 24, 8, true},
-		{"25.3.0.0", 25, 3, true},
-		{" 25.6.1 ", 25, 6, true},
-		{"25", 0, 0, false},         // only one field
-		{"lts.8.2", 0, 0, false},    // non-numeric major
-		{"25.lts", 0, 0, false},     // non-numeric minor
-		{"", 0, 0, false},           // empty
-		{"25.6-rc1.2", 25, 6, true}, // trailing non-digit on minor trimmed
+		{"25.8.2.1", Version{Major: 25, Minor: 8, Patch: 2, Build: 1}, true},
+		{"25.8.2.1-lts", Version{Major: 25, Minor: 8, Patch: 2, Build: 1, Vendor: true}, true},
+		{"26.3.17.56", Version{Major: 26, Minor: 3, Patch: 17, Build: 56}, true},
+		{"24.8", Version{Major: 24, Minor: 8}, true},
+		{"25.3.0.0", Version{Major: 25, Minor: 3}, true},
+		{" 25.6.1 ", Version{Major: 25, Minor: 6, Patch: 1}, true},
+		{"25.8.lts", Version{Major: 25, Minor: 8, Vendor: true}, true},                            // non-numeric patch ends the version
+		{"25.6-rc1.2", Version{Major: 25, Minor: 6, Vendor: true}, true},                          // suffix on minor ends the version
+		{"26.3.17.56.99", Version{Major: 26, Minor: 3, Patch: 17, Build: 56, Vendor: true}, true}, // only four fields are read
+		{"25", Version{}, false},      // only one field
+		{"lts.8.2", Version{}, false}, // non-numeric major
+		{"25.lts", Version{}, false},  // non-numeric minor
+		{"", Version{}, false},        // empty
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -26,38 +28,84 @@ func TestParseVersion(t *testing.T) {
 			if ok != tc.wantOK {
 				t.Fatalf("ParseVersion(%q) ok = %v; want %v", tc.in, ok, tc.wantOK)
 			}
-			if !ok {
-				return
-			}
-			if got.Major != tc.wantMajor || got.Minor != tc.wantMinor {
-				t.Errorf("ParseVersion(%q) = %d.%d; want %d.%d", tc.in, got.Major, got.Minor, tc.wantMajor, tc.wantMinor)
+			if ok && got != tc.want {
+				t.Errorf("ParseVersion(%q) = %+v; want %+v", tc.in, got, tc.want)
 			}
 		})
 	}
 }
 
 func TestVersionAtLeast(t *testing.T) {
+	v := func(s string) Version {
+		t.Helper()
+		out, ok := ParseVersion(s)
+		if !ok {
+			t.Fatalf("ParseVersion(%q) failed", s)
+		}
+		return out
+	}
 	cases := []struct {
-		v    Version
-		min  Version
-		want bool
+		v, min string
+		want   bool
 	}{
-		{Version{25, 8}, Version{25, 3}, true},
-		{Version{25, 3}, Version{25, 3}, true},
-		{Version{25, 2}, Version{25, 3}, false},
-		{Version{26, 0}, Version{25, 9}, true},
-		{Version{24, 8}, Version{25, 0}, false},
-		{Version{25, 6}, Version{24, 8}, true},
+		{"25.8", "25.3", true},
+		{"25.3", "25.3", true},
+		{"25.2", "25.3", false},
+		{"26.0", "25.9", true},
+		{"24.8", "25.0", false},
+		{"25.6", "24.8", true},
+		// A floor carries no patch/build, so every build of the floor's minor
+		// meets it.
+		{"25.3.1.2703", "25.3", true},
+		{"25.2.99.99", "25.3", false},
+		// Patch and build decide a backport boundary.
+		{"26.3.12.3", "26.3.13.31", false},
+		{"26.3.13.31", "26.3.13.31", true},
+		{"26.3.17.4", "26.3.17.56", false},
+		{"26.3.17.110", "26.3.17.56", true},
+		{"26.4.1.1141", "26.3.33.24", true},
 	}
 	for _, tc := range cases {
-		if got := tc.v.AtLeast(tc.min); got != tc.want {
+		if got := v(tc.v).AtLeast(v(tc.min)); got != tc.want {
 			t.Errorf("%s.AtLeast(%s) = %v; want %v", tc.v, tc.min, got, tc.want)
 		}
 	}
 }
 
 func TestVersionString(t *testing.T) {
-	if got := (Version{25, 8}).String(); got != "25.8" {
-		t.Errorf("String() = %q; want %q", got, "25.8")
+	cases := []struct {
+		v    Version
+		want string
+	}{
+		{Version{Major: 25, Minor: 8}, "25.8"},
+		{Version{Major: 26, Minor: 3, Patch: 17, Build: 56}, "26.3.17.56"},
+		{Version{Major: 25, Minor: 6, Patch: 1}, "25.6.1.0"},
+	}
+	for _, tc := range cases {
+		if got := tc.v.String(); got != tc.want {
+			t.Errorf("%+v.String() = %q; want %q", tc.v, got, tc.want)
+		}
+	}
+}
+
+func TestBuildRangeContains(t *testing.T) {
+	r := BuildRange{
+		From:  Version{Major: 26, Minor: 3},
+		Until: Version{Major: 26, Minor: 3, Patch: 13, Build: 31},
+	}
+	cases := []struct {
+		v    Version
+		want bool
+	}{
+		{Version{Major: 26, Minor: 2, Patch: 19, Build: 43}, false},
+		{Version{Major: 26, Minor: 3, Patch: 1, Build: 896}, true},
+		{Version{Major: 26, Minor: 3, Patch: 12, Build: 3}, true},
+		{Version{Major: 26, Minor: 3, Patch: 13, Build: 31}, false},
+		{Version{Major: 26, Minor: 4, Patch: 1, Build: 1141}, false},
+	}
+	for _, tc := range cases {
+		if got := r.Contains(tc.v); got != tc.want {
+			t.Errorf("Contains(%s) = %v; want %v", tc.v, got, tc.want)
+		}
 	}
 }

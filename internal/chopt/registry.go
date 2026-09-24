@@ -18,8 +18,11 @@ const (
 
 	// FeatureConditionCache stamps use_query_condition_cache=1 on a
 	// predicate-stable read path when the server is >= 25.3. The query
-	// condition cache is result-equivalent (a cache), so it ships under auto
-	// for supporting servers; below 25.3 it is absent from the set (no-op).
+	// condition cache is a cache, so it ships under auto for supporting
+	// servers; below 25.3 it is absent from the set (no-op). Two upstream
+	// defects make the cache return WRONG RESULTS on most builds between 25.3
+	// and the 26.x backports — see conditionCacheUnsafeBuilds — so the feature
+	// is withheld there and the client forces the setting to 0.
 	FeatureConditionCache = "condition_cache"
 
 	// FeatureTSGridRange opts eligible rate(<counter>[<range>]) query_range
@@ -2285,8 +2288,113 @@ type Feature struct {
 	// query-result-cache capability probe rather than assumed available just
 	// because the version floor is met — see the type doc above.
 	RequiresResultCacheCapability bool
-	Doc                           string
+	// UnsafeBuilds lists the ClickHouse builds on which the feature is known to
+	// return WRONG RESULTS even though the version floor is met — an upstream
+	// defect whose fix landed on each maintained release line at its own patch
+	// release. A server inside any range has the feature withheld from the
+	// resolved set (auto skips it with a WARN; an explicit request is refused
+	// under enforcing) and reported by KnownUnsafe, so a consumer whose
+	// server-side default would engage the same mechanism can switch it off
+	// explicitly instead of merely not asking for it.
+	UnsafeBuilds []BuildRange
+	Doc          string
 }
+
+// BuildRange is a half-open span [From, Until) of ClickHouse builds carrying
+// one known defect, with the upstream reference that documents it. Until is
+// the first RELEASED build of that line verified to carry the fix — a
+// published clickhouse/clickhouse-server tag the reproduction came back clean
+// on — or the first build of the next release line when the line never
+// received a backport.
+type BuildRange struct {
+	From   Version
+	Until  Version
+	Defect string
+}
+
+// Contains reports whether v falls inside the range. A Vendor build's patch
+// and build numbers are not upstream's, so it is judged by its release line
+// alone: it is inside the range whenever its line overlaps the range's lines.
+func (r BuildRange) Contains(v Version) bool {
+	if v.Vendor {
+		line := v.line()
+		if !line.AtLeast(r.From.line()) {
+			return false
+		}
+		if r.Until.Patch == 0 && r.Until.Build == 0 {
+			return !line.AtLeast(r.Until.line())
+		}
+		return !r.Until.line().Less(line)
+	}
+	return v.AtLeast(r.From) && !v.AtLeast(r.Until)
+}
+
+// unsafeRanges returns every UnsafeBuilds range containing server.
+func (f Feature) unsafeRanges(server Version) []BuildRange {
+	var out []BuildRange
+	for _, r := range f.UnsafeBuilds {
+		if r.Contains(server) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// KnownUnsafe reports whether server falls inside one of feature id's
+// UnsafeBuilds ranges. It is independent of any selection: a defect in the
+// server build exists whether or not the operator asked for the feature.
+func KnownUnsafe(id string, server Version) bool {
+	f, ok := featureByID(id)
+	return ok && len(f.unsafeRanges(server)) > 0
+}
+
+// conditionCacheUnsafeBuilds are the ClickHouse builds on which the query
+// condition cache silently drops rows from a later read. Both defects write a
+// "no granule matches" verdict under a predicate's cache key when something
+// OTHER than that predicate emptied the granule, and every later query with the
+// same predicate — from any user — skips those granules:
+//
+//   - ClickHouse#105686 (issue #104781): with use_skip_indexes_on_data_read (the
+//     default since 26.1) a skip index that dropped whole marks before PREWHERE
+//     had its verdict attributed to the PREWHERE predicate. Cerberus's own
+//     shapes trigger it: a TraceQL `{ resource.service.name = "x" && duration >
+//     100ms }` (PREWHERE Duration > ? WHERE ResourceAttributes[?] = ?, bloom
+//     index on the map values) poisons the cache for the next
+//     `{ duration > 100ms }`. Merged at 26.6.1.141 and backported to 26.5.2.12,
+//     26.4.4.15 and 26.3.13.13; 26.1 and 26.2 never received the fix.
+//   - ClickHouse#107145: a row policy (or on-the-fly mutation) that hid a
+//     granule had its verdict attributed to the PREWHERE predicate, so a
+//     restricted user's query poisons the cache for every other user — including
+//     cerberus's, whether or not cerberus's own user carries a policy. Present
+//     since the cache shipped in 25.3; merged at 26.6.1.1043 and backported to
+//     26.5.6.46, 26.4.5.134 and 26.3.17.50, never to a 25.x line.
+//
+// Each Until is the first published clickhouse/clickhouse-server release of
+// the line the cerberus-shaped reproduction came back clean on, which is
+// after the upstream backport build above; no release sits between the two.
+// The 26.6 ranges hold only pre-release builds: 26.6.1.1193, the line's first
+// release, already carries both fixes. test/chserver's condition-cache test
+// pins the last affected and first fixed release of the 26.3, 26.4 and 26.5
+// lines for the defect whose boundary each one bounds, plus the 25.3 floor and
+// 26.6.1.1193; the complete per-build survey is recorded in
+// docs/clickhouse-optimizations.background.md.
+var conditionCacheUnsafeBuilds = []BuildRange{
+	{From: Version{Major: 26, Minor: 1}, Until: Version{Major: 26, Minor: 3, Patch: 13, Build: 31}, Defect: conditionCacheSkipIndexDefect},
+	{From: Version{Major: 26, Minor: 4}, Until: Version{Major: 26, Minor: 4, Patch: 4, Build: 38}, Defect: conditionCacheSkipIndexDefect},
+	{From: Version{Major: 26, Minor: 5}, Until: Version{Major: 26, Minor: 5, Patch: 2, Build: 39}, Defect: conditionCacheSkipIndexDefect},
+	{From: Version{Major: 26, Minor: 6}, Until: Version{Major: 26, Minor: 6, Patch: 1, Build: 1193}, Defect: conditionCacheSkipIndexDefect},
+	{From: Version{Major: 25, Minor: 3}, Until: Version{Major: 26, Minor: 3, Patch: 17, Build: 56}, Defect: conditionCacheRowPolicyDefect},
+	{From: Version{Major: 26, Minor: 4}, Until: Version{Major: 26, Minor: 4, Patch: 5, Build: 143}, Defect: conditionCacheRowPolicyDefect},
+	{From: Version{Major: 26, Minor: 5}, Until: Version{Major: 26, Minor: 5, Patch: 6, Build: 64}, Defect: conditionCacheRowPolicyDefect},
+	{From: Version{Major: 26, Minor: 6}, Until: Version{Major: 26, Minor: 6, Patch: 1, Build: 1193}, Defect: conditionCacheRowPolicyDefect},
+}
+
+const (
+	// conditionCacheSkipIndexDefect names ClickHouse#105686.
+	conditionCacheSkipIndexDefect = "ClickHouse#105686: skip-index-dropped marks attributed to the PREWHERE predicate"
+	// conditionCacheRowPolicyDefect names ClickHouse#107145.
+	conditionCacheRowPolicyDefect = "ClickHouse#107145: row-policy-hidden marks attributed to the PREWHERE predicate"
+)
 
 // registry is the seeded feature table. It is value data (no init-time
 // mutation), so Registry can hand out a defensive copy and callers cannot
@@ -2300,11 +2408,12 @@ var registry = []Feature{
 		Doc:        "stamp optimize_aggregation_in_order=1 when the Aggregate GROUP BY is a sort-key prefix (result-equivalent)",
 	},
 	{
-		ID:         FeatureConditionCache,
-		MinVersion: Version{Major: 25, Minor: 3},
-		Stability:  Stable,
-		AutoSelect: true,
-		Doc:        "stamp use_query_condition_cache=1 on predicate-stable read paths (result-equivalent cache, server >= 25.3)",
+		ID:           FeatureConditionCache,
+		MinVersion:   Version{Major: 25, Minor: 3},
+		Stability:    Stable,
+		AutoSelect:   true,
+		UnsafeBuilds: conditionCacheUnsafeBuilds,
+		Doc:          "stamp use_query_condition_cache=1 on predicate-stable read paths (result-equivalent cache, server >= 25.3 outside the known wrong-result builds)",
 	},
 	{
 		ID:                         FeatureTSGridRange,
