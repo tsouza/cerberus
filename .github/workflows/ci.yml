@@ -610,7 +610,16 @@ jobs:
   # via branch protection.
   forbid-skip:
     name: forbid-skip
-    runs-on: [self-hosted, cerberus]
+    # Stays on ubuntu-latest: one of this job's own self-tests
+    # (semantic-replay.test.mjs, CTREX-3271) invokes `go test` via Node's
+    # spawnSync directly rather than a shell `run:` step, and that specific
+    # call can't resolve the `go` binary on the self-hosted runners — every
+    # other newly self-hosted-routed job (changes, forbid-deferral,
+    # config-docs, link-check) passed cleanly, and `go test -run
+    # '^TestPromQLOracleEngineParity$' ./test/regression/` reproduces fine
+    # locally, so this is narrow to the unshelled spawnSync path, not a
+    # general Go-toolchain problem. See #3675.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
