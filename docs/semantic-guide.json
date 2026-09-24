@@ -325,7 +325,7 @@
       "execution": {
         "binding_id": "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
         "lane_id": "chdb.strict-scan",
-        "command": "just ch-server-safety-integration && just chclient-integration && just histogram-realexporter-integration && just metadata-endpoints-integration && just native-histogram-dashboard-floor-integration && just native-histogram-dashboard-integration && just native-lowerers-prom-integration && just native-lowerers-smoke-integration && just perf-smoke-integration && just quantile-prom-histogram-rankwalk-integration && just route-b-differential-integration && just router-corpus-integration && just solver-memory-apportion-integration && just strict-scan-test && just structural-two-phase-external-table-integration && just tag-groups-differential-integration && just traces-scan-bound-integration && just traces-scan-window-integration && just ts-grid-group-array-integration && just ts-grid-last-over-time-integration && just ts-grid-nan-duplicate-integration",
+        "command": "just chclient-integration && just histogram-realexporter-integration && just metadata-endpoints-integration && just native-histogram-dashboard-floor-integration && just native-histogram-dashboard-integration && just native-lowerers-prom-integration && just native-lowerers-smoke-integration && just perf-smoke-integration && just quantile-prom-histogram-rankwalk-integration && just route-b-differential-integration && just router-corpus-integration && just solver-memory-apportion-integration && just strict-scan-test && just structural-two-phase-external-table-integration && just tag-groups-differential-integration && just traces-scan-bound-integration && just traces-scan-window-integration && just ts-grid-group-array-integration && just ts-grid-last-over-time-integration && just ts-grid-nan-duplicate-integration",
         "merge_required": true,
         "release_required": true
       }
@@ -1442,6 +1442,12 @@
           "evidence_system": "source-path",
           "obligations": [
             {
+              "lane_id": "chdb.ch-server-safety",
+              "context_name": "ch-server-safety",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.perf-guards",
               "context_name": "perf-guards",
               "merge_required": false,
@@ -1611,6 +1617,12 @@
           "evidence_class": "execution",
           "evidence_system": "source-path",
           "obligations": [
+            {
+              "lane_id": "chdb.ch-server-safety",
+              "context_name": "ch-server-safety",
+              "merge_required": false,
+              "release_required": false
+            },
             {
               "lane_id": "chdb.perf-guards",
               "context_name": "perf-guards",

@@ -9,5 +9,6 @@
 // version policy internal/chopt records for that build.
 //
 // The tests carry the `integration` build tag (Docker required) and run in the
-// strict-scan lane through `just ch-server-safety-integration`.
+// ch-server-safety job of strict-scan.yml through
+// `just ch-server-safety-integration`.
 package chserver

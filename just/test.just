@@ -434,7 +434,7 @@ chclient-integration:
 # Run the condition-cache and cancellation probes across pinned ClickHouse builds. Needs Docker.
 ch-server-safety-integration:
     @just _pull-retry {{CH_SERVER_SAFETY_IMAGES}} {{CH_HISTOGRAM_REPORT_IMAGE}}
-    go test -timeout 25m -tags=integration -count=1 ./test/chserver/...
+    go test -timeout 20m -tags=integration -count=1 ./test/chserver/...
 
 # Run the strict-scan differential: execute the matrix-shaped spec golden
 # SQL corpus against a REAL ClickHouse (testcontainers-go) through the
