@@ -1532,7 +1532,7 @@
       "description": "Pull request descriptions carry meaningful review context.",
       "owner": {
         "workflow": ".github/workflows/pr-hygiene.yml",
-        "jobs": ["pr-body"],
+        "jobs": ["dependabot-title", "pr-body"],
         "producer_jobs": [],
         "context_job": "pr-body"
       },
