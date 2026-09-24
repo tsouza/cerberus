@@ -156,3 +156,52 @@ realistic scale is already fast. When an optimization targets memory or
 cardinality but the user-felt cost is wall, confirm which axis actually
 dominates *before* building the alternative: here, four of them were built
 before the 14 ms scan vs ~98%-arithmetic split was measured.
+
+## Why the native quantile keeps its nesting shallow
+
+The dense native-histogram dashboard (`histogram_quantile(0.50, sum by
+(cerberus_ql)(rate(cerberus_queries_duration_exp_hist[5m])))` over the
+96-series, scales 3–20 fixture of the dashboard regression) spent almost all of
+an instant request in ClickHouse planning: `EXPLAIN PLAN` alone took about as
+long as the full request, and `EXPLAIN AST` (parsing only) took tens of
+milliseconds, so the cost sat in analysis. A CPU profile of `EXPLAIN PLAN` on
+24.8 and 26.6 was dominated by nested `InterpreterSelectQuery` construction,
+`JoinedTables::resolveTables` → `getSampleBlock` of each derived query, AST
+cloning and `ExpressionAnalyzer` actions building — the older analyzer
+re-analyzing inner derived queries once per level above them.
+
+Wrapping the quantile's input in trivial `SELECT * FROM (…)` levels made this
+visible: each wrapper added roughly a quarter of the wrapped subtree's own
+planning time, independent of what the wrapper computed. Shrinking a
+mid-tree expression by about 1 KB (binding one squared width once) moved
+planning by 5–8%, so the cost scales with expression size times the number of
+levels above it. The emitted statement was 22 derived-query levels deep for the
+instant query; six of them were single-column `SELECT *, <helper> AS x`
+stages of the quantile walk, sitting above the whole folded-histogram subtree.
+
+Binding those helpers as lambda parameters inside one SELECT, reading the
+fields off the materialization boundary's tuple, and not re-projecting an
+identity sample Project removed eight levels over that subtree. Median / min
+over seven interleaved rounds, the same SQL and the settings cerberus stamps,
+on memory-capped `clickhouse-server:24.8-alpine` (24.8.14.39) and
+`26.6-alpine` (26.6.8.7) containers under a loaded host:
+
+| Build   | Query     | Planning before (ms)   | Planning after (ms)   | Total before (ms)   | Total after (ms)   |
+| ------- | --------- | ---------------------- | --------------------- | ------------------- | ------------------ |
+| 24.8    | instant   | 5480 / 4084            | 2193 / 1910           | 6099 / 3849         | 2486 / 1966        |
+| 24.8    | range     | 9543 / 6944            | 4887 / 3649           | 14737 / 11526       | 10201 / 7601       |
+| 26.6    | instant   | 5443 / 4292            | 2192 / 1857           | 5618 / 4826         | 2351 / 2180        |
+| 26.6    | range     | 9655 / 7476            | 4924 / 3397           | 15966 / 12065       | 12520 / 9157       |
+
+Range "planning" includes the fan-out and fold budget guards' scalar
+subqueries, which the older analyzer executes during analysis. Peak memory did
+not rise (24.8 range 403 → 379 MiB, 26.6 range 350 → 340 MiB), and every
+group, anchor and value was byte-identical before and after on both builds,
+including a computed-`scalar()` phi and a three-level `histogram_quantiles`.
+
+Two levers were rejected. More materialization boundaries add levels and
+raised planning cost. The newer analyzer planned the let-bound statement
+faster on 26.6 (about 2.1 s against 3.2 s) but took over 40 s on 24.8, and
+the engine's native-histogram analyzer rule records why its execution cost
+on this shape is worse even on 26.x at production cardinality — so the
+analyzer choice stays as it is and the fix is in the emitted structure.

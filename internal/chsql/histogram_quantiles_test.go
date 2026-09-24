@@ -171,31 +171,39 @@ func TestEmitHistogramQuantiles_SharedAggregateCarriesEveryLevel(t *testing.T) {
 }
 
 // TestEmitHistogramQuantilesNative_MaterialisesReverseWalkOnlyWhenALevelNeedsIt
-// pins the shared reverse cumulative walk: it is prepared once when any level
-// can take the backward rank walk (a literal phi at or above 0.5), and left
-// out when every level resolves to the forward walk at emit time.
+// pins the shared reverse cumulative walk: it is bound once (as a
+// hqNativeLet lambda parameter, not a derived-query column — see
+// hqNativeBindPrepared) when any level can take the backward rank walk (a
+// literal phi at or above 0.5), and left out when every level resolves to
+// the forward walk at emit time.
 func TestEmitHistogramQuantilesNative_MaterialisesReverseWalkOnlyWhenALevelNeedsIt(t *testing.T) {
 	t.Parallel()
 
-	const revCum = "AS `_cerb_hq_revcum`"
+	// hqNativeBindPrepared always binds _cerb_hq_revcum last among the
+	// lambda's parameters when it binds it at all, so its bare (unquoted)
+	// spelling immediately before the lambda arrow is the one-and-only
+	// binding site; every read of the bound value inside the lambda body
+	// quotes it as an ordinary identifier, `_cerb_hq_revcum`.
+	const declSite = ", _cerb_hq_revcum) ->"
+	const useSite = "`_cerb_hq_revcum`"
 	forward := emitQuantilesSQL(t, nativeQuantilesPlan(
 		chplan.HistogramQuantileLevel{Phi: 0.1, Label: "0.1"},
 		chplan.HistogramQuantileLevel{Phi: 0.25, Label: "0.25"},
 	))
-	if strings.Contains(forward, revCum) {
+	if strings.Contains(forward, declSite) || strings.Contains(forward, useSite) {
 		t.Errorf("forward-only levels materialised the reverse walk\nSQL: %s", forward)
 	}
 	mixed := emitQuantilesSQL(t, nativeQuantilesPlan(
 		chplan.HistogramQuantileLevel{Phi: 0.1, Label: "0.1"},
 		chplan.HistogramQuantileLevel{Phi: 0.9, Label: "0.9"},
 	))
-	if got := strings.Count(mixed, revCum); got != 1 {
-		t.Errorf("a level at phi 0.9 needs the reverse walk once, got %d\nSQL: %s", got, mixed)
+	if got := strings.Count(mixed, declSite); got != 1 {
+		t.Errorf("a level at phi 0.9 needs the reverse walk bound once, got %d\nSQL: %s", got, mixed)
 	}
-	// The level's value reads the prepared column rather than re-deriving
+	// The level's value reads the bound parameter rather than re-deriving
 	// the reverse walk inline.
-	if uses := strings.Count(mixed, "`_cerb_hq_revcum`") - strings.Count(mixed, revCum); uses == 0 {
-		t.Errorf("the phi 0.9 level never reads the prepared reverse walk\nSQL: %s", mixed)
+	if uses := strings.Count(mixed, useSite); uses == 0 {
+		t.Errorf("the phi 0.9 level never reads the bound reverse walk\nSQL: %s", mixed)
 	}
 }
 

@@ -202,40 +202,27 @@ func (e *emitter) emitHistogramQuantilesNative(q *chplan.HistogramQuantilesNativ
 		return err
 	}
 
-	raw := newHQNativeWriters(&h, hqNativeHelperColumns{})
-	bucketed := NewQuery().Select(Star(), As(raw.buckets(), hqQuantileBucketsColumn)).From(sub)
-	bucketHelpers := hqNativeHelperColumns{buckets: hqQuantileBucketsColumn}
-	cumW := newHQNativeWriters(&h, bucketHelpers)
-	cumulated := NewQuery().Select(Star(), As(cumW.cum(), hqQuantileCumColumn)).From(Subquery(bucketed))
 	needsReverse := false
 	for _, level := range q.Levels {
 		levelHistogram := h
 		levelHistogram.Phi, levelHistogram.PhiExpr = level.Phi, nil
 		needsReverse = needsReverse || reachesReverseArm(&levelHistogram)
 	}
-	helpers := hqNativeHelperColumns{
-		buckets:        hqQuantileBucketsColumn,
-		cum:            hqQuantileCumColumn,
-		firstPopulated: hqQuantileFirstPopulatedColumn,
-		lastPopulated:  hqQuantileLastPopulatedColumn,
-	}
-	if needsReverse {
-		cumulated.Select(As(cumW.revCum(), hqQuantileRevCumColumn))
-		helpers.revCum = hqQuantileRevCumColumn
-	}
-	popW := newHQNativeWriters(&h, bucketHelpers)
-	prepared := NewQuery().Select(
-		Star(),
-		As(popW.firstPopulated(), hqQuantileFirstPopulatedColumn),
-		As(popW.lastPopulated(), hqQuantileLastPopulatedColumn),
-	).From(Subquery(cumulated))
-	values := make([]Frag, len(q.Levels))
-	for i, level := range q.Levels {
-		levelHistogram := h
-		levelHistogram.Phi, levelHistogram.PhiExpr = level.Phi, nil
-		values[i] = histogramQuantileNativeValueFrag(&levelHistogram, helpers)
-	}
-	valued := NewQuery().Select(Star(), As(Array(values...), hqLevelsColumn)).From(Subquery(prepared))
+	// Every level reads the same once-bound walk arrays (hqNativeBindPrepared)
+	// inside this single SELECT — including binding the reverse-walk array
+	// only when needsReverse, so a plan that never reaches the backward arm
+	// pays for no extra array walk — and only the rank position and
+	// interpolation are per level.
+	values := hqNativeBindPrepared(&h, needsReverse, func(helpers hqNativeHelperColumns) Frag {
+		perLevel := make([]Frag, len(q.Levels))
+		for i, level := range q.Levels {
+			levelHistogram := h
+			levelHistogram.Phi, levelHistogram.PhiExpr = level.Phi, nil
+			perLevel[i] = histogramQuantileNativeValueFrag(&levelHistogram, helpers)
+		}
+		return Array(perLevel...)
+	})
+	valued := NewQuery().Select(Star(), As(values, hqLevelsColumn)).From(sub)
 	return e.emitSelect(hqLevelRows(valued, hqLevelGrouping{
 		groupBy:          h.GroupBy,
 		groupByAliases:   h.GroupByAliases,

@@ -216,10 +216,11 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 }
 
 // TestEmit_HistogramQuantileNative_FactorsSharedExpressions pins the
-// derived-query stages that keep the native bucket walk from being
-// expanded at every use. Re-expanding these expressions is semantically
-// equivalent, but makes shifting-histogram compatibility queries exceed
-// the ClickHouse 24.8 request deadline.
+// let-bindings that keep the native bucket walk from being expanded at every
+// use. Re-expanding these expressions is semantically equivalent, but makes
+// shifting-histogram compatibility queries exceed the ClickHouse 24.8 request
+// deadline. Each defining expression renders exactly once, as the value its
+// lambda parameter is bound to.
 func TestEmit_HistogramQuantileNative_FactorsSharedExpressions(t *testing.T) {
 	t.Parallel()
 
@@ -229,15 +230,119 @@ func TestEmit_HistogramQuantileNative_FactorsSharedExpressions(t *testing.T) {
 	}
 
 	wantOnce := []string{
-		"arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`) AS `_cerb_hq_buckets`",
-		"arrayCumSum(`_cerb_hq_buckets`) AS `_cerb_hq_cum`",
-		"arrayFirstIndex(c -> c >= (0.25 * `Count`), `_cerb_hq_cum`) AS `_cerb_hq_idx`",
-		"AS `_cerb_hq_value_idx`",
+		"(_cerb_hq_buckets) -> ",
+		"[arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)]",
+		"(_cerb_hq_cum, _cerb_hq_first_populated, _cerb_hq_last_populated) -> ",
+		"[arrayCumSum(`_cerb_hq_buckets`)]",
+		"(_cerb_hq_idx) -> ",
+		"[arrayFirstIndex(c -> c >= (0.25 * `Count`), `_cerb_hq_cum`)]",
+		"(_cerb_hq_count, _cerb_hq_value_idx) -> ",
 	}
 	for _, fragment := range wantOnce {
 		if got := strings.Count(sql, fragment); got != 1 {
 			t.Errorf("SQL contains shared-expression fragment %q %d times, want 1\n--- sql ---\n%s", fragment, got, sql)
 		}
+	}
+}
+
+// TestEmit_HistogramQuantileNative_SingleSelectOverBoundary pins the nesting
+// depth of the native quantile: ClickHouse's query analysis re-walks a derived
+// query's whole subtree for every level above it, so every level the quantile
+// stacks over its (typically large) folded-histogram input is paid for again.
+// With output keys that are plain input columns, the quantile is exactly two
+// SELECTs over its input — the ARRAY JOIN materialization boundary and the
+// quantile itself, which reads the histogram fields straight off the
+// boundary's tuple. A key the tuple cannot supply keeps the unpacking
+// derived query in between.
+func TestEmit_HistogramQuantileNative_SingleSelectOverBoundary(t *testing.T) {
+	t.Parallel()
+
+	withAttributes := func(rename map[string]string) *chplan.Scan {
+		input := nativeQuantileTestInput(true)
+		input.Columns = append([]string{"Attributes"}, input.Columns...)
+		input.Roles = append([]chplan.Column{{Name: "Attributes", Role: chplan.RoleAttributes}}, input.Roles...)
+		for i, name := range input.Columns {
+			if to, ok := rename[name]; ok {
+				input.Columns[i], input.Roles[i].Name = to, to
+			}
+		}
+		return input
+	}
+	attributes := &chplan.ColumnRef{Name: "Attributes"}
+
+	const boundary = "SELECT arrayJoin([(`Attributes`, `Count`, "
+	cases := []struct {
+		name    string
+		input   *chplan.Scan
+		groupBy chplan.Expr
+		aliases []string
+		// wantHeads are the leading text of the outermost SELECTs, from the
+		// quantile's own down to the materialization boundary.
+		wantHeads []string
+	}{
+		{
+			name:    "input column key reads the boundary tuple",
+			input:   withAttributes(nil),
+			groupBy: attributes,
+			aliases: []string{"Attributes"},
+			wantHeads: []string{
+				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, arrayMap((Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts, ZeroThreshold) -> arrayMap((_cerb_hq_buckets) -> ",
+				boundary,
+			},
+		},
+		{
+			name:    "aliased input column key keeps its alias",
+			input:   withAttributes(nil),
+			groupBy: attributes,
+			aliases: []string{"labels"},
+			wantHeads: []string{
+				"SELECT `_cerb_histogram_input`.1 AS `labels`, arrayMap((Count, Sum, ",
+				boundary,
+			},
+		},
+		{
+			name:    "computed key keeps the unpacking query",
+			input:   withAttributes(nil),
+			groupBy: &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{attributes}},
+			aliases: []string{"Attributes"},
+			wantHeads: []string{
+				"SELECT mapSort(`Attributes`) AS `Attributes`, arrayMap((_cerb_hq_buckets) -> ",
+				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, `_cerb_histogram_input`.2 AS `Count`, ",
+				boundary,
+			},
+		},
+		{
+			name:    "non-identifier field keeps the unpacking query",
+			input:   withAttributes(map[string]string{"Sum": "sum.total"}),
+			groupBy: attributes,
+			aliases: []string{"Attributes"},
+			wantHeads: []string{
+				"SELECT `Attributes` AS `Attributes`, arrayMap((_cerb_hq_buckets) -> ",
+				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, `_cerb_histogram_input`.2 AS `Count`, `_cerb_histogram_input`.3 AS `sum.total`, ",
+				"SELECT arrayJoin([(`Attributes`, `Count`, `sum.total`, ",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan := hqNativePlan(0.25, nil)
+			plan.Input = tc.input
+			plan.GroupBy = []chplan.Expr{tc.groupBy}
+			plan.GroupByAliases = tc.aliases
+			sql, _, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			rest := sql
+			for i, head := range tc.wantHeads {
+				at := strings.Index(rest, "SELECT ")
+				if at < 0 || !strings.HasPrefix(rest[at:], head) {
+					t.Fatalf("SELECT #%d does not start with %q\n--- sql ---\n%s", i+1, head, sql)
+				}
+				rest = rest[at+len("SELECT "):]
+			}
+		})
 	}
 }
 

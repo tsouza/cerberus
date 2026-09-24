@@ -515,6 +515,31 @@ A six-series selection uses default admission limits. The full fixture uses an
 explicit test-only fold-work budget; it does not change production defaults or
 the physical memory cap. Query duration is recorded but is not a latency gate.
 
+## Query nesting depth
+
+Native-histogram plans run under ClickHouse's older query analyzer
+(`enable_analyzer=0`, stamped by the engine's native-histogram analyzer rule).
+That analyzer re-walks a derived query's whole subtree for every derived-query
+level above it, so a request's planning time grows with its nesting depth times
+the size of the expressions beneath each level. Emitters keep nesting shallow:
+
+- A per-row value that several expressions read is bound once as a lambda
+  parameter over a one-element array — `arrayMap((x, …) -> <body>, [<value>],
+  …)[1]` — inside the SELECT that reads it, not projected by its own
+  `SELECT *, <value> AS x FROM (…)` stage. The native `histogram_quantile` and
+  `histogram_quantiles` walk helpers (bucket walk, running counts, stop and
+  value indexes, populated bounds) are bound this way.
+- The native `histogram_quantile` reads its input's histogram fields straight
+  off the ARRAY JOIN materialization boundary's tuple when its output keys are
+  input columns and the field names are bare identifiers; otherwise an
+  unpacking SELECT sits between the boundary and the quantile.
+- The PromQL sample projection returns a Project that already publishes
+  `MetricName`, `Attributes`, `TimeUnix`, `Value` in order as is, instead of
+  re-projecting it.
+
+`TestEmit_HistogramQuantileNative_SingleSelectOverBoundary` pins the native
+quantile's depth over its input.
+
 ## See also
 
 - [`benchmarks.md`](benchmarks.md) — live before/after wins, scaling curves,
