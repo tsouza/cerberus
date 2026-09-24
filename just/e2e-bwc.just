@@ -357,6 +357,18 @@ e2e-bwc-replicated-verify:
     @echo "==> [bwc-replicated] verifying schema + row replication across every ClickHouse pod"
     node .github/scripts/e2e-bwc-replicated-verify.mjs
 
+# Terminates a ClickHouse pod while a bounded query runs against it, then
+# rolls the whole StatefulSet: the pod grace must exceed the server's own
+# shutdown wait, the in-flight query must complete, the old pod must exit
+# before its grace ends, and every pod must come back Ready and writable.
+# Logic lives in .github/scripts/e2e-bwc-shutdown-verify.mjs. Run AFTER
+# `just e2e-bwc-replicated-up`; it restarts every ClickHouse pod.
+
+# Verify graceful ClickHouse shutdown under load, restart recovery and a rolling update.
+e2e-bwc-shutdown-verify:
+    @echo "==> [bwc-replicated] verifying graceful shutdown, restart recovery and a rolling update"
+    node .github/scripts/e2e-bwc-shutdown-verify.mjs
+
 # Tear the bundled-ClickHouse replicated lane down.
 e2e-bwc-replicated-down: e2e-down
 

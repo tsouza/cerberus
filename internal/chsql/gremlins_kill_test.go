@@ -25,16 +25,15 @@ import (
 //     `||` or `==` ↔ `!=` flip on the named operator falls out of
 //     scope and gets killed.
 
-// TestSortRankFor_ContinueVsBreak kills the `continue` → `break` flip
-// in prewhere.go:`r < 0`. Input order matters: an unknown column ahead of
-// a known one only resolves to the known column's rank if the loop
-// keeps iterating (continue) rather than bailing on the first miss
-// (break).
+// TestSortRankFor_ContinueVsBreak kills the boundary and negation flips of
+// prewhere.go:sortRankFor:`r >= 0`. An unknown column (SortRank -1) must be dropped rather
+// than ranked, and the loop must keep scanning past it, so an unknown column
+// ahead of a known one still resolves to the known column's rank.
 func TestSortRankFor_ContinueVsBreak(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName", "Timestamp"}}
-	// Unknown column first → continue path returns 0 (ServiceName).
-	// break-mutant would short-circuit to -1.
+	// Unknown column first → returns 0 (ServiceName). Ranking the unknown
+	// column, or dropping rank 0, would return -1.
 	if got := sortRankFor([]string{"Unknown", "ServiceName"}, shape); got != 0 {
 		t.Errorf("sortRankFor([Unknown, ServiceName]) = %d, want 0", got)
 	}
@@ -44,42 +43,28 @@ func TestSortRankFor_ContinueVsBreak(t *testing.T) {
 	}
 }
 
-// TestSortRankFor_BestNegativeBoundary kills the `<` ↔ `<=` boundary
-// flip on prewhere.go:`best < 0`. The citation names that operand alone:
-// the `||` it sits in hosts a SECOND, independent CONDITIONALS_BOUNDARY on
-// `r < best` that prewhere_mutation_test.go's NOT KILLABLE footer proves
-// equivalent, and a citation covering both would adjudicate two mutants at
-// once. With the mutant `best <= 0`
-// the loop overwrites the rank-0 best when it sees any larger rank,
-// returning the wrong (later) sort column.
+// TestSortRankFor_BestNegativeBoundary pins that prewhere.go:`slices.Min(ranks)`
+// keeps the rank-0 column when a larger rank follows it, rather than returning
+// the later sort column.
 func TestSortRankFor_BestNegativeBoundary(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName", "Timestamp"}}
-	// ServiceName(rank=0) processed first → best=0. Timestamp(rank=1)
-	// must NOT overwrite. Mutant `<=` would (0<=0 true).
+	// ServiceName(rank=0) first, Timestamp(rank=1) second: the minimum is 0.
 	if got := sortRankFor([]string{"ServiceName", "Timestamp"}, shape); got != 0 {
 		t.Errorf("sortRankFor([ServiceName, Timestamp]) = %d, want 0", got)
 	}
 }
 
-// TestOrderedConjuncts_StableSortLogicalOr kills the CONDITIONALS_BOUNDARY
-// and CONDITIONALS_NEGATION flips of the insertion-sort swap condition
-// prewhere.go:`prefix[j-1].rank > prefix[j].rank`. When the rank
-// comparison holds the original swaps the pair; a flipped comparison
-// never swaps, so an out-of-order pair is left in input order.
-//
-// The mutators are named because that line also hosts the INVERT_LOOPCTRL
-// mutant of the `break` below it, which prewhere_mutation_test.go's
-// NOT KILLABLE footer proves equivalent. Naming both sides is what keeps the
-// two verdicts on one line legible as the different mutants they are.
+// TestOrderedConjuncts_StableSortLogicalOr pins the sort-prefix bucket's
+// ascending order at prewhere.go:`cmp.Compare(a.rank, b.rank)`: an
+// out-of-order pair must be reordered, not left in input order.
 func TestOrderedConjuncts_StableSortLogicalOr(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName", "Timestamp"}}
 	a := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "Timestamp"}, Right: &chplan.LitInt{V: 1}}
 	b := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ServiceName"}, Right: &chplan.LitString{V: "api"}}
-	// Input order: Timestamp(rank 1), ServiceName(rank 0). Original
-	// sorts to [ServiceName, Timestamp]; `&&` mutant leaves them in
-	// input order.
+	// Input order: Timestamp(rank 1), ServiceName(rank 0); sorted order is
+	// [ServiceName, Timestamp].
 	got := orderedConjuncts([]chplan.Expr{a, b}, shape)
 	if len(got) != 2 || got[0] != b || got[1] != a {
 		t.Errorf("orderedConjuncts: got %v, want [ServiceName, Timestamp]", got)
@@ -3243,15 +3228,11 @@ func TestOrderedConjuncts_SkipBucketContinue(t *testing.T) {
 	}
 }
 
-// TestOrderedConjuncts_StableSameRankTiebreak kills the insertion-sort
-// mutants of prewhere.go:`prefix[j-1].rank > prefix[j].rank` — the
-// comparison flips plus the INVERT_LOOPCTRL on the `continue` after a
-// swap.
+// TestOrderedConjuncts_StableSameRankTiebreak pins that the sort-prefix
+// bucket's sort is stable (prewhere.go:`slices.SortStableFunc`).
 //
 // Three conjuncts all reference the SAME sort column (ServiceName, rank
-// 0), so the rank comparison is always a tie and the strict `>` must
-// leave them alone. The original keeps them in input order; a flipped
-// comparison or an early `break` permutes them.
+// 0), so every comparison is a tie and they must stay in input order.
 func TestOrderedConjuncts_StableSameRankTiebreak(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName"}}
