@@ -129,3 +129,43 @@ func TestWrapWithSampleProjectionRejectsUntrustedSchemas(t *testing.T) {
 		})
 	}
 }
+
+// TestWrapWithSampleProjectionSkipsIdentityProject pins that a Project already
+// publishing the Sample quartet in order is returned as is, while a quartet
+// that still needs a rename, a reorder, or a non-Project root keeps its
+// wrapper.
+func TestWrapWithSampleProjectionSkipsIdentityProject(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	quartet := sampleRoleColumns(s)
+
+	identity := schemaProject(quartet)
+	wrapped, err := wrapWithSampleProjection(identity, s)
+	if err != nil {
+		t.Fatalf("wrapWithSampleProjection: %v", err)
+	}
+	if wrapped != identity {
+		t.Fatalf("identity quartet Project was re-wrapped as %T", wrapped)
+	}
+
+	renamed := slices.Clone(quartet)
+	renamed[3].Name = "source_value"
+	reordered := []chplan.Column{quartet[1], quartet[0], quartet[2], quartet[3]}
+	for name, input := range map[string]chplan.Node{
+		"renamed value": schemaProject(renamed),
+		"reordered":     schemaProject(reordered),
+		"scan root":     &chplan.Scan{Table: s.GaugeTable, Columns: []string{quartet[0].Name, quartet[1].Name, quartet[2].Name, quartet[3].Name}, Roles: quartet},
+	} {
+		wrapped, err := wrapWithSampleProjection(input, s)
+		if err != nil {
+			t.Fatalf("%s: wrapWithSampleProjection: %v", name, err)
+		}
+		projected, ok := wrapped.(*chplan.Project)
+		if !ok || projected.Input != input {
+			t.Fatalf("%s: got %T, want a sample Project over the input", name, wrapped)
+		}
+		if got := projected.RowType(); !got.Equal(chplan.Schema{Columns: quartet}) {
+			t.Fatalf("%s: wrapped schema = %#v, want %#v", name, got, quartet)
+		}
+	}
+}
