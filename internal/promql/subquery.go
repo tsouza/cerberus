@@ -670,6 +670,57 @@ func subqueryAnchorShape(inner chplan.Node, s schema.Metrics) chplan.Node {
 // leading MetricName.
 const subqueryAnchorShapeMaxCols = 5
 
+// lowerSubqueryOverInstantTransform is [lowerSubqueryOverCall]'s
+// sample-preserving-transform arm, split out to keep that function's own
+// nesting flat: `call` is a member of instantTransformFns whose argument
+// subtree [subqueryInstantSafe] already cleared.
+//
+// The math/clamp/round-to-nearest corner of instantTransformFns does not
+// merely risk dropping the marker at the scan (the mode fix below) —
+// ClickHouse does not preserve [value.StaleNaN]'s exact bit pattern
+// through those functions at all, so encoding the marker into Value and
+// running the transform on it first is unsound regardless of mode. See
+// [lowerSubqueryIdentityMathReorder]'s own doc for the verified
+// per-function evidence and the reorder that sidesteps it.
+//
+// The remaining instantTransformFns members that never rewrite Value
+// (label_replace / label_join / info rewrite Attributes only; the sort
+// family rewrites neither column) can safely encode the marker at the
+// scan and drop it after the window, the same rule
+// [lowerSubqueryOverVectorSelector] applies to a bare selector. See
+// [subqueryIdentityValuePreserving].
+func lowerSubqueryOverInstantTransform(
+	sub *parser.SubqueryExpr,
+	call *parser.Call,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	if vs, ok := call.Args[0].(*parser.VectorSelector); ok {
+		if plan, matched, err := lowerSubqueryIdentityMathReorder(sub, call, vs, step, s, ctx); matched {
+			return plan, err
+		}
+	}
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	valuePreserving := subqueryIdentityValuePreserving(call.Func.Name)
+	if valuePreserving {
+		rangeCtx.latestSampleWindow = true
+	}
+	inner, err := lowerCall(call, s, rangeCtx)
+	if err != nil {
+		return nil, err
+	}
+	windowed, err := wrapSubqueryIdentity(sub, inner, step, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if valuePreserving {
+		return dropStaleLatestSamples(windowed, s), nil
+	}
+	return windowed, nil
+}
+
 // lowerSubqueryOverCall — `<range-vector-fn>(<inner>[<inner_range>])[<outer_range>:<step>]`.
 // The most common shape is `rate(m[5m])[1h:5m]`. Lowers to a single
 // matrix-shape RangeWindow where:
@@ -697,43 +748,7 @@ func lowerSubqueryOverCall(
 	// sources, whose instant lowerings collapse the per-sample
 	// timestamps the Identity wrapper needs).
 	if isInstantTransformCall(call) && subqueryInstantSafe(call) {
-		// The math/clamp/round-to-nearest corner of instantTransformFns
-		// does not merely risk dropping the marker at the scan (the mode
-		// fix below) — ClickHouse does not preserve [value.StaleNaN]'s
-		// exact bit pattern through those functions at all, so encoding
-		// the marker into Value and running the transform on it first is
-		// unsound regardless of mode. See
-		// [lowerSubqueryIdentityMathReorder]'s own doc for the verified
-		// per-function evidence and the reorder that sidesteps it.
-		if vs, ok := call.Args[0].(*parser.VectorSelector); ok {
-			if plan, matched, err := lowerSubqueryIdentityMathReorder(sub, call, vs, step, s, ctx); matched {
-				return plan, err
-			}
-		}
-		rangeCtx := ctx
-		rangeCtx.inRangeVector = true
-		// The remaining instantTransformFns members that never rewrite
-		// Value (label_replace / label_join / info rewrite Attributes
-		// only; the sort family rewrites neither column) can safely
-		// encode the marker at the scan and drop it after the window,
-		// the same rule [lowerSubqueryOverVectorSelector] applies to a
-		// bare selector. See [subqueryIdentityValuePreserving].
-		valuePreserving := subqueryIdentityValuePreserving(call.Func.Name)
-		if valuePreserving {
-			rangeCtx.latestSampleWindow = true
-		}
-		inner, err := lowerCall(call, s, rangeCtx)
-		if err != nil {
-			return nil, err
-		}
-		windowed, err := wrapSubqueryIdentity(sub, inner, step, s, ctx)
-		if err != nil {
-			return nil, err
-		}
-		if valuePreserving {
-			return dropStaleLatestSamples(windowed, s), nil
-		}
-		return windowed, nil
+		return lowerSubqueryOverInstantTransform(sub, call, step, s, ctx)
 	}
 	// `absent(<v>)[range:step]` — per-anchor absence indicator; needs
 	// the StepGrid-fanned absent lowering, not the Identity wrap (the
