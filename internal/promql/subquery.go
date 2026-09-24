@@ -332,6 +332,97 @@ func wrapSubqueryIdentity(
 	}, nil
 }
 
+// subqueryIdentityValuePreserving reports whether an instantTransformFns
+// member never rewrites Value, so a stale marker's [value.StaleNaN]
+// encoding (stale_marker.go) survives the transform bit-for-bit:
+// label_replace / label_join / info rewrite Attributes only, and the
+// sort family rewrites neither column (see instantTransformFns's own
+// membership doc). Every other member either goes through
+// [lowerSubqueryIdentityMathReorder] instead, or — the date-component
+// family — is left on this function's pre-#3655 behaviour: reordering
+// them the same way would need a per-function value kernel the way the
+// math family already has, and encoding a marker into their Value
+// unreordered doesn't merely risk a corrupted bit pattern, it makes
+// ClickHouse reject the query outright (`toYear(fromUnixTimestamp64Nano(...))`
+// on a NaN operand raises `CANNOT_CONVERT_TYPE: Unexpected inf or nan to
+// integer conversion`), so this deliberately excludes them rather than
+// trade a stale answer for a 502.
+func subqueryIdentityValuePreserving(fn string) bool {
+	switch fn {
+	case fnLabelReplace, fnLabelJoin, "info",
+		"sort", "sort_desc", "sort_by_label", "sort_by_label_desc":
+		return true
+	}
+	return false
+}
+
+// lowerSubqueryIdentityMathReorder implements the reorder issue #3655's
+// path 1 calls for: `abs(x)[2m:30s]` (and the rest of instantFnCH, plus
+// clamp/clamp_min/clamp_max and the 2-arg round(v, to_nearest) form)
+// lowers its argument over raw rows and only then wraps the Identity
+// window, so a stale marker's encoded Value ([staleMarkerValueExpr])
+// reaches the transform BEFORE [dropStaleLatestSamples] ever gets to
+// check it. Verified against ClickHouse directly (reinterpreting
+// [value.StaleNaN]'s bits, running each function, and reinterpreting the
+// result back): `abs` happens to preserve the exact bit pattern, but
+// `round`, `ceil`, `sqrt`, `exp` and every other instantFnCH entry
+// canonicalize a NaN operand to a DIFFERENT bit pattern, and
+// `least(NaN, bound)` — clamp_max's kernel — resolves to the bound
+// itself, not NaN at all. Any of these silently turns a marker into an
+// ordinary sample the drop check no longer recognises.
+//
+// instantTransformFns's own membership rule is exactly the fact that
+// makes reordering sound: every member is a per-sample Value/Attributes
+// map that commutes with "take the latest sample in window", so
+// transform-then-select and select-then-transform must agree for every
+// REAL sample. The fix windows the BARE argument first — through
+// [lowerSubqueryOverVectorSelector], the identical pipeline a
+// bare-selector subquery uses, which encodes the marker, picks the
+// per-anchor latest sample, and drops the anchor a marker wins — and
+// applies the transform on the survivors, so a marker's encoded NaN is
+// never handed to a corrupting function at all.
+//
+// matched is false for a call shape this reorder doesn't cover — its
+// value argument is not vs at all (a nested composition such as
+// `abs(clamp_max(x,5))[5m:1m]` recurses through a Call, not a
+// VectorSelector, at c.Args[0]) or its function isn't in the
+// math/clamp/round family — and the caller keeps its existing lowering.
+func lowerSubqueryIdentityMathReorder(
+	sub *parser.SubqueryExpr,
+	call *parser.Call,
+	vs *parser.VectorSelector,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, bool, error) {
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	load := func() (chplan.Node, error) { return lowerSubqueryOverVectorSelector(sub, vs, step, s, ctx) }
+
+	// round's 2-arg (to_nearest) form takes this branch first — same
+	// precedence [lowerMathCall] itself gives it over the generic
+	// instantFnCH tail — so it reaches [lowerRoundOverInput] rather than
+	// being rejected by the arity check below.
+	switch call.Func.Name {
+	case "clamp", "clamp_min", "clamp_max":
+		plan, err := lowerClampOverInput(call, s, rangeCtx, load, ordinaryGuarded)
+		return plan, true, err
+	case "round":
+		if len(call.Args) == 2 {
+			plan, err := lowerRoundOverInput(call, s, rangeCtx, load, ordinaryGuarded)
+			return plan, true, err
+		}
+	}
+	if chFn, ok := instantFnCH[call.Func.Name]; ok {
+		if len(call.Args) != 1 {
+			return nil, false, nil
+		}
+		plan, err := lowerMathCall(call, s, rangeCtx, chFn, load, ordinaryGuarded)
+		return plan, true, err
+	}
+	return nil, false, nil
+}
+
 // declareSubqueryTimestampRole closes the lowering-owned boundary between an
 // arbitrary instant expression and the identity RangeWindow that re-evaluates
 // it on the subquery grid. Some aggregate/arithmetic compositions retain the
@@ -579,6 +670,57 @@ func subqueryAnchorShape(inner chplan.Node, s schema.Metrics) chplan.Node {
 // leading MetricName.
 const subqueryAnchorShapeMaxCols = 5
 
+// lowerSubqueryOverInstantTransform is [lowerSubqueryOverCall]'s
+// sample-preserving-transform arm, split out to keep that function's own
+// nesting flat: `call` is a member of instantTransformFns whose argument
+// subtree [subqueryInstantSafe] already cleared.
+//
+// The math/clamp/round-to-nearest corner of instantTransformFns does not
+// merely risk dropping the marker at the scan (the mode fix below) —
+// ClickHouse does not preserve [value.StaleNaN]'s exact bit pattern
+// through those functions at all, so encoding the marker into Value and
+// running the transform on it first is unsound regardless of mode. See
+// [lowerSubqueryIdentityMathReorder]'s own doc for the verified
+// per-function evidence and the reorder that sidesteps it.
+//
+// The remaining instantTransformFns members that never rewrite Value
+// (label_replace / label_join / info rewrite Attributes only; the sort
+// family rewrites neither column) can safely encode the marker at the
+// scan and drop it after the window, the same rule
+// [lowerSubqueryOverVectorSelector] applies to a bare selector. See
+// [subqueryIdentityValuePreserving].
+func lowerSubqueryOverInstantTransform(
+	sub *parser.SubqueryExpr,
+	call *parser.Call,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	if vs, ok := call.Args[0].(*parser.VectorSelector); ok {
+		if plan, matched, err := lowerSubqueryIdentityMathReorder(sub, call, vs, step, s, ctx); matched {
+			return plan, err
+		}
+	}
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	valuePreserving := subqueryIdentityValuePreserving(call.Func.Name)
+	if valuePreserving {
+		rangeCtx.latestSampleWindow = true
+	}
+	inner, err := lowerCall(call, s, rangeCtx)
+	if err != nil {
+		return nil, err
+	}
+	windowed, err := wrapSubqueryIdentity(sub, inner, step, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if valuePreserving {
+		return dropStaleLatestSamples(windowed, s), nil
+	}
+	return windowed, nil
+}
+
 // lowerSubqueryOverCall — `<range-vector-fn>(<inner>[<inner_range>])[<outer_range>:<step>]`.
 // The most common shape is `rate(m[5m])[1h:5m]`. Lowers to a single
 // matrix-shape RangeWindow where:
@@ -606,13 +748,7 @@ func lowerSubqueryOverCall(
 	// sources, whose instant lowerings collapse the per-sample
 	// timestamps the Identity wrapper needs).
 	if isInstantTransformCall(call) && subqueryInstantSafe(call) {
-		rangeCtx := ctx
-		rangeCtx.inRangeVector = true
-		inner, err := lowerCall(call, s, rangeCtx)
-		if err != nil {
-			return nil, err
-		}
-		return wrapSubqueryIdentity(sub, inner, step, s, ctx)
+		return lowerSubqueryOverInstantTransform(sub, call, step, s, ctx)
 	}
 	// `absent(<v>)[range:step]` — per-anchor absence indicator; needs
 	// the StepGrid-fanned absent lowering, not the Identity wrap (the
