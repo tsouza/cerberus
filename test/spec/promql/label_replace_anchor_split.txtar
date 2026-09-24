@@ -1,0 +1,36 @@
+# Regex `a)|(b` is accepted by Prometheus's `label_replace` (it anchors as
+# `^(?s:a)|(b)$`, which the Go parser accepts even though `a)|(b` alone
+# does not) — but the regex's own `)` closes the anchoring `(?s:...)`
+# group early, splitting `^` onto the first alternation arm and `$` onto
+# the second instead of wrapping the whole pattern. A match can then cover
+# only a prefix (`^(?s:a)` matching the leading "a") or a suffix (`(b)$`
+# matching a trailing "b") of the source value, never the value's full
+# span.
+#
+# Prometheus writes `ExpandString(replacement)` — the template alone —
+# whenever the anchored regex matches, regardless of how much of the
+# source value the match actually covered. `[$1]` never references group
+# 0 (the match span itself), and group 1 — `(b)` — only takes part when
+# the second alternation arm matched, so the destination label is `[]` on
+# every one of these source values: "api" matches via the first arm
+# (leading "a"), "a-b" also via the first arm, and "ab" via the first arm
+# too (RE2's leftmost-first semantics try the first alternative first).
+-- query.promql --
+label_replace(reqs, "dst", "[$1]", "v", "a)|(b")
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('reqs', map('v', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1),
+    ('reqs', map('v', 'a-b'), toDateTime64('2026-01-01 00:00:00', 9), 2),
+    ('reqs', map('v', 'ab'), toDateTime64('2026-01-01 00:00:00', 9), 3);
+-- expected_rows --
+[]
