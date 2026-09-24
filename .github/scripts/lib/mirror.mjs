@@ -83,6 +83,8 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.6',
   'clickhouse/clickhouse-server:26.6-alpine',
   'clickhouse/clickhouse-server:26.6.1.1193-alpine',
+  // test/regexjit's exact builds (CH_REGEX_JIT_IMAGES): one release of each
+  // line that compiles regular expressions to native code.
   // test/querylog's exact builds (CH_QUERY_LOG_IMAGES): the supported floor
   // and the first line maintaining system.all_query_log.
   'clickhouse/clickhouse-server:24.8.14.39-alpine',

@@ -85,7 +85,7 @@ func TestMutation_ExprLabelReplace_TemplateForm(t *testing.T) {
 		"mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), "+
 			"mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, "+
 			"replaceRegexpOne(`Attributes`[?], ?, ?)))), `Attributes`))",
-		[]any{"src", "^(?s:(.*))$", "dst", "src", "", "src", "^(?s:(.*))$", "v-$1"},
+		[]any{"src", "(?s)^(?:(.*))$", "dst", "src", "", "src", "(?s)^(?:(.*))$", "v-$1"},
 	)
 }
 
@@ -121,8 +121,8 @@ func TestMutation_ExprLabelReplace_SegmentForm(t *testing.T) {
 			"mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, "+
 			"concat(?, `Attributes`[?], extractGroups(`Attributes`[?], ?)[?])))), `Attributes`))",
 		[]any{
-			"src", "^(?s:(.*))$", "dst", "src", "empty",
-			"pre-", "src", "src", "^(?s:(.*))$", int64(groupAboveTemplateCeiling),
+			"src", "(?s)^(?:(.*))$", "dst", "src", "empty",
+			"pre-", "src", "src", "(?s)^(?:(.*))$", int64(groupAboveTemplateCeiling),
 		},
 	)
 }
@@ -167,11 +167,11 @@ func TestMutation_ExprLabelReplace_SharedCaptureNameForm(t *testing.T) {
 			"extractGroups(`Attributes`[?], ?)[?], "+
 			"extractGroups(`Attributes`[?], ?)[?]]))))), `Attributes`))",
 		[]any{
-			"src", "^(?s:(a)|(b))$", "dst", "src", "",
+			"src", "(?s)^(?:(a)|(b))$", "dst", "src", "",
 			"v=", "",
-			"src", "^(?s:(a)|(b))$", int64(1),
-			"src", "^(?s:(a)|(b))$", int64(2),
-			"src", "^(?s:(a)|(b))$", int64(3),
+			"src", "(?s)^(?:(a)|(b))$", int64(1),
+			"src", "(?s)^(?:(a)|(b))$", int64(2),
+			"src", "(?s)^(?:(a)|(b))$", int64(3),
 		},
 	)
 }
@@ -269,7 +269,7 @@ func TestMutation_ExprLabelReplace_ProbedCarrierForm(t *testing.T) {
 		},
 	})
 
-	const probed = `^(?s:(?:(?P<cerberusprobe0>x(?P<dup>a?)))?(?P<dup>b))$`
+	const probed = `(?s)^(?:(?:(?P<cerberusprobe0>x(?P<dup>a?)))?(?P<dup>b))$`
 	assertRender(
 		t, sql, args,
 		"mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), "+
@@ -282,7 +282,7 @@ func TestMutation_ExprLabelReplace_ProbedCarrierForm(t *testing.T) {
 		[]any{
 			// The match() test keeps the ORIGINAL regex: it accepts the
 			// same strings, and no numbering is read off it.
-			"src", "^(?s:(?:x(?P<dup>a?))?(?P<dup>b))$", "dst", "src", "",
+			"src", "(?s)^(?:(?:x(?P<dup>a?))?(?P<dup>b))$", "dst", "src", "",
 			"",
 			"src", probed, int64(2),
 			"src", probed, int64(3),
