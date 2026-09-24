@@ -5,7 +5,7 @@
       "site": "internal/promql/lower.go:lowerCall#682975f8",
       "message": "promql: function %s is not a recognized lowering target",
       "class": "internal",
-      "rationale": "quantile_over_time is special-cased above; every remaining function name the parser accepts is covered before this point: the arg0 shape check (now peeling ParenExpr/StepInvariantExpr via peelWrappers, #1896) catches every function whose argument position is Matrix-typed -- the rangeVectorFn set plus absent_over_time, whose sole argument the parser always types as Matrix -- and every other function name is covered by either the exhaustive switch above or instantFnCH. The date-function switch retains timestamp through timestampFunctionName, whose value is the same parser function name. No parseable function name reaches this fallback.",
+      "rationale": "quantile_over_time is special-cased above; every remaining function name the parser accepts is covered before this point: the arg0 shape check (now peeling ParenExpr/StepInvariantExpr via peelWrappers, #1896) catches every function whose argument position is Matrix-typed -- the rangeVectorFn set plus absent_over_time, whose sole argument the parser always types as Matrix -- and every other function name is covered by either the exhaustive switch above or instantFnCH. The date-function switch retains timestamp through timestampFunctionName, whose value is the same parser function name. No parseable function name reaches this fallback. lowerSubqueryOverInstantTransform, which replaced lowerSubqueryOverCall as this direct caller for the sample-preserving-transform arm, hands lowerCall the SAME parsed call isInstantTransformCall already confirmed names a real instantTransformFns member, so it reaches this fallback no more than lower itself does.",
       "evidence": {
         "guard": [
           "past returning if c.Func.Name == \"quantile_over_time\"",
@@ -14,10 +14,14 @@
         ],
         "callers": [
           "lower",
-          "lowerSubqueryOverCall",
-          "lowerSubqueryOverInstantCall"
+          "lowerSubqueryOverInstantCall",
+          "lowerSubqueryOverInstantTransform"
         ],
         "cited": [
+          "isInstantTransformCall",
+          "lowerCall",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverInstantTransform",
           "peelWrappers"
         ]
       }
@@ -35,8 +39,8 @@
         ],
         "callers": [
           "lower",
-          "lowerSubqueryOverCall",
-          "lowerSubqueryOverInstantCall"
+          "lowerSubqueryOverInstantCall",
+          "lowerSubqueryOverInstantTransform"
         ]
       }
     }
