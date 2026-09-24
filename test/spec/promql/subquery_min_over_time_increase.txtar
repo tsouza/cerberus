@@ -42,7 +42,7 @@ RangeWindow func=min_over_time range=1h0m0s step=0s ts=anchor_ts value=Value gro
   Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
     RangeWindow func=increase range=5m0s step=5m0s outerRange=1h0m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2025-12-31T23:00:01Z end=2026-01-01T00:00:01Z stepAlign
       Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value, AggregationTemporality AS AggregationTemporality]
-        Filter predicate=((MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total")) AND FnNot((bitAnd(Flags, 1) != 0)))
+        Filter predicate=((MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total")) AND FnNot((FnBitAnd(Flags, 1) != 0)))
           Scan(otel_metrics_sum)
 -- args_optimized --
 [0] string = "service_name"

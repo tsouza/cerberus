@@ -79,7 +79,7 @@ INSERT INTO otel_metrics_histogram VALUES
 [55] int64 = 300000000000
 [56] int64 = 9218868437227405314
 -- chplan --
-Filter predicate=(reinterpretAsUInt64(Value) != 9218868437227405314)
+Filter predicate=(FnReinterpretAsUInt64(Value) != 9218868437227405314)
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
       Filter predicate=((TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))

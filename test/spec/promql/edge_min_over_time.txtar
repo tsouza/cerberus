@@ -20,7 +20,7 @@ SELECT `Attributes`, min(`Value`) AS `Value` FROM (SELECT `MetricName` AS `Metri
 -- chplan --
 RangeWindow func=min_over_time range=10m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z distinctSampleRows
   Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
-    Filter predicate=((MetricName = "temperature") AND FnNot((bitAnd(Flags, 1) != 0)))
+    Filter predicate=((MetricName = "temperature") AND FnNot((FnBitAnd(Flags, 1) != 0)))
       Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- seed --
 CREATE TABLE otel_metrics_gauge (

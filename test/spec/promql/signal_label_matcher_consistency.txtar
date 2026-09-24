@@ -106,11 +106,11 @@ INSERT INTO otel_metrics_gauge VALUES
 [39] int64 = 300000000000
 [40] int64 = 9218868437227405314
 -- chplan --
-Filter predicate=(reinterpretAsUInt64(Value) != 9218868437227405314)
+Filter predicate=(FnReinterpretAsUInt64(Value) != 9218868437227405314)
   Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
     Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
       Filter predicate=((TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
-        Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnIf((bitAnd(Flags, 1) != 0), reinterpretAsFloat64(9218868437227405314), Value) AS Value]
+        Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnIf((FnBitAnd(Flags, 1) != 0), FnReinterpretAsFloat64(9218868437227405314), Value) AS Value]
           Filter predicate=(((((FnCoalesce(FnNullIf(Attributes["job"], ""), FnNullIf(ResourceAttributes["job"], ""), "") = "api") AND (FnCoalesce(FnNullIf(Attributes["env"], ""), FnNullIf(ResourceAttributes["env"], ""), "") != "prod")) AND (FnCoalesce(FnNullIf(Attributes["region"], ""), FnNullIf(ResourceAttributes["region"], ""), "") =~ "us-.*")) AND (FnCoalesce(FnNullIf(Attributes["cell"], ""), FnNullIf(ResourceAttributes["cell"], ""), "") !~ "staging.*")) AND (MetricName = "up"))
             Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- settings --
