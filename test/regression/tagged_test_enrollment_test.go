@@ -1424,11 +1424,23 @@ func taggedWorkingDirectory(workflow, job taggedWorkflowDefaults, step taggedWor
 }
 
 func taggedWorkflowRunsOnLinux(runsOn any) bool {
-	value, ok := runsOn.(string)
+	if value, ok := runsOn.(string); ok {
+		return regexp.MustCompile(`^ubuntu-(?:latest|[0-9]+\.[0-9]+)$`).MatchString(strings.TrimSpace(value))
+	}
+	// A list form (`runs-on: [self-hosted, cerberus]`) targets one of the
+	// project's own self-hosted runner pods, every one of which is Linux
+	// (registered with the "Linux" label in cirunners' bootstrap script).
+	// There is no Windows/macOS self-hosted runner in this repo.
+	labels, ok := runsOn.([]any)
 	if !ok {
 		return false
 	}
-	return regexp.MustCompile(`^ubuntu-(?:latest|[0-9]+\.[0-9]+)$`).MatchString(strings.TrimSpace(value))
+	for _, label := range labels {
+		if s, ok := label.(string); ok && strings.EqualFold(strings.TrimSpace(s), "self-hosted") {
+			return true
+		}
+	}
+	return false
 }
 
 func taggedWorkflowPipelineIsFailClosed(workflow, job taggedWorkflowDefaults, step taggedWorkflowStep) bool {
@@ -2176,6 +2188,12 @@ func TestTaggedTestEnrollmentNegativeControls(t *testing.T) {
 		if !taggedWorkflowRunsOnLinux("ubuntu-latest") || taggedWorkflowRunsOnLinux("windows-latest") ||
 			taggedWorkflowRunsOnLinux("${{ matrix.os }}") {
 			t.Fatal("runner build context was not bound to static Linux")
+		}
+		if !taggedWorkflowRunsOnLinux([]any{"self-hosted", "cerberus"}) {
+			t.Fatal("a self-hosted runs-on list was not recognized as Linux")
+		}
+		if taggedWorkflowRunsOnLinux([]any{"windows-latest"}) || taggedWorkflowRunsOnLinux([]any{}) {
+			t.Fatal("a non-self-hosted runs-on list was accepted as Linux")
 		}
 	})
 
