@@ -263,8 +263,6 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		return err
 	}
 
-	sub = materializeHistogramInput(sub, h.Input.RowType())
-
 	// Native quantile interpolation reuses the bucket walk, cumulative
 	// counts, stop index, value index, and the first/last populated-bucket
 	// positions many times. Each is bound ONCE per row as a lambda
@@ -275,16 +273,7 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 	// SELECT instead of one derived-query stage per helper because every
 	// extra nesting level makes ClickHouse's query analysis re-walk the
 	// whole subtree beneath it — see hqNativeLet.
-	sb := NewQuery().From(sub)
-	for i, g := range h.GroupBy {
-		expr := g
-		alias := ""
-		if i < len(h.GroupByAliases) {
-			alias = h.GroupByAliases[i]
-		}
-		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
-	}
-	sb.SelectAs(hqNativeBindPrepared(h, reachesReverseArm(h), func(prepared hqNativeHelperColumns) Frag {
+	value := hqNativeBindPrepared(h, reachesReverseArm(h), func(prepared hqNativeHelperColumns) Frag {
 		idxW := newHQNativeWriters(h, prepared)
 		return hqNativeLet([]hqNativeBinding{{hqQuantileIdxColumn, idxW.idx()}}, func() Frag {
 			indexed := prepared
@@ -300,8 +289,89 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 				return histogramQuantileNativeValueFrag(h, helpers)
 			})
 		})
-	}), "Value")
+	})
+
+	row := h.Input.RowType()
+	// The quantile reads its input through the ARRAY JOIN materialization
+	// boundary. When every output key is one of the input's own columns and
+	// every histogram field is a bare identifier, the fields are bound
+	// straight off the boundary's tuple (hqNativeLet again) inside this
+	// SELECT, rather than through the derived query that would otherwise
+	// unpack the tuple back into columns — one nesting level fewer over the
+	// whole folded-histogram subtree.
+	if keys, fields, ok := hqNativeInlineUnpack(h, row); ok {
+		sb := NewQuery().From(histogramInputBoundary(sub, row))
+		for _, key := range keys {
+			sb.Select(As(histogramInputField(key.index), key.alias))
+		}
+		sb.Select(As(hqNativeLet(fields, func() Frag { return value }), "Value"))
+		return e.emitSelect(sb)
+	}
+
+	sb := NewQuery().From(materializeHistogramInput(sub, row))
+	for i, g := range h.GroupBy {
+		expr := g
+		alias := ""
+		if i < len(h.GroupByAliases) {
+			alias = h.GroupByAliases[i]
+		}
+		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
+	}
+	sb.SelectAs(value, "Value")
 	return e.emitSelect(sb)
+}
+
+// hqNativeInputKey is one output key of the inlined quantile SELECT: the
+// input column at index, re-published as alias.
+type hqNativeInputKey struct {
+	index int
+	alias string
+}
+
+// hqNativeInlineUnpack decides whether [emitHistogramQuantileNative] can read
+// its input fields straight off the materialization boundary's tuple. It can
+// when every GroupBy entry is a bare reference to an input column (so the key
+// is that tuple field under its alias) and every histogram field the value
+// reads is an input column whose name is a bare identifier (so it can be a
+// lambda parameter). It returns the keys to publish and the field bindings.
+func hqNativeInlineUnpack(h *chplan.HistogramQuantileNative, row chplan.Schema) ([]hqNativeInputKey, []hqNativeBinding, bool) {
+	position := make(map[string]int, len(row.Columns))
+	for i, column := range row.Columns {
+		position[column.Name] = i
+	}
+	keys := make([]hqNativeInputKey, 0, len(h.GroupBy))
+	for i, g := range h.GroupBy {
+		ref, ok := g.(*chplan.ColumnRef)
+		if !ok {
+			return nil, nil, false
+		}
+		index, ok := position[ref.Name]
+		if !ok {
+			return nil, nil, false
+		}
+		alias := ref.Name
+		if i < len(h.GroupByAliases) && h.GroupByAliases[i] != "" {
+			alias = h.GroupByAliases[i]
+		}
+		keys = append(keys, hqNativeInputKey{index: index, alias: alias})
+	}
+	names := []string{
+		h.CountColumn, h.SumColumn, h.ScaleColumn, h.ZeroCountColumn,
+		h.PositiveOffsetColumn, h.PositiveBucketCountsColumn,
+		h.NegativeOffsetColumn, h.NegativeBucketCountsColumn,
+	}
+	if h.ZeroThresholdColumn != "" {
+		names = append(names, h.ZeroThresholdColumn)
+	}
+	fields := make([]hqNativeBinding, 0, len(names))
+	for _, name := range names {
+		index, ok := position[name]
+		if !ok || !isBareIdentifier(name) {
+			return nil, nil, false
+		}
+		fields = append(fields, hqNativeBinding{name: name, value: histogramInputField(index)})
+	}
+	return keys, fields, true
 }
 
 // hqNativeBinding is one lambda parameter of an [hqNativeLet]: the name the
@@ -331,6 +401,21 @@ func hqNativeLet(bindings []hqNativeBinding, body func() Frag) Frag {
 	bodyFrag := body()
 	args[0] = func(b *Builder) { b.Lambda(params, bodyFrag) }
 	return Subscript(Call("arrayMap", args...), InlineLit(1))
+}
+
+// isBareIdentifier reports whether name matches `[A-Za-z_][A-Za-z0-9_]*`,
+// the shape a lambda parameter is written in unquoted (see Lambda1).
+func isBareIdentifier(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		letter := r == '_' || ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z')
+		if !letter && (i == 0 || r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // hqNativeBindPrepared binds the phi-independent per-row walk arrays every
