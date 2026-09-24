@@ -12,7 +12,6 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/optimizer"
 	"github.com/tsouza/cerberus/internal/promql"
-	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/test/spec"
 )
 
@@ -101,7 +100,7 @@ func TestFixedAccumulator_HoldsToFixtureGoldens(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			plan, err := promql.LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(),
+			plan, err := promql.LowerAtRangeOpts(context.Background(), expr, spec.FixtureMetrics(),
 				fixedAccumRangeStart, fixedAccumRangeEnd, step, promql.LowerOpts{Lowerers: tc.lowerers})
 			if err != nil {
 				t.Fatalf("lower: %v", err)
@@ -154,7 +153,7 @@ func TestFixedAccumulator_CounterDeltaIsParenthesised(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			plan, err := promql.LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(),
+			plan, err := promql.LowerAtRangeOpts(context.Background(), expr, spec.FixtureMetrics(),
 				fixedAccumRangeStart, fixedAccumRangeEnd, 30*time.Second, promql.LowerOpts{Lowerers: tc.lowerers})
 			if err != nil {
 				t.Fatalf("lower: %v", err)

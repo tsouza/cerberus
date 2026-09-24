@@ -14,8 +14,10 @@ import (
 
 // TestStaleMarkers_EverySelectorShapeReadsFlags pins that every selector
 // shape reading a Value-bearing arm applies the stale-marker rules under a
-// schema with a Flags column, and that a schema declaring none (FlagsColumn
-// "") emits SQL that never names a Flags column. The chDB fixtures
+// schema whose Flags column was established on every metric table
+// (FlagsColumnProbed), and that the default schema — nothing has probed its
+// tables — and a schema declaring no Flags column emit SQL that never names
+// the column. The chDB fixtures
 // test/spec/promql/stale_marker_*.txtar pin the answers against reference
 // Prometheus; this pins the reach across the selector builders.
 func TestStaleMarkers_EverySelectorShapeReadsFlags(t *testing.T) {
@@ -76,7 +78,9 @@ func TestStaleMarkers_EverySelectorShapeReadsFlags(t *testing.T) {
 				return sql
 			}
 
-			sql := emit(schema.DefaultOTelMetrics())
+			probed := schema.DefaultOTelMetrics()
+			probed.FlagsColumnProbed = true
+			sql := emit(probed)
 			const (
 				dropMark   = "not((bitAnd(`Flags`, ?) != ?))"
 				encodeMark = "if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?)"
@@ -89,7 +93,10 @@ func TestStaleMarkers_EverySelectorShapeReadsFlags(t *testing.T) {
 				t.Errorf("instant-selection encoding present = %v, want %v:\n%s", got, tc.wantEncode, sql)
 			}
 
-			noFlags := schema.DefaultOTelMetrics()
+			if sql := emit(schema.DefaultOTelMetrics()); strings.Contains(sql, "Flags") || strings.Contains(sql, "reinterpretAs") {
+				t.Errorf("a schema whose Flags column was never probed must not read one:\n%s", sql)
+			}
+			noFlags := probed
 			noFlags.FlagsColumn = ""
 			if sql := emit(noFlags); strings.Contains(sql, "Flags") || strings.Contains(sql, "reinterpretAs") {
 				t.Errorf("a schema with no Flags column must not read one:\n%s", sql)
@@ -108,7 +115,9 @@ func TestStaleMarkers_MetadataIgnoresFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := LowerMetadataRange(context.Background(), expr, schema.DefaultOTelMetrics(), start, start.Add(time.Hour))
+	probed := schema.DefaultOTelMetrics()
+	probed.FlagsColumnProbed = true
+	plan, err := LowerMetadataRange(context.Background(), expr, probed, start, start.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

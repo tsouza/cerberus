@@ -341,12 +341,15 @@ type Result struct {
 	LogsAttrStrategies AttrStrategies
 
 	// StaleMarkerFlagsMissing names the metric tables that exist but lack
-	// the configured schema.Metrics.FlagsColumn. Any entry means the Flags
-	// column cannot be read on every table a metrics scan may cover, so the
-	// caller clears FlagsColumn (see ResolveStaleMarkerFlags) and every row
-	// reads as a sample. nil when every probed table carries it, when no
-	// table was introspected, or when the schema declares no Flags column.
+	// the configured schema.Metrics.FlagsColumn; each also carries a
+	// warning.
 	StaleMarkerFlagsMissing []string
+	// StaleMarkerFlagsPresent reports that every metric table was
+	// introspected and carries FlagsColumn — the only finding on which
+	// ResolveStaleMarkerFlags lets the read path reference the column. An
+	// absent table, a table without the column, or a schema declaring none
+	// leaves it false.
+	StaleMarkerFlagsPresent bool
 
 	// TracesAttrStrategies is LogsAttrStrategies's traces counterpart —
 	// resolved by the SAME boot-probe detection (tableReq.jsonAttrMapCompat
@@ -480,6 +483,8 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 	}
 
 	schemaProblems, absent, schemaWarnings, jsonColsByTable, flagsMissing, unreachable := checkSchema(ctx, q, req)
+	flagsPresent := req.Metrics.FlagsColumn != "" && req.effectiveSignals().Metrics &&
+		len(flagsMissing) == 0 && !anyMetricTableAbsent(req.Metrics, absent)
 	if unreachable != nil {
 		return Result{Unreachable: true, UnreachableErr: unreachable}
 	}
@@ -503,6 +508,7 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 		TracesAttrStrategies: attrStrategiesFor(jsonColsByTable[req.Traces.SpansTable]),
 
 		StaleMarkerFlagsMissing: flagsMissing,
+		StaleMarkerFlagsPresent: flagsPresent,
 	}
 	if len(problems) == 0 {
 		return res
@@ -517,15 +523,25 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 	return res
 }
 
-// ResolveStaleMarkerFlags returns m with FlagsColumn cleared when r found a
-// metric table without it, and m unchanged otherwise. Stale markers are
-// recognised only when every table a metrics scan may cover — a
-// merge()/UnionTables scan reads gauge and sum together, and the histogram
-// arms read the histogram tables — carries the column.
-func (r Result) ResolveStaleMarkerFlags(m schema.Metrics) schema.Metrics {
-	if len(r.StaleMarkerFlagsMissing) > 0 {
-		m.FlagsColumn = ""
+// anyMetricTableAbsent reports whether absent names one of m's metric tables
+// that the Flags probe covers.
+func anyMetricTableAbsent(m schema.Metrics, absent []string) bool {
+	for _, t := range []string{m.GaugeTable, m.SumTable, m.HistogramTable, m.ExpHistogramTable} {
+		if t != "" && slices.Contains(absent, t) {
+			return true
+		}
 	}
+	return false
+}
+
+// ResolveStaleMarkerFlags returns m with FlagsColumnProbed set to r's
+// StaleMarkerFlagsPresent. Stale markers are recognised only when every
+// table a metrics scan may cover — a merge()/UnionTables scan reads gauge
+// and sum together, and the histogram arms read the histogram tables —
+// was found carrying the column; on any other probe result, including a
+// Result that never probed, the read path references no Flags column.
+func (r Result) ResolveStaleMarkerFlags(m schema.Metrics) schema.Metrics {
+	m.FlagsColumnProbed = r.StaleMarkerFlagsPresent
 	return m
 }
 

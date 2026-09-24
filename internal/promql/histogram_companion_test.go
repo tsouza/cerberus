@@ -330,14 +330,17 @@ func projectPassesValue(p *chplan.Project, valueAlias string) bool {
 
 // stripStaleMarkerEncoding returns the raw Value expression an arm's
 // stale-marker encoding wraps (see staleMarkerValueExpr), or e itself when
-// e is not that exact encoding under the default schema.
+// e is not that exact encoding under the default schema with its Flags
+// column probed.
 func stripStaleMarkerEncoding(e chplan.Expr) chplan.Expr {
 	call, ok := e.(*chplan.FuncCall)
 	if !ok || call.Fn != chplan.FnIf || len(call.Args) != 3 {
 		return e
 	}
 	inner := call.Args[2]
-	if !e.Equal(staleMarkerValueExpr(inner, staleMarkersEncoded, schema.DefaultOTelMetrics())) {
+	probed := schema.DefaultOTelMetrics()
+	probed.FlagsColumnProbed = true
+	if !e.Equal(staleMarkerValueExpr(inner, staleMarkersEncoded, probed)) {
 		return e
 	}
 	return inner

@@ -158,18 +158,18 @@ func storageSpellingSeed() string {
 	b.WriteString(`CREATE OR REPLACE TABLE ` + probeGaugeTable + ` (
 	  ServiceName String, MetricName String, Attributes Map(String,String),
 	  ResourceAttributes Map(String,String) DEFAULT map(),
-	  TimeUnix DateTime64(9), Value Float64, Flags UInt32 DEFAULT 0
+	  TimeUnix DateTime64(9), Value Float64
 	) ENGINE = MergeTree() ORDER BY (ServiceName, MetricName, toUnixTimestamp64Nano(TimeUnix));`)
 	b.WriteString(`CREATE OR REPLACE TABLE ` + probeSumTable + ` (
 	  ServiceName String, MetricName String, Attributes Map(String,String),
 	  ResourceAttributes Map(String,String) DEFAULT map(),
-	  TimeUnix DateTime64(9), Value Float64, Flags UInt32 DEFAULT 0
+	  TimeUnix DateTime64(9), Value Float64
 	) ENGINE = MergeTree() ORDER BY (ServiceName, MetricName, toUnixTimestamp64Nano(TimeUnix));`)
 	b.WriteString(`CREATE OR REPLACE TABLE ` + probeHistogramTable + ` (
 	  ServiceName String, MetricName String, Attributes Map(String,String),
 	  ResourceAttributes Map(String,String) DEFAULT map(),
 	  TimeUnix DateTime64(9), Count UInt64, Sum Float64,
-	  BucketCounts Array(UInt64), ExplicitBounds Array(Float64), Flags UInt32 DEFAULT 0
+	  BucketCounts Array(UInt64), ExplicitBounds Array(Float64)
 	) ENGINE = MergeTree() ORDER BY (ServiceName, MetricName, toUnixTimestamp64Nano(TimeUnix));`)
 	for _, n := range storageSpellings {
 		fmt.Fprintf(

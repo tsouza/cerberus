@@ -37,7 +37,7 @@ func TestQueryRange_LabelRewritePhysicalColumns_ChDB(t *testing.T) {
 		ts := start.Add(time.Duration(i-seedLeadMinutes) * step).Format("2006-01-02 15:04:05.000000000")
 		rows = append(rows, fmt.Sprintf("('http_requests_total', map('job','api'), 'svc', toDateTime64('%s',9), %d.0)", ts, i))
 	}
-	seedDDL := strings.Replace(rangeOffsetSumDDL, "Value Float64", fmt.Sprintf("Value Float64, AggregationTemporality Int32 DEFAULT %d, Flags UInt32 DEFAULT 0", schema.AggregationTemporalityCumulative), 1)
+	seedDDL := strings.Replace(rangeOffsetSumDDL, "Value Float64", fmt.Sprintf("Value Float64, AggregationTemporality Int32 DEFAULT %d", schema.AggregationTemporalityCumulative), 1)
 	seed := seedDDL + "\nINSERT INTO otel_metrics_sum (MetricName,Attributes,ServiceName,TimeUnix,Value) VALUES " + strings.Join(rows, ",") + ";"
 	for _, schemaName := range []string{"default", "custom"} {
 		t.Run(schemaName, func(t *testing.T) {
@@ -48,10 +48,9 @@ func TestQueryRange_LabelRewritePhysicalColumns_ChDB(t *testing.T) {
 				metrics.AttributesColumn = "labels_map"
 				metrics.TimestampColumn = "sample_time"
 				metrics.ValueColumn = "sample_value"
-				metrics.FlagsColumn = "sample_flags"
 				// Preserve ResourceAttributes as a separate physical field while
 				// renaming the canonical sample attributes column.
-				physicalSeed = strings.NewReplacer("ResourceAttributes", "ResourceAttributes", "MetricName", metrics.MetricNameColumn, "Attributes", metrics.AttributesColumn, "TimeUnix", metrics.TimestampColumn, "Value", metrics.ValueColumn, "Flags", metrics.FlagsColumn).Replace(seed)
+				physicalSeed = strings.NewReplacer("ResourceAttributes", "ResourceAttributes", "MetricName", metrics.MetricNameColumn, "Attributes", metrics.AttributesColumn, "TimeUnix", metrics.TimestampColumn, "Value", metrics.ValueColumn).Replace(seed)
 			}
 			client := chclienttest.NewChDB(t)
 			client.Seed(t, physicalSeed)

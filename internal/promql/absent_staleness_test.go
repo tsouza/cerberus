@@ -29,15 +29,14 @@ import (
 // Each assertion below fails on the old table-wide `count() = 0` shape:
 // that plan carried no AbsentOverTime node at all.
 //
-// The schema declares no Flags column, so no stale marker can exist and
-// the raw-lookback window is exact; a schema with one lowers absent() over
-// the instant selection instead
+// The default schema has no probed Flags column, so no stale marker can be
+// recognised and the raw-lookback window is exact; a schema with one lowers
+// absent() over the instant selection instead
 // (TestLowerAbsent_StaleMarkerSchemaReadsTheInstantSelection).
 func TestLowerAbsent_SelectorAppliesTheInstantStalenessWindow(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
-	s.FlagsColumn = ""
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	end := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	start := end.Add(-time.Hour)
@@ -132,15 +131,14 @@ func TestLowerAbsent_SelectorAppliesTheInstantStalenessWindow(t *testing.T) {
 // must lower to the same plan. If they ever diverge, one of the two is
 // answering something reference does not.
 //
-// The identity holds only while no stale marker can exist, so the schema
-// declares no Flags column: a stale marker that is the latest sample makes
-// the instant vector empty while an earlier raw sample keeps
-// absent_over_time's window non-empty.
+// The identity holds only while no stale marker can be recognised, so the
+// schema's Flags column is the default, unprobed one: a stale marker that is
+// the latest sample makes the instant vector empty while an earlier raw
+// sample keeps absent_over_time's window non-empty.
 func TestLowerAbsent_MatchesAbsentOverTimeOfTheSameWindow(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
-	s.FlagsColumn = ""
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	end := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
@@ -178,7 +176,7 @@ func TestLowerAbsent_MatchesAbsentOverTimeOfTheSameWindow(t *testing.T) {
 }
 
 // TestLowerAbsent_StaleMarkerSchemaReadsTheInstantSelection pins that under
-// a schema with a Flags column `absent(<selector>)` asks its question of the
+// a schema whose Flags column was probed `absent(<selector>)` asks its question of the
 // instant selection — the latest sample per series and step, with a stale
 // marker that wins ending the series — rather than of every raw sample in
 // the lookback. In range mode the selection's rows already sit on the step
@@ -189,6 +187,7 @@ func TestLowerAbsent_MatchesAbsentOverTimeOfTheSameWindow(t *testing.T) {
 func TestLowerAbsent_StaleMarkerSchemaReadsTheInstantSelection(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelMetrics()
+	s.FlagsColumnProbed = true
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	end := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	start := end.Add(-time.Hour)

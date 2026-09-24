@@ -83,6 +83,9 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.6',
   'clickhouse/clickhouse-server:26.6-alpine',
   'clickhouse/clickhouse-server:26.6.1.1193-alpine',
+  // The stale-marker Flags pins' exact builds (see CH_STALE_MARKER_*_IMAGE).
+  'clickhouse/clickhouse-server:26.7.13.12-alpine',
+  'clickhouse/clickhouse-server:26.8.1.2041-alpine',
 
   // Reference backends the three heads are diffed against, plus the reference
   // Prometheus the PromQL surface gate probes and the reference Mimir the

@@ -188,7 +188,7 @@ func lowerPromQL(t *testing.T, ctx context.Context, c *spec.Case) (chplan.Node, 
 	}
 	query = strings.TrimSpace(query)
 
-	s := schema.DefaultOTelMetrics()
+	s := spec.FixtureMetrics()
 	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
 	expr, err := p.ParseExpr(query)
 	if err != nil {

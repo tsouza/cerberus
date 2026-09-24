@@ -418,6 +418,7 @@
         "route-b-differential-integration",
         "router-corpus-integration",
         "solver-memory-apportion-integration",
+        "stale-marker-flags-integration",
         "strict-scan-test",
         "structural-two-phase-external-table-integration",
         "tag-groups-differential-integration",

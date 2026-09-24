@@ -45,8 +45,10 @@ type staleMarkerMode int
 
 const (
 	// staleMarkersIgnored reads the raw rows unchanged. It applies to a
-	// schema with no Flags column and to metadata enumeration, where a
-	// series whose only in-window sample is a stale marker still exists.
+	// schema whose Flags column was not established on every metric table
+	// (schema.Metrics.StaleMarkerFlagsColumn) and to metadata enumeration,
+	// where a series whose only in-window sample is a stale marker still
+	// exists.
 	staleMarkersIgnored staleMarkerMode = iota
 	// staleMarkersDropped removes stale-marker rows at the scan: the range
 	// selection rule.
@@ -61,7 +63,7 @@ const (
 // lowered under c against schema s.
 func (c lowerCtx) staleMarkerMode(s schema.Metrics) staleMarkerMode {
 	switch {
-	case s.FlagsColumn == "", c.metadataFullRange, c.catalog != nil:
+	case s.StaleMarkerFlagsColumn() == "", c.metadataFullRange, c.catalog != nil:
 		return staleMarkersIgnored
 	case c.inRangeVector && !c.latestSampleWindow:
 		return staleMarkersDropped
@@ -77,7 +79,7 @@ func staleMarkerRowExpr(s schema.Metrics) chplan.Expr {
 		Op: chplan.OpNe,
 		Left: &chplan.FuncCall{
 			Fn:   chplan.FnBitAnd,
-			Args: []chplan.Expr{&chplan.ColumnRef{Name: s.FlagsColumn}, &chplan.LitInt{V: noRecordedValueFlag}},
+			Args: []chplan.Expr{&chplan.ColumnRef{Name: s.StaleMarkerFlagsColumn()}, &chplan.LitInt{V: noRecordedValueFlag}},
 		},
 		Right: &chplan.LitInt{V: 0},
 	}
@@ -123,10 +125,10 @@ func staleMarkerValueExpr(valueExpr chplan.Expr, mode staleMarkerMode, s schema.
 // dropStaleLatestSamples is the instant-selection rule's second half: it
 // drops every row of a latest-sample collapse whose picked Value is a
 // stale marker, so the series has no sample at that step. It is the
-// identity for a schema with no Flags column, whose arms never encode a
-// marker.
+// identity for a schema without an established Flags column, whose arms
+// never encode a marker.
 func dropStaleLatestSamples(latest chplan.Node, s schema.Metrics) chplan.Node {
-	if s.FlagsColumn == "" {
+	if s.StaleMarkerFlagsColumn() == "" {
 		return latest
 	}
 	return &chplan.Filter{

@@ -736,7 +736,7 @@ histogram-realexporter-integration:
 
 # Run the stale-marker Flags pins against real ClickHouse 25.9 / 26.7 / 26.8. Needs Docker.
 stale-marker-flags-integration:
-    @just _pull-retry clickhouse/clickhouse-server:25.9 clickhouse/clickhouse-server:26.7.13.12 clickhouse/clickhouse-server:26.8.1.2041
+    @just _pull-retry {{CH_TEST_IMAGE}} {{CH_STALE_MARKER_26_7_IMAGE}} {{CH_STALE_MARKER_26_8_IMAGE}}
     go test -timeout 20m -tags=integration -count=1 -run TestStaleMarkerFlags_RealCH ./internal/api/prom/...
 
 # Run internal/api/prom's native range-window lowerer activation lane. Needs Docker.

@@ -335,7 +335,7 @@ func lowerAbsenceOverWindow(
 // of each anchor. An `@`-pinned selection is evaluated once, in instant
 // form, and its verdict broadcast.
 func lowerAbsenceOfLatestSample(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
-	if s.FlagsColumn == "" {
+	if s.StaleMarkerFlagsColumn() == "" {
 		return nil, false, nil
 	}
 	if name := metricNameFromMatchers(vs.LabelMatchers); name != "" && s.ExpHistogramTable != "" && s.IsExpHistogramMetric(name) {
