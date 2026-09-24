@@ -149,3 +149,54 @@ func equalInts(a, b []int) bool {
 	}
 	return true
 }
+
+// regexTokens are the pieces TestLineFilterRegex_ExhaustiveSmallPatterns
+// concatenates: the constructs spellDotsAsNotNewline scans past, rewrites or
+// declines. Class edge cases and group names are pinned by the table test.
+var regexTokens = []string{
+	"a", ".", `\.`, "[.]", "[^a]", "(", ")", "*", "|", `\n`, "(?s)", "(?-s)", "(?s:", `\Q`,
+}
+
+// tokenPatternInputs cover what the tokens can tell apart: a newline where
+// `.` would or would not match, the literal characters, and the empty string.
+var tokenPatternInputs = []string{"", "a\nb", "\n\n", "a.]A", "\\Q.\\E\na"}
+
+// maxRegexTokens bounds the concatenation length; three tokens already
+// combine every scanner state with every other once.
+const maxRegexTokens = 3
+
+// Every parseable concatenation of up to maxRegexTokens tokens must mean,
+// after lineFilterRegex and read with `.` matching a newline, what it means
+// under Go's defaults — checked by execution, not by the parser comparison
+// lineFilterRegex itself relies on.
+func TestLineFilterRegex_ExhaustiveSmallPatterns(t *testing.T) {
+	checked := 0
+	var walk func(prefix string, depth int)
+	walk = func(prefix string, depth int) {
+		if prefix != "" {
+			if ref, err := regexp.Compile(prefix); err == nil {
+				checked++
+				got := lineFilterRegex(prefix)
+				emitted, err := regexp.Compile("(?s)" + got)
+				if err != nil {
+					t.Fatalf("lineFilterRegex(%q) = %q does not compile: %v", prefix, got, err)
+				}
+				for _, in := range tokenPatternInputs {
+					if a, b := emitted.FindAllStringSubmatchIndex(in, -1), ref.FindAllStringSubmatchIndex(in, -1); !equalMatches(a, b) {
+						t.Fatalf("on %q: lineFilterRegex(%q) = %q matches %v; Go matches %v", in, prefix, got, a, b)
+					}
+				}
+			}
+		}
+		if depth == maxRegexTokens {
+			return
+		}
+		for _, tok := range regexTokens {
+			walk(prefix+tok, depth+1)
+		}
+	}
+	walk("", 0)
+	if checked == 0 {
+		t.Fatal("no generated pattern parsed; the generator is broken")
+	}
+}

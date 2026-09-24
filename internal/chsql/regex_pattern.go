@@ -214,10 +214,8 @@ func classEnd(pattern string, start int) int {
 }
 
 // indexFrom is strings.Index over pattern[from:], offset back into pattern.
+// Callers pass a from no greater than len(pattern).
 func indexFrom(pattern, sub string, from int) int {
-	if from > len(pattern) {
-		return -1
-	}
 	if i := strings.Index(pattern[from:], sub); i >= 0 {
 		return from + i
 	}
