@@ -43,17 +43,18 @@ import (
 //
 // Unlike changes/resets/irate/idelta (issue #2759), the array-fold path this
 // file replaces DOES deduplicate same-(series,ts) rows before computing
-// first/last/count (dedupWindowPairsByTsFrag), keeping the MAX-VALUE row of
-// each tied timestamp — an OTel/ClickHouse ingestion artifact
+// first/last/count (dedupWindowPairsByTsFrag), keeping the greatest-ranked
+// row of each tied timestamp under dedupWindowPairsByTsFrag's own NaN-loses
+// order (cerberus issue #3648) — an OTel/ClickHouse ingestion artifact
 // (dedupWindowPairsByTsFrag's own doc), not a Prometheus semantic, but this
 // feature must reproduce it exactly to stay a bit-identical fallback. A
 // naive single-pass `argMin(value, ts)` does NOT reproduce it: ClickHouse
 // only guarantees ONE tied row wins, not which (and a signed-tuple key such
 // as `argMin(value, tuple(ts, -value))` risks NaN-comparison divergence from
-// arraySort's own tie order). fixedAccumDedupLayer instead collapses ties
+// this shape's own tie order). fixedAccumDedupLayer instead collapses ties
 // RELATIONALLY first, via one forward-looking leadInFrame pass that keeps
-// exactly the max-value row of each timestamp run (the same
-// last-of-run-in-(ts,value)-ascending-order test #2759's own
+// exactly the greatest-ranked row of each timestamp run (the same
+// last-of-run-in-(ts,NaN-loses-rank,value)-ascending-order test #2759's own
 // lagAdjIsLastOfRunAlias flag uses, just for a different purpose there).
 // Once every row's timestamp is unique within its series, first/last/count
 // need no further tie-break: argMin/argMax/min/max/count over a
@@ -162,11 +163,12 @@ func fixedAccumulatorMatrixShapeCheck(r *chplan.RangeWindow) error {
 }
 
 // fixedAccumDedupLayer collapses duplicate-(series,ts) raw samples down to
-// one row per distinct timestamp, keeping the MAX-VALUE row of each tied
-// timestamp run — see this file's doc comment for why. A row is the keeper
-// of its timestamp iff no LATER row, in the same (ts, value) ascending order
-// groupArrayPairFrag's arraySort establishes, shares its timestamp: exactly
-// #2759's own lagAdjIsLastOfRunAlias test (`leadInFrame(ts) != ts` under a
+// one row per distinct timestamp, keeping the greatest-ranked row of each
+// tied timestamp run — see this file's doc comment for why. A row is the
+// keeper of its timestamp iff no LATER row, in the same
+// (ts, NaN-loses rank, value) ascending order dedupWindowPairsByTsFrag
+// establishes (cerberus issue #3648), shares its timestamp: exactly #2759's
+// own lagAdjIsLastOfRunAlias test (`leadInFrame(ts) != ts` under a
 // forward-admitting frame), reused here to dedupe rather than to survivor-pick
 // a window's last two samples.
 //
@@ -183,7 +185,11 @@ func (e *emitter) fixedAccumDedupLayer(
 	r *chplan.RangeWindow, innerSub Frag, groupFrags []Frag, srcTs string,
 	end Frag, stepNS, rangeNS, numAnchors int64, needsDeltaFirstLevel, useAggregateDeltaPrefix bool,
 ) (*QueryBuilder, error) {
-	orderBy := []OrderKey{{Expr: Col(srcTs)}, {Expr: Col(r.ValueColumn)}}
+	orderBy := []OrderKey{
+		{Expr: Col(srcTs)},
+		{Expr: nanLosesRankFrag(Col(r.ValueColumn))},
+		{Expr: Col(r.ValueColumn)},
+	}
 	leadFrame := RowsCurrentRowToUnboundedFollowing()
 	hasTemporality := windowTemporalityProjected(r)
 

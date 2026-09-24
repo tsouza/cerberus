@@ -2557,63 +2557,92 @@ func matrixWindowPairsAlreadyDeduped(r *chplan.RangeWindow) bool {
 	return r.NativeGroupArray
 }
 
-// dedupWindowPairsByTsFrag collapses a `arraySort`-ordered
-// `Array(Tuple(ts, value))` down to one tuple per distinct timestamp,
-// keeping the LAST tuple of each equal-ts run. It implements cerberus's
-// single duplicate-timestamp rule, and this comment is where that rule is
-// stated in full.
+// nanLosesRankFrag returns a Frag rendering `NOT isNaN(<v>)` — FALSE for a
+// NaN value, TRUE for every finite one. Every one of this file's
+// duplicate-timestamp tie-breaks shares this one building block as the
+// middle term of its sort key, because a boolean is never itself NaN:
+// ascending order over it places a NaN row before every finite row no
+// matter which native NaN ranking the surrounding comparison uses —
+// ClickHouse ranks NaN differently in a tuple/array total order (greatest)
+// than in a plain column `ORDER BY` (last in BOTH directions, not a total
+// order at all — see internal/promql's clickhouse_nan_ordering_chdb_test.go)
+// — so the rule is stated once here and every site quotes the same term
+// rather than re-deriving it against whichever comparison context it sorts
+// in.
+func nanLosesRankFrag(v Frag) Frag {
+	return Not(Call("isNaN", v))
+}
+
+// dedupWindowPairsByTsFrag collapses an `Array(Tuple(ts, value))` down to
+// one tuple per distinct timestamp, keeping the greatest-ranked tuple of
+// each equal-ts run under this function's own NaN-loses order (not
+// necessarily the caller's incoming order — see "Collapse strategy" below).
+// It implements cerberus's single duplicate-timestamp rule, and this comment
+// is where that rule is stated in full.
 //
 // # The rule
 //
-// One sample per distinct (series, timestamp), tie-broken to the max value.
-// That is the rule PR #1092 gave the rate family, and the rule cerberus
+// One sample per distinct (series, timestamp), tie-broken to the greatest
+// FINITE value; the survivor is NaN only when every duplicate at that
+// timestamp is NaN. That is the rule PR #1092 gave the rate family, cerberus
 // issue #2914 / PR #2920 pinned for the *_over_time family's identical-value
 // duplicate (see internal/promql's duplicate_timestamp_seed_chdb_test.go,
 // which is the authority on which shapes each family's lowerings collapse —
-// this comment states the rule, not its reach).
+// this comment states the rule, not its reach), and cerberus issue #3648
+// re-pinned to rank NaN LOWEST rather than greatest.
 //
-// "Max" is ClickHouse's TOTAL order over Float64 — the one arraySort imposes,
-// in which NaN ranks GREATEST. That clause is load-bearing rather than
-// pedantic: IEEE754 leaves `max` undefined the moment a NaN is involved
+// IEEE754 leaves "the max value" undefined the moment a NaN is involved
 // (every comparison against a NaN is false in both directions), so a rule
-// naming only "the max value" would say nothing about the one case where the
+// naming only "the max value" says nothing about the one case where the
 // answer is actually in doubt — which is exactly the case this Frag and the
-// native family answer differently.
+// native family must agree on. "NaN loses" resolves it explicitly rather
+// than inheriting whichever way a particular CH comparison happens to break
+// the tie.
 //
 // The rule has two halves, and separating them is what makes it checkable:
 //
 //   - CARDINALITY — exactly one sample survives each distinct timestamp.
-//   - REPRESENTATIVE — the survivor is the greatest-ranked sample under that
-//     total order, and is therefore a function of the sample multiset alone,
-//     never of the order the rows arrived in.
+//   - REPRESENTATIVE — the survivor is the greatest FINITE sample if one
+//     exists, else NaN, and is therefore a function of the sample multiset
+//     alone, never of the order the rows arrived in.
 //
-// This Frag delivers both, measured rather than assumed: the input is sorted
-// ascending by (ts, value), so the last-of-run tuple is the greatest-ranked
-// sample at the timestamp, and arraySort's ordering does not depend on
-// insertion order. This is executed against a real ClickHouse over both
-// encounter orders of a NaN-bearing duplicate, asserting an identical
-// survivor, by
+// This Frag delivers both, measured rather than assumed: it re-sorts its own
+// input by (ts, nanLosesRankFrag(value), value) before collapsing, so the
+// last-of-run tuple is the greatest-ranked sample under THIS order
+// regardless of the order the caller's `arr` arrived in. This is executed
+// against a real ClickHouse over both encounter orders of a NaN-bearing
+// duplicate, asserting an identical survivor, by
 // TestFanoutDedup_DuplicateSurvivorIsOrderIndependent_RealCH.
 //
-// # Where the native family departs from the rule
+// # Why this must match the native family
 //
-// The ClickHouse-native `timeSeries*` aggregates keep the cardinality half and
-// decide the representative inside the builtin, by a rule that depends on the
-// server build: a scan-order fold before ClickHouse #115920 (the survivor of a
-// NaN-bearing duplicate is whichever row, or partial state, the fold visits
-// first — last for the trailing-pair members), and "greatest value wins, NaN
-// loses" from 26.8.1.2041 on. They agree with this Frag on unequal finite
-// duplicates and on all-NaN duplicates, and disagree on a NaN-versus-finite
-// one: order-dependently before #115920, and deterministically (the native
-// path keeps the finite sample, this Frag the NaN) after it. Measured per
+// The ClickHouse-native `timeSeries*` aggregates keep the cardinality half
+// and decide the representative inside the builtin, by a rule that depends
+// on the server build: a scan-order fold before ClickHouse #115920 (the
+// survivor of a NaN-bearing duplicate is whichever row, or partial state,
+// the fold visits first — last for the trailing-pair members), and
+// "greatest value wins, NaN loses to any other value" — [ClickHouse
+// #115920](https://github.com/ClickHouse/ClickHouse/pull/115920) —
+// deterministically, under every insertion and state-merge order, from
+// server 26.8.1.2041 on. Both contracts agree with this Frag on unequal
+// finite duplicates and on all-NaN duplicates. Before #115920 cerberus's own
+// rule could not agree with the native fold by construction — the fold's
+// survivor depended on scan order, which this rule deliberately does not —
+// so there was no single native answer to align with; from 26.8.1.2041 on
+// there is, and cerberus's two fan-out lowerings of one query (the native
+// `timeSeries*` family and this Frag, auto-selected per query and per
+// server) must elect the SAME sample on a NaN-versus-finite duplicate, or
+// the same `rate(x[1m])` answers NaN or a finite number depending only on
+// which internal lowering the query happened to take — the bug cerberus
+// issue #3648 closed by ranking NaN lowest here to match. Measured per
 // member and per build by TestTSGridFamily_DuplicateSurvivor_RealCH, and end
 // to end through cerberus's own lowering by
 // TestRate_NativeGrid_NaNDuplicate_AgainstFanout_RealCH.
 //
 // The fold lives inside a ClickHouse builtin, so no emitted SQL can reorder
 // it; nativeTSGridFn's own doc records the emitter-side gate that was
-// measured and ruled out. Aligning this Frag's NaN ranking with #115920's is
-// https://github.com/tsouza/cerberus/issues/3648.
+// measured and ruled out — aligning this Frag's own tie-break was the only
+// side that could move.
 //
 // OTel/ClickHouse ingestion can write two rows with the same
 // (Attributes, TimeUnix); without this collapse `length(window_vals)`
@@ -2625,26 +2654,53 @@ func matrixWindowPairsAlreadyDeduped(r *chplan.RangeWindow) bool {
 // downstream quantity (length, counter_delta, first/last_ts, first_val)
 // count distinct timestamps.
 //
-// Collapse strategy: `arrayCompact(p -> ts(p), …)` drops every element
-// equal (by ts) to its predecessor, keeping the FIRST of each run in a
-// single linear pass that never captures `arr` itself — so, unlike an
-// `arrayFilter` whose lambda reads `arr[i + 1]`, ClickHouse does not
-// replicate the whole window array once per element (that O(n²) blow-up
-// per window OOM'd `rate(…[5m])` query_range past the per-query memory
-// cap). To keep the LAST (max-valued) tuple of each run rather than the
-// first while staying linear, the array is reversed into ts-descending
-// order before the compact and reversed back after: arrayCompact then
-// keeps the max-valued tuple of each run, and the outer reverse restores
-// the ts-ascending order the downstream layers assume — byte-identical
-// membership and ordering to the prior arrayFilter form.
+// Collapse strategy: a keyed `arraySort(p -> (ts(p), nanLosesRankFrag(val(p)),
+// val(p)), arr)` re-sorts `arr` ascending by (ts, NaN-loses rank, value)
+// first. Re-sorting rather than trusting the caller's own order is what
+// makes the NaN-loses rank take effect: the caller's `groupArrayPairFrag`
+// sorts by (ts, value) alone, under ClickHouse's own tuple total order in
+// which NaN ranks GREATEST, so within one duplicate-timestamp run every NaN
+// sample already sits AFTER every finite one — the opposite of where this
+// rule needs it, and no mere `arrayReverse` recovers the right order because
+// reversing the whole run would also reverse the finite values' own
+// ascending order. Composing the extra boolean rank term is what moves only
+// the NaN samples: ascending on (ts, NOT isNaN(value), value) places NaN
+// samples FIRST in their run instead (a boolean sorts by its own FALSE <
+// TRUE order, independent of the surrounding float comparison), while
+// finite samples keep their relative ascending order — so the run's LAST
+// element becomes the greatest finite sample, or remains NaN only when the
+// whole run is NaN. `arraySort`'s function form evaluates the key once per
+// element rather than invoking a comparator once per comparison, so the
+// extra term is one more field materialized per sample, not a second
+// per-comparison callback — measured negligible on the flagship `rate`
+// fan-out (see docs/performance.md's "Native rate" section).
+//
+// The same `arrayCompact(p -> ts(p), …)` collapse this Frag has always used
+// then drops every element equal (by ts) to its predecessor, keeping the
+// FIRST of each run in a single linear pass that never captures `arr`
+// itself — so, unlike an `arrayFilter` whose lambda reads `arr[i + 1]`,
+// ClickHouse does not replicate the whole window array once per element
+// (that O(n²) blow-up per window OOM'd `rate(…[5m])` query_range past the
+// per-query memory cap). To keep the LAST (greatest-ranked) tuple of each
+// run rather than the first while staying linear, the re-sorted array is
+// reversed into ts-descending order before the compact and reversed back
+// after: arrayCompact then keeps the greatest-ranked tuple of each run, and
+// the outer reverse restores the ts-ascending order the downstream layers
+// assume.
 func dedupWindowPairsByTsFrag(arr Frag) Frag {
 	tsOf := func(t Frag) Frag { return Call("tupleElement", t, InlineLit(int64(1))) }
+	valOf := func(t Frag) Frag { return Call("tupleElement", t, InlineLit(int64(2))) }
+	ranked := Call(
+		"arraySort",
+		Lambda1("p", Tuple(tsOf(BareIdent("p")), nanLosesRankFrag(valOf(BareIdent("p"))), valOf(BareIdent("p")))),
+		arr,
+	)
 	return Call(
 		"arrayReverse",
 		Call(
 			"arrayCompact",
 			Lambda1("p", tsOf(BareIdent("p"))),
-			Call("arrayReverse", arr),
+			Call("arrayReverse", ranked),
 		),
 	)
 }

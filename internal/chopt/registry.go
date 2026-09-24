@@ -889,22 +889,26 @@ const (
 	//
 	// NaN precondition (measured, the reason AutoSelect is false): the
 	// existing dedupWindowPairsByTsFrag idiom is deterministic on a
-	// duplicate-timestamp NaN — arraySort ranks NaN greatest, so it always
-	// survives the last-of-run keep, independent of insertion order.
-	// timeSeriesGroupArray's own collapse keeps the true max of finite
-	// duplicates in any order, but on a NaN-bearing duplicate it follows the
-	// family's per-build rule: before ClickHouse #115920 it is a running
-	// "replace current-best only when candidate > current-best" fold, so a
-	// NaN landing FIRST can never be replaced and a NaN landing after any
-	// non-NaN can never displace it — the survivor depends on which row a
-	// (possibly multi-threaded, multi-part) scan visits first; from
-	// 26.8.1.2041 on the NaN loses in either order. Swapping the assembly
-	// would therefore import into these sites either nondeterminism (older
-	// builds) or the finite survivor the fan-out's rule does not elect
-	// (current builds). This codebase already forced ts_grid_changes into
-	// AutoSelect: false for an analogous NaN-adjacent native/fan-out
-	// divergence (#1721); this feature follows the identical posture. Both
-	// the plain and the -If form are measured on every pinned build by
+	// duplicate-timestamp NaN — it ranks NaN LOWEST (cerberus issue #3648),
+	// so it keeps the greatest FINITE duplicate and survives NaN only when
+	// every duplicate at that timestamp is NaN, independent of insertion
+	// order. timeSeriesGroupArray's own collapse keeps the true max of
+	// finite duplicates in any order, but on a NaN-bearing duplicate it
+	// follows the family's per-build rule: before ClickHouse #115920 it is
+	// a running "replace current-best only when candidate > current-best"
+	// fold, so a NaN landing FIRST can never be replaced and a NaN landing
+	// after any non-NaN can never displace it — the survivor depends on
+	// which row a (possibly multi-threaded, multi-part) scan visits first;
+	// from 26.8.1.2041 on the NaN loses in either order, the SAME rule
+	// dedupWindowPairsByTsFrag now states. Swapping the assembly would
+	// therefore import nondeterminism on a pre-#115920 server (the native
+	// fold's scan-order dependence), even though it would agree with the
+	// fan-out's own answer from 26.8.1.2041 on. This codebase already
+	// forced ts_grid_changes into AutoSelect: false for an analogous
+	// NaN-adjacent native/fan-out divergence (#1721); this feature follows
+	// the identical posture for the pre-#115920 case that divergence still
+	// covers. Both the plain and the -If form are measured on every pinned
+	// build by
 	// internal/chsql's TestTSGridFamily_DuplicateSurvivor_RealCH.
 	//
 	// Shares the timeSeries*ToGrid family's registry gate
