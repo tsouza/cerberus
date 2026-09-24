@@ -72,16 +72,38 @@ the initiator. A two-node rig on a private Docker network confirmed both
 halves: `SELECT timeSeriesRateToGrid(...)(...) FROM dist GROUP BY ...` fails
 with code 117 from either initiator of a 26.6/26.7, 26.7/26.8 or 26.6/26.8
 pair, while the same aggregate over `(SELECT * FROM dist WHERE ...)` answers
-correctly from both. Cerberus's emitter renders every scan as its own
-subquery, so none of its plans is the first shape. That is why the upgrade
-contract is "no action" rather than a capability gate: a gate that switched
-the native family off whenever the participants disagreed on a minor was
-built and then removed, because it would have cost the native path for the
-length of every rollout to guard against a state exchange cerberus never
-makes. `TestNativeTSAggregatesNeverReadATableDirectly` holds the emitter to
-that shape across the whole golden corpus, and the mixed-version suite's
-control query proves each rig really straddles the boundary, so neither
-guard can pass by not looking.
+correctly from both. The shards' `system.query_log` shows why: a shard
+receives only the innermost `SELECT` over its local table, with the outer
+predicates pushed into it, and returns rows. That held under every
+`Distributed` setting a profile can change and that decides what a shard
+is sent — `distributed_product_mode`, `prefer_localhost_replica`,
+`optimize_distributed_group_by_sharding_key` with
+`optimize_skip_unused_shards`, `distributed_group_by_no_merge` 1 and 2,
+`distributed_push_down_limit`, `distributed_aggregation_memory_efficient`,
+`prefer_global_in_and_join`. With the old analyzer (`enable_analyzer = 0`)
+the native SQL does not run at all (`Duplicate alias in ARRAY JOIN`), so it
+cannot ship states either.
+
+Parallel replicas is the exception. With it on, each replica runs the
+query's aggregation — through the subquery — and the initiator merges their
+states; on a 26.6/26.7 replica pair with it on in the server profile,
+cerberus's native `rate` (with and without recollapse) and resample SQL
+fails with code 117. Measured on a small table, one pass over three shapes
+and two initiators shipped a state in between 1 and 6 of the 6 queries,
+depending on which replica the coordinator handed each granule to; the
+suite therefore runs four passes. Pinning
+`allow_experimental_parallel_reading_from_replicas = 0` on the native
+queries removes it, and the same queries then answer the fan-out.
+
+That is why the upgrade contract is "no action" rather than a capability
+gate: a gate that switched the native family off whenever the participants
+disagreed on a minor was built and then removed, because it would have cost
+the native path for the length of every rollout to guard against a state
+exchange cerberus does not make. The emitter refuses the table-level shape
+for every emission path (`errNativeTSAggregateOverTable`), and the
+mixed-version suite's control queries prove each rig really straddles the
+boundary and really ships states under parallel replicas, so neither guard
+can pass by not looking.
 
 The persisted `timeSeriesLastTwoSamples` state is not part of the versioned
 family format: its bytes are identical on every build from 25.9 through

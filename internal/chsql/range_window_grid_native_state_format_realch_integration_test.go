@@ -11,12 +11,15 @@
 // the same query level as a Distributed table: each shard aggregates its
 // rows and the initiator merges the states.
 //
-// Cerberus never emits that shape. Every scan renders as its own
-// `(SELECT ... FROM <table> WHERE ...)` subquery, so the Distributed table
-// sends rows and the whole aggregation — plain, -State and -Merge alike —
-// runs on the initiator. The native path is therefore insensitive to a
-// version skew between the participants, and this suite proves it on real
-// servers rather than trusting the planner:
+// Cerberus never emits that shape: the emitter refuses to render a native
+// aggregate at a SELECT level that reads a physical table
+// (errNativeTSAggregateOverTable), so every native aggregate reads a
+// subquery. ClickHouse sends a shard only the innermost SELECT that reads the
+// Distributed table — with the outer predicates pushed into it — and the
+// shard returns rows; the aggregation runs on the initiator. The one
+// mechanism that still ships states through a subquery is parallel replicas,
+// which chclient.WithTSGridSetting pins off on every native query. This suite
+// proves both on real servers:
 //
 //  1. a control query with the aggregate directly over the Distributed table
 //     FAILS with INCORRECT_DATA on every cross-minor rig and succeeds on every
@@ -33,7 +36,11 @@
 //  4. the timeSeriesLastTwoSamples state the downsample tier persists
 //     round-trips between the two servers of every rig in both directions,
 //     while a timeSeriesRateToGrid state does not across a minor boundary —
-//     the persisted tier does not share the family's versioned format.
+//     the persisted tier does not share the family's versioned format;
+//  5. with parallel replicas turned on by the server profile, on a 26.6 /
+//     26.7 replica pair, cerberus's native SQL ships states and fails with
+//     INCORRECT_DATA unless pinned, and answers the fan-out through the
+//     production settings (TestTSGridStateFormatBoundary_ParallelReplicas_RealCH).
 //
 // The reference is the fan-out answer, which carries no aggregate state; every
 // rig's fan-out answer must equal every other rig's.
@@ -65,6 +72,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	promparser "github.com/prometheus/prometheus/promql/parser"
+	"github.com/testcontainers/testcontainers-go"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 	"github.com/testcontainers/testcontainers-go/network"
 
@@ -94,10 +102,13 @@ const (
 )
 
 const (
-	tsStateCluster  = "cerberus_ts_state"
-	tsStateDatabase = "otel"
-	tsStateUser     = "cerberus"
-	tsStatePassword = "cerberus"
+	tsStateCluster = "cerberus_ts_state"
+	// tsStateReplicaCluster names the same two servers as two replicas of
+	// one shard, for the parallel-replicas case.
+	tsStateReplicaCluster = "cerberus_ts_state_replicas"
+	tsStateDatabase       = "otel"
+	tsStateUser           = "cerberus"
+	tsStatePassword       = "cerberus"
 
 	// clickhouseIncorrectData is ClickHouse's INCORRECT_DATA error code, the
 	// one a timeSeries*ToGrid state carrying a foreign format version raises.
@@ -332,21 +343,43 @@ func assertTSStateNativePaths(ctx context.Context, t *testing.T, initiator *tsSt
 			t.Fatalf("%s: the native lowering did not emit %s — this would compare the fan-out with itself:\n%s",
 				shape.name, shape.nativeFn, sqlStr)
 		}
-		got, err := queryTSState(ctx, initiator.db, sqlStr, args)
-		if err != nil {
-			t.Fatalf("%s from %s (%s): native query failed: %v", shape.name, initiator.alias, initiator.image, err)
-		}
 		want := reference
 		if shape.query != tsStateRateQuery {
+			var err error
 			if want, err = queryTSStateFanout(ctx, t, initiator, shape.query); err != nil {
 				t.Fatalf("%s from %s: fan-out query: %v", shape.name, initiator.alias, err)
 			}
 		}
-		if !tsStateAnswersEqual(got, want) {
-			t.Fatalf("%s from %s (%s): native answer differs from the fan-out:\n native %v\n fanout %v",
-				shape.name, initiator.alias, initiator.image, got, want)
+		for _, setting := range tsStateDistributedSettings {
+			got, err := queryTSState(ctx, initiator.db, sqlStr, args, setting...)
+			if err != nil {
+				t.Fatalf("%s from %s (%s) with %q: native query failed: %v",
+					shape.name, initiator.alias, initiator.image, setting, err)
+			}
+			if !tsStateAnswersEqual(got, want) {
+				t.Fatalf("%s from %s (%s) with %q: native answer differs from the fan-out:\n native %v\n fanout %v",
+					shape.name, initiator.alias, initiator.image, setting, got, want)
+			}
 		}
 	}
+}
+
+// tsStateDistributedSettings are the Distributed-query settings a deployment
+// or a server profile can set that decide what a shard is sent. Under each,
+// a shard still receives only the innermost SELECT over its local table, so
+// cerberus's native SQL must answer the fan-out on every mixed rig. The first
+// entry is ClickHouse's defaults.
+var tsStateDistributedSettings = [][]string{
+	nil,
+	{"distributed_product_mode = 'global'"},
+	{"distributed_product_mode = 'local'"},
+	{"prefer_localhost_replica = 0"},
+	{"optimize_distributed_group_by_sharding_key = 1", "optimize_skip_unused_shards = 1"},
+	{"distributed_group_by_no_merge = 1"},
+	{"distributed_group_by_no_merge = 2"},
+	{"distributed_push_down_limit = 1"},
+	{"distributed_aggregation_memory_efficient = 1"},
+	{"prefer_global_in_and_join = 1"},
 }
 
 func queryTSStateFanout(ctx context.Context, t *testing.T, initiator *tsStateNode, query string) (tsStateAnswer, error) {
@@ -494,7 +527,7 @@ func assertTSStateReferenceShape(t *testing.T, ref tsStateAnswer) {
 
 // startTSStateCluster boots two ClickHouse servers on one private network,
 // each defining the two-shard cluster over both aliases.
-func startTSStateCluster(ctx context.Context, t *testing.T, images [2]string) [2]*tsStateNode {
+func startTSStateCluster(ctx context.Context, t *testing.T, images [2]string, extra ...testcontainers.ContainerCustomizer) [2]*tsStateNode {
 	t.Helper()
 	nw, err := network.New(ctx)
 	if err != nil {
@@ -503,28 +536,33 @@ func startTSStateCluster(ctx context.Context, t *testing.T, images [2]string) [2
 	t.Cleanup(func() { _ = nw.Remove(context.Background()) })
 
 	aliases := [2]string{"cha", "chb"}
-	var replicas strings.Builder
+	// Two clusters over the same two servers: tsStateCluster makes each a
+	// shard (the Distributed rig), tsStateReplicaCluster makes them two
+	// replicas of one shard (the parallel-replicas rig).
+	var shards, replicas strings.Builder
 	for _, alias := range aliases {
-		fmt.Fprintf(&replicas, "<shard><replica><host>%s</host><port>9000</port><user>%s</user><password>%s</password></replica></shard>",
+		replica := fmt.Sprintf("<replica><host>%s</host><port>9000</port><user>%s</user><password>%s</password></replica>",
 			alias, tsStateUser, tsStatePassword)
+		shards.WriteString("<shard>" + replica + "</shard>")
+		replicas.WriteString(replica)
 	}
 	configPath := filepath.Join(t.TempDir(), "cluster.xml")
-	clusterXML := fmt.Sprintf("<clickhouse><remote_servers><%[1]s>%[2]s</%[1]s></remote_servers></clickhouse>\n",
-		tsStateCluster, replicas.String())
+	clusterXML := fmt.Sprintf("<clickhouse><remote_servers><%[1]s>%[2]s</%[1]s><%[3]s><shard>%[4]s</shard></%[3]s></remote_servers></clickhouse>\n",
+		tsStateCluster, shards.String(), tsStateReplicaCluster, replicas.String())
 	if err := os.WriteFile(configPath, []byte(clusterXML), 0o600); err != nil {
 		t.Fatalf("write cluster config: %v", err)
 	}
 
 	var nodes [2]*tsStateNode
 	for i, alias := range aliases {
-		container, err := tcclickhouse.Run(
-			ctx, images[i],
+		opts := append([]testcontainers.ContainerCustomizer{
 			tcclickhouse.WithUsername(tsStateUser),
 			tcclickhouse.WithPassword(tsStatePassword),
 			tcclickhouse.WithDatabase(tsStateDatabase),
 			tcclickhouse.WithConfigFile(configPath),
 			network.WithNetwork([]string{alias}, nw),
-		)
+		}, extra...)
+		container, err := tcclickhouse.Run(ctx, images[i], opts...)
 		if err != nil {
 			t.Fatalf("start %s (%s): %v", alias, images[i], err)
 		}
@@ -618,11 +656,14 @@ func runTSStateQuery(ctx context.Context, t *testing.T, node *tsStateNode, query
 	return got
 }
 
-func queryTSState(ctx context.Context, db *sql.DB, sqlStr string, args []any) (tsStateAnswer, error) {
+func queryTSState(ctx context.Context, db *sql.DB, sqlStr string, args []any, extraSettings ...string) (tsStateAnswer, error) {
 	wrapped := fmt.Sprintf(
 		"SELECT toJSONString(`Attributes`), toUnixTimestamp(`TimeUnix`), `Value` FROM (%s) SETTINGS %s = 1",
 		sqlStr, chclient.SettingExperimentalTSGridAggregate,
 	)
+	for _, setting := range extraSettings {
+		wrapped += ", " + setting
+	}
 	rows, err := db.QueryContext(ctx, wrapped, args...)
 	if err != nil {
 		return nil, err
@@ -712,4 +753,125 @@ func queryTSStateRows(ctx context.Context, db *sql.DB, query string) (int, error
 		n++
 	}
 	return n, rows.Err()
+}
+
+// tsStateParallelReplicasProfile turns parallel replicas on for every query
+// of the default profile — the way an operator's server profile can, with no
+// cerberus setting involved. parallel_replicas_for_non_replicated_merge_tree
+// lets the rig use a plain MergeTree holding the same rows on both replicas.
+const tsStateParallelReplicasProfile = `<clickhouse><profiles><default>
+<allow_experimental_parallel_reading_from_replicas>1</allow_experimental_parallel_reading_from_replicas>
+<max_parallel_replicas>2</max_parallel_replicas>
+<cluster_for_parallel_replicas>` + tsStateReplicaCluster + `</cluster_for_parallel_replicas>
+<parallel_replicas_for_non_replicated_merge_tree>1</parallel_replicas_for_non_replicated_merge_tree>
+<parallel_replicas_local_plan>0</parallel_replicas_local_plan>
+</default></profiles></clickhouse>
+`
+
+// tsStateOneRowGranules gives every row its own granule. Parallel replicas
+// hand out work by granule, so with the dataset's few rows in one granule the
+// coordinator gives every read to one replica and nothing crosses the wire.
+const tsStateOneRowGranules = " SETTINGS index_granularity = 1"
+
+// TestTSGridStateFormatBoundary_ParallelReplicas_RealCH covers the one
+// ClickHouse mechanism that ships partial aggregation states through a
+// subquery: parallel replicas. With it on, each replica runs the query's
+// aggregation and the initiator merges their states, so a replicated
+// deployment mid-upgrade across a state-format boundary fails every such
+// query with INCORRECT_DATA. Cerberus pins it off on every native query
+// (chclient.WithTSGridSetting); this rig turns it on through the server
+// profile, on a 26.6 / 26.7 replica pair holding the same rows.
+//
+// The control runs cerberus's native SQL with the profile in force and no
+// pin, and must hit INCORRECT_DATA on at least one shape from at least one
+// initiator — proof the profile really ships states. The same SQL then runs
+// through a chclient.Client carrying the production WithTSGridSetting
+// settings and must answer exactly the fan-out from both initiators.
+func TestTSGridStateFormatBoundary_ParallelReplicas_RealCH(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), tsStateStartTimeout)
+	defer cancel()
+	profilePath := filepath.Join(t.TempDir(), "parallel_replicas.xml")
+	if err := os.WriteFile(profilePath, []byte(tsStateParallelReplicasProfile), 0o600); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+	nodes := startTSStateCluster(ctx, t, [2]string{tsStateV2Image, tsStateV3Image},
+		testcontainers.WithFiles(testcontainers.ContainerFile{
+			HostFilePath:      profilePath,
+			ContainerFilePath: "/etc/clickhouse-server/users.d/parallel_replicas.xml",
+			FileMode:          0o644,
+		}))
+
+	// The same rows on both replicas, in one plain MergeTree per server under
+	// the name every query reads.
+	for _, node := range nodes {
+		ddl := strings.Replace(tsStateLocalDDL, "otel_metrics_sum_local", "otel_metrics_sum", 1) + tsStateOneRowGranules
+		if _, err := node.db.ExecContext(ctx, ddl); err != nil {
+			t.Fatalf("%s DDL: %v", node.alias, err)
+		}
+		values := make([]string, 0, len(tsStateRows))
+		for _, r := range tsStateRows {
+			values = append(values, fmt.Sprintf("('requests_total', %s, toDateTime64('%s', 9), %s)", r.attrs, r.ts, r.value))
+		}
+		if _, err := node.db.ExecContext(ctx, "INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES "+
+			strings.Join(values, ", ")); err != nil {
+			t.Fatalf("%s seed: %v", node.alias, err)
+		}
+	}
+
+	// Which replica the coordinator hands each granule to varies run to run,
+	// so a single pass can miss the remote replica. Both halves therefore run
+	// tsStateParallelReplicaRounds times: the control needs one shipped state
+	// across all of them, the pinned run needs every answer right.
+	shipped := 0
+	for range tsStateParallelReplicaRounds {
+		for _, initiator := range nodes {
+			for _, shape := range tsStateShapes {
+				sqlStr, args := emitTSState(ctx, t, shape.query, shape.native)
+				_, err := queryTSState(ctx, initiator.db, sqlStr, args)
+				var ex *clickhouse.Exception
+				switch {
+				case errors.As(err, &ex) && ex.Code == clickhouseIncorrectData:
+					shipped++
+				case err != nil:
+					t.Fatalf("%s unpinned from %s: %v", shape.name, initiator.alias, err)
+				}
+
+				want := queryTSStateLines(ctx, t, initiator, shape.query, promql.RangeLowerers{})
+				got := queryTSStateLines(ctx, t, initiator, shape.query, shape.native)
+				if strings.Join(got, "\n") != strings.Join(want, "\n") {
+					t.Fatalf("%s from %s (%s) through the production settings differs from the fan-out:\n native %q\n fanout %q",
+						shape.name, initiator.alias, initiator.image, got, want)
+				}
+			}
+		}
+	}
+	t.Logf("%d unpinned native queries hit INCORRECT_DATA", shipped)
+	if shipped == 0 {
+		t.Fatal("no native query failed with INCORRECT_DATA under the parallel-replicas profile without the pin — " +
+			"the rig does not ship states, so the pinned run above proves nothing")
+	}
+}
+
+// tsStateParallelReplicaRounds is how many passes the parallel-replicas
+// case makes over every shape and initiator. Measured: a single pass shipped
+// a state in 1 to 6 of its 6 unpinned queries.
+const tsStateParallelReplicaRounds = 4
+
+// queryTSStateLines runs query's emitted SQL through initiator's
+// chclient.Client — so it carries every production per-query setting, the
+// native ones via chclient.WithTSGridSetting exactly as the engine stamps
+// them — and returns one sorted `series|ts|value` line per row.
+func queryTSStateLines(ctx context.Context, t *testing.T, initiator *tsStateNode, query string, lowerers promql.RangeLowerers) []string {
+	t.Helper()
+	sqlStr, args := emitTSState(ctx, t, query, lowerers)
+	if strings.Contains(sqlStr, "timeSeries") {
+		ctx = chclient.WithTSGridSetting(ctx)
+	}
+	lines, err := initiator.client.QueryStrings(ctx, "SELECT concat(toJSONString(`Attributes`), '|', "+
+		"toString(toUnixTimestamp(`TimeUnix`)), '|', toString(`Value`)) FROM ("+sqlStr+")", args...)
+	if err != nil {
+		t.Fatalf("%q from %s (%s) through chclient: %v", query, initiator.alias, initiator.image, err)
+	}
+	sort.Strings(lines)
+	return lines
 }

@@ -355,13 +355,24 @@ Two servers on different formats refuse each other's state with
 state.
 
 - **Rolling upgrades need no cerberus change.** Cerberus never ships a
-  partial state between servers: every scan is its own subquery, so a
-  `Distributed` table returns rows and the whole aggregation runs on the
-  server cerberus's connection lands on. A multi-shard deployment can upgrade
-  its shards and initiators in any order, across either boundary or both at
-  once, with the native path on throughout. `just
-  ts-grid-state-format-integration` proves this on two-shard clusters for
-  every step of such an upgrade, in both initiator directions.
+  partial state between servers. The emitter refuses to render a native
+  aggregate at a query level that reads a table directly, so a `Distributed`
+  table returns rows and the whole aggregation runs on the server cerberus's
+  connection lands on. Every native query also pins
+  `allow_experimental_parallel_reading_from_replicas = 0`, which overrides a
+  server profile that turns parallel replicas on — the one mechanism that
+  ships states through a subquery. A multi-shard or replicated deployment can
+  upgrade its servers in any order, across either boundary or both at once,
+  with the native path on throughout. `just ts-grid-state-format-integration`
+  proves this on two-shard clusters for every step of such an upgrade, in both
+  initiator directions and under the `Distributed` settings a profile can
+  change, and on a mixed-version replica pair with parallel replicas on in
+  the server profile.
+- **A profile that forbids the parallel-replicas pin disables the native
+  path.** The capability probe stamps the same settings as a native query, so
+  a constrained or readonly profile that refuses
+  `allow_experimental_parallel_reading_from_replicas` keeps every `ts_grid_*`
+  feature on the fan-out.
 - **The persisted downsample tier crosses every version.** Its
   `timeSeriesLastTwoSamples` state has the same format on 25.9 through
   26.8.1.2041: parts written before an upgrade read and merge after it, and

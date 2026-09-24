@@ -402,10 +402,13 @@ jobs:
       # The native timeSeries*ToGrid state-format boundary: two-shard
       # Distributed rigs on each step of a rolling upgrade across the 26.7
       # and 26.8 state-format bumps. Cerberus's native SQL must answer the
-      # fan-out reference from both initiators of every mixed rig (it never
-      # ships a partial state), a control aggregate over the Distributed
-      # table must fail with INCORRECT_DATA across each boundary, and the
-      # persisted timeSeriesLastTwoSamples tier state must cross versions.
+      # fan-out reference from both initiators of every mixed rig under every
+      # Distributed setting a profile can change (it never ships a partial
+      # state), a control aggregate over the Distributed table must fail with
+      # INCORRECT_DATA across each boundary, the persisted
+      # timeSeriesLastTwoSamples tier state must cross versions, and a
+      # mixed-version replica pair with parallel replicas on in the server
+      # profile must ship states unpinned and answer correctly pinned.
       # Boots its own pinned builds (CH_TS_STATE_*_IMAGE). See internal/chsql/
       # range_window_grid_native_state_format_realch_integration_test.go.
       - name: Run timeSeries*ToGrid state-format boundary (real ClickHouse, mixed-version Distributed)
