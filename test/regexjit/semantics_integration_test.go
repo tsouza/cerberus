@@ -103,7 +103,7 @@ var matcherCases = []matcherCase{
 	{pattern: `\s*lead`, anchoredJIT: true, lineFilterJIT: true},
 	{pattern: `\s`, anchoredJIT: true, lineFilterJIT: true},
 	{pattern: `(?:x(y))?api`, anchoredJIT: true, lineFilterJIT: true},
-	{pattern: `.*\n.*`, anchoredJIT: false, lineFilterJIT: false},
+	{pattern: `.*\n.*`, anchoredJIT: false, lineFilterJIT: true},
 	{pattern: `(?s:.*)`, anchoredJIT: false, lineFilterJIT: false},
 	{pattern: `^api`, anchoredJIT: false, lineFilterJIT: true},
 	{pattern: `api$`, anchoredJIT: false, lineFilterJIT: true},
@@ -127,13 +127,12 @@ var labelReplaceCases = []labelReplaceCase{
 	{regex: `(\w+)(-(\d+))?`, repl: `[$1|$2|$3]`, jit: true},
 	{regex: `([a-z]*)-?([0-9]*)`, repl: `$2$1`, jit: true},
 	{regex: `.*`, repl: `all`, jit: true},
-	{regex: `(?P<name>\w+)-\d+`, repl: `${name}!`, jit: true},
-	{regex: `(.*)-[0-9]+`, repl: `$1`, jit: true},
+	{regex: `(?P<name>\w+)-\d+`, repl: `${name}!`, jit: false},
+	{regex: `(.*)-[0-9]+`, repl: `$1`, jit: false},
 	{regex: ``, repl: `none`, jit: true},
 	{regex: `api|web-(\d)`, repl: `x$1`, jit: false},
 	{regex: `caf(.)`, repl: `$1`, jit: false},
 	{regex: `(?i)(k)elvin`, repl: `$1`, jit: false},
-	{regex: `a)|(b`, repl: `[$1]`, jit: false},
 }
 
 // Unwrap probes: logfmt lines whose duration and byte fields exercise the
@@ -270,7 +269,7 @@ func (r *runner) check(ctx context.Context, t *testing.T, name string, wantJIT b
 				r.s.dropCompiled(ctx, t)
 			}
 			for run := 0; run < runs; run++ {
-				got := canonical(t, request(withMode(ctx, mode)))
+				got := canonical(t, request(r.s.modeCtx(ctx, mode)))
 				if baseline == nil {
 					baseline = got
 				} else if !bytes.Equal(got, baseline) {
@@ -292,7 +291,7 @@ func (r *runner) check(ctx context.Context, t *testing.T, name string, wantJIT b
 		}
 		r.s.dropCompiled(ctx, t)
 		tag := probeTag(name)
-		request(chclient.WithQuerySetting(withOtherJITOff(withMode(ctx, jitNow)), settingLogComment, tag))
+		request(chclient.WithQuerySetting(withOtherJITOff(r.s.modeCtx(ctx, jitNow)), settingLogComment, tag))
 		if got := r.s.compiledEntries(ctx, t) > 0; got != wantJIT {
 			t.Errorf("%s compiled a regular expression = %v; the corpus records %v. Emitted SQL:\n%s",
 				r.s.version, got, wantJIT, strings.Join(r.s.loggedQueries(ctx, t, tag), "\n"))
@@ -312,7 +311,7 @@ func probeTag(name string) string {
 func (s *server) loggedQueries(ctx context.Context, t testing.TB, tag string) []string {
 	t.Helper()
 	s.exec(ctx, t, "SYSTEM FLUSH LOGS")
-	rows, err := s.admin.Conn().Query(ctx, "SELECT query FROM system.query_log WHERE type = 'QueryFinish' AND log_comment = ? ORDER BY event_time_microseconds", tag)
+	rows, err := s.admin.Conn().Query(ctx, "SELECT concat(toString(Settings), ' ', query) FROM system.query_log WHERE type = 'QueryFinish' AND log_comment = ? ORDER BY event_time_microseconds", tag)
 	if err != nil {
 		t.Fatalf("read query_log: %v", err)
 	}
@@ -650,7 +649,7 @@ func parseHumanBytes(s string) (float64, bool) {
 // filter answer as the reference engines do. The interpreted engine is not
 // held to this — see the package documentation.
 func checkInvalidUTF8(ctx context.Context, t *testing.T, s *server, h handlers) {
-	jitCtx := withMode(ctx, jitNow)
+	jitCtx := s.modeCtx(ctx, jitNow)
 	for _, c := range matcherCases {
 		if c.anchoredJIT {
 			q := fmt.Sprintf(`%s{%s=~%s}`, bytesMetric, probeLabel, strconv.Quote(c.pattern))

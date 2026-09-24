@@ -154,7 +154,7 @@ var benchTagSeq atomic.Int64
 
 func runBench(ctx context.Context, b *testing.B, s *server, h handlers, q benchQuery, sc benchScenario, mode jitMode) {
 	tag := fmt.Sprintf("regexjit-bench-%d", benchTagSeq.Add(1))
-	reqCtx := chclient.WithQuerySetting(withMode(ctx, mode), settingLogComment, tag)
+	reqCtx := chclient.WithQuerySetting(s.modeCtx(ctx, mode), settingLogComment, tag)
 	issue := func(query string) {
 		start := benchEnd.Add(-benchSpan)
 		if q.logql {
@@ -168,7 +168,7 @@ func runBench(ctx context.Context, b *testing.B, s *server, h handlers, q benchQ
 	if sc == scenarioWarm || sc == scenarioConcurrent {
 		s.dropCompiled(ctx, b)
 		issue(q.query)
-		reqCtx = chclient.WithQuerySetting(withMode(ctx, mode), settingLogComment, tag)
+		reqCtx = chclient.WithQuerySetting(s.modeCtx(ctx, mode), settingLogComment, tag)
 	}
 	b.ResetTimer()
 	switch sc {

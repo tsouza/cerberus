@@ -46,6 +46,7 @@ const (
 	settingCompileRegexp  = "compile_regular_expressions"
 	settingMinCountRegexp = "min_count_to_compile_regular_expression"
 	minCountCompileNow    = 0
+	settingConditionCache = "use_query_condition_cache"
 )
 
 // otherJITSettings are the server's other native-code compilers. They share
@@ -73,6 +74,32 @@ type server struct {
 	version string
 	// regexpJIT reports whether the build has compile_regular_expressions.
 	regexpJIT bool
+	// conditionCache reports whether the build has the query condition
+	// cache, which [server.modeCtx] switches off.
+	conditionCache bool
+}
+
+// hasSetting reports whether the build knows the setting name.
+func (s *server) hasSetting(ctx context.Context, t testing.TB, name string) bool {
+	t.Helper()
+	var n uint64
+	if err := s.admin.Conn().QueryRow(ctx, "SELECT count() FROM system.settings WHERE name = ?", name).Scan(&n); err != nil {
+		t.Fatalf("%s: probe setting %s: %v", s.image, name, err)
+	}
+	return n > 0
+}
+
+// modeCtx is withMode with the query condition cache off. A request's
+// filter must evaluate its regular expression on every granule: a cache
+// entry left by an earlier request in another mode would let the server
+// skip granules it proved empty, so neither the answer nor the compiled
+// code would come from the mode under test.
+func (s *server) modeCtx(ctx context.Context, mode jitMode) context.Context {
+	ctx = withMode(ctx, mode)
+	if s.conditionCache {
+		ctx = chclient.WithQuerySetting(ctx, settingConditionCache, 0)
+	}
+	return ctx
 }
 
 // startServer boots image under the package's CPU and memory limits and
@@ -110,11 +137,8 @@ func startServer(ctx context.Context, t testing.TB, image string) *server {
 	if err := s.admin.Conn().QueryRow(ctx, "SELECT version()").Scan(&s.version); err != nil {
 		t.Fatalf("%s: read version: %v", image, err)
 	}
-	var n uint64
-	if err := s.admin.Conn().QueryRow(ctx, "SELECT count() FROM system.settings WHERE name = ?", settingCompileRegexp).Scan(&n); err != nil {
-		t.Fatalf("%s: probe %s: %v", image, settingCompileRegexp, err)
-	}
-	s.regexpJIT = n > 0
+	s.regexpJIT = s.hasSetting(ctx, t, settingCompileRegexp)
+	s.conditionCache = s.hasSetting(ctx, t, settingConditionCache)
 	if err := ddl.Apply(ctx, s.admin.Conn(), []ddl.Signal{ddl.Metrics, ddl.Logs}); err != nil {
 		t.Fatalf("%s: apply DDL: %v", image, err)
 	}
