@@ -90,15 +90,15 @@ func TestMutation_HQNativeArmSelectFiniteSum_BackwardAtReverseWalkPhi(t *testing
 }
 
 // TestMutation_HQNativeHelperColumns_MaterializedOnceAndReadBack pins the
-// helper-column protocol that emitHistogramQuantileNative's staged pipeline
-// runs on. Each stage builds its writers with the helper names produced SO FAR:
-// an EMPTY name means "this stage is the one that computes the quantity, so
-// expand the expression", and a non-empty one means "an enclosing stage already
-// projected it, read the column". Inverting that test makes every writer do
-// exactly the wrong thing — the defining stage emits `Col("")`, which renders
-// as an empty backtick-quoted identifier, and every consumer re-expands the
-// full array walk per use, which is the unbounded-cost shape the staging exists
-// to avoid.
+// helper-name protocol emitHistogramQuantileNative's let-bindings run on. Each
+// binding builds its writers with the helper names bound SO FAR: an EMPTY name
+// means "this binding is the one that computes the quantity, so expand the
+// expression", and a non-empty one means "an enclosing binding already holds
+// it, read the parameter". Inverting that test makes every writer do exactly
+// the wrong thing — the defining binding emits `Col("")`, which renders as an
+// empty backtick-quoted identifier, and every consumer re-expands the full
+// array walk per use, which is the unbounded-cost shape the binding exists to
+// avoid.
 //
 // Kills the three surviving CONDITIONALS_NEGATION mutants of that test:
 // histogram_quantile_native.go:`helpers.revCum != ""`,
@@ -106,25 +106,26 @@ func TestMutation_HQNativeArmSelectFiniteSum_BackwardAtReverseWalkPhi(t *testing
 // histogram_quantile_native.go:`helperCol != ""` (shared by firstPopulated
 // and lastPopulated).
 //
-// phi is at reverseWalkPhi so reachesReverseArm holds and the revCum stage is
-// actually projected.
+// phi is at reverseWalkPhi so reachesReverseArm holds and revCum is actually
+// bound.
 func TestMutation_HQNativeHelperColumns_MaterializedOnceAndReadBack(t *testing.T) {
 	t.Parallel()
 
 	sql := emitNodeSQL(t, hqNativeMutationPlan(reverseWalkPhi))
 
-	// Each helper is DEFINED once, by expansion, in its own stage …
+	// Each helper is DEFINED once, by expansion, as the value its lambda
+	// parameter is bound to …
 	for _, want := range []string{
-		"arrayReverse(arrayCumSum(arrayReverse(`_cerb_hq_buckets`))) AS `_cerb_hq_revcum`",
-		"`_cerb_hq_idx`) AS `_cerb_hq_value_idx`",
-		"arrayFirstIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_first_populated`",
-		"arrayLastIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_last_populated`",
+		"[arrayReverse(arrayCumSum(arrayReverse(`_cerb_hq_buckets`)))]",
+		"`_cerb_hq_idx`)])[1]",
+		"[arrayFirstIndex(c -> c > 0, `_cerb_hq_buckets`)]",
+		"[arrayLastIndex(c -> c > 0, `_cerb_hq_buckets`)]",
 	} {
-		if !strings.Contains(sql, want) {
-			t.Fatalf("helper column must be materialized by expansion: expected %q in\n%s", want, sql)
+		if got := strings.Count(sql, want); got != 1 {
+			t.Fatalf("helper must be bound once by expansion: expected %q once, got %d, in\n%s", want, got, sql)
 		}
 	}
-	// … and READ BACK as a column everywhere above it.
+	// … and READ BACK through that parameter everywhere inside it.
 	for _, want := range []string{
 		"`_cerb_hq_revcum`[`_cerb_hq_idx`]",
 		"if(`_cerb_hq_value_idx` <= length(`NegativeBucketCounts`)",
@@ -132,12 +133,35 @@ func TestMutation_HQNativeHelperColumns_MaterializedOnceAndReadBack(t *testing.T
 		"if(`_cerb_hq_last_populated` <= length(`NegativeBucketCounts`)",
 	} {
 		if !strings.Contains(sql, want) {
-			t.Fatalf("materialized helper must be read back as a column: expected %q in\n%s", want, sql)
+			t.Fatalf("bound helper must be read back by name: expected %q in\n%s", want, sql)
 		}
 	}
 	// The negated guard's signature: Col("") renders as a bare pair of
 	// backticks, which no legitimate identifier in this query produces.
 	if strings.Contains(sql, "``") {
 		t.Fatalf("emitted SQL contains an empty backtick-quoted identifier:\n%s", sql)
+	}
+}
+
+// TestIsBareIdentifier pins the gate on binding a histogram field as a lambda
+// parameter: the parameter is written unquoted, so only a name ClickHouse
+// parses as a plain identifier may take that path.
+func TestIsBareIdentifier(t *testing.T) {
+	t.Parallel()
+
+	for name, want := range map[string]bool{
+		"Count":                 true,
+		"_hq_x9":                true,
+		"a":                     true,
+		"":                      false,
+		"9lives":                false,
+		"Positive.BucketCounts": false,
+		"zero-count":            false,
+		"sum count":             false,
+		"ñ":                     false,
+	} {
+		if got := isBareIdentifier(name); got != want {
+			t.Errorf("isBareIdentifier(%q) = %t, want %t", name, got, want)
+		}
 	}
 }

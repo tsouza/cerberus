@@ -1779,13 +1779,15 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) (chplan.Node, 
 		{Name: s.TimestampColumn, Role: chplan.RoleTimestamp},
 		{Name: s.ValueColumn, Role: chplan.RoleValue},
 	}
-	// A plan that already publishes exactly the Sample quartet, in order,
-	// needs no re-projection: every projection would be an identity column
-	// reference. Wrapping it anyway costs a derived-query level, and
-	// ClickHouse's query analysis re-walks the whole subtree beneath every
-	// such level — on a deep plan (the native histogram quantile) one
-	// identity wrapper measured as a tenth of the request's planning time.
-	if row.Equal(chplan.Schema{Columns: roles}) && identityProjections(projections) {
+	// A Project that already publishes exactly the Sample quartet, in
+	// order, needs no re-projection: every projection would be an identity
+	// column reference, and a Project of a Project is one projection.
+	// Wrapping it anyway costs a derived-query level, and ClickHouse's query
+	// analysis re-walks the whole subtree beneath every such level — on a
+	// deep plan (the native histogram quantile) one identity wrapper
+	// measured as a tenth of the request's planning time.
+	if _, projected := plan.(*chplan.Project); projected &&
+		row.Equal(chplan.Schema{Columns: roles}) && identityProjections(projections) {
 		return plan, nil
 	}
 	return &chplan.Project{Input: plan, Projections: projections, Roles: roles}, nil
