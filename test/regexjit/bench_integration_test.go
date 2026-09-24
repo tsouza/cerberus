@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ const (
 	benchQueryStep     = time.Minute
 	benchMetric        = "rjit_bench"
 	benchService       = "rjitbench"
-	benchParallelism   = 4 // concurrent clients per GOMAXPROCS unit
+	benchClients       = 8
 	benchSeedTimeout   = 20 * time.Minute
 	benchPodGroups     = 4
 	benchLatencyBucket = 997
@@ -52,23 +53,26 @@ type benchQuery struct {
 // rows.
 const churnDigits = 6
 
+// The PromQL shapes read one pod group (a quarter of the pods) through a
+// range equal to the query step, so every sample lands in one anchor and the
+// scan stays under the emitter's range-window fan-out bound.
 var benchQueries = []benchQuery{
 	{
 		name:  "promql-matcher-compiled",
-		query: `sum(rate(` + benchMetric + `{pod=~"api-.*"}[5m]))`,
+		query: `sum(rate(` + benchMetric + `{pod=~"api-.*"}[1m]))`,
 		churn: func(i int) string {
-			return fmt.Sprintf(`sum(rate(%s{pod=~"api-[0-9]{1,%d}-.*"}[5m]))`, benchMetric, churnDigits+i)
+			return fmt.Sprintf(`sum(rate(%s{pod=~"api-[0-9]{1,%d}-.*"}[1m]))`, benchMetric, churnDigits+i)
 		},
 	},
 	{
 		name:  "promql-matcher-alternation-re2",
-		query: `sum(rate(` + benchMetric + `{pod=~"api-.*|web-.*"}[5m]))`,
+		query: `sum(rate(` + benchMetric + `{pod=~"api-.*|none-.*"}[1m]))`,
 	},
 	{
 		name:  "promql-label_replace",
-		query: `sum by (svc) (label_replace(rate(` + benchMetric + `[5m]), "svc", "$1", "pod", "(.*)-[0-9]+-.*"))`,
+		query: `sum by (svc) (label_replace(rate(` + benchMetric + `{pod=~"api-.*"}[1m]), "svc", "$1", "pod", "(.*)-[0-9]+-.*"))`,
 		churn: func(i int) string {
-			return fmt.Sprintf(`sum by (svc) (label_replace(rate(%s[5m]), "svc", "$1", "pod", "(.*)-[0-9]{1,%d}-.*"))`, benchMetric, churnDigits+i)
+			return fmt.Sprintf(`sum by (svc) (label_replace(rate(%s{pod=~"api-.*"}[1m]), "svc", "$1", "pod", "(.*)-[0-9]{1,%d}-.*"))`, benchMetric, churnDigits+i)
 		},
 	},
 	{
@@ -111,7 +115,8 @@ const (
 	scenarioCold benchScenario = "cold"
 	// scenarioChurn sends a pattern the server has not seen every request.
 	scenarioChurn benchScenario = "churn"
-	// scenarioConcurrent runs the warm query from concurrent clients.
+	// scenarioConcurrent sends the warm query from benchClients clients at
+	// once; one op is the whole batch.
 	scenarioConcurrent benchScenario = "concurrent"
 )
 
@@ -120,7 +125,7 @@ const (
 // per scenario. Besides wall time per request it reports, from
 // system.query_log, the server's elapsed and CPU milliseconds per request.
 //
-//	go test -tags=integration -run '^$' -bench RegexJIT -benchtime 10x ./test/regexjit/
+//	just regex-jit-bench
 func BenchmarkRegexJIT(b *testing.B) {
 	for _, image := range benchBuilds {
 		b.Run(image, func(b *testing.B) {
@@ -154,8 +159,7 @@ var benchTagSeq atomic.Int64
 
 func runBench(ctx context.Context, b *testing.B, s *server, h handlers, q benchQuery, sc benchScenario, mode jitMode) {
 	tag := fmt.Sprintf("regexjit-bench-%d", benchTagSeq.Add(1))
-	reqCtx := chclient.WithQuerySetting(s.modeCtx(ctx, mode), settingLogComment, tag)
-	issue := func(query string) {
+	issue := func(reqCtx context.Context, query string) {
 		start := benchEnd.Add(-benchSpan)
 		if q.logql {
 			h.lokiRange(reqCtx, b, query, start, benchEnd, benchQueryStep, probeLineLimit)
@@ -163,34 +167,35 @@ func runBench(ctx context.Context, b *testing.B, s *server, h handlers, q benchQ
 		}
 		h.promRange(reqCtx, b, query, start, benchEnd, benchQueryStep)
 	}
+	measured := chclient.WithQuerySetting(s.modeCtx(ctx, mode), settingLogComment, tag)
 	// Warm and concurrent runs start from a server that has seen the query:
-	// one untimed request, untagged, compiles what the defaults compile.
+	// one untimed, untagged request compiles what the defaults compile.
 	if sc == scenarioWarm || sc == scenarioConcurrent {
 		s.dropCompiled(ctx, b)
-		issue(q.query)
-		reqCtx = chclient.WithQuerySetting(s.modeCtx(ctx, mode), settingLogComment, tag)
+		issue(s.modeCtx(ctx, mode), q.query)
 	}
 	b.ResetTimer()
-	switch sc {
-	case scenarioConcurrent:
-		b.SetParallelism(benchParallelism)
-		b.RunParallel(func(pb *testing.PB) {
-			for pb.Next() {
-				issue(q.query)
+	for i := 0; i < b.N; i++ {
+		switch sc {
+		case scenarioCold:
+			b.StopTimer()
+			s.dropCompiled(ctx, b)
+			b.StartTimer()
+			issue(measured, q.query)
+		case scenarioChurn:
+			issue(measured, q.churn(int(benchTagSeq.Add(1))))
+		case scenarioConcurrent:
+			var wg sync.WaitGroup
+			for range benchClients {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					issue(measured, q.query)
+				}()
 			}
-		})
-	default:
-		for i := 0; i < b.N; i++ {
-			query := q.query
-			switch sc {
-			case scenarioCold:
-				b.StopTimer()
-				s.dropCompiled(ctx, b)
-				b.StartTimer()
-			case scenarioChurn:
-				query = q.churn(int(benchTagSeq.Add(1)))
-			}
-			issue(query)
+			wg.Wait()
+		default:
+			issue(measured, q.query)
 		}
 	}
 	b.StopTimer()

@@ -21,11 +21,12 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 )
 
-// semanticBuilds are the builds the semantic corpus runs against: the first
-// patch releases of the two lines that carry the regular-expression compiler
-// in this repository's pinned set, and the supported floor, which has no
-// compiler and pins that the emitted patterns answer like the reference
-// engines there too.
+// semanticBuilds are the builds the semantic corpus runs against: one
+// release of each line whose server compiles regular expressions to native
+// code, and the supported floor, which has no compiler and pins that the
+// emitted patterns answer as the reference engines do there too. Held equal
+// to the Justfile's CH_REGEX_JIT_IMAGES and CH_TEST_IMAGE_PRIOR by
+// test/regression's TestIntegrationImagePinsMatchTheJustfile.
 var semanticBuilds = []string{
 	"clickhouse/clickhouse-server:26.7.13.12-alpine",
 	"clickhouse/clickhouse-server:26.8.10.6-alpine",

@@ -83,6 +83,10 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.6',
   'clickhouse/clickhouse-server:26.6-alpine',
   'clickhouse/clickhouse-server:26.6.1.1193-alpine',
+  // test/regexjit's exact builds (CH_REGEX_JIT_IMAGES): one release of each
+  // line that compiles regular expressions to native code.
+  'clickhouse/clickhouse-server:26.7.13.12-alpine',
+  'clickhouse/clickhouse-server:26.8.10.6-alpine',
 
   // Reference backends the three heads are diffed against, plus the reference
   // Prometheus the PromQL surface gate probes and the reference Mimir the
