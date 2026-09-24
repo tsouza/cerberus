@@ -437,6 +437,29 @@ chclient-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -race -tags=integration ./internal/chclient/...
 
+# Run test/regexjit's real-server checks of the regular expressions cerberus
+# emits: every PromQL / LogQL shape in its corpus answers identically with
+# ClickHouse's native regex compiler off, on, and at its default threshold,
+# answers as the Go-regexp reference engines do, and is compiled exactly when
+# the corpus records it is. Requires Docker; gated behind the `integration`
+# build tag. See test/regexjit/doc.go and .github/workflows/strict-scan.yml.
+
+# Check emitted regex shapes against Go regexp with ClickHouse's regex compiler on and off. Needs Docker.
+regex-jit-integration:
+    @just _pull-retry {{CH_REGEX_JIT_IMAGES}} {{CH_TEST_IMAGE_PRIOR}}
+    go test -timeout 15m -tags=integration -count=1 -run '^TestRegexJIT_' ./test/regexjit/...
+
+# Benchmark the same shapes over an hour of seeded metrics and logs: cold,
+# warm, changing-pattern and concurrent requests, compilation off and at the
+# server's defaults, reporting wall, server elapsed and server CPU time per
+# request. Not a CI gate — docs/clickhouse-optimizations.background.md holds
+# the recorded run.
+
+# Benchmark emitted regex shapes with ClickHouse's regex compiler on and off. Needs Docker.
+regex-jit-bench:
+    @just _pull-retry {{CH_REGEX_JIT_IMAGES}}
+    go test -timeout 90m -tags=integration -count=1 -run '^$' -bench RegexJIT -benchtime 3x ./test/regexjit/...
+
 # Run test/querylog's real-server evidence for the query-actuals query-log
 # source: two data shards and an upgraded server whose log rotates, on the
 # pinned floor and union-capable builds, with container CPU and memory limits.

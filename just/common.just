@@ -65,6 +65,13 @@ CH_QUANTILE_PROM_HISTOGRAM_IMAGE := "clickhouse/clickhouse-server:25.10-alpine"
 # the test source.
 CH_TAG_GROUPS_IMAGE := "clickhouse/clickhouse-server:26.2-alpine"
 
+# CH_REGEX_JIT_IMAGES are the builds test/regexjit boots beyond
+# CH_TEST_IMAGE_PRIOR (the supported floor, which it also runs): one release
+# of each of the 26.7 and 26.8 lines, whose servers compile regular
+# expressions to native code (compile_regular_expressions). Exact tags,
+# because the tests record which emitted shapes that specific build compiles.
+CH_REGEX_JIT_IMAGES := "clickhouse/clickhouse-server:26.7.13.12-alpine clickhouse/clickhouse-server:26.8.10.6-alpine"
+
 # CH_QUERY_LOG_IMAGES are the exact builds test/querylog's real-server
 # evidence pins: the supported floor (versions.yaml min_clickhouse), and the
 # first line whose server maintains system.all_query_log. Exact tags, because

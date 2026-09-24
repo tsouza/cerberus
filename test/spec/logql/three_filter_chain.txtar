@@ -1,13 +1,14 @@
 -- query.logql --
 {job="api"} |= "a" != "b" |~ "c"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0) AND (position(`Body`, ?) = 0) AND match(`Body`, ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0) AND (position(`Body`, ?) = 0) AND (position(`Body`, ?) > 0 AND match(`Body`, ?))
 -- args --
 [0] string = "job"
 [1] string = "api"
 [2] string = "a"
 [3] string = "b"
 [4] string = "c"
+[5] string = "c"
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
@@ -35,6 +36,7 @@ detail: log query `{job="api"} |= "a" != "b" |~ "c"` answers with log lines: the
 [2] string = "a"
 [3] string = "b"
 [4] string = "c"
+[5] string = "c"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -43,4 +45,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0) AND (position(`Body`, ?) = 0) AND match(`Body`, ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) > 0) AND (position(`Body`, ?) = 0) AND (position(`Body`, ?) > 0 AND match(`Body`, ?))

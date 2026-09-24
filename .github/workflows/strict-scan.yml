@@ -414,6 +414,50 @@ jobs:
       - name: Run timeSeries*ToGrid state-format boundary (real ClickHouse, mixed-version Distributed)
         run: just ts-grid-state-format-integration
 
+  # ClickHouse 26.7 compiles a subset of regular expressions to native code
+  # (compile_regular_expressions, on by default), and falls back to RE2 for
+  # the rest. This job boots pinned 26.7 and 26.8 builds and the supported
+  # floor, drives cerberus-emitted PromQL and LogQL regex shapes through the
+  # production handlers, and requires the answers with compilation off, on
+  # and at the default threshold to agree with each other and with the
+  # Go-regexp reference engines, and each shape to be compiled exactly when
+  # test/regexjit's corpus records it is. See test/regexjit/doc.go. It is its
+  # own job, beside strict-scan rather than a step inside it, so neither
+  # lane's wall clock grows with the other's.
+  regex-jit:
+    name: regex-jit
+    needs: changes
+    # `always()` for the same reason as strict-scan above: a failed `changes`
+    # must fail this job, never skip it into green.
+    if: >-
+      always() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
+    runs-on: ubuntu-latest
+    # Three pinned ClickHouse servers run concurrently, each seeded with a
+    # few hundred rows; the corpus takes about two and a half minutes on a
+    # loaded eight-core host, the image pulls the rest.
+    timeout-minutes: 20
+    steps:
+      - name: gate on the changes job
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::changes did not succeed (${{ needs.changes.result }}); a check must not be skipped into green."
+          exit 1
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go
+
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
+        with:
+          tool: just@1.46.0
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - name: Run emitted regex shapes with native compilation on and off (real ClickHouse)
+        run: just regex-jit-integration
+
   # The query-actuals query-log source (internal/chclient/query_log_actuals.go,
   # internal/engine's QueryLogActualsReconciler) against real servers: two data
   # shards behind a Distributed table and a server upgraded from the supported

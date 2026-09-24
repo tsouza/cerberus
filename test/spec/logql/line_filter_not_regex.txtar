@@ -1,11 +1,12 @@
 -- query.logql --
 {job="api"} !~ "health"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND NOT match(`Body`, ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) = 0 OR NOT match(`Body`, ?))
 -- args --
 [0] string = "job"
 [1] string = "api"
 [2] string = "health"
+[3] string = "health"
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
@@ -30,6 +31,7 @@ detail: log query `{job="api"} !~ "health"` answers with log lines: the referenc
 [0] string = "job"
 [1] string = "api"
 [2] string = "health"
+[3] string = "health"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -38,4 +40,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND NOT match(`Body`, ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Body`, ?) = 0 OR NOT match(`Body`, ?))

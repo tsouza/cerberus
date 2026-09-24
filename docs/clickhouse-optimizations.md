@@ -1105,6 +1105,71 @@ ORDER BY cache_hits DESC
 LIMIT 20;
 ```
 
+## Native regular-expression compilation
+
+ClickHouse 26.7 and later compile a subset of regular expressions to native
+code in `match`, `extract`, `extractAll`, `replaceRegexpOne` and
+`replaceRegexpAll`. Two server settings control it:
+
+| Setting                                   | Server default | Meaning                                                                  |
+| ----------------------------------------- | -------------- | ------------------------------------------------------------------------ |
+| `compile_regular_expressions`             | `1`            | Compile a constant pattern that falls inside the subset.                 |
+| `min_count_to_compile_regular_expression` | `3`            | Evaluations of one pattern before it is compiled, counted per process.   |
+
+Cerberus stamps neither setting and registers no `chopt` feature for it: the
+server default is the configuration. A pattern outside the subset, and every
+pattern on a server older than 26.7, is evaluated by RE2. Answers are the
+same either way for valid UTF-8 input, so an operator who switches compilation
+off in the cerberus user's ClickHouse profile changes cost, never results.
+
+The subset covers `^` / `$` anchors, literals, character classes (`[...]`,
+`[^...]`, `\d`, `\w`, `\s`), `.`, the quantifiers `*` `+` `?` `{n,m}`,
+capturing and non-capturing groups, and leading `(?i)` / `(?s)` flags. It
+excludes alternation, named groups, scoped flag groups such as `(?s:...)`,
+and — for a class that can match a non-ASCII byte — any count but `*` or `+`.
+`extractAllGroupsHorizontal` is never compiled.
+
+How the emitted shapes fare on 26.7 and 26.8:
+
+| Emitted shape                             | Bound pattern                                   | Compiled when the user pattern is                                          |
+| ----------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------- |
+| PromQL `=~` / `!~`, LogQL stream `=~`     | `^(?:<re>)$`                                    | in the subset, with no `^` / `$` / flags of its own (`api.*`, `\w+-\d+`)   |
+| `label_replace`                           | `(?s)^(?:<re>)$`, or `^(?s:<re>)$` (see below)  | in the subset, with no named group (`host-(.*)`, `(\w+)(-(\d+))?`)         |
+| LogQL line filter                         | `<re>`, each `.` spelled `[^\n]` (see below)    | in the subset, not empty and not a pure literal (`timeout after \d+ms`)    |
+| LogQL `regexp` parser                     | `<re>` in `extractAllGroupsHorizontal`          | never                                                                      |
+| LogQL `unwrap duration()` / `bytes()`     | fixed patterns in `internal/logql`              | always: each conversion binds compilable fixed patterns                    |
+
+Within the subset, a greedy run followed by a literal the run can also
+consume — `(.*)-[0-9]+` — is still left to RE2.
+
+The emitter spells the patterns it binds so that they stay inside the subset
+and cheap without changing meaning (`internal/chsql/regex_pattern.go`):
+
+- **`label_replace`** anchors a regex that parses on its own as
+  `(?s)^(?:<re>)$`, the same program as Prometheus's `^(?s:<re>)$`. A regex
+  whose `)` closes the anchor group early keeps the reference spelling.
+- **LogQL line filters** spell a `.` read without the `s` flag as `[^\n]`:
+  Loki's line filter does not let `.` match a newline and ClickHouse's
+  `match()` does. The rewrite is used only when it parses to the program the
+  pattern has under Go's defaults; otherwise the pattern is prefixed with
+  `(?-s)`. A pattern with no such `.` is bound unchanged.
+- **LogQL line filters with a literal prefix** — every match of `<re>`
+  starting with the same literal, as `timeout after \d+ms` does — are guarded
+  as `(position(Body, '<prefix>') > 0 AND match(Body, '<re>'))`, or
+  `(position(Body, '<prefix>') = 0 OR NOT match(Body, '<re>'))` for `!~`, so a
+  line without the literal is rejected before a compiled matcher runs on it.
+
+On bytes that are not valid UTF-8 a compiled pattern matches as Go's `regexp`
+does — the reference engines' — and RE2 does not (issue
+[#3664](https://github.com/tsouza/cerberus/issues/3664)).
+
+Evidence: `just regex-jit-integration` (the `regex-jit` job of
+`strict-scan.yml`, `test/regexjit`) runs every shape above through the
+production handlers on 26.7.13.12, 26.8.10.6 and 24.8 with compilation off,
+on, and at the default threshold, and requires identical answers, answers
+equal to Go-regexp references, and each shape compiled exactly when its corpus
+entry says so. `just regex-jit-bench` measures the same shapes.
+
 ## Version safety
 
 Nothing in this suite can break ClickHouse 24.8:
@@ -1126,6 +1191,9 @@ Nothing in this suite can break ClickHouse 24.8:
   a `>= 25.9` server.
 - `columnar_result_decode` is client-side and version-agnostic (no server
   setting); it is opt-in only, so `auto` never engages it.
+- Native regular-expression compilation is a server default cerberus does not
+  set; the patterns cerberus binds mean the same on 24.8, where RE2 evaluates
+  all of them.
 - Under `auto`, an unsupported feature is simply not enabled, so a deployment
   on ClickHouse 24.8 keeps its 24.8-safe SQL unchanged.
 

@@ -8,6 +8,11 @@ package chplan
 //   - IsRegex=true,  Negated=false → `match(<Source>, <Pattern>)`
 //   - IsRegex=true,  Negated=true  → `NOT match(<Source>, <Pattern>)`
 //
+// A regex Pattern is read as Go's regexp reads it under its default flags
+// — Loki's line-filter semantics, where `.` does not match a newline.
+// ClickHouse's match() evaluates with `.` matching one, so the emitter
+// respells such a `.` (internal/chsql's lineFilterRegex).
+//
 // The emitter renders it as the CH expression that yields a UInt8
 // suitable for a WHERE predicate.
 type LineContent struct {

@@ -435,6 +435,38 @@
         "id": "chdb.query-log-union"
       },
       {
+        "lane_id": "chdb.regex-jit",
+        "context_name": "regex-jit",
+        "merge_required": false,
+        "release_required": false,
+        "binding_ids": [
+          "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE",
+          "BINDING-ARCH-CANCELLATION-CLEANUP-PANIC",
+          "BINDING-ARCH-COMPUTE-FANOUT-STATIC-LINT",
+          "BINDING-ARCH-CURSOR-TEARDOWN-CH-RECOVERY",
+          "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
+          "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
+          "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
+          "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
+          "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
+          "BINDING-ARCH-NO-CACHING-STATIC",
+          "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
+          "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+          "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
+          "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
+          "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
+          "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION",
+          "BINDING-SIGNAL-ADMISSION-GRPC-TRANSPORT",
+          "BINDING-SIGNAL-ADMISSION-LOGQL-WIRING",
+          "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
+          "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
+          "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
+        ],
+        "id": "chdb.regex-jit"
+      },
+      {
         "lane_id": "chdb.strict-scan",
         "context_name": "strict-scan",
         "merge_required": true,
@@ -2123,6 +2155,12 @@
               "release_required": false
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -2334,6 +2372,12 @@
             {
               "lane_id": "chdb.query-log-union",
               "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
               "merge_required": false,
               "release_required": false
             },
@@ -2690,6 +2734,12 @@
               "release_required": false
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -2821,6 +2871,12 @@
             {
               "lane_id": "chdb.query-log-union",
               "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
               "merge_required": false,
               "release_required": false
             },
@@ -2960,6 +3016,12 @@
               "release_required": false
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -3091,6 +3153,12 @@
             {
               "lane_id": "chdb.query-log-union",
               "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
               "merge_required": false,
               "release_required": false
             },
@@ -3387,6 +3455,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -3659,6 +3733,12 @@
               "context_name": "perf-guards",
               "merge_required": false,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.strict-scan",
@@ -4466,6 +4546,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -4665,6 +4751,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.strict-scan",
@@ -5357,6 +5449,12 @@
               "release_required": false
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -5468,6 +5566,12 @@
             {
               "lane_id": "chdb.query-log-union",
               "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
               "merge_required": false,
               "release_required": false
             },
@@ -6724,6 +6828,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.strict-scan",
@@ -9575,6 +9685,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.roundtrip-promql",
               "context_name": "roundtrip (promql)",
               "merge_required": false,
@@ -10808,6 +10924,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -10946,6 +11068,12 @@
               "release_required": false
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -11071,6 +11199,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.strict-scan",
@@ -11204,6 +11338,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.strict-scan",
@@ -11340,6 +11480,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.strict-scan",
@@ -11490,6 +11636,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -11636,6 +11788,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.strict-scan",
@@ -11786,6 +11944,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -11932,6 +12096,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.strict-scan",

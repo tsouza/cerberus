@@ -548,6 +548,138 @@ so it fixes only the SQL-text-size axis, and its production win at the
 corpus — the same posture `trace_id_projection` took on a fresh mechanism that
 only a real server exercises.
 
+## Why native regular-expression compilation has no `chopt` entry
+
+ClickHouse #108004 (merged into 26.7.1.459) turns compilation on by default
+and falls back to RE2 outside its subset, so the choice a cerberus knob could
+make — on or off — is one the server already makes well. A `chopt` feature
+exists to stamp a setting that is off by default, or to gate one that is
+wrong on some builds. Neither holds: the evidence below found no divergence on
+valid UTF-8 between compiled and interpreted evaluation for any emitted shape,
+and on invalid UTF-8 the compiled engine is the one that agrees with the
+reference engines. A knob that could only restate the server default, or
+switch the more reference-faithful engine off, would be machinery without a
+decision behind it.
+
+What cerberus controls is the spelling of the patterns it binds, and that is
+where the change landed.
+
+### Why `label_replace` is anchored as `(?s)^(?:re)$`
+
+Prometheus's `^(?s:re)$` was bound verbatim, and the compiler's parser
+rejects a scoped flag group, so no `label_replace` regex ever compiled. The
+two spellings differ only in where `s` is set: `(?s)` sets it for the whole
+pattern, `(?s:...)` for the group. The group spans all of `re` whenever `re`
+parses on its own, and outside it there are only `^` and `$`, which read no
+flag `s` changes, so the programs are identical — `internal/chsql/regex_pattern_test.go`
+checks it by program equality and by submatch indexes. `(?s)` rather than
+dropping the flag, because `replaceRegexpOne` / `replaceRegexpAll` do not set
+`.`-matches-newline on 24.8 (measured: `replaceRegexpOne('a\nb', '^(?:a(.)b)$',
+'[\1]')` returns `a\nb` there and `[\n]` on 26.7), so the flag must travel
+in the pattern. A regex whose `)` closes the reference group early (`a)|(b`)
+would put text outside the group under `(?s)`, so it keeps the reference
+spelling — that shape has a separate, pre-existing defect,
+[#3663](https://github.com/tsouza/cerberus/issues/3663).
+
+### Why a line filter's `.` is spelled `[^\n]` and not prefixed with `(?-s)`
+
+The semantic corpus found that `{...} |~ "a.b"` kept a line `a\nb` that Loki
+drops: Loki compiles a line filter with Go's default flags, ClickHouse's
+`match()` with `.` matching a newline. Both `(?-s)<re>` and the `[^\n]`
+respelling restore Go's meaning; only the second stays compilable — on 26.7
+and 26.8 `(?-s)api.*`, `(?-s).+` and `(?-s)host-(.*)` fall back to RE2 while
+`api[^\n]*`, `[^\n]+` and `host-([^\n]*)` compile. The respelling is done
+by a small scanner, and is used only when the result parses to the program
+the input has under Go's defaults, so a scanner mistake costs compilability,
+never meaning; `(?-s)` is the fallback. A pattern that sets or clears `s`
+itself is left to the fallback, since there a `.`'s meaning depends on its
+position.
+
+### Shapes that stay on RE2
+
+- **Alternation** — `job=~"api|web"`, the shape a Grafana multi-value
+  variable produces, and `|~ "error|timeout"`. The subset has no alternation.
+- **The label-name sanitizer** `replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_')`,
+  the most frequent emitted regex (every Loki label key). A negated class can
+  match a non-ASCII byte, so with a count of one it falls back; it has to, since
+  RE2 replaces a whole multi-byte code point with one `_`, which is Loki's
+  behaviour. Measured over 20M keys on 26.7.13.12, single thread: 6.1 s with
+  compilation off and 6.0 s on. A two-pass spelling that sends the ASCII class
+  through the compiler (``[\x00-/:-@\[-^`{-\x7f]``, then `[^\x00-\x7f]`)
+  measured 8.0 s off and 10.1 s on, so it was not adopted.
+- **Named groups**, **anchors or flags inside the user's own pattern**
+  (`^api` becomes `^(?:^api)$`), **a fixed count on `.`** (`status=5..`),
+  **pure literals and the empty pattern** in a line filter (RE2's substring
+  search already handles those), and **`extractAllGroupsHorizontal`**.
+
+### Why the tests switch the query condition cache off
+
+26.x's query condition cache (`use_query_condition_cache`, on by default)
+remembers which granules a filter rejected. The corpus runs each query several
+times in different modes; with the cache on, a later request skips the
+granules an earlier one proved empty and never evaluates its regex there — the
+first version of the test read "not compiled" for exactly the stream selectors
+that matched no seeded row. The cache is orthogonal to regex evaluation, so
+the tests and the benchmark turn it off to measure the mode under test.
+
+### What the benchmark measured
+
+`just regex-jit-bench` (`BenchmarkRegexJIT`) on ClickHouse 26.7.13.12 (official
+build), in a container limited to 2 CPUs and 6 GiB, with the server's default
+`compile_regular_expressions=1` / `min_count_to_compile_regular_expression=3`
+against `compile_regular_expressions=0`, and `use_query_condition_cache=0`.
+Seed: one hour of gauge samples every 10 s for 20,000 pods (7.2M rows) and
+10M logfmt log lines. Every request is a 1-hour range query at a 1-minute
+step through the production handler; each cell is the mean over three
+iterations of server CPU time (user + system, from `system.query_log`) per
+request — per batch of eight simultaneous requests for "concurrent". Warm
+repeats one query; cold drops the compiled-code cache before each request;
+churn sends a pattern the server has not seen on every request. The host was
+shared with other work, so differences under about 5% are noise.
+
+| Emitted shape (bound pattern)                                            | Warm off → on         | Cold off → on        | Churn off → on       | Concurrent ×8 off → on |
+| ------------------------------------------------------------------------ | --------------------- | -------------------- | -------------------- | ---------------------- |
+| PromQL matcher `pod=~"api-.*"` (`^(?:api-.*)$`)                          | 6616 → 4979 (−25%)    | 8371 → 7836 (−6%)    | 8117 → 6602 (−19%)   | 56724 → 48304 (−15%)   |
+| PromQL matcher with alternation `api-.*` or `none-.*` (RE2 either way)   | 5695 → 5356 (−6%)     | 5622 → 5438 (−3%)    | —                    | 56060 → 56163 (0%)     |
+| `label_replace` with `(.*)-[0-9]+-.*` (RE2) over the matcher above       | 5645 → 4966 (−12%)    | 5736 → 5440 (−5%)    | 5895 → 5263 (−11%)   | 60418 → 61051 (+1%)    |
+| Line filter `timeout after [0-9]+ms`, unguarded                          | 4936 → 5862 (+19%)    | 4370 → 5198 (+19%)   | 4329 → 5315 (+23%)   | 46160 → 55462 (+20%)   |
+| Line filter `timeout after [0-9]+ms`, `position()`-guarded               | 4865 → 3950 (−19%)    | 4558 → 4148 (−9%)    | 4068 → 3891 (−4%)    | 44996 → 43777 (−3%)    |
+| Line filter `user=.*admin` (`user=[^\n]*admin`, guarded)                 | 6535 → 6371 (−3%)     | 6975 → 6580 (−6%)    | —                    | 73431 → 74370 (+1%)    |
+| `unwrap duration(latency)` after a `timeout` substring filter            | 34156 → 34386 (+1%)   | 34391 → 35639 (+4%)  | —                    | 420826 → 397778 (−5%)  |
+
+In a whole emitted query the regex is one cost among the scan, map access and
+range-window work, so the gains are partial: the anchored matcher, the most
+common PromQL shape, saves about a quarter of the request's CPU when warm.
+
+**The unguarded line filter row is a regression the defaults cause.**
+ClickHouse's RE2 path searches a pattern's required literal with a vectorised
+substring search before it runs the regex; the compiled path runs its matcher
+on every line instead. Measured directly over the same 10M lines, single
+thread: `match(b, 'timeout after [0-9]+ms')` 0.9–1.1 s interpreted against
+1.8–2.2 s compiled, and `match(b, 'latency=[0-9]+ms')` — a literal on every
+line, so RE2 gets no help — 2.2 s interpreted against 1.1–1.6 s compiled.
+`position(b, 'timeout after ') > 0 AND match(...)` measured 0.8 s compiled and
+1.0–1.2 s interpreted, so the emitter guards every line filter whose matches
+share a literal prefix. On a server without the compiler the guard repeats a
+search RE2 does anyway, at the cost of one substring scan.
+
+**Compilation is cheap and paid once per pattern per server.** A 4-row
+`match()` right after `SYSTEM DROP COMPILED EXPRESSION CACHE`, with the
+threshold at 0, took 10.4 ms against 3.7 ms interpreted for `^(?:api-.*)$`,
+15.5 ms against 2.9 ms for `(?s)^(?:host-(.*))$` and 20.6 ms against 5.3 ms
+for `timeout after [0-9]+ms`; the churn column shows a pattern compiled on
+first sight still pays for itself inside one request over this volume. At the
+default threshold of 3 a single request over many blocks crosses it within
+the request.
+
+**Microbenchmarks behind the subset analysis** (26.7.13.12, single thread):
+upstream's own URL shape `match(URL, '^https?://(?:www\.)?([^/]+)/.*$')` over
+20M rows ran 4.9–6.9 s interpreted and 0.9–1.2 s compiled. A `label_replace`
+regex such as `(.*)-[0-9]+-.*` — a greedy group followed by a literal the
+group can also consume — is not compiled in either spelling, which is why the
+`label_replace` row's saving is the matcher's; `host-(.*)` and
+`(\w+)(-(\d+))?` are compiled.
+
 ## Why `query_log_union` is opt-in and never fatal
 
 The packet path already observes every query the dispatching process armed
