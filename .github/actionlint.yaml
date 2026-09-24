@@ -1,0 +1,7 @@
+self-hosted-runner:
+  # cirunners' k3d cluster (../cirunners in this host's workspace) registers
+  # runners against tsouza/cerberus carrying this label, in addition to the
+  # runner's own `self-hosted`/`Linux`/`X64` labels — see
+  # cirunners/manifests/cerberus-runner.yaml and its README.
+  labels:
+    - cerberus

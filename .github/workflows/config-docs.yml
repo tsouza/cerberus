@@ -31,7 +31,7 @@ concurrency:
 jobs:
   config-docs:
     name: config-docs
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     steps:
       - uses: actions/checkout@v7
 

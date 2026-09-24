@@ -119,7 +119,7 @@ concurrency:
 jobs:
   property:
     name: property (PromQL + LogQL + TraceQL, rapid N=500)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     # Must stay comfortably above HISTOGRAM_TIMEOUT_MINUTES in
     # property-fanout.mjs (the slowest leg the job waits on) plus setup —
     # see that constant's comment for the real measured per-check cost this

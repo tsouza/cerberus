@@ -254,6 +254,11 @@ jobs:
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
+    # Stays on ubuntu-latest: internal/api/prom's chDB suite reliably hangs
+    # to the 10-minute test timeout on the self-hosted cerberus runners
+    # across repeated resource-tuning attempts (CPU/memory requests,
+    # GOMAXPROCS, open-file limit) while completing in ~3.5 min here. See
+    # #3674.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

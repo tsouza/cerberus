@@ -43,7 +43,7 @@ jobs:
   # file was a doc file → docs_only.
   changes:
     name: changes
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     outputs:
       docs_only: ${{ steps.docs.outputs.docs_only }}
     steps:
@@ -75,7 +75,7 @@ jobs:
     name: check-test
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     # The lane settles around 5m30s. This budget is the outer bound the
     # runner enforces; the inner one is `just test-unit`'s own `-timeout`,
     # deliberately shorter so a hang is a Go panic with every goroutine's
@@ -99,7 +99,7 @@ jobs:
     name: check-build
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     # Settles around 3 minutes; same budget as `check-test` because the two
     # halves are interchangeable in what a stall costs, and a single number
     # is one fewer thing to keep in sync.
@@ -170,7 +170,7 @@ jobs:
     name: check
     needs: [changes, check-test, check-build]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     timeout-minutes: 5
     steps:
       - name: gate on both halves
@@ -203,7 +203,7 @@ jobs:
   #   - Markdown (markdownlint-cli2)
   lint:
     name: lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     # Undeclared here defaults to GitHub's 360-minute cap, which is no bound
     # at all and would silently become the tighter constraint once the two
     # golangci-lint steps' own `run.timeout` (.golangci.yml) grew a real
@@ -615,6 +615,15 @@ jobs:
   # via branch protection.
   forbid-skip:
     name: forbid-skip
+    # Stays on ubuntu-latest: one of this job's own self-tests
+    # (semantic-replay.test.mjs, CTREX-3271) invokes `go test` via Node's
+    # spawnSync directly rather than a shell `run:` step, and that specific
+    # call can't resolve the `go` binary on the self-hosted runners — every
+    # other newly self-hosted-routed job (changes, forbid-deferral,
+    # config-docs, link-check) passed cleanly, and `go test -run
+    # '^TestPromQLOracleEngineParity$' ./test/regression/` reproduces fine
+    # locally, so this is narrow to the unshelled spawnSync path, not a
+    # general Go-toolchain problem. See #3675.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1485,7 +1494,7 @@ jobs:
   # reference material outside cerberus's authorship boundary.
   link-check:
     name: link-check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     steps:
       - uses: actions/checkout@v7
 
@@ -1544,7 +1553,7 @@ jobs:
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     steps:
       - name: gate on the changes job
         if: needs.changes.result != 'success'
