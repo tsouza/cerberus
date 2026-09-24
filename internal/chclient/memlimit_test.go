@@ -245,6 +245,9 @@ func TestQuerySettings_TSGridSetting(t *testing.T) {
 	if _, ok := plain[SettingExperimentalTSGridAggregate]; ok {
 		t.Errorf("plain ctx carries %s; want it absent", SettingExperimentalTSGridAggregate)
 	}
+	if _, ok := plain[SettingParallelReplicas]; ok {
+		t.Errorf("plain ctx carries %s; want it absent — only native queries pin it", SettingParallelReplicas)
+	}
 
 	// Marked ctx → both knobs present on the one map (the merge, not a
 	// clobbering second WithSettings wrap).
@@ -252,11 +255,14 @@ func TestQuerySettings_TSGridSetting(t *testing.T) {
 	if marked[SettingExperimentalTSGridAggregate] != 1 {
 		t.Errorf("%s = %v; want 1", SettingExperimentalTSGridAggregate, marked[SettingExperimentalTSGridAggregate])
 	}
+	if v, ok := marked[SettingParallelReplicas]; !ok || v != 0 {
+		t.Errorf("%s = %v (present=%v); want 0 pinned alongside the ts-grid gate", SettingParallelReplicas, v, ok)
+	}
 	if marked["max_memory_usage"] != int64(1<<30) {
 		t.Errorf("max_memory_usage = %v; want %d (the merge must not drop the cap)", marked["max_memory_usage"], int64(1<<30))
 	}
-	if len(marked) != 2+distributedPinCount {
-		t.Errorf("marked settings carries %d entries (%v); want exactly the two knobs plus the %d distributed pins",
+	if len(marked) != 3+distributedPinCount {
+		t.Errorf("marked settings carries %d entries (%v); want exactly the ts-grid gate, its parallel-replicas pin, the memory cap and the %d distributed pins",
 			len(marked), marked, distributedPinCount)
 	}
 
@@ -269,8 +275,8 @@ func TestQuerySettings_TSGridSetting(t *testing.T) {
 	if _, ok := bare["max_memory_usage"]; ok {
 		t.Errorf("bare client carries max_memory_usage; want it absent (cap is 0)")
 	}
-	if len(bare) != 1+distributedPinCount {
-		t.Errorf("bare settings carries %d entries (%v); want exactly the experimental knob plus the %d distributed pins",
+	if len(bare) != 2+distributedPinCount {
+		t.Errorf("bare settings carries %d entries (%v); want exactly the ts-grid gate and its parallel-replicas pin plus the %d distributed pins",
 			len(bare), bare, distributedPinCount)
 	}
 }

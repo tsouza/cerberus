@@ -1,6 +1,7 @@
 package chsql
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"regexp/syntax"
@@ -91,6 +92,79 @@ type Builder struct {
 	// two arms, rate()'s three window scans), and only the render knows how
 	// many.
 	physicalScans int
+
+	// levelTableReads / levelNativeTSAggregate describe the ONE SELECT
+	// level being rendered: the physical tables its own FROM/JOIN names
+	// (countPhysicalScans), and the first native timeSeries* aggregate its
+	// own clauses call (Call/Parametric). QueryBuilder.writeInto saves and
+	// resets both on entry and restores them on exit, so a nested
+	// subquery's reads and aggregates never leak into its parent's level.
+	// writeInto uses them to refuse a native aggregate that reads a table
+	// directly — see errNativeTSAggregateOverTable.
+	levelTableReads        int
+	levelNativeTSAggregate string
+}
+
+// errNativeTSAggregateOverTable is the render error for a SELECT level that
+// calls a native timeSeries* aggregate while reading a physical table
+// (a plain table or a merge() union) in its own FROM/JOIN.
+//
+// The native aggregates' partial-state format is versioned per ClickHouse
+// minor release (2 through 26.6, 3 in 26.7, 4 from 26.8.1.2041), and two
+// servers on different formats refuse each other's state with
+// INCORRECT_DATA. ClickHouse ships partial states between servers exactly
+// when an aggregate sits at the same level as a Distributed table: every
+// shard aggregates and the initiator merges. With the aggregate over a
+// subquery instead, a shard receives only the subquery's own SELECT and
+// returns rows, so a Distributed deployment can run servers on different
+// minors during a rolling upgrade. Refusing the other shape here makes
+// that hold for every emission path by construction, not only for the
+// shapes a test happens to exercise.
+var errNativeTSAggregateOverTable = errors.New("chsql: a native timeSeries* aggregate reads a physical table directly; " +
+	"it must read a subquery so a Distributed table never ships its partial state")
+
+// nativeTSAggregates are the ClickHouse timeSeries* functions that are
+// aggregates (system.functions.is_aggregate = 1). A name matches when it is
+// one of these or one of them followed by a combinator suffix (-State,
+// -Merge, -If, ...). The rest of the timeSeries* namespace — timeSeriesRange,
+// timeSeriesFromGrid, the tag helpers — are ordinary functions with no
+// partial state.
+var nativeTSAggregates = []string{
+	"timeSeriesBottomKMasks",
+	"timeSeriesChangesToGrid",
+	"timeSeriesDeltaToGrid",
+	"timeSeriesDerivToGrid",
+	"timeSeriesGroupArray",
+	"timeSeriesIncreaseToGrid",
+	"timeSeriesInstantDeltaToGrid",
+	"timeSeriesInstantRateToGrid",
+	"timeSeriesLastToGrid",
+	"timeSeriesLastTwoSamples",
+	"timeSeriesLimitKMasks",
+	"timeSeriesPredictLinearToGrid",
+	"timeSeriesRateToGrid",
+	"timeSeriesResampleToGridWithStaleness",
+	"timeSeriesResetsToGrid",
+	"timeSeriesTopKMasks",
+}
+
+// isNativeTSAggregate reports whether name calls a nativeTSAggregates member,
+// with or without a combinator suffix.
+func isNativeTSAggregate(name string) bool {
+	for _, agg := range nativeTSAggregates {
+		if strings.HasPrefix(name, agg) {
+			return true
+		}
+	}
+	return false
+}
+
+// noteNativeTSAggregate records name on the current SELECT level when it is
+// a native timeSeries* aggregate.
+func (b *Builder) noteNativeTSAggregate(name string) {
+	if b.levelNativeTSAggregate == "" && isNativeTSAggregate(name) {
+		b.levelNativeTSAggregate = name
+	}
 }
 
 // PhysicalScans reports how many physical table references have been
@@ -106,6 +180,7 @@ func (b *Builder) PhysicalScans() int { return b.physicalScans }
 func countPhysicalScans(n int, inner Frag) Frag {
 	return func(b *Builder) {
 		b.physicalScans += n
+		b.levelTableReads += n
 		inner(b)
 	}
 }
@@ -2792,6 +2867,7 @@ func writeFragList(b *Builder, parts []Frag) {
 // now() or today().
 func Call(name string, args ...Frag) Frag {
 	return func(b *Builder) {
+		b.noteNativeTSAggregate(name)
 		b.sb.WriteString(name)
 		b.sb.WriteByte('(')
 		writeFragList(b, args)
@@ -2826,6 +2902,7 @@ func Parametric(name string, params []Frag, args ...Frag) Frag {
 		panic("chsql: Parametric requires at least one param; use Call for non-parametric functions")
 	}
 	return func(b *Builder) {
+		b.noteNativeTSAggregate(name)
 		b.sb.WriteString(name)
 		b.sb.WriteByte('(')
 		writeFragList(b, params)
@@ -3104,8 +3181,13 @@ func ExplainEstimateStatement(sql string) string { return "EXPLAIN ESTIMATE " + 
 // ClickHouse evaluates the subquery once the table behind it is a
 // `Distributed` wrapper. Every emitter renders its plan subtrees as derived
 // tables, so an outer statement's main table is typically `FROM (SELECT …
-// FROM otel_traces …)`, and ClickHouse pushes such a statement down to every
-// shard WHOLE — the IN's subquery included. On each shard that subquery's
+// FROM otel_traces …)`. ClickHouse sends each shard only the innermost
+// SELECT that reads the Distributed table, but it first pushes the outer
+// statement's predicates down into that SELECT — so an outer
+// `<left> IN (<sub>)` travels to every shard inside it (it arrives as a
+// HAVING clause over the shard's local table; measured on a two-shard
+// 26.6/26.7 rig via the shards' system.query_log). The outer SELECT levels —
+// projections, aggregates — stay on the initiator. On each shard the IN's
 // `otel_traces` is still the Distributed wrapper, so a plain IN is
 // re-executed there as a distributed query of its own: DataShardCount² (or,
 // inside a recursive closure, DataShardCount x iterations) per-shard
@@ -3729,6 +3811,14 @@ func (c cteClause) writeBody(b *Builder) {
 }
 
 func (s *QueryBuilder) writeInto(b *Builder) {
+	outerReads, outerAgg := b.levelTableReads, b.levelNativeTSAggregate
+	b.levelTableReads, b.levelNativeTSAggregate = 0, ""
+	defer func() {
+		if b.levelNativeTSAggregate != "" && b.levelTableReads > 0 && b.err == nil {
+			b.err = fmt.Errorf("%w (%s)", errNativeTSAggregateOverTable, b.levelNativeTSAggregate)
+		}
+		b.levelTableReads, b.levelNativeTSAggregate = outerReads, outerAgg
+	}()
 	s.writeCTEs(b)
 	b.sb.WriteString("SELECT ")
 	if len(s.selectList) == 0 {

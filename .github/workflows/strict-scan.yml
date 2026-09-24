@@ -376,31 +376,43 @@ jobs:
       # The ts_grid_group_array real-CH precondition + regression pin
       # (#2749): timeSeriesGroupArray accepts a DateTime64(9) timestamp
       # directly and losslessly (contrary to its own documented
-      # UInt32/DateTime/UInt64 signature); a NaN-bearing duplicate timestamp
-      # collapses in an insertion-order-DEPENDENT way, unlike the fan-out's
-      # own deterministic dedup — the reason chopt.FeatureTSGridGroupArray
-      # ships AutoSelect: false; and, end to end through cerberus's own
-      # lowering + emitter, rate()'s native array-fold assembly matches the
-      # fan-out exactly on a genuine duplicate, non-NaN timestamp. Boots its
-      # own fresh testcontainer at CH_TEST_IMAGE (the feature's own 25.9
+      # UInt32/DateTime/UInt64 signature); the -If combinator filters before
+      # the duplicate-timestamp collapse; and, end to end through cerberus's
+      # own lowering + emitter, rate()'s native array-fold assembly matches
+      # the fan-out exactly on a genuine duplicate, non-NaN timestamp. Boots
+      # its own fresh testcontainer at CH_TEST_IMAGE (the feature's own 25.9
       # floor) rather than this job's higher CH_STRICT_SCAN_IMAGE pin. See
       # internal/chsql/range_window_group_array_realch_integration_test.go.
       - name: Run ts_grid_group_array duplicate-timestamp + DateTime64 preconditions (real ClickHouse)
         run: just ts-grid-group-array-integration
 
-      # The timeSeries*ToGrid duplicate-timestamp survivor pins (#2798): for
-      # every member of the emitter's own nativeTSGridFn registry, which
-      # sample survives a NaN-bearing duplicate (series, timestamp) under each
-      # encounter order — including the split where the whole-window members
-      # keep a FIRST-visited NaN and the instant members (irate / idelta) keep
-      # a LAST-visited one; that the production dedupWindowPairsByTsFrag Frag
-      # elects the same survivor under both orders; and the divergence end to
-      # end through cerberus's own lowering + emitter. The family's own 25.9
-      # floor, so this boots its own container at CH_TEST_IMAGE rather than
-      # this job's higher CH_STRICT_SCAN_IMAGE pin. See internal/chsql/
+      # The native timeSeries* duplicate-timestamp survivor pins, on each
+      # side of ClickHouse #115920 (the family's 25.9 floor and 26.7.13.12
+      # collapse a NaN-bearing duplicate by scan order; 26.8.1.2041 keeps the
+      # finite sample): every native member cerberus emits, every collision
+      # kind (NaN, stale marker, all-NaN, unequal finite), both insertion and
+      # both partial-state merge orders; the production
+      # dedupWindowPairsByTsFrag Frag's order-independent survivor; and the
+      # native-versus-fan-out answer end to end through cerberus's own
+      # lowering + emitter. Boots its own pinned builds. See internal/chsql/
       # range_window_grid_native_nan_duplicate_realch_integration_test.go.
-      - name: Run timeSeries*ToGrid NaN-duplicate survivor pins (real ClickHouse)
+      - name: Run timeSeries* NaN-duplicate survivor pins (real ClickHouse)
         run: just ts-grid-nan-duplicate-integration
+
+      # The native timeSeries*ToGrid state-format boundary: two-shard
+      # Distributed rigs on each step of a rolling upgrade across the 26.7
+      # and 26.8 state-format bumps. Cerberus's native SQL must answer the
+      # fan-out reference from both initiators of every mixed rig under every
+      # Distributed setting a profile can change (it never ships a partial
+      # state), a control aggregate over the Distributed table must fail with
+      # INCORRECT_DATA across each boundary, the persisted
+      # timeSeriesLastTwoSamples tier state must cross versions, and a
+      # mixed-version replica pair with parallel replicas on in the server
+      # profile must ship states unpinned and answer correctly pinned.
+      # Boots its own pinned builds (CH_TS_STATE_*_IMAGE). See internal/chsql/
+      # range_window_grid_native_state_format_realch_integration_test.go.
+      - name: Run timeSeries*ToGrid state-format boundary (real ClickHouse, mixed-version Distributed)
+        run: just ts-grid-state-format-integration
 
   # The query condition cache's result equivalence and ClickHouse's
   # cancellation of CPU-bound expressions are server-side mechanisms cerberus

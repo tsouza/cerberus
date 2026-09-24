@@ -47,15 +47,15 @@ const (
 	// release whose window is Prometheus-equivalent.
 	//
 	// KNOWN DIVERGENCE, NOT REPAIRABLE HERE — a duplicate (series, timestamp)
-	// pair where one sample is NaN collapses inside ClickHouse's own builtin in
-	// an order-DEPENDENT way (cerberus issue #2798), unlike cerberus's own
-	// array-fold fan-out. An order-independent scan-side gate exists and is
-	// sound, but was measured (cerberus issue #2924) at a ~2.1-2.4x wall-clock
-	// tax on this exact path even under the best-case ORDER BY alignment, for
-	// no memory benefit — see chsql.nativeTSGridFn's own "Verdict on the
-	// scan-order gate" section for the full measurement. Not shipped, gated or
-	// not; the only remaining path is an upstream report, which needs
-	// authorization this repo has not given.
+	// pair where one sample is NaN collapses inside ClickHouse's own builtin:
+	// by scan order before ClickHouse #115920, and to the finite sample from
+	// 26.8.1.2041 on, while cerberus's array-fold fan-out elects the NaN on
+	// every build. An order-independent scan-side gate exists and is sound,
+	// but was measured (cerberus issue #2924) at a ~2.1-2.4x wall-clock tax on
+	// this exact path even under the best-case ORDER BY alignment, for no
+	// memory benefit — see chsql.nativeTSGridFn's own duplicate-timestamp and
+	// "Verdict on the scan-order gate" sections. Aligning the fan-out's rule
+	// with #115920's is https://github.com/tsouza/cerberus/issues/3648.
 	FeatureTSGridRange = "ts_grid_range"
 
 	// FeatureTSGridResample opts the eligible range-mode instant-vector
@@ -115,6 +115,11 @@ const (
 	// ClickHouse's own NaN handling inside the builtin: the posture lifts
 	// when a ClickHouse release fixes it, not on any cerberus-side change.
 	// Cerberus issue #1721 records the divergence and the reproduction.
+	// Re-measured on pinned builds: 26.7.1.1315 onward no longer overcounts
+	// a window whose earliest sample is NaN (a lone NaN counts 0, NaN then
+	// 40 counts 1, matching funcChanges), but 26.7.13.12 and 26.8.1.2041
+	// still count a NaN followed by a NaN as one change where funcChanges
+	// counts none, so the posture stands on every current build.
 	FeatureTSGridChanges = "ts_grid_changes"
 
 	// FeatureTSGridResets opts eligible resets(<counter>[<range>]) query_range
@@ -504,21 +509,15 @@ const (
 	//     bit pattern the closed-form arithmetic predicts.
 	//   - The doc's duplicate-timestamp "highest value wins, NaN loses
 	//     unless all NaN" rule matches for two real values. For a real-vs-NaN
-	//     duplicate pair it is ORDER-DEPENDENT: NaN loses when it is
-	//     inserted before the real sample, but WINS (propagates) when
-	//     inserted after — traced to ClickHouse's own greatest() being
-	//     asymmetric on NaN (greatest(nan, x) = x but greatest(x, nan) =
-	//     nan) and the aggregate's internal dedup folding pairwise in
-	//     encounter order. This is a genuine, reproducible divergence from
-	//     the documented contract, filed as
-	//     https://github.com/tsouza/cerberus/issues/2798 — but it is
-	//     FAMILY-WIDE, not delta-specific: the identical probe against the
-	//     already-shipped, auto-selected timeSeriesRateToGrid reproduces the
-	//     same order-dependence. It therefore does not single out delta()
-	//     for a different AutoSelect posture than its already-auto-selected
-	//     siblings; the narrow, pre-existing gap (a real sample and a NaN
-	//     sample sharing one series' exact timestamp) is tracked, not
-	//     hidden.
+	//     duplicate pair the builds before ClickHouse #115920 are
+	//     ORDER-DEPENDENT (the aggregate's internal dedup folds pairwise in
+	//     encounter order); from 26.8.1.2041 on the NaN loses in either
+	//     order. Either way the survivor is FAMILY-WIDE, not delta-specific:
+	//     the identical probe against the already-shipped, auto-selected
+	//     timeSeriesRateToGrid gives the same survivor on every build
+	//     (chsql.nativeTSGridFn's duplicate-timestamp section states the
+	//     per-build contract), so it does not single out delta() for a
+	//     different AutoSelect posture than its siblings.
 	//
 	// AutoSelect is true: the sweep found no delta-specific divergence from
 	// PromQL — the one real gap it surfaced is a pre-existing, family-wide
@@ -565,27 +564,25 @@ const (
 	//     trailing edge (anchor - staleness) is excluded, matching
 	//     FeatureTSGridRange's own left-open fix.
 	//   - The doc's duplicate-timestamp "highest value wins, NaN loses"
-	//     rule is order-dependent for a real-vs-NaN duplicate pair, the
-	//     family-wide gap cerberus tracks at
-	//     https://github.com/tsouza/cerberus/issues/2798. Re-measured
-	//     against a real ClickHouse at this feature's own 25.9 floor
-	//     (internal/chsql's
-	//     TestTSGridFamily_NaNDuplicateSurvivorIsOrderDependent_RealCH),
-	//     irate INVERTS the whole-window members' direction: the finite
-	//     sample survives when the NaN reaches the fold first, the NaN
-	//     survives when it reaches the fold second. Unlike rate/delta,
-	//     irate reduces every window to its trailing pair, so a
-	//     duplicate-timestamp trailing pair is not a rare edge of a summed
-	//     window but the whole answer.
+	//     rule holds for a real-vs-NaN duplicate pair only from ClickHouse
+	//     #115920 (26.8.1.2041) on. On the earlier builds (measured at this
+	//     feature's own 25.9 floor and on 26.7.13.12 by internal/chsql's
+	//     TestTSGridFamily_DuplicateSurvivor_RealCH) irate INVERTS the
+	//     whole-window members' scan order: the finite sample survives when
+	//     the NaN reaches the fold first, the NaN survives when it reaches
+	//     the fold second. Unlike rate/delta, irate reduces every window to
+	//     its trailing pair, so a duplicate-timestamp trailing pair is not a
+	//     rare edge of a summed window but the whole answer.
 	//   - The array-fold fan-out this feature displaces does NOT share that
 	//     exposure, and the asymmetry is real rather than a wash: the
 	//     pairs-shaped fan-out carries no dedup layer for a duplicate-ts
 	//     trailing pair, but arraySort orders Float64 totally with NaN
 	//     ranked greatest, so the pair it selects is a function of the
 	//     sample multiset alone. Switching irate to the native aggregate
-	//     therefore trades a deterministic answer for a scan-order-dependent
-	//     one on that shape. internal/chsql.dedupWindowPairsByTsFrag's doc
-	//     states the rule and names the tests that execute both sides.
+	//     therefore trades that answer for a scan-order-dependent one on the
+	//     builds before #115920, and for the opposite (finite) survivor
+	//     after it. internal/chsql.dedupWindowPairsByTsFrag's doc states the
+	//     rule and names the tests that execute both sides.
 	//
 	// AutoSelect is true, and the reason is exposure rather than harmlessness.
 	// The shape needed to reach the divergence is doubly degenerate — two
@@ -606,7 +603,7 @@ const (
 	// idelta(<gauge>[<range>]), mapping onto native
 	// timeSeriesInstantDeltaToGrid (internal/chsql.emitRangeWindowIDelta's
 	// native competitor). Same 25.9 floor, same lagInFrame-then-fan-out
-	// fallback chain, same family-wide #2798 duplicate-timestamp gap.
+	// fallback chain, same family-wide duplicate-timestamp survivor.
 	//
 	// The same cerberus issue #2746 sweep found idelta applies NO
 	// counter-reset correction: the identical strictly-decreasing trailing
@@ -893,21 +890,22 @@ const (
 	// NaN precondition (measured, the reason AutoSelect is false): the
 	// existing dedupWindowPairsByTsFrag idiom is deterministic on a
 	// duplicate-timestamp NaN — arraySort ranks NaN greatest, so it always
-	// survives the last-of-run keep, independent of insertion order (both
-	// orderings verified). timeSeriesGroupArray's own duplicate-timestamp
-	// collapse is a running "replace current-best only when candidate >
-	// current-best" fold: for finite values this converges to the same true
-	// max regardless of insertion order (also verified both orderings), but
-	// IEEE754 makes every comparison against NaN false, so a NaN landing
-	// FIRST at a duplicate timestamp can never be replaced, and a NaN
-	// landing after any non-NaN can never displace it — the surviving value
-	// depends on which row a (possibly multi-threaded, multi-part) scan
-	// visits first. That is not just a divergence from the fan-out's own
-	// NaN-always-wins rule, it is NON-DETERMINISTIC. This codebase already
-	// forced ts_grid_changes into AutoSelect: false for an analogous
-	// NaN-adjacent native/fan-out divergence (#1721); this feature follows
-	// the identical posture rather than risk a query whose answer can flip
-	// between two runs of the same data.
+	// survives the last-of-run keep, independent of insertion order.
+	// timeSeriesGroupArray's own collapse keeps the true max of finite
+	// duplicates in any order, but on a NaN-bearing duplicate it follows the
+	// family's per-build rule: before ClickHouse #115920 it is a running
+	// "replace current-best only when candidate > current-best" fold, so a
+	// NaN landing FIRST can never be replaced and a NaN landing after any
+	// non-NaN can never displace it — the survivor depends on which row a
+	// (possibly multi-threaded, multi-part) scan visits first; from
+	// 26.8.1.2041 on the NaN loses in either order. Swapping the assembly
+	// would therefore import into these sites either nondeterminism (older
+	// builds) or the finite survivor the fan-out's rule does not elect
+	// (current builds). This codebase already forced ts_grid_changes into
+	// AutoSelect: false for an analogous NaN-adjacent native/fan-out
+	// divergence (#1721); this feature follows the identical posture. Both
+	// the plain and the -If form are measured on every pinned build by
+	// internal/chsql's TestTSGridFamily_DuplicateSurvivor_RealCH.
 	//
 	// Shares the timeSeries*ToGrid family's registry gate
 	// (allow_experimental_time_series_aggregate_functions) and 25.9 floor —
@@ -2579,7 +2577,7 @@ var registry = []Feature{
 		Stability:                  Experimental,
 		AutoSelect:                 false,
 		RequiresExperimentalTSGrid: true,
-		Doc:                        "swap groupArray+arraySort(+dedup) window assembly for native timeSeriesGroupArray at sites that already dedup (server >= 25.9, opt-in — native collapse is order-dependent on a NaN duplicate, so auto never picks it)",
+		Doc:                        "swap groupArray+arraySort(+dedup) window assembly for native timeSeriesGroupArray at sites that already dedup (server >= 25.9, opt-in — on a NaN duplicate the native collapse elects another sample than the fan-out dedup, so auto never picks it)",
 	},
 	{
 		ID:         FeatureMapBucketedSerialization,
