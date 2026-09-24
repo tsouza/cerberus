@@ -314,12 +314,15 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 		// DefaultQueryRangeStep targets ~240 points across the window,
 		// so ns is far below MaxInt64 for any representable time range;
 		// clamp anyway so the uint64 → Duration conversion is provably
-		// overflow-free (gosec G115). An explicit branch rather than the
-		// min builtin: gosec proves the bound only from the branch.
+		// overflow-free (gosec G115). The conversion sits inside the
+		// branch: gosec proves the bound only from a branch, and a bare
+		// `if ns > max { ns = max }` clamp is what go fix's minmax
+		// modernizer folds into min(), which gosec cannot see through.
 		if ns > math.MaxInt64 {
-			ns = math.MaxInt64
+			step = time.Duration(math.MaxInt64)
+		} else {
+			step = time.Duration(ns)
 		}
-		step = time.Duration(ns)
 	} else {
 		var err error
 		step, err = parseMetricsStep(stepStr)

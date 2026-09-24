@@ -300,6 +300,14 @@ jobs:
           args: --build-tags cerberus_untagged_build ./...
           skip-cache: true
 
+      # The tree must be a fixed point of the pinned toolchain's `go fix`
+      # modernizers, over the same two build configurations as the lint passes
+      # above (the tag union read from .golangci.yml, then untagged). Without
+      # it one change applies them and the next silently reintroduces the
+      # idioms they removed. `just go-fix` applies the rewrites locally.
+      - name: go fix fixed-point check
+        run: node .github/scripts/go-fix-check.mjs
+
       # The tagged lint pass above type-checks the `migration`-tagged Tier-0
       # runner, which is what the `go vet -tags=migration` step that used to
       # stand here did. Compiling it proves nothing about whether the committed
@@ -1349,6 +1357,9 @@ jobs:
 
       - name: Assert the raw-SQL gate's pattern table and scanner
         run: node --test .github/scripts/forbid-sql-raw.test.mjs
+
+      - name: Assert the go fix fixed-point gate
+        run: node --test .github/scripts/go-fix-check.test.mjs
 
       - name: Assert the sealed chplan Fn vocabulary gate
         run: node --test .github/scripts/forbid-chplan-fn-literal.test.mjs
