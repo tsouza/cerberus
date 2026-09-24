@@ -106,7 +106,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 
 import { loadSemanticModel } from "./semantic-model.mjs";
 import { loadCounterexamples } from "./semantic-counterexamples.mjs";
@@ -445,11 +445,51 @@ export function buildGoTestInvocation(mechanism) {
       ? `^${escapeRegExp(mechanism.testFunc)}$/^${escapeRegExp(mechanism.subtest)}$`
       : `^${escapeRegExp(mechanism.testFunc)}$`;
   args.push("-run", runPattern, "-v", `./${mechanism.dir}/...`);
+  // "go" here, not an absolute path: this stays a pure routing decision with
+  // no filesystem access, matching the file's own NON-GOALS. resolveGoBinary
+  // does the actual resolution, once, at the point this gets spawned.
   return { cmd: "go", args };
 }
 
 function commandString(cmd, args) {
   return [cmd, ...args].join(" ");
+}
+
+let cachedGoBinary;
+
+// resolveGoBinary finds an absolute path to the go binary rather than
+// relying on spawnSync("go", …) to search process.env.PATH itself. On the
+// project's self-hosted runners a bare, unshelled spawnSync("go", …)
+// intermittently could not find the toolchain that every shell `run: go …`
+// step in the same job resolved without issue — spawnSync returned with no
+// output at all (an exec failure, not a real zero-match), which the caller
+// then misread as "the -run pattern matched nothing" (see runMechanism's
+// exec-failed handling, and issue #3675). GOROOT is set on process.env by
+// the Go toolchain setup step directly (an environment variable, not a
+// $GITHUB_PATH addition another process's PATH lookup has to pick up), so
+// preferring it sidesteps whatever made the PATH search unreliable, without
+// needing to fully explain it. Falls back to a manual PATH scan, then to
+// the bare "go" that always worked everywhere except this one shape, so a
+// substrate this reasoning does not anticipate still gets a real attempt.
+export function resolveGoBinary() {
+  if (cachedGoBinary) return cachedGoBinary;
+  const exe = process.platform === "win32" ? "go.exe" : "go";
+  const fromGoroot = process.env.GOROOT && join(process.env.GOROOT, "bin", exe);
+  if (fromGoroot && existsSync(fromGoroot)) {
+    cachedGoBinary = fromGoroot;
+    return cachedGoBinary;
+  }
+  const path = process.env.PATH ?? "";
+  for (const dir of path.split(delimiter)) {
+    if (!dir) continue;
+    const candidate = join(dir, exe);
+    if (existsSync(candidate)) {
+      cachedGoBinary = candidate;
+      return cachedGoBinary;
+    }
+  }
+  cachedGoBinary = "go";
+  return cachedGoBinary;
 }
 
 export function isChdbTag(buildTag) {
@@ -515,7 +555,21 @@ export function runMechanism(mechanism, { root = process.cwd() } = {}) {
     };
   }
 
-  const res = spawnSync(cmd, args, { cwd: root, encoding: "utf8" });
+  const res = spawnSync(cmd === "go" ? resolveGoBinary() : cmd, args, { cwd: root, encoding: "utf8" });
+
+  // A failed exec (binary not found, EACCES, …) leaves stdout/stderr both
+  // empty, which the zero-selected check below cannot tell apart from a
+  // `-run` pattern that genuinely matched nothing — the exact confusion
+  // issue #3675 traced a real self-hosted failure to. Surface it distinctly.
+  if (res.error) {
+    return {
+      status: REPLAY_STATUS.ERROR,
+      reasonKind: "exec-failed",
+      detail: `${command} never ran: ${res.error.message}`,
+      command,
+    };
+  }
+
   const output = `${res.stdout ?? ""}\n${res.stderr ?? ""}`;
 
   if (/\[build failed\]/.test(output) || /^# /m.test(output)) {

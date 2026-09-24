@@ -91,6 +91,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { resolveGoBinary } from "./semantic-replay.mjs";
+
 export class SemanticEvidenceAdapterError extends Error {
   constructor(problems) {
     super(`semantic evidence adapter:\n${problems.map((p) => `- ${p}`).join("\n")}`);
@@ -146,7 +148,10 @@ export function loadTxtarFixture(repoRoot, relPath) {
 const PROPERTY_SHAPE_EXPORT_PKG = "./test/semantic/cmd/property-shape-export";
 
 function defaultRunExporter(repoRoot) {
-  const result = spawnSync("go", ["run", PROPERTY_SHAPE_EXPORT_PKG], {
+  // resolveGoBinary, not a bare "go": see its own comment in
+  // semantic-replay.mjs (issue #3675) for why an unshelled spawnSync
+  // resolving "go" via inherited PATH is unreliable on self-hosted runners.
+  const result = spawnSync(resolveGoBinary(), ["run", PROPERTY_SHAPE_EXPORT_PKG], {
     cwd: repoRoot,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
