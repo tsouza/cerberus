@@ -3622,6 +3622,23 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `GIT_USER_EMAIL` (default `github-actions[bot]` identity).
   - Exit: `0` nothing to do or fixup pushed; `1` on a `go mod tidy` or git
     failure.
+- **`dependabot-pr-title.mjs`** — `dependabot-pr-title.yml`, the `shorten`
+  job. Rewrites a `dependabot[bot]` PR title whose squash subject (the title
+  plus `(#N)`, composed by `commitlint-pr-title.mjs`'s `landingSubject`) is
+  over the `.commitlintrc.json` `header-max-length`. Qualifiers are removed in
+  a fixed order — `across N directories`, `in the <group> group`,
+  `in /<directory>`, `from <old-version>`, then leading dependency-path
+  segments (replaced by `...`) — stopping at the first form that fits; the
+  prefix, the dependency and the target version always stay. The edit uses
+  `RELEASE_PAT` so its `edited` event re-runs `pr-hygiene`. Pinned by
+  `dependabot-pr-title.test.mjs`, run from `pr-hygiene.yml`.
+  - Env: `PR_NUMBER`, `PR_AUTHOR`, `GITHUB_REPOSITORY`, `GITHUB_TOKEN`
+    (required; reads the live title), `TITLE_EDIT_TOKEN` (required only for a
+    rewrite), `GITHUB_API_URL`, `COMMITLINT_CONFIG` (default
+    `.commitlintrc.json`).
+  - Exit: `0` skipped, already compliant, or rewritten; `1` when no rewrite
+    fits, `TITLE_EDIT_TOKEN` is missing for a needed rewrite, an input is
+    missing, or the API call failed.
 - **`pull-buildkit-image.mjs`** — `.github/actions/setup-buildx` (the composite
   every image-building job goes through). Acquires the BuildKit bootstrap image
   into the local docker daemon, with retry, before

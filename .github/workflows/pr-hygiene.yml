@@ -90,7 +90,9 @@ jobs:
 
       - name: Guard the squash-subject gate logic
         if: github.event_name == 'pull_request'
-        run: node --test .github/scripts/commitlint-pr-title.test.mjs
+        run: |
+          node --test .github/scripts/commitlint-pr-title.test.mjs
+          node --test .github/scripts/dependabot-pr-title.test.mjs
 
       # PR_TITLE is attacker-controlled, so it is passed via env and read by the
       # script — never interpolated into a shell `run:` line, exactly as PR_BODY
