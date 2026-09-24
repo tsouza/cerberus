@@ -76,6 +76,7 @@ SELECT * FROM (SELECT `MetricName`, `Attributes`, toDateTime64(`anchor_ts`, 9) A
 [10] string = "up"
 [11] int64 = 9218868437227405314
 -- settings --
+allow_experimental_parallel_reading_from_replicas=0
 allow_experimental_time_series_aggregate_functions=1
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter

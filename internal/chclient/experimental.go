@@ -57,6 +57,22 @@ const SettingExperimentalTSGridAggregate = "allow_experimental_time_series_aggre
 // on the one map rather than one wrap clobbering the other. The carrier is
 // a context value, not a Client field, so it stays per-request: two
 // concurrent requests, one native and one not, never cross-contaminate.
+//
+// It also pins SettingParallelReplicas to 0 on the same queries. With
+// parallel replicas on — a server profile can turn it on for every query —
+// ClickHouse runs a query's aggregation on each replica and merges their
+// partial states on the initiator, even when the aggregate reads a
+// subquery. The native aggregates' state format is versioned per minor
+// release, so during a rolling upgrade of a replicated deployment those
+// states fail with INCORRECT_DATA. Measured on a 26.6.8.7 / 26.7.13.12 pair
+// by internal/chsql's TestTSGridStateFormatBoundary_Distributed_RealCH.
 func WithTSGridSetting(ctx context.Context) context.Context {
-	return WithQuerySetting(ctx, SettingExperimentalTSGridAggregate, 1)
+	ctx = WithQuerySetting(ctx, SettingExperimentalTSGridAggregate, 1)
+	return WithQuerySetting(ctx, SettingParallelReplicas, 0)
 }
+
+// SettingParallelReplicas is ClickHouse's parallel-replicas master switch.
+// This is the canonical name: enable_parallel_replicas is its alias
+// (system.settings.alias_for), and only the canonical name exists on every
+// supported server from 24.8 on.
+const SettingParallelReplicas = "allow_experimental_parallel_reading_from_replicas"

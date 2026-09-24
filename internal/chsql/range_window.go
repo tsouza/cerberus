@@ -2511,15 +2511,17 @@ func groupArrayPairIfFrag(tsCol, valCol string, cond Frag) Frag {
 // preconditions nativeGroupArrayPairFrag's own doc pins for the plain form —
 // DateTime64(9) accepted directly and losslessly, duplicate-timestamp
 // collapse to the max-valued sample (insertion-order independent for finite
-// values), and insertion-order DEPENDENT survival on a NaN-bearing duplicate
-// — plus the one only the combinator form can pose: cond gates whether a row
+// values), and the family's per-build survival rule on a NaN-bearing
+// duplicate (scan order before ClickHouse #115920, NaN loses from
+// 26.8.1.2041 on) — plus the one only the combinator form can pose: cond gates whether a row
 // reaches the fold at ALL, so the collapse runs over the rows PASSING cond
 // and a cond-failing row can never take a timestamp from a passing one. All
 // four are RE-RUN for this form rather than assumed to carry over from the
 // plain one, against a real ClickHouse at chopt.FeatureTSGridGroupArray's own
 // 25.9 floor — see range_window_group_array_realch_integration_test.go's
-// TestTimeSeriesGroupArray_IfCombinator* trio (the strict-scan lane's
-// `just ts-grid-group-array-integration` recipe). Callers that swap to this
+// TestTimeSeriesGroupArray_IfCombinator* pair (the strict-scan lane's
+// `just ts-grid-group-array-integration` recipe) and, for the NaN rule on
+// every pinned build, TestTSGridFamily_DuplicateSurvivor_RealCH. Callers that swap to this
 // Frag must skip the subsequent dedup step for THIS array — see
 // seriesArrayPairIfFrag and deltaPrefixSumFrag's alreadyDeduped parameter.
 func nativeGroupArrayPairIfFrag(tsCol, valCol string, cond Frag) Frag {
@@ -2591,28 +2593,27 @@ func matrixWindowPairsAlreadyDeduped(r *chplan.RangeWindow) bool {
 // insertion order. This is executed against a real ClickHouse over both
 // encounter orders of a NaN-bearing duplicate, asserting an identical
 // survivor, by
-// TestFanoutDedup_NaNDuplicateSurvivorIsOrderIndependent_RealCH.
+// TestFanoutDedup_DuplicateSurvivorIsOrderIndependent_RealCH.
 //
-// # Where the rule cannot be kept
+// # Where the native family departs from the rule
 //
-// The ClickHouse-native `timeSeries*ToGrid` family keeps the cardinality half
-// and cannot keep the representative half. Its own documented rule is the
-// opposite one ("a NaN value loses to any other value"), and it delivers
-// NEITHER rule deterministically: the collapse is a running "replace the
-// current best only when the candidate compares greater" fold, so on a
-// NaN-bearing duplicate the survivor is whichever row the (multi-threaded,
-// multi-part) scan visits first. Measured family-wide against a real server
-// at the family's own 25.9 floor — including the split where the whole-window
-// members keep a FIRST-visited NaN while the instant members (irate / idelta)
-// keep a LAST-visited one — by
-// TestTSGridFamily_NaNDuplicateSurvivorIsOrderDependent_RealCH, and end to
-// end through cerberus's own lowering by
-// TestRate_NativeGrid_NaNDuplicate_DivergesFromFanout_RealCH.
+// The ClickHouse-native `timeSeries*` aggregates keep the cardinality half and
+// decide the representative inside the builtin, by a rule that depends on the
+// server build: a scan-order fold before ClickHouse #115920 (the survivor of a
+// NaN-bearing duplicate is whichever row, or partial state, the fold visits
+// first — last for the trailing-pair members), and "greatest value wins, NaN
+// loses" from 26.8.1.2041 on. They agree with this Frag on unequal finite
+// duplicates and on all-NaN duplicates, and disagree on a NaN-versus-finite
+// one: order-dependently before #115920, and deterministically (the native
+// path keeps the finite sample, this Frag the NaN) after it. Measured per
+// member and per build by TestTSGridFamily_DuplicateSurvivor_RealCH, and end
+// to end through cerberus's own lowering by
+// TestRate_NativeGrid_NaNDuplicate_AgainstFanout_RealCH.
 //
 // The fold lives inside a ClickHouse builtin, so no emitted SQL can reorder
 // it; nativeTSGridFn's own doc records the emitter-side gate that was
-// measured and ruled out, and cerberus tracks the gap at
-// https://github.com/tsouza/cerberus/issues/2798.
+// measured and ruled out. Aligning this Frag's NaN ranking with #115920's is
+// https://github.com/tsouza/cerberus/issues/3648.
 //
 // OTel/ClickHouse ingestion can write two rows with the same
 // (Attributes, TimeUnix); without this collapse `length(window_vals)`

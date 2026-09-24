@@ -1,59 +1,70 @@
 //go:build integration
 
-// Real-ClickHouse characterisation of the duplicate-timestamp SURVIVOR the
-// native timeSeries*ToGrid family actually elects, and of the survivor the
-// array-fold fan-out elects for the same rows (cerberus issue #2798).
+// Real-ClickHouse characterisation of the duplicate-timestamp SURVIVOR every
+// native timeSeries* aggregate cerberus emits elects, on each side of
+// ClickHouse #115920, and of the survivor cerberus's own fan-out elects for
+// the same rows.
 //
-// # What this pins, and why it is a class-level suite rather than one probe
+// # The two upstream contracts
 //
-// Cerberus states ONE duplicate-timestamp rule for every range function
-// (cerberus issue #2914, PR #2920), implemented by dedupWindowPairsByTsFrag
-// and stated in full on that function's doc: one sample per distinct
-// (series, timestamp), tie-broken to the max value under ClickHouse's total
-// order over Float64 — the order in which NaN ranks GREATEST.
+// Every native member collapses a duplicate (series, timestamp) inside the
+// ClickHouse builtin. Two contracts exist, and which one a server delivers is
+// a property of its build:
 //
-// The native family cannot keep the second half of that rule. Its own
-// documented rule is the opposite one ("a NaN value loses to any other
-// value"), and it delivers NEITHER deterministically: the collapse is a
-// running "replace the current best only when the candidate compares
-// greater" fold, and IEEE754 makes every comparison against a NaN false, so
-// the survivor is decided by which row the scan happens to visit first.
+//   - scan order (every build before #115920): the collapse is a running
+//     "replace the current best only when the candidate compares greater"
+//     fold, and IEEE754 makes every comparison against a NaN false, so on a
+//     NaN-bearing duplicate the survivor follows encounter order. The
+//     whole-window members keep a FIRST-visited NaN; the trailing-pair
+//     members (irate, idelta, timeSeriesLastTwoSamples) keep a LAST-visited
+//     one. Merging partial states follows the same rule, with the state
+//     merge order standing in for row order.
+//   - NaN loses (#115920): the greatest value wins and a NaN loses to any
+//     other value, whatever the order. An all-NaN duplicate stays NaN.
 //
-// Three properties are therefore pinned here, all against a real server at
-// the family's own 25.9 registry floor (chopt.FeatureTSGridRange and
-// siblings), because the finding is a property of the ClickHouse builtin and
-// no amount of cerberus-side reasoning can establish it:
+// Both contracts keep the greater of two unequal FINITE duplicates, and both
+// treat a Prometheus stale-marker payload (value.StaleNaN) exactly like an
+// ordinary NaN — the builtins compare floats, never NaN payload bits.
 //
-//  1. TestTSGridFamily_NaNDuplicateSurvivorIsOrderDependent_RealCH — for
-//     EVERY member of the emitter's own nativeTSGridFn registry, which
-//     sample survives a NaN-bearing duplicate under each of the two
-//     encounter orders. The case list is ratcheted against that registry, so
-//     a family member added later cannot ship unprobed.
-//  2. TestFanoutDedup_NaNDuplicateSurvivorIsOrderIndependent_RealCH — the
-//     production dedupWindowPairsByTsFrag Frag itself, rendered and executed,
-//     elects the SAME survivor under both encounter orders. This is the half
-//     of the contract cerberus does deliver, and it is what makes the
-//     divergence a divergence rather than two equally unspecified paths.
-//  3. TestRate_NativeGrid_NaNDuplicate_DivergesFromFanout_RealCH — the gap
-//     end to end through cerberus's own lowering and emitter, over one
-//     MergeTree table holding two series with the IDENTICAL sample multiset
-//     and opposite physical row order.
+// The pinned servers, each measured rather than read off a changelog heading:
+// 25.9 (the family's registry floor) and 26.7.13.12 (the latest 26.7 build;
+// #115920 is not an ancestor of any v26.7.* release tag and was never
+// backported) deliver scan order; 26.8.1.2041 (the first 26.8 release)
+// delivers NaN loses.
 //
-// These tests are a characterisation of third-party behaviour, so their
-// direction of failure is the point: they go red when ClickHouse's fold
-// changes. A red here is the signal to re-derive nativeTSGridFn's and
-// chopt.FeatureTSGrid*'s posture docs against the new behaviour — and, if
-// the fold became order-independent, to re-derive every doc that cites
-// cerberus issue #2798, whose characterisation records the fold as
-// order-DEPENDENT.
+// # Cerberus's fan-out
 //
-// Needs a real ClickHouse >= 25.9 and Docker; gated behind the `integration`
-// build tag, run by the `ts-grid-nan-duplicate-integration` Justfile recipe.
-// In-package (`package chsql`, unlike its `chsql_test` sibling
-// range_window_group_array_realch_integration_test.go) precisely so the
-// family sweep can be driven by the unexported nativeTSGridFn registry and
-// the fan-out probe can execute the unexported dedupWindowPairsByTsFrag Frag
-// itself rather than a hand-copied transcription of either.
+// dedupWindowPairsByTsFrag keeps the greatest sample under ClickHouse's total
+// order over Float64, in which NaN ranks GREATEST — on every server, and
+// independent of encounter order. It agrees with both upstream contracts on
+// unequal finite duplicates and on all-NaN duplicates, and disagrees with
+// NaN-loses on every NaN-versus-finite duplicate: the fan-out elects the NaN,
+// a #115920 server elects the finite sample. Against scan order it agrees
+// only when the encounter order happens to favour the NaN.
+//
+// # What is pinned
+//
+//  1. TestTSGridFamily_DuplicateSurvivor_RealCH — for every member of the
+//     emitter's nativeTSGridFn registry plus the other native aggregates
+//     cerberus emits (resample, timeSeriesLastTwoSamples,
+//     timeSeriesGroupArray and its -If form), on every pinned server: NaN-versus-finite,
+//     stale-versus-finite, all-NaN (NaN/NaN, NaN/stale) and unequal finite
+//     duplicates, each under both insertion orders AND both partial-state
+//     merge orders, asserted against the server's contract.
+//  2. TestFanoutDedup_DuplicateSurvivorIsOrderIndependent_RealCH — the
+//     production dedupWindowPairsByTsFrag Frag, rendered and executed on
+//     every pinned server, elects the same survivor under both encounter
+//     orders for every collision kind.
+//  3. TestRate_NativeGrid_NaNDuplicate_AgainstFanout_RealCH — end to end
+//     through cerberus's own lowering and emitter over one MergeTree table
+//     holding two series with the identical sample multiset and opposite
+//     physical row order: order-dependent on a scan-order server,
+//     deterministic but opposite to the fan-out on a NaN-loses server.
+//
+// Needs Docker; gated behind the `integration` build tag, run by the
+// `ts-grid-nan-duplicate-integration` Justfile recipe. In-package so the sweep
+// is driven by the unexported nativeTSGridFn registry and the fan-out probe
+// executes the unexported dedupWindowPairsByTsFrag Frag itself.
 package chsql
 
 import (
@@ -76,172 +87,224 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// nanDupImage pins a ClickHouse at the timeSeries*ToGrid family's own 25.9
-// registry floor (chopt.FeatureTSGridRange and siblings). A plain literal
-// rather than an import of internal/chopt, mirroring tsGridGroupArrayImage's
-// rationale in the sibling integration file: this suite's only dependency on
-// the family's floor is the image tag its container runs.
-const nanDupImage = "clickhouse/clickhouse-server:25.9-alpine"
+// nanDupContract is the duplicate-timestamp rule a server build delivers.
+type nanDupContract int
 
-// The one grid point every probe evaluates, and the two samples that share a
-// timestamp inside its window. nanDupDupTS carries BOTH nanDupFiniteValue and
-// a NaN; nanDupLaterTS carries a single unambiguous sample, so every
-// aggregate has the >= 2 samples it needs to return non-NULL.
 const (
-	nanDupAnchor    = "2026-01-01 00:01:00"
-	nanDupDupTS     = "2026-01-01 00:00:20"
-	nanDupLaterTS   = "2026-01-01 00:00:50"
-	nanDupStepSec   = 60
-	nanDupWindowSec = 60
+	// contractScanOrder: the pre-#115920 fold, decided by encounter order
+	// on a NaN-bearing duplicate.
+	contractScanOrder nanDupContract = iota
+	// contractNaNLoses: ClickHouse #115920 — greatest value wins, NaN loses.
+	contractNaNLoses
+)
 
-	nanDupFiniteValue = 25.0
-	nanDupLaterValue  = 40.0
+func (c nanDupContract) String() string {
+	if c == contractNaNLoses {
+		return "NaN-loses"
+	}
+	return "scan-order"
+}
+
+// nanDupServer is one pinned build and the contract it was measured to
+// deliver. The Justfile pre-pulls the same literals (CH_TEST_IMAGE,
+// CH_TS_STATE_V3_IMAGE, CH_TS_STATE_V4_IMAGE), held equal by
+// TestIntegrationImagePinsMatchTheJustfile.
+type nanDupServer struct {
+	image    string
+	contract nanDupContract
+}
+
+var nanDupServers = []nanDupServer{
+	// The timeSeries*ToGrid family's 25.9 registry floor.
+	{"clickhouse/clickhouse-server:25.9-alpine", contractScanOrder},
+	// The latest 26.7 build published as an image.
+	{"clickhouse/clickhouse-server:26.7.13.12-alpine", contractScanOrder},
+	// The first 26.8 release, the first build carrying #115920.
+	{"clickhouse/clickhouse-server:26.8.1.2041-alpine", contractNaNLoses},
+}
+
+// The grid point every grid probe evaluates, as epoch seconds (2026-01-01
+// 00:01:00 UTC) because an aggregate's parameters must be literals for the
+// -Merge form arrayReduce names. nanDupDupTS carries the colliding samples;
+// nanDupLaterTS carries a single unambiguous sample so every rate-like member
+// has the >= 2 samples it needs to answer.
+const (
+	nanDupAnchor      = "2026-01-01 00:01:00"
+	nanDupAnchorEpoch = 1767225660
+	nanDupDupTS       = "2026-01-01 00:00:20"
+	nanDupLaterTS     = "2026-01-01 00:00:50"
+	nanDupStepSec     = 60
+	nanDupWindowSec   = 60
+	// nanDupStalenessSec is the resample member's staleness window: wide
+	// enough that the duplicate is the sample it carries to the grid point.
+	nanDupStalenessSec = 300
+
+	nanDupFiniteValue  = 25.0
+	nanDupGreaterValue = 30.0
+	nanDupLaterValue   = 40.0
 
 	// nanDupPredictOffsetSec is predict_linear's fifth parametric argument
-	// (the forecast horizon). Any whole-second horizon works; 600 matches
-	// the horizon the native predict_linear fixtures already use.
+	// (the forecast horizon). 600 matches the native predict_linear
+	// fixtures.
 	nanDupPredictOffsetSec = 600
 )
 
-// nanDupSurvivor names which of the two samples sharing nanDupDupTS won the
-// collapse. It is derived from the aggregate's answer by comparing it against
-// the two duplicate-free baselines the same aggregate returns over the same
-// window — so a case declares a statement about the DEDUP CONTRACT ("the NaN
-// survived") rather than transcribing whatever float the arithmetic happens
-// to produce.
-type nanDupSurvivor int
-
+// The sample values a collision is built from, as SQL expressions.
 const (
-	// survivorUnobservable marks an aggregate whose two duplicate-free
-	// baselines are equal, so its answer cannot reveal which sample won.
-	survivorUnobservable nanDupSurvivor = iota
-	survivorNaN
-	survivorFinite
+	nanDupNaN = "nan"
+	// nanDupStale is Prometheus's value.StaleNaN (0x7ff0000000000002).
+	nanDupStale = "reinterpretAsFloat64(toUInt64(9218868437227405314))"
 )
 
-func (s nanDupSurvivor) String() string {
-	switch s {
-	case survivorNaN:
-		return "NaN"
-	case survivorFinite:
-		return "finite"
+var (
+	nanDupFinite  = nanDupFloatLit(nanDupFiniteValue)
+	nanDupGreater = nanDupFloatLit(nanDupGreaterValue)
+)
+
+// nanDupFold is the side a scan-order fold lands a NaN on.
+type nanDupFold int
+
+const (
+	// foldFirstVisited: a running-max fold. A NaN already holding the slot
+	// is never replaced, and a NaN arriving later never replaces a finite
+	// best — the FIRST-visited sample survives a NaN-bearing duplicate.
+	foldFirstVisited nanDupFold = iota
+	// foldLastVisited: a trailing-pair fold. The same false comparison lands
+	// on the other side — the LAST-visited sample survives.
+	foldLastVisited
+)
+
+// nanDupMember is one native aggregate cerberus emits.
+type nanDupMember struct {
+	// params is the parenthesised parameter list, or "" for a
+	// non-parametric aggregate.
+	params string
+	// extraArgs follows the (ts, val) arguments: the -If combinator's
+	// predicate.
+	extraArgs string
+	// ts renders a timestamp literal in the type the aggregate is fed.
+	ts func(string) string
+	// withLater appends the unambiguous later sample. The resample member
+	// omits it: it answers the latest sample, which would hide the
+	// duplicate.
+	withLater bool
+	fold      nanDupFold
+	// observable declares that the answer reveals which sample survived, on
+	// every pinned server. A member not declared observable is still asserted
+	// against its contract; the declaration only stops an observable member
+	// from silently becoming uninformative.
+	observable bool
+}
+
+func nanDupDateTime(s string) string   { return "toDateTime('" + s + "', 'UTC')" }
+func nanDupDateTime64(s string) string { return "toDateTime64('" + s + "', 9, 'UTC')" }
+
+func nanDupGridParams(extra string) string {
+	return fmt.Sprintf("(%d, %d, %d, %d%s)", nanDupAnchorEpoch, nanDupAnchorEpoch, nanDupStepSec, nanDupWindowSec, extra)
+}
+
+// nanDupRegistryMembers covers every nativeTSGridFn entry; the sweep fails
+// when the registry holds a function this map does not, so a member added
+// later cannot ship unprobed.
+var nanDupRegistryMembers = map[string]nanDupMember{
+	"rate":     {params: nanDupGridParams(""), ts: nanDupDateTime, withLater: true, fold: foldFirstVisited, observable: true},
+	"increase": {params: nanDupGridParams(""), ts: nanDupDateTime, withLater: true, fold: foldFirstVisited, observable: true},
+	"delta":    {params: nanDupGridParams(""), ts: nanDupDateTime, withLater: true, fold: foldFirstVisited, observable: true},
+	"deriv":    {params: nanDupGridParams(""), ts: nanDupDateTime, withLater: true, fold: foldFirstVisited, observable: true},
+	"predict_linear": {
+		params: nanDupGridParams(fmt.Sprintf(", %d", nanDupPredictOffsetSec)), ts: nanDupDateTime,
+		withLater: true, fold: foldFirstVisited, observable: true,
+	},
+	// changes: a NaN-then-finite window counts one change more than a
+	// finite-then-finite one only on builds before 26.7 (the leading-NaN
+	// overcount chopt.FeatureTSGridChanges documents); from 26.7 on both
+	// count one, so the survivor is not visible on every pinned server.
+	"changes": {params: nanDupGridParams(""), ts: nanDupDateTime, withLater: true, fold: foldFirstVisited},
+	// resets: a reset needs curr < prev, and every comparison against a NaN
+	// is false, so every survivor counts zero.
+	"resets": {params: nanDupGridParams(""), ts: nanDupDateTime, withLater: true, fold: foldFirstVisited},
+	"irate":  {params: nanDupGridParams(""), ts: nanDupDateTime, withLater: true, fold: foldLastVisited, observable: true},
+	"idelta": {params: nanDupGridParams(""), ts: nanDupDateTime, withLater: true, fold: foldLastVisited, observable: true},
+}
+
+// nanDupOtherMembers are the native aggregates cerberus emits outside the
+// nativeTSGridFn registry, keyed by aggregate name.
+var nanDupOtherMembers = map[string]nanDupMember{
+	// The bare-selector resample (chopt.FeatureTSGridResample and
+	// chopt.FeatureTSGridLastOverTime).
+	nativeResampleFn: {
+		params: fmt.Sprintf("(%d, %d, %d, %d)", nanDupAnchorEpoch, nanDupAnchorEpoch, nanDupStepSec, nanDupStalenessSec),
+		ts:     nanDupDateTime64, fold: foldFirstVisited, observable: true,
+	},
+	// The persisted downsample tier's state (schema.DownsampleTierSamplesColumn).
+	"timeSeriesLastTwoSamples": {ts: nanDupDateTime64, withLater: true, fold: foldLastVisited, observable: true},
+	// The window-pairs assembly (chopt.FeatureTSGridGroupArray), and its
+	// split-window -If form (nativeGroupArrayPairIfFrag) with an
+	// always-true predicate.
+	"timeSeriesGroupArray": {ts: nanDupDateTime64, withLater: true, fold: foldFirstVisited, observable: true},
+	"timeSeriesGroupArrayIf": {
+		extraArgs: ", toUInt8(1)", ts: nanDupDateTime64, withLater: true, fold: foldFirstVisited, observable: true,
+	},
+}
+
+// nanDupCollision is one duplicate-timestamp shape: the two values that share
+// nanDupDupTS.
+type nanDupCollision struct {
+	name string
+	a, b string
+}
+
+var nanDupCollisions = []nanDupCollision{
+	{"nan vs finite", nanDupNaN, nanDupFinite},
+	{"stale vs finite", nanDupStale, nanDupFinite},
+	{"nan vs nan", nanDupNaN, nanDupNaN},
+	{"nan vs stale", nanDupNaN, nanDupStale},
+	{"unequal finite", nanDupFinite, nanDupGreater},
+}
+
+func nanDupIsNaN(v string) bool { return v == nanDupNaN || v == nanDupStale }
+
+// nanDupExpected is the sample the contract elects when first and second
+// reach the collapse in that order (rows fed, or states merged). For an
+// all-NaN collision it returns first: every NaN answers the same, which the
+// sweep asserts separately.
+func nanDupExpected(contract nanDupContract, fold nanDupFold, first, second string) string {
+	switch {
+	case !nanDupIsNaN(first) && !nanDupIsNaN(second):
+		a, _ := strconv.ParseFloat(first, 64)
+		b, _ := strconv.ParseFloat(second, 64)
+		if a >= b {
+			return first
+		}
+		return second
+	case nanDupIsNaN(first) && nanDupIsNaN(second):
+		return first
+	case contract == contractNaNLoses:
+		if nanDupIsNaN(first) {
+			return second
+		}
+		return first
+	case fold == foldFirstVisited:
+		return first
 	default:
-		return "unobservable"
+		return second
 	}
 }
 
-// nanDupCase declares, for one nativeTSGridFn member, the extra parametric
-// arguments its aggregate takes and the survivor it elects under each of the
-// two encounter orders.
-type nanDupCase struct {
-	// extraParams is appended to the shared
-	// `(start, end, step_s, window_s)` parameter list. Empty for every
-	// member except predict_linear, whose fifth argument is its horizon.
-	extraParams string
-	// nanFirstSurvivor / nanSecondSurvivor are the samples that win when the
-	// NaN row is fed to the aggregate before / after the finite row.
-	nanFirstSurvivor  nanDupSurvivor
-	nanSecondSurvivor nanDupSurvivor
-	// why records what makes this member's outcome what it is, so a future
-	// red carries its own diagnosis.
-	why string
-}
-
-// orderDependent reports whether the two encounter orders elect different
-// samples. Derived rather than declared: a case that declared BOTH the two
-// survivors and a redundant "is it order dependent" flag could disagree with
-// itself.
-func (c nanDupCase) orderDependent() bool {
-	return c.nanFirstSurvivor != c.nanSecondSurvivor
-}
-
-// nanDupCases covers every nativeTSGridFn member. The sweep below fails when
-// the registry holds a function this map does not, which is what makes the
-// coverage a ratchet rather than a snapshot.
-//
-// Two sub-groups fall out of the measurements, and the split is the
-// substantive finding — the family does NOT fold uniformly:
-//
-//   - The whole-window members (rate / increase / delta / changes / resets /
-//     deriv / predict_linear) keep the FIRST-visited sample when it is a NaN:
-//     nothing compares greater than a NaN, so a NaN that is already the
-//     current best can never be replaced, and a NaN arriving later can never
-//     replace a finite current best.
-//   - The instant members (irate / idelta) invert it: they keep the
-//     LAST-visited sample when it is a NaN. Their fold reduces the window to
-//     its trailing pair rather than sweeping a running maximum, so the same
-//     false comparison lands on the opposite side.
-//
-// Neither sub-group matches the family's own documented "a NaN value loses to
-// any other value" rule, which would require survivorFinite in BOTH columns
-// for every member.
-var nanDupCases = map[string]nanDupCase{
-	"rate": {
-		nanFirstSurvivor:  survivorNaN,
-		nanSecondSurvivor: survivorFinite,
-		why:               "running max fold; a NaN current best is never replaced and never replaces",
-	},
-	"increase": {
-		nanFirstSurvivor:  survivorNaN,
-		nanSecondSurvivor: survivorFinite,
-		why:               "shares timeSeriesRateToGrid with rate, so it shares rate's fold exactly",
-	},
-	"changes": {
-		nanFirstSurvivor:  survivorNaN,
-		nanSecondSurvivor: survivorFinite,
-		why:               "running max fold; the surviving sample shifts the transition count",
-	},
-	"resets": {
-		nanFirstSurvivor:  survivorUnobservable,
-		nanSecondSurvivor: survivorUnobservable,
-		why: "a counter reset needs curr < prev, and every comparison against a NaN is false, " +
-			"so both survivors yield the same zero count and the fold is not observable through the answer",
-	},
-	"deriv": {
-		nanFirstSurvivor:  survivorNaN,
-		nanSecondSurvivor: survivorFinite,
-		why:               "running max fold; the surviving sample enters the least-squares fit",
-	},
-	"predict_linear": {
-		extraParams:       fmt.Sprintf(", %d", nanDupPredictOffsetSec),
-		nanFirstSurvivor:  survivorNaN,
-		nanSecondSurvivor: survivorFinite,
-		why:               "running max fold; the surviving sample enters the same least-squares fit deriv uses",
-	},
-	"delta": {
-		nanFirstSurvivor:  survivorNaN,
-		nanSecondSurvivor: survivorFinite,
-		why:               "running max fold; the surviving sample is one end of the differenced pair",
-	},
-	"irate": {
-		nanFirstSurvivor:  survivorFinite,
-		nanSecondSurvivor: survivorNaN,
-		why:               "trailing-pair fold, INVERTED against the whole-window members: the LAST-visited NaN wins",
-	},
-	"idelta": {
-		nanFirstSurvivor:  survivorFinite,
-		nanSecondSurvivor: survivorNaN,
-		why:               "trailing-pair fold, inverted for the same reason irate's is",
-	},
-}
-
-// nanDupConnect boots a ClickHouse at nanDupImage and returns a pooled
-// handle. A local copy of the sibling file's realCHConnect rather than a
-// shared helper: that one lives in `package chsql_test` and this suite must
-// be in-package to reach nativeTSGridFn and dedupWindowPairsByTsFrag.
-func nanDupConnect(ctx context.Context, t *testing.T) *sql.DB {
+// nanDupConnect boots a ClickHouse at image and returns a pooled handle.
+func nanDupConnect(ctx context.Context, t *testing.T, image string) *sql.DB {
 	t.Helper()
 	container, err := tcclickhouse.Run(
 		ctx,
-		nanDupImage,
+		image,
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 		tcclickhouse.WithDatabase("otel"),
 	)
 	if err != nil {
-		t.Fatalf("start clickhouse: %v", err)
+		t.Fatalf("start clickhouse %s: %v", image, err)
 	}
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
 
 	host, err := container.Host(ctx)
 	if err != nil {
@@ -267,228 +330,200 @@ func nanDupConnect(ctx context.Context, t *testing.T) *sql.DB {
 	return db
 }
 
+// nanDupServerTimeout bounds one server's boot plus its whole sweep.
+const nanDupServerTimeout = 10 * time.Minute
+
+// forEachNaNDupServer runs fn against every pinned server in parallel.
+func forEachNaNDupServer(t *testing.T, fn func(ctx context.Context, t *testing.T, db *sql.DB, server nanDupServer)) {
+	t.Helper()
+	for _, server := range nanDupServers {
+		t.Run(server.image, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), nanDupServerTimeout)
+			defer cancel()
+			fn(ctx, t, nanDupConnect(ctx, t, server.image), server)
+		})
+	}
+}
+
 // nanDupFloatLit renders a Float64 SQL literal. A bare `%v` renders 25.0 as
-// `25`, which ClickHouse types UInt8 — and the timeSeries*ToGrid family
-// rejects a non-Float64 value argument outright (ILLEGAL_TYPE_OF_ARGUMENT),
-// so the fractional digit is load-bearing rather than cosmetic.
+// `25`, which ClickHouse types UInt8 — and the timeSeries* family rejects a
+// non-Float64 value argument outright (ILLEGAL_TYPE_OF_ARGUMENT), so the
+// fractional digit is load-bearing rather than cosmetic.
 func nanDupFloatLit(v float64) string {
 	return strconv.FormatFloat(v, 'f', 1, 64)
 }
 
-// nanDupSampleRows renders the UNION ALL row source the sweep feeds one
-// aggregate. valuesAtDupTS are the samples sharing nanDupDupTS, IN ENCOUNTER
-// ORDER — the whole point of the probe — followed by the unambiguous
-// nanDupLaterTS sample.
-func nanDupSampleRows(valuesAtDupTS ...string) string {
+// nanDupSampleRows renders the UNION ALL row source for one member.
+// valuesAtDupTS are the samples sharing nanDupDupTS, IN ENCOUNTER ORDER,
+// followed by the later sample when the member takes one.
+func nanDupSampleRows(m nanDupMember, valuesAtDupTS ...string) string {
 	parts := make([]string, 0, len(valuesAtDupTS)+1)
-	for i, v := range valuesAtDupTS {
-		if i == 0 {
-			parts = append(parts, fmt.Sprintf(
-				"SELECT toDateTime('%s') AS ts, %s AS val", nanDupDupTS, v,
-			))
-			continue
-		}
-		parts = append(parts, fmt.Sprintf(
-			"SELECT toDateTime('%s'), %s", nanDupDupTS, v,
-		))
+	for _, v := range valuesAtDupTS {
+		parts = append(parts, fmt.Sprintf("SELECT %s AS ts, toFloat64(%s) AS val", m.ts(nanDupDupTS), v))
 	}
-	parts = append(parts, fmt.Sprintf(
-		"SELECT toDateTime('%s'), %s", nanDupLaterTS, nanDupFloatLit(nanDupLaterValue),
-	))
+	if m.withLater {
+		parts = append(parts, fmt.Sprintf("SELECT %s AS ts, toFloat64(%s) AS val",
+			m.ts(nanDupLaterTS), nanDupFloatLit(nanDupLaterValue)))
+	}
 	return "(" + strings.Join(parts, " UNION ALL ") + ")"
 }
 
-// nanDupGrid runs one family member over rows and returns its grid as a
-// string. The experimental setting is scoped to the statement rather than the
-// session: a pooled *sql.DB gives no guarantee a later query reuses the
-// connection a session-level SET landed on.
-func nanDupGrid(ctx context.Context, t *testing.T, db *sql.DB, agg, extraParams, rows string) string {
+// nanDupScalar runs query with the experimental setting scoped to the
+// statement: a pooled *sql.DB gives no guarantee a later query reuses the
+// connection a session-level SET landed on. max_threads=1 keeps the UNION ALL
+// arms in the order they are written.
+func nanDupScalar(ctx context.Context, t *testing.T, db *sql.DB, query string) string {
 	t.Helper()
-	query := fmt.Sprintf(
-		"SELECT toString(%s(toDateTime('%s'), toDateTime('%s'), %d, %d%s)(ts, val)) FROM %s SETTINGS %s = 1",
-		agg, nanDupAnchor, nanDupAnchor, nanDupStepSec, nanDupWindowSec, extraParams, rows,
-		chclient.SettingExperimentalTSGridAggregate,
-	)
+	full := query + " SETTINGS max_threads = 1, " + chclient.SettingExperimentalTSGridAggregate + " = 1"
 	var got string
-	if err := db.QueryRowContext(ctx, query).Scan(&got); err != nil {
-		t.Fatalf("%s: %v\nSQL: %s", agg, err, query)
+	if err := db.QueryRowContext(ctx, full).Scan(&got); err != nil {
+		t.Fatalf("%v\nSQL: %s", err, full)
 	}
 	return got
 }
 
-// TestTSGridFamily_NaNDuplicateSurvivorIsOrderDependent_RealCH measures, for
-// every nativeTSGridFn member, which sample survives a NaN-bearing duplicate
-// timestamp under each encounter order — the upstream ClickHouse behaviour
-// cerberus issue #2798 characterised, established here family-wide rather
-// than inferred from the two members #2746's chDB sweep happened to probe.
-//
-// The survivor is DERIVED, not transcribed: each member is first run over the
-// two duplicate-free windows (the NaN alone at the shared timestamp, then the
-// finite sample alone), and the duplicate answer is matched against those two
-// baselines. A member whose baselines coincide is declared unobservable and
-// asserted to be so, which is what stops `resets` from silently counting as
-// evidence of order-independence.
-func TestTSGridFamily_NaNDuplicateSurvivorIsOrderDependent_RealCH(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	db := nanDupConnect(ctx, t)
+// nanDupFeed answers agg over rows fed in the order given.
+func nanDupFeed(ctx context.Context, t *testing.T, db *sql.DB, agg string, m nanDupMember, values ...string) string {
+	t.Helper()
+	return nanDupScalar(ctx, t, db, fmt.Sprintf("SELECT toString(%s%s(ts, val%s)) FROM %s",
+		agg, m.params, m.extraArgs, nanDupSampleRows(m, values...)))
+}
 
+// nanDupMerge builds one partial state holding first (plus the later sample)
+// and one holding second, and answers their merge in that order — the order a
+// Distributed initiator or the deferred-shaping recollapse merges states in.
+func nanDupMerge(ctx context.Context, t *testing.T, db *sql.DB, agg string, m nanDupMember, first, second string) string {
+	t.Helper()
+	stateOf := func(rows string) string {
+		return fmt.Sprintf("(SELECT %sState%s(ts, val%s) FROM %s)", agg, m.params, m.extraArgs, rows)
+	}
+	onlyDup := m
+	onlyDup.withLater = false
+	return nanDupScalar(ctx, t, db, fmt.Sprintf("SELECT toString(arrayReduce('%sMerge%s', [%s, %s]))",
+		agg, m.params, stateOf(nanDupSampleRows(m, first)), stateOf(nanDupSampleRows(onlyDup, second))))
+}
+
+// TestTSGridFamily_DuplicateSurvivor_RealCH asserts, for every native member
+// and every pinned server, that each collision's survivor is the one the
+// server's contract elects — under both insertion orders and both
+// partial-state merge orders.
+//
+// The survivor is read off the answer by comparing it with the answer the
+// same member gives over the window holding each candidate alone, so a case
+// asserts which SAMPLE survived rather than transcribing a float.
+func TestTSGridFamily_DuplicateSurvivor_RealCH(t *testing.T) {
 	if len(nativeTSGridFn) == 0 {
 		t.Fatal("nativeTSGridFn is empty — the ratchet below would vacuously pass")
 	}
-	for fn := range nativeTSGridFn {
-		if _, ok := nanDupCases[fn]; !ok {
-			t.Errorf("nativeTSGridFn registers %q but nanDupCases has no case for it — every native "+
-				"family member must have its duplicate-timestamp survivor measured (cerberus issue #2798)", fn)
-		}
-	}
-	for fn := range nanDupCases {
-		if _, ok := nativeTSGridFn[fn]; !ok {
-			t.Errorf("nanDupCases declares %q, which nativeTSGridFn does not register — a stale case "+
-				"would keep asserting against an aggregate cerberus no longer emits", fn)
-		}
-	}
-
-	names := make([]string, 0, len(nanDupCases))
-	for fn := range nanDupCases {
-		names = append(names, fn)
-	}
-	sort.Strings(names)
-
-	orderDependentMembers := 0
-	for _, fn := range names {
-		c := nanDupCases[fn]
-		agg, ok := nativeTSGridFn[fn]
+	members := map[string]nanDupMember{}
+	for fn, agg := range nativeTSGridFn {
+		m, ok := nanDupRegistryMembers[fn]
 		if !ok {
-			continue // already reported above
+			t.Errorf("nativeTSGridFn registers %q but nanDupRegistryMembers has no entry for it — every native "+
+				"member must have its duplicate-timestamp survivor measured", fn)
+			continue
 		}
-		t.Run(fn, func(t *testing.T) {
-			nanOnly := nanDupGrid(ctx, t, db, agg.Fn, c.extraParams,
-				nanDupSampleRows("nan"))
-			finiteOnly := nanDupGrid(ctx, t, db, agg.Fn, c.extraParams,
-				nanDupSampleRows(nanDupFloatLit(nanDupFiniteValue)))
-
-			classify := func(got string) nanDupSurvivor {
-				if nanOnly == finiteOnly {
-					return survivorUnobservable
-				}
-				switch got {
-				case nanOnly:
-					return survivorNaN
-				case finiteOnly:
-					return survivorFinite
-				default:
-					t.Fatalf("%s: duplicate answer %q matches NEITHER duplicate-free baseline "+
-						"(nan-only=%q, finite-only=%q) — the collapse kept something other than one of "+
-						"the two samples, which no reading of the documented rule allows",
-						agg.Fn, got, nanOnly, finiteOnly)
-					return survivorUnobservable
-				}
-			}
-
-			if c.nanFirstSurvivor == survivorUnobservable || c.nanSecondSurvivor == survivorUnobservable {
-				if nanOnly != finiteOnly {
-					t.Fatalf("%s: case declares the survivor unobservable (%s), but the two "+
-						"duplicate-free baselines DIFFER (nan-only=%q, finite-only=%q) — the answer "+
-						"does reveal the survivor, so the case must declare which one it is",
-						agg.Fn, c.why, nanOnly, finiteOnly)
-				}
-			} else if nanOnly == finiteOnly {
-				t.Fatalf("%s: case declares survivors (%s / %s) the answer cannot distinguish — both "+
-					"duplicate-free baselines are %q",
-					agg.Fn, c.nanFirstSurvivor, c.nanSecondSurvivor, nanOnly)
-			}
-
-			nanFirst := classify(nanDupGrid(ctx, t, db, agg.Fn, c.extraParams,
-				nanDupSampleRows("nan", nanDupFloatLit(nanDupFiniteValue))))
-			nanSecond := classify(nanDupGrid(ctx, t, db, agg.Fn, c.extraParams,
-				nanDupSampleRows(nanDupFloatLit(nanDupFiniteValue), "nan")))
-
-			if nanFirst != c.nanFirstSurvivor {
-				t.Errorf("%s: NaN fed FIRST — survivor is %s, case declares %s (%s)",
-					agg.Fn, nanFirst, c.nanFirstSurvivor, c.why)
-			}
-			if nanSecond != c.nanSecondSurvivor {
-				t.Errorf("%s: NaN fed SECOND — survivor is %s, case declares %s (%s)",
-					agg.Fn, nanSecond, c.nanSecondSurvivor, c.why)
-			}
-			if got, want := nanFirst != nanSecond, c.orderDependent(); got != want {
-				t.Errorf("%s: order dependence = %v, case implies %v — a future ClickHouse whose fold is "+
-					"order-independent would invalidate cerberus issue #2798's characterisation, and every "+
-					"doc citing it must then be re-derived", agg.Fn, got, want)
-			}
-		})
-		if c.orderDependent() {
-			orderDependentMembers++
+		members[agg.Fn] = m
+	}
+	for fn := range nanDupRegistryMembers {
+		if _, ok := nativeTSGridFn[fn]; !ok {
+			t.Errorf("nanDupRegistryMembers declares %q, which nativeTSGridFn does not register", fn)
 		}
 	}
-
-	if orderDependentMembers == 0 {
-		t.Fatal("no nativeTSGridFn member is declared order dependent — this suite exists to pin " +
-			"cerberus issue #2798's finding, and would be vacuous with every case declared insensitive")
+	for agg, m := range nanDupOtherMembers {
+		members[agg] = m
 	}
+	aggs := make([]string, 0, len(members))
+	for agg := range members {
+		aggs = append(aggs, agg)
+	}
+	sort.Strings(aggs)
+
+	forEachNaNDupServer(t, func(ctx context.Context, t *testing.T, db *sql.DB, server nanDupServer) {
+		orderDependent := 0
+		for _, agg := range aggs {
+			m := members[agg]
+			alone := map[string]string{}
+			for _, v := range []string{nanDupNaN, nanDupStale, nanDupFinite, nanDupGreater} {
+				alone[v] = nanDupFeed(ctx, t, db, agg, m, v)
+			}
+			if alone[nanDupNaN] != alone[nanDupStale] {
+				t.Errorf("%s answers a stale-marker payload (%s) differently from an ordinary NaN (%s)",
+					agg, alone[nanDupStale], alone[nanDupNaN])
+				continue
+			}
+			if m.observable && (alone[nanDupNaN] == alone[nanDupFinite] || alone[nanDupFinite] == alone[nanDupGreater]) {
+				t.Errorf("%s is declared observable, but its single-sample answers do not tell the candidates "+
+					"apart (nan=%s finite=%s greater=%s)", agg, alone[nanDupNaN], alone[nanDupFinite], alone[nanDupGreater])
+				continue
+			}
+			for _, c := range nanDupCollisions {
+				for _, order := range [][2]string{{c.a, c.b}, {c.b, c.a}} {
+					want := alone[nanDupExpected(server.contract, m.fold, order[0], order[1])]
+					if got := nanDupFeed(ctx, t, db, agg, m, order[0], order[1]); got != want {
+						t.Errorf("%s fed %s then %s (%s): got %s, want %s under the %s contract",
+							agg, order[0], order[1], c.name, got, want, server.contract)
+					}
+					if got := nanDupMerge(ctx, t, db, agg, m, order[0], order[1]); got != want {
+						t.Errorf("%s merged %s's state then %s's (%s): got %s, want %s under the %s contract",
+							agg, order[0], order[1], c.name, got, want, server.contract)
+					}
+				}
+			}
+			if m.observable && nanDupExpected(server.contract, m.fold, nanDupNaN, nanDupFinite) !=
+				nanDupExpected(server.contract, m.fold, nanDupFinite, nanDupNaN) {
+				orderDependent++
+			}
+		}
+		// The two contracts must actually differ where they claim to: a
+		// scan-order server shows order dependence on its observable members,
+		// and a NaN-loses server shows none.
+		if server.contract == contractScanOrder && orderDependent == 0 {
+			t.Errorf("%s is pinned as scan-order, but no observable member is order dependent", server.image)
+		}
+		if server.contract == contractNaNLoses && orderDependent != 0 {
+			t.Errorf("%s is pinned as NaN-loses, but %d observable members are order dependent", server.image, orderDependent)
+		}
+	})
 }
 
-// TestFanoutDedup_NaNDuplicateSurvivorIsOrderIndependent_RealCH executes the
+// TestFanoutDedup_DuplicateSurvivorIsOrderIndependent_RealCH executes the
 // PRODUCTION dedupWindowPairsByTsFrag Frag — rendered from the emitter's own
-// constructor, not transcribed — over the same two encounter orders, and
-// asserts it elects the same survivor either way.
-//
-// This is the half of cerberus's duplicate-timestamp contract that IS
-// deliverable, and it is what makes the native family's behaviour a
-// divergence rather than two equally unspecified paths: `arraySort` orders
-// Float64 under a total order in which NaN ranks greatest, so the
-// last-of-run keep is a function of the sample multiset alone.
-//
-// It fails if dedupWindowPairsByTsFrag is ever swapped for a fold that
-// inherits ClickHouse's IEEE754 comparison — including the self-deduping
-// native timeSeriesGroupArray aggregate (chopt.FeatureTSGridGroupArray),
-// whose AutoSelect: false posture rests on exactly this difference.
-func TestFanoutDedup_NaNDuplicateSurvivorIsOrderIndependent_RealCH(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	db := nanDupConnect(ctx, t)
-
+// constructor, not transcribed — on every pinned server, over both encounter
+// orders of every collision, and asserts one survivor per collision: the
+// greatest under ClickHouse's total order, in which NaN ranks greatest.
+func TestFanoutDedup_DuplicateSurvivorIsOrderIndependent_RealCH(t *testing.T) {
 	dedupSQL, err := Render(dedupWindowPairsByTsFrag(
 		Call("arraySort", Call("groupArray", Tuple(Col("ts"), Col("val")))),
 	))
 	if err != nil {
 		t.Fatalf("render dedupWindowPairsByTsFrag: %v", err)
 	}
+	rowsOnly := nanDupMember{ts: nanDupDateTime64, withLater: true}
 
-	run := func(rows string) string {
-		var got string
-		query := fmt.Sprintf("SELECT toString(%s) FROM %s", dedupSQL, rows)
-		if err := db.QueryRowContext(ctx, query).Scan(&got); err != nil {
-			t.Fatalf("dedup probe: %v\nSQL: %s", err, query)
+	forEachNaNDupServer(t, func(ctx context.Context, t *testing.T, db *sql.DB, _ nanDupServer) {
+		run := func(values ...string) string {
+			return nanDupScalar(ctx, t, db, fmt.Sprintf("SELECT toString(%s) FROM %s",
+				dedupSQL, nanDupSampleRows(rowsOnly, values...)))
 		}
-		return got
-	}
-
-	finite := nanDupFloatLit(nanDupFiniteValue)
-	nanFirst := run(nanDupSampleRows("nan", finite))
-	nanSecond := run(nanDupSampleRows(finite, "nan"))
-
-	if nanFirst != nanSecond {
-		t.Fatalf("dedupWindowPairsByTsFrag is insertion-order DEPENDENT: nan-first=%q nan-second=%q. "+
-			"Cerberus's duplicate-timestamp contract (see the Frag's own doc) promises a survivor that "+
-			"is a function of the sample multiset alone", nanFirst, nanSecond)
-		return
-	}
-	if strings.Count(nanFirst, "(") != 2 {
-		t.Fatalf("dedupWindowPairsByTsFrag kept %q — want exactly two tuples, one per distinct "+
-			"timestamp (the cardinality half of the contract)", nanFirst)
-	}
-	if !strings.Contains(strings.ToLower(nanFirst), "nan") {
-		t.Fatalf("dedupWindowPairsByTsFrag kept %q — want the NaN to survive: arraySort ranks NaN "+
-			"greatest, so the last-of-run keep elects it, and that is the representative half of the "+
-			"contract cerberus commits to", nanFirst)
-	}
-	if strings.Contains(nanFirst, finite) {
-		t.Fatalf("dedupWindowPairsByTsFrag kept %q — the finite duplicate must NOT survive alongside "+
-			"the NaN; both rows surviving is the over-count dedupWindowPairsByTsFrag exists to prevent",
-			nanFirst)
-	}
+		for _, c := range nanDupCollisions {
+			ab, ba := run(c.a, c.b), run(c.b, c.a)
+			if ab != ba {
+				t.Errorf("%s: dedupWindowPairsByTsFrag is insertion-order DEPENDENT: %q vs %q", c.name, ab, ba)
+				continue
+			}
+			// The total order ranks NaN greatest, so the NaN — or, for two
+			// finite values, the greater one — is the survivor.
+			survivor := c.b
+			if nanDupIsNaN(c.a) {
+				survivor = c.a
+			}
+			if want := run(survivor); ab != want {
+				t.Errorf("%s: kept %q, want %q — one sample per timestamp, the total order's greatest", c.name, ab, want)
+			}
+		}
+	})
 }
 
 // nanDupMetricsDDL is the OTel-CH sum table the end-to-end case seeds. Only
@@ -516,29 +551,30 @@ const (
 	nanDupJobPlain     = "plain"
 )
 
-// TestRate_NativeGrid_NaNDuplicate_DivergesFromFanout_RealCH runs cerberus's
-// OWN emitted SQL for `rate(requests_total[1m])` down both lowerings over one
-// table holding two series with the identical sample multiset, and pins the
-// divergence cerberus issue #2798 characterised:
+// TestRate_NativeGrid_NaNDuplicate_AgainstFanout_RealCH runs cerberus's OWN
+// emitted SQL for `rate(requests_total[1m])` down both lowerings, on every
+// pinned server, over one table holding two series with the identical sample
+// multiset in opposite physical order:
 //
-//   - the fan-out answers the two series IDENTICALLY (its survivor is a
-//     function of the multiset), and
-//   - the native grid path does NOT (its survivor is a function of physical
-//     row order), so one of the two series gets an answer the contract does
-//     not sanction.
+//   - the fan-out answers both series NaN on every server — its survivor is a
+//     function of the multiset, and the total order ranks NaN greatest;
+//   - on a scan-order server the native path answers NaN only where the NaN
+//     row is physically first, so it disagrees with itself as well as with
+//     the fan-out;
+//   - on a NaN-loses server the native path answers both series with the
+//     finite survivor's rate — deterministic, and opposite to the fan-out.
 //
-// The control series pins that both lowerings agree where no duplicate
-// timestamp exists at all, so the divergence cannot be an artefact of the two
-// paths disagreeing generally.
-func TestRate_NativeGrid_NaNDuplicate_DivergesFromFanout_RealCH(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	db := nanDupConnect(ctx, t)
-
-	if _, err := db.ExecContext(ctx, nanDupMetricsDDL); err != nil {
-		t.Fatalf("create table: %v", err)
+// The control series pins that both lowerings agree where no duplicate exists.
+func TestRate_NativeGrid_NaNDuplicate_AgainstFanout_RealCH(t *testing.T) {
+	anchor, err := time.Parse(time.DateTime, nanDupAnchor)
+	if err != nil {
+		t.Fatalf("parse anchor: %v", err)
 	}
-	seed := fmt.Sprintf(`
+	forEachNaNDupServer(t, func(ctx context.Context, t *testing.T, db *sql.DB, server nanDupServer) {
+		if _, err := db.ExecContext(ctx, nanDupMetricsDDL); err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+		seed := fmt.Sprintf(`
 INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
     ('requests_total', map('job', '%[1]s'), toDateTime64('%[4]s', 9), nan),
     ('requests_total', map('job', '%[1]s'), toDateTime64('%[4]s', 9), %[6]s),
@@ -549,71 +585,56 @@ INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
     ('requests_total', map('job', '%[3]s'), toDateTime64('%[4]s', 9), %[6]s),
     ('requests_total', map('job', '%[3]s'), toDateTime64('%[5]s', 9), %[7]s)
 `, nanDupJobNaNFirst, nanDupJobNaNSecond, nanDupJobPlain,
-		nanDupDupTS, nanDupLaterTS, nanDupFloatLit(nanDupFiniteValue), nanDupFloatLit(nanDupLaterValue))
-	if _, err := db.ExecContext(ctx, seed); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	anchor, err := time.Parse("2006-01-02 15:04:05", nanDupAnchor)
-	if err != nil {
-		t.Fatalf("parse anchor: %v", err)
-	}
-
-	fanout := nanDupRunRate(ctx, t, db, anchor, false)
-	native := nanDupRunRate(ctx, t, db, anchor, true)
-
-	for _, job := range []string{nanDupJobNaNFirst, nanDupJobNaNSecond, nanDupJobPlain} {
-		if _, ok := fanout[job]; !ok {
-			t.Fatalf("fan-out returned no row for job=%s — the fixture is broken", job)
+			nanDupDupTS, nanDupLaterTS, nanDupFinite, nanDupFloatLit(nanDupLaterValue))
+		if _, err := db.ExecContext(ctx, seed); err != nil {
+			t.Fatalf("seed: %v", err)
 		}
-		if _, ok := native[job]; !ok {
-			t.Fatalf("native returned no row for job=%s — the fixture is broken", job)
+
+		fanout := nanDupRunRate(ctx, t, db, anchor, false)
+		native := nanDupRunRate(ctx, t, db, anchor, true)
+		for _, job := range []string{nanDupJobNaNFirst, nanDupJobNaNSecond, nanDupJobPlain} {
+			if _, ok := fanout[job]; !ok {
+				t.Fatalf("fan-out returned no row for job=%s — the fixture is broken", job)
+			}
+			if _, ok := native[job]; !ok {
+				t.Fatalf("native returned no row for job=%s — the fixture is broken", job)
+			}
 		}
-	}
 
-	// The control: no duplicate timestamp, so both lowerings must agree.
-	if f, n := fanout[nanDupJobPlain], native[nanDupJobPlain]; math.Abs(f-n) > 1e-9 {
-		t.Fatalf("job=%s carries no duplicate timestamp yet native=%v and fan-out=%v disagree — the "+
-			"divergence asserted below would not be attributable to the duplicate",
-			nanDupJobPlain, n, f)
-	}
+		// The control: no duplicate timestamp, so both lowerings must agree.
+		// It holds exactly the two samples a finite survivor leaves, so its
+		// rate is the finite-survivor answer below.
+		finiteRate := native[nanDupJobPlain]
+		if f := fanout[nanDupJobPlain]; math.IsNaN(finiteRate) || math.Abs(f-finiteRate) > 1e-9 {
+			t.Fatalf("job=%s carries no duplicate timestamp yet native=%v and fan-out=%v disagree",
+				nanDupJobPlain, finiteRate, f)
+		}
 
-	// The contract half cerberus delivers: the two duplicate-bearing series
-	// hold the same sample multiset, so the fan-out must answer them the same.
-	fFirst, fSecond := fanout[nanDupJobNaNFirst], fanout[nanDupJobNaNSecond]
-	if !math.IsNaN(fFirst) || !math.IsNaN(fSecond) {
-		t.Fatalf("fan-out answered job=%s %v and job=%s %v — cerberus's duplicate-timestamp contract "+
-			"elects the NaN (arraySort ranks NaN greatest), so rate() over the surviving window is NaN "+
-			"for both", nanDupJobNaNFirst, fFirst, nanDupJobNaNSecond, fSecond)
-	}
+		if f1, f2 := fanout[nanDupJobNaNFirst], fanout[nanDupJobNaNSecond]; !math.IsNaN(f1) || !math.IsNaN(f2) {
+			t.Fatalf("fan-out answered job=%s %v and job=%s %v — dedupWindowPairsByTsFrag elects the NaN "+
+				"(the total order ranks it greatest), so both windows answer NaN",
+				nanDupJobNaNFirst, f1, nanDupJobNaNSecond, f2)
+		}
 
-	// The upstream behaviour #2798 characterised: the native family's survivor
-	// follows physical row order, so the two series answer differently.
-	nFirst, nSecond := native[nanDupJobNaNFirst], native[nanDupJobNaNSecond]
-	if math.IsNaN(nFirst) && math.IsNaN(nSecond) {
-		t.Fatalf("the native timeSeries*ToGrid path answered both duplicate-bearing series NaN — "+
-			"a future ClickHouse whose collapse is order-independent would invalidate cerberus issue "+
-			"#2798's characterisation, and every doc citing it must then be re-derived "+
-			"(native: %s=%v %s=%v)",
-			nanDupJobNaNFirst, nFirst, nanDupJobNaNSecond, nSecond)
-	}
-	if !math.IsNaN(nFirst) {
-		t.Errorf("native job=%s = %v, want NaN: with the NaN row physically first, nothing compares "+
-			"greater than it, so it survives the collapse", nanDupJobNaNFirst, nFirst)
-	}
-	if math.IsNaN(nSecond) {
-		t.Errorf("native job=%s = NaN, want the finite-survivor answer: with the NaN row physically "+
-			"second it can never displace the finite current best", nanDupJobNaNSecond)
-	}
+		wantFirst, wantSecond := finiteRate, finiteRate
+		if server.contract == contractScanOrder {
+			// rate's fold keeps a FIRST-visited NaN.
+			wantFirst = math.NaN()
+		}
+		for job, want := range map[string]float64{nanDupJobNaNFirst: wantFirst, nanDupJobNaNSecond: wantSecond} {
+			got := native[job]
+			if math.IsNaN(got) != math.IsNaN(want) || (!math.IsNaN(want) && math.Abs(got-want) > 1e-9) {
+				t.Errorf("native job=%s = %v, want %v under the %s contract", job, got, want, server.contract)
+			}
+		}
+	})
 }
 
-// nanDupRunRate lowers and emits `rate(requests_total[1m])` as an instant
-// query at anchor, down the native timeSeries*ToGrid lowering or the fan-out,
-// and returns the per-job value.
-//
-// An instant query rather than a range query: it evaluates exactly one grid
-// point, so the answer is the survivor's contribution and nothing else, and
-// the assertions above need no anchor bookkeeping.
+// nanDupRunRate lowers and emits `rate(requests_total[1m])` as a single-point
+// range query at anchor, down the native timeSeries*ToGrid lowering or the
+// fan-out, and returns the per-job value. A range query rather than the
+// instant shape: the native lowering is a query_range strategy, so an instant
+// query would silently fall back to the fan-out.
 func nanDupRunRate(ctx context.Context, t *testing.T, db *sql.DB, anchor time.Time, native bool) map[string]float64 {
 	t.Helper()
 	p := promparser.NewParser(promparser.Options{})
@@ -626,10 +647,6 @@ func nanDupRunRate(ctx context.Context, t *testing.T, db *sql.DB, anchor time.Ti
 	if native {
 		lowerers.Rate = promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}}
 	}
-	// A single-point range query rather than the instant shape: the native
-	// timeSeries*ToGrid lowering is a query_range strategy, so an instant
-	// query would silently fall back to the fan-out and compare the fan-out
-	// with itself.
 	plan, err := promql.LowerAtRangeOpts(ctx, expr, nanDupSchema(),
 		anchor, anchor, time.Duration(nanDupStepSec)*time.Second,
 		promql.LowerOpts{Lowerers: lowerers})
@@ -640,13 +657,9 @@ func nanDupRunRate(ctx context.Context, t *testing.T, db *sql.DB, anchor time.Ti
 	if err != nil {
 		t.Fatalf("emit (native=%v): %v", native, err)
 	}
-	if native && !strings.Contains(sqlStr, nativeTSGridFn["rate"].Fn) {
-		t.Fatalf("native=true did not emit %s — the differential would compare the fan-out with "+
-			"itself:\n%s", nativeTSGridFn["rate"].Fn, sqlStr)
-	}
-	if !native && strings.Contains(sqlStr, nativeTSGridFn["rate"].Fn) {
-		t.Fatalf("native=false emitted %s — the fan-out arm is not the fan-out:\n%s",
-			nativeTSGridFn["rate"].Fn, sqlStr)
+	if emitted := strings.Contains(sqlStr, nativeTSGridFn["rate"].Fn); emitted != native {
+		t.Fatalf("native=%v but the emitted SQL names %s: %v — the differential would compare one lowering "+
+			"with itself:\n%s", native, nativeTSGridFn["rate"].Fn, emitted, sqlStr)
 	}
 
 	wrapped := fmt.Sprintf(
@@ -685,7 +698,7 @@ func nanDupSchema() schema.Metrics {
 }
 
 // nanDupJobLabel pulls the job value out of the JSON-encoded Attributes map
-// (`{"job":"a"}`). A local copy for the same reason nanDupConnect is one.
+// (`{"job":"a"}`).
 func nanDupJobLabel(jsonStr string) string {
 	const key = `"job":"`
 	i := strings.Index(jsonStr, key)

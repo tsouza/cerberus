@@ -13,19 +13,22 @@
 //     INDEPENDENT for finite values — proven end to end through cerberus's
 //     own lowering + emitter, matching the fan-out's own dedup exactly
 //     (TestRate_NativeGroupArray_DuplicateTimestamp_MatchesFanoutRealCH).
-//  3. NaN edge case: unlike the finite case, a duplicate timestamp carrying a
-//     NaN sample is insertion-order DEPENDENT — the reason
-//     chopt.FeatureTSGridGroupArray ships AutoSelect: false
-//     (TestTimeSeriesGroupArray_NaNDuplicateIsInsertionOrderDependent_RealCH).
+//  3. NaN edge case: a duplicate timestamp carrying a NaN sample collapses by
+//     scan order before ClickHouse #115920 and to the finite sample from
+//     26.8.1.2041 on — either way unlike the fan-out's own dedup, which
+//     elects the NaN. That is pinned for both the plain and the -If form, on
+//     every pinned server, by the family-wide sweep
+//     TestTSGridFamily_DuplicateSurvivor_RealCH
+//     (range_window_grid_native_nan_duplicate_realch_integration_test.go).
 //
 // Cerberus issue #2862 extends the same feature to the split-window
 // assembly sites via ClickHouse's generic `-If` aggregate combinator
 // (timeSeriesGroupArrayIf, nativeGroupArrayPairIfFrag). Combinator wrapping
 // could plausibly change any of the three, so each is RE-RUN for that form
 // rather than assumed to carry over — TestTimeSeriesGroupArray_IfCombinator*
-// below, one per precondition, plus the combinator's own additional
-// question (does the predicate filter BEFORE or AFTER the
-// duplicate-timestamp collapse?) which the plain form cannot pose.
+// below for preconditions 1 and 2 (3 is in the family-wide sweep), plus the
+// combinator's own additional question (does the predicate filter BEFORE or
+// AFTER the duplicate-timestamp collapse?) which the plain form cannot pose.
 //
 // Needs a real ClickHouse >= 25.9 (chopt.FeatureTSGridGroupArray's own
 // floor, shared with the rest of the timeSeries*ToGrid family) — this lane
@@ -153,54 +156,6 @@ func TestTimeSeriesGroupArray_AcceptsDateTime64Losslessly_RealCH(t *testing.T) {
 	}
 }
 
-// TestTimeSeriesGroupArray_NaNDuplicateIsInsertionOrderDependent_RealCH pins
-// precondition 3's NaN finding: the native aggregate's duplicate-timestamp
-// collapse is a running "replace only when candidate > current-best" fold.
-// IEEE754 makes every comparison against NaN false, so whichever value a
-// (possibly multi-threaded, multi-part) scan visits FIRST at a duplicate
-// timestamp survives when it is NaN, and can never be dislodged — while a
-// NaN visited SECOND can never displace a non-NaN first value. This is the
-// reason chopt.FeatureTSGridGroupArray ships AutoSelect: false: the fan-out's
-// own dedupWindowPairsByTsFrag is deterministic here (arraySort ranks NaN
-// greatest, so it always survives regardless of insertion order).
-func TestTimeSeriesGroupArray_NaNDuplicateIsInsertionOrderDependent_RealCH(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	db := realCHConnect(ctx, t)
-
-	const settings = " SETTINGS " + chclient.SettingExperimentalTSGridAggregate + " = 1"
-
-	// NaN listed FIRST survives — nothing compares greater than NaN.
-	var nanFirst string
-	if err := db.QueryRowContext(
-		ctx,
-		"SELECT toString(timeSeriesGroupArray(t, v)) FROM "+
-			"(SELECT toDateTime64('2026-01-01 00:00:01', 9) AS t, nan AS v "+
-			"UNION ALL SELECT toDateTime64('2026-01-01 00:00:01', 9), 3.0)"+settings,
-	).Scan(&nanFirst); err != nil {
-		t.Fatalf("nan-first probe: %v", err)
-	}
-	if !strings.Contains(strings.ToLower(nanFirst), "nan") {
-		t.Errorf("NaN-first duplicate: got %q, want the surviving sample to be nan (nothing compares > nan)", nanFirst)
-	}
-
-	// The SAME two candidates, NaN listed SECOND: the finite value survives
-	// instead — proving the outcome depends on encounter order, not on the
-	// values alone.
-	var nanSecond string
-	if err := db.QueryRowContext(
-		ctx,
-		"SELECT toString(timeSeriesGroupArray(t, v)) FROM "+
-			"(SELECT toDateTime64('2026-01-01 00:00:01', 9) AS t, 3.0 AS v "+
-			"UNION ALL SELECT toDateTime64('2026-01-01 00:00:01', 9), nan)"+settings,
-	).Scan(&nanSecond); err != nil {
-		t.Fatalf("nan-second probe: %v", err)
-	}
-	if strings.Contains(strings.ToLower(nanSecond), "nan") {
-		t.Errorf("NaN-second duplicate: got %q, want the surviving sample to be 3 (nan never displaces a finite current-best)", nanSecond)
-	}
-}
-
 // TestTimeSeriesGroupArray_IfCombinatorAcceptsDateTime64Losslessly_RealCH
 // re-runs precondition 1 for the `-If` combinator form (cerberus issue
 // #2862): wrapping the aggregate in `-If` must not change which timestamp
@@ -319,56 +274,6 @@ func TestTimeSeriesGroupArray_IfCombinatorFiltersBeforeCollapse_RealCH(t *testin
 			"timeSeriesGroupArrayIf duplicate collapse among passing rows: got %q, want the max-valued "+
 				"sample (value 7), matching the plain form's own fold",
 			maxAmongPassing,
-		)
-	}
-}
-
-// TestTimeSeriesGroupArray_IfCombinatorNaNDuplicateIsInsertionOrderDependent_RealCH
-// re-runs precondition 3 for the `-If` combinator form (cerberus issue
-// #2862). The finding is the plain form's, unchanged: because every IEEE754
-// comparison against NaN is false, the running "replace only when candidate
-// > current-best" fold keeps whichever NaN it visits FIRST and never lets a
-// NaN visited SECOND dislodge a finite current-best. Pinning it here is what
-// makes chopt.FeatureTSGridGroupArray's AutoSelect: false posture cover the
-// split-window sites too, rather than resting on the assumption that a
-// combinator cannot change a fold's comparison.
-func TestTimeSeriesGroupArray_IfCombinatorNaNDuplicateIsInsertionOrderDependent_RealCH(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	db := realCHConnect(ctx, t)
-
-	const settings = " SETTINGS " + chclient.SettingExperimentalTSGridAggregate + " = 1"
-
-	// NaN listed FIRST survives — nothing compares greater than NaN. Both
-	// rows pass cond, so the predicate is not what decides the outcome.
-	var nanFirst string
-	if err := db.QueryRowContext(
-		ctx,
-		"SELECT toString(timeSeriesGroupArrayIf(t, v, keep)) FROM "+
-			"(SELECT toDateTime64('2026-01-01 00:00:01', 9) AS t, nan AS v, 1 AS keep "+
-			"UNION ALL SELECT toDateTime64('2026-01-01 00:00:01', 9), 3.0, 1)"+settings,
-	).Scan(&nanFirst); err != nil {
-		t.Fatalf("nan-first -If probe: %v", err)
-	}
-	if !strings.Contains(strings.ToLower(nanFirst), "nan") {
-		t.Errorf("NaN-first duplicate under -If: got %q, want the surviving sample to be nan", nanFirst)
-	}
-
-	// The SAME two candidates, NaN listed SECOND: the finite value survives.
-	var nanSecond string
-	if err := db.QueryRowContext(
-		ctx,
-		"SELECT toString(timeSeriesGroupArrayIf(t, v, keep)) FROM "+
-			"(SELECT toDateTime64('2026-01-01 00:00:01', 9) AS t, 3.0 AS v, 1 AS keep "+
-			"UNION ALL SELECT toDateTime64('2026-01-01 00:00:01', 9), nan, 1)"+settings,
-	).Scan(&nanSecond); err != nil {
-		t.Fatalf("nan-second -If probe: %v", err)
-	}
-	if strings.Contains(strings.ToLower(nanSecond), "nan") {
-		t.Errorf(
-			"NaN-second duplicate under -If: got %q, want the surviving sample to be 3 (nan never displaces "+
-				"a finite current-best)",
-			nanSecond,
 		)
 	}
 }
