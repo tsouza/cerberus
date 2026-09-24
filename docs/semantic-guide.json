@@ -1454,6 +1454,12 @@
               "release_required": true
             },
             {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.strict-scan",
               "context_name": "strict-scan",
               "merge_required": true,
@@ -1622,6 +1628,12 @@
               "context_name": "probe",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
             },
             {
               "lane_id": "chdb.strict-scan",
