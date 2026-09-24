@@ -277,14 +277,7 @@ func lowerAbsenceOverWindow(
 		return nil, err
 	}
 
-	// Resolve the eval anchor: a non-zero `@`/`@start`/`@end` modifier
-	// pins `anchor.End` directly; otherwise fall through to ctx.end (the
-	// query's eval time for instant queries). Zero ctx.end + zero
-	// anchor.End falls back to CH's `now64(9)` at emit time.
-	endTime := anchor.End
-	if endTime.IsZero() && !ctx.end.IsZero() {
-		endTime = ctx.end.UTC()
-	}
+	endTime := absenceEnd(anchor, ctx)
 
 	a := &chplan.AbsentOverTime{
 		Input:            inner,
@@ -338,7 +331,7 @@ func lowerAbsenceOfLatestSample(vs *parser.VectorSelector, s schema.Metrics, ctx
 	if s.StaleMarkerFlagsColumn() == "" {
 		return nil, false, nil
 	}
-	if name := metricNameFromMatchers(vs.LabelMatchers); name != "" && s.ExpHistogramTable != "" && s.IsExpHistogramMetric(name) {
+	if pinsExpHistogramMetric(metricNameFromMatchers(vs.LabelMatchers), s) {
 		return nil, false, nil
 	}
 	anchor, err := anchorFromSelector(vs, ctx)
@@ -354,15 +347,11 @@ func lowerAbsenceOfLatestSample(vs *parser.VectorSelector, s schema.Metrics, ctx
 	if err != nil {
 		return nil, true, err
 	}
-	endTime := anchor.End
-	if endTime.IsZero() && !ctx.end.IsZero() {
-		endTime = ctx.end.UTC()
-	}
 	a := &chplan.AbsentOverTime{
 		Input:            inner,
 		SynthLabels:      synthLabelsFromMatchers(vs.LabelMatchers),
 		Range:            instantLookback,
-		End:              endTime,
+		End:              absenceEnd(anchor, ctx),
 		Offset:           anchor.Offset,
 		TimestampColumn:  s.TimestampColumn,
 		ValueColumn:      s.ValueColumn,
@@ -381,6 +370,25 @@ func lowerAbsenceOfLatestSample(vs *parser.VectorSelector, s schema.Metrics, ctx
 	case gridSingleAnchor:
 	}
 	return a, true, nil
+}
+
+// absenceEnd resolves an absence check's eval anchor: a non-zero
+// `@`/`@start`/`@end` modifier pins anchor.End directly; otherwise ctx.end
+// (the query's eval time for instant queries). A zero result falls back to
+// CH's `now64(9)` at emit time.
+func absenceEnd(anchor evalAnchor, ctx lowerCtx) time.Time {
+	if !anchor.End.IsZero() {
+		return anchor.End
+	}
+	return ctx.end.UTC()
+}
+
+// pinsExpHistogramMetric reports whether metricName, a pinned `__name__`
+// ("" when unpinned), names an exponential-histogram metric the schema
+// stores in its own table — the selectors whose presence is read from that
+// table's rows rather than through the scalar Value pipeline.
+func pinsExpHistogramMetric(metricName string, s schema.Metrics) bool {
+	return metricName != "" && s.ExpHistogramTable != "" && s.IsExpHistogramMetric(metricName)
 }
 
 // lowerAbsencePresenceSelector builds the matcher-filtered presence stream
@@ -417,7 +425,7 @@ func lowerAbsencePresenceSelector(vs *parser.VectorSelector, s schema.Metrics, c
 		// silently reports it ABSENT.
 		return lowerVectorSelector(vs, s, ctx.withAbsencePresenceSelector())
 	}
-	if s.ExpHistogramTable == "" || !s.IsExpHistogramMetric(metricName) {
+	if !pinsExpHistogramMetric(metricName, s) {
 		return lowerVectorSelector(vs, s, ctx)
 	}
 
