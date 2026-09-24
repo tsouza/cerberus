@@ -19,8 +19,8 @@ const (
 // Prometheus-compatible interpolation shares every preparation stage and only
 // repeats the irreducibly phi-dependent rank search.
 func (e *emitter) emitHistogramQuantiles(q *chplan.HistogramQuantiles) error {
-	if q.Histogram == nil || q.Histogram.Input == nil || len(q.Levels) == 0 {
-		return fmt.Errorf("%w: HistogramQuantiles requires a histogram input and levels", ErrUnsupported)
+	if q.Histogram == nil || len(q.Levels) == 0 {
+		return fmt.Errorf("%w: HistogramQuantiles requires a histogram and levels", ErrUnsupported)
 	}
 	h := *q.Histogram
 	counts, err := histogramFieldChildColumn("HistogramQuantiles", h.Input, chplan.HistogramFieldBucketCounts, false)
@@ -71,8 +71,31 @@ func (e *emitter) emitHistogramQuantiles(q *chplan.HistogramQuantiles) error {
 		valued = NewQuery().Select(Star(), As(Array(values...), hqLevelsColumn)).From(Subquery(counted))
 	}
 
-	labels := make([]Frag, len(q.Levels))
-	for i, level := range q.Levels {
+	return e.emitSelect(hqLevelRows(valued, hqLevelGrouping{
+		groupBy:          h.GroupBy,
+		groupByAliases:   h.GroupByAliases,
+		attributesColumn: h.AttributesColumn,
+		labelName:        q.LabelName,
+	}, q.Levels))
+}
+
+// hqLevelGrouping is the part of a plural quantile plan that shapes its
+// output rows: the per-series group keys and the label that names each level.
+type hqLevelGrouping struct {
+	groupBy          []chplan.Expr
+	groupByAliases   []string
+	attributesColumn string
+	labelName        string
+}
+
+// hqLevelRows expands valued's hqLevelsColumn array into one row per level.
+// Each row projects the group keys under their aliases (a key past the end of
+// the alias list stays unaliased), stamps labelName=Level.Label into the key
+// aliased as the attributes column, and carries the level's quantile as
+// `Value`.
+func hqLevelRows(valued *QueryBuilder, g hqLevelGrouping, levels []chplan.HistogramQuantileLevel) *QueryBuilder {
+	labels := make([]Frag, len(levels))
+	for i, level := range levels {
 		labels[i] = InlineLit(level.Label)
 	}
 	expanded := NewQuery().Select(Star(), As(
@@ -81,36 +104,29 @@ func (e *emitter) emitHistogramQuantiles(q *chplan.HistogramQuantiles) error {
 	)).From(Subquery(valued))
 
 	query := NewQuery().From(Subquery(expanded))
-	for i, group := range h.GroupBy {
+	for i, group := range g.groupBy {
 		alias := ""
-		if i < len(h.GroupByAliases) {
-			alias = h.GroupByAliases[i]
+		if i < len(g.groupByAliases) {
+			alias = g.groupByAliases[i]
 		}
 		groupFrag := func(b *Builder) { _ = b.Expr(group) }
-		if alias == h.AttributesColumn {
-			query.Select(As(Call("mapConcat", groupFrag, Call("map", InlineLit(q.LabelName), TupleIndex(Col(hqLevelColumn), 1))), alias))
+		if alias == g.attributesColumn {
+			query.Select(As(Call("mapConcat", groupFrag, Call("map", InlineLit(g.labelName), TupleIndex(Col(hqLevelColumn), 1))), alias))
 		} else {
 			query.SelectAs(groupFrag, alias)
 		}
 	}
-	query.Select(As(TupleIndex(Col(hqLevelColumn), 2), "Value"))
-	return e.emitSelect(query)
+	return query.Select(As(TupleIndex(Col(hqLevelColumn), 2), "Value"))
 }
 
 func sharedPrometheusQuantilesAggregate(h *chplan.HistogramQuantile, levels []chplan.HistogramQuantileLevel, helpers hqClassicHelperColumns) Frag {
 	w := newHQClassicWriters(h, helpers)
 	nameParts := []Frag{InlineLit("quantilesPrometheusHistogram(")}
 	for i, level := range levels {
-		// The ClickHouse aggregate's levels must lie in [0, 1]; an
-		// out-of-domain or NaN phi is answered by sharedPrometheusQuantilesValues.
-		phi := 0.0
-		if !math.IsNaN(level.Phi) {
-			phi = min(max(level.Phi, 0), 1)
-		}
 		if i > 0 {
 			nameParts = append(nameParts, InlineLit(","))
 		}
-		nameParts = append(nameParts, Call("toString", InlineLit(phi)))
+		nameParts = append(nameParts, Call("toString", InlineLit(aggregatePhi(level.Phi))))
 	}
 	nameParts = append(nameParts, InlineLit(")"))
 	aggregate := Call("concat", nameParts...)
@@ -118,6 +134,17 @@ func sharedPrometheusQuantilesAggregate(h *chplan.HistogramQuantile, levels []ch
 	bounds := Call("arrayPushBack", w.bounds(), inf)
 	counts := If(Neq(w.cumCount(), w.boundCount()), w.cum(), Call("arrayPushBack", w.cum(), w.observations()))
 	return Call("arrayReduce", aggregate, bounds, counts)
+}
+
+// aggregatePhi maps phi into the [0, 1] domain quantilesPrometheusHistogram
+// accepts as a parameter; NaN maps to 0. The out-of-domain answer itself is
+// decided by sharedPrometheusQuantilesValues, which never reads the aggregate
+// for such a level.
+func aggregatePhi(phi float64) float64 {
+	if math.IsNaN(phi) {
+		return 0
+	}
+	return math.Min(1, math.Max(0, phi))
 }
 
 func sharedPrometheusQuantilesValues(h *chplan.HistogramQuantile, levels []chplan.HistogramQuantileLevel, helpers hqClassicHelperColumns) Frag {
@@ -144,8 +171,8 @@ func sharedPrometheusQuantilesValues(h *chplan.HistogramQuantile, levels []chpla
 // phi still has its own rank position and interpolation, but those operate on
 // the shared prepared arrays instead of rebuilding the histogram N times.
 func (e *emitter) emitHistogramQuantilesNative(q *chplan.HistogramQuantilesNative) error {
-	if q.Histogram == nil || q.Histogram.Input == nil || len(q.Levels) == 0 {
-		return fmt.Errorf("%w: HistogramQuantilesNative requires a histogram input and levels", ErrUnsupported)
+	if q.Histogram == nil || len(q.Levels) == 0 {
+		return fmt.Errorf("%w: HistogramQuantilesNative requires a histogram and levels", ErrUnsupported)
 	}
 	h := *q.Histogram
 	fields := []struct {
@@ -181,13 +208,11 @@ func (e *emitter) emitHistogramQuantilesNative(q *chplan.HistogramQuantilesNativ
 		levelHistogram.Phi, levelHistogram.PhiExpr = level.Phi, nil
 		needsReverse = needsReverse || reachesReverseArm(&levelHistogram)
 	}
-	labels := make([]Frag, len(q.Levels))
-	for i, level := range q.Levels {
-		labels[i] = InlineLit(level.Label)
-	}
 	// Every level reads the same once-bound walk arrays (hqNativeBindPrepared)
-	// inside this single SELECT; only the rank position and interpolation are
-	// per level.
+	// inside this single SELECT — including binding the reverse-walk array
+	// only when needsReverse, so a plan that never reaches the backward arm
+	// pays for no extra array walk — and only the rank position and
+	// interpolation are per level.
 	values := hqNativeBindPrepared(&h, needsReverse, func(helpers hqNativeHelperColumns) Frag {
 		perLevel := make([]Frag, len(q.Levels))
 		for i, level := range q.Levels {
@@ -197,23 +222,11 @@ func (e *emitter) emitHistogramQuantilesNative(q *chplan.HistogramQuantilesNativ
 		}
 		return Array(perLevel...)
 	})
-	expanded := NewQuery().Select(Star(), As(
-		Call("arrayJoin", Call("arrayZip", Array(labels...), values)),
-		hqLevelColumn,
-	)).From(sub)
-	query := NewQuery().From(Subquery(expanded))
-	for i, group := range h.GroupBy {
-		alias := ""
-		if i < len(h.GroupByAliases) {
-			alias = h.GroupByAliases[i]
-		}
-		groupFrag := func(b *Builder) { _ = b.Expr(group) }
-		if alias == h.AttributesColumn {
-			query.Select(As(Call("mapConcat", groupFrag, Call("map", InlineLit(q.LabelName), TupleIndex(Col(hqLevelColumn), 1))), alias))
-		} else {
-			query.SelectAs(groupFrag, alias)
-		}
-	}
-	query.Select(As(TupleIndex(Col(hqLevelColumn), 2), "Value"))
-	return e.emitSelect(query)
+	valued := NewQuery().Select(Star(), As(values, hqLevelsColumn)).From(sub)
+	return e.emitSelect(hqLevelRows(valued, hqLevelGrouping{
+		groupBy:          h.GroupBy,
+		groupByAliases:   h.GroupByAliases,
+		attributesColumn: h.AttributesColumn,
+		labelName:        q.LabelName,
+	}, q.Levels))
 }

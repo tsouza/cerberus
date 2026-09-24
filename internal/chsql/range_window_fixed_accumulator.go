@@ -478,10 +478,7 @@ func (e *emitter) fixedAccumRegroupLayer(
 			deltaPrefixPairsAlias,
 		))
 	}
-	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
-	regroupKeys = append(regroupKeys, groupFrags...)
-	regroupKeys = append(regroupKeys, Col(RangeWindowAnchorAlias))
-	regroup.GroupBy(regroupKeys...)
+	regroup.GroupBy(groupFrags...).GroupBy(Col(RangeWindowAnchorAlias))
 
 	regroupSource := regroup.Frag()
 	if needsDeltaFirstLevel {

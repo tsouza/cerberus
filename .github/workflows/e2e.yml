@@ -1991,6 +1991,10 @@ jobs:
   # MergeTree-family table a Replicated* engine registered in
   # `system.replicas` at total_replicas = active_replicas = the pod count,
   # and a marker row written through each pod read back from every other.
+  # `just e2e-bwc-shutdown-verify` (.github/scripts/e2e-bwc-shutdown-verify.mjs)
+  # then deletes a ClickHouse pod under a bounded query — the query must
+  # complete and the pod exit inside its grace period — waits for it to
+  # come back Ready and writable, and rolls the whole StatefulSet.
   #
   # INFORMATIONAL, never a PR gate — SAME trigger posture as `bwc-minio`:
   # push-to-main + nightly + manual dispatch ONLY. Unlike `datashard` /
@@ -2048,6 +2052,9 @@ jobs:
 
       - name: Verify the auto-created schema and rows replicate across both ClickHouse pods
         run: just e2e-bwc-replicated-verify
+
+      - name: Verify graceful ClickHouse shutdown under load, restart recovery and a rolling update
+        run: just e2e-bwc-shutdown-verify
 
       - name: Dump cluster state on failure
         if: failure()

@@ -1532,7 +1532,7 @@
       "description": "Pull request descriptions carry meaningful review context.",
       "owner": {
         "workflow": ".github/workflows/pr-hygiene.yml",
-        "jobs": ["pr-body"],
+        "jobs": ["dependabot-title", "pr-body"],
         "producer_jobs": [],
         "context_job": "pr-body"
       },
@@ -2148,6 +2148,47 @@
       "timeout_minutes": 60,
       "slo_minutes": 60,
       "accountable_owner": "release-engineering"
+    },
+    {
+      "id": "schema.clickhouse-upgrade",
+      "description": "ClickHouse upgrade compatibility on real servers: on-disk format across a mixed-version rollout and its rollbacks, and the quickstart collector's ClickHouse receiver across server versions.",
+      "owner": {
+        "workflow": ".github/workflows/schema-integration.yml",
+        "jobs": ["changes", "clickhouse-upgrade"],
+        "producer_jobs": [],
+        "context_job": "clickhouse-upgrade"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "clickhouse-upgrade", "protected": false },
+      "purpose": "correctness",
+      "layers": ["8"],
+      "oracle_class": "execution",
+      "recipes": ["clickhouse-upgrade-test"],
+      "command": "just clickhouse-upgrade-test",
+      "build_tags": ["integration"],
+      "package_globs": [
+        ".github/ci-lanes.json",
+        ".github/workflows/schema-integration.yml",
+        "deploy/helm/cerberus/values.yaml",
+        "docker-compose.yml",
+        "go.mod",
+        "go.sum",
+        "internal/api/loki/**",
+        "internal/schema/**",
+        "test/clickhouse-upgrade/**",
+        "test/e2e/grafana/compose/dashboards/clickhouse.json",
+        "test/e2e/otel-collector/**"
+      ],
+      "substrate": "real-clickhouse",
+      "risk_domains": ["lifecycle", "schema"],
+      "merge_posture": "impact",
+      "main_posture": "coalesced",
+      "release_posture": "advisory",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 25,
+      "slo_minutes": 20,
+      "accountable_owner": "system-quality"
     },
     {
       "id": "schema.ddl",
