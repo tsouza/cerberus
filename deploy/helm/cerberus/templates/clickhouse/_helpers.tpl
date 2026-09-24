@@ -22,6 +22,134 @@ StatefulSet pods stable per-replica DNS.
 {{- end }}
 
 {{/*
+cerberus.queryTimeoutDefaultSeconds — the cerberus binary's own default
+per-query timeout (CERBERUS_QUERY_TIMEOUT unset: 2m), in seconds. Held equal
+to internal/config's default by
+test/regression's TestChartQueryTimeoutDefaultMatchesBinary.
+*/}}
+{{- define "cerberus.queryTimeoutDefaultSeconds" -}}
+120
+{{- end }}
+
+{{/*
+cerberus.durationSeconds — a Go duration string ("90s", "2m", "1m30s",
+"1.5h") as whole seconds, rounded up. Anything else fails the render: a
+duration the chart cannot read is a shutdown budget it cannot size. Input:
+dict "value" <string> "key" <values path, for the error>.
+*/}}
+{{- define "cerberus.durationSeconds" -}}
+{{- $v := toString .value | trim -}}
+{{- $parts := regexFindAll "[0-9]*\\.?[0-9]+(ns|us|µs|ms|s|m|h)" $v -1 -}}
+{{- if and (ne $v "0") (ne (join "" $parts) $v) -}}
+{{- fail (printf "%s=%q is not a Go duration (e.g. 90s, 2m, 1m30s)" .key $v) -}}
+{{- end -}}
+{{- $unit := dict "ns" 0.000000001 "us" 0.000001 "µs" 0.000001 "ms" 0.001 "s" 1.0 "m" 60.0 "h" 3600.0 -}}
+{{- $total := 0.0 -}}
+{{- range $parts -}}
+{{- $u := regexFind "(ns|us|µs|ms|s|m|h)$" . -}}
+{{- $total = addf $total (mulf (float64 (trimSuffix $u .)) (get $unit $u)) -}}
+{{- end -}}
+{{- int (ceil $total) -}}
+{{- end }}
+
+{{/*
+cerberus.queryTimeoutSeconds — the longest per-query timeout any cerberus pod
+of this release runs with, in seconds: query.timeout, and in split mode each
+enabled head's own timeout. Unset, empty and "0" (no cap) all mean the
+binary's default applies to the drain budget. Input is the root context.
+*/}}
+{{- define "cerberus.queryTimeoutSeconds" -}}
+{{- $ctx := . -}}
+{{- $candidates := list (dict "value" .Values.query.timeout "key" "query.timeout") -}}
+{{- if eq .Values.mode "split" -}}
+{{- range $svc := list "prometheus" "loki" "tempo" -}}
+{{- $head := index $ctx.Values.split $svc -}}
+{{- if and $head.enabled (not (kindIs "invalid" $head.timeout)) -}}
+{{- $candidates = append $candidates (dict "value" $head.timeout "key" (printf "split.%s.timeout" $svc)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $max := 0 -}}
+{{- range $candidates -}}
+{{- if and (not (kindIs "invalid" .value)) (ne (toString .value) "") -}}
+{{- $s := int (include "cerberus.durationSeconds" .) -}}
+{{- if gt $s $max }}{{ $max = $s }}{{ end -}}
+{{- end -}}
+{{- end -}}
+{{- if eq $max 0 }}{{ $max = int (include "cerberus.queryTimeoutDefaultSeconds" .) }}{{ end -}}
+{{- $max -}}
+{{- end }}
+
+{{/*
+cerberus.clickhouse.shutdownWaitSeconds — the server's query wait on SIGTERM
+(shutdown_wait_unfinished): shutdown.waitUnfinishedSeconds when set, else the
+longest cerberus query timeout. An explicit wait shorter than that timeout
+fails the render: a rolling update would cut queries cerberus still allows.
+Input is the root context.
+*/}}
+{{- define "cerberus.clickhouse.shutdownWaitSeconds" -}}
+{{- $timeout := int (include "cerberus.queryTimeoutSeconds" .) -}}
+{{- $wait := .Values.clickhouse.bundled.shutdown.waitUnfinishedSeconds -}}
+{{- if kindIs "invalid" $wait -}}
+{{- $timeout -}}
+{{- else -}}
+{{- if lt (int $wait) $timeout -}}
+{{- fail (printf "clickhouse.bundled.shutdown.waitUnfinishedSeconds=%d is shorter than the longest cerberus query timeout (%ds): a rolling update would cancel queries cerberus still allows. Raise it, lower query.timeout, or leave it null to follow the timeout." (int $wait) $timeout) -}}
+{{- end -}}
+{{- int $wait -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+cerberus.clickhouse.terminationGracePeriodSeconds — the pod grace of every
+bundled ClickHouse pod: the server's own query wait on SIGTERM
+(cerberus.clickhouse.shutdownWaitSeconds) plus the shutdown work after it
+(shutdown.overheadSeconds). Input is the root context.
+*/}}
+{{- define "cerberus.clickhouse.terminationGracePeriodSeconds" -}}
+{{- add (int (include "cerberus.clickhouse.shutdownWaitSeconds" .)) (int .Values.clickhouse.bundled.shutdown.overheadSeconds) -}}
+{{- end }}
+
+{{/*
+cerberus.clickhouse.imageMinorVersion — "<major>.<minor>" read from the
+bundled image's tag ("26.6", "26.6.8.7-alpine", "25.3.6.10034.altinitystable",
+a registry host with a port), or "" when the tag carries no version (a digest,
+"latest", a custom tag). Input is the root context.
+*/}}
+{{- define "cerberus.clickhouse.imageMinorVersion" -}}
+{{- $ref := first (splitList "@" (toString .Values.clickhouse.bundled.image)) -}}
+{{- $name := last (splitList "/" $ref) -}}
+{{- if contains ":" $name -}}
+{{- trimPrefix "v" (regexFind "^v?[0-9]+\\.[0-9]+" (last (splitList ":" $name))) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+cerberus.clickhouse.assertSettingsSupported — fails the render when
+clickhouse.bundled.settings carries a MergeTree setting the bundled image's
+server line does not know: such a server refuses to start (UNKNOWN_SETTING),
+so the rollout would crash-loop instead of the upgrade failing here. An image
+whose tag carries no version is not checked; the settings render as given.
+Input is the root context.
+*/}}
+{{- define "cerberus.clickhouse.assertSettingsSupported" -}}
+{{- $version := include "cerberus.clickhouse.imageMinorVersion" . -}}
+{{- if $version -}}
+{{- $v := splitList "." $version -}}
+{{- $have := add (mul (int (index $v 0)) 1000) (int (index $v 1)) -}}
+{{- /* setting -> first server line that knows it, as major*1000+minor */ -}}
+{{- $floors := dict "packed_skip_index_max_bytes" 26006 "text_index_serialization_version" 26006 -}}
+{{- $settings := default (dict) .Values.clickhouse.bundled.settings -}}
+{{- range $name := keys $floors | sortAlpha -}}
+{{- $floor := int (get $floors $name) -}}
+{{- if and (hasKey $settings $name) (lt $have $floor) -}}
+{{- fail (printf "clickhouse.bundled.settings.%s needs ClickHouse %d.%d or later, but clickhouse.bundled.image is %s: that server refuses to start with it (UNKNOWN_SETTING). Set clickhouse.bundled.settings.%s=null for this image." $name (div $floor 1000) (mod $floor 1000) $.Values.clickhouse.bundled.image $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 cerberus.clickhouse.dataShardCount — the number of independent ClickHouse
 DATA shards this chart renders (cerberus issue #3077, epic #3074's THIRD,
 unrelated sense of "shard" — DISAMBIGUATION: not internal/solver's own

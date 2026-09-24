@@ -520,15 +520,13 @@ func structuralUnionOutputCols(j *chplan.StructuralJoin) []string {
 // wherever the arms enumerate them (structuralUnionOutputCols), so the
 // union's output column names stay resolvable to a wrapping subquery —
 // the same CH 25.8 analyzer constraint structuralProjectionFrags
-// documents. It falls back to `*` only on the `<side>.* EXCEPT (…)` arm
-// shape, where the column set is not knowable at emit time.
+// documents. It falls back to `*` (an empty select list) only on the
+// `<side>.* EXCEPT (…)` arm shape, where the column set is not knowable at
+// emit time.
 func (e *emitter) emitStructuralSpanUnion(j *chplan.StructuralJoin, rightArm, leftArm *QueryBuilder) error {
-	proj := []Frag{verbatim("*")}
-	if cols := structuralUnionOutputCols(j); len(cols) > 0 {
-		proj = make([]Frag, 0, len(cols))
-		for _, col := range cols {
-			proj = append(proj, Col(col))
-		}
+	var proj []Frag
+	for _, col := range structuralUnionOutputCols(j) {
+		proj = append(proj, Col(col))
 	}
 	sb := NewQuery().
 		Select(proj...).
@@ -737,9 +735,7 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	// pure pruning bounds; a plan that sets none renders the anchor
 	// byte-identical to before. rightSub is the closure's OTHER side (R for
 	// the canonical closure).
-	if seedWhere := structuralAnchorWhere(j, rightSub); len(seedWhere) > 0 {
-		anchor = anchor.Where(seedWhere...)
-	}
+	anchor = anchor.Where(structuralAnchorWhere(j, rightSub)...)
 
 	// Recursive step: SELECT t.<...>, c._depth + 1 FROM `<table>` AS t
 	// INNER JOIN _struct_closure AS c ON <stepOn> WHERE c._depth < <cap>

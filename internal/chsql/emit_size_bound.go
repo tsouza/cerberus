@@ -247,11 +247,7 @@ func gridCarrierNesting(n chplan.Node) (levels int, mixed bool) {
 			mixed = true
 		}
 		deepest := 0
-		descend := func(c chplan.Node) {
-			if d := walk(c); d > deepest {
-				deepest = d
-			}
-		}
+		descend := func(c chplan.Node) { deepest = max(deepest, walk(c)) }
 		for _, c := range n.Children() {
 			descend(c)
 		}

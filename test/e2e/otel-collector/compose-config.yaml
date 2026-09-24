@@ -234,11 +234,55 @@ receivers:
             data_type: sum
             value_type: double
             monotonic: true
-      - sql: "SELECT metric AS name, value FROM system.asynchronous_metrics"
+      # system.asynchronous_metrics publishes two row shapes on ClickHouse
+      # 26.8+: scalar rows (`value`) and key-value rows (`value` is NaN, the
+      # per-core / per-device readings sit in the `key_values` map). Older
+      # servers have no `key_values` column at all, so neither query names
+      # it directly: `tupleElement(tuple(*), 'key_values', map())` reads the
+      # column when the server has it and an empty map when it does not.
+      # docs/observability.md § "ClickHouse asynchronous metrics" is the
+      # series contract; test/clickhouse-upgrade's integration test runs
+      # both queries through this collector against every server shape.
+      #
+      # Scalar rows. Under `asynchronous_metrics_key_values_mode: both` the
+      # server also republishes every key as a legacy scalar
+      # (`OSUserTimeCPU3`) carrying its family's description; those rows are
+      # dropped so each reading is exported once, as its keyed series. A
+      # non-finite value (a key-value family whose map is empty on this host)
+      # is not a reading and is dropped too.
+      - sql: |-
+          WITH rows AS (
+            SELECT metric, value, description,
+                   tupleElement(tuple(*), 'key_values', map()) AS keyed
+            FROM system.asynchronous_metrics
+          )
+          SELECT metric AS name, value
+          FROM rows
+          WHERE empty(keyed)
+            AND isFinite(value)
+            AND description NOT IN (SELECT description FROM rows WHERE notEmpty(keyed))
+          SETTINGS enable_named_columns_in_function_tuple = 1
         metrics:
           - metric_name: clickhouse_async_metric
             value_column: value
             attribute_columns: [name]
+            data_type: gauge
+            value_type: double
+      # Key-value rows: one series per map entry, the family name in `name`
+      # and the core / device / disk / interface in `key`.
+      - sql: |-
+          SELECT name, kv.1 AS key, kv.2 AS value
+          FROM (
+            SELECT metric AS name,
+                   tupleElement(tuple(*), 'key_values', map()) AS keyed
+            FROM system.asynchronous_metrics
+          )
+          ARRAY JOIN CAST(keyed, 'Array(Tuple(String, Float64))') AS kv
+          SETTINGS enable_named_columns_in_function_tuple = 1
+        metrics:
+          - metric_name: clickhouse_async_metric
+            value_column: value
+            attribute_columns: [name, key]
             data_type: gauge
             value_type: double
       - sql: |-
