@@ -83,6 +83,10 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.6',
   'clickhouse/clickhouse-server:26.6-alpine',
   'clickhouse/clickhouse-server:26.6.1.1193-alpine',
+  // test/querylog's exact builds (CH_QUERY_LOG_IMAGES): the supported floor
+  // and the first line maintaining system.all_query_log.
+  'clickhouse/clickhouse-server:24.8.14.39-alpine',
+  'clickhouse/clickhouse-server:26.8.10.6-alpine',
 
   // Reference backends the three heads are diffed against, plus the reference
   // Prometheus the PromQL surface gate probes and the reference Mimir the

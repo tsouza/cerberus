@@ -111,7 +111,7 @@ func TestQueryLogActualsReconciler_PollFeedsTrackerAndAdvancesCursor(t *testing.
 	tracker := actuals.NewTracker(testActualsConfig())
 	r := newTestReconciler(fake, tracker, nil, nil)
 
-	r.poll(context.Background())
+	r.Poll(context.Background())
 
 	cfg := testActualsConfig()
 	req := fake.requests()[0]
@@ -155,8 +155,8 @@ func TestQueryLogActualsReconciler_EqualTimestampsPageWithoutLossOrRepeat(t *tes
 	tracker := actuals.NewTracker(testActualsConfig())
 	r := newTestReconciler(fake, tracker, nil, nil)
 
-	r.poll(context.Background())
-	r.poll(context.Background())
+	r.Poll(context.Background())
+	r.Poll(context.Background())
 
 	report, ok := tracker.Snapshot(shape)
 	if !ok || report.Observations != n {
@@ -182,14 +182,14 @@ func TestQueryLogActualsReconciler_PagesPerPollAreBounded(t *testing.T) {
 	tracker := actuals.NewTracker(testActualsConfig())
 	r := newTestReconciler(fake, tracker, nil, nil)
 
-	r.poll(context.Background())
+	r.Poll(context.Background())
 	if got := len(fake.requests()); got != queryLogActualsMaxPagesPerPoll {
 		t.Fatalf("one poll issued %d reads, want the bound %d", got, queryLogActualsMaxPagesPerPoll)
 	}
 	if report, _ := tracker.Snapshot(shape); report.Observations != n-extra {
 		t.Fatalf("after the bounded poll: %d observations, want %d", report.Observations, n-extra)
 	}
-	r.poll(context.Background())
+	r.Poll(context.Background())
 	if report, _ := tracker.Snapshot(shape); report.Observations != n {
 		t.Fatalf("after the next poll: %d observations, want all %d", report.Observations, n)
 	}
@@ -202,12 +202,12 @@ func TestQueryLogActualsReconciler_PollFailureKeepsCursor(t *testing.T) {
 	start := chclient.QueryLogCursor{EventTime: testRowTime, Hostname: "ch-0", QueryID: "q-last"}
 	r.cursor = start
 
-	r.poll(context.Background())
+	r.Poll(context.Background())
 	if r.cursor != start {
 		t.Fatalf("cursor = %+v after a failed read, want it unchanged at %+v", r.cursor, start)
 	}
 	fake.err = nil
-	r.poll(context.Background())
+	r.Poll(context.Background())
 	reqs := fake.requests()
 	if reqs[len(reqs)-1].After != start {
 		t.Fatalf("retry read after %+v, want the same cursor %+v", reqs[len(reqs)-1].After, start)
@@ -222,7 +222,7 @@ func TestQueryLogActualsReconciler_CursorClampedToLookback(t *testing.T) {
 	r := newTestReconciler(fake, actuals.NewTracker(testActualsConfig()), nil, nil)
 	r.cursor = chclient.QueryLogCursor{EventTime: testNow.Add(-24 * time.Hour), Hostname: "ch-0", QueryID: "stale"}
 
-	r.poll(context.Background())
+	r.Poll(context.Background())
 	floor := chclient.QueryLogCursor{EventTime: testNow.Add(-testActualsConfig().QueryLogLookback)}
 	if got := fake.requests()[0].After; got != floor {
 		t.Fatalf("read after %+v, want the lookback floor %+v", got, floor)
@@ -234,7 +234,7 @@ func TestQueryLogActualsReconciler_SkipsRowsWithNoLogComment(t *testing.T) {
 	tracker := actuals.NewTracker(testActualsConfig())
 	r := newTestReconciler(fake, tracker, nil, nil)
 
-	r.poll(context.Background())
+	r.Poll(context.Background())
 	if stats := tracker.Stats(); stats.Entries != 0 {
 		t.Fatalf("expected an empty log_comment row to be skipped, got %+v", stats)
 	}
@@ -251,7 +251,7 @@ func TestQueryLogActualsReconciler_ReadsUnionWhenInForce(t *testing.T) {
 	tracker := actuals.NewTracker(testActualsConfig())
 	r := newTestReconciler(fake, tracker, func() bool { return true }, nil)
 
-	r.poll(context.Background())
+	r.Poll(context.Background())
 	if !fake.requests()[0].Union {
 		t.Fatal("query_log_union in force but the read went to the local log")
 	}
@@ -274,8 +274,8 @@ func TestQueryLogActualsReconciler_UnionRefusalFallsBackToLocal(t *testing.T) {
 	tracker := actuals.NewTracker(testActualsConfig())
 	r := newTestReconciler(fake, tracker, func() bool { return true }, slog.New(slog.NewTextHandler(&logs, nil)))
 
-	r.poll(context.Background())
-	r.poll(context.Background())
+	r.Poll(context.Background())
+	r.Poll(context.Background())
 
 	if report, ok := tracker.Snapshot(shape); !ok || report.Observations != 1 {
 		t.Fatalf("the local row after a refused union read: %+v (ok=%v), want one observation", report, ok)
@@ -289,7 +289,7 @@ func TestQueryLogActualsReconciler_UnionRefusalFallsBackToLocal(t *testing.T) {
 	}
 
 	fake.unionErr = nil
-	r.poll(context.Background())
+	r.Poll(context.Background())
 	if !strings.Contains(logs.String(), "system.all_query_log readable again") {
 		t.Fatalf("the recovery was not logged:\n%s", logs.String())
 	}
@@ -303,7 +303,7 @@ func TestQueryLogActualsReconciler_TransportFailureIsNotAFallback(t *testing.T) 
 	fake := &fakeQueryLog{unionErr: errors.New("dial tcp: connection refused")}
 	r := newTestReconciler(fake, actuals.NewTracker(testActualsConfig()), func() bool { return true }, nil)
 
-	r.poll(context.Background())
+	r.Poll(context.Background())
 	if reqs := fake.requests(); len(reqs) != 1 || !reqs[0].Union {
 		t.Fatalf("reads = %+v, want the one failed union read and no local fallback", reqs)
 	}
@@ -368,8 +368,8 @@ func TestQueryLogActualsReconciler_SkipsRowsThePacketPathAlreadyRecorded(t *test
 	fake := &fakeQueryLog{local: sortedLog(row)}
 	r := newTestReconciler(fake, tracker, nil, nil)
 
-	r.poll(context.Background())
-	r.poll(context.Background())
+	r.Poll(context.Background())
+	r.Poll(context.Background())
 
 	report, ok := tracker.Snapshot(shape)
 	if !ok {
@@ -406,7 +406,7 @@ func TestQueryLogActualsReconciler_RecordsRowsThePacketPathNeverSaw(t *testing.T
 		Hostname: "ch-0", LogComment: shape, QueryID: "trace-span-unmarked", ReadRows: 4242, EventTime: testRowTime,
 	})}
 	r := newTestReconciler(fake, tracker, nil, nil)
-	r.poll(context.Background())
+	r.Poll(context.Background())
 
 	report, ok := tracker.Snapshot(shape)
 	if !ok {
@@ -450,7 +450,7 @@ func TestQueryLogActualsReconciler_RouteBShardRowsDoNotDragTheEMA(t *testing.T) 
 	}
 
 	r := newTestReconciler(&fakeQueryLog{local: sortedLog(rows...)}, tracker, nil, nil)
-	r.poll(context.Background())
+	r.Poll(context.Background())
 
 	report, ok := tracker.Snapshot(shape)
 	if !ok {

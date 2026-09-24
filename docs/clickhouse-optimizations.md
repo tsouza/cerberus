@@ -784,6 +784,30 @@ Conversely, permitting the setting in the ClickHouse profile (or using a
 non-readonly user) lets `auto` pick the native family back up on the next
 re-probe.
 
+## Capability probe (query-log union)
+
+`query_log_union` points the query-actuals reconciler at
+`system.all_query_log` instead of the local `system.query_log` (see
+[`solver.md`](solver.md#query-log-source)). It is gated on a probe, never on
+the version, and only when the selection lists it: cerberus runs the
+reconciler's own record-selection query against `system.all_query_log` for an
+empty page, over the bootstrap connection, at boot and on every
+[re-probe](#re-probe).
+
+- **available** — the table exists, every union member has the selected
+  columns, and cerberus's user may `SELECT` it: the feature resolves in.
+- **forbidden** — the server answered with an error: the table is absent
+  (ClickHouse older than 26.8, or no `<create_union_system_log_tables>`
+  section), the `SELECT` is not granted, or a member refused.
+- **unreachable** — no server verdict.
+
+Unlike every other capability-gated feature, a non-`available` verdict is
+**never fatal**, in `enforcing` as in `permissive`: the feature resolves out
+with a boot `WARN` (`ch_opt "query_log_union" disabled: ... falling back to
+the local system.query_log`) and the reconciler reads the local log. Only
+`SELECT` on `system.all_query_log` is required; the union table reaches the
+other replicas with the cluster's own configured credentials.
+
 ## Re-probe
 
 The resolved set describes a server, and the server changes: a rolling
@@ -822,6 +846,7 @@ What a transition swaps:
 | PromQL range lowering         | The native `timeSeries*ToGrid` strategy table is replaced, so subsequent `query_range` requests lower to the native shape (or back to fan-out).   |
 | Engine per-query settings     | The whole `SettingsRules` value is swapped in one pointer store, so subsequent queries stamp the settings the current server supports.            |
 | `/info`                       | `clickhouse.serverVersion`, `optimizations.resolvedAgainstVersion`, and `optimizations.enabled` report the set in force, not the one booted with. |
+| Query-actuals reconciler      | Reads `query_log_union` from the set in force on every poll, so it moves between `system.all_query_log` and the local `system.query_log`.         |
 
 `columnar_result_decode` is deliberately **not** in that list: it is
 `AlwaysAvailable` and opt-in only, so no server upgrade can change its verdict

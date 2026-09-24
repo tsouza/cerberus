@@ -90,7 +90,7 @@ type QueryLogActualsReconciler struct {
 
 // NewQueryLogActualsReconciler constructs a reconciler. union may be nil
 // (local log only); logger may be nil (a poll failure is then silently
-// swallowed rather than logged — see poll's own doc for why a failure is
+// swallowed rather than logged — see Poll's own doc for why a failure is
 // never fatal either way).
 func NewQueryLogActualsReconciler(client QueryLogQuerier, tracker *actuals.Tracker, cfg actuals.Config, union func() bool, logger *slog.Logger) *QueryLogActualsReconciler {
 	return &QueryLogActualsReconciler{
@@ -120,21 +120,21 @@ func (r *QueryLogActualsReconciler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.poll(ctx)
+			r.Poll(ctx)
 		}
 	}
 }
 
-// poll reads up to queryLogActualsMaxPagesPerPoll pages after the cursor,
-// feeds each row into the tracker as SourceQueryLog, emits the drift-alert
-// telemetry for any row with enough prediction history, and advances the
-// cursor past every row it read — recorded or refused alike, since a read row
+// Poll runs one reconciliation pass: it reads up to
+// queryLogActualsMaxPagesPerPoll pages after the cursor, feeds each row into
+// the tracker as SourceQueryLog, emits the drift-alert telemetry for any row
+// with enough prediction history, and advances the cursor past every row it read — recorded or refused alike, since a read row
 // is never read again. A read failure leaves the cursor where it is, so the
 // next poll retries the same page. A failure is never fatal: this is a
 // best-effort source layered on top of the packet path, so a query-log
 // misconfiguration must only leave this ONE source degraded — logged when a
 // logger is wired, silently swallowed otherwise.
-func (r *QueryLogActualsReconciler) poll(ctx context.Context) {
+func (r *QueryLogActualsReconciler) Poll(ctx context.Context) {
 	if floor := r.now().Add(-r.lookback); r.cursor.EventTime.Before(floor) {
 		r.cursor = chclient.QueryLogCursor{EventTime: floor}
 	}

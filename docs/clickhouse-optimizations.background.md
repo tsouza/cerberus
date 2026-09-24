@@ -392,6 +392,21 @@ so it fixes only the SQL-text-size axis, and its production win at the
 corpus — the same posture `trace_id_projection` took on a fresh mechanism that
 only a real server exercises.
 
+## Why `query_log_union` is opt-in and never fatal
+
+The packet path already observes every query the dispatching process armed
+for capture, on every shard and across every log rotation, so the union adds
+rows only outside that coverage: stamped queries dispatched without capture,
+and other processes' queries. Which of those an operator wants a pod to learn
+from is a deployment decision, and the server half (the union section and
+the grant) is the operator's to provision — so `auto` never selects it. A
+blocked probe degrades rather than failing an explicit request under
+`enforcing` because the local log is a complete fallback for every row it can
+hold, and ClickHouse documents `system.all_query_log` as safe to drop at any
+time and recreated automatically, so a boot-time refusal says nothing
+permanent about the deployment. The measurements behind this are in
+[`solver.background.md`](solver.background.md#query-log-source-what-the-local-log-misses-measured).
+
 ## Audited, not adopted
 
 Not every settings family the audit epic (#2778) reviews earns a registry

@@ -47,6 +47,12 @@ CH_QUANTILE_PROM_HISTOGRAM_IMAGE := "clickhouse/clickhouse-server:25.10-alpine"
 # the test source.
 CH_TAG_GROUPS_IMAGE := "clickhouse/clickhouse-server:26.2-alpine"
 
+# CH_QUERY_LOG_IMAGES are the exact builds test/querylog's real-server
+# evidence pins: the supported floor (versions.yaml min_clickhouse), and the
+# first line whose server maintains system.all_query_log. Exact tags, because
+# each case asserts what that specific build does.
+CH_QUERY_LOG_IMAGES := "clickhouse/clickhouse-server:24.8.14.39-alpine clickhouse/clickhouse-server:26.8.10.6-alpine"
+
 # Exact production-report replay image. Kept separate from CH_STRICT_SCAN_IMAGE
 # because the captured incident records the full patch version it ran against.
 CH_HISTOGRAM_REPORT_IMAGE := "clickhouse/clickhouse-server:26.6.1.1193-alpine"

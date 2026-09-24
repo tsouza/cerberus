@@ -425,6 +425,17 @@ chclient-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -race -tags=integration ./internal/chclient/...
 
+# Run test/querylog's real-server evidence for the query-actuals query-log
+# source: two data shards and an upgraded server whose log rotates, on the
+# pinned floor and union-capable builds, with container CPU and memory limits.
+# Requires Docker; gated behind the `integration` build tag. See
+# test/querylog/doc.go and .github/workflows/strict-scan.yml.
+
+# Run the local and union query-log source evidence across pinned builds. Needs Docker.
+query-log-integration:
+    @just _pull-retry {{CH_QUERY_LOG_IMAGES}}
+    go test -timeout 15m -tags=integration -count=1 ./test/querylog/...
+
 # Run the strict-scan differential: execute the matrix-shaped spec golden
 # SQL corpus against a REAL ClickHouse (testcontainers-go) through the
 # production cursor's strict positional scan, failing on any type-coercion

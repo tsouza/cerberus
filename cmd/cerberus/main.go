@@ -1714,7 +1714,7 @@ func probeQueryLogUnionCapabilityOverBootstrap(ctx context.Context, chCfg chclie
 // capability canary over a short-lived client bound to ClickHouse's
 // always-present `default` database, exactly like
 // probeResultCacheCapabilityOverBootstrap — same reasoning for binding to
-// `default`. Unlike the other two canaries it stamps the OPERATOR'S OWN
+// `default`. Unlike the other canaries it stamps the OPERATOR'S OWN
 // configured workload name (workloadName), not a fixed sentinel — see
 // ProbeQueryWorkloadCapability's own doc for why. A failure to even open the
 // client is itself an unreachable verdict (conservative: the knob is
