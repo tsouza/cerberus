@@ -144,7 +144,7 @@ var settingFlagRE = regexp.MustCompile(`--([a-zA-Z0-9-]+).*\(setting: (CERBERUS_
 // as flags are added.
 func settingFlags(help string) map[string]string {
 	out := map[string]string{}
-	for _, line := range strings.Split(help, "\n") {
+	for line := range strings.SplitSeq(help, "\n") {
 		if m := settingFlagRE.FindStringSubmatch(line); m != nil {
 			out[m[1]] = m[2]
 		}

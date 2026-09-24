@@ -122,7 +122,7 @@ func TestSessionSurvivesRepeatedErrorThenSuccess(t *testing.T) {
 	ctx := context.Background()
 	c.Seed(t, sessionRecoverySeedDDL)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := c.Query(ctx, sessionRecoveryBoomQuery); err == nil {
 			t.Fatalf("round %d: boom query: expected a ClickHouse exception, got nil error", i)
 		}

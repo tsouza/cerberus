@@ -185,7 +185,7 @@ func routeBDecisionK(t *testing.T, header http.Header) int {
 			"would make the byte-identical-result assertion vacuous: of course route A matches itself)",
 			engine.HeaderRouteDecision, v, solver.StrategyShardedTimeslice)
 	}
-	for _, field := range strings.Split(v, ";") {
+	for field := range strings.SplitSeq(v, ";") {
 		if k, ok := strings.CutPrefix(field, "k="); ok {
 			n, err := strconv.Atoi(k)
 			if err != nil {

@@ -244,7 +244,6 @@ func TestMetricsQueryInstant_QueryParamAliases(t *testing.T) {
 	t.Parallel()
 
 	for _, key := range []string{"q", "query"} {
-		key := key
 		t.Run("param="+key, func(t *testing.T) {
 			t.Parallel()
 			q := &stubQuerier{samples: []chclient.Sample{{
@@ -338,7 +337,6 @@ func TestMetricsQueryInstant_BadInputs(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			q := &stubQuerier{}

@@ -171,7 +171,7 @@ func TestCardinalityLegMatrixCoversEverySlice(t *testing.T) {
 			}
 
 			var legs []int
-			for _, field := range strings.Split(list[1], ",") {
+			for field := range strings.SplitSeq(list[1], ",") {
 				field = strings.TrimSpace(field)
 				if field == "" {
 					continue

@@ -397,11 +397,11 @@ func wireNativeStrategies(has func(section string) bool) promql.RangeLowerers {
 func TestNativeStrategies_CoverEveryRangeLowerersField(t *testing.T) {
 	t.Parallel()
 
-	tableType := reflect.TypeOf(promql.RangeLowerers{})
+	tableType := reflect.TypeFor[promql.RangeLowerers]()
 
 	fields := make(map[string]bool, tableType.NumField())
-	for i := range tableType.NumField() {
-		fields[tableType.Field(i).Name] = false
+	for field := range tableType.Fields() {
+		fields[field.Name] = false
 	}
 
 	for _, ns := range nativeStrategies {

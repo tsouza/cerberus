@@ -10,7 +10,7 @@ package tempo
 // aggregate fields are reported as zeros).
 type SearchResponse struct {
 	Traces  []TraceSummary `json:"traces"`
-	Metrics SearchMetrics  `json:"metrics,omitempty"`
+	Metrics SearchMetrics  `json:"metrics"`
 }
 
 // TraceSummary is one element of SearchResponse.Traces. Field names
@@ -121,7 +121,7 @@ type SpanEntry struct {
 	Kind              string            `json:"kind,omitempty"`
 	StartTimeUnixNano string            `json:"startTimeUnixNano,omitempty"`
 	DurationNanos     int64             `json:"durationNanos,omitempty"`
-	Status            SpanStatus        `json:"status,omitempty"`
+	Status            SpanStatus        `json:"status"`
 	Attributes        map[string]string `json:"attributes,omitempty"`
 }
 

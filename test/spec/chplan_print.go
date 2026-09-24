@@ -13,6 +13,7 @@ package spec
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -93,12 +94,7 @@ func printUnvisitedChildren(b *strings.Builder, n chplan.Node, depth int, visite
 // pointer type, so the dynamic values are comparable and two distinct
 // children never collide.
 func nodeVisited(visited []chplan.Node, c chplan.Node) bool {
-	for _, v := range visited {
-		if v == c {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(visited, c)
 }
 
 // flag pairs a printed name with the node field it renders.
@@ -1007,9 +1003,10 @@ func printAggFunc(a chplan.AggFunc) string {
 	for i, x := range a.Args {
 		args[i] = printExpr(x)
 	}
-	name := fnDisplayName(a.Fn)
+	var name strings.Builder
+	name.WriteString(fnDisplayName(a.Fn))
 	for _, c := range a.Combinators {
-		name += combinatorDisplayName(c)
+		name.WriteString(combinatorDisplayName(c))
 	}
 	var head string
 	if len(a.Params) > 0 {
@@ -1017,9 +1014,9 @@ func printAggFunc(a chplan.AggFunc) string {
 		for i, p := range a.Params {
 			ps[i] = printExpr(p)
 		}
-		head = fmt.Sprintf("%s(%s)(%s)", name, strings.Join(ps, ", "), strings.Join(args, ", "))
+		head = fmt.Sprintf("%s(%s)(%s)", name.String(), strings.Join(ps, ", "), strings.Join(args, ", "))
 	} else {
-		head = fmt.Sprintf("%s(%s)", name, strings.Join(args, ", "))
+		head = fmt.Sprintf("%s(%s)", name.String(), strings.Join(args, ", "))
 	}
 	if a.Alias != "" {
 		return head + " AS " + a.Alias

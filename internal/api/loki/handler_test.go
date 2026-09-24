@@ -1020,7 +1020,7 @@ func TestQuery_Streams_CollapsesPerEntryLabelsToStreamCount(t *testing.T) {
 
 	base := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
 	samples := make([]chclient.Sample, 0, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		samples = append(samples, chclient.Sample{
 			MetricName: "line-" + strconv.Itoa(i),
 			// Per-entry-unique label so every entry surfaces as
@@ -1069,7 +1069,7 @@ func TestQueryRange_Streams_DefaultLimitClampsResponse(t *testing.T) {
 
 	base := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
 	samples := make([]chclient.Sample, 0, 250)
-	for i := 0; i < 250; i++ {
+	for i := range 250 {
 		samples = append(samples, chclient.Sample{
 			MetricName: "line-" + strconv.Itoa(i),
 			Labels:     map[string]string{"job": "api"},

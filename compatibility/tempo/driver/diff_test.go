@@ -109,13 +109,13 @@ func TestDeriveTraceIDFromTemplate_MatchesSeederHash(t *testing.T) {
 	}
 	// Compute the seeder's hash directly.
 	seederID := deriveTraceID("checkout", 0)
-	wantHex := ""
+	var wantHex strings.Builder
 	for _, b := range seederID[:] {
 		const hexDigits = "0123456789abcdef"
-		wantHex += string(hexDigits[b>>4]) + string(hexDigits[b&0xf])
+		wantHex.WriteString(string(hexDigits[b>>4]) + string(hexDigits[b&0xf]))
 	}
-	if gotDiffer != wantHex {
-		t.Fatalf("differ trace ID = %s, seeder trace ID = %s — these MUST match", gotDiffer, wantHex)
+	if gotDiffer != wantHex.String() {
+		t.Fatalf("differ trace ID = %s, seeder trace ID = %s — these MUST match", gotDiffer, wantHex.String())
 	}
 }
 

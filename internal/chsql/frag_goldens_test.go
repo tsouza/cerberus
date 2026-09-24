@@ -316,7 +316,6 @@ func TestFrag_Goldens(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			b := NewBuilder()
@@ -417,7 +416,6 @@ func TestFrag_InlineLit_StringEscapesPreserveBytes(t *testing.T) {
 		{"", `''`},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.in, func(t *testing.T) {
 			t.Parallel()
 			b := NewBuilder()

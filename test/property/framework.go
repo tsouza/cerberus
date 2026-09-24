@@ -720,7 +720,6 @@ func runShapeCases[S ~string, Q any](
 		})
 	}
 	for _, shapeCase := range prepared {
-		shapeCase := shapeCase
 		t.Run(shapeCase.name, func(t *testing.T) {
 			run(t, shapeCase.dataset, shapeCase.generated)
 		})
@@ -784,7 +783,6 @@ func runShapeExamples[S ~string](
 		compare = compareOutcomeRows
 	}
 	for _, shapeID := range shapeIDs {
-		shapeID := shapeID
 		propertyShapeID := ShapeID(shapeID)
 		t.Run(string(propertyShapeID), func(t *testing.T) {
 			for attempt := range ShapeExampleAttemptLimit {

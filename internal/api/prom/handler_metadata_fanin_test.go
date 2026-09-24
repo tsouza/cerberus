@@ -217,7 +217,7 @@ func truncSQL(s string) string {
 func broadMatchValues(n int) (url.Values, []string) {
 	v := url.Values{}
 	names := make([]string, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		name := fmt.Sprintf("traces_service_graph_request_total_%d", i)
 		v.Add("match[]", name)
 		names = append(names, name)

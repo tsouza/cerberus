@@ -394,7 +394,7 @@ func naiveSetOpArms(k int, proj string) []string {
 	var arms []string
 	for i := 0; i <= k; i++ {
 		reps := 1 << (k - i) // 2^(k-i)
-		for r := 0; r < reps; r++ {
+		for range reps {
 			arms = append(arms, fmt.Sprintf(
 				"SELECT %s FROM bench_setop_sum WHERE MetricName = 'setop.chain.metric.%d'", proj, i,
 			))
@@ -570,7 +570,7 @@ func boundedRecursionSeed(candTraces, noiseTraces, depth int) string {
 	gid := 0
 	emit := func(traceID string, marker bool) {
 		base := gid
-		for lvl := 0; lvl < depth; lvl++ {
+		for lvl := range depth {
 			var parent string
 			if lvl > 0 {
 				parent = hexID(base + lvl - 1)
@@ -594,10 +594,10 @@ func boundedRecursionSeed(candTraces, noiseTraces, depth int) string {
 		}
 		gid += depth
 	}
-	for i := 0; i < candTraces; i++ {
+	for i := range candTraces {
 		emit(hexTrace('c', i), true)
 	}
-	for i := 0; i < noiseTraces; i++ {
+	for i := range noiseTraces {
 		emit(hexTrace('n', i), false)
 	}
 	b.WriteString(";")

@@ -106,7 +106,6 @@ var guardFixtures = []string{
 func TestSlice_DifferentialSQL_NoSharedMutation(t *testing.T) {
 	ctx := context.Background()
 	for _, query := range guardFixtures {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			plan := guardOptimizedPlan(t, ctx, query)
 			snapshot := chplan.CloneNode(plan)

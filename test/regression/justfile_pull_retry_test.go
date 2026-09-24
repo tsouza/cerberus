@@ -48,7 +48,7 @@ func justRecipes(t *testing.T, src string) map[string]string {
 		body.Reset()
 	}
 
-	for _, line := range strings.Split(src, "\n") {
+	for line := range strings.SplitSeq(src, "\n") {
 		switch {
 		case strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t"):
 			if name != "" {
@@ -137,7 +137,7 @@ func workflowJobs(src string) map[string]string {
 		body.Reset()
 	}
 
-	for _, line := range strings.Split(src, "\n") {
+	for line := range strings.SplitSeq(src, "\n") {
 		if strings.HasPrefix(line, "jobs:") {
 			inJobs = true
 		}
@@ -612,7 +612,7 @@ func TestJustfileNoUnretriedDockerPull(t *testing.T) {
 		if name == retryRecipe {
 			continue
 		}
-		for _, line := range strings.Split(r.bodyText(t), "\n") {
+		for line := range strings.SplitSeq(r.bodyText(t), "\n") {
 			if strings.Contains(line, "docker pull ") {
 				t.Errorf("Justfile recipe %q calls `docker pull` directly: %s\n"+
 					"Route it through `just %s <image>...` so a transient registry timeout retries "+

@@ -18,7 +18,6 @@ func TestReportResult_Passed(t *testing.T) {
 		{"diff + unexpected failure", reportResult{Diff: "x", UnexpectedFailure: "y"}, false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := tc.r.passed(); got != tc.want {

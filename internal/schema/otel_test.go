@@ -269,7 +269,6 @@ func TestHistogramCompanionColumn(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			bare, col, ok := m.HistogramCompanionColumn(tc.input)
@@ -406,7 +405,6 @@ func TestExemplarSources(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := m.ExemplarSources(tc.metric)

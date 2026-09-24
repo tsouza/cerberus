@@ -71,8 +71,7 @@ func TestStartupSpeed_HealthzUnder2s(t *testing.T) {
 	chUser := envOr("CH_USERNAME", "default")
 	chPass := envOr("CH_PASSWORD", "")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	cmd := exec.CommandContext(ctx, binary)
 	cmd.Env = append(

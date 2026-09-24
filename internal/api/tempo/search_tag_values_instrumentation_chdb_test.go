@@ -23,6 +23,7 @@ package tempo_test
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,15 +64,16 @@ func TestBuildAttributeValuesSQL_ChDB_InstrumentationScope_IsolatedFromSpanResou
 		{scopeMapSQL: "map()", spanMapSQL: "map('otel.scope.name','span-leaked-value')", resourceMapSQL: "map()"},
 		{scopeMapSQL: "map()", spanMapSQL: "map()", resourceMapSQL: "map('otel.scope.name','resource-leaked-value')"},
 	}
-	seed := instrumentationScopeSeedTable
+	var seed strings.Builder
+	seed.WriteString(instrumentationScopeSeedTable)
 	for i, r := range rows {
 		ts := instrumentationScopeWindowBase.Add(time.Duration(i) * time.Second).Format(tsFmt)
-		seed += "\nINSERT INTO otel_traces (Timestamp, ScopeAttributes, SpanAttributes, ResourceAttributes) VALUES" +
-			" (toDateTime64('" + ts + "', 9), " + r.scopeMapSQL + ", " + r.spanMapSQL + ", " + r.resourceMapSQL + ");"
+		seed.WriteString("\nINSERT INTO otel_traces (Timestamp, ScopeAttributes, SpanAttributes, ResourceAttributes) VALUES" +
+			" (toDateTime64('" + ts + "', 9), " + r.scopeMapSQL + ", " + r.spanMapSQL + ", " + r.resourceMapSQL + ");")
 	}
 
 	c := chclienttest.NewChDB(t)
-	c.Seed(t, seed)
+	c.Seed(t, seed.String())
 	start := instrumentationScopeWindowBase.Add(-time.Minute)
 	end := instrumentationScopeWindowBase.Add(time.Duration(len(rows))*time.Second + time.Minute)
 

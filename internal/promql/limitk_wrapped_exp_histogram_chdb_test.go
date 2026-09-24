@@ -109,7 +109,6 @@ func TestLower_ExpHistogram_LimitKWrappedByFloatOnlyFn_ChDB(t *testing.T) {
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			n := countRowsOverEmitted(t, fixture, s, query)
 			if n != 0 {

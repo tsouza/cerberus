@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -942,10 +943,5 @@ func containsSubstr(ss []string, sub string) bool {
 
 // containsExact reports whether ss contains want exactly.
 func containsExact(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ss, want)
 }

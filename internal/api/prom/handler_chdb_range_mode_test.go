@@ -61,7 +61,7 @@ func TestQueryRange_RangeMode_BareSelector_ChDB(t *testing.T) {
 	const wantSamples = 11
 
 	seedRows := make([]string, 0, wantSamples)
-	for i := 0; i < wantSamples; i++ {
+	for i := range wantSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
@@ -107,7 +107,7 @@ func TestQueryRange_RangeMode_SumAggregation_ChDB(t *testing.T) {
 	const wantSamples = 11
 
 	seedRows := make([]string, 0, wantSamples*2)
-	for i := 0; i < wantSamples; i++ {
+	for i := range wantSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(
 			seedRows,
@@ -154,7 +154,7 @@ func TestQueryRange_RangeMode_SumByLabel_ChDB(t *testing.T) {
 	// (job, instance) — the per-step sum within each job is then a
 	// stable constant across all 11 anchors.
 	seedRows := []string{}
-	for i := 0; i < wantSamples; i++ {
+	for i := range wantSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		// api job — 3 instances, each Value=1.0 → sum=3.0
 		seedRows = append(
@@ -218,7 +218,7 @@ func TestQueryRange_RangeMode_AvgOverTime_ChDB(t *testing.T) {
 	const seedSamples = 11
 
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
@@ -321,7 +321,7 @@ func TestQueryRange_RangeMode_Deriv_ChDB(t *testing.T) {
 	const seedSamples = 11
 
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_disk_usage_bytes', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
@@ -373,7 +373,7 @@ func TestQueryRange_RangeMode_IRate_ChDB(t *testing.T) {
 	// irate is a counter rate; seed an otel_metrics_sum-shaped table.
 	sumDDL := strings.ReplaceAll(gaugeDDL, "otel_metrics_gauge", "otel_metrics_sum")
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_cpu_usage_seconds_total', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
@@ -423,7 +423,7 @@ func TestQueryRange_RangeMode_LabelReplace_NonMatchingRegex_ChDB(t *testing.T) {
 	const seedSamples = 11
 
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_num_cpus', map('instance', 'demo.promlabs.com:10000', 'job', 'demo'), toDateTime64('%s', 9), 4.0)`,
@@ -474,7 +474,7 @@ func TestQueryRange_RangeMode_LabelReplace_MissingSrc_ChDB(t *testing.T) {
 	const seedSamples = 11
 
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_num_cpus', map('instance', 'demo.promlabs.com:10000', 'job', 'demo'), toDateTime64('%s', 9), 4.0)`,
@@ -526,7 +526,7 @@ func TestQueryRange_RangeMode_QuantileOverTime_ChDB(t *testing.T) {
 	const seedSamples = 11
 
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
@@ -581,7 +581,7 @@ func TestQueryRange_RangeMode_QuantileOverTimeOutOfRange_ChDB(t *testing.T) {
 	const seedSamples = 11
 
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
@@ -628,7 +628,7 @@ func TestQueryRange_RangeMode_Clamp_ChDB(t *testing.T) {
 	const seedSamples = 11
 
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
@@ -697,7 +697,7 @@ func TestQueryRange_RangeMode_ClampInverted_ChDB(t *testing.T) {
 	const seedSamples = 11
 
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
@@ -738,7 +738,7 @@ func TestQueryRange_RangeMode_RateMatrix_ChDB(t *testing.T) {
 	const seedSamples = 11
 
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_cpu_usage_seconds', map('job', 'api'), toDateTime64('%s', 9), %d.0)`,
@@ -866,7 +866,7 @@ func TestQueryRange_RangeMode_SumOverTimeMatrix_ChDB(t *testing.T) {
 	const seedSamples = 11
 
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows,
 			fmt.Sprintf(`('demo_memory_usage_bytes', map('job', 'api'), toDateTime64('%s', 9), 10.0)`,
@@ -934,7 +934,7 @@ func TestQueryRange_RangeMode_VVOnComparison_ChDB(t *testing.T) {
 	// identical values, the comparison surfaces 1.0 per surviving
 	// pair (the bool-mode variant of `==`).
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('instance', 'demo', 'job', 'app', 'type', 'rss'), toDateTime64('%s', 9), %d.0)`,
@@ -1026,7 +1026,7 @@ func TestQueryRange_RangeMode_HistogramQuantileClassic_ChDB(t *testing.T) {
 	// buckets (not at the highest finite edge) so any sub-bucket
 	// regression surfaces in the value comparison.
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		// BucketCounts at index i: [10+i, 20+i, 30+i] — the trailing
 		// +Inf bucket dominates so p95 reads into the (0.5, +Inf]
@@ -1303,7 +1303,7 @@ func TestQueryRange_RangeMode_VVOnCompare_ChDB(t *testing.T) {
 	// behave like `==`. Mirrors the compatibility lane's PromLabs
 	// demo seed (instance/job/type labels).
 	seedRows := make([]string, 0, wantSamples*2)
-	for i := 0; i < wantSamples; i++ {
+	for i := range wantSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(
 			seedRows,
@@ -1447,7 +1447,7 @@ func TestQueryRange_RangeMode_VVOnCompareGroupLeft_ChDB(t *testing.T) {
 	// produces one row per group with `job=demo`. `group_left(job)`
 	// copies `job` from RHS onto the LHS output.
 	seedRows := make([]string, 0, wantSamples*2)
-	for i := 0; i < wantSamples; i++ {
+	for i := range wantSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(
 			seedRows,
@@ -1534,7 +1534,7 @@ func TestQueryRange_RangeMode_TopK_ChDB(t *testing.T) {
 	// sample per series per step (constant value across the time
 	// range so the per-step rank is deterministic).
 	seedRows := make([]string, 0, wantSamples*6)
-	for i := 0; i < wantSamples; i++ {
+	for i := range wantSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(
 			seedRows,
@@ -1734,7 +1734,7 @@ func TestQueryRange_RangeMode_AtModifier_Collapse_ChDB(t *testing.T) {
 	atTS := start.Add(10 * step).Unix()
 
 	seedRows := make([]string, 0, wantSamples)
-	for i := 0; i < wantSamples; i++ {
+	for i := range wantSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
@@ -1818,7 +1818,7 @@ func TestQueryRange_RangeMode_LastOverTime_PreservesName_ChDB(t *testing.T) {
 	const seedSamples = 11
 
 	seedRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('instance', 'demo', 'job', 'api'), toDateTime64('%s', 9), %d.0)`,
@@ -1934,7 +1934,7 @@ func TestQueryRange_RangeMode_SubScrape_ChDB(t *testing.T) {
 	scrape := 30 * time.Second
 	gaugeRows := make([]string, 0, seedSamples)
 	sumRows := make([]string, 0, seedSamples)
-	for i := 0; i < seedSamples; i++ {
+	for i := range seedSamples {
 		ts := start.Add(time.Duration(i) * scrape).Format("2006-01-02 15:04:05.000000000")
 		gaugeRows = append(gaugeRows, fmt.Sprintf(
 			`('demo_disk_usage_bytes', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
@@ -2000,7 +2000,7 @@ func TestQueryRange_RangeMode_SubqueryOverArbitraryExprs_ChDB(t *testing.T) {
 	step := time.Minute
 
 	seedRows := make([]string, 0, 60)
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		ts := start.Add(time.Duration(i-10) * time.Minute).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('instance', 'a'), toDateTime64('%s', 9), %d.0)`, ts, 100+i,
@@ -2066,7 +2066,7 @@ func TestQueryRange_RangeMode_HistogramQuantileComputedPhi_ChDB(t *testing.T) {
 	step := time.Minute
 
 	rows := make([]string, 0, 30)
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		ts := start.Add(time.Duration(i-10) * time.Minute).Format("2006-01-02 15:04:05.000000000")
 		rows = append(rows, fmt.Sprintf(
 			`('demo_api_request_duration_seconds', map('service', 'api'), toDateTime64('%s', 9), %d, %d.0, [%d, %d, %d], [0.1, 0.5, 1.0])`,
@@ -2165,10 +2165,10 @@ func TestQueryRange_RangeMode_SetOpPerTimestamp_ChDB(t *testing.T) {
 			name, ts, value,
 		))
 	}
-	for i := 0; i < setOpShortArmSamples; i++ {
+	for i := range setOpShortArmSamples {
 		appendRow("demo_a", i, setOpShortArmBase+i)
 	}
-	for i := 0; i < longArmSamples; i++ {
+	for i := range longArmSamples {
 		appendRow("demo_b", i, setOpLongArmBase+i)
 	}
 	seed := gaugeDDL + "\nINSERT INTO otel_metrics_gauge VALUES\n  " +

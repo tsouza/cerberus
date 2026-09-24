@@ -136,7 +136,6 @@ func runDiff(args []string) error {
 	results := make([]CaseResult, 0, len(cases))
 
 	for _, tc := range cases {
-		tc := tc
 		logger.Info("diffing case", "name", tc.Name, "endpoint", tc.Endpoint)
 		results = append(results, diffCase(ctx, client, tc, opts))
 	}

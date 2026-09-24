@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"sort"
 	"strconv"
@@ -160,13 +161,9 @@ func routeRulesRunBenchmark(args []string, stdout, stderr io.Writer) error {
 	}
 
 	cfg := routerrules.BenchConfig{}
-	for k, v := range rrBenchDefaultConfig {
-		cfg[k] = v
-	}
+	maps.Copy(cfg, rrBenchDefaultConfig)
 	cfg["router_rules.min_rows_per_class"] = strconv.Itoa(*minSupport)
-	for k, v := range params {
-		cfg[k] = v
-	}
+	maps.Copy(cfg, params)
 
 	corpus := routerrules.GenerateBenchCorpus(routerrules.BenchParams{Seed: *seed, MinSupport: *minSupport})
 	metrics, err := routerrules.ScoreCatalog(context.Background(), cat, cfg, corpus)

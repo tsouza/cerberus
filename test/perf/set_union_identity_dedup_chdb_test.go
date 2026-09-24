@@ -185,7 +185,7 @@ func TestSetUnion_IdentityDedup_Cost(t *testing.T) {
 			t.Fatalf("query failed: %v\nSQL: %s", err, q)
 		}
 		b := time.Hour
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			s := time.Now()
 			_ = db.QueryRow("SELECT count() FROM ("+q+")", a...).Scan(&sink)
 			if d := time.Since(s); d < b {

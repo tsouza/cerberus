@@ -1,6 +1,10 @@
 package chsql
 
-import "github.com/tsouza/cerberus/internal/schema"
+import (
+	"slices"
+
+	"github.com/tsouza/cerberus/internal/schema"
+)
 
 // TableShape captures the ClickHouse-side facts the codegen needs to
 // produce sort-key-aware filter orderings and PREWHERE promotion.
@@ -25,12 +29,7 @@ type TableShape struct {
 
 // IsSortColumn reports whether name is listed in SortColumns.
 func (s TableShape) IsSortColumn(name string) bool {
-	for _, c := range s.SortColumns {
-		if c == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.SortColumns, name)
 }
 
 // SortRank returns the position of name in SortColumns, or -1 when
@@ -47,35 +46,20 @@ func (s TableShape) SortRank(name string) int {
 
 // IsWideColumn reports whether name is listed in WideColumns.
 func (s TableShape) IsWideColumn(name string) bool {
-	for _, c := range s.WideColumns {
-		if c == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.WideColumns, name)
 }
 
 // IsIntegerDiscriminatorColumn reports whether name is an explicitly
 // registered narrow enum-like integer discriminator.
 func (s TableShape) IsIntegerDiscriminatorColumn(name string) bool {
-	for _, c := range s.IntegerDiscriminatorColumns {
-		if c == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.IntegerDiscriminatorColumns, name)
 }
 
 // IsSkipIndexColumn reports whether name has a registered skip index.
 // Always false today (no defaults populate SkipIndexColumns) — kept as
 // part of the public surface so future schema overrides can plug in.
 func (s TableShape) IsSkipIndexColumn(name string) bool {
-	for _, c := range s.SkipIndexColumns {
-		if c == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.SkipIndexColumns, name)
 }
 
 // defaultTableShapes is the static lookup populated from the OTel-CH

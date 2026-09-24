@@ -65,7 +65,7 @@ func TestQueryRange_StepLoop_NoDrivingVector_ChDB(t *testing.T) {
 	// the "demo + 0" control case has a per-bucket value to pivot
 	// onto the matrix.
 	seedRows := make([]string, 0, wantSamples)
-	for i := 0; i < wantSamples; i++ {
+	for i := range wantSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
@@ -332,7 +332,7 @@ func TestQueryRange_StepLoop_TimeMetric_ChDB(t *testing.T) {
 	const wantSamples = 11
 
 	seedRows := make([]string, 0, wantSamples)
-	for i := 0; i < wantSamples; i++ {
+	for i := range wantSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,
@@ -468,7 +468,7 @@ func TestQueryRange_StepLoop_DrivingVector_ChDB(t *testing.T) {
 	const wantSamples = 11
 
 	seedRows := make([]string, 0, wantSamples)
-	for i := 0; i < wantSamples; i++ {
+	for i := range wantSamples {
 		ts := start.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('demo_memory_usage_bytes', map('instance', 'demo'), toDateTime64('%s', 9), %d.0)`,

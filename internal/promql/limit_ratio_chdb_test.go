@@ -85,7 +85,6 @@ func TestLimitRatio_ChDBParity(t *testing.T) {
 	evalTS := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 
 	for _, ratio := range []float64{0.5, -0.5, 1.0, -1.0, 0.0} {
-		ratio := ratio
 		t.Run(fmt.Sprintf("ratio=%g", ratio), func(t *testing.T) {
 			query := fmt.Sprintf("limit_ratio(%g, up)", ratio)
 			expr, err := p.ParseExpr(query)
@@ -139,7 +138,6 @@ func TestLimitRatio_ChDBParity_ComputedRatio(t *testing.T) {
 		{"limit_ratio(scalar(vector(-0.5)), up)", -0.5},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.query, func(t *testing.T) {
 			expr, err := p.ParseExpr(tc.query)
 			if err != nil {
@@ -268,7 +266,6 @@ func TestLimitRatio_ChDBParity_LongLabelValues(t *testing.T) {
 	evalTS := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 
 	for _, ratio := range []float64{0.25, 0.5, 0.75, -0.5} {
-		ratio := ratio
 		t.Run(fmt.Sprintf("ratio=%g", ratio), func(t *testing.T) {
 			query := fmt.Sprintf("limit_ratio(%g, %s)", ratio, longLabelMetric)
 			expr, err := p.ParseExpr(query)

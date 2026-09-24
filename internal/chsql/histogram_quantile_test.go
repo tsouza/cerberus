@@ -114,7 +114,6 @@ func TestEmitHistogramQuantile_LegacyColumnsDoNotDriveInput(t *testing.T) {
 		{"ExplicitBoundsColumn empty", func(h *chplan.HistogramQuantile) { h.ExplicitBoundsColumn = "" }},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			h := base()

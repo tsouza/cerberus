@@ -115,10 +115,8 @@ func TestConcurrencyStress_ReadyzCacheBreakerPool(t *testing.T) {
 	hc := srv.Client()
 
 	// Lane 1: hammer /readyz — reads + refreshes the TTL cache slot.
-	for i := 0; i < workersPerLane; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workersPerLane {
+		wg.Go(func() {
 			for cont() {
 				resp, err := hc.Get(srv.URL + "/readyz")
 				if err != nil {
@@ -126,16 +124,14 @@ func TestConcurrencyStress_ReadyzCacheBreakerPool(t *testing.T) {
 				}
 				_ = resp.Body.Close()
 			}
-		}()
+		})
 	}
 
 	// Lane 2: simulate the query_range path — acquire (here: read the fake
 	// conn's health via a ping) gated on the breaker's allow()/record(). This
 	// is the inbound-traffic writer that races the background recovery probe.
-	for i := 0; i < workersPerLane; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workersPerLane {
+		wg.Go(func() {
 			for cont() {
 				if !br.allow() {
 					// Breaker OPEN: fast-fail, exactly like the production
@@ -147,21 +143,19 @@ func TestConcurrencyStress_ReadyzCacheBreakerPool(t *testing.T) {
 				br.record(ctx, err)
 				cancel()
 			}
-		}()
+		})
 	}
 
 	// Lane 3: concurrent state readers — the solver's pre-flight peek() and the
 	// metrics/logging currentState(), both reading the slot the writers mutate.
-	for i := 0; i < workersPerLane; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workersPerLane {
+		wg.Go(func() {
 			for cont() {
 				_ = br.peek()
 				_ = br.currentState()
 				_ = br.observeLevel()
 			}
-		}()
+		})
 	}
 
 	// Controller: flip the upstream dead↔healthy so the breaker is repeatedly
@@ -169,16 +163,14 @@ func TestConcurrencyStress_ReadyzCacheBreakerPool(t *testing.T) {
 	// (by the background recovery loop + lane 2 probes) for the whole run. This
 	// is what forces the recovery probe to write breaker state concurrently
 	// with the readers and request goroutines.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for cont() {
 			conn.down.Store(true)
 			time.Sleep(20 * time.Millisecond)
 			conn.down.Store(false)
 			time.Sleep(20 * time.Millisecond)
 		}
-	}()
+	})
 
 	wg.Wait()
 

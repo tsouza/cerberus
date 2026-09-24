@@ -91,7 +91,6 @@ func TestCarrierGeometry_OffsetChangesNeitherFanoutNorD(t *testing.T) {
 	}
 
 	for _, tc := range carrierCases() {
-		tc := tc
 		t.Run(tc.kind, func(t *testing.T) {
 			t.Parallel()
 
@@ -329,7 +328,6 @@ func TestWalkNode_OffsetWidensNativeAndAbsentInnerSpine(t *testing.T) {
 	offsetBlindInnerStart := gridStart.Add(-geomNestedRange)
 
 	for _, tc := range offsetWalkCases() {
-		tc := tc
 		t.Run(tc.kind, func(t *testing.T) {
 			t.Parallel()
 

@@ -50,7 +50,7 @@ func TestQueryRange_SubqueryBareVector_ChDB(t *testing.T) {
 	// Project ColumnRefs), not arithmetic.
 	now := time.Now().UTC()
 	seedRows := make([]string, 0, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		// Anchor each sample at (now - i*30s); five samples, 30s apart,
 		// span 2 minutes — wide enough that the matrix's 1m window
 		// catches at least one per anchor.

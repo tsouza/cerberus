@@ -89,7 +89,6 @@ func TestRangeLWRRejectsMalformedChildSchema(t *testing.T) {
 		),
 	}
 	for name, child := range tests {
-		child := child
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeLWR{

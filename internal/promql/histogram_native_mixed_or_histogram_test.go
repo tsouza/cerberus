@@ -21,7 +21,6 @@ func TestLower_ExpHistogram_MixedOrBesideHistogramVector(t *testing.T) {
 	}
 	at := time.Unix(1700000000, 0)
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})

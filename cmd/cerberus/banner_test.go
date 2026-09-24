@@ -19,7 +19,7 @@ const bannerArtColumns = 42
 // assertion vacuously true.
 func TestBannerArtShape(t *testing.T) {
 	rows := 0
-	for _, line := range strings.Split(bannerArt, "\n") {
+	for line := range strings.SplitSeq(bannerArt, "\n") {
 		if strings.TrimSpace(line) != "" {
 			rows++
 		}
@@ -50,7 +50,7 @@ func TestRootHelpRendersBanner(t *testing.T) {
 	help := out.String()
 
 	rows := 0
-	for _, line := range strings.Split(bannerArt, "\n") {
+	for line := range strings.SplitSeq(bannerArt, "\n") {
 		line = strings.TrimRight(line, " ")
 		if line == "" {
 			continue
@@ -67,7 +67,7 @@ func TestRootHelpRendersBanner(t *testing.T) {
 	if want := bannerMetaLine(Version, buildDate()); !strings.Contains(help, want) {
 		t.Errorf("help output is missing the build-identity line %q; got:\n%s", want, help)
 	}
-	for _, line := range strings.Split(rootDescription, "\n") {
+	for line := range strings.SplitSeq(rootDescription, "\n") {
 		if line == "" {
 			continue
 		}

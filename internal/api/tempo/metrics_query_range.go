@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"sort"
@@ -307,16 +308,15 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 	// issue-detector query omits step entirely.
 	var step time.Duration
 	if stepStr := r.URL.Query().Get("step"); stepStr == "" {
-		ns := defaultQueryRangeStep(
-			uint64(start.UnixNano()), uint64(end.UnixNano()),
+		ns := min(
+			// DefaultQueryRangeStep targets ~240 points across the window,
+			// so ns is far below MaxInt64 for any representable time range;
+			// clamp anyway so the uint64 → Duration conversion is provably
+			// overflow-free (gosec G115).
+			defaultQueryRangeStep(
+				uint64(start.UnixNano()), uint64(end.UnixNano()),
+			), math.MaxInt64,
 		)
-		// DefaultQueryRangeStep targets ~240 points across the window,
-		// so ns is far below MaxInt64 for any representable time range;
-		// clamp anyway so the uint64 → Duration conversion is provably
-		// overflow-free (gosec G115).
-		if ns > math.MaxInt64 {
-			ns = math.MaxInt64
-		}
 		step = time.Duration(ns)
 	} else {
 		var err error
@@ -758,9 +758,7 @@ func postProcessQuantileBuckets(samples []chclient.Sample, m *chplan.MetricsAggr
 		for _, phi := range m.Quantiles {
 			value, _ := log2QuantileWithBucket(phi, buckets)
 			labels := make(map[string]string, len(g.labels)+1)
-			for k, v := range g.labels {
-				labels[k] = v
-			}
+			maps.Copy(labels, g.labels)
 			labels[tempoQuantileLabel] = formatPhi(phi)
 			out = append(out, chclient.Sample{
 				Labels:    labels,
@@ -808,7 +806,7 @@ func metricsLabelNames(m *chplan.MetricsAggregate) []string {
 		return []string{tempoMetricNameLabel}
 	}
 	out := make([]string, 0, n+1)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if i < len(m.GroupByDisplayNames) && m.GroupByDisplayNames[i] != "" {
 			out = append(out, m.GroupByDisplayNames[i])
 			continue

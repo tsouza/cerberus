@@ -347,7 +347,7 @@ func TestExitSeverityOrderIsPinned(t *testing.T) {
 // would hang rather than fail.
 func TestObserveRoutedQuery_NonBlocking_DropsWhenBufferFull(t *testing.T) {
 	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 8, ObserveBuffer: 2})
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		observeRouted(r, []string{"q" + strconv.Itoa(i) + "-a", "q" + strconv.Itoa(i) + "-b"}, "cerb:scan", 2)
 	}
 	if n := len(r.snapshotIDs()); n != 0 {
@@ -414,7 +414,7 @@ func TestObserveRoutedQuery_RingEvictionDropsEveryShardID(t *testing.T) {
 	r.drainIngest()
 
 	// Fill the ring past the routed record's slot.
-	for i := 0; i < ringCap; i++ {
+	for i := range ringCap {
 		observeNoRoute(r, "single-"+strconv.Itoa(i), "cerb:scan", nil, "promql")
 	}
 	r.drainIngest()
@@ -625,7 +625,7 @@ func TestObserveRoutedQuery_PartialFanOutIsPublishedOnRingSlotReuse(t *testing.T
 	}
 
 	// Enough later dispatches to wrap the ring back onto the routed record's slot.
-	for i := 0; i < ringCap; i++ {
+	for i := range ringCap {
 		observeNoRoute(r, "single-"+strconv.Itoa(i), "cerb:scan", nil, "promql")
 	}
 	r.drainIngest()

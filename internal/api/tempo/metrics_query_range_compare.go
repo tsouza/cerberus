@@ -121,13 +121,10 @@ func compareAnchorGrid(start, end time.Time, step time.Duration) []time.Time {
 	if step <= 0 {
 		return []time.Time{end}
 	}
-	span := end.Sub(start)
-	if span < 0 {
-		span = 0
-	}
+	span := max(end.Sub(start), 0)
 	n := int(span/step) + 1
 	out := make([]time.Time, n)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		out[n-1-k] = end.Add(-time.Duration(k) * step)
 	}
 	return out

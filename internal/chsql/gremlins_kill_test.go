@@ -140,7 +140,6 @@ func TestFlattenAnd_NonAndOp(t *testing.T) {
 		{"lt", chplan.OpLt},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			root := &chplan.Binary{Op: c.op, Left: a, Right: b}
@@ -187,7 +186,6 @@ func TestClassifyPredicate_CheapAndWide(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			_, cheap, wide := classifyPredicate(c.expr, shape)
@@ -261,7 +259,6 @@ func TestProjectionTouchesWide_BoundaryCases(t *testing.T) {
 		{"mixed wide+narrow", []string{"A", "Body", "C"}, true},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			if got := projectionTouchesWide(c.cols, shape); got != c.want {
@@ -403,7 +400,6 @@ func TestEmitMetricsExemplars_RangeDurationFallback(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			sql, _, _, err := EmitMetricsExemplars(context.Background(), c.rw, m, "TraceId", "SpanId", 1, "")
@@ -461,7 +457,6 @@ func TestEmitMetricsExemplars_NumAnchorsBoundary(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			rw := &chplan.RangeWindow{
@@ -511,7 +506,6 @@ func TestEmitMetricsExemplars_GroupByDisplayNamesFallback(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			m := &chplan.MetricsAggregate{
@@ -570,7 +564,6 @@ func TestEmitMetricsExemplars_MetricArgEmission_Op154(t *testing.T) {
 		{"Rate + nil Attr → no metric_arg", chplan.MetricsOpRate, nil, false},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			m := &chplan.MetricsAggregate{
@@ -625,7 +618,6 @@ func TestEmitMetricsExemplars_ValueExprOpEquality(t *testing.T) {
 		{"AvgOverTime with Attr → argMax(metric_arg)", chplan.MetricsOpAvgOverTime, &chplan.ColumnRef{Name: "Duration"}, false},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			m := &chplan.MetricsAggregate{
@@ -673,7 +665,6 @@ func TestEmitMetricsAggregate_GroupByBoundary(t *testing.T) {
 		{"one group key → GROUP BY emitted", []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}}, true},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.MetricsAggregate{
@@ -756,7 +747,6 @@ func TestEmitMetricsAggregate_LogicalAndOnMetricArg(t *testing.T) {
 		{"SumOverTime + ColumnRef", chplan.MetricsOpSumOverTime, &chplan.ColumnRef{Name: "Duration"}, true},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			m := &chplan.MetricsAggregate{
@@ -847,7 +837,6 @@ func TestEmitStructuralJoin_RequiredColumnsTriple(t *testing.T) {
 		{"parent empty", "TraceId", "SpanId", ""},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.StructuralJoin{
@@ -916,7 +905,6 @@ func TestEmitMetricsHistogramOverTimeBucketAliasFallback(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.MetricsHistogramOverTime{
@@ -1001,7 +989,6 @@ func TestEmitMetricsHistogramOverTime_RangeFallback(t *testing.T) {
 		{"Range non-zero → used directly", 3 * time.Minute, 1 * time.Minute, " - 180000000000, toInt64(60000000000))"},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
@@ -1046,7 +1033,6 @@ func TestEmitMetricsHistogramOverTime_NumAnchorsBoundary(t *testing.T) {
 		{"5 steps", time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC), time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC), "least(6, intDiv(dateDiff('nanosecond'"},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
@@ -1123,7 +1109,6 @@ func TestEmitMetricsSecondStage_PartitionByBoundary(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.MetricsSecondStage{
@@ -1167,7 +1152,6 @@ func TestEmitVectorJoin_LogicalOr(t *testing.T) {
 		{"ManyToOne with Include → include-merge branch", chplan.CardManyToOne, []string{"foo"}},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.VectorJoin{
@@ -1269,7 +1253,6 @@ func TestEmitLimit_NonPositiveBoundary(t *testing.T) {
 		{"Count=42 → LIMIT 42", 42, true, "LIMIT 42"},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.Limit{
@@ -1382,7 +1365,6 @@ func TestWithRecursive_AnchorOrRecursiveNil(t *testing.T) {
 		{"both nil", nil, nil},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			defer func() {
@@ -1460,7 +1442,6 @@ func TestEmitWindowedExtrapolated_GroupByBoundary(t *testing.T) {
 		{"with GroupBy → GROUP BY present", []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}, true},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
@@ -1512,7 +1493,6 @@ func TestEmitWindowedArrayMatrix_GroupByBoundary(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
@@ -1590,7 +1570,6 @@ func TestEmitWindowedArrayPairsMatrix_GroupByBoundary(t *testing.T) {
 		{"with GroupBy → GROUP BY present", []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}, true},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
@@ -1721,7 +1700,6 @@ func TestEmitAggregate_DropEmptyGuard(t *testing.T) {
 		{"with group + DropEmpty=true → no guard (group keys dominate)", []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}}, true, false},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.Aggregate{
@@ -1878,7 +1856,6 @@ func TestEmitMetricsHistogramOverTimeMatrix_AliasFallbackDistinct(t *testing.T) 
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
@@ -1969,7 +1946,6 @@ func TestWithRecursive_NilPanicMessage(t *testing.T) {
 		{"recursive nil, anchor non-nil", NewQuery().From(Col("t")), nil},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			defer func() {
@@ -2026,11 +2002,11 @@ func TestPartitionPrewhere_LastWhereRetainsExactConjunct(t *testing.T) {
 	// producing `WHERE ` with no operand; assert WHERE is followed by
 	// a backtick-quoted identifier (the retained predicate's left
 	// column).
-	idx := strings.Index(sql, "WHERE ")
-	if idx < 0 {
+	_, after, ok := strings.Cut(sql, "WHERE ")
+	if !ok {
 		t.Fatalf("expected WHERE clause in SQL.\nSQL=%s", sql)
 	}
-	tail := sql[idx+len("WHERE "):]
+	tail := after
 	// Original: a Binary conjunct renders with surrounding parens
 	// (mirroring chsql.Builder.Expr's wrapping of an AND/comparison)
 	// so the tail starts with `(`. The mutant's empty WHERE clause
@@ -2609,7 +2585,6 @@ func TestRegexQuoteMeta_EscapesEachMetacharacter(t *testing.T) {
 	t.Parallel()
 	// One char at a time so a missing escape fails its own subtest.
 	for _, r := range []rune{'\\', '.', '+', '*', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$'} {
-		r := r
 		t.Run(string(r), func(t *testing.T) {
 			t.Parallel()
 			got := regexQuoteMeta(string(r))
@@ -2621,7 +2596,6 @@ func TestRegexQuoteMeta_EscapesEachMetacharacter(t *testing.T) {
 	}
 	// Plain identifier characters must pass through verbatim.
 	for _, s := range []string{"a", "z", "0", "_", "abc_123", "otel_metrics_gauge"} {
-		s := s
 		t.Run("plain/"+s, func(t *testing.T) {
 			t.Parallel()
 			if got := regexQuoteMeta(s); got != s {
@@ -2726,7 +2700,6 @@ func TestCompareOutAliasFallbacks(t *testing.T) {
 		{"value", func(m *chplan.MetricsCompare) { m.ValueAlias = "" }, compareValueOut, "Value", "Count"},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			mDflt := compareNodeInternal()
@@ -3116,7 +3089,6 @@ func TestEmitNestedSetAnnotate_ColumnGuardDisjunction(t *testing.T) {
 		{"TimestampColumn", func(n *chplan.NestedSetAnnotate) { n.TimestampColumn = "" }},
 	}
 	for _, b := range blanks {
-		b := b
 		t.Run(b.name+" empty → error", func(t *testing.T) {
 			t.Parallel()
 			n := nsAnnotateInternal()
@@ -3306,7 +3278,6 @@ func TestValidateVectorJoinCols_EachEmptyErrors(t *testing.T) {
 		{"ValueColumn", func(j *chplan.VectorJoin) { j.ValueColumn = "" }},
 	}
 	for _, b := range blanks {
-		b := b
 		t.Run(b.name+" empty → error", func(t *testing.T) {
 			t.Parallel()
 			j := base()
@@ -3356,7 +3327,6 @@ func TestValidateVectorSetOpCols_EachEmptyErrors(t *testing.T) {
 		{"ValueColumn", func(s *chplan.VectorSetOp) { s.ValueColumn = "" }},
 	}
 	for _, b := range blanks {
-		b := b
 		t.Run(b.name+" empty → error", func(t *testing.T) {
 			t.Parallel()
 			s := base()

@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"strconv"
@@ -971,9 +972,7 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	// Plan-shape-gated per-request settings ride on top of the client-wide
 	// caps. They are merged last so a future shape-gated override of a cap
 	// is intentional and visible here, not accidental.
-	for name, value := range perQuery {
-		s[name] = value
-	}
+	maps.Copy(s, perQuery)
 	if c.QueryConditionCacheDisabled() {
 		// Applied after the per-query settings: the override exists because
 		// the server build is known to return wrong results through the

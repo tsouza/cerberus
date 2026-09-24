@@ -253,7 +253,6 @@ func TestFoldIntInt_Comparison(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range cmpIntOps {
-		tc := tc
 		t.Run(string(tc.op), func(t *testing.T) {
 			t.Parallel()
 			rapid.Check(t, func(t *rapid.T) {
@@ -354,7 +353,6 @@ func TestFoldFloatFloat_Arithmetic(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range arithFloatOps {
-		tc := tc
 		t.Run(string(tc.op), func(t *testing.T) {
 			t.Parallel()
 			rapid.Check(t, func(t *rapid.T) {
@@ -385,7 +383,6 @@ func TestFoldFloatFloat_Comparison(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range cmpFloatOps {
-		tc := tc
 		t.Run(string(tc.op), func(t *testing.T) {
 			t.Parallel()
 			rapid.Check(t, func(t *rapid.T) {
@@ -539,7 +536,6 @@ func TestFoldFloatFloat_InfArithmetic(t *testing.T) {
 	finites := []float64{0, math.Copysign(0, -1), 1, -1, math.MaxFloat64, -math.MaxFloat64}
 
 	for _, tc := range arithFloatOps {
-		tc := tc
 		t.Run(string(tc.op), func(t *testing.T) {
 			t.Parallel()
 			rapid.Check(t, func(t *rapid.T) {

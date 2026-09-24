@@ -398,7 +398,7 @@ func runbookStageRow(doc string) (string, error) {
 	rowPrefix := "| " + decommissionStoryID + " |"
 	anchor := decommissionStagePhrases[decommissionStageOrder[0]]
 	var found []string
-	for _, line := range strings.Split(doc, "\n") {
+	for line := range strings.SplitSeq(doc, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, rowPrefix) && strings.Contains(trimmed, anchor) {
 			found = append(found, trimmed)

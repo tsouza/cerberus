@@ -2,6 +2,7 @@ package loki
 
 import (
 	"fmt"
+	"maps"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -29,9 +30,7 @@ import (
 // `{{ __timestamp__ | date "..." }}` stays at parity.
 func templateFuncs(currLine func() string, currTs func() int64) template.FuncMap {
 	out := make(template.FuncMap, len(logqlFunctionMap)+2)
-	for k, v := range logqlFunctionMap {
-		out[k] = v
-	}
+	maps.Copy(out, logqlFunctionMap)
 	out[functionLineName] = func() string { return currLine() }
 	out[functionTimestampName] = func() time.Time { return time.Unix(0, currTs()) }
 	return out

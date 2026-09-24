@@ -1938,10 +1938,7 @@ func buildSolver(
 	// GLOBAL shard gate: MaxOpenConns − reserve, floored at 2 so the
 	// Executor's gate/2 cap never collapses to zero. The pool size is the
 	// validated, already-positive value config.FromEnv resolved.
-	gateCap := int64(chCfg.MaxOpenConns - solverGateReserve)
-	if gateCap < 2 {
-		gateCap = 2
-	}
+	gateCap := max(int64(chCfg.MaxOpenConns-solverGateReserve), 2)
 	gate := semaphore.NewWeighted(gateCap)
 
 	// The admit top-up is only meaningful when admission control is enabled.

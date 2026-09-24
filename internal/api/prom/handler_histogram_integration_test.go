@@ -42,6 +42,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -269,7 +270,7 @@ VALUES
 // non-empty CREATE statements (the driver executes one statement per Exec).
 func splitDDL(ddl string) []string {
 	var out []string
-	for _, part := range strings.Split(ddl, ";") {
+	for part := range strings.SplitSeq(ddl, ";") {
 		if trimmed := strings.TrimSpace(part); trimmed != "" {
 			out = append(out, trimmed)
 		}
@@ -353,10 +354,5 @@ func getNameValues(t *testing.T, base string) []string {
 }
 
 func containsName(hay []string, needle string) bool {
-	for _, h := range hay {
-		if h == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(hay, needle)
 }

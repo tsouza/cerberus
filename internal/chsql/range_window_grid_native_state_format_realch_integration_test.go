@@ -65,6 +65,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -657,14 +658,15 @@ func runTSStateQuery(ctx context.Context, t *testing.T, node *tsStateNode, query
 }
 
 func queryTSState(ctx context.Context, db *sql.DB, sqlStr string, args []any, extraSettings ...string) (tsStateAnswer, error) {
-	wrapped := fmt.Sprintf(
+	var wrapped strings.Builder
+	wrapped.WriteString(fmt.Sprintf(
 		"SELECT toJSONString(`Attributes`), toUnixTimestamp(`TimeUnix`), `Value` FROM (%s) SETTINGS %s = 1",
 		sqlStr, chclient.SettingExperimentalTSGridAggregate,
-	)
+	))
 	for _, setting := range extraSettings {
-		wrapped += ", " + setting
+		wrapped.WriteString(", " + setting)
 	}
-	rows, err := db.QueryContext(ctx, wrapped, args...)
+	rows, err := db.QueryContext(ctx, wrapped.String(), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -722,7 +724,7 @@ func (a tsStateAnswer) String() string {
 		for k := range a[s] {
 			ts = append(ts, k)
 		}
-		sort.Slice(ts, func(i, j int) bool { return ts[i] < ts[j] })
+		slices.Sort(ts)
 		fmt.Fprintf(&b, "%s:", s)
 		for _, k := range ts {
 			fmt.Fprintf(&b, " %d=%v", k, a[s][k])

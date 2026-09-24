@@ -182,18 +182,18 @@ func TestShardFromEnv(t *testing.T) {
 		wantErrLike string
 	}{
 		{name: "unset defaults to the whole corpus", want: WholeCorpus},
-		{name: "a declared leg", index: ptr("3"), count: ptr("8"), want: Shard{Index: 3, Count: 8}},
-		{name: "single-leg split is the whole corpus", index: ptr("1"), count: ptr("1"), want: Shard{Index: 1, Count: 1}},
-		{name: "last leg", index: ptr("8"), count: ptr("8"), want: Shard{Index: 8, Count: 8}},
+		{name: "a declared leg", index: new("3"), count: new("8"), want: Shard{Index: 3, Count: 8}},
+		{name: "single-leg split is the whole corpus", index: new("1"), count: new("1"), want: Shard{Index: 1, Count: 1}},
+		{name: "last leg", index: new("8"), count: new("8"), want: Shard{Index: 8, Count: 8}},
 
-		{name: "index without count", index: ptr("3"), wantErrLike: "must be set together"},
-		{name: "count without index", count: ptr("8"), wantErrLike: "must be set together"},
-		{name: "non-integer count", index: ptr("1"), count: ptr("eight"), wantErrLike: "is not an integer"},
-		{name: "non-integer index", index: ptr("first"), count: ptr("8"), wantErrLike: "is not an integer"},
-		{name: "zero count", index: ptr("1"), count: ptr("0"), wantErrLike: "must be >= 1"},
-		{name: "index above count", index: ptr("9"), count: ptr("8"), wantErrLike: "outside"},
-		{name: "zero index", index: ptr("0"), count: ptr("8"), wantErrLike: "outside"},
-		{name: "negative index", index: ptr("-1"), count: ptr("8"), wantErrLike: "outside"},
+		{name: "index without count", index: new("3"), wantErrLike: "must be set together"},
+		{name: "count without index", count: new("8"), wantErrLike: "must be set together"},
+		{name: "non-integer count", index: new("1"), count: new("eight"), wantErrLike: "is not an integer"},
+		{name: "non-integer index", index: new("first"), count: new("8"), wantErrLike: "is not an integer"},
+		{name: "zero count", index: new("1"), count: new("0"), wantErrLike: "must be >= 1"},
+		{name: "index above count", index: new("9"), count: new("8"), wantErrLike: "outside"},
+		{name: "zero index", index: new("0"), count: new("8"), wantErrLike: "outside"},
+		{name: "negative index", index: new("-1"), count: new("8"), wantErrLike: "outside"},
 	}
 
 	for _, tc := range cases {
@@ -300,4 +300,5 @@ func truncate(ids []string) []string {
 	return append(ids[:maxListed:maxListed], "…")
 }
 
-func ptr(s string) *string { return &s }
+//go:fix inline
+func ptr(s string) *string { return new(s) }

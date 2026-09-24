@@ -349,9 +349,7 @@ func TestCH_ConcurrentRequestsUnderChaos_AllFail(t *testing.T) {
 	var wg sync.WaitGroup
 	done := make(chan result, 32)
 	for range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
 			if err != nil {
 				done <- result{0, ""}
@@ -359,7 +357,7 @@ func TestCH_ConcurrentRequestsUnderChaos_AllFail(t *testing.T) {
 			}
 			body := readBody(t, resp)
 			done <- result{resp.StatusCode, body}
-		}()
+		})
 	}
 	wg.Wait()
 	close(done)

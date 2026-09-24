@@ -365,11 +365,8 @@ func compareMetricsSeries(key string, a, b MetricsSeriesEntry, aLabel, bLabel st
 	sort.Slice(aSamples, func(i, j int) bool { return aSamples[i].TimestampMs < aSamples[j].TimestampMs })
 	sort.Slice(bSamples, func(i, j int) bool { return bSamples[i].TimestampMs < bSamples[j].TimestampMs })
 
-	n := len(aSamples)
-	if len(bSamples) < n {
-		n = len(bSamples)
-	}
-	for i := 0; i < n; i++ {
+	n := min(len(bSamples), len(aSamples))
+	for i := range n {
 		if aSamples[i].TimestampMs != bSamples[i].TimestampMs {
 			reasons = append(reasons, DiffReason{
 				Kind:   reasonKindFieldMismatch,

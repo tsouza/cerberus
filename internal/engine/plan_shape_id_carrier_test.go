@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -151,12 +152,7 @@ func carrierTokenCases() []carrierTokenCase {
 func hasModifierToken(id, token string) bool {
 	parts := strings.Split(id, ";")
 	// parts[0] is the "cerb:<root>" prefix, never a modifier.
-	for _, mod := range parts[1:] {
-		if mod == token {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(parts[1:], token)
 }
 
 func TestShapeModifiers_EveryGridCarrierGetsAToken(t *testing.T) {

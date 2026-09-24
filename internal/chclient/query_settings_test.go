@@ -147,9 +147,7 @@ func TestEnsureQueryID_UniquePerDispatch(t *testing.T) {
 		wg  sync.WaitGroup
 	)
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range perWorker {
 				// A fresh traced ctx per dispatch: the SAME trace/span, the
 				// shape a fan-out produces (one trace, many concurrent CH
@@ -162,7 +160,7 @@ func TestEnsureQueryID_UniquePerDispatch(t *testing.T) {
 				ids[id] = struct{}{}
 				mu.Unlock()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

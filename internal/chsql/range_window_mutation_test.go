@@ -350,7 +350,6 @@ func TestFusedSubqueryOuterShapeGuard(t *testing.T) {
 		{"matrix fuses", 10 * time.Minute, 1 * time.Minute, true},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := fusedOuter()
@@ -398,7 +397,6 @@ func TestFusedInstantInnerGate(t *testing.T) {
 		{"zero inner Start", func(in *chplan.RangeWindow) { in.Start = time.Time{} }},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := fusedOuter()

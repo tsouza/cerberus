@@ -140,7 +140,7 @@ func TestUpdateGoldenChainsParityArtifacts(t *testing.T) {
 	}
 
 	var gotParityGoTests []string
-	for _, line := range strings.Split(parityBody, "\n") {
+	for line := range strings.SplitSeq(parityBody, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.Contains(line, "go test") {
 			gotParityGoTests = append(gotParityGoTests, line)

@@ -85,10 +85,7 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 	var spans []span
 	for j := 0; j*m < n; j++ {
 		lo := j * m
-		hi := lo + m
-		if hi > n {
-			hi = n
-		}
+		hi := min(lo+m, n)
 		spans = append(spans, span{startIdx: lo, count: hi - lo})
 	}
 

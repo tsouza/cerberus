@@ -30,7 +30,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompareFilter(t *testing.T)
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	for _, op := range []string{"==", "!=", "<", "<=", ">", ">="} {
-		op := op
 		t.Run(op, func(t *testing.T) {
 			t.Parallel()
 			query := mixedOrExpr + " " + op + " " + mixedOrExpr
@@ -86,7 +85,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompareBool(t *testing.T) {
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	for _, op := range []string{"==", "!=", "<", "<=", ">", ">="} {
-		op := op
 		t.Run(op, func(t *testing.T) {
 			t.Parallel()
 			query := mixedOrExpr + " " + op + " bool " + mixedOrExpr
@@ -156,7 +154,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompareGroupLeftRight(t *te
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)
@@ -209,7 +206,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompareOnIgnoring(t *testin
 		{"ignoring", mixedOrExpr + ` != ignoring(job) ` + mixedOrExpr},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)
@@ -299,7 +295,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorCompareNameFollowsManySide(
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	for _, mod := range []string{"", "on (service) group_left ()", "on (service) group_right ()"} {
-		mod := mod
 		name := mod
 		if name == "" {
 			name = "default-matching"

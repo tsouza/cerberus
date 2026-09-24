@@ -60,7 +60,6 @@ func TestBuilder_LitFloat_WrapsInToFloat64(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -137,7 +136,6 @@ func TestBuilder_LitFloat_NonFiniteInline(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

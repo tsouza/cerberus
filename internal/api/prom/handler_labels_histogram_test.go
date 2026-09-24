@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -162,13 +163,7 @@ func TestLabels_HistogramBareName_FansOutCompanions(t *testing.T) {
 	if env.Status != "success" {
 		t.Errorf("status: got %q, want success", env.Status)
 	}
-	gotLe := false
-	for _, name := range env.Data {
-		if name == "le" {
-			gotLe = true
-			break
-		}
-	}
+	gotLe := slices.Contains(env.Data, "le")
 	if !gotLe {
 		t.Errorf("expected `le` label in response (from bucket companion fan-out); got %v", env.Data)
 	}

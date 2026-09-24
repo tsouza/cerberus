@@ -108,7 +108,6 @@ func TestLower_SubStepSubqueryWindow_ChDB(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			expr, err := p.ParseExpr(tc.query)
 			if err != nil {

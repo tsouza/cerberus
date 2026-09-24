@@ -1,6 +1,7 @@
 package loki
 
 import (
+	"maps"
 	"strconv"
 	"time"
 
@@ -144,9 +145,7 @@ func stampLabelFilterErr(labels map[string]string, err error) map[string]string 
 		return labels
 	}
 	out := make(map[string]string, len(labels)+2)
-	for k, v := range labels {
-		out[k] = v
-	}
+	maps.Copy(out, labels)
 	out[syntax.ErrorLabel] = errLabelFilterKind
 	out[syntax.ErrorDetailsLabel] = err.Error()
 	return out

@@ -2,6 +2,7 @@ package chsql
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -118,10 +119,8 @@ func matchRangeLWRFusion(a *chplan.Aggregate) (*chplan.RangeLWR, rangeLWRFusionK
 	if len(a.GroupByAliases) != len(a.GroupBy) {
 		return nil, rangeLWRFusionNone
 	}
-	for _, alias := range a.GroupByAliases {
-		if alias == "" {
-			return nil, rangeLWRFusionNone
-		}
+	if slices.Contains(a.GroupByAliases, "") {
+		return nil, rangeLWRFusionNone
 	}
 	hasAnchorKey := false
 	for _, g := range a.GroupBy {

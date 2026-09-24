@@ -37,7 +37,6 @@ func TestUnaryOverExpHistogram_GuardHappyPath(t *testing.T) {
 		{"plus", "+latency_exp_hist", parser.ADD},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			operand, op, ok := unaryOverExpHistogram(mustParse(tc.query), s, lowerCtx{})

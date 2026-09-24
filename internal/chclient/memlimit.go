@@ -114,13 +114,11 @@ func ApportionMemoryBytes(cap, divisor int64) int64 {
 	if divisor < 1 {
 		divisor = 1
 	}
-	v := cap / divisor
-	if v < 1 {
+	v := max(cap/divisor,
 		// Only reachable if cap < divisor — an unrealistic (byte-scale cap,
 		// or an extreme shard/fan-out count) configuration. Guards against
 		// stamping a literal 0, which ClickHouse's max_memory_usage setting
 		// treats as UNLIMITED.
-		v = 1
-	}
+		1)
 	return v
 }

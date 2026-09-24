@@ -188,7 +188,7 @@ func TestSearch_FrameBatching(t *testing.T) {
 	const total = 45
 	rows := make([]chclient.Sample, 0, total)
 	ts := time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < total; i++ {
+	for i := range total {
 		rows = append(rows, makeSearchRow(
 			padHexTraceID(i), "GET /api", "svc",
 			ts.Add(time.Duration(i)*time.Millisecond), 10,

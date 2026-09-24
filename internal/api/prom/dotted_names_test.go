@@ -112,7 +112,6 @@ func TestNormalizeDottedSelectors(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := normalizeDottedSelectors(tc.in)
@@ -137,7 +136,6 @@ func TestNormalizeDottedSelectors_Idempotent(t *testing.T) {
 		`histogram_quantile(0.95, sum by (le) (rate(http.server.duration_bucket{job="api"}[5m])))`,
 	}
 	for _, in := range inputs {
-		in := in
 		t.Run(in, func(t *testing.T) {
 			t.Parallel()
 			first := normalizeDottedSelectors(in)

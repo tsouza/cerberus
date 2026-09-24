@@ -1,6 +1,7 @@
 package promql
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -24,12 +25,7 @@ func containsFuncCall(e chplan.Expr) bool {
 		if containsFuncCall(v.Left) {
 			return true
 		}
-		for _, item := range v.List {
-			if containsFuncCall(item) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(v.List, containsFuncCall)
 	default:
 		return false
 	}

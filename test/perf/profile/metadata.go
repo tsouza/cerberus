@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chclient"
@@ -184,21 +185,21 @@ func metadataProfileProjections(table string) []string {
 // projected + OPTIMIZE-FINAL'd so the projection collapses to real merged
 // parts instead of unmerged insert parts.
 func metadataProfileSeed() string {
-	var seed string
+	var seed strings.Builder
 	tableDDL := map[string]func(string) string{
 		"otel_metrics_gauge":     metadataProfileTableDDL,
 		"otel_metrics_sum":       metadataProfileTableDDL,
 		"otel_metrics_histogram": metadataProfileHistogramTableDDL,
 	}
 	for _, table := range []string{"otel_metrics_gauge", "otel_metrics_sum", "otel_metrics_histogram"} {
-		seed += tableDDL[table](table) + "\n"
-		seed += metadataProfileInsert(table) + "\n"
+		seed.WriteString(tableDDL[table](table) + "\n")
+		seed.WriteString(metadataProfileInsert(table) + "\n")
 		for _, stmt := range metadataProfileProjections(table) {
-			seed += stmt + ";\n"
+			seed.WriteString(stmt + ";\n")
 		}
-		seed += "OPTIMIZE TABLE " + table + " FINAL;\n"
+		seed.WriteString("OPTIMIZE TABLE " + table + " FINAL;\n")
 	}
-	return seed
+	return seed.String()
 }
 
 // metadataCaptureQuerier is a prom.Querier stub that records every SQL

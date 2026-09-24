@@ -120,7 +120,7 @@ func justfilePins(t *testing.T) map[string]map[string]bool {
 	pins := map[string]map[string]bool{}
 	for name, value := range justDump(t).resolvedStringAssignments() {
 		set := map[string]bool{}
-		for _, ref := range strings.Fields(value) {
+		for ref := range strings.FieldsSeq(value) {
 			set[ref] = true
 		}
 		pins[name] = set

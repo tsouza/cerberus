@@ -223,7 +223,6 @@ func TestUnwindowedSpansScans(t *testing.T) {
 	}...)
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := len(spansscan.UnwindowedSpansScans(tc.sql, spansTable))
@@ -454,7 +453,6 @@ func TestUnwindowedSpansScans_BracketedCoScope(t *testing.T) {
 		{"bracketed_subquery_window_not_borrowed", bracketedSubqueryWindowNotBorrowed, 1},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := len(spansscan.UnwindowedSpansScans(tc.sql, spansTable))
@@ -499,7 +497,6 @@ func TestUnwindowedSpansScans_BracketingDoesNotChangeVerdict(t *testing.T) {
 		{"flagged_arm_depth_cap", recursiveArmUnwindowed, depthCap, 1},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if !strings.Contains(tc.sql, tc.conjunct) {

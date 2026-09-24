@@ -70,7 +70,6 @@ func TestConformance_QueryWire(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{samples: tc.samples})
@@ -161,7 +160,6 @@ func TestConformance_QueryRangeWire(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{samples: tc.samples})
@@ -220,7 +218,6 @@ func TestConformance_LabelsWire(t *testing.T) {
 		{"deduped", []string{"job", "job", "instance"}},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{strings: tc.rows})
@@ -273,7 +270,6 @@ func TestConformance_LabelValuesWire(t *testing.T) {
 		{"label_empty_result", "/api/v1/label/foo/values", nil},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{strings: tc.rows})
@@ -374,7 +370,6 @@ func TestConformance_MetadataWire(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{metaRows: tc.rows})
@@ -429,7 +424,6 @@ func TestConformance_RulesEndpoints(t *testing.T) {
 		{"alerts_empty", "/api/v1/alerts", "alerts"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})
@@ -483,7 +477,6 @@ func TestConformance_FormatQueryWire(t *testing.T) {
 		{"matcher", "/api/v1/format_query?query=up%7Bjob%3D%22api%22%7D"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})
@@ -683,8 +676,8 @@ func TestConformance_PromExemplarsBasic(t *testing.T) {
 	// `any` map; subsequent assertions inspect that map's surface to
 	// pin the field-name vocabulary and the float64 timestamp shape.
 	var env struct {
-		Status string                   `json:"status"`
-		Data   []map[string]interface{} `json:"data"`
+		Status string           `json:"status"`
+		Data   []map[string]any `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(body), &env); err != nil {
 		t.Fatalf("decode envelope: %v body=%s", err, body)
@@ -704,7 +697,7 @@ func TestConformance_PromExemplarsBasic(t *testing.T) {
 		// series identity. The handler shape is intentionally
 		// distinct to match Prom's documented `/query_exemplars`
 		// wire contract.
-		sl, ok := elem["seriesLabels"].(map[string]interface{})
+		sl, ok := elem["seriesLabels"].(map[string]any)
 		if !ok {
 			t.Errorf("data[%d]: seriesLabels not a flat object: %T = %v",
 				i, elem["seriesLabels"], elem["seriesLabels"])
@@ -726,7 +719,7 @@ func TestConformance_PromExemplarsBasic(t *testing.T) {
 			t.Errorf("data[%d].seriesLabels[__name__] = %v; want 'up'", i, sl["__name__"])
 		}
 
-		exemplars, ok := elem["exemplars"].([]interface{})
+		exemplars, ok := elem["exemplars"].([]any)
 		if !ok {
 			t.Errorf("data[%d]: exemplars not an array: %T", i, elem["exemplars"])
 			continue
@@ -735,7 +728,7 @@ func TestConformance_PromExemplarsBasic(t *testing.T) {
 			t.Errorf("data[%d]: len(exemplars) = %d; want %d", i, got, want)
 		}
 		for j, raw := range exemplars {
-			ex, ok := raw.(map[string]interface{})
+			ex, ok := raw.(map[string]any)
 			if !ok {
 				t.Errorf("data[%d].exemplars[%d] not an object: %T", i, j, raw)
 				continue
@@ -754,7 +747,7 @@ func TestConformance_PromExemplarsBasic(t *testing.T) {
 			}
 			// `labels` is a flat map[string]string with `trace_id`
 			// and `span_id` overlaid from the dedicated columns.
-			labels, ok := ex["labels"].(map[string]interface{})
+			labels, ok := ex["labels"].(map[string]any)
 			if !ok {
 				t.Errorf("data[%d].exemplars[%d].labels not a flat object: %T",
 					i, j, ex["labels"])
@@ -795,7 +788,6 @@ func TestConformance_QueryExemplarsWire(t *testing.T) {
 		{"query": {"up"}, "start": {"1717995600000"}, "end": {"1717999200000"}},
 	}
 	for i, qs := range cases {
-		qs := qs
 		t.Run("case_"+strconv.Itoa(i), func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})
@@ -900,7 +892,6 @@ func TestConformance_PromErrorEnvelope(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(c.stub)
@@ -1013,7 +1004,6 @@ func TestConformance_PromRangeTimeMatrix(t *testing.T) {
 		{"empty_end", "1717995600", "", "60", http.StatusBadRequest},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})
@@ -1066,7 +1056,6 @@ func TestConformance_PromQueryTimeMatrix(t *testing.T) {
 		{"unix_millis_with_subms_frac", "1717995600123", http.StatusOK},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})
@@ -1124,7 +1113,6 @@ func TestConformance_LabelsMatchEdge(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{strings: []string{"job"}})
@@ -1181,7 +1169,6 @@ func TestConformance_SeriesMatchEdge(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{samples: nil})
@@ -1256,7 +1243,7 @@ func TestConformance_PromAdmitReleaseAdmitsNext(t *testing.T) {
 
 	// First request occupies the slot momentarily; second goes through
 	// once it releases. Run them serially.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
 		if err != nil {
 			t.Fatalf("GET %d: %v", i, err)
@@ -1294,10 +1281,8 @@ func TestConformance_PromAdmitParallelOverCap(t *testing.T) {
 		rejected atomic.Int32
 		wg       sync.WaitGroup
 	)
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
 			if err != nil {
 				return
@@ -1311,7 +1296,7 @@ func TestConformance_PromAdmitParallelOverCap(t *testing.T) {
 			if resp.StatusCode == http.StatusOK {
 				admitted.Add(1)
 			}
-		}()
+		})
 	}
 	// Give rejections time to land — they happen synchronously when
 	// TryAcquire fails so a brief sleep is enough.
@@ -1412,7 +1397,6 @@ func TestConformance_DottedMetricNames(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			// Stub returns one synthetic sample so the response is a
@@ -1662,7 +1646,6 @@ func TestConformance_ServiceNameMatcherRoutesToTopLevelColumn(t *testing.T) {
 		{"dotted", `cerberus_queries_total{"service.name"="cerberus"}`},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			stub := &stubQuerier{samples: nil}
@@ -1781,7 +1764,6 @@ func TestConformance_ServiceNameMatcherWithByClauseCrossProduct(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			stub := &stubQuerier{samples: nil}

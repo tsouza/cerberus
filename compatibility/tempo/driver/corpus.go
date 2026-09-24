@@ -366,7 +366,7 @@ const (
 // no current case does.
 func stripCommentLines(raw string) string {
 	var bodyLines []string
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
@@ -526,7 +526,7 @@ func appendNonEmptyLines(body string, dst *[]string) {
 	if body == "" {
 		return
 	}
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if s := strings.TrimSpace(line); s != "" {
 			*dst = append(*dst, s)
 		}

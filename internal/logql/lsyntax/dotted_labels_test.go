@@ -408,7 +408,6 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := NormalizeDottedLabels(tc.in)
@@ -434,7 +433,6 @@ func TestNormalizeLokiDottedLabels_Idempotent(t *testing.T) {
 		`{service.name="api"} | json | duration > 1s`,
 	}
 	for _, in := range inputs {
-		in := in
 		t.Run(in, func(t *testing.T) {
 			t.Parallel()
 			first := NormalizeDottedLabels(in)
@@ -467,7 +465,6 @@ func TestNormalizeLokiDottedLabels_ParserRoundtrip(t *testing.T) {
 		`{service.name="api"} | label_format new=old`,
 	}
 	for _, q := range queries {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 			rewritten := NormalizeDottedLabels(q)

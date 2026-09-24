@@ -539,7 +539,7 @@ func splitStarExcept(head string) (string, []string) {
 		return head, nil
 	}
 	var cols []string
-	for _, c := range strings.Split(head[i+len(kw):len(head)-1], ",") {
+	for c := range strings.SplitSeq(head[i+len(kw):len(head)-1], ",") {
 		c = strings.Trim(strings.TrimSpace(c), "`")
 		if c == "" {
 			return head, nil
@@ -1077,7 +1077,7 @@ var mapTypedFunctions = []string{"mapContains", "mapKeys", "mapValues", "mapFilt
 // `name`, “ `name` “, or `qualifier.name` with either side optionally
 // backtick-quoted — as opposed to a function call or any other expression.
 func isColumnReference(expr string) bool {
-	for _, part := range strings.Split(expr, ".") {
+	for part := range strings.SplitSeq(expr, ".") {
 		part = unquoteBackticks(part)
 		if part == "" {
 			return false
@@ -1411,10 +1411,8 @@ func ProjectionCount(query string) int {
 		return 0
 	}
 	projs := splitProjections(head)
-	for _, p := range projs {
-		if isWildcardProjection(p) {
-			return 0
-		}
+	if slices.ContainsFunc(projs, isWildcardProjection) {
+		return 0
 	}
 	return len(projs)
 }

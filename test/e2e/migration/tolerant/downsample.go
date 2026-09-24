@@ -45,7 +45,7 @@ func DownsampleCounterAware(raw []Sample, from, to time.Time, bucket time.Durati
 	out := make([]Sample, 0, n)
 	var carry float64
 	haveCarry := false
-	for i := 0; i < n; i++ {
+	for i := range n {
 		bStart := from.Add(time.Duration(i) * bucket)
 		bEnd := bStart.Add(bucket)
 		max := carry

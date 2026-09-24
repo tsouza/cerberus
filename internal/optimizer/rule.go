@@ -258,7 +258,7 @@ func runBatch(ctx context.Context, plan chplan.Node, batch Batch, rulesApplied i
 		return plan, rulesApplied
 	}
 	maxIter := batch.Strategy.maxIterations()
-	for i := 0; i < maxIter; i++ {
+	for range maxIter {
 		var iterationChanged bool
 		for _, rule := range batch.Rules {
 			rewritten, changed := applyToTree(plan, rule)

@@ -2,6 +2,7 @@ package chopt
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -465,12 +466,7 @@ func splitSelection(selection string) []string {
 
 // hasToken reports whether want appears among tokens.
 func hasToken(tokens []string, want string) bool {
-	for _, t := range tokens {
-		if t == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(tokens, want)
 }
 
 // applyLegacyTSGrid layers the deprecated CERBERUS_EXPERIMENTAL_TS_GRID_RANGE

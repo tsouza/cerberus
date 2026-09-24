@@ -1,6 +1,7 @@
 package promql
 
 import (
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -77,9 +78,7 @@ func FromDataset(d property.Dataset) *Model {
 	out := make([]*Series, 0, len(d.Metrics.Series))
 	for _, s := range d.Metrics.Series {
 		lbls := make(map[string]string, len(s.Labels)+1)
-		for k, v := range s.Labels {
-			lbls[k] = v
-		}
+		maps.Copy(lbls, s.Labels)
 		lbls[MetricNameLabel] = s.MetricName
 
 		samples := make([]Sample, 0, len(s.Points))
@@ -149,9 +148,7 @@ func CopyLabels(in map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 

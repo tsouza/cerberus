@@ -269,7 +269,7 @@ func TestExecute_FirstErrorWins(t *testing.T) {
 	for _, gomax := range []int{1, 4} {
 		runtime.GOMAXPROCS(gomax)
 		for _, cls := range classes {
-			for shard := 0; shard < 4; shard++ {
+			for shard := range 4 {
 				name := fmt.Sprintf("%s/shard%d/gomax%d", cls.name, shard, gomax)
 				t.Run(name, func(t *testing.T) {
 					q := newFakeQuerier(8)
@@ -311,7 +311,7 @@ func TestExecute_FirstErrorWins(t *testing.T) {
 func TestExecute_BreakerDedup_FirstErrorWins(t *testing.T) {
 	shardErr := errors.New("shard open failed: CH down")
 	q := newFakeQuerier(5)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		q.openErrAt[i] = shardErr
 	}
 	cfg := testCfg()
@@ -386,7 +386,7 @@ func TestExecute_BreakerDedup_CountsOnce(t *testing.T) {
 
 			const k = 4
 			q := newFakeQuerier(5)
-			for i := 0; i < k; i++ {
+			for i := range k {
 				q.openErrAt[i] = shardErr
 			}
 			rq := &recordingQuerier{inner: q, barrier: make(chan struct{}), k: k}
@@ -422,7 +422,7 @@ func TestExecute_BreakerDedup_RouteAUnaffected(t *testing.T) {
 	plainCtx := context.Background()
 	const opens = 4
 	counted := 0
-	for i := 0; i < opens; i++ {
+	for range opens {
 		if chclient.ClaimBreakerDedup(plainCtx) {
 			counted++
 		}

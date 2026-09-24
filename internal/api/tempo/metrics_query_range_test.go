@@ -257,7 +257,6 @@ func TestMetricsQueryRange_ZeroFillSQLShapeCountOverTime(t *testing.T) {
 		"{} | count_over_time()",
 		"{} | rate()",
 	} {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 
@@ -336,7 +335,6 @@ func TestMetricsQueryRange_ZeroFillSkippedForOverTimeAggs(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -533,7 +531,6 @@ func TestMetricsQueryRange_DurationAggInSeconds(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -766,7 +763,6 @@ func TestMetricsQueryRange_BadInputs(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			q := &stubQuerier{}
@@ -921,7 +917,6 @@ func TestMetricsQueryRange_StepDurationForms(t *testing.T) {
 	t.Parallel()
 
 	for _, step := range []string{"30s", "0.5m", "30", "1m"} {
-		step := step
 		t.Run(fmt.Sprintf("step=%s", step), func(t *testing.T) {
 			t.Parallel()
 			q := &stubQuerier{samples: []chclient.Sample{{
@@ -1319,7 +1314,6 @@ func TestMetricsQueryRange_QuantileOverTimeWireShape(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

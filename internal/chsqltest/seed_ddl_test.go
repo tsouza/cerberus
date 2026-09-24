@@ -27,11 +27,11 @@ func TestMetricsSeedDDLOrdersLikeARealMetricsTable(t *testing.T) {
 	// The tuple's own closing paren is the one immediately before the
 	// statement terminator; the last key element is itself function-wrapped,
 	// so a plain "first )" would cut the tuple short.
-	closeIdx := strings.Index(tail, ");")
-	if closeIdx < 0 {
+	before, _, ok := strings.Cut(tail, ");")
+	if !ok {
 		t.Fatalf("seed DDL's ORDER BY tuple is unterminated:\n%s", ddl)
 	}
-	got := strings.TrimSpace(tail[:closeIdx])
+	got := strings.TrimSpace(before)
 
 	want := strings.Join(append(m.SortingKeyPrefix(), metricsSeedTimestampKeyFn+"("+m.TimestampColumn+")"), ", ")
 	if got != want {

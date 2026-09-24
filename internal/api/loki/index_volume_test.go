@@ -289,11 +289,11 @@ func TestIndexVolume_TargetLabelsResolveLikeTheSelector(t *testing.T) {
 	selectorSQL := get(t, q, srv.URL,
 		`/loki/api/v1/index/volume?query=%7Bservice_name%3D%22api%22%7D`)
 	const wherePrefix = "WHERE ("
-	i := strings.Index(selectorSQL, wherePrefix)
-	if i < 0 {
+	_, after, ok := strings.Cut(selectorSQL, wherePrefix)
+	if !ok {
 		t.Fatalf("no WHERE clause to read the matcher LHS from: %q", selectorSQL)
 	}
-	lhs := selectorSQL[i+len(wherePrefix):]
+	lhs := after
 	j := strings.Index(lhs, " = ?)")
 	if j < 0 {
 		t.Fatalf("could not delimit the matcher LHS in %q", selectorSQL)
@@ -337,7 +337,6 @@ func TestIndexVolume_TargetLabelsApplyInSeriesMode(t *testing.T) {
 	const projectedMap = "mapFilter((k, v) -> v != ?, map("
 
 	for _, aggregateBy := range []string{"", "series", "labels"} {
-		aggregateBy := aggregateBy
 		name := aggregateBy
 		if name == "" {
 			name = "default"

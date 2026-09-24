@@ -23,7 +23,6 @@ func TestScaling_ChDB(t *testing.T) {
 		t.Fatal("scaling registry is empty — no constructs registered; the harness would silently pass")
 	}
 	for _, c := range registry {
-		c := c
 		t.Run(c.Name, func(t *testing.T) {
 			runConstruct(t, c)
 		})

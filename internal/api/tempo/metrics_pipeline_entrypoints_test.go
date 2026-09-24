@@ -291,10 +291,10 @@ func TestAcceptedMetricsPipelineFormsCoversEveryRouterMethod(t *testing.T) {
 // tables. reflect is confined to this test file; production code never
 // inspects the interface.
 func metricsPipelineRouterMethods() []string {
-	t := reflect.TypeOf((*metricsPipelineRouter)(nil)).Elem()
+	t := reflect.TypeFor[metricsPipelineRouter]()
 	out := make([]string, 0, t.NumMethod())
-	for i := range t.NumMethod() {
-		out = append(out, t.Method(i).Name)
+	for method := range t.Methods() {
+		out = append(out, method.Name)
 	}
 	return out
 }

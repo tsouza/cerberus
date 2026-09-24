@@ -24,7 +24,6 @@ func TestParseExprPermissive_WellFormedPassesThrough(t *testing.T) {
 		`sum by (level) (count_over_time({job="api"}[5m]))`,
 	}
 	for _, q := range cases {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 			expr, err := logql.ParseExprPermissive(q)
@@ -53,7 +52,6 @@ func TestParseExprPermissive_GenuineErrorsStillSurface(t *testing.T) {
 		`{job="api"} | unknown_parser_stage`,
 	}
 	for _, q := range cases {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 			if _, err := logql.ParseExprPermissive(q); err == nil {
@@ -145,7 +143,6 @@ func TestParseExprPermissive_RelaxesOnlyTheMatcherRule(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

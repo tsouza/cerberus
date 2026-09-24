@@ -218,7 +218,6 @@ func TestDecodeResponse_ErrorPaths(t *testing.T) {
 		{"ts-neither-number-nor-string", `{"data":{"resultType":"vector","result":[{"metric":{},"value":[{},"1"]}]}}`, "ts decode"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := decodeResponse([]byte(tc.body))
@@ -267,7 +266,6 @@ func TestTypedResultIsEmpty(t *testing.T) {
 		{"unknown-kind", typedResult{kind: "histogram"}, true},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := tc.in.isEmpty(); got != tc.want {

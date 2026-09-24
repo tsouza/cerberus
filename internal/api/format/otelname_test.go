@@ -3,6 +3,7 @@ package format_test
 import (
 	"reflect"
 	"regexp"
+	"slices"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/api/format"
@@ -300,13 +301,7 @@ func TestPromLabelToOTelCandidatesGCP(t *testing.T) {
 		{"loadbalancing_googleapis_com_https_total_latencies_bucket", "loadbalancing.googleapis.com/https/total_latencies_bucket"},
 	} {
 		got := format.PromLabelToOTelCandidates(tc.in)
-		found := false
-		for _, c := range got {
-			if c == tc.raw {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(got, tc.raw)
 		if !found {
 			t.Errorf("PromLabelToOTelCandidates(%q): raw OTel name %q not reconstructed (got %d candidates)",
 				tc.in, tc.raw, len(got))

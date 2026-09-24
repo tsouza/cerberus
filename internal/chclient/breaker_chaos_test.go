@@ -191,7 +191,7 @@ func TestBreaker_OpensAfterNConsecutiveFailures(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	for i := 0; i < breakerThreshold; i++ {
+	for i := range breakerThreshold {
 		_, err := client.Query(ctx, "SELECT 1")
 		if err == nil {
 			t.Fatalf("Query %d: nil error, want flakyConn failure", i)
@@ -217,7 +217,7 @@ func TestBreaker_FastFailsWhenOpen(t *testing.T) {
 	client, _ := newBreakerTestClient(t, conn)
 
 	ctx := context.Background()
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		_, _ = client.Query(ctx, "SELECT 1")
 	}
 	if client.br.currentState() != "open" {
@@ -248,7 +248,7 @@ func TestBreaker_HalfOpenAfterBackoff(t *testing.T) {
 
 	ctx := context.Background()
 	// Trip OPEN.
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		_, _ = client.Query(ctx, "SELECT 1")
 	}
 	if client.br.currentState() != "open" {
@@ -285,7 +285,7 @@ func TestBreaker_ProbeSuccessClosesCircuit(t *testing.T) {
 	client, setNow := newBreakerTestClient(t, conn)
 
 	ctx := context.Background()
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		_, _ = client.Query(ctx, "SELECT 1")
 	}
 	if client.br.currentState() != "open" {
@@ -306,7 +306,7 @@ func TestBreaker_ProbeSuccessClosesCircuit(t *testing.T) {
 	}
 
 	// Subsequent requests flow through.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		_, err := client.Query(ctx, "SELECT 1")
 		if err != nil {
 			t.Errorf("post-recovery Query %d: %v", i, err)
@@ -324,7 +324,7 @@ func TestBreaker_ProbeFailureKeepsOpen(t *testing.T) {
 	client, setNow := newBreakerTestClient(t, conn)
 
 	ctx := context.Background()
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		_, _ = client.Query(ctx, "SELECT 1")
 	}
 	if client.br.currentState() != "open" {
@@ -377,7 +377,7 @@ func TestBreaker_ConcurrentRequestsDuringHalfOpen(t *testing.T) {
 	client, setNow := newBreakerTestClient(t, conn)
 
 	ctx := context.Background()
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		_, _ = client.Query(ctx, "SELECT 1")
 	}
 	if client.br.currentState() != "open" {
@@ -400,7 +400,7 @@ func TestBreaker_ConcurrentRequestsDuringHalfOpen(t *testing.T) {
 	// so atomic counters are mandatory under -race.
 	var admitted, rejected, unexpected atomic.Int64
 	start := make(chan struct{})
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			defer wg.Done()
 			<-start
@@ -482,7 +482,7 @@ func TestBreaker_SuccessResetsCounter(t *testing.T) {
 
 	// 4 failures.
 	conn.setFail(true)
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		_, _ = client.Query(ctx, "SELECT 1")
 	}
 	if got := client.br.currentState(); got != "closed" {
@@ -499,7 +499,7 @@ func TestBreaker_SuccessResetsCounter(t *testing.T) {
 	// success. The counter should have reset on the success, so we
 	// land at 4 < threshold and the breaker stays CLOSED.
 	conn.setFail(true)
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		_, _ = client.Query(ctx, "SELECT 1")
 	}
 	if got := client.br.currentState(); got != "closed" {
@@ -557,7 +557,7 @@ func TestBreaker_PingRespectsBreaker(t *testing.T) {
 	ctx := context.Background()
 	// Trip the breaker via Ping itself (Ping is one of the wrapped
 	// methods so failures count toward the threshold).
-	for i := 0; i < breakerThreshold; i++ {
+	for i := range breakerThreshold {
 		err := client.Ping(ctx)
 		if err == nil {
 			t.Fatalf("Ping %d: nil err on flaky conn", i)
@@ -593,7 +593,7 @@ func TestBreaker_ExecRespectsBreaker(t *testing.T) {
 	client, _ := newBreakerTestClient(t, conn)
 
 	ctx := context.Background()
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		_ = client.Exec(ctx, "CREATE TABLE t (x Int32) ENGINE = Memory")
 	}
 	if got := client.br.currentState(); got != "open" {
@@ -615,7 +615,7 @@ func TestBreaker_QueryStringsRespectsBreaker(t *testing.T) {
 	client, _ := newBreakerTestClient(t, conn)
 
 	ctx := context.Background()
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		_, _ = client.QueryStrings(ctx, "SELECT name FROM system.tables")
 	}
 	if got := client.br.currentState(); got != "open" {
@@ -644,11 +644,11 @@ func TestBreaker_WindowRolls(t *testing.T) {
 	// then 4 more. Total 8 failures but only 4 in any one window,
 	// so the breaker stays CLOSED.
 	setNow(t0)
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		_, _ = client.Query(ctx, "SELECT 1")
 	}
 	setNow(t0.Add(20 * time.Second))
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		_, _ = client.Query(ctx, "SELECT 1")
 	}
 	if got := client.br.currentState(); got != "closed" {

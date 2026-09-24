@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -453,11 +454,9 @@ func (w *World) thenForeignTenantAbsent() error {
 		return fmt.Errorf("cerberus's metric-name catalog has not been proven populated in this run; the " +
 			"scenario must assert the archetype's declared metric names are present before this absence claim")
 	}
-	for _, name := range w.tenant.metricNames {
-		if name == foreignTenantMetric {
-			return fmt.Errorf("cerberus's metric-name catalog includes %q, which exists only in the foreign tenant's database %s",
-				foreignTenantMetric, foreignTenantDatabase)
-		}
+	if slices.Contains(w.tenant.metricNames, foreignTenantMetric) {
+		return fmt.Errorf("cerberus's metric-name catalog includes %q, which exists only in the foreign tenant's database %s",
+			foreignTenantMetric, foreignTenantDatabase)
 	}
 	return nil
 }
@@ -543,11 +542,9 @@ func (w *World) thenForeignTenantLabelAbsent() error {
 		return fmt.Errorf("cerberus's label surface has not been proven populated in this run; the scenario " +
 			"must assert the fixture's mapped labels are present before this absence claim")
 	}
-	for _, name := range w.tenant.labelNames {
-		if name == foreignTenantLabel {
-			return fmt.Errorf("cerberus's label surface includes %q, which exists only in the foreign tenant's database %s",
-				foreignTenantLabel, foreignTenantDatabase)
-		}
+	if slices.Contains(w.tenant.labelNames, foreignTenantLabel) {
+		return fmt.Errorf("cerberus's label surface includes %q, which exists only in the foreign tenant's database %s",
+			foreignTenantLabel, foreignTenantDatabase)
 	}
 	return nil
 }

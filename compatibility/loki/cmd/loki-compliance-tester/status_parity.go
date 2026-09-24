@@ -134,7 +134,6 @@ func compareStatusParityOne(c *http.Client, f flags, sc statusParityCase, start,
 	var wg sync.WaitGroup
 	wg.Add(2)
 	for idx, addr := range []string{f.addr1, f.addr2} {
-		idx, addr := idx, addr
 		go func() {
 			defer wg.Done()
 			status, body, err := fetchRawStatus(c, addr, sc.path, params)
