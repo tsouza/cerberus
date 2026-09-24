@@ -10,6 +10,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/health"
 	"github.com/tsouza/cerberus/internal/api/info"
 	"github.com/tsouza/cerberus/internal/api/prom"
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
@@ -71,11 +72,19 @@ func (l *chOptLive) infoState() info.OptState {
 // SettingsRules the set gates, and the prom handler takes the native-lowering
 // dispatch table the set selects.
 //
-// Nothing else in the process reads the set on the query path. The only other
-// set-gated decision, the client-side columnar matrix decode, is off the version
-// axis entirely (columnar_result_decode is AlwaysAvailable and opt-in only), so
-// no server upgrade can move it and it stays a boot-time swap.
+// The only set-gated client decision, the columnar matrix decode, is off the
+// version axis entirely (columnar_result_decode is AlwaysAvailable and opt-in
+// only), so no server upgrade can move it and it stays a boot-time swap. The
+// client-wide query-condition-cache override is not set-gated at all: every
+// re-probe pass refreshes it from the fleet (refreshConditionCacheOverride),
+// whatever the resolution did.
 type chOptConsumers struct {
+	// client is the shared data-plane client, or nil in a harness that serves
+	// no queries. Its ForHead views share the override it carries.
+	client *chclient.Client
+	// fleet probes the build of every node client can reach, for the
+	// condition-cache override; nil in a harness without a client.
+	fleet fleetProber
 	// engines are the built heads' engines, in mount order. A disabled head has
 	// no engine here, so the swap touches exactly what this process serves.
 	engines []*engine.Engine
@@ -106,6 +115,28 @@ func (c chOptConsumers) apply(cfg config.Config, res chOptResolution) {
 		c.prom.SetLowerers(nativeRangeLowerers(res.Set))
 	}
 }
+
+// logCancellationGaps warns once per gap the probed build carries: a
+// function cerberus emits whose single call the server does not interrupt, so
+// a timed-out or cancelled query answers the client on time while the server
+// finishes that call. It is the operator-facing half of the supported-version
+// policy for bounded server-side cancellation (chopt.CancellationGaps).
+func logCancellationGaps(logger *slog.Logger, server chopt.Version) {
+	for _, g := range chopt.CancellationGaps(server) {
+		logger.Warn(
+			"clickhouse build does not interrupt a running call of functions cerberus emits; "+
+				"a timed-out or cancelled query keeps using server CPU until that call finishes",
+			"server_version", server.String(),
+			"functions", strings.Join(g.Functions, ","),
+			"upstream_fix", g.Defect,
+			"fixed_in", g.Fixed.String(),
+		)
+	}
+}
+
+// versionProber reads the server version the resolution runs against.
+// Production passes probeVersionOverBootstrap.
+type versionProber func(ctx context.Context, chCfg chclient.Config) (chopt.Version, error)
 
 // chOptReprobeInterval is the cadence at which cerberus re-reads the connected
 // ClickHouse server's capabilities. It is a compromise between two costs that
@@ -197,6 +228,7 @@ func reprobeCHOptimizations(
 	consumers chOptConsumers,
 	interval time.Duration,
 	rawQueryWorkload string,
+	probeVersion versionProber,
 ) {
 	// A timer rather than a ticker: the delay is re-derived from the
 	// resolution in force after every attempt, so a pod pinned to the floor
@@ -211,7 +243,14 @@ func reprobeCHOptimizations(
 		case <-timer.C:
 		}
 
-		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload)
+		// The condition-cache override follows the fleet on every pass,
+		// before and regardless of the resolution: a resolve error, a floor
+		// fallback, or an unchanged set must never leave a known-unsafe build
+		// serving from its cache.
+		if consumers.client != nil && consumers.fleet != nil {
+			refreshConditionCacheOverride(ctx, logger, consumers.client, consumers.fleet)
+		}
+		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload, probeVersion)
 		if !ok {
 			// The resolution in force is unchanged, so the delay is derived
 			// from it: still on the floor means still retrying fast.
@@ -228,6 +267,9 @@ func reprobeCHOptimizations(
 		// against, which is the direction an operator can act on.
 		live.store(next)
 		consumers.apply(cfg, next)
+		if !next.VersionFallback && next.ResolvedVersion != prev.ResolvedVersion {
+			logCancellationGaps(logger, next.ResolvedVersion)
+		}
 		logger.Info(
 			"clickhouse optimizations re-resolved",
 			"server_version", next.ResolvedVersion.String(),
@@ -252,8 +294,8 @@ func reprobeCHOptimizations(
 // CERBERUS_CH_QUERY_WORKLOAD — see reprobeCHOptimizations's own doc for why
 // this must be the immutable raw value, not a copy of cfg.CHQueryWorkload
 // that boot may already have zeroed.
-func resolveCHOptimizationsOnce(ctx context.Context, logger *slog.Logger, cfg config.Config, rawQueryWorkload string) (chOptResolution, bool) {
-	resolvedVersion, err := probeVersionOverBootstrap(ctx, cfg.ClickHouse)
+func resolveCHOptimizationsOnce(ctx context.Context, logger *slog.Logger, cfg config.Config, rawQueryWorkload string, probeVersion versionProber) (chOptResolution, bool) {
+	resolvedVersion, err := probeVersion(ctx, cfg.ClickHouse)
 	versionFallback := err != nil
 	if err != nil {
 		resolvedVersion = supportedFloorVersion
@@ -267,10 +309,14 @@ func resolveCHOptimizationsOnce(ctx context.Context, logger *slog.Logger, cfg co
 		ResultCacheCapability: probeResultCacheCapabilityOverBootstrap(ctx, cfg.ClickHouse),
 	}, resolvedVersion)
 	if err != nil {
-		// Unreachable for a selection that already resolved at boot (the
-		// selection is fixed for the life of the process), so this is logged
-		// rather than swallowed: it would mean the resolver disagreed with
-		// itself, which an operator needs to see.
+		// The selection resolved at boot, but the server it resolved against
+		// can change under a running process: under enforcing, an explicit
+		// feature is refused once the server drops below its floor or moves
+		// into one of its known-defective builds (a rollback, or a load
+		// balancer landing on an older replica). A re-probe never kills a
+		// serving pod, so the set in force is kept and the refusal logged.
+		// The one decision that must not wait on this — the condition-cache
+		// override — was already refreshed from the fleet above.
 		logger.Warn("clickhouse optimizations re-resolve failed; keeping the set in force", "err", err)
 		return chOptResolution{}, false
 	}

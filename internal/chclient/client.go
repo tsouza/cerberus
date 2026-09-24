@@ -526,6 +526,11 @@ type Client struct {
 	// pointer also makes Close idempotent + view-safe: whichever Client calls
 	// Close first stops the single loop exactly once via recovery.stop.
 	recovery *recoveryLoop
+
+	// conditionCacheDisabled forces use_query_condition_cache=0 onto every
+	// data-plane query; see SetQueryConditionCacheDisabled. A pointer so every
+	// ForHead view shares the one switch the capability re-probe flips.
+	conditionCacheDisabled *atomic.Bool
 }
 
 // buildBreakers constructs the per-head breaker registry shared by all of a
@@ -833,6 +838,8 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 		dataShardFanoutGate: dataShardFanoutGate,
 		dataShardFanoutCap:  dataShardFanoutCap,
 		queryTimeout:        cfg.QueryTimeout,
+
+		conditionCacheDisabled: new(atomic.Bool),
 	}
 	// Resolve the cursor-decode strategy ONCE, here at construction. The
 	// default is the concrete row path; when Config.ColumnarMatrixDecode is set
@@ -966,6 +973,12 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	// is intentional and visible here, not accidental.
 	for name, value := range perQuery {
 		s[name] = value
+	}
+	if c.QueryConditionCacheDisabled() {
+		// Applied after the per-query settings: the override exists because
+		// the server build is known to return wrong results through the
+		// cache, so nothing may re-enable it for a single query.
+		s[SettingUseQueryConditionCache] = 0
 	}
 	if blockSize > 0 {
 		// Per-request override (WithMaxBlockSize) — only ever set by the
@@ -1258,7 +1271,7 @@ func newWithConn(conn driver.Conn) *Client {
 	// tests. nil metrics = the no-telemetry path (these tests assert breaker
 	// state via currentState(), not via the metric label).
 	def, registry := buildBreakers(false, 0, 0, 0, nil)
-	c := &Client{conn: conn, br: def, breakers: registry}
+	c := &Client{conn: conn, br: def, breakers: registry, conditionCacheDisabled: new(atomic.Bool)}
 	// The cursor-decode strategy is ALWAYS non-nil — the row path is the
 	// default, matching production New with the columnar flag off. QueryCursor
 	// dispatches to it unconditionally, so the seam must wire it too.
