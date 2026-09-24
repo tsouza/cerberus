@@ -1,7 +1,9 @@
 package chsql
 
 import (
+	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -141,5 +143,96 @@ func TestMutation_RangeBucketFanoutFoldCostAliases_RequiresGroupArray(t *testing
 	})
 	if err == nil {
 		t.Fatal("rangeBucketFanoutFoldCostAliases accepted an accumulator set with no groupArray")
+	}
+}
+
+// TestAbsentOverTime_PrefilterLowerBookendFollowsQueryMode pins which bookend
+// bounds the global matcher prefilter from below. A range query's earliest
+// anchor is Start, so the prefilter must reach back to Start - Range; an
+// instant query has its single anchor at End and ignores Start, so the
+// prefilter starts at End - Range.
+func TestAbsentOverTime_PrefilterLowerBookendFollowsQueryMode(t *testing.T) {
+	t.Parallel()
+
+	const inputTimestamp = "physical_sample_time"
+	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
+	start := end.Add(-time.Hour)
+	lowerBound := func(bookend time.Time) string {
+		return renderFragToSQL(Gt(Col(inputTimestamp),
+			Sub(absentOverTimeBookendFrag(bookend, 0), Call("toIntervalNanosecond", InlineLit(time.Minute.Nanoseconds())))))
+	}
+	for name, tc := range map[string]struct {
+		step        time.Duration
+		want, avoid time.Time
+	}{
+		"range":   {step: time.Minute, want: start, avoid: end},
+		"instant": {step: 0, want: end, avoid: start},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sql, _, err := Emit(context.Background(), &chplan.AbsentOverTime{
+				Input:            closedRoleProject(chplan.Column{Name: inputTimestamp, Role: chplan.RoleTimestamp}),
+				Range:            time.Minute,
+				Start:            start,
+				End:              end,
+				Step:             tc.step,
+				TimestampColumn:  "TimeUnix",
+				MetricNameColumn: "MetricName",
+				AttributesColumn: "Attributes",
+				ValueColumn:      "Value",
+			})
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			if want := lowerBound(tc.want); !strings.Contains(sql, want) {
+				t.Errorf("prefilter lower bound: want %s\nSQL: %s", want, sql)
+			}
+			if avoid := lowerBound(tc.avoid); strings.Contains(sql, avoid) {
+				t.Errorf("prefilter lower bound must not start from %s\nSQL: %s", avoid, sql)
+			}
+		})
+	}
+}
+
+// TestAbsentOverTime_RangeGridCoversEachSampleLookback pins the range-mode
+// anchor arithmetic. A one-hour query at a one-minute step has
+// (End-Start)/Step + 1 = 61 anchors, and a sample at distance dist past Start
+// covers the anchors i with ts <= a_i and ts > a_i - Range, which is
+// floor((dist-1)/Step)+1 <= i <= floor((dist+Range-1)/Step) — clamped to the
+// grid [0, 61).
+func TestAbsentOverTime_RangeGridCoversEachSampleLookback(t *testing.T) {
+	t.Parallel()
+
+	const inputTimestamp = "physical_sample_time"
+	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
+	start := end.Add(-time.Hour)
+	lookback := 5 * time.Minute
+	sql, _, err := Emit(context.Background(), &chplan.AbsentOverTime{
+		Input:            closedRoleProject(chplan.Column{Name: inputTimestamp, Role: chplan.RoleTimestamp}),
+		Range:            lookback,
+		Start:            start,
+		End:              end,
+		Step:             time.Minute,
+		TimestampColumn:  "TimeUnix",
+		MetricNameColumn: "MetricName",
+		AttributesColumn: "Attributes",
+		ValueColumn:      "Value",
+	})
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	dist := renderFragToSQL(Call("dateDiff", InlineLit("nanosecond"), absentOverTimeBookendFrag(start, 0), Col(inputTimestamp)))
+	floorIdx := func(numerator string) string {
+		step := "toInt64(" + strconv.FormatInt(time.Minute.Nanoseconds(), 10) + ")"
+		return "intDiv(" + numerator + ", " + step + ") - (modulo(" + numerator + ", " + step + ") < 0) + 1"
+	}
+	for _, want := range []string{
+		"range(0, 61)",
+		"range(greatest(0, " + floorIdx(dist+" - 1") + "), ",
+		"least(61, " + floorIdx(dist+" + "+strconv.FormatInt(lookback.Nanoseconds()-1, 10)) + ")",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("range grid: want %s\nSQL: %s", want, sql)
+		}
 	}
 }

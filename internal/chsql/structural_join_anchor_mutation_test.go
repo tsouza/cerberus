@@ -30,9 +30,9 @@ func structuralClosurePlan() *chplan.StructuralJoin {
 // and then dropped is invisible in the result set and shows up only as the
 // runaway scan it was added to prevent.
 //
-// Kills structural_join.go's `len(seedWhere) > 0` CONDITIONALS_NEGATION
-// (`<= 0`), which applies the seed WHERE only when it is EMPTY — so exactly the
-// plans that asked for pruning get none.
+// Pins that the anchor applies every conjunct structuralAnchorWhere returns
+// (structural_join.go:`anchor = anchor.Where(structuralAnchorWhere(j, rightSub)...)`);
+// dropping that call leaves exactly the plans that asked for pruning with none.
 func TestEmitStructuralRecursive_AnchorCarriesCandidatePrefilter(t *testing.T) {
 	t.Parallel()
 
@@ -53,8 +53,8 @@ func TestEmitStructuralRecursive_AnchorCarriesCandidatePrefilter(t *testing.T) {
 // top-N trace ids. Dropping it turns a bounded phase-B into a full closure over
 // every seeded trace.
 //
-// Kills the same `len(seedWhere) > 0` CONDITIONALS_NEGATION via the second
-// conjunct source, so the assertion does not rest on the prefilter alone.
+// Pins the same seed WHERE via the second conjunct source, so the assertion
+// does not rest on the prefilter alone.
 func TestEmitStructuralRecursive_AnchorCarriesTraceIDRestriction(t *testing.T) {
 	t.Parallel()
 
@@ -144,26 +144,3 @@ func TestEmitStructuralRecursive_InverseAnchorUnrestrictedHasNoSeedWhere(t *test
 		t.Fatalf("plan set no pruning bound, yet the inverse anchor seed carries a WHERE:\n%s", sql)
 	}
 }
-
-// NOT KILLABLE — documented, not defended by a test.
-//
-// structural_join.go:`len(seedWhere) > 0` (CONDITIONALS_BOUNDARY,
-// `if seedWhere := structuralAnchorWhere(j, rightSub); len(seedWhere) > 0`
-// -> `>= 0`). The
-// forms differ only when seedWhere is empty, where the mutant runs
-// `anchor = anchor.Where()`. QueryBuilder.Where is variadic and its body is
-// `s.where = append(s.where, conds...)`, so a zero-argument call appends
-// nothing and returns the same builder — the WHERE slot stays empty and the
-// renderer emits no clause. Byte-identical SQL. (The CONDITIONALS_NEGATION
-// mutant on this same comparison is a real defect, and the three tests
-// above kill it.)
-//
-// structural_join.go:`len(cols) > 0` (CONDITIONALS_BOUNDARY,
-// `if cols := structuralUnionOutputCols(j); len(cols) > 0` -> `>= 0` in
-// emitStructuralSpanUnion). structuralUnionOutputCols returns either nil or
-// the three join keys plus the extra projection columns, so len(cols) is
-// either 0 or at least 3 and the forms can differ only at 0. There the
-// original keeps `proj = []Frag{verbatim("*")}` while the mutant rebuilds
-// proj as an EMPTY slice and passes it to Select — and QueryBuilder's
-// renderer writes a bare `*` for an empty SELECT list. Both spellings
-// render `SELECT *`, so the statement is byte-identical.
