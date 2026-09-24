@@ -1350,7 +1350,16 @@ func lowerOuterRangeFnOverHistogramSubquery(
 // Name-DROPPING inners fall out for free — `rate(m[5m])[1h:5m]` roots at
 // a reducing window and `(a - b)[5m:1m]` at a Project holding the empty
 // literal, both of which [subquerySpineNameWindows] declines.
+//
+// A Filter over the root window — the stale-marker drop a subquery over a
+// bare selector ends with — stays on top of the re-exposed shape.
 func wrapBareSubqueryName(plan chplan.Node, s schema.Metrics) chplan.Node {
+	if f, ok := plan.(*chplan.Filter); ok {
+		if wrapped := wrapBareSubqueryName(f.Input, s); wrapped != f.Input {
+			return &chplan.Filter{Input: wrapped, Predicate: f.Predicate}
+		}
+		return plan
+	}
 	rw, ok := plan.(*chplan.RangeWindow)
 	if !ok || s.MetricNameColumn == "" {
 		return plan
