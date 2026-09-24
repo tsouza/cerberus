@@ -90,20 +90,27 @@
 version: "2"
 
 run:
-  # `10m` is a runaway-analysis guard, not a contention tripwire — the `lint`
+  # `18m` is a runaway-analysis guard, not a contention tripwire — the `lint`
   # job's own `timeout-minutes` (.github/workflows/ci.yml) is the outer safety
   # net, so this cap only needs to fire on a genuinely pathological analysis,
-  # not on ordinary shared-runner noise. Measured cold (`golangci-lint cache
+  # not on ordinary substrate slowness. Measured cold (`golangci-lint cache
   # clean`, matching CI's `skip-cache: true`) across five consecutive `main`
-  # runs on 2026-08-20, the tagged pass — the more expensive of the two
-  # `run: ./...` invocations this timeout applies to — took 2m46s-3m47s; a
-  # sixth run (#32253179854 attempt 1, same commit that passed at 3m07s on
-  # retry) hit the OLD 5m cap at 5m05s on pure runner contention, confirmed by
-  # near-identical CPU-seconds between the failing and passing attempts
-  # (issue #2388). 10m is >2.6x the worst clean pass observed, comfortably
-  # absorbing that class of contention while still catching an actual
-  # runaway.
-  timeout: 10m
+  # runs on 2026-08-20 on GitHub-hosted runners, the tagged pass — the more
+  # expensive of the two `run: ./...` invocations this timeout applies to —
+  # took 2m46s-3m47s; a sixth run (#32253179854 attempt 1, same commit that
+  # passed at 3m07s on retry) hit the OLD 5m cap at 5m05s on pure runner
+  # contention (issue #2388), which set the previous 10m value.
+  #
+  # The `cerberus-heavy` self-hosted pool (#3677) is real, measurably slower
+  # hardware for this specific workload — a real, scheduler-guaranteed 1 CPU
+  # per pod against a burst ceiling of 3, not a fixed multi-core GitHub-hosted
+  # box — and the tagged pass completed clean (0 issues) at 11m24s on PR
+  # #3678's own validating run, just past the old 10m cap. 18m keeps ~1.6x
+  # that measurement as margin, comfortably past ordinary self-hosted
+  # contention while still catching an actual runaway; the outer job timeout
+  # (.github/workflows/ci.yml) scales with this value — see that file's
+  # comment.
+  timeout: 18m
 
   # golangci-lint analyses ONE build configuration per invocation, so a run
   # that sets no tags cannot see a single tagged file — 120 `chdb` files (the
