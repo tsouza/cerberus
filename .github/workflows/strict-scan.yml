@@ -445,3 +445,52 @@ jobs:
 
       - name: Run emitted regex shapes with native compilation on and off (real ClickHouse)
         run: just regex-jit-integration
+
+  # The query condition cache's result equivalence and ClickHouse's
+  # cancellation of CPU-bound expressions are server-side mechanisms cerberus
+  # relies on but cannot implement, and upstream fixes show both failing on
+  # specific builds. This job boots the exact builds that bracket each fix,
+  # drives cerberus-emitted shapes through the production handlers and client,
+  # and requires what each build does to match the version policy
+  # internal/chopt records for it (condition_cache's UnsafeBuilds,
+  # CancellationGaps). See test/chserver/doc.go. It is its own job, beside
+  # strict-scan rather than a step inside it, so neither lane's wall clock
+  # grows with the other's.
+  ch-server-safety:
+    name: ch-server-safety
+    needs: changes
+    # `always()` for the same reason as strict-scan above: a failed `changes`
+    # must fail this job, never skip it into green.
+    if: >-
+      always() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
+    runs-on: ubuntu-latest
+    # Fourteen pinned ClickHouse images, thirteen condition-cache servers run
+    # three at a time, and three cancellation servers whose probes calibrate
+    # each workload to about ten seconds of uncancelled work.
+    timeout-minutes: 25
+    steps:
+      - name: gate on the changes job
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::changes did not succeed (${{ needs.changes.result }}); a check must not be skipped into green."
+          exit 1
+      - uses: actions/checkout@v7
+
+      # Fourteen ClickHouse images plus their running containers outgrow the
+      # runner's ~14 GB of free root fs. Reclaim the unused pre-baked
+      # toolchains first; Docker's own images are kept.
+      - uses: ./.github/actions/free-disk-space
+
+      - uses: ./.github/actions/setup-go
+
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
+        with:
+          tool: just@1.46.0
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - name: Run condition-cache and cancellation probes across pinned builds (real ClickHouse)
+        run: just ch-server-safety-integration

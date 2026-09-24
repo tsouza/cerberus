@@ -1442,6 +1442,12 @@
           "evidence_system": "source-path",
           "obligations": [
             {
+              "lane_id": "chdb.ch-server-safety",
+              "context_name": "ch-server-safety",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "chdb.perf-guards",
               "context_name": "perf-guards",
               "merge_required": false,
@@ -1617,6 +1623,12 @@
           "evidence_class": "execution",
           "evidence_system": "source-path",
           "obligations": [
+            {
+              "lane_id": "chdb.ch-server-safety",
+              "context_name": "ch-server-safety",
+              "merge_required": false,
+              "release_required": false
+            },
             {
               "lane_id": "chdb.perf-guards",
               "context_name": "perf-guards",

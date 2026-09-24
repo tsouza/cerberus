@@ -95,11 +95,11 @@ It runs at startup, and again every `5m` while the process serves (see
 [Re-probe](#re-probe)), so the set in force always describes the server
 cerberus is actually connected to.
 
-| `CERBERUS_CH_OPTIMIZATIONS`   | Effect                                                                                                                                        |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `off`                         | Empty set.                                                                                                                                    |
-| `auto`                        | Every `autoSelect: yes` feature with `minVersion <= server` (includes the experimental native aggregates; excludes `columnar_result_decode`). |
-| explicit list                 | Per id: supported -> enable; unsupported -> `enforcing`: FATAL / `permissive`: WARN + skip. Unknown id -> FATAL (both modes).                 |
+| `CERBERUS_CH_OPTIMIZATIONS`   | Effect                                                                                                                                                                                                                                                                     |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `off`                         | Empty set.                                                                                                                                                                                                                                                                 |
+| `auto`                        | Every `autoSelect: yes` feature with `minVersion <= server` (includes the experimental native aggregates; excludes `columnar_result_decode`), minus any feature the probed build is [known to return wrong results through](#known-defective-server-builds) (WARN + skip). |
+| explicit list                 | Per id: supported -> enable; unsupported or known-defective build -> `enforcing`: FATAL / `permissive`: WARN + skip. Unknown id -> FATAL (both modes).                                                                                                                     |
 
 The boot log records the resolved set, the server version it resolved
 against, and any skips or the deprecation notice (below).
@@ -126,7 +126,7 @@ table.
 | id                               | minVersion | stability    | autoSelect | experimental setting                                 | doc                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | -------------------------------- | ---------- | ------------ | ---------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `aggregation_in_order`           | 24.8       | stable       | yes        | (none)                                               | stamp optimize_aggregation_in_order=1 when the Aggregate GROUP BY is a sort-key prefix (result-equivalent)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `condition_cache`                | 25.3       | stable       | yes        | (none)                                               | stamp use_query_condition_cache=1 on predicate-stable read paths (result-equivalent cache, server >= 25.3)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `condition_cache`                | 25.3       | stable       | yes        | (none)                                               | stamp use_query_condition_cache=1 on predicate-stable read paths (result-equivalent cache, server >= 25.3 outside the known wrong-result builds)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `ts_grid_range`                  | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt eligible rate(<counter>[<range>]) shapes onto native timeSeriesRateToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `ts_grid_resample`               | 25.9       | experimental | yes        | `allow_experimental_time_series_aggregate_functions` | opt the range-mode instant-vector staleness shape onto native timeSeriesResampleToGridWithStaleness (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `columnar_result_decode`         | none       | experimental | no         | (none)                                               | decode the query_range matrix shape via ch-go columnar path (client-side, no version floor, opt-in only — never auto)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -226,9 +226,12 @@ Notes:
   its eligibility check passes: single Aggregate, all GROUP BY keys bare columns, single
   physical table, GROUP BY an ordered prefix of the schema sorting key.
   Its enablement flows from the resolved set.
-- **`condition_cache`** activates only on server `>= 25.3` and only on a
-  predicate-stable read path, gated conservatively (it needs the analyzer);
-  below 25.3 it is a no-op.
+- **`condition_cache`** activates only on server `>= 25.3`, outside the builds
+  listed under [Known-defective server builds](#known-defective-server-builds),
+  and only on a predicate-stable read path, gated conservatively (it needs the
+  analyzer); below 25.3 it is a no-op. On a listed build the data-plane client
+  instead stamps `use_query_condition_cache=0` on every query, whatever the
+  selection.
 - **`ts_grid_range`** is `experimental` in maturity but **auto-enabled** on a
   capable server (`>= 25.9`); see
   [`clickhouse-optimizations.background.md`](clickhouse-optimizations.background.md)
@@ -707,14 +710,17 @@ the measurements that settled each one — are recorded in
 
 ## Runtime version probe
 
-At connection init the client issues `SELECT version()` once, parses the
-result to a comparable `major.minor` struct, and exposes a
-`serverAtLeast(major, minor)` predicate. Resolution consumes this probe to
-decide which registry features the server supports.
+At connection init the client issues `SELECT version()` once and parses the
+result to a comparable `major.minor.patch.build` version (`26.3.17.56`; a
+trailing suffix such as `-lts` is dropped, and absent fields read as zero).
+Resolution consumes this probe to decide which registry features the server
+supports; the preflight version floor parses the same way.
 
-Patch and build suffixes (`25.8.2.1`, `25.8.2.1-lts`) are dropped: feature
-availability lands at minor-version granularity, so the comparison is over
-`(major, minor)` only. This mirrors the existing preflight version parse.
+Feature floors are bare `major.minor` values, so every build of a floor's minor
+meets it. [Known-defective build](#known-defective-server-builds) ranges are
+the one place patch and build decide the answer, because an upstream fix
+reaches each maintained release line at its own patch release. The resolved
+server version is reported at full precision (`/info`, the boot log).
 
 The probe repeats on the [re-probe](#re-probe) cadence, so a rolling ClickHouse
 upgrade that crosses a feature floor is picked up by a running cerberus without
@@ -816,11 +822,12 @@ verdict the same pass re-probes.)
 
 What a transition swaps:
 
-| Consumer                      | Effect of a re-resolved set                                                                                                                       |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PromQL range lowering         | The native `timeSeries*ToGrid` strategy table is replaced, so subsequent `query_range` requests lower to the native shape (or back to fan-out).   |
-| Engine per-query settings     | The whole `SettingsRules` value is swapped in one pointer store, so subsequent queries stamp the settings the current server supports.            |
-| `/info`                       | `clickhouse.serverVersion`, `optimizations.resolvedAgainstVersion`, and `optimizations.enabled` report the set in force, not the one booted with. |
+| Consumer                      | Effect of a re-resolved set                                                                                                                                                                                                                             |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PromQL range lowering         | The native `timeSeries*ToGrid` strategy table is replaced, so subsequent `query_range` requests lower to the native shape (or back to fan-out).                                                                                                         |
+| Engine per-query settings     | The whole `SettingsRules` value is swapped in one pointer store, so subsequent queries stamp the settings the current server supports.                                                                                                                  |
+| `/info`                       | `clickhouse.serverVersion`, `optimizations.resolvedAgainstVersion`, and `optimizations.enabled` report the set in force, not the one booted with.                                                                                                       |
+| Data-plane client             | Not part of the transition swap: every pass, whether or not its resolution changed or succeeded, re-probes the fleet and engages or lifts the `use_query_condition_cache=0` override ([Known-defective server builds](#known-defective-server-builds)). |
 
 `columnar_result_decode` is deliberately **not** in that list: it is
 `AlwaysAvailable` and opt-in only, so no server upgrade can change its verdict
@@ -832,6 +839,89 @@ strategy table or rule set, never a half-replaced one. A request that straddles
 a swap may lower with one posture and execute with the other; both are valid
 postures for the same server, because a dropped capability only ever disables a
 native path and a gained one only ever enables it.
+
+## Known-defective server builds
+
+Some ClickHouse builds meet a feature's version floor yet return wrong results
+through a server-side mechanism the feature relies on. The registry records
+these as `UnsafeBuilds` ranges — half-open `[from, until)` spans of full build
+versions, one per affected release line, each naming the upstream fix. A
+feature is withheld from the resolved set on a build inside any of its ranges:
+`auto` skips it with a `WARN`, and an explicit request is FATAL under
+`enforcing` and a `WARN` + skip under `permissive`.
+
+`condition_cache` is the one feature with recorded ranges. Two upstream
+defects let one query write a "no granule matches" verdict under a predicate's
+cache key when something other than that predicate emptied the granule, and
+every later query with the same predicate — from any user — then silently
+skips those granules:
+
+| Defect                                                                    | Trigger                                                                                                                                             | Affected builds                                                                                                     |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| [ClickHouse#105686](https://github.com/ClickHouse/ClickHouse/pull/105686) | A skip index drops whole marks before `PREWHERE` (TraceQL `PREWHERE (Duration > ?) WHERE (ResourceAttributes[?] = ?)` over the bloom index).        | `26.1` – `26.3.13.31`, `26.4` – `26.4.4.38`, `26.5` – `26.5.2.39`, `26.6` – `26.6.1.1193`                           |
+| [ClickHouse#107145](https://github.com/ClickHouse/ClickHouse/pull/107145) | A row policy (or on-the-fly mutation) hides whole granules from a restricted user reading with the same `PREWHERE` predicate cerberus emits.        | `25.3` – `26.3.17.56`, `26.4` – `26.4.5.143`, `26.5` – `26.5.6.64`, `26.6` – `26.6.1.1193`                          |
+
+Each upper bound is exclusive: it is the first published release of the line
+verified clean. The `26.6` rows cover only pre-release builds.
+
+ClickHouse enables the query condition cache by default, so withholding the
+feature is not enough: while any node cerberus can reach runs a build inside
+either table row, the data-plane client stamps `use_query_condition_cache=0` on
+every query it dispatches, applied after every per-query setting, under every
+selection including `off`. The nodes are every configured ClickHouse address
+and, when `CERBERUS_SCHEMA_CLUSTER` is set, every replica of that cluster
+(`clusterAllReplicas`). The override is refreshed on every
+[re-probe](#re-probe) pass, independently of whether that pass's resolution
+succeeded or changed anything. It lifts only once every node answers from a
+fixed build; a pass that could not reach every node and saw no affected build
+leaves it as it was. A change is logged (`query condition cache override
+changed`).
+
+A server reporting a non-upstream version string — a vendor suffix
+(`.altinitystable`), an extra version field, or a suffix glued to a field — is
+parsed with `Vendor` set and judged by its `major.minor` line alone: it is
+inside a range whenever its line overlaps the range's lines, and it carries a
+cancellation gap until its line is past the fix's line. Cerberus logs a
+`WARN` at boot for such a server.
+
+Under `enforcing`, an explicit `condition_cache` is FATAL at boot on an
+affected build. A running process never exits on a re-probe: if the server
+later moves into an affected build, the refused re-resolution keeps the set in
+force and logs a `WARN`, while the override above engages on the same pass.
+
+The index-selection defect fixed by
+[ClickHouse#108548](https://github.com/ClickHouse/ClickHouse/pull/108548)
+needs a skip index whose verdict can disagree with the row predicate (a text
+index with a preprocessor); cerberus provisions no such index, so it carries no
+range.
+
+### Cancellation of CPU-bound expressions
+
+ClickHouse checks a query's cancellation and `max_execution_time` between
+pipeline blocks. Before the builds below, a single call of these functions
+cerberus emits did not also check inside its own loop, so a query that timed
+out or was cancelled while inside the call kept a server thread busy until the
+call finished:
+
+| Functions                                                          | Emitted by                                                                        | First fixed build |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------- | ----------------- |
+| `arrayFold`                                                        | range-window folds (`double_exponential_smoothing`), LogQL pattern line filters   | `26.7.1.446`      |
+| `replaceAll`, `replaceOne`, `replaceRegexpAll`, `replaceRegexpOne` | PromQL label-name normalization, LogQL `json` key sanitising and unit conversions | `26.8.1.581`      |
+
+Bounded server-side cancellation of cerberus-emitted expressions is supported
+on builds carrying every fix in that table. On an older build cerberus still
+answers a timed-out or cancelled request, but the server may keep evaluating
+the in-flight call; cerberus logs one `WARN` per remaining gap at boot and
+whenever a re-probe finds a different server version.
+
+A dispatch cancelled after its statement reached the server — the request
+deadline passing, the client disconnecting, or a routed sibling being
+cancelled — issues `KILL QUERY ... SYNC` for its own `query_id` before its
+connection and admission are released. The wait is bounded at 5 seconds: it
+ends early once ClickHouse confirms the statement stopped, and runs its full
+length when the server cannot interrupt the in-flight call or when the kill
+itself waits for a pooled connection. A dispatch cancelled while still waiting
+for a pooled connection or a dial issues no kill.
 
 ## Legacy alias: `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`
 
@@ -1060,7 +1150,9 @@ Nothing in this suite can break ClickHouse 24.8:
 
 - `aggregation_in_order` and `log_comment` are 24.8-safe (long-standing
   result-equivalent / free-form knobs).
-- `condition_cache` activates only on `>= 25.3`; below that it is a no-op.
+- `condition_cache` activates only on `>= 25.3`, outside its
+  [known-defective builds](#known-defective-server-builds); below 25.3 it is a
+  no-op.
 - `ts_grid_range` and `ts_grid_resample` activate only on `>= 25.9`
   (experimental maturity, auto-enabled there); below 25.9 they are absent from
   the resolved set.
