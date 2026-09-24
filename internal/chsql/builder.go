@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"regexp/syntax"
 	"strconv"
 	"strings"
@@ -1552,9 +1553,14 @@ func (b *Builder) labelReplaceSubstitution(l *chplan.LabelReplace, anchored stri
 // has no substitution ceiling; out-of-range and no-match indexing both
 // yield the empty string, which is what Go's ExpandString substitutes for
 // a group that bound to nothing. The whole-match group is read off the
-// source value directly — the regex is anchored, so a match spans the
-// entire source string, and `extractGroups` numbers from the first real
-// group.
+// source value directly when l.Regex's anchors cannot split (the common
+// case) — the anchoring then guarantees a match spans the entire source
+// string, and `extractGroups` numbers from the first real group anyway, so
+// there is no subscript for the whole match to read even if wanted. When
+// [labelReplaceAnchorsMaySplit] reports true, no such guarantee holds — a
+// match can cover only a prefix or a suffix — so the whole-match group is
+// read back from a dedicated capturing wrapper instead; see
+// [wholeMatchExtractRegex].
 //
 // A segment carrying Fallbacks references a NAME that several capture
 // groups share. Go's ExpandString expands it to the first of those groups
@@ -1576,6 +1582,9 @@ func (b *Builder) labelReplaceSegment(l *chplan.LabelReplace, seg chplan.LabelRe
 		b.Arg(seg.Literal)
 		return nil
 	case chplan.WholeMatchGroup:
+		if labelReplaceAnchorsMaySplit(l.Regex) {
+			return b.wholeMatchGroupValue(l)
+		}
 		return b.srcValue(l)
 	}
 	// srcValue renders a plan sub-expression and can fail, while a Frag
@@ -1656,6 +1665,66 @@ func labelReplaceExtractRegex(l *chplan.LabelReplace, anchored string) string {
 		return anchored
 	}
 	return anchorLabelReplaceRegex(l.ProbedRegex)
+}
+
+// labelReplaceAnchorsMaySplit reports whether [anchorLabelReplaceRegex]'s
+// `^(?s:…)$` wrapper can bind the anchors around only PART of regex
+// instead of the whole pattern — the precondition for trusting that a
+// match spans the entire source value (see that function's doc comment
+// for the two ways a bare `^…$` gets this wrong, and
+// [qlcommon.regexAnchorsMaySplit] for the balanced-parens argument — the
+// two must never drift, so this is a byte-for-byte duplicate of that
+// check, not an approximation of it). `internal/chsql` may not import
+// `internal/qlcommon` (`.go-arch-lint.yml`), so the check is duplicated
+// rather than shared, the same way [anchorLabelReplaceRegex] already
+// duplicates [qlcommon.anchorRegex]'s spelling.
+//
+// When this reports false, the anchored pattern is guaranteed to match the
+// ENTIRE source value whenever it matches at all, so the whole-match group
+// ($0) is exactly the source value and [Builder.srcValue] is both cheaper
+// and correct. When it reports true, no such guarantee holds — see
+// [chplan.LabelReplace] and the `label_replace` emitter's doc comment — so
+// $0 must be read back from [wholeMatchExtractRegex] instead.
+func labelReplaceAnchorsMaySplit(regex string) bool {
+	if _, err := regexp.Compile(regex); err == nil {
+		// Balanced on its own: the wrapper can only nest around it.
+		return false
+	}
+	// Unbalanced on its own AND unbalanced once wrapped never reaches
+	// ClickHouse at all — CH's own parse stage rejects it regardless of
+	// which form is chosen here, so this is not this function's concern
+	// (see qlcommon.regexAnchorsMaySplit).
+	_, err := regexp.Compile(anchorLabelReplaceRegex(regex))
+	return err == nil
+}
+
+// wholeMatchExtractRegex anchors regex the same way
+// [anchorLabelReplaceRegex] does, but wraps the whole pattern in an extra
+// CAPTURING group so its matched span — Go's `$0` — can be read back via
+// `extractGroups`, which exposes captured groups only and never the whole
+// match. Used only for a $0 reference against a regex whose anchors may
+// split (see [labelReplaceAnchorsMaySplit]); every other $0 reference
+// reads [Builder.srcValue] directly instead.
+//
+// The added group is the pattern's first (its opening parenthesis is the
+// leftmost), so it is always capture-group 1 regardless of how many
+// groups l.Regex itself declares — nothing else reads this pattern's
+// numbering, so no other index needs to account for the shift.
+func wholeMatchExtractRegex(regex string) string {
+	return "^((?s:" + regex + "))$"
+}
+
+// wholeMatchGroupValue renders a $0 reference against a regex that is not
+// self-contained: `extractGroups(<src>, <wholeMatchExtractRegex>)[1]`.
+func (b *Builder) wholeMatchGroupValue(l *chplan.LabelReplace) error {
+	var srcErr error
+	src := Frag(func(fb *Builder) {
+		if err := fb.srcValue(l); err != nil && srcErr == nil {
+			srcErr = err
+		}
+	})
+	captureGroupAt(src, wholeMatchExtractRegex(l.Regex), 1)(b)
+	return srcErr
 }
 
 // labelReplaceCandidateParam is the lambda parameter naming one

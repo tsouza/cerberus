@@ -127,6 +127,49 @@ func TestMutation_ExprLabelReplace_SegmentForm(t *testing.T) {
 	)
 }
 
+// TestMutation_ExprLabelReplace_WholeMatchAnchorsMaySplit pins the #3663
+// fix: when l.Regex's anchors may split across a top-level alternation
+// (labelReplaceAnchorsMaySplit reports true — see regex_pattern_test.go
+// and qlcommon.TestRegexAnchorsMaySplit for why `a)|(b` is such a regex),
+// the whole-match segment can no longer read `Attributes[?]` directly,
+// because a match is no longer guaranteed to span the entire source
+// value. It must read back the actual matched span through a dedicated
+// capturing wrapper instead.
+//
+// Contrast with TestMutation_ExprLabelReplace_SegmentForm, whose regex
+// `(.*)` cannot split: there the whole-match segment renders the bare
+// `Attributes[?]` subscript. Swapping in a splitting regex must change
+// that rendering — this test is what would fail if
+// labelReplaceAnchorsMaySplit's result were ignored (or negated) in
+// labelReplaceSegment's WholeMatchGroup arm.
+func TestMutation_ExprLabelReplace_WholeMatchAnchorsMaySplit(t *testing.T) {
+	t.Parallel()
+
+	sql, args := renderExpr(t, &chplan.LabelReplace{
+		Map:              attrsMap(),
+		Dst:              "dst",
+		Src:              "src",
+		Regex:            `a)|(b`,
+		EmptyReplacement: "empty",
+		Segments: []chplan.LabelReplaceSegment{
+			{Literal: "[", Group: chplan.NoCaptureGroup},
+			{Group: chplan.WholeMatchGroup},
+			{Literal: "]", Group: chplan.NoCaptureGroup},
+		},
+	})
+
+	assertRender(
+		t, sql, args,
+		"mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), "+
+			"mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, "+
+			"concat(?, extractGroups(`Attributes`[?], ?)[?], ?)))), `Attributes`))",
+		[]any{
+			"src", "^(?s:a)|(b)$", "dst", "src", "empty",
+			"[", "src", "^((?s:a)|(b))$", int64(1), "]",
+		},
+	)
+}
+
 // TestMutation_ExprLabelReplace_SharedCaptureNameForm pins the
 // `arrayFirst` selection a segment carrying Fallbacks renders — the shape
 // a `$name` reference takes when several capture groups share that name

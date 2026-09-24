@@ -103,7 +103,7 @@ func ReplacementToCH(repl, regex string) (CHReplacement, error) {
 	if err != nil {
 		return CHReplacement{}, err
 	}
-	return chReplacement(segments, probed), nil
+	return chReplacement(segments, probed, regex), nil
 }
 
 // chReplacement picks the output form a decomposition takes.
@@ -121,9 +121,28 @@ func ReplacementToCH(repl, regex string) (CHReplacement, error) {
 // built from those indices would point at the wrong groups. The
 // `extractGroups` form is the one that reads the rewritten pattern, so it
 // is the only form a rewrite may take.
-func chReplacement(segments []chplan.LabelReplaceSegment, probed string) CHReplacement {
+//
+// A regex whose own `)` closes the anchoring group early forces the same
+// choice too, for a different reason: `replaceRegexpOne` substitutes the
+// template for the MATCHED SPAN and keeps the rest of the source string
+// around it, which is only equivalent to Prometheus's
+// `ExpandString(replacement)` — the template alone, nothing spliced in —
+// when a match is guaranteed to span the entire source value.
+// [anchorRegex]'s `^(?s:…)$` wrapper guarantees that only when regex's own
+// parens are already balanced: an unbalanced paren such as the one in
+// `a)|(b` closes the wrapper's non-capturing group early, so
+// `^(?s:a)|(b)$` parses as `(^(?s:a))|((b)$)` — two top-level alternation
+// arms, each anchored at one end only — and a match can then cover a
+// prefix or a suffix instead of the whole value. The `extractGroups` form
+// never has this problem: it reads whichever capture groups the actual
+// match populated and renders nothing else, exactly like `ExpandString`.
+// See [regexAnchorsMaySplit].
+func chReplacement(segments []chplan.LabelReplaceSegment, probed, regex string) CHReplacement {
 	if probed != "" {
 		return CHReplacement{Segments: segments, ProbedRegex: probed}
+	}
+	if regexAnchorsMaySplit(regex) {
+		return CHReplacement{Segments: segments}
 	}
 	for _, seg := range segments {
 		if seg.Group > maxCHBackref || len(seg.Fallbacks) > 0 {
@@ -131,6 +150,36 @@ func chReplacement(segments []chplan.LabelReplaceSegment, probed string) CHRepla
 		}
 	}
 	return CHReplacement{Template: renderCHTemplate(segments)}
+}
+
+// regexAnchorsMaySplit reports whether [anchorRegex]'s `^(?s:…)$` wrapper
+// can bind the anchors around only PART of regex instead of the whole
+// pattern — the precondition [chReplacement] needs before trusting that a
+// match spans the entire source value.
+//
+// The wrapper is a non-capturing GROUP, so it is safe exactly when regex's
+// own parens are already balanced: balanced parens can only nest inside
+// the wrapper's, never consume one of its delimiters early or leave one of
+// theirs for the wrapper to consume. regex is checked standalone first,
+// with no anchoring at all, because that is the one shape immune to the
+// wrapper regardless of what it contains.
+//
+// An unbalanced regex is not automatically unsafe, though: Prometheus (and
+// this package) reject a regex outright when even the WRAPPED form fails
+// to compile, so an unbalanced regex whose wrapped form is ALSO invalid —
+// `(.*`, say — never reaches ClickHouse at all; which output form
+// [chReplacement] picks for it is moot, since the query fails at CH's own
+// parse stage regardless. Only an unbalanced regex whose wrapped form
+// nonetheless compiles — because the imbalance repartitions the anchors
+// rather than breaking the pattern outright, exactly the `a)|(b` shape —
+// is the case this function exists to catch.
+func regexAnchorsMaySplit(regex string) bool {
+	if _, err := regexp.Compile(regex); err == nil {
+		// Balanced on its own: the wrapper can only nest around it.
+		return false
+	}
+	_, err := regexp.Compile(anchorRegex(regex))
+	return err == nil
 }
 
 // CHReplacement is the ClickHouse-side form of a Go replacement template.

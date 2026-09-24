@@ -172,9 +172,9 @@ func TestMutation_Spliced_KeepsOuterFirstError(t *testing.T) {
 // `extractGroups(<nothing>, '…')[1]` and reports success.
 //
 // Kills both CONDITIONALS_NEGATION mutants of
-// builder.go:`err != nil && srcErr == nil` (`err != nil` -> `err == nil`,
-// `srcErr == nil` -> `srcErr != nil`): under either, srcErr never takes a
-// non-nil value and the method returns nil.
+// builder.go:labelReplaceSegment:`err != nil && srcErr == nil` (`err !=
+// nil` -> `err == nil`, `srcErr == nil` -> `srcErr != nil`): under either,
+// srcErr never takes a non-nil value and the method returns nil.
 func TestMutation_LabelReplaceSegment_SrcErrorPropagates(t *testing.T) {
 	t.Parallel()
 
@@ -215,8 +215,9 @@ func TestMutation_LabelReplaceSegment_RendersCaptureGroup(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// builder.go:`err != nil && srcErr == nil` (INVERT_LOGICAL, `&&` -> `||` in
-// labelReplaceSegment's srcErr latch) is EQUIVALENT. The mutated guard is
+// builder.go:labelReplaceSegment:`err != nil && srcErr == nil`
+// (INVERT_LOGICAL, `&&` -> `||` in labelReplaceSegment's srcErr latch) is
+// EQUIVALENT. The mutated guard is
 // `err != nil || srcErr == nil`, which differs from the original in exactly
 // one state: srcErr already non-nil AND err non-nil, where the mutant
 // overwrites srcErr with the later error instead of keeping the first. Every
