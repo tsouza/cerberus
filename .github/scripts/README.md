@@ -3630,6 +3630,22 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` every PR tidy, fixed, or moved since fetched; `1` on a missing
     input, an empty `RELEASE_PAT`, an API failure, or any PR whose fetch,
     `go mod tidy`, commit or push failed.
+- **`dependabot-pr-title.mjs`** — `pr-hygiene.yml`, the `dependabot-title`
+  job, which `pr-body` waits for. Rewrites a `dependabot[bot]` PR title whose
+  squash subject (the title plus `(#N)`, composed by
+  `commitlint-pr-title.mjs`'s `landingSubject`) is over the
+  `.commitlintrc.json` `header-max-length`. Qualifiers are removed in a fixed
+  order — `across N directories`, `in the <group> group`, `in /<directory>`,
+  `from <old-version>`, then leading dependency-path segments (replaced by
+  `...`) — stopping at the first form that fits; the prefix, the dependency
+  and the target version always stay. `pr-body` then lints the repaired title
+  in the same run. Pinned by `dependabot-pr-title.test.mjs`, run from
+  `pr-hygiene.yml`.
+  - Env: `PR_NUMBER`, `PR_AUTHOR`, `GITHUB_REPOSITORY`, `GITHUB_TOKEN`
+    (required; reads the live title and edits it), `GITHUB_API_URL`,
+    `COMMITLINT_CONFIG` (default `.commitlintrc.json`).
+  - Exit: `0` skipped, already compliant, or rewritten; `1` when no rewrite
+    fits, an input is missing, or the API call failed.
 - **`pull-buildkit-image.mjs`** — `.github/actions/setup-buildx` (the composite
   every image-building job goes through). Acquires the BuildKit bootstrap image
   into the local docker daemon, with retry, before

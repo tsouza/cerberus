@@ -1,6 +1,11 @@
 package chsql
 
-import "github.com/tsouza/cerberus/internal/chplan"
+import (
+	"cmp"
+	"slices"
+
+	"github.com/tsouza/cerberus/internal/chplan"
+)
 
 // flattenAnd walks a chplan.Expr tree, returning the conjunction's
 // flattened list of leaves. `Binary{OpAnd, A, B}` decomposes into
@@ -133,14 +138,7 @@ func isCheapPredicate(e chplan.Expr) bool {
 // sort-key ordering pass inspects it independently.
 func classifyPredicate(e chplan.Expr, shape TableShape) (cols []string, cheap, touchesWide bool) {
 	cols = collectColumnRefs(e)
-	cheap = isCheapPredicate(e)
-	for _, c := range cols {
-		if shape.IsWideColumn(c) {
-			touchesWide = true
-			break
-		}
-	}
-	return cols, cheap, touchesWide
+	return cols, isCheapPredicate(e), slices.ContainsFunc(cols, shape.IsWideColumn)
 }
 
 // sortRankFor returns the lowest SortColumns rank among the predicate's
@@ -148,17 +146,16 @@ func classifyPredicate(e chplan.Expr, shape TableShape) (cols []string, cheap, t
 // touches a column closer to the front of the ORDER BY, which is the
 // position CH's granule-skipping cares about.
 func sortRankFor(cols []string, shape TableShape) int {
-	best := -1
+	var ranks []int
 	for _, c := range cols {
-		r := shape.SortRank(c)
-		if r < 0 {
-			continue
-		}
-		if best < 0 || r < best {
-			best = r
+		if r := shape.SortRank(c); r >= 0 {
+			ranks = append(ranks, r)
 		}
 	}
-	return best
+	if len(ranks) == 0 {
+		return -1
+	}
+	return slices.Min(ranks)
 }
 
 // orderedConjuncts partitions conjuncts into three buckets — sort-prefix
@@ -189,33 +186,15 @@ func orderedConjuncts(conjuncts []chplan.Expr, shape TableShape) []chplan.Expr {
 			prefix = append(prefix, ranked{expr: c, rank: r})
 			continue
 		}
-		hitsSkip := false
-		for _, col := range cols {
-			if shape.IsSkipIndexColumn(col) {
-				hitsSkip = true
-				break
-			}
-		}
-		if hitsSkip {
+		if slices.ContainsFunc(cols, shape.IsSkipIndexColumn) {
 			skip = append(skip, c)
 			continue
 		}
 		rest = append(rest, c)
 	}
-	// Insertion sort by rank. The strict `>` is what makes it stable, and
-	// stability is what preserves input order within a rank — an equal-rank
-	// pair never swaps, so the earlier conjunct stays earlier. No explicit
-	// index tie-break is needed (nor would one ever fire: prefix[j] is always
-	// the element being inserted, so its input index is the largest in play).
-	for i := 1; i < len(prefix); i++ {
-		for j := i; j > 0; j-- {
-			if prefix[j-1].rank > prefix[j].rank {
-				prefix[j-1], prefix[j] = prefix[j], prefix[j-1]
-				continue
-			}
-			break
-		}
-	}
+	// A stable sort by rank preserves input order within a rank, so no
+	// explicit index tie-break is needed.
+	slices.SortStableFunc(prefix, func(a, b ranked) int { return cmp.Compare(a.rank, b.rank) })
 	out := make([]chplan.Expr, 0, len(conjuncts))
 	for _, r := range prefix {
 		out = append(out, r.expr)
@@ -289,7 +268,7 @@ func isNarrowIntegerDiscriminator(e chplan.Expr, shape TableShape) bool {
 	}
 	column, columnOK := binary.Left.(*chplan.ColumnRef)
 	_, literalOK := binary.Right.(*chplan.LitInt)
-	if !columnOK || !literalOK {
+	if !columnOK {
 		column, columnOK = binary.Right.(*chplan.ColumnRef)
 		_, literalOK = binary.Left.(*chplan.LitInt)
 	}

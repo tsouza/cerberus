@@ -125,3 +125,44 @@ jobs:
 
       - name: Run schema/ddl integration tests (real ClickHouse)
         run: just schema-ddl-test
+
+  # ClickHouse upgrade-compatibility lane: real servers on both sides of a
+  # bundled-server upgrade (docs/helm-clickhouse.md § "On-disk format across
+  # ClickHouse upgrades", docs/observability.md § "ClickHouse asynchronous
+  # metrics"). A 26.6 and a 26.8 replica share cerberus's own schema and must
+  # read each other's parts through a restart and a rollback; the quickstart
+  # collector's ClickHouse receiver runs against 26.6 and 26.8. Its own job,
+  # beside schema-ddl rather than inside it, so neither lane's wall clock
+  # grows with the other's.
+  clickhouse-upgrade:
+    name: clickhouse-upgrade
+    needs: changes
+    # `always()` for the same reason as schema-ddl above: a failed `changes`
+    # must fail this job, never skip it into green.
+    if: >-
+      always() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
+    runs-on: ubuntu-latest
+    # Four images (three ClickHouse lines and the collector) and a dozen
+    # container starts, under -race.
+    timeout-minutes: 25
+    steps:
+      - name: gate on the changes job
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::changes did not succeed (${{ needs.changes.result }}); a check must not be skipped into green."
+          exit 1
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go
+
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
+        with:
+          tool: just@1.46.0
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - name: Run ClickHouse upgrade-compatibility tests (real ClickHouse)
+        run: just clickhouse-upgrade-test

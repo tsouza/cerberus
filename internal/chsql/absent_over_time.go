@@ -103,10 +103,7 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 		// anti-filtered against the sample-side covered-anchor set. See
 		// the function comment for the O(anchors + samples) rationale.
 		stepNS := a.Step.Nanoseconds()
-		numAnchors := a.End.Sub(a.Start).Nanoseconds()/stepNS + 1
-		if numAnchors < 1 {
-			numAnchors = 1
-		}
+		numAnchors := max(a.End.Sub(a.Start).Nanoseconds()/stepNS+1, 1)
 		// The arrayJoin fanout walks the step grid starting from
 		// `a.Start` (offset-adjusted by prefilterStartFrag); see
 		// absentOverTimeAnchorRangeFrag.
@@ -295,7 +292,7 @@ func synthAttrsMapFrag(labels []chplan.SynthLabel) Frag {
 	if len(labels) == 0 {
 		return Call("CAST", Call("map"), Lit("Map(String,String)"))
 	}
-	args := make([]Frag, 0, len(labels)*2)
+	var args []Frag
 	for _, kv := range labels {
 		args = append(args, Lit(kv.Key), Lit(kv.Value))
 	}

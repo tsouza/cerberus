@@ -37,6 +37,7 @@ spec:
         {{- include "cerberus.clickhouse.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "cerberus.clickhouse.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ include "cerberus.clickhouse.terminationGracePeriodSeconds" . }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 101
@@ -224,6 +225,7 @@ spec:
         {{- include "cerberus.clickhouse.selectorLabelsForDataShard" (dict "ctx" $ "shard" $shard) | nindent 8 }}
     spec:
       serviceAccountName: {{ include "cerberus.clickhouse.serviceAccountName" $ }}
+      terminationGracePeriodSeconds: {{ include "cerberus.clickhouse.terminationGracePeriodSeconds" $ }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 101
