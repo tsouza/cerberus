@@ -153,3 +153,15 @@ func (v Version) String() string {
 	}
 	return short + "." + strconv.Itoa(v.Patch) + "." + strconv.Itoa(v.Build)
 }
+
+// LowestVersion returns the lowest of versions, or ok=false when versions is
+// empty. Of builds that compare equal it prefers one with Vendor set, whose
+// defect gates are judged by release line and so are the more conservative.
+func LowestVersion(versions []Version) (lowest Version, ok bool) {
+	for i, v := range versions {
+		if i == 0 || v.Less(lowest) || (v.Compare(lowest) == 0 && v.Vendor) {
+			lowest = v
+		}
+	}
+	return lowest, len(versions) > 0
+}

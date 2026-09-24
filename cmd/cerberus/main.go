@@ -314,7 +314,7 @@ func mountAPIHeads(
 
 	return apiHeads{
 		grpcServer: grpcServer,
-		consumers:  chOptConsumers{client: client, fleet: liveFleetProber(cfg), engines: engines, prom: promHandler},
+		consumers:  chOptConsumers{client: client, engines: engines, prom: promHandler},
 	}, nil
 }
 
@@ -641,7 +641,7 @@ func run() error {
 	// connected server and swaps a changed result into the heads mounted above,
 	// so an upgraded ClickHouse is picked up without restarting cerberus. Bound
 	// to the run ctx, so SIGTERM stops it.
-	go reprobeCHOptimizations(ctx, logger, cfg, chOpts, heads.consumers, chOptReprobeInterval, optRes.RawQueryWorkload, probeVersionOverBootstrap)
+	go reprobeCHOptimizations(ctx, logger, cfg, chOpts, heads.consumers, chOptReprobeInterval, optRes.RawQueryWorkload, liveFleetProber(cfg))
 
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
@@ -1401,8 +1401,9 @@ func startCHOptimizations(ctx context.Context, logger *slog.Logger, client *chcl
 	return optRes.Set, newCHOptLive(optRes), optRes, nil
 }
 
-// resolveCHOptimizations probes the connected ClickHouse server version and
-// resolves the CERBERUS_CH_OPTIMIZATIONS auto-picker against it at boot,
+// resolveCHOptimizations probes the build of every ClickHouse node cerberus
+// can reach (liveFleetProber) and resolves the CERBERUS_CH_OPTIMIZATIONS
+// auto-picker against the oldest of them at boot (fleetResolutionVersion),
 // returning the EnabledSet the process starts on. It back-fills
 // cfg.ExperimentalTSGridRange from the resolved set so the legacy ts-grid
 // consumers (the PromQL lowering, the engine native gate, the preflight version
@@ -1424,7 +1425,11 @@ func startCHOptimizations(ctx context.Context, logger *slog.Logger, client *chcl
 // fatal — that is a typo/operator error, independent of connectivity.
 func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chOptResolution, error) {
 	rawQueryWorkload := cfg.CHQueryWorkload
-	resolvedVersion, err := probeVersionOverBootstrap(ctx, cfg.ClickHouse)
+	// The fleet probe reads every node cerberus can reach; resolution runs
+	// against the oldest of them and the condition-cache override below reads
+	// the same pass.
+	fleet := liveFleetProber(*cfg)(ctx)
+	resolvedVersion, err := fleetResolutionVersion(fleet, nil)
 	versionFallback := err != nil
 	if err != nil {
 		// Connectivity fallback: assume the supported floor so 24.8-safe
@@ -1555,7 +1560,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// still expose every query to it: force it off client-wide whenever any
 	// node the fleet probe reaches runs such a build. The re-probe refreshes
 	// this on every pass.
-	refreshConditionCacheOverride(ctx, logger, client, liveFleetProber(*cfg))
+	refreshConditionCacheOverride(logger, client, fleet)
 	if !versionFallback {
 		logCancellationGaps(logger, resolvedVersion)
 		logVendorBuild(logger, resolvedVersion)
@@ -1566,6 +1571,8 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"selection", cfg.CHOptimizations,
 		"mode", cfg.CHOptimizationsMode.String(),
 		"server_version", resolvedVersion.String(),
+		"fleet_versions", fleetVersionStrings(fleet),
+		"fleet_probe_complete", fleet.Complete,
 		"server_ts_grid_capability", capability.String(),
 		"server_result_cache_capability", resultCacheCapability.String(),
 		"server_query_log_union_capability", queryLogUnionCapability.String(),
@@ -1650,33 +1657,9 @@ func decideQueryWorkload(configured string, capability chopt.Capability, mode ch
 	}
 }
 
-// probeVersionOverBootstrap issues the SELECT version() probe over a
-// short-lived client bound to ClickHouse's always-present `default` database,
-// not the configured (otel) one. The version probe must succeed on a fresh or
-// freshly-upgraded server whose configured database does not exist yet: it runs
-// at boot BEFORE setupSchema creates the target database, and ClickHouse rejects
-// EVERY statement — version() included — on a session whose default database is
-// absent (code 81, UNKNOWN_DATABASE). Binding the probe to `default` (which is
-// always present, the same database the auto-create DDL targets) makes the probe
-// independent of whether the configured database exists, so a CH upgrade takes
-// effect on the next boot instead of being masked as a probe failure that pins
-// the supported floor. The client is opened, probed, and closed here — it never
-// outlives the probe; the breaker-guarded read surface still makes a genuinely
-// unreachable server fail (not hang), preserving the connectivity fallback.
-func probeVersionOverBootstrap(ctx context.Context, chCfg chclient.Config) (chopt.Version, error) {
-	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, versionProbePool))
-	if err != nil {
-		return chopt.Version{}, fmt.Errorf("open bootstrap client for version probe: %w", err)
-	}
-	defer func() {
-		_ = bootClient.Close()
-	}()
-	return bootClient.ProbeVersion(ctx)
-}
-
 // probeTSGridCapabilityOverBootstrap runs the experimental-setting capability
 // canary over a short-lived client bound to ClickHouse's always-present
-// `default` database, exactly like probeVersionOverBootstrap. The canary must
+// `default` database, exactly like the fleet version probe. The canary must
 // not depend on the configured (otel) database existing -- it runs at boot
 // BEFORE setupSchema creates it, and ClickHouse rejects every statement on a
 // session whose default database is absent (code 81), which would masquerade as
