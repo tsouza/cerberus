@@ -1,7 +1,8 @@
 -- sql --
-SELECT * FROM `otel_logs` WHERE match(`Body`, ?)
+SELECT * FROM `otel_logs` WHERE (position(`Body`, ?) > 0 AND match(`Body`, ?))
 -- args --
-[0] string = "failed: \\w+"
+[0] string = "failed: "
+[1] string = "failed: \\w+"
 -- chplan --
 Filter predicate=lineContent(Body, "failed: \\w+", regex)
   Scan(otel_logs)
