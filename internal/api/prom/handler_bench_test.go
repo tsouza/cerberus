@@ -543,7 +543,11 @@ func TestAllocs_HandleQuery_Small(t *testing.T) {
 	// catches a gross regression (a response materialised twice, a
 	// per-predicate walk pattern creeping back), not a single added
 	// walk. The goal is regression detection, not optimisation.
-	const ceiling = 850.0
+	// Stale-marker handling (internal/promql/stale_marker.go) grows the
+	// instant plan by a Value rewrite and a latest-sample filter, which
+	// every lowering, optimizer pass and emit walks: measured 815 → 880,
+	// with the ceiling back at ~5% over it.
+	const ceiling = 925.0
 	if got > ceiling {
 		t.Errorf("HandleQuery_Small avg allocs = %.1f; want <= %.1f", got, ceiling)
 	}

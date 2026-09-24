@@ -116,6 +116,7 @@ func healthyColumns() map[string][]chclient.NameTypePair {
 			col(m.MetricNameColumn, "String"),
 			col(m.TimestampColumn, "DateTime64(9)"),
 			col(m.ValueColumn, "Float64"),
+			col(m.FlagsColumn, "UInt32"),
 			col(m.ServiceNameColumn, "LowCardinality(String)"),
 		}
 		return append(base, attr(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn)...)
@@ -126,6 +127,7 @@ func healthyColumns() map[string][]chclient.NameTypePair {
 			col(m.TimestampColumn, "DateTime64(9)"),
 			col(m.CountColumn, "UInt64"),
 			col(m.SumColumn, "Float64"),
+			col(m.FlagsColumn, "UInt32"),
 		}
 		return append(base, attr(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn)...)
 	}
@@ -416,6 +418,36 @@ func TestRunMissingColumnFails(t *testing.T) {
 	want := "table otel_traces: missing required column ServiceName"
 	if !strings.Contains(err.Error(), want) {
 		t.Errorf("message missing %q: %v", want, err)
+	}
+}
+
+// TestRunMissingFlagsColumn pins the metrics Flags column's two outcomes:
+// a table without it fails boot, because every metrics selector reads it
+// to recognise a stale marker; a schema that declares no Flags column
+// (FlagsColumn "") does not require one.
+func TestRunMissingFlagsColumn(t *testing.T) {
+	t.Parallel()
+	m := schema.DefaultOTelMetrics()
+	cols := healthyColumns()
+	pruned := cols[m.SumTable][:0:0]
+	for _, c := range cols[m.SumTable] {
+		if c.Name != m.FlagsColumn {
+			pruned = append(pruned, c)
+		}
+	}
+	cols[m.SumTable] = pruned
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+
+	err := Run(context.Background(), q, defaultReq()).Fatal
+	want := "table otel_metrics_sum: missing required column Flags"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("a sum table without Flags must fail with %q, got: %v", want, err)
+	}
+
+	noFlags := defaultReq()
+	noFlags.Metrics.FlagsColumn = ""
+	if err := Run(context.Background(), q, noFlags).Fatal; err != nil {
+		t.Fatalf("a schema with no Flags column must not require one, got: %v", err)
 	}
 }
 

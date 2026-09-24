@@ -849,13 +849,14 @@ func requiredTables(req Requirements) []tableReq {
 	if signals.Metrics {
 		m := req.Metrics
 		// Gauge + Sum share the plain-sample shape: name, timestamp, value,
-		// service, and the two attribute maps. These are the columns the
-		// PromQL emitter projects for a Sample.
+		// flags, service, and the two attribute maps. These are the columns
+		// the PromQL emitter projects for a Sample; Flags marks a stale
+		// marker.
 		for _, t := range []string{m.GaugeTable, m.SumTable} {
 			tables = append(tables, tableReq{
 				name: t,
 				columns: nonEmpty(
-					m.MetricNameColumn, m.TimestampColumn, m.ValueColumn,
+					m.MetricNameColumn, m.TimestampColumn, m.ValueColumn, m.FlagsColumn,
 					m.ServiceNameColumn, m.AttributesColumn, m.ResourceAttributesColumn,
 				),
 				attrMap: nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
@@ -868,7 +869,7 @@ func requiredTables(req Requirements) []tableReq {
 			tables = append(tables, tableReq{
 				name: t,
 				columns: nonEmpty(
-					m.MetricNameColumn, m.TimestampColumn, m.CountColumn, m.SumColumn,
+					m.MetricNameColumn, m.TimestampColumn, m.CountColumn, m.SumColumn, m.FlagsColumn,
 					m.AttributesColumn, m.ResourceAttributesColumn,
 				),
 				attrMap: nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),

@@ -20,7 +20,8 @@ import (
 //     consumer) never contains a stale marker — the marker row is dropped at
 //     the scan, before any window sees it;
 //   - an instant selection (the latest sample within the lookback, in
-//     instant mode, range mode and under an absolute `@`) produces no sample
+//     instant mode, range mode, under an absolute `@`, and at each inner
+//     step of a subquery over a bare selector) produces no sample
 //     for a series whose latest sample is a stale marker — the marker takes
 //     part in the latest-sample pick, then the series is dropped at that
 //     step when the marker wins.
@@ -62,7 +63,7 @@ func (c lowerCtx) staleMarkerMode(s schema.Metrics) staleMarkerMode {
 	switch {
 	case s.FlagsColumn == "", c.metadataFullRange, c.catalog != nil:
 		return staleMarkersIgnored
-	case c.inRangeVector:
+	case c.inRangeVector && !c.latestSampleWindow:
 		return staleMarkersDropped
 	default:
 		return staleMarkersEncoded

@@ -36,6 +36,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
+	"github.com/prometheus/prometheus/model/value"
 	"github.com/prometheus/prometheus/prompb"
 
 	"github.com/tsouza/cerberus/internal/promql"
@@ -148,6 +149,10 @@ var fixtureSources = []fixtureSource{
 	{metricName: "demo_intermittent_metric", table: otelMetricsGaugeTable},
 	{metricName: "up", table: otelMetricsGaugeTable},
 	{metricName: "demo_gauge_with_nan_run", table: otelMetricsGaugeTable},
+	// demo_disappearing_requests_total: readFixtureSeries mirrors its
+	// NoRecordedValue rows as the Prometheus stale markers they were
+	// scraped as.
+	{metricName: "demo_disappearing_requests_total", table: otelMetricsSumTable},
 	// demo_delta_requests_total: a DELTA-temporality counter (issue #1628).
 	// The CH fixture stores raw per-step increments with
 	// AggregationTemporality = 1; the reference Prometheus side has no
@@ -318,7 +323,7 @@ func (p *promSeriesSet) series() []prompb.TimeSeries {
 // of prompb.TimeSeries ready to be wire-encoded.
 func readFixtureSeries(ctx context.Context, conn driver.Conn, src fixtureSource) ([]prompb.TimeSeries, error) {
 	q := fmt.Sprintf(
-		"SELECT Attributes, toUnixTimestamp64Milli(TimeUnix) AS ts_ms, Value "+
+		"SELECT Attributes, toUnixTimestamp64Milli(TimeUnix) AS ts_ms, Value, Flags "+
 			"FROM %s WHERE MetricName = ? ORDER BY Attributes, TimeUnix",
 		src.table,
 	)
@@ -342,8 +347,13 @@ func readFixtureSeries(ctx context.Context, conn driver.Conn, src fixtureSource)
 		var attrs map[string]string
 		var tsMS int64
 		var val float64
-		if err := rows.Scan(&attrs, &tsMS, &val); err != nil {
+		var flags uint32
+		if err := rows.Scan(&attrs, &tsMS, &val, &flags); err != nil {
 			return nil, err
+		}
+		if flags&otelNoRecordedValueFlag != 0 {
+			acc.add(src.metricName, attrs, tsMS, math.Float64frombits(value.StaleNaN))
+			continue
 		}
 		if running != nil {
 			key := canonicaliseLabels(attrs)

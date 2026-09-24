@@ -959,6 +959,10 @@ func lowerSubqueryOverVectorSelector(
 	ctx lowerCtx,
 ) (chplan.Node, error) {
 	vsNoModifier, rangeCtx := stripSelectorModifierForRangeVector(vs, ctx)
+	// Each inner step is an instant selection of the latest sample, so a
+	// stale marker must reach the Identity window as a marker and end the
+	// series at the steps it wins, not vanish at the scan.
+	rangeCtx.latestSampleWindow = true
 	inner, err := lowerVectorSelector(&vsNoModifier, s, rangeCtx)
 	if err != nil {
 		return nil, err
@@ -969,7 +973,7 @@ func lowerSubqueryOverVectorSelector(
 		return nil, err
 	}
 
-	return &chplan.RangeWindow{
+	return dropStaleLatestSamples(&chplan.RangeWindow{
 		Input:           inner,
 		Identity:        true,
 		Range:           subqueryStalenessLookback,
@@ -981,7 +985,7 @@ func lowerSubqueryOverVectorSelector(
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, nil
+	}, s), nil
 }
 
 // lowerOuterRangeFnOverSubquery — `max_over_time(rate(m[5m])[1h:5m])`,

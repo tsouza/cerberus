@@ -215,9 +215,18 @@ func TestAllocs_Lower(t *testing.T) {
 		// it. ONLY the subquery case moves, confirming the growth is
 		// confined to that new re-declaration rather than a shared-path
 		// slip. Re-baselined: subquery 213, same ~1.2× headroom.
-		{"instant", `up`, 220},
-		{"range", `rate(http_requests_total[5m])`, 195},
-		{"binary", `(up * 2) > 1`, 240},
+		//
+		// Stale markers (stale_marker.go): a range selection drops the
+		// OTel NoRecordedValue rows with one more scan conjunct, and an
+		// instant selection rewrites a marker's Value in the selector
+		// Project and filters the latest-sample collapse on it. Measured
+		// 211 → 230 instant, 189 → 198 range, 238 → 257 binary, 442 → 452
+		// aggregation, 213 → 222 subquery. The instant, range and binary
+		// ceilings move to ~1.2× the new baseline; aggregation and subquery
+		// already clear it.
+		{"instant", `up`, 276},
+		{"range", `rate(http_requests_total[5m])`, 238},
+		{"binary", `(up * 2) > 1`, 308},
 		{"aggregation", `sum by (le)(rate(http_request_duration_seconds_bucket[1m]))`, 515},
 		{"subquery", `max_over_time(rate(http_requests_total[1m])[5m:30s])`, 256},
 	}

@@ -79,6 +79,9 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		// stopped reporting hours ago still read as present, every step
 		// of a range query got that same stale verdict, and `@`/`offset`
 		// were ignored outright.
+		if latest, ok, err := lowerAbsenceOfLatestSample(vs, s, ctx); ok || err != nil {
+			return latest, err
+		}
 		return lowerAbsenceOverWindow(vs, instantLookback, s, ctx)
 	} else {
 		// General instant-vector expression — `absent(sum(up))`,
@@ -312,6 +315,72 @@ func lowerAbsenceOverWindow(
 	case gridSingleAnchor:
 	}
 	return a, nil
+}
+
+// lowerAbsenceOfLatestSample lowers `absent(<selector>)` over the selector's
+// instant selection — the latest sample per series and step — instead of
+// over every raw sample in the lookback. The two agree unless a stale
+// marker is the latest sample: the instant selection then has no sample
+// for that series, so `absent()` fires at the marker, while any raw sample
+// earlier in the lookback would still read as present. It applies whenever
+// the schema can carry stale markers (a Flags column) and the selector
+// reads the scalar Value pipeline; ok is false otherwise, and the caller
+// falls back to [lowerAbsenceOverWindow], which is exact without markers.
+//
+// The AbsentOverTime window then only has to recognise the instant
+// selection's own rows: a single-anchor selection emits them at their
+// sample timestamps inside the lookback, and the range-mode selection
+// emits them at the step anchor itself, already shifted by any `offset`,
+// so a one-step window with no offset of its own selects exactly the rows
+// of each anchor. An `@`-pinned selection is evaluated once, in instant
+// form, and its verdict broadcast.
+func lowerAbsenceOfLatestSample(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	if s.FlagsColumn == "" {
+		return nil, false, nil
+	}
+	if name := metricNameFromMatchers(vs.LabelMatchers); name != "" && s.ExpHistogramTable != "" && s.IsExpHistogramMetric(name) {
+		return nil, false, nil
+	}
+	anchor, err := anchorFromSelector(vs, ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	shape := rangeGridShapeFor(vs, ctx)
+	latestCtx := ctx.withAbsencePresenceSelector()
+	if shape == gridBroadcast {
+		latestCtx.step = 0
+	}
+	inner, err := lowerVectorSelector(vs, s, latestCtx)
+	if err != nil {
+		return nil, true, err
+	}
+	endTime := anchor.End
+	if endTime.IsZero() && !ctx.end.IsZero() {
+		endTime = ctx.end.UTC()
+	}
+	a := &chplan.AbsentOverTime{
+		Input:            inner,
+		SynthLabels:      synthLabelsFromMatchers(vs.LabelMatchers),
+		Range:            instantLookback,
+		End:              endTime,
+		Offset:           anchor.Offset,
+		TimestampColumn:  s.TimestampColumn,
+		ValueColumn:      s.ValueColumn,
+		MetricNameColumn: s.MetricNameColumn,
+		AttributesColumn: s.AttributesColumn,
+	}
+	switch shape {
+	case gridFanout:
+		a.Start = ctx.start.UTC()
+		a.End = ctx.end.UTC()
+		a.Step = ctx.step
+		a.Range = ctx.step
+		a.Offset = 0
+	case gridBroadcast:
+		return wrapAbsentOverTimeAtBroadcast(a, ctx, s), true, nil
+	case gridSingleAnchor:
+	}
+	return a, true, nil
 }
 
 // lowerAbsencePresenceSelector builds the matcher-filtered presence stream

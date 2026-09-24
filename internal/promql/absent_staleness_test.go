@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/prometheus/model/value"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -27,10 +28,16 @@ import (
 //
 // Each assertion below fails on the old table-wide `count() = 0` shape:
 // that plan carried no AbsentOverTime node at all.
+//
+// The schema declares no Flags column, so no stale marker can exist and
+// the raw-lookback window is exact; a schema with one lowers absent() over
+// the instant selection instead
+// (TestLowerAbsent_StaleMarkerSchemaReadsTheInstantSelection).
 func TestLowerAbsent_SelectorAppliesTheInstantStalenessWindow(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
+	s.FlagsColumn = ""
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	end := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	start := end.Add(-time.Hour)
@@ -124,10 +131,16 @@ func TestLowerAbsent_SelectorAppliesTheInstantStalenessWindow(t *testing.T) {
 // `absent_over_time(v[<instantLookback>])` are the same question, so they
 // must lower to the same plan. If they ever diverge, one of the two is
 // answering something reference does not.
+//
+// The identity holds only while no stale marker can exist, so the schema
+// declares no Flags column: a stale marker that is the latest sample makes
+// the instant vector empty while an earlier raw sample keeps
+// absent_over_time's window non-empty.
 func TestLowerAbsent_MatchesAbsentOverTimeOfTheSameWindow(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
+	s.FlagsColumn = ""
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	end := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
@@ -162,4 +175,88 @@ func TestLowerAbsent_MatchesAbsentOverTimeOfTheSameWindow(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLowerAbsent_StaleMarkerSchemaReadsTheInstantSelection pins that under
+// a schema with a Flags column `absent(<selector>)` asks its question of the
+// instant selection — the latest sample per series and step, with a stale
+// marker that wins ending the series — rather than of every raw sample in
+// the lookback. In range mode the selection's rows already sit on the step
+// anchors with any offset applied, so the absence window is one step wide
+// and carries no offset of its own. The chDB fixture
+// test/spec/promql/stale_marker_absent_range_step.txtar pins the answer
+// against reference Prometheus.
+func TestLowerAbsent_StaleMarkerSchemaReadsTheInstantSelection(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	end := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	start := end.Add(-time.Hour)
+	const step = time.Minute
+	cases := []struct {
+		name       string
+		query      string
+		rangeMode  bool
+		wantRange  time.Duration
+		wantOffset time.Duration
+	}{
+		{name: "instant", query: `absent(up{job="api"})`, wantRange: qlcommon.InstantLookback},
+		{name: "instant_offset", query: `absent(up{job="api"} offset 10m)`, wantRange: qlcommon.InstantLookback, wantOffset: 10 * time.Minute},
+		{name: "range", query: `absent(up{job="api"})`, rangeMode: true, wantRange: step},
+		{name: "range_offset", query: `absent(up{job="api"} offset 10m)`, rangeMode: true, wantRange: step},
+		{name: "range_at", query: `absent(up{job="api"} @ 1767259800)`, rangeMode: true, wantRange: qlcommon.InstantLookback},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			var plan chplan.Node
+			if tc.rangeMode {
+				plan, err = promql.LowerAtRange(context.Background(), expr, s, start, end, step)
+			} else {
+				plan, err = promql.LowerAt(context.Background(), expr, s, end, end)
+			}
+			if err != nil {
+				t.Fatalf("Lower(%q): %v", tc.query, err)
+			}
+			var absent *chplan.AbsentOverTime
+			chplan.Walk(plan, func(n chplan.Node) bool {
+				if candidate, ok := n.(*chplan.AbsentOverTime); ok && absent == nil {
+					absent = candidate
+				}
+				return true
+			})
+			if absent == nil {
+				t.Fatalf("absent(%q) lowered with no AbsentOverTime node:\n%#v", tc.query, plan)
+			}
+			if absent.Range != tc.wantRange || absent.Offset != tc.wantOffset {
+				t.Errorf("window = %v offset %v, want %v offset %v", absent.Range, absent.Offset, tc.wantRange, tc.wantOffset)
+			}
+			if !isStaleLatestSampleFilter(absent.Input) {
+				t.Errorf("absence input is not the instant selection's stale-filtered latest sample:\n%#v", absent.Input)
+			}
+		})
+	}
+}
+
+// isStaleLatestSampleFilter reports whether n is the Filter the instant
+// selection ends with: `reinterpretAsUInt64(Value) != <stale-marker bits>`.
+func isStaleLatestSampleFilter(n chplan.Node) bool {
+	f, ok := n.(*chplan.Filter)
+	if !ok {
+		return false
+	}
+	b, ok := f.Predicate.(*chplan.Binary)
+	if !ok || b.Op != chplan.OpNe {
+		return false
+	}
+	call, ok := b.Left.(*chplan.FuncCall)
+	if !ok || call.Fn != chplan.FnReinterpretAsUInt64 {
+		return false
+	}
+	bits, ok := b.Right.(*chplan.LitInt)
+	return ok && uint64(bits.V) == value.StaleNaN
 }

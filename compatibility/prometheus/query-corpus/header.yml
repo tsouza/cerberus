@@ -99,6 +99,14 @@
 #     Add/Sub — a different reference method from the Kahan-compensated
 #     KahanAdd edit 7's `sum()` case exercises — so neither case is
 #     redundant with it.
+# 12. Cerberus-owned scrape-target-disappearance cases over
+#     `demo_disappearing_requests_total` (cmd/seed/main.go). Upstream's demo
+#     service never loses a target, so its corpus holds no Prometheus stale
+#     marker. The OTel collector stores a stale marker as a NoRecordedValue
+#     point with Value 0, which the seeder writes to ClickHouse and mirrors
+#     to the reference as the stale marker it was scraped as; the cases
+#     cover the bare selector, an aggregation over it, the extrapolated rate
+#     functions, last_over_time, absent() and a subquery.
 #
 # Series schema: the harness seeds a fixture that mirrors PromLabs's demo
 # service labels (`instance` / `job` / `type` / `mode` / `method` / `path`

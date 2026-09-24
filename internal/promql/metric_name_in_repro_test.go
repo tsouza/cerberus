@@ -129,8 +129,11 @@ func TestMetricNameQueryRange_RenderedSQLBounded(t *testing.T) {
 	// which re-measures each built chunk's BOUND byte length and splits it
 	// further (down to one arm) whenever it breaches the budget. So the 256KB
 	// ceiling never depends on this heuristic; the pin just catches a gross
-	// per-query regression. 3KB leaves margin for the gauge arm.
-	const perQueryBound = 3072
+	// per-query regression. 3KB left margin for the gauge arm; the
+	// stale-marker Value rewrite on each of the three arms plus the
+	// latest-sample stale filter (stale_marker.go) took the worst case from
+	// 2989 to 3215 bytes, so the pin sits at 3.5KB.
+	const perQueryBound = 3584
 	if len(sql) >= perQueryBound {
 		t.Errorf("single 64-candidate span-metric query rendered %d bytes (want < %d) — gross per-query size regression:\n%.400s",
 			len(sql), perQueryBound, sql)

@@ -317,7 +317,7 @@ func projectPassesValue(p *chplan.Project, valueAlias string) bool {
 		if proj.Alias != valueAlias {
 			continue
 		}
-		col, ok := proj.Expr.(*chplan.ColumnRef)
+		col, ok := stripStaleMarkerEncoding(proj.Expr).(*chplan.ColumnRef)
 		if !ok {
 			continue
 		}
@@ -328,6 +328,21 @@ func projectPassesValue(p *chplan.Project, valueAlias string) bool {
 	return false
 }
 
+// stripStaleMarkerEncoding returns the raw Value expression an arm's
+// stale-marker encoding wraps (see staleMarkerValueExpr), or e itself when
+// e is not that exact encoding under the default schema.
+func stripStaleMarkerEncoding(e chplan.Expr) chplan.Expr {
+	call, ok := e.(*chplan.FuncCall)
+	if !ok || call.Fn != chplan.FnIf || len(call.Args) != 3 {
+		return e
+	}
+	inner := call.Args[2]
+	if !e.Equal(staleMarkerValueExpr(inner, staleMarkersEncoded, schema.DefaultOTelMetrics())) {
+		return e
+	}
+	return inner
+}
+
 // projectAliasesValue reports whether the supplied Project has a
 // projection that aliases `toFloat64(<sourceColumn>)` as the canonical
 // `Value` column.
@@ -336,7 +351,7 @@ func projectAliasesValue(p *chplan.Project, sourceColumn, valueAlias string) boo
 		if proj.Alias != valueAlias {
 			continue
 		}
-		call, ok := proj.Expr.(*chplan.FuncCall)
+		call, ok := stripStaleMarkerEncoding(proj.Expr).(*chplan.FuncCall)
 		if !ok || call.Fn != chplan.FnToFloat64 || len(call.Args) != 1 {
 			continue
 		}

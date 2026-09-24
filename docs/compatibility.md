@@ -82,6 +82,20 @@ branch as shields.io badge JSON; the README shows them live. On
   buckets. Count, sum and zero-count are exact at any scale; only the
   bucket ladder, and any quantile read from it, is coarser. Prometheus
   merges at the minimum scale with sparse spans and applies no budget.
+- **Stale markers**: the OTel collector stores a scraped Prometheus stale
+  marker as a data point carrying the `NoRecordedValue` flag (bit 0 of the
+  `Flags` column) and `Value = 0`. Cerberus reads such a row as the stale
+  marker it was scraped as, on the gauge, sum and classic-histogram
+  `_count` / `_sum` selector paths: a range selection (every range
+  function, a top-level range vector) excludes it, and an instant
+  selection (a bare selector, each inner step of a subquery over a bare
+  selector, `absent()`) has no sample for a series whose latest sample in
+  the lookback is the marker. Metadata endpoints list the series as usual.
+  A schema whose `schema.Metrics.FlagsColumn` is empty reads every row as a
+  sample. The classic `_bucket` and `histogram_quantile` paths, native
+  histograms, an instant function inside a subquery and the downsampled
+  long-range tier still read a stale marker as a sample (#3655).
+  `internal/promql/stale_marker.go` holds both rules.
 - **Native-grid duplicate-timestamp NaN survivor**: when a query lowers
   onto a `timeSeries*ToGrid` aggregate (the auto-enabled `ts_grid_*`
   features on a server >= 25.9 — see
