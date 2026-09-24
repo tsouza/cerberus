@@ -1097,9 +1097,9 @@ A server section that enables the union:
 ```
 
 with `GRANT SELECT ON system.all_query_log TO cerberus` and
-`CERBERUS_CH_OPTIMIZATIONS=auto,query_log_union`. An unavailable replica is
-skipped (`skip_unavailable_shards`), so its rows are read once it answers
-again, provided they are still inside the lookback.
+`CERBERUS_CH_OPTIMIZATIONS=auto,query_log_union`. The union skips a
+replica that does not answer (`skip_unavailable_shards`); rows it logged
+at times the cursor moves past while it is unreachable are not read.
 
 ### Four consumers
 
