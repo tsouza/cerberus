@@ -36,10 +36,12 @@ import (
 // poll; the cursor survives across polls, so a backlog drains over several
 // polls rather than in one unbounded read. Rows younger than the settle delay
 // are left for a later poll (chclient.QueryLogActualsRequest.SettleDelay), so
-// an asynchronously flushed row is never skipped by the forward-only cursor.
-// Rows whose query started more than the lookback ago are never read; the
-// cursor is clamped to the lookback at the start of every poll, which also
-// places the first poll.
+// an asynchronously flushed row is not skipped by the forward-only cursor
+// while the servers' clocks agree to within the settle delay less the flush
+// interval.
+// The cursor is clamped to the lookback at the start of every poll, so a row
+// that finished longer ago than that is never read; the clamp also places the
+// first poll.
 //
 // Genuinely a SLOW path by construction: a row surfaces here a settle delay
 // and a poll interval after the query that produced it finished. Mirrors
@@ -167,7 +169,6 @@ func (r *QueryLogActualsReconciler) readPage(ctx context.Context, union *bool) (
 		Union:         *union,
 		After:         r.cursor,
 		SettleDelay:   r.settle,
-		Window:        r.lookback,
 		ShapeIDPrefix: shapeIDPrefix,
 		Limit:         queryLogActualsBatchLimit,
 	}

@@ -29,6 +29,7 @@ func TestConfig_ValidateRejectsBadFields(t *testing.T) {
 		{"lookback equal to poll interval", func(c *Config) { c.Enabled = true; c.QueryLogLookback = c.QueryLogPollInterval }},
 		{"lookback below poll interval", func(c *Config) { c.Enabled = true; c.QueryLogLookback = c.QueryLogPollInterval / 2 }},
 		{"negative settle delay", func(c *Config) { c.QueryLogSettleDelay = -time.Second }},
+		{"negative max query duration", func(c *Config) { c.MaxQueryDuration = -time.Second }},
 		{"lookback equal to poll interval plus settle delay", func(c *Config) {
 			c.Enabled = true
 			c.QueryLogLookback = c.QueryLogPollInterval + c.QueryLogSettleDelay
@@ -58,5 +59,16 @@ func TestConfig_ValidateAcceptsAnInvertedLookbackWhileDisabled(t *testing.T) {
 	cfg.QueryLogLookback = cfg.QueryLogPollInterval / 2
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("a disabled tracker must not fail boot over a field nothing reads: %v", err)
+	}
+}
+
+// TestConfig_PacketMarkTTLCoversTheLongestQuery pins what the mark lifetime
+// must outlast: a row stays readable for QueryLogLookback after it finishes,
+// and it finishes up to MaxQueryDuration after the dispatch that marked it.
+func TestConfig_PacketMarkTTLCoversTheLongestQuery(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxQueryDuration = 2 * time.Minute
+	if got, floor := cfg.PacketMarkTTL(), cfg.QueryLogLookback+cfg.MaxQueryDuration; got <= floor {
+		t.Fatalf("PacketMarkTTL = %s, want more than lookback + max query duration (%s)", got, floor)
 	}
 }

@@ -538,14 +538,16 @@ is unset:
 - **` + "`CERBERUS_QUERY_ACTUALS_QUERY_LOG_POLL_INTERVAL`" + `** (duration, default
   ` + "`60s`" + `) - how often the ` + "`system.query_log`" + ` batch/fallback reconciler polls.
 - **` + "`CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK`" + `** (duration, default ` + "`180s`" + `)
-  - the reconciler's read window: it reads only rows whose query started
-  within this much of the server's current time, which bounds a poll's scan
+  - the reconciler's read window: its cursor is never further back than this,
+  so it reads only rows that finished within it; this bounds a poll's scan
   and is where the first poll starts. Must exceed the poll interval plus the
   settle delay.
 - **` + "`CERBERUS_QUERY_ACTUALS_QUERY_LOG_SETTLE_DELAY`" + `** (duration, default
   ` + "`15s`" + `) - rows younger than this (server clock) wait for a later poll, so an
-  asynchronously flushed row is never skipped by the reconciler's forward-only
-  cursor. Must cover the server's query_log ` + "`flush_interval_milliseconds`" + `.
+  asynchronously flushed row is not skipped by the reconciler's forward-only
+  cursor while the servers' clocks agree to within the settle delay less the
+  query-log flush interval. Must cover the server's query_log
+  ` + "`flush_interval_milliseconds`" + `.
 
 ## Dependency matrix
 

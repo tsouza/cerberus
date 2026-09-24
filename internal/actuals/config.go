@@ -113,14 +113,13 @@ type Config struct {
 	QueryLogPollInterval time.Duration
 
 	// QueryLogLookback (CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK) is the
-	// reconciler's read window: it only ever reads a query-log row whose query
-	// started within QueryLogLookback of the server's current time. That bounds
-	// what one poll can scan however far behind the reconciler has fallen, sets
-	// where the first poll starts, and is the lifetime of the packet path's
-	// query-id marks (Tracker.MarkPacketObserved), so no row the reader can
-	// still admit outlives the mark that refuses it. It must exceed
-	// QueryLogPollInterval + QueryLogSettleDelay: a row becomes readable one
-	// settle delay after it finishes and is read by the next poll.
+	// reconciler's read window: it never places its cursor further back than
+	// QueryLogLookback before now, so it only reads a query-log row that
+	// finished within that window. That bounds what one poll can scan however
+	// far behind the reconciler has fallen and sets where the first poll
+	// starts. It must exceed QueryLogPollInterval + QueryLogSettleDelay: a row
+	// becomes readable one settle delay after it finishes and is read by the
+	// next poll.
 	QueryLogLookback time.Duration
 
 	// QueryLogSettleDelay (CERBERUS_QUERY_ACTUALS_QUERY_LOG_SETTLE_DELAY) holds
@@ -129,9 +128,18 @@ type Config struct {
 	// query log asynchronously, so a row can surface after a row with a later
 	// timestamp was already read — on the same server between two flushes, or
 	// across the members of system.all_query_log. Waiting the flush lag out
-	// before a row becomes readable is what lets the cursor never skip one. It
-	// must cover the server's query_log flush_interval_milliseconds.
+	// before a row becomes readable is what keeps the cursor from skipping one,
+	// as long as the servers' clocks agree to within the settle delay less
+	// the flush interval. It must cover the server's query_log
+	// flush_interval_milliseconds.
 	QueryLogSettleDelay time.Duration
+
+	// MaxQueryDuration is the longest a query this process dispatches can run
+	// on the server — cmd/cerberus sets it from CERBERUS_QUERY_TIMEOUT, which
+	// every data-plane dispatch carries as max_execution_time. Not an env knob
+	// of its own. It extends the packet path's query-id marks (PacketMarkTTL)
+	// by the gap between a dispatch and its query-log row's finish time.
+	MaxQueryDuration time.Duration
 }
 
 // Default tuning constants (this package's own calibration surface — no
@@ -191,19 +199,20 @@ const (
 	// just after another's.
 	defaultQueryLogSettleDelay = 15 * time.Second
 
-	// packetMarkClockAllowance extends a packet-path query-id mark past
-	// QueryLogLookback. The mark is taken on cerberus's clock at dispatch; the
-	// reader's window is measured on the server's clock from the query's
-	// start. The allowance covers the dispatch-to-start latency and the clock
-	// offset between the two, so a row inside the window is never read after
-	// its mark expired.
+	// packetMarkClockAllowance extends a packet-path query-id mark further.
+	// The mark is taken on cerberus's clock at dispatch; the query-log row's
+	// finish time is written on the server's clock. The allowance covers the
+	// dispatch-to-start latency and the clock offset between the two.
 	packetMarkClockAllowance = time.Minute
 )
 
-// PacketMarkTTL is how long Tracker keeps a packet-path query-id mark: the
-// reader's window plus packetMarkClockAllowance.
+// PacketMarkTTL is how long Tracker keeps a packet-path query-id mark. A row
+// stays readable until its finish time leaves the read window
+// (QueryLogLookback), and it finishes at most MaxQueryDuration after the
+// dispatch that took the mark, give or take packetMarkClockAllowance — so no
+// row the reader can still admit outlives the mark that refuses it.
 func (c Config) PacketMarkTTL() time.Duration {
-	return c.QueryLogLookback + packetMarkClockAllowance
+	return c.QueryLogLookback + c.MaxQueryDuration + packetMarkClockAllowance
 }
 
 // DefaultConfig returns the conservative library defaults. Enabled is false
@@ -248,6 +257,9 @@ func (c Config) Validate() error {
 	}
 	if c.QueryLogLookback <= 0 {
 		return fmt.Errorf("actuals: QueryLogLookback must be > 0, got %s", c.QueryLogLookback)
+	}
+	if c.MaxQueryDuration < 0 {
+		return fmt.Errorf("actuals: MaxQueryDuration must be >= 0, got %s", c.MaxQueryDuration)
 	}
 	if c.QueryLogSettleDelay < 0 {
 		return fmt.Errorf("actuals: QueryLogSettleDelay must be >= 0, got %s", c.QueryLogSettleDelay)

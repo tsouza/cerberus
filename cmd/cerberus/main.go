@@ -231,7 +231,7 @@ func mountAPIHeads(
 		// own scope: the actuals hooks all key off the solver's own
 		// plan-shape-id / K-clamp machinery, which is PromQL-only
 		// (solver.RequestMeta.Lang's own doc).
-		actualsTracker, err := buildActualsTracker(ctx, logger, cfg.Settings.String, promClient, queryLogUnion)
+		actualsTracker, err := buildActualsTracker(ctx, logger, cfg.Settings.String, promClient, cfg.ClickHouse.QueryTimeout, queryLogUnion)
 		if err != nil {
 			return apiHeads{}, fmt.Errorf("configure query actuals: %w", err)
 		}
@@ -1037,14 +1037,19 @@ func buildCardinalityProbeAdvisor(
 // (query_log_actuals.go) on its own goroutine, bound to ctx — mirroring
 // startOptCorpus's own goroutine-launch-and-log shape, independently
 // implemented (see query_log_actuals.go's own doc for why this package
-// cannot import internal/optcorpus). queryLogUnion reports, on every poll,
+// cannot import internal/optcorpus). queryTimeout is the server-side cap every
+// data-plane dispatch carries (CERBERUS_QUERY_TIMEOUT); it bounds how long
+// after a dispatch its query-log row can finish, so it sizes how long the
+// packet path's query-id marks are kept (actuals.Config.MaxQueryDuration).
+// queryLogUnion reports, on every poll,
 // whether the query_log_union feature is in force in the live chopt
 // resolution; nil reads the local log only.
-func buildActualsTracker(ctx context.Context, logger *slog.Logger, settings func(string) string, promClient *chclient.Client, queryLogUnion func() bool) (*actuals.Tracker, error) {
+func buildActualsTracker(ctx context.Context, logger *slog.Logger, settings func(string) string, promClient *chclient.Client, queryTimeout time.Duration, queryLogUnion func() bool) (*actuals.Tracker, error) {
 	cfg, err := actuals.ConfigFrom(settings)
 	if err != nil {
 		return nil, err
 	}
+	cfg.MaxQueryDuration = queryTimeout
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -1547,6 +1552,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"server_version", resolvedVersion.String(),
 		"server_ts_grid_capability", capability.String(),
 		"server_result_cache_capability", resultCacheCapability.String(),
+		"server_query_log_union_capability", queryLogUnionCapability.String(),
 		"query_workload", cfg.CHQueryWorkload,
 		"server_query_workload_capability", queryWorkloadCapability.String(),
 		"enabled", strings.Join(set.IDs(), ","),
@@ -1574,7 +1580,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 // workload is dropped from the live rules, exactly like a Set feature that
 // regresses across a live server change. Unreachable (inconclusive, a
 // transient connectivity failure rather than a verdict from the server) is
-// NEVER fatal in either caller, mirroring blockIsInconclusive's treatment
+// NEVER fatal in either caller, mirroring blockIsNonFatal's treatment
 // of Unreachable elsewhere in the chopt resolver.
 func resolveQueryWorkload(
 	ctx context.Context,

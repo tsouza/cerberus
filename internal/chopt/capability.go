@@ -31,8 +31,9 @@ package chopt
 // old" for a feature that requires it: under auto it is a silent skip + a
 // boot WARN, under an explicit list it is FATAL (enforcing) or WARN+skip
 // (permissive) — except on the query-log union axis, whose block always
-// degrades with a WARN (Feature.RequiresQueryLogUnionCapability). Only CapabilityAvailable permits a gated feature on any axis;
-// every other state (Unknown / Forbidden / Unreachable) is conservative.
+// degrades with a WARN (Feature.RequiresQueryLogUnionCapability). Only
+// CapabilityAvailable permits a gated feature on any axis; every other state
+// (Unknown / Forbidden / Unreachable) is conservative.
 type Capability int
 
 const (

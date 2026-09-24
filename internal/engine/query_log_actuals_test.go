@@ -118,7 +118,6 @@ func TestQueryLogActualsReconciler_PollFeedsTrackerAndAdvancesCursor(t *testing.
 	want := chclient.QueryLogActualsRequest{
 		After:         chclient.QueryLogCursor{EventTime: testNow.Add(-cfg.QueryLogLookback)},
 		SettleDelay:   cfg.QueryLogSettleDelay,
-		Window:        cfg.QueryLogLookback,
 		ShapeIDPrefix: shapeIDPrefix,
 		Limit:         queryLogActualsBatchLimit,
 	}

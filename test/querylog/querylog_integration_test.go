@@ -226,8 +226,8 @@ func caseUnionFindsObservationsAfterFailover(ctx context.Context, t *testing.T, 
 
 // caseUnionReadPagesStably walks the union with one-row pages and requires
 // the exact row set a single read returns, in the same order, with no row
-// twice: the cursor's tuple comparison, the settle horizon and the start-time
-// window, evaluated by a real server across union members.
+// twice: the cursor's tuple comparison and the settle horizon, evaluated by a
+// real server across union members.
 func caseUnionReadPagesStably(ctx context.Context, t *testing.T, rig twoShardRig) {
 	w := newWorkload("pages")
 	for range repeatPolls {
@@ -237,7 +237,6 @@ func caseUnionReadPagesStably(ctx context.Context, t *testing.T, rig twoShardRig
 	req := chclient.QueryLogActualsRequest{
 		Union:         true,
 		After:         chclient.QueryLogCursor{EventTime: time.Now().Add(-actualsConfig().QueryLogLookback)},
-		Window:        actualsConfig().QueryLogLookback,
 		ShapeIDPrefix: w.prefix,
 		Limit:         wholeReadLimit,
 	}
@@ -280,11 +279,6 @@ func caseUnionReadPagesStably(ctx context.Context, t *testing.T, rig twoShardRig
 	held.SettleDelay = time.Hour
 	if rows, err := reader.QueryLogActuals(ctx, held); err != nil || len(rows) != 0 {
 		t.Fatalf("an hour's settle delay returned %d rows (err %v), want none: every row is younger than that", len(rows), err)
-	}
-	narrow := req
-	narrow.Window = 0
-	if rows, err := reader.QueryLogActuals(ctx, narrow); err != nil || len(rows) != 0 {
-		t.Fatalf("a zero start-time window returned %d rows (err %v), want none", len(rows), err)
 	}
 }
 

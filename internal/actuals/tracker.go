@@ -248,10 +248,11 @@ func (t *Tracker) SetNowForTest(now func() time.Time) {
 // "helpfully" recording the surviving K-1 per-shard fragments as if each were
 // a whole query.
 //
-// Entries expire after cfg.PacketMarkTTL(): the poller only reads a row whose
-// query started within cfg.QueryLogLookback of the server's clock, and the
-// TTL adds an allowance for the dispatch-to-start latency and the clock offset
-// between cerberus and the server. Past it, no poll can still admit the row,
+// Entries expire after cfg.PacketMarkTTL(): the poller only reads a row that
+// finished within cfg.QueryLogLookback, a dispatch's row finishes at most
+// cfg.MaxQueryDuration after the dispatch, and the TTL adds an allowance for
+// the clock offset between cerberus and the server. Past it, no poll can
+// still admit the row,
 // so remembering the id has no purpose. Memory is therefore bounded by the
 // dispatch rate over that window, and the whole map is inert unless actuals
 // capture is on.
@@ -272,14 +273,12 @@ func (t *Tracker) MarkPacketObserved(queryID string) {
 // observation for queryID — true only when the packet path did not already
 // take one (MarkPacketObserved).
 //
-// Deliberately NON-consuming: the mark stays until it expires with the rest.
-// The poller's cursor reads each row once within one process, but nothing
-// else is gained by consuming the mark, and a consuming claim would admit any
-// second read of the same row — a cursor rebuilt from the lookback after the
-// poller's own state is lost — recording exactly the duplicate it was added
-// to prevent. The mark's lifetime covers every read the poller can still
-// make, so every read inside it is refused and nothing outside it can still
-// arrive.
+// Deliberately NON-consuming, as a defensive choice: the poller's cursor
+// reads each row once, so no second read of a marked row exists today, and a
+// non-consuming claim keeps that true should one ever appear — a consuming
+// claim would admit the second read, recording exactly the duplicate the mark
+// exists to prevent. The mark's lifetime covers every read the poller can
+// make, so every read inside it is refused and nothing outside it can arrive.
 //
 // An empty queryID answers true: a row with no id cannot be matched against
 // anything, and refusing it would silently drop the poller's genuine residual

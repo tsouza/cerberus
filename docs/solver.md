@@ -1061,11 +1061,14 @@ path reports — never sums across servers.
 microseconds, hostname, `query_id`) and reads strictly after it, at most
 10 pages of 1,000 rows per poll; the cursor carries a backlog to the next
 poll. Rows younger than `CERBERUS_QUERY_ACTUALS_QUERY_LOG_SETTLE_DELAY`
-(server clock) wait for a later poll, so an asynchronously flushed row is
-never skipped. Rows whose query started more than
-`CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK` ago are never read; a packet
-mark outlives that window by a clock allowance. A read failure leaves the
-cursor in place for the next poll; it never fails the process.
+(server clock) wait for a later poll, so an asynchronously flushed row is not
+skipped while the servers' clocks agree to within the settle delay less the
+query-log flush interval. The cursor is never placed further back than
+`CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK`, so a row that finished longer
+ago than that is not read. A packet mark lives for the lookback plus
+`CERBERUS_QUERY_TIMEOUT` (the longest a dispatch can run) plus a clock
+allowance. A read failure leaves the cursor in place for the next poll; it
+never fails the process.
 
 **Which table.**
 
@@ -1077,13 +1080,19 @@ cursor in place for the next poll; it never fails the process.
 `query_log_union` is an opt-in `CERBERUS_CH_OPTIMIZATIONS` feature. At boot
 and on every capability re-probe, cerberus runs the reconciler's own
 record-selection query against `system.all_query_log` for an empty page;
-the feature is in force only while that succeeds. When the table is absent
-(an older server, or no union section), the `SELECT` is not granted, or a
-union member answers with an error, the feature resolves out with a boot
-`WARN` in both optimization modes and the reconciler reads the local log. A
-union read the server refuses between two probes falls back to the local log
-for that poll, logged once per transition. A transport failure is not a
-refusal: the poll is retried from the same cursor.
+the feature is in force only while that succeeds. When it does not, the
+feature resolves out with a boot `WARN` in both optimization modes and the
+reconciler reads the local log.
+
+Between two probes, a union read the server refuses as not provisioned —
+`UNKNOWN_TABLE` (60, an older server or no union section), `ACCESS_DENIED`
+(497), `UNKNOWN_IDENTIFIER` (47) or `NO_SUCH_COLUMN_IN_TABLE` (16) — falls
+back to the local log for that poll, logged once per transition. The cursor
+then advances over the local log, so rows only the union holds that are
+older than it when the union answers again are not read. Any other failure
+— a transport error, or a server error about the read itself such as a
+timeout or a memory limit — is retried from the same cursor on the next
+poll.
 
 A server section that enables the union:
 

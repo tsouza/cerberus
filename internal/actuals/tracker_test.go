@@ -302,7 +302,7 @@ func TestPacketObservedClaim(t *testing.T) {
 	// 3. The mark expires once no poll could still be carrying the row, so the
 	//    set cannot grow without bound.
 	//    It survives the whole read window first: the reader can still admit a
-	//    row whose query started just inside QueryLogLookback.
+	//    row that finished just inside QueryLogLookback.
 	now = now.Add(cfg.QueryLogLookback + time.Second)
 	tr.MarkPacketObserved("dispatch-2") // marking is what sweeps
 	if tr.ClaimQueryLogRow("dispatch-1") {
