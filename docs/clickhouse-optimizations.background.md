@@ -489,7 +489,7 @@ shared with other work, so differences under about 5% are noise.
 | Line filter `timeout after [0-9]+ms`, unguarded                          | 4936 → 5862 (+19%)    | 4370 → 5198 (+19%)   | 4329 → 5315 (+23%)   | 46160 → 55462 (+20%)   |
 | Line filter `timeout after [0-9]+ms`, `position()`-guarded               | 4865 → 3950 (−19%)    | 4558 → 4148 (−9%)    | 4068 → 3891 (−4%)    | 44996 → 43777 (−3%)    |
 | Line filter `user=.*admin` (`user=[^\n]*admin`, guarded)                 | 6535 → 6371 (−3%)     | 6975 → 6580 (−6%)    | —                    | 73431 → 74370 (+1%)    |
-| `unwrap duration(latency)` after a `timeout` substring filter            | 34156 → 34386 (+1%)   | 34391 → 35639 (+4%)  | —                    | —                      |
+| `unwrap duration(latency)` after a `timeout` substring filter            | 34156 → 34386 (+1%)   | 34391 → 35639 (+4%)  | —                    | 420826 → 397778 (−5%)  |
 
 In a whole emitted query the regex is one cost among the scan, map access and
 range-window work, so the gains are partial: the anchored matcher, the most
