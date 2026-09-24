@@ -1,0 +1,8 @@
+<!-- system.all_query_log over every rotated query_log table on every
+     replica of the querylog cluster. -->
+<clickhouse>
+    <create_union_system_log_tables>
+        <merge_rotated_tables>1</merge_rotated_tables>
+        <cluster>querylog</cluster>
+    </create_union_system_log_tables>
+</clickhouse>

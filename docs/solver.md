@@ -994,7 +994,9 @@ resource usage a dispatch of that shape actually consumed.
 with no version floor to probe — this is a plain solver-policy config knob
 (`CERBERUS_QUERY_ACTUALS_ENABLED`, default `false`), mirroring
 `CERBERUS_SOLVER_ADAPTIVE_ENABLED`'s own posture rather than
-`CERBERUS_CH_OPTIMIZATIONS`'s AutoSelect/version-floor machinery.
+`CERBERUS_CH_OPTIMIZATIONS`'s AutoSelect/version-floor machinery. The one
+chopt entry is the query-log source's union table, `query_log_union` — see
+[Query-log source](#query-log-source).
 
 **Anti-autotune stance**, inherited from the cardinality pre-probe's own
 precedent above: the tracker is a bounded, ADVISORY input to existing
@@ -1019,22 +1021,94 @@ repeat.
    no extra round trip — only the (already-flowing) packet's parse cost —
    so it is wired ONLY when the actuals feature is on (`WithActualsCapture`),
    never unconditionally.
-2. **`system.query_log`** (`internal/engine/query_log_actuals.go`, the SLOW
-   batch/fallback path) — a background reconciler polls for
-   `log_comment LIKE 'cerb:%'` `QueryFinish` rows, for the dispatches the
-   packet path could not observe (one that failed before completing, or a
-   deployment mode where packet capture is not wired). Genuinely slow by
-   construction: `system.query_log`'s own async flush lag means a row
-   surfaces well after the query that produced it finished, so the
-   reconciler is watermark-based (retries from the same point on a query
-   failure, never advances past unread rows) rather than assumed
-   synchronous.
+2. **The query log** (`internal/engine/query_log_actuals.go`, the SLOW
+   path) — a background reconciler polls for finished, cerberus-stamped
+   (`log_comment` starting `cerb:`) initiator rows and records the ones no
+   packet observation in this process covers. Slow by construction: a row
+   becomes readable a settle delay after its query finished. See
+   [Query-log source](#query-log-source).
 
 `log_comment` is stamped onto every dispatch the actuals feature covers
 REGARDLESS of `SettingsRules.LogCommentShape` — that flag governs a
 separate, purely-observability concern (an operator manually clustering
 `system.query_log` by hand); actuals capture needs the correlation key
 whether or not the operator separately opted into it.
+
+### Query-log source
+
+**What it records.** Every dispatch this process arms for capture claims its
+ClickHouse `query_id` at dispatch (`Tracker.MarkPacketObserved`), and the
+packet path observes it on the dispatching connection — whichever server ran
+it, every shard of a `Distributed` read included, and whatever later happens
+to any server's log. The reconciler refuses every claimed id, so it records
+only:
+
+- a query stamped without capture armed (`CERBERUS_LOG_COMMENT_SHAPE` on a
+  dispatch path that never classified);
+- a query another process dispatched — another cerberus replica, or this
+  process before a restart, within the lookback.
+
+**Record selection.** One row per physical query: `type = 'QueryFinish'`,
+`is_initial_query = 1`, one row per `(hostname, query_id)`. A `Distributed`
+read also logs a child row on every other server that ran a piece of it, with
+its own `query_id`, the propagated `log_comment` and only that piece's
+`read_rows`; the initiator's row already sums every child, so child rows are
+never read. `read_rows` / `read_bytes` are the initiator's whole-query totals
+and `memory_usage` is the initiator's own peak — the quantities the packet
+path reports — never sums across servers.
+
+**Reading.** The reconciler keeps a cursor in the order (event time in
+microseconds, hostname, `query_id`) and reads strictly after it, at most
+10 pages of 1,000 rows per poll; the cursor carries a backlog to the next
+poll. Rows younger than `CERBERUS_QUERY_ACTUALS_QUERY_LOG_SETTLE_DELAY`
+(server clock) wait for a later poll, so an asynchronously flushed row is not
+skipped while the servers' clocks agree to within the settle delay less the
+query-log flush interval. The cursor is never placed further back than
+`CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK`, so a row that finished longer
+ago than that is not read. A packet mark lives for the lookback plus
+`CERBERUS_QUERY_TIMEOUT` (the longest a dispatch can run) plus a clock
+allowance. A read failure leaves the cursor in place for the next poll; it
+never fails the process.
+
+**Which table.**
+
+| Source            | Table                   | Sees                                                                                                                                             | Needs                                                                                                                                                                     |
+| ----------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| local (default)   | `system.query_log`      | queries the connected server initiated since its log last rotated                                                                                | `SELECT` on `system.query_log`                                                                                                                                            |
+| `query_log_union` | `system.all_query_log`  | the current and every rotated `query_log_N` table, and — when the server section names a cluster — those of every replica of that cluster        | ClickHouse 26.8+ with `<create_union_system_log_tables>` configured, and `SELECT` on `system.all_query_log` only; replicas are reached with the cluster's own credentials |
+
+`query_log_union` is an opt-in `CERBERUS_CH_OPTIMIZATIONS` feature. At boot
+and on every capability re-probe, cerberus runs the reconciler's own
+record-selection query against `system.all_query_log` for an empty page;
+the feature is in force only while that succeeds. When it does not, the
+feature resolves out with a boot `WARN` in both optimization modes and the
+reconciler reads the local log.
+
+Between two probes, a union read the server refuses as not provisioned —
+`UNKNOWN_TABLE` (60, an older server or no union section), `ACCESS_DENIED`
+(497), `UNKNOWN_IDENTIFIER` (47) or `NO_SUCH_COLUMN_IN_TABLE` (16) — falls
+back to the local log for that poll, logged once per transition. The cursor
+then advances over the local log, so rows only the union holds that are
+older than it when the union answers again are not read. Any other failure
+— a transport error, or a server error about the read itself such as a
+timeout or a memory limit — is retried from the same cursor on the next
+poll.
+
+A server section that enables the union:
+
+```xml
+<clickhouse>
+    <create_union_system_log_tables>
+        <merge_rotated_tables>1</merge_rotated_tables>
+        <cluster>my_cluster</cluster>
+    </create_union_system_log_tables>
+</clickhouse>
+```
+
+with `GRANT SELECT ON system.all_query_log TO cerberus` and
+`CERBERUS_CH_OPTIMIZATIONS=auto,query_log_union`. The union skips a
+replica that does not answer (`skip_unavailable_shards`); rows it logged
+at times the cursor moves past while it is unreachable are not read.
 
 ### Four consumers
 

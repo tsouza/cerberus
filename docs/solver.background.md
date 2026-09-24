@@ -243,3 +243,52 @@ a cached advisory estimate going stale relative to data that grew after it
 was taken — rather than a structural `PREWHERE`/skip-index mismatch in
 row-count terms specifically; both are covered by the SAME mechanism
 regardless of which one produced the divergence.
+
+## Query-log source: what the local log misses, measured
+
+`test/querylog` measured the local reader against two data shards behind a
+`Distributed` table and a server upgraded from the supported floor, on
+ClickHouse 24.8.14.39 and 26.8.10.6:
+
+- **Native packets already cover this process's own queries.** A
+  `Distributed` read of 100,000 rows per shard, dispatched through
+  cerberus's client with capture armed, produced one packet observation of
+  200,000 rows on both builds. Where the query ran and what happens to any
+  server's log afterwards cannot change that observation, so neither a
+  failover nor a rotation loses anything the packet path records — and the
+  reconciler already refused every such query id (#3184).
+- **The local log misses what it never held.** With the reader's connection
+  failed over to shard B, a query shard A ran was invisible (0 observations);
+  the same reader on shard A found it. After an upgrade from 24.8.14.39 to
+  26.8.10.6 on the same data volume, the server renamed `query_log` to
+  `query_log_0`, and the local reader found none of the pre-upgrade queries.
+  Both gaps affect only the rows the packet path cannot see: stamped queries
+  dispatched without capture and queries from another process.
+- **The pre-union selection double-accounted remote children.** On both
+  builds, shard B's own `query_log` held a `QueryFinish` row for the child of
+  shard A's `Distributed` read: its own `query_id`, `is_initial_query = 0`,
+  the propagated `log_comment`, and 100,000 `read_rows` — half the query.
+  The reader selected on `type` and `log_comment` alone, and the child's id
+  was never marked by the packet path, so a reader on shard B recorded it as
+  a whole query: a second observation of work the packet path had already
+  counted, at half its size. Through a cluster-wide union the same selection
+  added that second observation and moved the tracked EMA from the packet
+  path's correct 200,000 rows to 180,000. Selecting `is_initial_query = 1` removes it; the
+  initiator's row already carries every child's rows.
+- **The second-granularity watermark dropped rows.** The reader advanced a
+  `DateTime` watermark to the latest `event_time` read and read
+  `event_time > watermark` next time. Every row sharing that second but not
+  yet read — the rest of a page cut by the row limit, or a row flushed after
+  the poll — was never read. The cursor over (microsecond event time,
+  hostname, `query_id`) plus the settle delay replace it; one-row paging over
+  the union returns exactly the rows one large read does, in order.
+- **No cluster-wide grant.** A user holding only `SELECT` on
+  `system.query_log` and `system.all_query_log` read every replica through
+  the union: the table's `clusterAllReplicas` reaches them with the
+  cluster's own configured credentials.
+
+The union is therefore an improvement only for rows outside this process's
+packet coverage, which is why it is opt-in rather than auto-selected, and why
+a refusal degrades to the local log instead of failing boot: the local log
+is complete for every row it can hold, and the server may drop and recreate
+`system.all_query_log` at any time.

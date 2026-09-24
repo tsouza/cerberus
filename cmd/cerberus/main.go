@@ -198,6 +198,7 @@ func mountAPIHeads(
 	client *chclient.Client,
 	cfg config.Config,
 	optSet chopt.EnabledSet,
+	queryLogUnion func() bool,
 	limiters admitLimiters,
 	logger *slog.Logger,
 	resourceBounds engine.ResourceBoundOverrides,
@@ -235,7 +236,7 @@ func mountAPIHeads(
 		// own scope: the actuals hooks all key off the solver's own
 		// plan-shape-id / K-clamp machinery, which is PromQL-only
 		// (solver.RequestMeta.Lang's own doc).
-		actualsTracker, err := buildActualsTracker(ctx, logger, cfg.Settings.String, promClient)
+		actualsTracker, err := buildActualsTracker(ctx, logger, cfg.Settings.String, promClient, cfg.ClickHouse.QueryTimeout, queryLogUnion)
 		if err != nil {
 			return apiHeads{}, fmt.Errorf("configure query actuals: %w", err)
 		}
@@ -630,7 +631,7 @@ func run() error {
 		return err
 	}
 
-	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, limiters, logger, resourceBounds, promResourceBounds, probes)
+	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, chOpts.queryLogUnion, limiters, logger, resourceBounds, promResourceBounds, probes)
 	if err != nil {
 		return err
 	}
@@ -1041,12 +1042,19 @@ func buildCardinalityProbeAdvisor(
 // (query_log_actuals.go) on its own goroutine, bound to ctx — mirroring
 // startOptCorpus's own goroutine-launch-and-log shape, independently
 // implemented (see query_log_actuals.go's own doc for why this package
-// cannot import internal/optcorpus).
-func buildActualsTracker(ctx context.Context, logger *slog.Logger, settings func(string) string, promClient *chclient.Client) (*actuals.Tracker, error) {
+// cannot import internal/optcorpus). queryTimeout is the server-side cap every
+// data-plane dispatch carries (CERBERUS_QUERY_TIMEOUT); it bounds how long
+// after a dispatch its query-log row can finish, so it sizes how long the
+// packet path's query-id marks are kept (actuals.Config.MaxQueryDuration).
+// queryLogUnion reports, on every poll,
+// whether the query_log_union feature is in force in the live chopt
+// resolution; nil reads the local log only.
+func buildActualsTracker(ctx context.Context, logger *slog.Logger, settings func(string) string, promClient *chclient.Client, queryTimeout time.Duration, queryLogUnion func() bool) (*actuals.Tracker, error) {
 	cfg, err := actuals.ConfigFrom(settings)
 	if err != nil {
 		return nil, err
 	}
+	cfg.MaxQueryDuration = queryTimeout
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -1054,7 +1062,7 @@ func buildActualsTracker(ctx context.Context, logger *slog.Logger, settings func
 		return nil, nil
 	}
 	tracker := actuals.NewTracker(cfg)
-	rec := engine.NewQueryLogActualsReconciler(queryLogQuerierAdapter{promClient}, tracker, cfg, logger.With("component", "query_actuals"))
+	rec := engine.NewQueryLogActualsReconciler(promClient, tracker, cfg, queryLogUnion, logger.With("component", "query_actuals"))
 	go rec.Run(ctx)
 	logger.Info(
 		"query actuals predicted-vs-actual drift tracker started",
@@ -1062,37 +1070,6 @@ func buildActualsTracker(ctx context.Context, logger *slog.Logger, settings func
 		"drift_band", fmt.Sprintf("[%g, %g]", cfg.DriftLowerRatio, cfg.DriftUpperRatio),
 	)
 	return tracker, nil
-}
-
-// queryLogQuerierAdapter adapts *chclient.Client to engine.QueryLogQuerier.
-// The two QueryLogActualRow types (chclient's transport type,
-// engine.QueryLogActualRow's package-local stand-in — see that type's own
-// doc) are field-for-field identical; this is the one-line conversion that
-// doc promises, kept here rather than in internal/engine so that package
-// depends only on its own narrow interface, never chclient's concrete type
-// (mirrors every other Estimator-style seam in this codebase).
-type queryLogQuerierAdapter struct {
-	client *chclient.Client
-}
-
-func (a queryLogQuerierAdapter) QueryLogActuals(ctx context.Context, since time.Time, shapeIDPrefix string, limit int) ([]engine.QueryLogActualRow, error) {
-	rows, err := a.client.QueryLogActuals(ctx, since, shapeIDPrefix, limit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]engine.QueryLogActualRow, len(rows))
-	for i, r := range rows {
-		// A whole-struct CONVERSION, deliberately, not a field-by-field
-		// literal. Go only permits this when the two structs are identical in
-		// field names, types and order, so the compiler enforces the
-		// "field-for-field identical" claim above. The literal this replaces
-		// compiled perfectly well after a new field was added to both sides
-		// and silently dropped it, which left the consumer reading a zero
-		// value — exactly the kind of hollow wiring a conversion makes
-		// impossible (cerberus issue #3184 added QueryID this way).
-		out[i] = engine.QueryLogActualRow(r)
-	}
-	return out, nil
 }
 
 // nativeRangeLowerers builds the boot-wired polymorphic lowering dispatch
@@ -1482,12 +1459,18 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// same bootstrap/default-DB connection, never fatal here.
 	resultCacheCapability := probeResultCacheCapabilityOverBootstrap(ctx, cfg.ClickHouse)
 
+	// The query-log union canary, run only when query_log_union is listed
+	// (probeQueryLogUnionCapabilityOverBootstrap). A block degrades the
+	// actuals reconciler to the local system.query_log and is never fatal.
+	queryLogUnionCapability := probeQueryLogUnionCapabilityOverBootstrap(ctx, cfg.ClickHouse, cfg.CHOptimizations)
+
 	set, warnings, err := chopt.Resolve(chopt.Config{
-		Optimizations:         cfg.CHOptimizations,
-		Mode:                  cfg.CHOptimizationsMode,
-		LegacyTSGrid:          cfg.LegacyTSGridFlag,
-		Capability:            capability,
-		ResultCacheCapability: resultCacheCapability,
+		Optimizations:           cfg.CHOptimizations,
+		Mode:                    cfg.CHOptimizationsMode,
+		LegacyTSGrid:            cfg.LegacyTSGridFlag,
+		Capability:              capability,
+		ResultCacheCapability:   resultCacheCapability,
+		QueryLogUnionCapability: queryLogUnionCapability,
 	}, resolvedVersion)
 	if err != nil {
 		return chOptResolution{}, fmt.Errorf("resolve clickhouse optimizations: %w", err)
@@ -1585,6 +1568,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"server_version", resolvedVersion.String(),
 		"server_ts_grid_capability", capability.String(),
 		"server_result_cache_capability", resultCacheCapability.String(),
+		"server_query_log_union_capability", queryLogUnionCapability.String(),
 		"query_workload", cfg.CHQueryWorkload,
 		"server_query_workload_capability", queryWorkloadCapability.String(),
 		"enabled", strings.Join(set.IDs(), ","),
@@ -1613,7 +1597,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 // workload is dropped from the live rules, exactly like a Set feature that
 // regresses across a live server change. Unreachable (inconclusive, a
 // transient connectivity failure rather than a verdict from the server) is
-// NEVER fatal in either caller, mirroring blockIsInconclusive's treatment
+// NEVER fatal in either caller, mirroring blockIsNonFatal's treatment
 // of Unreachable elsewhere in the chopt resolver.
 func resolveQueryWorkload(
 	ctx context.Context,
@@ -1728,11 +1712,32 @@ func probeResultCacheCapabilityOverBootstrap(ctx context.Context, chCfg chclient
 	return bootClient.ProbeResultCacheCapability(ctx)
 }
 
+// probeQueryLogUnionCapabilityOverBootstrap runs the query-log union canary
+// (chclient.ProbeQueryLogUnionCapability) over a short-lived bootstrap
+// client, like probeResultCacheCapabilityOverBootstrap. It contacts the server
+// only when selection names query_log_union explicitly: the feature is never
+// auto-selected, so an unrequested verdict decides nothing, and the canary
+// reaches every member of a cluster-wide union table. Unrequested, it returns
+// CapabilityUnknown. A failure to even open the client is Unreachable.
+func probeQueryLogUnionCapabilityOverBootstrap(ctx context.Context, chCfg chclient.Config, selection string) chopt.Capability {
+	if !chopt.ExplicitlyRequested(selection, chopt.FeatureQueryLogUnion) {
+		return chopt.CapabilityUnknown
+	}
+	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, queryLogUnionProbePool))
+	if err != nil {
+		return chopt.CapabilityUnreachable
+	}
+	defer func() {
+		_ = bootClient.Close()
+	}()
+	return bootClient.ProbeQueryLogUnionCapability(ctx)
+}
+
 // probeQueryWorkloadCapabilityOverBootstrap runs the `workload` setting
 // capability canary over a short-lived client bound to ClickHouse's
 // always-present `default` database, exactly like
 // probeResultCacheCapabilityOverBootstrap — same reasoning for binding to
-// `default`. Unlike the other two canaries it stamps the OPERATOR'S OWN
+// `default`. Unlike the other canaries it stamps the OPERATOR'S OWN
 // configured workload name (workloadName), not a fixed sentinel — see
 // ProbeQueryWorkloadCapability's own doc for why. A failure to even open the
 // client is itself an unreachable verdict (conservative: the knob is
@@ -2119,6 +2124,7 @@ const (
 	tsGridProbePool        = "tsgrid-probe"
 	resultCacheProbePool   = "result-cache-probe"
 	queryWorkloadProbePool = "query-workload-probe"
+	queryLogUnionProbePool = "query-log-union-probe"
 	schemaApplyPool        = "schema-apply"
 )
 

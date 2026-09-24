@@ -22,6 +22,7 @@ const (
 	EnvEntryTTL             = "CERBERUS_QUERY_ACTUALS_ENTRY_TTL"
 	EnvQueryLogPollInterval = "CERBERUS_QUERY_ACTUALS_QUERY_LOG_POLL_INTERVAL"
 	EnvQueryLogLookback     = "CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK"
+	EnvQueryLogSettleDelay  = "CERBERUS_QUERY_ACTUALS_QUERY_LOG_SETTLE_DELAY"
 )
 
 // ConfigFromEnv is [ConfigFrom] over the process environment alone. The
@@ -67,6 +68,9 @@ func ConfigFrom(get func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.QueryLogLookback, err = settingDuration(get, EnvQueryLogLookback, cfg.QueryLogLookback); err != nil {
+		return Config{}, err
+	}
+	if cfg.QueryLogSettleDelay, err = settingDuration(get, EnvQueryLogSettleDelay, cfg.QueryLogSettleDelay); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
