@@ -202,8 +202,13 @@ func mountAPIHeads(
 	logger *slog.Logger,
 	resourceBounds engine.ResourceBoundOverrides,
 	promResourceBounds promql.ResourceBounds,
-	attrStrategies preflightProbes,
+	probes preflightProbes,
 ) (apiHeads, error) {
+	// A metric table without the Flags column cannot tell a stale marker
+	// from a sample, and a query naming the column would fail on it: every
+	// head reads each row as a sample instead. preflight has already
+	// warned, naming the table.
+	cfg.Schema = probes.Result.ResolveStaleMarkerFlags(cfg.Schema)
 	// engines accumulates the engines actually built so the corpus reconciler
 	// observes only live heads (a disabled head has no engine to observe), and
 	// so the capability re-probe swaps a re-resolved set into exactly the heads
@@ -241,7 +246,7 @@ func mountAPIHeads(
 
 	if cfg.HeadEnabled(config.HeadLoki) {
 		lokiClient := client.ForHead(chclient.HeadLoki)
-		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, limiters, logger, resourceBounds, attrStrategies.Logs)
+		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, limiters, logger, resourceBounds, probes.Logs)
 		lokiHandler.Mount(traceMux)
 		engines = append(engines, lokiHandler.Engine)
 	}
@@ -273,7 +278,7 @@ func mountAPIHeads(
 		// wiring above. nil (the overwhelmingly common case: no
 		// JSON-typed column detected, or the requirements check
 		// disabled) renders byte-identical to before this field existed.
-		tempoHandler.SetAttrStrategies(attrStrategies.Traces)
+		tempoHandler.SetAttrStrategies(probes.Traces)
 		tempoHandler.Engine.Settings = settingsRules(cfg, optSet)
 		// The per-query sample budget the ENGINE-level bounds read. The cursor
 		// enforces the same ceiling on rows it drains from ClickHouse, but the
@@ -578,11 +583,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// A metric table without the Flags column cannot tell a stale marker
-	// from a sample, and a query naming the column would fail on it: read
-	// every row as a sample instead. preflight has already warned, naming
-	// the table.
-	cfg.Schema = probes.Result.ResolveStaleMarkerFlags(cfg.Schema)
 
 	// Build the admission-control limiters (see newAdmitLimiters).
 	limiters := newAdmitLimiters(cfg, logger)
