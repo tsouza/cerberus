@@ -75,7 +75,7 @@ jobs:
     name: check-test
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     # The lane settles around 5m30s. This budget is the outer bound the
     # runner enforces; the inner one is `just test-unit`'s own `-timeout`,
     # deliberately shorter so a hang is a Go panic with every goroutine's
@@ -99,7 +99,7 @@ jobs:
     name: check-build
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     # Settles around 3 minutes; same budget as `check-test` because the two
     # halves are interchangeable in what a stall costs, and a single number
     # is one fewer thing to keep in sync.
@@ -203,7 +203,7 @@ jobs:
   #   - Markdown (markdownlint-cli2)
   lint:
     name: lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     # Undeclared here defaults to GitHub's 360-minute cap, which is no bound
     # at all and would silently become the tighter constraint once the two
     # golangci-lint steps' own `run.timeout` (.golangci.yml) grew a real

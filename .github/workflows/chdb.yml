@@ -254,7 +254,7 @@ jobs:
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     timeout-minutes: 15
     steps:
       - name: gate on the changes job

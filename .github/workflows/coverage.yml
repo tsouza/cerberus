@@ -298,7 +298,7 @@ jobs:
     name: coverage-default
     needs: coverage-plan
     if: needs.coverage-plan.outputs.run_heavy == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     # `just coverage-default`'s own `go test` is capped at `-timeout 40m`
     # (see the recipe's comment for why); this leaves headroom for checkout,
     # Go module/build caching and the recipe's own fold step on top of that,
@@ -331,7 +331,7 @@ jobs:
     name: coverage-chdb (${{ matrix.shard }})
     needs: coverage-plan
     if: needs.coverage-plan.outputs.run_heavy == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     strategy:
       fail-fast: false
       matrix:
@@ -404,7 +404,7 @@ jobs:
     name: coverage-chdb-ratchet (${{ matrix.leg }})
     needs: coverage-plan
     if: needs.coverage-plan.outputs.run_heavy == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, cerberus]
     # perf-coverage-fanout.mjs's RATCHET_TIMEOUT_MINUTES=35 is this leg's own
     # internal `go test -timeout`. 45 leaves 10 minutes for checkout, Go
     # module/build caching, `just chdb-install` and the compile itself on top
