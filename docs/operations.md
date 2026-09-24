@@ -349,6 +349,56 @@ the SQL array machinery leaves at high cardinality. See
 See [`operations.background.md`](operations.background.md) for the dual-emit
 parity validation behind this path and the divergence bound its test enforces.
 
+### Upgrading ClickHouse under the native time-series aggregates
+
+The native `timeSeries*ToGrid` aggregates behind the `ts_grid_*` features
+version their partial-aggregation state, and the version changes between
+minor releases:
+
+| ClickHouse builds                                                         | State format |
+| ------------------------------------------------------------------------- | ------------ |
+| 25.9 through 26.6 (25.9.7.56, 25.10.7.6, 26.3.33.24, 26.5.7.64, 26.6.8.7) | 2            |
+| 26.7 (26.7.1.1315 through 26.7.13.12)                                     | 3            |
+| 26.8 (26.8.1.2041 through 26.8.10.6)                                      | 4            |
+
+Two servers on different formats refuse each other's state with
+`INCORRECT_DATA` (code 117). Patch builds inside one minor read each other's
+state.
+
+- **Rolling upgrades need no cerberus change.** Cerberus never ships a
+  partial state between servers. The emitter refuses to render a native
+  aggregate at a query level that reads a table directly, so a `Distributed`
+  table returns rows and the whole aggregation runs on the server cerberus's
+  connection lands on. Every native query also pins
+  `allow_experimental_parallel_reading_from_replicas = 0`, which overrides a
+  server profile that turns parallel replicas on — the one mechanism that
+  ships states through a subquery. A multi-shard or replicated deployment can
+  upgrade its servers in any order, across either boundary or both at once,
+  with the native path on throughout. `just ts-grid-state-format-integration`
+  proves this on two-shard clusters for every step of such an upgrade, in both
+  initiator directions and under the `Distributed` settings a profile can
+  change, and on a mixed-version replica pair with parallel replicas on in
+  the server profile.
+- **A profile that forbids the parallel-replicas pin disables the native
+  path.** The capability probe stamps the same settings as a native query, so
+  a constrained or readonly profile that refuses
+  `allow_experimental_parallel_reading_from_replicas` keeps every `ts_grid_*`
+  feature on the fan-out.
+- **The persisted downsample tier crosses every version.** Its
+  `timeSeriesLastTwoSamples` state has the same format on 25.9 through
+  26.8.1.2041: parts written before an upgrade read and merge after it, and
+  replicas on different versions exchange parts.
+- **Queries outside cerberus can break mid-rollout.** A hand-written query or
+  dashboard that calls a `timeSeries*ToGrid` aggregate directly over a
+  `Distributed` table makes the shards ship states, and fails with
+  `INCORRECT_DATA` while the participants straddle a format change. Wrap the
+  `Distributed` read in a subquery, or finish the rollout.
+- **One answer changes at 26.8.1.2041.** A NaN-versus-finite duplicate
+  `(series, timestamp)` answers from the finite sample on the native path
+  from 26.8.1.2041 on, and by row order before it; while a rollout is mixed,
+  the answer follows the version of the server cerberus's connection lands
+  on. See [`compatibility.md`](compatibility.md) for the exact shape.
+
 ### Recursive-CTE parallelism — recommend ClickHouse ≥ 26.6 for trace structure
 
 The TraceQL structural operators (`>>`, `&>>`, the Explore-Traces structure tab)
