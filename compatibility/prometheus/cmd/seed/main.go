@@ -1020,7 +1020,7 @@ var fixtureInserts = []namedStmt{
             toDateTime64({anchor:String}, 9),
             toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
             if(step = gap_start, 0,
-                toFloat64(2 * if(step >= gap_end, step - gap_end, step) + 1000 * instance_idx)),
+                toFloat64(2 * (step - if(step >= gap_end, gap_end, 0))) + toFloat64(1000 * instance_idx)),
             if(step = gap_start, {no_recorded_value_flag:UInt32}, toUInt32(0)),
             2,
             true
