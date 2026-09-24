@@ -1,6 +1,7 @@
 package chsql
 
 import (
+	"regexp"
 	"regexp/syntax"
 	"strings"
 	"unicode"
@@ -220,4 +221,23 @@ func indexFrom(pattern, sub string, from int) int {
 		return from + i
 	}
 	return -1
+}
+
+// lineFilterLiteralPrefix returns the literal every match of a line-filter
+// pattern starts with under Go's regexp (Loki's reading), or "" when there is
+// none or the pattern does not parse.
+//
+// A line that lacks that literal cannot match, so a substring search for it
+// is a sound guard ahead of match(). The guard is what keeps a line filter
+// cheap on ClickHouse 26.7 and later: RE2 behind match() searches a
+// pattern's required literal before it runs the regex, but a pattern the
+// server compiles to native code skips that search and runs the compiled
+// matcher on every line, which is slower for a literal most lines lack.
+func lineFilterLiteralPrefix(pattern string) string {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return ""
+	}
+	prefix, _ := re.LiteralPrefix()
+	return prefix
 }

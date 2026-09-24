@@ -1839,17 +1839,45 @@ func textIndexPrefilterArgs(l *chplan.LineContent) []string {
 }
 
 func (b *Builder) exprLineContent(l *chplan.LineContent) error {
+	renderMatch := func() error {
+		if l.Negated {
+			b.sb.WriteString("NOT ")
+		}
+		b.sb.WriteString("match(")
+		if err := b.Expr(l.Source); err != nil {
+			return err
+		}
+		b.sb.WriteString(", ")
+		b.Arg(lineFilterRegex(l.Pattern))
+		b.sb.WriteByte(')')
+		return nil
+	}
 	renderRow := func() error {
 		if l.IsRegex {
-			if l.Negated {
-				b.sb.WriteString("NOT ")
+			// A regex every match of which starts with a literal is guarded
+			// by a substring search for that literal — see
+			// [lineFilterLiteralPrefix]. position() short-circuits the row
+			// before match() evaluates it; a negated filter keeps the rows
+			// the literal is absent from, by De Morgan.
+			prefix := lineFilterLiteralPrefix(l.Pattern)
+			if prefix == "" {
+				return renderMatch()
 			}
-			b.sb.WriteString("match(")
+			join := " > 0 AND "
+			if l.Negated {
+				join = " = 0 OR "
+			}
+			b.sb.WriteString("(position(")
 			if err := b.Expr(l.Source); err != nil {
 				return err
 			}
 			b.sb.WriteString(", ")
-			b.Arg(lineFilterRegex(l.Pattern))
+			b.Arg(prefix)
+			b.sb.WriteByte(')')
+			b.sb.WriteString(join)
+			if err := renderMatch(); err != nil {
+				return err
+			}
 			b.sb.WriteByte(')')
 			return nil
 		}

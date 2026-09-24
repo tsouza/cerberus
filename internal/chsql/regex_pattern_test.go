@@ -3,6 +3,7 @@ package chsql
 import (
 	"regexp"
 	"regexp/syntax"
+	"strings"
 	"testing"
 )
 
@@ -198,5 +199,36 @@ func TestLineFilterRegex_ExhaustiveSmallPatterns(t *testing.T) {
 	walk("", 0)
 	if checked == 0 {
 		t.Fatal("no generated pattern parsed; the generator is broken")
+	}
+}
+
+func TestLineFilterLiteralPrefix(t *testing.T) {
+	for _, tc := range []struct{ pattern, want string }{
+		{`timeout after \d+ms`, "timeout after "},
+		{`^api`, "api"},
+		{`api|apx`, "ap"},
+		{`api`, "api"},
+		{`a.b`, "a"},
+		{`(?i)api`, ""},
+		{`.*x`, ""},
+		{``, ""},
+		{`a(`, ""},
+	} {
+		if got := lineFilterLiteralPrefix(tc.pattern); got != tc.want {
+			t.Errorf("lineFilterLiteralPrefix(%q) = %q; want %q", tc.pattern, got, tc.want)
+		}
+	}
+}
+
+// Every match of a pattern must contain its literal prefix, or the
+// position() guard would drop a line Loki keeps.
+func TestLineFilterLiteralPrefix_EveryMatchContainsIt(t *testing.T) {
+	for _, p := range []string{`api|apx`, `ab*`, `ab?c`, `(ab)+x`, `a.b`, `^api`, `api$`, `timeout after \d+ms`} {
+		prefix, re := lineFilterLiteralPrefix(p), regexp.MustCompile(p)
+		for _, in := range append(regexPatternInputs, "apx", "ac", "abx", "ababx") {
+			if re.MatchString(in) && !strings.Contains(in, prefix) {
+				t.Errorf("%q matches %q, which lacks its literal prefix %q", p, in, prefix)
+			}
+		}
 	}
 }
