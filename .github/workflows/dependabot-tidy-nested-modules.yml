@@ -5,60 +5,60 @@ name: dependabot-tidy-nested-modules
 # `directory: /` — on purpose, a second Dependabot directory for
 # test/oracle would just open a second, unsynced PR, not fix this — so a
 # root-only Dependabot bump routinely leaves test/oracle/go.mod stale and
-# `ci.yml`'s "test oracle module" step fails with "go: updates to go.mod
-# needed; to update it: go mod tidy" (see PR #1211). This workflow closes
-# the loop: re-tidy the nested module(s) inside the Dependabot PR itself
-# and push a fixup commit straight to its branch, so the required checks
-# go green without a human (or agent) noticing and doing it by hand.
-# bench/histogram is a second nested module but deliberately does NOT
+# `ci.yml`'s "test oracle module" and "go.mod is tidy" steps fail (see PR
+# #1211). This workflow closes the loop: it re-tidies the nested module(s)
+# on each open Dependabot Go-module PR and pushes a fixup commit straight to
+# its branch, so the required checks go green without a human doing it by
+# hand. bench/histogram is a second nested module but deliberately does NOT
 # depend on the root module, so it's excluded by the script's default.
 #
-# Gated the same way as auto-merge-deps.yml: job-level actor guard plus
-# dependabot/fetch-metadata's ecosystem output, since only `go_modules`
-# bumps can desync test/oracle.
+# Trigger and token (#3659): the fixup must start the PR's checks the way a
+# human push does, which takes RELEASE_PAT. A push made with GITHUB_TOKEN
+# starts runs that wait in `action_required` for a manual approval, and a run
+# triggered by Dependabot (`pull_request`, and `pull_request_target` on a
+# Dependabot-authored PR) sees only Dependabot secrets, so RELEASE_PAT is
+# empty there. A scheduled run is never Dependabot-triggered and does get
+# RELEASE_PAT; it sweeps every open Dependabot Go-module PR, so a bump waits
+# at most one interval for its fixup. An empty RELEASE_PAT fails the run
+# rather than falling back to a token whose push would need approval.
 #
-# Token: RELEASE_PAT (fine-grained, contents:write) when present, else
-# github.token. A push made with the plain GITHUB_TOKEN does not trigger
-# downstream `pull_request` workflow runs (GitHub's recursion guard), so
-# without RELEASE_PAT the fixup lands but the PR's checks need a manual
-# re-run; see prepare-release.yml / release.yml for the same fallback.
+# SECURITY: the job checks out the DEFAULT branch with RELEASE_PAT persisted
+# as the `origin` credential, and runs only that checkout's code. Each PR
+# branch is fetched into a separate git worktree where only `go mod tidy`
+# runs, which resolves module metadata without building or running anything
+# from the PR.
 on:
-  pull_request:
-    paths:
-      - go.mod
-      - go.sum
+  schedule:
+    # Every 30 minutes, off the :00 minute to dodge the cron stampede.
+    - cron: '13,43 * * * *'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pull-requests: read
 
 concurrency:
-  group: dependabot-tidy-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: dependabot-tidy-nested-modules
+  cancel-in-progress: false
 
 jobs:
   tidy:
     name: tidy nested modules
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - name: Fetch Dependabot metadata
-        id: meta
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3
+      - uses: actions/checkout@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: checkout PR branch
-        if: steps.meta.outputs.package-ecosystem == 'go_modules'
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          token: ${{ secrets.RELEASE_PAT || github.token }}
+          token: ${{ secrets.RELEASE_PAT }}
 
       - uses: ./.github/actions/setup-go
-        if: steps.meta.outputs.package-ecosystem == 'go_modules'
+        with:
+          also-warm: test/oracle/go.mod
 
-      - name: go mod tidy nested modules + push fixup if needed
-        if: steps.meta.outputs.package-ecosystem == 'go_modules'
+      - name: go mod tidy nested modules on open Dependabot PRs + push fixups
         env:
-          BRANCH: ${{ github.event.pull_request.head.ref }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSH_TOKEN_SET: ${{ secrets.RELEASE_PAT != '' }}
         run: node .github/scripts/dependabot-tidy-nested-modules.mjs
