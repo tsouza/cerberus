@@ -3218,10 +3218,10 @@ func TestOrderedConjuncts_StableSameRankTiebreak(t *testing.T) {
 	}
 }
 
-// TestIsSkipIndexColumn_Match kills the CONDITIONALS_NEGATION at
-// tableshape.go:IsSkipIndexColumn:`c == name` (→ `!=`). With a matching
-// name the lookup must report true; a non-member must report false. Also
-// covers the same equality flip in IsSortColumn below.
+// TestIsSkipIndexColumn_Match pins the membership lookup at
+// tableshape.go:IsSkipIndexColumn:`slices.Contains(s.SkipIndexColumns, name)`.
+// With a matching name the lookup must report true; a non-member must
+// report false. IsSortColumn below gets the same pair of checks.
 func TestIsSkipIndexColumn_Match(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SkipIndexColumns: []string{"TraceId", "SpanId"}}
@@ -3233,8 +3233,8 @@ func TestIsSkipIndexColumn_Match(t *testing.T) {
 	}
 }
 
-// TestIsSortColumn_Match kills the CONDITIONALS_NEGATION at
-// tableshape.go:IsSortColumn:`c == name` (→ `!=`).
+// TestIsSortColumn_Match pins the membership lookup at
+// tableshape.go:IsSortColumn:`slices.Contains(s.SortColumns, name)`.
 func TestIsSortColumn_Match(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName", "Timestamp"}}
