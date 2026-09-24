@@ -1378,8 +1378,8 @@ func (b *Builder) exprMapWithoutEmptyValues(m *chplan.MapWithoutEmptyValues) err
 //	             replaceRegexpOne(<map>[?src], ?anchoredRegex, ?replacement)))),
 //	       <map>))
 //
-// `anchoredRegex` is `^(?s:<regex>)$` — see [anchorLabelReplaceRegex] —
-// so the match is full-string, matching Prometheus's `label_replace`
+// `anchoredRegex` is `(?s)^(?:<regex>)$` — see [anchorLabelReplaceRegex]
+// — so the match is full-string, matching Prometheus's `label_replace`
 // anchoring rule (`promql/functions.go`:
 // `"^(?s:" + regexStr + ")$"`). The outer mapFilter drops the dst label
 // when the substituted replacement is the empty string — Prom's "labels
@@ -1433,26 +1433,6 @@ func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
 	}
 	b.sb.WriteString("))")
 	return nil
-}
-
-// anchorLabelReplaceRegex anchors a `label_replace` regex to a
-// full-string match, the same way reference Prometheus does
-// (`promql/functions.go`: `"^(?s:" + regexStr + ")$"`). ClickHouse's RE2
-// engine accepts the `(?s:...)` non-capturing flag group natively, so no
-// other change is needed to the emitted pattern.
-//
-// The `internal/qlcommon` capture-group resolver (`newCaptureGroups`,
-// which decides which capture-group index a `$N` / `$name` replacement
-// reference in this same LabelReplace resolves to) anchors identically —
-// the two must never drift, or the group indices this emitter reads off
-// `l.Segments` stop lining up with the regex ClickHouse actually
-// evaluates. `internal/chsql` may not import `internal/qlcommon`
-// (`.go-arch-lint.yml`), so the anchoring form is duplicated rather than
-// shared — see [qlcommon.anchorRegex]'s doc comment for the two
-// independent behaviour differences a bare `^...$` gets wrong
-// (alternation escaping the anchors, `.` not matching newline).
-func anchorLabelReplaceRegex(regex string) string {
-	return "^(?s:" + regex + ")$"
 }
 
 // labelReplaceSubstitution renders the substituted value itself — the
@@ -1869,7 +1849,7 @@ func (b *Builder) exprLineContent(l *chplan.LineContent) error {
 				return err
 			}
 			b.sb.WriteString(", ")
-			b.Arg(l.Pattern)
+			b.Arg(lineFilterRegex(l.Pattern))
 			b.sb.WriteByte(')')
 			return nil
 		}
