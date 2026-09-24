@@ -308,7 +308,7 @@ func mountAPIHeads(
 
 	return apiHeads{
 		grpcServer: grpcServer,
-		consumers:  chOptConsumers{client: client, engines: engines, prom: promHandler},
+		consumers:  chOptConsumers{client: client, fleet: liveFleetProber(cfg), engines: engines, prom: promHandler},
 	}, nil
 }
 
@@ -635,7 +635,7 @@ func run() error {
 	// connected server and swaps a changed result into the heads mounted above,
 	// so an upgraded ClickHouse is picked up without restarting cerberus. Bound
 	// to the run ctx, so SIGTERM stops it.
-	go reprobeCHOptimizations(ctx, logger, cfg, chOpts, heads.consumers, chOptReprobeInterval, optRes.RawQueryWorkload)
+	go reprobeCHOptimizations(ctx, logger, cfg, chOpts, heads.consumers, chOptReprobeInterval, optRes.RawQueryWorkload, probeVersionOverBootstrap)
 
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
@@ -1564,12 +1564,13 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 
 	// A server build with a known query-condition-cache wrong-result defect
 	// enables the cache by default, so leaving the setting unstamped would
-	// still expose every query to it: force it off client-wide instead. The
-	// re-probe re-evaluates this on every capability transition
-	// (chOptConsumers.apply).
-	applyConditionCacheOverride(client, set)
+	// still expose every query to it: force it off client-wide whenever any
+	// node the fleet probe reaches runs such a build. The re-probe refreshes
+	// this on every pass.
+	refreshConditionCacheOverride(ctx, logger, client, liveFleetProber(*cfg))
 	if !versionFallback {
 		logCancellationGaps(logger, resolvedVersion)
+		logVendorBuild(logger, resolvedVersion)
 	}
 
 	logger.Info(

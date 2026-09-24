@@ -86,11 +86,38 @@ reproductions of both defects run against each:
 | `26.7.13.12`  | clean             | not probed        |
 | `26.8.10.6`   | clean             | clean             |
 
-Each range's upper bound is the upstream backport build (`26.3.17.50`,
-`26.4.5.134`, …), which the last-affected and first-fixed released tags above
-bracket; a released build between the two does not exist. `26.3.17.4` and
-`26.3.17.56` share a patch number and differ in the fix, which is why the
-version model carries the build component and not only the patch.
+Each range's upper bound is the first released build the reproduction came
+back clean on, not the upstream backport build number (`26.3.17.50`,
+`26.4.5.134`, …): the backport build is a CI build of the release branch, and
+the recorded bound is the published tag an operator can actually run. No
+released tag sits between the two. `26.3.17.4` and `26.3.17.56` share a patch
+number and differ in the fix, which is why the version model carries the build
+component and not only the patch.
+
+The real-server test pins the last affected and first fixed release of every
+backported line for each defect — thirteen builds — and runs them three at a
+time; the reproductions are correctness checks, so sharing CPUs cannot change
+a verdict, and one after another they would add six minutes to the lane.
+
+The override is decided across every node cerberus can reach rather than the
+one node the resolution probes, because the poisoning is per server: a mixed
+fleet with one affected replica returns wrong results for every query that
+lands there, however healthy the rest is. A failed resolution must not decide
+it either: under `enforcing`, a rollback into an affected build makes the
+explicit selection unresolvable, and keeping the previous set would otherwise
+keep both the engine's `use_query_condition_cache=1` and a lifted override —
+silent wrong results on exactly the build the gate exists for.
+
+Vendor builds are judged by line because their build numbers are not
+upstream's: an Altinity build such as `26.3.17.10034.altinitystable` compares
+above `26.3.17.56` numerically whether or not it carries the backport. Treating
+the whole line as affected costs a vendor build that has the fix its condition
+cache; crediting it with a fix it may lack would cost wrong results.
+
+An explicit `condition_cache` under `enforcing` now refuses to boot on every
+25.x build, where it used to enable the cache. That is deliberate: the
+operator asked for a mechanism that returns wrong results there, and
+`enforcing` exists to make "I require this" fail loudly rather than degrade.
 
 Raising the global floor or dropping the feature would have been the blunt
 alternatives. Neither was needed: the defects are confined to known builds,
@@ -101,7 +128,7 @@ restricted user often cannot see `system.row_policies` to find out.
 
 ## Why every cancelled dispatch kills its own statement
 
-The cancellation probes drive a `double_exponential_smoothing` over 400,000
+The cancellation probes drive a `double_exponential_smoothing` over 700,000
 samples (one `arrayFold` call) and a PromQL selector over a label name of 100
 million characters that all need `replaceRegexpAll` normalization. Under a 1 s
 `max_execution_time`, `26.6.8.7` ran the fold for 9.7 s and `26.7.13.12`
@@ -111,15 +138,30 @@ stopped it at 1.05 s; a 20 MB label name ran 2.3 s on `26.6.1.1193` and
 
 The probes also showed that a client disconnect was not bounded even on the
 fixed builds. A cancelled clickhouse-go dispatch sends `ClientCancel`, which
-ClickHouse notices between pipeline blocks, while the in-function checks the
-upstream fixes added honour `KILL QUERY` and `max_execution_time` only. Before
-cerberus killed every cancelled dispatch, the single-shard path — the default
-deployment — freed the request's admission slot and its connection while the
-fold or replacement ran to completion, on every build; only the data-shard
-fan-out gate already issued `KILL QUERY`. The cost of the kill is one extra
-statement per cancelled dispatch, and on a build that cannot interrupt the call
-a wait bounded by the kill timeout before the release proceeds — the honest
-account of a slot whose work is still running.
+ClickHouse notices only between pipeline blocks, not inside a long function
+call, while the in-function checks the upstream fixes added honour `KILL QUERY`
+and `max_execution_time` only. Before cerberus killed every cancelled dispatch,
+the single-shard path — the default deployment — freed the request's admission
+slot and its connection while the fold or replacement ran to completion, on
+every build; only the data-shard fan-out gate already issued `KILL QUERY`. The
+cost of the kill is one extra statement per cancelled dispatch, and a wait
+bounded by the kill timeout before the release proceeds when the server cannot
+interrupt the call or the kill itself queues for a pooled connection — the
+honest account of a slot whose work is still running.
+
+A dispatch cancelled before the driver got the server's answer — still waiting
+for a pooled connection, a dial, or the send — issues no kill. Under pool
+saturation the kill would queue for the same pool the dispatch was waiting on,
+holding the admission slot for the full timeout to kill a statement that never
+existed.
+
+The probes judge an interrupted call from an uninterrupted one against the
+shape's own measured natural duration, not a fixed threshold, because the same
+seed ran in 5.7 s on one build and 10.9 s on another, and 30–40 % faster on CI
+runners: an interrupted call must stop within 1.5 s of the cancellation, an
+uninterrupted one must run on for at least half the work that was left, and the
+probe fails loudly rather than guessing when too little work was left to tell
+the two apart.
 
 `KILL QUERY` on one's own query is allowed under `readonly = 1` and
 `readonly = 2`, so a read-only cerberus user can issue it.

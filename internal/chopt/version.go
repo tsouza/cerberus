@@ -25,6 +25,14 @@ type Version struct {
 	Minor int
 	Patch int
 	Build int
+	// Vendor marks a version string that is not upstream's plain
+	// major.minor.patch.build: a vendor suffix or extra field
+	// ("24.8.14.10459.altinitystable"), or a suffix glued to a field
+	// ("25.8.2.1-lts"). Such a build's patch and build numbers are not
+	// upstream's, so a patch-level boundary cannot be decided from them:
+	// Contains and CancellationGaps judge a vendor build by its major.minor
+	// line alone, conservatively. Compare ignores it.
+	Vendor bool
 }
 
 // versionFields is the number of dot-separated integer fields a full
@@ -41,30 +49,34 @@ const requiredVersionFields = 2
 // and left at zero otherwise, so a bare "24.8" parses to the floor 24.8.0.0.
 // A trailing non-digit run on a field (e.g. a "-lts" glued to the build) is
 // trimmed and ends the numeric version, and reading also stops at the first
-// optional field that does not start with a digit. Returns ok=false when the
-// string has no leading integer major or minor field.
+// optional field that does not start with a digit. Any of those, or a field
+// beyond the fourth, sets Vendor. Returns ok=false when the string has no
+// leading integer major or minor field.
 func ParseVersion(s string) (Version, bool) {
 	fields := strings.Split(strings.TrimSpace(s), ".")
 	if len(fields) < requiredVersionFields {
 		return Version{}, false
 	}
 	var parts [versionFields]int
+	vendor := len(fields) > versionFields
 	for i := 0; i < versionFields && i < len(fields); i++ {
 		n, ok := leadingInt(fields[i])
 		if !ok {
 			if i < requiredVersionFields {
 				return Version{}, false
 			}
+			vendor = true
 			break
 		}
 		parts[i] = n
 		if !isAllDigits(strings.TrimSpace(fields[i])) {
 			// A suffix glued to this field ("6-rc1", "1-lts") ends the
 			// numeric version; whatever follows is not a build component.
+			vendor = true
 			break
 		}
 	}
-	return Version{Major: parts[0], Minor: parts[1], Patch: parts[2], Build: parts[3]}, true
+	return Version{Major: parts[0], Minor: parts[1], Patch: parts[2], Build: parts[3], Vendor: vendor}, true
 }
 
 // leadingInt parses the leading run of ASCII digits in s. Returns ok=false
@@ -113,6 +125,16 @@ func (v Version) Compare(other Version) int {
 		}
 	}
 	return 0
+}
+
+// line is v's major.minor release line, with patch, build and Vendor dropped.
+func (v Version) line() Version {
+	return Version{Major: v.Major, Minor: v.Minor}
+}
+
+// Less reports whether v sorts strictly before other.
+func (v Version) Less(other Version) bool {
+	return v.Compare(other) < 0
 }
 
 // AtLeast reports whether v is greater than or equal to min.

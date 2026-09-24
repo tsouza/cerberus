@@ -9,18 +9,18 @@ func TestParseVersion(t *testing.T) {
 		wantOK bool
 	}{
 		{"25.8.2.1", Version{Major: 25, Minor: 8, Patch: 2, Build: 1}, true},
-		{"25.8.2.1-lts", Version{Major: 25, Minor: 8, Patch: 2, Build: 1}, true},
+		{"25.8.2.1-lts", Version{Major: 25, Minor: 8, Patch: 2, Build: 1, Vendor: true}, true},
 		{"26.3.17.56", Version{Major: 26, Minor: 3, Patch: 17, Build: 56}, true},
 		{"24.8", Version{Major: 24, Minor: 8}, true},
 		{"25.3.0.0", Version{Major: 25, Minor: 3}, true},
 		{" 25.6.1 ", Version{Major: 25, Minor: 6, Patch: 1}, true},
-		{"25.8.lts", Version{Major: 25, Minor: 8}, true},                            // non-numeric patch ends the version
-		{"25.6-rc1.2", Version{Major: 25, Minor: 6}, true},                          // suffix on minor ends the version
-		{"26.3.17.56.99", Version{Major: 26, Minor: 3, Patch: 17, Build: 56}, true}, // only four fields are read
-		{"25", Version{}, false},                                                    // only one field
-		{"lts.8.2", Version{}, false},                                               // non-numeric major
-		{"25.lts", Version{}, false},                                                // non-numeric minor
-		{"", Version{}, false},                                                      // empty
+		{"25.8.lts", Version{Major: 25, Minor: 8, Vendor: true}, true},                            // non-numeric patch ends the version
+		{"25.6-rc1.2", Version{Major: 25, Minor: 6, Vendor: true}, true},                          // suffix on minor ends the version
+		{"26.3.17.56.99", Version{Major: 26, Minor: 3, Patch: 17, Build: 56, Vendor: true}, true}, // only four fields are read
+		{"25", Version{}, false},      // only one field
+		{"lts.8.2", Version{}, false}, // non-numeric major
+		{"25.lts", Version{}, false},  // non-numeric minor
+		{"", Version{}, false},        // empty
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {

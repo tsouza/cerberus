@@ -14,13 +14,14 @@ const SettingUseQueryConditionCache = "use_query_condition_cache"
 // Leaving the setting unstamped is not enough to keep a query off the cache:
 // ClickHouse enables it by default (and a server profile may too), so a query
 // that merely omits it still reads — and writes — cached granule verdicts.
-// cmd/cerberus turns the override on exactly when the probed build falls
-// inside chopt.FeatureConditionCache's UnsafeBuilds, where a cached verdict
-// written by another query can make a later read silently drop rows, and
-// re-evaluates it on every capability re-probe.
+// cmd/cerberus turns the override on whenever a node its fleet probe reaches
+// runs a build inside chopt.FeatureConditionCache's UnsafeBuilds, where a
+// cached verdict written by another query can make a later read silently drop
+// rows, and re-evaluates it on every capability re-probe.
 //
 // The setting does not exist below ClickHouse 25.3, so the override must stay
-// off against an older server; every known-unsafe build is far above that.
+// off against an older server; every known-unsafe build is at or above 25.3,
+// where the setting exists.
 //
 // The switch is shared by every ForHead view of the client.
 func (c *Client) SetQueryConditionCacheDisabled(disabled bool) {

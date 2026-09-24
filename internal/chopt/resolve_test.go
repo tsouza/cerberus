@@ -149,7 +149,7 @@ func TestResolve_Auto_EnablesAutoSelectByVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if !set.KnownUnsafe(FeatureConditionCache) {
+	if !KnownUnsafe(FeatureConditionCache, v(25, 9)) {
 		t.Errorf("25.9 not reported known-unsafe for %q", FeatureConditionCache)
 	}
 	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
@@ -1144,15 +1144,6 @@ func TestEnabledSetEqual(t *testing.T) {
 			want: false,
 		},
 		{
-			// Identical (empty) ids, but only one build is known-unsafe for
-			// condition_cache: a re-probe across that boundary must still be a
-			// transition, or the client-wide cache override would never flip.
-			name: "same ids, different known-unsafe features",
-			a:    resolve("off", v(25, 8)),
-			b:    resolve("off", conditionCacheFixed),
-			want: false,
-		},
-		{
 			name: "empty versus non-empty",
 			a:    resolve("off", v(25, 8)),
 			b:    resolve("aggregation_in_order", v(25, 8)),
@@ -1319,7 +1310,7 @@ func TestConditionCacheUnsafeBuilds_VerifiedBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)
 			}
-			if got := set.KnownUnsafe(FeatureConditionCache); got != tc.unsafe {
+			if got := KnownUnsafe(FeatureConditionCache, server); got != tc.unsafe {
 				t.Errorf("KnownUnsafe(condition_cache) = %v; want %v", got, tc.unsafe)
 			}
 			floorMet := server.AtLeast(Version{Major: 25, Minor: 3})
@@ -1334,22 +1325,55 @@ func TestConditionCacheUnsafeBuilds_VerifiedBoundaries(t *testing.T) {
 	}
 }
 
-// TestConditionCacheUnsafeBuilds_ReportedUnderEverySelection pins that the
-// known-unsafe verdict is independent of the selection: "off" and an explicit
-// list without condition_cache still report it, because the server's own
-// default engages the cache whether or not cerberus asks for it.
-func TestConditionCacheUnsafeBuilds_ReportedUnderEverySelection(t *testing.T) {
+// TestConditionCacheUnsafeBuilds_NeverResolvedUnderAnySelection pins that no
+// selection resolves condition_cache in on a known-unsafe build.
+func TestConditionCacheUnsafeBuilds_NeverResolvedUnderAnySelection(t *testing.T) {
 	unsafe := Version{Major: 26, Minor: 2, Patch: 19, Build: 43}
 	for _, selection := range []string{"off", "aggregation_in_order", SelectionAuto} {
 		set, _, err := Resolve(Config{Optimizations: selection}, unsafe)
 		if err != nil {
 			t.Fatalf("Resolve(%q): %v", selection, err)
 		}
-		if !set.KnownUnsafe(FeatureConditionCache) {
-			t.Errorf("Resolve(%q) on %s: KnownUnsafe(condition_cache) = false; want true", selection, unsafe)
-		}
 		if set.Has(FeatureConditionCache) {
 			t.Errorf("Resolve(%q) on %s enabled condition_cache", selection, unsafe)
+		}
+	}
+}
+
+// TestConditionCacheUnsafeBuilds_ReportsEveryDefect pins that a build inside
+// both defects' ranges names both in the reason, not only the first match.
+func TestConditionCacheUnsafeBuilds_ReportsEveryDefect(t *testing.T) {
+	_, warns, err := Resolve(Config{Optimizations: FeatureConditionCache, Mode: Permissive}, Version{Major: 26, Minor: 3, Patch: 12, Build: 3})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "ClickHouse#105686") || !strings.Contains(warns[0], "ClickHouse#107145") {
+		t.Errorf("warnings = %v; want one naming both ClickHouse#105686 and ClickHouse#107145", warns)
+	}
+}
+
+// TestConditionCacheUnsafeBuilds_VendorBuildsJudgedByLine pins the
+// conservative treatment of non-upstream build numbering: a vendor build is
+// unsafe whenever its release line overlaps a range, whatever its build
+// number, and safe only on a line past every range.
+func TestConditionCacheUnsafeBuilds_VendorBuildsJudgedByLine(t *testing.T) {
+	cases := []struct {
+		raw    string
+		unsafe bool
+	}{
+		{"26.3.17.10034.altinitystable", true}, // build number above the fixed 26.3.17.56
+		{"26.5.9.20001.altinityantalya", true},
+		{"24.8.14.10459.altinitystable", false}, // below the 25.3 floor of every range
+		{"26.6.2.10001.altinitystable", true},   // the 26.6 line holds pre-release ranges
+		{"26.7.1.10001.altinitystable", false},
+	}
+	for _, tc := range cases {
+		server, ok := ParseVersion(tc.raw)
+		if !ok || !server.Vendor {
+			t.Fatalf("ParseVersion(%q) = %+v, %v; want a Vendor version", tc.raw, server, ok)
+		}
+		if got := KnownUnsafe(FeatureConditionCache, server); got != tc.unsafe {
+			t.Errorf("KnownUnsafe(condition_cache, %s) = %v; want %v", tc.raw, got, tc.unsafe)
 		}
 	}
 }
@@ -1365,7 +1389,7 @@ func TestConditionCacheUnsafeBuilds_ExplicitRequest(t *testing.T) {
 	if err == nil {
 		t.Fatal("enforcing explicit condition_cache on a known-unsafe build: want fatal error, got nil")
 	}
-	for _, want := range []string{FeatureConditionCache, "ClickHouse#107145", "26.4.5.134"} {
+	for _, want := range []string{FeatureConditionCache, "ClickHouse#107145", "26.4.5.143"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %v; want it to name %q", err, want)
 		}

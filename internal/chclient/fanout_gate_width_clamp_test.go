@@ -38,7 +38,7 @@ func TestAcquireDataShardFanout_WiderThanCap_AdmittedAlone(t *testing.T) {
 	if c.dataShardFanoutGate.TryAcquire(1) {
 		t.Fatal("gate admitted another unit alongside a statement wider than the cap — the clamp did not saturate the gate")
 	}
-	release()
+	release(true)
 	if !c.dataShardFanoutGate.TryAcquire(cap) {
 		t.Fatal("gate did not release the full clamped weight")
 	}

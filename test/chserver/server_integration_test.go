@@ -23,7 +23,7 @@ import (
 // bounded share of the host, never the whole of it.
 const (
 	serverNanoCPUs    = 2_000_000_000 // two CPUs
-	serverMemoryBytes = 6 << 30       // 6 GiB; ClickHouse sizes its own memory cap from the cgroup limit
+	serverMemoryBytes = 8 << 30       // 8 GiB; ClickHouse sizes its own memory cap from the cgroup limit
 )
 
 // Credentials of the administrative user every container is booted with. It

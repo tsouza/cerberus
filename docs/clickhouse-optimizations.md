@@ -822,12 +822,12 @@ verdict the same pass re-probes.)
 
 What a transition swaps:
 
-| Consumer                      | Effect of a re-resolved set                                                                                                                                                                         |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PromQL range lowering         | The native `timeSeries*ToGrid` strategy table is replaced, so subsequent `query_range` requests lower to the native shape (or back to fan-out).                                                     |
-| Engine per-query settings     | The whole `SettingsRules` value is swapped in one pointer store, so subsequent queries stamp the settings the current server supports.                                                              |
-| `/info`                       | `clickhouse.serverVersion`, `optimizations.resolvedAgainstVersion`, and `optimizations.enabled` report the set in force, not the one booted with.                                                   |
-| Data-plane client             | The `use_query_condition_cache=0` override is engaged or lifted to match whether the probed build is known-defective for `condition_cache`; a pass that fell back to the floor leaves it unchanged. |
+| Consumer                      | Effect of a re-resolved set                                                                                                                                                                                                                             |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PromQL range lowering         | The native `timeSeries*ToGrid` strategy table is replaced, so subsequent `query_range` requests lower to the native shape (or back to fan-out).                                                                                                         |
+| Engine per-query settings     | The whole `SettingsRules` value is swapped in one pointer store, so subsequent queries stamp the settings the current server supports.                                                                                                                  |
+| `/info`                       | `clickhouse.serverVersion`, `optimizations.resolvedAgainstVersion`, and `optimizations.enabled` report the set in force, not the one booted with.                                                                                                       |
+| Data-plane client             | Not part of the transition swap: every pass, whether or not its resolution changed or succeeded, re-probes the fleet and engages or lifts the `use_query_condition_cache=0` override ([Known-defective server builds](#known-defective-server-builds)). |
 
 `columnar_result_decode` is deliberately **not** in that list: it is
 `AlwaysAvailable` and opt-in only, so no server upgrade can change its verdict
@@ -858,17 +858,36 @@ skips those granules:
 
 | Defect                                                                    | Trigger                                                                                                                                             | Affected builds                                                                                                     |
 | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| [ClickHouse#105686](https://github.com/ClickHouse/ClickHouse/pull/105686) | A skip index drops whole marks before `PREWHERE` (TraceQL `PREWHERE (Duration > ?) WHERE (ResourceAttributes[?] = ?)` over the bloom index).        | `26.1` – `26.3.13.13`, `26.4` – `26.4.4.15`, `26.5` – `26.5.2.12`, `26.6` – `26.6.1.141` (upper bounds exclusive)   |
-| [ClickHouse#107145](https://github.com/ClickHouse/ClickHouse/pull/107145) | A row policy (or on-the-fly mutation) hides whole granules from a restricted user reading with the same `PREWHERE` predicate cerberus emits.        | `25.3` – `26.3.17.50`, `26.4` – `26.4.5.134`, `26.5` – `26.5.6.46`, `26.6` – `26.6.1.1043` (upper bounds exclusive) |
+| [ClickHouse#105686](https://github.com/ClickHouse/ClickHouse/pull/105686) | A skip index drops whole marks before `PREWHERE` (TraceQL `PREWHERE (Duration > ?) WHERE (ResourceAttributes[?] = ?)` over the bloom index).        | `26.1` – `26.3.13.31`, `26.4` – `26.4.4.38`, `26.5` – `26.5.2.39`, `26.6` – `26.6.1.1193`                           |
+| [ClickHouse#107145](https://github.com/ClickHouse/ClickHouse/pull/107145) | A row policy (or on-the-fly mutation) hides whole granules from a restricted user reading with the same `PREWHERE` predicate cerberus emits.        | `25.3` – `26.3.17.56`, `26.4` – `26.4.5.143`, `26.5` – `26.5.6.64`, `26.6` – `26.6.1.1193`                          |
+
+Each upper bound is exclusive: it is the first published release of the line
+verified clean. The `26.6` rows cover only pre-release builds.
 
 ClickHouse enables the query condition cache by default, so withholding the
-feature is not enough: on a build inside either table row, the data-plane
-client stamps `use_query_condition_cache=0` on every query it dispatches,
-applied after every per-query setting, under every selection including `off`.
-The override follows the [re-probe](#re-probe): it lifts once the server is
-upgraded to a fixed build, and a probe that could not reach the server leaves
-it as the last answered probe set it. The boot log's
-`query_condition_cache_forced_off` field reports it.
+feature is not enough: while any node cerberus can reach runs a build inside
+either table row, the data-plane client stamps `use_query_condition_cache=0` on
+every query it dispatches, applied after every per-query setting, under every
+selection including `off`. The nodes are every configured ClickHouse address
+and, when `CERBERUS_SCHEMA_CLUSTER` is set, every replica of that cluster
+(`clusterAllReplicas`). The override is refreshed on every
+[re-probe](#re-probe) pass, independently of whether that pass's resolution
+succeeded or changed anything. It lifts only once every node answers from a
+fixed build; a pass that could not reach every node and saw no affected build
+leaves it as it was. A change is logged (`query condition cache override
+changed`).
+
+A server reporting a non-upstream version string — a vendor suffix
+(`.altinitystable`), an extra version field, or a suffix glued to a field — is
+parsed with `Vendor` set and judged by its `major.minor` line alone: it is
+inside a range whenever its line overlaps the range's lines, and it carries a
+cancellation gap until its line is past the fix's line. Cerberus logs a
+`WARN` at boot for such a server.
+
+Under `enforcing`, an explicit `condition_cache` is FATAL at boot on an
+affected build. A running process never exits on a re-probe: if the server
+later moves into an affected build, the refused re-resolution keeps the set in
+force and logs a `WARN`, while the override above engages on the same pass.
 
 The index-selection defect fixed by
 [ClickHouse#108548](https://github.com/ClickHouse/ClickHouse/pull/108548)
@@ -895,12 +914,14 @@ answers a timed-out or cancelled request, but the server may keep evaluating
 the in-flight call; cerberus logs one `WARN` per remaining gap at boot and
 whenever a re-probe finds a different server version.
 
-A cancelled dispatch — the request deadline passing, the client disconnecting,
-or a routed sibling being cancelled — issues `KILL QUERY ... SYNC` for its own
-`query_id` before its connection and admission are released, because a
-cancelled driver's `ClientCancel` is noticed only between blocks while the
-in-function checks honour `KILL QUERY`. The wait is bounded; on a build that
-cannot interrupt the call it gives up and the release proceeds.
+A dispatch cancelled after its statement reached the server — the request
+deadline passing, the client disconnecting, or a routed sibling being
+cancelled — issues `KILL QUERY ... SYNC` for its own `query_id` before its
+connection and admission are released. The wait is bounded at 5 seconds: it
+ends early once ClickHouse confirms the statement stopped, and runs its full
+length when the server cannot interrupt the in-flight call or when the kill
+itself waits for a pooled connection. A dispatch cancelled while still waiting
+for a pooled connection or a dial issues no kill.
 
 ## Legacy alias: `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`
 

@@ -393,17 +393,6 @@ func downsampleAndSlabLowerers(l *promql.RangeLowerers, optSet chopt.EnabledSet)
 	}
 }
 
-// ConditionCacheDisabled reports whether the data-plane client must force
-// use_query_condition_cache=0 onto every query
-// (chclient.Client.SetQueryConditionCacheDisabled): exactly when the probed
-// build is known to return wrong results through the query condition cache
-// (chopt.FeatureConditionCache's UnsafeBuilds). It reads the set's
-// known-unsafe half, which is independent of the selection, because the
-// server enables the cache by default whether or not cerberus asks for it.
-func ConditionCacheDisabled(set chopt.EnabledSet) bool {
-	return set.KnownUnsafe(chopt.FeatureConditionCache)
-}
-
 // SettingsRules builds the CAPABILITY-decided half of the per-query
 // engine.SettingsRules from a resolved EnabledSet, plus the three schema
 // instances the eligibility checks need to map a scanned table name to its

@@ -109,9 +109,9 @@ jobs:
     # second is the perf-smoke corpus's join-spill tier
     # (test/perf/smoke's perfSmokeJoinSpillCHImage, >= chopt.FeatureJoinSpill's
     # 26.4 floor), which boots and runs its own sentinel in about a minute on
-    # top of everything below. test/chserver's probes add about four minutes
-    # of real-server work and five more image pulls.
-    timeout-minutes: 35
+    # top of everything below. test/chserver's probes add about six minutes
+    # of real-server work and fourteen more image pulls.
+    timeout-minutes: 40
     steps:
       - name: gate on the changes job
         if: needs.changes.result != 'success'
@@ -119,6 +119,12 @@ jobs:
           echo "::error::changes did not succeed (${{ needs.changes.result }}); a required check must not be skipped into green."
           exit 1
       - uses: actions/checkout@v7
+
+      # The lane pulls two dozen ClickHouse images — test/chserver alone pins
+      # fourteen exact builds — which together with the running containers
+      # outgrow the runner's ~14 GB of free root fs. Reclaim the unused
+      # pre-baked toolchains first; Docker's own images are kept.
+      - uses: ./.github/actions/free-disk-space
 
       - uses: ./.github/actions/setup-go
 

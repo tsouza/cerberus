@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
 // --- NewDataShardFanoutGate --------------------------------------------------
@@ -423,7 +425,7 @@ func TestAcquireDataShardFanout_CancelledDispatch_IssuesKillQueryBeforeRelease(t
 
 	releaseDone := make(chan struct{})
 	go func() {
-		release()
+		release(true)
 		close(releaseDone)
 	}()
 
@@ -477,7 +479,7 @@ func TestAcquireDataShardFanout_NormalFinish_NoKillQuery(t *testing.T) {
 	}
 
 	// ctx stays live (never cancelled) — a normal finish.
-	release()
+	release(true)
 
 	if execs := conn.execCalls(); len(execs) != 0 {
 		t.Fatalf("Exec calls = %d, want 0 (a normal finish must never issue KILL QUERY): %v", len(execs), execs)
@@ -511,7 +513,7 @@ func TestAcquireDataShardFanout_CancelledDispatch_UntracedCtx_StillKills(t *test
 		t.Fatalf("acquireDataShardFanout: %v", err)
 	}
 	cancel()
-	release()
+	release(true)
 
 	execs := conn.execCalls()
 	if len(execs) != 1 {
@@ -547,7 +549,7 @@ func TestAcquireDataShardFanout_CancelledDispatch_NoQueryID_SkipsKillQuery(t *te
 		t.Fatalf("acquireDataShardFanout: %v", err)
 	}
 	cancel()
-	release()
+	release(true)
 
 	if execs := conn.execCalls(); len(execs) != 0 {
 		t.Fatalf("Exec calls = %d, want 0 (no query_id to target)", len(execs))
@@ -583,7 +585,7 @@ func TestAcquireDataShardFanout_DefaultMultiplier_ChargesDataShardCountExactly(t
 	if c.dataShardFanoutGate.TryAcquire(1) {
 		t.Fatal("gate admitted an extra unit of weight — default multiplier charged less than dataShardCount")
 	}
-	release()
+	release(true)
 	if !c.dataShardFanoutGate.TryAcquire(dataShardCount) {
 		t.Fatal("gate did not release the full dataShardCount weight — default multiplier charged more than dataShardCount")
 	}
@@ -620,7 +622,7 @@ func TestAcquireDataShardFanout_WithMultiplier_ScalesChargedWeight(t *testing.T)
 	if c.dataShardFanoutGate.TryAcquire(1) {
 		t.Fatal("gate admitted an extra unit of weight — multiplier was not applied")
 	}
-	release()
+	release(true)
 	// ...and releasing must free the FULL 2*dataShardCount, not merely
 	// dataShardCount (which would prove the multiplier was charged on acquire
 	// but silently dropped on release, leaking capacity).
@@ -657,7 +659,7 @@ func TestAcquireDataShardFanout_NonPositiveMultiplier_FallsBackToDefault(t *test
 			if c.dataShardFanoutGate.TryAcquire(1) {
 				t.Fatalf("multiplier=%d: gate admitted an extra unit — charged less than the dataShardCount floor", multiplier)
 			}
-			release()
+			release(true)
 			if !c.dataShardFanoutGate.TryAcquire(dataShardCount) {
 				t.Fatalf("multiplier=%d: gate did not release the full dataShardCount weight", multiplier)
 			}
@@ -687,9 +689,9 @@ func TestAcquireDataShardFanout_ReleaseIsIdempotent_KillsOnlyOnce(t *testing.T) 
 		t.Fatalf("acquireDataShardFanout: %v", err)
 	}
 	cancel()
-	release()
-	release()
-	release()
+	release(true)
+	release(true)
+	release(true)
 
 	if execs := conn.execCalls(); len(execs) != 1 {
 		t.Fatalf("Exec calls = %d, want exactly 1 across 3 release() calls", len(execs))
@@ -716,7 +718,7 @@ func TestAcquireDataShardFanout_SingleShard_CancelledDispatch_StillKills(t *test
 		if err != nil {
 			t.Fatalf("acquireDataShardFanout: %v", err)
 		}
-		normal()
+		normal(true)
 		if execs := conn.execCalls(); len(execs) != 0 {
 			t.Fatalf("DataShardCount=%d: a normal finish issued %d Exec call(s): %v", shards, len(execs), execs)
 		}
@@ -728,11 +730,75 @@ func TestAcquireDataShardFanout_SingleShard_CancelledDispatch_StillKills(t *test
 			t.Fatalf("acquireDataShardFanout: %v", err)
 		}
 		cancel()
-		release()
-		release() // idempotent: one KILL only
+		release(true)
+		release(true) // idempotent: one KILL only
 		execs := conn.execCalls()
 		if len(execs) != 1 || execs[0].sql != killDataShardQuerySQL || len(execs[0].args) != 1 || execs[0].args[0] != queryID {
 			t.Fatalf("DataShardCount=%d: Exec calls = %v; want exactly one %q for %q", shards, execs, killDataShardQuerySQL, queryID)
 		}
+	}
+}
+
+// undispatchedConn is an execRecordingConn whose Query stands for a driver
+// that never got the statement to the server: it cancels the dispatch's ctx
+// (a client hanging up while the dispatch waited for a pool slot or a dial)
+// and returns the cancellation, with no rows.
+type undispatchedConn struct {
+	execRecordingConn
+	cancel context.CancelFunc
+}
+
+func (c *undispatchedConn) Query(ctx context.Context, _ string, _ ...any) (driver.Rows, error) {
+	c.cancel()
+	return nil, ctx.Err()
+}
+
+// TestQueryOpen_CancelledBeforeDispatch_NoKillQuery pins that a dispatch
+// cancelled before the driver handed back rows issues no KILL QUERY — there
+// is no server-side statement, and the KILL would hold the capacity while
+// queueing for the same saturated pool — on the gated and ungated paths
+// alike, while still releasing the gate weight.
+func TestQueryOpen_CancelledBeforeDispatch_NoKillQuery(t *testing.T) {
+	t.Parallel()
+	for _, shards := range []int{1, 4} {
+		ctx, cancel := context.WithCancel(withQueryID(context.Background(), "never-dispatched"))
+		conn := &undispatchedConn{cancel: cancel}
+		m, _ := newTestConnMetrics(t)
+		c := assembleClientFromConn(Config{DataShardCount: shards, MaxOpenConns: shards}, conn, m)
+		t.Cleanup(func() { _ = c.Close() })
+
+		if _, err := c.queryOpen(ctx, "SELECT 1"); err == nil {
+			t.Fatalf("DataShardCount=%d: queryOpen succeeded on a cancelled dispatch", shards)
+		}
+		if execs := conn.execCalls(); len(execs) != 0 {
+			t.Errorf("DataShardCount=%d: an undispatched cancellation issued %d Exec call(s): %v", shards, len(execs), execs)
+		}
+		if c.dataShardFanoutGate != nil && !c.dataShardFanoutGate.TryAcquire(c.dataShardFanoutCap) {
+			t.Errorf("DataShardCount=%d: the gate weight was not released", shards)
+		}
+	}
+}
+
+// TestQueryOpen_CancelledAfterDispatch_KillsQuery is the counterpart: once
+// the driver handed back rows the statement is on the server, and a
+// cancellation before the rows are closed issues KILL QUERY for it.
+func TestQueryOpen_CancelledAfterDispatch_KillsQuery(t *testing.T) {
+	t.Parallel()
+	const queryID = "dispatched-then-cancelled"
+	conn := &execRecordingConn{}
+	m, _ := newTestConnMetrics(t)
+	c := assembleClientFromConn(Config{}, conn, m)
+	t.Cleanup(func() { _ = c.Close() })
+
+	ctx, cancel := context.WithCancel(withQueryID(context.Background(), queryID))
+	rows, err := c.queryOpen(ctx, "SELECT 1")
+	if err != nil {
+		t.Fatalf("queryOpen: %v", err)
+	}
+	cancel()
+	_ = rows.Close()
+	execs := conn.execCalls()
+	if len(execs) != 1 || execs[0].sql != killDataShardQuerySQL || execs[0].args[0] != queryID {
+		t.Fatalf("Exec calls = %v; want exactly one %q for %q", execs, killDataShardQuerySQL, queryID)
 	}
 }

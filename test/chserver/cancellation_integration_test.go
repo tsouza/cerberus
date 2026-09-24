@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
@@ -88,12 +89,12 @@ var cancelShapes = []cancelShape{
 // container's memory and finishes well inside naturalRunBudget.
 const (
 	foldMetric       = "foldprobe"
-	foldSamples      = 500_000
+	foldSamples      = 700_000
 	regexMetric      = "regexprobe"
 	regexKeyChunks   = 100
 	regexChunkChars  = 1_000_000 // repeat()'s own per-call cap
 	cancelDeadline   = time.Second
-	cancelBound      = time.Second
+	cancelBound      = 1500 * time.Millisecond
 	handlerSlack     = 3 * time.Second
 	naturalRunBudget = 90 * time.Second
 	runningBudget    = 30 * time.Second
@@ -143,6 +144,12 @@ func TestCancellation_CPUBoundEmittedShapesAcrossBuilds(t *testing.T) {
 			s := startServer(ctx, t, build.image, tcclickhouse.WithConfigFile(clusterConfig))
 			seedCancellationProbe(ctx, t, s)
 
+			// The fleet probe's cluster arm reads every replica's build
+			// through clusterAllReplicas; this cluster's one replica is s.
+			if versions, err := s.admin.ProbeClusterVersions(ctx, shardCluster); err != nil || len(versions) != 1 || versions[0] != s.version {
+				t.Fatalf("ProbeClusterVersions(%q) = %v, %v; want [%s]", shardCluster, versions, err, s.version)
+			}
+
 			set := chopttest.ResolveEnabledSet(ctx, t, s.admin, chopt.SelectionAuto)
 			rules := choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
 
@@ -150,15 +157,16 @@ func TestCancellation_CPUBoundEmittedShapesAcrossBuilds(t *testing.T) {
 				t.Run(shape.name, func(t *testing.T) {
 					bounded := shape.bounded(build.foldBounded, build.regexBounded)
 					assertCancellationPolicy(t, s.version, shape.function, bounded)
+					want := cancelExpectation{bounded: bounded, natural: s.naturalDuration(ctx, t, shape)}
 
 					t.Run("request_deadline", func(t *testing.T) {
-						probeRequestDeadline(ctx, t, s, rules, shape, bounded)
+						probeRequestDeadline(ctx, t, s, rules, shape, want)
 					})
 					t.Run("client_disconnect", func(t *testing.T) {
-						probeClientDisconnect(ctx, t, s, rules, shape, bounded)
+						probeClientDisconnect(ctx, t, s, rules, shape, want)
 					})
 					t.Run("routed_siblings", func(t *testing.T) {
-						probeRoutedSiblings(ctx, t, s, shape, bounded)
+						probeRoutedSiblings(ctx, t, s, shape, want)
 					})
 				})
 			}
@@ -259,7 +267,7 @@ func assertErrorType(t *testing.T, rec *httptest.ResponseRecorder, want string) 
 	}
 }
 
-func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, bounded bool) {
+func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, want cancelExpectation) {
 	p := newPromProbe(t, s, rules, cancelDeadline)
 	qid := cancelQueryID(shape, "deadline")
 	start := time.Now()
@@ -270,7 +278,7 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 	// promptly where the call is interruptible and gives up after
 	// chclient.KillDataShardQueryTimeout where it is not.
 	budget := cancelDeadline + handlerSlack
-	if !bounded {
+	if !want.bounded {
 		budget += chclient.KillDataShardQueryTimeout
 	}
 	if answered > budget {
@@ -278,11 +286,11 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 	}
 	p.assertAdmissionFree(t)
 	// The server's own max_execution_time is the cancellation here.
-	s.assertServerWorkEnds(ctx, t, []string{qid}, bounded, start.Add(cancelDeadline))
+	s.assertServerWorkEnds(ctx, t, []string{qid}, want, start.Add(cancelDeadline))
 	p.assertPoolReleased(t)
 }
 
-func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, bounded bool) {
+func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, want cancelExpectation) {
 	p := newPromProbe(t, s, rules, 0)
 	qid := cancelQueryID(shape, "disconnect")
 	reqCtx, disconnect := context.WithCancel(chclient.WithQueryID(ctx, qid))
@@ -294,7 +302,7 @@ func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules e
 	cancelAt := time.Now()
 	disconnect()
 	budget := handlerSlack
-	if !bounded {
+	if !want.bounded {
 		budget += chclient.KillDataShardQueryTimeout
 	}
 	select {
@@ -304,11 +312,11 @@ func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules e
 		t.Fatalf("the handler did not return within %s of the client disconnecting", budget)
 	}
 	p.assertAdmissionFree(t)
-	s.assertServerWorkEnds(ctx, t, []string{qid}, bounded, cancelAt)
+	s.assertServerWorkEnds(ctx, t, []string{qid}, want, cancelAt)
 	p.assertPoolReleased(t)
 }
 
-func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape cancelShape, bounded bool) {
+func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape cancelShape, want cancelExpectation) {
 	client := s.client(t, adminUser, adminPassword, chclient.Config{
 		Database:       shardedDB,
 		DataShardCount: shardCount,
@@ -355,7 +363,7 @@ func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape can
 	}
 
 	// The gate capacity is released now.
-	s.assertServerWorkEnds(ctx, t, ids, bounded, cancelAt)
+	s.assertServerWorkEnds(ctx, t, ids, want, cancelAt)
 
 	fctx, cancel := context.WithTimeout(ctx, cancelBound)
 	defer cancel()
@@ -408,20 +416,45 @@ func (s *server) waitRunningFor(ctx context.Context, t *testing.T, qid string, d
 	}
 }
 
+// cancelExpectation is what one shape must show on one build: whether the
+// build interrupts its CPU-bound call, and how long the server takes to run
+// the shape to completion when nothing cancels it.
+type cancelExpectation struct {
+	bounded bool
+	natural time.Duration
+}
+
+// Separation requirements, in cancelBounds of uncancelled work that must
+// remain at the moment of cancellation. An interrupted call must stop within
+// one cancelBound, which means something only if running the work out would
+// have taken at least boundedSeparation cancelBounds. An uninterrupted call
+// runs out the remainder, of which the assertion requires at least half; with
+// unboundedSeparation cancelBounds remaining that is at least 1.5 cancelBounds,
+// so the two accepted ranges never meet. Observed: an interrupted call stopped
+// within 1.2 s at most, an uninterrupted one ran on for 0.8 or more of the
+// remainder.
+const (
+	boundedSeparation   = 2
+	unboundedSeparation = 3
+)
+
 // assertServerWorkEnds runs the moment cerberus has released the capacity a
 // cancelled dispatch held — its admission slot or its fan-out gate weight.
 //
-// On a build that interrupts the call, KILL QUERY ... SYNC confirmed the work
-// dead before that release, so no statement for ids — initiator or remote
-// child — may still run, and the server must have stopped within cancelBound
-// of cancelAt. On a build that cannot, the server keeps evaluating the
-// in-flight call past cancelAt + cancelBound. Which of the two happened is
-// read from the server's own query_log, so the verdict does not depend on how
-// the call's natural length compares with the release's bounded KILL wait.
-// Either way the work must end on its own within naturalRunBudget.
-func (s *server) assertServerWorkEnds(ctx context.Context, t *testing.T, ids []string, bounded bool, cancelAt time.Time) {
+// The verdict is read from the server's own query_log and anchored on the
+// shape's measured natural duration, not on a fixed threshold: remaining is
+// how much of the shape's work was left when cancelAt came. The probe first
+// requires remaining to clear the separation the expected outcome needs,
+// failing diagnosably when the seed is too small for the substrate. On a build that
+// interrupts the call, KILL QUERY ... SYNC confirmed the work dead before
+// the release, so no statement for ids — initiator or remote child — may
+// still run, and the work must have ended within cancelBound of cancelAt. On
+// a build that cannot, the server runs the call out, so the work must have
+// ended at least remaining/2 after cancelAt. Either way it must end on its
+// own within naturalRunBudget.
+func (s *server) assertServerWorkEnds(ctx context.Context, t *testing.T, ids []string, want cancelExpectation, cancelAt time.Time) {
 	t.Helper()
-	if bounded {
+	if want.bounded {
 		if running := s.runningCount(ctx, t, ids); running != 0 {
 			t.Errorf("%d statement(s) for %v still run once their capacity was released", running, ids)
 		}
@@ -429,11 +462,26 @@ func (s *server) assertServerWorkEnds(ctx context.Context, t *testing.T, ids []s
 	if !s.goneWithin(ctx, t, ids, naturalRunBudget) {
 		t.Fatalf("server work for %v still running after %s", ids, naturalRunBudget)
 	}
-	delay := s.stopDelay(ctx, t, ids, cancelAt)
-	t.Logf("server work for %v ended %s after the cancellation", ids, delay)
-	if stopped := delay <= cancelBound; stopped != bounded {
-		t.Errorf("server work for %v ended %s after the cancellation: within %s = %v; want %v",
-			ids, delay, cancelBound, stopped, bounded)
+	started, ended := s.workSpan(ctx, t, ids)
+	remaining := want.natural - cancelAt.Sub(started)
+	delay := ended.Sub(cancelAt)
+	t.Logf("server work for %v: natural %s, %s left at the cancellation, ended %s after it", ids, want.natural, remaining, delay)
+	need := time.Duration(unboundedSeparation) * cancelBound
+	if want.bounded {
+		need = time.Duration(boundedSeparation) * cancelBound
+	}
+	if remaining < need {
+		t.Fatalf("only %s of the shape's %s natural run was left at the cancellation; the probe needs at least %s "+
+			"to separate an interrupted call from an uninterrupted one — enlarge the seed for this substrate",
+			remaining, want.natural, need)
+	}
+	if want.bounded && delay > cancelBound {
+		t.Errorf("server work for %v ended %s after the cancellation; want within %s on a build that interrupts the call",
+			ids, delay, cancelBound)
+	}
+	if !want.bounded && delay < remaining/2 {
+		t.Errorf("server work for %v ended %s after the cancellation; want at least %s (half the remaining work) on a build "+
+			"that cannot interrupt the call", ids, delay, remaining/2)
 	}
 }
 
@@ -452,26 +500,53 @@ func (s *server) goneWithin(ctx context.Context, t *testing.T, ids []string, bud
 	}
 }
 
-// stopDelay is how long after cancelAt the last statement for ids — or any
-// remote child it dispatched — ended, from the server's own query_log.
-func (s *server) stopDelay(ctx context.Context, t *testing.T, ids []string, cancelAt time.Time) time.Duration {
+// workSpan returns when the first statement for ids — or any remote child it
+// dispatched — started and when the last one ended, from the server's own
+// query_log.
+func (s *server) workSpan(ctx context.Context, t *testing.T, ids []string) (started, ended time.Time) {
 	t.Helper()
 	s.flushLogs(ctx, t)
 	var (
-		endMicros int64
-		rows      uint64
+		startMicros, endMicros int64
+		rows                   uint64
 	)
 	err := s.admin.Conn().QueryRow(ctx,
-		"SELECT toInt64(max(toUnixTimestamp64Micro(event_time_microseconds))), count() FROM system.query_log "+
+		"SELECT toInt64(min(toUnixTimestamp64Micro(query_start_time_microseconds))), "+
+			"toInt64(max(toUnixTimestamp64Micro(event_time_microseconds))), count() FROM system.query_log "+
 			"WHERE (has(?, query_id) OR has(?, initial_query_id)) AND type != 'QueryStart'",
-		ids, ids).Scan(&endMicros, &rows)
+		ids, ids).Scan(&startMicros, &endMicros, &rows)
 	if err != nil {
 		t.Fatalf("read query_log for %v: %v", ids, err)
 	}
 	if rows == 0 {
 		t.Fatalf("query_log has no terminal row for %v", ids)
 	}
-	return time.UnixMicro(endMicros).Sub(cancelAt)
+	return time.UnixMicro(startMicros), time.UnixMicro(endMicros)
+}
+
+// naturalDuration runs shape's emitted SQL to completion, uncancelled, and
+// returns how long the server took — the yardstick assertServerWorkEnds
+// measures a cancellation against.
+func (s *server) naturalDuration(ctx context.Context, t *testing.T, shape cancelShape) time.Duration {
+	t.Helper()
+	eng := &engine.Engine{Optimizer: optimizer.Default()}
+	dr, err := eng.DryRunSQL(ctx, prom.NewExplainLang(schema.DefaultOTelMetrics(), cancelEvalTime, promql.ResourceBounds{}), shape.query)
+	if err != nil {
+		t.Fatalf("emit %s: %v", shape.query, err)
+	}
+	qid := cancelQueryID(shape, "natural")
+	rows, err := s.admin.Conn().Query(clickhouse.Context(ctx, clickhouse.WithQueryID(qid)), dr.SQL, dr.Args...)
+	if err != nil {
+		t.Fatalf("natural run of %s: %v", shape.query, err)
+	}
+	for rows.Next() {
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("natural run of %s: %v", shape.query, err)
+	}
+	_ = rows.Close()
+	started, ended := s.workSpan(ctx, t, []string{qid})
+	return ended.Sub(started)
 }
 
 // seedCancellationProbe applies cerberus's metrics DDL to the default

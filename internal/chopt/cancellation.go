@@ -20,8 +20,9 @@ type CancellationGap struct {
 }
 
 // cancellationGaps are the verified gaps. Each boundary is the upstream merge
-// build; test/chserver's real-server cancellation test reproduces the gap
-// on the last release before it and bounded cancellation on a release after it.
+// build, which is the first build of the fix's release line; test/chserver's
+// real-server cancellation test reproduces the gap on a release of an
+// earlier line and bounded cancellation on a release of the fixed line.
 var cancellationGaps = []CancellationGap{
 	{
 		Functions: []string{"arrayFold"},
@@ -40,10 +41,18 @@ var cancellationGaps = []CancellationGap{
 // may keep evaluating one in-flight call of a listed function until it
 // finishes. The supported-version policy for bounded server-side cancellation
 // of cerberus-emitted expressions is a build with no remaining gap.
+//
+// A Vendor build's patch and build numbers are not upstream's, so it is
+// judged by its release line: it carries a gap unless its line is past the
+// fix's line.
 func CancellationGaps(server Version) []CancellationGap {
 	var out []CancellationGap
 	for _, g := range cancellationGaps {
-		if !server.AtLeast(g.Fixed) {
+		fixed := server.AtLeast(g.Fixed)
+		if server.Vendor {
+			fixed = g.Fixed.line().Less(server.line())
+		}
+		if !fixed {
 			out = append(out, g)
 		}
 	}

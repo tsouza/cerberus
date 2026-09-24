@@ -165,7 +165,11 @@ func (c *Client) queryOpen(ctx context.Context, sql string, args ...any) (driver
 		return c.conn.Query(ctx, sql, args...)
 	})
 	if err != nil {
-		release()
+		// No rows means the driver never got the server's answer to the
+		// statement: a cancellation here landed while it still waited for a
+		// pool slot, a dial, or the send, so there is no server-side work to
+		// kill.
+		release(false)
 		return nil, err
 	}
 	return &gatedRows{Rows: rows, release: release}, nil

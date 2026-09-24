@@ -27,12 +27,16 @@ import (
 // run against, with the outcome each upstream defect's reproduction must show
 // there. The expectations are observations of the builds themselves; the test
 // separately requires chopt's recorded UnsafeBuilds ranges to agree with them.
+// Every backported line is pinned at the last release affected by, and the
+// first release fixed for, each defect whose boundary falls on that line:
 //
 //   - 25.3.14.14: the supported floor. Skip-index reads before PREWHERE do not
 //     exist yet; the row-policy attribution defect does.
-//   - 26.3.12.3: last 26.3 release before either backport — both defects.
-//   - 26.3.17.56: first 26.3 release carrying both backports.
-//   - 26.6.1.1193: first release of the line both fixes merged into.
+//   - 26.3: 26.3.12.3 / 26.3.13.31 bracket the skip-index backport, and
+//     26.3.17.4 / 26.3.17.56 the row-policy backport.
+//   - 26.4: 26.4.3.37 / 26.4.4.38 and 26.4.4.38 / 26.4.5.143.
+//   - 26.5: 26.5.1.882 / 26.5.2.39 and 26.5.5.8 / 26.5.6.64.
+//   - 26.6.1.1193: the first release of the line both fixes merged into.
 var conditionCacheBuilds = []struct {
 	image                string
 	skipIndexPoisons     bool
@@ -41,9 +45,22 @@ var conditionCacheBuilds = []struct {
 }{
 	{"clickhouse/clickhouse-server:25.3.14.14-alpine", false, true, true},
 	{"clickhouse/clickhouse-server:26.3.12.3-alpine", true, true, true},
+	{"clickhouse/clickhouse-server:26.3.13.31-alpine", false, true, true},
+	{"clickhouse/clickhouse-server:26.3.17.4-alpine", false, true, true},
 	{"clickhouse/clickhouse-server:26.3.17.56-alpine", false, false, false},
+	{"clickhouse/clickhouse-server:26.4.3.37-alpine", true, true, true},
+	{"clickhouse/clickhouse-server:26.4.4.38-alpine", false, true, true},
+	{"clickhouse/clickhouse-server:26.4.5.143-alpine", false, false, false},
+	{"clickhouse/clickhouse-server:26.5.1.882-alpine", true, true, true},
+	{"clickhouse/clickhouse-server:26.5.2.39-alpine", false, true, true},
+	{"clickhouse/clickhouse-server:26.5.5.8-alpine", false, true, true},
+	{"clickhouse/clickhouse-server:26.5.6.64-alpine", false, false, false},
 	{"clickhouse/clickhouse-server:26.6.1.1193-alpine", false, false, false},
 }
+
+// conditionCacheConcurrentBuilds bounds how many pinned builds run at once,
+// so their containers' memory limits together stay within a CI runner.
+const conditionCacheConcurrentBuilds = 3
 
 // Upstream defect references, matched against the Defect text of chopt's
 // recorded UnsafeBuilds ranges.
@@ -117,8 +134,15 @@ const (
 // No probe enables the query RESULT cache: the resolved sets below are
 // required to leave result_cache out, so every answer is computed.
 func TestConditionCache_CerberusShapesAcrossBuilds(t *testing.T) {
+	// Builds run a few at a time: each probe is a correctness check, not a
+	// timing one, so sharing the host's CPUs cannot change its verdict, and
+	// running the pinned builds one after another would dominate the lane.
+	slots := make(chan struct{}, conditionCacheConcurrentBuilds)
 	for _, build := range conditionCacheBuilds {
 		t.Run(build.image, func(t *testing.T) {
+			t.Parallel()
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
 			s := startServer(ctx, t, build.image)
@@ -170,7 +194,7 @@ func TestConditionCache_CerberusShapesAcrossBuilds(t *testing.T) {
 			for _, selection := range []string{chopt.SelectionAuto, "off"} {
 				t.Run("selection="+selection, func(t *testing.T) {
 					set := chopttest.ResolveEnabledSet(ctx, t, s.admin, selection)
-					if got := set.KnownUnsafe(chopt.FeatureConditionCache); got != build.conditionCacheUnsafe {
+					if got := chopt.KnownUnsafe(chopt.FeatureConditionCache, s.version); got != build.conditionCacheUnsafe {
 						t.Fatalf("KnownUnsafe(condition_cache) on %s = %v; want %v", s.version, got, build.conditionCacheUnsafe)
 					}
 					rules := choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
@@ -178,7 +202,7 @@ func TestConditionCache_CerberusShapesAcrossBuilds(t *testing.T) {
 						t.Fatal("the resolved set enabled result_cache; every probe answer must be computed, not served from cache")
 					}
 					prodClient := s.client(t, adminUser, adminPassword, chclient.Config{})
-					prodClient.SetQueryConditionCacheDisabled(choptwire.ConditionCacheDisabled(set))
+					prodClient.SetQueryConditionCacheDisabled(chopt.KnownUnsafe(chopt.FeatureConditionCache, s.version))
 					prod := newProbeMux(t, prodClient, rules)
 
 					// The effective setting cerberus's query ran under: forced off

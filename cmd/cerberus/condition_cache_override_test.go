@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
@@ -12,14 +14,102 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestCHOptConsumers_ConditionCacheOverrideFollowsTheProbedBuild pins the
-// client-wide use_query_condition_cache=0 override across the capability
-// re-probe: it engages on a build known to return wrong results through the
-// cache — even under the "off" selection, because the server's own default
-// engages the cache — lifts once a probe answers from a fixed build, and is
-// left untouched by a floor fallback, which reports an unreachable server
-// rather than a changed one.
-func TestCHOptConsumers_ConditionCacheOverrideFollowsTheProbedBuild(t *testing.T) {
+// Builds on either side of condition_cache's known-unsafe ranges.
+var (
+	ccUnsafeBuild = chopt.Version{Major: 26, Minor: 2, Patch: 19, Build: 43}
+	ccFixedBuild  = chopt.Version{Major: 26, Minor: 6, Patch: 1, Build: 1193}
+)
+
+// TestConditionCacheOverride_ConservativeAcrossTheFleet pins the decision
+// table: any reached node on an unsafe build turns the override on; only a
+// complete pass with every node on a fixed build turns it off; an incomplete
+// pass with no unsafe node leaves the decision in force.
+func TestConditionCacheOverride_ConservativeAcrossTheFleet(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		fv      fleetVersions
+		current bool
+		want    bool
+	}{
+		{"single unsafe node", fleetVersions{versions: []chopt.Version{ccUnsafeBuild}, complete: true}, false, true},
+		{"mixed fleet, one unsafe replica", fleetVersions{versions: []chopt.Version{ccFixedBuild, ccUnsafeBuild}, complete: true}, false, true},
+		{"unsafe node seen, others unreachable", fleetVersions{versions: []chopt.Version{ccUnsafeBuild}}, false, true},
+		{"every node fixed", fleetVersions{versions: []chopt.Version{ccFixedBuild, ccFixedBuild}, complete: true}, true, false},
+		{"fixed nodes seen, one unreachable, override on", fleetVersions{versions: []chopt.Version{ccFixedBuild}}, true, true},
+		{"fixed nodes seen, one unreachable, override off", fleetVersions{versions: []chopt.Version{ccFixedBuild}}, false, false},
+		{"nothing reachable", fleetVersions{}, true, true},
+	}
+	for _, tc := range cases {
+		if got := conditionCacheOverride(tc.fv, tc.current); got != tc.want {
+			t.Errorf("%s: override = %v; want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestReprobe_ConditionCacheOverrideEngagesWhenResolveFails is the rollback
+// case: an explicit condition_cache selection under enforcing, resolved on a
+// fixed build, then the server moves into a known-unsafe build. Resolve now
+// refuses the selection and the re-probe keeps the set in force — so the
+// engine still stamps use_query_condition_cache=1 — yet the client override
+// must engage, and win, on the very next pass.
+func TestReprobe_ConditionCacheOverrideEngagesWhenResolveFails(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		CHOptimizations:     chopt.FeatureConditionCache,
+		CHOptimizationsMode: chopt.Enforcing,
+		Schema:              schema.DefaultOTelMetrics(),
+	}
+	cfg.ClickHouse.Addr = unreachableAddr(t)
+	cfg.ClickHouse.DialTimeout = 100 * time.Millisecond
+
+	if _, _, err := chopt.Resolve(chopt.Config{Optimizations: cfg.CHOptimizations, Mode: cfg.CHOptimizationsMode}, ccUnsafeBuild); err == nil {
+		t.Fatal("premise: an explicit condition_cache under enforcing must be refused on the unsafe build")
+	}
+
+	client, err := chclient.New(chclient.Config{Addr: cfg.ClickHouse.Addr, Database: "otel"})
+	if err != nil {
+		t.Fatalf("chclient.New: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	boot := resolutionAt(t, ccFixedBuild, chopt.FeatureConditionCache)
+	live := newCHOptLive(boot)
+	consumers := chOptConsumers{
+		client: client,
+		fleet: func(context.Context) fleetVersions {
+			return fleetVersions{versions: []chopt.Version{ccUnsafeBuild}, complete: true}
+		},
+	}
+	rolledBack := func(context.Context, chclient.Config) (chopt.Version, error) { return ccUnsafeBuild, nil }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reprobeCHOptimizations(ctx, quietLogger(), cfg, live, consumers, time.Millisecond, "", rolledBack)
+	}()
+
+	deadline := time.Now().Add(20 * time.Second)
+	for !client.QueryConditionCacheDisabled() {
+		if time.Now().After(deadline) {
+			t.Fatal("the override never engaged after the server moved into a known-unsafe build")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if got := live.get(); !got.Set.Has(chopt.FeatureConditionCache) || got.ResolvedVersion != ccFixedBuild {
+		t.Fatalf("premise: the refused re-resolve should have kept the set in force; got %+v", got)
+	}
+}
+
+// TestRefreshConditionCacheOverride_SharedByHeadViews pins that the refresh
+// flips the one switch every ForHead view reads, in both directions.
+func TestRefreshConditionCacheOverride_SharedByHeadViews(t *testing.T) {
 	t.Parallel()
 
 	client, err := chclient.New(chclient.Config{Addr: "127.0.0.1:1", Database: "otel"})
@@ -28,28 +118,19 @@ func TestCHOptConsumers_ConditionCacheOverrideFollowsTheProbedBuild(t *testing.T
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	view := client.ForHead(chclient.HeadProm)
-
-	cfg := config.Config{Schema: schema.DefaultOTelMetrics()}
-	consumers := chOptConsumers{client: client}
-	unsafeBuild := chopt.Version{Major: 26, Minor: 2, Patch: 19, Build: 43}
-	fixedBuild := chopt.Version{Major: 26, Minor: 6, Patch: 1, Build: 1193}
-
-	consumers.apply(cfg, resolutionAt(t, unsafeBuild))
-	if !client.QueryConditionCacheDisabled() || !view.QueryConditionCacheDisabled() {
-		t.Fatalf("override off on known-unsafe %s under the off selection (client %v, view %v)",
-			unsafeBuild, client.QueryConditionCacheDisabled(), view.QueryConditionCacheDisabled())
+	probe := func(v chopt.Version) fleetProber {
+		return func(context.Context) fleetVersions {
+			return fleetVersions{versions: []chopt.Version{v}, complete: true}
+		}
 	}
 
-	fallback := resolutionAt(t, supportedFloorVersion, chopt.FeatureAggregationInOrder)
-	fallback.VersionFallback = true
-	consumers.apply(cfg, fallback)
-	if !client.QueryConditionCacheDisabled() {
-		t.Fatal("a floor fallback lifted the override; an unreachable probe says nothing about the build")
+	refreshConditionCacheOverride(context.Background(), quietLogger(), client, probe(ccUnsafeBuild))
+	if !view.QueryConditionCacheDisabled() {
+		t.Fatal("override off on a head view after an unsafe fleet probe")
 	}
-
-	consumers.apply(cfg, resolutionAt(t, fixedBuild, chopt.FeatureConditionCache))
-	if client.QueryConditionCacheDisabled() || view.QueryConditionCacheDisabled() {
-		t.Fatalf("override still on after a probe answered from fixed %s", fixedBuild)
+	refreshConditionCacheOverride(context.Background(), quietLogger(), client, probe(ccFixedBuild))
+	if view.QueryConditionCacheDisabled() {
+		t.Fatal("override still on on a head view after every node answered from a fixed build")
 	}
 }
 
@@ -73,5 +154,28 @@ func TestLogCancellationGaps(t *testing.T) {
 		if got := strings.Count(buf.String(), "level=WARN"); got != tc.want {
 			t.Errorf("%s: %d warnings, want %d:\n%s", tc.server, got, tc.want, buf.String())
 		}
+	}
+}
+
+// TestLiveFleetProber_UnreachableNodesMakeAnIncompletePass pins that a node
+// the probe cannot reach — here every configured address — leaves the pass
+// incomplete rather than silently reporting a smaller fleet, so the override
+// decision stays as it was.
+func TestLiveFleetProber_UnreachableNodesMakeAnIncompletePass(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{}
+	cfg.ClickHouse.Addrs = []string{unreachableAddr(t), unreachableAddr(t)}
+	cfg.ClickHouse.Addr = cfg.ClickHouse.Addrs[0]
+	cfg.ClickHouse.DialTimeout = 100 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	fv := liveFleetProber(cfg)(ctx)
+	if fv.complete || len(fv.versions) != 0 {
+		t.Fatalf("fleet probe over unreachable addresses = %+v; want an incomplete pass with no versions", fv)
+	}
+	if !conditionCacheOverride(fv, true) {
+		t.Fatal("an incomplete pass lifted the override")
 	}
 }
