@@ -92,7 +92,7 @@ chOptimizations: >-
   trace_id_bitmap_filter,arg_and_max_fusion,result_cache,lazy_materialization,
   explain_estimate,cardinality_probe,full_text_index,text_index_line_filter,
   trace_id_external_table,ts_tag_groups,ts_throw_duplicate_series_if,
-  exp_histogram_two_level
+  exp_histogram_two_level,query_log_union
 
 schema:
   ttl: "7d"

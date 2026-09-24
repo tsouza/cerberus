@@ -1,33 +1,86 @@
 package engine
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/actuals"
+	"github.com/tsouza/cerberus/internal/chclient"
 )
 
-type fakeQueryLogQuerier struct {
-	rows []QueryLogActualRow
-	err  error
-
-	calls      int
-	lastSince  time.Time
-	lastPrefix string
-	lastLimit  int
+// fakeQueryLog models a server's query log as the reader sees it: rows in
+// the reader's total order, served strictly after the request's cursor and
+// capped at its limit — the contract chclient's record-selection query
+// implements on a real server (test/querylog pins that half).
+type fakeQueryLog struct {
+	mu       sync.Mutex
+	local    []chclient.QueryLogActualRow
+	union    []chclient.QueryLogActualRow
+	err      error
+	unionErr error
+	reqs     []chclient.QueryLogActualsRequest
 }
 
-func (f *fakeQueryLogQuerier) QueryLogActuals(_ context.Context, since time.Time, shapeIDPrefix string, limit int) ([]QueryLogActualRow, error) {
-	f.calls++
-	f.lastSince = since
-	f.lastPrefix = shapeIDPrefix
-	f.lastLimit = limit
+func (f *fakeQueryLog) QueryLogActuals(_ context.Context, req chclient.QueryLogActualsRequest) ([]chclient.QueryLogActualRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reqs = append(f.reqs, req)
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.rows, nil
+	rows := f.local
+	if req.Union {
+		if f.unionErr != nil {
+			return nil, f.unionErr
+		}
+		rows = f.union
+	}
+	var out []chclient.QueryLogActualRow
+	for _, r := range rows {
+		if compareCursor(cursorOf(r), req.After) > 0 {
+			out = append(out, r)
+			if len(out) == req.Limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeQueryLog) requests() []chclient.QueryLogActualsRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.reqs)
+}
+
+func cursorOf(r chclient.QueryLogActualRow) chclient.QueryLogCursor {
+	return chclient.QueryLogCursor{EventTime: r.EventTime, Hostname: r.Hostname, QueryID: r.QueryID}
+}
+
+func compareCursor(a, b chclient.QueryLogCursor) int {
+	if c := a.EventTime.Compare(b.EventTime); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(a.Hostname, b.Hostname); c != 0 {
+		return c
+	}
+	return cmp.Compare(a.QueryID, b.QueryID)
+}
+
+// sortedLog returns rows in the reader's total order, as the server serves them.
+func sortedLog(rows ...chclient.QueryLogActualRow) []chclient.QueryLogActualRow {
+	out := slices.Clone(rows)
+	slices.SortFunc(out, func(a, b chclient.QueryLogActualRow) int { return compareCursor(cursorOf(a), cursorOf(b)) })
+	return out
 }
 
 func testActualsConfig() actuals.Config {
@@ -36,70 +89,230 @@ func testActualsConfig() actuals.Config {
 	return cfg
 }
 
-func TestQueryLogActualsReconciler_PollFeedsTrackerAndAdvancesWatermark(t *testing.T) {
-	t1 := time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)
-	t2 := t1.Add(time.Minute)
-	fake := &fakeQueryLogQuerier{rows: []QueryLogActualRow{
-		{LogComment: "cerb:agg;rw", ReadRows: 1000, ReadBytes: 8000, MemoryUsage: 500, EventTime: t1},
-		{LogComment: "cerb:agg;rw;rbf", ReadRows: 2000, ReadBytes: 16000, MemoryUsage: 900, EventTime: t2},
-	}}
+// testNow is the reconciler clock every test pins; testRowTime is inside its
+// lookback window.
+var (
+	testNow     = time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	testRowTime = testNow.Add(-time.Minute)
+)
+
+func newTestReconciler(q QueryLogQuerier, tracker *actuals.Tracker, union func() bool, logger *slog.Logger) *QueryLogActualsReconciler {
+	r := NewQueryLogActualsReconciler(q, tracker, testActualsConfig(), union, logger)
+	r.now = func() time.Time { return testNow }
+	return r
+}
+
+func TestQueryLogActualsReconciler_PollFeedsTrackerAndAdvancesCursor(t *testing.T) {
+	t2 := testRowTime.Add(time.Second)
+	fake := &fakeQueryLog{local: sortedLog(
+		chclient.QueryLogActualRow{Hostname: "ch-0", LogComment: "cerb:agg;rw", QueryID: "q1", ReadRows: 1000, ReadBytes: 8000, MemoryUsage: 500, EventTime: testRowTime},
+		chclient.QueryLogActualRow{Hostname: "ch-0", LogComment: "cerb:agg;rw;rbf", QueryID: "q2", ReadRows: 2000, ReadBytes: 16000, MemoryUsage: 900, EventTime: t2},
+	)}
 	tracker := actuals.NewTracker(testActualsConfig())
-	r := NewQueryLogActualsReconciler(fake, tracker, testActualsConfig(), nil)
+	r := newTestReconciler(fake, tracker, nil, nil)
 
-	since := time.Time{}
-	next := r.poll(context.Background(), since)
+	r.Poll(context.Background())
 
-	if next != t2 {
-		t.Fatalf("expected the watermark to advance to the latest EventTime %v, got %v", t2, next)
+	cfg := testActualsConfig()
+	req := fake.requests()[0]
+	want := chclient.QueryLogActualsRequest{
+		After:         chclient.QueryLogCursor{EventTime: testNow.Add(-cfg.QueryLogLookback)},
+		SettleDelay:   cfg.QueryLogSettleDelay,
+		ShapeIDPrefix: shapeIDPrefix,
+		Limit:         queryLogActualsBatchLimit,
 	}
-	if fake.lastPrefix != shapeIDPrefix {
-		t.Fatalf("expected the shape id prefix %q, got %q", shapeIDPrefix, fake.lastPrefix)
+	if req != want {
+		t.Fatalf("first read = %+v, want %+v", req, want)
 	}
-	if fake.lastLimit != queryLogActualsBatchLimit {
-		t.Fatalf("expected the batch limit %d, got %d", queryLogActualsBatchLimit, fake.lastLimit)
+	if got, want := r.cursor, (chclient.QueryLogCursor{EventTime: t2, Hostname: "ch-0", QueryID: "q2"}); got != want {
+		t.Fatalf("cursor = %+v, want the last row read %+v", got, want)
 	}
-
 	report, ok := tracker.Snapshot("cerb:agg;rw")
 	if !ok || report.ActualEMARows != 1000 || report.LastSource != actuals.SourceQueryLog {
 		t.Fatalf("expected the first row recorded as SourceQueryLog, got %+v (ok=%v)", report, ok)
 	}
-	report, ok = tracker.Snapshot("cerb:agg;rw;rbf")
-	if !ok || report.ActualEMARows != 2000 {
+	if report, ok = tracker.Snapshot("cerb:agg;rw;rbf"); !ok || report.ActualEMARows != 2000 {
 		t.Fatalf("expected the second row recorded, got %+v (ok=%v)", report, ok)
 	}
 }
 
-func TestQueryLogActualsReconciler_PollFailureKeepsWatermark(t *testing.T) {
-	fake := &fakeQueryLogQuerier{err: errors.New("query_log disabled")}
+// TestQueryLogActualsReconciler_EqualTimestampsPageWithoutLossOrRepeat pins
+// the pagination the old second-granularity watermark got wrong: more rows
+// than one page shares ONE timestamp, and every one of them is recorded
+// exactly once, across pages and across polls.
+func TestQueryLogActualsReconciler_EqualTimestampsPageWithoutLossOrRepeat(t *testing.T) {
+	const shape = "cerb:agg;rw;burst"
+	n := queryLogActualsBatchLimit*2 + queryLogActualsBatchLimit/2
+	rows := make([]chclient.QueryLogActualRow, 0, n)
+	for i := range n {
+		rows = append(rows, chclient.QueryLogActualRow{
+			Hostname: fmt.Sprintf("ch-%d", i%2), LogComment: shape, QueryID: fmt.Sprintf("q-%05d", i),
+			ReadRows: 1, EventTime: testRowTime,
+		})
+	}
+	fake := &fakeQueryLog{local: sortedLog(rows...)}
 	tracker := actuals.NewTracker(testActualsConfig())
-	r := NewQueryLogActualsReconciler(fake, tracker, testActualsConfig(), nil)
+	r := newTestReconciler(fake, tracker, nil, nil)
 
-	since := time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)
-	next := r.poll(context.Background(), since)
-	if !next.Equal(since) {
-		t.Fatalf("expected the watermark to stay unchanged on a query failure, got %v want %v", next, since)
+	r.Poll(context.Background())
+	r.Poll(context.Background())
+
+	report, ok := tracker.Snapshot(shape)
+	if !ok || report.Observations != n {
+		t.Fatalf("observations = %d (ok=%v), want %d — every row sharing the timestamp, once each", report.Observations, ok, n)
+	}
+}
+
+// TestQueryLogActualsReconciler_PagesPerPollAreBounded pins the per-poll cost
+// bound: a backlog larger than queryLogActualsMaxPagesPerPoll pages costs
+// exactly that many reads, and the cursor carries the rest to the next poll.
+func TestQueryLogActualsReconciler_PagesPerPollAreBounded(t *testing.T) {
+	const shape = "cerb:agg;rw;backlog"
+	extra := queryLogActualsBatchLimit / 4
+	n := queryLogActualsBatchLimit*queryLogActualsMaxPagesPerPoll + extra
+	rows := make([]chclient.QueryLogActualRow, 0, n)
+	for i := range n {
+		rows = append(rows, chclient.QueryLogActualRow{
+			Hostname: "ch-0", LogComment: shape, QueryID: fmt.Sprintf("q-%06d", i),
+			ReadRows: 1, EventTime: testRowTime.Add(time.Duration(i) * time.Microsecond),
+		})
+	}
+	fake := &fakeQueryLog{local: sortedLog(rows...)}
+	tracker := actuals.NewTracker(testActualsConfig())
+	r := newTestReconciler(fake, tracker, nil, nil)
+
+	r.Poll(context.Background())
+	if got := len(fake.requests()); got != queryLogActualsMaxPagesPerPoll {
+		t.Fatalf("one poll issued %d reads, want the bound %d", got, queryLogActualsMaxPagesPerPoll)
+	}
+	if report, _ := tracker.Snapshot(shape); report.Observations != n-extra {
+		t.Fatalf("after the bounded poll: %d observations, want %d", report.Observations, n-extra)
+	}
+	r.Poll(context.Background())
+	if report, _ := tracker.Snapshot(shape); report.Observations != n {
+		t.Fatalf("after the next poll: %d observations, want all %d", report.Observations, n)
+	}
+}
+
+func TestQueryLogActualsReconciler_PollFailureKeepsCursor(t *testing.T) {
+	fake := &fakeQueryLog{err: errors.New("query_log disabled")}
+	tracker := actuals.NewTracker(testActualsConfig())
+	r := newTestReconciler(fake, tracker, nil, nil)
+	start := chclient.QueryLogCursor{EventTime: testRowTime, Hostname: "ch-0", QueryID: "q-last"}
+	r.cursor = start
+
+	r.Poll(context.Background())
+	if r.cursor != start {
+		t.Fatalf("cursor = %+v after a failed read, want it unchanged at %+v", r.cursor, start)
+	}
+	fake.err = nil
+	r.Poll(context.Background())
+	reqs := fake.requests()
+	if reqs[len(reqs)-1].After != start {
+		t.Fatalf("retry read after %+v, want the same cursor %+v", reqs[len(reqs)-1].After, start)
+	}
+}
+
+// TestQueryLogActualsReconciler_CursorClampedToLookback pins the read window:
+// however far behind the cursor is, a poll never reads before the lookback,
+// the interval the packet path's query-id marks are kept for.
+func TestQueryLogActualsReconciler_CursorClampedToLookback(t *testing.T) {
+	fake := &fakeQueryLog{}
+	r := newTestReconciler(fake, actuals.NewTracker(testActualsConfig()), nil, nil)
+	r.cursor = chclient.QueryLogCursor{EventTime: testNow.Add(-24 * time.Hour), Hostname: "ch-0", QueryID: "stale"}
+
+	r.Poll(context.Background())
+	floor := chclient.QueryLogCursor{EventTime: testNow.Add(-testActualsConfig().QueryLogLookback)}
+	if got := fake.requests()[0].After; got != floor {
+		t.Fatalf("read after %+v, want the lookback floor %+v", got, floor)
 	}
 }
 
 func TestQueryLogActualsReconciler_SkipsRowsWithNoLogComment(t *testing.T) {
-	fake := &fakeQueryLogQuerier{rows: []QueryLogActualRow{
-		{LogComment: "", ReadRows: 999, EventTime: time.Now()},
-	}}
+	fake := &fakeQueryLog{local: sortedLog(chclient.QueryLogActualRow{Hostname: "ch-0", QueryID: "q", ReadRows: 999, EventTime: testRowTime})}
 	tracker := actuals.NewTracker(testActualsConfig())
-	r := NewQueryLogActualsReconciler(fake, tracker, testActualsConfig(), nil)
+	r := newTestReconciler(fake, tracker, nil, nil)
 
-	r.poll(context.Background(), time.Time{})
+	r.Poll(context.Background())
 	if stats := tracker.Stats(); stats.Entries != 0 {
 		t.Fatalf("expected an empty log_comment row to be skipped, got %+v", stats)
 	}
 }
 
-func TestQueryLogActualsReconciler_RunStopsOnContextCancel(t *testing.T) {
-	fake := &fakeQueryLogQuerier{}
+// TestQueryLogActualsReconciler_ReadsUnionWhenInForce pins the source switch:
+// with query_log_union in force the reconciler reads system.all_query_log and
+// records a row only a replica or a rotated table holds.
+func TestQueryLogActualsReconciler_ReadsUnionWhenInForce(t *testing.T) {
+	const shape = "cerb:agg;rw;replica"
+	fake := &fakeQueryLog{union: sortedLog(chclient.QueryLogActualRow{
+		Hostname: "ch-1", LogComment: shape, QueryID: "on-the-other-replica", ReadRows: 77, EventTime: testRowTime,
+	})}
 	tracker := actuals.NewTracker(testActualsConfig())
+	r := newTestReconciler(fake, tracker, func() bool { return true }, nil)
+
+	r.Poll(context.Background())
+	if !fake.requests()[0].Union {
+		t.Fatal("query_log_union in force but the read went to the local log")
+	}
+	if report, ok := tracker.Snapshot(shape); !ok || report.ActualEMARows != 77 {
+		t.Fatalf("the replica's row was not recorded: %+v (ok=%v)", report, ok)
+	}
+}
+
+// TestQueryLogActualsReconciler_UnionRefusalFallsBackToLocal pins the
+// runtime fallback: a union read the server refuses between two capability
+// probes is retried on the local log in the same poll, logged once per
+// transition, and the union is read again once it answers.
+func TestQueryLogActualsReconciler_UnionRefusalFallsBackToLocal(t *testing.T) {
+	const shape = "cerb:agg;rw;local"
+	fake := &fakeQueryLog{
+		local:    sortedLog(chclient.QueryLogActualRow{Hostname: "ch-0", LogComment: shape, QueryID: "q-local", ReadRows: 5, EventTime: testRowTime}),
+		unionErr: fmt.Errorf("%w: code 60", chclient.ErrQueryLogUnionRefused),
+	}
+	var logs bytes.Buffer
+	tracker := actuals.NewTracker(testActualsConfig())
+	r := newTestReconciler(fake, tracker, func() bool { return true }, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	r.Poll(context.Background())
+	r.Poll(context.Background())
+
+	if report, ok := tracker.Snapshot(shape); !ok || report.Observations != 1 {
+		t.Fatalf("the local row after a refused union read: %+v (ok=%v), want one observation", report, ok)
+	}
+	reqs := fake.requests()
+	if len(reqs) != 4 || !reqs[0].Union || reqs[1].Union || !reqs[2].Union || reqs[3].Union {
+		t.Fatalf("reads = %+v, want union-then-local on each of the two polls", reqs)
+	}
+	if got := strings.Count(logs.String(), "reading the local system.query_log"); got != 1 {
+		t.Fatalf("fallback logged %d times over two refused polls, want once:\n%s", got, logs.String())
+	}
+
+	fake.unionErr = nil
+	r.Poll(context.Background())
+	if !strings.Contains(logs.String(), "system.all_query_log readable again") {
+		t.Fatalf("the recovery was not logged:\n%s", logs.String())
+	}
+}
+
+// TestQueryLogActualsReconciler_TransportFailureIsNotAFallback pins that only
+// a server's refusal of the union table falls back: a transport failure is
+// retried from the same cursor next poll, never read from a narrower source
+// that would move the cursor past rows only the union holds.
+func TestQueryLogActualsReconciler_TransportFailureIsNotAFallback(t *testing.T) {
+	fake := &fakeQueryLog{unionErr: errors.New("dial tcp: connection refused")}
+	r := newTestReconciler(fake, actuals.NewTracker(testActualsConfig()), func() bool { return true }, nil)
+
+	r.Poll(context.Background())
+	if reqs := fake.requests(); len(reqs) != 1 || !reqs[0].Union {
+		t.Fatalf("reads = %+v, want the one failed union read and no local fallback", reqs)
+	}
+}
+
+func TestQueryLogActualsReconciler_RunStopsOnContextCancel(t *testing.T) {
+	fake := &fakeQueryLog{}
 	cfg := testActualsConfig()
 	cfg.QueryLogPollInterval = time.Millisecond
-	r := NewQueryLogActualsReconciler(fake, tracker, cfg, nil)
+	r := NewQueryLogActualsReconciler(fake, actuals.NewTracker(cfg), cfg, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -117,13 +330,13 @@ func TestQueryLogActualsReconciler_RunStopsOnContextCancel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Run did not stop within 1s of ctx cancellation")
 	}
-	if fake.calls == 0 {
+	if len(fake.requests()) == 0 {
 		t.Fatal("expected at least one poll before cancellation")
 	}
 }
 
 func TestQueryLogActualsReconciler_RunNoOpWithoutClientOrTracker(t *testing.T) {
-	r := NewQueryLogActualsReconciler(nil, nil, testActualsConfig(), nil)
+	r := NewQueryLogActualsReconciler(nil, nil, testActualsConfig(), nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	r.Run(ctx) // must return once ctx is done, not hang or panic
@@ -141,7 +354,6 @@ func TestQueryLogActualsReconciler_RunNoOpWithoutClientOrTracker(t *testing.T) {
 // admission, making it a wrong routing input.
 func TestQueryLogActualsReconciler_SkipsRowsThePacketPathAlreadyRecorded(t *testing.T) {
 	const shape = "cerb:agg;rw"
-	t1 := time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)
 	tracker := actuals.NewTracker(testActualsConfig())
 
 	// The packet path recorded this dispatch: one observation, whole-query
@@ -151,12 +363,12 @@ func TestQueryLogActualsReconciler_SkipsRowsThePacketPathAlreadyRecorded(t *test
 		t.Fatal("fixture: the packet observation was not recorded")
 	}
 
-	fake := &fakeQueryLogQuerier{rows: []QueryLogActualRow{
-		{LogComment: shape, QueryID: "trace-span-1", ReadRows: 1000, EventTime: t1},
-	}}
-	r := NewQueryLogActualsReconciler(fake, tracker, testActualsConfig(), nil)
+	row := chclient.QueryLogActualRow{Hostname: "ch-0", LogComment: shape, QueryID: "trace-span-1", ReadRows: 1000, EventTime: testRowTime}
+	fake := &fakeQueryLog{local: sortedLog(row)}
+	r := newTestReconciler(fake, tracker, nil, nil)
 
-	next := r.poll(context.Background(), time.Time{})
+	r.Poll(context.Background())
+	r.Poll(context.Background())
 
 	report, ok := tracker.Snapshot(shape)
 	if !ok {
@@ -171,10 +383,10 @@ func TestQueryLogActualsReconciler_SkipsRowsThePacketPathAlreadyRecorded(t *test
 		t.Errorf("last source = %v, want %v — the query_log row must not overwrite the packet observation",
 			report.LastSource, actuals.SourcePacket)
 	}
-	// The watermark still advances past a skipped row, or the poller re-reads
-	// it forever and never makes progress.
-	if next != t1 {
-		t.Errorf("watermark = %v, want %v — a skipped row was still READ and must not stall the watermark", next, t1)
+	// The cursor still advances past a refused row, or the poller re-reads it
+	// forever and never makes progress.
+	if r.cursor != cursorOf(row) {
+		t.Errorf("cursor = %+v, want %+v — a refused row was still READ and must not stall the cursor", r.cursor, cursorOf(row))
 	}
 }
 
@@ -187,14 +399,13 @@ func TestQueryLogActualsReconciler_SkipsRowsThePacketPathAlreadyRecorded(t *test
 // Without this, "skip everything" would pass the sibling test.
 func TestQueryLogActualsReconciler_RecordsRowsThePacketPathNeverSaw(t *testing.T) {
 	const shape = "cerb:agg;rw;unseen"
-	t1 := time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)
 	tracker := actuals.NewTracker(testActualsConfig())
 
-	fake := &fakeQueryLogQuerier{rows: []QueryLogActualRow{
-		{LogComment: shape, QueryID: "trace-span-unmarked", ReadRows: 4242, EventTime: t1},
-	}}
-	r := NewQueryLogActualsReconciler(fake, tracker, testActualsConfig(), nil)
-	r.poll(context.Background(), time.Time{})
+	fake := &fakeQueryLog{local: sortedLog(chclient.QueryLogActualRow{
+		Hostname: "ch-0", LogComment: shape, QueryID: "trace-span-unmarked", ReadRows: 4242, EventTime: testRowTime,
+	})}
+	r := newTestReconciler(fake, tracker, nil, nil)
+	r.Poll(context.Background())
 
 	report, ok := tracker.Snapshot(shape)
 	if !ok {
@@ -221,25 +432,24 @@ func TestQueryLogActualsReconciler_RouteBShardRowsDoNotDragTheEMA(t *testing.T) 
 		shardRows  = 250
 		wholeQuery = k * shardRows
 	)
-	t1 := time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)
 	tracker := actuals.NewTracker(testActualsConfig())
 
 	// The fan-out: K shard dispatches, then the fold's single summed record.
-	rows := make([]QueryLogActualRow, 0, k)
+	rows := make([]chclient.QueryLogActualRow, 0, k)
 	for i := range k {
 		id := "trace-span-shard-" + string(rune('a'+i))
 		tracker.MarkPacketObserved(id)
-		rows = append(rows, QueryLogActualRow{
-			LogComment: shape, QueryID: id, ReadRows: shardRows,
-			EventTime: t1.Add(time.Duration(i) * time.Second),
+		rows = append(rows, chclient.QueryLogActualRow{
+			Hostname: "ch-0", LogComment: shape, QueryID: id, ReadRows: shardRows,
+			EventTime: testRowTime.Add(time.Duration(i) * time.Second),
 		})
 	}
 	if _, ok := tracker.RecordActual(shape, actuals.Actual{ReadRows: wholeQuery}, actuals.SourcePacket); !ok {
 		t.Fatal("fixture: the fold's summed observation was not recorded")
 	}
 
-	r := NewQueryLogActualsReconciler(&fakeQueryLogQuerier{rows: rows}, tracker, testActualsConfig(), nil)
-	r.poll(context.Background(), time.Time{})
+	r := newTestReconciler(&fakeQueryLog{local: sortedLog(rows...)}, tracker, nil, nil)
+	r.Poll(context.Background())
 
 	report, ok := tracker.Snapshot(shape)
 	if !ok {

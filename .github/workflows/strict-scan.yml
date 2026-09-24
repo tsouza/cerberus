@@ -414,6 +414,49 @@ jobs:
       - name: Run timeSeries*ToGrid state-format boundary (real ClickHouse, mixed-version Distributed)
         run: just ts-grid-state-format-integration
 
+  # The query-actuals query-log source (internal/chclient/query_log_actuals.go,
+  # internal/engine's QueryLogActualsReconciler) against real servers: two data
+  # shards behind a Distributed table and a server upgraded from the supported
+  # floor so its query log rotates, on the floor build and the first build
+  # maintaining system.all_query_log. It measures what the local log misses
+  # after the reader's connection fails over and after a rotation, that the
+  # native packet path already covers the dispatching process's own queries,
+  # and that the union finds the rest without accounting any query twice. See
+  # test/querylog/doc.go. It is its own job, beside strict-scan rather than a
+  # step inside it, because strict-scan already runs close to its SLO.
+  query-log-union:
+    name: query-log-union
+    needs: changes
+    # `always()` for the same reason as strict-scan above: a failed `changes`
+    # must fail this job, never skip it into green.
+    if: >-
+      always() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
+    runs-on: ubuntu-latest
+    # Two pinned ClickHouse images and seven servers booted one after another:
+    # three two-shard rigs and the two halves of an upgrade.
+    timeout-minutes: 20
+    steps:
+      - name: gate on the changes job
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::changes did not succeed (${{ needs.changes.result }}); a check must not be skipped into green."
+          exit 1
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go
+
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
+        with:
+          tool: just@1.46.0
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - name: Run the local and union query-log source evidence (real ClickHouse)
+        run: just query-log-integration
+
   # The query condition cache's result equivalence and ClickHouse's
   # cancellation of CPU-bound expressions are server-side mechanisms cerberus
   # relies on but cannot implement, and upstream fixes show both failing on
