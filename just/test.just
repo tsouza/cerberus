@@ -29,10 +29,20 @@ test: test-unit test-chaos-sleep vet-tagged
 # and nothing else: it is the long pole of the gate, and pairing it with the
 # quick type-check/build work would serialise two things that have no reason to
 # wait on each other.
+#
+# `-timeout 25m`: CI's `check-test` job wraps this in a `timeout-minutes`
+# outer bound (.github/workflows/ci.yml, that job's comment) that this must
+# stay comfortably inside — deliberately shorter so a hang is a Go panic with
+# every goroutine's stack rather than a killed container with no artefact.
+# 25m holds real margin over the `cerberus-heavy` self-hosted pool's (#3677)
+# measured full-suite time (PR #3678's own validating run: all 101 packages
+# passed inside the previous 15m cap, but the job's total wall time —
+# checkout, setup, this, and test-chaos-sleep together — exceeded the outer
+# 20m it had then).
 
 # Run the race-detected unit + spec suite.
 test-unit:
-    go test -timeout 15m -race ./...
+    go test -timeout 25m -race ./...
 
 # Run the deterministic chaos_sleep injection assertions. The live chaos lane
 # builds this tag into the binary, but only this focused recipe executes the six
