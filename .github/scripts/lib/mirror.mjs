@@ -92,6 +92,8 @@ export const mirroredImages = [
   // of each format bump (see CH_TS_STATE_*_IMAGE).
   'clickhouse/clickhouse-server:26.6.8.7-alpine',
   'clickhouse/clickhouse-server:26.7.1.1315-alpine',
+  // The stale-marker Flags pins' exact builds (see CH_STALE_MARKER_*_IMAGE),
+  // below.
   'clickhouse/clickhouse-server:26.7.13.12-alpine',
   'clickhouse/clickhouse-server:26.8.1.2041-alpine',
   // test/chserver's exact builds (CH_SERVER_SAFETY_IMAGES): the condition

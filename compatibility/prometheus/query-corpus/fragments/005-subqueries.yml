@@ -129,3 +129,6 @@
   # families whose label shapes DIFFER stays a legal query on both
   # backends, so the rejection above cannot pass by rejecting the class.
   - query: 'rate({__name__=~"demo_memory_usage_bytes|demo_disk_usage_bytes"}[5m])'
+  # Each inner step of a subquery over a bare selector is an instant
+  # selection, which a stale marker ends.
+  - query: 'count_over_time(demo_disappearing_requests_total[10m:1m])'

@@ -219,6 +219,16 @@ jobs:
       - name: Run route-B real-CH result differential (real ClickHouse)
         run: just route-b-differential-integration
 
+      # A Prometheus stale marker is an OTel NoRecordedValue point, read
+      # through the metrics Flags column. chDB resolves an absent column
+      # more leniently than a production server, so this step pins, on each
+      # pinned server, that a stale marker ends the series and that a metric
+      # table without Flags is probed at boot and read as samples rather
+      # than failing the query. See
+      # internal/api/prom/handler_stale_marker_realch_integration_test.go.
+      - name: Run stale-marker Flags pins (real ClickHouse)
+        run: just stale-marker-flags-integration
+
       # The Loki + Prometheus metadata/label-values endpoints (/series,
       # /labels, /label/<name>/values, /index/stats, /index/volume,
       # /metadata) call a chclient.Client decoder method directly from the

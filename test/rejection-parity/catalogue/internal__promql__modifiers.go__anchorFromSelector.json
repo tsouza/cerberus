@@ -5,7 +5,7 @@
       "site": "internal/promql/modifiers.go:anchorFromSelector#394bcda7",
       "message": "promql: `@ end()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramRangeFnWindowed replaced expHistogramRateWindowed: it resolves its anchor from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context. lowerExpHistogramBareMatrix (cerberus issue #2548) resolves its anchor from vs via this same anchorFromSelector under the identical LowerAt/LowerAtRange entry points its float-selector sibling lowerMatrixSelector already uses, so it adds no such path either. lowerAbsenceOverWindow is a new caller as of this change: it is the body lowerAbsentOverTime already had, extracted so that instant absent(\u003cselector\u003e) shares it rather than lowering to an unwindowed row count. Both absent() and absent_over_time() are function calls dispatched from lowerRoot under those same entry points, so the extraction moves no code across an entry-point boundary and adds no path that reaches this switch with an empty range context. It does mean absent(v @ start()) now reports this rejection where it previously ignored the modifier outright, which is the same answer its absent_over_time sibling has always given.",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramRangeFnWindowed replaced expHistogramRateWindowed: it resolves its anchor from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context. lowerExpHistogramBareMatrix (cerberus issue #2548) resolves its anchor from vs via this same anchorFromSelector under the identical LowerAt/LowerAtRange entry points its float-selector sibling lowerMatrixSelector already uses, so it adds no such path either. lowerAbsenceOverWindow is a new caller as of this change: it is the body lowerAbsentOverTime already had, extracted so that instant absent(\u003cselector\u003e) shares it rather than lowering to an unwindowed row count. Both absent() and absent_over_time() are function calls dispatched from lowerRoot under those same entry points, so the extraction moves no code across an entry-point boundary and adds no path that reaches this switch with an empty range context. It does mean absent(v @ start()) now reports this rejection where it previously ignored the modifier outright, which is the same answer its absent_over_time sibling has always given. lowerAbsenceOfLatestSample is a new caller as well: absent(\u003cselector\u003e) under a schema with a Flags column resolves its anchor from vs through this same anchorFromSelector before lowering the selector's instant selection, from the same absent() call site under the same lowerRoot entry points, so it adds no path that reaches this switch with an empty range context either.",
       "evidence": {
         "guard": [
           "case parser.END of switch vs.StartOrEnd",
@@ -15,6 +15,7 @@
           "andInstantWindow",
           "expHistogramRangeFnWindowed",
           "expHistogramResetsWindowed",
+          "lowerAbsenceOfLatestSample",
           "lowerAbsenceOverWindow",
           "lowerExpHistogramBareMatrix",
           "lowerHistogramQuantileAgg",
@@ -32,6 +33,7 @@
           "LowerAtRange",
           "anchorFromSelector",
           "expHistogramRangeFnWindowed",
+          "lowerAbsenceOfLatestSample",
           "lowerAbsenceOverWindow",
           "lowerAbsentOverTime",
           "lowerExpHistogramBareMatrix",
@@ -45,7 +47,7 @@
       "site": "internal/promql/modifiers.go:anchorFromSelector#91490634",
       "message": "promql: `@ start()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramRangeFnWindowed replaced expHistogramRateWindowed: it resolves its anchor from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context. lowerExpHistogramBareMatrix (cerberus issue #2548) resolves its anchor from vs via this same anchorFromSelector under the identical LowerAt/LowerAtRange entry points its float-selector sibling lowerMatrixSelector already uses, so it adds no such path either. lowerAbsenceOverWindow is a new caller as of this change: it is the body lowerAbsentOverTime already had, extracted so that instant absent(\u003cselector\u003e) shares it rather than lowering to an unwindowed row count. Both absent() and absent_over_time() are function calls dispatched from lowerRoot under those same entry points, so the extraction moves no code across an entry-point boundary and adds no path that reaches this switch with an empty range context. It does mean absent(v @ start()) now reports this rejection where it previously ignored the modifier outright, which is the same answer its absent_over_time sibling has always given.",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramRangeFnWindowed replaced expHistogramRateWindowed: it resolves its anchor from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context. lowerExpHistogramBareMatrix (cerberus issue #2548) resolves its anchor from vs via this same anchorFromSelector under the identical LowerAt/LowerAtRange entry points its float-selector sibling lowerMatrixSelector already uses, so it adds no such path either. lowerAbsenceOverWindow is a new caller as of this change: it is the body lowerAbsentOverTime already had, extracted so that instant absent(\u003cselector\u003e) shares it rather than lowering to an unwindowed row count. Both absent() and absent_over_time() are function calls dispatched from lowerRoot under those same entry points, so the extraction moves no code across an entry-point boundary and adds no path that reaches this switch with an empty range context. It does mean absent(v @ start()) now reports this rejection where it previously ignored the modifier outright, which is the same answer its absent_over_time sibling has always given. lowerAbsenceOfLatestSample is a new caller as well: absent(\u003cselector\u003e) under a schema with a Flags column resolves its anchor from vs through this same anchorFromSelector before lowering the selector's instant selection, from the same absent() call site under the same lowerRoot entry points, so it adds no path that reaches this switch with an empty range context either.",
       "evidence": {
         "guard": [
           "case parser.START of switch vs.StartOrEnd",
@@ -55,6 +57,7 @@
           "andInstantWindow",
           "expHistogramRangeFnWindowed",
           "expHistogramResetsWindowed",
+          "lowerAbsenceOfLatestSample",
           "lowerAbsenceOverWindow",
           "lowerExpHistogramBareMatrix",
           "lowerHistogramQuantileAgg",
@@ -72,6 +75,7 @@
           "LowerAtRange",
           "anchorFromSelector",
           "expHistogramRangeFnWindowed",
+          "lowerAbsenceOfLatestSample",
           "lowerAbsenceOverWindow",
           "lowerAbsentOverTime",
           "lowerExpHistogramBareMatrix",
@@ -85,7 +89,7 @@
       "site": "internal/promql/modifiers.go:anchorFromSelector#df7f6e9a",
       "message": "promql: unexpected StartOrEnd token %v",
       "class": "internal",
-      "rationale": "the parser yields only START / END / 0 in StartOrEnd. The claim is a property of the parser rather than of any caller, so neither the expanded histogram range-function caller set, lowerExpHistogramBareMatrix (cerberus issue #2548), nor lowerAbsenceOverWindow — the extracted lowerAbsentOverTime body that instant absent(\u003cselector\u003e) now shares — can bear on it: the claim does not depend on which caller supplies vs.",
+      "rationale": "the parser yields only START / END / 0 in StartOrEnd. The claim is a property of the parser rather than of any caller, so neither the expanded histogram range-function caller set, lowerExpHistogramBareMatrix (cerberus issue #2548), nor lowerAbsenceOverWindow — the extracted lowerAbsentOverTime body that instant absent(\u003cselector\u003e) now shares — can bear on it: the claim does not depend on which caller supplies vs. The same holds for lowerAbsenceOfLatestSample, the instant-selection absent(\u003cselector\u003e) lowering under a schema with a Flags column: it passes vs through unchanged.",
       "evidence": {
         "guard": [
           "default of switch vs.StartOrEnd over [case parser.START; case parser.END; case 0; default]"
@@ -94,6 +98,7 @@
           "andInstantWindow",
           "expHistogramRangeFnWindowed",
           "expHistogramResetsWindowed",
+          "lowerAbsenceOfLatestSample",
           "lowerAbsenceOverWindow",
           "lowerExpHistogramBareMatrix",
           "lowerHistogramQuantileAgg",
@@ -106,6 +111,7 @@
           "selectorAnchor"
         ],
         "cited": [
+          "lowerAbsenceOfLatestSample",
           "lowerAbsenceOverWindow",
           "lowerAbsentOverTime",
           "lowerExpHistogramBareMatrix"

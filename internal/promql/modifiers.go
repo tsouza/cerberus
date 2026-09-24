@@ -75,6 +75,12 @@ type lowerCtx struct {
 	// ([wrapMetadataCatalog]). Set only by [LowerMetadataLabelValues] /
 	// [LowerMetadataLabelNames].
 	catalog *metadataCatalog
+	// latestSampleWindow marks an inRangeVector selector whose consumer
+	// picks the latest raw sample per window instead of reading every
+	// sample — the Identity RangeWindow a subquery over a bare selector
+	// evaluates its inner instant steps with. Such a consumer needs stale
+	// markers encoded rather than dropped (see [lowerCtx.staleMarkerMode]).
+	latestSampleWindow bool
 	// lowerers is the BOOT-WIRED polymorphic dispatch table for the
 	// ClickHouse-native timeSeries*ToGrid family (rate / staleness). It is
 	// decided ONCE at boot from the resolved chopt.EnabledSet and threaded in

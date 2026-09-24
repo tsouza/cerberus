@@ -90,7 +90,16 @@ type Metrics struct {
 	ScopeAttributesColumn string
 
 	// FlagsColumn names the OTel data-point Flags column (UInt32 bitfield).
+	// Its NoRecordedValue bit marks a Prometheus stale marker. The PromQL
+	// read path references the column only once FlagsColumnProbed is set.
 	FlagsColumn string
+	// FlagsColumnProbed reports that FlagsColumn was found on every metric
+	// table a query may scan. Nothing but that finding sets it — the boot
+	// requirements check (preflight.Result.ResolveStaleMarkerFlags), or a
+	// test whose own seed DDL declares the column — so a deployment whose
+	// tables were never probed reads every row as a sample instead of
+	// naming a column a table may lack. See StaleMarkerFlagsColumn.
+	FlagsColumnProbed bool
 
 	// Classic histogram + summary columns.
 
@@ -773,4 +782,14 @@ func distinctTables(tables ...string) []string {
 
 func hasSuffix(s, suffix string) bool {
 	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
+}
+
+// StaleMarkerFlagsColumn is the Flags column the PromQL read path may
+// reference to recognise a Prometheus stale marker: FlagsColumn once
+// FlagsColumnProbed established it on every metric table, "" otherwise.
+func (m Metrics) StaleMarkerFlagsColumn() string {
+	if !m.FlagsColumnProbed {
+		return ""
+	}
+	return m.FlagsColumn
 }

@@ -116,6 +116,7 @@ func healthyColumns() map[string][]chclient.NameTypePair {
 			col(m.MetricNameColumn, "String"),
 			col(m.TimestampColumn, "DateTime64(9)"),
 			col(m.ValueColumn, "Float64"),
+			col(m.FlagsColumn, "UInt32"),
 			col(m.ServiceNameColumn, "LowCardinality(String)"),
 		}
 		return append(base, attr(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn)...)
@@ -126,6 +127,7 @@ func healthyColumns() map[string][]chclient.NameTypePair {
 			col(m.TimestampColumn, "DateTime64(9)"),
 			col(m.CountColumn, "UInt64"),
 			col(m.SumColumn, "Float64"),
+			col(m.FlagsColumn, "UInt32"),
 		}
 		return append(base, attr(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn)...)
 	}
@@ -416,6 +418,71 @@ func TestRunMissingColumnFails(t *testing.T) {
 	want := "table otel_traces: missing required column ServiceName"
 	if !strings.Contains(err.Error(), want) {
 		t.Errorf("message missing %q: %v", want, err)
+	}
+}
+
+// TestRunMissingFlagsColumn pins the metrics Flags column's probe, and that
+// only a probe which found the column on every metric table lets the read
+// path reference it. A metric table without it still boots, with a warning
+// naming it; so does an absent table, which leaves the column unestablished;
+// a schema that declares no Flags column probes for none; and a Result that
+// never probed resolves to the unprobed schema.
+func TestRunMissingFlagsColumn(t *testing.T) {
+	t.Parallel()
+	m := schema.DefaultOTelMetrics()
+
+	if got := (Result{}).ResolveStaleMarkerFlags(m).StaleMarkerFlagsColumn(); got != "" {
+		t.Fatalf("a Result that never probed established Flags column %q", got)
+	}
+
+	healthy := Run(context.Background(), &stubQuerier{Version: "25.8.2.1", Columns: healthyColumns()}, defaultReq())
+	if healthy.Fatal != nil || healthy.StaleMarkerFlagsMissing != nil || !healthy.StaleMarkerFlagsPresent {
+		t.Fatalf("every table carries Flags: fatal=%v missing=%v present=%v",
+			healthy.Fatal, healthy.StaleMarkerFlagsMissing, healthy.StaleMarkerFlagsPresent)
+	}
+	if got := healthy.ResolveStaleMarkerFlags(m).StaleMarkerFlagsColumn(); got != m.FlagsColumn {
+		t.Fatalf("a schema whose tables all carry Flags resolved the read-path column to %q, want %q", got, m.FlagsColumn)
+	}
+
+	cols := healthyColumns()
+	pruned := cols[m.SumTable][:0:0]
+	for _, c := range cols[m.SumTable] {
+		if c.Name != m.FlagsColumn {
+			pruned = append(pruned, c)
+		}
+	}
+	cols[m.SumTable] = pruned
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal != nil {
+		t.Fatalf("a sum table without Flags must boot, got: %v", res.Fatal)
+	}
+	if len(res.StaleMarkerFlagsMissing) != 1 || res.StaleMarkerFlagsMissing[0] != m.SumTable || res.StaleMarkerFlagsPresent {
+		t.Fatalf("missing=%v present=%v, want [%s] and false", res.StaleMarkerFlagsMissing, res.StaleMarkerFlagsPresent, m.SumTable)
+	}
+	if got := res.ResolveStaleMarkerFlags(m).StaleMarkerFlagsColumn(); got != "" {
+		t.Fatalf("a sum table without Flags resolved the read-path column to %q, want none", got)
+	}
+	warned := false
+	for _, w := range res.Warnings {
+		warned = warned || strings.Contains(w, "table otel_metrics_sum has no Flags column")
+	}
+	if !warned {
+		t.Fatalf("no warning names the table without Flags: %v", res.Warnings)
+	}
+
+	absentCols := healthyColumns()
+	delete(absentCols, m.GaugeTable)
+	if res := Run(context.Background(), &stubQuerier{Version: "25.8.2.1", Columns: absentCols}, defaultReq()); res.StaleMarkerFlagsPresent {
+		t.Fatal("an absent gauge table cannot have established the Flags column")
+	}
+
+	noFlags := defaultReq()
+	noFlags.Metrics.FlagsColumn = ""
+	if res := Run(context.Background(), q, noFlags); res.Fatal != nil || res.StaleMarkerFlagsMissing != nil || res.StaleMarkerFlagsPresent {
+		t.Fatalf("a schema with no Flags column must probe for none: fatal=%v missing=%v present=%v",
+			res.Fatal, res.StaleMarkerFlagsMissing, res.StaleMarkerFlagsPresent)
 	}
 }
 

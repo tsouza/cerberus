@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/value"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/promql/promparse"
@@ -826,7 +827,8 @@ func readSeededSeries(
 		q := "SELECT MetricName, toJSONString(Attributes), " +
 			resourceAttributesProjection(seedCols[table]) + ", " +
 			serviceNameProjection(seedCols[table]) + ", " +
-			"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols[table]) + ", Value " +
+			"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols[table]) + ", Value, " +
+			flagsProjection(seedCols[table]) + " " +
 			"FROM " + table + " ORDER BY MetricName, TimeUnix"
 		rows, err := db.Query(q)
 		if err != nil {
@@ -875,12 +877,14 @@ func scanSeriesRows(
 	for rows.Next() {
 		var name, attrsJSON, resAttrsJSON, serviceName string
 		var tsMillis, temporality int64
-		var value float64
+		var sampleValue float64
+		var flags uint32
 		if err := rows.Scan(
-			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis, &temporality, &value,
+			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis, &temporality, &sampleValue, &flags,
 		); err != nil {
 			return err
 		}
+		sampleValue = referenceSampleValue(sampleValue, flags)
 		lbls, err := labelsFromSeededRow(name, attrsJSON, resAttrsJSON, serviceName, allow)
 		if err != nil {
 			return err
@@ -895,9 +899,24 @@ func scanSeriesRows(
 			s = &oracle.Series{Labels: lbls}
 			byKey[key] = s
 		}
-		s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Value: value})
+		s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Value: sampleValue})
 	}
 	return rows.Err()
+}
+
+// otelNoRecordedValueFlag is the OTel data-point flag bit the collector's
+// prometheusreceiver sets on a scraped Prometheus stale marker, storing the
+// point with an empty value (Value = 0 in ClickHouse).
+const otelNoRecordedValueFlag = 1
+
+// referenceSampleValue is the sample the reference Prometheus holds for a
+// seeded row: the row's Value, or for a row carrying the NoRecordedValue
+// flag, the stale marker the collector translated it from.
+func referenceSampleValue(v float64, flags uint32) float64 {
+	if flags&otelNoRecordedValueFlag != 0 {
+		return math.Float64frombits(value.StaleNaN)
+	}
+	return v
 }
 
 // cumulativeDeltaSeries adapts OTel DELTA observations to the cumulative
@@ -1575,10 +1594,21 @@ func serviceNameProjection(seedCols []string) string {
 	return "toString(" + colServiceName + ")"
 }
 
+const colFlags = "Flags"
+
 const (
 	colAggregationTemporality         = "AggregationTemporality"
 	deltaAggregationTemporality int64 = 1
 )
+
+// flagsProjection reads the OTel data-point Flags column, or 0 (no flag
+// set) for a seed that declares none.
+func flagsProjection(seedCols []string) string {
+	if !hasColumn(seedCols, colFlags) {
+		return "toUInt32(0)"
+	}
+	return "toUInt32(" + colFlags + ")"
+}
 
 func temporalityProjection(seedCols []string) string {
 	if !hasColumn(seedCols, colAggregationTemporality) {

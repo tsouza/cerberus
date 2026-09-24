@@ -300,6 +300,7 @@ CREATE TABLE otel_metrics_sum (
     ServiceName LowCardinality(String) DEFAULT '',
     TimeUnix DateTime64(9),
     Value Float64,
+    Flags UInt32 DEFAULT 0,
     AggregationTemporality Int32 DEFAULT 2
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix)
 `); err != nil {

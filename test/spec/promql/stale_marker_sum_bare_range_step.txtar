@@ -1,0 +1,163 @@
+-- query.promql --
+sum(stale_gauge)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64,
+    Flags UInt32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value, Flags) VALUES
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:58:00', 9), 40.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:58:15', 9), 41.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:58:30', 9), 42.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:58:45', 9), 43.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:59:00', 9), 44.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:59:15', 9), 40.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 41.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2025-12-31 23:59:45', 9), 42.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 43.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:00:15', 9), 44.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:00:30', 9), 40.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:00:45', 9), 41.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 42.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:01:15', 9), 43.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:01:30', 9), 44.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:01:45', 9), 40.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 0.0, 1),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:04:00', 9), 7.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:04:15', 9), 8.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:04:30', 9), 9.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:04:45', 9), 10.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:05:00', 9), 11.0, 0),
+    ('stale_gauge', map('job', 'a'), toDateTime64('2026-01-01 00:05:15', 9), 12.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:58:00', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:58:15', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:58:30', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:58:45', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:59:00', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:59:15', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:59:30', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2025-12-31 23:59:45', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:00:15', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:00:30', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:00:45', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:01:00', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:01:15', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:01:30', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:01:45', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:02:00', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:02:15', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:02:30', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:02:45', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:03:00', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:03:15', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:03:30', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:03:45', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:04:00', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:04:15', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:04:30', 9), 58.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:04:45', 9), 60.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:05:00', 9), 59.0, 0),
+    ('stale_gauge', map('job', 'b'), toDateTime64('2026-01-01 00:05:15', 9), 58.0, 0);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:00Z", 101],
+  ["", {}, "2026-01-01T00:00:30Z", 99],
+  ["", {}, "2026-01-01T00:01:00Z", 102],
+  ["", {}, "2026-01-01T00:01:30Z", 102],
+  ["", {}, "2026-01-01T00:02:00Z", 59],
+  ["", {}, "2026-01-01T00:02:30Z", 60],
+  ["", {}, "2026-01-01T00:03:00Z", 58],
+  ["", {}, "2026-01-01T00:03:30Z", 59],
+  ["", {}, "2026-01-01T00:04:00Z", 67],
+  ["", {}, "2026-01-01T00:04:30Z", 67],
+  ["", {}, "2026-01-01T00:05:00Z", 70]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = ""
+[8] string = "service_name"
+[9] int64 = 1
+[10] int64 = 0
+[11] int64 = 9218868437227405314
+[12] string = "stale_gauge"
+[13] string = "stale.gauge"
+[14] string = "stale/gauge"
+[15] string = "service_name"
+[16] string = "service.name"
+[17] string = "service_name"
+[18] string = "service.name"
+[19] string = "service_name"
+[20] string = ""
+[21] string = "service_name"
+[22] int64 = 1
+[23] int64 = 0
+[24] int64 = 9218868437227405314
+[25] string = "stale_gauge"
+[26] string = "stale.gauge"
+[27] string = "stale/gauge"
+[28] int64 = 9218868437227405314
+-- args_optimized --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = ""
+[8] string = "service_name"
+[9] int64 = 1
+[10] int64 = 0
+[11] int64 = 9218868437227405314
+[12] string = "stale_gauge"
+[13] string = "stale.gauge"
+[14] string = "stale/gauge"
+[15] string = "service_name"
+[16] string = "service.name"
+[17] string = "service_name"
+[18] string = "service.name"
+[19] string = "service_name"
+[20] string = ""
+[21] string = "service_name"
+[22] int64 = 1
+[23] int64 = 0
+[24] int64 = 9218868437227405314
+[25] string = "stale_gauge"
+[26] string = "stale.gauge"
+[27] string = "stale/gauge"
+[28] int64 = 9218868437227405314
+-- chplan --
+Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[TimeUnix AS bucket_ts] funcs=[FnSum(Value) AS Value] dropEmptyOnNoGroup
+    Filter predicate=(FnReinterpretAsUInt64(Value) != 9218868437227405314)
+      RangeLWR step=30s lookback=5m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+        Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnIf((FnBitAnd(Flags, 1) != 0), FnReinterpretAsFloat64(9218868437227405314), Value) AS Value]
+          Filter predicate=(MetricName IN ("stale_gauge", "stale.gauge", "stale/gauge"))
+            Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=1;lwr;union
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT * FROM (SELECT * FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001)) > 40000000, 'range LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) WHERE (reinterpretAsUInt64(`Value`) != ?)) GROUP BY `bucket_ts`)
+-- sql_optimized --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT * FROM (SELECT * FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001)) > 40000000, 'range LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) WHERE (reinterpretAsUInt64(`Value`) != ?)) GROUP BY `bucket_ts`)

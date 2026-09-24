@@ -1,0 +1,147 @@
+-- query.promql --
+rate(stale_counter_total[1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64,
+    Flags UInt32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value, Flags) VALUES
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:58:45', 9), 100.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:00', 9), 110.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:15', 9), 120.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 130.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:45', 9), 140.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.0, 1),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:58:45', 9), 1000.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:00', 9), 1003.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:15', 9), 1006.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:30', 9), 1009.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:45', 9), 1012.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 1015.0, 0);
+-- expected_rows --
+[
+  [{"job": "a"}, 0.6666666666666666],
+  [{"job": "b"}, 0.19999999999999998]
+]
+-- args --
+[0] string = "service_name"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] string = "stale_counter_total"
+[8] string = "stale.counter.total"
+[9] string = "stale.counter/total"
+[10] string = "stale.counter_total"
+[11] string = "stale/counter/total"
+[12] string = "stale/counter_total"
+[13] string = "stale_counter.total"
+[14] int64 = 1
+[15] int64 = 0
+[16] string = "service_name"
+[17] string = "service.name"
+[18] string = "service_name"
+[19] string = "service.name"
+[20] string = "service_name"
+[21] string = ""
+[22] string = "service_name"
+[23] string = "stale_counter_total"
+[24] string = "stale.counter.total"
+[25] string = "stale.counter/total"
+[26] string = "stale.counter_total"
+[27] string = "stale/counter/total"
+[28] string = "stale/counter_total"
+[29] string = "stale_counter.total"
+[30] int64 = 1
+[31] int64 = 0
+[32] string = "service_name"
+[33] string = "service.name"
+[34] string = "service_name"
+[35] string = "service.name"
+[36] string = "service_name"
+[37] string = ""
+[38] string = "service_name"
+[39] string = "stale_counter_total"
+[40] string = "stale.counter.total"
+[41] string = "stale.counter/total"
+[42] string = "stale.counter_total"
+[43] string = "stale/counter/total"
+[44] string = "stale/counter_total"
+[45] string = "stale_counter.total"
+[46] int64 = 1
+[47] int64 = 0
+-- args_optimized --
+[0] string = "service_name"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] string = "stale_counter_total"
+[8] string = "stale.counter.total"
+[9] string = "stale.counter/total"
+[10] string = "stale.counter_total"
+[11] string = "stale/counter/total"
+[12] string = "stale/counter_total"
+[13] string = "stale_counter.total"
+[14] int64 = 1
+[15] int64 = 0
+[16] string = "service_name"
+[17] string = "service.name"
+[18] string = "service_name"
+[19] string = "service.name"
+[20] string = "service_name"
+[21] string = ""
+[22] string = "service_name"
+[23] string = "stale_counter_total"
+[24] string = "stale.counter.total"
+[25] string = "stale.counter/total"
+[26] string = "stale.counter_total"
+[27] string = "stale/counter/total"
+[28] string = "stale/counter_total"
+[29] string = "stale_counter.total"
+[30] int64 = 1
+[31] int64 = 0
+[32] string = "service_name"
+[33] string = "service.name"
+[34] string = "service_name"
+[35] string = "service.name"
+[36] string = "service_name"
+[37] string = ""
+[38] string = "service_name"
+[39] string = "stale_counter_total"
+[40] string = "stale.counter.total"
+[41] string = "stale.counter/total"
+[42] string = "stale.counter_total"
+[43] string = "stale/counter/total"
+[44] string = "stale/counter_total"
+[45] string = "stale_counter.total"
+[46] int64 = 1
+[47] int64 = 0
+-- chplan --
+RangeWindow func=rate range=1m0s step=0s ts=TimeUnix value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z
+  Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value, AggregationTemporality AS AggregationTemporality]
+    Filter predicate=((MetricName IN ("stale_counter_total", "stale.counter.total", "stale.counter/total", "stale.counter_total", "stale/counter/total", "stale/counter_total", "stale_counter.total")) AND FnNot((FnBitAnd(Flags, 1) != 0)))
+      Scan(otel_metrics_sum)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:rw;rw;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT `Attributes`, if(sampled_interval > 0, counter_delta * ((sampled_interval + if(counter_delta > 0 AND first_val >= 0, least(duration_to_start, sampled_interval * first_val / counter_delta), duration_to_start) + duration_to_end) / sampled_interval / 60), nan) AS `Value` FROM (SELECT `Attributes`, `window_vals`, `counter_delta`, `first_val`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, toDateTime64('2026-01-01 00:00:01.000000000', 9))) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, toDateTime64('2026-01-01 00:00:01.000000000', 9))) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, if(temporality = 1, arraySum(arrayMap(x -> tupleElement(x, 2), window_pairs)) - tupleElement(window_pairs[1], 2), arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs))))) AS `counter_delta`, tupleElement(window_pairs[1], 1) AS `first_ts`, tupleElement(window_pairs[length(window_pairs)], 1) AS `last_ts`, if(temporality = 1, `delta_prefix_before_window` + tupleElement(window_pairs[1], 2), tupleElement(window_pairs[1], 2)) AS `first_val` FROM (SELECT `Attributes`, `temporality`, `delta_prefix_before_window`, arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(window_pairs))) AS `window_pairs` FROM (SELECT `Attributes`, `temporality`, `delta_prefix_before_window`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `w`.`Attributes` AS `Attributes`, `w`.`series_array` AS `series_array`, `w`.`temporality` AS `temporality`, `p`.`delta_prefix_before_window` AS `delta_prefix_before_window` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array`, any(`AggregationTemporality`) AS `temporality` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value`, `AggregationTemporality` AS `AggregationTemporality` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE not((bitAnd(`Flags`, ?) != ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`) AS w LEFT JOIN (SELECT `Attributes` AS `delta_prefix_key_0`, sum(`Value`) AS `delta_prefix_before_window` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value`, `AggregationTemporality` AS `AggregationTemporality` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE not((bitAnd(`Flags`, ?) != ?)))) WHERE `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000) - toIntervalNanosecond(86400000000000) AND (SELECT max(`AggregationTemporality` = 1) FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value`, `AggregationTemporality` AS `AggregationTemporality` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE not((bitAnd(`Flags`, ?) != ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9)) GROUP BY `Attributes`) AS p ON `w`.`Attributes` = `p`.`delta_prefix_key_0`))))) WHERE length(`window_vals`) >= 2
+-- sql_optimized --
+SELECT `Attributes`, if(sampled_interval > 0, counter_delta * ((sampled_interval + if(counter_delta > 0 AND first_val >= 0, least(duration_to_start, sampled_interval * first_val / counter_delta), duration_to_start) + duration_to_end) / sampled_interval / 60), nan) AS `Value` FROM (SELECT `Attributes`, `window_vals`, `counter_delta`, `first_val`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, toDateTime64('2026-01-01 00:00:01.000000000', 9))) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, toDateTime64('2026-01-01 00:00:01.000000000', 9))) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, if(temporality = 1, arraySum(arrayMap(x -> tupleElement(x, 2), window_pairs)) - tupleElement(window_pairs[1], 2), arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs))))) AS `counter_delta`, tupleElement(window_pairs[1], 1) AS `first_ts`, tupleElement(window_pairs[length(window_pairs)], 1) AS `last_ts`, if(temporality = 1, `delta_prefix_before_window` + tupleElement(window_pairs[1], 2), tupleElement(window_pairs[1], 2)) AS `first_val` FROM (SELECT `Attributes`, `temporality`, `delta_prefix_before_window`, arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(window_pairs))) AS `window_pairs` FROM (SELECT `Attributes`, `temporality`, `delta_prefix_before_window`, arrayFilter(p -> tupleElement(p, 1) > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000) AND tupleElement(p, 1) <= toDateTime64('2026-01-01 00:00:01.000000000', 9), series_array) AS `window_pairs` FROM (SELECT `w`.`Attributes` AS `Attributes`, `w`.`series_array` AS `series_array`, `w`.`temporality` AS `temporality`, `p`.`delta_prefix_before_window` AS `delta_prefix_before_window` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `series_array`, any(`AggregationTemporality`) AS `temporality` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value`, `AggregationTemporality` AS `AggregationTemporality` FROM (SELECT `AggregationTemporality`, `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE not((bitAnd(`Flags`, ?) != ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) GROUP BY `Attributes`) AS w LEFT JOIN (SELECT `Attributes` AS `delta_prefix_key_0`, sum(`Value`) AS `delta_prefix_before_window` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value`, `AggregationTemporality` AS `AggregationTemporality` FROM (SELECT `AggregationTemporality`, `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE not((bitAnd(`Flags`, ?) != ?)))) WHERE `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000) - toIntervalNanosecond(86400000000000) AND (SELECT max(`AggregationTemporality` = 1) FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value`, `AggregationTemporality` AS `AggregationTemporality` FROM (SELECT `AggregationTemporality`, `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE not((bitAnd(`Flags`, ?) != ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:01.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:00:01.000000000', 9)) GROUP BY `Attributes`) AS p ON `w`.`Attributes` = `p`.`delta_prefix_key_0`))))) WHERE length(`window_vals`) >= 2

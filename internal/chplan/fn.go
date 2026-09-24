@@ -392,6 +392,16 @@ const (
 	// second precision.
 	FnToDateTime64 Fn = "toDateTime64"
 
+	// reinterpretAsFloat64(x) — the Float64 whose IEEE-754 bit pattern is the
+	// integer x's bytes: a bit-exact reinterpretation, not a numeric cast, so a
+	// NaN payload survives it.
+	FnReinterpretAsFloat64 Fn = "reinterpretAsFloat64"
+
+	// reinterpretAsUInt64(x) — the UInt64 whose bytes are the Float64 x's
+	// IEEE-754 bit pattern: a bit-exact reinterpretation, so two NaNs with
+	// different payloads compare unequal.
+	FnReinterpretAsUInt64 Fn = "reinterpretAsUInt64"
+
 	// toFloat64(x) — x cast to Float64; aborts the query if x cannot be
 	// represented (use ToFloat64OrNull/ToFloat64OrZero to avoid that).
 	FnToFloat64 Fn = "toFloat64"
@@ -515,6 +525,9 @@ const (
 	FnToYear Fn = "toYear"
 
 	// Math functions.
+	// bitAnd(x, y) — the bitwise AND of two integers.
+	FnBitAnd Fn = "bitAnd"
+
 	// abs(x) — the absolute value of a numeric x.
 	FnAbs Fn = "abs"
 

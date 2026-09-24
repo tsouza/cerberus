@@ -895,11 +895,12 @@ func lowerHistogramSelectorInput(
 	companionValueColumn string,
 	s schema.Metrics,
 	cat *metadataCatalog,
+	mode staleMarkerMode,
 ) (chplan.Node, chplan.Expr, bool) {
 	switch {
 	case bucketSuffixed != "":
 		var fanInput chplan.Node = scan
-		if pred != nil {
+		if pred = withStaleMarkerDrop(pred, mode, s); pred != nil {
 			fanInput = &chplan.Filter{Input: scan, Predicate: pred}
 		}
 		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s, cat)
@@ -910,9 +911,9 @@ func lowerHistogramSelectorInput(
 		}
 		return selectorInput, nil, true
 	case companionValueColumn != "":
-		return wrapHistogramCompanionProject(scan, companionValueColumn, s, cat), pred, true
+		return wrapHistogramCompanionProject(scan, companionValueColumn, s, cat, mode), pred, true
 	}
-	return scan, pred, false
+	return scan, withStaleMarkerDrop(pred, mode, s), false
 }
 
 // expHistogramSelectorRouting resolves how lowerVectorSelector should
@@ -1201,8 +1202,9 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// Any user-supplied `le` matcher applies AFTER the fan-out as an
 	// outer Filter on `Attributes['le']` (the column doesn't exist on
 	// the raw scan row).
+	staleMode := ctx.staleMarkerMode(s)
 	selectorInput, pred, attributesPreMerged := lowerHistogramSelectorInput(
-		scan, pred, bucketSuffixed, bucketLeMatchers, companionValueColumn, s, ctx.catalog,
+		scan, pred, bucketSuffixed, bucketLeMatchers, companionValueColumn, s, ctx.catalog, staleMode,
 	)
 
 	// Resolve the effective evaluation anchor for this selector.
@@ -1256,15 +1258,24 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// same as the outer-by case). `isBareAttributesRef` is the same
 	// decision `augmentSelectorAttributes` uses, so the pred sink and the
 	// Project wrap stay in lock-step.
+	//
+	// A raw (Gauge, Sum) scan that encodes stale markers also needs the
+	// Project — its Value projection is where the marker's Value is
+	// rewritten, reading the raw Flags column — so the same guard covers it.
+	// Every other input already projected its own Value from the raw scan
+	// (see lowerHistogramSelectorInput), with any marker already encoded.
 	attrCtx := ctx
+	valueExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ValueColumn})
 	if attributesPreMerged {
 		attrCtx = ctx.withAttributesPreMerged()
+	} else {
+		valueExpr = staleMarkerValueExpr(valueExpr, staleMode, s)
 	}
-	if pred != nil && !isBareAttributesRef(selectorAttributesExpr(attrCtx, s), s) {
+	if pred != nil && !isIdentitySelectorProjection(selectorAttributesExpr(attrCtx, s), valueExpr, s) {
 		selectorInput = &chplan.Filter{Input: selectorInput, Predicate: pred}
 		pred = nil
 	}
-	selectorInput = augmentSelectorAttributes(selectorInput, attrCtx, s)
+	selectorInput = augmentSelectorAttributesValue(selectorInput, attrCtx, s, valueExpr)
 
 	if ctx.inRangeVector {
 		// Inside a range vector / subquery the surrounding node owns
@@ -1335,7 +1346,7 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 // here keeps the downstream rate / arithmetic expressions consistent
 // with the gauge / sum-table path (where `Value` is already
 // `Float64`).
-func wrapHistogramCompanionProject(scan *chplan.Scan, sourceColumn string, s schema.Metrics, cat *metadataCatalog) chplan.Node {
+func wrapHistogramCompanionProject(scan *chplan.Scan, sourceColumn string, s schema.Metrics, cat *metadataCatalog, mode staleMarkerMode) chplan.Node {
 	projections := []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
 	}
@@ -1349,14 +1360,18 @@ func wrapHistogramCompanionProject(scan *chplan.Scan, sourceColumn string, s sch
 		projections,
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 		chplan.Projection{
-			Expr: &chplan.FuncCall{
+			Expr: staleMarkerValueExpr(&chplan.FuncCall{
 				Fn:   chplan.FnToFloat64,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
-			},
+			}, mode, s),
 			Alias: s.ValueColumn,
 		},
 	)
-	return &chplan.Project{Roles: metricRoles(s), Input: scan, Projections: projections}
+	var input chplan.Node = scan
+	if drop := withStaleMarkerDrop(nil, mode, s); drop != nil {
+		input = &chplan.Filter{Input: scan, Predicate: drop}
+	}
+	return &chplan.Project{Roles: metricRoles(s), Input: input, Projections: projections}
 }
 
 // needCompanionUnion reports whether the classic-histogram-companion
@@ -1417,15 +1432,16 @@ func lowerCompanionUnion(
 	matchers []*labels.Matcher,
 	bareName, suffixedName, sourceColumn string,
 ) (chplan.Node, error) {
+	staleMode := ctx.staleMarkerMode(s)
 	inputs := []chplan.Node{
-		buildHistogramCompanionArm(s, matchers, bareName, suffixedName, sourceColumn, ctx.catalog),
+		buildHistogramCompanionArm(s, matchers, bareName, suffixedName, sourceColumn, ctx.catalog, staleMode),
 	}
 	// One literal-suffixed-name arm per distinct value table the name may live
 	// in: the Sum table (hostmetrics cumulative sums) and the Gauge table
 	// (standalone `<x>_sum`/`<x>_count` gauges — the yace CloudWatch-suffix
 	// case). Empty arms are cost-free under the per-arm MetricName filter.
 	for _, t := range literalCompanionValueTables(s) {
-		inputs = append(inputs, buildLiteralNameCompanionArm(s, matchers, suffixedName, t, ctx.catalog))
+		inputs = append(inputs, buildLiteralNameCompanionArm(s, matchers, suffixedName, t, ctx.catalog, staleMode))
 	}
 	selectorInput := chplan.Node(&chplan.UnionAll{Inputs: inputs})
 	anchor, err := selectorAnchor(v, ctx)
@@ -1488,11 +1504,12 @@ func buildHistogramCompanionArm(
 	s schema.Metrics, matchers []*labels.Matcher,
 	bareName, suffixedName, sourceColumn string,
 	cat *metadataCatalog,
+	mode staleMarkerMode,
 ) chplan.Node {
 	armMatchers := rewriteMetricName(matchers, bareName)
 	scan := &chplan.Scan{Roles: metricScanRoles(s, s.HistogramTable), Table: s.HistogramTable}
 	var armInput chplan.Node = scan
-	if pred := buildPredicate(armMatchers, s); pred != nil {
+	if pred := withStaleMarkerDrop(buildPredicate(armMatchers, s), mode, s); pred != nil {
 		armInput = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	projections := []chplan.Projection{
@@ -1508,10 +1525,10 @@ func buildHistogramCompanionArm(
 		projections,
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 		chplan.Projection{
-			Expr: &chplan.FuncCall{
+			Expr: staleMarkerValueExpr(&chplan.FuncCall{
 				Fn:   chplan.FnToFloat64,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
-			},
+			}, mode, s),
 			Alias: s.ValueColumn,
 		},
 	)
@@ -1530,6 +1547,7 @@ func buildHistogramCompanionArm(
 func buildLiteralNameCompanionArm(
 	s schema.Metrics, matchers []*labels.Matcher, suffixedName, table string,
 	cat *metadataCatalog,
+	mode staleMarkerMode,
 ) chplan.Node {
 	// Defensive: thread the suffixed name back through rewriteMetricName
 	// so any non-Equal `__name__` matchers in the input list (regex
@@ -1549,7 +1567,7 @@ func buildLiteralNameCompanionArm(
 	armMatchers := rewriteMetricName(matchers, suffixedName)
 	scan := &chplan.Scan{Roles: metricScanRoles(s, table), Table: table}
 	var armInput chplan.Node = scan
-	if pred := buildPredicate(armMatchers, s); pred != nil {
+	if pred := withStaleMarkerDrop(buildPredicate(armMatchers, s), mode, s); pred != nil {
 		armInput = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	projections := []chplan.Projection{
@@ -1563,7 +1581,10 @@ func buildLiteralNameCompanionArm(
 	projections = append(
 		projections,
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		chplan.Projection{
+			Expr:  staleMarkerValueExpr(&chplan.ColumnRef{Name: s.ValueColumn}, mode, s),
+			Alias: s.ValueColumn,
+		},
 	)
 	return &chplan.Project{Roles: metricRoles(s), Input: armInput, Projections: projections}
 }
@@ -1593,8 +1614,17 @@ func buildLiteralNameCompanionArm(
 // RangeWindow's `GROUP BY Attributes` already partitions over the
 // distinct ServiceName values.
 func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics) chplan.Node {
+	return augmentSelectorAttributesValue(input, ctx, s, &chplan.ColumnRef{Name: s.ValueColumn})
+}
+
+// augmentSelectorAttributesValue is [augmentSelectorAttributes] with the
+// Value projection supplied by the caller: the bare Value column, or on a
+// raw scan the stale-marker-encoding expression [staleMarkerValueExpr]
+// builds. The Project is skipped only when both the Attributes and the
+// Value projections are identities.
+func augmentSelectorAttributesValue(input chplan.Node, ctx lowerCtx, s schema.Metrics, valueExpr chplan.Expr) chplan.Node {
 	attrsExpr := selectorAttributesExpr(ctx, s)
-	if isBareAttributesRef(attrsExpr, s) {
+	if isIdentitySelectorProjection(attrsExpr, valueExpr, s) {
 		// No resource merge (schema cleared ResourceAttributesColumn) AND
 		// no outer-by overlay — the Project would be a no-op identity, so
 		// skip it to keep custom-schema-without-ResourceAttributes
@@ -1605,7 +1635,7 @@ func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics
 		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
 		{Expr: attrsExpr, Alias: s.AttributesColumn},
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		{Expr: valueExpr, Alias: s.ValueColumn},
 	}
 	// A rate() / increase() range-vector call over an unambiguous Sum- or
 	// Histogram-table scan needs the AggregationTemporality column past
@@ -2052,7 +2082,7 @@ func wrapInstantLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalA
 		},
 	}
 
-	return &chplan.Project{
+	return dropStaleLatestSamples(&chplan.Project{
 		Roles: metricRoles(s),
 		Input: agg,
 		Projections: []chplan.Projection{
@@ -2061,7 +2091,7 @@ func wrapInstantLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalA
 			{Expr: &chplan.ColumnRef{Name: lwrTsAlias}, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: lwrValueAlias}, Alias: s.ValueColumn},
 		},
-	}
+	}, s)
 }
 
 // wrapMetadataFullRange filters (scan, pred) to the closed [start,end]
@@ -2224,7 +2254,7 @@ func wrapRangeLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalAnc
 	// canonical 4-column Sample row shape (proven on the chDB substrate by the
 	// resample dual-emit parity test), so the surrounding plan tree is
 	// unaffected by which strategy is wired.
-	return ctx.lowerers.Staleness.LowerStaleness(stalenessLowerInput{
+	return dropStaleLatestSamples(ctx.lowerers.Staleness.LowerStaleness(stalenessLowerInput{
 		input:       rawSide,
 		start:       ctx.start.UTC(),
 		end:         ctx.end.UTC(),
@@ -2242,7 +2272,7 @@ func wrapRangeLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalAnc
 		attributesCol: s.AttributesColumn,
 		timestampCol:  s.TimestampColumn,
 		valueCol:      s.ValueColumn,
-	})
+	}), s)
 }
 
 // wrapRangeAbsoluteAtBroadcast is the range-mode lowering for a bare
@@ -2374,7 +2404,7 @@ func wrapRangeAbsoluteAtBroadcast(scan chplan.Node, pred chplan.Expr, anchor eva
 			Alias: chplan.RangeLWRSampleTimestampColumn,
 		})
 	}
-	return out
+	return dropStaleLatestSamples(out, s)
 }
 
 // selectorAnchor resolves the effective evaluation anchor for a vector

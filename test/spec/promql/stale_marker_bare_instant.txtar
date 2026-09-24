@@ -1,0 +1,99 @@
+-- query.promql --
+stale_counter_total
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64,
+    Flags UInt32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value, Flags) VALUES
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:58:45', 9), 100.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:00', 9), 110.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:15', 9), 120.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 130.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:45', 9), 140.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.0, 1),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:58:45', 9), 1000.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:00', 9), 1003.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:15', 9), 1006.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:30', 9), 1009.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:45', 9), 1012.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 1015.0, 0);
+-- expected_rows --
+[
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:00:00Z", 1015]
+]
+-- args --
+[0] string = "service_name"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] int64 = 1
+[8] int64 = 0
+[9] int64 = 9218868437227405314
+[10] string = "stale_counter_total"
+[11] string = "stale.counter.total"
+[12] string = "stale.counter/total"
+[13] string = "stale.counter_total"
+[14] string = "stale/counter/total"
+[15] string = "stale/counter_total"
+[16] string = "stale_counter.total"
+[17] string = "2026-01-01 00:00:01.000000000"
+[18] int64 = 9
+[19] string = "2026-01-01 00:00:01.000000000"
+[20] int64 = 9
+[21] int64 = 300000000000
+[22] int64 = 9218868437227405314
+-- args_optimized --
+[0] string = "service_name"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] int64 = 1
+[8] int64 = 0
+[9] int64 = 9218868437227405314
+[10] string = "stale_counter_total"
+[11] string = "stale.counter.total"
+[12] string = "stale.counter/total"
+[13] string = "stale.counter_total"
+[14] string = "stale/counter/total"
+[15] string = "stale/counter_total"
+[16] string = "stale_counter.total"
+[17] string = "2026-01-01 00:00:01.000000000"
+[18] int64 = 9
+[19] string = "2026-01-01 00:00:01.000000000"
+[20] int64 = 9
+[21] int64 = 300000000000
+[22] int64 = 9218868437227405314
+-- chplan --
+Filter predicate=(FnReinterpretAsUInt64(Value) != 9218868437227405314)
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=((TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
+        Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnIf((FnBitAnd(Flags, 1) != 0), FnReinterpretAsFloat64(9218868437227405314), Value) AS Value]
+          Filter predicate=(MetricName IN ("stale_counter_total", "stale.counter.total", "stale.counter/total", "stale.counter_total", "stale/counter/total", "stale/counter_total", "stale_counter.total"))
+            Scan(otel_metrics_sum)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter;agg=2
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+optimize_aggregation_in_order=1
+use_query_condition_cache=1
+-- sql --
+SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) WHERE (reinterpretAsUInt64(`Value`) != ?)
+-- sql_optimized --
+SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) WHERE (reinterpretAsUInt64(`Value`) != ?)

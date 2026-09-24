@@ -410,6 +410,14 @@ func isBareAttributesRef(expr chplan.Expr, s schema.Metrics) bool {
 	return ok && ref.Name == s.AttributesColumn && ref.Qualifier == ""
 }
 
+// isIdentitySelectorProjection reports whether the selector Project with
+// Attributes attrsExpr and Value valueExpr would be an identity map, which
+// is when [augmentSelectorAttributesValue] skips it.
+func isIdentitySelectorProjection(attrsExpr, valueExpr chplan.Expr, s schema.Metrics) bool {
+	ref, ok := valueExpr.(*chplan.ColumnRef)
+	return ok && ref.Name == s.ValueColumn && ref.Qualifier == "" && isBareAttributesRef(attrsExpr, s)
+}
+
 // resourceMatcherFallback returns the ResourceAttributes-side lookup arm
 // for a non-service, non-__name__ matcher, or nil when the resource arm is
 // disabled (schema cleared the column, or the label is not allowlisted).

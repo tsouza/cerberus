@@ -91,7 +91,7 @@ func TestMountAPIHeads_EveryBuiltEngineCarriesMaxQuerySamples(t *testing.T) {
 	logger := quietLogger()
 	limiters := newAdmitLimiters(cfg, logger)
 
-	heads, err := mountAPIHeads(t.Context(), http.NewServeMux(), client, cfg, chopt.EnabledSet{}, nil, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, preflightAttrStrategies{})
+	heads, err := mountAPIHeads(t.Context(), http.NewServeMux(), client, cfg, chopt.EnabledSet{}, nil, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, preflightProbes{})
 	if err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}

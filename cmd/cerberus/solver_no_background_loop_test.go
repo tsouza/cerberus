@@ -77,7 +77,7 @@ func TestMountAPIHeads_PromStartsNoBackgroundLoop(t *testing.T) {
 		goleak.IgnoreCurrent(),
 	}
 
-	if _, err := mountAPIHeads(ctx, http.NewServeMux(), client, cfg, chopt.EnabledSet{}, nil, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, preflightAttrStrategies{}); err != nil {
+	if _, err := mountAPIHeads(ctx, http.NewServeMux(), client, cfg, chopt.EnabledSet{}, nil, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, preflightProbes{}); err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}
 

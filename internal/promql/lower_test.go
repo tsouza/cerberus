@@ -13,7 +13,6 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
-	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/test/spec"
 )
 
@@ -44,7 +43,7 @@ func TestLower(t *testing.T) {
 		}
 	})
 
-	s := schema.DefaultOTelMetrics()
+	s := spec.FixtureMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 
 	// Fixed start/end used when a fixture's query contains `@ start()`

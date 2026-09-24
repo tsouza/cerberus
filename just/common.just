@@ -105,6 +105,14 @@ CH_SERVER_SAFETY_IMAGES := "clickhouse/clickhouse-server:25.3.14.14-alpine click
 # because the captured incident records the full patch version it ran against.
 CH_HISTOGRAM_REPORT_IMAGE := "clickhouse/clickhouse-server:26.6.1.1193-alpine"
 
+# The two exact builds the stale-marker Flags pins run on alongside
+# CH_TEST_IMAGE (internal/api/prom's TestStaleMarkerFlags_RealCH): the last
+# 26.7 build before ClickHouse #115920 and the first 26.8 release carrying it.
+# TestIntegrationImagePinsMatchTheJustfile holds these against the literals in
+# the test source.
+CH_STALE_MARKER_26_7_IMAGE := "clickhouse/clickhouse-server:26.7.13.12-alpine"
+CH_STALE_MARKER_26_8_IMAGE := "clickhouse/clickhouse-server:26.8.1.2041-alpine"
+
 # k3s node image for the k3d clusters. Pinned (k3d otherwise picks a default tag
 # per k3d version) so we pull ONE known tag with retry and hand it to
 # `k3d cluster create --image` — k3d then boots from the host-cached copy

@@ -1,0 +1,150 @@
+-- query.promql --
+stale_counter_total
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_ts_grid_resample --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64,
+    Flags UInt32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value, Flags) VALUES
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:58:00', 9), 100.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:58:15', 9), 110.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:58:30', 9), 120.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:58:45', 9), 130.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:00', 9), 140.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:15', 9), 150.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 160.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:45', 9), 170.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 180.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:00:15', 9), 190.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:00:30', 9), 200.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:00:45', 9), 210.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 220.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:01:15', 9), 230.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:01:30', 9), 240.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:01:45', 9), 250.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 0.0, 1),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:04:00', 9), 5.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:04:15', 9), 15.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:04:30', 9), 25.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:04:45', 9), 35.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:05:00', 9), 45.0, 0),
+    ('stale_counter_total', map('job', 'a'), toDateTime64('2026-01-01 00:05:15', 9), 55.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:58:00', 9), 1000.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:58:15', 9), 1003.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:58:30', 9), 1006.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:58:45', 9), 1009.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:00', 9), 1012.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:15', 9), 1015.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:30', 9), 1018.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:45', 9), 1021.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 1024.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:00:15', 9), 1027.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:00:30', 9), 1030.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:00:45', 9), 1033.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:01:00', 9), 1036.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:01:15', 9), 1039.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:01:30', 9), 1042.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:01:45', 9), 1045.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:02:00', 9), 1048.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:02:15', 9), 1051.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:02:30', 9), 1054.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:02:45', 9), 1057.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:03:00', 9), 1060.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:03:15', 9), 1063.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:03:30', 9), 1066.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:03:45', 9), 1069.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:04:00', 9), 1072.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:04:15', 9), 1075.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:04:30', 9), 1078.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:04:45', 9), 1081.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:05:00', 9), 1084.0, 0),
+    ('stale_counter_total', map('job', 'b'), toDateTime64('2026-01-01 00:05:15', 9), 1087.0, 0);
+-- expected_rows --
+[
+  ["stale_counter_total", {"job": "a"}, "2026-01-01T00:00:00Z", 180],
+  ["stale_counter_total", {"job": "a"}, "2026-01-01T00:00:30Z", 200],
+  ["stale_counter_total", {"job": "a"}, "2026-01-01T00:01:00Z", 220],
+  ["stale_counter_total", {"job": "a"}, "2026-01-01T00:01:30Z", 240],
+  ["stale_counter_total", {"job": "a"}, "2026-01-01T00:04:00Z", 5],
+  ["stale_counter_total", {"job": "a"}, "2026-01-01T00:04:30Z", 25],
+  ["stale_counter_total", {"job": "a"}, "2026-01-01T00:05:00Z", 45],
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:00:00Z", 1024],
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:00:30Z", 1030],
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:01:00Z", 1036],
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:01:30Z", 1042],
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:02:00Z", 1048],
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:02:30Z", 1054],
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:03:00Z", 1060],
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:03:30Z", 1066],
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:04:00Z", 1072],
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:04:30Z", 1078],
+  ["stale_counter_total", {"job": "b"}, "2026-01-01T00:05:00Z", 1084]
+]
+-- args --
+[0] string = "service_name"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] int64 = 1
+[8] int64 = 0
+[9] int64 = 9218868437227405314
+[10] string = "stale_counter_total"
+[11] string = "stale.counter.total"
+[12] string = "stale.counter/total"
+[13] string = "stale.counter_total"
+[14] string = "stale/counter/total"
+[15] string = "stale/counter_total"
+[16] string = "stale_counter.total"
+[17] int64 = 9218868437227405314
+-- args_optimized --
+[0] string = "service_name"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] int64 = 1
+[8] int64 = 0
+[9] int64 = 9218868437227405314
+[10] string = "stale_counter_total"
+[11] string = "stale.counter.total"
+[12] string = "stale.counter/total"
+[13] string = "stale.counter_total"
+[14] string = "stale/counter/total"
+[15] string = "stale/counter_total"
+[16] string = "stale_counter.total"
+[17] int64 = 9218868437227405314
+-- chplan --
+Filter predicate=(FnReinterpretAsUInt64(Value) != 9218868437227405314)
+  RangeWindowStaleResample step=30s lookback=5m0s start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+    Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, FnIf((FnBitAnd(Flags, 1) != 0), FnReinterpretAsFloat64(9218868437227405314), Value) AS Value]
+        Filter predicate=(MetricName IN ("stale_counter_total", "stale.counter.total", "stale.counter/total", "stale.counter_total", "stale/counter/total", "stale/counter_total", "stale_counter.total"))
+          Scan(otel_metrics_sum)
+-- settings --
+allow_experimental_parallel_reading_from_replicas=0
+allow_experimental_time_series_aggregate_functions=1
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter;rwr
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT * FROM (SELECT `MetricName`, `Attributes`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT `MetricName`, `Attributes`, timeSeriesResampleToGridWithStaleness(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?))))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `MetricName`, `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL) WHERE (reinterpretAsUInt64(`Value`) != ?)
+-- sql_optimized --
+SELECT * FROM (SELECT `MetricName`, `Attributes`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT `MetricName`, `Attributes`, timeSeriesResampleToGridWithStaleness(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?))))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `MetricName`, `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL) WHERE (reinterpretAsUInt64(`Value`) != ?)

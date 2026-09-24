@@ -116,6 +116,30 @@ const (
 	nanRunSteps     = 2
 )
 
+// The demo_disappearing_requests_total family's scrape targets disappear
+// and come back. A disappearing target leaves one Prometheus stale marker
+// at the step it vanished, which the collector's prometheusreceiver stores
+// as an OTel NoRecordedValue point (Flags bit 0 set, Value 0):
+//
+//   - instance :10000 vanishes at step 100 and is scraped again from step
+//     160 — a 15m hole, longer than the 5m lookback;
+//   - instance :10001 vanishes at step 200 and is scraped again from step
+//     204 — a 1m hole, inside the lookback, so only the stale marker (not
+//     the lookback expiring) ends the series in between;
+//   - instance :10002 is scraped throughout.
+//
+// A returning target restarts its counter from zero.
+const (
+	disappearLongGapStartStep  = 100
+	disappearLongGapEndStep    = 160
+	disappearShortGapStartStep = 200
+	disappearShortGapEndStep   = 204
+)
+
+// otelNoRecordedValueFlag is the OTel data-point flag bit the collector
+// sets on a scraped Prometheus stale marker.
+const otelNoRecordedValueFlag = 1
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(logger); err != nil {
@@ -233,6 +257,11 @@ func insertFixture(ctx context.Context, conn driver.Conn) error {
 			clickhouse.Named("nan_run_steps", uint64(nanRunSteps)),
 			clickhouse.Named("shifting_exp_hist_sparse_period_steps",
 				uint64(shiftingExpHistSparsePeriodSteps)),
+			clickhouse.Named("disappear_long_gap_start_step", uint64(disappearLongGapStartStep)),
+			clickhouse.Named("disappear_long_gap_end_step", uint64(disappearLongGapEndStep)),
+			clickhouse.Named("disappear_short_gap_start_step", uint64(disappearShortGapStartStep)),
+			clickhouse.Named("disappear_short_gap_end_step", uint64(disappearShortGapEndStep)),
+			clickhouse.Named("no_recorded_value_flag", uint32(otelNoRecordedValueFlag)),
 		); err != nil {
 			return fmt.Errorf("%s: %w", s.name, err)
 		}
@@ -969,6 +998,49 @@ var fixtureInserts = []namedStmt{
                 nan,
                 toFloat64(step))
         FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s`,
+	},
+	// demo_disappearing_requests_total: 3 instances, a counter whose scrape
+	// targets disappear and return (see disappearLongGapStartStep). The
+	// row at a gap's first step is the stale marker; the rows strictly
+	// inside the gap do not exist; a returning target's counter restarts.
+	// The third instance's gap bounds sit past the last step, so it never
+	// disappears.
+	{
+		name: "demo_disappearing_requests_total",
+		sql: `INSERT INTO otel_metrics_sum
+            (ResourceAttributes, MetricName, MetricDescription, MetricUnit,
+             Attributes, StartTimeUnix, TimeUnix, Value,
+             Flags, AggregationTemporality, IsMonotonic)
+        SELECT
+            map('service.name', 'demo'),
+            'demo_disappearing_requests_total',
+            'Requests served by a target that disappears and returns',
+            'requests',
+            map('instance', instance, 'job', 'demo'),
+            toDateTime64({anchor:String}, 9),
+            toDateTime64({anchor:String}, 9) + INTERVAL step * {step_seconds:UInt64} SECOND,
+            if(step = gap_start, 0,
+                toFloat64(2 * (step - if(step >= gap_end, gap_end, 0))) + toFloat64(1000 * instance_idx)),
+            if(step = gap_start, {no_recorded_value_flag:UInt32}, toUInt32(0)),
+            2,
+            true
+        FROM (
+            SELECT step, instance, instance_idx,
+                [{disappear_long_gap_start_step:UInt64}, {disappear_short_gap_start_step:UInt64},
+                 {steps:UInt64}][instance_idx + 1] AS gap_start,
+                [{disappear_long_gap_end_step:UInt64}, {disappear_short_gap_end_step:UInt64},
+                 {steps:UInt64}][instance_idx + 1] AS gap_end
+            FROM (SELECT number AS step FROM numbers({steps:UInt64})) AS s
+            CROSS JOIN (
+                SELECT arrayJoin(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002']
+                ) AS instance,
+                indexOf(
+                    ['demo.promlabs.com:10000','demo.promlabs.com:10001','demo.promlabs.com:10002'],
+                    instance) - 1 AS instance_idx
+            ) AS i
+        )
+        WHERE step <= gap_start OR step >= gap_end`,
 	},
 }
 

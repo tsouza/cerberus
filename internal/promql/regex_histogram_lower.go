@@ -62,16 +62,16 @@ func regexHistogramNamePredicate(names []*labels.Matcher, s schema.Metrics) chpl
 	return buildPredicate(names, s)
 }
 
-func regexHistogramScanTable(table string, s schema.Metrics, matchers []*labels.Matcher) chplan.Node {
+func regexHistogramScanTable(table string, s schema.Metrics, matchers []*labels.Matcher, mode staleMarkerMode) chplan.Node {
 	scan := &chplan.Scan{Roles: metricScanRoles(s, table), Table: table}
-	if pred := buildPredicate(matchers, s); pred != nil {
+	if pred := withStaleMarkerDrop(buildPredicate(matchers, s), mode, s); pred != nil {
 		return &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	return scan
 }
 
-func regexHistogramScan(s schema.Metrics, matchers []*labels.Matcher) chplan.Node {
-	return regexHistogramScanTable(s.HistogramTable, s, matchers)
+func regexHistogramScan(s schema.Metrics, matchers []*labels.Matcher, mode staleMarkerMode) chplan.Node {
+	return regexHistogramScanTable(s.HistogramTable, s, matchers, mode)
 }
 
 // buildRegexHistogramCompanionArmTable builds one companion arm (a `Count`
@@ -82,9 +82,9 @@ func regexHistogramScan(s schema.Metrics, matchers []*labels.Matcher) chplan.Nod
 // both physical layouts store Count/Sum as columns on a single row under
 // the same synthetic-name convention, so only the source table differs.
 func buildRegexHistogramCompanionArmTable(
-	table string, s schema.Metrics, cat *metadataCatalog, names, scanMatchers []*labels.Matcher, suffix, sourceColumn string,
+	table string, s schema.Metrics, cat *metadataCatalog, names, scanMatchers []*labels.Matcher, suffix, sourceColumn string, mode staleMarkerMode,
 ) chplan.Node {
-	input := regexHistogramScanTable(table, s, scanMatchers)
+	input := regexHistogramScanTable(table, s, scanMatchers, mode)
 	project := &chplan.Project{
 		Roles: metricRoles(s),
 		Input: input,
@@ -94,10 +94,10 @@ func buildRegexHistogramCompanionArmTable(
 			catalogAttributesProjections(cat, s, selectorAttributesSource(cat, s)),
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			chplan.Projection{
-				Expr: &chplan.FuncCall{
+				Expr: staleMarkerValueExpr(&chplan.FuncCall{
 					Fn:   chplan.FnToFloat64,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
-				},
+				}, mode, s),
 				Alias: s.ValueColumn,
 			},
 		)...),
@@ -112,9 +112,9 @@ func buildRegexHistogramCompanionArmTable(
 // (table = s.HistogramTable) — the thin wrapper the pre-#1549r1 call sites
 // use; see buildRegexHistogramCompanionArmTable for the shared body.
 func buildRegexHistogramCompanionArm(
-	s schema.Metrics, cat *metadataCatalog, names, scanMatchers []*labels.Matcher, suffix, sourceColumn string,
+	s schema.Metrics, cat *metadataCatalog, names, scanMatchers []*labels.Matcher, suffix, sourceColumn string, mode staleMarkerMode,
 ) chplan.Node {
-	return buildRegexHistogramCompanionArmTable(s.HistogramTable, s, cat, names, scanMatchers, suffix, sourceColumn)
+	return buildRegexHistogramCompanionArmTable(s.HistogramTable, s, cat, names, scanMatchers, suffix, sourceColumn, mode)
 }
 
 // buildRegexExpHistogramCompanionArm builds an exp-histogram companion arm
@@ -144,15 +144,15 @@ func buildRegexHistogramCompanionArm(
 // visible either, and gets no arm in buildRegexMetricArm/
 // buildRegexHistogramCompanionArm).
 func buildRegexExpHistogramCompanionArm(
-	s schema.Metrics, cat *metadataCatalog, names, scanMatchers []*labels.Matcher, suffix, sourceColumn string,
+	s schema.Metrics, cat *metadataCatalog, names, scanMatchers []*labels.Matcher, suffix, sourceColumn string, mode staleMarkerMode,
 ) chplan.Node {
-	return buildRegexHistogramCompanionArmTable(s.ExpHistogramTable, s, cat, names, scanMatchers, suffix, sourceColumn)
+	return buildRegexHistogramCompanionArmTable(s.ExpHistogramTable, s, cat, names, scanMatchers, suffix, sourceColumn, mode)
 }
 
 func buildRegexHistogramBucketArm(
-	s schema.Metrics, cat *metadataCatalog, names, scanMatchers, leMatchers []*labels.Matcher,
+	s schema.Metrics, cat *metadataCatalog, names, scanMatchers, leMatchers []*labels.Matcher, mode staleMarkerMode,
 ) chplan.Node {
-	input := regexHistogramScan(s, scanMatchers)
+	input := regexHistogramScan(s, scanMatchers, mode)
 	input = wrapHistogramBucketFanout(input, "", s, cat)
 	if pred := regexHistogramNamePredicate(names, s); pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
@@ -185,10 +185,10 @@ func buildRegexHistogramBucketArm(
 // path is: this exemption only holds for a consumer that never reads a
 // real Value, and sourceColumn mirrors expHistogramSelectorRouting's
 // choice of s.CountColumn as the placeholder.
-func buildRegexExpHistogramBareArm(s schema.Metrics, cat *metadataCatalog, matchers []*labels.Matcher, sourceColumn string) chplan.Node {
+func buildRegexExpHistogramBareArm(s schema.Metrics, cat *metadataCatalog, matchers []*labels.Matcher, sourceColumn string, mode staleMarkerMode) chplan.Node {
 	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	var input chplan.Node = scan
-	if pred := buildPredicate(matchers, s); pred != nil {
+	if pred := withStaleMarkerDrop(buildPredicate(matchers, s), mode, s); pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	projections := []chplan.Projection{
@@ -199,20 +199,20 @@ func buildRegexExpHistogramBareArm(s schema.Metrics, cat *metadataCatalog, match
 		projections,
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 		chplan.Projection{
-			Expr: &chplan.FuncCall{
+			Expr: staleMarkerValueExpr(&chplan.FuncCall{
 				Fn:   chplan.FnToFloat64,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
-			},
+			}, mode, s),
 			Alias: s.ValueColumn,
 		},
 	)
 	return &chplan.Project{Roles: metricRoles(s), Input: input, Projections: projections}
 }
 
-func buildRegexMetricArm(s schema.Metrics, cat *metadataCatalog, matchers []*labels.Matcher) chplan.Node {
+func buildRegexMetricArm(s schema.Metrics, cat *metadataCatalog, matchers []*labels.Matcher, mode staleMarkerMode) chplan.Node {
 	scan := scanFromTables(s.TablesForUnknownName(), s)
 	var input chplan.Node = scan
-	if pred := buildPredicate(matchers, s); pred != nil {
+	if pred := withStaleMarkerDrop(buildPredicate(matchers, s), mode, s); pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	projections := []chplan.Projection{
@@ -222,23 +222,27 @@ func buildRegexMetricArm(s schema.Metrics, cat *metadataCatalog, matchers []*lab
 	projections = append(
 		projections,
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		chplan.Projection{
+			Expr:  staleMarkerValueExpr(&chplan.ColumnRef{Name: s.ValueColumn}, mode, s),
+			Alias: s.ValueColumn,
+		},
 	)
 	return &chplan.Project{Roles: metricRoles(s), Input: input, Projections: projections}
 }
 
 func lowerRegexHistogramSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	names, scanMatchers, leMatchers := splitRegexHistogramMatchers(v.LabelMatchers)
-	inputs := []chplan.Node{buildRegexMetricArm(s, ctx.catalog, v.LabelMatchers)}
+	staleMode := ctx.staleMarkerMode(s)
+	inputs := []chplan.Node{buildRegexMetricArm(s, ctx.catalog, v.LabelMatchers, staleMode)}
 
 	for _, suffix := range s.HistogramCompanionSuffixes() {
 		_, sourceColumn, ok := s.HistogramCompanionColumn("base" + suffix)
 		if !ok {
 			continue
 		}
-		inputs = append(inputs, buildRegexHistogramCompanionArm(s, ctx.catalog, names, scanMatchers, suffix, sourceColumn))
+		inputs = append(inputs, buildRegexHistogramCompanionArm(s, ctx.catalog, names, scanMatchers, suffix, sourceColumn, staleMode))
 	}
-	inputs = append(inputs, buildRegexHistogramBucketArm(s, ctx.catalog, names, scanMatchers, leMatchers))
+	inputs = append(inputs, buildRegexHistogramBucketArm(s, ctx.catalog, names, scanMatchers, leMatchers, staleMode))
 
 	// Exp-histogram companion arms (#1549 residue 1): same `_count`/`_sum`
 	// suffix set as the classic arms above, read from ExpHistogramTable
@@ -250,7 +254,7 @@ func lowerRegexHistogramSelector(v *parser.VectorSelector, s schema.Metrics, ctx
 			if !ok {
 				continue
 			}
-			inputs = append(inputs, buildRegexExpHistogramCompanionArm(s, ctx.catalog, names, scanMatchers, suffix, sourceColumn))
+			inputs = append(inputs, buildRegexExpHistogramCompanionArm(s, ctx.catalog, names, scanMatchers, suffix, sourceColumn, staleMode))
 		}
 
 		// info()'s second-argument selector (ctx.infoMetricSelector —
@@ -266,7 +270,7 @@ func lowerRegexHistogramSelector(v *parser.VectorSelector, s schema.Metrics, ctx
 		// info()'s join nor absent()'s row-count check ever reads one for
 		// real.
 		if ctx.infoMetricSelector || ctx.absencePresenceSelector {
-			inputs = append(inputs, buildRegexExpHistogramBareArm(s, ctx.catalog, v.LabelMatchers, s.CountColumn))
+			inputs = append(inputs, buildRegexExpHistogramBareArm(s, ctx.catalog, v.LabelMatchers, s.CountColumn, staleMode))
 		}
 	}
 

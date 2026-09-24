@@ -14,6 +14,12 @@
     variant_args: ['extrapolatedRateFunc']
   - query: '{{.extrapolatedRateFunc}}(demo_cpu_usage_seconds_total[{{.range}}])'
     variant_args: ['extrapolatedRateFunc', 'range']
+  # A stale marker inside a range window is no sample: no counter reset,
+  # no zero, and no value for last_over_time to return.
+  - query: '{{.extrapolatedRateFunc}}(demo_disappearing_requests_total[{{.range}}])'
+    variant_args: ['extrapolatedRateFunc', 'range']
+  - query: 'last_over_time(demo_disappearing_requests_total[{{.range}}])'
+    variant_args: ['range']
   - query: 'deriv(demo_disk_usage_bytes[{{.range}}])'
     variant_args: ['range']
   - query: 'predict_linear(demo_disk_usage_bytes[{{.range}}], 600)'
@@ -102,3 +108,6 @@
   - query: 'count_values("value", demo_api_request_duration_seconds_bucket)'
   - query: 'absent(demo_memory_usage_bytes)'
   - query: 'absent(nonexistent_metric_name)'
+  # absent() fires at a stale marker, while an earlier raw sample is still
+  # inside the lookback.
+  - query: 'absent(demo_disappearing_requests_total{instance="demo.promlabs.com:10001"})'

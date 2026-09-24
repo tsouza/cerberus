@@ -118,7 +118,8 @@ CREATE TABLE otel_metrics_gauge (
     ResourceAttributes Map(String, String) DEFAULT map(),
     ServiceName LowCardinality(String) DEFAULT '',
     TimeUnix DateTime64(9),
-    Value Float64
+    Value Float64,
+    Flags UInt32 DEFAULT 0
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix)
 `); err != nil {
 		t.Fatalf("create table: %v", err)

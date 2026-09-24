@@ -45,3 +45,8 @@
     variant_args: ['offset']
   # Test staleness handling.
   - query: demo_intermittent_metric
+  # A disappearing scrape target leaves a Prometheus stale marker, stored as
+  # an OTel NoRecordedValue point: the series ends at the marker, not when
+  # the lookback expires, and the marker is never a sample of its own.
+  - query: demo_disappearing_requests_total
+  - query: 'count(demo_disappearing_requests_total)'

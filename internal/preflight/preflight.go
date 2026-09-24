@@ -342,6 +342,17 @@ type Result struct {
 	// for both.
 	LogsAttrStrategies AttrStrategies
 
+	// StaleMarkerFlagsMissing names the metric tables that exist but lack
+	// the configured schema.Metrics.FlagsColumn; each also carries a
+	// warning.
+	StaleMarkerFlagsMissing []string
+	// StaleMarkerFlagsPresent reports that every metric table was
+	// introspected and carries FlagsColumn — the only finding on which
+	// ResolveStaleMarkerFlags lets the read path reference the column. An
+	// absent table, a table without the column, or a schema declaring none
+	// leaves it false.
+	StaleMarkerFlagsPresent bool
+
 	// TracesAttrStrategies is LogsAttrStrategies's traces counterpart —
 	// resolved by the SAME boot-probe detection (tableReq.jsonAttrMapCompat
 	// covers both logs and traces) and, since cerberus issue #3062, wired
@@ -473,7 +484,9 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 		return Result{DatabaseAbsent: true, DatabaseAbsentErr: dbAbsent}
 	}
 
-	schemaProblems, absent, schemaWarnings, jsonColsByTable, unreachable := checkSchema(ctx, q, req)
+	schemaProblems, absent, schemaWarnings, jsonColsByTable, flagsMissing, unreachable := checkSchema(ctx, q, req)
+	flagsPresent := req.Metrics.FlagsColumn != "" && req.effectiveSignals().Metrics &&
+		len(flagsMissing) == 0 && !anyMetricTableAbsent(req.Metrics, absent)
 	if unreachable != nil {
 		return Result{Unreachable: true, UnreachableErr: unreachable}
 	}
@@ -495,6 +508,9 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 		AbsentTables:         absent,
 		LogsAttrStrategies:   attrStrategiesFor(jsonColsByTable[req.Logs.LogsTable]),
 		TracesAttrStrategies: attrStrategiesFor(jsonColsByTable[req.Traces.SpansTable]),
+
+		StaleMarkerFlagsMissing: flagsMissing,
+		StaleMarkerFlagsPresent: flagsPresent,
 	}
 	if len(problems) == 0 {
 		return res
@@ -507,6 +523,28 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 	}
 	res.Fatal = fmt.Errorf("%s", b.String())
 	return res
+}
+
+// anyMetricTableAbsent reports whether absent names one of m's metric tables
+// that the Flags probe covers.
+func anyMetricTableAbsent(m schema.Metrics, absent []string) bool {
+	for _, t := range []string{m.GaugeTable, m.SumTable, m.HistogramTable, m.ExpHistogramTable} {
+		if t != "" && slices.Contains(absent, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveStaleMarkerFlags returns m with FlagsColumnProbed set to r's
+// StaleMarkerFlagsPresent. Stale markers are recognised only when every
+// table a metrics scan may cover — a merge()/UnionTables scan reads gauge
+// and sum together, and the histogram arms read the histogram tables —
+// was found carrying the column; on any other probe result, including a
+// Result that never probed, the read path references no Flags column.
+func (r Result) ResolveStaleMarkerFlags(m schema.Metrics) schema.Metrics {
+	m.FlagsColumnProbed = r.StaleMarkerFlagsPresent
+	return m
 }
 
 // isUnreachable reports whether err is a transport / connectivity failure
@@ -804,6 +842,13 @@ type tableReq struct {
 	// expects schema.NumericMaterializedAttributeColumnType
 	// (Nullable(Int32)) instead.
 	materializedColumns []materializedColumnCheck
+	// staleMarkerFlags names the metrics Flags column (schema.Metrics.
+	// FlagsColumn) this table is probed for, or "" for none. It is not a
+	// required column: a metric table without it boots, and
+	// Result.StaleMarkerFlagsMissing names the table so the caller can read
+	// every row as a sample instead of emitting SQL against a column the
+	// table lacks.
+	staleMarkerFlags string
 }
 
 // materializedColumnCheck pairs one materialized attribute column with
@@ -852,7 +897,8 @@ func requiredTables(req Requirements) []tableReq {
 		m := req.Metrics
 		// Gauge + Sum share the plain-sample shape: name, timestamp, value,
 		// service, and the two attribute maps. These are the columns the
-		// PromQL emitter projects for a Sample.
+		// PromQL emitter projects for a Sample. The Flags column is probed,
+		// not required: see tableReq.staleMarkerFlags.
 		for _, t := range []string{m.GaugeTable, m.SumTable} {
 			tables = append(tables, tableReq{
 				name: t,
@@ -860,7 +906,8 @@ func requiredTables(req Requirements) []tableReq {
 					m.MetricNameColumn, m.TimestampColumn, m.ValueColumn,
 					m.ServiceNameColumn, m.AttributesColumn, m.ResourceAttributesColumn,
 				),
-				attrMap: nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
+				staleMarkerFlags: m.FlagsColumn,
+				attrMap:          nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
 			})
 		}
 		// Histogram + exp-histogram carry the decomposed observation columns
@@ -873,7 +920,8 @@ func requiredTables(req Requirements) []tableReq {
 					m.MetricNameColumn, m.TimestampColumn, m.CountColumn, m.SumColumn,
 					m.AttributesColumn, m.ResourceAttributesColumn,
 				),
-				attrMap: nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
+				staleMarkerFlags: m.FlagsColumn,
+				attrMap:          nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
 			})
 		}
 	}
@@ -987,7 +1035,7 @@ func nonEmpty(vals ...string) []string {
 // entirely-absent table is transient (the schema race), so it lands in the
 // second value and is NOT a wrong-shape problem; a table that exists but has
 // the wrong columns is.
-func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, absent, warnings []string, jsonColsByTable map[string][]string, unreachable error) {
+func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, absent, warnings []string, jsonColsByTable map[string][]string, flagsMissing []string, unreachable error) {
 	seen := map[string]bool{}
 	jsonColsByTable = map[string][]string{}
 	for _, t := range requiredTables(req) {
@@ -995,15 +1043,18 @@ func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, ab
 			continue
 		}
 		seen[t.name] = true
-		probs, warns, jsonCols, isAbsent, unreach := checkTable(ctx, q, req.Database, t)
+		probs, warns, jsonCols, isAbsent, noFlags, unreach := checkTable(ctx, q, req.Database, t)
 		if unreach != nil {
 			// A transport failure mid-introspection means the server dropped
 			// (or never came up): abandon the shape gate and report unreachable
 			// so the caller waits rather than recording a half-introspected
 			// schema as wrong-shape.
-			return nil, nil, nil, nil, unreach
+			return nil, nil, nil, nil, nil, unreach
 		}
 		problems = append(problems, probs...)
+		if noFlags {
+			flagsMissing = append(flagsMissing, t.name)
+		}
 		warnings = append(warnings, warns...)
 		if isAbsent {
 			absent = append(absent, t.name)
@@ -1012,7 +1063,7 @@ func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, ab
 			jsonColsByTable[t.name] = append(jsonColsByTable[t.name], jsonCols...)
 		}
 	}
-	return problems, absent, warnings, jsonColsByTable, nil
+	return problems, absent, warnings, jsonColsByTable, flagsMissing, nil
 }
 
 // checkTable introspects one table via system.columns and validates its
@@ -1033,7 +1084,10 @@ func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, ab
 //     JSON-typed attribute map on a jsonAttrMapCompat table (logs/traces),
 //     which is a WARNING instead of a problem (cerberus issue #2777 phase 1
 //     boot-probe compat; see tableReq.jsonAttrMapCompat and isJSONAttrType).
-func checkTable(ctx context.Context, q Querier, database string, t tableReq) (problems, warnings, jsonCols []string, absent bool, unreachable error) {
+//
+// flagsMissing reports a table that exists without its t.staleMarkerFlags
+// column, and comes with a warning naming the consequence.
+func checkTable(ctx context.Context, q Querier, database string, t tableReq) (problems, warnings, jsonCols []string, absent, flagsMissing bool, unreachable error) {
 	sql, args := chsql.NewQuery().
 		Select(chsql.Col("name"), chsql.Col("type")).
 		From(chsql.Qual("system", "columns")).
@@ -1045,15 +1099,15 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 	rows, err := q.QueryNameTypePairs(ctx, sql, args...)
 	if err != nil {
 		if isUnreachable(err) {
-			return nil, nil, nil, false, err
+			return nil, nil, nil, false, false, err
 		}
-		return []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}, nil, nil, false, nil
+		return []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}, nil, nil, false, false, nil
 	}
 	if len(rows) == 0 {
 		// Entirely absent: the schema has not been provisioned yet. This is
 		// the transient startup race, not a misconfiguration — surface it as
 		// absent so the caller waits (NOT READY) rather than exiting.
-		return nil, nil, nil, true, nil
+		return nil, nil, nil, true, false, nil
 	}
 
 	types := make(map[string]string, len(rows))
@@ -1064,6 +1118,16 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 	for _, col := range t.columns {
 		if _, ok := types[col]; !ok {
 			problems = append(problems, fmt.Sprintf("table %s: missing required column %s", t.name, col))
+		}
+	}
+	if t.staleMarkerFlags != "" {
+		if _, ok := types[t.staleMarkerFlags]; !ok {
+			flagsMissing = true
+			warnings = append(warnings, fmt.Sprintf(
+				"table %s has no %s column: Prometheus stale markers (OTel NoRecordedValue points) "+
+					"cannot be recognised, so every metrics row is read as a sample",
+				t.name, t.staleMarkerFlags,
+			))
 		}
 	}
 	for _, col := range t.attrMap {
@@ -1124,7 +1188,7 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 			))
 		}
 	}
-	return problems, warnings, jsonCols, false, nil
+	return problems, warnings, jsonCols, false, flagsMissing, nil
 }
 
 // normalizeType canonicalises a ClickHouse type string for comparison:
