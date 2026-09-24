@@ -446,7 +446,7 @@ regex-jit-integration:
 # Benchmark emitted regex shapes with ClickHouse's regex compiler on and off. Needs Docker.
 regex-jit-bench:
     @just _pull-retry {{CH_REGEX_JIT_IMAGES}}
-    go test -timeout 170m -tags=integration -count=1 -run '^$' -bench RegexJIT -benchtime 3x ./test/regexjit/...
+    go test -timeout 90m -tags=integration -count=1 -run '^$' -bench RegexJIT -benchtime 3x ./test/regexjit/...
 
 # Run the strict-scan differential: execute the matrix-shaped spec golden
 # SQL corpus against a REAL ClickHouse (testcontainers-go) through the

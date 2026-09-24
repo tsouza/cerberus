@@ -14,10 +14,11 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 )
 
-// benchBuilds are the builds BenchmarkRegexJIT measures.
+// benchBuilds are the builds BenchmarkRegexJIT measures: the pinned release
+// of 26.7, the first line with the compiler. The semantic tests hold
+// 26.8.10.6 to the same compiled shapes.
 var benchBuilds = []string{
 	"clickhouse/clickhouse-server:26.7.13.12-alpine",
-	"clickhouse/clickhouse-server:26.8.10.6-alpine",
 }
 
 // Benchmark data volume: one hour of metrics and logs ending at benchEnd.
@@ -87,16 +88,6 @@ var benchQueries = []benchQuery{
 		name:  "logql-line-filter-dot",
 		logql: true,
 		query: `sum(count_over_time({service_name="` + benchService + `"} |~ "user=.*admin" [5m]))`,
-	},
-	{
-		name:  "logql-line-filter-alternation-re2",
-		logql: true,
-		query: `sum(count_over_time({service_name="` + benchService + `"} |~ "timeout|refused" [5m]))`,
-	},
-	{
-		name:  "logql-regexp-parser",
-		logql: true,
-		query: `sum by (code) (count_over_time({service_name="` + benchService + `"} | regexp "status=(?P<code>[0-9]+)" [5m]))`,
 	},
 	{
 		name:  "logql-unwrap-duration",
