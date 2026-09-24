@@ -38,6 +38,13 @@ import (
 //     already sums every child's read_rows/read_bytes (the server-initiator
 //     summarises all received and local values), so a child row is a
 //     fragment of work already accounted, never a query of its own.
+//   - query != the HTTP connection hello: clickhouse-go's HTTP transport
+//     opens a connection by running httpConnectionHelloQuery under the
+//     context of the query that needed the connection, so the server logs it
+//     as an initiator row carrying that dispatch's query_id and log_comment
+//     and one row read. It is the driver's, not the dispatch's; left in, it
+//     shares the dispatch's (hostname, query_id) and, finishing first, is the
+//     row LIMIT 1 BY would keep.
 //   - memory_usage is the initiator's own peak — the same quantity the packet
 //     path's MemoryTrackerPeakUsage ProfileEvent reports on the dispatching
 //     connection — never a sum across servers.
@@ -70,6 +77,7 @@ FROM system.query_log
 WHERE type = 'QueryFinish'
   AND is_initial_query = 1
   AND startsWith(log_comment, ?)
+  AND query != ?
   AND event_date >= toDate(toDateTime(?))
   AND event_time >= toDateTime(?)
   AND (toUnixTimestamp64Micro(event_time_microseconds), hostname, query_id) > (?, ?, ?)
@@ -83,6 +91,7 @@ FROM system.all_query_log
 WHERE type = 'QueryFinish'
   AND is_initial_query = 1
   AND startsWith(log_comment, ?)
+  AND query != ?
   AND event_date >= toDate(toDateTime(?))
   AND event_time >= toDateTime(?)
   AND (toUnixTimestamp64Micro(event_time_microseconds), hostname, query_id) > (?, ?, ?)
@@ -90,6 +99,12 @@ WHERE type = 'QueryFinish'
 ORDER BY event_time_microseconds, hostname, query_id
 LIMIT 1 BY hostname, query_id
 LIMIT ?`
+
+// httpConnectionHelloQuery is the statement clickhouse-go's HTTP transport
+// runs to open a connection (conn_http.go's queryHello), learning the server's
+// name, version, revision and timezone. test/querylog measures it in a real
+// server's log under a dispatch's query_id and log_comment.
+const httpConnectionHelloQuery = "SELECT displayName(), version(), revision(), timezone()"
 
 // ErrQueryLogUnionRefused wraps a server's refusal of the system.all_query_log
 // read as not provisioned (isQueryLogUnionRefusal): the table is absent (the
@@ -169,6 +184,7 @@ func (c *Client) QueryLogActuals(ctx context.Context, req QueryLogActualsRequest
 	rows, err := c.queryOpen(
 		ctx, sql,
 		req.ShapeIDPrefix,
+		httpConnectionHelloQuery,
 		afterSeconds, afterSeconds,
 		req.After.EventTime.UnixMicro(), req.After.Hostname, req.After.QueryID,
 		req.SettleDelay.Milliseconds(),

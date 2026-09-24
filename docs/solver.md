@@ -1013,7 +1013,9 @@ repeat.
 1. **Native-protocol packets** (`internal/chclient/progress.go`, the FAST
    path) — free, since the production deployment's driver already streams
    both `Progress` (rows/bytes) and `ProfileEvents` packets for every
-   query.
+   query. Over `CERBERUS_CH_PROTOCOL=http` the driver delivers neither, so
+   this path records nothing and claims nothing; the query log is the only
+   source.
    `MemoryTrackerPeakUsage`, a real ClickHouse `ProfileEvents` counter
    (verified against a live ClickHouse 26.6 server; not documented on
    ClickHouse's own reference, only in `system.query_log`'s column docs),
@@ -1036,20 +1038,35 @@ whether or not the operator separately opted into it.
 
 ### Query-log source
 
-**What it records.** Every dispatch this process arms for capture claims its
-ClickHouse `query_id` at dispatch (`Tracker.MarkPacketObserved`), and the
-packet path observes it on the dispatching connection — whichever server ran
-it, every shard of a `Distributed` read included, and whatever later happens
-to any server's log. The reconciler refuses every claimed id, so it records
-only:
+**What it records.** Over the native protocol every dispatch this process
+arms for capture claims its ClickHouse `query_id` at dispatch
+(`Tracker.MarkPacketObserved`), and the packet path observes it on the
+dispatching connection — whichever server ran it, every shard of a
+`Distributed` read included, and whatever later happens to any server's log.
+The reconciler refuses every claimed id, so it records only:
 
 - a query stamped without capture armed (`CERBERUS_LOG_COMMENT_SHAPE` on a
   dispatch path that never classified);
 - a query another process dispatched — another cerberus replica, or this
-  process before a restart, within the lookback.
+  process before a restart, within the lookback;
+- every query this process dispatched over HTTP, where the packet path neither
+  claims nor records.
+
+**Routed requests.** A route-B request runs K shard statements, each a
+top-level query with its own row carrying a fraction of the request's rows.
+Each shard's `query_id` is `<request>-shard-<i>-of-<K>` (a re-dispatch of the
+same shard appends `-<n>`), so the reconciler folds a request's K rows into one
+observation — rows and bytes summed, peak memory the maximum, the rule the
+packet path's own fold applies — and records it once all K are read. A second
+row for a shard adds nothing; a request with a shard that never finished is
+never recorded, and its partial fold is dropped once it leaves the lookback.
+If the packet path claimed any of its shards, the request is not recorded.
 
 **Record selection.** One row per physical query: `type = 'QueryFinish'`,
-`is_initial_query = 1`, one row per `(hostname, query_id)`. A `Distributed`
+`is_initial_query = 1`, one row per `(hostname, query_id)`, never the HTTP
+transport's connection hello (`SELECT displayName(), version(), revision(),
+timezone()`), which the driver runs under the `query_id` and `log_comment` of
+the dispatch that opened the connection. A `Distributed`
 read also logs a child row on every other server that ran a piece of it, with
 its own `query_id`, the propagated `log_comment` and only that piece's
 `read_rows`; the initiator's row already sums every child, so child rows are

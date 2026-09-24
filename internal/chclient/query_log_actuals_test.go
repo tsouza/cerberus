@@ -29,13 +29,14 @@ func TestQueryLogActualsSQL_DifferOnlyInTable(t *testing.T) {
 
 // TestQueryLogActualsSQL_SelectsInitiatorFinishRows pins the record-selection
 // predicates the accounting depends on: finished queries only, initiators
-// only (a remote child's row is a fragment of the initiator's totals), one
-// row per (hostname, query_id), a strict cursor over the total order and the
-// settle horizon.
+// only (a remote child's row is a fragment of the initiator's totals), never
+// the HTTP transport's connection hello, one row per (hostname, query_id), a
+// strict cursor over the total order and the settle horizon.
 func TestQueryLogActualsSQL_SelectsInitiatorFinishRows(t *testing.T) {
 	for _, want := range []string{
 		"type = 'QueryFinish'",
 		"is_initial_query = 1",
+		"query != ?",
 		"(toUnixTimestamp64Micro(event_time_microseconds), hostname, query_id) > (?, ?, ?)",
 		"event_time_microseconds <= now64(6) - toIntervalMillisecond(?)",
 		"ORDER BY event_time_microseconds, hostname, query_id",

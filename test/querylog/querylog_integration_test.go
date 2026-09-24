@@ -7,10 +7,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"maps"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/testcontainers/testcontainers-go/network"
 
 	"github.com/tsouza/cerberus/internal/actuals"
@@ -105,6 +108,9 @@ func TestFloorBuild(t *testing.T) {
 	t.Run("remote child rows are not queries", func(t *testing.T) { caseRemoteChildRowsAreNotQueries(ctx, t, rig) })
 	t.Run("local log misses after failover", func(t *testing.T) { caseLocalLogMissesAfterFailover(ctx, t, rig) })
 	t.Run("absent union falls back to local", func(t *testing.T) { caseUnionAbsentFallsBackToLocal(ctx, t, rig) })
+	t.Run("routed request is one observation in another process", func(t *testing.T) {
+		caseRoutedRequestIsOneObservationInAnotherProcess(ctx, t, rig, rig.a.admin, false)
+	})
 }
 
 // TestUnionBuildWithoutSection measures a union-capable build whose operator
@@ -125,6 +131,10 @@ func TestUnionBuild(t *testing.T) {
 	t.Run("union finds observations after failover", func(t *testing.T) { caseUnionFindsObservationsAfterFailover(ctx, t, rig) })
 	t.Run("union read pages stably", func(t *testing.T) { caseUnionReadPagesStably(ctx, t, rig) })
 	t.Run("union needs no cluster-wide grant", func(t *testing.T) { caseUnionNeedsNoClusterWideGrant(ctx, t, rig) })
+	t.Run("routed request is one observation in another process", func(t *testing.T) {
+		caseRoutedRequestIsOneObservationInAnotherProcess(ctx, t, rig, failoverClient(t, rig.b), true)
+	})
+	t.Run("http dispatches are observed from the query log", func(t *testing.T) { caseHTTPDispatchesObservedFromQueryLog(ctx, t, rig) })
 }
 
 // casePacketPathCoversRemoteShards: the native packet path records one
@@ -384,4 +394,140 @@ func randomSuffix(t *testing.T) string {
 		t.Fatalf("random suffix: %v", err)
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// statementRows is read_rows of every finished initiator row of shape in n's
+// own log whose statement is statement, keyed by query id.
+func (n *node) statementRows(ctx context.Context, t *testing.T, shape, statement string) map[string]uint64 {
+	t.Helper()
+	rows, err := n.admin.Conn().Query(ctx,
+		"SELECT query_id, read_rows FROM system.query_log WHERE type = 'QueryFinish' AND is_initial_query = 1 AND log_comment = ? AND query = ?",
+		shape, statement)
+	if err != nil {
+		t.Fatalf("%s: initiator rows of %s: %v", n.image, shape, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string]uint64)
+	for rows.Next() {
+		var id string
+		var readRows uint64
+		if err := rows.Scan(&id, &readRows); err != nil {
+			t.Fatalf("%s: scan: %v", n.image, err)
+		}
+		out[id] = readRows
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("%s: initiator rows of %s: %v", n.image, shape, err)
+	}
+	return out
+}
+
+// caseRoutedRequestIsOneObservationInAnotherProcess is the acceptance for
+// cerberus issue #3669. One tracker dispatches a routed request of
+// routedShards shard statements through the solver's executor on shard A;
+// each statement is a top-level query of its own in the log, carrying a
+// fraction of the request's rows. A second tracker — another process, which
+// holds no packet claim on those statements — reads the log through reader
+// and records at most one observation, whose rows are the request's total.
+func caseRoutedRequestIsOneObservationInAnotherProcess(ctx context.Context, t *testing.T, rig twoShardRig, reader *chclient.Client, union bool) {
+	w := newWorkload("routed")
+	shape := w.prefix + "routed"
+	dispatcher := actuals.NewTracker(actualsConfig())
+	ids := dispatchRouted(ctx, t, rig.a.admin, dispatcher, shape)
+	rig.a.flushLogs(ctx, t)
+	rig.b.flushLogs(ctx, t)
+
+	// The log holds one initiator row per shard statement, each a fraction of
+	// the request: exactly the rows a reader would record as routedShards
+	// whole queries without the request's identity.
+	logged := rig.a.statementRows(ctx, t, shape, routedShardSQL)
+	if len(logged) != routedShards {
+		t.Fatalf("shard A logged %d initiator rows for the routed request, want one per shard (%d): %v", len(logged), routedShards, logged)
+	}
+	var total uint64
+	for _, id := range ids {
+		readRows, ok := logged[id]
+		if !ok || readRows != shardRows {
+			t.Fatalf("shard statement %s logged read_rows %d (present %v), want %d", id, readRows, ok, shardRows)
+		}
+		total += readRows
+	}
+
+	if n, rows := observations(dispatcher, shape); n != 1 || uint64(rows) != total {
+		t.Fatalf("dispatching process, packet path: %d observations of %v rows, want 1 of %d", n, rows, total)
+	}
+
+	other := actuals.NewTracker(actualsConfig())
+	reconcile(ctx, t, reader, other, union, repeatPolls)
+	if n, rows := observations(other, shape); n != 1 || uint64(rows) != total {
+		t.Fatalf("another process reading the log: %d observations of %v rows, want 1 of the request's %d", n, rows, total)
+	}
+
+	reconcile(ctx, t, reader, dispatcher, union, repeatPolls)
+	if n, rows := observations(dispatcher, shape); n != 1 || uint64(rows) != total {
+		t.Fatalf("dispatching process after reading the log: %d observations of %v rows, want the packet path's 1 of %d", n, rows, total)
+	}
+}
+
+// caseHTTPDispatchesObservedFromQueryLog is the acceptance for cerberus issue
+// #3668. Over HTTP the server streams no progress packets, so the packet path
+// has nothing to observe: a single statement and a routed request dispatched
+// over HTTP with capture armed leave no packet observation and no claim, and
+// the same process's query-log reader records each once with the real
+// read_rows the log carries.
+func caseHTTPDispatchesObservedFromQueryLog(ctx context.Context, t *testing.T, rig twoShardRig) {
+	w := newWorkload("http")
+	single, routed := w.prefix+"single", w.prefix+"routed"
+	httpClient := newClient(t, chclient.Config{Addr: rig.a.httpAddr, Protocol: clickhouse.HTTP}, adminUser, adminPassword)
+	tracker := actuals.NewTracker(actualsConfig())
+	dispatch(ctx, t, httpClient, tracker, single, shardQuery)
+	dispatchRouted(ctx, t, httpClient, tracker, routed)
+	rig.a.flushLogs(ctx, t)
+
+	for _, shape := range []string{single, routed} {
+		if n, rows := observations(tracker, shape); n != 0 {
+			t.Fatalf("%s over HTTP: the packet path recorded %d observations of %v rows, want none — "+
+				"it has no progress packets to observe", shape, n, rows)
+		}
+	}
+
+	// The real totals the log carries — never zero: every statement scans the
+	// whole shard-local table.
+	singleStatement := rig.a.statementRows(ctx, t, single, shardQuery)
+	if len(singleStatement) != 1 {
+		t.Fatalf("the HTTP statement logged %d finished initiator rows, want 1", len(singleStatement))
+	}
+	var singleRows uint64
+	for _, readRows := range singleStatement {
+		singleRows = readRows
+	}
+	if singleRows < shardRows {
+		t.Fatalf("the HTTP statement logged read_rows %d, want at least the %d-row table it scans", singleRows, shardRows)
+	}
+	shardStatements := rig.a.statementRows(ctx, t, routed, routedShardSQL)
+	if len(shardStatements) != routedShards {
+		t.Fatalf("the HTTP routed request logged %d finished initiator rows, want one per shard (%d)", len(shardStatements), routedShards)
+	}
+	var routedRows uint64
+	for _, readRows := range shardStatements {
+		routedRows += readRows
+	}
+	// The HTTP transport opens a connection by running its hello under the
+	// dispatch's own query_id and log_comment, so the log holds a second
+	// finished initiator row with the statement's identity that is not the
+	// statement: the row the reader must not take for it.
+	if hello := rig.a.uint64Of(ctx, t,
+		"SELECT count() FROM system.query_log WHERE type = 'QueryFinish' AND is_initial_query = 1 AND log_comment = ? AND query != ? AND query_id IN (?)",
+		single, shardQuery, slices.Collect(maps.Keys(singleStatement))); hello == 0 {
+		t.Fatalf("the first statement over a fresh HTTP connection logged no connection hello under its identity")
+	}
+
+	reconcile(ctx, t, rig.a.admin, tracker, false, repeatPolls)
+	if n, rows := observations(tracker, single); n != 1 || uint64(rows) != singleRows {
+		t.Fatalf("HTTP statement after reading the log: %d observations of %v rows, want 1 of the logged %d", n, rows, singleRows)
+	}
+	if n, rows := observations(tracker, routed); n != 1 || uint64(rows) != routedRows {
+		t.Fatalf("HTTP routed request after reading the log: %d observations of %v rows, want 1 of the logged total %d",
+			n, rows, routedRows)
+	}
 }

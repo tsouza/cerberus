@@ -437,7 +437,7 @@ func TestQueryLogActualsReconciler_RouteBShardRowsDoNotDragTheEMA(t *testing.T) 
 	// The fan-out: K shard dispatches, then the fold's single summed record.
 	rows := make([]chclient.QueryLogActualRow, 0, k)
 	for i := range k {
-		id := "trace-span-shard-" + string(rune('a'+i))
+		id := chclient.ShardQueryID("trace-span-1", i, k)
 		tracker.MarkPacketObserved(id)
 		rows = append(rows, chclient.QueryLogActualRow{
 			Hostname: "ch-0", LogComment: shape, QueryID: id, ReadRows: shardRows,
@@ -463,5 +463,146 @@ func TestQueryLogActualsReconciler_RouteBShardRowsDoNotDragTheEMA(t *testing.T) 
 		t.Errorf("EMA rows = %v, want %d — %d per-shard samples dragged the whole-query row count toward total/K, "+
 			"which is the input the K clamp and per-rung admission read",
 			report.ActualEMARows, wholeQuery, k)
+	}
+}
+
+// routedRequestRows is the query-log rows of one routed request dispatched by
+// a process other than the reader's: k shard statements under request's
+// identity, each reading rowsPerShard rows, finishing a second apart.
+func routedRequestRows(shape, request string, k int, rowsPerShard uint64, start time.Time) []chclient.QueryLogActualRow {
+	rows := make([]chclient.QueryLogActualRow, 0, k)
+	for i := range k {
+		rows = append(rows, chclient.QueryLogActualRow{
+			Hostname: "ch-0", LogComment: shape, QueryID: chclient.ShardQueryID(request, i, k),
+			ReadRows: rowsPerShard, ReadBytes: 8 * rowsPerShard, MemoryUsage: uint64(i+1) * 100,
+			EventTime: start.Add(time.Duration(i) * time.Second),
+		})
+	}
+	return rows
+}
+
+// TestQueryLogActualsReconciler_FoldsAnotherProcessesRoutedRequest pins
+// cerberus issue #3669: a routed request another process dispatched carries
+// no packet claim in this one, so its k shard rows are all admissible. They
+// are one query and enter the tracker as one observation of the request's
+// total rows, not k observations of a fraction each. A route-A row read
+// between them is recorded on its own, as before.
+func TestQueryLogActualsReconciler_FoldsAnotherProcessesRoutedRequest(t *testing.T) {
+	const (
+		shape        = "cerb:agg;rw;routed-foreign"
+		plainShape   = "cerb:agg;rw;plain"
+		k            = 4
+		rowsPerShard = 250
+	)
+	rows := routedRequestRows(shape, "trace-span-9", k, rowsPerShard, testRowTime)
+	rows = append(rows, chclient.QueryLogActualRow{
+		Hostname: "ch-0", LogComment: plainShape, QueryID: "trace-span-10", ReadRows: 77,
+		EventTime: testRowTime.Add(1500 * time.Millisecond),
+	})
+	tracker := actuals.NewTracker(testActualsConfig())
+	r := newTestReconciler(&fakeQueryLog{local: sortedLog(rows...)}, tracker, nil, nil)
+
+	r.Poll(context.Background())
+	r.Poll(context.Background())
+
+	report, ok := tracker.Snapshot(shape)
+	if !ok || report.Observations != 1 || report.ActualEMARows != k*rowsPerShard {
+		t.Fatalf("routed request: %+v (ok=%v), want 1 observation of %d rows", report, ok, k*rowsPerShard)
+	}
+	if report.LastSource != actuals.SourceQueryLog {
+		t.Errorf("routed request recorded from %v, want %v", report.LastSource, actuals.SourceQueryLog)
+	}
+	if plain, ok := tracker.Snapshot(plainShape); !ok || plain.Observations != 1 || plain.ActualEMARows != 77 {
+		t.Fatalf("route-A row: %+v (ok=%v), want 1 observation of 77 rows", plain, ok)
+	}
+	if len(r.shardFolds) != 0 {
+		t.Errorf("%d partial folds left after the request completed, want 0", len(r.shardFolds))
+	}
+}
+
+// TestQueryLogActualsReconciler_FoldSpansPolls: a request's shard rows can
+// surface in the log across several polls (each shard finishes and flushes
+// on its own); the request is recorded when its last shard row is read.
+func TestQueryLogActualsReconciler_FoldSpansPolls(t *testing.T) {
+	const (
+		shape        = "cerb:agg;rw;routed-late"
+		k            = 3
+		rowsPerShard = 1000
+	)
+	rows := routedRequestRows(shape, "trace-span-11", k, rowsPerShard, testRowTime)
+	fake := &fakeQueryLog{local: sortedLog(rows[:k-1]...)}
+	tracker := actuals.NewTracker(testActualsConfig())
+	r := newTestReconciler(fake, tracker, nil, nil)
+
+	r.Poll(context.Background())
+	if report, ok := tracker.Snapshot(shape); ok {
+		t.Fatalf("recorded %+v with %d of %d shard rows read, want nothing until the request is whole", report, k-1, k)
+	}
+
+	fake.mu.Lock()
+	fake.local = sortedLog(rows...)
+	fake.mu.Unlock()
+	r.Poll(context.Background())
+	report, ok := tracker.Snapshot(shape)
+	if !ok || report.Observations != 1 || report.ActualEMARows != k*rowsPerShard {
+		t.Fatalf("after the last shard row: %+v (ok=%v), want 1 observation of %d rows", report, ok, k*rowsPerShard)
+	}
+}
+
+// TestQueryLogActualsReconciler_RedispatchedShardCountsOnce: a shard
+// statement re-dispatched under a fresh id (the columnar decode's row-path
+// fallback keeps the shard identity) logs a second row for the same shard.
+// The shard is folded in once, so the request's rows are not inflated.
+func TestQueryLogActualsReconciler_RedispatchedShardCountsOnce(t *testing.T) {
+	const (
+		shape        = "cerb:agg;rw;routed-redispatch"
+		k            = 2
+		rowsPerShard = 500
+	)
+	rows := routedRequestRows(shape, "trace-span-12", k, rowsPerShard, testRowTime)
+	redispatch := rows[0]
+	redispatch.QueryID = rows[0].QueryID + "-99"
+	redispatch.EventTime = testRowTime.Add(500 * time.Millisecond)
+	if parts, ok := chclient.ParseShardQueryID(redispatch.QueryID); !ok || parts.Index != 0 {
+		t.Fatalf("fixture: %q is not a re-dispatch of shard 0 (%+v, %v)", redispatch.QueryID, parts, ok)
+	}
+	tracker := actuals.NewTracker(testActualsConfig())
+	r := newTestReconciler(&fakeQueryLog{local: sortedLog(append(rows, redispatch)...)}, tracker, nil, nil)
+
+	r.Poll(context.Background())
+
+	report, ok := tracker.Snapshot(shape)
+	if !ok || report.Observations != 1 || report.ActualEMARows != k*rowsPerShard {
+		t.Fatalf("%+v (ok=%v), want 1 observation of %d rows", report, ok, k*rowsPerShard)
+	}
+}
+
+// TestQueryLogActualsReconciler_IncompleteRoutedRequestIsNeverRecorded: a
+// request one of whose shards never finished leaves k-1 rows. They are never
+// recorded — k-1 fragments are not the query — and the partial fold is
+// dropped once it ages out of the lookback, so it holds no memory forever.
+func TestQueryLogActualsReconciler_IncompleteRoutedRequestIsNeverRecorded(t *testing.T) {
+	const (
+		shape = "cerb:agg;rw;routed-failed"
+		k     = 4
+	)
+	rows := routedRequestRows(shape, "trace-span-13", k, 100, testRowTime)
+	tracker := actuals.NewTracker(testActualsConfig())
+	r := newTestReconciler(&fakeQueryLog{local: sortedLog(rows[:k-1]...)}, tracker, nil, nil)
+
+	r.Poll(context.Background())
+	if len(r.shardFolds) != 1 {
+		t.Fatalf("%d partial folds after reading %d of %d shard rows, want 1", len(r.shardFolds), k-1, k)
+	}
+
+	later := testNow.Add(testActualsConfig().QueryLogLookback)
+	r.now = func() time.Time { return later }
+	r.Poll(context.Background())
+
+	if report, ok := tracker.Snapshot(shape); ok {
+		t.Fatalf("recorded %+v from an incomplete routed request, want nothing", report)
+	}
+	if len(r.shardFolds) != 0 {
+		t.Fatalf("%d partial folds left once the request aged out of the lookback, want 0", len(r.shardFolds))
 	}
 }

@@ -4,7 +4,10 @@
 // system.query_log misses when a query ran on another server or before the
 // log rotated, which of them the native packet path already covers, and that
 // the system.all_query_log union finds the rest without accounting any
-// physical query twice.
+// physical query twice. It also measures that a routed request's shard
+// statements enter another process's tracker as one observation of the
+// request's total, and that a dispatch over the HTTP protocol, which streams
+// no progress packets, is observed from the query log with its real totals.
 //
 // Every test boots pinned clickhouse/clickhouse-server builds — the supported
 // floor and the first line carrying create_union_system_log_tables — under

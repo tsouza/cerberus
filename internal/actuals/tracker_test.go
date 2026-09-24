@@ -332,3 +332,24 @@ func TestPacketObservedClaimNilTracker(t *testing.T) {
 		t.Error("a nil Tracker refused a claim; the poller must be unaffected when actuals capture is off")
 	}
 }
+
+// TestActual_FoldShard pins the routed-request folding rule both folds share:
+// rows and bytes add across shards, peak memory takes the maximum, and the
+// zero Actual is the identity.
+func TestActual_FoldShard(t *testing.T) {
+	shards := []Actual{
+		{ReadRows: 250, ReadBytes: 2500, PeakMemory: 1_000},
+		{ReadRows: 300, ReadBytes: 3000, PeakMemory: 5_000},
+		{ReadRows: 200, ReadBytes: 2000, PeakMemory: 2_000},
+	}
+	var total Actual
+	for _, s := range shards {
+		total = total.FoldShard(s)
+	}
+	if want := (Actual{ReadRows: 750, ReadBytes: 7500, PeakMemory: 5_000}); total != want {
+		t.Fatalf("folded %+v, want %+v", total, want)
+	}
+	if one := (Actual{}).FoldShard(shards[1]); one != shards[1] {
+		t.Fatalf("folding one shard into the zero Actual gave %+v, want the shard's own %+v", one, shards[1])
+	}
+}

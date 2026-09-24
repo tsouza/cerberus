@@ -445,6 +445,11 @@ type Client struct {
 	conn driver.Conn
 	addr string // CH addr (host:port) — stamped on execute spans as server.address
 
+	// protocol is Config.Protocol: the wire protocol conn speaks. It decides
+	// whether a dispatch's actuals can be observed from the connection itself
+	// (deliversProgressPackets).
+	protocol clickhouse.Protocol
+
 	// br is the breaker the CH-touching methods on THIS view gate on. New
 	// sets it to an unscoped breaker; ForHead returns a shallow copy of the
 	// Client with br swapped for that head's registry entry. A pointer (not
@@ -830,6 +835,7 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 	c := &Client{
 		conn:                conn,
 		addr:                cfg.Addr,
+		protocol:            cfg.Protocol,
 		br:                  def,
 		breakers:            registry,
 		maxSamples:          cfg.MaxQuerySamples,
@@ -1049,8 +1055,18 @@ func (c *Client) queryContext(ctx context.Context) context.Context {
 	// the minted id and the capture intent, and every data-plane dispatch
 	// passes through it — route A's single statement and each of route B's K
 	// shard statements alike. Inert unless actuals capture is armed on ctx.
+	//
+	// A transport that streams no progress packets gives the packet path
+	// nothing to observe: it would record an observation of zero rows and zero
+	// memory, and its claim would make the poller refuse the query-log row
+	// that carries the real totals. There the packet path stands down for this
+	// dispatch — no claim, no observation — and the query log is its source.
 	if intent, ok := actualsIntentFromContext(ctx); ok {
-		intent.tracker.MarkPacketObserved(queryID)
+		if c.deliversProgressPackets() {
+			intent.tracker.MarkPacketObserved(queryID)
+		} else {
+			disarmPacketActuals(ctx)
+		}
 	}
 	ctx = hiddenDeadlineContext(ctx)
 	opts := make([]clickhouse.QueryOption, 0, 3)
@@ -1070,6 +1086,16 @@ func (c *Client) queryContext(ctx context.Context) context.Context {
 		opts = append(opts, clickhouse.WithQueryID(queryID))
 	}
 	return clickhouse.Context(ctx, opts...)
+}
+
+// deliversProgressPackets reports whether c's transport streams the Progress
+// and ProfileEvents packets the actuals packet path observes a dispatch
+// through (progress.go). The native protocol does; over HTTP clickhouse-go
+// delivers neither, so a dispatch's progress callback never fires and its
+// ProfileEvents callback never sees a peak — test/querylog measures both
+// against a real server.
+func (c *Client) deliversProgressPackets() bool {
+	return c.protocol == clickhouse.Native
 }
 
 // ensureQueryID returns the per-dispatch ClickHouse query_id for ctx,
@@ -1174,8 +1200,18 @@ func queryIDFromContext(ctx context.Context) string {
 // (the trace id stays a greppable prefix). When no valid trace is present the id
 // is minted with random trace/span components (mintQueryID), matching
 // ensureQueryID.
+//
+// A routed request's shard statement keeps its shard identity across the
+// re-key (ShardQueryIDParts.redispatchID): the fallback is still that shard of
+// that request, and a query-log reader folds the request's shard rows by that
+// identity (shard_query_id.go).
 func freshQueryID(ctx context.Context) (string, context.Context) {
-	id := mintQueryID(ctx)
+	var id string
+	if shard, ok := ParseShardQueryID(queryIDFromContext(ctx)); ok {
+		id = shard.redispatchID()
+	} else {
+		id = mintQueryID(ctx)
+	}
 	return id, withQueryID(ctx, id)
 }
 
