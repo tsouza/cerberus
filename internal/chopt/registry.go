@@ -18,8 +18,11 @@ const (
 
 	// FeatureConditionCache stamps use_query_condition_cache=1 on a
 	// predicate-stable read path when the server is >= 25.3. The query
-	// condition cache is result-equivalent (a cache), so it ships under auto
-	// for supporting servers; below 25.3 it is absent from the set (no-op).
+	// condition cache is a cache, so it ships under auto for supporting
+	// servers; below 25.3 it is absent from the set (no-op). Two upstream
+	// defects make the cache return WRONG RESULTS on most builds between 25.3
+	// and the 26.x backports — see conditionCacheUnsafeBuilds — so the feature
+	// is withheld there and the client forces the setting to 0.
 	FeatureConditionCache = "condition_cache"
 
 	// FeatureTSGridRange opts eligible rate(<counter>[<range>]) query_range
@@ -44,15 +47,15 @@ const (
 	// release whose window is Prometheus-equivalent.
 	//
 	// KNOWN DIVERGENCE, NOT REPAIRABLE HERE — a duplicate (series, timestamp)
-	// pair where one sample is NaN collapses inside ClickHouse's own builtin in
-	// an order-DEPENDENT way (cerberus issue #2798), unlike cerberus's own
-	// array-fold fan-out. An order-independent scan-side gate exists and is
-	// sound, but was measured (cerberus issue #2924) at a ~2.1-2.4x wall-clock
-	// tax on this exact path even under the best-case ORDER BY alignment, for
-	// no memory benefit — see chsql.nativeTSGridFn's own "Verdict on the
-	// scan-order gate" section for the full measurement. Not shipped, gated or
-	// not; the only remaining path is an upstream report, which needs
-	// authorization this repo has not given.
+	// pair where one sample is NaN collapses inside ClickHouse's own builtin:
+	// by scan order before ClickHouse #115920, and to the finite sample from
+	// 26.8.1.2041 on, while cerberus's array-fold fan-out elects the NaN on
+	// every build. An order-independent scan-side gate exists and is sound,
+	// but was measured (cerberus issue #2924) at a ~2.1-2.4x wall-clock tax on
+	// this exact path even under the best-case ORDER BY alignment, for no
+	// memory benefit — see chsql.nativeTSGridFn's own duplicate-timestamp and
+	// "Verdict on the scan-order gate" sections. Aligning the fan-out's rule
+	// with #115920's is https://github.com/tsouza/cerberus/issues/3648.
 	FeatureTSGridRange = "ts_grid_range"
 
 	// FeatureTSGridResample opts the eligible range-mode instant-vector
@@ -112,6 +115,11 @@ const (
 	// ClickHouse's own NaN handling inside the builtin: the posture lifts
 	// when a ClickHouse release fixes it, not on any cerberus-side change.
 	// Cerberus issue #1721 records the divergence and the reproduction.
+	// Re-measured on pinned builds: 26.7.1.1315 onward no longer overcounts
+	// a window whose earliest sample is NaN (a lone NaN counts 0, NaN then
+	// 40 counts 1, matching funcChanges), but 26.7.13.12 and 26.8.1.2041
+	// still count a NaN followed by a NaN as one change where funcChanges
+	// counts none, so the posture stands on every current build.
 	FeatureTSGridChanges = "ts_grid_changes"
 
 	// FeatureTSGridResets opts eligible resets(<counter>[<range>]) query_range
@@ -501,21 +509,15 @@ const (
 	//     bit pattern the closed-form arithmetic predicts.
 	//   - The doc's duplicate-timestamp "highest value wins, NaN loses
 	//     unless all NaN" rule matches for two real values. For a real-vs-NaN
-	//     duplicate pair it is ORDER-DEPENDENT: NaN loses when it is
-	//     inserted before the real sample, but WINS (propagates) when
-	//     inserted after — traced to ClickHouse's own greatest() being
-	//     asymmetric on NaN (greatest(nan, x) = x but greatest(x, nan) =
-	//     nan) and the aggregate's internal dedup folding pairwise in
-	//     encounter order. This is a genuine, reproducible divergence from
-	//     the documented contract, filed as
-	//     https://github.com/tsouza/cerberus/issues/2798 — but it is
-	//     FAMILY-WIDE, not delta-specific: the identical probe against the
-	//     already-shipped, auto-selected timeSeriesRateToGrid reproduces the
-	//     same order-dependence. It therefore does not single out delta()
-	//     for a different AutoSelect posture than its already-auto-selected
-	//     siblings; the narrow, pre-existing gap (a real sample and a NaN
-	//     sample sharing one series' exact timestamp) is tracked, not
-	//     hidden.
+	//     duplicate pair the builds before ClickHouse #115920 are
+	//     ORDER-DEPENDENT (the aggregate's internal dedup folds pairwise in
+	//     encounter order); from 26.8.1.2041 on the NaN loses in either
+	//     order. Either way the survivor is FAMILY-WIDE, not delta-specific:
+	//     the identical probe against the already-shipped, auto-selected
+	//     timeSeriesRateToGrid gives the same survivor on every build
+	//     (chsql.nativeTSGridFn's duplicate-timestamp section states the
+	//     per-build contract), so it does not single out delta() for a
+	//     different AutoSelect posture than its siblings.
 	//
 	// AutoSelect is true: the sweep found no delta-specific divergence from
 	// PromQL — the one real gap it surfaced is a pre-existing, family-wide
@@ -562,27 +564,25 @@ const (
 	//     trailing edge (anchor - staleness) is excluded, matching
 	//     FeatureTSGridRange's own left-open fix.
 	//   - The doc's duplicate-timestamp "highest value wins, NaN loses"
-	//     rule is order-dependent for a real-vs-NaN duplicate pair, the
-	//     family-wide gap cerberus tracks at
-	//     https://github.com/tsouza/cerberus/issues/2798. Re-measured
-	//     against a real ClickHouse at this feature's own 25.9 floor
-	//     (internal/chsql's
-	//     TestTSGridFamily_NaNDuplicateSurvivorIsOrderDependent_RealCH),
-	//     irate INVERTS the whole-window members' direction: the finite
-	//     sample survives when the NaN reaches the fold first, the NaN
-	//     survives when it reaches the fold second. Unlike rate/delta,
-	//     irate reduces every window to its trailing pair, so a
-	//     duplicate-timestamp trailing pair is not a rare edge of a summed
-	//     window but the whole answer.
+	//     rule holds for a real-vs-NaN duplicate pair only from ClickHouse
+	//     #115920 (26.8.1.2041) on. On the earlier builds (measured at this
+	//     feature's own 25.9 floor and on 26.7.13.12 by internal/chsql's
+	//     TestTSGridFamily_DuplicateSurvivor_RealCH) irate INVERTS the
+	//     whole-window members' scan order: the finite sample survives when
+	//     the NaN reaches the fold first, the NaN survives when it reaches
+	//     the fold second. Unlike rate/delta, irate reduces every window to
+	//     its trailing pair, so a duplicate-timestamp trailing pair is not a
+	//     rare edge of a summed window but the whole answer.
 	//   - The array-fold fan-out this feature displaces does NOT share that
 	//     exposure, and the asymmetry is real rather than a wash: the
 	//     pairs-shaped fan-out carries no dedup layer for a duplicate-ts
 	//     trailing pair, but arraySort orders Float64 totally with NaN
 	//     ranked greatest, so the pair it selects is a function of the
 	//     sample multiset alone. Switching irate to the native aggregate
-	//     therefore trades a deterministic answer for a scan-order-dependent
-	//     one on that shape. internal/chsql.dedupWindowPairsByTsFrag's doc
-	//     states the rule and names the tests that execute both sides.
+	//     therefore trades that answer for a scan-order-dependent one on the
+	//     builds before #115920, and for the opposite (finite) survivor
+	//     after it. internal/chsql.dedupWindowPairsByTsFrag's doc states the
+	//     rule and names the tests that execute both sides.
 	//
 	// AutoSelect is true, and the reason is exposure rather than harmlessness.
 	// The shape needed to reach the divergence is doubly degenerate — two
@@ -603,7 +603,7 @@ const (
 	// idelta(<gauge>[<range>]), mapping onto native
 	// timeSeriesInstantDeltaToGrid (internal/chsql.emitRangeWindowIDelta's
 	// native competitor). Same 25.9 floor, same lagInFrame-then-fan-out
-	// fallback chain, same family-wide #2798 duplicate-timestamp gap.
+	// fallback chain, same family-wide duplicate-timestamp survivor.
 	//
 	// The same cerberus issue #2746 sweep found idelta applies NO
 	// counter-reset correction: the identical strictly-decreasing trailing
@@ -890,21 +890,22 @@ const (
 	// NaN precondition (measured, the reason AutoSelect is false): the
 	// existing dedupWindowPairsByTsFrag idiom is deterministic on a
 	// duplicate-timestamp NaN — arraySort ranks NaN greatest, so it always
-	// survives the last-of-run keep, independent of insertion order (both
-	// orderings verified). timeSeriesGroupArray's own duplicate-timestamp
-	// collapse is a running "replace current-best only when candidate >
-	// current-best" fold: for finite values this converges to the same true
-	// max regardless of insertion order (also verified both orderings), but
-	// IEEE754 makes every comparison against NaN false, so a NaN landing
-	// FIRST at a duplicate timestamp can never be replaced, and a NaN
-	// landing after any non-NaN can never displace it — the surviving value
-	// depends on which row a (possibly multi-threaded, multi-part) scan
-	// visits first. That is not just a divergence from the fan-out's own
-	// NaN-always-wins rule, it is NON-DETERMINISTIC. This codebase already
-	// forced ts_grid_changes into AutoSelect: false for an analogous
-	// NaN-adjacent native/fan-out divergence (#1721); this feature follows
-	// the identical posture rather than risk a query whose answer can flip
-	// between two runs of the same data.
+	// survives the last-of-run keep, independent of insertion order.
+	// timeSeriesGroupArray's own collapse keeps the true max of finite
+	// duplicates in any order, but on a NaN-bearing duplicate it follows the
+	// family's per-build rule: before ClickHouse #115920 it is a running
+	// "replace current-best only when candidate > current-best" fold, so a
+	// NaN landing FIRST can never be replaced and a NaN landing after any
+	// non-NaN can never displace it — the survivor depends on which row a
+	// (possibly multi-threaded, multi-part) scan visits first; from
+	// 26.8.1.2041 on the NaN loses in either order. Swapping the assembly
+	// would therefore import into these sites either nondeterminism (older
+	// builds) or the finite survivor the fan-out's rule does not elect
+	// (current builds). This codebase already forced ts_grid_changes into
+	// AutoSelect: false for an analogous NaN-adjacent native/fan-out
+	// divergence (#1721); this feature follows the identical posture. Both
+	// the plain and the -If form are measured on every pinned build by
+	// internal/chsql's TestTSGridFamily_DuplicateSurvivor_RealCH.
 	//
 	// Shares the timeSeries*ToGrid family's registry gate
 	// (allow_experimental_time_series_aggregate_functions) and 25.9 floor —
@@ -2204,6 +2205,25 @@ const (
 	// applyExpHistogramTwoLevelBound for the predicate and for the shapes
 	// deliberately left outside it.
 	FeatureExpHistogramTwoLevel = "exp_histogram_two_level"
+
+	// FeatureQueryLogUnion points the query-actuals reconciler (internal/engine's
+	// QueryLogActualsReconciler, active only with
+	// CERBERUS_QUERY_ACTUALS_ENABLED=true) at system.all_query_log instead of
+	// the local system.query_log. That table exists only when the operator
+	// configured the server's <create_union_system_log_tables> section
+	// (ClickHouse 26.8+): with <merge_rotated_tables> it also covers the
+	// query_log_N tables a schema change rotates the log into, and with
+	// <cluster> it also covers every replica of that cluster, reached with the
+	// cluster's own interserver credentials. cerberus's user needs SELECT on
+	// system.all_query_log and nothing cluster-wide.
+	//
+	// Gated on a probe (chclient.ProbeQueryLogUnionCapability runs the
+	// reconciler's own record-selection query against the table), never on the
+	// version: a 26.8 server without the section has no such table, and a
+	// server with it may still deny the SELECT. Opt-in only — the operator
+	// provisions the server side — and never fatal when blocked, because the
+	// local log is a complete fallback for every row it can see.
+	FeatureQueryLogUnion = "query_log_union"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -2285,8 +2305,121 @@ type Feature struct {
 	// query-result-cache capability probe rather than assumed available just
 	// because the version floor is met — see the type doc above.
 	RequiresResultCacheCapability bool
-	Doc                           string
+	// RequiresQueryLogUnionCapability marks a feature (only query_log_union)
+	// gated on the query-log union probe. A block on this axis is never
+	// fatal, even for an explicit request under enforcing: the feature
+	// changes where an advisory observability source reads, the local
+	// system.query_log is its complete fallback, and a union table the
+	// server may drop and re-create at any time makes a definitive
+	// "forbidden" verdict meaningless at boot.
+	RequiresQueryLogUnionCapability bool
+	// UnsafeBuilds lists the ClickHouse builds on which the feature is known to
+	// return WRONG RESULTS even though the version floor is met — an upstream
+	// defect whose fix landed on each maintained release line at its own patch
+	// release. A server inside any range has the feature withheld from the
+	// resolved set (auto skips it with a WARN; an explicit request is refused
+	// under enforcing) and reported by KnownUnsafe, so a consumer whose
+	// server-side default would engage the same mechanism can switch it off
+	// explicitly instead of merely not asking for it.
+	UnsafeBuilds []BuildRange
+	Doc          string
 }
+
+// BuildRange is a half-open span [From, Until) of ClickHouse builds carrying
+// one known defect, with the upstream reference that documents it. Until is
+// the first RELEASED build of that line verified to carry the fix — a
+// published clickhouse/clickhouse-server tag the reproduction came back clean
+// on — or the first build of the next release line when the line never
+// received a backport.
+type BuildRange struct {
+	From   Version
+	Until  Version
+	Defect string
+}
+
+// Contains reports whether v falls inside the range. A Vendor build's patch
+// and build numbers are not upstream's, so it is judged by its release line
+// alone: it is inside the range whenever its line overlaps the range's lines.
+func (r BuildRange) Contains(v Version) bool {
+	if v.Vendor {
+		line := v.line()
+		if !line.AtLeast(r.From.line()) {
+			return false
+		}
+		if r.Until.Patch == 0 && r.Until.Build == 0 {
+			return !line.AtLeast(r.Until.line())
+		}
+		return !r.Until.line().Less(line)
+	}
+	return v.AtLeast(r.From) && !v.AtLeast(r.Until)
+}
+
+// unsafeRanges returns every UnsafeBuilds range containing server.
+func (f Feature) unsafeRanges(server Version) []BuildRange {
+	var out []BuildRange
+	for _, r := range f.UnsafeBuilds {
+		if r.Contains(server) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// KnownUnsafe reports whether server falls inside one of feature id's
+// UnsafeBuilds ranges. It is independent of any selection: a defect in the
+// server build exists whether or not the operator asked for the feature.
+func KnownUnsafe(id string, server Version) bool {
+	f, ok := featureByID(id)
+	return ok && len(f.unsafeRanges(server)) > 0
+}
+
+// conditionCacheUnsafeBuilds are the ClickHouse builds on which the query
+// condition cache silently drops rows from a later read. Both defects write a
+// "no granule matches" verdict under a predicate's cache key when something
+// OTHER than that predicate emptied the granule, and every later query with the
+// same predicate — from any user — skips those granules:
+//
+//   - ClickHouse#105686 (issue #104781): with use_skip_indexes_on_data_read (the
+//     default since 26.1) a skip index that dropped whole marks before PREWHERE
+//     had its verdict attributed to the PREWHERE predicate. Cerberus's own
+//     shapes trigger it: a TraceQL `{ resource.service.name = "x" && duration >
+//     100ms }` (PREWHERE Duration > ? WHERE ResourceAttributes[?] = ?, bloom
+//     index on the map values) poisons the cache for the next
+//     `{ duration > 100ms }`. Merged at 26.6.1.141 and backported to 26.5.2.12,
+//     26.4.4.15 and 26.3.13.13; 26.1 and 26.2 never received the fix.
+//   - ClickHouse#107145: a row policy (or on-the-fly mutation) that hid a
+//     granule had its verdict attributed to the PREWHERE predicate, so a
+//     restricted user's query poisons the cache for every other user — including
+//     cerberus's, whether or not cerberus's own user carries a policy. Present
+//     since the cache shipped in 25.3; merged at 26.6.1.1043 and backported to
+//     26.5.6.46, 26.4.5.134 and 26.3.17.50, never to a 25.x line.
+//
+// Each Until is the first published clickhouse/clickhouse-server release of
+// the line the cerberus-shaped reproduction came back clean on, which is
+// after the upstream backport build above; no release sits between the two.
+// The 26.6 ranges hold only pre-release builds: 26.6.1.1193, the line's first
+// release, already carries both fixes. test/chserver's condition-cache test
+// pins the last affected and first fixed release of the 26.3, 26.4 and 26.5
+// lines for the defect whose boundary each one bounds, plus the 25.3 floor and
+// 26.6.1.1193; the complete per-build survey is recorded in
+// docs/clickhouse-optimizations.background.md.
+var conditionCacheUnsafeBuilds = []BuildRange{
+	{From: Version{Major: 26, Minor: 1}, Until: Version{Major: 26, Minor: 3, Patch: 13, Build: 31}, Defect: conditionCacheSkipIndexDefect},
+	{From: Version{Major: 26, Minor: 4}, Until: Version{Major: 26, Minor: 4, Patch: 4, Build: 38}, Defect: conditionCacheSkipIndexDefect},
+	{From: Version{Major: 26, Minor: 5}, Until: Version{Major: 26, Minor: 5, Patch: 2, Build: 39}, Defect: conditionCacheSkipIndexDefect},
+	{From: Version{Major: 26, Minor: 6}, Until: Version{Major: 26, Minor: 6, Patch: 1, Build: 1193}, Defect: conditionCacheSkipIndexDefect},
+	{From: Version{Major: 25, Minor: 3}, Until: Version{Major: 26, Minor: 3, Patch: 17, Build: 56}, Defect: conditionCacheRowPolicyDefect},
+	{From: Version{Major: 26, Minor: 4}, Until: Version{Major: 26, Minor: 4, Patch: 5, Build: 143}, Defect: conditionCacheRowPolicyDefect},
+	{From: Version{Major: 26, Minor: 5}, Until: Version{Major: 26, Minor: 5, Patch: 6, Build: 64}, Defect: conditionCacheRowPolicyDefect},
+	{From: Version{Major: 26, Minor: 6}, Until: Version{Major: 26, Minor: 6, Patch: 1, Build: 1193}, Defect: conditionCacheRowPolicyDefect},
+}
+
+const (
+	// conditionCacheSkipIndexDefect names ClickHouse#105686.
+	conditionCacheSkipIndexDefect = "ClickHouse#105686: skip-index-dropped marks attributed to the PREWHERE predicate"
+	// conditionCacheRowPolicyDefect names ClickHouse#107145.
+	conditionCacheRowPolicyDefect = "ClickHouse#107145: row-policy-hidden marks attributed to the PREWHERE predicate"
+)
 
 // registry is the seeded feature table. It is value data (no init-time
 // mutation), so Registry can hand out a defensive copy and callers cannot
@@ -2300,11 +2433,12 @@ var registry = []Feature{
 		Doc:        "stamp optimize_aggregation_in_order=1 when the Aggregate GROUP BY is a sort-key prefix (result-equivalent)",
 	},
 	{
-		ID:         FeatureConditionCache,
-		MinVersion: Version{Major: 25, Minor: 3},
-		Stability:  Stable,
-		AutoSelect: true,
-		Doc:        "stamp use_query_condition_cache=1 on predicate-stable read paths (result-equivalent cache, server >= 25.3)",
+		ID:           FeatureConditionCache,
+		MinVersion:   Version{Major: 25, Minor: 3},
+		Stability:    Stable,
+		AutoSelect:   true,
+		UnsafeBuilds: conditionCacheUnsafeBuilds,
+		Doc:          "stamp use_query_condition_cache=1 on predicate-stable read paths (result-equivalent cache, server >= 25.3 outside the known wrong-result builds)",
 	},
 	{
 		ID:                         FeatureTSGridRange,
@@ -2470,7 +2604,7 @@ var registry = []Feature{
 		Stability:                  Experimental,
 		AutoSelect:                 false,
 		RequiresExperimentalTSGrid: true,
-		Doc:                        "swap groupArray+arraySort(+dedup) window assembly for native timeSeriesGroupArray at sites that already dedup (server >= 25.9, opt-in — native collapse is order-dependent on a NaN duplicate, so auto never picks it)",
+		Doc:                        "swap groupArray+arraySort(+dedup) window assembly for native timeSeriesGroupArray at sites that already dedup (server >= 25.9, opt-in — on a NaN duplicate the native collapse elects another sample than the fan-out dedup, so auto never picks it)",
 	},
 	{
 		ID:         FeatureMapBucketedSerialization,
@@ -2635,6 +2769,15 @@ var registry = []Feature{
 			"converts to its two-level table at once instead of feeding the array stages one whole-state block " +
 			"(result-equivalent, no version floor, measured 157 -> 27 MiB at 21 anchors and 383 -> 53 MiB at 61 -- #3247)",
 	},
+	{
+		ID:                              FeatureQueryLogUnion,
+		MinVersion:                      AlwaysAvailable,
+		Stability:                       Experimental,
+		AutoSelect:                      false,
+		RequiresQueryLogUnionCapability: true,
+		Doc: "read query actuals from system.all_query_log (rotated query_log tables and cluster replicas) instead of the local system.query_log " +
+			"(opt-in, probe-gated on the server's create_union_system_log_tables section and SELECT grant, falls back to the local log when blocked)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -2649,7 +2792,8 @@ var registry = []Feature{
 // trace_id_bitmap_filter, arg_and_max_fusion, result_cache,
 // lazy_materialization, explain_estimate, cardinality_probe,
 // full_text_index, text_index_line_filter, trace_id_external_table,
-// ts_tag_groups, ts_throw_duplicate_series_if, exp_histogram_two_level).
+// ts_tag_groups, ts_throw_duplicate_series_if, exp_histogram_two_level,
+// query_log_union).
 // The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the

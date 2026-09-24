@@ -1535,7 +1535,7 @@ func lagAdjacencyEligible(rw *chplan.RangeWindow) bool {
 // -1.5); idelta applies NO correction (the identical pair returned the raw
 // -90). See internal/chsql.nativeTSGridFn's own "irate"/"idelta" entries for
 // the full sweep, including the duplicate-timestamp / window-membership
-// findings and the pre-existing #2798 gap they reproduce.
+// findings and the family-wide duplicate-timestamp survivor they reproduce.
 
 // NativeIrateLowerer is the boot-wired IrateLowerer that emits the native
 // timeSeriesInstantRateToGrid lowering (a chplan.RangeWindowGridNative with

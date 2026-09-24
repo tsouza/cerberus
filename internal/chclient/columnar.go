@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ClickHouse/ch-go"
@@ -296,23 +297,38 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	rec := recorderFromContext(ctx)
 
 	pe := &profileEventAccumulator{}
+	// answered records that the server sent any packet for this statement —
+	// a result block, a progress update, or profile events — so the release
+	// below knows the statement reached ClickHouse and a cancellation has
+	// server-side work to kill (dispatchRelease).
+	var answered atomic.Bool
 	q := ch.Query{
-		Body:            body,
-		QueryID:         queryID,
-		Result:          dec.results.Auto(),
-		Settings:        chSettings(c.querySettings(ctx)),
-		OnResult:        dec.onResult,
-		OnProfileEvents: pe.observe,
-	}
-	if rec != nil {
-		q.OnProgress = progressBridge(rec)
+		Body:     body,
+		QueryID:  queryID,
+		Result:   dec.results.Auto(),
+		Settings: chSettings(c.querySettings(ctx)),
+		OnResult: func(ctx context.Context, b chproto.Block) error {
+			answered.Store(true)
+			return dec.onResult(ctx, b)
+		},
+		OnProfileEvents: func(ctx context.Context, events []ch.ProfileEvent) error {
+			answered.Store(true)
+			return pe.observe(ctx, events)
+		},
+		OnProgress: func(ctx context.Context, p chproto.Progress) error {
+			answered.Store(true)
+			if rec != nil {
+				return progressBridge(rec)(ctx, p)
+			}
+			return nil
+		},
 	}
 
 	runErr := pool.Do(ctx, q)
 	// pool.Do is synchronous — the ClickHouse-side statement is fully done
 	// (answered, errored, or mismatched-shape) the instant it returns, so the
 	// fan-out weight releases here unconditionally, before any branch below.
-	release()
+	release(answered.Load())
 	// Record the open-call outcome against the breaker exactly once — the same
 	// contract the row path keeps: a shape-mismatch (matrixMismatchErr) or a
 	// budget rejection is NOT a CH failure, a transport/server error is.

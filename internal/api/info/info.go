@@ -63,7 +63,8 @@ type Snapshot struct {
 // watching an upgrade the one thing they must not be told: that nothing changed.
 type OptState struct {
 	// ServerVersion is the ClickHouse server version the selection resolved
-	// against, as "<major>.<minor>".
+	// against: the full "<major>.<minor>.<patch>.<build>" build the server
+	// reports, or "<major>.<minor>" for the fallback floor (chopt.Version.String).
 	ServerVersion string
 	// ServerVersionSource is [ServerVersionSourceProbe] when the version was
 	// read live, or [ServerVersionSourceFallback] when the probe failed and the

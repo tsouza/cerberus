@@ -149,6 +149,17 @@ budget cerberus could choose would have saved it. See
 [`observability.md`](observability.md) for how the three outcomes decompose
 overall connection churn.
 
+A dispatch whose context was cancelled after its statement reached ClickHouse
+— the request deadline passing, the client disconnecting, a routed sibling
+being cancelled, or a teardown budget expiring — also issues
+`KILL QUERY WHERE query_id = ? SYNC` for its own `query_id` before its
+connection and admission are released, and waits up to 5 seconds for
+ClickHouse to confirm the statement stopped. A dispatch cancelled while it was
+still waiting for a pooled connection or a dial never reached the server and
+issues no kill. How promptly the server honours the kill depends on its build:
+see
+[Cancellation of CPU-bound expressions](clickhouse-optimizations.md#cancellation-of-cpu-bound-expressions).
+
 The routed (multi-shard) path applies the same contract one level up: the
 composed cursor signals its producers to STOP STREAMING, each producer tears
 down its own cursor on its own live query context, and cancelling the shared
@@ -338,6 +349,56 @@ the SQL array machinery leaves at high cardinality. See
 See [`operations.background.md`](operations.background.md) for the dual-emit
 parity validation behind this path and the divergence bound its test enforces.
 
+### Upgrading ClickHouse under the native time-series aggregates
+
+The native `timeSeries*ToGrid` aggregates behind the `ts_grid_*` features
+version their partial-aggregation state, and the version changes between
+minor releases:
+
+| ClickHouse builds                                                         | State format |
+| ------------------------------------------------------------------------- | ------------ |
+| 25.9 through 26.6 (25.9.7.56, 25.10.7.6, 26.3.33.24, 26.5.7.64, 26.6.8.7) | 2            |
+| 26.7 (26.7.1.1315 through 26.7.13.12)                                     | 3            |
+| 26.8 (26.8.1.2041 through 26.8.10.6)                                      | 4            |
+
+Two servers on different formats refuse each other's state with
+`INCORRECT_DATA` (code 117). Patch builds inside one minor read each other's
+state.
+
+- **Rolling upgrades need no cerberus change.** Cerberus never ships a
+  partial state between servers. The emitter refuses to render a native
+  aggregate at a query level that reads a table directly, so a `Distributed`
+  table returns rows and the whole aggregation runs on the server cerberus's
+  connection lands on. Every native query also pins
+  `allow_experimental_parallel_reading_from_replicas = 0`, which overrides a
+  server profile that turns parallel replicas on — the one mechanism that
+  ships states through a subquery. A multi-shard or replicated deployment can
+  upgrade its servers in any order, across either boundary or both at once,
+  with the native path on throughout. `just ts-grid-state-format-integration`
+  proves this on two-shard clusters for every step of such an upgrade, in both
+  initiator directions and under the `Distributed` settings a profile can
+  change, and on a mixed-version replica pair with parallel replicas on in
+  the server profile.
+- **A profile that forbids the parallel-replicas pin disables the native
+  path.** The capability probe stamps the same settings as a native query, so
+  a constrained or readonly profile that refuses
+  `allow_experimental_parallel_reading_from_replicas` keeps every `ts_grid_*`
+  feature on the fan-out.
+- **The persisted downsample tier crosses every version.** Its
+  `timeSeriesLastTwoSamples` state has the same format on 25.9 through
+  26.8.1.2041: parts written before an upgrade read and merge after it, and
+  replicas on different versions exchange parts.
+- **Queries outside cerberus can break mid-rollout.** A hand-written query or
+  dashboard that calls a `timeSeries*ToGrid` aggregate directly over a
+  `Distributed` table makes the shards ship states, and fails with
+  `INCORRECT_DATA` while the participants straddle a format change. Wrap the
+  `Distributed` read in a subquery, or finish the rollout.
+- **One answer changes at 26.8.1.2041.** A NaN-versus-finite duplicate
+  `(series, timestamp)` answers from the finite sample on the native path
+  from 26.8.1.2041 on, and by row order before it; while a rollout is mixed,
+  the answer follows the version of the server cerberus's connection lands
+  on. See [`compatibility.md`](compatibility.md) for the exact shape.
+
 ### Recursive-CTE parallelism — recommend ClickHouse ≥ 26.6 for trace structure
 
 The TraceQL structural operators (`>>`, `&>>`, the Explore-Traces structure tab)
@@ -352,6 +413,37 @@ holds on every floor; 26.6 only makes the bounded recursion *faster*. There is
 no correctness floor here (the SQL is 24.8-safe), so it stays a **recommendation,
 not a requirement**: trace-heavy deployments leaning on the structure tab should
 prefer 26.6+, everyone else is unaffected.
+
+### ClickHouse builds with a defective query condition cache
+
+Most builds from 25.3 up to the 26.x backports return wrong results through
+ClickHouse's query condition cache; the exact ranges are under
+[Known-defective server builds](clickhouse-optimizations.md#known-defective-server-builds).
+On those builds cerberus withholds the `condition_cache` optimization and sends
+`use_query_condition_cache=0` on every query. Upgrade to a fixed build
+(`26.3.17.56`, `26.4.5.143`, `26.5.6.64`, or any 26.6 release or later) to get
+the cache back.
+
+**Breaking change:** an explicit `condition_cache` in
+`CERBERUS_CH_OPTIMIZATIONS` under the default `enforcing` mode now **fails
+boot** on every 25.x build and on the affected 26.x builds, where it used to
+enable the cache. Drop `condition_cache` from the list (keep `auto`), switch to
+`CERBERUS_CH_OPTIMIZATIONS_MODE=permissive` to have it skipped with a warning,
+or upgrade ClickHouse.
+
+The override is decided across every node cerberus can reach: each configured
+ClickHouse address and, when `CERBERUS_SCHEMA_CLUSTER` is set, every replica of
+that cluster. Any one of them on an affected build keeps the override on for
+all queries; it is lifted only once every one of them answers from a fixed
+build. A replica hidden behind a load balancer that neither setting names is
+seen only when a probe lands on it, so list every address or set the cluster
+when builds can differ across nodes.
+
+A server reporting a non-upstream version string (a vendor suffix such as
+`.altinitystable`, or an extra version field) is judged by its `major.minor`
+line alone, because its build numbers do not follow upstream's: a vendor build
+on any line an affected range touches is treated as affected, and cerberus logs
+a warning at boot.
 
 ### ClickHouse 26.5 — known-defective line
 

@@ -181,7 +181,7 @@ func mountedConsumers(t *testing.T, enabledHeads string) chOptConsumers {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	heads, err := mountAPIHeads(ctx, http.NewServeMux(), lazyClient(t), cfg, chopt.EnabledSet{},
+	heads, err := mountAPIHeads(ctx, http.NewServeMux(), lazyClient(t), cfg, chopt.EnabledSet{}, nil,
 		limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, preflightAttrStrategies{})
 	if err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
@@ -231,7 +231,7 @@ func TestReprobeCHOptimizations_SwapsWhenTheAnswerChanges(t *testing.T) {
 	go func() {
 		defer close(done)
 		reprobeCHOptimizations(ctx, quietLogger(), cfg, live,
-			chOptConsumers{engines: []*engine.Engine{e}}, time.Millisecond, "")
+			chOptConsumers{engines: []*engine.Engine{e}}, time.Millisecond, "", probeVersionOverBootstrap)
 	}()
 
 	deadline := time.Now().Add(20 * time.Second)
@@ -266,7 +266,7 @@ func TestReprobeCHOptimizations_StopsOnContextCancel(t *testing.T) {
 	go func() {
 		defer close(done)
 		reprobeCHOptimizations(ctx, quietLogger(), config.Config{}, newCHOptLive(chOptResolution{}),
-			chOptConsumers{}, time.Hour, "")
+			chOptConsumers{}, time.Hour, "", probeVersionOverBootstrap)
 	}()
 
 	select {

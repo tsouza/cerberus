@@ -65,6 +65,35 @@ CH_QUANTILE_PROM_HISTOGRAM_IMAGE := "clickhouse/clickhouse-server:25.10-alpine"
 # the test source.
 CH_TAG_GROUPS_IMAGE := "clickhouse/clickhouse-server:26.2-alpine"
 
+# CH_QUERY_LOG_IMAGES are the exact builds test/querylog's real-server
+# evidence pins: the supported floor (versions.yaml min_clickhouse), and the
+# first line whose server maintains system.all_query_log. Exact tags, because
+# each case asserts what that specific build does.
+CH_QUERY_LOG_IMAGES := "clickhouse/clickhouse-server:24.8.14.39-alpine clickhouse/clickhouse-server:26.8.10.6-alpine"
+
+# The native timeSeries*ToGrid aggregate-state format boundary
+# (internal/chsql's TestTSGridStateFormatBoundary_Distributed_RealCH and the
+# duplicate-timestamp survivor pins). Exact builds, because each stands for a
+# measured fact about that build rather than a minor line: 26.6.8.7 writes
+# state format 2; 26.7.1.1315 (the first 26.7 release) and 26.7.13.12 write
+# format 3 and still collapse a NaN-bearing duplicate timestamp by scan order;
+# 26.8.1.2041 (the first 26.8 release) writes format 4 and carries ClickHouse
+# #115920's greatest-value-wins, NaN-loses rule.
+# TestIntegrationImagePinsMatchTheJustfile holds these against the literals in
+# the test sources.
+CH_TS_STATE_V2_IMAGE := "clickhouse/clickhouse-server:26.6.8.7-alpine"
+CH_TS_STATE_V3_FIRST_IMAGE := "clickhouse/clickhouse-server:26.7.1.1315-alpine"
+CH_TS_STATE_V3_IMAGE := "clickhouse/clickhouse-server:26.7.13.12-alpine"
+CH_TS_STATE_V4_IMAGE := "clickhouse/clickhouse-server:26.8.1.2041-alpine"
+
+# CH_SERVER_SAFETY_IMAGES are the exact builds test/chserver's real-server
+# probes pin, beyond CH_HISTOGRAM_REPORT_IMAGE (26.6.1.1193, which they share):
+# the condition cache's supported floor and the last-affected / first-fixed
+# releases of every backported line, and the releases whose functions first
+# honour cancellation mid-call. Exact tags rather than floating ones, because
+# each probe asserts what that specific build does.
+CH_SERVER_SAFETY_IMAGES := "clickhouse/clickhouse-server:25.3.14.14-alpine clickhouse/clickhouse-server:26.3.12.3-alpine clickhouse/clickhouse-server:26.3.13.31-alpine clickhouse/clickhouse-server:26.3.17.4-alpine clickhouse/clickhouse-server:26.3.17.56-alpine clickhouse/clickhouse-server:26.4.3.37-alpine clickhouse/clickhouse-server:26.4.4.38-alpine clickhouse/clickhouse-server:26.4.5.143-alpine clickhouse/clickhouse-server:26.5.1.882-alpine clickhouse/clickhouse-server:26.5.2.39-alpine clickhouse/clickhouse-server:26.5.5.8-alpine clickhouse/clickhouse-server:26.5.6.64-alpine clickhouse/clickhouse-server:26.7.13.12-alpine clickhouse/clickhouse-server:26.8.10.6-alpine"
+
 # Exact production-report replay image. Kept separate from CH_STRICT_SCAN_IMAGE
 # because the captured incident records the full patch version it ran against.
 CH_HISTOGRAM_REPORT_IMAGE := "clickhouse/clickhouse-server:26.6.1.1193-alpine"

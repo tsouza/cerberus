@@ -206,6 +206,7 @@ func TestConfigDocsPreambleDefaultsMatchBinary(t *testing.T) {
 	assertDocumented(t, doc, "CERBERUS_QUERY_ACTUALS_ENTRY_TTL", ac.EntryTTL)
 	assertDocumented(t, doc, "CERBERUS_QUERY_ACTUALS_QUERY_LOG_POLL_INTERVAL", ac.QueryLogPollInterval)
 	assertDocumented(t, doc, "CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK", ac.QueryLogLookback)
+	assertDocumented(t, doc, "CERBERUS_QUERY_ACTUALS_QUERY_LOG_SETTLE_DELAY", ac.QueryLogSettleDelay)
 
 	pb := promql.DefaultResourceBounds()
 	assertDocumented(t, doc, "CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS", pb.HistogramMergeMaxCostUnits)

@@ -25,6 +25,7 @@ func TestConfigFromEnv_Overrides(t *testing.T) {
 	t.Setenv(EnvEntryTTL, "10m")
 	t.Setenv(EnvQueryLogPollInterval, "30s")
 	t.Setenv(EnvQueryLogLookback, "2m")
+	t.Setenv(EnvQueryLogSettleDelay, "20s")
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
@@ -33,7 +34,7 @@ func TestConfigFromEnv_Overrides(t *testing.T) {
 	if !cfg.Enabled || cfg.DriftLowerRatio != 0.05 || cfg.DriftUpperRatio != 5 ||
 		cfg.MinObservations != 3 || cfg.EMAAlpha != 0.5 ||
 		cfg.EntryTTL.String() != "10m0s" || cfg.QueryLogPollInterval.String() != "30s" ||
-		cfg.QueryLogLookback.String() != "2m0s" {
+		cfg.QueryLogLookback.String() != "2m0s" || cfg.QueryLogSettleDelay.String() != "20s" {
 		t.Fatalf("unexpected config from overrides: %+v", cfg)
 	}
 	if err := cfg.Validate(); err != nil {
