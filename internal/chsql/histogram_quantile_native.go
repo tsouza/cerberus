@@ -186,11 +186,7 @@
 // than the fixed upper edge.
 package chsql
 
-import (
-	"fmt"
-
-	"github.com/tsouza/cerberus/internal/chplan"
-)
+import "github.com/tsouza/cerberus/internal/chplan"
 
 const (
 	hqQuantileBucketsColumn        = "_cerb_hq_buckets"
@@ -229,6 +225,12 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		{chplan.HistogramFieldCount, &resolved.CountColumn, false},
 		{chplan.HistogramFieldSum, &resolved.SumColumn, false},
 		{chplan.HistogramFieldScale, &resolved.ScaleColumn, false},
+		// ZeroThreshold is the one optional field: the upstream OTel-CH
+		// exp-histogram DDL does not persist the OTLP zero_threshold field, so
+		// the default schema leaves it empty and the value fragment renders a
+		// constant 0 zero-bucket width instead (see writeZt in
+		// histogramQuantileNativeValueFrag). Every other field resolves to a
+		// named child column or rejects the plan here.
 		{chplan.HistogramFieldZeroThreshold, &resolved.ZeroThresholdColumn, true},
 		{chplan.HistogramFieldZeroCount, &resolved.ZeroCountColumn, false},
 		{chplan.HistogramFieldPositiveOffset, &resolved.PositiveOffsetColumn, false},
@@ -244,20 +246,6 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		*requirement.target = column
 	}
 	h = &resolved
-	if h.Input == nil {
-		return fmt.Errorf("%w: HistogramQuantileNative.Input is nil", ErrUnsupported)
-	}
-	// ZeroThresholdColumn is intentionally NOT required: the upstream
-	// OTel-CH exp-histogram DDL does not persist the OTLP
-	// zero_threshold field, so the default schema leaves it empty and
-	// the value fragment renders a constant 0 zero-bucket width
-	// instead (see writeZt in histogramQuantileNativeValueFrag).
-	if h.PositiveBucketCountsColumn == "" || h.PositiveOffsetColumn == "" ||
-		h.ScaleColumn == "" || h.ZeroCountColumn == "" ||
-		h.NegativeOffsetColumn == "" || h.NegativeBucketCountsColumn == "" ||
-		h.CountColumn == "" || h.SumColumn == "" {
-		return fmt.Errorf("%w: HistogramQuantileNative requires Scale / ZeroCount / PositiveOffset / PositiveBucketCounts / NegativeOffset / NegativeBucketCounts / Count / Sum column names", ErrUnsupported)
-	}
 	sub, err := e.subqueryFrag(h.Input)
 	if err != nil {
 		return err
