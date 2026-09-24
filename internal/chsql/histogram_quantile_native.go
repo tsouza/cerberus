@@ -311,14 +311,19 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 	sb := NewQuery().From(materializeHistogramInput(sub, row))
 	for i, g := range h.GroupBy {
 		expr := g
-		alias := ""
-		if i < len(h.GroupByAliases) {
-			alias = h.GroupByAliases[i]
-		}
-		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
+		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, hqNativeGroupAlias(h, i))
 	}
 	sb.SelectAs(value, "Value")
 	return e.emitSelect(sb)
+}
+
+// hqNativeGroupAlias is the output alias of GroupBy entry i, or "" when the
+// node carries fewer aliases than keys and the entry renders bare.
+func hqNativeGroupAlias(h *chplan.HistogramQuantileNative, i int) string {
+	if i < len(h.GroupByAliases) {
+		return h.GroupByAliases[i]
+	}
+	return ""
 }
 
 // hqNativeInputKey is one output key of the inlined quantile SELECT: the
@@ -349,9 +354,9 @@ func hqNativeInlineUnpack(h *chplan.HistogramQuantileNative, row chplan.Schema) 
 		if !ok {
 			return nil, nil, false
 		}
-		alias := ref.Name
-		if i < len(h.GroupByAliases) && h.GroupByAliases[i] != "" {
-			alias = h.GroupByAliases[i]
+		alias := hqNativeGroupAlias(h, i)
+		if alias == "" {
+			alias = ref.Name
 		}
 		keys = append(keys, hqNativeInputKey{index: index, alias: alias})
 	}
