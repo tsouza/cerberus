@@ -37,8 +37,55 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Dependabot builds its titles from the dependency, both versions, the
+  # directory and the group name, and nothing bounds their length, so a title
+  # can put the squash subject `pr-body` lints over `header-max-length`
+  # (#3647). This job shortens such a title before `pr-body` reads it; the
+  # rewrite rule is in dependabot-pr-title.mjs.
+  #
+  # It runs here, ahead of `pr-body` in the same run, because nothing else can
+  # get the repaired title linted: an edit made with GITHUB_TOKEN starts no
+  # workflow run that proceeds without a manual approval, and a
+  # Dependabot-triggered run sees no Actions secrets, so no personal token is
+  # available for an edit that would.
+  #
+  # `pull-requests: write` is granted to this job alone, which runs only for
+  # Dependabot's own pull requests. It checks out the BASE commit's scripts,
+  # without persisted credentials, so the code holding the write token is
+  # never the pull request's. The title is read from the REST API inside the
+  # script and never interpolated into a shell line.
+  dependabot-title:
+    name: dependabot title
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Shorten a title whose landing subject is over the limit
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/dependabot-pr-title.mjs
+
   pr-body:
     name: pr-body
+    # Waits for the title repair so it lints the repaired title. `!cancelled()`
+    # keeps this required check running when that job is skipped (every
+    # non-Dependabot pull request and every other event) or fails: a failed
+    # repair must leave `pr-body` red on the original title, never skipped.
+    needs: dependabot-title
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -90,7 +137,9 @@ jobs:
 
       - name: Guard the squash-subject gate logic
         if: github.event_name == 'pull_request'
-        run: node --test .github/scripts/commitlint-pr-title.test.mjs
+        run: |
+          node --test .github/scripts/commitlint-pr-title.test.mjs
+          node --test .github/scripts/dependabot-pr-title.test.mjs
 
       # PR_TITLE is attacker-controlled, so it is passed via env and read by the
       # script — never interpolated into a shell `run:` line, exactly as PR_BODY

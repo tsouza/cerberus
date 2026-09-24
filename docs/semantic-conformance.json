@@ -1298,6 +1298,18 @@
         "id": "compatibility.promql-surface"
       },
       {
+        "lane_id": "schema.clickhouse-upgrade",
+        "context_name": "clickhouse-upgrade",
+        "merge_required": false,
+        "release_required": false,
+        "binding_ids": [
+          "BINDING-SIGNAL-ADMISSION-LOGQL-WIRING",
+          "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
+          "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE"
+        ],
+        "id": "schema.clickhouse-upgrade"
+      },
+      {
         "lane_id": "e2e.bwc-minio",
         "context_name": "bwc-minio (",
         "merge_required": false,
@@ -11272,6 +11284,12 @@
               "context_name": "coverage",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "schema.clickhouse-upgrade",
+              "context_name": "clickhouse-upgrade",
+              "merge_required": false,
+              "release_required": false
             }
           ]
         },
@@ -11550,6 +11568,12 @@
               "context_name": "coverage",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "schema.clickhouse-upgrade",
+              "context_name": "clickhouse-upgrade",
+              "merge_required": false,
+              "release_required": false
             }
           ]
         },
@@ -11686,6 +11710,12 @@
               "context_name": "coverage",
               "merge_required": true,
               "release_required": true
+            },
+            {
+              "lane_id": "schema.clickhouse-upgrade",
+              "context_name": "clickhouse-upgrade",
+              "merge_required": false,
+              "release_required": false
             }
           ]
         },

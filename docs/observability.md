@@ -550,6 +550,59 @@ disable individual signals with the three `CERBERUS_OTLP_*_ENABLED` switches.
 When trace export is disabled, otelhttp middleware still wraps the mux but its
 spans are silently dropped.
 
+## ClickHouse asynchronous metrics
+
+The quickstart collector (`test/e2e/otel-collector/compose-config.yaml`,
+receiver `sqlquery/clickhouse`) exports every row of the monitored server's
+`system.asynchronous_metrics` as the gauge `clickhouse_async_metric`. The
+series identity depends only on the row's shape, never on the server version:
+
+| Row shape | Series                                                  | Example                           |
+| --------- | ------------------------------------------------------- | --------------------------------- |
+| Scalar    | `clickhouse_async_metric{name="<metric>"}`              | `{name="LoadAverage1"}`           |
+| Key-value | `clickhouse_async_metric{name="<family>", key="<key>"}` | `{name="OSUserTimeCPU", key="3"}` |
+
+`key` is the map key ClickHouse publishes in the `key_values` column: the CPU
+core number, the block device, the network interface, the disk name, and so on.
+A scalar series never carries `key`. Every exported value is finite; the NaN a
+key-value row carries in its own `value` column is never exported.
+
+Which rows carry which shape is the server's decision, set by its
+`asynchronous_metrics_key_values_mode`:
+
+| Server                                  | Per-core / per-device readings are exported as                         |
+| --------------------------------------- | ---------------------------------------------------------------------- |
+| before 26.8                             | scalar series, the key folded into the name: `{name="OSUserTimeCPU3"}` |
+| 26.8+, `legacy_names`                   | scalar series, the key folded into the name: `{name="OSUserTimeCPU3"}` |
+| 26.8+, `key_values` (the 26.8 default)  | key-value series: `{name="OSUserTimeCPU", key="3"}`                    |
+| 26.8+, `both`                           | key-value series only; the server's legacy duplicates are dropped      |
+
+One collector configuration serves every row of this table: neither query names
+the `key_values` column, so a server without it answers both.
+
+### Migrating dashboards across the 26.8 upgrade
+
+1. Before upgrading the monitored server, find the queries that select a legacy
+   per-key name: `name=~"OSUserTimeCPU.*"`, `name="BlockReadBytes_sda"`,
+   `name="NetworkReceiveBytes_eth0"`, `name="DiskTotal_default"`, and so on.
+   The `max by (name)` panel in `clickhouse.json` reads scalar metrics only and
+   needs no change.
+2. To keep those queries answering while they are rewritten, set
+   `asynchronous_metrics_key_values_mode: legacy_names` on the server before
+   the upgrade. The collector then exports exactly the pre-26.8 series.
+3. Rewrite each query against the family and the key:
+   `sum by (key) (clickhouse_async_metric{name="OSUserTimeCPU"})`,
+   `clickhouse_async_metric{name="BlockReadBytes", key="sda"}`.
+4. Remove the server setting once no query selects a legacy name. ClickHouse
+   re-reads it on every metrics update, so `SYSTEM RELOAD CONFIG` applies it
+   without a restart.
+
+`both` is safe to leave on for other consumers of the server's metrics (its
+Prometheus endpoint, Graphite): the collector exports each reading once, so no
+aggregate over this collector's series counts a reading twice. A history that
+spans the upgrade holds legacy per-key series up to the switch and key-value
+series after it.
+
 ---
 
 For the rationale behind these choices — alternatives considered, incidents,

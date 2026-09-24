@@ -86,6 +86,11 @@ export const mirroredImages = [
   // test/querylog's exact builds (CH_QUERY_LOG_IMAGES): the supported floor
   // and the first line maintaining system.all_query_log.
   'clickhouse/clickhouse-server:24.8.14.39-alpine',
+  // The clickhouse-upgrade lane's exact builds (CH_UPGRADE_FLOOR_IMAGE,
+  // CH_UPGRADE_TARGET_IMAGE, CH_TEXT_INDEX_V0_READER_IMAGE, CH_PRE_KEYED_IMAGES).
+  'clickhouse/clickhouse-server:25.3.14.14-alpine',
+  'clickhouse/clickhouse-server:26.5.7.64-alpine',
+  'clickhouse/clickhouse-server:26.6.8.7-alpine',
   'clickhouse/clickhouse-server:26.8.10.6-alpine',
 
   // Reference backends the three heads are diffed against, plus the reference
