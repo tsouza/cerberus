@@ -267,84 +267,15 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 
 	// Native quantile interpolation reuses the bucket walk, cumulative
 	// counts, stop index, value index, and the first/last populated-bucket
-	// positions many times. Keep each one in its own typed derived-query
-	// stage so ClickHouse evaluates it once per row. Expanding those
-	// expressions at every use pushed the CH 24.8 compatibility floor past
-	// its request deadline on shifting native histograms even though the
-	// result stayed correct — and, worse, left firstPopulated/lastPopulated
-	// (each an arrayFirstIndex/arrayLastIndex walk over the full bucket
-	// array) re-derived at every one of their four use sites in
-	// histogramQuantileNativeValueFrag instead of once: those two walks
-	// were the only ones in this function NOT yet materialized this way,
-	// so disabling ClickHouse's own CSE fold for this plan shape (to fix
-	// the CH 24.8 timeout above) left their cost unbounded by row count on
-	// a real high-cardinality histogram, independent of that setting — the
-	// production memory-limit regression this materialization fixes.
-	rawW := newHQNativeWriters(h, hqNativeHelperColumns{})
-	bucketed := NewQuery().
-		Select(Star(), As(rawW.buckets(), hqQuantileBucketsColumn)).
-		From(sub)
-	cumW := newHQNativeWriters(h, hqNativeHelperColumns{
-		buckets: hqQuantileBucketsColumn,
-	})
-	cumulated := NewQuery().
-		Select(Star(), As(cumW.cum(), hqQuantileCumColumn)).
-		From(Subquery(bucketed))
-	// The top-down running count is materialized only for a plan that can
-	// actually reach the backward arm. A literal phi below reverseWalkPhi
-	// resolves to the forward arm at emit time (see armSelect), so
-	// projecting revCum there would be a second full array walk per row
-	// that nothing reads.
-	if reachesReverseArm(h) {
-		cumulated.Select(As(cumW.revCum(), hqQuantileRevCumColumn))
-	}
-	idxW := newHQNativeWriters(h, hqNativeHelperColumns{
-		buckets: hqQuantileBucketsColumn,
-		cum:     hqQuantileCumColumn,
-		revCum:  hqQuantileRevCumColumn,
-	})
-	indexed := NewQuery().
-		Select(Star(), As(idxW.idx(), hqQuantileIdxColumn)).
-		From(Subquery(cumulated))
-	countW := newHQNativeWriters(h, hqNativeHelperColumns{
-		buckets: hqQuantileBucketsColumn,
-		cum:     hqQuantileCumColumn,
-		revCum:  hqQuantileRevCumColumn,
-		idx:     hqQuantileIdxColumn,
-	})
-	counted := NewQuery().
-		Select(Star(), As(countW.runningCount(), hqQuantileRunningCountColumn)).
-		From(Subquery(indexed))
-	valueIdxW := newHQNativeWriters(h, hqNativeHelperColumns{
-		buckets:      hqQuantileBucketsColumn,
-		cum:          hqQuantileCumColumn,
-		revCum:       hqQuantileRevCumColumn,
-		idx:          hqQuantileIdxColumn,
-		runningCount: hqQuantileRunningCountColumn,
-	})
-	withValueIdx := NewQuery().
-		Select(Star(), As(valueIdxW.valueIdx(), hqQuantileValueIdxColumn)).
-		From(Subquery(counted))
-	popW := newHQNativeWriters(h, hqNativeHelperColumns{
-		buckets: hqQuantileBucketsColumn,
-	})
-	withPopulated := NewQuery().
-		Select(Star(),
-			As(popW.firstPopulated(), hqQuantileFirstPopulatedColumn),
-			As(popW.lastPopulated(), hqQuantileLastPopulatedColumn)).
-		From(Subquery(withValueIdx))
-	helpers := hqNativeHelperColumns{
-		buckets:        hqQuantileBucketsColumn,
-		cum:            hqQuantileCumColumn,
-		revCum:         hqQuantileRevCumColumn,
-		idx:            hqQuantileIdxColumn,
-		runningCount:   hqQuantileRunningCountColumn,
-		valueIdx:       hqQuantileValueIdxColumn,
-		firstPopulated: hqQuantileFirstPopulatedColumn,
-		lastPopulated:  hqQuantileLastPopulatedColumn,
-	}
-
-	sb := NewQuery().From(Subquery(withPopulated))
+	// positions many times. Each is bound ONCE per row as a lambda
+	// parameter (see hqNativeLet) rather than expanded at every use site:
+	// expansion pushed the CH 24.8 compatibility floor past its request
+	// deadline and re-derived the firstPopulated/lastPopulated array walks
+	// at each of their four use sites. The bindings live inside a single
+	// SELECT instead of one derived-query stage per helper because every
+	// extra nesting level makes ClickHouse's query analysis re-walk the
+	// whole subtree beneath it — see hqNativeLet.
+	sb := NewQuery().From(sub)
 	for i, g := range h.GroupBy {
 		expr := g
 		alias := ""
@@ -353,8 +284,84 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 		}
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
-	sb.SelectAs(histogramQuantileNativeValueFrag(h, helpers), "Value")
+	sb.SelectAs(hqNativeBindPrepared(h, reachesReverseArm(h), func(prepared hqNativeHelperColumns) Frag {
+		idxW := newHQNativeWriters(h, prepared)
+		return hqNativeLet([]hqNativeBinding{{hqQuantileIdxColumn, idxW.idx()}}, func() Frag {
+			indexed := prepared
+			indexed.idx = hqQuantileIdxColumn
+			stopW := newHQNativeWriters(h, indexed)
+			return hqNativeLet([]hqNativeBinding{
+				{hqQuantileRunningCountColumn, stopW.runningCount()},
+				{hqQuantileValueIdxColumn, stopW.valueIdx()},
+			}, func() Frag {
+				helpers := indexed
+				helpers.runningCount = hqQuantileRunningCountColumn
+				helpers.valueIdx = hqQuantileValueIdxColumn
+				return histogramQuantileNativeValueFrag(h, helpers)
+			})
+		})
+	}), "Value")
 	return e.emitSelect(sb)
+}
+
+// hqNativeBinding is one lambda parameter of an [hqNativeLet]: the name the
+// body reads and the per-row value bound to it.
+type hqNativeBinding struct {
+	name  string
+	value Frag
+}
+
+// hqNativeLet renders `arrayMap((<name>, …) -> <body>, [<value>], …)[1]`.
+// ClickHouse has no `let`; binding each value as the parameter of a lambda
+// mapped over a one-element array evaluates it once per row and lets the
+// body read it by name any number of times. The alternative — one
+// `SELECT *, <value> AS <name> FROM (…)` stage per helper — is equivalent
+// at execution time but not at analysis time: ClickHouse's query analysis
+// re-walks a derived query's whole subtree for every level above it, so
+// each stage stacked over the (large) folded-histogram input added a
+// fraction of that input's own analysis cost to every request.
+func hqNativeLet(bindings []hqNativeBinding, body func() Frag) Frag {
+	params := make([]string, len(bindings))
+	args := make([]Frag, 0, len(bindings)+1)
+	args = append(args, nil)
+	for i, binding := range bindings {
+		params[i] = binding.name
+		args = append(args, Array(binding.value))
+	}
+	bodyFrag := body()
+	args[0] = func(b *Builder) { b.Lambda(params, bodyFrag) }
+	return Subscript(Call("arrayMap", args...), InlineLit(1))
+}
+
+// hqNativeBindPrepared binds the phi-independent per-row walk arrays every
+// native quantile reads — the concatenated bucket walk, its forward (and,
+// when reachable, reverse) running counts, and the first/last populated
+// positions — then renders body with helper columns naming those bindings.
+func hqNativeBindPrepared(h *chplan.HistogramQuantileNative, needsReverse bool, body func(hqNativeHelperColumns) Frag) Frag {
+	raw := newHQNativeWriters(h, hqNativeHelperColumns{})
+	return hqNativeLet([]hqNativeBinding{{hqQuantileBucketsColumn, raw.buckets()}}, func() Frag {
+		bucketed := hqNativeHelperColumns{buckets: hqQuantileBucketsColumn}
+		w := newHQNativeWriters(h, bucketed)
+		bindings := []hqNativeBinding{
+			{hqQuantileCumColumn, w.cum()},
+			{hqQuantileFirstPopulatedColumn, w.firstPopulated()},
+			{hqQuantileLastPopulatedColumn, w.lastPopulated()},
+		}
+		prepared := bucketed
+		prepared.cum = hqQuantileCumColumn
+		prepared.firstPopulated = hqQuantileFirstPopulatedColumn
+		prepared.lastPopulated = hqQuantileLastPopulatedColumn
+		// The top-down running count is bound only for a plan that can
+		// actually reach the backward arm. A literal phi below
+		// reverseWalkPhi resolves to the forward arm at emit time (see
+		// armSelect), so binding revCum there would be a second full array
+		// walk per row that nothing reads.
+		if needsReverse {
+			bindings = append(bindings, hqNativeBinding{hqQuantileRevCumColumn, w.revCum()})
+			prepared.revCum = hqQuantileRevCumColumn
+		}
+		return hqNativeLet(bindings, func() Frag { return body(prepared) })
+	})
 }
 
 // histogramQuantileNativeValueFrag returns the Frag rendering the
