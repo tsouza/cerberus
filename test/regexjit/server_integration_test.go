@@ -4,11 +4,13 @@ package regexjit
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,12 +53,47 @@ const (
 
 // otherJITSettings are the server's other native-code compilers. They share
 // the compiled-expression cache the regular-expression compiler reports its
-// entries through, so an eligibility probe switches them off to attribute
-// every entry to a regular expression.
+// entries through, so a server whose compiled entries must all be regular
+// expressions has them off in the default profile — for every query it runs,
+// including any a handler issues outside the request under test.
 var otherJITSettings = []string{
 	"compile_expressions",
 	"compile_aggregate_expressions",
 	"compile_sort_description",
+}
+
+// otherJITOffProfile switches otherJITSettings off in the server's default
+// profile.
+func otherJITOffProfile() testcontainers.ContainerCustomizer {
+	var b strings.Builder
+	b.WriteString("<clickhouse><profiles><default>")
+	for _, name := range otherJITSettings {
+		fmt.Fprintf(&b, "<%s>0</%s>", name, name)
+	}
+	b.WriteString("</default></profiles></clickhouse>")
+	return testcontainers.WithFiles(testcontainers.ContainerFile{
+		Reader:            strings.NewReader(b.String()),
+		ContainerFilePath: "/etc/clickhouse-server/users.d/regexjit-other-jit-off.xml",
+		FileMode:          configFileMode,
+	})
+}
+
+// configFileMode is the permission bits of a configuration file copied into
+// the container: readable by the server's own user.
+const configFileMode = 0o644
+
+// requireOtherJITOff fails unless every setting in otherJITSettings reads 0.
+func (s *server) requireOtherJITOff(ctx context.Context, t testing.TB) {
+	t.Helper()
+	for _, name := range otherJITSettings {
+		var v string
+		if err := s.admin.Conn().QueryRow(ctx, "SELECT value FROM system.settings WHERE name = ?", name).Scan(&v); err != nil {
+			t.Fatalf("%s: read %s: %v", s.image, name, err)
+		}
+		if v != "0" {
+			t.Fatalf("%s: %s = %s in the default profile; want 0", s.image, name, v)
+		}
+	}
 }
 
 // compiledCacheMetric counts the entries in the server's cache of compiled
@@ -104,13 +141,13 @@ func (s *server) modeCtx(ctx context.Context, mode jitMode) context.Context {
 
 // startServer boots image under the package's CPU and memory limits and
 // applies cerberus's metrics and logs DDL to it.
-func startServer(ctx context.Context, t testing.TB, image string) *server {
+// extra customizes the container further.
+func startServer(ctx context.Context, t testing.TB, image string, extra ...testcontainers.ContainerCustomizer) *server {
 	t.Helper()
 	bootCtx, cancel := context.WithTimeout(ctx, serverBootBudget)
 	defer cancel()
 
-	ctr, err := tcclickhouse.Run(
-		bootCtx, image,
+	opts := append([]testcontainers.ContainerCustomizer{
 		tcclickhouse.WithUsername(adminUser),
 		tcclickhouse.WithPassword(adminPassword),
 		tcclickhouse.WithDatabase(serverDB),
@@ -118,7 +155,8 @@ func startServer(ctx context.Context, t testing.TB, image string) *server {
 			hc.NanoCPUs = serverNanoCPUs
 			hc.Memory = serverMemoryBytes
 		}),
-	)
+	}, extra...)
+	ctr, err := tcclickhouse.Run(bootCtx, image, opts...)
 	if err != nil {
 		t.Fatalf("start %s: %v", image, err)
 	}
@@ -171,16 +209,47 @@ func (s *server) exec(ctx context.Context, t testing.TB, stmt string, args ...an
 	}
 }
 
-// dropCompiled empties the compiled-code cache and the regular-expression
-// compiler's per-pattern use counts, so the next request starts cold.
+// dropCompiled waits until the server runs no other query, then empties the
+// compiled-code cache and the regular-expression compiler's per-pattern use
+// counts, so the next request starts cold and nothing an earlier request left
+// running can compile into the cache after the drop.
 func (s *server) dropCompiled(ctx context.Context, t testing.TB) {
 	t.Helper()
+	s.awaitIdle(ctx, t)
 	s.exec(ctx, t, "SYSTEM DROP COMPILED EXPRESSION CACHE")
 }
 
-// compiledEntries reads how many compiled functions the server holds.
+// idleBudget bounds how long awaitIdle waits for other queries to finish,
+// and idlePoll how often it looks.
+const (
+	idleBudget = time.Minute
+	idlePoll   = 50 * time.Millisecond
+)
+
+// awaitIdle waits until system.processes lists no query but its own.
+func (s *server) awaitIdle(ctx context.Context, t testing.TB) {
+	t.Helper()
+	deadline := time.Now().Add(idleBudget)
+	for {
+		var n uint64
+		if err := s.admin.Conn().QueryRow(ctx, "SELECT count() FROM system.processes WHERE query_id != queryID()").Scan(&n); err != nil {
+			t.Fatalf("%s: read system.processes: %v", s.image, err)
+		}
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: %d queries still running after %s", s.image, n, idleBudget)
+		}
+		time.Sleep(idlePoll)
+	}
+}
+
+// compiledEntries reads how many compiled functions the server holds once
+// every query in flight has finished.
 func (s *server) compiledEntries(ctx context.Context, t testing.TB) int64 {
 	t.Helper()
+	s.awaitIdle(ctx, t)
 	var n int64
 	if err := s.admin.Conn().QueryRow(ctx, "SELECT toInt64(value) FROM system.metrics WHERE metric = ?", compiledCacheMetric).Scan(&n); err != nil {
 		t.Fatalf("%s: read %s: %v", s.image, compiledCacheMetric, err)
@@ -210,14 +279,6 @@ func withMode(ctx context.Context, mode jitMode) context.Context {
 	case jitNow:
 		ctx = chclient.WithQuerySetting(ctx, settingCompileRegexp, 1)
 		return chclient.WithQuerySetting(ctx, settingMinCountRegexp, minCountCompileNow)
-	}
-	return ctx
-}
-
-// withOtherJITOff switches off the server's other native-code compilers.
-func withOtherJITOff(ctx context.Context) context.Context {
-	for _, name := range otherJITSettings {
-		ctx = chclient.WithQuerySetting(ctx, name, 0)
 	}
 	return ctx
 }

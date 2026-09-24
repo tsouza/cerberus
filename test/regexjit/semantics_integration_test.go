@@ -163,7 +163,8 @@ func TestRegexJIT_EmittedShapesMatchReference(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 			defer cancel()
-			s := startServer(ctx, t, image)
+			s := startServer(ctx, t, image, otherJITOffProfile())
+			s.requireOtherJITOff(ctx, t)
 			seedSemanticProbe(ctx, t, s)
 			h := newHandlers(s.client(t))
 
@@ -249,7 +250,7 @@ type runner struct {
 // check runs request under each mode and requires, on a build with the
 // regular-expression compiler:
 //   - off, compile-on-first-use and default-threshold answers to be equal;
-//   - a compile-on-first-use request, with every other compiler off, to
+//   - a compile-on-first-use request to
 //     leave compiled code behind exactly when wantJIT;
 //   - the default threshold to have compiled the pattern by the time a
 //     repeated request crosses it, when wantJIT.
@@ -292,7 +293,7 @@ func (r *runner) check(ctx context.Context, t *testing.T, name string, wantJIT b
 		}
 		r.s.dropCompiled(ctx, t)
 		tag := probeTag(name)
-		request(chclient.WithQuerySetting(withOtherJITOff(r.s.modeCtx(ctx, jitNow)), settingLogComment, tag))
+		request(chclient.WithQuerySetting(r.s.modeCtx(ctx, jitNow), settingLogComment, tag))
 		if got := r.s.compiledEntries(ctx, t) > 0; got != wantJIT {
 			t.Errorf("%s compiled a regular expression = %v; the corpus records %v. Emitted SQL:\n%s",
 				r.s.version, got, wantJIT, strings.Join(r.s.loggedQueries(ctx, t, tag), "\n"))
