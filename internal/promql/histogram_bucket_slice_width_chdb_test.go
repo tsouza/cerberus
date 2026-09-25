@@ -17,7 +17,7 @@ func TestExpHistogramBucketSliceBounds_WideScaleGapChDB(t *testing.T) {
 		t.Run(fmt.Sprintf("scale_gap=%d", gap), func(t *testing.T) {
 			zero := &chplan.LitInt{V: 0}
 			buckets := &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{&chplan.LitFloat{V: 1}, &chplan.LitFloat{V: 1}}}
-			start, length := expHistogramBucketSliceBoundsExpr(&chplan.LitInt{V: gap}, zero, buckets, zero, zero, zero)
+			start, length := expHistogramBucketSliceBoundsExpr(expHistogramScaleRatioExpr(&chplan.LitInt{V: gap}, zero), zero, &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{buckets}}, zero, zero)
 			query := chsql.NewQuery().SelectAs(func(b *chsql.Builder) { _ = b.Expr(start) }, "slice_start").
 				SelectAs(func(b *chsql.Builder) { _ = b.Expr(length) }, "slice_length")
 			sql, args := query.Build()

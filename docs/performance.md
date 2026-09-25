@@ -529,6 +529,15 @@ the size of the expressions beneath each level. Emitters keep nesting shallow:
   `SELECT *, <value> AS x FROM (…)` stage. The native `histogram_quantile` and
   `histogram_quantiles` walk helpers (bucket walk, running counts, stop and
   value indexes, populated bounds) are bound this way.
+- A subexpression that one expression reads more than once is bound once. A
+  binding is a lambda parameter in a lambda that already exists wherever one
+  fits, and a new one-element binding only where its body reads no array
+  column. In the native-histogram lowerings:
+  - a merged bucket range binds its start and end together, and its length
+    reads both bindings;
+  - the counter-reset mask's per-pair lambda takes the pair's reconciled scale
+    as an argument;
+  - the merge budget guard binds each ladder's clamped width before squaring it.
 - The native `histogram_quantile` reads its input's histogram fields straight
   off the ARRAY JOIN materialization boundary's tuple when its output keys are
   input columns and the field names are bare identifiers; otherwise an
@@ -538,7 +547,9 @@ the size of the expressions beneath each level. Emitters keep nesting shallow:
   re-projecting it.
 
 `TestEmit_HistogramQuantileNative_SingleSelectOverBoundary` pins the native
-quantile's depth over its input.
+quantile's depth over its input. `TestExpHistogramRepeatedSubexpressionsRenderOnce`
+and `TestNativeHistogramDashboardBindsRepeatedSubexpressions` pin one render of
+each bound subexpression per binding scope.
 
 ## See also
 
