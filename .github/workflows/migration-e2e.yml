@@ -267,7 +267,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
+      - uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12  # v2.87.18
         with:
           tool: just@1.46.0
       # See migration-tier0's identical block: unconditional so the artifact
@@ -421,7 +421,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
+      - uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12  # v2.87.18
         with:
           tool: just@1.46.0
       # See migration-tier0's identical block.
