@@ -330,13 +330,25 @@ func matchesEmpty(pattern string) (bool, error) {
 			return false
 		}
 	}
-	// prog.Start indexes prog.Inst; it is documented non-negative and always
-	// less than len(prog.Inst), but that isn't visible to a bare int->uint32
-	// conversion (gosec G115). Same bound seen already checks pc against.
-	if prog.Start < 0 || prog.Start >= len(prog.Inst) {
-		return false, fmt.Errorf("regexp/syntax: program start %d out of range [0, %d)", prog.Start, len(prog.Inst))
+	start, err := boundedProgIndex(prog.Start, len(prog.Inst))
+	if err != nil {
+		return false, err
 	}
-	return reach(uint32(prog.Start)), nil
+	return reach(start), nil
+}
+
+// boundedProgIndex converts a [syntax.Prog] instruction index (documented
+// non-negative and less than instCount, the same bound reach's own seen[pc]
+// check relies on) to the uint32 [syntax.Inst] indexing expects. Routed
+// through a real range check rather than a bare conversion so gosec's G115
+// int->uint32 rule has something other than the cast itself to see —
+// unlike a #nosec comment (unused anywhere else in this tree), the checked
+// error path is real, not just silenced.
+func boundedProgIndex(n, instCount int) (uint32, error) {
+	if n < 0 || n >= instCount {
+		return 0, fmt.Errorf("regexp/syntax: program index %d out of range [0, %d)", n, instCount)
+	}
+	return uint32(n), nil
 }
 
 // withGoDefaultFlagsPattern returns f with its pattern respelled by
