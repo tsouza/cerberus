@@ -160,6 +160,11 @@ export const ROOT_ALLOWLIST = [
   'go.sum',
   'just',
   'lefthook.yml',
+  // The pinned commitlint toolchain. It sits beside .commitlintrc.json
+  // because commitlint resolves that config's `extends` from the config's own
+  // directory.
+  'package-lock.json',
+  'package.json',
   'versions.yaml',
   // Source trees.
   'bench',

@@ -101,3 +101,20 @@ updates:
       playwright-deps:
         patterns:
           - "*"
+
+  # npm — the pinned commitlint toolchain the commit-message and PR-title
+  # gates install from its lockfile.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - dependencies
+      - npm
+    groups:
+      commitlint-deps:
+        patterns:
+          - "*"

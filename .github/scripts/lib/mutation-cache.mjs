@@ -1,0 +1,280 @@
+// mutation-cache.mjs — content-keyed verdict cache for one `mutation` leg.
+//
+// A leg's verdict is a deterministic function of its inputs, so it is cached
+// by the CONTENT of those inputs and never by commit SHA, branch or time. This
+// module holds the pure half: which inputs make up the key, how the key is
+// derived from them, what a stored entry looks like, and when an entry may be
+// believed. .github/scripts/mutation-cache.mjs collects the inputs from a
+// checkout and drives the workflow steps.
+//
+// KEY INPUT CLASSES (KEY_INPUT_CLASSES below; the key refuses an input object
+// that lacks any of them, so a class cannot be dropped silently):
+//
+//   toolchain      `go version` plus the Go environment that changes what a
+//                  test binary is: GOOS/GOARCH/GOAMD64, CGO_ENABLED and the C
+//                  toolchain and flags, GOEXPERIMENT, and GOFLAGS (which is
+//                  where build tags reach an untagged `go test`).
+//   runner         the runner image (RUNNER_OS, RUNNER_ARCH, ImageOS,
+//                  ImageVersion), the kernel release, and the node version.
+//   gremlins       the gremlins module path, the fork ref the workflow
+//                  installs, and the commit that ref resolves to.
+//   phaseRow       the leg's matrix row (scope, efficacy, workers,
+//                  exclude_files, anything added later) WITHOUT `diff_ref`,
+//                  which is a commit SHA; the content it selects is `scopeDiff`.
+//   runnerEnv      the workflow-level bounds mutation-run.mjs reads
+//                  (MUTANT_TIMEOUT_MIN / MUTANT_TIMEOUT_MAX).
+//   scopeDiff      for a changed-line leg, the repo-wide `git diff --merge-base`
+//                  gremlins itself reads to select mutants, restricted to the
+//                  hunks that touch a path inside the leg's own closure — see
+//                  .github/scripts/mutation-cache.mjs's scopeDiff /
+//                  closureTouchingPaths. Restricting to the closure (rather
+//                  than hashing the whole-repo diff) is what lets a commit
+//                  outside it, such as a docs edit, leave the key alone; a
+//                  cross-directory rename is still caught because BOTH its
+//                  old and new path are kept in the filtered pathspec, which
+//                  is what makes git pair them as a rename in the first
+//                  place. Empty for a full-phase leg, so a pull request's
+//                  full leg and main's full leg over identical content share
+//                  one entry.
+//   runnerScripts  every script the leg executes to reach its verdict
+//                  (mutation-run.mjs, mutant-memory-guard.mjs,
+//                  gremlins-threshold.mjs, the cache itself) and, transitively,
+//                  every local module they import; plus mutation.yml, which
+//                  declares the leg's job env, step flags and runner, and the
+//                  setup-go action.
+//   goModule       go.mod, go.sum and .gremlins.yaml; go.sum pins the content
+//                  of every third-party module in the closure.
+//   packages       every file under the directory, recursively, of every
+//                  main-module package in `go list -deps -test <scope>/...` —
+//                  sources, tests, cgo, generated files, testdata/, embedded
+//                  subdirectories, and any data file sitting beside them.
+//   dataRoots      files the tests read from outside their own package: every
+//                  all-literal relative path (`"../x"` or
+//                  `filepath.Join("..", "..", "test", "spec")`) written in any
+//                  Go file of the closure, resolved against that package's
+//                  directory and hashed recursively. A test that builds a path
+//                  to repository data at runtime from anything but literals is
+//                  outside what this discovers; write such paths as literals.
+//
+// TIMED-OUT MUTANTS. `RUN TIMED OUT` and `TIMED OUT` depend on how fast the
+// runner was, not only on the inputs above. What the store rule covers, and
+// what it does not:
+//
+//   covered      re-timing of the mutants that DID time out on the producing
+//                run. An entry is written only when the verdict is the same
+//                with every one of them scored as KILLED and again as LIVED;
+//                those extremes bound every re-scoring of them (a mutant that
+//                leaves the ratio instead lies between the two).
+//   not covered  a mutant that completed on the producing run and would time
+//                out on a slower runner (KILLED -> TIMED OUT lowers the score),
+//                or complete on a faster one. A stored verdict is the verdict
+//                of the producing run's runner; a later run on a slower runner
+//                could score lower. The lane has the same exposure without the
+//                cache, between two runs of one commit.
+//
+// A report that still holds a RUNNABLE mutant (the run was interrupted) or a
+// status the threshold gate does not know is never cached.
+//
+// WHO MAY READ AND WRITE. The cache is on only on `pull_request` events
+// (MUTATION_CACHE=read-write, set in mutation.yml; the repository variable
+// MUTATION_CACHE_DISABLED=true turns it off there too). actions/cache stores
+// entries in the repository's GitHub cache service, not on the runner, and
+// scopes each write to the ref that made it: a pull request's entries live
+// under that PR's merge ref and are readable by that PR alone. So no entry a
+// PR writes can reach main, another PR, or a merge group. Main pushes, the
+// nightly, dispatches and merge groups neither read nor write, always run
+// gremlins, and the aggregator refuses any cache record on them.
+//
+// CONCURRENCY. Each key includes the phase row, so two legs never share one.
+// actions/cache entries are immutable per key: two runs racing to save the
+// same key leave the first complete upload and the second save is refused.
+// An entry is written to disk in full before the save step starts, and a
+// truncated or otherwise partial entry fails its digest and is a miss.
+//
+// AN ENTRY IS BELIEVED ONLY AFTER VALIDATION, AT TWO INDEPENDENT LAYERS.
+//
+//   the leg      mutation.yml deletes any .mutation-cache/ and provenance/
+//                already in the checkout before restoring, and `check` reads
+//                an entry only when the restore step reported a hit on the
+//                exact key (RESTORED=true) and the leg is cacheable. It then
+//                recomputes the entry's digest, requires its key, phase and
+//                threshold to match, and re-applies the timed-out rule.
+//   the aggregator  recomputes each hit's key from its own checkout (taking
+//                only the runner description from the leg), rejects a leg that
+//                is not cacheable, validates the entry against that key, and
+//                verifies through the API that the entry's producing run is a
+//                completed pull_request run of mutation.yml for this PR whose
+//                head carried harness files byte-identical to the ones running
+//                now. An entry written by a run of a modified harness is
+//                therefore refused.
+//
+// A missing, unparsable, tampered, mismatched or unverifiable entry is a miss
+// at the leg and a failure at the aggregator; it is never a pass.
+//
+// NONDETERMINISTIC LEGS. A leg whose test binaries link rapid is cacheable only
+// when every such binary's package applies CERBERUS_RAPID_SEED to `rapid.seed`
+// and the variable is set (the workflow sets it; its value is in the key).
+// Anything else draws different inputs per run and is never cached.
+//
+// WHAT THE CACHE CANNOT ADD. The change under test runs inside the producing
+// leg and can already influence that leg's report; an entry records exactly
+// what that run reported, under that run's own key, so a hit never shows more
+// than the producing run showed.
+
+import { createHash } from 'node:crypto';
+
+import { attemptedEfficacy, countMutationStatuses, minCompletedMutants } from '../gremlins-threshold.mjs';
+
+export const CACHE_SCHEMA = 'cerberus-mutation-leg-cache/v1';
+
+export const KEY_INPUT_CLASSES = Object.freeze([
+  'toolchain',
+  'runner',
+  'gremlins',
+  'phaseRow',
+  'runnerEnv',
+  'scopeDiff',
+  'runnerScripts',
+  'goModule',
+  'packages',
+  'dataRoots',
+]);
+
+// The phase-row field that names a commit rather than content.
+export const PHASE_ROW_COMMIT_FIELD = 'diff_ref';
+
+const runnableStatus = 'RUNNABLE';
+const hexDigestPattern = /^[0-9a-f]{64}$/;
+const runUrlPattern = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/actions\/runs\/[0-9]+(\/attempts\/[0-9]+)?$/;
+
+export function sha256(data) {
+  return createHash('sha256').update(data).digest('hex');
+}
+
+// canonicalJson serialises with object keys sorted at every depth, so two
+// equal values always hash equally regardless of insertion order.
+export function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(',')}}`;
+  }
+  if (value === undefined) throw new Error('canonicalJson: undefined is not serialisable');
+  return JSON.stringify(value);
+}
+
+// phaseRowForKey drops the commit-valued field; see PHASE_ROW_COMMIT_FIELD.
+export function phaseRowForKey(row) {
+  if (row === null || typeof row !== 'object' || Array.isArray(row)) {
+    throw new Error('phase row must be an object');
+  }
+  const { [PHASE_ROW_COMMIT_FIELD]: _commit, ...rest } = row;
+  return rest;
+}
+
+export function legCacheKey(inputs) {
+  if (inputs === null || typeof inputs !== 'object') throw new Error('key inputs must be an object');
+  const extra = Object.keys(inputs).filter((k) => !KEY_INPUT_CLASSES.includes(k));
+  if (extra.length > 0) throw new Error(`unknown key input class(es): ${extra.join(', ')}`);
+  for (const cls of KEY_INPUT_CLASSES) {
+    if (inputs[cls] === undefined) throw new Error(`key input class "${cls}" is missing`);
+  }
+  if (Object.hasOwn(inputs.phaseRow, PHASE_ROW_COMMIT_FIELD)) {
+    throw new Error(`phaseRow must not carry ${PHASE_ROW_COMMIT_FIELD}; pass phaseRowForKey(row)`);
+  }
+  return sha256(canonicalJson({ schema: CACHE_SCHEMA, ...inputs }));
+}
+
+function gatePasses(counts, threshold) {
+  if (counts.killed + counts.lived < minCompletedMutants) return false;
+  return attemptedEfficacy(counts) >= threshold;
+}
+
+// timingStability answers whether a report's verdict against `threshold` can
+// change under any re-timing of its timed-out mutants. See the header.
+export function timingStability(report, threshold) {
+  if (!Number.isFinite(threshold)) return { stable: false, reason: 'threshold is not a number' };
+  const counts = countMutationStatuses(report);
+  if (counts.unknown.size > 0) return { stable: false, reason: 'report carries an unknown mutation status' };
+  const runnable = (report?.files ?? []).some((f) => (f?.mutations ?? []).some((m) => m?.status === runnableStatus));
+  if (runnable) return { stable: false, reason: 'report carries RUNNABLE mutants (the run was interrupted)' };
+  if (counts.total === 0) return { stable: false, reason: 'report carries no per-mutant records' };
+  const timedOut = counts.timedOut + counts.runTimedOut;
+  const actual = gatePasses(counts, threshold);
+  if (timedOut === 0) return { stable: true, pass: actual, reason: 'no timed-out mutants' };
+  const base = { ...counts, timedOut: 0, runTimedOut: 0 };
+  const allKilled = gatePasses({ ...base, killed: counts.killed + timedOut }, threshold);
+  const allLived = gatePasses({ ...base, lived: counts.lived + timedOut }, threshold);
+  if (allKilled === actual && allLived === actual) {
+    return { stable: true, pass: actual, reason: `verdict holds with all ${timedOut} timed-out mutant(s) killed or lived` };
+  }
+  return {
+    stable: false,
+    pass: actual,
+    reason: `${timedOut} timed-out mutant(s) could flip the verdict under a different runner speed`,
+  };
+}
+
+// survivors lists the LIVED mutants a report carries, for the hit log.
+export function survivors(report) {
+  const out = [];
+  for (const file of report?.files ?? []) {
+    for (const m of file?.mutations ?? []) {
+      if (m?.status === 'LIVED') out.push(`${file.file_name}:${m.line}:${m.column} ${m.type}`);
+    }
+  }
+  return out;
+}
+
+function entryDigest({ schema, key, phase, threshold, sourceRunUrl, report }) {
+  return sha256(canonicalJson({ schema, key, phase, threshold, sourceRunUrl, report }));
+}
+
+export function buildEntry({ key, phase, threshold, sourceRunUrl, report }) {
+  const body = { schema: CACHE_SCHEMA, key, phase, threshold, sourceRunUrl, report };
+  return { ...body, digest: entryDigest(body) };
+}
+
+// validateEntry returns { ok: true, entry } or { ok: false, reason }. Anything
+// it cannot positively verify is a miss.
+export function validateEntry(raw, { key, phase, threshold }) {
+  let entry;
+  try {
+    entry = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (cause) {
+    return { ok: false, reason: `entry is not JSON: ${cause.message}` };
+  }
+  if (entry === null || typeof entry !== 'object') return { ok: false, reason: 'entry is not an object' };
+  if (entry.schema !== CACHE_SCHEMA) return { ok: false, reason: `entry schema ${JSON.stringify(entry.schema)}` };
+  if (!hexDigestPattern.test(String(entry.key))) return { ok: false, reason: 'entry key is malformed' };
+  if (entry.key !== key) return { ok: false, reason: 'entry key does not match this leg' };
+  if (entry.phase !== phase) return { ok: false, reason: 'entry phase does not match this leg' };
+  if (entry.threshold !== threshold) return { ok: false, reason: 'entry threshold does not match this leg' };
+  if (!runUrlPattern.test(String(entry.sourceRunUrl))) return { ok: false, reason: 'entry source run URL is malformed' };
+  if (entry.report === null || typeof entry.report !== 'object') return { ok: false, reason: 'entry has no report' };
+  if (entry.digest !== entryDigest(entry)) return { ok: false, reason: 'entry digest does not match its content' };
+  const stability = timingStability(entry.report, threshold);
+  if (!stability.stable) return { ok: false, reason: `entry verdict is not timing-stable: ${stability.reason}` };
+  return { ok: true, entry };
+}
+
+// PROVENANCE: every leg records where its verdict came from. The `mutation`
+// aggregator checks the record of every selected phase; for a cache record it
+// validates the carried entry against the key IT recomputed from the checkout
+// (`key`), never against the key the leg wrote into the record.
+export const PROVENANCE_SOURCES = Object.freeze(['run', 'cache']);
+
+export function validateProvenance(record, { phase, threshold, entry, key }) {
+  if (record === null || typeof record !== 'object') return 'provenance is not an object';
+  if (record.phase !== phase) return `provenance phase ${JSON.stringify(record.phase)} is not ${phase}`;
+  if (!PROVENANCE_SOURCES.includes(record.source)) return `provenance source ${JSON.stringify(record.source)}`;
+  if (!hexDigestPattern.test(String(record.key))) return 'provenance key is malformed';
+  if (record.source === 'run') return null;
+  if (!hexDigestPattern.test(String(key))) return 'no recomputed key to check the hit against';
+  if (record.key !== key) return 'the leg\'s key differs from the key recomputed from this checkout';
+  if (entry === undefined) return 'cache hit carries no entry to verify';
+  const verdict = validateEntry(entry, { key, phase, threshold });
+  if (!verdict.ok) return `cache entry fails validation: ${verdict.reason}`;
+  if (record.digest !== entry.digest) return 'provenance digest does not name the carried entry';
+  return null;
+}
