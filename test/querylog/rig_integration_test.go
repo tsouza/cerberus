@@ -19,7 +19,9 @@ import (
 
 	"github.com/tsouza/cerberus/internal/actuals"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/solver"
 )
 
 // The pinned builds: the supported floor (versions.yaml min_clickhouse) and
@@ -69,7 +71,9 @@ const (
 type node struct {
 	image string
 	addr  string
-	ctr   *tcclickhouse.ClickHouseContainer
+	// httpAddr is the server's HTTP-protocol address.
+	httpAddr string
+	ctr      *tcclickhouse.ClickHouseContainer
 	// admin is the administrative connection; it never dispatches a query
 	// under measurement.
 	admin *chclient.Client
@@ -142,6 +146,11 @@ func startNode(ctx context.Context, t *testing.T, image string, opts nodeOptions
 		t.Fatalf("%s port: %v", image, err)
 	}
 	n.addr = net.JoinHostPort(host, port.Port())
+	httpPort, err := ctr.MappedPort(bootCtx, "8123/tcp")
+	if err != nil {
+		t.Fatalf("%s HTTP port: %v", image, err)
+	}
+	n.httpAddr = net.JoinHostPort(host, httpPort.Port())
 	n.admin = newClient(t, chclient.Config{Addr: n.addr}, adminUser, adminPassword)
 	return n
 }
@@ -262,6 +271,69 @@ func dispatch(ctx context.Context, t *testing.T, c *chclient.Client, tracker *ac
 	if _, err := c.QueryStrings(ctx, query); err != nil {
 		t.Fatalf("dispatch %s: %v", shape, err)
 	}
+}
+
+// routedShardSQL is every shard statement of a routed request dispatched
+// through the solver's executor: the matrix projection a shard cursor scans,
+// over the whole shard-local table, so each shard statement reads exactly
+// shardRows rows and the request reads routedShards times that.
+const routedShardSQL = `SELECT 'samples' AS MetricName, map('table', 'samples') AS Attributes, now() AS TimeUnix, toFloat64(count()) AS Value
+FROM samples
+WHERE x % 13 = 0`
+
+// routedShards is the shard count K of every routed request dispatched here.
+const routedShards = 3
+
+// routedTimeout bounds one routed request's execution.
+const routedTimeout = time.Minute
+
+// routedEmitter emits routedShardSQL for every shard.
+type routedEmitter struct{}
+
+func (routedEmitter) Emit(context.Context, chplan.Node) (string, []any, int, error) {
+	return routedShardSQL, nil, 1, nil
+}
+
+// dispatchRouted runs one routed request of routedShards shard statements
+// through c with the solver's own executor, stamped and armed exactly as the
+// engine's route-B dispatch is: log_comment carries shape, and when tracker is
+// non-nil actuals capture is armed on it, so the packet path folds the shards
+// into one observation (chclient.ShardActualsFold) and claims every shard's
+// query id. It returns the shard statements' query ids.
+func dispatchRouted(ctx context.Context, t *testing.T, c *chclient.Client, tracker *actuals.Tracker, shape string) []string {
+	t.Helper()
+	ctx = chclient.WithProgressFor(ctx, "promql")
+	ctx = chclient.WithQuerySetting(ctx, "log_comment", shape)
+	if tracker != nil {
+		ctx = chclient.WithActualsCapture(ctx, tracker, shape)
+	}
+	cfg := solver.DefaultConfig()
+	cfg.Mode = solver.ModeSharded
+	cfg.Parallel = routedShards
+	cfg.Timeout = routedTimeout
+	x := &solver.Executor{Client: c, Emitter: routedEmitter{}, Cfg: cfg}
+	d := &solver.Decision{Strategy: solver.StrategyShardedTimeslice, K: routedShards, Reason: solver.ReasonRouted}
+	for i := range routedShards {
+		d.Slices = append(d.Slices, solver.Slice{Index: i, Plan: &chplan.OneRow{}})
+	}
+	cur, info, err := x.Execute(ctx, "promql", d, nil)
+	if err != nil {
+		t.Fatalf("routed dispatch %s: %v", shape, err)
+	}
+	samples := 0
+	for cur.Next() {
+		samples++
+	}
+	if err := cur.Err(); err != nil {
+		t.Fatalf("routed dispatch %s: drain: %v", shape, err)
+	}
+	if err := cur.Close(); err != nil {
+		t.Fatalf("routed dispatch %s: close: %v", shape, err)
+	}
+	if samples != routedShards {
+		t.Fatalf("routed dispatch %s drained %d samples, want one per shard (%d)", shape, samples, routedShards)
+	}
+	return info.ShardQueryIDs
 }
 
 // actualsConfig is the reconciler configuration every test uses: logs are

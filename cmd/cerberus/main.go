@@ -236,7 +236,7 @@ func mountAPIHeads(
 		// own scope: the actuals hooks all key off the solver's own
 		// plan-shape-id / K-clamp machinery, which is PromQL-only
 		// (solver.RequestMeta.Lang's own doc).
-		actualsTracker, err := buildActualsTracker(ctx, logger, cfg.Settings.String, promClient, cfg.ClickHouse.QueryTimeout, queryLogUnion)
+		actualsTracker, err := buildActualsTracker(ctx, logger, cfg.Settings.String, promClient, cfg.ClickHouse.QueryTimeout, evalSolver.Cfg.Timeout, queryLogUnion)
 		if err != nil {
 			return apiHeads{}, fmt.Errorf("configure query actuals: %w", err)
 		}
@@ -1042,15 +1042,20 @@ func buildCardinalityProbeAdvisor(
 // data-plane dispatch carries (CERBERUS_QUERY_TIMEOUT); it bounds how long
 // after a dispatch its query-log row can finish, so it sizes how long the
 // packet path's query-id marks are kept (actuals.Config.MaxQueryDuration).
+// routedRequestTimeout is the end-to-end cap on a routed request
+// (CERBERUS_SOLVER_TIMEOUT); it bounds how far apart a routed request's shard
+// rows can finish, so it sizes how long the reconciler keeps a request's
+// partial fold (actuals.Config.MaxRoutedRequestDuration).
 // queryLogUnion reports, on every poll,
 // whether the query_log_union feature is in force in the live chopt
 // resolution; nil reads the local log only.
-func buildActualsTracker(ctx context.Context, logger *slog.Logger, settings func(string) string, promClient *chclient.Client, queryTimeout time.Duration, queryLogUnion func() bool) (*actuals.Tracker, error) {
+func buildActualsTracker(ctx context.Context, logger *slog.Logger, settings func(string) string, promClient *chclient.Client, queryTimeout, routedRequestTimeout time.Duration, queryLogUnion func() bool) (*actuals.Tracker, error) {
 	cfg, err := actuals.ConfigFrom(settings)
 	if err != nil {
 		return nil, err
 	}
 	cfg.MaxQueryDuration = queryTimeout
+	cfg.MaxRoutedRequestDuration = routedRequestTimeout
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

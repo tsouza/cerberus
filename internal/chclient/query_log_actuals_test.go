@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
@@ -29,13 +30,14 @@ func TestQueryLogActualsSQL_DifferOnlyInTable(t *testing.T) {
 
 // TestQueryLogActualsSQL_SelectsInitiatorFinishRows pins the record-selection
 // predicates the accounting depends on: finished queries only, initiators
-// only (a remote child's row is a fragment of the initiator's totals), one
-// row per (hostname, query_id), a strict cursor over the total order and the
-// settle horizon.
+// only (a remote child's row is a fragment of the initiator's totals), never
+// the HTTP transport's connection hello, one row per (hostname, query_id), a
+// strict cursor over the total order and the settle horizon.
 func TestQueryLogActualsSQL_SelectsInitiatorFinishRows(t *testing.T) {
 	for _, want := range []string{
 		"type = 'QueryFinish'",
 		"is_initial_query = 1",
+		"query != ?",
 		"(toUnixTimestamp64Micro(event_time_microseconds), hostname, query_id) > (?, ?, ?)",
 		"event_time_microseconds <= now64(6) - toIntervalMillisecond(?)",
 		"ORDER BY event_time_microseconds, hostname, query_id",
@@ -77,5 +79,43 @@ func TestIsQueryLogUnionRefusal(t *testing.T) {
 				t.Fatalf("isQueryLogUnionRefusal(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestQueryLogActualsArgs_BindEveryPlaceholder pins that each placeholder the
+// record selection filters on receives the value it is written for — above
+// all that the HTTP connection hello is what `query != ?` excludes, and the
+// shape prefix what log_comment must start with — and that the statement has
+// exactly as many placeholders as bound values.
+func TestQueryLogActualsArgs_BindEveryPlaceholder(t *testing.T) {
+	req := QueryLogActualsRequest{
+		After:         QueryLogCursor{EventTime: time.UnixMicro(1_790_000_000_123_456), Hostname: "ch-0", QueryID: "q"},
+		SettleDelay:   15 * time.Second,
+		ShapeIDPrefix: "cerb:",
+		Limit:         1000,
+	}
+	args := queryLogActualsArgs(req)
+	for _, sql := range []string{queryLogActualsLocalSQL, queryLogActualsUnionSQL} {
+		if got := strings.Count(sql, "?"); got != len(args) {
+			t.Fatalf("statement has %d placeholders, %d values are bound:\n%s", got, len(args), sql)
+		}
+		for _, tc := range []struct {
+			clause string
+			want   any
+		}{
+			{"startsWith(log_comment, ?)", "cerb:"},
+			{"query != ?", HTTPConnectionHelloQuery},
+			{"toIntervalMillisecond(?)", int64(15_000)},
+			{"LIMIT ?", 1000},
+		} {
+			at := strings.Index(sql, tc.clause)
+			if at < 0 {
+				t.Fatalf("statement lacks %q:\n%s", tc.clause, sql)
+			}
+			position := strings.Count(sql[:at], "?")
+			if got := args[position]; got != tc.want {
+				t.Errorf("%q binds %#v, want %#v", tc.clause, got, tc.want)
+			}
+		}
 	}
 }
