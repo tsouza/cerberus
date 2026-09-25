@@ -337,16 +337,14 @@ func wrapSubqueryIdentity(
 // encoding (stale_marker.go) survives the transform bit-for-bit:
 // label_replace / label_join / info rewrite Attributes only, and the
 // sort family rewrites neither column (see instantTransformFns's own
-// membership doc). Every other member either goes through
-// [lowerSubqueryIdentityMathReorder] instead, or — the date-component
-// family — is left on this function's pre-#3655 behaviour: reordering
-// them the same way would need a per-function value kernel the way the
-// math family already has, and encoding a marker into their Value
-// unreordered doesn't merely risk a corrupted bit pattern, it makes
-// ClickHouse reject the query outright (`toYear(fromUnixTimestamp64Nano(...))`
-// on a NaN operand raises `CANNOT_CONVERT_TYPE: Unexpected inf or nan to
-// integer conversion`), so this deliberately excludes them rather than
-// trade a stale answer for a 502 (tracked by #3692).
+// membership doc). Every other member goes through
+// [lowerSubqueryIdentityMathReorder] or [lowerSubqueryIdentityDateReorder]
+// instead: encoding a marker into their Value unreordered doesn't merely
+// risk a corrupted bit pattern, it makes ClickHouse reject the query
+// outright (`toYear(fromUnixTimestamp64Nano(...))` on a NaN operand
+// raises `CANNOT_CONVERT_TYPE: Unexpected inf or nan to integer
+// conversion`), so this deliberately excludes them rather than trade a
+// stale answer for a 502.
 func subqueryIdentityValuePreserving(fn string) bool {
 	switch fn {
 	case fnLabelReplace, fnLabelJoin, "info",
@@ -421,6 +419,59 @@ func lowerSubqueryIdentityMathReorder(
 		return plan, true, err
 	}
 	return nil, false, nil
+}
+
+// lowerSubqueryIdentityDateReorder implements the same reorder
+// [lowerSubqueryIdentityMathReorder] applies to the math/clamp/round
+// family, for the date-component family (`year`, `month`, `day_of_month`,
+// `day_of_week`, `day_of_year`, `days_in_month`, `hour`, `minute`,
+// `timestamp`) — issue #3692. Windows the BARE argument first through
+// [lowerSubqueryOverVectorSelector], the identical pipeline a
+// bare-selector subquery uses, which encodes the stale marker, picks
+// each anchor's own latest sample, and drops the anchor a marker wins —
+// and only then applies the date-component kernel
+// ([projectDateFnOverInner]) to the survivors, so a marker's encoded NaN
+// is never handed to `toYear`/`toDayOfWeek`/etc, which reject it outright
+// (see [subqueryIdentityValuePreserving]'s own doc for the exact CH
+// error).
+//
+// The windowed inner keeps each surviving sample's OWN TimeUnix (it is a
+// per-anchor pick of a real row, not a re-stamp to the anchor), so
+// projectDateFnOverInner is invoked under a range-vector ctx —
+// `timestamp(v)` then reads that row's own timestamp column directly
+// rather than the RangeLWR sample-timestamp column an aggregated instant
+// seam would otherwise require (see [timestampResultExpr] /
+// [readsRangeSampleTimestamp]).
+//
+// matched is false for a call shape this reorder doesn't cover — its
+// value argument is not vs at all, or its function isn't a
+// date-component function — and the caller keeps its existing lowering.
+func lowerSubqueryIdentityDateReorder(
+	sub *parser.SubqueryExpr,
+	call *parser.Call,
+	vs *parser.VectorSelector,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, bool, error) {
+	if !isDateComponentFn(call.Func.Name) || len(call.Args) != 1 {
+		return nil, false, nil
+	}
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	windowed, err := lowerSubqueryOverVectorSelector(sub, vs, step, s, ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	plan, err := projectDateFnOverInner(call, windowed, s, rangeCtx)
+	return plan, true, err
+}
+
+// isDateComponentFn reports whether name is one of the date-component
+// functions [dateFnExpr] recognises (including `timestamp`), reusing that
+// function's own name switch rather than duplicating the name list.
+func isDateComponentFn(name string) bool {
+	return dateFnExpr(name, nil, nil) != nil
 }
 
 // declareSubqueryTimestampRole closes the lowering-owned boundary between an
@@ -681,7 +732,10 @@ const subqueryAnchorShapeMaxCols = 5
 // through those functions at all, so encoding the marker into Value and
 // running the transform on it first is unsound regardless of mode. See
 // [lowerSubqueryIdentityMathReorder]'s own doc for the verified
-// per-function evidence and the reorder that sidesteps it.
+// per-function evidence and the reorder that sidesteps it. The
+// date-component family has the same unsoundness for a different reason
+// — `toYear`/`toDayOfWeek`/etc. reject a NaN operand outright rather than
+// silently mangling it — and the same reorder, [lowerSubqueryIdentityDateReorder].
 //
 // The remaining instantTransformFns members that never rewrite Value
 // (label_replace / label_join / info rewrite Attributes only; the sort
@@ -698,6 +752,9 @@ func lowerSubqueryOverInstantTransform(
 ) (chplan.Node, error) {
 	if vs, ok := call.Args[0].(*parser.VectorSelector); ok {
 		if plan, matched, err := lowerSubqueryIdentityMathReorder(sub, call, vs, step, s, ctx); matched {
+			return plan, err
+		}
+		if plan, matched, err := lowerSubqueryIdentityDateReorder(sub, call, vs, step, s, ctx); matched {
 			return plan, err
 		}
 	}
