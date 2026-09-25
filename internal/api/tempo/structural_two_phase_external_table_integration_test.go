@@ -31,6 +31,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -383,14 +384,15 @@ func extTblRootTraceIDs(ctx context.Context, t *testing.T, conn driver.Conn, n i
 // extTblExplainGranules parses, using chsql's own quoting convention (single
 // quotes) so the rendered predicate matches what inStringLiteralsFrag emits.
 func extTblLiteralExplainSQL(ids []string) string {
-	sql := "EXPLAIN indexes=1 SELECT count() FROM otel_traces WHERE TraceId IN ("
+	var sql strings.Builder
+	sql.WriteString("EXPLAIN indexes=1 SELECT count() FROM otel_traces WHERE TraceId IN (")
 	for i, id := range ids {
 		if i > 0 {
-			sql += ", "
+			sql.WriteString(", ")
 		}
-		sql += "'" + id + "'"
+		sql.WriteString("'" + id + "'")
 	}
-	return sql + ")"
+	return sql.String() + ")"
 }
 
 // extTblExplainGranuleLine matches EXPLAIN indexes=1's per-index summary line,

@@ -244,7 +244,7 @@ func (p *parser) expect(k tokenKind, what string) token {
 	return p.advance()
 }
 
-func (p *parser) errf(format string, args ...interface{}) {
+func (p *parser) errf(format string, args ...any) {
 	panic(NewParseError(fmt.Sprintf(format, args...), 0, 0))
 }
 

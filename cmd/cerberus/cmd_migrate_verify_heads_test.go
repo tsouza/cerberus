@@ -181,7 +181,7 @@ func headTableRows(t *testing.T, report string) map[string]string {
 	t.Helper()
 	rows := map[string]string{}
 	inTable := false
-	for _, line := range strings.Split(report, "\n") {
+	for line := range strings.SplitSeq(report, "\n") {
 		if strings.HasPrefix(line, "# per-head lanes:") {
 			inTable = true
 			continue

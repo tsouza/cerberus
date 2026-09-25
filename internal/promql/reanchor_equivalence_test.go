@@ -91,7 +91,6 @@ func TestReanchorRange_EquivalentToWidenSubquerySpine(t *testing.T) {
 	step := time.Minute
 
 	for _, c := range cases {
-		c := c
 		q := c.query
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()

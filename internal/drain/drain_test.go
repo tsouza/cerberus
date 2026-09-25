@@ -18,7 +18,7 @@ func TestDrain_CompactJSONCollapsesBySchema(t *testing.T) {
 	d := drain.New(drain.DefaultConfig())
 	base := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
 	const lineCount = 32
-	for i := 0; i < lineCount; i++ {
+	for i := range lineCount {
 		line := fmt.Sprintf(
 			`{"level":"info","ts":%q,"msg":"HTTP request","method":"GET","path":"/api/users/%d","status":200,"latency_ms":%d}`,
 			base.Add(time.Duration(i)*time.Minute).Format(time.RFC3339), i, 10+i,
@@ -47,7 +47,7 @@ func TestDrain_LogfmtKeepsQuotedFields(t *testing.T) {
 	t.Parallel()
 	d := drain.New(drain.DefaultConfig())
 	base := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		line := fmt.Sprintf(
 			`level=info ts=%q msg="HTTP request" method=GET path=/api/users/%d status=200`,
 			base.Add(time.Duration(i)*time.Minute).Format(time.RFC3339), i,
@@ -194,7 +194,7 @@ func TestDrain_SampleBucketing(t *testing.T) {
 	// Bucket-aligned base (multiple of 10s) so the truncated timestamp is
 	// the base itself.
 	base := time.Unix(1778760000, 0).UTC()
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		d.Train("GET /x/1 ok done", base.Add(time.Duration(i)*time.Second).UnixNano())
 	}
 	clusters := d.Clusters()

@@ -150,7 +150,6 @@ func TestLower_ExpHistogram_DroppingAggregationComposesUnderWrappers(t *testing.
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(query)

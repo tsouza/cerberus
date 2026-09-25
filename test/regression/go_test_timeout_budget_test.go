@@ -235,7 +235,7 @@ func jobsInWorkflow(workflow, filename string, recipeNames map[string]bool) []wo
 			jobs = append(jobs, *current)
 		}
 	}
-	for _, line := range strings.Split(workflow, "\n") {
+	for line := range strings.SplitSeq(workflow, "\n") {
 		if header := jobHeaderRe.FindStringSubmatch(line); header != nil {
 			flush()
 			current = &workflowJob{workflow: filename, name: header[1]}
@@ -271,7 +271,7 @@ func jobsInWorkflow(workflow, filename string, recipeNames map[string]bool) []wo
 func goTestCommands(t *testing.T, recipe string) []string {
 	t.Helper()
 	var out []string
-	for _, line := range strings.Split(justRecipeBodyWithDeps(t, recipe), "\n") {
+	for line := range strings.SplitSeq(justRecipeBodyWithDeps(t, recipe), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "#") || !goTestRe.MatchString(trimmed) {
 			continue

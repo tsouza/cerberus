@@ -156,7 +156,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorPlainFloatOnlyArithmetic(t *testi
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	for _, op := range []string{"^", "%", "atan2"} {
-		op := op
 		t.Run(op, func(t *testing.T) {
 			t.Parallel()
 			query := mixedOrExpr + " " + op + " " + mvpPlainVector

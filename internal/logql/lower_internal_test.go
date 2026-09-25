@@ -387,7 +387,6 @@ func TestResourceFallbackColumn(t *testing.T) {
 		{name: "unknown label has no top-level column", label: "totally_unknown_label", want: ""},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := resourceFallbackColumn(s, tc.label); got != tc.want {
@@ -451,7 +450,6 @@ func TestMatcherToExpr_TopLevelColumnCoalesce_Conformance(t *testing.T) {
 		"TraceFlags",
 	}
 	for _, col := range columns {
-		col := col
 		t.Run(col, func(t *testing.T) {
 			t.Parallel()
 			m := labels.MustNewMatcher(labels.MatchEqual, col, "val")

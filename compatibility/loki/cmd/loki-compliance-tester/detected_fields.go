@@ -102,7 +102,6 @@ func compareDetectedFieldsOne(c *http.Client, f flags, service, selector string,
 	out := make([]fetched, 2)
 	done := make(chan int, 2)
 	for idx, addr := range []string{f.addr1, f.addr2} {
-		idx, addr := idx, addr
 		go func() {
 			body, err := fetchDetectedFields(c, addr, selector, start, end)
 			out[idx] = fetched{body: body, err: err}

@@ -143,7 +143,7 @@ volumes by project name, so two checkouts that resolve the same name are one
 stack to the daemon: `up` adopts the other's containers and `down -v
 --remove-orphans` destroys them, silently and with a green exit code. Every
 compose file in the tree therefore spells its project name
-`<stable-base>${COMPOSE_PROJECT_SUFFIX:-}`, and `scripts/compose-project-suffix.sh`
+`<stable-base>${COMPOSE_PROJECT_SUFFIX:-}`, and `.github/scripts/compose-project-suffix.mjs`
 derives that variable from the checkout's own path — empty in a primary checkout
 (and so in CI, where the project name is exactly its stable base), a short path
 hash in a linked worktree. The Justfile exports it to every recipe, `.envrc`

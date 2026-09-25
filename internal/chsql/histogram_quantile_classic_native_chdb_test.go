@@ -264,7 +264,6 @@ func TestNativeClassicHistogramLadder_DualEmitParity(t *testing.T) {
 	hasFn := hqNativeFnsPresent(t, db)
 
 	for _, tc := range hqNativeCases() {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			seed(t, db, hqNativeSeedDDL)
 			cols := "(MetricName, Attributes, TimeUnix, BucketCounts, ExplicitBounds"

@@ -1,6 +1,7 @@
 package logql
 
 import (
+	"slices"
 	"testing"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
@@ -598,7 +599,7 @@ func multiIfArgCount(groups int) int { return 2*(groups+1) + 1 }
 // simulation would answer a question nobody asked.
 func capAfterPairedAppends(hint, pairs int) (length, capacity int) {
 	args := make([]chplan.Expr, 0, hint)
-	for i := 0; i < pairs; i++ {
+	for range pairs {
 		args = append(args, nil, nil) // (condition, value)
 	}
 	args = append(args, nil) // trailing default branch
@@ -888,12 +889,7 @@ func collectEqRHSLiterals(e chplan.Expr) []string {
 }
 
 func containsString(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(xs, want)
 }
 
 // TestDetectedLevelSource_PrecedenceCascade pins reference Loki's

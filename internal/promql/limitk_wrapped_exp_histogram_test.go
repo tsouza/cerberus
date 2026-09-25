@@ -72,7 +72,6 @@ func TestLower_ExpHistogram_LimitKAndLimitRatioComposeUnderFloatOnlyWrappers(t *
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 
@@ -125,7 +124,6 @@ func TestLower_ExpHistogram_LimitKUnderLabelReplaceStillPreserves(t *testing.T) 
 		`label_replace(limitk(2, latency_exp_hist), "dst", "$1", "job", "(.*)")`,
 		`label_replace(limit_ratio(0.5, latency_exp_hist), "dst", "$1", "job", "(.*)")`,
 	} {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 
@@ -163,7 +161,6 @@ func TestLower_ExpHistogram_LimitKUnderTimestampStillAnswers(t *testing.T) {
 		`timestamp(limitk(2, latency_exp_hist))`,
 		`timestamp(limit_ratio(0.5, latency_exp_hist))`,
 	} {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 
@@ -214,7 +211,6 @@ func TestLower_ExpHistogram_LimitKUnwrappedStillPreserves(t *testing.T) {
 		`limitk(2, latency_exp_hist)`,
 		`limit_ratio(0.5, latency_exp_hist)`,
 	} {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 

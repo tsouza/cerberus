@@ -25,7 +25,7 @@ func responseShapeOfShards(t *testing.T, q *fakeQuerier, k int) []string {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	shapes := make([]string, k)
-	for shard := 0; shard < k; shard++ {
+	for shard := range k {
 		shardCtx, ok := q.ctxByShard[shard]
 		if !ok {
 			t.Fatalf("shard %d never opened a cursor — nothing to assert about its ctx", shard)

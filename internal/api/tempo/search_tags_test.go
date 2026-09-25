@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -788,7 +789,6 @@ func TestSearchTags_V1OmitsIntrinsicsByDefault(t *testing.T) {
 		"event:name", "link:spanID", "instrumentation:name",
 	}
 	for _, query := range []string{"", "?scope=none"} {
-		query := query
 		t.Run("query="+query, func(t *testing.T) {
 			t.Parallel()
 			q := &stubQuerier{stringsBySQL: map[string][]string{
@@ -881,12 +881,7 @@ func TestSearchTags_V1WireShape(t *testing.T) {
 // contains is a small helper so test failures point at the missing
 // string rather than dumping the whole slice diff.
 func contains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(haystack, needle)
 }
 
 func count(haystack []string, needle string) int {

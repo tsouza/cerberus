@@ -84,7 +84,6 @@ func TestRouteBExecCtx_SettingsMatchRouteAAtK1(t *testing.T) {
 	// The plan table is the composition test's own: every plan shape a
 	// setting is gated on, including the ones where two rules meet.
 	for _, p := range compositionPlans() {
-		p := p
 		t.Run(p.name, func(t *testing.T) {
 			t.Parallel()
 

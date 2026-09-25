@@ -163,11 +163,11 @@ func runFixedAccumMatrixPrefixLevelQuery(
 	}
 	inner := strings.TrimSuffix(strings.TrimSpace(sqlText), ";")
 	const outerFromMarker = " FROM ("
-	idx := strings.Index(inner, outerFromMarker)
-	if idx == -1 {
+	_, after, ok := strings.Cut(inner, outerFromMarker)
+	if !ok {
 		t.Fatalf("runFixedAccumMatrixPrefixLevelQuery: no outer FROM found in:\n%s", inner)
 	}
-	rest := inner[idx+len(outerFromMarker):]
+	rest := after
 	wrapped := fmt.Sprintf(
 		"SELECT Attributes['job'] AS job, toUnixTimestamp64Milli(anchor_ts) AS anchor_ms, "+
 			"if(%s = %d, %s + %s, %s) AS first_val FROM (%s",

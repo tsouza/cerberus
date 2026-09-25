@@ -163,9 +163,7 @@ func TestLower_ExpHistogram_MixedSetOpOr_ScalarTypedOperands(t *testing.T) {
 		"scalar(demo_num_cpus)",
 	}
 	for _, operand := range operands {
-		operand := operand
 		for _, nested := range []bool{false, true} {
-			nested := nested
 			name := operand
 			if nested {
 				name += "/nested"

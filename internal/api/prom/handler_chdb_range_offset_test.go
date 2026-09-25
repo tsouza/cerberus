@@ -51,7 +51,7 @@ func TestQueryRange_RateOffset_UnshiftedGrid_ChDB(t *testing.T) {
 	seedStart := start.Add(-20 * time.Minute)
 	nSamples := int(end.Sub(seedStart)/step) + 1
 	rows := make([]string, 0, nSamples)
-	for i := 0; i < nSamples; i++ {
+	for i := range nSamples {
 		ts := seedStart.Add(time.Duration(i) * step).Format("2006-01-02 15:04:05.000000000")
 		rows = append(rows, fmt.Sprintf(
 			`('http_requests_total', map('job', 'api'), 'svc', toDateTime64('%s', 9), %d.0)`,

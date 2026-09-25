@@ -92,7 +92,7 @@ func assertCerberusVersion(bin string) error {
 	}
 
 	var lines []string
-	for _, line := range strings.Split(string(res.Stdout), "\n") {
+	for line := range strings.SplitSeq(string(res.Stdout), "\n") {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			lines = append(lines, trimmed)
 		}

@@ -273,7 +273,6 @@ func TestConsumerCorpus_Replay_ChDB(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		e := e
 		t.Run(e.Version+"/"+e.Name, func(t *testing.T) {
 			srv := newServer(t, e.Datasource)
 			for _, err := range Replay(srv.Client(), srv.URL, e, chdbTokens(e.Datasource, now), true) {

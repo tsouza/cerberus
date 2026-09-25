@@ -111,10 +111,7 @@ func log2QuantileWithBucket(p float64, buckets []histogramBucket) (float64, int)
 	}
 
 	// Round up so low-sample-count quantiles still read at least one sample.
-	target := int(math.Ceil(p * float64(total)))
-	if target < 1 {
-		target = 1
-	}
+	target := max(int(math.Ceil(p*float64(total))), 1)
 
 	// Walk buckets, consuming whole buckets until the next one would overshoot
 	// the target sample. `consumed` is the count strictly before `idx`.

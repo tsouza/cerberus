@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -369,7 +369,7 @@ func (w *World) whenReplayHeavyQuery() error {
 			firstErr = err
 		}
 	}
-	for i := 0; i < faultReplicas; i++ {
+	for range faultReplicas {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
@@ -404,7 +404,7 @@ func (w *World) whenReplayHeavyQuery() error {
 // ascending; it never mutates the caller's slice.
 func percentile(lats []time.Duration, p float64) time.Duration {
 	sorted := append([]time.Duration(nil), lats...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	slices.Sort(sorted)
 	idx := int(p * float64(len(sorted)-1))
 	return sorted[idx]
 }
@@ -553,12 +553,7 @@ var faultDegradedStatuses = []int{http.StatusBadGateway, http.StatusServiceUnava
 // isDegradedStatus reports whether status is one of the documented
 // backend-failure statuses.
 func isDegradedStatus(status int) bool {
-	for _, s := range faultDegradedStatuses {
-		if s == status {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(faultDegradedStatuses, status)
 }
 
 // thenHeavyQueryDegradesCleanly replays the SAME heavy query against cerberus

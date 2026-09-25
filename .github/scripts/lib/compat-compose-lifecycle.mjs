@@ -47,6 +47,7 @@ import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import process from 'node:process';
 
+import { deriveSuffix } from '../compose-project-suffix.mjs';
 import { error, log } from './gh.mjs';
 
 // isComposeKeepSet — COMPOSE_KEEP honoured exactly like the bash scripts:
@@ -55,20 +56,11 @@ export function isComposeKeepSet() {
   return (process.env.COMPOSE_KEEP ?? '').trim() !== '';
 }
 
-// deriveComposeProjectSuffix — run scripts/compose-project-suffix.sh and
-// export its stdout as COMPOSE_PROJECT_SUFFIX for every later subprocess.
-// `path` is a computed value on purpose: this call names no docker/node
-// program and no image, so it carries nothing assert-image-jobs-authenticate.mjs
-// tracks — see the module header for the rule that constrains what MUST stay
-// literal, and why this one does not have to.
-export function deriveComposeProjectSuffix(repoRoot) {
-  const path = `${repoRoot}/scripts/compose-project-suffix.sh`;
-  const res = spawnSync(path, [], { encoding: 'utf8' });
-  if (res.status !== 0) {
-    error(`${path} failed (status ${res.status}): ${res.stderr ?? ''}`);
-    process.exit(1);
-  }
-  const suffix = (res.stdout ?? '').trim();
+// deriveComposeProjectSuffix — derive this checkout's compose project suffix
+// (compose-project-suffix.mjs) and export it as COMPOSE_PROJECT_SUFFIX for
+// every later subprocess.
+export function deriveComposeProjectSuffix() {
+  const suffix = deriveSuffix();
   process.env.COMPOSE_PROJECT_SUFFIX = suffix;
   return suffix;
 }

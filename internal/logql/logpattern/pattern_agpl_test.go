@@ -42,7 +42,6 @@ var patternCorpus = []string{
 
 func TestPattern_New_MatchesLoki(t *testing.T) {
 	for _, p := range patternCorpus {
-		p := p
 		t.Run(p, func(t *testing.T) {
 			want, wantErr := lokipattern.New(p)
 			got, gotErr := New(p)
@@ -61,7 +60,6 @@ func TestPattern_New_MatchesLoki(t *testing.T) {
 
 func TestPattern_ParseLineFilter_MatchesLoki(t *testing.T) {
 	for _, p := range patternCorpus {
-		p := p
 		t.Run(p, func(t *testing.T) {
 			_, wantErr := lokipattern.ParseLineFilter([]byte(p))
 			_, gotErr := ParseLineFilter([]byte(p))
@@ -74,7 +72,6 @@ func TestPattern_ParseLineFilter_MatchesLoki(t *testing.T) {
 
 func TestPattern_ParseLiterals_MatchesLoki(t *testing.T) {
 	for _, p := range patternCorpus {
-		p := p
 		t.Run(p, func(t *testing.T) {
 			want, wantErr := lokipattern.ParseLiterals(p)
 			got, gotErr := ParseLiterals(p)
@@ -130,7 +127,6 @@ func TestPattern_MatchesAndTest_MatchLoki(t *testing.T) {
 			t.Fatalf("in-house New(%q) unexpectedly errored: %v", p, err)
 		}
 		for _, line := range lineCorpus {
-			line := line
 			wantCaps := lm.Matches(line)
 			gotCaps := gm.Matches(line)
 			if len(wantCaps) != len(gotCaps) {

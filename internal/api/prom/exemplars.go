@@ -3,6 +3,7 @@ package prom
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"sort"
 	"time"
@@ -351,9 +352,7 @@ func groupExemplars(rows []chclient.ExemplarRow, metricName string) []ExemplarSe
 // dropped — no `"trace_id":""` keys land on the wire.
 func projectExemplar(r chclient.ExemplarRow) Exemplar {
 	out := make(map[string]string, len(r.ExemplarAttributes)+2)
-	for k, v := range r.ExemplarAttributes {
-		out[k] = v
-	}
+	maps.Copy(out, r.ExemplarAttributes)
 	if r.TraceID != "" {
 		out["trace_id"] = r.TraceID
 	}

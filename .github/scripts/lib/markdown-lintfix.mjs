@@ -1,6 +1,6 @@
 // markdown-lintfix.mjs — runs the repository's own Markdown house-style
-// fixers (`scripts/align-md-tables.py` then `.github/scripts/markdownlint-
-// run.mjs --staged`, in that order — MD060 table alignment has no fixer
+// fixers (`.github/scripts/align-md-tables.mjs` then `.github/scripts/
+// markdownlint-run.mjs --staged`, in that order — MD060 table alignment has no fixer
 // inside markdownlint itself and must be resolved first) against a
 // throwaway temp copy of generated Markdown, never the real target.
 //
@@ -23,23 +23,18 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 
+import { alignMarkdown } from "../align-md-tables.mjs";
+
 /**
- * Runs `markdown` through align-md-tables.py then markdownlint-run.mjs
- * --staged, both against a temp copy, and returns the fixed text.
- * `root` is the repository root the two fixer scripts are invoked from.
+ * Runs `markdown` through align-md-tables.mjs then markdownlint-run.mjs
+ * --staged, against a temp copy, and returns the fixed text.
+ * `root` is the repository root markdownlint-run.mjs is invoked from.
  */
 export function lintFixMarkdown(markdown, root) {
   const dir = mkdtempSync(join(tmpdir(), "md-lintfix-"));
   const tmpPath = join(dir, "generated.md");
   try {
-    writeFileSync(tmpPath, markdown);
-    const align = spawnSync("python3", ["scripts/align-md-tables.py", tmpPath], {
-      cwd: root,
-      encoding: "utf8",
-    });
-    if (align.status !== 0) {
-      throw new Error(`align-md-tables.py exited ${align.status}: ${align.stderr || align.error}`);
-    }
+    writeFileSync(tmpPath, alignMarkdown(markdown));
     const fix = spawnSync(
       "node",
       [join(root, ".github/scripts/markdownlint-run.mjs"), "--staged", tmpPath],

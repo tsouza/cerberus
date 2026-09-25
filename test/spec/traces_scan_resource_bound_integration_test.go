@@ -141,10 +141,7 @@ func TestTracesScanResourceBoundRealCH(t *testing.T) {
 	if inWindowRoots == 0 {
 		t.Fatal("seed produced zero in-window root traces — correctness assertions would be vacuous")
 	}
-	wantTraces := inWindowRoots
-	if wantTraces > scanBoundSearchLimit {
-		wantTraces = scanBoundSearchLimit
-	}
+	wantTraces := min(inWindowRoots, scanBoundSearchLimit)
 
 	// --- 1. Structure query: real lower→emit, executes WITHOUT error 49 and
 	//        returns the correct nested-set numbering. ---

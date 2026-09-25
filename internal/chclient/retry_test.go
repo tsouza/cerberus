@@ -126,7 +126,7 @@ func TestQuery_StaleConn_DoesNotTripBreaker(t *testing.T) {
 	client := newWithConn(conn)
 
 	const queries = breakerThreshold * 3 // well past the trip threshold
-	for i := 0; i < queries; i++ {
+	for i := range queries {
 		// Each query sees exactly one fresh stale conn: bump failUntil so the
 		// next single call fails, then succeeds on retry.
 		conn.failUntil = conn.calls.Load() + 1
@@ -150,7 +150,7 @@ func TestQuery_DeadBackend_StillTripsBreaker(t *testing.T) {
 	conn := &staleConn{brokenErr: errBrokenPipe, failForever: true}
 	client := newWithConn(conn)
 
-	for i := 0; i < breakerThreshold; i++ {
+	for i := range breakerThreshold {
 		if _, err := client.Query(context.Background(), "SELECT 1"); err == nil {
 			t.Fatalf("Query %d: nil error; want broken-conn error from a dead backend", i)
 		}
@@ -201,8 +201,7 @@ func TestWithTransportRetry_BlockingStaleConn_NotRetried(t *testing.T) {
 	if isBrokenConnError(context.DeadlineExceeded) {
 		t.Fatal("context.DeadlineExceeded must NOT be a broken-conn error — a blocking stale conn is not fast-retryable")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	var calls int
 	// The call models a read that blocked on the dead peer until the ctx

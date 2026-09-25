@@ -44,6 +44,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -462,12 +464,8 @@ func decodeLabelMap(encoded string) (map[string]string, error) {
 // constructor produces when nothing collides.
 func stageLabels(extracted map[string]string) map[string]string {
 	out := make(map[string]string, len(stageStreamLabels)+len(extracted))
-	for k, v := range stageStreamLabels {
-		out[k] = v
-	}
-	for k, v := range extracted {
-		out[k] = v
-	}
+	maps.Copy(out, stageStreamLabels)
+	maps.Copy(out, extracted)
 	return out
 }
 
@@ -682,12 +680,7 @@ func parseGoFile(t *testing.T, name string) *ast.File {
 }
 
 func contains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(haystack, needle)
 }
 
 // stageExtractionExprs keeps the label-extraction expression arguments

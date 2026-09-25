@@ -63,7 +63,6 @@ func TestPromOutcomeFixturesStayOutsideSampleParity(t *testing.T) {
 	}
 
 	for _, class := range classes {
-		class := class
 		t.Run(class.name, func(t *testing.T) {
 			assertOutcomeOwners(t, root, class.owners)
 			assertOutcomeFixtureInventory(t, fixtureDir, class)

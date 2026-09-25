@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -215,14 +216,14 @@ func runQuery(b backend, q querySpec, man manifest, iters, warmup int) (latency,
 	if err != nil {
 		return latency{}, promResult{}, err
 	}
-	for i := 0; i < warmup; i++ {
+	for range warmup {
 		if _, err := doGet(b, u); err != nil {
 			return latency{}, promResult{}, err
 		}
 	}
 	var lat latency
 	var lastBody []byte
-	for i := 0; i < iters; i++ {
+	for range iters {
 		t0 := time.Now()
 		body, err := doGet(b, u)
 		d := time.Since(t0)
@@ -245,7 +246,7 @@ func (l *latency) compute() {
 		return
 	}
 	s := append([]time.Duration(nil), l.all...)
-	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	slices.Sort(s)
 	l.n = len(s)
 	l.min = s[0]
 	l.max = s[len(s)-1]
@@ -263,10 +264,7 @@ func pct(sorted []time.Duration, p int) time.Duration {
 	if len(sorted) == 0 {
 		return 0
 	}
-	rank := int(math.Ceil(float64(p)/100*float64(len(sorted)))) - 1
-	if rank < 0 {
-		rank = 0
-	}
+	rank := max(int(math.Ceil(float64(p)/100*float64(len(sorted))))-1, 0)
 	if rank >= len(sorted) {
 		rank = len(sorted) - 1
 	}
@@ -293,10 +291,7 @@ func buildURL(b backend, q querySpec, man manifest) (string, error) {
 		}
 		// Clamp the window to the available data so a "24h" shape still runs on
 		// the 1h smoke dataset (it just covers the whole window).
-		start := man.EndUnix - int64(rng.Seconds())
-		if start < man.StartUnix {
-			start = man.StartUnix
-		}
+		start := max(man.EndUnix-int64(rng.Seconds()), man.StartUnix)
 		end := man.EndUnix
 		// Snap start/end onto the step grid, exactly as Grafana's Prometheus
 		// datasource does before issuing a range query. Without this the two
@@ -579,7 +574,7 @@ func dockerStats(containers []string) map[string]resStat {
 	if err != nil {
 		return out
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(buf)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(buf)), "\n") {
 		fields := strings.Split(line, "\t")
 		if len(fields) < 3 {
 			continue
@@ -617,8 +612,8 @@ func parseSizeMiB(s string) float64 {
 		{"B", 1.0 / 1048576.0},
 	}
 	for _, u := range units {
-		if strings.HasSuffix(s, u.suf) {
-			f, _ := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(s, u.suf)), 64)
+		if before, ok := strings.CutSuffix(s, u.suf); ok {
+			f, _ := strconv.ParseFloat(strings.TrimSpace(before), 64)
 			return f * u.toMiB
 		}
 	}

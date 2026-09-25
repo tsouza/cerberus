@@ -188,7 +188,7 @@ func innermostScanProjection(t *testing.T, sqlStr string) []string {
 		return allMetricsSumColumns()
 	}
 	cols := make([]string, 0)
-	for _, raw := range strings.Split(projList, ",") {
+	for raw := range strings.SplitSeq(projList, ",") {
 		name := strings.Trim(strings.TrimSpace(raw), "`")
 		if name != "" {
 			cols = append(cols, name)

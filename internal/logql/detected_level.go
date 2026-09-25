@@ -1,6 +1,7 @@
 package logql
 
 import (
+	"slices"
 	"strings"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
@@ -363,10 +364,8 @@ func NormalizeDetectedLevel(raw string) string {
 		return "unknown"
 	}
 	for _, g := range levelNormalizationGroups {
-		for _, v := range g.variants {
-			if lower == v {
-				return g.canonical
-			}
+		if slices.Contains(g.variants, lower) {
+			return g.canonical
 		}
 	}
 	return raw

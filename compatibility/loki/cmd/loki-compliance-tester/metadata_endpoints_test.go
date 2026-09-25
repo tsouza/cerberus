@@ -54,13 +54,13 @@ func (s *metadataStub) matches(stream map[string]string, selector string) bool {
 func (s *metadataStub) keyLabels(selector, targetLabels string) map[string]struct{} {
 	target := map[string]struct{}{}
 	if targetLabels != "" {
-		for _, k := range strings.Split(targetLabels, ",") {
+		for k := range strings.SplitSeq(targetLabels, ",") {
 			target[k] = struct{}{}
 		}
 		return target
 	}
 	inner := strings.Trim(selector, "{}")
-	for _, m := range strings.Split(inner, ",") {
+	for m := range strings.SplitSeq(inner, ",") {
 		name, _, _ := strings.Cut(strings.TrimSpace(m), "=")
 		target[strings.TrimRight(name, "!~")] = struct{}{}
 	}
@@ -372,7 +372,6 @@ func TestCompareMetadataOne_StatusArms(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			f := flags{addr1: newMetadataStub(t, tc.ref).URL, addr2: newMetadataStub(t, tc.test).URL}
@@ -436,7 +435,6 @@ func TestDiffMetadataBody_SetKinds(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if diff := diffMetadataBody(tc.same, tc.reordered); diff != "" {
@@ -552,7 +550,6 @@ func TestDecodeMetadataBody_Shapes(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := decodeMetadataBody(tc.kind, []byte(tc.body))

@@ -93,7 +93,7 @@ func TestParityOracleImportsNoCerberusLowering(t *testing.T) {
 		if config == "" {
 			config = "(default build)"
 		}
-		for _, dep := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		for dep := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 			dep = strings.TrimSpace(dep)
 			reached[dep] = true
 			for _, forbidden := range forbiddenOracleDeps {

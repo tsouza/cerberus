@@ -400,7 +400,7 @@ func TestOptdocsRun_FlagParsing(t *testing.T) {
 // optdocRowFor returns the one table line of block whose id cell is id.
 func optdocRowFor(t *testing.T, block, id string) string {
 	t.Helper()
-	for _, line := range strings.Split(block, "\n") {
+	for line := range strings.SplitSeq(block, "\n") {
 		if strings.HasPrefix(line, "| `"+id+"` ") {
 			return line
 		}

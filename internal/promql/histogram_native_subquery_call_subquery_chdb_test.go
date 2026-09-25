@@ -59,6 +59,7 @@ package promql_test
 import (
 	"math"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,20 +85,20 @@ const (
 // values are never read.
 func callSubqHistAndSeed() string {
 	rows := func(metric string, countOf func(i int) int) string {
-		out := ""
+		var out strings.Builder
 		for i := 0; i <= 12; i++ {
 			ts := callSubqSeedBaseTS.Add(time.Duration(i) * time.Minute)
 			c := countOf(i)
-			out += "    ('" + metric + "', map('series', 'a'), toDateTime64('" +
+			out.WriteString("    ('" + metric + "', map('series', 'a'), toDateTime64('" +
 				ts.Format("2006-01-02 15:04:05") + "', 9), " +
-				strconv.Itoa(c) + ", " + strconv.Itoa(c) + ".0, 0, 0, 0, [" + strconv.Itoa(c*2) + "], 0, [])"
+				strconv.Itoa(c) + ", " + strconv.Itoa(c) + ".0, 0, 0, 0, [" + strconv.Itoa(c*2) + "], 0, [])")
 			if i < 12 {
-				out += ",\n"
+				out.WriteString(",\n")
 			} else {
-				out += ";\n"
+				out.WriteString(";\n")
 			}
 		}
-		return out
+		return out.String()
 	}
 	return subqHistDDL +
 		swapGaugeSeedDDL +
@@ -116,29 +117,29 @@ func callSubqHistAndSeed() string {
 // same thirteen-samples-one-minute-apart, Count/Value = minute+1 pattern
 // as callSubqHistAndSeed.
 func callSubqMixedOrSeed() string {
-	histRows := ""
-	gaugeRows := ""
+	var histRows strings.Builder
+	var gaugeRows strings.Builder
 	for i := 0; i <= 12; i++ {
 		ts := callSubqSeedBaseTS.Add(time.Duration(i) * time.Minute).Format("2006-01-02 15:04:05")
 		c := i + 1
-		histRows += "    ('" + callSubqMixedHistMetric + "', map('series', 'h'), toDateTime64('" + ts + "', 9), " +
-			strconv.Itoa(c) + ", " + strconv.Itoa(c) + ".0, 0, 0, 0, [" + strconv.Itoa(c*2) + "], 0, [])"
-		gaugeRows += "    ('" + callSubqMixedGaugeMetric + "', map('series', 'g'), toDateTime64('" + ts + "', 9), " + strconv.Itoa(c) + ".0)"
+		histRows.WriteString("    ('" + callSubqMixedHistMetric + "', map('series', 'h'), toDateTime64('" + ts + "', 9), " +
+			strconv.Itoa(c) + ", " + strconv.Itoa(c) + ".0, 0, 0, 0, [" + strconv.Itoa(c*2) + "], 0, [])")
+		gaugeRows.WriteString("    ('" + callSubqMixedGaugeMetric + "', map('series', 'g'), toDateTime64('" + ts + "', 9), " + strconv.Itoa(c) + ".0)")
 		if i < 12 {
-			histRows += ",\n"
-			gaugeRows += ",\n"
+			histRows.WriteString(",\n")
+			gaugeRows.WriteString(",\n")
 		} else {
-			histRows += ";\n"
-			gaugeRows += ";\n"
+			histRows.WriteString(";\n")
+			gaugeRows.WriteString(";\n")
 		}
 	}
 	return subqHistDDL +
 		"INSERT INTO otel_metrics_exponential_histogram " +
 		"(MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n" +
-		histRows +
+		histRows.String() +
 		swapGaugeSeedDDL +
 		"INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES\n" +
-		gaugeRows
+		gaugeRows.String()
 }
 
 // callSubqOuterAnchors are the ten outer-subquery anchors a `[10m:1m]`

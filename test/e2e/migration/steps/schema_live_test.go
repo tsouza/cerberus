@@ -481,7 +481,7 @@ func insertColumnList(t *testing.T, stmt string) []string {
 		t.Fatalf("statement %q carries no column list", stmt)
 	}
 	var out []string
-	for _, part := range strings.Split(stmt[open+1:shut], ",") {
+	for part := range strings.SplitSeq(stmt[open+1:shut], ",") {
 		if p := strings.TrimSpace(part); p != "" {
 			out = append(out, p)
 		}

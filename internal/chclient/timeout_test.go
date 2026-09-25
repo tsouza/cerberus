@@ -180,7 +180,7 @@ func TestBreaker_QueryTimeoutNeutral_Closed(t *testing.T) {
 
 	var b breaker
 	ctx := context.Background()
-	for i := 0; i < breakerThreshold*3; i++ {
+	for i := range breakerThreshold * 3 {
 		if !b.allow() {
 			t.Fatalf("allow() = false after %d timeout rejections; breaker must stay closed", i)
 		}
@@ -193,7 +193,7 @@ func TestBreaker_QueryTimeoutNeutral_Closed(t *testing.T) {
 	// A 159 also RESETS the consecutive-failure count (it is a success):
 	// real failures interleaved with timeout rejections never accumulate.
 	outage := errors.New("dial tcp: connection refused")
-	for i := 0; i < breakerThreshold*2; i++ {
+	for range breakerThreshold * 2 {
 		b.record(ctx, outage)
 		b.record(ctx, chTimeoutException())
 	}
@@ -279,8 +279,7 @@ func TestHiddenDeadlineContext_HidesDeadlineOnly(t *testing.T) {
 func TestHiddenDeadlineContext_NoOpWithoutDeadline(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	if got := hiddenDeadlineContext(ctx); got != ctx {
 		t.Errorf("hiddenDeadlineContext returned a different context for a Deadline()-less input")

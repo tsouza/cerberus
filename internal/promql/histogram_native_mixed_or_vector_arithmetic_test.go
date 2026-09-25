@@ -35,7 +35,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorAdditiveArithmetic(t *testi
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	for _, op := range []string{"+", "-"} {
-		op := op
 		t.Run(op, func(t *testing.T) {
 			t.Parallel()
 			query := mixedOrExpr + " " + op + " " + mixedOrExpr
@@ -105,7 +104,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorScaledArithmetic(t *testing
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	for _, op := range []string{"*", "/"} {
-		op := op
 		t.Run(op, func(t *testing.T) {
 			t.Parallel()
 			query := mixedOrExpr + " " + op + " " + mixedOrExpr
@@ -166,7 +164,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorPowModAtan2(t *testing.T) {
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	for _, op := range []string{"^", "%", "atan2"} {
-		op := op
 		t.Run(op, func(t *testing.T) {
 			t.Parallel()
 			query := mixedOrExpr + " " + op + " " + mixedOrExpr
@@ -247,7 +244,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorGroupLeftRight(t *testing.T
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)
@@ -299,7 +295,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorOnIgnoring(t *testing.T) {
 		{"ignoring", mixedOrExpr + ` - ignoring(job) ` + mixedOrExpr},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)

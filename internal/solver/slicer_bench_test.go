@@ -33,7 +33,6 @@ func BenchmarkSlice(b *testing.B) {
 	p := &Planner{Cfg: autoCfg()}
 
 	for _, k := range []int{2, 4, 8, 16} {
-		k := k
 		b.Run(fmt.Sprintf("K=%d", k), func(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()

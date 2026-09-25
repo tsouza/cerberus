@@ -1131,7 +1131,6 @@ func TestAnchoredGridLayoutSpine_CrossJoinIsAnchoredIfEitherSideIs(t *testing.T)
 		{"neither side carries a grid", &chplan.CrossJoin{Left: lookup, Right: lookup}, false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := anchoredGridLayoutSpine(tc.join); got != tc.wantAnchord {

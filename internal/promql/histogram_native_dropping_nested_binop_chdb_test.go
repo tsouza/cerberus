@@ -149,7 +149,6 @@ func TestLower_ExpHistogram_DroppingShapeNestedInBinop_ChDB(t *testing.T) {
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			expr, err := p.ParseExpr(query)
 			if err != nil {

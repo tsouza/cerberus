@@ -58,9 +58,9 @@ func TestMinePatternsClearsE2ESeedFloor(t *testing.T) {
 	end := now
 
 	var lines []chclient.TimestampedLine
-	for tick := 0; tick < realisticDwellTicks; tick++ {
+	for tick := range realisticDwellTicks {
 		tickNow := now.Add(-time.Duration(tick) * tickInterval)
-		for n := 0; n < rowsPerTick; n++ {
+		for n := range rowsPerTick {
 			if n%3 != 0 {
 				continue // insertLogsSQL: arrayElement(['api','frontend','db'], number%3+1) != 'api'
 			}

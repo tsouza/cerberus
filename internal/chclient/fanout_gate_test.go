@@ -25,7 +25,6 @@ import (
 func TestNewDataShardFanoutGate_DataShardCountLE1_NeverAllocates(t *testing.T) {
 	t.Parallel()
 	for _, n := range []int{0, 1} {
-		n := n
 		t.Run(fmt.Sprintf("DataShardCount=%d", n), func(t *testing.T) {
 			t.Parallel()
 			cfg := Config{DataShardCount: n, MaxOpenConns: 42}
@@ -191,7 +190,7 @@ func TestQueryCursor_DataShardFanoutGate_DeniedIsBreakerNeutral(t *testing.T) {
 
 	// Drive well past the breaker's own failure threshold with denied
 	// acquires while the gate stays saturated.
-	for i := 0; i < breakerThreshold*3; i++ {
+	for i := range breakerThreshold * 3 {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 		_, err := c.QueryCursor(ctx, "SELECT 1")
 		cancel()
@@ -259,7 +258,6 @@ func TestQueryOpen_ConcurrentDataShardFanout_NeverExceedsCap(t *testing.T) {
 	const holdTime = 2 * time.Millisecond
 
 	for _, dataShardCount := range []int{1, 2, 4, 8, 32} {
-		dataShardCount := dataShardCount
 		t.Run(fmt.Sprintf("DataShardCount=%d", dataShardCount), func(t *testing.T) {
 			t.Parallel()
 
@@ -283,10 +281,8 @@ func TestQueryOpen_ConcurrentDataShardFanout_NeverExceedsCap(t *testing.T) {
 
 			var wg sync.WaitGroup
 			start := make(chan struct{})
-			for i := 0; i < numGoroutines; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+			for range numGoroutines {
+				wg.Go(func() {
 					<-start
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
@@ -295,10 +291,7 @@ func TestQueryOpen_ConcurrentDataShardFanout_NeverExceedsCap(t *testing.T) {
 						t.Errorf("QueryCursor: %v", err)
 						return
 					}
-					weight := int64(dataShardCount)
-					if weight < 1 {
-						weight = 1
-					}
+					weight := max(int64(dataShardCount), 1)
 					newVal := aggregate.Add(weight)
 					for {
 						old := maxObserved.Load()
@@ -317,7 +310,7 @@ func TestQueryOpen_ConcurrentDataShardFanout_NeverExceedsCap(t *testing.T) {
 					time.Sleep(holdTime)
 					aggregate.Add(-weight)
 					_ = cur.Close()
-				}()
+				})
 			}
 			close(start)
 
@@ -469,8 +462,7 @@ func TestAcquireDataShardFanout_NormalFinish_NoKillQuery(t *testing.T) {
 	c := assembleClientFromConn(cfg, conn, m)
 	t.Cleanup(func() { _ = c.Close() })
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	ctx = withQueryID(ctx, "trace-normal-qid")
 
 	release, err := c.acquireDataShardFanout(ctx)
@@ -575,8 +567,7 @@ func TestAcquireDataShardFanout_DefaultMultiplier_ChargesDataShardCountExactly(t
 	c := assembleClientFromConn(cfg, conn, m)
 	t.Cleanup(func() { _ = c.Close() })
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	release, err := c.acquireDataShardFanout(ctx)
 	if err != nil {
@@ -609,8 +600,7 @@ func TestAcquireDataShardFanout_WithMultiplier_ScalesChargedWeight(t *testing.T)
 	c := assembleClientFromConn(cfg, conn, m)
 	t.Cleanup(func() { _ = c.Close() })
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	ctx = WithDataShardFanoutMultiplier(ctx, multiplier)
 
 	release, err := c.acquireDataShardFanout(ctx)
@@ -638,7 +628,6 @@ func TestAcquireDataShardFanout_WithMultiplier_ScalesChargedWeight(t *testing.T)
 func TestAcquireDataShardFanout_NonPositiveMultiplier_FallsBackToDefault(t *testing.T) {
 	t.Parallel()
 	for _, multiplier := range []int{0, -1} {
-		multiplier := multiplier
 		t.Run(fmt.Sprintf("multiplier=%d", multiplier), func(t *testing.T) {
 			t.Parallel()
 			const dataShardCount = 2
@@ -648,8 +637,7 @@ func TestAcquireDataShardFanout_NonPositiveMultiplier_FallsBackToDefault(t *test
 			c := assembleClientFromConn(cfg, conn, m)
 			t.Cleanup(func() { _ = c.Close() })
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 			ctx = WithDataShardFanoutMultiplier(ctx, multiplier)
 
 			release, err := c.acquireDataShardFanout(ctx)

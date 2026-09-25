@@ -31,6 +31,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,14 +112,15 @@ func seedNumericMatClient(t *testing.T) (*chclienttest.Client, time.Time, time.T
 	const tsFmt = "2006-01-02 15:04:05.000"
 
 	rows := numericMatSeedRows()
-	seed := numericMatSeedTable
+	var seed strings.Builder
+	seed.WriteString(numericMatSeedTable)
 	for i, r := range rows {
 		ts := numericMatWindowBase.Add(time.Duration(i) * time.Second).Format(tsFmt)
 		attrs := "map()"
 		if !r.omit {
 			attrs = fmt.Sprintf("map('http.status_code', '%s')", r.statusVal)
 		}
-		seed += fmt.Sprintf(
+		fmt.Fprintf(&seed,
 			"\nINSERT INTO otel_traces (TraceId, SpanId, SpanName, SpanKind, Duration, Timestamp, StatusCode, SpanAttributes)"+
 				" VALUES ('%s', '1', 'op', 'Server', 100, toDateTime64('%s', 9), 'Unset', %s);",
 			r.traceID, ts, attrs,
@@ -126,7 +128,7 @@ func seedNumericMatClient(t *testing.T) (*chclienttest.Client, time.Time, time.T
 	}
 
 	c := chclienttest.NewChDB(t)
-	c.Seed(t, seed)
+	c.Seed(t, seed.String())
 	start := numericMatWindowBase.Add(-time.Minute)
 	end := numericMatWindowBase.Add(time.Duration(len(rows))*time.Second + time.Minute)
 	return c, start, end
@@ -300,17 +302,18 @@ func TestBuildAutoScopeUnionAttributeValuesSQL_NumericArmUnionsWithMapFallbackAr
 	}
 
 	const tsFmt = "2006-01-02 15:04:05.000"
-	seed := seedTable
+	var seed strings.Builder
+	seed.WriteString(seedTable)
 	for i, r := range rows {
 		ts := windowBase.Add(time.Duration(i) * time.Second).Format(tsFmt)
-		seed += fmt.Sprintf(
+		fmt.Fprintf(&seed,
 			"\nINSERT INTO otel_traces (Timestamp, SpanAttributes, ResourceAttributes) VALUES (toDateTime64('%s', 9), %s, %s);",
 			ts, r.spanMapSQL, r.resourceMapSQL,
 		)
 	}
 
 	c := chclienttest.NewChDB(t)
-	c.Seed(t, seed)
+	c.Seed(t, seed.String())
 	ctx := context.Background()
 	start := windowBase.Add(-time.Minute)
 	end := windowBase.Add(time.Duration(len(rows))*time.Second + time.Minute)

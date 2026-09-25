@@ -83,7 +83,7 @@ func cardinalityUpdatePlan(t *testing.T) []string {
 	}
 
 	var lines []string
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if strings.TrimSpace(line) != "" {
 			lines = append(lines, line)
 		}

@@ -79,7 +79,7 @@ func TestStreamingCursor_StopMid_FreesBuffers(t *testing.T) {
 	rows := newGenRows(100_000)
 	cursor := &rowsCursor{rows: rows}
 
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		if !cursor.Next() {
 			t.Fatalf("Next: ran out at %d", i)
 		}

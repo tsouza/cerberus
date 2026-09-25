@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -212,7 +213,7 @@ func deGatedLanesFromDocs(t *testing.T) map[string]string {
 	section, _, _ := strings.Cut(after, "\n#")
 
 	lanes := map[string]string{}
-	for _, line := range strings.Split(section, "\n") {
+	for line := range strings.SplitSeq(section, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "|") {
 			continue
@@ -318,7 +319,7 @@ func TestNoJustfileRecipePushesAReleaseTag(t *testing.T) {
 				consequence, name)
 		}
 		body := r.bodyText(t)
-		for _, line := range strings.Split(body, "\n") {
+		for line := range strings.SplitSeq(body, "\n") {
 			if why := tagCuttingCommand(line); why != "" {
 				t.Errorf("Justfile recipe %q %s:\n\t%s\n"+consequence,
 					name, why, strings.TrimSpace(line))
@@ -377,7 +378,7 @@ func assertStagesPerfBaseline(t *testing.T, where, body string) {
 			"the next release is judged against", where, perfBaselineCaptureRecipe)
 	}
 	staged := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if strings.Contains(line, "git add") && strings.Contains(line, perfBaselineDir) {
 			staged = true
 		}
@@ -549,12 +550,7 @@ type checkOwner struct {
 }
 
 func (o checkOwner) pushesOn(branch string) bool {
-	for _, b := range o.pushBranches {
-		if b == branch {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(o.pushBranches, branch)
 }
 
 // checkOwnerIndex resolves a check-run name to the workflow that posts it.
@@ -765,9 +761,7 @@ func matrixCombos(t *testing.T, path, jobID string, node yaml.Node) []map[string
 			if !comboCompatible(combo, add, axes) {
 				continue
 			}
-			for k, v := range add {
-				combo[k] = v
-			}
+			maps.Copy(combo, add)
 			extended = true
 		}
 		if !extended {

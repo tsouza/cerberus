@@ -371,7 +371,7 @@ func TestMetricNameRestorer(t *testing.T) {
 			"job=web": "container/cpu/usage",
 		} {
 			labelSet := map[string]string{promNameLabel: "container_cpu_usage"}
-			for _, pair := range strings.Split(labels, ",") {
+			for pair := range strings.SplitSeq(labels, ",") {
 				key, value, _ := strings.Cut(pair, "=")
 				labelSet[key] = value
 			}

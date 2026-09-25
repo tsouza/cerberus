@@ -29,6 +29,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,10 +139,11 @@ func seedAutoScopeClient(t *testing.T) (*chclienttest.Client, time.Time, time.Ti
 	const tsFmt = "2006-01-02 15:04:05.000"
 
 	rows := autoScopeSeedRows()
-	seed := autoScopeSeedTable
+	var seed strings.Builder
+	seed.WriteString(autoScopeSeedTable)
 	for i, r := range rows {
 		ts := autoScopeWindowBase.Add(time.Duration(i) * time.Second).Format(tsFmt)
-		seed += fmt.Sprintf(
+		fmt.Fprintf(&seed,
 			"\nINSERT INTO otel_traces (Timestamp, SpanAttributes, ResourceAttributes) VALUES"+
 				" (toDateTime64('%s', 9), %s, %s);",
 			ts, r.spanMapSQL, r.resourceMapSQL,
@@ -149,7 +151,7 @@ func seedAutoScopeClient(t *testing.T) (*chclienttest.Client, time.Time, time.Ti
 	}
 
 	c := chclienttest.NewChDB(t)
-	c.Seed(t, seed)
+	c.Seed(t, seed.String())
 	start := autoScopeWindowBase.Add(-time.Minute)
 	end := autoScopeWindowBase.Add(time.Duration(len(rows))*time.Second + time.Minute)
 	return c, start, end

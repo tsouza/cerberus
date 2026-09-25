@@ -137,7 +137,6 @@ func TestMetricsRecursiveArmWindowed(t *testing.T) {
 		{"nested_set_filter", `{ nestedSetLeft > 0 } | rate()`, false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			plan := lowerMetricsWithWindow(t, tc.query, start, end)

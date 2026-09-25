@@ -69,7 +69,6 @@ var isolationSample = []string{
 // drives, even though the whole-package walk would stay green.
 func TestFixtureIsolation_SampleRunsAlone(t *testing.T) {
 	for _, name := range isolationSample {
-		name := name
 		t.Run(name, func(t *testing.T) {
 			pattern := "^TestRoundTripChDB$/^" + name + "$"
 			cmd := exec.Command("go", "test", "-tags", "chdb", "-count=1", "-v", "-run", pattern, ".")

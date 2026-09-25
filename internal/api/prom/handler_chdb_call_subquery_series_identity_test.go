@@ -47,6 +47,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -111,14 +112,14 @@ func callSubqStamp(start time.Time, minute int) string {
 
 // callSubqValues terminates a VALUES list.
 func callSubqValues(rows []string) string {
-	out := ""
+	var out strings.Builder
 	for i, r := range rows {
-		out += r
+		out.WriteString(r)
 		if i < len(rows)-1 {
-			out += ",\n"
+			out.WriteString(",\n")
 		}
 	}
-	return out + ";\n"
+	return out.String() + ";\n"
 }
 
 // callSubqNameDroppingNames are the six names whose output carries no

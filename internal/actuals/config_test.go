@@ -30,6 +30,7 @@ func TestConfig_ValidateRejectsBadFields(t *testing.T) {
 		{"lookback below poll interval", func(c *Config) { c.Enabled = true; c.QueryLogLookback = c.QueryLogPollInterval / 2 }},
 		{"negative settle delay", func(c *Config) { c.QueryLogSettleDelay = -time.Second }},
 		{"negative max query duration", func(c *Config) { c.MaxQueryDuration = -time.Second }},
+		{"negative max routed request duration", func(c *Config) { c.MaxRoutedRequestDuration = -time.Second }},
 		{"lookback equal to poll interval plus settle delay", func(c *Config) {
 			c.Enabled = true
 			c.QueryLogLookback = c.QueryLogPollInterval + c.QueryLogSettleDelay
@@ -70,5 +71,16 @@ func TestConfig_PacketMarkTTLCoversTheLongestQuery(t *testing.T) {
 	cfg.MaxQueryDuration = 2 * time.Minute
 	if got, floor := cfg.PacketMarkTTL(), cfg.QueryLogLookback+cfg.MaxQueryDuration; got <= floor {
 		t.Fatalf("PacketMarkTTL = %s, want more than lookback + max query duration (%s)", got, floor)
+	}
+}
+
+// TestConfig_ShardFoldHorizonCoversTheLongestRoutedRequest pins what a partial
+// fold must outlast: a routed request's shard rows finish up to
+// MaxRoutedRequestDuration apart, and the servers' clocks can disagree.
+func TestConfig_ShardFoldHorizonCoversTheLongestRoutedRequest(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxRoutedRequestDuration = 3 * time.Minute
+	if got := cfg.ShardFoldHorizon(); got <= cfg.MaxRoutedRequestDuration {
+		t.Fatalf("ShardFoldHorizon = %s, want more than the max routed request duration (%s)", got, cfg.MaxRoutedRequestDuration)
 	}
 }

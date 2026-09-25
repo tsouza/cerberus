@@ -436,7 +436,6 @@ func TestReanchorRange_LWRReGrids(t *testing.T) {
 		{"negative offset", -5 * time.Minute},
 		{"positive offset", time.Hour},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			gridStart := time.Unix(1000, 0).UTC()

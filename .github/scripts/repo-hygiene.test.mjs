@@ -21,6 +21,12 @@
 //   7. the CLI exits non-zero, naming file:line, on a fixture workflow that
 //      uses docker/login-action.
 //   8. the CLI exits 0 on a fixture workflow that runs registry-login.mjs.
+//   9. the root allow-list rejects a top-level `scripts/` directory.
+//  10. scriptLanguage / stepLogicViolation classify Python and shell by
+//      extension and by `#!` line, and accept shell only under test/,
+//      bench/ and in .envrc.
+//  11. the CLI exits non-zero, naming each offender, on a fixture carrying
+//      Python and shell step logic, and exits 0 on the accepted places.
 //
 // The live tree is deliberately NOT asserted here: the workflow runs the real
 // CLI against it in the two steps that follow this one, so duplicating that
@@ -34,7 +40,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +53,8 @@ import {
   isLfsPointer,
   loginActionUses,
   rootEntriesOf,
+  scriptLanguage,
+  stepLogicViolation,
 } from './repo-hygiene.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -373,4 +381,102 @@ test('the CLI PASSES on a workflow that runs the retrying login script', () => {
   );
   const { status, out } = runGate('registry-login', dir);
   assert.equal(status, 0, `the registry-login scan must pass; got:\n${out}`);
+});
+
+// --- top-level scripts/ and CHECK=step-logic --------------------------------
+
+test('the CLI FAILS on a top-level scripts/ directory, naming it', () => {
+  const { dir, stage } = newFixtureRepo();
+  rmSync(join(dir, 'scripts'), { force: true });
+  mkdirSync(join(dir, 'scripts'));
+  writeFileSync(join(dir, 'scripts', 'tool.mjs'), fixtureContent);
+  stage();
+  const { status, out } = runGate('root-allowlist', dir);
+  assert.notEqual(status, 0, `a top-level scripts/ directory must fail the root scan; got:\n${out}`);
+  assert.match(out, /::error::/);
+  assert.match(out, /\(scripts\)/);
+});
+
+const shebang = (line) => Buffer.from(`${line}\necho hi\n`);
+const noShebang = Buffer.from('plain text\n');
+
+test('scriptLanguage recognises Python and shell by extension and by #! line', () => {
+  assert.equal(scriptLanguage('a/tool.py', noShebang), 'Python');
+  assert.equal(scriptLanguage('a/tool.sh', noShebang), 'shell');
+  assert.equal(scriptLanguage('a/tool.bash', noShebang), 'shell');
+  assert.equal(scriptLanguage('a/tool', shebang('#!/usr/bin/env python3')), 'Python');
+  assert.equal(scriptLanguage('a/tool', shebang('#!/usr/bin/env -S python3.12 -u')), 'Python');
+  assert.equal(scriptLanguage('a/tool', shebang('#!/bin/bash -eu')), 'shell');
+  assert.equal(scriptLanguage('a/tool', shebang('#!/bin/sh')), 'shell');
+  assert.equal(scriptLanguage('a/tool', shebang('#!/usr/bin/env zsh')), 'shell');
+  assert.equal(scriptLanguage('a/tool.mjs', shebang('#!/usr/bin/env node')), null);
+  assert.equal(scriptLanguage('a/.shellcheckrc', noShebang), null);
+  assert.equal(scriptLanguage('a/doc.md', shebang('# not a shebang: #!/bin/sh')), null);
+});
+
+test('stepLogicViolation accepts shell only under test/, bench/ and in .envrc, and Python nowhere', () => {
+  assert.equal(stepLogicViolation('test/e2e/seed/helper.sh', noShebang), null);
+  assert.equal(stepLogicViolation('bench/histogram/run.sh', noShebang), null);
+  assert.equal(stepLogicViolation('.envrc', shebang('#!/usr/bin/env bash')), null);
+  assert.equal(stepLogicViolation('.github/scripts/tool.sh', noShebang), 'shell');
+  assert.equal(stepLogicViolation('just/helper.sh', noShebang), 'shell');
+  assert.equal(stepLogicViolation('internal/x/gen', shebang('#!/bin/bash')), 'shell');
+  assert.equal(stepLogicViolation('testdata/helper.sh', noShebang), 'shell');
+  assert.equal(stepLogicViolation('test/fixture/gen.py', noShebang), 'Python');
+  assert.equal(stepLogicViolation('bench/x/plot.py', noShebang), 'Python');
+  assert.equal(stepLogicViolation('.github/scripts/tool.mjs', noShebang), null);
+});
+
+// newTreeFixtureRepo — a throwaway repo holding exactly `files` (path ->
+// content), tracked unless `stage` is false. The step-logic scan reads every
+// file in scope and ignores the root allow-list, so a minimal tree is enough.
+function newTreeFixtureRepo(files, { stage = true } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'repo-hygiene-step-'));
+  const run = (args) => {
+    const res = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+    assert.equal(res.status, 0, `git ${args.join(' ')} failed: ${res.stderr}`);
+  };
+  run(['init', '--quiet']);
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), content);
+  }
+  if (stage) run(['add', '-A']);
+  return dir;
+}
+
+const acceptedShell = {
+  '.envrc': '#!/usr/bin/env bash\nexport X=1\n',
+  'bench/histogram/run.sh': '#!/usr/bin/env bash\necho bench\n',
+  'test/e2e/seed/supervisor.sh': '#!/usr/bin/env bash\necho supervise\n',
+  '.github/scripts/tool.mjs': '#!/usr/bin/env node\nconsole.log(1);\n',
+};
+
+test('the CLI passes step-logic on shell in the accepted places', () => {
+  const { status, out } = runGate('step-logic', newTreeFixtureRepo(acceptedShell));
+  assert.equal(status, 0, `accepted shell must pass; got:\n${out}`);
+  assert.match(out, /::notice::/);
+});
+
+test('the CLI FAILS step-logic on Python and shell step logic, naming each file', () => {
+  const dir = newTreeFixtureRepo({
+    ...acceptedShell,
+    'scripts/gen-coverage.py': 'print(1)\n',
+    'just/helper.sh': 'echo hi\n',
+    '.github/scripts/run-thing': '#!/bin/bash\necho hi\n',
+  });
+  const { status, out } = runGate('step-logic', dir);
+  assert.notEqual(status, 0, `step logic in Python / shell must fail; got:\n${out}`);
+  assert.match(out, /::error::3 Python \/ shell script/);
+  assert.match(out, /scripts\/gen-coverage\.py: Python script/);
+  assert.match(out, /just\/helper\.sh: shell script/);
+  assert.match(out, /\.github\/scripts\/run-thing: shell script/);
+  assert.doesNotMatch(out, /^(?:bench\/histogram\/run\.sh|test\/e2e\/seed\/supervisor\.sh|\.envrc):/m);
+});
+
+test('the CLI FAILS step-logic on an UNTRACKED Python script', () => {
+  const dir = newTreeFixtureRepo({ 'tools/align.py': 'print(1)\n' }, { stage: false });
+  const { status, out } = runGate('step-logic', dir);
+  assert.notEqual(status, 0, `an untracked Python script must fail; got:\n${out}`);
+  assert.match(out, /tools\/align\.py: Python script/);
 });

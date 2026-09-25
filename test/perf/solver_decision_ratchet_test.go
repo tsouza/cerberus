@@ -121,6 +121,7 @@ package perf
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -461,12 +462,8 @@ func TestSolverDecisionRatchet(t *testing.T) {
 	// was NOT default with zero coverage, so a routing regression confined to
 	// it shipped with this ratchet reporting no drift.
 	current := make(map[string]decisionEntry)
-	for k, v := range classifyCorpus(t, loweringFanout, promql.RangeLowerers{}) {
-		current[k] = v
-	}
-	for k, v := range classifyCorpus(t, loweringNative, nativeLowerers(t)) {
-		current[k] = v
-	}
+	maps.Copy(current, classifyCorpus(t, loweringFanout, promql.RangeLowerers{}))
+	maps.Copy(current, classifyCorpus(t, loweringNative, nativeLowerers(t)))
 
 	if os.Getenv(updateDecisionEnv) == "1" {
 		writeDecisionBaseline(t, current)

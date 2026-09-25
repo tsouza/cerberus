@@ -86,7 +86,6 @@ func TestCollectColumnRefs(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := collectColumnRefs(tc.expr)
@@ -148,7 +147,6 @@ func TestIsCheapPredicate(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := isCheapPredicate(tc.expr); got != tc.want {

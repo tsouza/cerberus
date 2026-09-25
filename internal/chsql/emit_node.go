@@ -212,10 +212,7 @@ func (e *emitter) emitStepGrid(g *chplan.StepGrid) error {
 	// up to and including End. Matches Prom's range-query step grid
 	// (the upstream evaluator emits (end-start)/step + 1 samples per
 	// series in the canonical case).
-	numAnchors := g.End.Sub(g.Start).Nanoseconds()/stepNS + 1
-	if numAnchors < 1 {
-		numAnchors = 1
-	}
+	numAnchors := max(g.End.Sub(g.Start).Nanoseconds()/stepNS+1, 1)
 	start := g.Start
 	// Forward step grid: anchorBase_i = <start> + toIntervalNanosecond(i * step),
 	// fanned out via arrayJoin(arrayMap(i -> …, range(0, N))).
@@ -515,7 +512,6 @@ func filterScanQuery(f *chplan.Filter, scan *chplan.Scan) (*QueryBuilder, error)
 func conjunctionFrag(exprs []chplan.Expr) Frag {
 	parts := make([]Frag, len(exprs))
 	for i, x := range exprs {
-		x := x
 		parts[i] = func(b *Builder) { _ = b.Expr(x) }
 	}
 	return And(parts...)
@@ -591,7 +587,6 @@ func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
 	for _, af := range a.AggFuncs {
-		af := af
 		sb.Select(aggFuncFrag(af))
 	}
 
@@ -629,7 +624,6 @@ func (e *emitter) emitAggregateNoGroup(a *chplan.Aggregate, sub Frag) error {
 	inner := NewQuery().From(sub)
 	outerCols := make([]Frag, 0, len(a.AggFuncs))
 	for i, af := range a.AggFuncs {
-		af := af
 		alias := af.Alias
 		if alias == "" {
 			alias = fmt.Sprintf("_cerb_agg_%d", i)

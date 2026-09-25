@@ -1119,7 +1119,7 @@ func TestSearch_SpanSets_SpssCap(t *testing.T) {
 	const traceID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	start := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
 	samples := make([]chclient.Sample, 0, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		samples = append(samples, searchSpanRow(
 			traceID,
 			"000000000000000"+strconv.Itoa(i+1),
@@ -1180,7 +1180,7 @@ func TestSearch_LimitEnforced(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
 	samples := make([]chclient.Sample, 0, 25)
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		samples = append(samples, searchSpanRow(
 			// %032x keeps trace IDs unique + hex-valid.
 			fmt.Sprintf("%032x", i+1),

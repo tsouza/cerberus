@@ -101,10 +101,7 @@ func chunkMatcherVariants(variants []string) [][]string {
 	}
 	chunks := make([][]string, 0, (len(variants)+maxMetricCandidatesPerQuery-1)/maxMetricCandidatesPerQuery)
 	for i := 0; i < len(variants); i += maxMetricCandidatesPerQuery {
-		end := i + maxMetricCandidatesPerQuery
-		if end > len(variants) {
-			end = len(variants)
-		}
+		end := min(i+maxMetricCandidatesPerQuery, len(variants))
 		chunks = append(chunks, variants[i:end])
 	}
 	return chunks

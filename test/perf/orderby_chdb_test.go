@@ -171,7 +171,7 @@ func runExplain(t *testing.T, db *sql.DB, query string) explainStats {
 func timeQuery(t *testing.T, db *sql.DB, query string, iters int) time.Duration {
 	t.Helper()
 	best := time.Hour
-	for i := 0; i < iters; i++ {
+	for range iters {
 		start := time.Now()
 		rows, err := db.Query(query)
 		if err != nil {
@@ -373,7 +373,7 @@ func productionMetricsSortKey(t *testing.T) []string {
 		if !strings.Contains(stmt, m.GaugeTable) {
 			continue
 		}
-		for _, line := range strings.Split(stmt, "\n") {
+		for line := range strings.SplitSeq(stmt, "\n") {
 			line = trimSpace(line)
 			if !hasPrefix(line, orderByPrefix) {
 				continue

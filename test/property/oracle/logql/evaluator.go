@@ -14,6 +14,7 @@ package logql
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"sort"
 	"strings"
@@ -199,12 +200,8 @@ func foldStructuredMetadata(records []property.LogRecord) []property.LogRecord {
 			continue
 		}
 		merged := make(map[string]string, len(records[i].ResourceAttributes)+len(md))
-		for k, v := range md {
-			merged[k] = v
-		}
-		for k, v := range records[i].ResourceAttributes {
-			merged[k] = v
-		}
+		maps.Copy(merged, md)
+		maps.Copy(merged, records[i].ResourceAttributes)
 		records[i].ResourceAttributes = merged
 	}
 	return records
@@ -431,9 +428,7 @@ func applyLabelFmt(e *syntax.LabelFmtExpr, records []property.LogRecord) []prope
 // without aliasing into the caller's map.
 func copyLabels(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 

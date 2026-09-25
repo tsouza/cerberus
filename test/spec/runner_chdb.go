@@ -609,7 +609,7 @@ func formatExpectedMap(m map[string]any) string {
 		}
 		raw, err := json.Marshal(k)
 		if err != nil {
-			raw = []byte(fmt.Sprintf(`"<json err: %v>"`, err))
+			raw = fmt.Appendf(nil, `"<json err: %v>"`, err)
 		}
 		b.Write(raw)
 		b.WriteString(": ")

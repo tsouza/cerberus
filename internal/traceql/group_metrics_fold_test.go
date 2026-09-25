@@ -2,6 +2,7 @@ package traceql
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	tempoql "github.com/tsouza/cerberus/internal/traceql/ast"
@@ -34,18 +35,11 @@ func hasGroupKeyAggregate(n chplan.Node) bool {
 		return false
 	}
 	if a, ok := n.(*chplan.Aggregate); ok {
-		for _, alias := range a.GroupByAliases {
-			if alias == groupKeyAlias {
-				return true
-			}
-		}
-	}
-	for _, c := range n.Children() {
-		if hasGroupKeyAggregate(c) {
+		if slices.Contains(a.GroupByAliases, groupKeyAlias) {
 			return true
 		}
 	}
-	return false
+	return slices.ContainsFunc(n.Children(), hasGroupKeyAggregate)
 }
 
 // TestFoldStandaloneGroupByIntoMetrics pins Bug 1: a standalone `| by(X)`

@@ -73,6 +73,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"math"
 	"sort"
 	"strconv"
@@ -433,9 +434,7 @@ func TestTSGridFamily_DuplicateSurvivor_RealCH(t *testing.T) {
 			t.Errorf("nanDupRegistryMembers declares %q, which nativeTSGridFn does not register", fn)
 		}
 	}
-	for agg, m := range nanDupOtherMembers {
-		members[agg] = m
-	}
+	maps.Copy(members, nanDupOtherMembers)
 	aggs := make([]string, 0, len(members))
 	for agg := range members {
 		aggs = append(aggs, agg)
@@ -709,14 +708,14 @@ func nanDupSchema() schema.Metrics {
 // (`{"job":"a"}`).
 func nanDupJobLabel(jsonStr string) string {
 	const key = `"job":"`
-	i := strings.Index(jsonStr, key)
-	if i < 0 {
+	_, after, ok := strings.Cut(jsonStr, key)
+	if !ok {
 		return ""
 	}
-	rest := jsonStr[i+len(key):]
-	j := strings.Index(rest, `"`)
-	if j < 0 {
+	rest := after
+	before, _, ok := strings.Cut(rest, `"`)
+	if !ok {
 		return rest
 	}
-	return rest[:j]
+	return before
 }

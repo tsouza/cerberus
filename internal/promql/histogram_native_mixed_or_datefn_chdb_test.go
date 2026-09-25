@@ -113,7 +113,6 @@ func TestDateComponentFnsOverMixedSetOpOr_ChDB(t *testing.T) {
 	}
 
 	for _, fn := range fns {
-		fn := fn
 		t.Run(fn.name, func(t *testing.T) {
 			want := map[string]float64{}
 			for series, v := range floats {
@@ -127,7 +126,6 @@ func TestDateComponentFnsOverMixedSetOpOr_ChDB(t *testing.T) {
 				{"histLHS", fn.name + "(" + foHistMetric + " or " + foFloatMetric + ")"},
 				{"floatLHS", fn.name + "(" + foFloatMetric + " or " + foHistMetric + ")"},
 			} {
-				order := order
 				t.Run(order.name, func(t *testing.T) {
 					got := dfSeriesValues(t, fixture, s, p, order.query)
 					if len(got) != len(want) {

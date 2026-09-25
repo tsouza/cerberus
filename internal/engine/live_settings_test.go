@@ -87,7 +87,7 @@ func TestSetSettings_ConcurrentWithReads(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < rounds; i++ {
+		for i := range rounds {
 			if i%2 == 0 {
 				e.SetSettings(defaultRules())
 			} else {
@@ -97,7 +97,7 @@ func TestSetSettings_ConcurrentWithReads(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < rounds; i++ {
+		for range rounds {
 			// LogCommentShape rides with OptimizeAggregationInOrder in both
 			// values above, so a torn read would show them disagreeing.
 			got := e.settings()

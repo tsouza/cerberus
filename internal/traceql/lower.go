@@ -8,6 +8,7 @@ package traceql
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -871,12 +872,7 @@ func predicateUsesNestedSetColumns(expr chplan.Expr) bool {
 	case *chplan.Binary:
 		return predicateUsesNestedSetColumns(v.Left) || predicateUsesNestedSetColumns(v.Right)
 	case *chplan.FuncCall:
-		for _, a := range v.Args {
-			if predicateUsesNestedSetColumns(a) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(v.Args, predicateUsesNestedSetColumns)
 	case *chplan.FieldAccess:
 		return predicateUsesNestedSetColumns(v.Source)
 	}

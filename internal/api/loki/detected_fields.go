@@ -580,9 +580,6 @@ func parsePositiveInt31(raw string, def, max int) (int, error) {
 	if err != nil || n == 0 {
 		return 0, errors.New("parameter must be a positive integer no larger than 2147483647")
 	}
-	v := int(n)
-	if v > max {
-		v = max
-	}
+	v := min(int(n), max)
 	return v, nil
 }
