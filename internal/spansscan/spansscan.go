@@ -1,5 +1,4 @@
 // Package spansscan is the shared, dependency-light matcher behind the
-// cache-probe: a comment the verdict-cache proof run selects this leg with.
 // spans-scan partition-pruning invariant. It statically inspects an emitted
 // ClickHouse statement for a physical spans-table scan sitting in a scope
 // where ClickHouse CANNOT push the request window down into the partition
