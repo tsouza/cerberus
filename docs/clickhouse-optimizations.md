@@ -1142,8 +1142,8 @@ code in `match`, `extract`, `extractAll`, `replaceRegexpOne` and
 Cerberus stamps neither setting and registers no `chopt` feature for it: the
 server default is the configuration. A pattern outside the subset, and every
 pattern on a server older than 26.7, is evaluated by RE2. Answers are the
-same either way for valid UTF-8 input, so an operator who switches compilation
-off in the cerberus user's ClickHouse profile changes cost, never results.
+same either way, so an operator who switches compilation off in the cerberus
+user's ClickHouse profile changes cost, never results.
 
 The subset covers `^` / `$` anchors, literals, character classes (`[...]`,
 `[^...]`, `\d`, `\w`, `\s`), `.`, the quantifiers `*` `+` `?` `{n,m}`,
@@ -1182,16 +1182,16 @@ and cheap without changing meaning (`internal/chsql/regex_pattern.go`):
   `(position(Body, '<prefix>') = 0 OR NOT match(Body, '<re>'))` for `!~`, so a
   line without the literal is rejected before a compiled matcher runs on it.
 
-On bytes that are not valid UTF-8 a compiled pattern matches as Go's `regexp`
-does — the reference engines' — and RE2 does not (issue
-[#3664](https://github.com/tsouza/cerberus/issues/3664)).
+A value that is not valid UTF-8 is evaluated on its U+FFFD form, which the
+compiled and interpreted engines read alike; see
+[compatibility.md § Invalid UTF-8](compatibility.md#invalid-utf-8).
 
 Evidence: `just regex-jit-integration` (the `regex-jit` job of
 `strict-scan.yml`, `test/regexjit`) runs every shape above through the
 production handlers on 26.7.13.12, 26.8.10.6 and 24.8 with compilation off,
 on, and at the default threshold, and requires identical answers, answers
-equal to Go-regexp references, and each shape compiled exactly when its corpus
-entry says so. `just regex-jit-bench` measures the same shapes.
+equal to Go-regexp references on valid and invalid UTF-8, and each shape
+compiled exactly when its corpus entry says so. `just regex-jit-bench` measures the same shapes.
 
 ## Version safety
 

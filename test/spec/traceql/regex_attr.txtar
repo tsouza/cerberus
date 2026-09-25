@@ -1,11 +1,14 @@
 -- query.traceql --
 { resource.service.name =~ "front.*" }
 -- sql --
-SELECT * FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND match(`ResourceAttributes`[?], ?)
+SELECT * FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND if(isValidUTF8(`ResourceAttributes`[?]), match(`ResourceAttributes`[?], ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', `ResourceAttributes`[?])))), ?))
 -- args --
 [0] string = "service.name"
 [1] string = "service.name"
-[2] string = "^(?:front.*)$"
+[2] string = "service.name"
+[3] string = "^(?:front.*)$"
+[4] string = "service.name"
+[5] string = "^(?:front.*)$"
 -- seed --
 CREATE TABLE otel_traces (
     _idx UInt64,
@@ -35,7 +38,10 @@ scope: full
 [2] string = "__cerberus_spanID"
 [3] string = "service.name"
 [4] string = "service.name"
-[5] string = "^(?:front.*)$"
+[5] string = "service.name"
+[6] string = "^(?:front.*)$"
+[7] string = "service.name"
+[8] string = "^(?:front.*)$"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -44,4 +50,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND match(`ResourceAttributes`[?], ?))
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND if(isValidUTF8(`ResourceAttributes`[?]), match(`ResourceAttributes`[?], ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', `ResourceAttributes`[?])))), ?)))

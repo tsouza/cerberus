@@ -164,73 +164,45 @@ func TestMutation_Spliced_KeepsOuterFirstError(t *testing.T) {
 	}
 }
 
-// TestMutation_LabelReplaceSegment_SrcErrorPropagates pins the same latch in
-// its local, non-Builder form: labelReplaceSegment renders the source value
-// inside a Frag closure (which cannot return) and stashes the failure in
-// srcErr, returning it once the Frag has run. A dropped error here means a
+// TestMutation_LabelReplace_SourceErrorPropagates pins the same latch in
+// label_replace: its source value renders inside Frag closures (which cannot
+// return), so a Map that cannot render latches on the Builder and
+// exprLabelReplace must report it. A dropped error here means a
 // label_replace whose source expression cannot render emits
 // `extractGroups(<nothing>, '…')[1]` and reports success.
-//
-// Kills both CONDITIONALS_NEGATION mutants of
-// builder.go:labelReplaceSegment:`err != nil && srcErr == nil` (`err !=
-// nil` -> `err == nil`, `srcErr == nil` -> `srcErr != nil`): under either,
-// srcErr never takes a non-nil value and the method returns nil.
-func TestMutation_LabelReplaceSegment_SrcErrorPropagates(t *testing.T) {
+func TestMutation_LabelReplace_SourceErrorPropagates(t *testing.T) {
 	t.Parallel()
 
 	l := &chplan.LabelReplace{
-		Map:         errExpr(),
-		Dst:         "dst",
-		Src:         "src",
-		Regex:       "(.*)",
-		Replacement: "$1",
+		Map:      errExpr(),
+		Dst:      "dst",
+		Src:      "src",
+		Regex:    "(.*)",
+		Segments: []chplan.LabelReplaceSegment{{Group: 1}},
 	}
-	err := NewBuilder().labelReplaceSegment(l, chplan.LabelReplaceSegment{Group: 1}, "^(?:(.*))$")
-	if !errors.Is(err, ErrUnsupported) {
+	if err := NewBuilder().Expr(l); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("an unrenderable source expression must surface as an error, got %v", err)
 	}
 }
 
-// TestMutation_LabelReplaceSegment_RendersCaptureGroup pins the success shape
-// so the assertion above cannot pass by rejecting every segment.
-func TestMutation_LabelReplaceSegment_RendersCaptureGroup(t *testing.T) {
+// TestMutation_LabelReplace_RendersCaptureGroup pins the success shape so
+// the assertion above cannot pass by rejecting every label_replace.
+func TestMutation_LabelReplace_RendersCaptureGroup(t *testing.T) {
 	t.Parallel()
 
 	l := &chplan.LabelReplace{
-		Map:         &chplan.ColumnRef{Name: "Attributes"},
-		Dst:         "dst",
-		Src:         "src",
-		Regex:       "(.*)",
-		Replacement: "$1",
+		Map:      &chplan.ColumnRef{Name: "Attributes"},
+		Dst:      "dst",
+		Src:      "src",
+		Regex:    "([a-z]*)",
+		Segments: []chplan.LabelReplaceSegment{{Group: 1}},
 	}
 	b := NewBuilder()
-	if err := b.labelReplaceSegment(l, chplan.LabelReplaceSegment{Group: 1}, "^(?:(.*))$"); err != nil {
+	if err := b.Expr(l); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	sql, _, _ := b.Build()
-	if !strings.HasPrefix(sql, "extractGroups(`Attributes`[?], ?)[?]") {
+	if !strings.Contains(sql, "concat(extractGroups(`Attributes`[?], ?)[?])") {
 		t.Fatalf("a capture-group segment must render `extractGroups(<src>, <re>)[<n>]`, got %q", sql)
 	}
 }
-
-// NOT KILLABLE — documented, not defended by a test.
-//
-// builder.go:labelReplaceSegment:`err != nil && srcErr == nil`
-// (INVERT_LOGICAL, `&&` -> `||` in labelReplaceSegment's srcErr latch) is
-// EQUIVALENT. The mutated guard is
-// `err != nil || srcErr == nil`, which differs from the original in exactly
-// one state: srcErr already non-nil AND err non-nil, where the mutant
-// overwrites srcErr with the later error instead of keeping the first. Every
-// invocation of that closure calls `fb.srcValue(l)` on the SAME *LabelReplace
-// value, and srcValue's only failure mode is `b.Expr(l.Map)`, whose verdict
-// and message are a pure function of l.Map's concrete type — Builder.Expr
-// neither reads Builder state when deciding nor mutates the expression it
-// renders. So within one labelReplaceSegment call every non-nil error the
-// closure can produce is a fresh value with an IDENTICAL message and an
-// identical wrapped sentinel, and first vs. last is indistinguishable through
-// the only channel the method exposes (its returned error). The remaining
-// state pair, err == nil with srcErr == nil, assigns nil over nil under the
-// mutant and is a no-op.
-//
-// Contrast Subquery / Spliced / Builder.Expr above, whose latch CAN be handed
-// two errors from different sources — those `&&`s are killable and are killed.

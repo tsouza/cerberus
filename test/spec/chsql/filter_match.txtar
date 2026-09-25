@@ -1,7 +1,8 @@
 -- args --
 [0] string = "^(?:^api-.*)$"
+[1] string = "^(?:^api-.*)$"
 -- sql --
-SELECT * FROM `otel_metrics_gauge` WHERE match(`ResourceAttributes_service_name`, ?)
+SELECT * FROM `otel_metrics_gauge` WHERE if(isValidUTF8(`ResourceAttributes_service_name`), match(`ResourceAttributes_service_name`, ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', `ResourceAttributes_service_name`)))), ?))
 -- chplan --
 Filter predicate=(ResourceAttributes_service_name =~ "^api-.*")
   Scan(otel_metrics_gauge)
