@@ -223,12 +223,10 @@ export function literalRelativePaths(source) {
 }
 
 // goPackageInputs returns the `packages` and `dataRoots` key classes for the
-// scope. See the header of ./lib/mutation-cache.mjs.
-export function goPackageInputs(root, scope) {
+// scope, keyed by the package directory relative to root. See the header of
+// ./lib/mutation-cache.mjs.
+export function goPackageInputs(root, dirs) {
   const absRoot = resolve(root);
-  const pattern = scope.endsWith('/...') ? scope : `${scope.replace(/\/$/, '')}/...`;
-  const dirs = mainModulePackageDirs(absRoot, pattern);
-  if (dirs.size === 0) throw new Error(`go list found no main-module package under ${pattern}`);
   const packages = {};
   const dataRoots = {};
   const inside = (p) => p === absRoot || p.startsWith(absRoot + sep);
@@ -266,29 +264,80 @@ export function goModuleInputs(root) {
   return out;
 }
 
-// scopeDiff is the content of the change a changed-line leg mutates, read
-// with exactly the command the pinned gremlins fork runs to build its
-// changed-line set (internal/diff/parse.go: `git diff --merge-base <ref>`,
-// whole repository, no options). Rename detection and the other diff knobs
-// are pinned for both by the workflow's GIT_CONFIG_* env (GIT_DIFF_CONFIG),
-// and git's version and those settings are part of the toolchain class.
-export function scopeDiff(root, diffRef) {
+// nameStatusPaths parses `git diff --name-status -M<limit>`'s output into the
+// set of paths a change touches, on EITHER side of a rename/copy — so a
+// rename whose source lay inside the closure and whose target does not (or
+// vice versa) is still found by dirsTouched below.
+function nameStatusPaths(line) {
+  const fields = line.split('\t');
+  const status = fields[0]?.[0];
+  if (status === 'R' || status === 'C') return [fields[1], fields[2]].filter(Boolean);
+  return fields[1] ? [fields[1]] : [];
+}
+
+// closureTouchingPaths is every changed path (from a repo-wide diff) that
+// falls inside one of the leg's own package directories, `dirs` (absolute).
+// This is what makes scopeDiff robust to a rename whose partner lies outside
+// the closure (a rename INTO scope reads as a real addition unless git's own
+// rename detection pairs it — exactly the signal gremlins' mutant selection
+// reads too) while still ignoring a change to a file no package in the
+// closure can see, such as a doc.
+export function closureTouchingPaths(root, diffRef, dirs) {
+  const absRoot = resolve(root);
+  const relDirs = [...dirs].map((d) => relative(absRoot, d).split(sep).join('/'));
+  const out = run('git', ['diff', '--merge-base', diffRef, '--name-status'], root);
+  const touched = new Set();
+  for (const line of out.split('\n')) {
+    if (line.trim() === '') continue;
+    const paths = nameStatusPaths(line);
+    if (!paths.some((path) => relDirs.some((d) => path === d || path.startsWith(`${d}/`)))) continue;
+    // BOTH sides of a rename/copy pair go in, even the side outside the
+    // closure: git only PAIRS a rename when both its old and new path are in
+    // the pathspec it is given (a pathspec of the new path alone reads as a
+    // plain addition, losing exactly the signal scopeDiff exists to keep).
+    for (const path of paths) touched.add(path);
+  }
+  return [...touched].sort();
+}
+
+// scopeDiff is the content of the change a changed-line leg mutates: the
+// hunks of the repo-wide `git diff --merge-base <ref>` — the exact command
+// the pinned gremlins fork runs to build its changed-line set
+// (internal/diff/parse.go) — but READ ONLY for the paths closureTouchingPaths
+// finds. Hashing the WHOLE repo-wide diff would move the key on every commit
+// that touches anything at all (a docs edit, an unrelated package), which
+// defeats caching for every changed-line leg on a multi-commit PR; scoping to
+// the closure's own paths keeps the key sensitive to what gremlins can
+// actually select mutants from, including the cross-directory rename case
+// (see the header of ./lib/mutation-cache.mjs), and nothing else. Rename
+// detection and the other diff knobs are pinned for both by the workflow's
+// GIT_CONFIG_* env (GIT_DIFF_CONFIG), and git's version and those settings are
+// part of the toolchain class.
+export function scopeDiff(root, diffRef, dirs) {
   if (diffRef === '') return '';
   if (!/^[0-9a-f]{40,64}$/i.test(diffRef)) throw new Error(`DIFF_REF is invalid: ${diffRef}`);
-  return sha256(run('git', ['diff', '--merge-base', diffRef], root));
+  const paths = closureTouchingPaths(root, diffRef, dirs);
+  // No path this leg's closure can see was touched: still distinct from a
+  // full-phase leg's `''`, which is a genuinely different case (no diffRef at
+  // all) — see collectKeyInputs.
+  if (paths.length === 0) return sha256('');
+  return sha256(run('git', ['diff', '--merge-base', diffRef, '--', ...paths], root));
 }
 
 export function collectKeyInputs({ root, scope, phaseRow, diffRef, runnerEnv, toolchain, gremlins, scripts, runner }) {
+  const pattern = scope.endsWith('/...') ? scope : `${scope.replace(/\/$/, '')}/...`;
+  const dirs = mainModulePackageDirs(resolve(root), pattern);
+  if (dirs.size === 0) throw new Error(`go list found no main-module package under ${pattern}`);
   return {
     toolchain,
     runner,
     gremlins,
     phaseRow: phaseRowForKey(phaseRow),
     runnerEnv,
-    scopeDiff: scopeDiff(root, diffRef),
+    scopeDiff: scopeDiff(root, diffRef, dirs),
     runnerScripts: scripts,
     goModule: goModuleInputs(root),
-    ...goPackageInputs(root, scope),
+    ...goPackageInputs(root, dirs),
   };
 }
 

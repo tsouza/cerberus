@@ -23,10 +23,19 @@
 //                  which is a commit SHA; the content it selects is `scopeDiff`.
 //   runnerEnv      the workflow-level bounds mutation-run.mjs reads
 //                  (MUTANT_TIMEOUT_MIN / MUTANT_TIMEOUT_MAX).
-//   scopeDiff      for a changed-line leg, the diff of the scope against its
-//                  merge base: that diff is what selects the mutants. Empty for
-//                  a full-phase leg, so a pull request's full leg and main's
-//                  full leg over identical content share one entry.
+//   scopeDiff      for a changed-line leg, the repo-wide `git diff --merge-base`
+//                  gremlins itself reads to select mutants, restricted to the
+//                  hunks that touch a path inside the leg's own closure — see
+//                  .github/scripts/mutation-cache.mjs's scopeDiff /
+//                  closureTouchingPaths. Restricting to the closure (rather
+//                  than hashing the whole-repo diff) is what lets a commit
+//                  outside it, such as a docs edit, leave the key alone; a
+//                  cross-directory rename is still caught because BOTH its
+//                  old and new path are kept in the filtered pathspec, which
+//                  is what makes git pair them as a rename in the first
+//                  place. Empty for a full-phase leg, so a pull request's
+//                  full leg and main's full leg over identical content share
+//                  one entry.
 //   runnerScripts  every script the leg executes to reach its verdict
 //                  (mutation-run.mjs, mutant-memory-guard.mjs,
 //                  gremlins-threshold.mjs, the cache itself) and, transitively,

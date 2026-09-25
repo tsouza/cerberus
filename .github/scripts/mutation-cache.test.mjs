@@ -456,15 +456,31 @@ function commitAll(root, msg) {
   return sh(root, 'git', ['rev-parse', 'HEAD']).trim();
 }
 
-test('a changed-line key moves with the merge base even when the checkout is identical', (t) => {
+test('a changed-line key moves with the merge base even when HEAD is identical', (t) => {
   const root = repo(t);
   const b1 = sh(root, 'git', ['rev-parse', 'HEAD']).trim();
-  edit(root, 'notes/readme.txt', 'second base\n');
+  // b/b.go is inside the closure (a dependency of scope ./a). This edit sits
+  // between b1 and b2, so the b1..HEAD diff carries it and the b2..HEAD diff
+  // does not, even though HEAD's own content — and so `packages` — is
+  // identical either way once we reach `head`.
+  edit(root, 'b/b.go', `${readFileSync(join(root, 'b/b.go'), 'utf8')}// between b1 and b2\n`);
   const b2 = commitAll(root, 'b2');
   edit(root, 'a/a.go', `${readFileSync(join(root, 'a/a.go'), 'utf8')}// head\n`);
   commitAll(root, 'head');
   const at = (ref) => keyOf(root, { diffRef: ref, phaseRow: { ...baseParams.phaseRow, diff_ref: ref } });
   assert.notEqual(at(b1), at(b2));
+});
+
+test('a changed-line key is unmoved by a commit outside the leg closure', (t) => {
+  const root = repo(t);
+  const base = sh(root, 'git', ['rev-parse', 'HEAD']).trim();
+  const before = keyOf(root, { diffRef: base, phaseRow: { ...baseParams.phaseRow, diff_ref: base } });
+  // A docs-only (or any out-of-closure) commit must not move a changed-line
+  // leg's key, or every push on a multi-commit PR would evict every entry.
+  edit(root, 'notes/readme.txt', 'unrelated docs edit\n');
+  commitAll(root, 'docs');
+  const after = keyOf(root, { diffRef: base, phaseRow: { ...baseParams.phaseRow, diff_ref: base } });
+  assert.equal(before, after);
 });
 
 test('a changed-line key sees a rename whose source lies outside the scope', (t) => {
