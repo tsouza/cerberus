@@ -395,8 +395,8 @@ verbatim copy.
 
 Cerberus itself is independently licensed (see the repo root
 `LICENSE`); the AGPL terms apply only to the vendored subtree under
-`upstream/loki-bench/`. The driver scripts (`scripts/` plus `cmd/`)
-live OUTSIDE `upstream/` and are cerberus-licensed.
+`upstream/loki-bench/`. The driver code (`cmd/`)
+lives OUTSIDE `upstream/` and is cerberus-licensed.
 
 ## Bump procedure
 

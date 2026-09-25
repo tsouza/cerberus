@@ -36,7 +36,7 @@ LINT_UNTAGGED_BUILD := "cerberus_untagged_build"
 # stack is a distinct set of objects rather than a shared one. Host ports stay
 # fixed, so two worktrees still cannot run the same stack at once; that now fails
 # on a port bind instead of silently adopting the other checkout's containers.
-# See scripts/compose-project-suffix.sh.
+# See .github/scripts/compose-project-suffix.mjs.
 #
 # `just` evaluates this before running ANY recipe, so the derivation has to hold
 # for a checkout with no git in sight (it prints nothing, and the bare project
@@ -44,7 +44,7 @@ LINT_UNTAGGED_BUILD := "cerberus_untagged_build"
 # (hence the justfile-relative path). What it does not paper over is a checkout
 # missing the script: that fails loudly, naming the absolute path, rather than
 # defaulting to a suffix that would silently share stacks between worktrees.
-export COMPOSE_PROJECT_SUFFIX := shell('exec "$1"', justfile_directory() / "scripts/compose-project-suffix.sh")
+export COMPOSE_PROJECT_SUFFIX := shell('exec node "$1"', justfile_directory() / ".github/scripts/compose-project-suffix.mjs")
 
 # Default: list recipes.
 default:

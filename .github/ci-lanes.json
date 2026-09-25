@@ -669,7 +669,7 @@
       "recipes": [],
       "command": "node .github/scripts/forbid-skip.mjs and CI harness self-tests",
       "build_tags": [],
-      "package_globs": [".github/**", "docs/**", "scripts/**", "test/**"],
+      "package_globs": [".github/**", "docs/**", "test/**"],
       "substrate": "runner",
       "risk_domains": ["ci", "governance", "test-discipline"],
       "merge_posture": "always",

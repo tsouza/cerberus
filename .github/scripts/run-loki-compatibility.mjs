@@ -110,7 +110,7 @@ function summarise(report) {
 }
 
 function main() {
-  deriveComposeProjectSuffix(process.cwd());
+  deriveComposeProjectSuffix();
 
   const scratchDir = mkdtempSync(join(tmpdir(), 'cerberus-loki-compat-'));
   registerComposeTeardown({ composeCwd: ROOT_DIR, scratchDir });
