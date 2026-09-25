@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
 	"runtime"
@@ -940,7 +941,7 @@ func buildRangeData(expr syntax.Expr, samples []chclient.Sample, start, end time
 // supports.
 func wantsCategorizedLabels(r *http.Request) bool {
 	for _, raw := range r.Header.Values("X-Loki-Response-Encoding-Flags") {
-		for _, flag := range strings.Split(raw, ",") {
+		for flag := range strings.SplitSeq(raw, ",") {
 			if strings.TrimSpace(flag) == encodingFlagCategorizeLabels {
 				return true
 			}
@@ -1331,12 +1332,8 @@ func foldStructuredMetadata(rows []chclient.LogRow, categorize bool) []chclient.
 			continue
 		}
 		merged := make(map[string]string, len(r.Labels)+len(md))
-		for k, v := range md {
-			merged[k] = v
-		}
-		for k, v := range r.Labels {
-			merged[k] = v
-		}
+		maps.Copy(merged, md)
+		maps.Copy(merged, r.Labels)
 		r.Labels = merged
 	}
 	return rows

@@ -63,6 +63,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -278,8 +279,6 @@ func parseStreamSample(v loki.StreamValue) (int64, error) {
 // labels to avoid aliasing.
 func copyLabels(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }

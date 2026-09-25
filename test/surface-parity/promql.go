@@ -3,6 +3,7 @@ package surfaceparity
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	promparser "github.com/prometheus/prometheus/promql/parser"
 )
@@ -117,14 +118,14 @@ func rateShaped(fn string) bool {
 }
 
 func joinArgs(args []string) string {
-	out := ""
+	var out strings.Builder
 	for i, a := range args {
 		if i > 0 {
-			out += ", "
+			out.WriteString(", ")
 		}
-		out += a
+		out.WriteString(a)
 	}
-	return out
+	return out.String()
 }
 
 // promQLAggregatorProbe synthesizes a canonical aggregation expression.

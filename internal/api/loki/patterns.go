@@ -297,14 +297,12 @@ func parsePatternsStep(raw string, start, end time.Time) (time.Duration, error) 
 // the resolution is whole seconds, matching upstream's
 // `WriteQueryPatternsResponseJSON`, which emits `sample.Timestamp.Unix()`.
 func projectSamples(samples []drain.Sample, start, end time.Time, step time.Duration) [][2]int64 {
-	stepSec := int64(step / time.Second)
-	if stepSec < 1 {
+	stepSec := max(int64(step/time.Second),
 		// parsePatternsStep floors the request step at
 		// minimumPatternSampleResolution, so this is unreachable from the
 		// wire; keeping the guard means a caller that passes a sub-second
 		// step re-scales by one second rather than dividing by zero.
-		stepSec = 1
-	}
+		1)
 	folded := make(map[int64]int64, len(samples))
 	order := make([]int64, 0, len(samples))
 	for _, s := range samples {

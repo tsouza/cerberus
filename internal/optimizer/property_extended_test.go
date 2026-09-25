@@ -98,7 +98,7 @@ func TestPropertyFilterFusion_RowSetEquivalent(t *testing.T) {
 	d := optimizer.New(optimizer.FilterFusion{})
 
 	verified := 0
-	for i := 0; i < N; i++ {
+	for i := range N {
 		plan := chplan.Node(&chplan.Filter{
 			Input: &chplan.Filter{
 				Input:     &chplan.Scan{Table: propertyTable},
@@ -154,7 +154,7 @@ func TestPropertyConstantFoldSemantic_RowSetEquivalent(t *testing.T) {
 	}
 
 	verified := 0
-	for i := 0; i < N; i++ {
+	for i := range N {
 		pair := literalPairs[rng.Intn(len(literalPairs))]
 		// Wrap the literal binary in `<literal-binary> AND <leaf>` to
 		// give the runner a chance of producing a non-empty row set.
@@ -214,7 +214,7 @@ func TestPropertyConstantFoldHeuristic_RowSetEquivalent(t *testing.T) {
 	}
 
 	verified := 0
-	for i := 0; i < N; i++ {
+	for i := range N {
 		id := identities[rng.Intn(len(identities))]
 		leaf := generateLeafPredicate(rng)
 		plan := chplan.Node(&chplan.Filter{
@@ -257,7 +257,7 @@ func TestPropertyProjectionPushdown_RowSetEquivalent(t *testing.T) {
 	d := optimizer.New(optimizer.ProjectionPushdown{})
 
 	verified := 0
-	for i := 0; i < N; i++ {
+	for i := range N {
 		// Subset of [MetricName, Value, TimeUnix].
 		cols := append([]string(nil), propertyColumns...)
 		rng.Shuffle(len(cols), func(i, j int) { cols[i], cols[j] = cols[j], cols[i] })

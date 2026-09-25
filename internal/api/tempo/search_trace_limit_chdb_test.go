@@ -85,14 +85,15 @@ func manyTracesSeed() string {
 			fmt.Sprintf("('%s', '%s', '%s', 'child-b', 'Client', 300, toDateTime64('%s', 9), 'Unset', '', '', '', map(), map('service.name', 'svc-b'))", traceID, child2, root, c2),
 		)
 	}
-	insert := "INSERT INTO otel_traces VALUES\n"
+	var insert strings.Builder
+	insert.WriteString("INSERT INTO otel_traces VALUES\n")
 	for i, r := range rows {
 		if i > 0 {
-			insert += ",\n"
+			insert.WriteString(",\n")
 		}
-		insert += "    " + r
+		insert.WriteString("    " + r)
 	}
-	return insert + ";"
+	return insert.String() + ";"
 }
 
 func newManyTracesChDBServer(t *testing.T, seed string) *httptest.Server {
@@ -159,7 +160,7 @@ func TestSearch_TraceLimitPushdown_BoundsDrain_ChDB(t *testing.T) {
 	// The kept set is the newest `searchLimit` traces by min(start):
 	// trace i's start increases with i, so the kept TraceIDs are the
 	// highest-i ones (8, 7, 6 for limit=3), in start-desc order.
-	for rank := 0; rank < searchLimit; rank++ {
+	for rank := range searchLimit {
 		wantTrace := seedTraceCount - rank
 		wantID := fmt.Sprintf("c%031x", wantTrace)
 		if sr.Traces[rank].TraceID != wantID {
@@ -296,7 +297,7 @@ const fatTraceMatchedSpans = 12
 func fatTraceSeed() string {
 	const traceID = "f00000000000000000000000000000aa"
 	rows := make([]string, 0, fatTraceMatchedSpans)
-	for i := 0; i < fatTraceMatchedSpans; i++ {
+	for i := range fatTraceMatchedSpans {
 		spanID := fmt.Sprintf("%016x", i+1)
 		parent := ""
 		if i > 0 {

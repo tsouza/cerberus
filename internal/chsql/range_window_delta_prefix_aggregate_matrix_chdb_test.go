@@ -117,11 +117,11 @@ func runDeltaMatrixPrefixLevelQuery(
 	}
 	inner := strings.TrimSuffix(strings.TrimSpace(sqlText), ";")
 	const outerFromMarker = " FROM ("
-	idx := strings.Index(inner, outerFromMarker)
-	if idx == -1 {
+	_, after, ok := strings.Cut(inner, outerFromMarker)
+	if !ok {
 		t.Fatalf("runDeltaMatrixPrefixLevelQuery: no outer FROM found in:\n%s", inner)
 	}
-	rest := inner[idx+len(outerFromMarker):]
+	rest := after
 	wrapped := "SELECT Attributes['job'] AS job, toUnixTimestamp64Milli(anchor_ts) AS anchor_ms, first_val " +
 		"FROM (" + rest
 	rows, err := db.Query(wrapped, args...)

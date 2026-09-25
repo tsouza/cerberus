@@ -212,7 +212,6 @@ func TestNativeDerivPredictFeatureDisabledStaysFanout(t *testing.T) {
 		"sum by(host) (deriv(disk_used_bytes[5m]))",
 		"sum by(host) (predict_linear(disk_used_bytes[10m], 3600))",
 	} {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 			// Zero-value RangeLowerers => withDefaults => all fan-out.

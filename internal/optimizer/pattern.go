@@ -22,6 +22,7 @@ package optimizer
 // of `PatternRule`.
 
 import (
+	"maps"
 	"reflect"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -53,17 +54,17 @@ func KindOf(n chplan.Node) NodeKind {
 // some PatternRule wants to capture it; KindOf gives a one-off lookup
 // for anything else.
 var (
-	KindScan           = NodeKind{t: reflect.TypeOf((*chplan.Scan)(nil))}
-	KindFilter         = NodeKind{t: reflect.TypeOf((*chplan.Filter)(nil))}
-	KindProject        = NodeKind{t: reflect.TypeOf((*chplan.Project)(nil))}
-	KindAggregate      = NodeKind{t: reflect.TypeOf((*chplan.Aggregate)(nil))}
-	KindRangeWindow    = NodeKind{t: reflect.TypeOf((*chplan.RangeWindow)(nil))}
-	KindLimit          = NodeKind{t: reflect.TypeOf((*chplan.Limit)(nil))}
-	KindOrderBy        = NodeKind{t: reflect.TypeOf((*chplan.OrderBy)(nil))}
-	KindVectorJoin     = NodeKind{t: reflect.TypeOf((*chplan.VectorJoin)(nil))}
-	KindVectorSetOp    = NodeKind{t: reflect.TypeOf((*chplan.VectorSetOp)(nil))}
-	KindStructuralJoin = NodeKind{t: reflect.TypeOf((*chplan.StructuralJoin)(nil))}
-	KindTopK           = NodeKind{t: reflect.TypeOf((*chplan.TopK)(nil))}
+	KindScan           = NodeKind{t: reflect.TypeFor[*chplan.Scan]()}
+	KindFilter         = NodeKind{t: reflect.TypeFor[*chplan.Filter]()}
+	KindProject        = NodeKind{t: reflect.TypeFor[*chplan.Project]()}
+	KindAggregate      = NodeKind{t: reflect.TypeFor[*chplan.Aggregate]()}
+	KindRangeWindow    = NodeKind{t: reflect.TypeFor[*chplan.RangeWindow]()}
+	KindLimit          = NodeKind{t: reflect.TypeFor[*chplan.Limit]()}
+	KindOrderBy        = NodeKind{t: reflect.TypeFor[*chplan.OrderBy]()}
+	KindVectorJoin     = NodeKind{t: reflect.TypeFor[*chplan.VectorJoin]()}
+	KindVectorSetOp    = NodeKind{t: reflect.TypeFor[*chplan.VectorSetOp]()}
+	KindStructuralJoin = NodeKind{t: reflect.TypeFor[*chplan.StructuralJoin]()}
+	KindTopK           = NodeKind{t: reflect.TypeFor[*chplan.TopK]()}
 )
 
 // Bindings is the result of a successful pattern match: a map from the
@@ -199,12 +200,8 @@ func (p withChildrenPattern) Match(n chplan.Node) (Bindings, bool) {
 		if !ok {
 			return nil, false
 		}
-		for k, v := range cb {
-			out[k] = v
-		}
+		maps.Copy(out, cb)
 	}
-	for k, v := range parentB {
-		out[k] = v
-	}
+	maps.Copy(out, parentB)
 	return out, true
 }

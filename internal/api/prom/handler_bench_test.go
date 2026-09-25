@@ -148,7 +148,7 @@ func BenchmarkHandleQueryRange_Small(b *testing.B) {
 	start := time.Unix(1700000000, 0).UTC()
 	end := start.Add(time.Hour)
 	samples := make([]chclient.Sample, 0, 60)
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		samples = append(samples, chclient.Sample{
 			MetricName: "up",
 			Labels:     map[string]string{"job": "api"},
@@ -182,7 +182,7 @@ func BenchmarkHandleQueryRange_Large(b *testing.B) {
 	start := time.Unix(1700000000, 0).UTC()
 	end := start.Add(24 * time.Hour)
 	samples := make([]chclient.Sample, 0, 1440)
-	for i := 0; i < 1440; i++ {
+	for i := range 1440 {
 		samples = append(samples, chclient.Sample{
 			MetricName: "up",
 			Labels:     map[string]string{"job": "api"},
@@ -213,7 +213,7 @@ func BenchmarkHandleQueryRange_Large(b *testing.B) {
 // flat list of names; the handler unions across all metric tables.
 func BenchmarkHandleLabels(b *testing.B) {
 	names := make([]string, 0, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		names = append(names, fmt.Sprintf("label_%03d", i))
 	}
 	q := &stubQuerier{strings: names}
@@ -325,7 +325,7 @@ func BenchmarkHandleSeries(b *testing.B) {
 		// the combined arm count crosses the K=128 cap and chunks into
 		// ⌈N_arms/K⌉ bounded queries.
 		form := url.Values{}
-		for i := 0; i < n; i++ {
+		for i := range n {
 			form.Add("match[]", fmt.Sprintf("traces_service_graph_request_total_%d", i))
 		}
 		reqURL := srv.URL + "/api/v1/series?" + form.Encode()

@@ -130,7 +130,7 @@ func LogsDataset() *rapid.Generator[property.Dataset] {
 
 		records := make([]property.LogRecord, 0, numRecords)
 		step := 15 * time.Second
-		for i := 0; i < numRecords; i++ {
+		for i := range numRecords {
 			lset := drawStreamLabels(t, fmt.Sprintf("labels_%d", i))
 			body := drawBody(t, fmt.Sprintf("body_%d", i))
 			severity := rapid.SampledFrom(LogSeverityPool).Draw(t, fmt.Sprintf("severity_%d", i))
@@ -201,7 +201,7 @@ func drawStructuredMetadata(t *rapid.T, id string) map[string]string {
 func drawBody(t *rapid.T, id string) string {
 	count := rapid.IntRange(2, 4).Draw(t, id+"_count")
 	tokens := make([]string, 0, count+1)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		tokens = append(tokens, rapid.SampledFrom(LogBodyTokenPool).Draw(t, fmt.Sprintf("%s_tok_%d", id, i)))
 	}
 	if rapid.Bool().Draw(t, id+"_with_ip") {

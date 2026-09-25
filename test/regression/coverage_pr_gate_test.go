@@ -331,7 +331,7 @@ func workflowTopLevelConcurrency(t *testing.T, workflow string) map[string]strin
 
 	values := map[string]string{}
 	inBlock := false
-	for _, line := range strings.Split(workflow, "\n") {
+	for line := range strings.SplitSeq(workflow, "\n") {
 		if line == "concurrency:" {
 			inBlock = true
 			continue

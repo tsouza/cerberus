@@ -118,7 +118,7 @@ func expandTokens(s string, tokens map[string]string) (string, error) {
 	for k, v := range tokens {
 		out = strings.ReplaceAll(out, "${"+k+"}", v)
 	}
-	if i := strings.Index(out, "${"); i >= 0 {
+	if found := strings.Contains(out, "${"); found {
 		return "", fmt.Errorf("unexpanded token in %q — the replay lane must provide it", s)
 	}
 	return out, nil
@@ -756,7 +756,7 @@ var predicates = map[string]predicateFunc{
 			}
 			seen[s.Labels[0].Value.StringValue] = true
 		}
-		for _, want := range strings.Split(arg, ",") {
+		for want := range strings.SplitSeq(arg, ",") {
 			if !seen[want] {
 				return fmt.Errorf("no series with __meta_type=%s (got %v)", want, seen)
 			}
@@ -1070,10 +1070,8 @@ var predicates = map[string]predicateFunc{
 		if !ok {
 			return typeErr(v)
 		}
-		for _, x := range s.Data {
-			if x == arg {
-				return nil
-			}
+		if slices.Contains(s.Data, arg) {
+			return nil
 		}
 		return fmt.Errorf("%q absent from data %v", arg, s.Data)
 	},

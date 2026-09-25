@@ -132,7 +132,6 @@ func TestHistogramQuantile_EmptyInput_DropsRow(t *testing.T) {
 	p := parser.NewParser(parser.Options{})
 
 	for _, phi := range []float64{0.0, 0.1, 0.5, 0.95, 1.0} {
-		phi := phi
 		t.Run(fmt.Sprintf("phi=%.2f", phi), func(t *testing.T) {
 			t.Parallel()
 			query := fmt.Sprintf(
@@ -304,7 +303,6 @@ func TestHistogramQuantile_EmptyGuardTracksGroupingKeyArity(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

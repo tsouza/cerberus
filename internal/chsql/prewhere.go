@@ -305,10 +305,5 @@ func projectionTouchesWide(cols []string, shape TableShape) bool {
 	if len(cols) == 0 {
 		return true
 	}
-	for _, c := range cols {
-		if shape.IsWideColumn(c) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(cols, shape.IsWideColumn)
 }

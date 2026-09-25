@@ -53,7 +53,6 @@ func TestLower_ExpHistogram_FloatOnlyFunctionsDropSamples(t *testing.T) {
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 
@@ -97,7 +96,6 @@ func TestLower_ExpHistogram_ClampFamilyDropsSamples(t *testing.T) {
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 

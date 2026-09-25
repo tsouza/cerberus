@@ -282,7 +282,7 @@ func runSeed(args []string) error {
 func buildFixture(start time.Time) []*fixtureTrace {
 	out := make([]*fixtureTrace, 0, len(services)*traceCount)
 	for si, svc := range services {
-		for i := 0; i < traceCount; i++ {
+		for i := range traceCount {
 			t := newTrace(start, svc, si, i)
 			out = append(out, t)
 		}
@@ -330,7 +330,7 @@ func newTrace(start time.Time, svc string, svcIdx, traceIdx int) *fixtureTrace {
 		},
 	})
 
-	for c := 0; c < childCount; c++ {
+	for c := range childCount {
 		childID := deriveSpanID(svc, traceIdx, c+1)
 		childKind := spanKinds[(c+traceIdx)%len(spanKinds)]
 		// One deterministic child per every-5th trace carries
@@ -927,7 +927,7 @@ func fetchLiveStoreReadyCounters(ctx context.Context, metricsURL string) (blocks
 	if err != nil {
 		return 0, 0, fmt.Errorf("read /metrics body: %w", err)
 	}
-	for _, line := range strings.Split(string(body), "\n") {
+	for line := range strings.SplitSeq(string(body), "\n") {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}

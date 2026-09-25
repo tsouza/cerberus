@@ -329,7 +329,7 @@ func TestBreaker_MemoryLimitNeutral_Closed(t *testing.T) {
 
 	var b breaker
 	ctx := context.Background()
-	for i := 0; i < breakerThreshold*3; i++ {
+	for i := range breakerThreshold * 3 {
 		if !b.allow() {
 			t.Fatalf("allow() = false after %d memory-limit rejections; breaker must stay closed", i)
 		}
@@ -343,7 +343,7 @@ func TestBreaker_MemoryLimitNeutral_Closed(t *testing.T) {
 	// success, not merely ignored): real failures interleaved with
 	// memory-limit rejections never accumulate to the threshold.
 	outage := errors.New("dial tcp: connection refused")
-	for i := 0; i < breakerThreshold*2; i++ {
+	for range breakerThreshold * 2 {
 		b.record(ctx, outage)
 		b.record(ctx, chMemLimitException())
 	}
@@ -363,7 +363,7 @@ func TestBreaker_MemoryLimitClosesHalfOpen(t *testing.T) {
 	ctx := context.Background()
 
 	outage := errors.New("dial tcp: connection refused")
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		b.record(ctx, outage)
 	}
 	if got := b.currentState(); got != "open" {
@@ -448,7 +448,7 @@ func TestQueryCursor_OpenTimeMemoryLimit(t *testing.T) {
 	conn.setFail(true)
 	c := newWithConn(conn)
 
-	for i := 0; i < breakerThreshold*2; i++ {
+	for range breakerThreshold * 2 {
 		_, err := c.QueryCursor(context.Background(), "SELECT 1")
 		if err == nil {
 			t.Fatal("QueryCursor: want the memory-limit rejection, got nil")

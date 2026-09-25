@@ -77,9 +77,9 @@ const (
 
 var (
 	fillTime  = time.Unix(1_234_567_890, 0).UTC()
-	exprIface = reflect.TypeOf((*chplan.Expr)(nil)).Elem()
-	nodeIface = reflect.TypeOf((*chplan.Node)(nil)).Elem()
-	timeType  = reflect.TypeOf(time.Time{})
+	exprIface = reflect.TypeFor[chplan.Expr]()
+	nodeIface = reflect.TypeFor[chplan.Node]()
+	timeType  = reflect.TypeFor[time.Time]()
 )
 
 // fillStruct fills every settable exported field of a struct value.

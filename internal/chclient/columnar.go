@@ -210,12 +210,15 @@ func chPoolOptions(cfg Config) chpool.Options {
 	poolOpts := chpool.Options{ClientOptions: opts}
 	if cfg.MaxOpenConns > 0 {
 		// Clamp to int32 (chpool.Options.MaxConns is int32); a pool-size config
-		// past 2^31 is nonsensical, so cap rather than wrap.
-		n := cfg.MaxOpenConns
-		if n > math.MaxInt32 {
-			n = math.MaxInt32
+		// past 2^31 is nonsensical, so cap rather than wrap. The conversion
+		// sits inside the branch: gosec G115 proves the bound only from a
+		// branch, and a bare `if n > max { n = max }` clamp is what go fix's
+		// minmax modernizer folds into min(), which gosec cannot see through.
+		if n := cfg.MaxOpenConns; n > math.MaxInt32 {
+			poolOpts.MaxConns = math.MaxInt32
+		} else {
+			poolOpts.MaxConns = int32(n)
 		}
-		poolOpts.MaxConns = int32(n)
 	}
 	return poolOpts
 }
@@ -627,7 +630,7 @@ func (d *columnarCursor) decodeBlock(cols matrixCols, rows int) error {
 		curID       uint32
 		haveSeries  bool
 	)
-	for r := 0; r < rows; r++ {
+	for r := range rows {
 		if !d.charge() {
 			d.err = &TooManySamplesError{Limit: d.budgetLimit()}
 			return errBudgetExceeded

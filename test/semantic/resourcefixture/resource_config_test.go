@@ -11,6 +11,7 @@
 package resourcefixture
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/api/format"
@@ -53,13 +54,7 @@ func TestResourceFixture_DottedKeyNormalization(t *testing.T) {
 	}
 
 	candidates := format.PromLabelToOTelCandidates(NamespaceWireLabel)
-	found := false
-	for _, c := range candidates {
-		if c == NamespaceKey {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(candidates, NamespaceKey)
 	if !found {
 		t.Errorf("PromLabelToOTelCandidates(%q) = %v, want it to include the dotted OTel key %q", NamespaceWireLabel, candidates, NamespaceKey)
 	}

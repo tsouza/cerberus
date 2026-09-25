@@ -108,7 +108,6 @@ func TestInspectPlanShape_DeepFactsReachExprSlots(t *testing.T) {
 		{"range carrier", &chplan.RangeWindow{Input: &chplan.Scan{Table: "otel_metrics_sum"}, Start: fixedNow.Add(-time.Hour), End: fixedNow, Step: time.Minute}, func(f planShapeFacts) bool { return f.rangeCarriers == 1 }},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if !tc.fact(shapeOf(tc.inner)) {

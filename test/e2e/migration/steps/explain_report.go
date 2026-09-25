@@ -142,7 +142,7 @@ func readExplainField(q *explainQuery, line string) error {
 	case strings.HasPrefix(line, explainSQLPrefix):
 		q.SQL = strings.TrimSpace(strings.TrimPrefix(line, explainSQLPrefix))
 	case strings.HasPrefix(line, explainTablesPrefix):
-		for _, t := range strings.Split(strings.TrimPrefix(line, explainTablesPrefix), ",") {
+		for t := range strings.SplitSeq(strings.TrimPrefix(line, explainTablesPrefix), ",") {
 			if t = strings.TrimSpace(t); t != "" {
 				q.Tables = append(q.Tables, t)
 			}

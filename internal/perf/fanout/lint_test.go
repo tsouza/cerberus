@@ -98,7 +98,6 @@ func TestRule1_HistogramQuantileBroadcast_OK(t *testing.T) {
 			return &chplan.HistogramQuantileNative{Input: in, Phi: 0.95}
 		}},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			right := &chplan.Project{
@@ -130,7 +129,6 @@ func TestRule1_HistogramQuantileOverRawScan_Trips(t *testing.T) {
 			return &chplan.HistogramQuantileNative{Input: in, Phi: 0.95}
 		}},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.CrossJoin{Left: stepGrid(), Right: tc.value(rawScan())}

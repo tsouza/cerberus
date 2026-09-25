@@ -425,10 +425,11 @@ func (l *lexer) next() token {
 	// prefixes such as `&` < `&>` < `&>>` and `span` < `span.`.
 	multi := tokenKind(0)
 	haveMulti := false
-	text := l.scanner.TokenText()
+	var text strings.Builder
+	text.WriteString(l.scanner.TokenText())
 	for {
-		text += string(l.scanner.Peek())
-		k, ok := keywordTokens[text]
+		text.WriteString(string(l.scanner.Peek()))
+		k, ok := keywordTokens[text.String()]
 		if !ok {
 			break
 		}

@@ -120,9 +120,9 @@ func TestColumnarLowCardinalityMapFallback_E2E(t *testing.T) {
 	)
 	base := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
 	var values [][]any
-	for s := 0; s < series; s++ {
+	for s := range series {
 		attrs := map[string]string{"job": "api", "instance": fmt.Sprintf("host-%d", s)}
-		for p := 0; p < perSeries; p++ {
+		for p := range perSeries {
 			ts := base.Add(time.Duration(s*perSeries+p) * time.Second)
 			values = append(values, []any{"http_requests_total", attrs, ts, float64(p)})
 		}
@@ -203,19 +203,19 @@ func seedMatrixFixture(ctx context.Context, t *testing.T, addr string) {
 	)
 	base := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
 	var values [][]any
-	for s := 0; s < series; s++ {
+	for s := range series {
 		attrs := map[string]string{
 			"job":      "api",
 			"env":      "prod",
 			"instance": fmt.Sprintf("host-%d", s),
 		}
-		for p := 0; p < perSeries; p++ {
+		for p := range perSeries {
 			ts := base.Add(time.Duration(s*perSeries+p) * time.Second)
 			values = append(values, []any{"http_requests_total", attrs, ts, float64(p)})
 		}
 	}
 	// One empty-label series so the empty-Map decode parity is exercised.
-	for p := 0; p < perSeries; p++ {
+	for p := range perSeries {
 		ts := base.Add(time.Duration(1000+p) * time.Second)
 		values = append(values, []any{"http_requests_total", map[string]string{}, ts, float64(p)})
 	}

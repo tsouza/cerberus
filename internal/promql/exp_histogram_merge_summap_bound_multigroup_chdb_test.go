@@ -75,9 +75,9 @@ func seedExpHistSumMapMultiGroupBoundRows(t *testing.T, groups, rowsPerGroup int
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n")
 	tuples := make([]string, 0, groups*rowsPerGroup)
-	for g := 0; g < groups; g++ {
+	for g := range groups {
 		route := "r" + strconv.Itoa(g)
-		for i := 0; i < rowsPerGroup; i++ {
+		for i := range rowsPerGroup {
 			tuples = append(tuples, fmt.Sprintf(
 				"('%s', map('route', '%s', 'series', 's%d'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
 				histogramMergeBoundMetric, route, i,
@@ -163,7 +163,7 @@ func TestExpHistogramMergeSumMapBudget_ChDB_MultiGroupPerGroupCostStillEnforced(
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
 	tuples := make([]string, 0, overflowGroupRows+1)
-	for i := 0; i < overflowGroupRows; i++ {
+	for i := range overflowGroupRows {
 		tuples = append(tuples, fmt.Sprintf(
 			"('%s', map('route', 'r0', 'series', 's%d'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
 			histogramMergeBoundMetric, i,

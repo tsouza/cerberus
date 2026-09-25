@@ -97,7 +97,6 @@ func compositionContributors() []settingsContributor {
 		}},
 	}
 	for _, f := range compositionRuleFlags {
-		f := f
 		switch f.name {
 		case "JoinSpill", "ExpHistogramTwoLevel":
 			// Applied by the dedicated bound above, not by SettingsRules.apply.
@@ -228,10 +227,9 @@ func TestSharedQuerySettings_EveryKeyResolvesToOneValue(t *testing.T) {
 	combos := 1 << len(compositionRuleFlags)
 
 	for _, p := range plans {
-		p := p
 		t.Run(p.name, func(t *testing.T) {
 			t.Parallel()
-			for mask := 0; mask < combos; mask++ {
+			for mask := range combos {
 				rules := compositionBaseRules()
 				var on []string
 				for i, f := range compositionRuleFlags {

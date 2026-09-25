@@ -82,7 +82,7 @@ func readTier1CerberusConfig(t *testing.T) map[string]any {
 func tier1CerberusSetting(t *testing.T, path string) (any, bool) {
 	t.Helper()
 	var node any = readTier1CerberusConfig(t)
-	for _, seg := range strings.Split(path, ".") {
+	for seg := range strings.SplitSeq(path, ".") {
 		m, ok := node.(map[string]any)
 		if !ok {
 			return nil, false

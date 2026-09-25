@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -212,12 +213,7 @@ func setEqual(a, b []string) bool {
 }
 
 func contains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(haystack, needle)
 }
 
 // TestMetadataWindowSweep_ChDB is the core sweep. For each window it

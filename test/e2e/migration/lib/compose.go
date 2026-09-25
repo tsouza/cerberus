@@ -17,7 +17,7 @@ const DockerBin = "docker"
 // invocations live here rather than at their call sites. Compose resolves which
 // project — and so which checkout's containers, networks and volumes — an
 // invocation addresses from COMPOSE_PROJECT_SUFFIX in that environment (see
-// scripts/compose-project-suffix.sh). Handing the child a constructed
+// .github/scripts/compose-project-suffix.mjs). Handing the child a constructed
 // environment instead resolves the unsuffixed project, so a pause or a teardown
 // lands in whichever checkout owns that one.
 func Compose(dir, file string, args ...string) error {

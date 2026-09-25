@@ -287,7 +287,6 @@ func TestUnpinSpine_ZeroesNativeBounds(t *testing.T) {
 		},
 		{name: "mixed-union", plan: nativeUnionPlan},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -395,7 +394,6 @@ func TestPlan_NativeGridGuardsRefuse(t *testing.T) {
 			wantReason: ReasonGridMismatch,
 		},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

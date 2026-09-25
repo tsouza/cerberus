@@ -106,7 +106,7 @@ func TestCalibrateEstimate_AppliesBoundedCorrection(t *testing.T) {
 	const shape = "cerb:agg;rw"
 
 	e.Actuals.RecordPredicted(shape, 100_000)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, ok := e.Actuals.RecordActual(shape, actuals.Actual{ReadRows: 1_000_000}, actuals.SourcePacket); !ok {
 			t.Fatal("RecordActual should succeed")
 		}

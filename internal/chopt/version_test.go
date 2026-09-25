@@ -109,3 +109,28 @@ func TestBuildRangeContains(t *testing.T) {
 		}
 	}
 }
+
+func TestLowestVersion(t *testing.T) {
+	old := Version{Major: 25, Minor: 3, Patch: 14, Build: 14}
+	fresh := Version{Major: 26, Minor: 6, Patch: 1, Build: 1193}
+	vendorOld := Version{Major: 25, Minor: 3, Patch: 14, Build: 14, Vendor: true}
+	cases := []struct {
+		name   string
+		in     []Version
+		want   Version
+		wantOK bool
+	}{
+		{"empty", nil, Version{}, false},
+		{"single", []Version{fresh}, fresh, true},
+		{"older last", []Version{fresh, old}, old, true},
+		{"older first", []Version{old, fresh}, old, true},
+		{"equal builds prefer vendor", []Version{old, vendorOld, fresh}, vendorOld, true},
+		{"vendor kept over a later equal upstream", []Version{vendorOld, old}, vendorOld, true},
+	}
+	for _, tc := range cases {
+		got, ok := LowestVersion(tc.in)
+		if got != tc.want || ok != tc.wantOK {
+			t.Errorf("%s: LowestVersion(%v) = %v, %v; want %v, %v", tc.name, tc.in, got, ok, tc.want, tc.wantOK)
+		}
+	}
+}

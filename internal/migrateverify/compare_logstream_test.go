@@ -432,7 +432,7 @@ func TestVerify_TruncationDoesNotHideAnInteriorDivergence(t *testing.T) {
 	const boundaryTS = 1_780_000_000_000_000_000
 	mk := func(swapAt int, line string) string {
 		entries := make([]entrySpec, 0, logStreamReplayLimit)
-		for i := 0; i < logStreamReplayLimit; i++ {
+		for i := range logStreamReplayLimit {
 			e := entrySpec{tsNano: strconv.Itoa(boundaryTS + i), line: fmt.Sprintf("line-%d", i)}
 			if i == swapAt {
 				e.line = line
@@ -463,7 +463,7 @@ func TestVerify_TruncationDoesNotHideAnInteriorDivergence(t *testing.T) {
 func TestVerify_LogStreamEmptyAgainstFullIsADivergence(t *testing.T) {
 	const oldestTS = 1_780_000_000_000_000_000
 	entries := make([]entrySpec, 0, logStreamReplayLimit)
-	for i := 0; i < logStreamReplayLimit; i++ {
+	for i := range logStreamReplayLimit {
 		entries = append(entries, entrySpec{tsNano: strconv.Itoa(oldestTS + i), line: fmt.Sprintf("line-%d", i)})
 	}
 	full := logStreamBody(streamSpec{labels: map[string]string{"job": "api"}, entries: entries})

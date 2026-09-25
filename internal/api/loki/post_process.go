@@ -3,6 +3,7 @@ package loki
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"regexp"
 	"text/template"
 
@@ -313,9 +314,7 @@ func newLabelFormatStep(formats []syntax.LabelFmt) (lineTransform, error) {
 		// Copy the input labels into a fresh map; mutations stay scoped
 		// to this row's result.
 		out := make(map[string]string, len(labels))
-		for k, v := range labels {
-			out[k] = v
-		}
+		maps.Copy(out, labels)
 		// Build a template context (map[string]any) once per row from
 		// the *input* labels — Loki templates see the pre-format label
 		// set, matching their `lbs.IntoMap(m)` pattern.
@@ -383,9 +382,7 @@ func unpackParseDetailStep(line string, _ int64, labels map[string]string) (stri
 		return line, withoutParserError(labels), true
 	}
 	out := make(map[string]string, len(labels))
-	for k, v := range labels {
-		out[k] = v
-	}
+	maps.Copy(out, labels)
 	out[syntax.ErrorDetailsLabel] = err.Error()
 	return line, out, true
 }
@@ -431,9 +428,7 @@ func newPatternStep(p string) (lineTransform, error) {
 			return line, lbs, true
 		}
 		out := make(map[string]string, len(lbs)+len(names))
-		for k, v := range lbs {
-			out[k] = v
-		}
+		maps.Copy(out, lbs)
 		for i, c := range caps {
 			if i >= len(names) {
 				break
@@ -528,8 +523,6 @@ func isSpecialLabel(name string) bool {
 // scoped to the result.
 func copyLabelMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }

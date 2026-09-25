@@ -3,6 +3,7 @@ package regression
 import (
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -94,10 +95,8 @@ func TestChartSecretKeyIsBindableFromAConfigFile(t *testing.T) {
 	t.Parallel()
 
 	const key = "CERBERUS_CH_PASSWORD"
-	for _, s := range config.ConfigFileSettings() {
-		if s == key {
-			return
-		}
+	if slices.Contains(config.ConfigFileSettings(), key) {
+		return
 	}
 	t.Errorf("%s has no nested path in internal/config's binding table; the chart supplies it from a Secret, "+
 		"so a config file is the only way to set it outside Kubernetes", key)

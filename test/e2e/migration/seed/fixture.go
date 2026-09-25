@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math/rand"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -187,12 +189,7 @@ func (d Declaration) validate() error {
 // contains reports whether a declared list holds a value. The lists are three
 // to six entries long, so a linear scan is the whole of it.
 func contains(list []string, want string) bool {
-	for _, v := range list {
-		if v == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, want)
 }
 
 // validateRestartKeys rejects a Restarts key that names a series the declared
@@ -391,9 +388,7 @@ type MetricSeries struct {
 // PromSeries renders the series in the reference-Prometheus shape.
 func (m MetricSeries) PromSeries() Series {
 	labels := make(map[string]string, len(m.Attributes)+1)
-	for k, v := range m.Attributes {
-		labels[k] = v
-	}
+	maps.Copy(labels, m.Attributes)
 	labels[metricNameLabel] = m.MetricName
 	return Series{Labels: labels, Samples: m.Samples}
 }
@@ -476,9 +471,7 @@ func (h HistogramSeries) SumSeries() MetricSeries {
 
 func (h HistogramSeries) suffixLabels(suffix string) map[string]string {
 	labels := make(map[string]string, len(h.Attributes)+1)
-	for k, v := range h.Attributes {
-		labels[k] = v
-	}
+	maps.Copy(labels, h.Attributes)
 	labels[metricNameLabel] = h.MetricName + suffix
 	return labels
 }
@@ -956,14 +949,14 @@ func spanName(service string, index int) string {
 }
 
 func deriveTraceID(service string, index int) [16]byte {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("trace|%s|%d", service, index)))
+	sum := sha256.Sum256(fmt.Appendf(nil, "trace|%s|%d", service, index))
 	var id [16]byte
 	copy(id[:], sum[:len(id)])
 	return id
 }
 
 func deriveSpanID(service string, traceIndex, spanIndex int) [8]byte {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("span|%s|%d|%d", service, traceIndex, spanIndex)))
+	sum := sha256.Sum256(fmt.Appendf(nil, "span|%s|%d|%d", service, traceIndex, spanIndex))
 	var id [8]byte
 	copy(id[:], sum[:len(id)])
 	return id

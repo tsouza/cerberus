@@ -91,7 +91,6 @@ func TestCheckStreamValueArity(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := checkStreamValueArity(tt.streams, tt.categorize)
@@ -149,7 +148,6 @@ func TestConsumerCorpus_Replay_Stub(t *testing.T) {
 		t.Fatal("corpus is empty")
 	}
 	for _, e := range entries {
-		e := e
 		t.Run(e.Version+"/"+e.Name, func(t *testing.T) {
 			t.Parallel()
 			srv := newStubServer(t, e.Datasource, e.Stub)

@@ -58,7 +58,7 @@ func buildLivePatternsFixture(now time.Time) livePatternsFixture {
 	entryCount := len(livePatternsLevels) * livePatternsEntriesPerLevel
 	entries := make([]entry, 0, entryCount)
 	counts := make(map[string]int, len(livePatternsLevels))
-	for i := 0; i < entryCount; i++ {
+	for i := range entryCount {
 		level := livePatternsLevels[i%len(livePatternsLevels)]
 		entries = append(entries, entry{
 			ts:    start.Add(time.Duration(i) * livePatternsEntryInterval),

@@ -391,7 +391,7 @@ func TestHTTPServer_GoroutineDeltaWithinBound(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	baseline := runtime.NumGoroutine()
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/echo", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -458,15 +458,13 @@ func TestHTTPServer_ConcurrentRequestsDuringShutdown(t *testing.T) {
 
 	const N = 5
 	var wg sync.WaitGroup
-	for i := 0; i < N; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range N {
+		wg.Go(func() {
 			resp, err := http.Get("http://" + ln.Addr().String() + "/slow")
 			if err == nil {
 				_ = resp.Body.Close()
 			}
-		}()
+		})
 	}
 
 	// Wait for every request to enter the handler before triggering

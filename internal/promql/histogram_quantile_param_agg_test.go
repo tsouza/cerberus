@@ -84,7 +84,6 @@ func TestClassicBucketLadderFold_OperatorTable(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 
 	for _, op := range reducers {
-		op := op
 		t.Run("reduces/"+op.String(), func(t *testing.T) {
 			t.Parallel()
 			agg := &parser.AggregateExpr{Op: op, Param: param(op)}
@@ -112,7 +111,6 @@ func TestClassicBucketLadderFold_OperatorTable(t *testing.T) {
 	}
 
 	for _, op := range shapers {
-		op := op
 		t.Run("no_fold/"+op.String(), func(t *testing.T) {
 			t.Parallel()
 			agg := &parser.AggregateExpr{Op: op, Param: param(op)}
@@ -259,7 +257,6 @@ func TestPromQuantileRungFold_PhiDomain(t *testing.T) {
 		{phi: math.NaN(), want: math.NaN()},
 	}
 	for _, tc := range outOfDomain {
-		tc := tc
 		t.Run(fmt.Sprintf("out_of_domain/phi=%v", tc.phi), func(t *testing.T) {
 			t.Parallel()
 			out, readsRungs := foldRungs(t, promQuantileRungFold(&chplan.LitFloat{V: tc.phi}))
@@ -283,7 +280,6 @@ func TestPromQuantileRungFold_PhiDomain(t *testing.T) {
 	}
 
 	for _, phi := range []float64{0, 0.5, 1} {
-		phi := phi
 		t.Run(fmt.Sprintf("in_domain/phi=%v", phi), func(t *testing.T) {
 			t.Parallel()
 			out, readsRungs := foldRungs(t, promQuantileRungFold(&chplan.LitFloat{V: phi}))
@@ -350,7 +346,6 @@ func TestHistogramQuantile_QuantileAgg_ReachesHistogramPath(t *testing.T) {
 		}},
 	}
 	for _, mode := range modes {
-		mode := mode
 		t.Run(mode.name, func(t *testing.T) {
 			t.Parallel()
 			plan, err := lower(expr, s, mode.ctx)

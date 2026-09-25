@@ -147,7 +147,7 @@ func TestScanEstimateAdvisor_SkipsWhenRouteMemoHasVerdict(t *testing.T) {
 	key := estimateTestKey()
 
 	memo := routememo.New(time.Hour)
-	for i := 0; i < routememo.MinCorroboratingFailures-1; i++ {
+	for range routememo.MinCorroboratingFailures - 1 {
 		memo.Observe(key, routememo.RouteA, routememo.OutcomeResourceFailure)
 	}
 	release, ok, _ := memo.ObserveRouteAFailureAndMaybeBeginProbe(key)

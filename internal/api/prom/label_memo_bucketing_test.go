@@ -67,7 +67,7 @@ func TestMatrixFromCursor_MemoPreservesBucketing(t *testing.T) {
 	step := time.Minute
 
 	var rows []chclient.Sample
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		ts := start.Add(time.Duration(i) * time.Minute)
 		rows = append(
 			rows,

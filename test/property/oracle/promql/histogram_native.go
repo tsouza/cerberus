@@ -336,7 +336,7 @@ func sPos(pbc []float64, total, p float64) float64 {
 	k := int(math.Floor(p))
 	frac := p - float64(k)
 	var cum float64
-	for i := 0; i < k; i++ {
+	for i := range k {
 		cum += pbc[i]
 	}
 	return cum + pbc[k]*frac
@@ -357,7 +357,7 @@ func sNeg(nbc []float64, total, q float64) float64 {
 	}
 	m := int(math.Ceil(q))
 	var cum float64
-	for i := 0; i < m; i++ {
+	for i := range m {
 		cum += nbc[i]
 	}
 	return (total - cum) + nbc[m-1]*(float64(m)-q)

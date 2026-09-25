@@ -31,7 +31,7 @@ that may be running on the box.
 
 The compose project is `histbench-ab5` plus this checkout's own suffix — empty
 in a primary checkout, a short hash of the worktree path otherwise, derived by
-`scripts/compose-project-suffix.sh`. Two checkouts of the repo therefore run two
+`.github/scripts/compose-project-suffix.mjs`. Two checkouts of the repo therefore run two
 independent bench stacks rather than one stack they take turns tearing down.
 Container names follow from the project, so `run.sh` asks compose for the names
 it assigned and passes them to the resource sampler instead of reconstructing

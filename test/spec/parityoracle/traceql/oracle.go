@@ -71,6 +71,7 @@ package traceql
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"testing"
@@ -145,9 +146,7 @@ func (s Span) resourceAttributes() map[string]string {
 		return s.ResourceAttrs
 	}
 	merged := make(map[string]string, len(s.ResourceAttrs)+1)
-	for k, v := range s.ResourceAttrs {
-		merged[k] = v
-	}
+	maps.Copy(merged, s.ResourceAttrs)
 	merged[serviceNameAttr] = s.ServiceName
 	return merged
 }

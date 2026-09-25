@@ -25,7 +25,7 @@ func TestBreakerRecord_AcquireConnTimeoutIsNeutral(t *testing.T) {
 	b := &breaker{}
 
 	// A storm of bare ErrAcquireConnTimeout never trips the breaker.
-	for i := 0; i < breakerThreshold*3; i++ {
+	for range breakerThreshold * 3 {
 		b.record(context.Background(), clickhouse.ErrAcquireConnTimeout)
 	}
 	if got := b.currentState(); got != "closed" {
@@ -34,7 +34,7 @@ func TestBreakerRecord_AcquireConnTimeoutIsNeutral(t *testing.T) {
 
 	// Same when wrapped the way the Client methods wrap it
 	// ("chclient: query: %w").
-	for i := 0; i < breakerThreshold*3; i++ {
+	for range breakerThreshold * 3 {
 		b.record(context.Background(), fmt.Errorf("chclient: query: %w", clickhouse.ErrAcquireConnTimeout))
 	}
 	if got := b.currentState(); got != "closed" {
@@ -43,7 +43,7 @@ func TestBreakerRecord_AcquireConnTimeoutIsNeutral(t *testing.T) {
 
 	// Genuine backend failures still trip it — the neutral arm must not
 	// neutralise everything.
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		b.record(context.Background(), errors.New("dial tcp 127.0.0.1:9000: connection refused"))
 	}
 	if got := b.currentState(); got != "open" {

@@ -1,6 +1,7 @@
 package traceql
 
 import (
+	"slices"
 	"testing"
 
 	tempoql "github.com/tsouza/cerberus/internal/traceql/ast"
@@ -192,10 +193,8 @@ func containsInList(e chplan.Expr) bool {
 	case *chplan.Binary:
 		return containsInList(v.Left) || containsInList(v.Right)
 	case *chplan.FuncCall:
-		for _, a := range v.Args {
-			if containsInList(a) {
-				return true
-			}
+		if slices.ContainsFunc(v.Args, containsInList) {
+			return true
 		}
 	}
 	return false

@@ -46,7 +46,19 @@
 //                         `uses:` form only, so prose that NAMES the Action
 //                         (this comment included) stays legal.
 //
-// All three scans read their file set from `git ls-files`, restricted to the
+//   CHECK=step-logic      Step logic is Node ESM (CLAUDE.md invariant 15):
+//                         no file in scope may be a Python or shell script
+//                         outside the places shell legitimately lives. A
+//                         file is a script by its extension (`.py`, `.sh`,
+//                         `.bash`) or, whatever its name, by a `#!` line
+//                         naming a Python or POSIX-shell interpreter.
+//                         Python is rejected everywhere. Shell is accepted
+//                         only under `test/` and `bench/`, where a script is
+//                         a helper of the harness it sits beside, and in
+//                         `.envrc`, whose language direnv fixes. A top-level
+//                         `scripts/` directory is rejected by root-allowlist.
+//
+// All four scans read their file set from `git ls-files`, restricted to the
 // tracked INDEX plus every untracked-but-NOT-ignored working-tree path
 // (`pathsInScope()` / `blobsInScope()` below) — so a `.gitignore`d path stays
 // out of scope by construction (the companion fix for an artefact this gate
@@ -63,7 +75,8 @@
 // and, failing that, exit non-zero rather than assume it is text.
 //
 // Env contract:
-//   CHECK      one of: binary | root-allowlist | registry-login   (required)
+//   CHECK      one of: binary | root-allowlist | registry-login | step-logic
+//              (required)
 //   REPO_ROOT  optional; directory to scan (default: the process cwd, which
 //              on a runner is the checkout root). The self-test points this
 //              at a synthetic fixture repo to prove the gate FIRES.
@@ -155,7 +168,6 @@ export const ROOT_ALLOWLIST = [
   'deploy',
   'docs',
   'internal',
-  'scripts',
   'test',
 ];
 
@@ -244,6 +256,55 @@ export function loginActionUses(source) {
     }
   }
   return hits;
+}
+
+// Script file extensions, by language.
+const scriptExtensions = { '.py': 'Python', '.sh': 'shell', '.bash': 'shell' };
+
+// Interpreter names (the basename a `#!` line runs) by language.
+const pythonInterpreter = /^python[\d.]*$/;
+const shellInterpreter = /^(?:ba|da|k|z)?sh$/;
+
+// shebangInterpreter — the basename of the program a `#!` line runs, looking
+// through `env` (`#!/usr/bin/env -S python3` -> `python3`); null without one.
+function shebangInterpreter(firstLine) {
+  if (!firstLine.startsWith('#!')) return null;
+  const words = firstLine.slice(2).trim().split(/\s+/);
+  const base = (w) => w.slice(w.lastIndexOf('/') + 1);
+  if (base(words[0]) !== 'env') return base(words[0]);
+  return words.slice(1).find((w) => !w.startsWith('-')) ?? null;
+}
+
+// Where shell is accepted: the directory trees whose scripts are helpers of
+// the harness they sit beside, and the one file whose language its tool fixes.
+const shellTrees = ['test/', 'bench/'];
+const shellFiles = ['.envrc'];
+
+// scriptLanguage — 'Python', 'shell', or null for a file that is neither,
+// judged by extension first and by the `#!` line of `head` otherwise.
+// Exported for the self-test.
+export function scriptLanguage(path, head) {
+  const dot = path.lastIndexOf('.');
+  const slash = path.lastIndexOf('/');
+  if (dot > slash + 1) {
+    const byExtension = scriptExtensions[path.slice(dot)];
+    if (byExtension) return byExtension;
+  }
+  const interpreter = shebangInterpreter(head.toString('utf8').split('\n', 1)[0]);
+  if (interpreter === null) return null;
+  if (pythonInterpreter.test(interpreter)) return 'Python';
+  if (shellInterpreter.test(interpreter)) return 'shell';
+  return null;
+}
+
+// stepLogicViolation — the language of a script at `path` that is not
+// allowed there, or null. Exported for the self-test.
+export function stepLogicViolation(path, head) {
+  const language = scriptLanguage(path, head);
+  if (language === 'shell' && (shellFiles.includes(path) || shellTrees.some((t) => path.startsWith(t)))) {
+    return null;
+  }
+  return language;
 }
 
 // pathsInScope — `git ls-files` restricted to CONTENT this gate should ever
@@ -444,6 +505,28 @@ function scanRegistryLogin() {
   notice(`repo-hygiene: no workflow uses docker/login-action (${workflows.length} workflows scanned)`);
 }
 
+function scanStepLogic() {
+  const violations = [];
+  let scanned = 0;
+  for (const entry of blobsInScope()) {
+    if (entry.mode !== modeRegularFile && entry.mode !== modeExecutableFile) continue;
+    scanned++;
+    const language = stepLogicViolation(entry.path, readHead(entry));
+    if (language) violations.push({ path: entry.path, language });
+  }
+  if (violations.length > 0) {
+    for (const v of violations) log(`${v.path}: ${v.language} script`);
+    error(
+      `${violations.length} Python / shell script(s) outside the places shell is accepted (test/, bench/, .envrc). ` +
+        `Step logic — a workflow step or a Justfile recipe body — is dependency-light Node ESM in ` +
+        `.github/scripts/*.mjs (CLAUDE.md invariant 15, .github/scripts/README.md); port the script there and ` +
+        `run it with \`node .github/scripts/<name>.mjs\`.`,
+    );
+    process.exit(1);
+  }
+  notice(`repo-hygiene: no Python / shell step logic outside test/, bench/ and .envrc (${scanned} files scanned)`);
+}
+
 function isMain() {
   const invoked = process.argv[1] || '';
   return invoked.endsWith('repo-hygiene.mjs');
@@ -463,9 +546,12 @@ if (isMain()) {
     case 'registry-login':
       scanRegistryLogin();
       break;
+    case 'step-logic':
+      scanStepLogic();
+      break;
     default:
       error(
-        `repo-hygiene.mjs: unknown CHECK="${CHECK}" (expected one of: binary, root-allowlist, registry-login)`,
+        `repo-hygiene.mjs: unknown CHECK="${CHECK}" (expected one of: binary, root-allowlist, registry-login, step-logic)`,
       );
       process.exit(1);
   }

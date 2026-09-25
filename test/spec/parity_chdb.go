@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -1125,9 +1126,7 @@ func (r metricNameRestorer) restore(results []oracle.Result) {
 			continue
 		}
 		labels := make(map[string]string, len(result.Labels))
-		for key, value := range result.Labels {
-			labels[key] = value
-		}
+		maps.Copy(labels, result.Labels)
 		labels[promNameLabel] = name
 		result.Labels = labels
 		restored = append(restored, result)
@@ -1572,12 +1571,8 @@ func seriesKey(base map[string]string, name string, extra map[string]string) str
 
 func seriesLabels(base map[string]string, name string, extra map[string]string) map[string]string {
 	lbls := make(map[string]string, len(base)+len(extra)+1)
-	for k, v := range base {
-		lbls[k] = v
-	}
-	for k, v := range extra {
-		lbls[k] = v
-	}
+	maps.Copy(lbls, base)
+	maps.Copy(lbls, extra)
 	lbls[promNameLabel] = normalizeMetricName(name)
 	return lbls
 }
@@ -1608,7 +1603,7 @@ func resourceLabelAllowlist(c *Case) resourceAllowlist {
 		return nil
 	}
 	allow := resourceAllowlist{}
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if key := strings.TrimSpace(line); key != "" {
 			allow[key] = true
 		}
@@ -1984,9 +1979,7 @@ func referenceShapeOfExpectedRows(rt *RoundTripSections, sc sampleColumns) ([]re
 		}
 
 		lbls := make(map[string]string, len(attrs)+1)
-		for k, v := range attrs {
-			lbls[k] = v
-		}
+		maps.Copy(lbls, attrs)
 		if name != "" {
 			lbls[promNameLabel] = name
 		}

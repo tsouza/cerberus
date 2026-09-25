@@ -129,7 +129,7 @@ func ExpHistogramDataset() *rapid.Generator[property.Dataset] {
 		seen := map[string]struct{}{}
 
 		series := make([]property.SeriesData, 0, numSeries)
-		for i := 0; i < numSeries; i++ {
+		for i := range numSeries {
 			name := rapid.SampledFrom(ExpHistogramMetricNamePool).Draw(t, fmt.Sprintf("expHistName_%d", i))
 			lset := drawLabelSet(t, fmt.Sprintf("expHistLabels_%d", i))
 			key := name + labelKey(lset)
@@ -167,7 +167,7 @@ func drawExpHistogramPoints(t *rapid.T, id string) []property.Point {
 	// transition semantics and isolate counter resets in the generated lane.
 	scale := rapid.SampledFrom(ExpHistogramScalePool).Draw(t, id+"_scale")
 	out := make([]property.Point, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		h := drawNativeHistogram(t, fmt.Sprintf("%s_h_%d", id, i), scale)
 		out = append(out, property.Point{
 			TimestampMs: anchorTime.Add(time.Duration(i) * expHistogramStep).UnixMilli(),
@@ -224,7 +224,7 @@ func drawBucketCounts(t *rapid.T, id string, maxLen int) []uint64 {
 		return nil
 	}
 	out := make([]uint64, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out = append(out, rapid.Uint64Range(0, maxExpHistBucketCount).Draw(t, fmt.Sprintf("%s_%d", id, i)))
 	}
 	return out

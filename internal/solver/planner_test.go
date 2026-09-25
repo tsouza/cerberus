@@ -124,7 +124,6 @@ func TestPlan_RangeLWRSpineRoutes(t *testing.T) {
 		{"negative offset", -5 * time.Minute},
 		{"positive offset", time.Hour},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			p := &Planner{Cfg: autoCfg()}
@@ -374,7 +373,6 @@ func TestPlan_RejectionTable(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			p := &Planner{Cfg: autoCfg()}
@@ -711,7 +709,6 @@ func TestPlan_NonRangeWindowSpineRejected(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			p := &Planner{Cfg: autoCfg()}
@@ -1073,7 +1070,6 @@ func TestPlan_ScalarAnchorIncompatibleRejected(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			agg := oomWindow().(*chplan.Aggregate)

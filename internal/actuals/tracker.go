@@ -73,6 +73,22 @@ type Actual struct {
 	PeakMemory uint64
 }
 
+// FoldShard combines a and b, two shards' observations of one routed
+// request, into the request's observation: ReadRows and ReadBytes sum, since
+// each shard scanned a disjoint slice of the request; PeakMemory is the
+// maximum, since each shard's peak is the high-water mark of its own
+// independent query and peaks of separate queries do not add. The zero Actual
+// is the identity, so folding every shard into a zero Actual yields the
+// request's observation. Both routed-request folds use it: the packet path's
+// (chclient.ShardActualsFold) and the query-log reader's.
+func (a Actual) FoldShard(b Actual) Actual {
+	return Actual{
+		ReadRows:   a.ReadRows + b.ReadRows,
+		ReadBytes:  a.ReadBytes + b.ReadBytes,
+		PeakMemory: max(a.PeakMemory, b.PeakMemory),
+	}
+}
+
 // DriftReport is a point-in-time read-out of one plan shape's tracked state.
 type DriftReport struct {
 	ShapeID string

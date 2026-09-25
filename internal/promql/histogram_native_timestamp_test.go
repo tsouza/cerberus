@@ -61,7 +61,6 @@ func TestLower_ExpHistogram_Timestamp(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name+"/instant", func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)
@@ -156,7 +155,6 @@ func TestLower_ExpHistogram_Timestamp_OtherDateFnsDropInsteadOfReject(t *testing
 		`minute(demo_latency_exp_hist)`,
 		`day_of_week(demo_latency_exp_hist)`,
 	} {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(query)

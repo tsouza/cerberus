@@ -89,9 +89,6 @@ type chOptConsumers struct {
 	// client is the shared data-plane client, or nil in a harness that serves
 	// no queries. Its ForHead views share the override it carries.
 	client *chclient.Client
-	// fleet probes the build of every node client can reach, for the
-	// condition-cache override; nil in a harness without a client.
-	fleet fleetProber
 	// engines are the built heads' engines, in mount order. A disabled head has
 	// no engine here, so the swap touches exactly what this process serves.
 	engines []*engine.Engine
@@ -140,10 +137,6 @@ func logCancellationGaps(logger *slog.Logger, server chopt.Version) {
 		)
 	}
 }
-
-// versionProber reads the server version the resolution runs against.
-// Production passes probeVersionOverBootstrap.
-type versionProber func(ctx context.Context, chCfg chclient.Config) (chopt.Version, error)
 
 // chOptReprobeInterval is the cadence at which cerberus re-reads the connected
 // ClickHouse server's capabilities. It is a compromise between two costs that
@@ -197,7 +190,7 @@ func nextReprobeDelay(res chOptResolution, steady time.Duration) time.Duration {
 // under a running cerberus starts using the newly-available native paths without
 // a restart. It runs until ctx is cancelled (SIGTERM / process shutdown).
 //
-// Each tick repeats exactly the boot resolution — probe the server version,
+// Each tick repeats exactly the boot resolution — probe the fleet's builds,
 // run the capability canaries (the experimental-setting one, the
 // result-cache one, and — when query_log_union is listed — the query-log
 // union one), and resolve the SAME configured selection against them all —
@@ -208,10 +201,12 @@ func nextReprobeDelay(res chOptResolution, steady time.Duration) time.Duration {
 // running process, so a resolve error here is evidence of something transient
 // and is logged and retried rather than taken as grounds to kill a serving pod.
 //
-// A probe that cannot reach the server resolves against the supported floor,
-// exactly as boot does. That is what makes the loop symmetric: a pod that booted
-// while ClickHouse was down pinned itself to the floor, and this is the path
-// that lifts it off the floor once the server answers, with no restart.
+// A probe that reaches no node resolves against the supported floor, exactly
+// as boot does. That is what makes the loop symmetric: a pod that booted while
+// ClickHouse was down pinned itself to the floor, and this is the path that
+// lifts it off the floor once the server answers, with no restart. A probe
+// that reaches only part of the fleet never raises the version above the one
+// in force (fleetResolutionVersion).
 //
 // Only a GENUINE transition is logged and swapped. The steady state — the
 // overwhelming majority of ticks — compares equal and does nothing, so the log
@@ -236,7 +231,7 @@ func reprobeCHOptimizations(
 	consumers chOptConsumers,
 	interval time.Duration,
 	rawQueryWorkload string,
-	probeVersion versionProber,
+	probeFleet fleetProber,
 ) {
 	// A timer rather than a ticker: the delay is re-derived from the
 	// resolution in force after every attempt, so a pod pinned to the floor
@@ -251,14 +246,16 @@ func reprobeCHOptimizations(
 		case <-timer.C:
 		}
 
-		// The condition-cache override follows the fleet on every pass,
-		// before and regardless of the resolution: a resolve error, a floor
-		// fallback, or an unchanged set must never leave a known-unsafe build
-		// serving from its cache.
-		if consumers.client != nil && consumers.fleet != nil {
-			refreshConditionCacheOverride(ctx, logger, consumers.client, consumers.fleet)
+		// One fleet probe feeds both decisions. The condition-cache override
+		// follows it on every pass, before and regardless of the resolution: a
+		// resolve error, a floor fallback, or an unchanged set must never
+		// leave a known-unsafe build serving from its cache.
+		fleet := probeFleet(ctx)
+		if consumers.client != nil {
+			refreshConditionCacheOverride(logger, consumers.client, fleet)
 		}
-		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload, probeVersion)
+		inForce := live.get()
+		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload, fleet, &inForce)
 		if !ok {
 			// The resolution in force is unchanged, so the delay is derived
 			// from it: still on the floor means still retrying fast.
@@ -293,7 +290,7 @@ func reprobeCHOptimizations(
 // resolveCHOptimizationsOnce runs one probe-and-resolve pass and reports the
 // result, or ok=false when the resolution failed and the caller must keep the
 // set already in force. It is the re-probe's half of resolveCHOptimizations:
-// the same version probe, the same capability canaries, and the same
+// the same fleet version decision, the same capability canaries, and the same
 // resolver against the same configured selection — but with none of boot's side effects
 // (no config back-fill, no columnar-decode swap, no fatal exit), because those
 // are decisions a process makes once and the re-probe must not re-make.
@@ -302,8 +299,18 @@ func reprobeCHOptimizations(
 // CERBERUS_CH_QUERY_WORKLOAD — see reprobeCHOptimizations's own doc for why
 // this must be the immutable raw value, not a copy of cfg.CHQueryWorkload
 // that boot may already have zeroed.
-func resolveCHOptimizationsOnce(ctx context.Context, logger *slog.Logger, cfg config.Config, rawQueryWorkload string, probeVersion versionProber) (chOptResolution, bool) {
-	resolvedVersion, err := probeVersion(ctx, cfg.ClickHouse)
+//
+// fleet is this pass's fleet probe and inForce the resolution it may replace;
+// fleetResolutionVersion derives the version to resolve against from both.
+func resolveCHOptimizationsOnce(
+	ctx context.Context,
+	logger *slog.Logger,
+	cfg config.Config,
+	rawQueryWorkload string,
+	fleet chclient.FleetVersions,
+	inForce *chOptResolution,
+) (chOptResolution, bool) {
+	resolvedVersion, err := fleetResolutionVersion(fleet, inForce)
 	versionFallback := err != nil
 	if err != nil {
 		resolvedVersion = supportedFloorVersion

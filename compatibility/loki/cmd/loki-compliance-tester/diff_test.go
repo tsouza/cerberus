@@ -34,7 +34,6 @@ func TestLabelsCmp(t *testing.T) {
 		{"nil-vs-populated", nil, map[string]string{"a": "1"}, -1},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := labelsCmp(tc.a, tc.b)
@@ -197,7 +196,6 @@ func TestDiffVector(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			diff := diffVector(base, tc.actual, 0)
@@ -248,7 +246,6 @@ func TestDiffMatrix(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			diff := diffMatrix(base, tc.actual, 0)
@@ -315,7 +312,6 @@ func TestDiffStreams(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			diff := diffStreams(base, tc.actual)
@@ -355,7 +351,6 @@ func TestFloatEqual(t *testing.T) {
 		{"zero-tolerance-inexact", 1.5, 1.5000001, 0, false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := floatEqual(tc.a, tc.b, tc.tol); got != tc.want {

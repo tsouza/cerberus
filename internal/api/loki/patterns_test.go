@@ -22,7 +22,7 @@ func TestPatterns_CompactJSONCollapsesBySchema(t *testing.T) {
 	base := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
 	const lineCount = 32
 	lines := make([]chclient.TimestampedLine, 0, lineCount)
-	for i := 0; i < lineCount; i++ {
+	for i := range lineCount {
 		ts := base.Add(time.Duration(i) * time.Minute)
 		lines = append(lines, chclient.TimestampedLine{
 			Timestamp: ts,
@@ -121,7 +121,7 @@ func TestPatterns_DrainExtractsCommonTemplate(t *testing.T) {
 
 	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 	lines := make([]chclient.TimestampedLine, 0, retainedPatternVolumeFloor)
-	for i := 0; i < retainedPatternVolumeFloor; i++ {
+	for i := range retainedPatternVolumeFloor {
 		lines = append(lines, chclient.TimestampedLine{
 			Timestamp: base.Add(time.Duration(i) * time.Second),
 			Body:      "GET /api/users/" + strconv.Itoa(i) + " status=200 latency=" + strconv.Itoa(i+1) + "ms",
@@ -204,7 +204,7 @@ func TestPatterns_UsesRequestedStep(t *testing.T) {
 
 	base := time.Unix(0, 0).UTC()
 	lines := make([]chclient.TimestampedLine, 0, retainedPatternVolumeFloor)
-	for i := 0; i < retainedPatternVolumeFloor; i++ {
+	for i := range retainedPatternVolumeFloor {
 		lines = append(lines, chclient.TimestampedLine{
 			Timestamp: base.Add(time.Duration(i) * time.Second),
 			Body:      "GET /api/users/42 status=200 latency=5ms",
@@ -262,7 +262,7 @@ func TestPatterns_DropsPartialPreStartBucket(t *testing.T) {
 		Body:      "live warning request failed",
 		Severity:  "WARN",
 	}}
-	for offset := int64(0); offset < 4; offset++ {
+	for offset := range int64(4) {
 		lines = append(lines, chclient.TimestampedLine{
 			Timestamp: time.Unix(firstFullBucket+offset, 0).UTC(),
 			Body:      "live warning request failed",
@@ -318,7 +318,7 @@ func TestPatterns_BucketsByDetectedLevel(t *testing.T) {
 
 	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 	lines := make([]chclient.TimestampedLine, 0, 2*retainedPatternVolumeFloor)
-	for i := 0; i < retainedPatternVolumeFloor; i++ {
+	for i := range retainedPatternVolumeFloor {
 		lines = append(
 			lines,
 			chclient.TimestampedLine{Timestamp: base.Add(time.Duration(i) * time.Second), Body: "connection reset by peer", Severity: "ERROR"},
@@ -391,7 +391,6 @@ func TestPatterns_PushesLineLimitToSQL(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			q := &stubQuerier{}
@@ -439,7 +438,6 @@ func TestPatterns_BadInput(t *testing.T) {
 		{"non-positive step", `/loki/api/v1/patterns?query=%7Bjob%3D%22api%22%7D&start=1&end=2&step=0`},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})

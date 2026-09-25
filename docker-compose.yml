@@ -54,7 +54,7 @@
 # Project name. The suffix is empty in a primary checkout — a plain clone, and
 # every CI checkout — so this stack is `cerberus`; a linked worktree gets its
 # own `cerberus-<hash>` so concurrent agents don't tear down each other's
-# containers, networks and volumes. See scripts/compose-project-suffix.sh.
+# containers, networks and volumes. See .github/scripts/compose-project-suffix.mjs.
 name: cerberus${COMPOSE_PROJECT_SUFFIX:-}
 
 networks:

@@ -52,7 +52,7 @@ pre-commit:
         - "deploy/helm/**/README.md"
       stage_fixed: true
       run: |
-        python3 scripts/align-md-tables.py {staged_files}
+        node .github/scripts/align-md-tables.mjs {staged_files}
     markdownlint:
       # Routed through the script rather than calling `markdownlint-cli2`
       # straight off $PATH. A bare call ran whatever version happened to be
@@ -144,11 +144,13 @@ pre-push:
     forbid-parity-duplicate-samples:
       tags: discipline
       run: node .github/scripts/forbid-parity-duplicate-samples.mjs
-    # Mirrors the CI `repo-hygiene` gate's two checks:
+    # Mirrors the CI `repo-hygiene` gate's file-content checks:
     #   - binary:         rejects committed ELF/Mach-O/PE executables and
     #                     other binary artefacts tracked in git
     #   - root-allowlist: rejects stray files at the repo root that don't
     #                     appear in the allowlist
+    #   - step-logic:     rejects Python anywhere and shell outside test/,
+    #                     bench/ and .envrc (step logic is Node ESM)
     # Both are fast (pure-JS, no network, no Go compile) and have caught
     # real pushes (bench-report committed in PR #1613). The self-test
     # that validates the detector logic is CI-only (it needs the git
@@ -164,6 +166,11 @@ pre-push:
       run: node .github/scripts/repo-hygiene.mjs
       env:
         CHECK: root-allowlist
+    repo-hygiene-step-logic:
+      tags: discipline
+      run: node .github/scripts/repo-hygiene.mjs
+      env:
+        CHECK: step-logic
 
 commit-msg:
   commands:

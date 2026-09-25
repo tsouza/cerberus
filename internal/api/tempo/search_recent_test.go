@@ -50,7 +50,6 @@ func TestSearchRecent_HonoursLimit(t *testing.T) {
 	t.Parallel()
 
 	for _, n := range []int{1, 5, 50, 200} {
-		n := n
 		t.Run(fmt.Sprintf("limit=%d", n), func(t *testing.T) {
 			t.Parallel()
 			q := &stubQuerier{}
@@ -103,7 +102,6 @@ func TestSearchRecent_IgnoresBadLimit(t *testing.T) {
 	t.Parallel()
 
 	for _, raw := range []string{"abc", "0", "-5", "", "1.5"} {
-		raw := raw
 		t.Run("limit="+raw, func(t *testing.T) {
 			t.Parallel()
 			q := &stubQuerier{}

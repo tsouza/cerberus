@@ -27,6 +27,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,25 +76,27 @@ func newLimitPushdownEngine(t *testing.T, ddl string) *engine.Engine {
 // full DDL+INSERT statement seedable via chclienttest.
 func insertRows(n int, start time.Time, attrs func(i int) map[string]string, body func(i int) string) string {
 	const tsFmt = "2006-01-02 15:04:05.000000000"
-	stmt := limitPushdownLogsDDL + "\nINSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES\n"
-	for i := 0; i < n; i++ {
+	var stmt strings.Builder
+	stmt.WriteString(limitPushdownLogsDDL + "\nINSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES\n")
+	for i := range n {
 		ts := start.Add(time.Duration(i) * time.Second).Format(tsFmt)
-		m := "map("
+		var m strings.Builder
+		m.WriteString("map(")
 		first := true
 		for k, v := range attrs(i) {
 			if !first {
-				m += ", "
+				m.WriteString(", ")
 			}
 			first = false
-			m += fmt.Sprintf("'%s', '%s'", k, v)
+			fmt.Fprintf(&m, "'%s', '%s'", k, v)
 		}
-		m += ")"
+		m.WriteString(")")
 		if i > 0 {
-			stmt += ",\n"
+			stmt.WriteString(",\n")
 		}
-		stmt += fmt.Sprintf("    (toDateTime64('%s', 9), '%s', %s)", ts, body(i), m)
+		fmt.Fprintf(&stmt, "    (toDateTime64('%s', 9), '%s', %s)", ts, body(i), m.String())
 	}
-	return stmt + ";"
+	return stmt.String() + ";"
 }
 
 // TestLimitPushdown_SafeShapes_IdenticalToGoOnlyClamp_ChDB is the primary

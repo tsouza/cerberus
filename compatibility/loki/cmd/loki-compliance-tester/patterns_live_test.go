@@ -292,7 +292,6 @@ func TestValidateLivePatternsMetadata_RejectsEachInvalidField(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			metadata := tc.mutate(base)
@@ -380,7 +379,6 @@ func TestDecodePatternsWire_HandlesMalformedEnvelopes(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := decodePatternsWire([]byte(tc.body))
@@ -439,7 +437,6 @@ func TestObserveLivePatterns_RejectsMalformedSamples(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			body := fmt.Sprintf(`{"status":"success","data":[{"level":"info","samples":%s}]}`, tc.samples)
@@ -466,7 +463,6 @@ func TestSideErrors_RendersEachCombination(t *testing.T) {
 		{name: "both", reference: "ref boom", test: "test boom", want: "axis: reference=ref boom; test endpoint=test boom"},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := sideErrors("axis", tc.reference, tc.test); got != tc.want {

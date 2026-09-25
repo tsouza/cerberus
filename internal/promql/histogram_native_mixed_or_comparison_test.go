@@ -197,7 +197,6 @@ func TestLower_ExpHistogram_MixedSetOpOr_ScalarTypedComparisons(t *testing.T) {
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	for _, operand := range []string{"scalar(vector(2))", "(2 * 3)", "scalar(demo_num_cpus)"} {
-		operand := operand
 		t.Run(operand, func(t *testing.T) {
 			t.Parallel()
 			query := `(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist)) > bool ` + operand

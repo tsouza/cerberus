@@ -80,7 +80,6 @@ func TestDetectedLevel_SeverityNumberResolvesWhenNoTextIsPresent(t *testing.T) {
 
 	s := schema.DefaultOTelLogs()
 	for _, r := range rows {
-		r := r
 		t.Run(fmt.Sprintf("number=%d text=%q", r.number, r.text), func(t *testing.T) {
 			query := fmt.Sprintf(`{job="api"} | detected_level="%s"`, r.want)
 			expr, err := syntax.ParseExpr(query)

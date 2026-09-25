@@ -221,7 +221,6 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 		collapse.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
 	for _, af := range r.AggFuncs {
-		af := af
 		collapse.Select(aggFuncFrag(af))
 	}
 

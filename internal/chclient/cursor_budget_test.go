@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"testing"
 	"time"
 
@@ -41,9 +42,7 @@ func (r *freshLabelRows) Scan(dest ...any) error {
 		// Fresh allocation per row — the per-row overhead the intern
 		// cache exists to deduplicate.
 		m := make(map[string]string, len(s.Labels))
-		for k, v := range s.Labels {
-			m[k] = v
-		}
+		maps.Copy(m, s.Labels)
 		*p = m
 	}
 	if p, ok := dest[2].(*time.Time); ok {
@@ -261,7 +260,7 @@ func TestClientQuery_SampleBudget_DoesNotTripBreaker(t *testing.T) {
 	client.maxSamples = 2
 
 	// Well past breakerThreshold (5) consecutive budget rejections.
-	for i := 0; i < 3*breakerThreshold; i++ {
+	for i := range 3 * breakerThreshold {
 		_, err := client.Query(context.Background(), "SELECT budgeted")
 		if !errors.Is(err, ErrTooManySamples) {
 			t.Fatalf("call %d: got %v, want ErrTooManySamples", i, err)

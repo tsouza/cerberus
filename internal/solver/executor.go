@@ -208,15 +208,9 @@ func (x *Executor) dataShardCount() int64 {
 // ADMITTED pEff; ShardMemoryDivisor calls it with the configured P, which is
 // pEff's ceiling, so both read one clamp and cannot drift.
 func (x *Executor) effectiveShardCount(k, pEff int) int {
-	kEff := k
-	if pEff < kEff {
-		kEff = pEff
-	}
+	kEff := min(pEff, k)
 	if x.Gate != nil && x.GateCap > 0 {
-		half := int(x.GateCap / 2)
-		if half < 1 {
-			half = 1
-		}
+		half := max(int(x.GateCap/2), 1)
 		if half < kEff {
 			kEff = half
 		}
@@ -314,6 +308,11 @@ func (x *Executor) Execute(
 		ShardQueryIDs: make([]string, k),
 		PhysicalScans: make([]int, k),
 	}
+	// One request id shared by the K shard statements; each shard's query_id
+	// carries it with the shard's coordinates (chclient.ShardQueryID), so a
+	// query-log reader that did not dispatch this request folds the K rows it
+	// finds into one observation instead of recording K fractional ones.
+	request := chclient.MintQueryID(ctx)
 	for i := range d.Slices {
 		sql, args, physicalScans, err := x.Emitter.Emit(ctx, d.Slices[i].Plan)
 		if err != nil {
@@ -328,7 +327,7 @@ func (x *Executor) Execute(
 		// One query_id per shard, fixed here so the caller can record the whole
 		// fan-out at the dispatch seam and runShard stamps the same id onto the
 		// query ClickHouse actually runs.
-		info.ShardQueryIDs[i] = chclient.MintQueryID(ctx)
+		info.ShardQueryIDs[i] = chclient.ShardQueryID(request, i, k)
 	}
 
 	// 2. TWO-STAGE WEIGHTED ADMISSION and 3. ATOMIC GATE ACQUISITION —

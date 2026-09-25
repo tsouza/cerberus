@@ -92,8 +92,9 @@ Resolution runs after a runtime version probe and produces an immutable
 nothing downstream re-reads the raw env.
 
 It runs at startup, and again every `5m` while the process serves (see
-[Re-probe](#re-probe)), so the set in force always describes the server
-cerberus is actually connected to.
+[Re-probe](#re-probe)), so the set in force always describes the servers
+cerberus is actually connected to — the oldest of them, when their builds
+differ ([Runtime version probe](#runtime-version-probe)).
 
 | `CERBERUS_CH_OPTIMIZATIONS`   | Effect                                                                                                                                                                                                                                                                     |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -711,17 +712,39 @@ the measurements that settled each one — are recorded in
 
 ## Runtime version probe
 
-At connection init the client issues `SELECT version()` once and parses the
-result to a comparable `major.minor.patch.build` version (`26.3.17.56`; a
-trailing suffix such as `-lts` is dropped, and absent fields read as zero).
-Resolution consumes this probe to decide which registry features the server
-supports; the preflight version floor parses the same way.
+At boot cerberus reads `SELECT version()` from every ClickHouse node it can
+reach and parses each answer to a comparable `major.minor.patch.build` version
+(`26.3.17.56`; a trailing suffix such as `-lts` is dropped, and absent fields
+read as zero). The preflight version floor parses the same way.
+
+The reachable nodes are:
+
+- every configured ClickHouse address, each over its own short-lived
+  connection; and
+- when `CERBERUS_SCHEMA_CLUSTER` is set, every replica of that cluster, read
+  through `clusterAllReplicas` on the first address that answers.
+
+Resolution runs against the **lowest** build among them, because a query can
+land on any of them and a feature the oldest one lacks fails there
+(`UNKNOWN_FUNCTION`, `UNKNOWN_SETTING`). A replica hidden behind a load
+balancer that neither setting names is not enumerated: its build is seen only
+when a connection happens to land on it. List every address, or set the
+cluster, when builds can differ across nodes.
+
+A probe that reaches only some of the nodes resolves against the lowest build
+it did reach, but never above the version already in force: a missed node may
+be the one holding the version down. The one exception is a
+[floor fallback](#re-probe), which records that no node answered at all and is
+lifted by any answer. A probe that reaches no node falls back to the supported
+floor. The boot log lists every build the probe read (`fleet_versions`) and
+whether it reached every node (`fleet_probe_complete`).
 
 Feature floors are bare `major.minor` values, so every build of a floor's minor
 meets it. [Known-defective build](#known-defective-server-builds) ranges are
 the one place patch and build decide the answer, because an upstream fix
 reaches each maintained release line at its own patch release. The resolved
-server version is reported at full precision (`/info`, the boot log).
+server version — the lowest build across the reachable nodes — is reported at
+full precision (`/info`, the boot log).
 
 The probe repeats on the [re-probe](#re-probe) cadence, so a rolling ClickHouse
 upgrade that crosses a feature floor is picked up by a running cerberus without
@@ -822,8 +845,8 @@ booted while ClickHouse was down pinned itself to the supported floor. So the
 resolution is re-run every **5 minutes** for the life of the process, and a
 changed answer is swapped into the query path in place.
 
-Each pass repeats exactly the boot resolution — probe `version()`, run the
-capability canary, resolve the *same* configured selection against both — so a
+Each pass repeats exactly the boot resolution — probe `version()` across the
+reachable nodes, run the capability canary, resolve the *same* configured selection against both — so a
 running process can never reach a posture boot could not have produced. The
 selection itself is fixed for the life of the process, which is what makes the
 loop safe to run unattended: a re-resolve cannot introduce an unknown feature id

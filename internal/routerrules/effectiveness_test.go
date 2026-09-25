@@ -524,9 +524,9 @@ func dumpFindings(fs []Finding) string {
 		ls = append(ls, f.RuleID+" "+classOf(f.GroupKey))
 	}
 	sort.Strings(ls)
-	out := ""
+	var out strings.Builder
 	for _, l := range ls {
-		out += "  " + l + "\n"
+		out.WriteString("  " + l + "\n")
 	}
-	return out
+	return out.String()
 }

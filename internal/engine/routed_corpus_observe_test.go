@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 
@@ -184,10 +185,7 @@ func newRoutedCorpusEngine(t *testing.T, cursorClient solver.CursorQuerier, obs 
 // file's wiring (no admission top-up, no concurrency gate): the configured P,
 // clamped down to K because a fan-out cannot run more shards than it has.
 func wantParallelism(eng *Engine, d *solver.Decision) int {
-	p := eng.Solver.Executor.Cfg.Parallel
-	if len(d.Slices) < p {
-		p = len(d.Slices)
-	}
+	p := min(len(d.Slices), eng.Solver.Executor.Cfg.Parallel)
 	return p
 }
 
@@ -364,12 +362,7 @@ func TestExecuteRoutedCursor_DrainOutcomeUsesLogicalRouteBRecord(t *testing.T) {
 }
 
 func containsID(ids []string, want string) bool {
-	for _, id := range ids {
-		if id == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ids, want)
 }
 
 // TestExecuteRouted_ObservesTheFanOut pins the same contract on the eager

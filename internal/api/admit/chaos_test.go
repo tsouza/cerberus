@@ -162,9 +162,7 @@ func TestAdmit_StressUnderPressure_NoDeadlock(t *testing.T) {
 	}()
 
 	for range 64 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				select {
 				case <-stop:
@@ -179,7 +177,7 @@ func TestAdmit_StressUnderPressure_NoDeadlock(t *testing.T) {
 				admitted.Add(1)
 				rel()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

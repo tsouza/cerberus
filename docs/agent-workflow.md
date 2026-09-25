@@ -247,7 +247,7 @@ Three lanes genuinely resist local reproduction, and only these justify a CI rou
   types production rejects, so a green chDB golden is not evidence for either.
 - **`e2e`, `compose-smoke`, and the crawl ratchet** — these need k3d or Docker Compose.
 
-`scripts/compose-project-suffix.sh` gives every linked worktree's compose stack a distinct project
+`.github/scripts/compose-project-suffix.mjs` gives every linked worktree's compose stack a distinct project
 name (a hash of the worktree path), so container, network, volume and image names do not collide
 between agents — a compose run from one worktree does not adopt or corrupt another's containers
 (enforced by `test/regression/compose_project_isolation_test.go`). The residual hazard is published

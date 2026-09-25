@@ -2,6 +2,7 @@ package routerrules
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/tsouza/cerberus/internal/chsql"
 )
@@ -236,10 +237,8 @@ func (c *NotCond) match(row corpusRow, env Env) (bool, error) {
 
 func (c *EnumCmp) match(row corpusRow, _ Env) (bool, error) {
 	got := row.enumValue(c.Column)
-	for _, v := range c.Values {
-		if got == v {
-			return true, nil
-		}
+	if slices.Contains(c.Values, got) {
+		return true, nil
 	}
 	return false, nil
 }

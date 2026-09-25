@@ -37,7 +37,7 @@ func TestMaybeSeedPerRungAdmissionFromActuals_SeedsOnLowCorroboratedActuals(t *t
 	const shape = "cerb:agg"
 	// Two corroborating observations, both well under
 	// NAnchors*perRungCheapRowsPerAnchor = 1441*20 = 28820.
-	for i := 0; i < perRungEvidenceMinObservations; i++ {
+	for range perRungEvidenceMinObservations {
 		if _, ok := tracker.RecordActual(shape, actuals.Actual{ReadRows: 100}, actuals.SourcePacket); !ok {
 			t.Fatal("RecordActual should succeed")
 		}
@@ -99,7 +99,7 @@ func TestMaybeSeedPerRungAdmissionFromActuals_NoSeedWhenNotCheap(t *testing.T) {
 
 	tracker := actuals.NewTracker(actuals.DefaultConfig())
 	const shape = "cerb:agg"
-	for i := 0; i < perRungEvidenceMinObservations; i++ {
+	for range perRungEvidenceMinObservations {
 		// Well ABOVE the cheap floor.
 		if _, ok := tracker.RecordActual(shape, actuals.Actual{ReadRows: 1_000_000}, actuals.SourcePacket); !ok {
 			t.Fatal("RecordActual should succeed")
@@ -133,7 +133,7 @@ func TestMaybeSeedPerRungAdmissionFromActuals_DoesNotReseedAFreshEntry(t *testin
 	decision := perRungTestDecision()
 	tracker := actuals.NewTracker(actuals.DefaultConfig())
 	const shape = "cerb:agg"
-	for i := 0; i < perRungEvidenceMinObservations; i++ {
+	for range perRungEvidenceMinObservations {
 		if _, ok := tracker.RecordActual(shape, actuals.Actual{ReadRows: 100}, actuals.SourcePacket); !ok {
 			t.Fatal("RecordActual should succeed")
 		}
@@ -150,7 +150,7 @@ func TestMaybeSeedPerRungAdmissionFromActuals_DoesNotReseedAFreshEntry(t *testin
 	// Simulate the seed firing again on "effectively every request" while
 	// the entry is still fresh — the pre-fix behavior this hook's own doc
 	// now warns against.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		e.maybeSeedPerRungAdmissionFromActuals(plan, shape, decision)
 	}
 

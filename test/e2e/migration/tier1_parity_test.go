@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -411,9 +413,7 @@ func (c metricParityCase) oracle(tc tier1Context) map[seriesKey][]float64 {
 	for _, s := range c.source(tc.fixture) {
 		labels := map[string]string{}
 		if c.groupBy == nil {
-			for k, v := range s.Attributes {
-				labels[k] = v
-			}
+			maps.Copy(labels, s.Attributes)
 			if c.carriesName {
 				labels["__name__"] = s.MetricName
 			}
@@ -576,7 +576,7 @@ func sortedKeys(m promMatrix) []seriesKey {
 	for k := range m {
 		out = append(out, k)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 
@@ -605,9 +605,7 @@ func logOracle(stream seed.LogStream, tc tier1Context) ([]logEntry, map[seriesKe
 		}
 		entries = append(entries, logEntry{unixNano: r.Time.UnixNano(), line: r.Line})
 		labels := map[string]string{"detected_level": r.Level}
-		for k, v := range stream.Labels {
-			labels[k] = v
-		}
+		maps.Copy(labels, stream.Labels)
 		labelSets[makeSeriesKey(labels)] = labels
 	}
 	sortLogEntries(entries)
@@ -726,7 +724,7 @@ func labelSetKeys(m map[seriesKey]map[string]string) []seriesKey {
 	for k := range m {
 		out = append(out, k)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 

@@ -10,6 +10,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -338,7 +339,7 @@ func sourceBuildConstraint(source []byte) (buildconstraint.Expr, bool, error) {
 		goBuild buildconstraint.Expr
 		legacy  []buildconstraint.Expr
 	)
-	for _, raw := range strings.Split(string(source), "\n") {
+	for raw := range strings.SplitSeq(string(source), "\n") {
 		line := strings.TrimSpace(raw)
 		if strings.HasPrefix(line, "//go:build ") {
 			if goBuild != nil {
@@ -1461,7 +1462,7 @@ func taggedWorkflowPipelineIsFailClosed(workflow, job taggedWorkflowDefaults, st
 func taggedJustPipelineIsFailClosed(justfile string) bool {
 	const required = `set shell := ["bash", "-eu", "-o", "pipefail", "-c"]`
 	count := 0
-	for _, line := range strings.Split(justfile, "\n") {
+	for line := range strings.SplitSeq(justfile, "\n") {
 		if strings.TrimSpace(line) == required {
 			count++
 		}
@@ -1527,9 +1528,7 @@ func taggedCoverageRecipeJoinIsFailClosed(recipe, body string) bool {
 func taggedMergedEnv(environments ...map[string]string) map[string]string {
 	merged := map[string]string{}
 	for _, environment := range environments {
-		for name, value := range environment {
-			merged[name] = value
-		}
+		maps.Copy(merged, environment)
 	}
 	return merged
 }
@@ -1801,8 +1800,8 @@ func registryGlobsCover(globs []string, file string) bool {
 		if glob == "**" {
 			return true
 		}
-		if strings.HasSuffix(glob, "/**") {
-			prefix := strings.TrimSuffix(glob, "/**")
+		if before, ok := strings.CutSuffix(glob, "/**"); ok {
+			prefix := before
 			if file == prefix || strings.HasPrefix(file, prefix+"/") {
 				return true
 			}

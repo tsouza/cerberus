@@ -12,6 +12,15 @@
 lint:
     golangci-lint run ./...
     golangci-lint run --build-tags {{LINT_UNTAGGED_BUILD}} ./...
+    node .github/scripts/go-fix-check.mjs
+
+# `go fix` rewrites in every Go module, over the same two build configurations
+# `lint` checks: the tag union from `.golangci.yml`, then untagged. Review the diff before
+# committing it.
+
+# Apply the pinned toolchain's go fix modernizers.
+go-fix:
+    GO_FIX_MODE=apply node .github/scripts/go-fix-check.mjs
 
 # Validate GitHub Actions workflow files (expression contexts, action
 # inputs, shellcheck of run blocks). Deliberately separate from `lint`
@@ -34,7 +43,7 @@ lint-actions:
 #
 # NOT everything `lint-md` reports is auto-fixable by `fmt-md`. MD060
 # (table-column-style) has no fixer in markdownlint at all — realign tables
-# with `python3 scripts/align-md-tables.py <file>...`, which lefthook runs as
+# with `node .github/scripts/align-md-tables.mjs <file>...`, which lefthook runs as
 # its own `md-table-align` pre-commit hook. `fmt-md` says so when MD060
 # survives the fix pass, rather than leaving a clean-looking run that still
 # fails `lint-md`.
@@ -43,7 +52,7 @@ lint-actions:
 lint-md:
     node .github/scripts/markdownlint-run.mjs
 
-# Auto-fix Markdown lint issues where possible (MD060 needs align-md-tables.py).
+# Auto-fix Markdown lint issues where possible (MD060 needs align-md-tables.mjs).
 fmt-md:
     node .github/scripts/markdownlint-run.mjs --fix
 

@@ -27,6 +27,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,14 +90,15 @@ const tilfNeedle = "connection reset by peer"
 // tilfVocabWords (via a deterministic arrayMap/rand seeded by `number`),
 // with tilfNeedle appended to every tilfNeedleEvery-th row.
 func tilfSeedInsert() string {
-	vocab := "["
+	var vocab strings.Builder
+	vocab.WriteString("[")
 	for i, w := range tilfVocabWords {
 		if i > 0 {
-			vocab += ", "
+			vocab.WriteString(", ")
 		}
-		vocab += "'" + w + "'"
+		vocab.WriteString("'" + w + "'")
 	}
-	vocab += "]"
+	vocab.WriteString("]")
 	return fmt.Sprintf(`INSERT INTO tilf_logs
 SELECT
     toDateTime64('2026-01-01 00:00:00', 9) + INTERVAL number MICROSECOND AS Timestamp,
@@ -104,7 +106,7 @@ SELECT
         arrayMap(i -> %s[1 + (cityHash64(number, i) %% %d)], range(6 + (number %% 8))),
         ' '
     ) || if(number %% %d = 0, ' %s', '') AS Body
-FROM numbers(%d);`, vocab, len(tilfVocabWords), tilfNeedleEvery, tilfNeedle, tilfTotalRows)
+FROM numbers(%d);`, vocab.String(), len(tilfVocabWords), tilfNeedleEvery, tilfNeedle, tilfTotalRows)
 }
 
 // tilfSeed opens an isolated chDB session (chsqltest.OpenIsolatedChDB — a
@@ -343,7 +345,7 @@ func TestTextIndexLineFilterPrefilter_Latency_ChDB(t *testing.T) {
 	const runs = 5
 	timeIt := func(sqlStr string, args []any) time.Duration {
 		best := time.Duration(1<<63 - 1)
-		for i := 0; i < runs; i++ {
+		for range runs {
 			start := time.Now()
 			rows, err := db.Query(sqlStr, args...)
 			if err != nil {
@@ -372,7 +374,7 @@ func TestTextIndexLineFilterPrefilter_Latency_ChDB(t *testing.T) {
 	// thermal throttling, a noisy CI neighbor) hits both forms evenly
 	// instead of biasing whichever form runs second.
 	var beforeBest, afterBest time.Duration
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if b := timeIt(beforeSQL, beforeArgs); beforeBest == 0 || b < beforeBest {
 			beforeBest = b
 		}

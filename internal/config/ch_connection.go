@@ -343,7 +343,7 @@ func chExtraFromEnv(v *viper.Viper) (chExtra, error) {
 // empty-dropped slice and requires at least one host.
 func parseAddrs(raw string) ([]string, error) {
 	out := make([]string, 0, 1)
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		if p := strings.TrimSpace(part); p != "" {
 			out = append(out, p)
 		}

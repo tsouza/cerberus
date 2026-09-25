@@ -305,14 +305,14 @@ func composeImageTag(t *testing.T, path string, re *regexp.Regexp) []string {
 // the trimmed value.
 func versionFileField(t *testing.T, body, field string) string {
 	t.Helper()
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
 		prefix := field + ":"
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if after, ok := strings.CutPrefix(line, prefix); ok {
+			return strings.TrimSpace(after)
 		}
 	}
 	t.Fatalf("VERSION file has no %q field", field)
@@ -322,10 +322,7 @@ func versionFileField(t *testing.T, body, field string) string {
 // commitPrefixMatch reports whether two commit hashes agree on the shorter
 // one's length (so a 12-char go.mod hash matches a 7-char image tag).
 func commitPrefixMatch(a, b string) bool {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
+	n := min(len(b), len(a))
 	if n == 0 {
 		return false
 	}

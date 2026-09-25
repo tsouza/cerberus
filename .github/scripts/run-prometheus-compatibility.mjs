@@ -325,7 +325,7 @@ function summarise(report) {
 }
 
 async function main() {
-  deriveComposeProjectSuffix(process.cwd());
+  deriveComposeProjectSuffix();
 
   const scratchDir = mkdtempSync(join(tmpdir(), 'cerberus-prom-compat-'));
   registerComposeTeardown({ composeCwd: ROOT_DIR, scratchDir });

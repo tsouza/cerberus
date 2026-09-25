@@ -261,7 +261,7 @@ func TestReSeedRowCountStability(t *testing.T) {
 
 	// Drive a handful of re-seed ticks with the exact function the
 	// background rolling re-seeder calls every productionReSeedInterval.
-	for i := 0; i < reseedStabilityTicks; i++ {
+	for i := range reseedStabilityTicks {
 		if err := seedAll(ctx, conn); err != nil {
 			t.Fatalf("seedAll tick %d: %v", i, err)
 		}
@@ -271,7 +271,6 @@ func TestReSeedRowCountStability(t *testing.T) {
 	}
 
 	for _, fam := range reseedStabilityFamilies {
-		fam := fam
 		t.Run(fam.name, func(t *testing.T) {
 			var sentinelCount uint64
 			if err := conn.QueryRow(ctx, fam.countSentinelSQL).Scan(&sentinelCount); err != nil {

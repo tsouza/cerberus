@@ -266,8 +266,8 @@ func signalTables() []string {
 
 // firstLine trims a statement to its opening line for an error message.
 func firstLine(stmt string) string {
-	if i := strings.IndexByte(stmt, '\n'); i >= 0 {
-		return stmt[:i]
+	if before, _, ok := strings.Cut(stmt, "\n"); ok {
+		return before
 	}
 	return stmt
 }

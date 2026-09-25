@@ -52,7 +52,7 @@ func TestQueryRange_QuantileOverTimeOutOfRange_ChDB(t *testing.T) {
 	// close to "now" so the [1s] range catches at least one anchor.
 	now := time.Now().UTC()
 	seedRows := make([]string, 0, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ts := now.Add(-time.Duration(i) * 200 * time.Millisecond).Format("2006-01-02 15:04:05.000")
 		seedRows = append(seedRows, fmt.Sprintf(
 			`('latency_ms', map('endpoint', '/api/v1'), toDateTime64('%s', 9), 100.0)`, ts,

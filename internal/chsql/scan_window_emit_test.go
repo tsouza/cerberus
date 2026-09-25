@@ -266,7 +266,6 @@ func TestEmitStructuralRecursiveAnchorWindowed(t *testing.T) {
 			// timestamp column.
 			{"chain", `{ .service.name = "a" } >> { .http.status_code = 500 } >> { .kind = client }`, 2},
 		} {
-			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				sql, err := emitSpansScoped(t, lowerWindowedSearch(t, tc.q, start, end))

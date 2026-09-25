@@ -228,18 +228,15 @@ WITH RECURSIVE walk AS (SELECT n FROM anchor UNION ALL SELECT n + 1 FROM walk WH
 	}
 }
 
-// ff is a small pointer-literal helper for FanFactor test fixtures.
-func ff(v float64) *float64 { return &v }
-
 // TestSortByFanFactor pins the descending ordering used by the nightly
 // step-summary, including that an unmeasured (nil) fan_factor sorts
 // first — ahead of every measured value, since an unknown fan-out is at
 // least as much of a risk signal as a known-bad one.
 func TestSortByFanFactor(t *testing.T) {
 	recs := []Record{
-		{Fixture: "a", FanFactor: ff(2)},
-		{Fixture: "b", FanFactor: ff(10)},
-		{Fixture: "c", FanFactor: ff(5)},
+		{Fixture: "a", FanFactor: new(float64(2))},
+		{Fixture: "b", FanFactor: new(float64(10))},
+		{Fixture: "c", FanFactor: new(float64(5))},
 		{Fixture: "d", FanFactor: nil},
 	}
 	SortByFanFactor(recs)

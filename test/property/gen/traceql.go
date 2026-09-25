@@ -198,7 +198,7 @@ func TraceQLDataset() *rapid.Generator[property.Dataset] {
 		numTraces := rapid.IntRange(1, traceQLMaxTraces).Draw(t, "numTraces")
 		var spans []traceQLSpan
 		spanOrdinal := 0
-		for ti := 0; ti < numTraces; ti++ {
+		for ti := range numTraces {
 			traceID := deterministicTraceID(ti, 0xa1)
 			if rapid.Bool().Draw(t, fmt.Sprintf("branchingTree_%d", ti)) {
 				spans = append(spans, drawTraceQLBranchingTree(t, ti, traceID, &spanOrdinal)...)
@@ -206,7 +206,7 @@ func TraceQLDataset() *rapid.Generator[property.Dataset] {
 			}
 			chainDepth := rapid.IntRange(1, traceQLMaxChainDepth).Draw(t, fmt.Sprintf("chainDepth_%d", ti))
 			parentID := traceQLRootParentID
-			for ci := 0; ci < chainDepth; ci++ {
+			for ci := range chainDepth {
 				service := rapid.SampledFrom(TraceQLServicePool).Draw(t, fmt.Sprintf("service_%d_%d", ti, ci))
 				cluster := rapid.SampledFrom(TraceQLClusterPool).Draw(t, fmt.Sprintf("cluster_%d_%d", ti, ci))
 				httpMethod := rapid.SampledFrom(TraceQLHTTPMethodPool).Draw(t, fmt.Sprintf("httpMethod_%d_%d", ti, ci))

@@ -435,9 +435,11 @@ The override is decided across every node cerberus can reach: each configured
 ClickHouse address and, when `CERBERUS_SCHEMA_CLUSTER` is set, every replica of
 that cluster. Any one of them on an affected build keeps the override on for
 all queries; it is lifted only once every one of them answers from a fixed
-build. A replica hidden behind a load balancer that neither setting names is
-seen only when a probe lands on it, so list every address or set the cluster
-when builds can differ across nodes.
+build. The optimization set is resolved against the same nodes, using the
+lowest build among them, so a feature the oldest node lacks stays off. A
+replica hidden behind a load balancer that neither setting names is seen only
+when a probe lands on it, so list every address or set the cluster when builds
+can differ across nodes.
 
 A server reporting a non-upstream version string (a vendor suffix such as
 `.altinitystable`, or an extra version field) is judged by its `major.minor`

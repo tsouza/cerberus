@@ -161,7 +161,7 @@ func TestJSONFullMapReconstruction_MapConcat(t *testing.T) {
 	if len(mapGot) != 5 || len(jsonGot) != 5 {
 		t.Fatalf("row count: Map %d, JSON %d, want 5 each", len(mapGot), len(jsonGot))
 	}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if mapGot[i] != jsonGot[i] {
 			t.Errorf("row %d: Map mapConcat = %s, JSON reconstruction+mapConcat = %s, want equal", i+1, mapGot[i], jsonGot[i])
 		}
@@ -229,7 +229,7 @@ func TestJSONFullMapReconstruction_MapFilter(t *testing.T) {
 	mapGot := queryToStringRows(t, db, mapSQL, mapArgs)
 	jsonGot := queryToStringRows(t, db, jsonSQL, jsonArgs)
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if mapGot[i] != jsonGot[i] {
 			t.Errorf("row %d: Map mapFilter = %s, JSON reconstruction+mapFilter = %s, want equal", i+1, mapGot[i], jsonGot[i])
 		}
@@ -285,7 +285,7 @@ func TestJSONFullMapReconstruction_BareProjection(t *testing.T) {
 	mapGot := queryToStringRows(t, db, mapSQL, mapArgs)
 	jsonGot := queryToStringRows(t, db, jsonSQL, jsonArgs)
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if mapGot[i] != jsonGot[i] {
 			t.Errorf("row %d: Map bare projection = %s, JSON reconstruction = %s, want equal", i+1, mapGot[i], jsonGot[i])
 		}
@@ -313,7 +313,7 @@ func TestJSONFullMapReconstruction_MapValues(t *testing.T) {
 	mapGot := queryToStringRows(t, db, mapSQL, mapArgs)
 	jsonGot := queryToStringRows(t, db, jsonSQL, jsonArgs)
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if mapGot[i] != jsonGot[i] {
 			t.Errorf("row %d: Map mapValues = %s, JSON reconstruction+mapValues = %s, want equal", i+1, mapGot[i], jsonGot[i])
 		}

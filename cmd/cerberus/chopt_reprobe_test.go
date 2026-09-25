@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -122,12 +123,7 @@ func TestCHOptLive_InfoStateReportsTheFallbackSource(t *testing.T) {
 
 // containsID reports whether ids carries want.
 func containsID(ids []string, want string) bool {
-	for _, id := range ids {
-		if id == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ids, want)
 }
 
 // TestCHOptConsumers_CoverEveryServedHead — the swap can only reach a consumer
@@ -231,7 +227,7 @@ func TestReprobeCHOptimizations_SwapsWhenTheAnswerChanges(t *testing.T) {
 	go func() {
 		defer close(done)
 		reprobeCHOptimizations(ctx, quietLogger(), cfg, live,
-			chOptConsumers{engines: []*engine.Engine{e}}, time.Millisecond, "", probeVersionOverBootstrap)
+			chOptConsumers{engines: []*engine.Engine{e}}, time.Millisecond, "", liveFleetProber(cfg))
 	}()
 
 	deadline := time.Now().Add(20 * time.Second)
@@ -266,7 +262,7 @@ func TestReprobeCHOptimizations_StopsOnContextCancel(t *testing.T) {
 	go func() {
 		defer close(done)
 		reprobeCHOptimizations(ctx, quietLogger(), config.Config{}, newCHOptLive(chOptResolution{}),
-			chOptConsumers{}, time.Hour, "", probeVersionOverBootstrap)
+			chOptConsumers{}, time.Hour, "", liveFleetProber(config.Config{}))
 	}()
 
 	select {
