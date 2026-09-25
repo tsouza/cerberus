@@ -549,12 +549,17 @@ func newSchemaDownsampleTierRebuildCmd() *cobra.Command {
 	var in downsampleTierRebuildInputs
 	cmd := &cobra.Command{
 		Use:   "downsample-tier-rebuild",
-		Short: "TRUNCATE and fully re-populate the downsampled long-range tier",
-		Long: "TRUNCATEs the downsampled long-range tier (CERBERUS_CH_OPTIMIZATIONS=\n" +
+		Short: "Re-provision the tier views, then TRUNCATE and fully re-populate the downsampled long-range tier",
+		Long: "Drops and re-creates the downsampled long-range tier's materialized\n" +
+			"views from their current definition (the views are created IF NOT\n" +
+			"EXISTS, so a deployed view otherwise keeps the definition it was first\n" +
+			"created with), then TRUNCATEs the tier (CERBERUS_CH_OPTIMIZATIONS=\n" +
 			"downsample_tier, cerberus issues #2751 and #2858) and re-populates it in\n" +
 			"FULL, from every configured source table's (Sum, and Gauge unless it is\n" +
 			"configured identically to Sum) entire currently-retained history — no\n" +
 			"--before bound. DESTRUCTIVE: every row currently in the tier is dropped first.\n" +
+			"Run it once on a deployment whose tier views predate the current\n" +
+			"definition — the views skip OTel NoRecordedValue (stale-marker) rows.\n" +
 			"Use this, not downsample-tier-backfill, when the persisted\n" +
 			"AggregateFunction(timeSeriesLastTwoSamples, ...) state is suspected\n" +
 			"stranded or format-incompatible (a ClickHouse changelog entry naming\n" +
@@ -573,7 +578,7 @@ func newSchemaDownsampleTierRebuildCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.BoolVar(&in.dryRun, "dry-run", false, "print the TRUNCATE + INSERT ... SELECT statements without executing them")
+	f.BoolVar(&in.dryRun, "dry-run", false, "print the view DROP + CREATE, TRUNCATE and INSERT ... SELECT statements without executing them")
 	return cmd
 }
 
@@ -583,8 +588,19 @@ func runDownsampleTierRebuild(cmd *cobra.Command, in downsampleTierRebuildInputs
 		return fmt.Errorf("load config from environment: %w", err)
 	}
 	cols := downsampleTierColumns(cfg)
+	ddlCfg, err := schemaboot.DDLConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("resolve schema DDL config: %w", err)
+	}
+	views, err := ddl.DownsampleTierReprovisionSQL(ddlCfg)
+	if err != nil {
+		return fmt.Errorf("render downsample-tier views: %w", err)
+	}
 
 	if in.dryRun {
+		for _, stmt := range views {
+			fmt.Fprintln(cmd.OutOrStdout(), stmt)
+		}
 		fmt.Fprintln(cmd.OutOrStdout(), downsampletier.TruncateSQL(cols))
 		for _, stmt := range downsampletier.RebuildSQL(cols) {
 			fmt.Fprintln(cmd.OutOrStdout(), stmt.SQL)
@@ -601,7 +617,7 @@ func runDownsampleTierRebuild(cmd *cobra.Command, in downsampleTierRebuildInputs
 	}
 	defer func() { _ = client.Close() }()
 
-	result, err := downsampletier.Rebuild(context.Background(), client.Conn(), cols, retention)
+	result, err := downsampletier.Rebuild(context.Background(), client.Conn(), cols, retention, views)
 	if err != nil {
 		return err
 	}

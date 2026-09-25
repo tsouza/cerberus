@@ -23,6 +23,12 @@ func testColumns() Columns {
 
 var testBefore = time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC)
 
+// recordedValueSQL is the rendered stale-marker exclusion every tier SELECT
+// carries — the same text internal/schema/ddl's tier MVs render (pinned
+// there by TestRenderDownsampleTierViews_ExcludeStaleMarkers). A row with the
+// OTel NoRecordedValue bit is a Prometheus stale marker, not a sample.
+const recordedValueSQL = "bitAnd(`Flags`, 1) = 0"
+
 // TestBackfillSQL pins the rendered INSERT ... SELECT shape: ONE statement
 // per downsampleTierSources(c) entry (Sum, then Gauge — cerberus issue
 // #2858), the target column list, the exact-instant-before WHERE bound (no
@@ -42,7 +48,7 @@ func TestBackfillSQL(t *testing.T) {
 		"toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300) AS `BucketEnd`, " +
 		"timeSeriesLastTwoSamplesState(`TimeUnix`, `Value`) AS `LastTwoSamples`, " +
 		"any(`AggregationTemporality`) AS `Temporality` " +
-		"FROM `otel`.`otel_metrics_sum` WHERE `TimeUnix` < ? " +
+		"FROM `otel`.`otel_metrics_sum` WHERE " + recordedValueSQL + " AND `TimeUnix` < ? " +
 		"GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
 		"toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300)"
 	if stmts[0].SQL != wantSum {
@@ -57,7 +63,7 @@ func TestBackfillSQL(t *testing.T) {
 		"toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300) AS `BucketEnd`, " +
 		"timeSeriesLastTwoSamplesState(`TimeUnix`, `Value`) AS `LastTwoSamples`, " +
 		"-1 AS `Temporality` " +
-		"FROM `otel`.`otel_metrics_gauge` WHERE `TimeUnix` < ? " +
+		"FROM `otel`.`otel_metrics_gauge` WHERE " + recordedValueSQL + " AND `TimeUnix` < ? " +
 		"GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
 		"toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300)"
 	if stmts[1].SQL != wantGauge {
@@ -102,7 +108,7 @@ func TestSourceTables(t *testing.T) {
 }
 
 // TestRebuildSQL pins the SAME shape as BackfillSQL but with NO `before`
-// bound at all — the full-history rebuild this package's doc explains is
+// bound at all — the stale-marker exclusion is its only condition — the full-history rebuild this package's doc explains is
 // the recovery path for a suspected stranded persisted state.
 func TestRebuildSQL(t *testing.T) {
 	stmts := RebuildSQL(testColumns())
@@ -113,8 +119,8 @@ func TestRebuildSQL(t *testing.T) {
 		if len(stmt.Args) != 0 {
 			t.Errorf("RebuildSQL[%d] args = %v; want none (no --before bound)", i, stmt.Args)
 		}
-		if containsSubstr(stmt.SQL, "WHERE") {
-			t.Errorf("RebuildSQL[%d] sql = %q; want no WHERE clause at all", i, stmt.SQL)
+		if !containsSubstr(stmt.SQL, "WHERE "+recordedValueSQL+" GROUP BY") {
+			t.Errorf("RebuildSQL[%d] sql = %q; want the NoRecordedValue exclusion as the only WHERE condition", i, stmt.SQL)
 		}
 	}
 	backfillStmts := BackfillSQL(testColumns(), testBefore)
@@ -177,7 +183,7 @@ func TestBaseAndTierBucketsSQL(t *testing.T) {
 	baseSQL, baseArgs := baseBucketsSQL(c, c.SumTable, testBefore, time.Time{}, false)
 	bucketExpr := "toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300)"
 	wantBase := "SELECT `MetricName`, uniqExact(" + bucketExpr + ") AS `n` " +
-		"FROM `otel`.`otel_metrics_sum` WHERE `TimeUnix` < ? GROUP BY `MetricName`"
+		"FROM `otel`.`otel_metrics_sum` WHERE " + recordedValueSQL + " AND `TimeUnix` < ? GROUP BY `MetricName`"
 	if baseSQL != wantBase {
 		t.Errorf("baseBucketsSQL sql =\n%s\nwant\n%s", baseSQL, wantBase)
 	}
@@ -187,7 +193,7 @@ func TestBaseAndTierBucketsSQL(t *testing.T) {
 
 	gaugeSQL, _ := baseBucketsSQL(c, c.GaugeTable, testBefore, time.Time{}, false)
 	wantGauge := "SELECT `MetricName`, uniqExact(" + bucketExpr + ") AS `n` " +
-		"FROM `otel`.`otel_metrics_gauge` WHERE `TimeUnix` < ? GROUP BY `MetricName`"
+		"FROM `otel`.`otel_metrics_gauge` WHERE " + recordedValueSQL + " AND `TimeUnix` < ? GROUP BY `MetricName`"
 	if gaugeSQL != wantGauge {
 		t.Errorf("baseBucketsSQL(gauge) sql =\n%s\nwant\n%s", gaugeSQL, wantGauge)
 	}
@@ -213,7 +219,7 @@ func TestBaseAndTierBucketsSQL_RetentionActive(t *testing.T) {
 	baseSQL, baseArgs := baseBucketsSQL(c, c.SumTable, testBefore, boundary, true)
 	bucketExpr := "toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300)"
 	wantBase := "SELECT `MetricName`, uniqExact(" + bucketExpr + ") AS `n` " +
-		"FROM `otel`.`otel_metrics_sum` WHERE `TimeUnix` < ? AND " + bucketExpr + " >= ? GROUP BY `MetricName`"
+		"FROM `otel`.`otel_metrics_sum` WHERE " + recordedValueSQL + " AND `TimeUnix` < ? AND " + bucketExpr + " >= ? GROUP BY `MetricName`"
 	if baseSQL != wantBase {
 		t.Errorf("baseBucketsSQL sql =\n%s\nwant\n%s", baseSQL, wantBase)
 	}
@@ -542,7 +548,7 @@ func TestQueryOutsideRetentionDays_PropagatesScanError(t *testing.T) {
 func TestRebuild_TruncatesThenInserts(t *testing.T) {
 	c := testColumns()
 	conn := &fakeConn{}
-	result, err := Rebuild(context.Background(), conn, c, 0)
+	result, err := Rebuild(context.Background(), conn, c, 0, nil)
 	if err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
@@ -563,12 +569,45 @@ func TestRebuild_TruncatesThenInserts(t *testing.T) {
 	}
 
 	failingTruncate := &fakeConn{execErr: errors.New("truncate failed")}
-	_, err = Rebuild(context.Background(), failingTruncate, c, 0)
+	_, err = Rebuild(context.Background(), failingTruncate, c, 0, nil)
 	if err == nil {
 		t.Fatal("expected error from a failing TRUNCATE")
 	}
 	if len(failingTruncate.execSQL) != 1 {
 		t.Errorf("expected Rebuild to stop after a failing TRUNCATE, not attempt any INSERT; got %d Exec calls", len(failingTruncate.execSQL))
+	}
+}
+
+// TestRebuild_ReprovisionsViewsBeforeTruncate confirms Rebuild executes the
+// caller's view re-provision statements first, in order, then the TRUNCATE
+// and the INSERTs — and stops before touching the tier when a view statement
+// fails, so a half-re-provisioned tier is never also emptied.
+func TestRebuild_ReprovisionsViewsBeforeTruncate(t *testing.T) {
+	c := testColumns()
+	views := []string{"DROP VIEW IF EXISTS v1", "CREATE MATERIALIZED VIEW IF NOT EXISTS v1 TO t AS SELECT 1"}
+	conn := &fakeConn{}
+	if _, err := Rebuild(context.Background(), conn, c, 0, views); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	want := append(append([]string{}, views...), TruncateSQL(c))
+	for _, stmt := range RebuildSQL(c) {
+		want = append(want, stmt.SQL)
+	}
+	if len(conn.execSQL) != len(want) {
+		t.Fatalf("Exec calls = %d; want %d", len(conn.execSQL), len(want))
+	}
+	for i := range want {
+		if conn.execSQL[i] != want[i] {
+			t.Errorf("Exec[%d] = %q; want %q", i, conn.execSQL[i], want[i])
+		}
+	}
+
+	failing := &fakeConn{execErrOn: 1, execErr: errors.New("drop failed")}
+	if _, err := Rebuild(context.Background(), failing, c, 0, views); err == nil {
+		t.Fatal("expected error from a failing view statement")
+	}
+	if len(failing.execSQL) != 1 {
+		t.Errorf("Exec calls after a failing view statement = %d; want 1 (no TRUNCATE)", len(failing.execSQL))
 	}
 }
 
@@ -580,7 +619,7 @@ func TestRebuild_TruncatesThenInserts(t *testing.T) {
 func TestRebuild_StopsAfterFirstFailingInsert(t *testing.T) {
 	c := testColumns()
 	conn := &fakeConn{execErrOn: 3, execErr: errors.New("gauge insert failed")}
-	_, err := Rebuild(context.Background(), conn, c, 0)
+	_, err := Rebuild(context.Background(), conn, c, 0, nil)
 	if err == nil {
 		t.Fatal("expected error from the second (Gauge) INSERT failing")
 	}
@@ -597,7 +636,7 @@ func TestRebuild_PropagatesRetentionCheckQueryError(t *testing.T) {
 	c := testColumns()
 	withFrozenNow(t, time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC))
 	conn := &fakeConn{rowsErr: errors.New("query failed")}
-	_, err := Rebuild(context.Background(), conn, c, 30*24*time.Hour)
+	_, err := Rebuild(context.Background(), conn, c, 30*24*time.Hour, nil)
 	if err == nil {
 		t.Fatal("expected error from a failing retention-check Query")
 	}

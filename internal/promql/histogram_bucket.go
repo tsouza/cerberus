@@ -130,7 +130,15 @@ func splitBucketMatchers(matchers []*labels.Matcher, bareName string) (scanMatch
 // is prefixed `le_` to avoid colliding with any plausible user-supplied
 // label (Prom forbids labels starting with `__` for the public range and
 // reserved-internal range; `le_idx` falls outside both).
-func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s schema.Metrics, cat *metadataCatalog) chplan.Node {
+//
+// Under staleMarkersEncoded a stale-marker row first takes its series'
+// bucket layout ([staleMarkerBucketLayout]) and every row it fans into
+// carries the encoded marker as Value, so the downstream latest-sample pick
+// ends each `le` series at the marker.
+func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s schema.Metrics, cat *metadataCatalog, mode staleMarkerMode) chplan.Node {
+	if mode == staleMarkersEncoded {
+		scanOrFilter = staleMarkerBucketLayout(scanOrFilter, s)
+	}
 	// Inner Project — pass the histogram row's identity columns through
 	// and add the fanned bucket index via arrayJoin. Every output row
 	// carries one (MetricName, Attributes, TimeUnix, ExplicitBounds,
@@ -167,6 +175,12 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 			Alias: bucketIdxAlias,
 		},
 	)
+	if mode == staleMarkersEncoded {
+		fanoutProjections = append(fanoutProjections, chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: s.StaleMarkerFlagsColumn()},
+			Alias: s.StaleMarkerFlagsColumn(),
+		})
+	}
 	fanout := &chplan.Project{Roles: metricRoles(s), Input: scanOrFilter, Projections: fanoutProjections}
 
 	// Outer Project — synthesize the canonical Sample shape with the
@@ -237,7 +251,7 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 	outer = append(
 		outer,
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-		chplan.Projection{Expr: cumCount, Alias: s.ValueColumn},
+		chplan.Projection{Expr: staleMarkerValueExpr(cumCount, mode, s), Alias: s.ValueColumn},
 	)
 	return &chplan.Project{Roles: metricRoles(s), Input: fanout, Projections: outer}
 }

@@ -903,7 +903,7 @@ func lowerHistogramSelectorInput(
 		if pred = withStaleMarkerDrop(pred, mode, s); pred != nil {
 			fanInput = &chplan.Filter{Input: scan, Predicate: pred}
 		}
-		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s, cat)
+		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s, cat, mode)
 		leSchema := s
 		leSchema.ResourceAttributesColumn = ""
 		if lePred := buildPredicate(bucketLeMatchers, leSchema); lePred != nil {
@@ -2939,6 +2939,9 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 			return lowerCallOverSubquery(c, sq, s, ctx)
 		}
 	}
+	if isHistogramValueFn(c.Func.Name) {
+		return lowerHistogramValueFn(c, s, ctx)
+	}
 	switch c.Func.Name {
 	case "absent":
 		return lowerAbsent(c, s, ctx)
@@ -2948,9 +2951,6 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerHistogramQuantile(c, s, ctx)
 	case "histogram_quantiles":
 		return lowerHistogramQuantiles(c, s, ctx)
-	case "histogram_count", "histogram_sum", "histogram_avg",
-		"histogram_stddev", "histogram_stdvar", "histogram_fraction":
-		return lowerHistogramValueFn(c, s, ctx)
 	case fnLabelReplace:
 		return lowerLabelReplace(c, s, ctx)
 	case fnLabelJoin:

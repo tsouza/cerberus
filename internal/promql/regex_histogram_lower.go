@@ -153,7 +153,7 @@ func buildRegexHistogramBucketArm(
 	s schema.Metrics, cat *metadataCatalog, names, scanMatchers, leMatchers []*labels.Matcher, mode staleMarkerMode,
 ) chplan.Node {
 	input := regexHistogramScan(s, scanMatchers, mode)
-	input = wrapHistogramBucketFanout(input, "", s, cat)
+	input = wrapHistogramBucketFanout(input, "", s, cat, mode)
 	if pred := regexHistogramNamePredicate(names, s); pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
 	}

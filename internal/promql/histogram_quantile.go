@@ -1264,6 +1264,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	// so the window always has a real left bound.
 	rangeStart := windowLeftBoundExpr(anchor, shape.windowRange)
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
+	pred = withHistogramRangeStaleDrop(pred, s)
 
 	var input chplan.Node = scan
 	if pred != nil {
@@ -2219,6 +2220,7 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	// lowerHistogramQuantileAgg binds it from.
 	rangeStart := windowLeftBoundExpr(anchor, shape.windowRange)
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
+	pred = withHistogramRangeStaleDrop(pred, s)
 
 	var input chplan.Node = scan
 	if pred != nil {

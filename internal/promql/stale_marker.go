@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"slices"
+
 	"github.com/prometheus/prometheus/model/value"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -34,11 +36,21 @@ import (
 // row whose picked Value carries exactly those bits. An ordinary NaN sample
 // has a different bit pattern and stays an ordinary NaN sample.
 
-// noRecordedValueFlag is the OTel data-point flag bit
-// (pmetric.DataPointFlags.NoRecordedValue, `FLAG_NO_RECORDED_VALUE` in the
-// OTLP proto) the collector's prometheusreceiver sets on a scraped stale
-// marker.
-const noRecordedValueFlag = 1
+// A histogram row has no scalar Value to encode a marker into, so the
+// histogram lowerings apply the same two rules to the Flags column itself:
+//
+//   - a range selection drops the marker row at the scan
+//     ([withHistogramRangeStaleDrop]);
+//   - an instant selection keeps the marker row in the newest-row pick and
+//     drops the series when the marker is the row it picks: a HAVING over
+//     `argMax(Flags, TimeUnix)` on an Aggregate ([staleLatestHaving]), or
+//     the same aggregate carried as a column of a RangeBucketFanout and
+//     filtered above it ([withStaleLatestAgg], [dropStaleLatestHistograms]).
+//
+// The `_bucket` fan-out is the exception: it turns a histogram row into
+// float Sample rows before the latest-sample pick, so a marker row there is
+// fanned into one encoded row per bucket bound its series carried
+// ([staleMarkerBucketLayout]).
 
 // staleMarkerMode is how a selector arm treats stale-marker rows.
 type staleMarkerMode int
@@ -79,7 +91,7 @@ func staleMarkerRowExpr(s schema.Metrics) chplan.Expr {
 		Op: chplan.OpNe,
 		Left: &chplan.FuncCall{
 			Fn:   chplan.FnBitAnd,
-			Args: []chplan.Expr{&chplan.ColumnRef{Name: s.StaleMarkerFlagsColumn()}, &chplan.LitInt{V: noRecordedValueFlag}},
+			Args: []chplan.Expr{&chplan.ColumnRef{Name: s.StaleMarkerFlagsColumn()}, &chplan.LitInt{V: schema.NoRecordedValueFlag}},
 		},
 		Right: &chplan.LitInt{V: 0},
 	}
@@ -140,6 +152,143 @@ func dropStaleLatestSamples(latest chplan.Node, s schema.Metrics) chplan.Node {
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 			},
 			Right: staleMarkerBitsExpr(),
+		},
+	}
+}
+
+// withHistogramRangeStaleDrop conjoins the range-selection rule onto the
+// raw-scan predicate of a histogram lowering that reads a range selection:
+// marker rows never reach the window. pred may be nil.
+func withHistogramRangeStaleDrop(pred chplan.Expr, s schema.Metrics) chplan.Expr {
+	if s.StaleMarkerFlagsColumn() == "" {
+		return pred
+	}
+	return withStaleMarkerDrop(pred, staleMarkersDropped, s)
+}
+
+// histogramInstantStaleMode is the stale-marker mode of a histogram arm
+// that projects a float Value per raw row for an instant selection:
+// staleMarkersEncoded, or staleMarkersIgnored for a schema without an
+// established Flags column.
+func histogramInstantStaleMode(s schema.Metrics) staleMarkerMode {
+	if s.StaleMarkerFlagsColumn() == "" {
+		return staleMarkersIgnored
+	}
+	return staleMarkersEncoded
+}
+
+// staleLatestFlagsExpr is the Flags of the newest row in a group:
+// `argMax(Flags, TimeUnix)`.
+func staleLatestFlagsExpr(s schema.Metrics) *chplan.FuncCall {
+	return &chplan.FuncCall{
+		Fn: chplan.FnArgMax,
+		Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.StaleMarkerFlagsColumn()},
+			&chplan.ColumnRef{Name: s.TimestampColumn},
+		},
+	}
+}
+
+// notStaleMarkerFlags is true when flags does not carry the
+// NoRecordedValue bit.
+func notStaleMarkerFlags(flags chplan.Expr) chplan.Expr {
+	return &chplan.Binary{
+		Op: chplan.OpEq,
+		Left: &chplan.FuncCall{
+			Fn:   chplan.FnBitAnd,
+			Args: []chplan.Expr{flags, &chplan.LitInt{V: schema.NoRecordedValueFlag}},
+		},
+		Right: &chplan.LitInt{V: 0},
+	}
+}
+
+// staleLatestHaving is the HAVING of a newest-row-per-series Aggregate over
+// raw histogram rows: it drops the group whose newest row is a stale
+// marker. It is nil for a schema without an established Flags column.
+func staleLatestHaving(s schema.Metrics) chplan.Expr {
+	if s.StaleMarkerFlagsColumn() == "" {
+		return nil
+	}
+	return notStaleMarkerFlags(staleLatestFlagsExpr(s))
+}
+
+// staleLatestFlagsAlias names the newest-row Flags a latest-pick
+// RangeBucketFanout carries for [dropStaleLatestHistograms].
+const staleLatestFlagsAlias = "stale_latest_flags"
+
+// withStaleLatestAgg appends the newest-row Flags aggregate to the
+// aggregates of a newest-row-per-(series, anchor) RangeBucketFanout. It
+// returns aggs unchanged for a schema without an established Flags column.
+func withStaleLatestAgg(aggs []chplan.AggFunc, s schema.Metrics) []chplan.AggFunc {
+	if s.StaleMarkerFlagsColumn() == "" {
+		return aggs
+	}
+	latest := staleLatestFlagsExpr(s)
+	return append(slices.Clone(aggs), chplan.AggFunc{Fn: latest.Fn, Args: latest.Args, Alias: staleLatestFlagsAlias})
+}
+
+// dropStaleLatestHistograms drops every (series, anchor) row of a
+// fan-out built with [withStaleLatestAgg] whose newest row is a stale
+// marker. It is the identity for a schema without an established Flags
+// column.
+func dropStaleLatestHistograms(fanout chplan.Node, s schema.Metrics) chplan.Node {
+	if s.StaleMarkerFlagsColumn() == "" {
+		return fanout
+	}
+	return &chplan.Filter{
+		Input:     fanout,
+		Predicate: notStaleMarkerFlags(&chplan.ColumnRef{Name: staleLatestFlagsAlias}),
+	}
+}
+
+// staleMarkerBucketLayout gives each stale-marker row of a classic
+// histogram scan the bucket layout of its series, so the `_bucket` fan-out
+// turns the marker into one row per bucket bound instead of into none. A
+// marker row carries empty BucketCounts / ExplicitBounds; it takes the
+// sorted union of every bound its series carried in the scanned rows, and
+// BucketCounts sized to that layout plus the `+Inf` bucket. The fanned rows'
+// Value is the encoded marker ([staleMarkerValueExpr]), so each `le` series
+// ends at the marker in the latest-sample pick. Every other row passes
+// through unchanged.
+func staleMarkerBucketLayout(input chplan.Node, s schema.Metrics) chplan.Node {
+	bounds := &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}
+	seriesBounds := &chplan.FuncCall{
+		Fn: chplan.FnArraySort,
+		Args: []chplan.Expr{&chplan.FuncCall{
+			Fn: chplan.FnArrayDistinct,
+			Args: []chplan.Expr{&chplan.FuncCall{
+				Fn: chplan.FnArrayFlatten,
+				Args: []chplan.Expr{&chplan.WindowExpr{
+					Fn:   chplan.FnGroupArray,
+					Args: []chplan.Expr{bounds},
+					PartitionBy: []chplan.Expr{
+						&chplan.ColumnRef{Name: s.MetricNameColumn},
+						histogramIdentityExpr(s),
+					},
+				}},
+			}},
+		}},
+	}
+	markerCounts := &chplan.FuncCall{
+		Fn: chplan.FnArrayResize,
+		Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.BucketCountsColumn},
+			addExpr(&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{seriesBounds}}, &chplan.LitInt{V: 1}),
+		},
+	}
+	marker := staleMarkerRowExpr(s)
+	return &chplan.Project{
+		Roles: metricRoles(s),
+		Input: input,
+		Replacements: []chplan.Projection{
+			{
+				Expr:  &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{marker, markerCounts, &chplan.ColumnRef{Name: s.BucketCountsColumn}}},
+				Alias: s.BucketCountsColumn,
+			},
+			{
+				Expr:  &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{marker, seriesBounds, bounds}},
+				Alias: s.ExplicitBoundsColumn,
+			},
 		},
 	}
 }

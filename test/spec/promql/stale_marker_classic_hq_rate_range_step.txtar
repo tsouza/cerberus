@@ -1,0 +1,68 @@
+# Seed: the classic histogram `stale_hist` is scraped every 30s. Series
+# job="a" is scraped until 23:59:00; its target then disappears and the
+# collector writes a NoRecordedValue data point (Flags = 1, empty
+# BucketCounts / ExplicitBounds) at 23:59:30, and the target returns at
+# 00:02:00 with its counters continuing. Series job="b" is scraped
+# throughout. Reference Prometheus holds that data point as a stale marker on
+# every `_bucket` series, `_count` and `_sum` of job="a".
+#
+# A range selection never contains a stale marker. Read as a sample, the
+# marker's empty point is a counter reset to zero, and every 5m window that
+# straddles it would add the whole pre-marker count to job="a"'s rate.
+
+-- query.promql --
+histogram_quantile(0.5, sum by (job, le) (rate(stale_hist_bucket[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64),
+    Flags UInt32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram (MetricName, Attributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds, Flags) VALUES
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:56:00', 9), 4, 10.0, [1, 2, 1], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:56:30', 9), 8, 20.0, [2, 4, 2], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:57:00', 9), 12, 30.0, [3, 6, 3], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:57:30', 9), 16, 40.0, [4, 8, 4], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:58:00', 9), 20, 50.0, [5, 10, 5], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:58:30', 9), 24, 60.0, [6, 12, 6], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:59:00', 9), 28, 70.0, [7, 14, 7], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 0, 0.0, [], [], 1),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 34, 77.0, [8, 15, 11], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:02:30', 9), 40, 84.0, [9, 16, 15], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:03:00', 9), 46, 91.0, [10, 17, 19], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:03:30', 9), 52, 98.0, [11, 18, 23], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:04:00', 9), 58, 105.0, [12, 19, 27], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:04:30', 9), 64, 112.0, [13, 20, 31], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:05:00', 9), 70, 119.0, [14, 21, 35], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:56:00', 9), 4, 3.0, [2, 1, 1], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:56:30', 9), 8, 6.0, [4, 2, 2], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:57:00', 9), 12, 9.0, [6, 3, 3], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:57:30', 9), 16, 12.0, [8, 4, 4], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:58:00', 9), 20, 15.0, [10, 5, 5], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:58:30', 9), 24, 18.0, [12, 6, 6], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:59:00', 9), 28, 21.0, [14, 7, 7], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:59:30', 9), 32, 24.0, [16, 8, 8], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 36, 27.0, [18, 9, 9], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:00:30', 9), 40, 30.0, [20, 10, 10], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:01:00', 9), 44, 33.0, [22, 11, 11], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:01:30', 9), 48, 36.0, [24, 12, 12], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:02:00', 9), 52, 39.0, [26, 13, 13], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:02:30', 9), 56, 42.0, [28, 14, 14], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:03:00', 9), 60, 45.0, [30, 15, 15], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:03:30', 9), 64, 48.0, [32, 16, 16], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:04:00', 9), 68, 51.0, [34, 17, 17], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:04:30', 9), 72, 54.0, [36, 18, 18], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:05:00', 9), 76, 57.0, [38, 19, 19], [1.0, 5.0], 0);
+-- expected_rows --
+[]

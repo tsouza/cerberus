@@ -147,7 +147,9 @@ func fanoutWindowBoundsExpr(anchorRef chplan.Expr, win histogramWindow) (start, 
 }
 
 // latestSampleAgg collapses a filtered histogram scan to the newest
-// sample per series. Reference PromQL resolves a bare selector to at most
+// sample per series, and drops a series whose newest sample is a stale
+// marker ([staleLatestHaving]); a caller reading a range selection drops
+// the marker rows from its scan instead, so there the HAVING never fires. Reference PromQL resolves a bare selector to at most
 // ONE sample per series, so without this collapse the quantile is
 // evaluated against every stored sample and the same series is emitted
 // once per row it happens to have. The range lowerings get the identical
@@ -165,6 +167,7 @@ func latestSampleAgg(input chplan.Node, aggs []chplan.AggFunc, s schema.Metrics)
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
 		AggFuncs:           aggs,
+		Having:             staleLatestHaving(s),
 		DropEmptyOnNoGroup: true,
 	}
 }
@@ -301,6 +304,8 @@ func lowerHistogramQuantileClassicAggRange(
 	// `_bucket` suffix strip — see stripBucketSuffix in
 	// histogram_quantile.go.
 	pred, leMatchers := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
+	// A range selection: both window strategies read this predicate.
+	pred = withHistogramRangeStaleDrop(pred, s)
 
 	// Stage 1: reduce each (series, anchor) window to one row carrying that
 	// series' window-folded bucket ladder, applying the range-vector
@@ -389,7 +394,7 @@ func buildHistogramRangeTree(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 
-	agg := buildHistogramBucketFanout(scan, pred, leMatchers, win, userGroupBy, userAliases, shaping.aggs, s, ctx)
+	agg := buildLatestHistogramBucketFanout(scan, pred, leMatchers, win, userGroupBy, userAliases, shaping.aggs, s, ctx)
 
 	// Reshape the aggregate output into the histogram-row contract
 	// HistogramQuantile consumes (Attributes + BucketCounts + ExplicitBounds)
@@ -573,7 +578,7 @@ func buildHistogramNativeRangeTree(
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 
-	agg := buildHistogramBucketFanout(scan, pred, nil, win, userGroupBy, userAliases, expHistAggs, s, ctx)
+	agg := buildLatestHistogramBucketFanout(scan, pred, nil, win, userGroupBy, userAliases, expHistAggs, s, ctx)
 
 	// Pass-through reshape: anchor_ts + attrs + per-row exp-histogram
 	// fields (already aliased to their schema-canonical names by the
@@ -687,7 +692,7 @@ func buildHistogramNativeRangeTreeMerge(
 	winIn = winIn.withLowerers(ctx.lowerers)
 	fold := histogramWindowFold(shape.windowFn, winIn)
 	perSeries := expHistogramWindowReshape(
-		guardExpHistogramWindowReduction(buildHistogramBucketFanout(
+		guardExpHistogramWindowReduction(buildRangeHistogramBucketFanout(
 			scan, pred, nil, win,
 			[]chplan.Expr{histogramIdentityExpr(s)},
 			[]string{s.AttributesColumn},
@@ -834,6 +839,44 @@ func buildHistogramBucketFanout(
 		AnchorAlias:    stepGridAnchorColumn,
 		TimestampCol:   s.TimestampColumn,
 	}
+}
+
+// buildRangeHistogramBucketFanout is [buildHistogramBucketFanout] for a
+// range selection: stale-marker rows never reach the window (see
+// stale_marker.go).
+func buildRangeHistogramBucketFanout(
+	scan *chplan.Scan,
+	pred chplan.Expr,
+	leMatchers []*labels.Matcher,
+	win histogramWindow,
+	userGroupBy []chplan.Expr,
+	userAliases []string,
+	aggFuncs []chplan.AggFunc,
+	s schema.Metrics,
+	ctx lowerCtx,
+) chplan.Node {
+	return buildHistogramBucketFanout(scan, withHistogramRangeStaleDrop(pred, s), leMatchers, win, userGroupBy, userAliases, aggFuncs, s, ctx)
+}
+
+// buildLatestHistogramBucketFanout is [buildHistogramBucketFanout] for an
+// instant selection: aggFuncs pick each (series, anchor)'s newest row, and
+// a (series, anchor) whose newest row is a stale marker produces no row
+// (see stale_marker.go).
+func buildLatestHistogramBucketFanout(
+	scan *chplan.Scan,
+	pred chplan.Expr,
+	leMatchers []*labels.Matcher,
+	win histogramWindow,
+	userGroupBy []chplan.Expr,
+	userAliases []string,
+	aggFuncs []chplan.AggFunc,
+	s schema.Metrics,
+	ctx lowerCtx,
+) chplan.Node {
+	return dropStaleLatestHistograms(
+		buildHistogramBucketFanout(scan, pred, leMatchers, win, userGroupBy, userAliases, withStaleLatestAgg(aggFuncs, s), s, ctx),
+		s,
+	)
 }
 
 // closeRangeBucketFanoutInput makes the fan-out's physical input contract

@@ -156,7 +156,7 @@ func expHistogramBareLatest(vs *parser.VectorSelector, s schema.Metrics, ctx low
 func lowerExpHistogramBareRange(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
-	fanout := buildHistogramBucketFanout(
+	fanout := buildLatestHistogramBucketFanout(
 		scan, pred, nil, windowFor(vs, instantLookback),
 		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 		nativeExpHistBareAggs(s), s, ctx,
@@ -271,6 +271,7 @@ func lowerExpHistogramBareMatrix(ms *parser.MatrixSelector, vs *parser.VectorSel
 	// for a float metric.
 	pred := andExpr(buildPredicate(vs.LabelMatchers, s), timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, ms.Range))
+	pred = withHistogramRangeStaleDrop(pred, s)
 
 	roles := expHistogramRoles(s)
 	scan := &chplan.Scan{Roles: roles, Columns: roleNames(roles), Table: s.ExpHistogramTable}

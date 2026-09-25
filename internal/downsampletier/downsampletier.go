@@ -117,6 +117,10 @@ type Columns struct {
 	TimestampColumn              string
 	ValueColumn                  string
 	AggregationTemporalityColumn string
+	// FlagsColumn is the OTel data-point Flags column whose
+	// schema.NoRecordedValueFlag bit marks a Prometheus stale marker — see
+	// recordedValuePredicate.
+	FlagsColumn string
 }
 
 // FromSchema builds Columns from the ClickHouse database name plus the
@@ -134,6 +138,7 @@ func FromSchema(database string, m schema.Metrics) Columns {
 		TimestampColumn:              m.TimestampColumn,
 		ValueColumn:                  m.ValueColumn,
 		AggregationTemporalityColumn: m.AggregationTemporalityColumn,
+		FlagsColumn:                  m.FlagsColumn,
 	}
 }
 
@@ -200,6 +205,21 @@ func bucketEndExpr(col string) chsql.Frag {
 
 func bucketSeconds() int64 { return int64(schema.DownsampleTierBucket / time.Second) }
 
+// recordedValuePredicate renders the SAME stale-marker exclusion
+// internal/schema/ddl's downsampleTierRecordedValuePredicate applies on the
+// live MVs: `bitAnd(Flags, NoRecordedValue) = 0`. A NoRecordedValue row is a
+// Prometheus stale marker whose Value is the exporter's placeholder 0, so a
+// backfilled or rebuilt tier must skip it exactly as the live MV does, and
+// Verify must not count a bucket holding only markers as one the tier lacks.
+// Like bucketEndExpr it is a copy rather than a shared helper; both
+// packages' tests pin the rendered text.
+func recordedValuePredicate(c Columns) chsql.Frag {
+	return chsql.Eq(
+		chsql.Call("bitAnd", chsql.Col(c.FlagsColumn), chsql.InlineLit(int64(schema.NoRecordedValueFlag))),
+		chsql.InlineLit(int64(0)),
+	)
+}
+
 // backfillSelectSQL renders the SELECT half shared by BackfillSQL (bounded
 // by `before`) and RebuildSQL (unbounded, the full history) — factored out
 // so the statements for every source (downsampleTierSources) cannot drift
@@ -220,10 +240,11 @@ func backfillSelectSQL(c Columns, src downsampleTierSource, before *time.Time) *
 			chsql.As(src.temporality, schema.DownsampleTierTemporalityColumn),
 		).
 		From(chsql.Qual(c.Database, src.table))
+	conds := []chsql.Frag{recordedValuePredicate(c)}
 	if before != nil {
-		q = q.Where(chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(*before)))
+		conds = append(conds, chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(*before)))
 	}
-	return q.GroupBy(
+	return q.Where(conds...).GroupBy(
 		chsql.Col(c.MetricNameColumn),
 		chsql.Col(c.AttributesColumn),
 		chsql.Col(c.ResourceAttributesColumn),
@@ -399,7 +420,14 @@ func Backfill(ctx context.Context, conn Conn, c Columns, before time.Time, reten
 // OutsideRetentionDays reports days already outside the tier's TTL as of
 // right now across the base table's FULL retained history, not just a
 // caller-chosen window.
-func Rebuild(ctx context.Context, conn Conn, c Columns, retention time.Duration) (Result, error) {
+//
+// views are the statements that re-provision the tier's materialized views
+// (internal/schema/ddl.DownsampleTierReprovisionSQL: DROP, then CREATE from
+// the current definition). Rebuild executes them, in order, before the
+// TRUNCATE, so the re-populated tier and every row the views fold from then
+// on follow the same current definition. This package cannot render them
+// itself — the view DDL lives in internal/schema/ddl.
+func Rebuild(ctx context.Context, conn Conn, c Columns, retention time.Duration, views []string) (Result, error) {
 	var outsideDays []time.Time
 	if boundary, active := retentionBoundary(nowFunc(), retention); active {
 		var err error
@@ -409,6 +437,11 @@ func Rebuild(ctx context.Context, conn Conn, c Columns, retention time.Duration)
 		outsideDays, err = queryOutsideRetentionDays(ctx, conn, c, nowFunc(), boundary)
 		if err != nil {
 			return Result{}, err
+		}
+	}
+	for _, stmt := range views {
+		if err := conn.Exec(withCaps(ctx), stmt); err != nil {
+			return Result{}, fmt.Errorf("downsampletier: re-provision %s views: %w", schema.DownsampleTierTable, err)
 		}
 	}
 	if err := conn.Exec(withCaps(ctx), TruncateSQL(c)); err != nil {
@@ -432,7 +465,7 @@ func Rebuild(ctx context.Context, conn Conn, c Columns, retention time.Duration)
 // entry's table (cerberus issue #2858: previously always c.SumTable).
 func baseBucketsSQL(c Columns, source string, before, boundary time.Time, retentionActive bool) (string, []any) {
 	bucket := bucketEndExpr(c.TimestampColumn)
-	conds := []chsql.Frag{chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(before))}
+	conds := []chsql.Frag{recordedValuePredicate(c), chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(before))}
 	if retentionActive {
 		conds = append(conds, chsql.Gte(bucket, chsql.Lit(boundary)))
 	}

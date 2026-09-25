@@ -346,7 +346,7 @@ func wrapSubqueryIdentity(
 // ClickHouse reject the query outright (`toYear(fromUnixTimestamp64Nano(...))`
 // on a NaN operand raises `CANNOT_CONVERT_TYPE: Unexpected inf or nan to
 // integer conversion`), so this deliberately excludes them rather than
-// trade a stale answer for a 502.
+// trade a stale answer for a 502 (tracked by #3692).
 func subqueryIdentityValuePreserving(fn string) bool {
 	switch fn {
 	case fnLabelReplace, fnLabelJoin, "info",
@@ -715,10 +715,19 @@ func lowerSubqueryOverInstantTransform(
 	if err != nil {
 		return nil, err
 	}
-	if valuePreserving {
+	if valuePreserving || subqueryIdentityEncodesStaleMarker(call.Func.Name) {
 		return dropStaleLatestSamples(windowed, s), nil
 	}
 	return windowed, nil
+}
+
+// subqueryIdentityEncodesStaleMarker reports whether an instantTransformFns
+// member's own subquery-inner arm writes the encoded stale marker as each
+// marker row's Value: the native-histogram value accessors, whose per-row
+// arm ([lowerHistogramValueFnPerSample]) reads the Flags column itself
+// rather than transforming an already-encoded Value.
+func subqueryIdentityEncodesStaleMarker(fn string) bool {
+	return isHistogramValueFn(fn)
 }
 
 // lowerSubqueryOverCall — `<range-vector-fn>(<inner>[<inner_range>])[<outer_range>:<step>]`.
