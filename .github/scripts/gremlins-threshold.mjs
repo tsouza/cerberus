@@ -151,7 +151,7 @@ import { error, notice } from './lib/gh.mjs';
 // One is the honest minimum: it separates "nothing completed" from "something
 // did". Any larger figure would be a guess about how many mutants a leg ought
 // to have.
-const minCompletedMutants = 1;
+export const minCompletedMutants = 1;
 
 // The per-mutation status strings gremlins writes (internal/mutator/mutator.go).
 // Matched exactly, and the set is CLOSED: a status this gate does not recognise

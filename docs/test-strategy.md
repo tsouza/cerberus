@@ -1159,6 +1159,35 @@ around an existing phase, or deleting the same scope from both mutable
 declarations therefore fails. On a scoped change, a registry-owned changed path
 with no phase owner also fails instead of selecting an empty matrix.
 
+Each selected leg first computes a content key over everything its verdict
+depends on — every file under every main-module package directory in its Go
+test closure, the data its tests read by literal path, `go.mod` / `go.sum` /
+`.gremlins.yaml`, the Go toolchain and build environment, git's version and
+pinned diff settings, the runner image, the gremlins fork commit, its matrix
+row (with, for a changed-line leg, the closure-scoped hunks of the
+`git diff --merge-base` output gremlins itself reads in place of `diff_ref` —
+scoped so a commit outside the closure, such as a docs edit, never moves the
+key), the per-mutant bounds and rapid seed, and the harness scripts and
+workflow — and looks it up with `actions/cache`. A validated hit skips
+gremlins, prints the key, the producing run and the stored survivors, and
+re-gates the stored report in the efficacy threshold step; a miss runs
+gremlins and stores the verdict, failing ones included. A leg whose tests link
+rapid without a pinned seed (`CERBERUS_RAPID_SEED`, set by the workflow,
+applied by the package's `rapid.seed` hook) is never cached, and neither is a
+verdict that a re-scoring of its own timed-out mutants could flip; a mutant
+that completed on the producing runner and would time out on a slower one is
+not covered. Every leg uploads a provenance record. For each cache hit the
+`mutation` aggregator recomputes the leg's key from its own checkout,
+validates the entry against it, and verifies through the API that the entry
+was produced by a completed `mutation.yml` run of the same pull request whose
+harness files match the current ones; a missing or unverifiable record fails
+the check. The cache is read and written on pull requests only, where
+`actions/cache` scopes each entry to the PR that wrote it. Main pushes, the
+nightly, dispatches and merge groups always run gremlins, and the aggregator
+refuses a cache record there. Setting the repository variable
+`MUTATION_CACHE_DISABLED` to `true` turns the cache off on pull requests as
+well.
+
 The selector also pins the phase table's efficacy threshold to an independent
 95% minimum. Lowering the shared phase constant cannot turn every leg into a
 green zero-evidence run.

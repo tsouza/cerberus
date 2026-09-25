@@ -1211,6 +1211,12 @@ jobs:
       - name: Assert the mutation runner's env contract and fallback
         run: node --test .github/scripts/mutation-run.test.mjs
 
+      # The mutation lane's verdict cache: each key input class moves the key,
+      # a corrupt or mismatched entry is a miss, a timing-dependent verdict is
+      # never stored, and the aggregator rejects a hit it cannot re-verify.
+      - name: Assert the mutation verdict cache keys on every input
+        run: node --test .github/scripts/mutation-cache.test.mjs
+
       # The third half of the same lane: the per-mutant MEMORY bound. The leash
       # gremlins enforces bounds time and nothing else, and a mutant that
       # allocates without terminating exhausts the runner in about ten seconds
