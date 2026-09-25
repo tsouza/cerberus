@@ -61,7 +61,7 @@ func downsampleTierGaugeChdbSetup(t *testing.T, db *sql.DB) {
 	if err := db.QueryRow("SELECT currentDatabase()").Scan(&currentDB); err != nil {
 		t.Fatalf("read currentDatabase(): %v", err)
 	}
-	cfg := ddl.Config{Database: currentDB, SkipDatabaseCreate: true, DownsampleTierEnabled: true}
+	cfg := ddl.Config{Database: currentDB, SkipDatabaseCreate: true, DownsampleTierEnabled: true, DownsampleTierFlagsColumn: schema.DefaultOTelMetrics().FlagsColumn}
 	stmts, err := ddl.RenderAll(cfg, []ddl.Signal{ddl.Metrics})
 	if err != nil {
 		t.Fatalf("ddl.RenderAll: %v", err)

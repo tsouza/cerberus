@@ -220,7 +220,7 @@ func expHistogramGroupMergedInstant(agg *parser.AggregateExpr, vs *parser.Vector
 func lowerExpHistogramSumOrAvgRange(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
-	perSeries := buildHistogramBucketFanout(
+	perSeries := buildLatestHistogramBucketFanout(
 		scan, pred, nil, windowFor(vs, instantLookback),
 		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 		nativeExpHistValuedLatestAggs(s), s, ctx,

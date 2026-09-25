@@ -2847,6 +2847,7 @@ SELECT MetricName, Attributes, ResourceAttributes, ServiceName,
        timeSeriesLastTwoSamplesState(TimeUnix, Value) AS LastTwoSamples,
        any(AggregationTemporality) AS Temporality
 FROM <db>.otel_metrics_sum
+WHERE bitAnd(Flags, 1) = 0
 GROUP BY MetricName, Attributes, ResourceAttributes, ServiceName, BucketEnd;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS <db>.otel_metrics_sum_downsample_tier_gauge_mv
@@ -2857,8 +2858,21 @@ SELECT MetricName, Attributes, ResourceAttributes, ServiceName,
        timeSeriesLastTwoSamplesState(TimeUnix, Value) AS LastTwoSamples,
        -1 AS Temporality
 FROM <db>.otel_metrics_gauge
+WHERE bitAnd(Flags, 1) = 0
 GROUP BY MetricName, Attributes, ResourceAttributes, ServiceName, BucketEnd;
 ```
+
+Both MVs, and every backfill / rebuild / verify statement below, skip a row
+carrying the OTel `NoRecordedValue` data-point flag (`Flags` value `1`, bit
+0): the collector's translation of a Prometheus stale marker, stored with an
+empty `Value` of `0`. Such a row is not a sample, so the tier never folds it
+— a range selection over the raw table drops it the same way. The filter
+applies under the same condition the PromQL read path recognises stale
+markers under: every metric table carries the `Flags` column, or is created
+by the schema apply that creates the MVs (with the column). On a deployment
+where an existing metric table lacks `Flags`, the MVs and the tier verbs
+render no filter and fold every row as a sample, exactly as the read path
+reads them.
 
 The Gauge-sourced MV writes the fixed sentinel `-1` in place of a real
 `AggregationTemporality` reading — a Gauge series carries no such column at
@@ -2913,16 +2927,42 @@ place, only samples to be present or absent.
 cerberus schema downsample-tier-rebuild
 ```
 
-`downsample-tier-rebuild` `TRUNCATE`s the tier table and re-populates it in
-full, from every configured source's entire currently-retained history — no
-`--before` bound. This is the recovery path for a suspected stranded or
+`downsample-tier-rebuild` first replaces the tier MVs with their current
+definition: `DROP VIEW IF EXISTS` for both tier MVs, then the `CREATE
+MATERIALIZED VIEW` auto-create renders for the Sum-sourced MV, then the same
+for the Gauge-sourced MV — only when Gauge and Sum are distinct tables; when
+they are the same table the Gauge-sourced MV is dropped and not re-created.
+The `Flags` filter in the re-created MVs follows the condition above,
+resolved against the live tables before the first `DROP`. Auto-create issues `CREATE MATERIALIZED VIEW IF
+NOT EXISTS`, which never alters an MV that already exists, so this verb is
+the only path that brings a deployed MV to its current definition. It then
+`TRUNCATE`s the tier table and re-populates it in full, from every
+configured source's entire currently-retained history — no `--before` bound.
+
+Run `cerberus schema downsample-tier-rebuild` once on a deployment whose
+tier MVs were created without the `NoRecordedValue` exclusion shown above
+(`SHOW CREATE TABLE <db>.otel_metrics_sum_downsample_tier_mv` has no
+`bitAnd(Flags, 1) = 0`): it re-provisions both MVs and purges every bucket
+state that folded a stale-marker row as a sample. Rows inserted into the
+source tables between the `DROP VIEW` and the re-populating `INSERT ...
+SELECT` are covered by the full re-populate. If a statement after the first
+`DROP` fails, the command reports that the MVs may be dropped and the tier is
+no longer fed; every statement is idempotent, so re-running
+`cerberus schema downsample-tier-rebuild` recovers. A row both the re-created MV
+and the re-populate fold counts once, because `timeSeriesLastTwoSamples`
+keeps one sample per timestamp.
+
+It is also the recovery path for a suspected stranded or
 format-incompatible persisted state: `timeSeriesLastTwoSamples` is an
 EXPERIMENTAL ClickHouse aggregate function, and a future ClickHouse upgrade
 changing its on-disk state format could strand every already-written row.
 An incremental `downsample-tier-backfill` cannot repair rows that are
 already unreadable — `downsample-tier-rebuild` starts clean instead. All
-three verbs accept `--dry-run` to print the statement(s) — one per
-configured source for backfill/rebuild — without executing.
+three verbs accept `--dry-run` to print the statement(s) without executing
+them: for rebuild, the MV `DROP`s and `CREATE`s in the order above and the
+`TRUNCATE`; for backfill and rebuild, one `INSERT ... SELECT` per configured
+source. A dry run connects to nothing, so it renders the `Flags` filter as
+for metric tables that carry the column.
 
 ### Startup requirements preflight
 

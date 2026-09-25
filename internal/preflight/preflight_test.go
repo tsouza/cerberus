@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -1460,5 +1462,59 @@ func TestIsUnreachableClassification(t *testing.T) {
 		if got := isUnreachable(tc.err); got != tc.want {
 			t.Errorf("isUnreachable(%s) = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestStaleMarkerFlagsEstablishable pins the verdict the downsample tier's
+// views are rendered under: every metric table either carries the Flags
+// column or is absent (schema apply provisions it with the column). One
+// existing table without it — the case the read path treats as supported
+// but reads every row as a sample — reports false, as does a schema naming
+// no Flags column; an introspection error propagates.
+func TestStaleMarkerFlagsEstablishable(t *testing.T) {
+	m := schema.DefaultOTelMetrics()
+	withFlags := func(cols []chclient.NameTypePair) []chclient.NameTypePair {
+		if slices.ContainsFunc(cols, func(c chclient.NameTypePair) bool { return c.Name == m.FlagsColumn }) {
+			return cols
+		}
+		return append(slices.Clone(cols), chclient.NameTypePair{Name: m.FlagsColumn, Type: "UInt32"})
+	}
+	healthy := healthyColumns()
+	allFlagged := map[string][]chclient.NameTypePair{}
+	for _, table := range []string{m.GaugeTable, m.SumTable, m.HistogramTable, m.ExpHistogramTable} {
+		allFlagged[table] = withFlags(healthy[table])
+	}
+	sumNoFlags := maps.Clone(allFlagged)
+	sumNoFlags[m.SumTable] = slices.DeleteFunc(slices.Clone(healthy[m.SumTable]), func(c chclient.NameTypePair) bool {
+		return c.Name == m.FlagsColumn
+	})
+	sumAbsent := maps.Clone(allFlagged)
+	delete(sumAbsent, m.SumTable)
+
+	cases := []struct {
+		name    string
+		columns map[string][]chclient.NameTypePair
+		schema  schema.Metrics
+		want    bool
+	}{
+		{name: "every table carries Flags", columns: allFlagged, schema: m, want: true},
+		{name: "nothing provisioned yet", columns: nil, schema: m, want: true},
+		{name: "an absent table", columns: sumAbsent, schema: m, want: true},
+		{name: "an existing table without Flags", columns: sumNoFlags, schema: m, want: false},
+		{name: "no Flags column configured", columns: allFlagged, schema: func() schema.Metrics { n := m; n.FlagsColumn = ""; return n }(), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := StaleMarkerFlagsEstablishable(context.Background(), &stubQuerier{Columns: tc.columns}, "otel", tc.schema)
+			if err != nil {
+				t.Fatalf("StaleMarkerFlagsEstablishable: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if _, err := StaleMarkerFlagsEstablishable(context.Background(), &stubQuerier{ColumnsErr: errors.New("boom")}, "otel", m); err == nil {
+		t.Error("an introspection error must propagate")
 	}
 }

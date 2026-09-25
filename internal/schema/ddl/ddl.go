@@ -279,6 +279,16 @@ type Config struct {
 	// separate later "backfill verified" declaration.
 	DownsampleTierEnabled bool
 
+	// DownsampleTierFlagsColumn names the Flags column the downsample tier's
+	// materialized views read to skip OTel NoRecordedValue (stale-marker)
+	// rows — see downsampleTierRecordedValuePredicate. Empty renders views
+	// that fold every row. It is set from the same condition the PromQL read
+	// path recognises stale markers under (schema.Metrics.
+	// StaleMarkerFlagsColumn): every metric table carries the column, or is
+	// provisioned by this apply with it — see
+	// preflight.StaleMarkerFlagsEstablishable.
+	DownsampleTierFlagsColumn string
+
 	// TraceMaterializedAttributesEnabled gates the curated `ADD COLUMN IF
 	// NOT EXISTS <col> LowCardinality(String) DEFAULT <map>['<key>']` +
 	// `MATERIALIZE COLUMN <col>` ALTER pairs (cerberus issue #2776) that
@@ -1940,10 +1950,74 @@ func renderDownsampleTierTable(cfg Config) string {
 		SQL()
 }
 
+// downsampleTierSumViewName / downsampleTierGaugeViewName name the tier's
+// two cerberus-owned materialized views (renderDownsampleTierView /
+// renderDownsampleTierGaugeView).
+const (
+	downsampleTierSumViewName   = schema.DownsampleTierTable + cerberusOwnedViewSuffix
+	downsampleTierGaugeViewName = schema.DownsampleTierTable + "_gauge" + cerberusOwnedViewSuffix
+)
+
+// DownsampleTierReprovisionSQL renders the statements that replace the
+// downsample tier's materialized views with their current definitions:
+// `DROP VIEW IF EXISTS` for both tier views, then the CREATE for each view
+// RenderAll provisions with the tier enabled (the Gauge-sourced view only
+// when the Gauge and Sum tables are distinct). A view's CREATE is
+// `IF NOT EXISTS`, so a deployed view keeps its original body until it is
+// dropped; `cerberus schema downsample-tier-rebuild` runs these statements
+// ahead of its TRUNCATE + full re-populate. Dropping a `TO`-target view
+// leaves the tier table itself untouched. The statements need the
+// allow_experimental_time_series_aggregate_functions setting on the
+// executing session, as every tier statement does.
+func DownsampleTierReprovisionSQL(cfg Config) ([]string, error) {
+	cfg = cfg.withDefaults()
+	cfg.DownsampleTierEnabled = true
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	cluster := cfg.tableCluster()
+	stmts := []string{
+		chsql.DropView(cfg.Database, downsampleTierSumViewName).OnCluster(cluster).SQL(),
+		chsql.DropView(cfg.Database, downsampleTierGaugeViewName).OnCluster(cluster).SQL(),
+		renderDownsampleTierView(cfg),
+	}
+	if cfg.Tables.MetricsGauge != cfg.Tables.MetricsSum {
+		stmts = append(stmts, renderDownsampleTierGaugeView(cfg))
+	}
+	return stmts, nil
+}
+
+// downsampleTierRecordedValuePredicate keeps a raw metric row only when it
+// carries a recorded sample: `bitAnd(Flags, NoRecordedValue) = 0`. A row
+// with the NoRecordedValue bit is a Prometheus stale marker whose Value is
+// the exporter's empty placeholder 0; folded into the tier's
+// timeSeriesLastTwoSamples state it would read as a real 0 — a counter reset
+// for irate(), a spurious last_over_time() value. Both tier MVs apply it when
+// Config.DownsampleTierFlagsColumn names the column, and
+// internal/downsampletier's backfill/rebuild/verify SELECTs apply the same
+// predicate under the same condition, rendered to the same text (each
+// package's tests pin that text).
+func downsampleTierRecordedValuePredicate(flagsColumn string) chsql.Frag {
+	return chsql.Eq(
+		chsql.Call("bitAnd", chsql.Col(flagsColumn), chsql.InlineLit(int64(schema.NoRecordedValueFlag))),
+		chsql.InlineLit(int64(0)),
+	)
+}
+
+// withDownsampleTierRecordedValueFilter applies the stale-marker exclusion
+// to a tier view body when cfg names the Flags column to read.
+func withDownsampleTierRecordedValueFilter(body *chsql.QueryBuilder, cfg Config) *chsql.QueryBuilder {
+	if cfg.DownsampleTierFlagsColumn == "" {
+		return body
+	}
+	return body.Where(downsampleTierRecordedValuePredicate(cfg.DownsampleTierFlagsColumn))
+}
+
 // renderDownsampleTierView renders the CREATE MATERIALIZED VIEW feeding
 // renderDownsampleTierTable from the Sum table (cerberus issue #2751): every
-// raw sample, bucketed to its downsampleTierBucketEndExpr boundary, folded
-// through timeSeriesLastTwoSamplesState. Scoped to the Sum table alone —
+// recorded raw sample (downsampleTierRecordedValuePredicate), bucketed to its
+// downsampleTierBucketEndExpr boundary, folded through
+// timeSeriesLastTwoSamplesState. Scoped to the Sum table alone —
 // counters, feeding irate()/idelta()/last_over_time() — with
 // renderDownsampleTierGaugeView below as its Gauge-sourced sibling (cerberus
 // issue #2858), feeding the SAME target table for last_over_time() only (a
@@ -1983,7 +2057,8 @@ func renderDownsampleTierView(cfg Config) string {
 			chsql.Col(metricServiceNameColumn),
 			bucketEnd,
 		)
-	stmt := chsql.CreateMaterializedView(schema.DownsampleTierTable+cerberusOwnedViewSuffix).
+	body = withDownsampleTierRecordedValueFilter(body, cfg)
+	stmt := chsql.CreateMaterializedView(downsampleTierSumViewName).
 		Database(cfg.Database).
 		IfNotExists().
 		To(cfg.Database, schema.DownsampleTierTable).
@@ -1996,8 +2071,8 @@ func renderDownsampleTierView(cfg Config) string {
 
 // renderDownsampleTierGaugeView renders the CREATE MATERIALIZED VIEW feeding
 // renderDownsampleTierTable from the Gauge table (cerberus issue #2858):
-// renderDownsampleTierView's sibling, folding every raw Gauge sample through
-// the SAME timeSeriesLastTwoSamplesState bucketing into the SAME physical
+// renderDownsampleTierView's sibling, folding every recorded raw Gauge sample
+// through the SAME timeSeriesLastTwoSamplesState bucketing into the SAME physical
 // tier table via a SECOND, independent MV — the same "two MVs, one
 // AggregatingMergeTree target" shape renderDeltaPrefixView's own doc
 // establishes as this codebase's precedent, not a new pattern.
@@ -2045,7 +2120,8 @@ func renderDownsampleTierGaugeView(cfg Config) string {
 			chsql.Col(metricServiceNameColumn),
 			bucketEnd,
 		)
-	stmt := chsql.CreateMaterializedView(schema.DownsampleTierTable+"_gauge"+cerberusOwnedViewSuffix).
+	body = withDownsampleTierRecordedValueFilter(body, cfg)
+	stmt := chsql.CreateMaterializedView(downsampleTierGaugeViewName).
 		Database(cfg.Database).
 		IfNotExists().
 		To(cfg.Database, schema.DownsampleTierTable).

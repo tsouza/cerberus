@@ -69,8 +69,77 @@ type cancelShape struct {
 	// slow substrate cannot grow the seed past the container's memory.
 	baseSize, maxSize int
 	bounded           func(foldBounded, regexBounded bool) bool
+	// inCall reports, from every system.processes reading of the shape's
+	// query so far (oldest first), that the query is running the part of
+	// function's call whose interruption the build table describes. The
+	// work ahead of that part — the read, the per-row label normalization,
+	// an aggregation, a filter, the other actions of the call's own
+	// expression — stops on a cancellation on some or all builds, and it
+	// grows with the seed and with the runner's load: a cancellation that
+	// lands in it can end the query within milliseconds whatever the build's
+	// cancellation gap. Every probe therefore cancels only once inCall
+	// holds, never after a fixed elapsed time.
+	inCall func(readings []callProgress) bool
 	// query is the calibrated query, set by calibrateShape.
 	query string
+}
+
+// callProgress is the part of one system.processes row the inCall
+// predicates read.
+type callProgress struct {
+	elapsed             time.Duration
+	readRows, totalRows uint64
+	// filterPassedRows and functionExecutions are the query's
+	// FilterTransformPassedRows and FunctionExecute profile events: the rows
+	// its FilterTransforms have passed, and the function executions it has
+	// started — once per block for an ordinary function, once per element
+	// for a lambda a higher-order function applies element by element.
+	filterPassedRows, functionExecutions uint64
+}
+
+// inputRead reports that the query's sources have read every row they will
+// read.
+func (p callProgress) inputRead() bool { return p.totalRows > 0 && p.readRows >= p.totalRows }
+
+// foldLoopRunning is array_fold's inCall. The fold is evaluated by the
+// ExpressionTransform that follows the emitted `WHERE length(window_vals) >=
+// 2`, whose FilterTransform passes the aggregated series row last. By then
+// the query has executed its functions once per block, a few hundred times.
+// arrayFold first splits its input into per-element arguments, which no
+// pinned build interrupts, and then applies its lambda once per element: the
+// loop ClickHouse#108192 made check for cancellation. The fold's own
+// expression executes only a handful of functions outside that loop, so the
+// count passing foldLoopGrowth times its value at the filter's pass is the
+// loop running.
+func foldLoopRunning(readings []callProgress) bool {
+	i := slices.IndexFunc(readings, func(p callProgress) bool { return p.filterPassedRows > 0 })
+	return i >= 0 && readings[len(readings)-1].functionExecutions > foldLoopGrowth*readings[i].functionExecutions
+}
+
+// foldLoopGrowth is the factor by which array_fold's function executions
+// must grow past their count at the filter's pass; see foldLoopRunning.
+const foldLoopGrowth = 2
+
+// regexCallRunning is regex_replace's inCall. The normalization runs
+// replaceRegexpAll once over the block the read produced, so for the whole
+// call the query's function-execution count stands still. The actions ahead
+// of it in the same expression each run briefly over bytes the read already
+// produced; on 26.7.13.12 a cancellation landing after the read's progress
+// report but before the call was observed to end the query at once. None of
+// those actions takes as long as producing its input took, so the count
+// standing still, with the input read, for longer than the query needed to
+// read that input is the call running.
+func regexCallRunning(readings []callProgress) bool {
+	i := slices.IndexFunc(readings, callProgress.inputRead)
+	if i < 0 {
+		return false
+	}
+	last := len(readings) - 1
+	since := last
+	for since > i && readings[since-1].functionExecutions == readings[last].functionExecutions {
+		since--
+	}
+	return readings[last].elapsed-readings[since].elapsed > readings[i].elapsed
 }
 
 var cancelShapes = []cancelShape{
@@ -92,6 +161,7 @@ FROM numbers(%d)`, metric, cancelEvalTime.Unix(), foldSampleSpacingMicros, size)
 		baseSize: 200_000,
 		maxSize:  700_000,
 		bounded:  func(fold, _ bool) bool { return fold },
+		inCall:   foldLoopRunning,
 	},
 	{
 		// Every PromQL selector normalizes label names with
@@ -110,17 +180,17 @@ SELECT 'svc', '%s', map(arrayStringConcat(arrayMap(x -> repeat('.', %d), range(%
 		baseSize: 30,
 		maxSize:  200,
 		bounded:  func(_, regex bool) bool { return regex },
+		inCall:   regexCallRunning,
 	},
 }
 
-// Seed and budget constants. Calibration grows each shape's seed until its
-// uncancelled run clears calibrationTarget on the substrate at hand, within
-// the shape's maxSize.
+// Seed and budget constants. Calibration grows each shape's seed until the
+// call leaves at least calibrationTarget of its uncancelled run to judge on
+// the substrate at hand, within the shape's maxSize.
 const (
 	foldSampleSpacingMicros = 100       // 6 million samples fit the 10m window
 	regexChunkChars         = 1_000_000 // repeat()'s own per-call cap
 	calibrationRounds       = 4
-	cancelDeadline          = time.Second
 	settleBudget            = 2 * time.Second
 	handlerSlack            = 3 * time.Second
 	naturalRunBudget        = 120 * time.Second
@@ -134,10 +204,13 @@ const (
 	shardedPoolConns        = shardCount * siblingCount * 2
 )
 
-// calibrationTarget is the natural run a calibrated shape aims for: the
-// cancellation point plus the widest separation an assertion needs, with half
-// again as headroom for run-to-run variance.
-const calibrationTarget = (cancelDeadline + minRemaining) * 3 / 2
+// calibrationTarget is how much of a calibrated shape's natural run the call
+// aims to leave after the latest point a probe cancels it (see
+// calibrateShape): the widest separation an assertion needs, with half again
+// as headroom for run-to-run variance. The headroom is also the window the
+// request-deadline probe places its deadline in
+// (cancelExpectation.requestDeadline).
+const calibrationTarget = minRemaining * 3 / 2
 
 // cancelProbeNanoCPUs throttles the cancellation probes' server to half a
 // CPU. The probed functions are single-threaded, so the throttle stretches
@@ -202,8 +275,8 @@ func TestCancellation_CPUBoundEmittedShapesAcrossBuilds(t *testing.T) {
 				t.Run(shape.name, func(t *testing.T) {
 					bounded := shape.bounded(build.foldBounded, build.regexBounded)
 					assertCancellationPolicy(t, s.version, shape.function, bounded)
-					shape, natural := s.calibrateShape(ctx, t, shape)
-					want := cancelExpectation{bounded: bounded, natural: natural}
+					shape, natural, entered := s.calibrateShape(ctx, t, shape)
+					want := cancelExpectation{bounded: bounded, natural: natural, entered: entered}
 
 					t.Run("request_deadline", func(t *testing.T) {
 						probeRequestDeadline(ctx, t, s, rules, shape, want)
@@ -314,7 +387,8 @@ func assertErrorType(t *testing.T, rec *httptest.ResponseRecorder, want string) 
 }
 
 func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, want cancelExpectation) {
-	p := newPromProbe(t, s, rules, cancelDeadline)
+	deadline := want.requestDeadline()
+	p := newPromProbe(t, s, rules, deadline)
 	qid := cancelQueryID(shape, "deadline")
 	start := time.Now()
 	rec := p.serve(chclient.WithQueryID(ctx, qid), shape)
@@ -323,7 +397,7 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 	// The answer waits for cerberus's KILL QUERY ... SYNC, which confirms
 	// promptly where the call is interruptible and gives up after
 	// chclient.KillDataShardQueryTimeout where it is not.
-	budget := cancelDeadline + handlerSlack
+	budget := deadline + handlerSlack
 	if !want.bounded {
 		budget += chclient.KillDataShardQueryTimeout
 	}
@@ -332,7 +406,7 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 	}
 	p.assertAdmissionFree(t)
 	// The server's own max_execution_time is the cancellation here.
-	s.assertServerWorkEnds(ctx, t, []string{qid}, want, start.Add(cancelDeadline))
+	s.assertServerWorkEnds(ctx, t, []string{qid}, want, start.Add(deadline))
 	p.assertPoolReleased(t)
 }
 
@@ -344,7 +418,7 @@ func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules e
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() { done <- p.serve(reqCtx, shape) }()
 
-	s.waitRunningFor(ctx, t, qid, cancelDeadline)
+	s.waitInCall(ctx, t, shape, qid)
 	cancelAt := time.Now()
 	disconnect()
 	budget := handlerSlack
@@ -387,7 +461,7 @@ func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape can
 		}
 	}
 	for _, id := range ids {
-		s.waitRunningFor(ctx, t, id, cancelDeadline)
+		s.waitInCall(ctx, t, shape, id)
 	}
 
 	cancelAt := time.Now()
@@ -408,12 +482,7 @@ func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape can
 		t.Fatalf("closing the cancelled siblings did not return within %s", closeBudget)
 	}
 
-	// The gate capacity is released now. On a build that does not interrupt
-	// the call, this scenario's teardown races the coordination layer
-	// against the call itself — see cancelExpectation.distributedRace.
-	if !want.bounded {
-		want.distributedRace = true
-	}
+	// The gate capacity is released now.
 	s.assertServerWorkEnds(ctx, t, ids, want, cancelAt)
 
 	fctx, cancel := context.WithTimeout(ctx, settleBudget)
@@ -443,50 +512,65 @@ func (s *server) runningCount(ctx context.Context, t *testing.T, ids []string) u
 	return n
 }
 
-// waitRunningFor waits until qid has been executing for at least d, so a
-// cancellation issued next lands inside the query's CPU-bound call rather
-// than in its read.
-func (s *server) waitRunningFor(ctx context.Context, t *testing.T, qid string, d time.Duration) {
+// waitInCall reads the running query qid every pollInterval until
+// shape.inCall holds for the readings so far, so a cancellation issued next
+// lands inside the query's CPU-bound call rather than in work ahead of it.
+func (s *server) waitInCall(ctx context.Context, t *testing.T, shape cancelShape, qid string) {
 	t.Helper()
 	deadline := time.Now().Add(runningBudget)
+	var readings []callProgress
 	for {
-		var elapsed float64
-		var n uint64
-		err := s.admin.Conn().QueryRow(ctx,
-			"SELECT count(), max(elapsed) FROM system.processes WHERE query_id = ?", qid).Scan(&n, &elapsed)
-		if err != nil {
-			t.Fatalf("read system.processes: %v", err)
-		}
-		if n > 0 && elapsed >= d.Seconds() {
-			return
+		if p, running := s.callProgress(ctx, t, qid); running {
+			if readings = append(readings, p); shape.inCall(readings) {
+				return
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("query %s never ran for %s within %s", qid, d, runningBudget)
+			t.Fatalf("query %s never reached its %s call within %s", qid, shape.function, runningBudget)
 		}
 		time.Sleep(pollInterval)
 	}
 }
 
+// callProgress reads qid's row in system.processes; running is false when
+// qid is not executing.
+func (s *server) callProgress(ctx context.Context, t *testing.T, qid string) (p callProgress, running bool) {
+	t.Helper()
+	var (
+		n       uint64
+		elapsed float64
+	)
+	err := s.admin.Conn().QueryRow(ctx,
+		"SELECT count(), max(elapsed), max(read_rows), max(total_rows_approx), "+
+			"max(ProfileEvents['FilterTransformPassedRows']), max(ProfileEvents['FunctionExecute']) "+
+			"FROM system.processes WHERE query_id = ?", qid).
+		Scan(&n, &elapsed, &p.readRows, &p.totalRows, &p.filterPassedRows, &p.functionExecutions)
+	if err != nil {
+		t.Fatalf("read system.processes: %v", err)
+	}
+	p.elapsed = time.Duration(elapsed * float64(time.Second))
+	return p, n > 0
+}
+
 // cancelExpectation is what one shape must show on one build: whether the
-// build interrupts its CPU-bound call, and how long the server takes to run
-// the shape to completion when nothing cancels it.
+// build interrupts its CPU-bound call, how long the server takes to run the
+// shape to completion when nothing cancels it, and how far into that run the
+// query reached the call.
 type cancelExpectation struct {
 	bounded bool
 	natural time.Duration
-	// distributedRace is set only for the routed_siblings scenario on a build
-	// that does not interrupt the call (!bounded). A Distributed dispatch's
-	// KILL QUERY ... SYNC on a remote child races that build's own
-	// coordination teardown of the connection to the remote against
-	// arrayFold's lack of an in-loop cancellation check: on
-	// clickhouse-server:26.6.1.1193-alpine, repeated local reproduction
-	// against a real server (not chDB) tore the remote sub-query down at the
-	// network/pipeline layer within a few hundred milliseconds in 5 of 6
-	// runs, and ran the call out the remaining 1 of 6 — the same build's
-	// single-node dispatch (request_deadline, client_disconnect) never
-	// interrupted the call, 2 of 2. This is a property of Distributed
-	// dispatch teardown, not of arrayFold's own cancellation check, so it is
-	// orthogonal to chopt.CancellationGaps and scoped to this one probe.
-	distributedRace bool
+	entered time.Duration
+}
+
+// requestDeadline is the request timeout the deadline probe sends. Unlike
+// the other probes it cannot wait for inCall: the deadline is fixed before
+// the query starts. It sits midway between the natural run's entry into the
+// call and the latest instant that still leaves minRemaining of the call to
+// judge, which calibration keeps at least minRemaining/2 apart — so the
+// deadline clears the entry, and the probe's remainder clears minRemaining,
+// by the same margin.
+func (w cancelExpectation) requestDeadline() time.Duration {
+	return w.entered + (w.natural-w.entered-minRemaining)/2
 }
 
 // Separation, relative to the work left at the cancellation (remaining). An
@@ -537,29 +621,13 @@ func (s *server) assertServerWorkEnds(ctx context.Context, t *testing.T, ids []s
 			"to separate an interrupted call from an uninterrupted one — raise the shape's maxSize for this substrate",
 			remaining, want.natural, minRemaining)
 	}
-	limit := remaining / interruptedFraction
-	floor := remaining / uninterruptedFraction
-	switch {
-	case want.bounded:
-		if delay > limit {
-			t.Errorf("server work for %v ended %s after the cancellation; want within %s (a quarter of the remaining work) "+
-				"on a build that interrupts the call", ids, delay, limit)
-		}
-	case want.distributedRace:
-		// Either extreme is a pass; see cancelExpectation.distributedRace.
-		// Only a value stuck in the ambiguous middle — which neither the
-		// distributed-teardown path nor the full uninterrupted run produced
-		// in any repro — signals a real regression.
-		if delay > limit && delay < floor {
-			t.Errorf("server work for %v ended %s after the cancellation; want either within %s (torn down at the "+
-				"distributed coordination layer) or at least %s (the full uninterrupted run) — see "+
-				"cancelExpectation.distributedRace", ids, delay, limit, floor)
-		}
-	default:
-		if delay < floor {
-			t.Errorf("server work for %v ended %s after the cancellation; want at least %s (half the remaining work) on a build "+
-				"that cannot interrupt the call", ids, delay, floor)
-		}
+	if limit := remaining / interruptedFraction; want.bounded && delay > limit {
+		t.Errorf("server work for %v ended %s after the cancellation; want within %s (a quarter of the remaining work) "+
+			"on a build that interrupts the call", ids, delay, limit)
+	}
+	if floor := remaining / uninterruptedFraction; !want.bounded && delay < floor {
+		t.Errorf("server work for %v ended %s after the cancellation; want at least %s (half the remaining work) on a build "+
+			"that cannot interrupt the call", ids, delay, floor)
 	}
 }
 
@@ -602,10 +670,12 @@ func (s *server) workSpan(ctx context.Context, t *testing.T, ids []string) (star
 	return time.UnixMicro(startMicros), time.UnixMicro(endMicros)
 }
 
-// naturalDuration runs shape's emitted SQL to completion, uncancelled, and
-// returns how long the server took — the yardstick assertServerWorkEnds
-// measures a cancellation against.
-func (s *server) naturalDuration(ctx context.Context, t *testing.T, shape cancelShape) time.Duration {
+// naturalRun runs shape's emitted SQL to completion, uncancelled, and returns
+// how long the server took — the yardstick assertServerWorkEnds measures a
+// cancellation against — and how far into that run shape.inCall first held.
+// A run inCall was never seen to hold in reports entered as natural: none of
+// its work can be counted as the call's.
+func (s *server) naturalRun(ctx context.Context, t *testing.T, shape cancelShape) (natural, entered time.Duration) {
 	t.Helper()
 	eng := &engine.Engine{Optimizer: optimizer.Default()}
 	dr, err := eng.DryRunSQL(ctx, prom.NewExplainLang(schema.DefaultOTelMetrics(), cancelEvalTime, promql.ResourceBounds{}), shape.query)
@@ -613,18 +683,43 @@ func (s *server) naturalDuration(ctx context.Context, t *testing.T, shape cancel
 		t.Fatalf("emit %s: %v", shape.query, err)
 	}
 	qid := cancelQueryID(shape, "natural")
-	rows, err := s.admin.Conn().Query(clickhouse.Context(ctx, clickhouse.WithQueryID(qid)), dr.SQL, dr.Args...)
-	if err != nil {
-		t.Fatalf("natural run of %s: %v", shape.query, err)
+	done := make(chan error, 1)
+	go func() {
+		rows, err := s.admin.Conn().Query(clickhouse.Context(ctx, clickhouse.WithQueryID(qid)), dr.SQL, dr.Args...)
+		if err == nil {
+			for rows.Next() {
+			}
+			err = rows.Err()
+			_ = rows.Close()
+		}
+		done <- err
+	}()
+	var (
+		readings []callProgress
+		inCall   bool
+	)
+	for finished := false; !finished; {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("natural run of %s: %v", shape.query, err)
+			}
+			finished = true
+		case <-time.After(pollInterval):
+			if p, running := s.callProgress(ctx, t, qid); running && !inCall {
+				readings = append(readings, p)
+				if inCall = shape.inCall(readings); inCall {
+					entered = p.elapsed
+				}
+			}
+		}
 	}
-	for rows.Next() {
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("natural run of %s: %v", shape.query, err)
-	}
-	_ = rows.Close()
 	started, ended := s.workSpan(ctx, t, []string{qid})
-	return ended.Sub(started)
+	natural = ended.Sub(started)
+	if !inCall {
+		return natural, natural
+	}
+	return natural, entered
 }
 
 // seedCancellationProbe applies cerberus's metrics DDL to the default
@@ -651,32 +746,46 @@ var shardedTables = []string{"otel_metrics_gauge", "otel_metrics_sum"}
 
 // calibrateShape sizes shape's seed to the substrate: it seeds a series at
 // the shape's baseSize, measures the uncancelled run, and re-seeds larger in
-// proportion until the run clears calibrationTarget or the size reaches
-// maxSize, for at most calibrationRounds rounds. It returns the shape with its
-// calibrated query and that query's natural duration. A run still short of the
-// target at maxSize is returned as is: the scenario assertions then fail with
-// the separation they could not get, rather than judging a probe that cannot
-// tell the two outcomes apart.
-func (s *server) calibrateShape(ctx context.Context, t *testing.T, shape cancelShape) (cancelShape, time.Duration) {
+// proportion until the work left after the latest cancellation a probe makes
+// clears calibrationTarget or the size reaches maxSize, for at most
+// calibrationRounds rounds. That latest cancellation is the routed-sibling
+// probe's: it runs siblingCount statements at once on the server's one
+// throttled CPU, so each reaches the call about siblingCount times later than
+// the lone natural run, and the work left is natural less siblingCount times
+// entered. It returns the shape with its calibrated query,
+// that query's natural duration and the point it entered the call. A run
+// still short of the target at maxSize is returned as is: the scenario
+// assertions then fail with the separation they could not get, rather than
+// judging a probe that cannot tell the two outcomes apart.
+func (s *server) calibrateShape(ctx context.Context, t *testing.T, shape cancelShape) (cancelShape, time.Duration, time.Duration) {
 	t.Helper()
 	size := shape.baseSize
-	var natural time.Duration
+	var natural, entered time.Duration
 	for round := range calibrationRounds {
 		metric := fmt.Sprintf("%s_probe_%d", shape.name, size)
 		s.exec(ctx, t, shape.seedSQL(metric, size))
 		local := shardedDB + ".otel_metrics_gauge" + ddl.DataShardLocalSuffix
 		s.exec(ctx, t, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s.otel_metrics_gauge WHERE MetricName = ?", local, serverDB), metric)
 		shape.query = shape.queryFor(metric)
-		natural = s.naturalDuration(ctx, t, shape)
-		t.Logf("calibration round %d: %s at size %d ran %s (target %s)", round, shape.name, size, natural, calibrationTarget)
-		if natural >= calibrationTarget || size >= shape.maxSize {
+		natural, entered = s.naturalRun(ctx, t, shape)
+		left := natural - siblingCount*entered
+		t.Logf("calibration round %d: %s at size %d ran %s and entered the call after %s, leaving %s (target %s)",
+			round, shape.name, size, natural, entered, left, calibrationTarget)
+		if left >= calibrationTarget || size >= shape.maxSize {
 			break
 		}
-		next := int(float64(size) * float64(calibrationTarget) / float64(natural) * calibrationOvershoot)
+		next := size * calibrationGrowth
+		if left > 0 {
+			next = int(float64(size) * float64(calibrationTarget) / float64(left) * calibrationOvershoot)
+		}
 		size = min(max(next, size+1), shape.maxSize)
 	}
-	return shape, natural
+	return shape, natural, entered
 }
+
+// calibrationGrowth multiplies a seed whose run left no work to judge, which
+// gives no proportion to scale by.
+const calibrationGrowth = 2
 
 // calibrationOvershoot scales a re-seed a little past the proportional size,
 // since a shape's run is not exactly linear in its size.

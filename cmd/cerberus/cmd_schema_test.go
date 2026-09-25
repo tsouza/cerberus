@@ -221,6 +221,42 @@ func TestRetireIdxLowerBody_DryRunHonorsTableOverride(t *testing.T) {
 	}
 }
 
+// TestDownsampleTierRebuild_DryRunReprovisionsViewsFirst confirms --dry-run
+// prints the view re-provision (DROP VIEW IF EXISTS for both tier views, then
+// each CREATE MATERIALIZED VIEW carrying the NoRecordedValue exclusion) BEFORE
+// the TRUNCATE and the re-populating INSERTs, without connecting. The view
+// CREATE is IF NOT EXISTS, so without the DROP a deployed view would keep its
+// original body and go on folding stale-marker rows into the tier.
+func TestDownsampleTierRebuild_DryRunReprovisionsViewsFirst(t *testing.T) {
+	var out, errOut bytes.Buffer
+	err := runSchema([]string{"downsample-tier-rebuild", "--dry-run"}, &out, &errOut)
+	if err != nil {
+		t.Fatalf("dry-run should not error: %v (stderr: %s)", err, errOut.String())
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	wantPrefixes := []string{
+		"DROP VIEW IF EXISTS default.otel_metrics_sum_downsample_tier_mv",
+		"DROP VIEW IF EXISTS default.otel_metrics_sum_downsample_tier_gauge_mv",
+		"CREATE MATERIALIZED VIEW IF NOT EXISTS default.otel_metrics_sum_downsample_tier_mv ",
+		"CREATE MATERIALIZED VIEW IF NOT EXISTS default.otel_metrics_sum_downsample_tier_gauge_mv ",
+		"TRUNCATE TABLE",
+		"INSERT INTO",
+	}
+	if len(lines) < len(wantPrefixes) {
+		t.Fatalf("dry-run printed %d lines; want at least %d:\n%s", len(lines), len(wantPrefixes), out.String())
+	}
+	for i, want := range wantPrefixes {
+		if !strings.HasPrefix(lines[i], want) {
+			t.Errorf("dry-run line %d = %q; want prefix %q", i, lines[i], want)
+		}
+	}
+	for _, i := range []int{2, 3} {
+		if !strings.Contains(lines[i], "WHERE bitAnd(`Flags`, 1) = 0") {
+			t.Errorf("view CREATE %q lacks the NoRecordedValue exclusion", lines[i])
+		}
+	}
+}
+
 // testVerifyReport builds a deltaprefix.Report with an outside-retention
 // day, so writeDeltaPrefixVerifyReport's tests below can drive both the
 // PASS and FAIL branches with the SAME excluded-day shape.

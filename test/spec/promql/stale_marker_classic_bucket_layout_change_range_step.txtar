@@ -1,0 +1,348 @@
+# Seed: the classic histogram `stale_hist` is scraped every 30s. Series
+# job="a" carries bounds 1/5/10 until 23:58:00 and 1/5 from 23:58:30; its
+# target disappears behind a NoRecordedValue data point (Flags = 1, empty
+# bucket arrays) at 23:59:30 and returns at 00:02:00 with bounds 1/5. Series
+# job="b" carries bounds 1/5 throughout. Reference Prometheus holds the marker
+# as a stale marker on every `_bucket` series job="a" has exposed, le="10"
+# included.
+#
+# The marker ends the le="10" series too, although the newest row before the
+# marker no longer carries that bound: job="a" has no bucket sample from
+# 00:00:00 to 00:01:30, and from 00:02:00 only its 1/5/+Inf series answer.
+
+-- query.promql --
+stale_hist_bucket
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64),
+    Flags UInt32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram (MetricName, Attributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds, Flags) VALUES
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:56:00', 9), 4, 4.0, [1, 1, 1, 1], [1.0, 5.0, 10.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:56:30', 9), 8, 8.0, [2, 2, 2, 2], [1.0, 5.0, 10.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:57:00', 9), 12, 12.0, [3, 3, 3, 3], [1.0, 5.0, 10.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:57:30', 9), 16, 16.0, [4, 4, 4, 4], [1.0, 5.0, 10.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:58:00', 9), 20, 20.0, [5, 5, 5, 5], [1.0, 5.0, 10.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:58:30', 9), 24, 24.0, [6, 12, 6], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:59:00', 9), 28, 28.0, [7, 14, 7], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 0, 0.0, [], [], 1),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 32, 32.0, [8, 16, 8], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:02:30', 9), 36, 36.0, [9, 18, 9], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:03:00', 9), 40, 40.0, [10, 20, 10], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:03:30', 9), 44, 44.0, [11, 22, 11], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:04:00', 9), 48, 48.0, [12, 24, 12], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:04:30', 9), 52, 52.0, [13, 26, 13], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'a'), toDateTime64('2026-01-01 00:05:00', 9), 56, 56.0, [14, 28, 14], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:56:00', 9), 4, 4.0, [2, 1, 1], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:56:30', 9), 8, 8.0, [4, 2, 2], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:57:00', 9), 12, 12.0, [6, 3, 3], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:57:30', 9), 16, 16.0, [8, 4, 4], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:58:00', 9), 20, 20.0, [10, 5, 5], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:58:30', 9), 24, 24.0, [12, 6, 6], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:59:00', 9), 28, 28.0, [14, 7, 7], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2025-12-31 23:59:30', 9), 32, 32.0, [16, 8, 8], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 36, 36.0, [18, 9, 9], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:00:30', 9), 40, 40.0, [20, 10, 10], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:01:00', 9), 44, 44.0, [22, 11, 11], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:01:30', 9), 48, 48.0, [24, 12, 12], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:02:00', 9), 52, 52.0, [26, 13, 13], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:02:30', 9), 56, 56.0, [28, 14, 14], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:03:00', 9), 60, 60.0, [30, 15, 15], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:03:30', 9), 64, 64.0, [32, 16, 16], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:04:00', 9), 68, 68.0, [34, 17, 17], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:04:30', 9), 72, 72.0, [36, 18, 18], [1.0, 5.0], 0),
+    ('stale_hist', map('job', 'b'), toDateTime64('2026-01-01 00:05:00', 9), 76, 76.0, [38, 19, 19], [1.0, 5.0], 0);
+-- expected_rows --
+[
+  ["stale_hist_bucket", {"job": "a", "le": "+Inf"}, "2026-01-01T00:02:00Z", 32],
+  ["stale_hist_bucket", {"job": "a", "le": "+Inf"}, "2026-01-01T00:02:30Z", 36],
+  ["stale_hist_bucket", {"job": "a", "le": "+Inf"}, "2026-01-01T00:03:00Z", 40],
+  ["stale_hist_bucket", {"job": "a", "le": "+Inf"}, "2026-01-01T00:03:30Z", 44],
+  ["stale_hist_bucket", {"job": "a", "le": "+Inf"}, "2026-01-01T00:04:00Z", 48],
+  ["stale_hist_bucket", {"job": "a", "le": "+Inf"}, "2026-01-01T00:04:30Z", 52],
+  ["stale_hist_bucket", {"job": "a", "le": "+Inf"}, "2026-01-01T00:05:00Z", 56],
+  ["stale_hist_bucket", {"job": "a", "le": "1"}, "2026-01-01T00:02:00Z", 8],
+  ["stale_hist_bucket", {"job": "a", "le": "1"}, "2026-01-01T00:02:30Z", 9],
+  ["stale_hist_bucket", {"job": "a", "le": "1"}, "2026-01-01T00:03:00Z", 10],
+  ["stale_hist_bucket", {"job": "a", "le": "1"}, "2026-01-01T00:03:30Z", 11],
+  ["stale_hist_bucket", {"job": "a", "le": "1"}, "2026-01-01T00:04:00Z", 12],
+  ["stale_hist_bucket", {"job": "a", "le": "1"}, "2026-01-01T00:04:30Z", 13],
+  ["stale_hist_bucket", {"job": "a", "le": "1"}, "2026-01-01T00:05:00Z", 14],
+  ["stale_hist_bucket", {"job": "a", "le": "5"}, "2026-01-01T00:02:00Z", 24],
+  ["stale_hist_bucket", {"job": "a", "le": "5"}, "2026-01-01T00:02:30Z", 27],
+  ["stale_hist_bucket", {"job": "a", "le": "5"}, "2026-01-01T00:03:00Z", 30],
+  ["stale_hist_bucket", {"job": "a", "le": "5"}, "2026-01-01T00:03:30Z", 33],
+  ["stale_hist_bucket", {"job": "a", "le": "5"}, "2026-01-01T00:04:00Z", 36],
+  ["stale_hist_bucket", {"job": "a", "le": "5"}, "2026-01-01T00:04:30Z", 39],
+  ["stale_hist_bucket", {"job": "a", "le": "5"}, "2026-01-01T00:05:00Z", 42],
+  ["stale_hist_bucket", {"job": "b", "le": "+Inf"}, "2026-01-01T00:00:00Z", 36],
+  ["stale_hist_bucket", {"job": "b", "le": "+Inf"}, "2026-01-01T00:00:30Z", 40],
+  ["stale_hist_bucket", {"job": "b", "le": "+Inf"}, "2026-01-01T00:01:00Z", 44],
+  ["stale_hist_bucket", {"job": "b", "le": "+Inf"}, "2026-01-01T00:01:30Z", 48],
+  ["stale_hist_bucket", {"job": "b", "le": "+Inf"}, "2026-01-01T00:02:00Z", 52],
+  ["stale_hist_bucket", {"job": "b", "le": "+Inf"}, "2026-01-01T00:02:30Z", 56],
+  ["stale_hist_bucket", {"job": "b", "le": "+Inf"}, "2026-01-01T00:03:00Z", 60],
+  ["stale_hist_bucket", {"job": "b", "le": "+Inf"}, "2026-01-01T00:03:30Z", 64],
+  ["stale_hist_bucket", {"job": "b", "le": "+Inf"}, "2026-01-01T00:04:00Z", 68],
+  ["stale_hist_bucket", {"job": "b", "le": "+Inf"}, "2026-01-01T00:04:30Z", 72],
+  ["stale_hist_bucket", {"job": "b", "le": "+Inf"}, "2026-01-01T00:05:00Z", 76],
+  ["stale_hist_bucket", {"job": "b", "le": "1"}, "2026-01-01T00:00:00Z", 18],
+  ["stale_hist_bucket", {"job": "b", "le": "1"}, "2026-01-01T00:00:30Z", 20],
+  ["stale_hist_bucket", {"job": "b", "le": "1"}, "2026-01-01T00:01:00Z", 22],
+  ["stale_hist_bucket", {"job": "b", "le": "1"}, "2026-01-01T00:01:30Z", 24],
+  ["stale_hist_bucket", {"job": "b", "le": "1"}, "2026-01-01T00:02:00Z", 26],
+  ["stale_hist_bucket", {"job": "b", "le": "1"}, "2026-01-01T00:02:30Z", 28],
+  ["stale_hist_bucket", {"job": "b", "le": "1"}, "2026-01-01T00:03:00Z", 30],
+  ["stale_hist_bucket", {"job": "b", "le": "1"}, "2026-01-01T00:03:30Z", 32],
+  ["stale_hist_bucket", {"job": "b", "le": "1"}, "2026-01-01T00:04:00Z", 34],
+  ["stale_hist_bucket", {"job": "b", "le": "1"}, "2026-01-01T00:04:30Z", 36],
+  ["stale_hist_bucket", {"job": "b", "le": "1"}, "2026-01-01T00:05:00Z", 38],
+  ["stale_hist_bucket", {"job": "b", "le": "5"}, "2026-01-01T00:00:00Z", 27],
+  ["stale_hist_bucket", {"job": "b", "le": "5"}, "2026-01-01T00:00:30Z", 30],
+  ["stale_hist_bucket", {"job": "b", "le": "5"}, "2026-01-01T00:01:00Z", 33],
+  ["stale_hist_bucket", {"job": "b", "le": "5"}, "2026-01-01T00:01:30Z", 36],
+  ["stale_hist_bucket", {"job": "b", "le": "5"}, "2026-01-01T00:02:00Z", 39],
+  ["stale_hist_bucket", {"job": "b", "le": "5"}, "2026-01-01T00:02:30Z", 42],
+  ["stale_hist_bucket", {"job": "b", "le": "5"}, "2026-01-01T00:03:00Z", 45],
+  ["stale_hist_bucket", {"job": "b", "le": "5"}, "2026-01-01T00:03:30Z", 48],
+  ["stale_hist_bucket", {"job": "b", "le": "5"}, "2026-01-01T00:04:00Z", 51],
+  ["stale_hist_bucket", {"job": "b", "le": "5"}, "2026-01-01T00:04:30Z", 54],
+  ["stale_hist_bucket", {"job": "b", "le": "5"}, "2026-01-01T00:05:00Z", 57]
+]
+-- args --
+[0] string = "stale_hist_bucket"
+[1] string = "le"
+[2] string = "+Inf"
+[3] float64 = 0
+[4] int64 = 0
+[5] int64 = 0
+[6] int64 = 1
+[7] int64 = 1
+[8] int64 = 0
+[9] int64 = 0
+[10] int64 = 1
+[11] int64 = 1
+[12] int64 = 1
+[13] int64 = 0
+[14] int64 = 1
+[15] int64 = 1
+[16] int64 = 1
+[17] int64 = 1
+[18] int64 = 1
+[19] int64 = 1
+[20] int64 = 1
+[21] int64 = 1
+[22] int64 = 1
+[23] int64 = 2
+[24] int64 = 1
+[25] int64 = 1
+[26] int64 = 1
+[27] int64 = 1
+[28] int64 = 0
+[29] int64 = 9218868437227405314
+[30] int64 = 1
+[31] int64 = 1
+[32] int64 = 0
+[33] int64 = 1
+[34] int64 = 0
+[35] int64 = 1
+[36] string = "service_name"
+[37] string = "service.name"
+[38] string = "service_name"
+[39] string = "service.name"
+[40] string = "service_name"
+[41] string = ""
+[42] string = "service_name"
+[43] string = "stale_hist"
+[44] string = "stale.hist"
+[45] string = "stale/hist"
+[46] string = "2025-12-31 23:54:30.000000000"
+[47] int64 = 9
+[48] string = "2026-01-01 00:05:00.000000000"
+[49] int64 = 9
+[50] string = "stale_hist_bucket"
+[51] string = "le"
+[52] string = "+Inf"
+[53] float64 = 0
+[54] int64 = 0
+[55] int64 = 0
+[56] int64 = 1
+[57] int64 = 1
+[58] int64 = 0
+[59] int64 = 0
+[60] int64 = 1
+[61] int64 = 1
+[62] int64 = 1
+[63] int64 = 0
+[64] int64 = 1
+[65] int64 = 1
+[66] int64 = 1
+[67] int64 = 1
+[68] int64 = 1
+[69] int64 = 1
+[70] int64 = 1
+[71] int64 = 1
+[72] int64 = 1
+[73] int64 = 2
+[74] int64 = 1
+[75] int64 = 1
+[76] int64 = 1
+[77] int64 = 1
+[78] int64 = 0
+[79] int64 = 9218868437227405314
+[80] int64 = 1
+[81] int64 = 1
+[82] int64 = 0
+[83] int64 = 1
+[84] int64 = 0
+[85] int64 = 1
+[86] string = "service_name"
+[87] string = "service.name"
+[88] string = "service_name"
+[89] string = "service.name"
+[90] string = "service_name"
+[91] string = ""
+[92] string = "service_name"
+[93] string = "stale_hist"
+[94] string = "stale.hist"
+[95] string = "stale/hist"
+[96] string = "2025-12-31 23:54:30.000000000"
+[97] int64 = 9
+[98] string = "2026-01-01 00:05:00.000000000"
+[99] int64 = 9
+[100] int64 = 9218868437227405314
+-- args_optimized --
+[0] string = "stale_hist_bucket"
+[1] string = "le"
+[2] string = "+Inf"
+[3] float64 = 0
+[4] int64 = 0
+[5] int64 = 0
+[6] int64 = 1
+[7] int64 = 1
+[8] int64 = 0
+[9] int64 = 0
+[10] int64 = 1
+[11] int64 = 1
+[12] int64 = 1
+[13] int64 = 0
+[14] int64 = 1
+[15] int64 = 1
+[16] int64 = 1
+[17] int64 = 1
+[18] int64 = 1
+[19] int64 = 1
+[20] int64 = 1
+[21] int64 = 1
+[22] int64 = 1
+[23] int64 = 2
+[24] int64 = 1
+[25] int64 = 1
+[26] int64 = 1
+[27] int64 = 1
+[28] int64 = 0
+[29] int64 = 9218868437227405314
+[30] int64 = 1
+[31] int64 = 1
+[32] int64 = 0
+[33] int64 = 1
+[34] int64 = 0
+[35] int64 = 1
+[36] string = "service_name"
+[37] string = "service.name"
+[38] string = "service_name"
+[39] string = "service.name"
+[40] string = "service_name"
+[41] string = ""
+[42] string = "service_name"
+[43] string = "stale_hist"
+[44] string = "stale.hist"
+[45] string = "stale/hist"
+[46] string = "2025-12-31 23:54:30.000000000"
+[47] int64 = 9
+[48] string = "2026-01-01 00:05:00.000000000"
+[49] int64 = 9
+[50] string = "stale_hist_bucket"
+[51] string = "le"
+[52] string = "+Inf"
+[53] float64 = 0
+[54] int64 = 0
+[55] int64 = 0
+[56] int64 = 1
+[57] int64 = 1
+[58] int64 = 0
+[59] int64 = 0
+[60] int64 = 1
+[61] int64 = 1
+[62] int64 = 1
+[63] int64 = 0
+[64] int64 = 1
+[65] int64 = 1
+[66] int64 = 1
+[67] int64 = 1
+[68] int64 = 1
+[69] int64 = 1
+[70] int64 = 1
+[71] int64 = 1
+[72] int64 = 1
+[73] int64 = 2
+[74] int64 = 1
+[75] int64 = 1
+[76] int64 = 1
+[77] int64 = 1
+[78] int64 = 0
+[79] int64 = 9218868437227405314
+[80] int64 = 1
+[81] int64 = 1
+[82] int64 = 0
+[83] int64 = 1
+[84] int64 = 0
+[85] int64 = 1
+[86] string = "service_name"
+[87] string = "service.name"
+[88] string = "service_name"
+[89] string = "service.name"
+[90] string = "service_name"
+[91] string = ""
+[92] string = "service_name"
+[93] string = "stale_hist"
+[94] string = "stale.hist"
+[95] string = "stale/hist"
+[96] string = "2025-12-31 23:54:30.000000000"
+[97] int64 = 9
+[98] string = "2026-01-01 00:05:00.000000000"
+[99] int64 = 9
+[100] int64 = 9218868437227405314
+-- chplan --
+Filter predicate=(FnReinterpretAsUInt64(Value) != 9218868437227405314)
+  RangeLWR step=30s lookback=5m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+    Project ["stale_hist_bucket" AS MetricName, FnMapMerge(Attributes, FnMap("le", FnIf((le_idx > FnLength(ExplicitBounds)), "+Inf", FnArrayMap(pffv -> FnArrayMap(pffu -> FnMultiIf(FnIsNaN(pffv), "NaN", (FnIsInfinite(pffv) AND (pffv > 0)), "+Inf", FnIsInfinite(pffv), "-Inf", FnArrayMap(pffs -> FnArrayMap(pffe -> FnIf((pffe = 0), pffu, FnConcat(FnIf(FnStartsWith(pffu, "-"), "-", ""), FnArrayMap(pffm -> FnArrayMap(pffp -> FnArrayMap(pffd -> FnArrayMap(pffn -> FnMultiIf((pffn >= FnToInt64(FnLength(pffd))), FnConcat(pffd, FnLeftPad("", (pffn - FnToInt64(FnLength(pffd))), "0")), (pffn > 0), FnConcat(FnSubstring(pffd, 1, pffn), ".", FnSubstring(pffd, (pffn + 1))), FnConcat("0.", FnLeftPad("", (0 - pffn), "0"), pffd)), FnArray((FnIf((pffp > 0), (pffp - 1), FnToInt64(FnLength(pffm))) + FnToInt64(FnSubstring(pffs, (pffe + 1))))))[1], FnArray(FnIf((pffp > 0), FnConcat(FnSubstring(pffm, 1, (pffp - 1)), FnSubstring(pffm, (pffp + 1))), pffm)))[1], FnArray(FnToInt64(FnStringPosition(pffm, "."))))[1], FnArray(FnSubstring(pffs, 1, (pffe - 1))))[1])), FnArray(FnToInt64(FnStringPosition(pffs, "e"))))[1], FnArray(FnIf(FnStartsWith(pffu, "-"), FnSubstring(pffu, 2), pffu)))[1]), FnArray(FnToString(pffv)))[1], FnArray(ExplicitBounds[le_idx]))[1]))) AS Attributes, TimeUnix AS TimeUnix, FnIf((FnBitAnd(Flags, 1) != 0), FnReinterpretAsFloat64(9218868437227405314), FnToFloat64(FnArraySum(FnArraySlice(BucketCounts, 1, le_idx)))) AS Value]
+      Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, Flags AS Flags, stale_layout_bounds AS ExplicitBounds, stale_layout_counts AS BucketCounts, FnArrayJoin(FnArrayEnumerate(stale_layout_counts)) AS le_idx]
+        Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, Flags AS Flags, FnIf((FnBitAnd(Flags, 1) != 0), FnArraySort(FnGroupUniqArrayArray(ExplicitBounds) OVER (PARTITION BY [MetricName, Attributes])), ExplicitBounds) AS stale_layout_bounds, FnIf((FnBitAnd(Flags, 1) != 0), FnArrayResize(BucketCounts, (FnLength(FnArraySort(FnGroupUniqArrayArray(ExplicitBounds) OVER (PARTITION BY [MetricName, Attributes]))) + 1)), BucketCounts) AS stale_layout_counts]
+          Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Flags AS Flags, ExplicitBounds AS ExplicitBounds, BucketCounts AS BucketCounts]
+            Filter predicate=((TimeUnix >= FnToDateTime64("2025-12-31 23:54:30.000000000", 9)) AND (TimeUnix <= FnToDateTime64("2026-01-01 00:05:00.000000000", 9)))
+              Filter predicate=(MetricName IN ("stale_hist", "stale.hist", "stale/hist"))
+                Scan(otel_metrics_histogram)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter;lwr
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT * FROM (SELECT * FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT ? AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, arrayMap(pffv -> arrayMap(pffu -> multiIf(isNaN(pffv), 'NaN', (isInfinite(pffv) AND (pffv > toFloat64(?))), '+Inf', isInfinite(pffv), '-Inf', arrayMap(pffs -> arrayMap(pffe -> if((pffe = ?), pffu, concat(if(startsWith(pffu, '-'), '-', ''), arrayMap(pffm -> arrayMap(pffp -> arrayMap(pffd -> arrayMap(pffn -> multiIf((pffn >= toInt64(length(pffd))), concat(pffd, leftPad('', (pffn - toInt64(length(pffd))), '0')), (pffn > ?), concat(substring(pffd, ?, pffn), '.', substring(pffd, (pffn + ?))), concat('0.', leftPad('', (? - pffn), '0'), pffd)), array((if((pffp > ?), (pffp - ?), toInt64(length(pffm))) + toInt64(substring(pffs, (pffe + ?))))))[?], array(if((pffp > ?), concat(substring(pffm, ?, (pffp - ?)), substring(pffm, (pffp + ?))), pffm)))[?], array(toInt64(position(pffm, '.'))))[?], array(substring(pffs, ?, (pffe - ?))))[?])), array(toInt64(position(pffs, 'e'))))[?], array(if(startsWith(pffu, '-'), substring(pffu, ?), pffu)))[?]), array(toString(pffv)))[?], array(`ExplicitBounds`[le_idx]))[?]))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx)))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, `stale_layout_bounds` AS `ExplicitBounds`, `stale_layout_counts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`stale_layout_counts`)) AS `le_idx` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, if((bitAnd(`Flags`, ?) != ?), arraySort(groupUniqArrayArray(`ExplicitBounds`) OVER (PARTITION BY `MetricName`, `Attributes`)), `ExplicitBounds`) AS `stale_layout_bounds`, if((bitAnd(`Flags`, ?) != ?), arrayResize(`BucketCounts`, (length(arraySort(groupUniqArrayArray(`ExplicitBounds`) OVER (PARTITION BY `MetricName`, `Attributes`))) + ?)), `BucketCounts`) AS `stale_layout_counts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?))) WHERE ((`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))))))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT ? AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, arrayMap(pffv -> arrayMap(pffu -> multiIf(isNaN(pffv), 'NaN', (isInfinite(pffv) AND (pffv > toFloat64(?))), '+Inf', isInfinite(pffv), '-Inf', arrayMap(pffs -> arrayMap(pffe -> if((pffe = ?), pffu, concat(if(startsWith(pffu, '-'), '-', ''), arrayMap(pffm -> arrayMap(pffp -> arrayMap(pffd -> arrayMap(pffn -> multiIf((pffn >= toInt64(length(pffd))), concat(pffd, leftPad('', (pffn - toInt64(length(pffd))), '0')), (pffn > ?), concat(substring(pffd, ?, pffn), '.', substring(pffd, (pffn + ?))), concat('0.', leftPad('', (? - pffn), '0'), pffd)), array((if((pffp > ?), (pffp - ?), toInt64(length(pffm))) + toInt64(substring(pffs, (pffe + ?))))))[?], array(if((pffp > ?), concat(substring(pffm, ?, (pffp - ?)), substring(pffm, (pffp + ?))), pffm)))[?], array(toInt64(position(pffm, '.'))))[?], array(substring(pffs, ?, (pffe - ?))))[?])), array(toInt64(position(pffs, 'e'))))[?], array(if(startsWith(pffu, '-'), substring(pffu, ?), pffu)))[?]), array(toString(pffv)))[?], array(`ExplicitBounds`[le_idx]))[?]))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx)))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, `stale_layout_bounds` AS `ExplicitBounds`, `stale_layout_counts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`stale_layout_counts`)) AS `le_idx` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, if((bitAnd(`Flags`, ?) != ?), arraySort(groupUniqArrayArray(`ExplicitBounds`) OVER (PARTITION BY `MetricName`, `Attributes`)), `ExplicitBounds`) AS `stale_layout_bounds`, if((bitAnd(`Flags`, ?) != ?), arrayResize(`BucketCounts`, (length(arraySort(groupUniqArrayArray(`ExplicitBounds`) OVER (PARTITION BY `MetricName`, `Attributes`))) + ?)), `BucketCounts`) AS `stale_layout_counts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_histogram` WHERE (`MetricName` IN (?, ?, ?))) WHERE ((`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))))))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001)) > 40000000, 'range LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) WHERE (reinterpretAsUInt64(`Value`) != ?)
+-- sql_optimized --
+SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, anchor_ts AS `TimeUnix`, lwr_value AS `Value` FROM (SELECT `MetricName`, `Attributes`, `anchor_ts`, argMax(`Value`, `TimeUnix`) AS lwr_value FROM (SELECT * FROM (SELECT * FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT ? AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, arrayMap(pffv -> arrayMap(pffu -> multiIf(isNaN(pffv), 'NaN', (isInfinite(pffv) AND (pffv > toFloat64(?))), '+Inf', isInfinite(pffv), '-Inf', arrayMap(pffs -> arrayMap(pffe -> if((pffe = ?), pffu, concat(if(startsWith(pffu, '-'), '-', ''), arrayMap(pffm -> arrayMap(pffp -> arrayMap(pffd -> arrayMap(pffn -> multiIf((pffn >= toInt64(length(pffd))), concat(pffd, leftPad('', (pffn - toInt64(length(pffd))), '0')), (pffn > ?), concat(substring(pffd, ?, pffn), '.', substring(pffd, (pffn + ?))), concat('0.', leftPad('', (? - pffn), '0'), pffd)), array((if((pffp > ?), (pffp - ?), toInt64(length(pffm))) + toInt64(substring(pffs, (pffe + ?))))))[?], array(if((pffp > ?), concat(substring(pffm, ?, (pffp - ?)), substring(pffm, (pffp + ?))), pffm)))[?], array(toInt64(position(pffm, '.'))))[?], array(substring(pffs, ?, (pffe - ?))))[?])), array(toInt64(position(pffs, 'e'))))[?], array(if(startsWith(pffu, '-'), substring(pffu, ?), pffu)))[?]), array(toString(pffv)))[?], array(`ExplicitBounds`[le_idx]))[?]))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx)))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, `stale_layout_bounds` AS `ExplicitBounds`, `stale_layout_counts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`stale_layout_counts`)) AS `le_idx` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, if((bitAnd(`Flags`, ?) != ?), arraySort(groupUniqArrayArray(`ExplicitBounds`) OVER (PARTITION BY `MetricName`, `Attributes`)), `ExplicitBounds`) AS `stale_layout_bounds`, if((bitAnd(`Flags`, ?) != ?), arrayResize(`BucketCounts`, (length(arraySort(groupUniqArrayArray(`ExplicitBounds`) OVER (PARTITION BY `MetricName`, `Attributes`))) + ?)), `BucketCounts`) AS `stale_layout_counts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts` FROM (SELECT `Attributes`, `BucketCounts`, `ExplicitBounds`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?))))))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT ? AS `MetricName`, mapConcat(`Attributes`, map(?, if((le_idx > length(`ExplicitBounds`)), ?, arrayMap(pffv -> arrayMap(pffu -> multiIf(isNaN(pffv), 'NaN', (isInfinite(pffv) AND (pffv > toFloat64(?))), '+Inf', isInfinite(pffv), '-Inf', arrayMap(pffs -> arrayMap(pffe -> if((pffe = ?), pffu, concat(if(startsWith(pffu, '-'), '-', ''), arrayMap(pffm -> arrayMap(pffp -> arrayMap(pffd -> arrayMap(pffn -> multiIf((pffn >= toInt64(length(pffd))), concat(pffd, leftPad('', (pffn - toInt64(length(pffd))), '0')), (pffn > ?), concat(substring(pffd, ?, pffn), '.', substring(pffd, (pffn + ?))), concat('0.', leftPad('', (? - pffn), '0'), pffd)), array((if((pffp > ?), (pffp - ?), toInt64(length(pffm))) + toInt64(substring(pffs, (pffe + ?))))))[?], array(if((pffp > ?), concat(substring(pffm, ?, (pffp - ?)), substring(pffm, (pffp + ?))), pffm)))[?], array(toInt64(position(pffm, '.'))))[?], array(substring(pffs, ?, (pffe - ?))))[?])), array(toInt64(position(pffs, 'e'))))[?], array(if(startsWith(pffu, '-'), substring(pffu, ?), pffu)))[?]), array(toString(pffv)))[?], array(`ExplicitBounds`[le_idx]))[?]))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx)))) AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, `stale_layout_bounds` AS `ExplicitBounds`, `stale_layout_counts` AS `BucketCounts`, arrayJoin(arrayEnumerate(`stale_layout_counts`)) AS `le_idx` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, if((bitAnd(`Flags`, ?) != ?), arraySort(groupUniqArrayArray(`ExplicitBounds`) OVER (PARTITION BY `MetricName`, `Attributes`)), `ExplicitBounds`) AS `stale_layout_bounds`, if((bitAnd(`Flags`, ?) != ?), arrayResize(`BucketCounts`, (length(arraySort(groupUniqArrayArray(`ExplicitBounds`) OVER (PARTITION BY `MetricName`, `Attributes`))) + ?)), `BucketCounts`) AS `stale_layout_counts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Flags` AS `Flags`, `ExplicitBounds` AS `ExplicitBounds`, `BucketCounts` AS `BucketCounts` FROM (SELECT `Attributes`, `BucketCounts`, `ExplicitBounds`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?))))))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 40000001)) > 40000000, 'range LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY `MetricName`, `Attributes`, `anchor_ts`)) WHERE (reinterpretAsUInt64(`Value`) != ?)

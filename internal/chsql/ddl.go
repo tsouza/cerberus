@@ -664,6 +664,56 @@ func (d *DropTableBuilder) SQL() string {
 	return RenderDDL(d.frag())
 }
 
+// --- DROP VIEW surface ---
+//
+// DropViewBuilder renders `DROP VIEW IF EXISTS [<db>.]<view> [ON CLUSTER x]`.
+// It drops a cerberus-owned materialized view so the view can be re-created
+// from its current definition: `CREATE MATERIALIZED VIEW IF NOT EXISTS` never
+// replaces a view that already exists. Dropping a materialized view created
+// with a `TO` clause leaves its target table and that table's data intact.
+// IF EXISTS makes the statement idempotent.
+
+// DropViewBuilder builds a DROP VIEW IF EXISTS statement.
+type DropViewBuilder struct {
+	database string // "" => unqualified view reference
+	view     string
+	cluster  string // "" => no ON CLUSTER clause
+}
+
+// DropView starts a DROP VIEW IF EXISTS builder for [<database>.]<view>. An
+// empty database emits no qualifier, the same convention DropTable follows.
+func DropView(database, view string) *DropViewBuilder {
+	return &DropViewBuilder{database: database, view: view}
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the DROP reaches every node
+// the CREATE reached. An empty name (the default) leaves it off.
+func (d *DropViewBuilder) OnCluster(name string) *DropViewBuilder {
+	d.cluster = name
+	return d
+}
+
+// frag assembles the statement from typed pieces, as DropTableBuilder.frag.
+func (d *DropViewBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("DROP VIEW IF EXISTS ")(b)
+		if d.database != "" {
+			BareIdent(d.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(d.view)(b)
+		if d.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(d.cluster)(b)
+		}
+	}
+}
+
+// SQL renders the DROP VIEW statement to ClickHouse text via RenderDDL.
+func (d *DropViewBuilder) SQL() string {
+	return RenderDDL(d.frag())
+}
+
 // --- ALTER TABLE ... ADD PROJECTION surface ---
 //
 // AddProjectionBuilder renders `ALTER TABLE <db>.<table> ADD PROJECTION IF

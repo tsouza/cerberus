@@ -17,6 +17,7 @@ import (
 	"github.com/tsouza/cerberus/internal/deltaprefix"
 	"github.com/tsouza/cerberus/internal/downsampletier"
 	"github.com/tsouza/cerberus/internal/migrateverify"
+	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 	"github.com/tsouza/cerberus/internal/schemaboot"
 )
@@ -425,15 +426,22 @@ func unionMetricNames(rep deltaprefix.Report) map[string]struct{} {
 	return out
 }
 
-// downsampleTierColumns builds the downsampletier.Columns a schema verb
-// needs from cfg — unlike deltaPrefixColumns there is no "empty means not
-// opted in" pre-flight check: schema.DownsampleTierTable is a fixed
-// constant (see that package's doc for why), always non-empty, so a
-// deployment that never provisioned the table simply gets ClickHouse's own
-// UNKNOWN_TABLE error at the first statement instead of a friendlier
-// upfront message.
-func downsampleTierColumns(cfg config.Config) downsampletier.Columns {
-	return downsampletier.FromSchema(cfg.ClickHouse.Database, cfg.Schema)
+// downsampleTierColumns resolves the tier's source columns for cfg. The
+// Flags column is read — stale-marker rows skipped — under the verdict
+// preflight.StaleMarkerFlagsEstablishable reaches against q, the condition
+// the tier's views and the PromQL read path share; a dry run (q nil) renders
+// for a schema whose metric tables carry the column.
+func downsampleTierColumns(ctx context.Context, cfg config.Config, q preflight.Querier) (downsampletier.Columns, error) {
+	m := cfg.Schema
+	m.FlagsColumnProbed = m.FlagsColumn != ""
+	if q != nil {
+		established, err := preflight.StaleMarkerFlagsEstablishable(ctx, q, cfg.ClickHouse.Database, m)
+		if err != nil {
+			return downsampletier.Columns{}, err
+		}
+		m.FlagsColumnProbed = established
+	}
+	return downsampletier.FromSchema(cfg.ClickHouse.Database, m), nil
 }
 
 // downsampleTierBackfillInputs carries newSchemaDownsampleTierBackfillCmd's
@@ -500,9 +508,12 @@ func runDownsampleTierBackfill(cmd *cobra.Command, in downsampleTierBackfillInpu
 	if err != nil {
 		return fmt.Errorf("load config from environment: %w", err)
 	}
-	cols := downsampleTierColumns(cfg)
 
 	if in.dryRun {
+		cols, err := downsampleTierColumns(cmd.Context(), cfg, nil)
+		if err != nil {
+			return err
+		}
 		for _, stmt := range downsampletier.BackfillSQL(cols, before) {
 			fmt.Fprintln(cmd.OutOrStdout(), stmt.SQL)
 			fmt.Fprintf(cmd.OutOrStdout(), "-- args: %v\n", stmt.Args)
@@ -517,6 +528,10 @@ func runDownsampleTierBackfill(cmd *cobra.Command, in downsampleTierBackfillInpu
 		return fmt.Errorf("connect ClickHouse: %w", err)
 	}
 	defer func() { _ = client.Close() }()
+	cols, err := downsampleTierColumns(context.Background(), cfg, client)
+	if err != nil {
+		return err
+	}
 
 	result, err := downsampletier.Backfill(context.Background(), client.Conn(), cols, before, retention)
 	if err != nil {
@@ -549,12 +564,21 @@ func newSchemaDownsampleTierRebuildCmd() *cobra.Command {
 	var in downsampleTierRebuildInputs
 	cmd := &cobra.Command{
 		Use:   "downsample-tier-rebuild",
-		Short: "TRUNCATE and fully re-populate the downsampled long-range tier",
-		Long: "TRUNCATEs the downsampled long-range tier (CERBERUS_CH_OPTIMIZATIONS=\n" +
+		Short: "Re-provision the tier views, then TRUNCATE and fully re-populate the downsampled long-range tier",
+		Long: "Drops and re-creates the downsampled long-range tier's materialized\n" +
+			"views from their current definition (the views are created IF NOT\n" +
+			"EXISTS, so a deployed view otherwise keeps the definition it was first\n" +
+			"created with), then TRUNCATEs the tier (CERBERUS_CH_OPTIMIZATIONS=\n" +
 			"downsample_tier, cerberus issues #2751 and #2858) and re-populates it in\n" +
 			"FULL, from every configured source table's (Sum, and Gauge unless it is\n" +
 			"configured identically to Sum) entire currently-retained history — no\n" +
 			"--before bound. DESTRUCTIVE: every row currently in the tier is dropped first.\n" +
+			"Run it once on a deployment whose tier views predate the current\n" +
+			"definition — the views skip OTel NoRecordedValue (stale-marker) rows\n" +
+			"when every metric table carries the Flags column. If a statement after\n" +
+			"the first DROP fails, the views may be dropped and the tier unfed:\n" +
+			"re-run the command to recover. --dry-run renders the Flags filter as\n" +
+			"for metric tables that carry the column.\n" +
 			"Use this, not downsample-tier-backfill, when the persisted\n" +
 			"AggregateFunction(timeSeriesLastTwoSamples, ...) state is suspected\n" +
 			"stranded or format-incompatible (a ClickHouse changelog entry naming\n" +
@@ -573,7 +597,7 @@ func newSchemaDownsampleTierRebuildCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.BoolVar(&in.dryRun, "dry-run", false, "print the TRUNCATE + INSERT ... SELECT statements without executing them")
+	f.BoolVar(&in.dryRun, "dry-run", false, "print the view DROP + CREATE, TRUNCATE and INSERT ... SELECT statements without executing them")
 	return cmd
 }
 
@@ -582,9 +606,19 @@ func runDownsampleTierRebuild(cmd *cobra.Command, in downsampleTierRebuildInputs
 	if err != nil {
 		return fmt.Errorf("load config from environment: %w", err)
 	}
-	cols := downsampleTierColumns(cfg)
+	ddlCfg, err := schemaboot.DDLConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("resolve schema DDL config: %w", err)
+	}
 
 	if in.dryRun {
+		cols, views, err := downsampleTierRebuildPlan(cmd.Context(), cfg, ddlCfg, nil)
+		if err != nil {
+			return err
+		}
+		for _, stmt := range views {
+			fmt.Fprintln(cmd.OutOrStdout(), stmt)
+		}
 		fmt.Fprintln(cmd.OutOrStdout(), downsampletier.TruncateSQL(cols))
 		for _, stmt := range downsampletier.RebuildSQL(cols) {
 			fmt.Fprintln(cmd.OutOrStdout(), stmt.SQL)
@@ -600,8 +634,14 @@ func runDownsampleTierRebuild(cmd *cobra.Command, in downsampleTierRebuildInputs
 		return fmt.Errorf("connect ClickHouse: %w", err)
 	}
 	defer func() { _ = client.Close() }()
+	// Resolved against the live tables before any view is dropped, so the
+	// re-created views read only a column every source table carries.
+	cols, views, err := downsampleTierRebuildPlan(context.Background(), cfg, ddlCfg, client)
+	if err != nil {
+		return err
+	}
 
-	result, err := downsampletier.Rebuild(context.Background(), client.Conn(), cols, retention)
+	result, err := downsampletier.Rebuild(context.Background(), client.Conn(), cols, retention, views)
 	if err != nil {
 		return err
 	}
@@ -611,6 +651,22 @@ func runDownsampleTierRebuild(cmd *cobra.Command, in downsampleTierRebuildInputs
 		writeOutsideRetentionWarning(cmd.OutOrStdout(), "the downsample tier", result.OutsideRetentionDays)
 	}
 	return nil
+}
+
+// downsampleTierRebuildPlan resolves the rebuild's source columns
+// ([downsampleTierColumns]) and the view statements that re-provision the
+// tier under the same Flags verdict.
+func downsampleTierRebuildPlan(ctx context.Context, cfg config.Config, ddlCfg ddl.Config, q preflight.Querier) (downsampletier.Columns, []string, error) {
+	cols, err := downsampleTierColumns(ctx, cfg, q)
+	if err != nil {
+		return downsampletier.Columns{}, nil, err
+	}
+	ddlCfg.DownsampleTierFlagsColumn = cols.FlagsColumn
+	views, err := ddl.DownsampleTierReprovisionSQL(ddlCfg)
+	if err != nil {
+		return downsampletier.Columns{}, nil, fmt.Errorf("render downsample-tier views: %w", err)
+	}
+	return cols, views, nil
 }
 
 // downsampleTierVerifyInputs carries newSchemaDownsampleTierVerifyCmd's
@@ -685,7 +741,10 @@ func runDownsampleTierVerify(cmd *cobra.Command, in downsampleTierVerifyInputs) 
 		return err
 	}
 	defer func() { _ = client.Close() }()
-	cols := downsampleTierColumns(cfg)
+	cols, err := downsampleTierColumns(context.Background(), cfg, client)
+	if err != nil {
+		return err
+	}
 
 	retention := schemaboot.MetricsRetention(cfg)
 	rep, err := downsampletier.Verify(context.Background(), client.Conn(), cols, before, retention)

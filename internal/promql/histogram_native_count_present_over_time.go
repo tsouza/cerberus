@@ -145,6 +145,7 @@ func expHistogramCountPresentWindowed(fn string, ms *parser.MatrixSelector, vs *
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, ms.Range))
+	pred = withHistogramRangeStaleDrop(pred, s)
 	var input chplan.Node = &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	if pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
@@ -166,7 +167,7 @@ func expHistogramCountPresentWindowed(fn string, ms *parser.MatrixSelector, vs *
 // for sum_over_time / avg_over_time — and collapse each (series, anchor)
 // group with the same value-blind aggregate the instant path uses.
 func lowerExpHistogramCountPresentRange(fn string, ms *parser.MatrixSelector, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) chplan.Node {
-	fanout := buildHistogramBucketFanout(
+	fanout := buildRangeHistogramBucketFanout(
 		&chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable},
 		buildPredicate(vs.LabelMatchers, s), nil,
 		windowFor(vs, ms.Range),
