@@ -34,7 +34,7 @@ func TestExecute_MandatoryPerShardMemoryApportion(t *testing.T) {
 	}
 
 	wantPerShard := routeACapBytes / k
-	for shard := 0; shard < k; shard++ {
+	for shard := range k {
 		shardCtx, ok := q.ctxByShard[shard]
 		if !ok {
 			t.Fatalf("shard %d never opened a cursor", shard)
@@ -98,7 +98,7 @@ func TestExecute_MemoryApportion_DividesByEffectiveConcurrency(t *testing.T) {
 	}
 
 	wantPerShard := routeACapBytes / parallel // NOT routeACapBytes / k
-	for shard := 0; shard < k; shard++ {
+	for shard := range k {
 		shardCtx, ok := q.ctxByShard[shard]
 		if !ok {
 			t.Fatalf("shard %d never opened a cursor", shard)
@@ -131,7 +131,7 @@ func TestExecute_MemoryApportion_UnconfiguredCapLeftUnapportioned(t *testing.T) 
 		t.Fatalf("drain: %v", err)
 	}
 
-	for shard := 0; shard < 2; shard++ {
+	for shard := range 2 {
 		shardCtx, ok := q.ctxByShard[shard]
 		if !ok {
 			t.Fatalf("shard %d never opened a cursor", shard)

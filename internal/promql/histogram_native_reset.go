@@ -314,9 +314,10 @@ func expHistogramResetMaskStage(input chplan.Node, aggs []chplan.AggFunc, keyAli
 // The two BUCKET ladders are the exception: they are sorted directly and
 // handed to the pair lambda as ARGUMENTS, because a subscript of an
 // Array(Array) column from inside that lambda is a capture ClickHouse
-// rebuilds once per pair — see [expHistogramPairBucketLadderArgs]. A
-// scalar list captured the same way costs one machine word per pair and
-// is not worth a sort.
+// rebuilds once per pair — see [expHistogramPairBucketLadderArgs]. A flat
+// scalar list captured the same way is also copied whole once per pair,
+// but that copy is one number per row rather than a row's whole ladder,
+// and is not worth a sort.
 //
 // The mask's j-th element compares the pair (positions[j], positions[j+1])
 // — hence popBack against popFront, the same pairing the fold applies to
@@ -334,16 +335,77 @@ func expHistogramResetMaskExpr(densified bool) chplan.Expr {
 
 	ladderParams, ladderArgs := expHistogramPairBucketLadderArgs()
 	return hqLet(paramResetOrderedRows, orderedRows, func(rows chplan.Expr) chplan.Expr {
+		prevRows := &chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{rows}}
+		currRows := &chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{rows}}
 		args := []chplan.Expr{
 			&chplan.Lambda{
-				Params: append([]string{paramResetPrevRow, paramResetCurrRow}, ladderParams...),
+				Params: append([]string{paramResetPrevRow, paramResetCurrRow, paramResetPairScale}, ladderParams...),
 				Body:   expHistogramResetVerdictExpr(densified),
 			},
-			&chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{rows}},
-			&chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{rows}},
+			prevRows,
+			currRows,
+			expHistogramPairScalesArg(prevRows, currRows),
 		}
 		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: append(args, ladderArgs...)}
 	})
+}
+
+// expHistogramPairScalesArg renders the pair lambda's [paramResetPairScale]
+// argument: every pair's reconciled scale
+// ([expHistogramResetPairScaleExpr]), positionally aligned with the
+// prevRows / currRows position arrays the pair lambda also takes. Every
+// lambda whose body is [expHistogramResetVerdictExpr] takes this argument
+// right after its two row positions.
+//
+// Each pair's scale is read by both ladders' merged range bounds and by
+// every row's scale ratio, so it arrives as one more lambda ARGUMENT,
+// computed once per pair by its own small lambda, instead of being
+// rendered at every read. An argument rather than a one-element binding
+// inside the verdict, because that binding would copy the pair's bucket
+// ladders once more per pair — see [expHistogramPairBucketLadderArgs].
+func expHistogramPairScalesArg(prevRows, currRows chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramResetPrevRow, paramResetCurrRow},
+			Body: expHistogramResetPairScaleExpr(
+				&chplan.BareIdent{Name: paramResetPrevRow},
+				&chplan.BareIdent{Name: paramResetCurrRow},
+			),
+		},
+		prevRows,
+		currRows,
+	}}
+}
+
+// expHistogramResetPairScaleExpr renders the pair's reconciled scale: the
+// coarser of the two rows' scales.
+//
+// It is the coarser of the pair, not curr's alone. For the pair the
+// bucket comparison can decide it is curr's — reference reconciles "prev
+// to the current schema", and a pair reaching a verdict there has prev at
+// least as coarse as curr, so least(prev, curr) IS curr. It differs only
+// where curr is FINER than prev, and that pair is already condemned
+// unconditionally by the `scales[curr] > scales[prev]` term of
+// [expHistogramResetVerdictExpr], so no verdict moves.
+//
+// What does move is whether the pair can be EVALUATED at all.
+// Downscaling is only ever lossless downward, so every shift in
+// expHistogramScaleRatioExpr and expHistogramMergeBucketsBoundsExpr is
+// `rowScale - mergedScale` and ClickHouse rejects a negative shift
+// outright ("The number of shift positions needs to be a non-negative
+// value"). Reconciling onto curr's scale alone spells exactly that shift
+// for a resolution INCREASE, leaving the mask's evaluability resting on
+// ClickHouse masking the condemned element out under
+// short_circuit_function_evaluation — which it does for some renderings of
+// this expression and not others. Taking the coarser scale removes the
+// negative shift from the expression instead of relying on it never being
+// reached.
+func expHistogramResetPairScaleExpr(prev, curr chplan.Expr) chplan.Expr {
+	scalesArr := chplan.Expr(&chplan.ColumnRef{Name: hqAggScalesArrayAlias})
+	return leastExpr(
+		&chplan.Subscript{Container: scalesArr, Key: prev},
+		&chplan.Subscript{Container: scalesArr, Key: curr},
+	)
 }
 
 // expHistogramResetVerdictExpr renders `DetectReset` for ONE consecutive
@@ -374,6 +436,9 @@ func expHistogramResetVerdictExpr(densified bool) chplan.Expr {
 		return pairwise(&chplan.ColumnRef{Name: alias}, chplan.OpLt)
 	}
 
+	// The pair's reconciled scale arrives bound as a lambda argument — see
+	// [expHistogramResetMaskExpr] and [expHistogramResetPairScaleExpr].
+	pairScale := chplan.Expr(&chplan.BareIdent{Name: paramResetPairScale})
 	return orAllExpr(
 		regressed(hqWindowCountArrayAlias),
 		regressed(hqWindowZeroCountsArrayAlias),
@@ -382,13 +447,17 @@ func expHistogramResetVerdictExpr(densified bool) chplan.Expr {
 		// why reference tests `>` rather than `!=`.
 		pairwise(&chplan.ColumnRef{Name: hqAggScalesArrayAlias}, chplan.OpGt),
 		expHistogramResetPairBucketRegressedExpr(
-			hqAggPosOffsetsArrayAlias, paramPairPrevPosBuckets, paramPairCurrPosBuckets, prev, curr, densified,
+			hqAggPosOffsetsArrayAlias, paramPairPrevPosBuckets, paramPairCurrPosBuckets, prev, curr, pairScale, densified,
 		),
 		expHistogramResetPairBucketRegressedExpr(
-			hqAggNegOffsetsArrayAlias, paramPairPrevNegBuckets, paramPairCurrNegBuckets, prev, curr, densified,
+			hqAggNegOffsetsArrayAlias, paramPairPrevNegBuckets, paramPairCurrNegBuckets, prev, curr, pairScale, densified,
 		),
 	)
 }
+
+// paramResetPairScale is the pair lambda's parameter the reconciled pair
+// scale ([expHistogramResetPairScaleExpr]) is bound to.
+const paramResetPairScale = "rps"
 
 // orAllExpr disjoins its arguments, which are the independent conditions
 // `DetectReset` returns true on. It takes at least one so the fold has a
@@ -433,7 +502,7 @@ func orAllExpr(first chplan.Expr, rest ...chplan.Expr) chplan.Expr {
 // identical slices; see [ExpHistogramResetMaskLowerer] for why the
 // superseded one is kept.
 func expHistogramResetPairBucketRegressedExpr(
-	offArrAlias, prevBucParam, currBucParam string, prev, curr chplan.Expr, densified bool,
+	offArrAlias, prevBucParam, currBucParam string, prev, curr, pairScale chplan.Expr, densified bool,
 ) chplan.Expr {
 	scalesArr := chplan.Expr(&chplan.ColumnRef{Name: hqAggScalesArrayAlias})
 	offArr := chplan.Expr(&chplan.ColumnRef{Name: offArrAlias})
@@ -449,29 +518,9 @@ func expHistogramResetPairBucketRegressedExpr(
 	prevBuc := chplan.Expr(&chplan.BareIdent{Name: prevBucParam})
 	currBuc := chplan.Expr(&chplan.BareIdent{Name: currBucParam})
 
-	// The scale both rows are reconciled onto is the COARSER of the pair,
-	// not curr's alone. For the pair this comparison can decide it is
-	// curr's — reference reconciles "prev to the current schema", and a
-	// pair reaching a verdict here has prev at least as coarse as curr, so
-	// least(prev, curr) IS curr. It differs only where curr is FINER than
-	// prev, and that pair is already condemned unconditionally by the
-	// `scales[curr] > scales[prev]` term this expression is OR-ed with
-	// (see expHistogramResetVerdictExpr), so no verdict moves.
-	//
-	// What does move is whether the pair can be EVALUATED at all.
-	// Downscaling is only ever lossless downward, so every shift in
-	// expHistogramBucketSliceBoundsExpr and
-	// expHistogramMergeBucketsBoundsExpr is `rowScale - mergedScale` and
-	// ClickHouse rejects a negative shift outright ("The number of shift
-	// positions needs to be a non-negative value"). Reconciling onto
-	// curr's scale alone spells exactly that shift for a resolution
-	// INCREASE, leaving the mask's evaluability resting on ClickHouse
-	// masking the condemned element out under short_circuit_function_
-	// evaluation — which it does for some renderings of this expression
-	// and not others. Taking the coarser scale removes the negative shift
-	// from the expression instead of relying on it never being reached.
-	pairScale := leastExpr(prevScale, currScale)
-
+	// pairScale is the pair's reconciled scale, bound by
+	// [expHistogramResetMaskExpr]; [expHistogramResetPairScaleExpr]
+	// documents why it is the coarser of the two rows' scales.
 	pairArray := func(a, b chplan.Expr) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{a, b}}
 	}
@@ -492,7 +541,9 @@ func expHistogramResetPairBucketRegressedExpr(
 				// expHistogramDenseContribsExpr for the measurement that
 				// makes this the shipped rendering.
 				dense := func(rowScale, rowOff, rowBuc chplan.Expr) chplan.Expr {
-					return expHistogramDenseContribsExpr(rowScale, rowOff, rowBuc, pairScale, start, length)
+					return expHistogramDenseContribsExpr(
+						expHistogramScaleRatioExpr(rowScale, pairScale), rowOff, rowBuc, start, length,
+					)
 				}
 				return &chplan.FuncCall{Fn: chplan.FnArrayExists, Args: []chplan.Expr{
 					&chplan.Lambda{

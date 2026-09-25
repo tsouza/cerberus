@@ -441,6 +441,10 @@ const (
 	// range.
 	FnToUInt64 Fn = "toUInt64"
 
+	// toUInt64OrZero(s) — the String s parsed as a UInt64, or 0 when s is empty
+	// or not an unsigned integer. Never throws.
+	FnToUInt64OrZero Fn = "toUInt64OrZero"
+
 	// toIPv4(s) — s (dotted-quad string) cast to IPv4; aborts the query if s does
 	// not parse.
 	FnToIPv4 Fn = "toIPv4"
@@ -554,6 +558,10 @@ const (
 
 	// log10(x) — the base-10 logarithm of x.
 	FnLog10 Fn = "log10"
+
+	// intDiv(a, b) — the integer quotient of a by b, rounded toward zero;
+	// both operands integers. Throws on b = 0.
+	FnIntDiv Fn = "intDiv"
 
 	// pow(base, exp) — base raised to the power exp.
 	FnPow Fn = "pow"

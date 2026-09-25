@@ -150,7 +150,6 @@ func TestHistogramQuantile_RankWalkNative_DifferentialRealCH(t *testing.T) {
 	}
 
 	for _, phi := range hqRankWalkDiffPhis {
-		phi := phi
 		t.Run(fmt.Sprintf("phi=%v", phi), func(t *testing.T) {
 			classic := hqRankWalkDiffQuery(table, phi, nil, false)
 			native := hqRankWalkDiffQuery(table, phi, nil, true)
@@ -162,7 +161,6 @@ func TestHistogramQuantile_RankWalkNative_DifferentialRealCH(t *testing.T) {
 	// guard both emitters carry only when PhiExpr != nil) — NaN and a
 	// well-in-range value.
 	for _, phi := range []float64{math.NaN(), 0.5} {
-		phi := phi
 		t.Run(fmt.Sprintf("phi_expr=%v", phi), func(t *testing.T) {
 			phiExpr := &chplan.LitFloat{V: phi}
 			classic := hqRankWalkDiffQuery(table, 0, phiExpr, false)

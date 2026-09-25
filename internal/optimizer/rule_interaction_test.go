@@ -197,7 +197,7 @@ func TestRuleInteractionMatrix(t *testing.T) {
 
 	rules := matrixRules()
 	covered := map[string]bool{}
-	for i := 0; i < len(rules); i++ {
+	for i := range rules {
 		for j := i + 1; j < len(rules); j++ {
 			a, b := rules[i], rules[j]
 			key := pairKey(a, b)

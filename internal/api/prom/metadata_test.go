@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -59,13 +60,7 @@ func TestLabels_Endpoint(t *testing.T) {
 	}
 	wantContains := []string{"bar", "foo", "instance"}
 	for _, w := range wantContains {
-		found := false
-		for _, n := range names {
-			if n == w {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(names, w)
 		if !found {
 			t.Errorf("missing %q in %v", w, names)
 		}

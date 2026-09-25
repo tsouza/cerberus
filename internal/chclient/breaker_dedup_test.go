@@ -25,7 +25,6 @@ func TestBreakerDedup_ConcurrentFailuresCountOnce(t *testing.T) {
 	t.Parallel()
 
 	for _, gomax := range []int{1, 4} {
-		gomax := gomax
 		t.Run("gomax"+itoa(gomax), func(t *testing.T) {
 			prev := runtime.GOMAXPROCS(gomax)
 			defer runtime.GOMAXPROCS(prev)
@@ -36,13 +35,11 @@ func TestBreakerDedup_ConcurrentFailuresCountOnce(t *testing.T) {
 			const k = 4 // mirror a 4-shard fan-out
 			var wg sync.WaitGroup
 			start := make(chan struct{})
-			for i := 0; i < k; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+			for range k {
+				wg.Go(func() {
 					<-start // release all opens at once to maximise the race
 					b.record(ctx, errRealCH)
-				}()
+				})
 			}
 			close(start)
 			wg.Wait()
@@ -70,7 +67,7 @@ func TestBreakerDedup_RouteAUnaffected(t *testing.T) {
 
 	b := &breaker{}
 	// No WithBreakerDedup on this ctx: every failure must count.
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		b.record(context.Background(), errRealCH)
 	}
 	if got := b.currentState(); got != "open" {

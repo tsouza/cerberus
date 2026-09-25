@@ -145,8 +145,8 @@ func chdbTaggedPackageDirs(t *testing.T) []string {
 // considered, since that is the only place a build constraint is honoured.
 func hasChDBBuildTag(src string) bool {
 	header := src
-	if idx := strings.Index(src, "\npackage "); idx >= 0 {
-		header = src[:idx]
+	if before, _, ok := strings.Cut(src, "\npackage "); ok {
+		header = before
 	}
 	return chdbBuildTagRE.MatchString(header)
 }

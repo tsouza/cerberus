@@ -112,7 +112,6 @@ func TestRouteBExecCtx_StampsTSGridSettingForNativeShards(t *testing.T) {
 		},
 		{name: "fan-out shard spine", wrap: tsGridRouteBFanoutShard, stamp: false},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

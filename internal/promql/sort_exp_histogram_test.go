@@ -39,7 +39,6 @@ func TestLower_ExpHistogram_SortFamilyDropsSamples(t *testing.T) {
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 
@@ -94,7 +93,6 @@ func TestLower_ExpHistogram_SortByLabelFamilyPreservesSamples(t *testing.T) {
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 

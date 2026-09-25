@@ -129,7 +129,7 @@ func TestPerRungAdmissionLearner_StaleEvidenceIsIgnored(t *testing.T) {
 func TestPerRungAdmissionLearner_CapacityEvictsRatherThanGrowsUnbounded(t *testing.T) {
 	t.Parallel()
 	l := NewPerRungAdmissionLearner()
-	for i := 0; i < perRungLearnerCapacity+8; i++ {
+	for i := range perRungLearnerCapacity + 8 {
 		key := routememo.KeyFor(perRungTestPlan(), i+1, 1, time.Minute)
 		l.Observe(key, 1, int64(i+1))
 	}
@@ -260,7 +260,7 @@ func TestWrapPerRungObserver_RecordsOnlyOnACleanDrain(t *testing.T) {
 
 	// Two SEPARATE clean, cheap dispatches (two distinct wrapped cursors,
 	// mirroring two distinct requests) accumulate toward the decline.
-	for i := 0; i < perRungEvidenceMinObservations; i++ {
+	for range perRungEvidenceMinObservations {
 		clean := &perRungFakeCursor{inspected: 1}
 		wrapped := wrapPerRungObserver(clean, l, nil, plan, decision)
 		if err := wrapped.Close(); err != nil {

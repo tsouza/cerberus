@@ -104,7 +104,6 @@ func TestClickHouseIgnoresNaNInMaxMin(t *testing.T) {
 		// with nothing better to fall back to.
 		{grp: "allnan", wantBothAreNaN: true},
 	} {
-		tc := tc
 		t.Run(tc.grp, func(t *testing.T) {
 			var gotMax, gotMin float64
 			row := fixture.db.QueryRow(
@@ -174,7 +173,6 @@ func TestClickHouseSortsNaNLastInBothDirections(t *testing.T) {
 			want: nanOrderingRealIDsAsc,
 		},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			got := nanOrderingIDs(t, fixture.db, tc.query)
 			if len(got) != len(tc.want)+len(nanOrderingNaNIDs) {

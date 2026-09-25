@@ -419,7 +419,7 @@ func generateProjections(rng *rand.Rand) []chplan.Projection {
 	count := 1 + rng.Intn(3)
 	used := map[string]bool{}
 	out := make([]chplan.Projection, 0, count)
-	for i := 0; i < count; i++ {
+	for range count {
 		col := propertyColumns[rng.Intn(len(propertyColumns))]
 		if used[col] {
 			continue

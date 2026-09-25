@@ -761,7 +761,7 @@ func (s *server) calibrateShape(ctx context.Context, t *testing.T, shape cancelS
 	t.Helper()
 	size := shape.baseSize
 	var natural, entered time.Duration
-	for round := 0; round < calibrationRounds; round++ {
+	for round := range calibrationRounds {
 		metric := fmt.Sprintf("%s_probe_%d", shape.name, size)
 		s.exec(ctx, t, shape.seedSQL(metric, size))
 		local := shardedDB + ".otel_metrics_gauge" + ddl.DataShardLocalSuffix

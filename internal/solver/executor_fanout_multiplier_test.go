@@ -35,7 +35,7 @@ func TestExecute_StampsEachShardsFanoutMultiplierFromItsEmitCount(t *testing.T) 
 	if _, err := drainAll(cur); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
-	for shard := 0; shard < k; shard++ {
+	for shard := range k {
 		if got := info.PhysicalScans[shard]; got != physicalScans {
 			t.Fatalf("ExecInfo.PhysicalScans[%d] = %d, want the emitter's %d", shard, got, physicalScans)
 		}

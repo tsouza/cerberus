@@ -79,7 +79,6 @@ func TestLower_ExpHistogram_DroppingShapeComposesUnderWrappers(t *testing.T) {
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(query)
@@ -161,7 +160,6 @@ func TestLower_ExpHistogram_DroppingShapeRangeMode(t *testing.T) {
 		`limitk(3, latency_exp_hist + 1)`,
 	}
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(query)
@@ -204,7 +202,6 @@ func TestLower_ExpHistogram_DroppingShapeAggregationValidatesParamsFirst(t *test
 		{name: "count_values empty label", query: `count_values("", latency_exp_hist + 1)`, wantErr: "count_values"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)

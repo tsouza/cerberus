@@ -1,6 +1,7 @@
 package prom
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/prometheus/common/model"
@@ -95,7 +96,6 @@ func TestNormalizeDottedSelectors_ParserRoundtrip(t *testing.T) {
 
 	parser := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			rewritten := normalizeDottedSelectors(tc.in)
@@ -139,7 +139,6 @@ func TestNormalizeDottedSelectors_ParserRejectsRawDotted(t *testing.T) {
 	}
 	parser := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
 	for _, in := range rawDotted {
-		in := in
 		t.Run(in, func(t *testing.T) {
 			t.Parallel()
 			if _, err := parser.ParseExpr(in); err == nil {
@@ -179,10 +178,5 @@ func collectMetricNames(expr promparser.Expr) []string {
 }
 
 func containsName(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(haystack, needle)
 }

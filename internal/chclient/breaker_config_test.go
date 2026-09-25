@@ -34,7 +34,7 @@ func fixedClock() (func() time.Time, func(time.Time)) {
 // drive records n consecutive failures against b under a CLOSED-state
 // admit, returning after the nth. err is the simulated CH-health failure.
 func drive(b *breaker, n int, err error) {
-	for i := 0; i < n; i++ {
+	for range n {
 		_ = b.allow()
 		b.record(context.Background(), err)
 	}

@@ -27,13 +27,7 @@ func AssertRowTypeMatchesDriver(t *testing.T, plan chplan.Node, result RoundTrip
 		}
 		comparedNamedColumns++
 		if want.Open {
-			found := false
-			for _, name := range result.projectionColumns {
-				if name == column.Name {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(result.projectionColumns, column.Name)
 			if !found {
 				t.Errorf("RowType open output %q absent from driver columns %q", column.Name, result.projectionColumns)
 			}

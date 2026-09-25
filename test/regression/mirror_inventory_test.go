@@ -115,11 +115,11 @@ func mirrorInventory(t *testing.T) map[string]bool {
 // looks like one, i.e. it carries a dot or a port. That is why `minio/mc`
 // resolves to Docker Hub while `gcr.io/distroless/static` does not.
 func isDockerHubImageRef(ref string) bool {
-	slash := strings.Index(ref, "/")
-	if slash == -1 {
+	before, _, ok := strings.Cut(ref, "/")
+	if !ok {
 		return true
 	}
-	first := ref[:slash]
+	first := before
 	return !strings.Contains(first, ".") && !strings.Contains(first, ":")
 }
 
@@ -245,7 +245,7 @@ func upstreamImageRefsInTree(t *testing.T) map[string][]string {
 			}
 		}
 
-		for _, line := range strings.Split(string(src), "\n") {
+		for line := range strings.SplitSeq(string(src), "\n") {
 			// Comments name images they do not pull — a bumped-from tag, an
 			// incident log, a worked example.
 			if isProse(line) {
@@ -261,7 +261,7 @@ func upstreamImageRefsInTree(t *testing.T) map[string][]string {
 				if m == nil {
 					continue
 				}
-				for _, ref := range strings.Fields(m[1]) {
+				for ref := range strings.FieldsSeq(m[1]) {
 					if !dockerHubRef.MatchString(ref) || !isDockerHubImageRef(ref) || built[ref] {
 						continue
 					}

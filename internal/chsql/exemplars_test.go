@@ -38,7 +38,6 @@ func TestEmitMetricsExemplars_MissingColumns(t *testing.T) {
 		{name: "empty_span_id", traceIDCol: "TraceId", spanIDCol: "", wantSub: "spanIDCol"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{

@@ -2,6 +2,7 @@ package promql_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -237,12 +238,7 @@ func hasIdentityRangeWindow(n chplan.Node) bool {
 	if rw, ok := n.(*chplan.RangeWindow); ok && rw.Identity {
 		return true
 	}
-	for _, kid := range n.Children() {
-		if hasIdentityRangeWindow(kid) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(n.Children(), hasIdentityRangeWindow)
 }
 
 // TestLowerComputedK pins the general "scalar-valued PromQL expression as

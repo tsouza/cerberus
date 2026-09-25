@@ -121,7 +121,7 @@ func TestRecordActualMagnitude_SurvivesRouteBLockUnlockCycle(t *testing.T) {
 
 	// Lock-out: MinCorroboratingFailures consecutive route-B failures reach
 	// BothFail through one more replacement each.
-	for i := 0; i < MinCorroboratingFailures; i++ {
+	for range MinCorroboratingFailures {
 		m.Observe(k, RouteB, OutcomeResourceFailure)
 	}
 	assertCarried("consecutive route-B failures (-> BothFail)", BothFail)

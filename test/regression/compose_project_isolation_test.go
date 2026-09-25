@@ -30,7 +30,7 @@ import (
 // directory holding the first `-f` file, which is `loki` / `tempo` /
 // `tier1-dual` in every checkout alike. So each compose file spells its project
 // name `<stable-base>${COMPOSE_PROJECT_SUFFIX:-}` and one script
-// (scripts/compose-project-suffix.sh) derives that variable from the checkout's
+// (.github/scripts/compose-project-suffix.mjs) derives that variable from the checkout's
 // path — empty in a primary checkout and in CI, a short path hash in the linked
 // worktrees agents run in.
 //
@@ -40,7 +40,11 @@ import (
 // individual call sites.
 const (
 	composeSuffixVar    = "COMPOSE_PROJECT_SUFFIX"
-	composeSuffixScript = "scripts/compose-project-suffix.sh"
+	composeSuffixScript = ".github/scripts/compose-project-suffix.mjs"
+
+	// The shared helper module the derivation script imports, which the
+	// derivation test commits next to it.
+	composeSuffixHelper = ".github/scripts/lib/gh.mjs"
 
 	// The exact interpolation every project name ends with. The `:-` default is
 	// what keeps an unset variable byte-identical to no mechanism at all.
@@ -202,7 +206,7 @@ func composeInvocations(t *testing.T, files []string) [][]string {
 	var out [][]string
 	for _, src := range justfileSources(t) {
 		joined := strings.ReplaceAll(src.Text, "\\\n", " ")
-		for _, line := range strings.Split(joined, "\n") {
+		for line := range strings.SplitSeq(joined, "\n") {
 			type mention struct {
 				at  int
 				rel string
@@ -377,7 +381,7 @@ func composeShellCallers(t *testing.T) []string {
 		if readErr != nil {
 			return readErr
 		}
-		for _, line := range strings.Split(string(buf), "\n") {
+		for line := range strings.SplitSeq(string(buf), "\n") {
 			code := strings.TrimSpace(line)
 			if code == "" || strings.HasPrefix(code, "#") {
 				continue
@@ -476,38 +480,6 @@ func TestComposeProjectSuffixIsWiredIntoEveryEntrypoint(t *testing.T) {
 	}
 }
 
-// TestComposeSuffixScriptIsTrackedExecutable pins the derivation script's mode
-// in the INDEX, not on disk. Every wiring above execs it directly, and a fresh
-// clone gets whatever mode git recorded: a script committed 100644 leaves each
-// of those call sites failing to start the one thing that isolates the stacks.
-func TestComposeSuffixScriptIsTrackedExecutable(t *testing.T) {
-	t.Parallel()
-
-	cmd := exec.Command("git", "ls-files", "-s", "--", composeSuffixScript)
-	cmd.Dir = repoRoot
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git ls-files %s: %v", composeSuffixScript, err)
-	}
-	fields := strings.Fields(string(out))
-	if len(fields) == 0 {
-		t.Fatalf("%s is not tracked. The compose files interpolate %s and every wiring execs this script, "+
-			"so a clone would have nothing to run.", composeSuffixScript, composeSuffixVar)
-	}
-
-	// git records exactly two file modes; 100755 is the executable one.
-	const trackedExecutableMode = "100755"
-	if fields[0] != trackedExecutableMode {
-		t.Fatalf("%s is tracked with mode %s, want %s — a fresh clone would check it out non-executable "+
-			"and every wiring's exec of it would fail.", composeSuffixScript, fields[0], trackedExecutableMode)
-	}
-}
-
-// suffixScriptBasename is the name the derivation script is committed under in
-// the throwaway repository the derivation test builds, so every worktree of it
-// checks out its own copy.
-const suffixScriptBasename = "compose-project-suffix.sh"
-
 // runSuffixScript runs CHECKOUT's own copy of the derivation script with a
 // hermetic environment: no inherited suffix, no user or system git config.
 //
@@ -519,12 +491,12 @@ const suffixScriptBasename = "compose-project-suffix.sh"
 func runSuffixScript(t *testing.T, checkout string) string {
 	t.Helper()
 
-	cmd := exec.Command(filepath.Join(checkout, suffixScriptBasename))
+	cmd := exec.Command("node", filepath.Join(checkout, composeSuffixScript))
 	cmd.Dir = t.TempDir()
 	cmd.Env = append(hermeticGitEnv(t), composeSuffixVar+"=")
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("run %s of %s: %v", suffixScriptBasename, checkout, err)
+		t.Fatalf("run %s of %s: %v", composeSuffixScript, checkout, err)
 	}
 	return string(out)
 }
@@ -558,21 +530,28 @@ func runGit(t *testing.T, dir string, args ...string) {
 func TestComposeProjectSuffixDerivation(t *testing.T) {
 	t.Parallel()
 
-	// The repository's own script, committed into a throwaway repository so each
-	// worktree of it checks out a copy: the derivation reads the checkout that
-	// holds the script, which is what makes it independent of the caller's cwd.
-	script, err := os.ReadFile(filepath.Join(repoRoot, composeSuffixScript))
-	if err != nil {
-		t.Fatalf("read %s: %v", composeSuffixScript, err)
-	}
-
+	// The repository's own script and the helper it imports, committed into a
+	// throwaway repository so each worktree of it checks out a copy: the
+	// derivation reads the checkout that holds the script, which is what makes
+	// it independent of the caller's cwd.
 	primary := t.TempDir()
 	runGit(t, primary, "init", "-q", ".")
-	const executableMode = 0o755
-	if err := os.WriteFile(filepath.Join(primary, suffixScriptBasename), script, executableMode); err != nil {
-		t.Fatalf("write %s: %v", suffixScriptBasename, err)
+	const fileMode = 0o644
+	for _, rel := range []string{composeSuffixScript, composeSuffixHelper} {
+		src, err := os.ReadFile(filepath.Join(repoRoot, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		dst := filepath.Join(primary, rel)
+		const dirMode = 0o755
+		if err := os.MkdirAll(filepath.Dir(dst), dirMode); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(dst, src, fileMode); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+		runGit(t, primary, "add", rel)
 	}
-	runGit(t, primary, "add", suffixScriptBasename)
 	runGit(t, primary, "-c", "user.email=pin@example.invalid", "-c", "user.name=pin",
 		"commit", "-q", "-m", "root")
 

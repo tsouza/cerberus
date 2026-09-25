@@ -190,7 +190,6 @@ func TestAttrStrategyJSON_MapAccessMatchesMapSemantics(t *testing.T) {
 	}
 
 	for _, key := range []string{"service.name", "http.status_code"} {
-		key := key
 		t.Run(key, func(t *testing.T) {
 			mapSQL, mapArgs := renderAttrSelect(t, "attrs_map", nil, mapAccess(key))
 			jsonSQL, jsonArgs := renderAttrSelect(t, "attrs_json",
@@ -231,7 +230,6 @@ func TestAttrStrategyJSON_MapContainsKeyMatchesMapSemantics(t *testing.T) {
 	}
 
 	for _, key := range []string{"service.name", "http.status_code"} {
-		key := key
 		t.Run(key, func(t *testing.T) {
 			mapSQL, mapArgs := renderAttrSelect(t, "attrs_map", nil, mapContains(key))
 			jsonSQL, jsonArgs := renderAttrSelect(t, "attrs_json",

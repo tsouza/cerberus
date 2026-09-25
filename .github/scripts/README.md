@@ -865,7 +865,7 @@ safe inside a read-only CI job — the same "regenerate, then diff" shape
 `config-docs.yml` uses for `docs/configuration.md`. Since `renderMarkdown()`
 emits plain, unformatted Markdown, the CLI runs the same two fixers
 lefthook's pre-commit hooks run on staged Markdown, in the same order
-(`scripts/align-md-tables.py`, then `markdownlint-run.mjs --staged`), against
+(`.github/scripts/align-md-tables.mjs`, then `markdownlint-run.mjs --staged`), against
 a throwaway temp copy so `--check` stays read-only. `just semantic-report`
 runs the CLI and prints a `regen-diff.mjs` summary of what changed; `just
 semantic-report-check` runs `--check` as the CI gate. Both generated files
@@ -968,6 +968,45 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
 
 ## Modules
 
+- **`align-md-tables.mjs`** — the lefthook `pre-commit` `md-table-align`
+  hook, and `lib/markdown-lintfix.mjs` (through its exported
+  `alignMarkdown()`). Pads every Markdown table in the named `.md` files so
+  markdownlint's MD060 `aligned` style passes: each cell is padded to its
+  column's widest cell (measured in code points), the separator row becomes
+  dashes of the column width, a run of rows that disagree on the column count
+  is left alone, and line endings are normalised to `\n`. A file is rewritten
+  only when its content changes. `align-md-tables.test.mjs` is the
+  `node --test` guard (`lint` job).
+  - Args: the files to align; arguments not ending in `.md` are ignored.
+  - Exit: `0` once every file is aligned; `1` with an `::error::` when a file
+    cannot be read or written.
+- **`compose-project-suffix.mjs`** — the Justfile's `COMPOSE_PROJECT_SUFFIX`
+  export, `.envrc`, `bench/histogram/run.sh`, and
+  `lib/compat-compose-lifecycle.mjs` (through its exported `deriveSuffix()`).
+  Prints the suffix every compose project name and locally built image tag
+  carries: empty in a primary checkout (every CI checkout) and outside git,
+  `-` plus the first eight hex characters of `git hash-object` over the
+  worktree root in a linked worktree. The checkout described is the one
+  holding the script, whatever the caller's working directory.
+  `test/regression/compose_project_isolation_test.go` pins the derivation and
+  its wiring.
+  - Env: `COMPOSE_PROJECT_SUFFIX` (optional; an already-set value is printed
+    back unchanged).
+  - Output: the suffix on stdout, no trailing newline. Exit: `0`; `1` with an
+    `::error::` on stderr when a git call fails inside a linked worktree.
+- **`gen-coverage.mjs`** — renders the `coverage-glance` and
+  `coverage-tables` AUTOGEN blocks of `docs/coverage.md` from
+  `test/surface-parity/inventory/`: the per-head summary counts (tallied by
+  `lib/surface-coverage.mjs`, the module `doc-counts.mjs` re-derives the same
+  cells with) and one table per head and symbol kind with the probe query and
+  the user-facing support state. Backslash escapes in a rendered block are
+  resolved as a regular-expression replacement template resolves them (`\\`
+  -> `\`; #3695). `gen-coverage.test.mjs` is the `node --test` guard (`lint`
+  job).
+  - Args: `--check` compares instead of writing.
+  - Exit: `0` written / fresh; `1` stale under `--check`, or a ledger head or
+    class the glance table has no column for.
+
 - **`verify-just-invocations.mjs`** — the CI-safety gate for the Justfile
   modularization epic (#3091, #3093). Scans every `.github/workflows/*.yml`
   file, extracts ONLY the literal shell text of each step's `run:` value
@@ -1046,6 +1085,22 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Env: `AGPL_CLEAN_PACKAGE` (optional; default `./cmd/cerberus`).
   - Exit: `0` clean; `1` on a violation. ENFORCING (a violation fails CI) and a
     required status check on `main`.
+- **`go-fix-check.mjs`** — `ci.yml`, the `lint` job step "go fix fixed-point
+  check", plus the `just lint` and `just go-fix` recipes. Runs `go fix -diff`
+  in every tracked Go module (the root one and each nested `go.mod`) over the
+  two build configurations golangci-lint analyses (the `run.build-tags` union
+  read from `.golangci.yml`, then untagged) and fails when any pass would
+  rewrite a file, annotating each one. `go fix -diff` exits 1 for a pending
+  rewrite as well as for a load failure; the script tells them apart by the
+  diff on stdout and an empty stderr. Holds the tree at the pinned toolchain's
+  modernizer fixed point, so a change cannot quietly reintroduce an idiom
+  `go fix` removed. The companion `go-fix-check.test.mjs` pins the tag reader,
+  the diff parser, the module discovery, the exit classification and both
+  modes.
+  - Env: `GO_FIX_MODE` (`check` default, `apply` rewrites in place — the
+    `just go-fix` recipe); `GOLANGCI_FILE` (default `.golangci.yml`).
+  - Exit: `0` clean, `1` on a pending rewrite or a `go fix` failure, `2` on a
+    bad `GO_FIX_MODE`.
 - **`forbid-sql-raw.mjs`** — `ci.yml`, the `forbid-skip` job step "Reject raw
   SQL writes outside the chsql Frag layer". Scans `internal/chsql/**/*.go`
   (excluding `builder.go` and test files) for `strings.Builder`, `sb.Write*`,
@@ -1432,7 +1487,8 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
 - **`repo-hygiene.mjs`** — `ci.yml`, the `forbid-skip` job's committed-artefact
   gate. Every other gate asks whether the tree COMPILES and PASSES; none asks
   what it CONTAINS, so a build artefact that is `git add`-ed by accident
-  survives indefinitely. Three scans close that class. `binary` rejects any
+  survives indefinitely. Three scans close that class, and a fourth holds
+  step logic to its home. `binary` rejects any
   tracked blob that is compiled output, detected by CONTENT — an executable
   magic (ELF / Mach-O / PE / WebAssembly / ar archive) at offset 0, or a NUL
   byte inside the same leading window git itself sniffs when it classifies a
@@ -1461,7 +1517,13 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   retry a spent quota or a rejected credential. The scan matches the `uses:`
   form only, so prose NAMING the Action — this paragraph included — stays
   legal; a gate that policed the word instead of the step would make its own
-  rationale unwritable.
+  rationale unwritable. `step-logic` rejects any Python or shell script —
+  by extension (`.py`, `.sh`, `.bash`) or by a `#!` line naming a Python or
+  POSIX-shell interpreter — outside the places shell is accepted: under
+  `test/` and `bench/`, where a script is a helper of the harness it sits
+  beside, and `.envrc`, whose language direnv fixes. Python is accepted
+  nowhere. Step logic is Node ESM in `.github/scripts/` (invariant 15), and a
+  top-level `scripts/` directory fails `root-allowlist`.
   `repo-hygiene.test.mjs` is the `node --test` guard (cheap discipline lane,
   run as the step BEFORE the gate): it builds a throwaway git repo, plants a
   synthetic ELF blob, a stray root file, and a workflow step using
@@ -1469,12 +1531,17 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   exit on a conforming fixture — a gate never shown to fail is
   indistinguishable from one that does nothing. It also plants each of those
   three fixtures WITHOUT `git add`-ing them, asserting the gate still fires on
-  an untracked violation and not only a committed one (issue #1938).
-  - Env: `CHECK` is one of `binary`, `root-allowlist`, `registry-login`;
+  an untracked violation and not only a committed one (issue #1938). For
+  `step-logic` it plants Python and shell scripts in and out of the accepted
+  places and asserts exactly the out-of-place ones are named, and it plants a
+  top-level `scripts/` directory for `root-allowlist`.
+  - Env: `CHECK` is one of `binary`, `root-allowlist`, `registry-login`,
+    `step-logic`;
     `REPO_ROOT` (optional) points the scan at another checkout (the
     self-test's fixture repo).
   - Exit: `0` clean, `1` on any tracked binary / unsanctioned or rotted root
-    entry / `docker/login-action` step / unreadable blob / bad `CHECK`.
+    entry / `docker/login-action` step / out-of-place Python or shell script /
+    unreadable blob / bad `CHECK`.
 - **`clickhouse-version-sync.mjs`** — `ci.yml`, the `forbid-skip` job's
   ClickHouse version-consistency gate. Reads `versions.yaml` (the single
   source of truth) and asserts the docker-compose quickstart + compatibility
@@ -1654,9 +1721,10 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - **surface-parity glance table** — tallies the `class` field of
     `test/surface-parity/inventory/` per head and asserts all sixteen
     cells of the "Coverage at a glance" table in `docs/coverage.md`. The fold
-    mirrors `scripts/gen-coverage.py` (`parity-accept` + `wrong-accept` →
-    supported, `parity-reject` → intentionally rejected, `wrong-reject` →
-    wrong-rejected); an unrecognised class throws rather than dropping out of
+    (`parity-accept` + `wrong-accept` → supported, `parity-reject` →
+    intentionally rejected, `wrong-reject` → wrong-rejected) is
+    `lib/surface-coverage.mjs`, the module `gen-coverage.mjs` renders the table
+    with; an unrecognised head or class throws rather than dropping out of
     every column, so a fourth ledger verdict cannot deflate the headline
     wrong-rejection cell.
   - **shape-divergence count** — counts the `class: "divergence"` rows across
@@ -3489,7 +3557,7 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `CERBERUS_EXPECT_VERSION` are appended to), `COMPOSE_PROJECT_SUFFIX` (the
     per-checkout suffix the local image tag carries, so the tag this module
     names is the one the stack runs; empty in a CI checkout, which is what
-    every CI checkout is — see `scripts/compose-project-suffix.sh`).
+    every CI checkout is — see `.github/scripts/compose-project-suffix.mjs`).
   - Exit: `0` once a binary exists and its `--version` matches, `1` on a half
     pair, a failed build / pull / extract, a `--version` that errors, prints
     nothing, prints more than one line, or prints the wrong stamp.

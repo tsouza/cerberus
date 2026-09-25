@@ -46,7 +46,7 @@
 # primary checkout and in CI, so the stack is `cerberus-migration-tier1` there;
 # a linked worktree gets `cerberus-migration-tier1-<hash>`, which is what stops
 # one agent's `down -v --remove-orphans` from destroying another's tier stack.
-# See scripts/compose-project-suffix.sh.
+# See .github/scripts/compose-project-suffix.mjs.
 name: cerberus-migration-tier1${COMPOSE_PROJECT_SUFFIX:-}
 
 services:

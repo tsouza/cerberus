@@ -236,7 +236,7 @@ func mountAPIHeads(
 		// own scope: the actuals hooks all key off the solver's own
 		// plan-shape-id / K-clamp machinery, which is PromQL-only
 		// (solver.RequestMeta.Lang's own doc).
-		actualsTracker, err := buildActualsTracker(ctx, logger, cfg.Settings.String, promClient, cfg.ClickHouse.QueryTimeout, queryLogUnion)
+		actualsTracker, err := buildActualsTracker(ctx, logger, cfg.Settings.String, promClient, cfg.ClickHouse.QueryTimeout, evalSolver.Cfg.Timeout, queryLogUnion)
 		if err != nil {
 			return apiHeads{}, fmt.Errorf("configure query actuals: %w", err)
 		}
@@ -314,7 +314,7 @@ func mountAPIHeads(
 
 	return apiHeads{
 		grpcServer: grpcServer,
-		consumers:  chOptConsumers{client: client, fleet: liveFleetProber(cfg), engines: engines, prom: promHandler},
+		consumers:  chOptConsumers{client: client, engines: engines, prom: promHandler},
 	}, nil
 }
 
@@ -637,11 +637,7 @@ func run() error {
 	}
 	grpcServer := heads.grpcServer
 
-	// Periodic capability re-probe: re-resolves the optimization set against the
-	// connected server and swaps a changed result into the heads mounted above,
-	// so an upgraded ClickHouse is picked up without restarting cerberus. Bound
-	// to the run ctx, so SIGTERM stops it.
-	go reprobeCHOptimizations(ctx, logger, cfg, chOpts, heads.consumers, chOptReprobeInterval, optRes.RawQueryWorkload, probeVersionOverBootstrap)
+	startCHOptReprobe(ctx, logger, cfg, chOpts, heads.consumers, optRes.RawQueryWorkload)
 
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
@@ -1046,15 +1042,20 @@ func buildCardinalityProbeAdvisor(
 // data-plane dispatch carries (CERBERUS_QUERY_TIMEOUT); it bounds how long
 // after a dispatch its query-log row can finish, so it sizes how long the
 // packet path's query-id marks are kept (actuals.Config.MaxQueryDuration).
+// routedRequestTimeout is the end-to-end cap on a routed request
+// (CERBERUS_SOLVER_TIMEOUT); it bounds how far apart a routed request's shard
+// rows can finish, so it sizes how long the reconciler keeps a request's
+// partial fold (actuals.Config.MaxRoutedRequestDuration).
 // queryLogUnion reports, on every poll,
 // whether the query_log_union feature is in force in the live chopt
 // resolution; nil reads the local log only.
-func buildActualsTracker(ctx context.Context, logger *slog.Logger, settings func(string) string, promClient *chclient.Client, queryTimeout time.Duration, queryLogUnion func() bool) (*actuals.Tracker, error) {
+func buildActualsTracker(ctx context.Context, logger *slog.Logger, settings func(string) string, promClient *chclient.Client, queryTimeout, routedRequestTimeout time.Duration, queryLogUnion func() bool) (*actuals.Tracker, error) {
 	cfg, err := actuals.ConfigFrom(settings)
 	if err != nil {
 		return nil, err
 	}
 	cfg.MaxQueryDuration = queryTimeout
+	cfg.MaxRoutedRequestDuration = routedRequestTimeout
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -1401,8 +1402,17 @@ func startCHOptimizations(ctx context.Context, logger *slog.Logger, client *chcl
 	return optRes.Set, newCHOptLive(optRes), optRes, nil
 }
 
-// resolveCHOptimizations probes the connected ClickHouse server version and
-// resolves the CERBERUS_CH_OPTIMIZATIONS auto-picker against it at boot,
+// startCHOptReprobe starts the periodic capability re-probe: it re-resolves the
+// optimization set against the fleet cerberus can reach and swaps a changed
+// result into the mounted heads, so an upgraded ClickHouse is picked up without
+// restarting cerberus. Bound to ctx, so SIGTERM stops it.
+func startCHOptReprobe(ctx context.Context, logger *slog.Logger, cfg config.Config, live *chOptLive, consumers chOptConsumers, rawQueryWorkload string) {
+	go reprobeCHOptimizations(ctx, logger, cfg, live, consumers, chOptReprobeInterval, rawQueryWorkload, liveFleetProber(cfg))
+}
+
+// resolveCHOptimizations probes the build of every ClickHouse node cerberus
+// can reach (liveFleetProber) and resolves the CERBERUS_CH_OPTIMIZATIONS
+// auto-picker against the oldest of them at boot (fleetResolutionVersion),
 // returning the EnabledSet the process starts on. It back-fills
 // cfg.ExperimentalTSGridRange from the resolved set so the legacy ts-grid
 // consumers (the PromQL lowering, the engine native gate, the preflight version
@@ -1424,7 +1434,11 @@ func startCHOptimizations(ctx context.Context, logger *slog.Logger, client *chcl
 // fatal — that is a typo/operator error, independent of connectivity.
 func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chOptResolution, error) {
 	rawQueryWorkload := cfg.CHQueryWorkload
-	resolvedVersion, err := probeVersionOverBootstrap(ctx, cfg.ClickHouse)
+	// The fleet probe reads every node cerberus can reach; resolution runs
+	// against the oldest of them and the condition-cache override below reads
+	// the same pass.
+	fleet := liveFleetProber(*cfg)(ctx)
+	resolvedVersion, err := fleetResolutionVersion(fleet, nil)
 	versionFallback := err != nil
 	if err != nil {
 		// Connectivity fallback: assume the supported floor so 24.8-safe
@@ -1555,7 +1569,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// still expose every query to it: force it off client-wide whenever any
 	// node the fleet probe reaches runs such a build. The re-probe refreshes
 	// this on every pass.
-	refreshConditionCacheOverride(ctx, logger, client, liveFleetProber(*cfg))
+	refreshConditionCacheOverride(logger, client, fleet)
 	if !versionFallback {
 		logCancellationGaps(logger, resolvedVersion)
 		logVendorBuild(logger, resolvedVersion)
@@ -1566,6 +1580,8 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"selection", cfg.CHOptimizations,
 		"mode", cfg.CHOptimizationsMode.String(),
 		"server_version", resolvedVersion.String(),
+		"fleet_versions", fleetVersionStrings(fleet),
+		"fleet_probe_complete", fleet.Complete,
 		"server_ts_grid_capability", capability.String(),
 		"server_result_cache_capability", resultCacheCapability.String(),
 		"server_query_log_union_capability", queryLogUnionCapability.String(),
@@ -1650,33 +1666,9 @@ func decideQueryWorkload(configured string, capability chopt.Capability, mode ch
 	}
 }
 
-// probeVersionOverBootstrap issues the SELECT version() probe over a
-// short-lived client bound to ClickHouse's always-present `default` database,
-// not the configured (otel) one. The version probe must succeed on a fresh or
-// freshly-upgraded server whose configured database does not exist yet: it runs
-// at boot BEFORE setupSchema creates the target database, and ClickHouse rejects
-// EVERY statement — version() included — on a session whose default database is
-// absent (code 81, UNKNOWN_DATABASE). Binding the probe to `default` (which is
-// always present, the same database the auto-create DDL targets) makes the probe
-// independent of whether the configured database exists, so a CH upgrade takes
-// effect on the next boot instead of being masked as a probe failure that pins
-// the supported floor. The client is opened, probed, and closed here — it never
-// outlives the probe; the breaker-guarded read surface still makes a genuinely
-// unreachable server fail (not hang), preserving the connectivity fallback.
-func probeVersionOverBootstrap(ctx context.Context, chCfg chclient.Config) (chopt.Version, error) {
-	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, versionProbePool))
-	if err != nil {
-		return chopt.Version{}, fmt.Errorf("open bootstrap client for version probe: %w", err)
-	}
-	defer func() {
-		_ = bootClient.Close()
-	}()
-	return bootClient.ProbeVersion(ctx)
-}
-
 // probeTSGridCapabilityOverBootstrap runs the experimental-setting capability
 // canary over a short-lived client bound to ClickHouse's always-present
-// `default` database, exactly like probeVersionOverBootstrap. The canary must
+// `default` database, exactly like the fleet version probe. The canary must
 // not depend on the configured (otel) database existing -- it runs at boot
 // BEFORE setupSchema creates it, and ClickHouse rejects every statement on a
 // session whose default database is absent (code 81), which would masquerade as
@@ -1938,10 +1930,7 @@ func buildSolver(
 	// GLOBAL shard gate: MaxOpenConns − reserve, floored at 2 so the
 	// Executor's gate/2 cap never collapses to zero. The pool size is the
 	// validated, already-positive value config.FromEnv resolved.
-	gateCap := int64(chCfg.MaxOpenConns - solverGateReserve)
-	if gateCap < 2 {
-		gateCap = 2
-	}
+	gateCap := max(int64(chCfg.MaxOpenConns-solverGateReserve), 2)
 	gate := semaphore.NewWeighted(gateCap)
 
 	// The admit top-up is only meaningful when admission control is enabled.

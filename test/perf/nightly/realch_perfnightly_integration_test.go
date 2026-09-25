@@ -278,7 +278,7 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			}
 
 			var maxBytes uint64
-			for i := 0; i < nightlySentinelRepeats; i++ {
+			for i := range nightlySentinelRepeats {
 				queryID := fmt.Sprintf("perfnightly-%s-%d", sentinel.Name, i)
 				code, body := runSentinelOnce(t, mux, sentinel, queryID)
 				result.ActualStatus = code

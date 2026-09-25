@@ -375,18 +375,18 @@ func evaluateCHTemplate(template string, groups []string) string {
 // `arrayFirst(x -> x != ”, […])`, whose no-match result is the empty
 // string.
 func evaluateSegments(segments []chplan.LabelReplaceSegment, src string, groups []string) string {
-	var out string
+	var out strings.Builder
 	for _, seg := range segments {
 		switch seg.Group {
 		case chplan.NoCaptureGroup:
-			out += seg.Literal
+			out.WriteString(seg.Literal)
 			continue
 		case chplan.WholeMatchGroup:
-			out += src
+			out.WriteString(src)
 			continue
 		}
 		if len(seg.Fallbacks) == 0 {
-			out += groups[seg.Group]
+			out.WriteString(groups[seg.Group])
 			continue
 		}
 		// arrayFirst over the carriers, testing each one's WITNESS — its
@@ -406,12 +406,12 @@ func evaluateSegments(segments []chplan.LabelReplaceSegment, src string, groups 
 				}
 			}
 			if matches {
-				out += groups[idx]
+				out.WriteString(groups[idx])
 				break
 			}
 		}
 	}
-	return out
+	return out.String()
 }
 
 // TestReplacementSegmentsAgreeWithExpandString is the differential that
@@ -451,20 +451,20 @@ func TestReplacementSegmentsAgreeWithExpandString(t *testing.T) {
 			}
 			want := string(re.ExpandString(nil, repl, src, match))
 
-			var evaluated string
+			var evaluated strings.Builder
 			for _, seg := range got.Segments {
 				switch seg.Group {
 				case chplan.NoCaptureGroup:
-					evaluated += seg.Literal
+					evaluated.WriteString(seg.Literal)
 				case chplan.WholeMatchGroup:
-					evaluated += src
+					evaluated.WriteString(src)
 				default:
-					evaluated += re.FindStringSubmatch(src)[seg.Group]
+					evaluated.WriteString(re.FindStringSubmatch(src)[seg.Group])
 				}
 			}
-			if evaluated != want {
+			if evaluated.String() != want {
 				t.Fatalf("segments for %q evaluate to %q; Go's ExpandString gives %q",
-					repl, evaluated, want)
+					repl, evaluated.String(), want)
 			}
 		})
 	}

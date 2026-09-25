@@ -81,7 +81,6 @@ func TestMetadataEndpoints_HangingBackendReleasesAtTheQueryTimeout(t *testing.T)
 		"/api/v1/query_exemplars?query=up&start=1717995600&end=1717999200",
 	}
 	for _, route := range routes {
-		route := route
 		t.Run(route, func(t *testing.T) {
 			t.Parallel()
 			started := time.Now()

@@ -31,7 +31,7 @@
 // for why that made a drift gate the wrong shape here.
 //
 // MD060 HAS NO AUTO-FIXER. `--fix` cannot repair a misaligned table; only
-// `scripts/align-md-tables.py` can, which is why lefthook runs that as its own
+// `.github/scripts/align-md-tables.mjs` can, which is why lefthook runs that as its own
 // `md-table-align` hook BEFORE this one, and why `--fix` here prints where the
 // padding pass lives when MD060 survives the fix.
 //
@@ -235,7 +235,7 @@ function runEngine(engine, args) {
 
 const MD060_HINT =
   'MD060 (table-column-style) has no auto-fixer. Realign tables with '
-  + '`python3 scripts/align-md-tables.py <file>...` — lefthook runs that as its '
+  + '`node .github/scripts/align-md-tables.mjs <file>...` — lefthook runs that as its '
   + 'own `md-table-align` pre-commit hook, before the fixer.';
 
 function main(argv, env = process.env) {

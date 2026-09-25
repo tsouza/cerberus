@@ -76,3 +76,47 @@ func TestMutation_Subquery_AccumulatesOntoNonzeroCount(t *testing.T) {
 		t.Fatalf("PhysicalScans = %d, want 2 (1 prior + 1 subquery)", got)
 	}
 }
+
+// TestMutation_CountPhysicalScans_AccumulatesLevelTableReads kills the
+// REMOVE_SELF_ASSIGNMENTS mutant on builder.go:countPhysicalScans:
+// `b.levelTableReads += n` rewritten to `b.levelTableReads = n`. The
+// per-SELECT read count is what the native timeSeries aggregate guard checks,
+// so a second counted scan at the same level must add to it rather than
+// replace it.
+func TestMutation_CountPhysicalScans_AccumulatesLevelTableReads(t *testing.T) {
+	t.Parallel()
+
+	b := &Builder{levelTableReads: 1}
+	countPhysicalScans(2, Col("merged"))(b)
+	if b.levelTableReads != 3 {
+		t.Fatalf("levelTableReads = %d, want 3 (1 prior + 2 counted)", b.levelTableReads)
+	}
+}
+
+// TestMutation_ASCIILower_FoldsRangeEndpoints kills both CONDITIONALS_BOUNDARY
+// mutants on builder.go:asciiLower:`c >= 'A' && c <= 'Z'`. `>` would leave 'A'
+// unfolded and `<` would leave 'Z' unfolded; the neighbours on either side of
+// the range must stay untouched.
+func TestMutation_ASCIILower_FoldsRangeEndpoints(t *testing.T) {
+	t.Parallel()
+
+	if got, want := asciiLower("@AZ["), "@az["; got != want {
+		t.Fatalf("asciiLower(%q) = %q, want %q", "@AZ[", got, want)
+	}
+}
+
+// TestMutation_ASCIIFoldSafe_RejectsFirstNonASCIIRune kills the
+// CONDITIONALS_BOUNDARY mutant on
+// builder.go:asciiFoldSafe:`r >= utf8.RuneSelf` (`>=` -> `>`). U+0080 is
+// exactly utf8.RuneSelf, the first rune `lower()` does not fold, so it is
+// not fold-safe; the mutant would accept it.
+func TestMutation_ASCIIFoldSafe_RejectsFirstNonASCIIRune(t *testing.T) {
+	t.Parallel()
+
+	if asciiFoldSafe("a\u0080") {
+		t.Fatalf("asciiFoldSafe(%q) = true, want false: U+0080 is utf8.RuneSelf", "a\u0080")
+	}
+	if !asciiFoldSafe("a\u007f") {
+		t.Fatalf("asciiFoldSafe(%q) = false, want true: U+007F is the last ASCII rune", "a\u007f")
+	}
+}

@@ -150,7 +150,6 @@ var rejectCorpus = []string{
 
 func TestAGPLOracle_Accept(t *testing.T) {
 	for _, q := range corpus {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			mine, myErr := ParseExpr(q)
 			ref, refErr := lokisyntax.ParseExpr(q)
@@ -177,7 +176,6 @@ func TestAGPLOracle_Accept(t *testing.T) {
 
 func TestAGPLOracle_Reject(t *testing.T) {
 	for _, q := range rejectCorpus {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			_, myErr := ParseExpr(q)
 			_, refErr := lokisyntax.ParseExpr(q)
@@ -306,7 +304,7 @@ func isLeafLabelType(name string) bool {
 // a StringLabelFilter (matcher promotion). Both are valid, equivalent
 // LogQL; normalising via the matcher makes the structural comparison
 // ignore that purely cosmetic rendering choice.
-func leafString(i interface{}) string {
+func leafString(i any) string {
 	rv := reflect.ValueOf(i)
 	name := rv.Type().Name()
 	if rv.Kind() == reflect.Pointer && rv.Elem().Kind() == reflect.Struct {
@@ -332,9 +330,8 @@ func embeddedMatcher(rv reflect.Value) *labels.Matcher {
 	if rv.Kind() != reflect.Struct {
 		return nil
 	}
-	matcherPtrType := reflect.TypeOf((*labels.Matcher)(nil))
-	for i := 0; i < rv.NumField(); i++ {
-		f := rv.Field(i)
+	matcherPtrType := reflect.TypeFor[*labels.Matcher]()
+	for _, f := range rv.Fields() {
 		if f.Type() == matcherPtrType && f.CanInterface() {
 			if m, ok := f.Interface().(*labels.Matcher); ok {
 				return m
@@ -344,7 +341,7 @@ func embeddedMatcher(rv reflect.Value) *labels.Matcher {
 	return nil
 }
 
-func stringify(i interface{}) string {
+func stringify(i any) string {
 	if s, ok := i.(interface{ String() string }); ok {
 		return s.String()
 	}

@@ -22,7 +22,7 @@ import (
 func benchInternedMatrixSamples(series, rowsPerSeries int) []chclient.Sample {
 	base := time.Unix(1778457600, 0).UTC()
 	out := make([]chclient.Sample, 0, series*rowsPerSeries)
-	for s := 0; s < series; s++ {
+	for s := range series {
 		// One shared map instance per series — the interning contract.
 		lset := map[string]string{
 			"route":               fmt.Sprintf("/api/%d", s),
@@ -35,7 +35,7 @@ func benchInternedMatrixSamples(series, rowsPerSeries int) []chclient.Sample {
 			"service_instance_id": fmt.Sprintf("inst-%d", s),
 			"cloud_region":        fmt.Sprintf("us-east-%d", s%4),
 		}
-		for r := 0; r < rowsPerSeries; r++ {
+		for r := range rowsPerSeries {
 			out = append(out, chclient.Sample{
 				MetricName: "http_requests_total",
 				Labels:     lset, // shared instance, as the cursor interns it

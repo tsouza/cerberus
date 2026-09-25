@@ -459,7 +459,7 @@ func wrapExpHistogramMergeScaleRefinement(merged chplan.Node) chplan.Node {
 // merged-start subtree — exactly the cerberus issue #2267 hazard
 // expHistogramOverMergedBucketRangeExpr's own doc describes, and exactly
 // what TestExpHistogramMergedStartIsBoundOncePerSite pins against: every
-// render of that subtree must be one of that helper's own hqLet bindings.
+// render of that subtree must be one of that helper's own bindings.
 // Going through it here keeps the guard from becoming a second, unbound
 // occurrence of the very hazard the merge site was already fixed for.
 //
@@ -483,11 +483,12 @@ func mergedLengthExpr(scalesArr, offArr, bucArr, mergedScale chplan.Expr) chplan
 // why the clamp itself is never the behavioral bound), squared via plain
 // integer multiplication — never `pow`, which returns Float64 and loses
 // exact precision on values this large. mergedLengthExpr is called exactly
-// ONCE per ladder and the resulting Frag reused twice below, so squaring
-// only doubles the cheap O(rows) `greatest`/comparison wrapper around it,
-// not the width computation itself (see mergedLengthExpr's own doc on why
-// a second CALL — as opposed to a second READ of the same Frag — would be
-// the #2267 hazard again).
+// ONCE per ladder, and the clamped width is bound once
+// ([paramClampedLadderWidth]) and squared from that binding. Reading the
+// same Go node twice is not enough: the emitter renders the expression DAG
+// as a tree (see hqLet), so `clamped * clamped` would print the whole
+// width computation twice, and the older ClickHouse analyzer re-analyses
+// each printed copy once per derived-query level above the guard.
 //
 // Squared, not cubed: issue #2500 rewrote expHistogramBucketPositionPickerExpr
 // (the merge's actual per-target-bucket work) from an O(row-width) rescan
@@ -501,8 +502,15 @@ func clampedLadderWidthSquaredExpr(scalesArr, offArr, bucArr, mergedScale chplan
 		Fn:   chplan.FnLeast,
 		Args: []chplan.Expr{mergedLengthExpr(scalesArr, offArr, bucArr, mergedScale), &chplan.LitInt{V: maxHistogramMergeClampedWidth}},
 	}
-	return mulExpr(clamped, clamped)
+	return hqLet(paramClampedLadderWidth, clamped, func(width chplan.Expr) chplan.Expr {
+		return mulExpr(width, width)
+	})
 }
+
+// paramClampedLadderWidth is the lambda parameter name
+// [clampedLadderWidthSquaredExpr] binds one ladder's clamped merged width
+// to before squaring it.
+const paramClampedLadderWidth = "mcw"
 
 // histogramMergeCostOverBudgetExpr renders the `<rowCount overflow guard> OR
 // <cost> > maxCostUnits` condition the calibration in this file's header

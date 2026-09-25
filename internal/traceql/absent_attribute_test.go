@@ -505,9 +505,9 @@ func guardedPredicateBody(t *testing.T, sqlStr string) string {
 		t.Fatalf("expected a guarded scalar predicate to strip, got: %s", pred)
 	}
 	const sep = " AND "
-	j := strings.Index(pred, sep)
-	if j < 0 {
+	_, after, ok := strings.Cut(pred, sep)
+	if !ok {
 		t.Fatalf("guarded predicate has no conjunct after the probe: %s", pred)
 	}
-	return pred[j+len(sep):]
+	return after
 }

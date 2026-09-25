@@ -296,7 +296,7 @@ func hasAnyNativeStrategyMarker(c *spec.Case) bool {
 // trimmed. Used by list-shaped sections such as `resource_labels:`.
 func nonEmptyLines(body string) []string {
 	var out []string
-	for _, ln := range strings.Split(body, "\n") {
+	for ln := range strings.SplitSeq(body, "\n") {
 		if ln = strings.TrimSpace(ln); ln != "" {
 			out = append(out, ln)
 		}

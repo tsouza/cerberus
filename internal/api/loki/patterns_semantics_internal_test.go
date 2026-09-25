@@ -40,7 +40,7 @@ func TestMinePatternsVolumeSortAndSeriesCap(t *testing.T) {
 	base := time.Unix(0, 0).UTC()
 	lines := make([]chclient.TimestampedLine, 0, candidateSeries*defaultPatternsMinVolume+1)
 	var highestVolumePattern string
-	for i := 0; i < candidateSeries; i++ {
+	for i := range candidateSeries {
 		body := distinctPatternBody(i)
 		lines = append(lines, repeatedPatternLines(base, body, defaultPatternsMinVolume)...)
 		if i == candidateSeries-1 {
@@ -109,7 +109,7 @@ func TestMinePatternsUsesRequestedStep(t *testing.T) {
 	const requestedStep = 15 * time.Second
 	base := time.Unix(0, 0).UTC()
 	lines := make([]chclient.TimestampedLine, 0, defaultPatternsMinVolume)
-	for i := 0; i < defaultPatternsMinVolume; i++ {
+	for i := range defaultPatternsMinVolume {
 		lines = append(lines, chclient.TimestampedLine{
 			Timestamp: base.Add(time.Duration(i) * time.Second),
 			Body:      "common beta loud route",

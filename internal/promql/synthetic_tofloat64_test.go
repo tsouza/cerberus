@@ -58,7 +58,6 @@ func TestSyntheticScalarVector_WrapsLitFloatInToFloat64(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)
@@ -115,7 +114,6 @@ func TestSyntheticFold_VectorVector_WrapsValueInToFloat64(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)

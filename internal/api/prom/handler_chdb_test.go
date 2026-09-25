@@ -274,7 +274,6 @@ func TestQuery_VectorVectorSynthBinop_ChDB(t *testing.T) {
 		{"div", "vector(8)/vector(2)", "4"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			srv, _ := newChDBServer(t, gaugeDDL)
 			// url.QueryEscape so the binop's `+` isn't decoded to a
@@ -594,7 +593,6 @@ func TestQuery_InstantStalenessLookback_5mBoundary(t *testing.T) {
 		{"outside_window_6m", 6 * time.Minute, 0},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			evalTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 			sampleTime := evalTime.Add(-tc.ageFromTs)

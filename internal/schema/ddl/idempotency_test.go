@@ -446,10 +446,8 @@ func TestRenderSignal_ConcurrentRendersDoNotRace(t *testing.T) {
 	const N = 32
 	var wg sync.WaitGroup
 	cfg := Config{Database: "ddl_concurrent"}.withDefaults()
-	for i := 0; i < N; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range N {
+		wg.Go(func() {
 			for _, sig := range All {
 				stmts, err := renderSignal(cfg, sig)
 				if err != nil {
@@ -462,7 +460,7 @@ func TestRenderSignal_ConcurrentRendersDoNotRace(t *testing.T) {
 					}
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

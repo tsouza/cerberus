@@ -76,7 +76,7 @@ func TestWrapLabelsWithMarks_CapHintMutantsKilled(t *testing.T) {
 			// branch: the grouping of the appends steers append's growth
 			// schedule, so the replay mirrors it call for call.
 			args := make([]chplan.Expr, 0, hint)
-			for i := 0; i < marks; i++ {
+			for range marks {
 				args = append(args, nil, nil)
 			}
 			args = append(args, nil)
@@ -90,7 +90,7 @@ func TestWrapLabelsWithMarks_CapHintMutantsKilled(t *testing.T) {
 // assertion added later reads something meaningful.
 func capHintMarks(n int) []labelFilterMark {
 	marks := make([]labelFilterMark, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		marks = append(marks, labelFilterMark{
 			cond:    &chplan.LitInt{V: int64(i)},
 			kind:    "SampleExtractionErr",
@@ -121,7 +121,7 @@ func TestMergeParsedFields_CapHintMutantKilled(t *testing.T) {
 		},
 		Observe: func(t *testing.T) (int, int) {
 			parsed := make([]parsedField, 0, fields)
-			for i := 0; i < fields; i++ {
+			for i := range fields {
 				parsed = append(parsed, parsedField{
 					name:  string(rune('a' + i)),
 					value: &chplan.LitString{V: "v"},
@@ -137,7 +137,7 @@ func TestMergeParsedFields_CapHintMutantKilled(t *testing.T) {
 		},
 		Build: func(hint int) (int, int) {
 			args := make([]chplan.Expr, 0, hint)
-			for i := 0; i < fields; i++ {
+			for range fields {
 				args = append(args, nil, nil) // (renamed key, value)
 			}
 			return len(args), cap(args)
@@ -183,7 +183,7 @@ func TestJSONExtractStringExpr_CapHintMutantKilled(t *testing.T) {
 		Build: func(hint int) (int, int) {
 			args := make([]chplan.Expr, 0, hint)
 			args = append(args, nil) // the Body column
-			for i := 0; i < segments; i++ {
+			for range segments {
 				args = append(args, nil)
 			}
 			return len(args), cap(args)
@@ -225,7 +225,7 @@ func TestRangeAggregationGroupBy_CapHintMutantKilled(t *testing.T) {
 		},
 		Build: func(hint int) (int, int) {
 			args := make([]chplan.Expr, 0, hint)
-			for i := 0; i < groups; i++ {
+			for range groups {
 				args = append(args, nil, nil) // (label literal, group-key value)
 			}
 			return len(args), cap(args)
@@ -285,7 +285,7 @@ func TestWrapVectorAggregateForSample_CapHintMutantKilled(t *testing.T) {
 		},
 		Build: func(hint int) (int, int) {
 			args := make([]chplan.Expr, 0, hint)
-			for i := 0; i < groups; i++ {
+			for range groups {
 				args = append(args, nil, nil) // (label literal, alias column)
 			}
 			return len(args), cap(args)

@@ -183,11 +183,11 @@ func TestWindowExpr_EmptyPartitionKeyMatchesWholeSetScalar(t *testing.T) {
 	const rows = `SELECT 'a' AS route, 0 AS Scale ` +
 		`UNION ALL SELECT 'a' AS route, 1 AS Scale ` +
 		`UNION ALL SELECT 'b' AS route, 5 AS Scale`
-	idx := strings.Index(gotSQL, "`windowSeries`")
-	if idx < 0 {
+	before, after, ok := strings.Cut(gotSQL, "`windowSeries`")
+	if !ok {
 		t.Fatalf("emitted SQL does not reference `windowSeries`: %s", gotSQL)
 	}
-	query := gotSQL[:idx] + "(" + rows + ")" + gotSQL[idx+len("`windowSeries`"):]
+	query := before + "(" + rows + ")" + after
 
 	db := chsqltest.OpenIsolatedChDB(t)
 	var mergedScale int64

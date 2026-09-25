@@ -109,7 +109,7 @@ func tempoParitySeedRows() []chclient.Sample {
 	rows := make([]chclient.Sample, 0, tempoParitySeedTraces*tempoParitySeedSpansPerTrc)
 	for tr := 1; tr <= tempoParitySeedTraces; tr++ {
 		traceID := fmt.Sprintf("%032x", tr)
-		for sp := 0; sp < tempoParitySeedSpansPerTrc; sp++ {
+		for sp := range tempoParitySeedSpansPerTrc {
 			rows = append(rows, chclient.Sample{
 				MetricName: fmt.Sprintf("span-%d-%d", tr, sp),
 				Labels: map[string]string{

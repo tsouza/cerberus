@@ -2,6 +2,7 @@ package chclient
 
 import (
 	"context"
+	"maps"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
@@ -29,9 +30,7 @@ var perQuerySettingsKey = perQuerySettingsKeyType{}
 func WithQuerySetting(ctx context.Context, name string, value any) context.Context {
 	prev := querySettingsFromContext(ctx)
 	next := make(clickhouse.Settings, len(prev)+1)
-	for k, v := range prev {
-		next[k] = v
-	}
+	maps.Copy(next, prev)
 	next[name] = value
 	return context.WithValue(ctx, perQuerySettingsKey, next)
 }
@@ -58,8 +57,6 @@ func QuerySettingsFromContext(ctx context.Context) clickhouse.Settings {
 		return nil
 	}
 	out := make(clickhouse.Settings, len(s))
-	for k, v := range s {
-		out[k] = v
-	}
+	maps.Copy(out, s)
 	return out
 }

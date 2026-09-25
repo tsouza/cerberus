@@ -56,7 +56,6 @@ func TestFanoutLint_LoweredPlans(t *testing.T) {
 	t.Parallel()
 
 	for _, head := range []string{"promql", "logql", "traceql"} {
-		head := head
 		t.Run(head, func(t *testing.T) {
 			t.Parallel()
 			lowerHead(t, head, func(t *testing.T, name string, plan chplan.Node, sql string) {
@@ -78,7 +77,6 @@ func TestFanoutLint_EmittedSQL(t *testing.T) {
 	t.Parallel()
 
 	for _, head := range []string{"promql", "logql", "traceql", "chsql"} {
-		head := head
 		t.Run(head, func(t *testing.T) {
 			t.Parallel()
 			dir := specDir(head)

@@ -21,8 +21,9 @@ import (
 // Rationale for going through clickhouse.WithProgress rather than the
 // older X-ClickHouse-Summary HTTP header: clickhouse-go/v2 uses the
 // native protocol by default, where Progress is a streamed packet not
-// an HTTP header. The progress callback is the only stable surface the
-// driver exposes that covers both the HTTP and native paths.
+// an HTTP header. Over its HTTP transport the driver never invokes the
+// callback, so a dispatch over HTTP records nothing here
+// (standDownProgressRecorder).
 //
 // Aggregation lives in a heap-allocated closure rather than a context
 // value because the driver invokes the callback off-goroutine from the
@@ -136,6 +137,20 @@ func WithActualsCapture(ctx context.Context, tracker *actuals.Tracker, shapeID s
 	return clickhouse.Context(ctx, clickhouse.WithProfileEvents(rec.onProfileEvents))
 }
 
+// standDownProgressRecorder marks the recorder ctx carries as observing a
+// dispatch whose transport delivers no progress packets
+// (Client.deliversProgressPackets): its flush then records nothing — no
+// sample on the rows/bytes-read histograms, whose zero would be a
+// measurement that never happened, and no actuals observation, directly or
+// folded into a routed request's ShardActualsFold, which therefore never
+// completes and records nothing either. Client.queryContext calls it for
+// every dispatch over such a transport. A no-op when ctx has no recorder.
+func standDownProgressRecorder(ctx context.Context) {
+	if rec := recorderFromContext(ctx); rec != nil {
+		rec.noPackets = true
+	}
+}
+
 // progressRecorder latches the most recent Progress snapshot for a
 // single query. The driver may emit several packets as the server
 // streams partial results; we keep only the final one because each
@@ -157,6 +172,10 @@ type progressRecorder struct {
 	peakMemory uint64
 	shapeID    string
 	tracker    *actuals.Tracker
+
+	// noPackets is set when the dispatch's transport delivers no progress
+	// packets (standDownProgressRecorder): flush then records nothing.
+	noPackets bool
 }
 
 // onProgress is the driver-facing callback. Each packet is an
@@ -223,7 +242,7 @@ func (r *progressRecorder) onProfileEvents(events []clickhouse.ProfileEvent) {
 // off), are byte-unchanged: they still call tracker.RecordActual here,
 // directly, exactly as before this issue.
 func (r *progressRecorder) flush() {
-	if r == nil {
+	if r == nil || r.noPackets {
 		return
 	}
 	telemetry.RecordClickHouseProgress(r.ctx, r.ql, r.rows, r.bytes)
@@ -252,7 +271,8 @@ func (r *progressRecorder) flush() {
 // K calls against the ONE un-sharded RecordPredicted prediction the whole
 // request made — corrupting the tracked EMA by roughly a factor of K.
 //
-// Folding rule:
+// Folding rule (actuals.Actual.FoldShard, shared with the query-log reader's
+// fold of the same request's shard rows):
 //   - ReadRows / ReadBytes: SUM across shards — each shard scanned a
 //     disjoint slice of the request's total.
 //   - PeakMemory: MAX across shards, never summed. onProfileEvents already
@@ -289,11 +309,9 @@ type ShardActualsFold struct {
 	shapeID string
 	k       int
 
-	mu         sync.Mutex
-	completed  int
-	rows       uint64
-	bytes      uint64
-	peakMemory uint64
+	mu        sync.Mutex
+	completed int
+	total     actuals.Actual
 }
 
 type shardActualsFoldKeyType struct{}
@@ -347,20 +365,12 @@ func shardActualsFoldFromContext(ctx context.Context) (*ShardActualsFold, bool) 
 func (f *ShardActualsFold) add(a actuals.Actual) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.rows += a.ReadRows
-	f.bytes += a.ReadBytes
-	if a.PeakMemory > f.peakMemory {
-		f.peakMemory = a.PeakMemory
-	}
+	f.total = f.total.FoldShard(a)
 	f.completed++
 	if f.completed != f.k {
 		return
 	}
-	report, ok := f.tracker.RecordActual(f.shapeID, actuals.Actual{
-		ReadRows:   f.rows,
-		ReadBytes:  f.bytes,
-		PeakMemory: f.peakMemory,
-	}, actuals.SourcePacket)
+	report, ok := f.tracker.RecordActual(f.shapeID, f.total, actuals.SourcePacket)
 	if ok && report.HasPredicted {
 		telemetry.RecordEstimateDrift(f.ctx, report.Ratio, report.Alerting, actuals.SourcePacket.String())
 	}

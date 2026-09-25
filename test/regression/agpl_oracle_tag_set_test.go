@@ -219,7 +219,7 @@ func goListPackages(t *testing.T, tags, patterns []string, withTestDeps bool) ma
 		t.Fatalf("go %s: %v", strings.Join(args, " "), err)
 	}
 	set := map[string]bool{}
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		// `go list -test` emits synthetic ".test" and "[…]" package names too;
 		// the base import path is what a file's package maps to.

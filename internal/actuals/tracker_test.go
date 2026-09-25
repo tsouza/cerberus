@@ -48,7 +48,7 @@ func TestTracker_NoDriftWithinBand(t *testing.T) {
 	const shape = "cerb:agg;rw"
 	tr.RecordPredicted(shape, 100_000)
 	// Two corroborating observations, both close to the prediction.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		report, ok := tr.RecordActual(shape, Actual{ReadRows: 90_000}, SourcePacket)
 		if !ok {
 			t.Fatal("RecordActual should succeed")
@@ -100,7 +100,7 @@ func TestTracker_ZeroPredictionNeverAlerts(t *testing.T) {
 	tr := NewTracker(testConfig())
 	const shape = "cerb:filter"
 	tr.RecordPredicted(shape, 0)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		report, ok := tr.RecordActual(shape, Actual{ReadRows: 1_000_000}, SourcePacket)
 		if !ok {
 			t.Fatal("RecordActual should succeed")
@@ -181,7 +181,7 @@ func TestTracker_CalibrationFactor_BoundedAndGated(t *testing.T) {
 	// clamps to minCalibrationFactor.
 	const underShape = "cerb:agg;rw;lwr"
 	tr.RecordPredicted(underShape, 1_000_000)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, ok := tr.RecordActual(underShape, Actual{ReadRows: 100}, SourcePacket); !ok {
 			t.Fatal("RecordActual should succeed")
 		}
@@ -202,7 +202,7 @@ func TestTracker_EntryTTLExpiry(t *testing.T) {
 
 	const shape = "cerb:agg;rw"
 	tr.RecordPredicted(shape, 100_000)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, ok := tr.RecordActual(shape, Actual{ReadRows: 90_000}, SourcePacket); !ok {
 			t.Fatal("RecordActual should succeed")
 		}
@@ -224,13 +224,13 @@ func TestTracker_StatsCountsAlerting(t *testing.T) {
 	tr := NewTracker(testConfig())
 
 	tr.RecordPredicted("cerb:agg;rw", 100_000)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, ok := tr.RecordActual("cerb:agg;rw", Actual{ReadRows: 90_000}, SourcePacket); !ok {
 			t.Fatal("RecordActual should succeed")
 		}
 	}
 	tr.RecordPredicted("cerb:agg;rw;rbf", 10_000)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, ok := tr.RecordActual("cerb:agg;rw;rbf", Actual{ReadRows: 100_000}, SourcePacket); !ok {
 			t.Fatal("RecordActual should succeed")
 		}
@@ -247,7 +247,7 @@ func TestTracker_StatsCountsAlerting(t *testing.T) {
 
 func TestTracker_CapacityEviction(t *testing.T) {
 	tr := NewTracker(testConfig())
-	for i := 0; i < trackerCapacity+10; i++ {
+	for i := range trackerCapacity + 10 {
 		tr.RecordPredicted(shapeIDForTest(i), 1000)
 	}
 	stats := tr.Stats()
@@ -330,5 +330,26 @@ func TestPacketObservedClaimNilTracker(t *testing.T) {
 	tr.MarkPacketObserved("anything") // must not panic
 	if !tr.ClaimQueryLogRow("anything") {
 		t.Error("a nil Tracker refused a claim; the poller must be unaffected when actuals capture is off")
+	}
+}
+
+// TestActual_FoldShard pins the routed-request folding rule both folds share:
+// rows and bytes add across shards, peak memory takes the maximum, and the
+// zero Actual is the identity.
+func TestActual_FoldShard(t *testing.T) {
+	shards := []Actual{
+		{ReadRows: 250, ReadBytes: 2500, PeakMemory: 1_000},
+		{ReadRows: 300, ReadBytes: 3000, PeakMemory: 5_000},
+		{ReadRows: 200, ReadBytes: 2000, PeakMemory: 2_000},
+	}
+	var total Actual
+	for _, s := range shards {
+		total = total.FoldShard(s)
+	}
+	if want := (Actual{ReadRows: 750, ReadBytes: 7500, PeakMemory: 5_000}); total != want {
+		t.Fatalf("folded %+v, want %+v", total, want)
+	}
+	if one := (Actual{}).FoldShard(shards[1]); one != shards[1] {
+		t.Fatalf("folding one shard into the zero Actual gave %+v, want the shard's own %+v", one, shards[1])
 	}
 }

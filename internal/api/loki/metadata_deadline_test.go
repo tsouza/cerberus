@@ -98,7 +98,6 @@ func TestMetadataEndpoints_HangingBackendReleasesAtTheQueryTimeout(t *testing.T)
 		"/loki/api/v1/detected_field/status/values?query=%7Bjob%3D%22api%22%7D&" + window,
 	}
 	for _, route := range routes {
-		route := route
 		t.Run(route, func(t *testing.T) {
 			t.Parallel()
 			started := time.Now()

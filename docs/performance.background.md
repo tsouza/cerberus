@@ -205,3 +205,68 @@ faster on 26.6 (about 2.1 s against 3.2 s) but took over 40 s on 24.8, and
 the engine's native-histogram analyzer rule records why its execution cost
 on this shape is worse even on 26.x at production cardinality — so the
 analyzer choice stays as it is and the fix is in the emitted structure.
+
+## Why repeated native-histogram subexpressions are bound where they are
+
+A subexpression one expression reads more than once is bound because the
+emitter prints the plan's expression DAG as a tree: every extra read is another
+printed copy for the older analyzer to walk, once per derived-query level above
+it. A new one-element binding goes only where its body reads no array column,
+because a ClickHouse lambda copies every array column its body reads once per
+element of the array it maps over.
+
+After the quantile's own levels were removed, the same dashboard's SQL still
+repeated large subexpressions inside single expressions: the merged bucket
+range's end (an `arrayMax` over a per-row `arrayMap`) sixteen times, the reset
+pair's reconciled scale `least(_hq_scales[ra], _hq_scales[rb])` eighteen times,
+and the budget guard's clamped width twice per ladder. Each copy sits under up
+to ten derived-query levels, and the older analyzer walks it at every one.
+
+The first attempt bound each repeat, and the row scale ratio
+`bitShiftLeft(toInt64(1), …)` too, with its own one-element `arrayMap`. That
+cut the SQL by about 8% but raised the range query's execution CPU by 3–7% on
+both builds. A lambda copies every array column its body reads once per
+element, so each new binding whose body read a bucket ladder or a per-series
+`Array(Array)` column added one more copy of it per row or per pair. The worst
+case was the across-series merge's per-target slice picker, where a binding
+around `arraySlice(arr, …)` copied the row's bucket array once per row and
+target. Removing the array-reading bindings one at a time moved the CPU part
+of the way back for each of them.
+
+The shipped shape adds no copy of a bucket ladder or of an `Array(Array)`
+column:
+
+- the merged end joins the start in the binding that already existed, as a
+  second lambda parameter;
+- the pair scale is one more argument of the pair lambda, computed by a small
+  lambda whose only array read is the flat `_hq_scales` list, copied once per
+  pair;
+- the guard's width binding reads only the width.
+
+The row scale ratio stays inline. Binding it per dense row contribution, around
+a per-target lambda whose body reads no array column, still measured about 2%
+more range execution CPU on 26.6 than leaving it inline. That comparison ran on
+one build, on a loaded host, over seven interleaved rounds. Binding it in the per-target
+picker would copy the bucket array per target. With the pair scale bound, each
+reset-mask ratio is a short `bitShiftLeft(toInt64(1), _hq_scales[rb] - rps)`.
+
+Measured on the #3641 dense fixture with the same SQL and settings cerberus
+stamps, seven interleaved rounds on memory-capped (4 GiB, 2 CPU)
+`clickhouse-server:24.8.14.39-alpine` and `26.6.8.7-alpine` containers. The
+host load average was 35–50, so the table reports ClickHouse's own
+`UserTimeMicroseconds` (median / min, ms), which is steadier under contention
+than wall time. The instant statement shrank from 36,047 to 34,040 bytes and
+the range statement from 40,406 to 38,399.
+
+| Build | Query   | Planning CPU before | Planning CPU after | Total CPU before | Total CPU after |
+| ----- | ------- | ------------------- | ------------------ | ---------------- | --------------- |
+| 24.8  | instant | 3533 / 3474         | 3351 / 3292        | 3726 / 3678      | 3516 / 3476     |
+| 24.8  | range   | 7110 / 6925         | 6766 / 6658        | 20025 / 19750    | 19414 / 19255   |
+| 26.6  | instant | 3648 / 3577         | 3423 / 3366        | 3779 / 3572      | 3572 / 3512     |
+| 26.6  | range   | 6977 / 6849         | 6830 / 6555        | 19768 / 19280    | 19426 / 18623   |
+
+Peak memory did not rise: 24.8 instant 60 → 56 MiB and range 379 → 379 MiB,
+26.6 instant 41 → 39 MiB and range 340 → 339 MiB.
+
+Every group, anchor and value of the instant and 121-anchor range answers was
+byte-identical before and after on both builds.

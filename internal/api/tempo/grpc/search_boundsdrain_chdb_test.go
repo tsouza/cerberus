@@ -24,6 +24,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,11 +99,12 @@ func grpcBoundsTracesSeed(base time.Time) (seed string, fullSeed int64) {
 }
 
 func joinRows(rows []string) string {
-	out := rows[0]
+	var out strings.Builder
+	out.WriteString(rows[0])
 	for _, r := range rows[1:] {
-		out += ",\n    " + r
+		out.WriteString(",\n    " + r)
 	}
-	return out
+	return out.String()
 }
 
 // dialChDBSearchServer wires a real chDB-backed tempo.Handler into a gRPC

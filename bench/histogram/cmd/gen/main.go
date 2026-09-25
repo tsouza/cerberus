@@ -35,6 +35,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -136,10 +137,7 @@ func run(ctx context.Context, cfg config) error {
 
 	total := 0
 	for s0 := 0; s0 < cfg.steps; s0 += cfg.blockSteps {
-		s1 := s0 + cfg.blockSteps
-		if s1 > cfg.steps {
-			s1 = cfg.steps
-		}
+		s1 := min(s0+cfg.blockSteps, cfg.steps)
 		promByKey := map[string]*promSeries{}
 		orderedKeys := []string{}
 
@@ -157,7 +155,7 @@ func run(ctx context.Context, cfg config) error {
 			for _, sr := range all {
 				bc := make([]uint64, nb)
 				var count uint64
-				for i := 0; i < nb; i++ {
+				for i := range nb {
 					bc[i] = sr.weights[i] * mult
 					count += bc[i]
 				}
@@ -169,7 +167,7 @@ func run(ctx context.Context, cfg config) error {
 
 				// Prometheus/Mimir exploded form: cumulative-across-buckets.
 				var across uint64
-				for i := 0; i < len(bounds); i++ {
+				for i := range bounds {
 					across += sr.weights[i] * mult
 					addSample(promByKey, &orderedKeys, bucketLabels(metric, sr.labels, leString(bounds[i])), tsMs, float64(across))
 				}
@@ -216,15 +214,14 @@ func buildSeries(cfg config, nb int, reps []float64) []series {
 			peak := (r*3 + inst) % nb
 			w := make([]uint64, nb)
 			var perStepSum float64
-			for i := 0; i < nb; i++ {
+			for i := range nb {
 				d := i - peak
 				if d < 0 {
 					d = -d
 				}
-				v := cfg.peakWidth - d
-				if v < 1 {
-					v = 1 // keep every bucket non-empty so cumulative counters are strictly monotone
-				}
+				v := max(cfg.peakWidth-d,
+					// keep every bucket non-empty so cumulative counters are strictly monotone
+					1)
 				w[i] = uint64(v)
 				perStepSum += float64(v) * reps[i]
 			}
@@ -277,11 +274,11 @@ func addSample(byKey map[string]*promSeries, order *[]string, labels [][2]string
 }
 
 func labelKey(labels [][2]string) string {
-	s := ""
+	var s strings.Builder
 	for _, l := range labels {
-		s += l[0] + "=" + l[1] + ";"
+		s.WriteString(l[0] + "=" + l[1] + ";")
 	}
-	return s
+	return s.String()
 }
 
 // nameLabels builds a sorted prom label slice from a metric name + attrs.

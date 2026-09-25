@@ -58,7 +58,6 @@ func TestConformance_LokiQueryWire(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{samples: c.samples})
@@ -128,7 +127,6 @@ func TestConformance_LokiQueryConstantArithmetic_HealthProbe(t *testing.T) {
 		`vector(8)/vector(2)`,
 	}
 	for _, q := range cases {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})
@@ -165,7 +163,6 @@ func TestConformance_LokiQueryRangeWire(t *testing.T) {
 		{"metric_range", `rate({job="api"}[5m])`, "matrix"},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})
@@ -220,7 +217,6 @@ func TestConformance_LokiLabelsWire(t *testing.T) {
 		{"empty", nil},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{stringRows: c.rows})
@@ -254,7 +250,6 @@ func TestConformance_LokiLabelValuesWire(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	for _, name := range []string{"job", "instance"} {
-		name := name
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			resp, err := http.Get(srv.URL + "/loki/api/v1/label/" + name + "/values")
@@ -292,7 +287,6 @@ func TestConformance_LokiSeriesWire(t *testing.T) {
 		{"empty", nil},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{labelSets: c.rows})
@@ -337,7 +331,6 @@ func TestConformance_LokiIndexStatsWire(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{statsRow: c.row})
@@ -385,7 +378,6 @@ func TestConformance_LokiIndexVolumeWire(t *testing.T) {
 		{name: "empty", rows: nil},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{volumeRows: c.rows})
@@ -460,7 +452,6 @@ func TestConformance_LokiDetectedFieldsWire(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{detectedRows: c.rows})
@@ -642,7 +633,7 @@ func TestConformance_LokiPatternsBasic(t *testing.T) {
 	// includes at least four space-separated chunks (path, status,
 	// latency suffix) to satisfy the minimum.
 	lines := make([]chclient.TimestampedLine, 0, retainedPatternVolumeFloor)
-	for i := 0; i < retainedPatternVolumeFloor; i++ {
+	for i := range retainedPatternVolumeFloor {
 		lines = append(lines, chclient.TimestampedLine{
 			Timestamp: base.Add(time.Duration(i) * time.Second),
 			Body:      "GET /api/foo/1 status=200 latency=5ms",
@@ -732,7 +723,6 @@ func TestConformance_LokiPatternsWire(t *testing.T) {
 		`{job=~"api|db"}`,
 	}
 	for _, q := range cases {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})
@@ -836,7 +826,6 @@ func TestConformance_LokiErrorEnvelope(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(c.stub)
@@ -932,7 +921,6 @@ func TestConformance_LokiRangeTimeMatrix(t *testing.T) {
 		{"end_before_start", "1717999200", "1717995600", http.StatusBadRequest},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})
@@ -1074,7 +1062,7 @@ func TestConformance_LokiAdmitSerialReleasesSlot(t *testing.T) {
 
 	// 2*cap requests serially — all should succeed since the slots
 	// release before the next acquire.
-	for i := 0; i < cap*2; i++ {
+	for i := range cap * 2 {
 		resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D`)
 		if err != nil {
 			t.Fatalf("GET %d: %v", i, err)
@@ -1108,7 +1096,7 @@ func TestConformance_LokiAdmitIndependentFromOthers(t *testing.T) {
 
 	const n = 20
 	admitted := 0
-	for i := 0; i < n; i++ {
+	for range n {
 		resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D`)
 		if err != nil {
 			continue
@@ -1272,7 +1260,7 @@ func TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted(t *testing.T) {
 		`/loki/api/v1/series?match%5B%5D=%7Bjob%3D%22api%22%7D`,
 		`/loki/api/v1/index/stats?query=%7Bjob%3D%22api%22%7D`,
 	}
-	for round := 0; round < requestCap*2; round++ {
+	for round := range requestCap * 2 {
 		for _, p := range paths {
 			resp, err := http.Get(srv.URL + p)
 			if err != nil {
@@ -1425,7 +1413,6 @@ func TestConformance_LokiGrafanaMsTimestamps_ResourcesProxy(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})
@@ -1569,7 +1556,6 @@ func TestConformance_LokiFormatQueryWire(t *testing.T) {
 		{"range_agg", `/loki/api/v1/format_query?query=` + url.QueryEscape(`rate({job="api"}[5m])`)},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})

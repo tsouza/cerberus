@@ -224,7 +224,6 @@ func TestTemplateFunc_FullSurfaceParse(t *testing.T) {
 		{"unixToTime", `{{ (unixToTime "1673798889").Year }}`, nil, "2023"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := renderInline(t, tc.body, tc.dot); got != tc.want {

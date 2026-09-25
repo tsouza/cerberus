@@ -2,6 +2,7 @@ package regression
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -185,7 +186,7 @@ func TestRoundtripPromqlShardMatrixIsContiguous(t *testing.T) {
 	}
 
 	var legs []int
-	for _, field := range strings.Split(list[1], ",") {
+	for field := range strings.SplitSeq(list[1], ",") {
 		field = strings.TrimSpace(field)
 		if field == "" {
 			continue
@@ -234,10 +235,8 @@ func TestReleasePreflightRequiresTheRoundtripPromqlLane(t *testing.T) {
 	job := workflowJobBody(t, readFileString(t, releaseWorkflowPath), preflightJob)
 	required := requiredChecksFromPreflight(t, job)
 
-	for _, name := range required {
-		if name == roundtripPromqlContext {
-			return
-		}
+	if slices.Contains(required, roundtripPromqlContext) {
+		return
 	}
 	t.Errorf("%s job %q does not require %q (required set: %q). The preflight is observation-derived "+
 		"for everything outside that set, so a lane that never ran contributes zero problems and the "+

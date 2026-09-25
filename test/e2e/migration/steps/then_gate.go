@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -174,10 +175,8 @@ func (w *World) thenGateNamesMissingParity() error {
 	if err != nil {
 		return err
 	}
-	for _, m := range dec.Missing {
-		if m == migrategate.StageVerify {
-			return nil
-		}
+	if slices.Contains(dec.Missing, migrategate.StageVerify) {
+		return nil
 	}
 	return fmt.Errorf("the gate lists %v as missing, without naming %q", dec.Missing, migrategate.StageVerify)
 }

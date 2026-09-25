@@ -418,11 +418,9 @@ func TestCursor_ConcurrentClose(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 16 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_ = cursor.Close()
-		}()
+		})
 	}
 	wg.Wait()
 	if got := rows.closeCalled.Load(); got != 1 {

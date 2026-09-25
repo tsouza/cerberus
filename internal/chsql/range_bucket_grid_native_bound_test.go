@@ -102,7 +102,7 @@ func seedGridNativeSeries(t *testing.T, exec func(string) error, seriesCount int
 
 	var b strings.Builder
 	b.WriteString("INSERT INTO otel_metrics_histogram (MetricName, SeriesID, TimeUnix, BucketCounts, ExplicitBounds) VALUES ")
-	for i := 0; i < seriesCount; i++ {
+	for i := range seriesCount {
 		if i > 0 {
 			b.WriteString(",")
 		}

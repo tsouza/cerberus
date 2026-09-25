@@ -2,6 +2,7 @@ package routerrules
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -306,14 +307,14 @@ func classOf(gk map[string]string) string {
 		keys = append(keys, k)
 	}
 	sortStringsLocal(keys)
-	out := ""
+	var out strings.Builder
 	for i, k := range keys {
 		if i > 0 {
-			out += ","
+			out.WriteString(",")
 		}
-		out += k + "=" + gk[k]
+		out.WriteString(k + "=" + gk[k])
 	}
-	return out
+	return out.String()
 }
 
 func sortStringsLocal(xs []string) {

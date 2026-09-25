@@ -283,7 +283,7 @@ SELECT DISTINCT MetricName, Attributes FROM (
 	combinedCount := "SELECT count() FROM (" + combined + ")"
 	const iters = 7
 	best := time.Hour
-	for i := 0; i < iters; i++ {
+	for range iters {
 		s := time.Now()
 		var c int64
 		if err := db.QueryRow(combinedCount).Scan(&c); err != nil {

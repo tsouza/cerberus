@@ -3,6 +3,7 @@ package chsql
 import (
 	"regexp"
 	"regexp/syntax"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -124,12 +125,7 @@ func readsDotWithoutNewline(re *syntax.Regexp) bool {
 	if re.Op == syntax.OpAnyCharNotNL {
 		return true
 	}
-	for _, sub := range re.Sub {
-		if readsDotWithoutNewline(sub) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(re.Sub, readsDotWithoutNewline)
 }
 
 // notNewlineClass is `.` without the `s` flag, spelled as a class.

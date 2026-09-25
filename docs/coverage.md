@@ -52,12 +52,12 @@ each citing an open issue and held to a count ceiling plus an age cap — see
 The numbers below are derived directly from
 [`test/surface-parity/inventory/`](../test/surface-parity/inventory),
 the pinned ledger of every grammar symbol the three upstream parsers expose.
-The table is rendered from it by `scripts/gen-coverage.py`, and every cell is
+The table is rendered from it by `.github/scripts/gen-coverage.mjs`, and every cell is
 re-derived from the ledger on each pull request by the `doc-counts` gate
 ([`.github/scripts/doc-counts.mjs`](../.github/scripts/doc-counts.mjs)), so a
 figure here can only ever be what the ledger tallies.
 
-<!-- BEGIN AUTOGEN: coverage-glance (scripts/gen-coverage.py) -->
+<!-- BEGIN AUTOGEN: coverage-glance (.github/scripts/gen-coverage.mjs) -->
 
 | Head      | Symbols probed | Supported (incl. experimental) | Intentionally rejected (parity) | Wrong-rejected symbols |
 | --------- | -------------- | ------------------------------ | ------------------------------- | ---------------------- |
@@ -123,12 +123,12 @@ above; regenerate both after a burndown that changes the surface with:
 
 ```sh
 CERBERUS_UPDATE_INVENTORY=1 go test ./test/surface-parity/   # re-pin the ledger
-python3 scripts/gen-coverage.py                              # re-render this doc
+node .github/scripts/gen-coverage.mjs                        # re-render this doc
 ```
 
 The `Probe` column is the exact query the ledger evaluates for that symbol.
 
-<!-- BEGIN AUTOGEN: coverage-tables (scripts/gen-coverage.py) -->
+<!-- BEGIN AUTOGEN: coverage-tables (.github/scripts/gen-coverage.mjs) -->
 
 ### PromQL (121 symbols)
 

@@ -466,7 +466,7 @@ func plantPathologies(bc *BenchCorpus, rng *rand.Rand, p BenchParams) {
 				shape = sp.shape + "_" + sev.String()
 			}
 			hash := sp.hashBase + uint64(sev)
-			for i := 0; i < size; i++ {
+			for range size {
 				row := sp.fill(rng, sev)
 				row.ShapeID = shape
 				row.Language = sp.lang
@@ -506,10 +506,7 @@ func pathologySize(sev PathologySeverity, p BenchParams) int {
 		base = p.MinSupport + 1
 		floor = minPathologyClassRows
 	}
-	scaled := int(math.Round(float64(base) * p.PathologyPrevalence))
-	if scaled < floor {
-		scaled = floor
-	}
+	scaled := max(int(math.Round(float64(base)*p.PathologyPrevalence)), floor)
 	return scaled
 }
 
@@ -810,13 +807,6 @@ func pick(sev PathologySeverity, severe, marginal float64) float64 {
 // rounded to an integer (corpus columns are integer-typed in the CH DDL).
 func jitter(rng *rand.Rand, base, spread float64) float64 {
 	return math.Round(base + rng.Float64()*spread)
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // classID is a stable identifier for a labeled class across its group_by

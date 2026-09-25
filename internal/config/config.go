@@ -576,7 +576,7 @@ func enabledHeadsFromEnv(v *viper.Viper) (EnabledHeads, error) {
 		raw = defaultEnabledHeads
 	}
 	set := EnabledHeads{}
-	for _, tok := range strings.Split(raw, ",") {
+	for tok := range strings.SplitSeq(raw, ",") {
 		if strings.TrimSpace(tok) == "" {
 			continue
 		}
@@ -2683,17 +2683,17 @@ func parseHeaders(raw string) (map[string]string, error) {
 		return nil, nil
 	}
 	out := map[string]string{}
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
-		eq := strings.IndexByte(part, '=')
-		if eq < 0 {
+		before, after, ok := strings.Cut(part, "=")
+		if !ok {
 			return nil, fmt.Errorf("entry %q: missing '='", part)
 		}
-		k := strings.TrimSpace(part[:eq])
-		val := strings.TrimSpace(part[eq+1:])
+		k := strings.TrimSpace(before)
+		val := strings.TrimSpace(after)
 		if k == "" {
 			return nil, fmt.Errorf("entry %q: empty key", part)
 		}

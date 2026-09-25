@@ -48,7 +48,7 @@ func newTestMemo() (*Memo, *fakeClock) {
 // leaving the test's real assertion running against an un-probed key.
 func admitFirstProbe(t *testing.T, m *Memo, k Key) (release func()) {
 	t.Helper()
-	for i := 0; i < MinCorroboratingFailures-1; i++ {
+	for range MinCorroboratingFailures - 1 {
 		m.Observe(k, RouteA, OutcomeResourceFailure)
 	}
 	release, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
@@ -168,7 +168,7 @@ func TestTTLExpiresFromCreationNotFromLookup(t *testing.T) {
 
 	// Repeated lookups before the TTL must NOT refresh the clock.
 	clk.advance(MemoEntryTTL - time.Second)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if state, _ := m.Lookup(k); state != PreferB {
 			t.Fatalf("expected PreferB to still be live just under the TTL, got %v", state)
 		}
@@ -314,7 +314,7 @@ func TestBothFailHasNoReValidationAndExpiresAtPlainTTL(t *testing.T) {
 // unaffected by the pressure damper), so these LRU tests exercise eviction
 // in isolation rather than interacting with pressure-window bookkeeping.
 func fillDistinctPreferB(m *Memo, n int, keyAt func(i int) Key) {
-	for i := 0; i < n; i++ {
+	for i := range n {
 		m.Observe(keyAt(i), RouteB, OutcomeSuccess)
 	}
 }
@@ -438,7 +438,7 @@ func TestPressureDamperSuppressesBothActionAndLearning(t *testing.T) {
 
 	// Drive enough DISTINCT keys into resource failure to cross the
 	// pressure threshold. None of them individually reaches corroboration.
-	for i := 0; i < pressureFailureThreshold+1; i++ {
+	for i := range pressureFailureThreshold + 1 {
 		k := Key{RootKind: testKeyName(i)}
 		m.Observe(k, RouteA, OutcomeResourceFailure)
 	}
@@ -470,7 +470,7 @@ func TestPressureDamperSuppressesBothActionAndLearning(t *testing.T) {
 func TestPressureDamperDecaysAfterWindow(t *testing.T) {
 	m, clk := newTestMemo()
 
-	for i := 0; i < pressureFailureThreshold+1; i++ {
+	for i := range pressureFailureThreshold + 1 {
 		k := Key{RootKind: testKeyName(i)}
 		m.Observe(k, RouteA, OutcomeResourceFailure)
 	}
@@ -490,7 +490,7 @@ func TestAdmissionBudgetCapsConcurrentDispatchesAcrossProbeAndHit(t *testing.T) 
 	m, _ := newTestMemo()
 
 	var releases []func()
-	for i := 0; i < maxConcurrentRoutedDispatches; i++ {
+	for i := range maxConcurrentRoutedDispatches {
 		release, ok := m.AdmitDispatch()
 		if !ok {
 			t.Fatalf("expected admission %d/%d to succeed", i+1, maxConcurrentRoutedDispatches)
@@ -548,7 +548,7 @@ func TestConcurrentLookupObserveAdmitDispatchIsRace_free(t *testing.T) {
 
 	const workers = 16
 	wg.Add(workers)
-	for w := 0; w < workers; w++ {
+	for w := range workers {
 		go worker(w)
 	}
 	time.Sleep(50 * time.Millisecond)

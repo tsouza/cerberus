@@ -24,8 +24,8 @@ name: CodeQL
 # requires this name; any rename here must be accompanied by an update to the
 # required-checks list (`gh api repos/tsouza/cerberus/rules/branches/main`).
 #
-# LANGUAGES: the same set default setup was scanning:
-#   go, javascript-typescript, actions, python
+# LANGUAGES: every language the tree carries source in:
+#   go, javascript-typescript, actions
 # The `actions` language scans workflow YAML for injection vulnerabilities.
 # The `javascript-typescript` language covers the .github/scripts/*.mjs files.
 #
@@ -64,7 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [go, javascript-typescript, actions, python]
+        language: [go, javascript-typescript, actions]
     steps:
       - uses: actions/checkout@v7
 

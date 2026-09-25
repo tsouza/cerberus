@@ -478,7 +478,7 @@ func readSkipBaseline(path string) ([]string, error) {
 		return nil, err
 	}
 	var out []string
-	for _, line := range strings.Split(string(b), "\n") {
+	for line := range strings.SplitSeq(string(b), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -662,7 +662,6 @@ func compareAll(cases []loadedCase, f flags, isInstant bool) []Result {
 	var wg sync.WaitGroup
 
 	for i, lc := range cases {
-		i, lc := i, lc
 
 		suiteFile := stripSourceLine(lc.def.Source)
 
@@ -710,7 +709,6 @@ func compareOne(c *http.Client, f flags, tc bench.TestCase, suiteFile string, is
 	var wg sync.WaitGroup
 	wg.Add(2)
 	for idx, addr := range []string{f.addr1, f.addr2} {
-		idx, addr := idx, addr
 		go func() {
 			defer wg.Done()
 			v, err := queryOne(c, addr, tc, isInstant)
@@ -1166,11 +1164,8 @@ func normaliseTypedResult(t typedResult) typedResult {
 func labelsCmp(a, b map[string]string) int {
 	akeys := sortedKeys(a)
 	bkeys := sortedKeys(b)
-	n := len(akeys)
-	if len(bkeys) < n {
-		n = len(bkeys)
-	}
-	for i := 0; i < n; i++ {
+	n := min(len(bkeys), len(akeys))
+	for i := range n {
 		if c := strings.Compare(akeys[i], bkeys[i]); c != 0 {
 			return c
 		}

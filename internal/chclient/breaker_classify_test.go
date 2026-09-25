@@ -115,7 +115,7 @@ func TestBreakerClassify_StatementScopedStreamDoesNotTrip(t *testing.T) {
 					b := &breaker{}
 					// Ten times the threshold, with no intervening success —
 					// there is no window-rollover escape hatch here.
-					for i := 0; i < breakerThreshold*10; i++ {
+					for range breakerThreshold * 10 {
 						_ = b.allow()
 						b.record(context.Background(), err)
 					}
@@ -182,7 +182,7 @@ func TestBreakerClassify_ServerHealthStreamTrips(t *testing.T) {
 					t.Run(shape, func(t *testing.T) {
 						t.Parallel()
 						b := &breaker{}
-						for i := 0; i < breakerThreshold; i++ {
+						for range breakerThreshold {
 							_ = b.allow()
 							b.record(context.Background(), err)
 						}
@@ -238,7 +238,7 @@ func TestBreakerClassify_ServerHealthStreamTrips(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				b := &breaker{}
-				for i := 0; i < breakerThreshold; i++ {
+				for range breakerThreshold {
 					_ = b.allow()
 					b.record(context.Background(), err)
 				}
@@ -329,7 +329,7 @@ func TestBreakerClassify_ClientScopedNeverCounts(t *testing.T) {
 				t.Fatalf("%s classified %v, want %v", name, got, breakerScopeClient)
 			}
 			b := &breaker{}
-			for i := 0; i < breakerThreshold*3; i++ {
+			for range breakerThreshold * 3 {
 				_ = b.allow()
 				b.record(context.Background(), err)
 			}
@@ -394,7 +394,7 @@ func TestBreakerTrip_CarriesCauseContext(t *testing.T) {
 			head:    HeadProm,
 			metrics: newBreakerMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))),
 		}
-		for i := 0; i < breakerThreshold; i++ {
+		for range breakerThreshold {
 			_ = b.allow()
 			b.record(context.Background(), rowDialException(chproto.ErrServerOverloaded))
 		}
@@ -428,12 +428,12 @@ func TestBreakerTrip_CarriesCauseContext(t *testing.T) {
 		// outage. The rejections must not contribute to the trip, but the trip
 		// must SAY they happened so the responder is not left guessing.
 		const rejections = 3
-		for i := 0; i < rejections; i++ {
+		for range rejections {
 			_ = b.allow()
 			b.record(context.Background(),
 				rowDialException(chproto.ErrQueryCacheUsedWithNondeterministicFunctions))
 		}
-		for i := 0; i < breakerThreshold; i++ {
+		for range breakerThreshold {
 			_ = b.allow()
 			b.record(context.Background(), errors.New("dial tcp 127.0.0.1:9000: connection refused"))
 		}
@@ -474,7 +474,7 @@ func TestBreakerMetrics_StatementRejectionsCounted(t *testing.T) {
 		metrics: newBreakerMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))),
 	}
 	const rejections = 21 // the #2895 incident's own count
-	for i := 0; i < rejections; i++ {
+	for range rejections {
 		_ = b.allow()
 		b.record(context.Background(),
 			rowDialException(chproto.ErrQueryCacheUsedWithNondeterministicFunctions))
@@ -568,7 +568,7 @@ func captureBreakerLogs(t *testing.T) *breakerLogCapture {
 func (c *breakerLogCapture) tripLine(t *testing.T) string {
 	t.Helper()
 	var hits []string
-	for _, line := range strings.Split(c.buf.String(), "\n") {
+	for line := range strings.SplitSeq(c.buf.String(), "\n") {
 		if strings.Contains(line, "tripped OPEN") {
 			hits = append(hits, line)
 		}

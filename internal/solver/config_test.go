@@ -46,7 +46,6 @@ func TestConfigValidate_FailFast(t *testing.T) {
 		{"DataShardCount < 1", func(c *Config) { c.DataShardCount = 0 }},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			c := DefaultConfig()

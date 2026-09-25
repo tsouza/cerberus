@@ -774,7 +774,7 @@ func TestDriver_FixpointTerminates(t *testing.T) {
 	// at most N+1 iterations and not hit the iteration cap.
 	plan := chplan.Node(&chplan.Scan{Table: "otel_metrics_gauge"})
 	const depth = 12
-	for i := 0; i < depth; i++ {
+	for range depth {
 		plan = &chplan.Filter{
 			Input:     plan,
 			Predicate: &chplan.LitBool{V: true},

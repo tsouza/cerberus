@@ -155,7 +155,6 @@ func TestOverTimeValueColumnIsFloat64(t *testing.T) {
 	t.Parallel()
 
 	for _, rd := range allPromQLOverTimeReducers {
-		rd := rd
 		t.Run(rd.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{

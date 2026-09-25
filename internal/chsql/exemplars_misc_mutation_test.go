@@ -249,7 +249,6 @@ func TestExemplarsRateAndCountIgnoreAttr(t *testing.T) {
 	}
 
 	for _, op := range []chplan.MetricsOp{chplan.MetricsOpRate, chplan.MetricsOpCountOverTime} {
-		op := op
 		t.Run(op.String(), func(t *testing.T) {
 			t.Parallel()
 			sql := emit(t, op, &chplan.ColumnRef{Name: "Duration"})

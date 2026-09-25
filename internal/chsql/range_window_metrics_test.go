@@ -105,7 +105,6 @@ func TestRangeWindowMetricsLeftOpenWindow(t *testing.T) {
 		{name: "quantile_over_time", op: chplan.MetricsOpQuantileOverTime, attr: &chplan.ColumnRef{Name: "Duration"}, q: []float64{0.95}},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
@@ -204,7 +203,6 @@ func TestMetricsAggregateRequiresAttr(t *testing.T) {
 		chplan.MetricsOpQuantileOverTime,
 	}
 	for _, op := range cases {
-		op := op
 		t.Run(op.String(), func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.MetricsAggregate{
@@ -407,7 +405,6 @@ func TestRangeWindowMetricsReducerIsFloat64(t *testing.T) {
 		{name: "quantile_over_time", op: chplan.MetricsOpQuantileOverTime, attr: &chplan.ColumnRef{Name: "Duration"}, q: []float64{0.95}},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{

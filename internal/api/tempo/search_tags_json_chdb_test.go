@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"sort"
 	"testing"
 
@@ -126,12 +127,7 @@ func searchTags(t *testing.T, srv *httptest.Server, scope string) []string {
 }
 
 func containsStr(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(xs, want)
 }
 
 // TestTagValues_JSONAttrStrategy_ChDB proves /api/search/tag/{name}/values

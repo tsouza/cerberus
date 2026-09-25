@@ -166,7 +166,6 @@ func TestLowerSubqueryOverAbsent_ShiftsGridForSubqueryOffset(t *testing.T) {
 		{"offset 10m", offsetQuery, offset},
 		{"no offset", unshiftedQuery, 0},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -205,7 +204,6 @@ func TestLowerSubqueryOverAbsent_ShiftsGridForSubqueryOffset(t *testing.T) {
 					},
 				},
 			} {
-				mode := mode
 				t.Run(mode.name, func(t *testing.T) {
 					t.Parallel()
 

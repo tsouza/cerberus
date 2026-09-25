@@ -59,9 +59,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -202,12 +204,7 @@ func getEnvelope(t *testing.T, base, path string, query url.Values) envelope {
 
 // containsStr reports whether s appears in vals.
 func containsStr(vals []string, s string) bool {
-	for _, v := range vals {
-		if v == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(vals, s)
 }
 
 func TestMetadataEndpoints_RealClickHouse(t *testing.T) {
@@ -320,9 +317,7 @@ func TestMetadataEndpoints_RealClickHouse(t *testing.T) {
 			"start": {fmt.Sprintf("%d", windowStart.Unix())},
 			"end":   {fmt.Sprintf("%d", windowEnd.Unix())},
 		}
-		for k, v := range extra {
-			q[k] = v
-		}
+		maps.Copy(q, extra)
 		return q
 	}
 
