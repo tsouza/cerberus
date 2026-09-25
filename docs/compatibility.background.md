@@ -149,3 +149,109 @@ where a reader would otherwise silently flip it back, and
 `test/regression/promql_oracle_engine_parity_test.go` turns any future
 disagreement into a CI failure naming both sites instead of a silent
 per-fixture disagreement.
+
+## Why invalid UTF-8 is in scope, and how the emitted shapes read it
+
+OTLP defines its string fields as UTF-8, but a writer that does not enforce
+it — a direct `INSERT`, another exporter — can store any bytes, and the
+reference engines answer on those bytes. Compatibility with them is the source
+of truth, so a value that is not valid UTF-8 is held to the same standard as
+any other rather than declared outside the input contract.
+
+### What diverged
+
+Go's `regexp` decodes its input with `utf8.DecodeRuneInString`: a byte that
+does not begin a valid sequence is one U+FFFD rune of width one. ClickHouse
+evaluates patterns with RE2 in UTF-8 mode, which never matches a lone invalid
+byte, and which reads some invalid sequences as one character where Go reads
+one U+FFFD per byte — measured on 26.7.13.12, 26.8.10.6 and 24.8.14.39:
+`\xed\xa0\x80` (an encoded surrogate) matches `^.$` and `^[\x{D800}-\x{DFFF}]$`,
+`\xe0\x80\x80` (overlong) and `\xf4\x90\x80\x80` (above U+10FFFF) match `^.$`
+but not `^[^\x{FFFD}]*$`, so RE2 reads them as a single U+FFFD. ClickHouse
+26.7's regex compiler matches bytes and agrees with Go on the shapes it
+compiles, but only for those shapes, and only once a pattern has been used
+`min_count_to_compile_regular_expression` times — so the same query could
+answer differently from one run to the next.
+
+### Why the value is rewritten per byte, not with `toValidUTF8`
+
+`toValidUTF8` collapses a run of invalid bytes into one U+FFFD, so `^..$` on
+`\xff\xfe` — two runes to Go — would read as one. The emitted rewrite splits
+the value into chunks, each a byte that is not a continuation byte followed by
+the continuation bytes after it: Go's decoder starts a rune at every such byte,
+so a chunk keeps the sequence its lead byte announces when `isValidUTF8`
+accepts it, and every other byte is one U+FFFD. A differential of 3,009 values
+(random strings over lead, continuation and invalid bytes, up to eight bytes)
+against `utf8.DecodeRuneInString` agreed on all three builds.
+
+### Why text results go through a substitute block
+
+Replacing each invalid byte by U+FFFD makes a match exact but loses the byte
+a capture or a replaced string must carry, and U+FFFD cannot be mapped back:
+the value may hold U+FFFD itself. Evaluating a second time over a spelling in
+which each invalid byte is its own code point keeps the byte recoverable. The
+block U+10FF80..U+10FFFF was chosen because a pattern treats all of it the way
+it treats U+FFFD unless it singles out private-use characters or U+FFFD, and
+because each code point's UTF-8 encoding carries the byte in its last two
+bytes, so it is recovered with integer arithmetic. The two evaluations parse
+identically, so their results align rune for rune and differ only where an
+invalid byte was copied. A pattern that does tell the block from U+FFFD is
+rewritten so that it does not; the rewrite cannot also keep a genuine
+block character apart from U+FFFD, which is why such a value falls back to the
+U+FFFD form.
+
+### Why the guard is `isValidUTF8`, and what it costs
+
+Rejected alternatives, each measured over 10M rows on 26.7.13.12:
+
+- `match(v, p) OR (NOT isValidUTF8(v) AND match(<U+FFFD form>, p))` relies on
+  RE2 never matching where Go does not, which the encoded-surrogate case above
+  disproves, and ClickHouse's short-circuit evaluation copies the column for
+  the second operand: +36% CPU on an anchored label matcher against +14% for
+  the `if` form.
+- `isASCII` is about twice as cheap as `isValidUTF8` but does not exist on the
+  24.8 floor.
+- Rewriting the pattern instead of the value (`\C` for bytes) cannot express
+  "one invalid byte" without look-around, which RE2 lacks.
+
+`isValidUTF8` is evaluated only for a pattern an invalid byte can take part
+in; a pattern with no `.`, no class or literal holding U+FFFD or a surrogate
+and no word boundary answers alike under every engine and is emitted
+unguarded. The U+FFFD branch costs nothing on valid data: ClickHouse evaluates
+it only for rows `isValidUTF8` rejects.
+
+Measured with `just regex-jit-bench`'s warm scenario (26.7.13.12, a
+container limited to 2 CPUs and 6 GiB, one hour of gauge samples for 20,000
+pods and 10M log lines; server CPU milliseconds per request, mean of five),
+on a host shared with other work, so differences under about 2% are noise —
+the unguarded line filter, whose SQL did not change, moved by −1.4% and
++0.9%:
+
+| Emitted shape                                  | Guarded | `jit=default`, before → after | `jit=off`, before → after |
+| ---------------------------------------------- | ------- | ----------------------------- | ------------------------- |
+| PromQL matcher `api-.*`                        | yes     | 7847 → 8067 (+2.8%)           | 8626 → 8905 (+3.2%)       |
+| PromQL matcher `api-.*\|none-.*`               | yes     | 9224 → 9648 (+4.6%)           | 9176 → 9634 (+5.0%)       |
+| `label_replace` with `(.*)-[0-9]+-.*`          | yes     | 9254 → 9319 (+0.7%)           | 9874 → 10233 (+3.6%)      |
+| Line filter `timeout after [0-9]+ms`           | no      | 7401 → 7465 (+0.9%)           | 7648 → 7541 (−1.4%)       |
+| Line filter `user=.*admin`                     | yes     | 12470 → 13238 (+6.2%)         | 12575 → 13341 (+6.1%)     |
+| `unwrap duration()` after `logfmt`             | yes     | 81301 → 89287 (+9.8%)         | 82156 → 89559 (+9.0%)     |
+
+An interleaved rerun of the two LogQL rows against one server over 2M lines
+put them at +8.2% and +4.2%, and the same query with the guard left off the
+regex functions the `logfmt` and `unwrap duration()` lowerings emit —
+`[^0-9.]` in the duration error classification among them — measured the
+same as before the change, which places the `unwrap` cost there: those
+functions run on every row, and `isValidUTF8` costs about as much as the
+regular expression it guards (0.6 ns per byte against the compiled
+`match`'s 0.1).
+
+### Why a literal U+FFFD follows Go's `regexp` rather than Prometheus's matcher
+
+Prometheus's `FastRegexMatcher` answers a pattern's literal parts with string
+comparison where it can — `\x{FFFD}` as an equality, `\x{FFFD}.*` as a prefix
+test — and hands the rest to Go's `regexp`, so whether a literal U+FFFD
+matches an invalid byte depends on how it decomposes the pattern: `\x{FFFD}`
+does not match `\xff`, `\x{FFFD}+` does. Loki's line-filter simplification
+does the same for literal filters. Reproducing that decomposition would tie
+the emitter to one upstream optimiser's internals for a pattern that names
+U+FFFD itself; the emitter reads it as the regular expression means.

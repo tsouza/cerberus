@@ -74,7 +74,7 @@ func readsInvalidByte(re *syntax.Regexp) bool {
 		if classContains(re.Rune, utf8.RuneError) {
 			return true
 		}
-		if _, none := classCovers(re.Rune, surrogateFirst, surrogateLast); !none {
+		if classOverlaps(re.Rune, surrogateFirst, surrogateLast) {
 			return true
 		}
 	case syntax.OpLiteral:
@@ -101,7 +101,7 @@ const (
 // classContains reports whether the rune ranges of a parsed character
 // class (lo, hi pairs) contain r.
 func classContains(ranges []rune, r rune) bool {
-	for i := 0; i+1 < len(ranges); i += 2 {
+	for i := 0; i < len(ranges); i += 2 {
 		if ranges[i] <= r && r <= ranges[i+1] {
 			return true
 		}
@@ -351,9 +351,9 @@ func substituteUniform(re *syntax.Regexp) bool {
 			}
 		}
 	case syntax.OpCharClass:
-		all, none := classCovers(re.Rune, substituteBlockFirst, substituteBlockLast)
 		fffd := classContains(re.Rune, utf8.RuneError)
-		if !(fffd && all) && !(!fffd && none) {
+		if fffd != classHolds(re.Rune, substituteBlockFirst, substituteBlockLast) ||
+			fffd != classOverlaps(re.Rune, substituteBlockFirst, substituteBlockLast) {
 			return false
 		}
 	}
@@ -367,17 +367,27 @@ func substituteUniform(re *syntax.Regexp) bool {
 
 func inSubstituteBlock(r rune) bool { return substituteBlockFirst <= r && r <= substituteBlockLast }
 
-// classCovers reports whether ranges contain all of lo..hi, and whether
-// they contain none of it.
-func classCovers(ranges []rune, lo, hi rune) (all, none bool) {
-	var covered rune
-	for i := 0; i+1 < len(ranges); i += 2 {
-		from, to := max(ranges[i], lo), min(ranges[i+1], hi)
-		if from <= to {
-			covered += to - from + 1
+// classHolds reports whether the ranges of a parsed character class hold
+// all of lo..hi. The parser merges adjacent and overlapping ranges, so a
+// class holds a contiguous span only inside one of its ranges.
+func classHolds(ranges []rune, lo, hi rune) bool {
+	for i := 0; i < len(ranges); i += 2 {
+		if ranges[i] <= lo && hi <= ranges[i+1] {
+			return true
 		}
 	}
-	return covered == hi-lo+1, covered == 0
+	return false
+}
+
+// classOverlaps reports whether the ranges of a parsed character class
+// hold any of lo..hi.
+func classOverlaps(ranges []rune, lo, hi rune) bool {
+	for i := 0; i < len(ranges); i += 2 {
+		if ranges[i] <= hi && lo <= ranges[i+1] {
+			return true
+		}
+	}
+	return false
 }
 
 // substituteLikeReplacement rewrites re in place so that it reads every
@@ -402,26 +412,21 @@ func substituteLikeReplacement(re *syntax.Regexp) *syntax.Regexp {
 // neither's counterpart otherwise.
 func literalWithSubstitutes(re *syntax.Regexp) *syntax.Regexp {
 	var parts []*syntax.Regexp
-	var run []rune
-	flush := func() {
-		if len(run) > 0 {
-			parts = append(parts, &syntax.Regexp{Op: syntax.OpLiteral, Flags: re.Flags, Rune: run})
-			run = nil
-		}
-	}
 	for _, r := range re.Rune {
-		if r != utf8.RuneError && !inSubstituteBlock(r) {
-			run = append(run, r)
+		if r == utf8.RuneError || inSubstituteBlock(r) {
+			parts = append(parts, &syntax.Regexp{
+				Op:    syntax.OpCharClass,
+				Flags: re.Flags,
+				Rune:  withSubstituteBlock([]rune{r, r}, r == utf8.RuneError),
+			})
 			continue
 		}
-		flush()
-		parts = append(parts, &syntax.Regexp{
-			Op:    syntax.OpCharClass,
-			Flags: re.Flags,
-			Rune:  withSubstituteBlock([]rune{r, r}, r == utf8.RuneError),
-		})
+		if last := len(parts) - 1; last >= 0 && parts[last].Op == syntax.OpLiteral {
+			parts[last].Rune = append(parts[last].Rune, r)
+			continue
+		}
+		parts = append(parts, &syntax.Regexp{Op: syntax.OpLiteral, Flags: re.Flags, Rune: []rune{r}})
 	}
-	flush()
 	if len(parts) == 1 {
 		return parts[0]
 	}
@@ -431,8 +436,8 @@ func literalWithSubstitutes(re *syntax.Regexp) *syntax.Regexp {
 // withSubstituteBlock returns ranges with the substitute block removed,
 // and added back whole when include is true.
 func withSubstituteBlock(ranges []rune, include bool) []rune {
-	out := make([]rune, 0, len(ranges)+2)
-	for i := 0; i+1 < len(ranges); i += 2 {
+	var out []rune
+	for i := 0; i < len(ranges); i += 2 {
 		lo, hi := ranges[i], ranges[i+1]
 		if lo < substituteBlockFirst {
 			out = append(out, lo, min(hi, substituteBlockFirst-1))
@@ -517,7 +522,7 @@ func goRegexCall(name string, spec regexFn, args []chplan.Expr) (Frag, bool) {
 	}
 	fffd := call(replacementRunes(subject), lit.V)
 	invalid := fffd
-	if sub, guard, ok := substitutePatternUnder(lit.V, spec.dotNL); ok && !(spec.allMatches && nullable(lit.V)) {
+	if sub, guard, ok := substitutePatternUnder(lit.V, spec.dotNL); ok && (!spec.allMatches || !nullable(lit.V)) {
 		invalid = restoreByResult(spec.result, call(substituteRunes(subject), sub), fffd)
 		if guard {
 			invalid = If(Call("match", subject, Lit(substituteBlockClass)), fffd, invalid)
@@ -539,8 +544,8 @@ func restoreByResult(result regexResult, sub, fffd Frag) Frag {
 }
 
 // substitutePatternUnder is [substitutePattern] for a pattern that may be
-// read under each of readings; ok is false unless every reading yields
-// the same pattern.
+// read under each of readings, of which there is at least one; ok is
+// false unless every reading yields the same pattern.
 func substitutePatternUnder(pattern string, readings []bool) (rewritten string, guard, ok bool) {
 	for i, dotNL := range readings {
 		r, g, parsed := substitutePattern(pattern, dotNL)
@@ -549,7 +554,7 @@ func substitutePatternUnder(pattern string, readings []bool) (rewritten string, 
 		}
 		rewritten, guard = r, g
 	}
-	return rewritten, guard, len(readings) > 0
+	return rewritten, guard, true
 }
 
 // nullable reports whether pattern can match the empty string somewhere,

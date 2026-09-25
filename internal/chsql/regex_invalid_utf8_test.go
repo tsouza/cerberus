@@ -39,8 +39,17 @@ func TestRegexReadsInvalidUTF8(t *testing.T) {
 		{`\x{FFFD}`, true},
 		{`[\x{FFF0}-\x{FFFF}]`, true},
 		{`\pS`, true},
+		{`[\x{FFFD}-\x{FFFF}]`, true},
+		{`[\x{FFF0}-\x{FFFD}]`, true},
+		{`[\x{FFFE}-\x{FFFF}]`, false},
 		{`[\x{D800}-\x{DFFF}]`, true},
 		{`[\x{DFFF}-\x{E000}]`, true},
+		{`[\x{D000}-\x{D800}]`, true},
+		{`[\x{E000}-\x{E0FF}]`, false},
+		{`\x{D800}`, true},
+		{`\x{DFFF}`, true},
+		{`\x{D7FF}`, false},
+		{`\x{E000}`, false},
 		{`\bapi`, true},
 		{`\Bapi`, true},
 		{`^api$`, false},
@@ -250,5 +259,85 @@ func TestTextIndexLikeTokens_SplitOnReplacementCharacter(t *testing.T) {
 	want := []string{"timeout", "after", "lengthy", "wait"}
 	if !slices.Equal(got, want) {
 		t.Errorf("textIndexLikeTokens = %q; want %q", got, want)
+	}
+}
+
+// TestSubstitutePattern_BlockEdges pins which patterns read the substitute
+// block (U+10FF80..U+10FFFF) as they read U+FFFD — returned unchanged —
+// and which are rewritten, at the edges of the block.
+func TestSubstitutePattern_BlockEdges(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		pattern   string
+		rewritten bool
+	}{
+		{`\x{10FF7F}`, false},
+		{`\x{10FF80}`, true},
+		{`\x{10FFFF}`, true},
+		{`a\x{FFFD}`, true},
+		{`[\x{FFFD}\x{10FF80}-\x{10FFFF}]`, false},
+		{`[\x{FFFD}\x{10FF81}-\x{10FFFF}]`, true},
+		{`[\x{10FF00}-\x{10FF7F}]`, false},
+		{`[\x{10FF00}-\x{10FF80}]`, true},
+		{`[^\x{10FF80}-\x{10FFFF}]`, true},
+		{`[^a]`, false},
+	}
+	for _, c := range cases {
+		got, guard, ok := substitutePattern(c.pattern, true)
+		if !ok || guard != c.rewritten || (got != c.pattern) != c.rewritten {
+			t.Errorf("substitutePattern(%q) = %q, guard %v, ok %v; want rewritten: %v", c.pattern, got, guard, ok, c.rewritten)
+		}
+	}
+}
+
+// TestLiteralWithSubstitutes pins how a rewritten literal splits around
+// U+FFFD and substitute-block runes.
+func TestLiteralWithSubstitutes(t *testing.T) {
+	t.Parallel()
+	// Go's regexp/syntax prints U+FFFD as itself and code points above the
+	// BMP in lower-case hex.
+	const fffdOrBlock = "[\uFFFD\\x{10ff80}-\\x{10ffff}]"
+	cases := map[string]string{
+		`ab\x{FFFD}cd`:      "ab" + fffdOrBlock + "cd",
+		`\x{FFFD}`:          fffdOrBlock,
+		`\x{10FF90}x`:       `[^\x00-\x{10FFFF}]x`,
+		`x\x{FFFD}\x{FFFD}`: "x" + fffdOrBlock + fffdOrBlock,
+	}
+	for pattern, want := range cases {
+		got, _, ok := substitutePattern(pattern, true)
+		if !ok || got != want {
+			t.Errorf("substitutePattern(%q) = %q; want %q", pattern, got, want)
+		}
+	}
+}
+
+// TestInvalidUTF8Frags pins the SQL of the U+FFFD form, the substitute
+// form and the restore; test/regexjit's TestRegexJIT_InvalidUTF8ShapesMatchGo
+// is the evidence that ClickHouse evaluates them as Go's decoder reads the
+// bytes.
+func TestInvalidUTF8Frags(t *testing.T) {
+	t.Parallel()
+	chunks := "arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', v))"
+	width := "multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)"
+	head := "arrayStringConcat(arraySlice(utf8_chunk, 1, " + width + "))"
+	runes := func(invalid string) string {
+		tail := func(from string) string {
+			return "arrayStringConcat(arrayMap(utf8_byte -> " + invalid + ", arraySlice(utf8_chunk, " + from + ")))"
+		}
+		return "arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(" + head + "), concat(" + head + ", " + tail(width+" + 1") + "), " + tail("1") + "), " + chunks + "))"
+	}
+	if got, _ := Render(replacementRunes(BareIdent("v"))); got != runes("'\uFFFD'") {
+		t.Errorf("replacementRunes:\n%s\nwant\n%s", got, runes("'\uFFFD'"))
+	}
+	sub := "char(244, 143, bitOr(188, bitShiftRight(reinterpretAsUInt8(utf8_byte), 6)), bitOr(128, bitAnd(reinterpretAsUInt8(utf8_byte), 63)))"
+	if got, _ := Render(substituteRunes(BareIdent("v"))); got != runes(sub) {
+		t.Errorf("substituteRunes:\n%s\nwant\n%s", got, runes(sub))
+	}
+	strs := func(x string) string {
+		return "arrayMap(utf8_chunk -> arrayStringConcat(utf8_chunk), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', " + x + ")))"
+	}
+	want := "arrayStringConcat(arrayMap((utf8_sub, utf8_rune) -> if(utf8_sub = utf8_rune, utf8_rune, concat(char(bitOr(bitShiftLeft(bitAnd(reinterpretAsUInt8(substring(utf8_sub, 3, 1)), 3), 6), bitAnd(reinterpretAsUInt8(substring(utf8_sub, 4, 1)), 63))), substring(utf8_sub, 5))), " + strs("s") + ", " + strs("f") + "))"
+	if got, _ := Render(restoreInvalidBytes(BareIdent("s"), BareIdent("f"))); got != want {
+		t.Errorf("restoreInvalidBytes:\n%s\nwant\n%s", got, want)
 	}
 }
