@@ -82,6 +82,9 @@ type QueryLogActualsReconciler struct {
 	interval time.Duration
 	lookback time.Duration
 	settle   time.Duration
+	// foldTTL is how long a routed request's partial shard fold outlives its
+	// earliest row (actuals.Config.QueryLogFoldTTL).
+	foldTTL time.Duration
 	// union reports whether the query_log_union feature is in force right
 	// now (the live chopt resolution). nil reads the local log only.
 	union  func() bool
@@ -109,6 +112,7 @@ func NewQueryLogActualsReconciler(client QueryLogQuerier, tracker *actuals.Track
 		tracker:  tracker,
 		interval: cfg.QueryLogPollInterval,
 		lookback: cfg.QueryLogLookback,
+		foldTTL:  cfg.QueryLogFoldTTL(),
 		settle:   cfg.QueryLogSettleDelay,
 		union:    union,
 		logger:   logger,
@@ -152,7 +156,7 @@ func (r *QueryLogActualsReconciler) Poll(ctx context.Context) {
 	if r.cursor.EventTime.Before(floor) {
 		r.cursor = chclient.QueryLogCursor{EventTime: floor}
 	}
-	r.evictShardFolds(floor)
+	r.evictShardFolds(r.now().Add(-r.foldTTL))
 	union := r.union != nil && r.union()
 	for range queryLogActualsMaxPagesPerPoll {
 		rows, err := r.readPage(ctx, &union)
@@ -303,13 +307,14 @@ func (r *QueryLogActualsReconciler) foldShardRow(shard chclient.ShardQueryIDPart
 	return fold, true
 }
 
-// evictShardFolds drops every partial fold with a row older than floor, the
-// lookback's start: the request's missing shards finished within the
-// request's own timeout of its first, so by then every row it will ever have
-// has been read, and it never completes.
-func (r *QueryLogActualsReconciler) evictShardFolds(floor time.Time) {
+// evictShardFolds drops every partial fold whose earliest row finished before
+// cutoff, which is foldTTL (actuals.Config.QueryLogFoldTTL) before now: the
+// request's missing shards finished within the query timeout of its dispatch,
+// and a row whose finish time has left the lookback is never read, so by then
+// every row the request will ever have has been read, and it never completes.
+func (r *QueryLogActualsReconciler) evictShardFolds(cutoff time.Time) {
 	for key, fold := range r.shardFolds {
-		if fold.oldest.Before(floor) {
+		if fold.oldest.Before(cutoff) {
 			delete(r.shardFolds, key)
 		}
 	}

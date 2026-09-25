@@ -215,6 +215,16 @@ func (c Config) PacketMarkTTL() time.Duration {
 	return c.QueryLogLookback + c.MaxQueryDuration + packetMarkClockAllowance
 }
 
+// QueryLogFoldTTL is how long the query-log reconciler keeps a routed
+// request's partial shard fold, counted from the finish time of the earliest
+// shard row it has read. Every shard finishes at most MaxQueryDuration after
+// the request's dispatch, which precedes that earliest finish, and a row stays
+// readable until its finish time leaves QueryLogLookback — the same window,
+// give or take the same clock allowance, that PacketMarkTTL holds a mark for.
+func (c Config) QueryLogFoldTTL() time.Duration {
+	return c.PacketMarkTTL()
+}
+
 // DefaultConfig returns the conservative library defaults. Enabled is false
 // — the feature ships dark, mirroring solver.DefaultConfig's Mode ==
 // ModeSingle — so DefaultConfig is safe to wire as the in-process default

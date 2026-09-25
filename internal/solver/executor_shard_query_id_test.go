@@ -53,7 +53,9 @@ func TestExecute_ShardQueryIDsCarryTheRequestIdentity(t *testing.T) {
 	if _, err := drainAll(cur2); err != nil {
 		t.Fatalf("second drain: %v", err)
 	}
-	_ = cur2.Close()
+	if err := cur2.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
 	second, _ := chclient.ParseShardQueryID(info2.ShardQueryIDs[0])
 	if second.Request == first.Request {
 		t.Fatalf("two routed requests share the request id %q", first.Request)

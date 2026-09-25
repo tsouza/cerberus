@@ -579,8 +579,9 @@ func TestQueryLogActualsReconciler_RedispatchedShardCountsOnce(t *testing.T) {
 
 // TestQueryLogActualsReconciler_IncompleteRoutedRequestIsNeverRecorded: a
 // request one of whose shards never finished leaves k-1 rows. They are never
-// recorded — k-1 fragments are not the query — and the partial fold is
-// dropped once it ages out of the lookback, so it holds no memory forever.
+// recorded — k-1 fragments are not the query — and the partial fold is kept
+// until QueryLogFoldTTL after its earliest row and dropped after it, so it
+// holds no memory forever.
 func TestQueryLogActualsReconciler_IncompleteRoutedRequestIsNeverRecorded(t *testing.T) {
 	const (
 		shape = "cerb:agg;rw;routed-failed"
@@ -595,7 +596,15 @@ func TestQueryLogActualsReconciler_IncompleteRoutedRequestIsNeverRecorded(t *tes
 		t.Fatalf("%d partial folds after reading %d of %d shard rows, want 1", len(r.shardFolds), k-1, k)
 	}
 
-	later := testNow.Add(testActualsConfig().QueryLogLookback)
+	ttl := testActualsConfig().QueryLogFoldTTL()
+	atTTL := testRowTime.Add(ttl)
+	r.now = func() time.Time { return atTTL }
+	r.Poll(context.Background())
+	if len(r.shardFolds) != 1 {
+		t.Fatalf("%d partial folds exactly QueryLogFoldTTL after the earliest row, want 1 (kept)", len(r.shardFolds))
+	}
+
+	later := atTTL.Add(time.Nanosecond)
 	r.now = func() time.Time { return later }
 	r.Poll(context.Background())
 
@@ -604,5 +613,53 @@ func TestQueryLogActualsReconciler_IncompleteRoutedRequestIsNeverRecorded(t *tes
 	}
 	if len(r.shardFolds) != 0 {
 		t.Fatalf("%d partial folds left once the request aged out of the lookback, want 0", len(r.shardFolds))
+	}
+}
+
+// TestQueryLogActualsReconciler_SlowRoutedRequestCompletesPastLookback: a
+// routed request whose shards run in waves can finish its last shard up to
+// the query timeout after its first. That last row becomes readable only after
+// the settle delay, by which time the first row can be older than the
+// lookback. The partial fold must survive until then, so the request is
+// recorded once, from all k rows, rather than dropped.
+func TestQueryLogActualsReconciler_SlowRoutedRequestCompletesPastLookback(t *testing.T) {
+	const (
+		shape        = "cerb:agg;rw;routed-slow"
+		k            = 3
+		rowsPerShard = 300
+	)
+	cfg := testActualsConfig()
+	cfg.MaxQueryDuration = 2 * time.Minute
+	rows := routedRequestRows(shape, "trace-span-14", k, rowsPerShard, testRowTime)
+	// The last shard finishes just inside the query timeout of the first.
+	rows[k-1].EventTime = testRowTime.Add(cfg.MaxQueryDuration - time.Second)
+	fake := &fakeQueryLog{local: sortedLog(rows[:k-1]...)}
+	tracker := actuals.NewTracker(cfg)
+	r := NewQueryLogActualsReconciler(fake, tracker, cfg, nil, nil)
+	r.now = func() time.Time { return testNow }
+
+	r.Poll(context.Background())
+	if len(r.shardFolds) != 1 {
+		t.Fatalf("%d partial folds after reading %d of %d shard rows, want 1", len(r.shardFolds), k-1, k)
+	}
+
+	// The next poll that can read the last row: past its settle delay and one
+	// poll interval on, which puts the first row outside the lookback.
+	next := rows[k-1].EventTime.Add(cfg.QueryLogSettleDelay + cfg.QueryLogPollInterval)
+	if !testRowTime.Before(next.Add(-cfg.QueryLogLookback)) {
+		t.Fatalf("fixture: the first row (%v) is still inside the lookback at %v", testRowTime, next)
+	}
+	fake.mu.Lock()
+	fake.local = sortedLog(rows...)
+	fake.mu.Unlock()
+	r.now = func() time.Time { return next }
+	r.Poll(context.Background())
+
+	report, ok := tracker.Snapshot(shape)
+	if !ok || report.Observations != 1 || report.ActualEMARows != k*rowsPerShard {
+		t.Fatalf("%+v (ok=%v), want 1 observation of %d rows", report, ok, k*rowsPerShard)
+	}
+	if len(r.shardFolds) != 0 {
+		t.Fatalf("%d partial folds left after the request completed, want 0", len(r.shardFolds))
 	}
 }
