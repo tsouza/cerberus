@@ -437,10 +437,10 @@ func expHistogramWindowClosedFormBucketsExpr(
 						paramWinCoeffScaled,
 						&chplan.BareIdent{Name: paramWinCoeff},
 						expHistogramDenseContribsExpr(
-							&chplan.BareIdent{Name: paramExpRowScale},
+							expHistogramScaleRatioExpr(&chplan.BareIdent{Name: paramExpRowScale}, mergedScale),
 							&chplan.BareIdent{Name: paramExpRowOffset},
 							&chplan.BareIdent{Name: paramExpRowBuckets},
-							mergedScale, mergedStart, mergedLength,
+							mergedStart, mergedLength,
 						),
 					),
 				},

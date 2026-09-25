@@ -20,7 +20,7 @@ import (
 // sees every RENDER of that subtree, whether or not the render is bound.
 const mergedStartRenderSQL = "arrayMin(arrayFilter((" + paramExpMergeRowStart + ", " + paramExpMergeRowBuckets + ") -> (length(" + paramExpMergeRowBuckets + ") > ?), arrayMap((" + paramExpMergeRowScale + ", " + paramExpMergeRowOffset + ") -> bitShiftRight(" + paramExpMergeRowOffset + ", "
 
-// mergedStartBoundRenderSQL is a render sitting inside its hqLet binding:
+// mergedStartBoundRenderSQL is a render sitting inside its binding:
 // `array(<start>)` is the one-element array the binding lambda maps over.
 const mergedStartBoundRenderSQL = "array(" + mergedStartRenderSQL
 
@@ -81,12 +81,13 @@ func unboundMergedStartRenders(sql string) (unbound, offsetProjections int) {
 	}
 }
 
-// mergedStartBindingSQL is the head of the hqLet binding
+// mergedStartBindingSQL is the head of the binding
 // expHistogramOverMergedBucketRangeExpr wraps each merged bucket-range in
-// — `arrayMap(mst -> …, array(<start>))[1]`. Exactly one binding is opened
-// per bucket-merge site, so its count is how many merged starts the query
-// contains, independent of how many times each is read.
-const mergedStartBindingSQL = "arrayMap(" + paramExpMergedStart + " -> "
+// — `arrayMap((mst, mnd) -> …, array(<start>), array(<end>))[1]`. Exactly
+// one binding is opened per bucket-merge site, so its count is how many
+// merged starts the query contains, independent of how many times each is
+// read.
+const mergedStartBindingSQL = "arrayMap((" + paramExpMergedStart + ", " + paramExpMergedEnd + ") -> "
 
 // TestExpHistogramMergedStartIsBoundOncePerSite pins the merged bucket
 // range's start to ONE render per bucket-merge site.
