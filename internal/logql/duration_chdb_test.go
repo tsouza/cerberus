@@ -43,6 +43,7 @@ var durationNumberShapes = []string{
 func TestDurationSecondsMatchesGo(t *testing.T) {
 	units := []string{"ns", "us", "µs", "μs", "ms", "s", "m", "h"}
 	corpus := append([]string{}, goDurationCorpus...)
+	corpus = append(corpus, goDurationOverflowCorpus...)
 	for _, n := range durationNumberShapes {
 		for _, u := range units {
 			corpus = append(corpus, n+u, "-"+n+u, n+u+"7ns", "1h"+n+u)

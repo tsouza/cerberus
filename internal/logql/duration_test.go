@@ -2,7 +2,9 @@ package logql
 
 import (
 	"fmt"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,9 +19,11 @@ import (
 // fractional / compound / signed shapes, the bare-zero special case,
 // the dot-edge shapes Go accepts but CH parseTimeDelta rejects, and
 // one representative per Go error class. Overflow shapes (>292y) are
-// deliberately absent — Go rejects them at integer-multiply time,
-// which a regex can't see; the SQL lowering treats them as valid and
-// returns the float seconds (documented divergence in duration.go).
+// deliberately absent from THIS corpus — it exercises the validity
+// REGEX only ([goSideValid] here checks the regex alone, matching
+// [goDurationValidRe]'s own scope); overflow is a separate axis,
+// checked by [goDurationOverflowCorpus] and [TestGoDurationOverflowParity]
+// against [goDurationOverflows] (cerberus issue #3686).
 var goDurationCorpus = []string{
 	// valid — one per unit
 	"1ns", "12us", "291.792µs", "5μs", "200ms", "1s", "1m", "1h",
@@ -81,6 +85,104 @@ func TestGoDurationRegexParity(t *testing.T) {
 		_, err := time.ParseDuration(in)
 		if got, want := goSideValid(in), err == nil; got != want {
 			t.Errorf("validity mismatch for %q: regex gate says %v, time.ParseDuration says %v (err: %v)", in, got, want, err)
+		}
+	}
+}
+
+// goDurationOverflowCorpus exercises the int64-nanosecond overflow
+// boundary the regex alone cannot see (cerberus issue #3686): values
+// from the reported bug report, the exact boundary in both directions,
+// per-component overflow via a single huge unit multiple, fractional
+// overflow, running-sum overflow across compound components, and an
+// integer-part digit run past uint64's own range.
+var goDurationOverflowCorpus = []string{
+	// from the bug report
+	"123456789h", "1h2562047h",
+	// the exact int64 nanosecond boundary, both signs
+	"2562047h47m16.854775807s", "2562047h47m16.854775808s",
+	"-2562047h47m16.854775808s", "-2562047h47m16.854775809s",
+	// single-component overflow (integer * unit past 1<<63)
+	"9223372036854775808ns", "9223372036854775807ns", "300000h",
+	// fractional overflow
+	"9223372036854775807.9s",
+	// running-sum overflow across otherwise-valid components
+	"2562047h47m16s2000000000ns",
+	// integer digit run past uint64's own range (20+ digits)
+	"99999999999999999999h", "99999999999999999999ns",
+}
+
+// goSideOverflows mirrors the SQL-side [goDurationOverflows]: Go's
+// time.ParseDuration uint64 accumulator loop, replayed digit group by
+// digit group over the same [goDurationComponentRe] captures the SQL
+// expression folds over.
+func goSideOverflows(raw string) bool {
+	stripped := stripSign(raw)
+	unitNanos := map[string]uint64{}
+	for i, name := range goDurationUnitNames {
+		unitNanos[name] = uint64(goDurationUnitNanos[i])
+	}
+	const pow2_63 = uint64(1) << 63
+	var d uint64
+	overflow := false
+	for _, m := range regexp.MustCompile(goDurationComponentRe).FindAllStringSubmatch(stripped, -1) {
+		intPart, fracPart, unitPart := m[1], m[2], m[3]
+		unit := unitNanos[unitPart]
+		var whole uint64
+		if len(intPart) > maxSafeIntegerDigits {
+			overflow = true
+		} else if intPart != "" {
+			whole, _ = strconv.ParseUint(intPart, 10, 64)
+		}
+		if whole > pow2_63/unit {
+			overflow = true
+		}
+		v := whole * unit
+
+		var fracX uint64
+		var scale float64 = 1
+		fracOverflow := false
+		for _, c := range fracPart {
+			if fracOverflow {
+				continue
+			}
+			digit := uint64(c - '0')
+			if fracX > goFractionSaturation || (fracX == goFractionSaturation && digit > goFractionSaturationLastDigit) {
+				fracOverflow = true
+				continue
+			}
+			fracX = fracX*decimalRadix + digit
+			scale *= decimalRadix
+		}
+		fracNanos := uint64(float64(fracX) * (float64(unit) / scale))
+		v += fracNanos
+		if v > pow2_63 {
+			overflow = true
+		}
+		d += v
+		if d > pow2_63 {
+			overflow = true
+		}
+	}
+	if !strings.HasPrefix(raw, "-") && d > math.MaxInt64 {
+		overflow = true
+	}
+	return overflow
+}
+
+// TestGoDurationOverflowParity pins [goSideOverflows] against real
+// time.ParseDuration over the boundary corpus, and TestDurationSecondsMatchesGo
+// (build-tagged chdb) pins the actual emitted SQL the same way.
+func TestGoDurationOverflowParity(t *testing.T) {
+	t.Parallel()
+	for _, in := range goDurationOverflowCorpus {
+		stripped := stripSign(in)
+		if !regexp.MustCompile(goDurationValidRe).MatchString(stripped) {
+			t.Fatalf("corpus bug: %q is not even regex-shaped valid", in)
+		}
+		_, err := time.ParseDuration(in)
+		wantOverflow := err != nil
+		if got := goSideOverflows(in); got != wantOverflow {
+			t.Errorf("%q: goSideOverflows = %v, time.ParseDuration overflow = %v (err: %v)", in, got, wantOverflow, err)
 		}
 	}
 }
