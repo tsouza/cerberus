@@ -1278,6 +1278,8 @@ update-golden *shards:
 # docs/coverage.md's per-symbol tables — rendered from the surface-parity
 # inventory this recipe just re-pinned, so a re-pin and the doc it feeds
 # never drift apart (#3696).
+
+# Regenerate the parity ledgers and the coverage docs they feed.
 update-parity-ledgers: update-parity-enrolment-baseline
     CERBERUS_UPDATE_INVENTORY=1 go test -count=1 -run '^(TestInventoryIsRegenerable|TestCatalogueIsRegenerable)$' ./test/surface-parity/ ./test/rejection-parity/
     CERBERUS_UPDATE_INVENTORY=1 go test -count=1 -run '^TestDivergenceCeilingRatchet$' ./test/rejection-parity/
