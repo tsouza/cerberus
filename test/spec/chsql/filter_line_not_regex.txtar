@@ -1,8 +1,9 @@
 -- sql --
-SELECT * FROM `otel_logs` WHERE (position(`Body`, ?) = 0 OR NOT match(`Body`, ?))
+SELECT * FROM `otel_logs` WHERE (position(`Body`, ?) = 0 OR NOT if(isValidUTF8(`Body`), match(`Body`, ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', `Body`)))), ?)))
 -- args --
 [0] string = "health"
 [1] string = "health[^\\n]*ok"
+[2] string = "health[^\\n]*ok"
 -- chplan --
 Filter predicate=lineContent(Body, "health.*ok", regex,not)
   Scan(otel_logs)
