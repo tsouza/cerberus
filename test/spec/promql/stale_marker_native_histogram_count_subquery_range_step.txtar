@@ -68,4 +68,70 @@ INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix
     ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:04:30', 9), 90, 72.0, 0, 0, 0, [18, 18, 54], 0, [], 0),
     ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:05:00', 9), 95, 76.0, 0, 0, 0, [19, 19, 57], 0, [], 0);
 -- expected_rows --
-[]
+[
+  [{"job": "a"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 28],
+  [{"job": "a"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 28],
+  [{"job": "a"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 34],
+  [{"job": "a"}, "2026-01-01T00:02:30Z", "2026-01-01T00:02:30Z", 40],
+  [{"job": "a"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 46],
+  [{"job": "a"}, "2026-01-01T00:03:30Z", "2026-01-01T00:03:30Z", 52],
+  [{"job": "a"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 58],
+  [{"job": "a"}, "2026-01-01T00:04:30Z", "2026-01-01T00:04:30Z", 64],
+  [{"job": "a"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 70],
+  [{"job": "b"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 45],
+  [{"job": "b"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 50],
+  [{"job": "b"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 55],
+  [{"job": "b"}, "2026-01-01T00:01:30Z", "2026-01-01T00:01:30Z", 60],
+  [{"job": "b"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 65],
+  [{"job": "b"}, "2026-01-01T00:02:30Z", "2026-01-01T00:02:30Z", 70],
+  [{"job": "b"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 75],
+  [{"job": "b"}, "2026-01-01T00:03:30Z", "2026-01-01T00:03:30Z", 80],
+  [{"job": "b"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 85],
+  [{"job": "b"}, "2026-01-01T00:04:30Z", "2026-01-01T00:04:30Z", 90],
+  [{"job": "b"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 95]
+]
+-- args --
+[0] string = ""
+[1] int64 = 1
+[2] int64 = 0
+[3] int64 = 9218868437227405314
+[4] string = "stale_exp_hist"
+[5] string = "stale.exp.hist"
+[6] string = "stale.exp/hist"
+[7] string = "stale.exp_hist"
+[8] string = "stale/exp/hist"
+[9] string = "stale/exp_hist"
+[10] string = "stale_exp.hist"
+[11] int64 = 9218868437227405314
+-- args_optimized --
+[0] string = ""
+[1] int64 = 1
+[2] int64 = 0
+[3] int64 = 9218868437227405314
+[4] string = "stale_exp_hist"
+[5] string = "stale.exp.hist"
+[6] string = "stale.exp/hist"
+[7] string = "stale.exp_hist"
+[8] string = "stale/exp/hist"
+[9] string = "stale/exp_hist"
+[10] string = "stale_exp.hist"
+[11] int64 = 9218868437227405314
+-- chplan --
+RangeWindow func=max_over_time range=2m0s step=30s outerRange=5m0s ts=anchor_ts value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z distinctSampleRows
+  Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+    Filter predicate=(FnReinterpretAsUInt64(Value) != 9218868437227405314)
+      RangeWindow func= range=5m0s step=30s outerRange=7m0s identity=true ts=TimeUnix value=Value groupBy=[Attributes] start=2025-12-31T23:58:00Z end=2026-01-01T00:05:00Z stepAlign
+        Project ["" AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, FnIf((FnBitAnd(Flags, 1) != 0), FnReinterpretAsFloat64(9218868437227405314), FnToFloat64(Count)) AS Value]
+          Filter predicate=(MetricName IN ("stale_exp_hist", "stale.exp.hist", "stale.exp/hist", "stale.exp_hist", "stale/exp/hist", "stale/exp_hist", "stale_exp.hist"))
+            Scan(otel_metrics_exponential_histogram)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:rw;rw
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, max(`Value`) AS `Value` FROM (SELECT `Attributes`, `_src_ts`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `_src_ts`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 120000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `_src_ts`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 120000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `_src_ts`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `_src_ts`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT *, `anchor_ts` AS _src_ts FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(14, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)), toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT * REPLACE (mapSort(`Attributes`) AS `Attributes`) FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(`Count`)) AS `Value` FROM (SELECT * FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?))))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:58:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`)) WHERE length(`window_vals`) >= 1) WHERE (reinterpretAsUInt64(`Value`) != ?)))) WHERE `_src_ts` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(120000000000) AND `_src_ts` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`
+-- sql_optimized --
+SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, max(`Value`) AS `Value` FROM (SELECT `Attributes`, `_src_ts`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `_src_ts`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 120000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `_src_ts`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 120000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `_src_ts`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `_src_ts`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT *, `anchor_ts` AS _src_ts FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(length(window_vals) > 0, window_vals[length(window_vals)], nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta` FROM (SELECT `Attributes`, `anchor_ts`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `window_pairs` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(14, intDiv(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, fromUnixTimestamp64Nano(intDiv(toUnixTimestamp64Nano(toDateTime64('2026-01-01 00:05:00.000000000', 9)), 30000000000) * 30000000000)), toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT * REPLACE (mapSort(`Attributes`) AS `Attributes`) FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), toFloat64(`Count`)) AS `Value` FROM (SELECT `Attributes`, `Count`, `Flags`, `MetricName`, `TimeUnix` FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?))))) WHERE `TimeUnix` > toDateTime64('2025-12-31 23:58:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`)) WHERE length(`window_vals`) >= 1) WHERE (reinterpretAsUInt64(`Value`) != ?)))) WHERE `_src_ts` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(120000000000) AND `_src_ts` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY `Attributes`, `anchor_ts`

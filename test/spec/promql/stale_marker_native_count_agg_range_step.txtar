@@ -68,4 +68,88 @@ INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix
     ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:04:30', 9), 90, 72.0, 0, 0, 0, [18, 18, 54], 0, [], 0),
     ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:05:00', 9), 95, 76.0, 0, 0, 0, [19, 19, 57], 0, [], 0);
 -- expected_rows --
-[]
+[
+  ["", {}, "2026-01-01T00:00:00Z", 1],
+  ["", {}, "2026-01-01T00:00:30Z", 1],
+  ["", {}, "2026-01-01T00:01:00Z", 1],
+  ["", {}, "2026-01-01T00:01:30Z", 1],
+  ["", {}, "2026-01-01T00:02:00Z", 2],
+  ["", {}, "2026-01-01T00:02:30Z", 2],
+  ["", {}, "2026-01-01T00:03:00Z", 2],
+  ["", {}, "2026-01-01T00:03:30Z", 2],
+  ["", {}, "2026-01-01T00:04:00Z", 2],
+  ["", {}, "2026-01-01T00:04:30Z", 2],
+  ["", {}, "2026-01-01T00:05:00Z", 2]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = ""
+[8] string = "service_name"
+[9] string = "stale_exp_hist"
+[10] string = "stale.exp.hist"
+[11] string = "stale.exp/hist"
+[12] string = "stale.exp_hist"
+[13] string = "stale/exp/hist"
+[14] string = "stale/exp_hist"
+[15] string = "stale_exp.hist"
+[16] string = "stale_exp_hist"
+[17] string = "stale.exp.hist"
+[18] string = "stale.exp/hist"
+[19] string = "stale.exp_hist"
+[20] string = "stale/exp/hist"
+[21] string = "stale/exp_hist"
+[22] string = "stale_exp.hist"
+[23] int64 = 1
+[24] int64 = 0
+-- args_optimized --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = ""
+[8] string = "service_name"
+[9] string = "stale_exp_hist"
+[10] string = "stale.exp.hist"
+[11] string = "stale.exp/hist"
+[12] string = "stale.exp_hist"
+[13] string = "stale/exp/hist"
+[14] string = "stale/exp_hist"
+[15] string = "stale_exp.hist"
+[16] string = "stale_exp_hist"
+[17] string = "stale.exp.hist"
+[18] string = "stale.exp/hist"
+[19] string = "stale.exp_hist"
+[20] string = "stale/exp/hist"
+[21] string = "stale/exp_hist"
+[22] string = "stale_exp.hist"
+[23] int64 = 1
+[24] int64 = 0
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
+  Project [anchor_ts AS anchor_ts, FnCast(FnMap(), "Map(String,String)") AS Attributes, Value AS Value]
+    Aggregate groupBy=[anchor_ts AS anchor_ts] funcs=[FnCount() AS Value] dropEmptyOnNoGroup
+      Filter predicate=(FnBitAnd(stale_latest_flags, 1) = 0)
+        RangeBucketFanout step=30s lookback=5m0s groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnMax(TimeUnix) AS exp_hist_sample_ts, FnArgMax(Flags, TimeUnix) AS stale_latest_flags] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+          Project [TimeUnix AS TimeUnix, ResourceAttributes AS ResourceAttributes, FnMapSort(Attributes) AS Attributes, ServiceName AS ServiceName, Flags AS Flags]
+            Filter predicate=(MetricName IN ("stale_exp_hist", "stale.exp.hist", "stale.exp/hist", "stale.exp_hist", "stale/exp/hist", "stale/exp_hist", "stale_exp.hist"))
+              Scan(otel_metrics_exponential_histogram)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=1;rbf
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, CAST(map(), ?) AS `Attributes`, `Value` AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, toFloat64(count()) AS `Value` FROM (SELECT * FROM (SELECT anchor_ts AS `anchor_ts`, `_rbf_key_1` AS `Attributes`, max(`TimeUnix`) AS `exp_hist_sample_ts`, argMax(`Flags`, `TimeUnix`) AS `stale_latest_flags` FROM (SELECT * FROM (SELECT * FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS _rbf_key_1 FROM (SELECT `TimeUnix` AS `TimeUnix`, `ResourceAttributes` AS `ResourceAttributes`, mapSort(`Attributes`) AS `Attributes`, `ServiceName` AS `ServiceName`, `Flags` AS `Flags` FROM (SELECT * FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 4000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `TimeUnix` AS `TimeUnix`, `ResourceAttributes` AS `ResourceAttributes`, mapSort(`Attributes`) AS `Attributes`, `ServiceName` AS `ServiceName`, `Flags` AS `Flags` FROM (SELECT * FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 4000001)) > 4000000, 'histogram/LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY anchor_ts, `_rbf_key_1`) WHERE (bitAnd(`stale_latest_flags`, ?) = ?)) GROUP BY `anchor_ts`))
+-- sql_optimized --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, CAST(map(), ?) AS `Attributes`, `Value` AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, toFloat64(count()) AS `Value` FROM (SELECT * FROM (SELECT anchor_ts AS `anchor_ts`, `_rbf_key_1` AS `Attributes`, max(`TimeUnix`) AS `exp_hist_sample_ts`, argMax(`Flags`, `TimeUnix`) AS `stale_latest_flags` FROM (SELECT * FROM (SELECT * FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS _rbf_key_1 FROM (SELECT `TimeUnix` AS `TimeUnix`, `ResourceAttributes` AS `ResourceAttributes`, mapSort(`Attributes`) AS `Attributes`, `ServiceName` AS `ServiceName`, `Flags` AS `Flags` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 4000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `TimeUnix` AS `TimeUnix`, `ResourceAttributes` AS `ResourceAttributes`, mapSort(`Attributes`) AS `Attributes`, `ServiceName` AS `ServiceName`, `Flags` AS `Flags` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 4000001)) > 4000000, 'histogram/LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY anchor_ts, `_rbf_key_1`) WHERE (bitAnd(`stale_latest_flags`, ?) = ?)) GROUP BY `anchor_ts`))
