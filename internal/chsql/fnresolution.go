@@ -200,7 +200,6 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnLog2:          {Name: "log2"},
 	chplan.FnLog10:         {Name: "log10"},
 	chplan.FnIntDiv:        {Name: "intDiv"},
-	chplan.FnIntExp10:      {Name: "intExp10"},
 	chplan.FnPow:           {Name: "pow"},
 	chplan.FnRound:         {Name: "round"},
 	chplan.FnSign:          {Name: "sign"},

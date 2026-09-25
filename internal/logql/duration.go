@@ -287,11 +287,26 @@ func wrapLabelsWithMarks(labelsExpr chplan.Expr, marks []labelFilterMark) chplan
 // (`.5s`, `1.s`); an empty half contributes zero, as it does in Go.
 const goDurationComponentRe = `([0-9]*)(?:\.([0-9]*))?(` + goDurationUnitRe + `)`
 
-// goDurationMaxFractionDigits is how many fraction digits the lowering
-// reads per component: the longest digit run that always fits Go's
-// leadingFraction accumulator (a uint64 that stops growing past
-// (1<<63-1)/10) and whose power-of-ten scale intExp10 returns exactly.
-const goDurationMaxFractionDigits = 18
+// goFractionSaturation is (1<<63-1)/10, the accumulator bound past
+// which Go's leadingFraction stops reading fraction digits.
+const goFractionSaturation = (1<<63 - 1) / 10
+
+// goFractionSaturationLastDigit is the largest digit leadingFraction
+// still accepts onto an accumulator equal to goFractionSaturation:
+// 10*goFractionSaturation + 8 == 1<<63, and one more is past it.
+const goFractionSaturationLastDigit = 8
+
+// decimalRadix is the base leadingFraction shifts its accumulator and
+// scale by per digit.
+const decimalRadix = 10
+
+// Lambda parameter names for the fraction fold. They are emitted
+// verbatim into the SQL, so they are named to be unmistakable in a
+// golden and impossible to confuse with a column.
+const (
+	durationFracAccParam   = "__dur_frac_acc"
+	durationFracDigitParam = "__dur_frac_digit"
+)
 
 // nanosPerSecond is time.Second in nanoseconds — the divisor
 // time.Duration.Seconds() splits a duration by.
@@ -315,7 +330,7 @@ var (
 //
 // Per component, Go's ParseDuration accumulates an integer nanosecond
 // count: `whole * unit + uint64(float64(frac) * (float64(unit) / scale))`
-// with scale = 10^len(frac). The total d is then converted by
+// with (frac, scale) as leadingFraction returns them. The total d is then converted by
 // Duration.Seconds(): `float64(d / 1e9) + float64(d % 1e9) / 1e9`. The
 // expression mirrors both steps operation for operation:
 //
@@ -323,10 +338,13 @@ var (
 //	secs = toFloat64(sec) + toFloat64(d - sec * 1e9) / 1e9
 //	d    = arraySum(arrayMap((i, f, u) -> <component nanos>, groups…))
 //
+// The fraction's (frac, scale) pair is [goLeadingFraction], a fold that
+// replays Go's leadingFraction digit by digit, so a fraction of any
+// length reads exactly the digits Go reads and scales by the same
+// float64 product of tens.
+//
 // Every function on this path is total over strings, so the expression
-// never aborts a query. Fraction digits past
-// goDurationMaxFractionDigits are ignored; Go's own accumulator reads
-// at most one more before it saturates.
+// never aborts a query.
 func goDurationSeconds(stripped chplan.Expr) chplan.Expr {
 	groups := &chplan.FuncCall{
 		Fn:   chplan.FnRegexExtractAllGroupsHorizontal,
@@ -358,26 +376,16 @@ func goDurationSeconds(stripped chplan.Expr) chplan.Expr {
 		Left:  &chplan.FuncCall{Fn: chplan.FnToUInt64OrZero, Args: []chplan.Expr{&chplan.BareIdent{Name: "i"}}},
 		Right: unitNanos,
 	}
-	frac := &chplan.FuncCall{
-		Fn: chplan.FnSubstring,
-		Args: []chplan.Expr{
-			&chplan.BareIdent{Name: "f"}, &chplan.LitInt{V: 1}, &chplan.LitInt{V: goDurationMaxFractionDigits},
-		},
-	}
-	scale := &chplan.FuncCall{
-		Fn: chplan.FnToFloat64,
-		Args: []chplan.Expr{&chplan.FuncCall{
-			Fn:   chplan.FnIntExp10,
-			Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{frac}}},
-		}},
-	}
+	fraction := goLeadingFraction(&chplan.BareIdent{Name: "f"})
+	frac := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{fraction, &chplan.LitInt{V: 1}}}
+	scale := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{fraction, &chplan.LitInt{V: 2}}}
 	fracNanos := &chplan.FuncCall{
 		Fn: chplan.FnToUInt64,
 		Args: []chplan.Expr{&chplan.Binary{
 			Op: chplan.OpMul,
 			Left: &chplan.FuncCall{
 				Fn:   chplan.FnToFloat64,
-				Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnToUInt64OrZero, Args: []chplan.Expr{frac}}},
+				Args: []chplan.Expr{frac},
 			},
 			Right: &chplan.Binary{
 				Op:    chplan.OpDiv,
@@ -413,6 +421,75 @@ func goDurationSeconds(stripped chplan.Expr) chplan.Expr {
 			Op:    chplan.OpDiv,
 			Left:  &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{nsec}},
 			Right: &chplan.LitFloat{V: float64(nanosPerSecond)},
+		},
+	}
+}
+
+// goLeadingFraction replays Go's time.leadingFraction over the fraction
+// digits of one duration component, returning the Tuple(UInt64, Float64,
+// UInt64) of its (x, scale, overflow) state:
+//
+//	for each digit c:
+//	    if overflow                         { continue }
+//	    if x > (1<<63-1)/10                 { overflow = true; continue }
+//	    y := x*10 + c
+//	    if y > 1<<63                        { overflow = true; continue }
+//	    x = y; scale *= 10
+//
+// With x <= (1<<63-1)/10, y exceeds 1<<63 only when x equals that bound
+// and c exceeds goFractionSaturationLastDigit, so the fold tests that
+// instead of forming a constant past the int64 range. scale is the same
+// running float64 product Go keeps, not a correctly rounded 10^n; the two
+// part ways from 10^25 on.
+func goLeadingFraction(digits chplan.Expr) chplan.Expr {
+	acc := &chplan.BareIdent{Name: durationFracAccParam}
+	field := func(n int64) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{acc, &chplan.LitInt{V: n}}}
+	}
+	x, scale, overflow := field(1), field(2), field(3)
+	digit := &chplan.FuncCall{Fn: chplan.FnToUInt64OrZero, Args: []chplan.Expr{&chplan.BareIdent{Name: durationFracDigitParam}}}
+	state := func(x, scale chplan.Expr, overflow int64) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{x}},
+			&chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{scale}},
+			&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{&chplan.LitInt{V: overflow}}},
+		}}
+	}
+	saturates := &chplan.Binary{
+		Op:   chplan.OpOr,
+		Left: &chplan.Binary{Op: chplan.OpGt, Left: x, Right: &chplan.LitInt{V: goFractionSaturation}},
+		Right: &chplan.Binary{
+			Op:   chplan.OpAnd,
+			Left: &chplan.Binary{Op: chplan.OpEq, Left: x, Right: &chplan.LitInt{V: goFractionSaturation}},
+			Right: &chplan.Binary{
+				Op: chplan.OpGt, Left: digit, Right: &chplan.LitInt{V: goFractionSaturationLastDigit},
+			},
+		},
+	}
+	step := &chplan.FuncCall{
+		Fn: chplan.FnMultiIf,
+		Args: []chplan.Expr{
+			&chplan.Binary{Op: chplan.OpNe, Left: overflow, Right: &chplan.LitInt{V: 0}},
+			state(x, scale, 1),
+			saturates,
+			state(x, scale, 1),
+			state(
+				&chplan.Binary{
+					Op:    chplan.OpAdd,
+					Left:  &chplan.Binary{Op: chplan.OpMul, Left: x, Right: &chplan.LitInt{V: decimalRadix}},
+					Right: digit,
+				},
+				&chplan.Binary{Op: chplan.OpMul, Left: scale, Right: &chplan.LitFloat{V: decimalRadix}},
+				0,
+			),
+		},
+	}
+	return &chplan.FuncCall{
+		Fn: chplan.FnArrayFold,
+		Args: []chplan.Expr{
+			&chplan.Lambda{Params: []string{durationFracAccParam, durationFracDigitParam}, Body: step},
+			&chplan.FuncCall{Fn: chplan.FnRegexExtractAll, Args: []chplan.Expr{digits, &chplan.LitString{V: "[0-9]"}}},
+			state(&chplan.LitInt{V: 0}, &chplan.LitInt{V: 1}, 0),
 		},
 	}
 }

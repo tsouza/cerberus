@@ -1213,7 +1213,6 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnLog2:                             "FnLog2",
 	chplan.FnLog10:                            "FnLog10",
 	chplan.FnIntDiv:                           "FnIntDiv",
-	chplan.FnIntExp10:                         "FnIntExp10",
 	chplan.FnPow:                              "FnPow",
 	chplan.FnRound:                            "FnRound",
 	chplan.FnSign:                             "FnSign",

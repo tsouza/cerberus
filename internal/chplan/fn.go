@@ -563,10 +563,6 @@ const (
 	// both operands integers. Throws on b = 0.
 	FnIntDiv Fn = "intDiv"
 
-	// intExp10(n) — 10 raised to the integer power n as a UInt64, exact for
-	// 0 <= n <= 19.
-	FnIntExp10 Fn = "intExp10"
-
 	// pow(base, exp) — base raised to the power exp.
 	FnPow Fn = "pow"
 

@@ -14,6 +14,7 @@ package logql
 import (
 	"database/sql"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,14 @@ var durationNumberShapes = []string{
 	"0", "1", "3", "5", "7", "12", "999", "1000", "2562046",
 	"1.5", "0.1", "0.3", "2.7", "291.792", ".5", "5.", "0.000001",
 	"1.123456789", "3.141592653589793", "0.999999999999999999",
+	// Past 18 fraction digits: Go's leadingFraction keeps reading while its
+	// accumulator stays under (1<<63-1)/10 (leading zeros never grow it),
+	// and its scale is a running float64 product of tens that parts from
+	// the correctly rounded 10^n at 10^25.
+	"0.0999999999999999999", "0.499999999999999999999", "0.1999999999999999999999",
+	"0.9223372036854775808", "0.9223372036854775809", "0.92233720368547758089",
+	"0.0000001234567890123456789", "0.00000000000000000000000000001",
+	"0.000000999999999999999999999999", "1." + strings.Repeat("0", 330) + "1",
 }
 
 func TestDurationSecondsMatchesGo(t *testing.T) {
