@@ -437,5 +437,3 @@ func withinAnySpan(i int, spans [][2]int) bool {
 	}
 	return false
 }
-
-// Probe line for the mutation verdict-cache proof run; removed before merge.
