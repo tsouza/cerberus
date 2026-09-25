@@ -136,12 +136,10 @@ func TestReadyz_CacheCoalesces_ConcurrentProbes(t *testing.T) {
 
 	const N = 32
 	var wg sync.WaitGroup
-	for i := 0; i < N; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range N {
+		wg.Go(func() {
 			_ = serveReadyz(t, h)
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -222,7 +220,7 @@ func TestProbes_Concurrent_NoPanics(t *testing.T) {
 
 	const N = 200
 	var wg sync.WaitGroup
-	for i := 0; i < N; i++ {
+	for range N {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()

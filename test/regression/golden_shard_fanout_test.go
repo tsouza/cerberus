@@ -83,7 +83,7 @@ func planLineIsShard(line, shard string) bool {
 
 // planEnvValue extracts `NAME=value` from a plan line.
 func planEnvValue(line, name string) (string, bool) {
-	for _, field := range strings.Fields(line) {
+	for field := range strings.FieldsSeq(line) {
 		if after, ok := strings.CutPrefix(field, name+"="); ok {
 			return after, true
 		}

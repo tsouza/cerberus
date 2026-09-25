@@ -65,7 +65,7 @@ func preambleDefaults(t *testing.T) map[string]documentedDefault {
 		t.Fatalf("read %s: %v", configDocsPath, err)
 	}
 	var bullets []string
-	for _, line := range strings.Split(string(raw), "\n") {
+	for line := range strings.SplitSeq(string(raw), "\n") {
 		switch {
 		case strings.HasPrefix(line, "- "):
 			bullets = append(bullets, strings.TrimPrefix(line, "- "))

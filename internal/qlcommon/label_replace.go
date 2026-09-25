@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"regexp/syntax"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -538,12 +539,7 @@ func matchesEmpty(re *syntax.Regexp) bool {
 		return true
 	case syntax.OpAlternate:
 		// One nullable branch is enough.
-		for _, sub := range re.Sub {
-			if matchesEmpty(sub) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(re.Sub, matchesEmpty)
 	}
 	return true
 }

@@ -201,7 +201,6 @@ func runDiffGRPC(args []string) error {
 	var skippedNoRPC []CorpusCase
 	var skippedStatusParity []CorpusCase
 	for _, tc := range cases {
-		tc := tc
 		switch {
 		case !grpcSupportsEndpoint(tc.Endpoint):
 			skippedNoRPC = append(skippedNoRPC, tc)

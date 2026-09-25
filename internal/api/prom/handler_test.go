@@ -759,9 +759,9 @@ func BenchmarkExecuteRangeStreaming(b *testing.B) {
 	end := start.Add(time.Duration(samplesPerSerie-1) * step)
 
 	samples := make([]chclient.Sample, 0, seriesCount*samplesPerSerie)
-	for i := 0; i < seriesCount; i++ {
+	for i := range seriesCount {
 		labels := map[string]string{"job": "api", "instance": fmt.Sprintf("host-%d", i)}
-		for j := 0; j < samplesPerSerie; j++ {
+		for j := range samplesPerSerie {
 			samples = append(samples, chclient.Sample{
 				MetricName: "up",
 				Labels:     labels,

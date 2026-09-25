@@ -99,7 +99,6 @@ func TestResolveLogSampleShapeRejectsMalformedSchemas(t *testing.T) {
 		"unnamed":   {Columns: append(append([]chplan.Column{}, valid[:3]...), chplan.Column{Role: chplan.RoleValue})},
 	}
 	for name, row := range tests {
-		row := row
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			if _, _, err := resolveLogSampleShape(row); err == nil {

@@ -202,7 +202,7 @@ func composeInvocations(t *testing.T, files []string) [][]string {
 	var out [][]string
 	for _, src := range justfileSources(t) {
 		joined := strings.ReplaceAll(src.Text, "\\\n", " ")
-		for _, line := range strings.Split(joined, "\n") {
+		for line := range strings.SplitSeq(joined, "\n") {
 			type mention struct {
 				at  int
 				rel string
@@ -377,7 +377,7 @@ func composeShellCallers(t *testing.T) []string {
 		if readErr != nil {
 			return readErr
 		}
-		for _, line := range strings.Split(string(buf), "\n") {
+		for line := range strings.SplitSeq(string(buf), "\n") {
 			code := strings.TrimSpace(line)
 			if code == "" || strings.HasPrefix(code, "#") {
 				continue

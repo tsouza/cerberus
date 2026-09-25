@@ -10,8 +10,6 @@ import (
 	"github.com/tsouza/cerberus/test/perf/profile"
 )
 
-func ptr(f float64) *float64 { return &f }
-
 func writeRecordsFile(t *testing.T, path string, recs []profile.Record) {
 	t.Helper()
 	data, err := json.Marshal(recs)
@@ -60,10 +58,10 @@ func TestMergeRecords_DuplicateFixtureAcrossShards(t *testing.T) {
 func TestMergeRecords_ConcatenatesAndSortsByFanFactor(t *testing.T) {
 	dir := t.TempDir()
 	writeRecordsFile(t, filepath.Join(dir, "shard-1.json"), []profile.Record{
-		{Fixture: "promql/low", FanFactor: ptr(1.5)},
+		{Fixture: "promql/low", FanFactor: new(1.5)},
 	})
 	writeRecordsFile(t, filepath.Join(dir, "shard-2.json"), []profile.Record{
-		{Fixture: "promql/high", FanFactor: ptr(9.0)},
+		{Fixture: "promql/high", FanFactor: new(9.0)},
 		{Fixture: "promql/unmeasured", FanFactor: nil},
 	})
 
@@ -83,10 +81,10 @@ func TestMergeRecords_ConcatenatesAndSortsByFanFactor(t *testing.T) {
 
 func TestSummarize(t *testing.T) {
 	recs := []profile.Record{
-		{Fixture: "a", FanFactor: ptr(2.0)},
-		{Fixture: "b", FanFactor: ptr(5.0)},
+		{Fixture: "a", FanFactor: new(2.0)},
+		{Fixture: "b", FanFactor: new(5.0)},
 		{Fixture: "c", FanFactor: nil},
-		{Fixture: "d", FanFactor: ptr(1.0), Err: "boom"},
+		{Fixture: "d", FanFactor: new(1.0), Err: "boom"},
 	}
 	nErr, nUnmeasured, maxFan := summarize(recs)
 	if nErr != 1 {
@@ -103,7 +101,7 @@ func TestSummarize(t *testing.T) {
 func TestWriteJSON_ToFile(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "out.json")
-	recs := []profile.Record{{Fixture: "promql/a", FanFactor: ptr(1.0)}}
+	recs := []profile.Record{{Fixture: "promql/a", FanFactor: new(1.0)}}
 	if err := writeJSON(out, recs); err != nil {
 		t.Fatalf("writeJSON: %v", err)
 	}
@@ -124,7 +122,7 @@ func TestWriteMarkdown(t *testing.T) {
 	dir := t.TempDir()
 	md := filepath.Join(dir, "summary.md")
 	recs := []profile.Record{
-		{Fixture: "promql/a", FanFactor: ptr(3.5), ScanRows: 10, PeakIntermediate: 35, HasCrossJoin: true},
+		{Fixture: "promql/a", FanFactor: new(3.5), ScanRows: 10, PeakIntermediate: 35, HasCrossJoin: true},
 		{Fixture: "promql/b", FanFactor: nil, ScanRows: 4, PeakIntermediate: 4},
 	}
 	if err := writeMarkdown(md, recs, 2, len(recs), 0, 1, 3.5); err != nil {
@@ -164,7 +162,7 @@ func TestFanFactorLabel(t *testing.T) {
 	if got := fanFactorLabel(nil); got != "unmeasured" {
 		t.Errorf("fanFactorLabel(nil) = %q, want %q", got, "unmeasured")
 	}
-	if got := fanFactorLabel(ptr(2.5)); got != "2.50" {
+	if got := fanFactorLabel(new(2.5)); got != "2.50" {
 		t.Errorf("fanFactorLabel(2.5) = %q, want %q", got, "2.50")
 	}
 }
@@ -206,7 +204,7 @@ func TestTruncate(t *testing.T) {
 
 func TestEmitReport_FailOverThreshold(t *testing.T) {
 	dir := t.TempDir()
-	recs := []profile.Record{{Fixture: "promql/a", FanFactor: ptr(10.0)}}
+	recs := []profile.Record{{Fixture: "promql/a", FanFactor: new(10.0)}}
 
 	code := emitReport(recs, filepath.Join(dir, "out.json"), "", 0, 5.0)
 	if code != 2 {
@@ -232,7 +230,7 @@ func TestRunMerge_PropagatesMergeError(t *testing.T) {
 
 func TestRunMerge_Succeeds(t *testing.T) {
 	dir := t.TempDir()
-	writeRecordsFile(t, filepath.Join(dir, "shard-1.json"), []profile.Record{{Fixture: "promql/a", FanFactor: ptr(1.0)}})
+	writeRecordsFile(t, filepath.Join(dir, "shard-1.json"), []profile.Record{{Fixture: "promql/a", FanFactor: new(1.0)}})
 	out := filepath.Join(dir, "merged.json")
 	code := runMerge(cliFlags{mergeGlob: filepath.Join(dir, "*.json"), outPath: out})
 	if code != 0 {

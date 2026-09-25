@@ -266,7 +266,6 @@ func TestCarrierGeometry_ExtractsFeaturesForEveryKind(t *testing.T) {
 	wantOuterRange := gridEnd.Sub(gridStart)
 
 	for _, tc := range carrierCases() {
-		tc := tc
 		t.Run(tc.kind, func(t *testing.T) {
 			t.Parallel()
 

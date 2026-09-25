@@ -229,13 +229,7 @@ func (a *fakeAdmit) TryAcquireTopUp(_ context.Context, want int) (int, func()) {
 	if a.denyTopUp || want <= 0 {
 		return 0, func() {}
 	}
-	g := want
-	if a.avail < g {
-		g = a.avail
-	}
-	if g < 0 {
-		g = 0
-	}
+	g := max(min(a.avail, want), 0)
 	a.granted.Add(int64(g))
 	var once sync.Once
 	return g, func() { once.Do(func() { a.released.Add(int64(g)) }) }
@@ -247,7 +241,7 @@ func (a *fakeAdmit) TryAcquireTopUp(_ context.Context, want int) (int, func()) {
 // slice is a trivial non-nil node (the fake emitter ignores it).
 func makeDecision(k int) *Decision {
 	d := &Decision{Strategy: StrategyShardedTimeslice, K: k, Reason: ReasonRouted}
-	for i := 0; i < k; i++ {
+	for i := range k {
 		d.Slices = append(d.Slices, Slice{Index: i, Plan: &chplan.OneRow{}})
 	}
 	return d

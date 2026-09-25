@@ -43,7 +43,6 @@ func TestPipelineErrorFor_SelectsLikeReference(t *testing.T) {
 		{name: "no samples answers", samples: nil, reject: false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := pipelineErrorFor(tc.samples)

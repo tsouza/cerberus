@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"testing"
 	"time"
 
@@ -51,12 +52,8 @@ func TestFixtureCorpus_WideProjectionByteBudget_WellBelowCeiling(t *testing.T) {
 		for _, sp := range tr.spans {
 			totalSpans++
 			merged := make(map[string]string, len(tr.resAttrs)+len(sp.Attributes))
-			for k, v := range tr.resAttrs {
-				merged[k] = v
-			}
-			for k, v := range keyValuesToMap(sp.Attributes) {
-				merged[k] = v
-			}
+			maps.Copy(merged, tr.resAttrs)
+			maps.Copy(merged, keyValuesToMap(sp.Attributes))
 			labelSets = append(labelSets, merged)
 		}
 	}

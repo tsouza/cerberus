@@ -102,7 +102,7 @@ func insertResourceBoundOverrideSeed(t *testing.T, exec func(string) error, tabl
 	t.Helper()
 	var b strings.Builder
 	fmt.Fprintf(&b, "INSERT INTO %s (MetricName, Attributes, TimeUnix, Value) VALUES ", table)
-	for i := 0; i < resourceBoundOverrideSeedRows; i++ {
+	for i := range resourceBoundOverrideSeedRows {
 		if i > 0 {
 			b.WriteString(",")
 		}

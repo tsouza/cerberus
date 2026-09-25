@@ -52,9 +52,9 @@ var (
 )
 
 var (
-	nodeInterface = reflect.TypeOf((*Node)(nil)).Elem()
-	exprInterface = reflect.TypeOf((*Expr)(nil)).Elem()
-	timeType      = reflect.TypeOf(time.Time{})
+	nodeInterface = reflect.TypeFor[Node]()
+	exprInterface = reflect.TypeFor[Expr]()
+	timeType      = reflect.TypeFor[time.Time]()
 )
 
 // synthValue returns a value of typ for the given variant. Two calls with

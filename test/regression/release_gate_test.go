@@ -321,7 +321,7 @@ func valueOfYAMLKey(t *testing.T, body, key string) string {
 	t.Helper()
 
 	var found []string
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if after, ok := strings.CutPrefix(trimmed, key+":"); ok {
 			found = append(found, strings.TrimSpace(after))
@@ -506,7 +506,7 @@ func TestReleaseGateDriftDetectorRunsLiveAndNotSelfTestOnly(t *testing.T) {
 	// flag. A file that mentions the script only inside a `--self-test` step is
 	// the exact hollow-green shape this pin exists to reject.
 	live := 0
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if strings.Contains(line, driftScript) && !strings.Contains(line, selfTestFlag) {
 			live++
 		}
@@ -533,7 +533,7 @@ func TestReleaseGateDriftDetectorRunsLiveAndNotSelfTestOnly(t *testing.T) {
 			"on the runner — the state that left this lane without a single verdict between "+
 			"2026-08-04 and 2026-09-01", driftWorkflowPath)
 	}
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "if:") {
 			t.Fatalf("%s conditions a step on %q. The comparison must run unconditionally: a step "+
@@ -552,7 +552,7 @@ func TestReleaseGateDriftDetectorRunsLiveAndNotSelfTestOnly(t *testing.T) {
 	script := readFileString(t, "../../.github/scripts/"+driftScript)
 	const apiBaseInterpolation = "${apiBase}"
 	rulesRead := false
-	for _, line := range strings.Split(script, "\n") {
+	for line := range strings.SplitSeq(script, "\n") {
 		if !strings.Contains(line, apiBaseInterpolation) {
 			continue
 		}
@@ -613,7 +613,7 @@ func TestPrepareReleaseOpensThePRAgainstTheDispatchedLine(t *testing.T) {
 	}
 
 	var create string
-	for _, line := range strings.Split(job, "\n") {
+	for line := range strings.SplitSeq(job, "\n") {
 		if strings.Contains(line, "gh pr create") {
 			create = strings.TrimSpace(line)
 		}

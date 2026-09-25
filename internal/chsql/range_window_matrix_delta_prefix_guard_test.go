@@ -158,10 +158,7 @@ func intervalNanosecondsAfter(t *testing.T, sqlText, marker string, n int) []int
 		t.Fatalf("marker %q not found in:\n%s", marker, sqlText)
 	}
 	const scanWindow = 300
-	end := idx + scanWindow
-	if end > len(sqlText) {
-		end = len(sqlText)
-	}
+	end := min(idx+scanWindow, len(sqlText))
 	segment := sqlText[idx:end]
 	re := regexp.MustCompile(`toIntervalNanosecond\((\d+)\)`)
 	matches := re.FindAllStringSubmatch(segment, n)
@@ -170,7 +167,7 @@ func intervalNanosecondsAfter(t *testing.T, sqlText, marker string, n int) []int
 			n, marker, len(matches), segment)
 	}
 	out := make([]int64, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		v, err := strconv.ParseInt(matches[i][1], 10, 64)
 		if err != nil {
 			t.Fatalf("parse %q: %v", matches[i][1], err)

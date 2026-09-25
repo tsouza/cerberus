@@ -61,7 +61,7 @@ func TestEvalInstantWindowSweep(t *testing.T) {
 	)
 	base := mustParseUTC(t, seriesStart)
 	samples := make([]sample, 0, sampleCount)
-	for i := 0; i < sampleCount; i++ {
+	for i := range sampleCount {
 		samples = append(samples, sample{
 			ts:  base.Add(time.Duration(i) * sampleStep),
 			val: float64(10 * (i + 1)), // 10,20,...,110 — all distinct
@@ -126,7 +126,6 @@ func TestEvalInstantWindowSweep(t *testing.T) {
 	p := parser.NewParser(parser.Options{})
 
 	for _, ex := range exprs {
-		ex := ex
 		t.Run(ex.name, func(t *testing.T) {
 			instantExpr, err := p.ParseExpr(ex.ql)
 			if err != nil {

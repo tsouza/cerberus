@@ -106,10 +106,10 @@ func isProse(line string) bool {
 func logicalLines(src string) []string {
 	var out []string
 	var buf strings.Builder
-	for _, raw := range strings.Split(src, "\n") {
+	for raw := range strings.SplitSeq(src, "\n") {
 		line := strings.TrimRight(raw, " \t\r")
-		if strings.HasSuffix(line, `\`) {
-			buf.WriteString(strings.TrimSuffix(line, `\`))
+		if before, ok := strings.CutSuffix(line, `\`); ok {
+			buf.WriteString(before)
 			buf.WriteString(" ")
 			continue
 		}

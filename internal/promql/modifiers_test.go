@@ -73,7 +73,6 @@ func TestLowerAt_StartEndModifiers(t *testing.T) {
 		`rate(http_requests_total[5m] @ end())`,
 	}
 	for _, q := range cases {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(q)

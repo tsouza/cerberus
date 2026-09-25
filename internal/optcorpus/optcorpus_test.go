@@ -102,7 +102,7 @@ func (m *memSink) snapshot() []Row {
 
 func TestObserve_RingBounded_DropsOldest(t *testing.T) {
 	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 3})
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		r.Observe(Record{QueryID: "q" + strconv.Itoa(i), ShapeID: "cerb:scan"})
 	}
 	ids := r.snapshotIDs()
@@ -139,7 +139,7 @@ func TestObserveQuery_NonBlocking_DropsWhenBufferFull(t *testing.T) {
 	// drain running, overflowing ObserveQuery calls are dropped, not blocked.
 	// (If they blocked, this test would hang.)
 	r := New(newFakeSource(), &memSink{}, Options{RingCapacity: 8, ObserveBuffer: 2})
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		observeNoRoute(r, "q"+strconv.Itoa(i), "cerb:scan", nil, "promql")
 	}
 	// Nothing reached the ring yet (no drain ran); the seam only buffers.
@@ -175,8 +175,7 @@ func TestRun_DrainsSeamThenReconciles(t *testing.T) {
 	src.seed(SourceRow{QueryID: "qz", NormalizedQueryHash: 7, ReadRows: 10})
 	observeNoRoute(r, "qz", "cerb:scan", nil, "traceql")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go r.Run(ctx)
 
 	deadline := time.After(time.Second)

@@ -55,7 +55,6 @@ func TestLower_ExpHistogram_LimitKAndLimitRatioPreserveSamples(t *testing.T) {
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 
@@ -106,7 +105,6 @@ func TestLower_ExpHistogram_TopKBottomKUnaffected(t *testing.T) {
 	at := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 
 	for _, query := range []string{`topk(3, latency_exp_hist)`, `bottomk(3, latency_exp_hist)`} {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 

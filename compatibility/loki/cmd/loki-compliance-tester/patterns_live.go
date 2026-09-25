@@ -177,7 +177,6 @@ func compareLivePatterns(c *http.Client, f flags, metadata livePatternsMetadata)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	for idx, addr := range []string{f.addr1, f.addr2} {
-		idx, addr := idx, addr
 		go func() {
 			defer wg.Done()
 			wire, err := fetchLivePatterns(c, addr, metadata)

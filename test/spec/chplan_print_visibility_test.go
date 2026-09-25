@@ -128,8 +128,8 @@ var chplanExprPrototypes = []chplan.Expr{
 }
 
 var (
-	chplanNodeInterface = reflect.TypeOf((*chplan.Node)(nil)).Elem()
-	chplanExprInterface = reflect.TypeOf((*chplan.Expr)(nil)).Elem()
+	chplanNodeInterface = reflect.TypeFor[chplan.Node]()
+	chplanExprInterface = reflect.TypeFor[chplan.Expr]()
 )
 
 // declaredMarkerImplementors parses internal/chplan and returns the name

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -225,13 +226,7 @@ func TestSignalTablesCoverEveryReadPath(t *testing.T) {
 
 	tables := signalTables()
 	for _, want := range []string{"otel_metrics_gauge", "otel_logs", "otel_traces"} {
-		found := false
-		for _, got := range tables {
-			if got == want {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(tables, want)
 		if !found {
 			t.Errorf("signalTables() = %v, missing %s", tables, want)
 		}

@@ -490,10 +490,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Traces Drilldown sends both (limit=200&spss=10 for the trace
 	// list); ignoring them returns every matching trace
 	// (e.g. 4937 summaries / ~755KB body for limit=200).
-	limit := positiveIntParam(r, "limit", DefaultSearchLimit)
-	if limit > MaxSearchLimit {
-		limit = MaxSearchLimit
-	}
+	limit := min(positiveIntParam(r, "limit", DefaultSearchLimit), MaxSearchLimit)
 	spss := positiveIntParam(r, "spss", DefaultSpansPerSpanSet)
 	// The request time window bounds the plain-search scan so /api/search
 	// drains only the matching traces in [start, end] rather than the whole

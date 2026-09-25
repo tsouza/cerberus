@@ -19,6 +19,7 @@ package promql_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,8 +56,9 @@ var absentSubquerySeed = "" +
 	absentSubqueryPresentInserts()
 
 func absentSubqueryPresentInserts() string {
-	out := "INSERT INTO otel_metrics_exponential_histogram " +
-		"(MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n"
+	var out strings.Builder
+	out.WriteString("INSERT INTO otel_metrics_exponential_histogram " +
+		"(MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n")
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := 0; i <= 25; i++ {
 		ts := base.Add(time.Duration(i) * time.Minute)
@@ -64,10 +66,10 @@ func absentSubqueryPresentInserts() string {
 		if i == 25 {
 			sep = ";\n"
 		}
-		out += "    ('" + absentSubqueryPresentMetric + "', map('job', 'api'), toDateTime64('" +
-			ts.Format("2006-01-02 15:04:05") + "', 9), 1, 1.0, 0, 0, 0, [1], 0, [])" + sep
+		out.WriteString("    ('" + absentSubqueryPresentMetric + "', map('job', 'api'), toDateTime64('" +
+			ts.Format("2006-01-02 15:04:05") + "', 9), 1, 1.0, 0, 0, 0, [1], 0, [])" + sep)
 	}
-	return out
+	return out.String()
 }
 
 func TestLower_ExpHistogram_AbsentSubquery_ChDB(t *testing.T) {
@@ -103,7 +105,6 @@ func TestLower_ExpHistogram_AbsentSubquery_ChDB(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			expr, err := p.ParseExpr(tc.query)
 			if err != nil {

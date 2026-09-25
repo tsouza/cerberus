@@ -28,8 +28,8 @@ import (
 // query and stays an explicit switch.
 
 var (
-	exprInterfaceType = reflect.TypeOf((*Expr)(nil)).Elem()
-	nodeInterfaceType = reflect.TypeOf((*Node)(nil)).Elem()
+	exprInterfaceType = reflect.TypeFor[Expr]()
+	nodeInterfaceType = reflect.TypeFor[Node]()
 )
 
 // maxExprSlotDepth bounds the reflective descent into a Node's fields. The
@@ -65,8 +65,8 @@ func typeCarriesExpr(t reflect.Type, seen map[reflect.Type]bool) bool {
 	case reflect.Map:
 		return typeCarriesExpr(t.Key(), seen) || typeCarriesExpr(t.Elem(), seen)
 	case reflect.Struct:
-		for i := range t.NumField() {
-			if typeCarriesExpr(t.Field(i).Type, seen) {
+		for field := range t.Fields() {
+			if typeCarriesExpr(field.Type, seen) {
 				return true
 			}
 		}

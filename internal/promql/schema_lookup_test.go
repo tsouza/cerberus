@@ -29,7 +29,6 @@ func TestSchemaTopLevelColumn_ServiceName(t *testing.T) {
 		{"", ""},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.label, func(t *testing.T) {
 			t.Parallel()
 			if got := schemaTopLevelColumn(s, tc.label); got != tc.want {
@@ -63,7 +62,6 @@ func TestMatcherToExpr_ServiceNameRoutesToCoalesce(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 
 	for _, spelling := range []string{"service_name", "service.name"} {
-		spelling := spelling
 		t.Run(spelling, func(t *testing.T) {
 			t.Parallel()
 			m, err := labels.NewMatcher(labels.MatchEqual, spelling, "cerberus")
@@ -181,7 +179,6 @@ func TestPromqlTopLevelKeys(t *testing.T) {
 		{"column_cleared", cleared, nil},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := promqlTopLevelKeys(tc.in)

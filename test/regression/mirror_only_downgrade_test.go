@@ -149,7 +149,7 @@ func readStubCalls(t *testing.T, callLog string) []dockerCall {
 		t.Fatalf("read stub call log: %v", err)
 	}
 	var calls []dockerCall
-	for _, line := range strings.Split(strings.TrimSpace(string(buf)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(buf)), "\n") {
 		if line == "" {
 			continue
 		}
@@ -215,7 +215,7 @@ func loginUnderOutage(t *testing.T, stubDir string, env ...string) (int, string,
 		t.Fatalf("read GITHUB_ENV file: %v", err)
 	}
 	var exported []string
-	for _, line := range strings.Split(strings.TrimSpace(string(buf)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(buf)), "\n") {
 		if line != "" {
 			exported = append(exported, line)
 		}

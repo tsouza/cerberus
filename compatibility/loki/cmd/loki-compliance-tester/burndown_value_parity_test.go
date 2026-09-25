@@ -58,7 +58,6 @@ func TestIntersectSorted(t *testing.T) {
 		{"b-order-does-not-leak", []string{"a", "b"}, []string{"b", "a"}, []string{"a", "b"}},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := intersectSorted(tc.a, tc.b)

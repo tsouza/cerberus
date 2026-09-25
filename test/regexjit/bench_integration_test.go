@@ -178,11 +178,9 @@ func runBench(ctx context.Context, b *testing.B, s *server, h handlers, q benchQ
 		case scenarioConcurrent:
 			var wg sync.WaitGroup
 			for range benchClients {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+				wg.Go(func() {
 					issue(measured, q.query)
-				}()
+				})
 			}
 			wg.Wait()
 		default:

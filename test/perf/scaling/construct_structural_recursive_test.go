@@ -109,7 +109,7 @@ func structuralSeedInsert(candidates, noise, depth int) string {
 	gid := 0
 	emit := func(traceID string, depth int, marker bool) {
 		base := gid
-		for lvl := 0; lvl < depth; lvl++ {
+		for lvl := range depth {
 			var parent string
 			if lvl > 0 {
 				parent = hexID(base + lvl - 1)
@@ -133,10 +133,10 @@ func structuralSeedInsert(candidates, noise, depth int) string {
 		}
 		gid += depth
 	}
-	for tr := 0; tr < candidates; tr++ {
+	for tr := range candidates {
 		emit(hexTrace('a', tr), depth, true)
 	}
-	for tr := 0; tr < noise; tr++ {
+	for tr := range noise {
 		emit(hexTrace('b', tr), depth, false)
 	}
 	b = append(b, ';')

@@ -84,7 +84,6 @@ func TestMetadataDispatch_StampsItsOwnPhysicalScanCount(t *testing.T) {
 		{"series", "/api/v1/series?match[]=up"},
 		{"metric_metadata", "/api/v1/metadata"},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

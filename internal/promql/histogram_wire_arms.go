@@ -1,6 +1,7 @@
 package promql
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/prometheus/common/model"
@@ -100,11 +101,8 @@ type WireArms struct {
 func (w WireArms) filter(arms ...WireArm) []*labels.Matcher {
 	out := make([]*labels.Matcher, 0, len(w.Matchers))
 	for i, m := range w.Matchers {
-		for _, arm := range arms {
-			if w.Arms[i] == arm {
-				out = append(out, m)
-				break
-			}
+		if slices.Contains(arms, w.Arms[i]) {
+			out = append(out, m)
 		}
 	}
 	return out

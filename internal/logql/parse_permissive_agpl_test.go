@@ -53,7 +53,6 @@ func TestParseExprPermissive_MatchAllAccepted(t *testing.T) {
 		`rate({job=~".*"}[1m])`,
 	}
 	for _, q := range cases {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 			// Confirm strict ParseExpr rejects the shape (otherwise the

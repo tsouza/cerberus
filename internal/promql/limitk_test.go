@@ -59,7 +59,6 @@ func TestLower_LimitK_Shape(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)
@@ -189,7 +188,6 @@ func TestLower_LimitK_Errors(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)

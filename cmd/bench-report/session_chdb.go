@@ -54,7 +54,7 @@ func (s *session) exec(stmt string) error {
 
 // execAll splits a multi-statement script on `;` and runs each fragment.
 func (s *session) execAll(script string) error {
-	for _, stmt := range strings.Split(script, ";") {
+	for stmt := range strings.SplitSeq(script, ";") {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
@@ -119,10 +119,10 @@ func (s *session) explainSelectedGranules(query string) (selected, total int, er
 		return -1, -1, e
 	}
 	selected, total = -1, -1
-	for _, line := range strings.Split(res.String(), "\n") {
+	for line := range strings.SplitSeq(res.String(), "\n") {
 		t := strings.TrimSpace(strings.Trim(line, "\""))
-		if strings.HasPrefix(t, "Granules:") {
-			rest := strings.TrimSpace(strings.TrimPrefix(t, "Granules:"))
+		if after, ok := strings.CutPrefix(t, "Granules:"); ok {
+			rest := strings.TrimSpace(after)
 			parts := strings.SplitN(rest, "/", 2)
 			if n, e := strconv.Atoi(strings.TrimSpace(parts[0])); e == nil {
 				selected = n

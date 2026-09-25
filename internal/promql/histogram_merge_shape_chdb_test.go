@@ -91,10 +91,7 @@ func readMergedHistogramShape(t *testing.T, fixture *chdbFixture, query string, 
 // rawScale: one extra downscale step per halving needed to bring the width
 // under [chplan.OTelExpoHistogramDefaultMaxSize], none when it already is.
 func expectedRefinedScale(rawScale, naturalWidth int64) int64 {
-	steps := int64(math.Ceil(math.Log2(float64(naturalWidth) / float64(chplan.OTelExpoHistogramDefaultMaxSize))))
-	if steps < 0 {
-		steps = 0
-	}
+	steps := max(int64(math.Ceil(math.Log2(float64(naturalWidth)/float64(chplan.OTelExpoHistogramDefaultMaxSize)))), 0)
 	return rawScale - steps
 }
 

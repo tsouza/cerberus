@@ -68,7 +68,6 @@ func TestLower_OvertimeTsMadFamily_LowersAndEmits(t *testing.T) {
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.fn, func(t *testing.T) {
 			t.Parallel()
 

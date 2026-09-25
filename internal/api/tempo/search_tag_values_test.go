@@ -51,7 +51,6 @@ func TestSearchTagValues_Intrinsic_Name(t *testing.T) {
 func TestSearchTagValues_Intrinsic_AllMapped(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"name", "kind", "status", "statusMessage", "duration", "parent"} {
-		name := name
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			q := &stubQuerier{strings: []string{"a"}}
@@ -607,7 +606,6 @@ func TestSearchTagValues_ScopedFormParityWithBare(t *testing.T) {
 		"/api/v2/search/tag/service.name/values",
 		"/api/v2/search/tag/.service.name/values",
 	} {
-		urlPath := urlPath
 		t.Run(urlPath, func(t *testing.T) {
 			t.Parallel()
 			q := &stubQuerier{strings: []string{"frontend", "backend"}}

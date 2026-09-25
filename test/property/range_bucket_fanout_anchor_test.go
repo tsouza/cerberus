@@ -63,7 +63,7 @@ func TestPromQL_RangeBucketFanoutAnchorsMatchStartAnchoredGrid(t *testing.T) {
 
 	s := property.SeriesData{MetricName: metric, Labels: map[string]string{"instance": "a"}}
 	base := []uint64{1, 2, 3, 4}
-	for step := 0; step < steps; step++ {
+	for step := range steps {
 		n := step + 1
 		counts := make([]uint64, len(base))
 		for i, c := range base {
@@ -98,7 +98,6 @@ func TestPromQL_RangeBucketFanoutAnchorsMatchStartAnchoredGrid(t *testing.T) {
 
 	assertGrid := func(t *testing.T, start, end int64) {
 		for _, fn := range []string{"changes", "resets"} {
-			fn := fn
 			t.Run(fn, func(t *testing.T) {
 				out := runCerberusRange(context.Background(), srv.URL,
 					fmt.Sprintf("%s(%s[5m])", fn, metric), start, end, step)
@@ -227,7 +226,7 @@ func TestRangeWindowAnchorsMatchStartAnchoredGrid(t *testing.T) {
 	const metric = "anchor_grid_requests_total"
 
 	s := property.SeriesData{MetricName: metric, Labels: map[string]string{"job": "api"}}
-	for i := 0; i < rangeWindowAnchorSampleCount; i++ {
+	for i := range rangeWindowAnchorSampleCount {
 		s.Points = append(s.Points, property.Point{
 			TimestampMs: anchorMs + int64(i)*rangeWindowAnchorSampleSeconds*1000,
 			Value:       float64(10 * i),
@@ -261,7 +260,6 @@ func TestRangeWindowAnchorsMatchStartAnchoredGrid(t *testing.T) {
 		{"rate_offset", fmt.Sprintf("rate(%s[2m] offset 1m)", metric)},
 	}
 	for _, tc := range rows {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			span := drawNonMultipleSpan(t, step)
 			out := runCerberusRange(context.Background(), srv.URL, tc.query, gridStart, gridStart+span, step)
@@ -302,7 +300,7 @@ func TestLogQL_RangeWindowAnchorsMatchStartAnchoredGrid(t *testing.T) {
 	const tsFmt = "2006-01-02 15:04:05.000000000"
 	dataStart := time.Unix(1_700_000_000, 0).UTC()
 	lines := make([]string, 0, rangeWindowAnchorSampleCount)
-	for i := 0; i < rangeWindowAnchorSampleCount; i++ {
+	for i := range rangeWindowAnchorSampleCount {
 		ts := dataStart.Add(time.Duration(i) * time.Duration(rangeWindowAnchorSampleSeconds) * time.Second).Format(tsFmt)
 		lines = append(lines, fmt.Sprintf("    (toDateTime64('%s', 9), 'line', map('service_name', 'api'))", ts))
 	}

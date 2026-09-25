@@ -14,6 +14,8 @@ package ast
 // pass walks every field expression in the query post-order, so inner folds
 // feed outer ones and a 3+ wide chain (`a=1 || a=2 || a=3`) collapses fully.
 
+import "slices"
+
 // applyRewrites returns r with the array-fold rewrites applied across its
 // pipeline (and any nested pipelines reachable from spanset operations). It
 // mutates the field expressions in place and returns the same root for
@@ -159,21 +161,11 @@ func attrLiteralOperands(fe FieldExpression, ops ...Operator) (Attribute, Static
 }
 
 func operatorIn(op Operator, ops []Operator) bool {
-	for _, o := range ops {
-		if op == o {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ops, op)
 }
 
 func staticTypeAllowed(t StaticType, allowed []StaticType) bool {
-	for _, a := range allowed {
-		if t == a {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(allowed, t)
 }
 
 // staticMerge combines two statics into the array static of the matching

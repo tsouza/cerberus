@@ -328,23 +328,17 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 	maxK := int64(p.Cfg.MaxK)
 	if meta.Estimate != nil && p.Cfg.MaxKWithEstimate > p.Cfg.MaxK {
 		// Real EXPLAIN ESTIMATE row counts never approach int64 overflow (~9.2e18).
-		estimateK := int64(meta.Estimate.Rows) / p.Cfg.EstimateMinRowsPerAdditionalShard //nolint:gosec // G115
-		if estimateK > int64(p.Cfg.MaxKWithEstimate) {
-			estimateK = int64(p.Cfg.MaxKWithEstimate)
-		}
+		estimateK := min(
+			//nolint:gosec // G115
+			int64(meta.Estimate.Rows)/p.Cfg.EstimateMinRowsPerAdditionalShard, int64(p.Cfg.MaxKWithEstimate),
+		)
 		if estimateK > maxK {
 			maxK = estimateK
 		}
 	}
-	denom := d
-	if step > denom {
-		denom = step
-	}
+	denom := max(step, d)
 	highBound := int64(outerRange / denom) // floor(OuterRange / max(D, Step))
-	upper := maxK
-	if highBound < upper {
-		upper = highBound
-	}
+	upper := min(highBound, maxK)
 	// If the high-D clamp ceiling fell below the floor there is no valid K —
 	// the documented high-D floor.
 	//
@@ -358,13 +352,7 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 		return sig, notRouted(ReasonHighD).withGrid(sig, meta), 0, false
 	}
 
-	kk := int64(n / p.Cfg.MinAnchorsPerSlice)
-	if kk < minRouteBShards {
-		kk = minRouteBShards
-	}
-	if kk > upper {
-		kk = upper
-	}
+	kk := min(max(int64(n/p.Cfg.MinAnchorsPerSlice), minRouteBShards), upper)
 	// (6) An end-phased nested grid is generated backward from its own End,
 	// so the slice quantum must preserve its phase — checked against the
 	// same ceil(N/K) quantum the slicer will emit below.

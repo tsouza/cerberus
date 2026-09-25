@@ -274,7 +274,7 @@ func runSentinelFloor(
 			}
 
 			var maxBytes uint64
-			for i := 0; i < sentinelRepeats; i++ {
+			for i := range sentinelRepeats {
 				queryID := fmt.Sprintf("perfsmoke-%s-%d", sentinel.Name, i)
 				code := runSentinelOnce(t, mux, sentinel, start, end, queryID)
 				if code != http.StatusOK {

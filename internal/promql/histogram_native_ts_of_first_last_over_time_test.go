@@ -60,7 +60,6 @@ func TestLower_ExpHistogram_TsOfFirstLastOverTime(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name+"/instant", func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)
@@ -115,7 +114,6 @@ func TestLower_ExpHistogram_TsOfFirstLastOverTime_AtPin(t *testing.T) {
 		`ts_of_first_over_time(demo_latency_exp_hist[5m] @ 1735689600)`,
 		`ts_of_last_over_time(demo_latency_exp_hist[5m] @ 1735689600)`,
 	} {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(query)
@@ -156,7 +154,6 @@ func TestLower_ExpHistogram_TsOfFirstLastOverTime_NameDropped(t *testing.T) {
 		`ts_of_first_over_time(demo_latency_exp_hist[5m])`,
 		`ts_of_last_over_time(demo_latency_exp_hist[5m])`,
 	} {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(query)

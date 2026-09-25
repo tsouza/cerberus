@@ -134,7 +134,7 @@ func capHintProjectionExpr(t *testing.T, projs []chplan.Projection, alias string
 // capHintAliases builds n distinct column names for a grouping key list.
 func capHintAliases(n int) []string {
 	out := make([]string, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out = append(out, fmt.Sprintf("cap_key_%d", i))
 	}
 	return out
@@ -166,7 +166,7 @@ func TestExpHistogramPairCountStage_CapHintMutantKilled(t *testing.T) {
 		},
 		Build: func(hint int) (int, int) {
 			projs := make([]chplan.Projection, 0, hint)
-			for i := 0; i < keys; i++ {
+			for range keys {
 				projs = append(projs, chplan.Projection{})
 			}
 			projs = append(projs, chplan.Projection{}) // the pair-count value
@@ -251,7 +251,7 @@ func TestExpHistogramWindowFactorStage_CapHintMutantsKilled(t *testing.T) {
 		countValues: &chplan.ColumnRef{Name: "counts"},
 	}
 	aggFuncs := make([]chplan.AggFunc, 0, aggs)
-	for i := 0; i < aggs; i++ {
+	for i := range aggs {
 		aggFuncs = append(aggFuncs, chplan.AggFunc{Fn: chplan.FnCount, Alias: fmt.Sprintf("agg_%d", i)})
 	}
 
@@ -275,7 +275,7 @@ func TestExpHistogramWindowFactorStage_CapHintMutantsKilled(t *testing.T) {
 		},
 		Build: func(hint int) (int, int) {
 			projs := make([]chplan.Projection, 0, hint)
-			for i := 0; i < keys+aggs+extras; i++ {
+			for range keys + aggs + extras {
 				projs = append(projs, chplan.Projection{})
 			}
 			projs = append(projs, chplan.Projection{}) // the hoisted factor
@@ -316,7 +316,7 @@ func TestExpHistogramWindowReshape_CapHintMutantsKilled(t *testing.T) {
 		countValues: &chplan.ColumnRef{Name: "counts"},
 	}
 	scalarProjs := make([]chplan.Projection, 0, scalars)
-	for i := 0; i < scalars; i++ {
+	for i := range scalars {
 		scalarProjs = append(scalarProjs, chplan.Projection{
 			Expr:  &chplan.ColumnRef{Name: fmt.Sprintf("scalar_%d", i)},
 			Alias: fmt.Sprintf("scalar_%d", i),
@@ -348,7 +348,7 @@ func TestExpHistogramWindowReshape_CapHintMutantsKilled(t *testing.T) {
 		},
 		Build: func(hint int) (int, int) {
 			projs := make([]chplan.Projection, 0, hint)
-			for i := 0; i < keys; i++ {
+			for range keys {
 				projs = append(projs, chplan.Projection{})
 			}
 			projs = append(projs, scalarProjs...)
@@ -377,7 +377,7 @@ func TestClassicBucketReshape_CapHintMutantKilled(t *testing.T) {
 
 	s := schema.DefaultOTelMetrics()
 	pass := make([]chplan.Projection, 0, passthrough)
-	for i := 0; i < passthrough; i++ {
+	for i := range passthrough {
 		pass = append(pass, chplan.Projection{
 			Expr:  &chplan.ColumnRef{Name: fmt.Sprintf("pass_%d", i)},
 			Alias: fmt.Sprintf("pass_%d", i),
@@ -435,7 +435,7 @@ func TestHistogramAggGroupBy_CapHintMutantKilled(t *testing.T) {
 		},
 		Build: func(hint int) (int, int) {
 			args := make([]chplan.Expr, 0, hint)
-			for i := 0; i < labels; i++ {
+			for range labels {
 				args = append(args, nil, nil) // (label literal, gkey column)
 			}
 			return len(args), cap(args)
@@ -486,7 +486,7 @@ func TestLowerCountValuesOverPlan_CapHintMutantsKilled(t *testing.T) {
 		},
 		Build: func(hint int) (int, int) {
 			args := make([]chplan.Expr, 0, hint)
-			for i := 0; i < groups; i++ {
+			for range groups {
 				args = append(args, nil, nil) // (label literal, gkey column)
 			}
 			args = append(args, nil, nil) // the synthetic value-as-label pair
@@ -523,7 +523,7 @@ func TestPromAggregateAttributesExpr_CapHintMutantKilled(t *testing.T) {
 		},
 		Build: func(hint int) (int, int) {
 			args := make([]chplan.Expr, 0, hint)
-			for i := 0; i < groups; i++ {
+			for range groups {
 				args = append(args, nil, nil) // (label literal, alias column)
 			}
 			return len(args), cap(args)

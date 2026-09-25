@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,10 +97,11 @@ func seedKeyOrderServer(t *testing.T, rows []keyOrderSeedRow) (*httptest.Server,
 	t.Helper()
 	const tsFmt = "2006-01-02 15:04:05.000"
 
-	seed := keyOrderSeedTable
+	var seed strings.Builder
+	seed.WriteString(keyOrderSeedTable)
 	for i, r := range rows {
 		ts := keyOrderWindowBase.Add(time.Duration(i) * time.Second).Format(tsFmt)
-		seed += fmt.Sprintf(
+		fmt.Fprintf(&seed,
 			"\nINSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES"+
 				" (toDateTime64('%s', 9), '%s', %s);",
 			ts, r.body, r.mapSQL,
@@ -107,7 +109,7 @@ func seedKeyOrderServer(t *testing.T, rows []keyOrderSeedRow) (*httptest.Server,
 	}
 
 	c := chclienttest.NewChDB(t)
-	c.Seed(t, seed)
+	c.Seed(t, seed.String())
 	counter := &labelSetRowCounter{Client: c}
 	h := loki.New(counter, schema.DefaultOTelLogs(), nil)
 	mux := http.NewServeMux()

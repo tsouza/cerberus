@@ -184,7 +184,7 @@ func TestSeededFixtureProblems(t *testing.T) {
 
 // valueForKey returns the text after the first line starting with key.
 func valueForKey(body, key string) string {
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimSpace(line)
 		if after, ok := strings.CutPrefix(line, key); ok {
 			return after

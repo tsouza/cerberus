@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -653,9 +654,7 @@ func evidenceOfFixture(t *testing.T, src string) map[string]*Evidence {
 			continue
 		}
 		_, ev := scanFunc(sc, fn, "internal/promql/p.go", "promql", "promql: ")
-		for k, v := range ev {
-			out[k] = v
-		}
+		maps.Copy(out, ev)
 	}
 	return out
 }

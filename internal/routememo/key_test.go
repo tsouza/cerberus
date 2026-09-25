@@ -16,10 +16,10 @@ func scanFixture() chplan.Node {
 
 func filterFixture(input chplan.Node, eqCount, matchCount int) chplan.Node {
 	var pred chplan.Expr = &chplan.LitBool{V: true}
-	for i := 0; i < eqCount; i++ {
+	for range eqCount {
 		pred = &chplan.Binary{Op: chplan.OpEq, Left: pred, Right: &chplan.LitString{V: "x"}}
 	}
-	for i := 0; i < matchCount; i++ {
+	for range matchCount {
 		pred = &chplan.Binary{Op: chplan.OpMatch, Left: pred, Right: &chplan.LitString{V: "y.*"}}
 	}
 	return &chplan.Filter{Input: input, Predicate: pred}

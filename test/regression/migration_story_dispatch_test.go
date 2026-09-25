@@ -2,6 +2,7 @@ package regression
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"testing"
@@ -104,12 +105,8 @@ func migrationTierJobTiers(t *testing.T) []string {
 // Actions itself applies.
 func stepEnv(job, step map[string]string) map[string]string {
 	merged := make(map[string]string, len(job)+len(step))
-	for k, v := range job {
-		merged[k] = v
-	}
-	for k, v := range step {
-		merged[k] = v
-	}
+	maps.Copy(merged, job)
+	maps.Copy(merged, step)
 	return merged
 }
 

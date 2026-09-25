@@ -32,11 +32,11 @@ import (
 // stays one element.
 func orderByTuple(t *testing.T, ddl string) []string {
 	t.Helper()
-	idx := strings.Index(ddl, "ORDER BY (")
-	if idx < 0 {
+	_, after, ok := strings.Cut(ddl, "ORDER BY (")
+	if !ok {
 		t.Fatalf("no `ORDER BY (` in the template — the parser is broken, not the DDL:\n%s", ddl)
 	}
-	rest := ddl[idx+len("ORDER BY ("):]
+	rest := after
 
 	depth := 0
 	var elems []string

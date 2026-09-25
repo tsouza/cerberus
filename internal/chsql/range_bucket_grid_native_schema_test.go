@@ -89,7 +89,6 @@ func TestRangeBucketGridNativeRejectsMalformedChildSchema(t *testing.T) {
 			chplan.Column{Name: "timestamp", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldExplicitBounds}),
 	}
 	for name, child := range tests {
-		child := child
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

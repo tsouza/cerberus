@@ -237,7 +237,7 @@ func TestExpHistogramIncreaseClosedForm_ChDB_MatchesTelescopingOverEveryResetPat
 		schema.AggregationTemporalityCumulative,
 		schema.AggregationTemporalityDelta,
 	} {
-		for mask := 0; mask < patterns; mask++ {
+		for mask := range patterns {
 			resets := make([]bool, closedFormSamples-1)
 			for i := range resets {
 				resets[i] = mask&(1<<i) != 0

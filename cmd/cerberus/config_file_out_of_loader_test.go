@@ -60,11 +60,11 @@ func TestConfigFile_OutOfLoaderCeilingReachesTheLowering(t *testing.T) {
 	// The guard renders as `throwIf(<cost> > ?, '<message>')`: the ceiling is
 	// the bound parameter immediately before the inline message, so it is the
 	// last placeholder in the SQL prefix that ends at the message.
-	at := strings.Index(sqlStr, chplan.ExpHistogramWindowSampleBudgetMessage)
-	if at < 0 {
+	before, _, ok := strings.Cut(sqlStr, chplan.ExpHistogramWindowSampleBudgetMessage)
+	if !ok {
 		t.Fatalf("emitted SQL carries no samples-per-window guard at all\nSQL: %s", sqlStr)
 	}
-	ceilingArg := strings.Count(sqlStr[:at], "?") - 1
+	ceilingArg := strings.Count(before, "?") - 1
 	if ceilingArg < 0 || ceilingArg >= len(args) {
 		t.Fatalf("no bound parameter precedes the guard message (placeholder index %d of %d args)", ceilingArg, len(args))
 	}

@@ -59,7 +59,7 @@ func fusedDiffOpenDB(t *testing.T, seedStart time.Time, scrape time.Duration, nS
 		t.Fatalf("create table: %v", err)
 	}
 	rows := make([]string, 0, nSamples*2)
-	for i := 0; i < nSamples; i++ {
+	for i := range nSamples {
 		ts := seedStart.Add(time.Duration(i) * scrape).Format("2006-01-02 15:04:05.000000000")
 		// `api` is a dense counter; `worker` is sparse (every third scrape) so
 		// some anchors see fewer than two samples and drop — the empty-window

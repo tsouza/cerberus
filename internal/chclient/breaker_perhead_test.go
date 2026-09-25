@@ -136,7 +136,7 @@ func tripHead(t *testing.T, client *Client, h Head) {
 	t.Helper()
 	ctx := context.Background()
 	view := client.ForHead(h)
-	for i := 0; i < breakerThreshold; i++ {
+	for i := range breakerThreshold {
 		if _, err := view.Query(ctx, "SELECT 1"); err == nil {
 			t.Fatalf("trip %s: Query %d returned nil, want failure", h, i)
 		}
@@ -201,7 +201,7 @@ func TestStorm_OnOneHead_DoesNotEvictPod(t *testing.T) {
 	// Now a genuine CH-reachability failure: the pings THEMSELVES fail.
 	conn.setFail(true)
 	probe := client.ForHead(HeadProbe)
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		_ = probe.Ping(context.Background())
 	}
 	if got := client.breakers[HeadProbe].currentState(); got != "open" {
@@ -251,7 +251,7 @@ func TestForHead_DistinctBreakers_SharedPool(t *testing.T) {
 
 	views := []*Client{prom, loki, tempo, probe}
 	// All breaker pointers distinct.
-	for i := 0; i < len(views); i++ {
+	for i := range views {
 		for j := i + 1; j < len(views); j++ {
 			if views[i].br == views[j].br {
 				t.Fatalf("views %d and %d share the same *breaker; per-head isolation collapsed", i, j)
@@ -301,7 +301,7 @@ func TestForHead_NeutralClassificationsPerHead(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Fire far more than the threshold of "neutral" failures.
-			for i := 0; i < breakerThreshold*3; i++ {
+			for range breakerThreshold * 3 {
 				_ = br.allow()
 				br.record(tc.ctx, tc.err)
 			}
@@ -456,7 +456,7 @@ func TestBreakerDisabled_PassThroughPerHead(t *testing.T) {
 
 	for _, h := range allHeads {
 		view := client.ForHead(h)
-		for i := 0; i < breakerThreshold*2; i++ {
+		for range breakerThreshold * 2 {
 			_ = view.Ping(context.Background()) // ping path also gated
 		}
 		if got := registry[h].currentState(); got != "closed" {

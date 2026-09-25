@@ -28,7 +28,6 @@ func TestResourceLabelAllowed(t *testing.T) {
 		{"allowlist_underscored_form", []string{"k8s_namespace_name"}, "k8s_namespace_name", true},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := schema.DefaultOTelMetrics()

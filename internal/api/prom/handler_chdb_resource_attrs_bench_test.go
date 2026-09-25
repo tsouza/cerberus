@@ -55,7 +55,7 @@ func benchResourceSeedRows(series, samplesPerSeries int) string {
 	base := time.Now().UTC().Add(-10 * time.Minute)
 	b.WriteString("INSERT INTO otel_metrics_sum (MetricName, Attributes, ResourceAttributes, TimeUnix, Value) VALUES ")
 	first := true
-	for s := 0; s < series; s++ {
+	for s := range series {
 		ra := fmt.Sprintf(
 			"map('k8s.namespace.name','ns-%d','k8s.pod.name','pod-%d','k8s.node.name','node-%d',"+
 				"'k8s.deployment.name','dep-%d','service.instance.id','inst-%d','cloud.region','us-east-%d',"+
@@ -63,7 +63,7 @@ func benchResourceSeedRows(series, samplesPerSeries int) string {
 			s%8, s, s%16, s%8, s, s%4, s%3,
 		)
 		attrs := fmt.Sprintf("map('route','/api/%d','method','GET','status_code','200')", s%32)
-		for n := 0; n < samplesPerSeries; n++ {
+		for n := range samplesPerSeries {
 			if !first {
 				b.WriteString(",")
 			}

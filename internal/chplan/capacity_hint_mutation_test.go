@@ -60,7 +60,7 @@ func TestRecollapseIdentityKeyAliases_CapHintMutantKilled(t *testing.T) {
 			// append. The element type and the grouping both steer append's
 			// growth schedule, so the replay mirrors them.
 			aliases := make([]string, 0, hint)
-			for i := 0; i < passKeys; i++ {
+			for range passKeys {
 				aliases = append(aliases, "")
 			}
 			aliases = append(aliases, make([]string, recollapse)...)
@@ -90,11 +90,11 @@ func mustGroupByColumns(t *testing.T, n *RangeWindowGridNative) []string {
 // [RangeWindowGridNative.PartitionRecollapseGroupBy].
 func recollapseNodeForCapHint(pass, recollapse int) *RangeWindowGridNative {
 	groupBy := make([]Expr, 0, pass+recollapse)
-	for i := 0; i < pass; i++ {
+	for i := range pass {
 		groupBy = append(groupBy, &ColumnRef{Name: fmt.Sprintf("pass_%d", i)})
 	}
 	shaped := make([]Projection, 0, recollapse)
-	for i := 0; i < recollapse; i++ {
+	for i := range recollapse {
 		src := fmt.Sprintf("shaped_src_%d", i)
 		groupBy = append(groupBy, &ColumnRef{Name: src})
 		shaped = append(shaped, Projection{

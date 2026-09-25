@@ -38,7 +38,6 @@ func TestLower_ExpHistogram_NestedHistogramConsumersStayHistogramValued(t *testi
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(query)
@@ -103,7 +102,6 @@ func TestLower_ExpHistogram_NestedDroppingAggregationsReturnEmpty(t *testing.T) 
 		`max(delta(latency_exp_hist[5m]))`,
 		`quantile(0.9, avg(latency_exp_hist))`,
 	} {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(query)
@@ -141,7 +139,6 @@ func TestLower_ExpHistogram_NestedPresenceAggregationsAreFloatValued(t *testing.
 		`group(rate(latency_exp_hist[5m]))`,
 		`group without (instance) (avg by (service, instance) (latency_exp_hist))`,
 	} {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(query)
@@ -181,7 +178,6 @@ func TestLower_ExpHistogram_CountValuesStringifiesPublishedHistogram(t *testing.
 		`count_values("hist", rate(latency_exp_hist[5m])) by (service)`,
 		`count_values("hist", sum by (service, instance) (latency_exp_hist)) without (instance)`,
 	} {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(query)
@@ -287,7 +283,6 @@ func TestLower_ExpHistogram_SubqueryMatrixPreservesHistogramContract(t *testing.
 			},
 		},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(tc.query)

@@ -38,7 +38,6 @@ func TestDottedLabels_QueryHandler(t *testing.T) {
 		{"k8s_multisegment", `{k8s.pod.name="cerberus-0"}`},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{})

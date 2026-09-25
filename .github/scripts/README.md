@@ -1046,6 +1046,22 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Env: `AGPL_CLEAN_PACKAGE` (optional; default `./cmd/cerberus`).
   - Exit: `0` clean; `1` on a violation. ENFORCING (a violation fails CI) and a
     required status check on `main`.
+- **`go-fix-check.mjs`** — `ci.yml`, the `lint` job step "go fix fixed-point
+  check", plus the `just lint` and `just go-fix` recipes. Runs `go fix -diff`
+  in every tracked Go module (the root one and each nested `go.mod`) over the
+  two build configurations golangci-lint analyses (the `run.build-tags` union
+  read from `.golangci.yml`, then untagged) and fails when any pass would
+  rewrite a file, annotating each one. `go fix -diff` exits 1 for a pending
+  rewrite as well as for a load failure; the script tells them apart by the
+  diff on stdout and an empty stderr. Holds the tree at the pinned toolchain's
+  modernizer fixed point, so a change cannot quietly reintroduce an idiom
+  `go fix` removed. The companion `go-fix-check.test.mjs` pins the tag reader,
+  the diff parser, the module discovery, the exit classification and both
+  modes.
+  - Env: `GO_FIX_MODE` (`check` default, `apply` rewrites in place — the
+    `just go-fix` recipe); `GOLANGCI_FILE` (default `.golangci.yml`).
+  - Exit: `0` clean, `1` on a pending rewrite or a `go fix` failure, `2` on a
+    bad `GO_FIX_MODE`.
 - **`forbid-sql-raw.mjs`** — `ci.yml`, the `forbid-skip` job step "Reject raw
   SQL writes outside the chsql Frag layer". Scans `internal/chsql/**/*.go`
   (excluding `builder.go` and test files) for `strings.Builder`, `sb.Write*`,

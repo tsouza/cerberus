@@ -36,7 +36,7 @@ func jsonpbName(t *testing.T, msg any, field string) string {
 		t.Fatalf("upstream %T.%s carries no protobuf tag to read a wire name from", msg, field)
 	}
 	var protoName string
-	for _, part := range strings.Split(tag, ",") {
+	for part := range strings.SplitSeq(tag, ",") {
 		switch {
 		case strings.HasPrefix(part, "json="):
 			return strings.TrimPrefix(part, "json=")

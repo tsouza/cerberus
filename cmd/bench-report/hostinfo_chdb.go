@@ -308,11 +308,11 @@ func readKernel() string {
 // splitColon splits a "key : value" or "key=value"-style line on the first
 // colon, trimming whitespace on both sides.
 func splitColon(line string) (key, val string, ok bool) {
-	i := strings.IndexByte(line, ':')
-	if i < 0 {
+	before, after, ok0 := strings.Cut(line, ":")
+	if !ok0 {
 		return "", "", false
 	}
-	return strings.TrimSpace(line[:i]), strings.TrimSpace(line[i+1:]), true
+	return strings.TrimSpace(before), strings.TrimSpace(after), true
 }
 
 // pseudoFSRoots are the only trees this reporter reads. Everything it wants

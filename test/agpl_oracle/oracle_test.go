@@ -123,7 +123,6 @@ var metricsCorpus = []string{
 // TestParserAcceptReject_AB pins accept/reject parity across the full grammar.
 func TestParserAcceptReject_AB(t *testing.T) {
 	for _, q := range append(append([]string{}, structuralCorpus...), metricsCorpus...) {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			_, refErr := tempo.Parse(q)
 			_, gotErr := ast.Parse(q)
@@ -138,7 +137,6 @@ func TestParserAcceptReject_AB(t *testing.T) {
 // subset.
 func TestParserStructural_AB(t *testing.T) {
 	for _, q := range structuralCorpus {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			ref, refErr := tempo.Parse(q)
 			got, gotErr := ast.Parse(q)

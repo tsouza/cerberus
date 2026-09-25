@@ -104,7 +104,7 @@ func TestShardActualsFold_KShardDispatchRecordsComparableActualsToSingleShard(t 
 	shardRows := [4]uint64{250, 300, 200, 250}
 	shardBytes := [4]uint64{2500, 3000, 2000, 2500}
 	shardPeaks := [4]uint64{1000, 5000, 2000, 3000} // max is 5000, the peak the single dispatch itself saw
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		simulateShardFlush(shardedOuter, shardRows[i], shardBytes[i], shardPeaks[i])
 	}
 

@@ -77,7 +77,6 @@ func TestLower_ExpHistogram_DroppingAggregationNestedUnderWrapper_ChDB(t *testin
 	}
 
 	for _, query := range queries {
-		query := query
 		t.Run(query, func(t *testing.T) {
 			expr, err := p.ParseExpr(query)
 			if err != nil {

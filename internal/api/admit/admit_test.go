@@ -422,7 +422,7 @@ func TestTailBudgetIsIndependentOfRequestBudget(t *testing.T) {
 	tail := admit.NewTail("loki", cap)
 
 	// Drain the tail budget completely.
-	for i := 0; i < cap; i++ {
+	for i := range cap {
 		rel, ok := tail.Acquire(t.Context())
 		if !ok {
 			t.Fatalf("tail acquire %d: want ok", i)
@@ -434,7 +434,7 @@ func TestTailBudgetIsIndependentOfRequestBudget(t *testing.T) {
 	}
 
 	// The request budget is untouched: still admits its full cap.
-	for i := 0; i < cap; i++ {
+	for i := range cap {
 		rel, ok := requests.Acquire(t.Context())
 		if !ok {
 			t.Fatalf("request acquire %d with the tail budget drained: want ok (#1482)", i)

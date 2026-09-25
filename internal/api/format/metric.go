@@ -1,5 +1,7 @@
 package format
 
+import "maps"
+
 // WithMetricName returns a shallow copy of labels with the
 // Prometheus-canonical __name__ entry set to name (if non-empty).
 // Used by the Prom-flavored API to round-trip CH's separate
@@ -18,9 +20,7 @@ package format
 // `__name__` and flag the round-trip as a mismatch.
 func WithMetricName(labels map[string]string, name string) map[string]string {
 	out := make(map[string]string, len(labels)+1)
-	for k, v := range labels {
-		out[k] = v
-	}
+	maps.Copy(out, labels)
 	if name != "" {
 		out["__name__"] = OTelToPromMetric(name)
 	}

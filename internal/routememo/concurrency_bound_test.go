@@ -39,7 +39,7 @@ func TestAmplificationBound_ConcurrentSameKeyFailuresCapAtDispatchBudget(t *test
 	// intervening success, the key is admit-eligible (Unknown state,
 	// corroboration == MinCorroboratingFailures) but no dispatch has been
 	// admitted yet — plain Observe only records, it never admits.
-	for i := 0; i < MinCorroboratingFailures; i++ {
+	for range MinCorroboratingFailures {
 		m.Observe(k, RouteA, OutcomeResourceFailure)
 	}
 
@@ -51,7 +51,7 @@ func TestAmplificationBound_ConcurrentSameKeyFailuresCapAtDispatchBudget(t *test
 
 	var wg sync.WaitGroup
 	wg.Add(burstSize)
-	for i := 0; i < burstSize; i++ {
+	for range burstSize {
 		go func() {
 			defer wg.Done()
 			release, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)
@@ -113,7 +113,7 @@ func TestClusterPressureBound_ConcurrentDistinctKeyFailuresBlockAllDispatch(t *t
 	// distinct keys, sequentially, so the cluster sits right at the trip
 	// line without crossing it yet (the gate is a strict
 	// countFresh > pressureFailureThreshold).
-	for i := 0; i < pressureFailureThreshold; i++ {
+	for i := range pressureFailureThreshold {
 		m.Observe(testKey(fmt.Sprintf("prime-%d", i)), RouteA, OutcomeResourceFailure)
 	}
 	if m.UnderPressure() {
@@ -131,7 +131,6 @@ func TestClusterPressureBound_ConcurrentDistinctKeyFailuresBlockAllDispatch(t *t
 	var wg sync.WaitGroup
 	wg.Add(burstSize)
 	for i, k := range burstKeys {
-		i, k := i, k
 		go func() {
 			defer wg.Done()
 			_, ok, _ := m.ObserveRouteAFailureAndMaybeBeginProbe(k)

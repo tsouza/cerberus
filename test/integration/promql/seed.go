@@ -38,6 +38,7 @@ package promql
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -194,9 +195,7 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 	}
 	for si, base := range histLabelSets {
 		lbls := map[string]string{"job": "demo"}
-		for k, v := range base {
-			lbls[k] = v
-		}
+		maps.Copy(lbls, base)
 		b.WriteString(histogramInsert("demo_api_request_duration_seconds", lbls, si))
 		series = append(series, histogramModelSeries("demo_api_request_duration_seconds", lbls, si)...)
 	}
@@ -242,7 +241,7 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 // must bridge and resets() must count.
 func counterValues(slope float64, reset bool) []property.Point {
 	out := make([]property.Point, 0, seedSteps)
-	for i := 0; i < seedSteps; i++ {
+	for i := range seedSteps {
 		v := slope * float64(i)
 		if reset && i >= seedSteps/2 {
 			v = slope * float64(i-seedSteps/2)
@@ -255,7 +254,7 @@ func counterValues(slope float64, reset bool) []property.Point {
 // gaugeRamp produces a gauge that rises linearly from base by inc per step.
 func gaugeRamp(base, inc float64) []property.Point {
 	out := make([]property.Point, 0, seedSteps)
-	for i := 0; i < seedSteps; i++ {
+	for i := range seedSteps {
 		out = append(out, property.Point{TimestampMs: stepTsMs(i), Value: base + float64(i)*inc})
 	}
 	return out
@@ -264,7 +263,7 @@ func gaugeRamp(base, inc float64) []property.Point {
 // gaugeConst produces a constant gauge.
 func gaugeConst(v float64) []property.Point {
 	out := make([]property.Point, 0, seedSteps)
-	for i := 0; i < seedSteps; i++ {
+	for i := range seedSteps {
 		out = append(out, property.Point{TimestampMs: stepTsMs(i), Value: v})
 	}
 	return out
@@ -387,7 +386,7 @@ func sumInsert(name string, lbls map[string]string, points []property.Point) str
 func histogramInsert(name string, lbls map[string]string, si int) string {
 	var b strings.Builder
 	b.WriteString("INSERT INTO otel_metrics_histogram (MetricName, Attributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds) VALUES ")
-	for step := 0; step < seedSteps; step++ {
+	for step := range seedSteps {
 		if step > 0 {
 			b.WriteString(", ")
 		}
@@ -416,7 +415,7 @@ func histogramInsert(name string, lbls map[string]string, si int) string {
 // way.
 func expHistogramValues(scale, posOffset int32, posBase []uint64, negOffset int32, negBase []uint64, zeroCount uint64) []property.Point {
 	out := make([]property.Point, 0, seedSteps)
-	for i := 0; i < seedSteps; i++ {
+	for i := range seedSteps {
 		pos := make([]uint64, len(posBase))
 		var total uint64
 		for j, c := range posBase {
@@ -485,7 +484,7 @@ func histogramModelSeries(name string, lbls map[string]string, si int) []propert
 		bl := copyLabels(lbls)
 		bl["le"] = le
 		points := make([]property.Point, 0, seedSteps)
-		for step := 0; step < seedSteps; step++ {
+		for step := range seedSteps {
 			deltas := bucketDeltas(si, step)
 			var cum uint64
 			for k := 0; k <= bi; k++ {
@@ -503,7 +502,7 @@ func histogramModelSeries(name string, lbls map[string]string, si int) []propert
 	// _count and _sum companions.
 	countPts := make([]property.Point, 0, seedSteps)
 	sumPts := make([]property.Point, 0, seedSteps)
-	for step := 0; step < seedSteps; step++ {
+	for step := range seedSteps {
 		deltas := bucketDeltas(si, step)
 		var count uint64
 		for _, d := range deltas {
@@ -611,8 +610,6 @@ func formatInt(v int64) string {
 
 func copyLabels(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }

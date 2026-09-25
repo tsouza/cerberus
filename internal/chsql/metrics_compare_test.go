@@ -330,11 +330,11 @@ func TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound(t *testing.T)
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		onIdx := strings.Index(sql, "ON s.`TraceId` = r.`TraceId`")
-		if onIdx < 0 {
+		before, _, ok := strings.Cut(sql, "ON s.`TraceId` = r.`TraceId`")
+		if !ok {
 			t.Fatalf("expected LEFT JOIN ON clause:\n%s", sql)
 		}
-		rLeg := sql[:onIdx]
+		rLeg := before
 		start := strings.LastIndex(rLeg, "`ParentSpanId` = ?")
 		seed := strings.Index(rLeg, "`TraceId` GLOBAL IN (SELECT `TraceId`")
 		if start < 0 || seed < 0 || seed <= start {
@@ -469,11 +469,11 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 		t.Errorf("cohort seed rendered %d times, want exactly 2:\n%s", got, sql)
 	}
 
-	onIdx := strings.Index(sql, "ON s.`TraceId` = r.`TraceId`")
-	if onIdx < 0 {
+	before, _, ok := strings.Cut(sql, "ON s.`TraceId` = r.`TraceId`")
+	if !ok {
 		t.Fatalf("expected LEFT JOIN ON clause:\n%s", sql)
 	}
-	rLeg := sql[:onIdx]
+	rLeg := before
 	start := strings.LastIndex(rLeg, "`ParentSpanId` = ?")
 	// The final seed occurrence in the root leg is the root scan's exact
 	// membership predicate; the bounds established before it are the envelope's.
@@ -684,11 +684,11 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsPartialConfig(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}
-			onIdx := strings.Index(sql, "ON s.`TraceId` = r.`TraceId`")
-			if onIdx < 0 {
+			before, _, ok := strings.Cut(sql, "ON s.`TraceId` = r.`TraceId`")
+			if !ok {
 				t.Fatalf("expected LEFT JOIN ON clause:\n%s", sql)
 			}
-			rLeg := sql[:onIdx]
+			rLeg := before
 			start := strings.LastIndex(rLeg, "`ParentSpanId` = ?")
 			// With no envelope the FIRST TraceId-IN is the exact cohort seed, so
 			// the prefix is the whole pre-seed scan filter.
