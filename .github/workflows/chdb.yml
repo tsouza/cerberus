@@ -262,7 +262,12 @@ jobs:
     # go test's 10-minute alarm while still making progress (every timeout
     # dump showed the running test at 0-1s old, not a blocked goroutine).
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Bumped from 15 alongside `just test-chdb`'s own -timeout going from
+    # 10m to 20m (tsouza/cerberus#3699, enrolling ./internal/promql/...): a
+    # safe upper bound over that per-process ceiling plus the job's fixed
+    # checkout/toolchain/libchdb-install overhead, not a measurement of this
+    # job.
+    timeout-minutes: 30
     steps:
       - name: gate on the changes job
         if: needs.changes.result != 'success'

@@ -350,14 +350,24 @@ spec-chdb:
 # in CI could see.
 #
 # The go test runs through go-test-fanout.mjs, which splits the packages its
-# FANOUT table names (./internal/api/prom) across concurrent processes: libchdb
-# runs one query at a time per process, so a package's chDB suite is serial
-# inside its own binary and its whole wall-clock counts against the one
-# -timeout (#3674).
+# FANOUT table names (./internal/api/prom, ./internal/promql) across
+# concurrent processes: libchdb runs one query at a time per process, so a
+# package's chDB suite is serial inside its own binary and its whole
+# wall-clock counts against the one -timeout (#3674).
+#
+# Includes ./internal/promql/... (#3699) so its own chdb-tagged
+# TestLower*/TestMixedSetOpOr_Nested* suite actually RUNS on every PR:
+# `roundtrip-promql-shard` (chdb.yml) already covers this package, but only
+# on a `run_heavy` push/release run, so a regression like #3699's three
+# TestMixedSetOpOr_Nested* failures ran on no CI lane an ordinary PR
+# triggers. Bumped the shared -timeout from 10m to 20m for it: at 1110
+# top-level tests it is far larger than the packages this recipe already
+# lists, and FANOUT splits it six ways rather than raising the timeout
+# further.
 
-# Run the chdb-tagged handler, emitter, optimizer, solver and corpus lanes. Needs libchdb.so.
+# Run the chdb-tagged handler, emitter, optimizer, solver, corpus and promql lowering lanes. Needs libchdb.so.
 test-chdb:
-    node .github/scripts/go-test-fanout.mjs go test -timeout 10m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/optimizer/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
+    node .github/scripts/go-test-fanout.mjs go test -timeout 20m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/optimizer/... ./internal/promql/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle) for all three
 # query heads. The synthetic composite tag activates the LogQL live runner.

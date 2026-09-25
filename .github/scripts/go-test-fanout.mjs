@@ -53,9 +53,20 @@ import { assertExecuted, parseTestInventory, partitionTests, testKey } from './l
  * to 1172s; the name-hash partition splits that 291/354/331/197s four ways,
  * where three ways put 727s on one process (a few fold-family tests of
  * 80-213s each share a partition).
+ *
+ * internal/promql: 1110 top-level tests. chdb-roundtrip.mjs's own header
+ * measured this package's hand-written suite alone (a distinct concern
+ * from the fixture-driven TXTAR walk that script already shards
+ * separately) at past 23 minutes unpartitioned. Enrolled here by #3699,
+ * whose three TestMixedSetOpOr_Nested* regressions had run on no CI lane
+ * at all — `roundtrip-promql-shard` covers this package too, but only on
+ * a `run_heavy` push/release run, never an ordinary PR. 6-way is a safe
+ * upper bound rather than a measurement of this specific split — it can
+ * be retuned once a real CI run reports its per-process times.
  */
 export const FANOUT = {
   'github.com/tsouza/cerberus/internal/api/prom': 4,
+  'github.com/tsouza/cerberus/internal/promql': 6,
 };
 
 /**
