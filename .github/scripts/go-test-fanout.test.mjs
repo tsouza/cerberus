@@ -4,9 +4,15 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { FANOUT, parseInvocation, planCommands, tagArgs } from './go-test-fanout.mjs';
+import { FANOUT, judge, parseInvocation, planCommands, readTestEvents, tagArgs } from './go-test-fanout.mjs';
+
+const SCRIPT = fileURLToPath(new URL('./go-test-fanout.mjs', import.meta.url));
 
 const PROM = 'github.com/tsouza/cerberus/internal/api/prom';
 const OTHER = 'github.com/tsouza/cerberus/internal/chsql';
@@ -31,9 +37,18 @@ test('parseInvocation refuses what the script cannot run faithfully', () => {
   assert.throws(() => parseInvocation(['go', 'vet', './...']), /go test/);
   assert.throws(() => parseInvocation(['go', 'test', '-count=1']), /names no/);
   assert.throws(() => parseInvocation(['go', 'test', './a/...', '-v']), /follows the package list/);
-  for (const owned of ['-run', '-skip', '-list', '-json', '--run=X', '-run=X']) {
-    assert.throws(() => parseInvocation(['go', 'test', owned, 'X', './a/...']), /set by this script/);
+  const refused = [
+    'run', 'skip', 'list', 'json', 'bench', 'fuzz',
+    'o', 'outputdir', 'coverprofile', 'cpuprofile', 'memprofile', 'blockprofile', 'mutexprofile', 'trace',
+  ];
+  for (const name of refused) {
+    for (const spelling of [`-${name}`, `--${name}`, `-test.${name}`, `--test.${name}`]) {
+      assert.throws(() => parseInvocation(['go', 'test', spelling, 'X', './a/...']), /cannot be passed/, spelling);
+      assert.throws(() => parseInvocation(['go', 'test', `${spelling}=X`, './a/...']), /cannot be passed/, `${spelling}=X`);
+    }
   }
+  // A refused flag's NAME as another flag's value is not the flag.
+  assert.doesNotThrow(() => parseInvocation(['go', 'test', '-tags', 'run', './a/...']));
 });
 
 test('tagArgs forwards -tags in both spellings and nothing else', () => {
@@ -47,6 +62,7 @@ test('a fanned-out package runs every listed test in exactly one process', () =>
   const commands = planCommands({ go: 'go', flags: FLAGS, importPaths: [OTHER, PROM], inventories });
   const legs = commands.filter((c) => c.argv.at(-1) === PROM);
   assert.equal(legs.length, FANOUT[PROM]);
+  for (const leg of legs) assert.ok(leg.argv.includes('-json'), 'a partition runs without -json, so its execution is unverified');
   const selectors = legs.map((c) => new RegExp(c.argv[c.argv.indexOf('-run') + 1]));
   for (const name of NAMES) {
     const hits = selectors.filter((re) => re.test(name)).length;
@@ -90,4 +106,81 @@ test('just test-chdb runs its go test through the fan-out, over every FANOUT pac
     assert.ok(body.includes(`${rel} `) || body.includes(`${rel}/...`) || body.includes(`${parent}/...`),
       `test-chdb does not select ${rel}`);
   }
+});
+
+function event(fields) {
+  return JSON.stringify(fields);
+}
+
+test('a partition passes only when exactly its selected tests passed', () => {
+  const inventories = new Map([[PROM, inventoryOf(PROM, NAMES)]]);
+  const [leg] = planCommands({ go: 'go', flags: FLAGS, importPaths: [PROM], inventories });
+  const selected = leg.plan.selected.map((t) => t.name);
+  const passLines = selected.map((name) => event({ Action: 'pass', Package: PROM, Test: name }));
+  const ok = [event({ Action: 'output', Package: PROM, Output: 'ok  \tprom\t1.0s\n' }), ...passLines].join('\n');
+  assert.equal(judge(leg, 0, ok).ok, true);
+  assert.match(judge(leg, 0, ok).text, /ok {2}\tprom/);
+
+  // A -run that matched nothing exits 0 with "no tests to run".
+  const none = event({ Action: 'output', Package: PROM, Output: 'testing: warning: no tests to run\n' });
+  const empty = judge(leg, 0, none);
+  assert.equal(empty.ok, false);
+  assert.match(empty.text, /missing=/);
+
+  // One selected test missing, or one test outside the partition, fails too.
+  assert.equal(judge(leg, 0, passLines.slice(1).join('\n')).ok, false);
+  const outsider = NAMES.find((n) => !selected.includes(n));
+  assert.equal(judge(leg, 0, `${ok}\n${event({ Action: 'pass', Package: PROM, Test: outsider })}`).ok, false);
+
+  // A failing go test fails the partition even when the passes line up.
+  assert.equal(judge(leg, 1, ok).ok, false);
+});
+
+test('readTestEvents keeps subtests out of the pass set and non-JSON lines in the text', () => {
+  const { text, passed } = readTestEvents([
+    event({ Action: 'pass', Package: PROM, Test: 'TestA' }),
+    event({ Action: 'pass', Package: PROM, Test: 'TestA/sub' }),
+    '# github.com/x/y [build failed]',
+  ].join('\n'));
+  assert.deepEqual([...passed], [`${PROM}/TestA`]);
+  assert.match(text, /build failed/);
+});
+
+test('the whole-package process is judged by its exit code alone', () => {
+  const whole = { name: 'rest', argv: ['go', 'test', OTHER] };
+  assert.equal(judge(whole, 0, 'ok').ok, true);
+  assert.equal(judge(whole, 1, 'FAIL').ok, false);
+});
+
+// main(), end to end, against a stand-in `go` that lists two tests and whose
+// partition runs pass nothing: every partition must fail, and so must the
+// script.
+test('main exits 1 when a partition runs none of its tests', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'go-test-fanout-'));
+  try {
+    const fakeGo = path.join(dir, 'go');
+    writeFileSync(fakeGo, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'list') { console.log('${PROM}'); process.exit(0); }
+if (args.includes('-list')) {
+  for (let i = 0; i < 40; i++) console.log(JSON.stringify({ Action: 'output', Package: '${PROM}', Output: 'TestFake' + i + '\\n' }));
+  process.exit(0);
+}
+console.log(JSON.stringify({ Action: 'output', Package: '${PROM}', Output: 'testing: warning: no tests to run\\n' }));
+process.exit(0);
+`);
+    chmodSync(fakeGo, 0o755);
+    const res = spawnSync(process.execPath, [SCRIPT, fakeGo, 'test', '-count=1', './internal/api/prom'], { encoding: 'utf8' });
+    assert.equal(res.status, 1, res.stdout + res.stderr);
+    assert.match(res.stdout, /missing=/);
+    assert.match(res.stdout, new RegExp(`${FANOUT[PROM]} of ${FANOUT[PROM]} process\\(es\\) failed`));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('main exits 1 on an argv it cannot run faithfully', () => {
+  const res = spawnSync(process.execPath, [SCRIPT, 'go', 'test', '-run', 'X', './a/...'], { encoding: 'utf8' });
+  assert.equal(res.status, 1);
+  assert.match(res.stdout + res.stderr, /cannot be passed/);
 });
