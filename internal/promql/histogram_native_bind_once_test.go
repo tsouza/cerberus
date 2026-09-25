@@ -111,8 +111,22 @@ func TestExpHistogramRepeatedSubexpressionsRenderOnce(t *testing.T) {
 			name: "reset_mask_per_target",
 			expr: expHistogramResetMaskExpr(false),
 			want: map[string]int{
-				pairScaleRenderSQL: 1,
-				mergedEndRenderSQL: 2,
+				pairScaleRenderSQL:   1,
+				mergedEndRenderSQL:   2,
+				mergedStartRenderSQL: 2,
+			},
+		},
+		{
+			// The mixed float/histogram resets() pair lambda reuses the
+			// reset verdict, so it takes the same pair-scale argument: one
+			// pair scale per pair and one merged range per signed ladder.
+			name: "mixed_or_resets_pair_verdict",
+			expr: mixedPairVerdictExpr(resetsWindowFn, schema.DefaultOTelMetrics(), true),
+			want: map[string]int{
+				pairScaleRenderSQL:   1,
+				pairLambdaSQL:        1,
+				mergedEndRenderSQL:   2,
+				mergedStartRenderSQL: 2,
 			},
 		},
 	}

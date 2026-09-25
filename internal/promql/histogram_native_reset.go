@@ -314,9 +314,10 @@ func expHistogramResetMaskStage(input chplan.Node, aggs []chplan.AggFunc, keyAli
 // The two BUCKET ladders are the exception: they are sorted directly and
 // handed to the pair lambda as ARGUMENTS, because a subscript of an
 // Array(Array) column from inside that lambda is a capture ClickHouse
-// rebuilds once per pair — see [expHistogramPairBucketLadderArgs]. A
-// scalar list captured the same way costs one machine word per pair and
-// is not worth a sort.
+// rebuilds once per pair — see [expHistogramPairBucketLadderArgs]. A flat
+// scalar list captured the same way is also copied whole once per pair,
+// but that copy is one number per row rather than a row's whole ladder,
+// and is not worth a sort.
 //
 // The mask's j-th element compares the pair (positions[j], positions[j+1])
 // — hence popBack against popFront, the same pairing the fold applies to

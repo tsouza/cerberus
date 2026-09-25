@@ -529,13 +529,10 @@ the size of the expressions beneath each level. Emitters keep nesting shallow:
   `SELECT *, <value> AS x FROM (…)` stage. The native `histogram_quantile` and
   `histogram_quantiles` walk helpers (bucket walk, running counts, stop and
   value indexes, populated bounds) are bound this way.
-- A subexpression that one expression reads more than once is bound once: the
-  emitter prints the plan's expression DAG as a tree, so every extra read is
-  another printed copy for the analyzer to walk. A binding is a lambda
-  parameter in a lambda that already exists wherever one fits, and a new
-  one-element binding only where its body reads no array column, since a
-  lambda copies every array it reads once per element. In the native-histogram
-  lowerings:
+- A subexpression that one expression reads more than once is bound once. A
+  binding is a lambda parameter in a lambda that already exists wherever one
+  fits, and a new one-element binding only where its body reads no array
+  column. In the native-histogram lowerings:
   - a merged bucket range binds its start and end together, and its length
     reads both bindings;
   - the counter-reset mask's per-pair lambda takes the pair's reconciled scale

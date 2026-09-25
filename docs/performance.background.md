@@ -208,6 +208,13 @@ analyzer choice stays as it is and the fix is in the emitted structure.
 
 ## Why repeated native-histogram subexpressions are bound where they are
 
+A subexpression one expression reads more than once is bound because the
+emitter prints the plan's expression DAG as a tree: every extra read is another
+printed copy for the older analyzer to walk, once per derived-query level above
+it. A new one-element binding goes only where its body reads no array column,
+because a ClickHouse lambda copies every array column its body reads once per
+element of the array it maps over.
+
 After the quantile's own levels were removed, the same dashboard's SQL still
 repeated large subexpressions inside single expressions: the merged bucket
 range's end (an `arrayMax` over a per-row `arrayMap`) sixteen times, the reset
@@ -226,17 +233,20 @@ around `arraySlice(arr, …)` copied the row's bucket array once per row and
 target. Removing the array-reading bindings one at a time moved the CPU part
 of the way back for each of them.
 
-The shipped shape adds no array copy:
+The shipped shape adds no copy of a bucket ladder or of an `Array(Array)`
+column:
 
 - the merged end joins the start in the binding that already existed, as a
   second lambda parameter;
 - the pair scale is one more argument of the pair lambda, computed by a small
-  lambda that reads only scalar lists;
+  lambda whose only array read is the flat `_hq_scales` list, copied once per
+  pair;
 - the guard's width binding reads only the width.
 
 The row scale ratio stays inline. Binding it per dense row contribution, around
-a per-target lambda that reads only scalars, still measured about 2% more range
-execution CPU on 26.6 than leaving it inline. Binding it in the per-target
+a per-target lambda whose body reads no array column, still measured about 2%
+more range execution CPU on 26.6 than leaving it inline. That comparison ran on
+one build, on a loaded host, over seven interleaved rounds. Binding it in the per-target
 picker would copy the bucket array per target. With the pair scale bound, each
 reset-mask ratio is a short `bitShiftLeft(toInt64(1), _hq_scales[rb] - rps)`.
 
