@@ -65,7 +65,6 @@ func TestJSONPathParse_MatchesLokiJSONExpr(t *testing.T) {
 	}
 
 	for _, path := range corpus {
-		path := path
 		t.Run(path, func(t *testing.T) {
 			want, wantErr := jsonexpr.Parse(path, false)
 			got, gotErr := jsonPathParse(path)

@@ -24,7 +24,7 @@ func TestBreakerRecord_ClientCancellationIsNeutral(t *testing.T) {
 
 	// Wrapped context.Canceled errors never trip the breaker, no
 	// matter how many arrive inside the window.
-	for i := 0; i < breakerThreshold*3; i++ {
+	for range breakerThreshold * 3 {
 		b.record(context.Background(), fmt.Errorf("chclient: query: %w", context.Canceled))
 	}
 	if got := b.currentState(); got != "closed" {
@@ -35,7 +35,7 @@ func TestBreakerRecord_ClientCancellationIsNeutral(t *testing.T) {
 	// wrapping context.Canceled are caught via the request context.
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
-	for i := 0; i < breakerThreshold*3; i++ {
+	for range breakerThreshold * 3 {
 		b.record(canceledCtx, errors.New("driver: context canceled (not wrapped)"))
 	}
 	if got := b.currentState(); got != "closed" {
@@ -43,7 +43,7 @@ func TestBreakerRecord_ClientCancellationIsNeutral(t *testing.T) {
 	}
 
 	// Genuine backend failures still trip it.
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		b.record(context.Background(), errors.New("dial tcp 127.0.0.1:9000: connection refused"))
 	}
 	if got := b.currentState(); got != "open" {
@@ -62,7 +62,7 @@ func TestBreakerRecord_CancelledProbeReleasesSlot(t *testing.T) {
 	b := &breaker{now: func() time.Time { return now }}
 
 	// Trip the breaker with genuine failures.
-	for i := 0; i < breakerThreshold; i++ {
+	for range breakerThreshold {
 		b.record(context.Background(), errors.New("connection refused"))
 	}
 	if got := b.currentState(); got != "open" {

@@ -337,11 +337,11 @@ func parseSeedFixtures(t *testing.T) []seedFixture {
 func insertTargetTable(t *testing.T, name, sql string) string {
 	t.Helper()
 
-	idx := strings.Index(sql, insertIntoKeyword)
-	if idx < 0 {
+	_, after, ok := strings.Cut(sql, insertIntoKeyword)
+	if !ok {
 		t.Fatalf("fixture %q has no %q clause", name, strings.TrimSpace(insertIntoKeyword))
 	}
-	fields := strings.Fields(sql[idx+len(insertIntoKeyword):])
+	fields := strings.Fields(after)
 	if len(fields) == 0 {
 		t.Fatalf("fixture %q names no table after %q", name, strings.TrimSpace(insertIntoKeyword))
 	}

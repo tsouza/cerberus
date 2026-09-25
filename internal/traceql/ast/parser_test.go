@@ -95,7 +95,6 @@ func TestParseScopedAttributes(t *testing.T) {
 		{`{ parent.baz = 1 }`, AttributeScopeNone, true, "baz"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
 			sf := firstElem(t, tc.query).(*SpansetFilter)
@@ -142,7 +141,6 @@ func TestParseStructuralOps(t *testing.T) {
 		{`{ .a } &< { .b }`, OpSpansetUnionParent},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
 			op, ok := firstElem(t, tc.query).(SpansetOperation)
@@ -406,7 +404,6 @@ func TestParseScopedIntrinsics(t *testing.T) {
 		{`{ instrumentation:version = "1" }`, IntrinsicInstrumentationVersion},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
 			sf := firstElem(t, tc.query).(*SpansetFilter)
@@ -451,7 +448,6 @@ func TestScopedIntrinsicSpellingRoundTrip(t *testing.T) {
 		return attr
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.scoped, func(t *testing.T) {
 			t.Parallel()
 			scopedSpelling := tc.scoped[:strings.IndexByte(tc.scoped, ' ')]
@@ -496,7 +492,6 @@ func TestParseDurationUnits(t *testing.T) {
 		{`{ duration = 1h }`, time.Hour},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
 			sf := firstElem(t, tc.query).(*SpansetFilter)
@@ -536,7 +531,6 @@ func TestParseRejections(t *testing.T) {
 		`notAKeyword`,
 	}
 	for _, q := range bad {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 			if _, err := Parse(q); err == nil {

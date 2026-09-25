@@ -49,10 +49,8 @@
 //   5. surface-parity "Coverage at a glance" — docs/coverage.md publishes a
 //      four-column per-head table (symbols probed / supported / intentionally
 //      rejected / wrong-rejected). Every cell is a tally over the `class` field
-//      of test/surface-parity/inventory/, folded exactly the way
-//      scripts/gen-coverage.py folds it for the per-symbol tables
-//      (parity-accept + wrong-accept -> supported, parity-reject ->
-//      intentionally rejected, wrong-reject -> wrong-rejected). The gate
+//      of test/surface-parity/inventory/, folded by lib/surface-coverage.mjs
+//      — the same module gen-coverage.mjs renders the table with. The gate
 //      re-derives all sixteen cells from the ledger, so the headline
 //      "wrong-rejections" figure a reader acts on cannot be hand-typed.
 //
@@ -96,6 +94,7 @@ import process from 'node:process';
 import { error, notice, log } from './lib/gh.mjs';
 import { loadParityBaseline } from './lib/compat-baseline.mjs';
 import { loadShardedEntries } from './lib/sharded-json.mjs';
+import { GLANCE_COLUMNS, SURFACE_HEADS, SURFACE_TOTAL_ROW, surfaceParityTotals } from './lib/surface-coverage.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..');
@@ -242,59 +241,6 @@ export function parityIntegerRestatements(text, values) {
   return found;
 }
 
-// The heads the surface-parity ledger probes, in the order docs/coverage.md
-// tabulates them, plus the aggregate row that closes the table.
-const SURFACE_HEADS = ['promql', 'logql', 'traceql'];
-const SURFACE_TOTAL_ROW = 'total';
-
-// The four glance-table columns, keyed by the tally field and carrying the
-// column header the doc prints, so a mismatch names the cell a reader would
-// look at rather than an internal field name.
-const GLANCE_COLUMNS = [
-  ['probed', 'Symbols probed'],
-  ['supported', 'Supported (incl. experimental)'],
-  ['parityRejected', 'Intentionally rejected (parity)'],
-  ['wrongRejected', 'Wrong-rejected symbols'],
-];
-
-// How a ledger class folds into a glance column. This mirrors the translation
-// scripts/gen-coverage.py performs for the per-symbol tables: `wrong-accept` is
-// cerberus accepting a shape the bare-call probe's reference rejects (range() /
-// step() driven outside a query context), which is supported surface for a
-// reader, not a gap.
-const SURFACE_CLASS_COLUMN = {
-  'parity-accept': 'supported',
-  'wrong-accept': 'supported',
-  'parity-reject': 'parityRejected',
-  'wrong-reject': 'wrongRejected',
-};
-
-// surfaceParityTotals — the live per-head tallies behind docs/coverage.md's
-// "Coverage at a glance" table, derived from the pinned ledger. An unknown head
-// or class throws rather than silently landing in no column: a ledger that grew
-// a fourth verdict must not be able to shrink the wrong-rejection cell by
-// falling off the end of this map.
-export function surfaceParityTotals(inventory) {
-  const blank = () => ({ probed: 0, supported: 0, parityRejected: 0, wrongRejected: 0 });
-  const out = { [SURFACE_TOTAL_ROW]: blank() };
-  for (const head of SURFACE_HEADS) out[head] = blank();
-  for (const entry of inventory.entries ?? []) {
-    const row = out[entry.head];
-    if (!row || entry.head === SURFACE_TOTAL_ROW) {
-      throw new Error(`surface-parity inventory carries head "${entry.head}", which docs/coverage.md does not tabulate`);
-    }
-    const column = SURFACE_CLASS_COLUMN[entry.class];
-    if (!column) {
-      throw new Error(`surface-parity inventory carries class "${entry.class}", which maps to no glance column`);
-    }
-    for (const key of ['probed', column]) {
-      row[key] += 1;
-      out[SURFACE_TOTAL_ROW][key] += 1;
-    }
-  }
-  return out;
-}
-
 // glanceTableRows — the four integers docs/coverage.md prints per head. Cells
 // are matched with their optional `**` bold markers and the padding
 // markdownlint's aligned-table style inserts, so reformatting the table cannot
@@ -309,7 +255,7 @@ export function glanceTableRows(src) {
   let m;
   while ((m = re.exec(src)) !== null) {
     const row = {};
-    GLANCE_COLUMNS.forEach(([key], i) => {
+    GLANCE_COLUMNS.forEach(({ key }, i) => {
       row[key] = Number(m[i + 2]);
     });
     rows[m[1].toLowerCase()] = row;
@@ -509,7 +455,7 @@ export function assertParityByReference(baseline, sites, report = error) {
 // posting an ::error:: annotation on a green job.
 export function compareGlance(live, rows, report = error) {
   let ok = true;
-  for (const head of [...SURFACE_HEADS, SURFACE_TOTAL_ROW]) {
+  for (const head of [...SURFACE_HEADS.map((h) => h.head), SURFACE_TOTAL_ROW]) {
     const row = rows[head];
     if (!row) {
       report(
@@ -521,7 +467,7 @@ export function compareGlance(live, rows, report = error) {
       ok = false;
       continue;
     }
-    for (const [key, column] of GLANCE_COLUMNS) {
+    for (const { key, title: column } of GLANCE_COLUMNS) {
       if (row[key] !== live[head][key]) {
         report(
           `surface-parity-glance: docs/coverage.md says ${head} "${column}" = ${row[key]} but ` +

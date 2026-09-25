@@ -3,6 +3,7 @@ package tempo_test
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"testing"
 	"time"
 
@@ -42,9 +43,7 @@ func shuffleProneTraceSamples() []chclient.Sample {
 			"__cerberus_statusCode":    "Ok",
 			"__cerberus_spanAttrsJSON": `{"http.method":"GET"}`,
 		}
-		for k, v := range extraResource {
-			labels[k] = v
-		}
+		maps.Copy(labels, extraResource)
 		return chclient.Sample{
 			MetricName: name,
 			Labels:     labels,

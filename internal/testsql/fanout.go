@@ -193,7 +193,7 @@ func armsFromPattern(lit string) ([]string, error) {
 		}
 	}
 	var arms []string
-	for _, raw := range strings.Split(body, "|") {
+	for raw := range strings.SplitSeq(body, "|") {
 		arm := strings.ReplaceAll(raw, `\`, "")
 		if arm == "" || !isIdentWord(arm) {
 			return nil, fmt.Errorf("merge() table pattern %q holds a non-literal arm %q that this check cannot resolve to a table name", pattern, raw)

@@ -27,7 +27,7 @@ func TestPressureTrackerBoundedUnderDistinctKeyBurst(t *testing.T) {
 	p := newPressureTracker()
 	base := time.Unix(1_700_000_000, 0)
 
-	for i := 0; i < pressureTrackerMaxEntries*4; i++ {
+	for i := range pressureTrackerMaxEntries * 4 {
 		p.record(Key{AnchorLg: i, FanoutLg: i / 256}, base)
 	}
 

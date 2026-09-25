@@ -25,7 +25,6 @@ func TestPlanHasTSGridNativeDerivPredictLinear(t *testing.T) {
 	end := start.Add(5 * time.Minute)
 
 	for _, fn := range []string{"deriv", "predict_linear"} {
-		fn := fn
 		t.Run(fn, func(t *testing.T) {
 			t.Parallel()
 			node := &chplan.RangeWindowGridNative{

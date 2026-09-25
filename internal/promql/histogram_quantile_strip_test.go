@@ -101,7 +101,6 @@ func TestStripBucketSuffix(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := stripBucketSuffix(tc.in)
@@ -221,7 +220,6 @@ func TestStripBucketSuffix_PassesThroughNonMatching(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			out := stripBucketSuffix([]*labels.Matcher{tc.in})
@@ -341,7 +339,6 @@ func TestStripBucketSuffix_TrimSuffixSemantics(t *testing.T) {
 		{"http_request_duration_bucket", "http_request_duration"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.in, func(t *testing.T) {
 			t.Parallel()
 			out := stripBucketSuffix([]*labels.Matcher{mk(tc.in)})

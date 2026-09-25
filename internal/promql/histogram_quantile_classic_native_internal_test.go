@@ -137,7 +137,6 @@ func TestNativeClassicHistogramEligible_WholeSecondsConjunction(t *testing.T) {
 		{"offset_sub_second", func(in *classicHistogramWindowInput) { in.win.offset = 500 * time.Millisecond }},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			in := baseEligibleInput()

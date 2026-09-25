@@ -278,7 +278,6 @@ func TestLowerNestedSubquery_OuterOffsetReachesInnerSpine(t *testing.T) {
 			},
 		},
 	} {
-		mode := mode
 		t.Run(mode.name, func(t *testing.T) {
 			t.Parallel()
 

@@ -353,7 +353,7 @@ func buildStreams(start time.Time) []stream {
 			entries: make([]entry, 0, entriesPerService),
 		}
 
-		for i := 0; i < entriesPerService; i++ {
+		for i := range entriesPerService {
 			ts := start.Add(time.Duration(i) * entryInterval)
 			level := levels[rng.Intn(len(levels))]
 			// request_id is scoped to metadata-probe ONLY — see
@@ -1170,7 +1170,7 @@ func fetchLokiMetrics(ctx context.Context, baseURL string) (map[string]float64, 
 // histogram extension doesn't break the gate.
 func parsePromMetrics(body []byte) map[string]float64 {
 	out := make(map[string]float64, 256)
-	for _, raw := range strings.Split(string(body), "\n") {
+	for raw := range strings.SplitSeq(string(body), "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || line[0] == '#' {
 			continue

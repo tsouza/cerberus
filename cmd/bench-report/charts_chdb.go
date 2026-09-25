@@ -129,7 +129,7 @@ func barChart(title, yUnit string, labels []string, values []float64, fmtVal fun
 	slot := plotW / n
 	const gap = 22
 	barW := slot - gap
-	for i := 0; i < n; i++ {
+	for i := range n {
 		v := values[i]
 		bx := x0 + i*slot + gap/2
 		by := ymap(v)

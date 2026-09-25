@@ -96,10 +96,10 @@ func seedExpHistSumMapRangeBoundRows(t *testing.T, steps, rowsPerStep int) *chdb
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n")
 	tuples := make([]string, 0, steps*rowsPerStep)
-	for step := 0; step < steps; step++ {
+	for step := range steps {
 		anchor := start.Add(time.Duration(step) * expHistSumMapRangeBoundStep)
 		ts := anchor.Add(-time.Second)
-		for i := 0; i < rowsPerStep; i++ {
+		for i := range rowsPerStep {
 			tuples = append(tuples, fmt.Sprintf(
 				"('%s', map('series', 's%d_%d'), toDateTime64('%s', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
 				histogramMergeBoundMetric, step, i, ts.Format("2006-01-02 15:04:05"),
@@ -192,7 +192,7 @@ func TestExpHistogramMergeSumMapBudget_ChDB_RangePerGroupCostStillEnforced(t *te
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
 	tuples := make([]string, 0, overflowAnchorRows+1)
-	for i := 0; i < overflowAnchorRows; i++ {
+	for i := range overflowAnchorRows {
 		tuples = append(tuples, fmt.Sprintf(
 			"('%s', map('series', 's0_%d'), toDateTime64('%s', 9), 1, 1.0, 0, 0, 0, [1], 0, [])",
 			histogramMergeBoundMetric, i, ts0,

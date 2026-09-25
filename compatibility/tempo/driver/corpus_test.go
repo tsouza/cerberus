@@ -535,7 +535,6 @@ all
 func TestParseCorpus_ExpectGRPCCodeRejectsOK(t *testing.T) {
 	t.Parallel()
 	for _, body := range []string{"OK", "0"} {
-		body := body
 		t.Run(body, func(t *testing.T) {
 			t.Parallel()
 			in := `-- name --

@@ -70,10 +70,8 @@ func TestDeadlockHammer(t *testing.T) {
 		var wg sync.WaitGroup
 
 		// 64 routed fan-outs sharing the one global gate.
-		for i := 0; i < 64; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range 64 {
+			wg.Go(func() {
 				x := &Executor{
 					Client:  q,
 					Emitter: newFakeEmitter(),
@@ -95,16 +93,14 @@ func TestDeadlockHammer(t *testing.T) {
 					t.Errorf("routed drain: %v", derr)
 				}
 				_ = cur.Close()
-			}()
+			})
 		}
 
 		// 64 concurrent route-A acquisitions: each grabs one slot, does a
 		// little work, releases. These contend with the routed fan-outs for
 		// the SAME gate, exactly the mixed-load shape the design pins.
-		for i := 0; i < 64; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range 64 {
+			wg.Go(func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				if err := gate.Acquire(ctx, 1); err != nil {
@@ -113,7 +109,7 @@ func TestDeadlockHammer(t *testing.T) {
 				}
 				time.Sleep(100 * time.Microsecond)
 				gate.Release(1)
-			}()
+			})
 		}
 
 		wg.Wait()
@@ -149,11 +145,8 @@ func TestMixedLoadStress(t *testing.T) {
 	q.delay = 30 * time.Microsecond
 
 	var wg sync.WaitGroup
-	for i := 0; i < 48; i++ {
-		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for i := range 48 {
+		wg.Go(func() {
 			br := newFakeBreaker(BreakerClosed)
 			var ad admitTopUp
 			switch i % 3 {
@@ -192,7 +185,7 @@ func TestMixedLoadStress(t *testing.T) {
 				t.Errorf("drain: %v", derr)
 			}
 			_ = cur.Close()
-		}()
+		})
 	}
 	wg.Wait()
 

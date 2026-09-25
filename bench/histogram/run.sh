@@ -19,8 +19,8 @@ cd "$(dirname "$0")"
 
 # Populate the per-checkout compose project suffix docker-compose.yml's `name:`
 # interpolates. Already set when this script runs under `just`; derived here so
-# running it directly isolates too. See scripts/compose-project-suffix.sh.
-COMPOSE_PROJECT_SUFFIX="$(../../scripts/compose-project-suffix.sh)"
+# running it directly isolates too. See .github/scripts/compose-project-suffix.mjs.
+COMPOSE_PROJECT_SUFFIX="$(node ../../.github/scripts/compose-project-suffix.mjs)"
 export COMPOSE_PROJECT_SUFFIX
 
 PROFILE="${1:-smoke}"

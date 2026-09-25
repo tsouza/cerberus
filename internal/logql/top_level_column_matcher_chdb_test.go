@@ -71,7 +71,6 @@ func TestStreamMatcherOnEveryTopLevelColumn(t *testing.T) {
 		{"service_name", "api"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.label, func(t *testing.T) {
 			if col := resourceFallbackColumn(s, tc.label); col == "" {
 				t.Fatalf("%q is not a hoisted top-level column on the default schema — "+

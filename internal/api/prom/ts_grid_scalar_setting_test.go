@@ -3,6 +3,7 @@ package prom_test
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -51,9 +52,7 @@ type ctxRecordingQuerier struct {
 
 func (q *ctxRecordingQuerier) record(ctx context.Context, sql string) {
 	settings := map[string]any{}
-	for k, v := range chclient.QuerySettingsFromContext(ctx) {
-		settings[k] = v
-	}
+	maps.Copy(settings, chclient.QuerySettingsFromContext(ctx))
 	q.dispatches = append(q.dispatches, tsGridDispatch{sql: sql, settings: settings})
 }
 

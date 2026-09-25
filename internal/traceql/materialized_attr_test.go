@@ -235,7 +235,6 @@ func TestLowerAttribute_NumericMaterializedColumnStringifiesForStringOps(t *test
 		{"gt_int32_string_keeps_bare_column", `{ span.http.status_code > "4" }`, false},
 		{"numeric_literal_keeps_bare_column", `{ span.http.status_code = 500 }`, false},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			sqlStr := emitTraceQL(t, tc.query, on)

@@ -128,7 +128,7 @@ func drawInstantWindowCase(t *rapid.T, shapeID ShapeID) InstantWindowCase {
 
 	points := make([]property.Point, 0, numSamples)
 	var acc float64
-	for i := 0; i < numSamples; i++ {
+	for i := range numSamples {
 		tsMs := AnchorTime().Add(time.Duration(i) * time.Duration(scrapeSec) * time.Second).UnixMilli()
 		var v float64
 		switch profile {

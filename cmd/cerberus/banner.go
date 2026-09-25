@@ -93,7 +93,7 @@ func bannerVersionLabel(version string) string {
 // flush with the wordmark's right edge.
 func bannerArtWidth() int {
 	width := 0
-	for _, line := range strings.Split(bannerArt, "\n") {
+	for line := range strings.SplitSeq(bannerArt, "\n") {
 		if n := utf8.RuneCountInString(strings.TrimRight(line, " ")); n > width {
 			width = n
 		}

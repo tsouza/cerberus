@@ -79,7 +79,7 @@ func TestStreamingCursorHeapStaysBounded(t *testing.T) {
 		var baseline runtime.MemStats
 		runtime.ReadMemStats(&baseline)
 
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			resp, err := http.Get(url)
 			if err != nil {
 				t.Fatalf("GET: %v", err)

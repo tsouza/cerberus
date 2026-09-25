@@ -77,7 +77,7 @@ func MetricsDataset() *rapid.Generator[property.Dataset] {
 		seen := map[string]struct{}{}
 
 		series := make([]property.SeriesData, 0, numSeries)
-		for i := 0; i < numSeries; i++ {
+		for i := range numSeries {
 			name := rapid.SampledFrom(MetricNamePool).Draw(t, fmt.Sprintf("name_%d", i))
 			lset := drawLabelSet(t, fmt.Sprintf("labels_%d", i))
 			key := name + labelKey(lset)
@@ -135,7 +135,7 @@ func drawPoints(t *rapid.T, id string) []property.Point {
 	count := rapid.IntRange(1, 10).Draw(t, id+"_count")
 	step := 15 * time.Second
 	out := make([]property.Point, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		ts := anchorTime.Add(time.Duration(i) * step).UnixMilli()
 		v := rapid.SampledFrom([]float64{0, 0.5, 1, 2.5, 10, 23, 60, 99}).Draw(t, fmt.Sprintf("%s_v_%d", id, i))
 		out = append(out, property.Point{TimestampMs: ts, Value: v})

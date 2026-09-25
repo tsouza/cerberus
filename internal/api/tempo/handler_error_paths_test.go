@@ -162,11 +162,9 @@ func TestTraceByID_GrammarGate(t *testing.T) {
 		{name: "v2", path: "/api/v2/traces/"},
 	}
 	for _, ver := range versions {
-		ver := ver
 		t.Run(ver.name, func(t *testing.T) {
 			// No t.Parallel() — sub-tests share the stubQuerier.
 			for _, c := range cases {
-				c := c
 				t.Run(c.name, func(t *testing.T) {
 					resp, err := http.Get(srv.URL + ver.path + c.id)
 					if err != nil {

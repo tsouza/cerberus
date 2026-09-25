@@ -148,7 +148,7 @@ func envCSVList(get Getenv, key string) []string {
 		return nil
 	}
 	var out []string
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		if p := strings.TrimSpace(part); p != "" {
 			out = append(out, p)
 		}
@@ -187,7 +187,7 @@ func ParseKVList(raw string) ([]KV, error) {
 		return nil, nil
 	}
 	var out []KV
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue

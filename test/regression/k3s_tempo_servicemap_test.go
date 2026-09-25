@@ -2,6 +2,7 @@ package regression
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -242,10 +243,5 @@ func TestK3sOtelCollectorGatewayCarriesServiceGraphConnector(t *testing.T) {
 }
 
 func contains(haystack []string, needle string) bool {
-	for _, h := range haystack {
-		if h == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(haystack, needle)
 }

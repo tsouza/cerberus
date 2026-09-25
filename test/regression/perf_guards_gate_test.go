@@ -3,6 +3,7 @@ package regression
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -225,7 +226,7 @@ func TestPerfGuardsShardMatrixCoversEverySlice(t *testing.T) {
 	}
 
 	var legs []int
-	for _, field := range strings.Split(list[1], ",") {
+	for field := range strings.SplitSeq(list[1], ",") {
 		field = strings.TrimSpace(field)
 		if field == "" {
 			continue
@@ -278,10 +279,8 @@ func TestReleasePreflightRequiresThePerfGuardsLane(t *testing.T) {
 	job := workflowJobBody(t, readFileString(t, releaseWorkflowPath), preflightJob)
 	required := requiredChecksFromPreflight(t, job)
 
-	for _, name := range required {
-		if name == perfGuardsJob {
-			return
-		}
+	if slices.Contains(required, perfGuardsJob) {
+		return
 	}
 	t.Errorf("%s job %q does not require %q (required set: %q). The preflight is observation-derived "+
 		"for everything outside that set, so a lane that never ran contributes zero problems and the "+

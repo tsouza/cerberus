@@ -49,7 +49,6 @@ func TestReanchorRange_NativeReGrids(t *testing.T) {
 		{"negative offset", -5 * time.Minute},
 		{"positive offset", time.Hour},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -94,7 +93,6 @@ func TestReanchorRange_NativeWidensInputSpine(t *testing.T) {
 		{"negative offset", -3 * time.Minute},
 		{"positive offset", 30 * time.Minute},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

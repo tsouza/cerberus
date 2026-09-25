@@ -68,7 +68,7 @@ func TestTermination_FilterFusion_DeepStackConverges(t *testing.T) {
 	t.Parallel()
 	const depth = 50
 	plan := chplan.Node(&chplan.Scan{Table: "otel_metrics_gauge"})
-	for i := 0; i < depth; i++ {
+	for range depth {
 		plan = &chplan.Filter{
 			Input:     plan,
 			Predicate: labelFilter("MetricName", "up"),
@@ -202,7 +202,7 @@ func TestTermination_DefaultDriverConvergesOnPathologicalStack(t *testing.T) {
 	t.Parallel()
 	const depth = 100
 	plan := chplan.Node(&chplan.Scan{Table: "otel_metrics_gauge"})
-	for i := 0; i < depth; i++ {
+	for range depth {
 		plan = &chplan.Filter{
 			Input:     plan,
 			Predicate: labelFilter("MetricName", "up"),

@@ -431,7 +431,6 @@ func TestSearchTagValuesV2_IntrinsicTypeLabel(t *testing.T) {
 		{"name", "string"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.tag, func(t *testing.T) {
 			t.Parallel()
 			q := &fakeQuerier{strings: []string{"42"}}

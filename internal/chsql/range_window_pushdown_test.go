@@ -95,7 +95,6 @@ func TestRangeWindowMetricsInnerScanPushdown_OnlyOneSet(t *testing.T) {
 		{name: "end_only", start: time.Time{}, end: nonZero},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
@@ -150,7 +149,6 @@ func TestPromQLMatrixInnerScanPushdown_OffsetAware(t *testing.T) {
 		{name: "negative_offset", offset: -3 * time.Minute, wantShift: "toIntervalNanosecond(-180000000000)"},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
@@ -241,7 +239,6 @@ func TestRangeWindowMetricsQuantileBucketsInnerScanPushdown_OnlyOneSet(t *testin
 		{name: "end_only", start: time.Time{}, end: nonZero},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeWindow{
@@ -329,7 +326,6 @@ func TestEmitMetricsExemplarsInnerScanPushdown_OnlyOneSet(t *testing.T) {
 		{name: "end_only", start: time.Time{}, end: nonZero},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			m := &chplan.MetricsAggregate{
@@ -537,7 +533,6 @@ func TestRangeLWRInnerScanTimeBound_OnlyOneSet(t *testing.T) {
 		{name: "end_only", start: time.Time{}, end: nonZero},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeLWR{
@@ -650,7 +645,6 @@ func TestRangeLWRRejectsBadInput(t *testing.T) {
 		{name: "start_after_end", mutfn: func(p *chplan.RangeLWR) { p.Start, p.End = end, start }},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			p := mkBase()
@@ -710,7 +704,6 @@ func TestRangeBucketFanoutRejectsBadAggExpr(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			p := mkBase()
@@ -740,7 +733,6 @@ func TestRangeBucketFanoutInnerScanTimeBound_OnlyOneSet(t *testing.T) {
 		{name: "end_only", start: time.Time{}, end: nonZero},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.RangeBucketFanout{
@@ -977,7 +969,6 @@ func TestRangeWindowGridNativeRejectsBadInput(t *testing.T) {
 		{name: "unknown_func", mutfn: func(p *chplan.RangeWindowGridNative) { p.Func = "nope" }},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			p := base
@@ -1155,7 +1146,6 @@ func TestRangeWindowStaleResampleRejectsBadInput(t *testing.T) {
 		{name: "zero_end", mutfn: func(p *chplan.RangeWindowStaleResample) { p.End = time.Time{} }},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			p := base
@@ -1216,7 +1206,6 @@ func TestRangeBucketFanoutRejectsBadInput(t *testing.T) {
 		{name: "start_after_end", mutfn: func(p *chplan.RangeBucketFanout) { p.Start, p.End = end, start }},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			p := mkBase()

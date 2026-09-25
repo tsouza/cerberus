@@ -52,7 +52,6 @@ func TestMetricsNestedTimestampColumnRejectsMalformedSchema(t *testing.T) {
 		},
 	}
 	for name, inner := range tests {
-		inner := inner
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			for _, input := range []interface {

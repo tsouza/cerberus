@@ -15,8 +15,8 @@ func TestSampleBudget_SharedAcrossConsumers(t *testing.T) {
 	// Four shards each drawing 3 = 12 total; the budget must reject once the
 	// shared remaining hits 0 (after 10 draws).
 	ok := 0
-	for shard := 0; shard < 4; shard++ {
-		for i := 0; i < 3; i++ {
+	for range 4 {
+		for range 3 {
 			if b.consume(1) {
 				ok++
 			}
@@ -33,7 +33,7 @@ func TestSampleBudget_SharedAcrossConsumers(t *testing.T) {
 // TestSampleBudget_Unlimited — a non-positive max never trips.
 func TestSampleBudget_Unlimited(t *testing.T) {
 	b := NewSampleBudget(0)
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		if !b.consume(1) {
 			t.Fatalf("unlimited budget tripped at %d", i)
 		}
@@ -71,7 +71,7 @@ func TestPeekBreakerState_ReadOnly(t *testing.T) {
 	}
 
 	// Trip it OPEN by recording threshold failures.
-	for i := 0; i < breakerThreshold+1; i++ {
+	for range breakerThreshold + 1 {
 		b.record(context.Background(), errors.New("ch down"))
 	}
 	if got := b.peek(); got != "open" {

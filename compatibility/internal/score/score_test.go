@@ -51,7 +51,6 @@ func TestCompute_ColorBands(t *testing.T) {
 		{"0%", 0, 10, "red", 0.00},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := Compute("x", tc.passed, tc.tot)

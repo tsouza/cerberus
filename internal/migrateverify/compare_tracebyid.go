@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -228,15 +229,11 @@ func buildTraceByIDSpan(sj traceByIDSpanJSON, resKeys map[string]struct{}, resVa
 	for k := range resKeys {
 		keys[k] = struct{}{}
 	}
-	for k, v := range resVals {
-		vals[k] = v
-	}
+	maps.Copy(vals, resVals)
 	for k := range spanKeys {
 		keys[k] = struct{}{}
 	}
-	for k, v := range spanVals {
-		vals[k] = v
-	}
+	maps.Copy(vals, spanVals)
 
 	start := int64(sj.StartTimeUnixNano)
 	end := int64(sj.EndTimeUnixNano)

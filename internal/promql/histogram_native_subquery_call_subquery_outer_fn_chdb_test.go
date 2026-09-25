@@ -83,7 +83,7 @@ func outerFn2MixedInner() string {
 //     present purely so `(hist) and (gate)` keeps every histogram row.
 func outerFn2Seed() string {
 	histRows, gaugeRows, gateRows := "", "", ""
-	for i := 0; i < outerFn2SeedSamples; i++ {
+	for i := range outerFn2SeedSamples {
 		ts := outerFn2BaseTS.Add(time.Duration(i) * time.Minute).Format("2006-01-02 15:04:05")
 		c := strconv.Itoa(i + 1)
 		sep := ",\n"

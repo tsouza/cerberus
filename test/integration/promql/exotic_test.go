@@ -90,7 +90,6 @@ func TestExoticPromQL(t *testing.T) {
 	})
 
 	for _, tc := range ExoticMatrix {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			q := property.Query{String: tc.promql, EvalTs: tc.ts()}
 			oracleOut := oraclepromql.Evaluate(ds, q, oraclepromql.Options{})

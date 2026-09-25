@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -366,9 +367,7 @@ func scanLowerings(repoRoot string) (*pkgScan, error) {
 			return nil, err
 		}
 		out.sites = append(out.sites, one.sites...)
-		for k, v := range one.evidence {
-			out.evidence[k] = v
-		}
+		maps.Copy(out.evidence, one.evidence)
 		out.scopes[head] = one.scopes[head]
 	}
 	sort.Slice(out.sites, func(i, j int) bool { return out.sites[i].Site < out.sites[j].Site })
@@ -416,9 +415,7 @@ func scanDir(absDir, relDir, head string) (*pkgScan, error) {
 			}
 			sites, ev := scanFunc(sc, fn, rels[i], head, prefix)
 			out.sites = append(out.sites, sites...)
-			for k, v := range ev {
-				out.evidence[k] = v
-			}
+			maps.Copy(out.evidence, ev)
 		}
 	}
 	return out, nil

@@ -27,7 +27,7 @@ import (
 // (curl, the cerberus conformance suite, the JSON-mode dashboard sweep)
 // keep getting the documented JSON shape.
 func negotiateTraceByIDProto(accept string) bool {
-	for _, raw := range strings.Split(accept, ",") {
+	for raw := range strings.SplitSeq(accept, ",") {
 		mt := strings.TrimSpace(raw)
 		if i := strings.IndexByte(mt, ';'); i >= 0 {
 			mt = mt[:i]

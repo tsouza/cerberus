@@ -347,11 +347,9 @@ func TestBaselineShardsShardedWriteMatchesTheWholeCorpusWrite(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range probeShardCount {
 		leg := spec.Shard{Index: i + 1, Count: probeShardCount}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			errs[i] = sharded.writeShard(spec.FilterShardMap(leg, probes(fresh...)), leg)
-		}()
+		})
 	}
 	wg.Wait()
 	for i, err := range errs {

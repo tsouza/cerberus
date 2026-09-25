@@ -735,11 +735,11 @@ func parseQuery(q string) (parsedQuery, error) {
 // values never contain `|` (plain pool strings), so the first
 // occurrence is always the pipeline boundary.
 func splitPipeline(q string) (base, pipelineStr string, hasPipeline bool) {
-	idx := strings.Index(q, " | ")
-	if idx < 0 {
+	before, after, ok := strings.Cut(q, " | ")
+	if !ok {
 		return q, "", false
 	}
-	return q[:idx], q[idx+len(" | "):], true
+	return before, after, true
 }
 
 // init validates the recognizer once at package load, one query per

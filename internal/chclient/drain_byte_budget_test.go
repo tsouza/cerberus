@@ -47,7 +47,7 @@ func TestLogPeekBytesExceeded_DrainLoop(t *testing.T) {
 	var buffered int64
 	tripped := -1
 	const lineCount = 256 // 256 * 8 MiB = 2 GiB if buffered unbounded.
-	for i := 0; i < lineCount; i++ {
+	for i := range lineCount {
 		buffered += int64(len(oversized))
 		if err := logPeekBytesExceeded(buffered); err != nil {
 			tripped = i

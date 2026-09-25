@@ -208,15 +208,9 @@ func (x *Executor) dataShardCount() int64 {
 // ADMITTED pEff; ShardMemoryDivisor calls it with the configured P, which is
 // pEff's ceiling, so both read one clamp and cannot drift.
 func (x *Executor) effectiveShardCount(k, pEff int) int {
-	kEff := k
-	if pEff < kEff {
-		kEff = pEff
-	}
+	kEff := min(pEff, k)
 	if x.Gate != nil && x.GateCap > 0 {
-		half := int(x.GateCap / 2)
-		if half < 1 {
-			half = 1
-		}
+		half := max(int(x.GateCap/2), 1)
 		if half < kEff {
 			kEff = half
 		}

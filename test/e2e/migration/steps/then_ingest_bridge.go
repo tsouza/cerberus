@@ -292,7 +292,7 @@ func (w *World) whenPushIngestBridgeBatch() error {
 				DataPoints: []*otlpmetrics.HistogramDataPoint{{
 					TimeUnixNano:   ts,
 					Count:          bridgeHistCount,
-					Sum:            ptr(bridgeHistSum),
+					Sum:            new(bridgeHistSum),
 					ExplicitBounds: bridgeHistogramBounds,
 					BucketCounts:   bridgeHistogramBuckets,
 				}},
@@ -305,7 +305,7 @@ func (w *World) whenPushIngestBridgeBatch() error {
 				DataPoints: []*otlpmetrics.ExponentialHistogramDataPoint{{
 					TimeUnixNano: ts,
 					Count:        bridgeExpHistCount,
-					Sum:          ptr(bridgeExpHistSum),
+					Sum:          new(bridgeExpHistSum),
 					Scale:        bridgeExpHistScale,
 					Positive: &otlpmetrics.ExponentialHistogramDataPoint_Buckets{
 						Offset:       bridgeExpHistOffset,
@@ -355,10 +355,6 @@ func (w *World) whenPushIngestBridgeBatch() error {
 	w.bridge.pushed, w.bridge.runID = true, runID
 	return nil
 }
-
-// ptr returns a pointer to v — HistogramDataPoint.Sum and friends are
-// *float64 so an explicit-but-absent sum is distinguishable from zero.
-func ptr[T any](v T) *T { return &v }
 
 // bridgeCHConn dials ClickHouse directly with the live stack's own
 // credentials, closing over the caller's defer.

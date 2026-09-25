@@ -125,7 +125,6 @@ func TestRangeWindowGapFunctionsEmit(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			plan := base(tc.fn)
@@ -185,7 +184,6 @@ func TestRangeWindowMatrixSurfacesTimestampColumn(t *testing.T) {
 	}
 
 	for _, fn := range cases {
-		fn := fn
 		t.Run(fn, func(t *testing.T) {
 			t.Parallel()
 			sql, _, err := chsql.Emit(context.Background(), base(fn))

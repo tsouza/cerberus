@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -67,14 +68,15 @@ func structuralTwoPhaseSeed() string {
 			))
 		}
 	}
-	insert := "INSERT INTO otel_traces VALUES\n    "
+	var insert strings.Builder
+	insert.WriteString("INSERT INTO otel_traces VALUES\n    ")
 	for i, r := range rows {
 		if i > 0 {
-			insert += ",\n    "
+			insert.WriteString(",\n    ")
 		}
-		insert += r
+		insert.WriteString(r)
 	}
-	return insert + ";"
+	return insert.String() + ";"
 }
 
 const structuralQuery = `{ resource.service.name = "root-svc" } >> { resource.service.name = "leaf-svc" }`
@@ -121,7 +123,7 @@ func TestSearch_StructuralTwoPhase_Parity_ChDB(t *testing.T) {
 	if len(small.Traces) != structTwoPhaseSmallLimit {
 		t.Fatalf("small fetch returned %d traces, want %d", len(small.Traces), structTwoPhaseSmallLimit)
 	}
-	for i := 0; i < structTwoPhaseSmallLimit; i++ {
+	for i := range structTwoPhaseSmallLimit {
 		if !reflect.DeepEqual(small.Traces[i], full.Traces[i]) {
 			t.Errorf("two-phase divergence at trace %d:\n  two-phase(limit=%d): %+v\n  single-query prefix:  %+v",
 				i, structTwoPhaseSmallLimit, small.Traces[i], full.Traces[i])
@@ -169,7 +171,7 @@ func TestSearch_WrappedSelectTwoPhase_Parity_ChDB(t *testing.T) {
 		t.Fatalf("small fetch returned %d traces, want %d", len(small.Traces), structTwoPhaseSmallLimit)
 	}
 	// Parity: small-limit two-phase == single-query reference prefix, field-for-field.
-	for i := 0; i < structTwoPhaseSmallLimit; i++ {
+	for i := range structTwoPhaseSmallLimit {
 		if !reflect.DeepEqual(small.Traces[i], full.Traces[i]) {
 			t.Errorf("wrapped-select two-phase divergence at trace %d:\n  two-phase: %+v\n  reference: %+v",
 				i, small.Traces[i], full.Traces[i])
@@ -223,7 +225,7 @@ func TestSearch_NegatedTwoPhase_Parity_ChDB(t *testing.T) {
 		t.Errorf("negated small drain (%d) not bounded below full (%d) — two-phase didn't engage",
 			small.InspectedSpans, full.InspectedSpans)
 	}
-	for i := 0; i < structTwoPhaseSmallLimit; i++ {
+	for i := range structTwoPhaseSmallLimit {
 		if !reflect.DeepEqual(small.Traces[i], full.Traces[i]) {
 			t.Errorf("negated two-phase divergence at trace %d:\n  two-phase: %+v\n  reference: %+v",
 				i, small.Traces[i], full.Traces[i])
@@ -253,7 +255,7 @@ func TestSearch_UnionTwoPhase_Parity_ChDB(t *testing.T) {
 	if len(small.Traces) != structTwoPhaseSmallLimit {
 		t.Fatalf("small &>> returned %d traces, want %d", len(small.Traces), structTwoPhaseSmallLimit)
 	}
-	for i := 0; i < structTwoPhaseSmallLimit; i++ {
+	for i := range structTwoPhaseSmallLimit {
 		if !reflect.DeepEqual(small.Traces[i], full.Traces[i]) {
 			t.Errorf("union two-phase divergence at trace %d:\n  two-phase: %+v\n  reference: %+v",
 				i, small.Traces[i], full.Traces[i])

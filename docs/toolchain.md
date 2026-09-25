@@ -88,7 +88,7 @@ file server-side as a zero-job failure run, which prevents required `pull_reques
 being scheduled — a PR then sits blocked on contexts that can never report.
 
 `markdownlint-cli2` with `.markdownlint.yaml`. `MD060` pins table-column-style to `aligned`; the
-`pre-commit` hook pads cell widths with `scripts/align-md-tables.py` before the auto-fixer runs,
+`pre-commit` hook pads cell widths with `.github/scripts/align-md-tables.mjs` before the auto-fixer runs,
 because that rule has no auto-fixer of its own. `just fmt-md` therefore does not fix everything
 `just lint-md` reports — when MD060 survives the fix pass it names the padding script rather than
 leaving a clean-looking run that still fails the lint.

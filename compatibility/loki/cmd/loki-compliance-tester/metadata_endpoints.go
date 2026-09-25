@@ -446,7 +446,6 @@ func compareMetadataOne(c *http.Client, f flags, mc metadataCase, start, end tim
 	var wg sync.WaitGroup
 	wg.Add(2)
 	for idx, addr := range []string{f.addr1, f.addr2} {
-		idx, addr := idx, addr
 		go func() {
 			defer wg.Done()
 			fetch, err := fetchMetadata(c, addr, mc)

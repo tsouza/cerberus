@@ -364,10 +364,7 @@ func deriveTraceByIDProbes(q Query, both []string) []Query {
 	if len(both) == 0 {
 		return nil
 	}
-	n := len(both)
-	if n > maxDerivedTraceFetchesPerSearch {
-		n = maxDerivedTraceFetchesPerSearch
-	}
+	n := min(len(both), maxDerivedTraceFetchesPerSearch)
 	out := make([]Query, 0, n)
 	for _, id := range both[:n] {
 		out = append(out, Query{

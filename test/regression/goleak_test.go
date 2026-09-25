@@ -483,9 +483,7 @@ func TestNoGoroutineLeak_ConcurrentRequests(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 10 {
 				resp, err := http.Get(srv.URL + "/api/v1/query?query=up")
 				if err != nil {
@@ -494,7 +492,7 @@ func TestNoGoroutineLeak_ConcurrentRequests(t *testing.T) {
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

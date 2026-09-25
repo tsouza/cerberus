@@ -1,5 +1,7 @@
 package gen
 
+import "slices"
+
 type ShapeID string
 
 const (
@@ -318,10 +320,5 @@ func copyShapeIDs(ids []ShapeID) []ShapeID {
 }
 
 func containsShapeID(ids []ShapeID, id ShapeID) bool {
-	for _, candidate := range ids {
-		if candidate == id {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ids, id)
 }

@@ -40,7 +40,6 @@ func TestLower_Group_WrapsLitInOToFloat64(t *testing.T) {
 	p := parser.NewParser(parser.Options{})
 
 	for _, q := range []string{`group(up)`, `group by (job) (up)`} {
-		q := q
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
 			expr, err := p.ParseExpr(q)

@@ -375,7 +375,7 @@ func seedSyntheticTracesWithEventsLinksDensity(
 			evTs := make([]time.Time, nEvents)
 			evNames := make([]string, nEvents)
 			evAttrs := make([]map[string]string, nEvents)
-			for e := 0; e < nEvents; e++ {
+			for e := range nEvents {
 				evTs[e] = ts
 				evNames[e] = "exception"
 				m := map[string]string{}
@@ -390,7 +390,7 @@ func seedSyntheticTracesWithEventsLinksDensity(
 			lnSpanID := make([]string, nLinks)
 			lnTraceState := make([]string, nLinks)
 			lnAttrs := make([]map[string]string, nLinks)
-			for l := 0; l < nLinks; l++ {
+			for l := range nLinks {
 				lnTraceID[l] = fmt.Sprintf("%032x", rng.Int63())
 				lnSpanID[l] = fmt.Sprintf("%016x", rng.Int63())
 				lnTraceState[l] = ""

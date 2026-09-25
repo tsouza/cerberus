@@ -410,7 +410,7 @@ func readSeedRows(t *testing.T, fixture string) []jsonlRow {
 		t.Fatalf("read seed: %v", err)
 	}
 	var out []jsonlRow
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

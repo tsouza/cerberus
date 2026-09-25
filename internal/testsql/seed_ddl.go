@@ -590,8 +590,8 @@ func stripLeadingNoise(s string) string {
 	for {
 		t := strings.TrimLeft(s, " \t\n\r")
 		if strings.HasPrefix(t, "--") {
-			if nl := strings.IndexByte(t, '\n'); nl >= 0 {
-				s = t[nl+1:]
+			if _, after, ok := strings.Cut(t, "\n"); ok {
+				s = after
 				continue
 			}
 			return ""

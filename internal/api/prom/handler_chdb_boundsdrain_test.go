@@ -96,15 +96,15 @@ func boundsDrainPromServer(t *testing.T, seed string) (*prom.Handler, *httptest.
 // (series, anchor) on the SQL side — the output axis.
 func seedManySeriesDenseWindows(start time.Time) (seed string, fullSeed int64) {
 	rows := make([]string, 0, drainSeriesCount*drainStepCount*drainSamplesPerWindow)
-	for s := 0; s < drainSeriesCount; s++ {
+	for s := range drainSeriesCount {
 		inst := fmt.Sprintf("inst-%03d", s)
-		for step := 0; step < drainStepCount; step++ {
+		for step := range drainStepCount {
 			anchor := start.Add(time.Duration(step) * drainStep)
 			// Spread drainSamplesPerWindow raw samples through the seconds
 			// leading up to (and including) the anchor, all inside the 5m
 			// staleness window so the per-step LWR sees every one of them and
 			// must collapse them to a single argMax(Value, TimeUnix) row.
-			for k := 0; k < drainSamplesPerWindow; k++ {
+			for k := range drainSamplesPerWindow {
 				ts := anchor.Add(-time.Duration(k) * time.Second).
 					Format("2006-01-02 15:04:05.000000000")
 				rows = append(rows, fmt.Sprintf(
@@ -205,16 +205,16 @@ const drainInstantInnerStep = time.Minute
 // inner anchor lands at instant - (drainInstantInnerStepCount-1) * step.
 func seedManySeriesDenseInnerWindows(instant time.Time) (seed string, fullSeed int64) {
 	rows := make([]string, 0, drainInstantSeriesCount*drainInstantInnerStepCount*drainInstantSamplesPerInnerWindow)
-	for s := 0; s < drainInstantSeriesCount; s++ {
+	for s := range drainInstantSeriesCount {
 		inst := fmt.Sprintf("inst-instant-%03d", s)
-		for step := 0; step < drainInstantInnerStepCount; step++ {
+		for step := range drainInstantInnerStepCount {
 			anchor := instant.Add(-time.Duration(drainInstantInnerStepCount-1-step) * drainInstantInnerStep)
 			// Spread drainInstantSamplesPerInnerWindow raw samples through the
 			// seconds leading up to (and including) the anchor, mirroring
 			// seedManySeriesDenseWindows above — dense enough that the inner
 			// per-anchor LWR collapse (not "there happened to be one sample")
 			// is what the anti-vacuous full-seed margin exercises.
-			for k := 0; k < drainInstantSamplesPerInnerWindow; k++ {
+			for k := range drainInstantSamplesPerInnerWindow {
 				ts := anchor.Add(-time.Duration(k) * time.Second).
 					Format("2006-01-02 15:04:05.000000000")
 				rows = append(rows, fmt.Sprintf(

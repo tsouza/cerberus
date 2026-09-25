@@ -41,7 +41,6 @@ func TestRangeWindowMetricsResolveNestedPhysicalTimestamp(t *testing.T) {
 		},
 	}
 	for name, input := range tests {
-		input := input
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			sql, _, err := chsql.Emit(context.Background(), metricsTimestampWindow(input))
@@ -72,7 +71,6 @@ func TestRangeWindowMetricsRejectMalformedNestedTimestampSchema(t *testing.T) {
 		),
 	}
 	for name, inner := range tests {
-		inner := inner
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			inputs := []chplan.Node{

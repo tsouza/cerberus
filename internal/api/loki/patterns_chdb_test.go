@@ -99,7 +99,7 @@ func TestPatterns_ChDB_DrainRoundtrip(t *testing.T) {
 		dt   time.Duration
 		body string
 	}, 0, retainedPatternVolumeFloor)
-	for i := 0; i < retainedPatternVolumeFloor; i++ {
+	for i := range retainedPatternVolumeFloor {
 		seedRows = append(seedRows, struct {
 			dt   time.Duration
 			body string

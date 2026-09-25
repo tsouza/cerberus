@@ -68,7 +68,6 @@ func TestConformance_TempoEchoWire(t *testing.T) {
 func TestConformance_TempoVersionWire(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{"/api/status/version", "/api/status/buildinfo"} {
-		path := path
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{}, "v1.2.3-test")
@@ -172,7 +171,6 @@ func TestConformance_TempoSearchWire(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{samples: c.samples}, "v1.0.0-test")
@@ -561,7 +559,6 @@ func TestConformance_TempoTraceByIDWire(t *testing.T) {
 	t.Run("not_found", func(t *testing.T) {
 		t.Parallel()
 		for _, pv := range pathVariants {
-			pv := pv
 			t.Run(pv.name, func(t *testing.T) {
 				t.Parallel()
 				srv := newServer(&stubQuerier{samples: nil}, "v1.0.0-test")
@@ -712,7 +709,6 @@ func TestConformance_TempoErrorEnvelope(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(c.stub, "v1.0.0-test")
@@ -802,7 +798,6 @@ func TestConformance_TempoStartEndMatrix(t *testing.T) {
 		{"end_before_start", "start=1717999200&end=1717995600", http.StatusBadRequest},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{strings: []string{"x"}}, "v1.0.0-test")
@@ -841,7 +836,6 @@ func TestConformance_TempoTraceIDEdge(t *testing.T) {
 		"abc-def-123",
 	}
 	for _, id := range cases {
-		id := id
 		t.Run(id, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{samples: nil}, "v1.0.0-test")
@@ -934,10 +928,8 @@ func TestConformance_TempoAdmitNilPassesThrough(t *testing.T) {
 
 	var wg sync.WaitGroup
 	var hits atomic.Int32
-	for i := 0; i < 25; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 25 {
+		wg.Go(func() {
 			resp, err := http.Get(srv.URL + "/api/echo")
 			if err != nil {
 				return
@@ -946,7 +938,7 @@ func TestConformance_TempoAdmitNilPassesThrough(t *testing.T) {
 			if resp.StatusCode == http.StatusOK {
 				hits.Add(1)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if hits.Load() != 25 {
@@ -997,7 +989,6 @@ func TestConformance_TempoGrafanaMsTimestamps_ResourcesProxy(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			srv := newServer(&stubQuerier{}, "v1.0.0-test")

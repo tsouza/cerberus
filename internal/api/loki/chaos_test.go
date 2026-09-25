@@ -257,9 +257,7 @@ func TestLokiCH_ConcurrentRequests_AllFail(t *testing.T) {
 	var wg sync.WaitGroup
 	codes := make(chan int, 16)
 	for range 16 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			resp, err := http.Get(srv.URL + `/loki/api/v1/query?query=%7Bjob%3D%22api%22%7D`)
 			if err != nil {
 				codes <- 0
@@ -267,7 +265,7 @@ func TestLokiCH_ConcurrentRequests_AllFail(t *testing.T) {
 			}
 			_ = resp.Body.Close()
 			codes <- resp.StatusCode
-		}()
+		})
 	}
 	wg.Wait()
 	close(codes)

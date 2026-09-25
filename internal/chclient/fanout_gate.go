@@ -526,21 +526,17 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(dispa
 	if c.dataShardFanoutGate == nil {
 		return c.dispatchRelease(ctx, 0), nil
 	}
-	weight := c.dataShardCount * int64(dataShardFanoutMultiplierFromContext(ctx))
-	if weight < 1 {
-		weight = 1
-	}
-	// A statement whose own fan-out exceeds the whole budget (several
-	// Distributed scans x a wide shard set) is admitted ALONE — weight capped
-	// at the gate's size — rather than never: semaphore.Weighted parks any
-	// acquisition wider than its size until ctx expires, which would turn
-	// such a query into a guaranteed deadline error. The gate then bounds
-	// concurrent dispatches exactly as before; what it cannot do is shrink a
-	// single statement below its inherent width, and operators size
-	// DataShardFanoutCap with that in mind (docs/solver.md, point 5).
-	if weight > c.dataShardFanoutCap {
-		weight = c.dataShardFanoutCap
-	}
+	weight := min(
+		// A statement whose own fan-out exceeds the whole budget (several
+		// Distributed scans x a wide shard set) is admitted ALONE — weight capped
+		// at the gate's size — rather than never: semaphore.Weighted parks any
+		// acquisition wider than its size until ctx expires, which would turn
+		// such a query into a guaranteed deadline error. The gate then bounds
+		// concurrent dispatches exactly as before; what it cannot do is shrink a
+		// single statement below its inherent width, and operators size
+		// DataShardFanoutCap with that in mind (docs/solver.md, point 5).
+		max(c.dataShardCount*int64(dataShardFanoutMultiplierFromContext(ctx)), 1), c.dataShardFanoutCap,
+	)
 	if aerr := c.dataShardFanoutGate.Acquire(ctx, weight); aerr != nil {
 		return nil, fmt.Errorf("chclient: data-shard fanout gate acquire: %w: %w", ErrDataShardFanoutGateBusy, aerr)
 	}

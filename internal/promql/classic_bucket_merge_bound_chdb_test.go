@@ -81,7 +81,7 @@ const classicBucketMergeBoundQuery = "histogram_quantile(0.5, sum by(le)(sum_ove
 func seedClassicBucketMergeBoundRows(seriesCount, width int) string {
 	var b strings.Builder
 	b.WriteString("INSERT INTO otel_metrics_histogram (MetricName, Attributes, TimeUnix, BucketCounts, ExplicitBounds) VALUES ")
-	for i := 0; i < seriesCount; i++ {
+	for i := range seriesCount {
 		if i > 0 {
 			b.WriteString(",")
 		}

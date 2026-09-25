@@ -50,7 +50,6 @@ func TestInputOnlyChildColumnsRejectMalformedSchemas(t *testing.T) {
 		),
 	}
 	for name, child := range tests {
-		child := child
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			if _, err := timestampChildColumn("test", child); err == nil {

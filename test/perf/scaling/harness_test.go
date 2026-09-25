@@ -66,7 +66,7 @@ package scaling
 
 import (
 	"database/sql"
-	"sort"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -269,14 +269,14 @@ func medianWall(t *testing.T, db *sql.DB, q string, args []any, iters int) time.
 		}
 		return time.Since(s)
 	}
-	for i := 0; i < warmupRuns; i++ {
+	for range warmupRuns {
 		run()
 	}
 	samples := make([]time.Duration, iters)
 	for i := range samples {
 		samples[i] = run()
 	}
-	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	slices.Sort(samples)
 	return samples[len(samples)/2]
 }
 

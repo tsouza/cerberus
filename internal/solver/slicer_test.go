@@ -48,7 +48,7 @@ func sliceLWR(start, end time.Time, step, lookback, offset time.Duration) chplan
 func originalAnchors(start, end time.Time, step time.Duration) []time.Time {
 	n := int(end.Sub(start)/step) + 1
 	out := make([]time.Time, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out[i] = end.Add(-time.Duration(i) * step)
 	}
 	return out
@@ -58,7 +58,7 @@ func originalAnchors(start, end time.Time, step time.Duration) []time.Time {
 func sliceAnchors(s Slice, step time.Duration) []time.Time {
 	n := int(s.End.Sub(s.Start)/step) + 1
 	out := make([]time.Time, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out[i] = s.End.Add(-time.Duration(i) * step)
 	}
 	return out

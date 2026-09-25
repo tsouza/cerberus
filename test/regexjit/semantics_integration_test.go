@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -176,7 +177,6 @@ func TestRegexJIT_EmittedShapesMatchReference(t *testing.T) {
 			r := &runner{s: s, h: h, modes: modes, minCount: s.defaultMinCount(ctx, t)}
 
 			for _, c := range matcherCases {
-				c := c
 				q := fmt.Sprintf(`%s{%s=~%s}`, probeMetric, probeLabel, strconv.Quote(c.pattern))
 				r.check(ctx, t, "prom-match/"+c.pattern, c.anchoredJIT, func(ctx context.Context) []byte {
 					return h.promInstant(ctx, t, q, probeEnd)
@@ -204,7 +204,6 @@ func TestRegexJIT_EmittedShapesMatchReference(t *testing.T) {
 			}
 
 			for _, c := range labelReplaceCases {
-				c := c
 				q := fmt.Sprintf(`label_replace(%s, %q, %s, %q, %s)`, probeMetric, dstLabel, strconv.Quote(c.repl), probeLabel, strconv.Quote(c.regex))
 				r.check(ctx, t, "label_replace/"+c.regex+"/"+c.repl, c.jit, func(ctx context.Context) []byte {
 					return h.promInstant(ctx, t, q, probeEnd)
@@ -227,7 +226,6 @@ func TestRegexJIT_EmittedShapesMatchReference(t *testing.T) {
 			}, func(body []byte) { assertUnwrap(t, body, unwrapBytes, parseHumanBytes) })
 
 			for _, c := range logQLOnlyEqualityCases {
-				c := c
 				r.check(ctx, t, "loki-stage/"+c.name, false, func(ctx context.Context) []byte {
 					return h.lokiRange(ctx, t, c.query, probeEnd.Add(-probeWindow), probeEnd, probeRangeStep, probeLineLimit)
 				}, nil)
@@ -367,9 +365,7 @@ func seedSemanticProbe(ctx context.Context, t *testing.T, s *server) {
 
 	insertLog := func(service string, i int, body string, resource map[string]string) {
 		res := map[string]string{"service.name": service}
-		for k, v := range resource {
-			res[k] = v
-		}
+		maps.Copy(res, resource)
 		s.exec(ctx, t, "INSERT INTO otel_logs (Timestamp, ServiceName, Body, ResourceAttributes, LogAttributes) VALUES (?, ?, ?, ?, ?)",
 			ts.Add(time.Duration(i)*time.Millisecond), service, body, res, map[string]string{indexLabel: strconv.Itoa(i)})
 	}

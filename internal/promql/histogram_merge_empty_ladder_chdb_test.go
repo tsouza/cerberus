@@ -116,7 +116,7 @@ func TestHistogramMerge_ChDB_EmptyLadderDoesNotCoarsenRangeScale(t *testing.T) {
 		b.WriteString(histogramMergeBoundSeedDDL)
 		b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
 		var tuples []string
-		for step := 0; step < steps; step++ {
+		for step := range steps {
 			at := start.Add(time.Duration(step) * expHistSumMapRangeBoundStep).Add(-time.Second)
 			tuples = append(tuples, emptyLadderRows(histogramMergeBoundMetric, "r0", at, withEmpty)...)
 		}

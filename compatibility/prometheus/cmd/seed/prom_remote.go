@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
 	"os"
@@ -474,9 +475,7 @@ func readHistogramFixtureSeries(
 		}
 		for i, le := range leLabels {
 			bucketLabels := make(map[string]string, len(attrs)+1)
-			for k, v := range attrs {
-				bucketLabels[k] = v
-			}
+			maps.Copy(bucketLabels, attrs)
 			bucketLabels[leLabel] = le
 			acc.add(bucketName, bucketLabels, tsMS, cumCounts[i])
 		}

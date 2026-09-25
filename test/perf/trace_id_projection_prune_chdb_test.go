@@ -58,6 +58,7 @@ package perf
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -260,7 +261,7 @@ func tpProjectionUsed(t *testing.T, db *sql.DB, query string) bool {
 func tpMedianLatency(t *testing.T, db *sql.DB, query string) time.Duration {
 	t.Helper()
 	var samples []time.Duration
-	for i := 0; i < tpLatencyReps; i++ {
+	for i := range tpLatencyReps {
 		start := time.Now()
 		rows, err := db.Query(query)
 		if err != nil {
@@ -286,7 +287,7 @@ func tpMedianLatency(t *testing.T, db *sql.DB, query string) time.Duration {
 			samples = append(samples, elapsed)
 		}
 	}
-	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	slices.Sort(samples)
 	return samples[len(samples)/2]
 }
 

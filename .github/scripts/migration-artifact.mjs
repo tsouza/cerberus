@@ -61,7 +61,7 @@ export const SOURCE_BUILD_VERSION = 'dev';
 // consumer expands it in its own runtime: compose interpolates it, a Justfile
 // recipe lets its shell do it, and expandComposeSuffix does it here, so all
 // three name one image. Empty in a primary checkout, which is what every CI
-// checkout is. See scripts/compose-project-suffix.sh.
+// checkout is. See .github/scripts/compose-project-suffix.mjs.
 const COMPOSE_SUFFIX_REF = '${COMPOSE_PROJECT_SUFFIX:-}';
 
 function expandComposeSuffix(ref) {

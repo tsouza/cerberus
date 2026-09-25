@@ -154,11 +154,11 @@ func TestRejectionParityDriverEvaluatesInsideFixtureWindow(t *testing.T) {
 		t.Fatalf("%s never calls runRejectionParityDriver(...); this test would compare nothing", compatDriverScript)
 	}
 	rest := script[callSiteStart:]
-	end := strings.Index(rest, "});")
-	if end < 0 {
+	before, _, ok := strings.Cut(rest, "});")
+	if !ok {
 		t.Fatalf("%s: the runRejectionParityDriver({ … }) call is never closed", compatDriverScript)
 	}
-	callSite := rest[:end]
+	callSite := before
 
 	if !strings.Contains(callSite, rejectionDriverCallSiteEvalTime) {
 		t.Errorf("%s calls runRejectionParityDriver without %q:\n%s\n"+

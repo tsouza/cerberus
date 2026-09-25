@@ -32,7 +32,6 @@ func TestIsExpectedEmptyCase(t *testing.T) {
 		{"only-empty-result", []string{"empty-result"}, true},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := isExpectedEmptyCase(bench.TestCase{Tags: tc.tags})
@@ -212,7 +211,6 @@ func TestBaselineKey(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := baselineKey(tc.def); got != tc.want {

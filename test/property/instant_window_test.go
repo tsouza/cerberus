@@ -44,6 +44,7 @@ package property_test
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -231,9 +232,7 @@ func oracleInstantWindow(c gen.InstantWindowCase) property.Outcome {
 		return property.Outcome{Err: err}
 	}
 	labels := make(map[string]string, len(c.Dataset.Metrics.Series[0].Labels))
-	for name, value := range c.Dataset.Metrics.Series[0].Labels {
-		labels[name] = value
-	}
+	maps.Copy(labels, c.Dataset.Metrics.Series[0].Labels)
 	return property.Outcome{Rows: []property.OutcomeRow{{
 		Labels:      labels,
 		TimestampMs: endMs,

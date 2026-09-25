@@ -105,7 +105,7 @@ func TestEmitGoModulo_BitExactVsGo(t *testing.T) {
 	// Random pairs across a wide dynamic range. Seeded so the corpus
 	// is deterministic per CI run.
 	r := rand.New(rand.NewSource(0xC0FFEE))
-	for i := 0; i < 60; i++ {
+	for range 60 {
 		x := (r.Float64() - 0.5) * math.Pow(2, float64(r.Intn(60)-30))
 		y := (r.Float64() - 0.5) * math.Pow(2, float64(r.Intn(60)-30))
 		cases = append(cases, pair{x, y})

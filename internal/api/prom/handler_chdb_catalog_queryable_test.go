@@ -159,7 +159,6 @@ INSERT INTO otel_metrics_summary VALUES
 
 	// --- 2. Every advertised name returns >= 1 series on /query. ---
 	for _, name := range env.Data {
-		name := name
 		t.Run(name, func(t *testing.T) {
 			q := fmt.Sprintf(`{__name__=%q}`, name)
 			u := fmt.Sprintf("%s/api/v1/query?query=%s&time=%d",

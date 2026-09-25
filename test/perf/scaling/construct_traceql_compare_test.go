@@ -119,7 +119,7 @@ func init() {
 func emitTraceQLCompareSQL(t *testing.T, k int) (string, []any) {
 	t.Helper()
 	preds := make([]string, k)
-	for i := 0; i < k; i++ {
+	for i := range k {
 		preds[i] = fmt.Sprintf(`span.a%d = "x"`, i)
 	}
 	q := "{ " + strings.Join(preds, " && ") + " }"

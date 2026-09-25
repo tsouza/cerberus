@@ -438,7 +438,7 @@ func TestTryRouteMemoHit_RecordsDeclineReasons(t *testing.T) {
 		memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
 		// Exhaust the shared admission semaphore (maxConcurrentRoutedDispatches
 		// == 4) directly, without releasing, so AdmitDispatch itself refuses.
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			if _, ok := memo.AdmitDispatch(); !ok {
 				t.Fatalf("failed to pre-admit token %d while exhausting the semaphore", i)
 			}
@@ -494,7 +494,7 @@ func TestRetryOnRouteAResourceFailure_RecordsProbeDeclineReasons(t *testing.T) {
 		// pressureFailureThreshold without any of them individually
 		// reaching corroboration.
 		const pressureBurstKeys = 8 // comfortably above routememo's pressureFailureThreshold (3)
-		for i := 0; i < pressureBurstKeys; i++ {
+		for i := range pressureBurstKeys {
 			k := routememo.Key{RootKind: "*fixture.PressureBurst", RangeFuncs: string(rune('a' + i))}
 			memo.Observe(k, routememo.RouteA, routememo.OutcomeResourceFailure)
 		}
@@ -648,7 +648,7 @@ func TestRouteMemoPressureActive(t *testing.T) {
 	}
 
 	const pressureBurstKeys = 8 // comfortably above routememo's pressureFailureThreshold (3)
-	for i := 0; i < pressureBurstKeys; i++ {
+	for i := range pressureBurstKeys {
 		k := routememo.Key{RootKind: "*fixture.PressureBurst", RangeFuncs: string(rune('a' + i))}
 		memo.Observe(k, routememo.RouteA, routememo.OutcomeResourceFailure)
 	}
@@ -1024,7 +1024,7 @@ func TestRetryOnRouteAResourceFailure_TrivialMagnitudeDeclinesRevalidation(t *te
 
 	// Corroborate a trivially small tracked magnitude — MinCorroboratingFailures
 	// readings, well below the per-anchor floor.
-	for i := 0; i < routememo.MinCorroboratingFailures; i++ {
+	for range routememo.MinCorroboratingFailures {
 		memo.RecordActualMagnitude(d.key, 1)
 	}
 
@@ -1066,7 +1066,7 @@ func TestRetryOnRouteAResourceFailure_LargeMagnitudeStillRevalidates(t *testing.
 	d := eng.deriveRouteMemoDispatch(plan, seed, fixedNow)
 	memo.Observe(d.key, routememo.RouteB, routememo.OutcomeSuccess)
 
-	for i := 0; i < routememo.MinCorroboratingFailures; i++ {
+	for range routememo.MinCorroboratingFailures {
 		memo.RecordActualMagnitude(d.key, 5_000_000)
 	}
 	memo.SetNowForTest(func() time.Time { return fixedNow.Add(20 * time.Minute) })
@@ -1118,7 +1118,7 @@ func TestRetryOnRouteAResourceFailure_NonResourceErrorNeverRetried(t *testing.T)
 	ctx := context.Background()
 
 	timeoutErr := &solver.SolverTimeoutError{Timeout: "60s"}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, timeoutErr, 0, nil)
 		if retried {
 			t.Fatalf("iteration %d: retried on a NoEvidence-class error (solver timeout)", i)
@@ -1355,7 +1355,7 @@ func TestTryRouteMemoHit_DispatchTokenHeldUntilCursorClose(t *testing.T) {
 	// Saturate the budget, holding every composed cursor OPEN and undrained.
 	budget := routedDispatchBudget(t)
 	open := make([]chclient.Cursor, 0, budget)
-	for i := 0; i < budget; i++ {
+	for i := range budget {
 		cur, ok := hit()
 		if !ok {
 			t.Fatalf("memo hit %d of %d was declined while the budget still had room", i+1, budget)

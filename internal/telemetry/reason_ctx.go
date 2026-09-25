@@ -1,6 +1,9 @@
 package telemetry
 
-import "context"
+import (
+	"context"
+	"slices"
+)
 
 // A request-scoped override for the `cerberus_error_reason` label.
 //
@@ -82,10 +85,5 @@ func knownReason(reason string) bool {
 	if reason == ReasonNone {
 		return false
 	}
-	for _, r := range ErrorReasons() {
-		if r == reason {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ErrorReasons(), reason)
 }

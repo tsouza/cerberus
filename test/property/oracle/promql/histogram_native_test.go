@@ -371,7 +371,6 @@ func TestNativeHistogramRangeFunctionsDropMixedFloatHistogramSamples(t *testing.
 	})
 
 	for _, fn := range []string{"delta", "irate", "idelta"} {
-		fn := fn
 		t.Run(fn, func(t *testing.T) {
 			t.Parallel()
 			o := eval(d, fn+`(mixed_exp_hist[5m])`, 60)

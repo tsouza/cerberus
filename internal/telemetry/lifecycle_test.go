@@ -125,7 +125,7 @@ func TestNew_NoopShutdownIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := providers.Shutdown(t.Context()); err != nil {
 			t.Errorf("Shutdown #%d: %v", i, err)
 		}

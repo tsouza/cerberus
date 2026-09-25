@@ -88,15 +88,15 @@ const (
 func seedManyServicesDenseWindows(start time.Time) (ddl string, fullSeed int64) {
 	const tsFmt = "2006-01-02 15:04:05.000000000"
 	rows := make([]string, 0, lokiDrainServiceCount*lokiDrainStepCount*lokiDrainLinesPerWindow)
-	for s := 0; s < lokiDrainServiceCount; s++ {
+	for s := range lokiDrainServiceCount {
 		svc := fmt.Sprintf("svc-%03d", s)
-		for step := 0; step < lokiDrainStepCount; step++ {
+		for step := range lokiDrainStepCount {
 			anchor := start.Add(time.Duration(step) * lokiDrainStep)
 			// Spread lokiDrainLinesPerWindow lines through the seconds
 			// leading up to (and including) the anchor, all inside the
 			// current tumbling window (anchor-1m, anchor] and clear of the
 			// PREVIOUS window's boundary.
-			for k := 0; k < lokiDrainLinesPerWindow; k++ {
+			for k := range lokiDrainLinesPerWindow {
 				ts := anchor.Add(-time.Duration(k) * time.Second).Format(tsFmt)
 				rows = append(rows, fmt.Sprintf(
 					"    (toDateTime64('%s', 9), 'line', map('service_name', '%s'))",

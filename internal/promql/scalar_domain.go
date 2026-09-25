@@ -3,6 +3,7 @@ package promql
 import (
 	"fmt"
 	"math"
+	"slices"
 )
 
 // verbatimErrorf constructs an error whose message reproduces a
@@ -202,10 +203,5 @@ func paramExtrema(values []float64) (mn, mx float64) {
 
 // hasAnyNaN reproduces fParams.HasAnyNaN.
 func hasAnyNaN(values []float64) bool {
-	for _, v := range values {
-		if math.IsNaN(v) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(values, math.IsNaN)
 }

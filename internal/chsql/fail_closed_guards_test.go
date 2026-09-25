@@ -49,7 +49,6 @@ func TestEmitSearchTraceLimit_NonPositiveLimitFailsClosed(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -104,7 +103,6 @@ func TestEmitQueryExemplars_ZeroBoundRejected(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

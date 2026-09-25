@@ -63,7 +63,7 @@ func TestSeedScriptsHaveNoInlineCommentsInValues(t *testing.T) {
 		}
 		inside := content[startIdx : startIdx+endIdx]
 		if commentRE.MatchString(inside) {
-			for _, line := range strings.Split(inside, "\n") {
+			for line := range strings.SplitSeq(inside, "\n") {
 				if commentRE.MatchString(line) {
 					t.Errorf("inline `--` comment inside an INSERT VALUES block — CH rejects this: %q",
 						strings.TrimSpace(line))

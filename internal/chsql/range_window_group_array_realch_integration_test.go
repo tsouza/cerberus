@@ -415,14 +415,14 @@ func runRateNativeGroupArrayRealCH(ctx context.Context, t *testing.T, db *sql.DB
 // integration-only build.
 func realCHGroupArrayExtractJobLabel(jsonStr string) string {
 	const key = `"job":"`
-	i := strings.Index(jsonStr, key)
-	if i < 0 {
+	_, after, ok := strings.Cut(jsonStr, key)
+	if !ok {
 		return ""
 	}
-	rest := jsonStr[i+len(key):]
-	j := strings.Index(rest, `"`)
-	if j < 0 {
+	rest := after
+	before, _, ok := strings.Cut(rest, `"`)
+	if !ok {
 		return rest
 	}
-	return rest[:j]
+	return before
 }

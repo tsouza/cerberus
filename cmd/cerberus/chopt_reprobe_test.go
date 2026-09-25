@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -122,12 +123,7 @@ func TestCHOptLive_InfoStateReportsTheFallbackSource(t *testing.T) {
 
 // containsID reports whether ids carries want.
 func containsID(ids []string, want string) bool {
-	for _, id := range ids {
-		if id == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ids, want)
 }
 
 // TestCHOptConsumers_CoverEveryServedHead — the swap can only reach a consumer
