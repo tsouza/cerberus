@@ -2491,21 +2491,18 @@ func expHistogramMergeBucketsExpr(offArrAlias, bucArrAlias, scalesArrAlias, merg
 
 // expHistogramMergeBucketsBoundsExpr builds the bucket-merge expression's
 // target range. Returned mergedStart is [expHistogramMergedStartExpr] — the
-// arrayMin of the non-empty rows' downscaled offsets; mergedLengthFrom
-// yields greatest(0, mergedEnd - start + 1) for whatever spelling of
-// mergedStart the caller passes it, where mergedEnd is the arrayMax of the
-// per-row downscaled last indices with every empty row's end replaced by
-// [expHistogramEmptyLadderEndSentinel], so an empty row never widens the
-// range and an all-empty group produces a zero-length output array.
+// arrayMin of the non-empty rows' downscaled offsets; mergedEnd is the
+// arrayMax of the per-row downscaled last indices with every empty row's
+// end replaced by [expHistogramEmptyLadderEndSentinel], so an empty row
+// never widens the range and an all-empty group produces a zero-length
+// output array (see [expHistogramMergedLengthExpr]).
 //
-// Length is returned as a FUNCTION of the start rather than as a finished
-// expression because mergedStart is an arrayMin over a per-row array — real
-// work, linear in the group's rows — and the length reads it. Handing the
-// caller a builder lets it bind mergedStart ONCE (see
-// [expHistogramOverMergedBucketRangeExpr]) and spell both the length and
-// every per-bucket read as that one binding, instead of re-rendering the
-// arrayMin subtree into each reader. Only that binder calls this.
-func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale chplan.Expr) (mergedStart chplan.Expr, mergedLengthFrom func(start chplan.Expr) chplan.Expr) {
+// Both are array folds over a per-row arrayMap — real work, linear in the
+// group's rows — so they are returned unrendered for
+// [expHistogramOverMergedBucketRangeExpr] to bind once each, and every
+// reader, the length included, reads the bindings. Only that binder calls
+// this.
+func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale chplan.Expr) (mergedStart, mergedEnd chplan.Expr) {
 	shift := &chplan.Binary{
 		Op:    chplan.OpSub,
 		Left:  &chplan.BareIdent{Name: paramExpMergeRowScale},
@@ -2545,41 +2542,33 @@ func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale c
 	}
 
 	mergedStart = expHistogramMergedStartExpr(scalesArr, offArr, bucArr, mergedScale)
-	mergedEnd := &chplan.FuncCall{Fn: chplan.FnArrayMax, Args: []chplan.Expr{downscaledEnds}}
-	// merged_length = mergedEnd - start + 1.
-	// Guard the "no rows contribute" case by clamping to 0 via greatest(0, …).
-	mergedLengthFrom = func(start chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{
-			Fn: chplan.FnGreatest,
-			Args: []chplan.Expr{
-				&chplan.LitInt{V: 0},
-				&chplan.Binary{
-					Op: chplan.OpAdd,
-					Left: &chplan.Binary{
-						Op:    chplan.OpSub,
-						Left:  mergedEnd,
-						Right: start,
-					},
-					Right: &chplan.LitInt{V: 1},
-				},
-			},
-		}
-	}
-	return mergedStart, mergedLengthFrom
+	mergedEnd = &chplan.FuncCall{Fn: chplan.FnArrayMax, Args: []chplan.Expr{downscaledEnds}}
+	return mergedStart, mergedEnd
 }
 
-// paramExpMergedStart is the lambda parameter name
-// [expHistogramOverMergedBucketRangeExpr] binds the merged bucket range's
-// start to. It is a per-GROUP quantity — one arrayMin over the group's rows
-// — read by the length and by every target bucket, so binding it once is
-// what keeps it from being recomputed per target bucket. See hqLet.
-const paramExpMergedStart = "mst"
+// expHistogramMergedLengthExpr renders greatest(0, end - start + 1): the
+// merged range's bucket count, clamped to 0 for a group no row
+// contributes to.
+func expHistogramMergedLengthExpr(start, end chplan.Expr) chplan.Expr {
+	return greatestExpr(&chplan.LitInt{V: 0}, addExpr(subExpr(end, start), &chplan.LitInt{V: 1}))
+}
+
+// paramExpMergedStart and paramExpMergedEnd are the lambda parameter
+// names [expHistogramOverMergedBucketRangeExpr] binds the merged bucket
+// range's start and end to. Both are per-GROUP quantities — one fold over
+// the group's rows each — read by the length and, for the start, by every
+// target bucket, so binding them once is what keeps them from being
+// recomputed per target bucket or re-rendered per reader. See hqLet.
+const (
+	paramExpMergedStart = "mst"
+	paramExpMergedEnd   = "mnd"
+)
 
 // expHistogramOverMergedBucketRangeExpr binds the merged bucket range's
-// start ONCE and hands `body` that binding plus the range length spelled in
-// terms of it, so a caller can build its own per-target-bucket loop over
-// range(toUInt64(mergedLength)) without the start's own expression landing
-// inside that loop.
+// start and end ONCE and hands `body` the start's binding plus the range
+// length spelled in terms of both bindings, so a caller can build its own
+// per-target-bucket loop over range(toUInt64(mergedLength)) without the
+// start's own expression landing inside that loop.
 //
 // This is the [expHistogramMergeBucketsExpr] doc's cerberus issue #2267
 // hazard applied to the OTHER O(rows) sub-expression in the same position.
@@ -2592,6 +2581,11 @@ const paramExpMergedStart = "mst"
 // rows x buckets work where rows + buckets suffices. Binding it here makes
 // every reader — the length included — a bare identifier.
 //
+// The end is bound in the same lambda, beside the start, rather than in a
+// binding of its own: several callers read the length twice, and a second
+// one-element arrayMap nested inside the first would capture every array
+// the body reads once more per row.
+//
 // ClickHouse lambdas capture their enclosing scope, so `body` may nest the
 // binding arbitrarily deep inside further lambdas, which is exactly what
 // each caller's per-target-bucket loop does.
@@ -2599,10 +2593,20 @@ func expHistogramOverMergedBucketRangeExpr(
 	scalesArr, offArr, bucArr, mergedScale chplan.Expr,
 	body func(mergedStart, mergedLength chplan.Expr) chplan.Expr,
 ) chplan.Expr {
-	start, lengthFrom := expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale)
-	return hqLet(paramExpMergedStart, start, func(ref chplan.Expr) chplan.Expr {
-		return body(ref, lengthFrom(ref))
-	})
+	start, end := expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale)
+	startRef := &chplan.BareIdent{Name: paramExpMergedStart}
+	endRef := &chplan.BareIdent{Name: paramExpMergedEnd}
+	return &chplan.Subscript{
+		Container: &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramExpMergedStart, paramExpMergedEnd},
+				Body:   body(startRef, expHistogramMergedLengthExpr(startRef, endRef)),
+			},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{start}},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{end}},
+		}},
+		Key: &chplan.LitInt{V: 1},
+	}
 }
 
 // expHistogramMergeBucketsRowsSumExpr builds the per-target-bucket
@@ -2874,18 +2878,46 @@ func expHistogramBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, para
 // s == mergedScale, the common no-collapse case), not the row's full
 // width, so summing over mergedLength targets costs this row O(row's own
 // width) total — once, not once per target.
+//
+// The row's scale ratio is left unbound here: a binding around the slice
+// would capture the row's whole bucket array once per row and target.
 func expHistogramBucketPositionPickerExpr(mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
 	rowBuckets := chplan.Expr(&chplan.BareIdent{Name: paramExpRowBuckets})
 	sliceStart, sliceLen := expHistogramBucketSliceBoundsExpr(
-		&chplan.BareIdent{Name: paramExpRowScale},
+		expHistogramScaleRatioExpr(&chplan.BareIdent{Name: paramExpRowScale}, mergedScale),
 		&chplan.BareIdent{Name: paramExpRowOffset},
-		rowBuckets,
-		mergedScale, mergedStart,
+		&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{rowBuckets}},
+		mergedStart,
 		&chplan.BareIdent{Name: paramT},
 	)
 	return &chplan.FuncCall{
 		Fn:   chplan.FnArraySlice,
 		Args: []chplan.Expr{rowBuckets, sliceStart, sliceLen},
+	}
+}
+
+// Lambda parameter names [expHistogramDenseContribsExpr] binds one row's
+// scale ratio ([expHistogramScaleRatioExpr]), offset and bucket count to.
+// The slice bounds read each several times, and under the older ClickHouse
+// analyzer every rendered copy is re-analysed once per derived-query level
+// above it, so each is bound once and read as a bare identifier.
+const (
+	paramExpScaleRatio = "bsr"
+	paramExpRowOff     = "bof"
+	paramExpRowLength  = "bln"
+)
+
+// expHistogramScaleRatioExpr renders 2^(rowScale - mergedScale): how many
+// consecutive absolute buckets at the row's scale fold onto one bucket at
+// the merged scale.
+//
+// Widen BEFORE shifting: ClickHouse can shift the literal 1 at UInt8
+// width even when the result type is Int32. Scale gaps >= 8 then wrap to
+// zero and silently discard fine-scale bucket contributions.
+func expHistogramScaleRatioExpr(rowScale, mergedScale chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Fn:   chplan.FnBitShiftLeft,
+		Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnToInt64, Args: []chplan.Expr{&chplan.LitInt{V: 1}}}, subExpr(rowScale, mergedScale)},
 	}
 }
 
@@ -2902,20 +2934,15 @@ func expHistogramBucketPositionPickerExpr(mergedScale, mergedStart chplan.Expr, 
 // The returned offset is 1-based and clamped to [1, length(arr)+1]; the
 // returned length is clamped to >= 0, so a row that does not touch the
 // target yields an EMPTY slice rather than an out-of-range one.
+//
+// ratio is the row's [expHistogramScaleRatioExpr] — every ratio
+// consecutive absolute buckets at row scale fold onto one merged-scale
+// bucket — and rowLength is length(<row's bucket array>). The ratio is read
+// three times below, the offset four times and the length twice;
+// [expHistogramDenseContribsExpr] passes all three bound.
 func expHistogramBucketSliceBoundsExpr(
-	rowScale, rowOffset, rowBuckets, mergedScale, mergedStart, target chplan.Expr,
+	ratio, rowOffset, rowLength, mergedStart, target chplan.Expr,
 ) (sliceStart, sliceLen chplan.Expr) {
-	rowLength := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{rowBuckets}}
-
-	// ratio = 2^(s - mergedScale): every ratio consecutive absolute
-	// buckets at row scale fold onto one merged-scale bucket.
-	// Widen BEFORE shifting: ClickHouse can shift the literal 1 at UInt8
-	// width even when the result type is Int32. Scale gaps >= 8 then wrap to
-	// zero and silently discard fine-scale bucket contributions.
-	ratio := &chplan.FuncCall{
-		Fn:   chplan.FnBitShiftLeft,
-		Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnToInt64, Args: []chplan.Expr{&chplan.LitInt{V: 1}}}, subExpr(rowScale, mergedScale)},
-	}
 	// target absolute index = mergedStart + t (t is 0-based).
 	targetAbs := addExpr(mergedStart, target)
 	// row's own last populated absolute index (off + length(arr) - 1;
@@ -2998,17 +3025,27 @@ const paramExpDenseTarget = "dk"
 // histogram_native_window_closed_form.go's header makes for the closed
 // form, and it is why this rendering is confined to callers folding
 // STORED counts.
+//
+// ratio is the row's [expHistogramScaleRatioExpr]. It is bound once per
+// row together with the row's offset and bucket count, around the
+// target-index lambda only, so none of them repeats per target bucket in
+// the text or in evaluation, and neither the binding nor the target-index
+// lambda reads the row's bucket array: that array reaches
+// `arrayReduceInRanges` as a plain argument outside both.
 func expHistogramDenseContribsExpr(
-	rowScale, rowOffset, rowBuckets, mergedScale, mergedStart, mergedLength chplan.Expr,
+	ratio, rowOffset, rowBuckets, mergedStart, mergedLength chplan.Expr,
 ) chplan.Expr {
-	sliceStart, sliceLen := expHistogramBucketSliceBoundsExpr(
-		rowScale, rowOffset, rowBuckets, mergedScale, mergedStart,
-		&chplan.BareIdent{Name: paramExpDenseTarget},
-	)
 	toUInt64 := func(e chplan.Expr) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{e}}
 	}
-	ranges := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+	sliceStart, sliceLen := expHistogramBucketSliceBoundsExpr(
+		&chplan.BareIdent{Name: paramExpScaleRatio},
+		&chplan.BareIdent{Name: paramExpRowOff},
+		&chplan.BareIdent{Name: paramExpRowLength},
+		mergedStart,
+		&chplan.BareIdent{Name: paramExpDenseTarget},
+	)
+	perTarget := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramExpDenseTarget},
 			Body: &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{
@@ -3017,6 +3054,21 @@ func expHistogramDenseContribsExpr(
 		},
 		&chplan.FuncCall{Fn: chplan.FnRange, Args: []chplan.Expr{toUInt64(mergedLength)}},
 	}}
+	one := func(e chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{e}}
+	}
+	ranges := &chplan.Subscript{
+		Container: &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramExpScaleRatio, paramExpRowOff, paramExpRowLength},
+				Body:   perTarget,
+			},
+			one(ratio),
+			one(rowOffset),
+			one(&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{rowBuckets}}),
+		}},
+		Key: &chplan.LitInt{V: 1},
+	}
 	return &chplan.FuncCall{Fn: chplan.FnArrayReduceInRanges, Args: []chplan.Expr{
 		&chplan.LitString{V: expHistogramDenseSumAggName},
 		ranges,

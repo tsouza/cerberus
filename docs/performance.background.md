@@ -205,3 +205,55 @@ faster on 26.6 (about 2.1 s against 3.2 s) but took over 40 s on 24.8, and
 the engine's native-histogram analyzer rule records why its execution cost
 on this shape is worse even on 26.x at production cardinality — so the
 analyzer choice stays as it is and the fix is in the emitted structure.
+
+## Why repeated native-histogram subexpressions are bound where they are
+
+After the quantile's own levels were removed, the same dashboard's SQL still
+repeated large subexpressions inside single expressions: the merged bucket
+range's end (an `arrayMax` over a per-row `arrayMap`) sixteen times, the reset
+pair's reconciled scale `least(_hq_scales[ra], _hq_scales[rb])` eighteen times,
+the row scale ratio `bitShiftLeft(toInt64(1), …)` twenty-four times, and the
+budget guard's clamped width twice per ladder. Each copy sits under up to ten
+derived-query levels, and the older analyzer walks it at every one.
+
+The first attempt bound each repeat with its own one-element `arrayMap`. That
+cut the SQL by about 8% but raised the range query's execution CPU by 3–7% on
+both builds. A lambda copies every array column its body reads once per
+element, so each new binding whose body read a bucket ladder or a per-series
+`Array(Array)` column added one more copy of it per row or per pair. The worst
+case was the across-series merge's per-target slice picker, where a binding
+around `arraySlice(arr, …)` copied the row's bucket array once per row and
+target. Removing the array-reading bindings one at a time moved the CPU part
+of the way back for each of them.
+
+The shipped shape adds no array copy:
+
+- the merged end joins the start in the binding that already existed, as a
+  second lambda parameter;
+- the pair scale is one more argument of the pair lambda, computed by a small
+  lambda that reads only scalar lists;
+- the dense contribution's ratio, offset and bucket count are bound around the
+  per-target lambda, whose body reads only scalars, and the bucket array stays
+  a plain `arrayReduceInRanges` argument;
+- the guard's width binding reads only the width;
+- the per-target picker keeps its three ratio renders, because binding it
+  would copy the bucket array per target.
+
+Measured on the #3641 dense fixture with the same SQL and settings cerberus
+stamps, seven interleaved rounds on memory-capped (4 GiB, 2 CPU)
+`clickhouse-server:24.8.14.39-alpine` and `26.6.8.7-alpine` containers. The
+host load average was 35–50, so the table reports ClickHouse's own
+`UserTimeMicroseconds` (median / min, ms), which is steadier under contention
+than wall time. The instant statement shrank from 36,047 to 33,620 bytes and
+the range statement from 40,406 to 37,979.
+
+| Build | Query   | Planning CPU before | Planning CPU after | Total CPU before | Total CPU after |
+| ----- | ------- | ------------------- | ------------------ | ---------------- | --------------- |
+| 24.8  | instant | 3645 / 3476         | 3387 / 3299        | 3827 / 3729      | 3627 / 3532     |
+| 24.8  | range   | 7204 / 7141         | 6897 / 6800        | 20433 / 20129    | 20076 / 19840   |
+| 26.6  | instant | 3772 / 3720         | 3573 / 3466        | 3890 / 3842      | 3727 / 3681     |
+| 26.6  | range   | 7193 / 7056         | 6984 / 6904        | 20000 / 19777    | 20184 / 20028   |
+
+Peak memory did not rise (24.8 range 379 MiB both, 26.6 range 340 → 339 MiB),
+and every group, anchor and value of the instant and 121-anchor range answers
+was byte-identical before and after on both builds.
