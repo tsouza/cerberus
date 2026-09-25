@@ -60,13 +60,17 @@ import { assertExecuted, parseTestInventory, partitionTests, testKey } from './l
  * separately) at past 23 minutes unpartitioned. Enrolled here by #3699,
  * whose three TestMixedSetOpOr_Nested* regressions had run on no CI lane
  * at all — `roundtrip-promql-shard` covers this package too, but only on
- * a `run_heavy` push/release run, never an ordinary PR. 6-way is a safe
- * upper bound rather than a measurement of this specific split — it can
- * be retuned once a real CI run reports its per-process times.
+ * a `run_heavy` push/release run, never an ordinary PR. A first 6-way split
+ * still hit the recipe's 20m per-process timeout in CI (1117 top-level
+ * tests, ~186/shard): internal/api/prom's known-working 4-way split carries
+ * only 430 tests (~107/shard), so 15-way — ~75/shard, below that ratio with
+ * margin for promql's chDB round-trips being heavier per test — is a safer
+ * upper bound. Still not a measurement; retune once a real CI run reports
+ * its per-process times.
  */
 export const FANOUT = {
   'github.com/tsouza/cerberus/internal/api/prom': 4,
-  'github.com/tsouza/cerberus/internal/promql': 6,
+  'github.com/tsouza/cerberus/internal/promql': 15,
 };
 
 /**
