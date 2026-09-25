@@ -1,9 +1,10 @@
 name: setup-commitlint
 description: >-
   Install the pinned commitlint toolchain (package-lock.json)
-  into node_modules. A cache hit restores node_modules and
-  skips both the Node download and the package install; the gate scripts run the
-  CLI with the node already on PATH (commitlint 19 needs Node >= 18).
+  into node_modules. A cache hit restores node_modules and skips only the
+  package install; Node setup always runs, because self-hosted runners have
+  no Node 20 on PATH by default and a lockfile bump can raise a transitive
+  dependency's Node floor above what a stale cache-hit PATH provides.
 
 runs:
   using: composite
@@ -16,7 +17,6 @@ runs:
         key: commitlint-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
     - name: Set up Node for the commitlint install
-      if: steps.cache.outputs.cache-hit != 'true'
       uses: actions/setup-node@v7
       with:
         node-version: '20'

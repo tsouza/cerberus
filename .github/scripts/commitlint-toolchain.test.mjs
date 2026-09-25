@@ -54,15 +54,21 @@ test('every job that runs a commitlint gate sets up the cached toolchain first',
   assert.ok(gatedJobs >= GATES.length, `expected every commitlint gate to be wired, found ${gatedJobs} job(s)`);
 });
 
-test('the action restores node_modules keyed on the lockfile and installs with npm ci on a miss', () => {
+test('the action restores node_modules keyed on the lockfile, always sets up Node 20, and installs with npm ci only on a miss', () => {
   const action = readFileSync(join(ROOT, ACTION, 'action.yml'), 'utf8');
   assert.match(action, /uses: actions\/cache@/);
   assert.match(action, /path: node_modules\n/);
   assert.match(action, /key: [^\n]*hashFiles\('package-lock\.json'\)/);
   assert.match(action, /npm ci --no-audit/);
   assert.doesNotMatch(action, /npm install/);
+  const setupNode = action.slice(action.indexOf('uses: actions/setup-node@'));
+  assert.doesNotMatch(
+    setupNode.slice(0, setupNode.indexOf('with:')),
+    /if: steps\.cache\.outputs\.cache-hit/,
+    'setup-node must run unconditionally: a cache hit only means node_modules is present, not that the runner already has Node 20 on PATH',
+  );
   const skips = action.match(/if: steps\.cache\.outputs\.cache-hit != 'true'/g) ?? [];
-  assert.equal(skips.length, 2, 'both the Node download and the install must be skipped on a cache hit');
+  assert.equal(skips.length, 1, 'only the npm ci install may be skipped on a cache hit');
 });
 
 test('the gates run the CLI from the pinned lockfile', () => {
