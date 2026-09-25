@@ -200,6 +200,14 @@ test('the shared policy is detected by a CALL, not by a mention of it', () => {
   assert.equal(callsSharedPolicy('// pullImageWithRetry(image, options) acquires one image'), false);
   assert.equal(callsSharedPolicy('export function pullImageWithRetry(image, options = {}) {'), false);
   assert.equal(callsSharedPolicy('if (!pullImageWithRetry(ref, { backoffStepSeconds })) failed++;'), true);
+  // The pooled drivers acquire through the same policy, so a script that only
+  // calls them (pull-images.mjs, compose-pull-images.mjs) is still an
+  // acquisition; their declarations are not.
+  assert.equal(callsSharedPolicy('const { failed } = await pullImages(missing, { backoffStepSeconds });'), true);
+  assert.equal(callsSharedPolicy('const res = await pullImageAsync(image, options);'), true);
+  assert.equal(callsSharedPolicy('export async function pullImages(images, options = {}) {'), false);
+  assert.equal(callsSharedPolicy('export async function pullImageAsync(image, options = {}) {'), false);
+  assert.equal(callsSharedPolicy('function* pullImageSteps(image, options = {}) {'), false);
 
   // chart-validate imports the rate-limit classifier out of lib/registry.mjs
   // via chart-kubeconform.mjs and never pulls through it. It DOES acquire an
