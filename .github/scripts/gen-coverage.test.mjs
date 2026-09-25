@@ -1,22 +1,22 @@
 // gen-coverage.test.mjs — node:test guard for the docs/coverage.md renderer.
 //
 // Pins the pieces whose output a reader sees: the MD060 cell width, the
-// replacement-template unescaping of a spliced block, the glance tally
-// (through lib/surface-coverage.mjs, shared with doc-counts.mjs), the
-// per-symbol status translation, and the splice that replaces only the text
-// between each pair of AUTOGEN markers.
+// glance tally (through lib/surface-coverage.mjs, shared with
+// doc-counts.mjs), the per-symbol status translation, the byte-for-byte
+// backslash fidelity of a rendered probe (#3695), and the splice that
+// replaces only the text between each pair of AUTOGEN markers.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { alignedTable, buildGlance, buildTables, mdWidth, render, splice, unescapeTemplate } from './gen-coverage.mjs';
+import { alignedTable, buildGlance, buildTables, mdWidth, render, splice } from './gen-coverage.mjs';
 
 const entry = (head, kind, symbol, probe, cls) => ({ head, kind, symbol, probe, class: cls });
 
-test('mdWidth drops one column per backslash escape except an escaped pipe', () => {
+test('mdWidth is the raw code-point length, with no escape adjustment', () => {
   assert.equal(mdWidth('abc'), 3);
   assert.equal(mdWidth('a\\|b'), 4);
-  assert.equal(mdWidth('a\\wb'), 3);
+  assert.equal(mdWidth('a\\wb'), 4);
   assert.equal(mdWidth('日本'), 2);
 });
 
@@ -27,14 +27,6 @@ test('alignedTable pads to the widest cell with a three-column minimum', () => {
     '| x    | y   |',
     '| long | z   |',
   ]);
-});
-
-test('unescapeTemplate collapses \\\\, keeps other non-letter escapes, and rejects letter escapes', () => {
-  assert.equal(unescapeTemplate('a\\\\w b\\|c'), 'a\\w b\\|c');
-  assert.equal(unescapeTemplate('x\\ny'), 'x\ny');
-  assert.throws(() => unescapeTemplate('\\w'), /bad escape/);
-  assert.throws(() => unescapeTemplate('\\1'), /bad escape/);
-  assert.throws(() => unescapeTemplate('tail\\'), /bad escape/);
 });
 
 test('buildGlance tallies each head and the total through the shared fold', () => {
@@ -75,6 +67,37 @@ test('buildTables translates ledger classes into support states and escapes prob
 test('splice replaces only the text between the markers', () => {
   const doc = 'before\n<!-- B -->\nstale\n<!-- E -->\nafter\n';
   assert.equal(splice(doc, '<!-- B -->', '<!-- E -->', 'fresh\n'), 'before\n<!-- B -->\n\nfresh\n\n<!-- E -->\nafter\n');
+});
+
+test('splice keeps a body\'s own backslashes byte-for-byte (#3695)', () => {
+  const doc = 'before\n<!-- B -->\nstale\n<!-- E -->\nafter\n';
+  assert.equal(
+    splice(doc, '<!-- B -->', '<!-- E -->', 'a\\\\w b\\|c\n'),
+    'before\n<!-- B -->\n\na\\\\w b\\|c\n\n<!-- E -->\nafter\n',
+  );
+});
+
+test('buildTables renders a probe with \\\\ and a probe with \\| byte-for-byte, MD060-aligned', () => {
+  const out = buildTables([
+    entry('logql', 'parser-stage', 'parser:regexp', '{service_name="gateway"} | regexp "(?P<lvl>\\\\w+)"', 'parity-accept'),
+    entry('logql', 'parser-stage', 'parser:pipe', 'literal \\| pipe', 'parity-accept'),
+  ]);
+  // The probe's own `\\` survives untouched — not collapsed to a single `\`.
+  // Its literal `|` is separately escaped to `\|` for Markdown by renderHead.
+  assert.match(out, /`\{service_name="gateway"\} \\\| regexp "\(\?P<lvl>\\\\w\+\)"`/);
+  // A probe carrying its own `\|` escape gets renderHead's pipe-escaping
+  // applied on top (it does not know the `|` is already escaped), and that
+  // doubled escape survives the splice uncollapsed too.
+  assert.match(out, /`literal \\\\\| pipe`/);
+  // MD060-aligned: every row's Probe cell (the column with variable-width
+  // escapes) has the SAME markdownlint-measured width as the separator row's
+  // dash count for that column.
+  const lines = out.split('\n').filter((l) => l.startsWith('| `'));
+  const sepWidth = out.match(/\| -+ \| (-+) \| -+ \|/)[1].length;
+  for (const line of lines) {
+    const probeCell = line.split(' | ')[1];
+    assert.equal(mdWidth(probeCell), sepWidth, `misaligned probe cell: ${JSON.stringify(probeCell)}`);
+  }
 });
 
 test('render rebuilds both generated blocks and is idempotent', () => {

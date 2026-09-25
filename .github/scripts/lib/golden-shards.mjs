@@ -264,6 +264,10 @@ export const SHARDS = {
       'test/surface-parity',
       'test/rejection-parity/catalogue',
       'test/regression/parity-enrolment-baselines',
+      // docs/coverage.md's coverage-tables block is rendered from
+      // test/surface-parity/inventory/ by gen-coverage.mjs, which
+      // update-parity-ledgers now also runs (#3696).
+      'docs/coverage.md',
     ],
     corpus: ['test/spec/promql', 'test/spec/logql', 'test/spec/traceql'],
     generators: [

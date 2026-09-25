@@ -103,13 +103,14 @@ function status(entry) {
 // codePoints — a string's length in code points.
 const codePoints = (s) => [...s].length;
 
-// mdWidth — a cell's width as markdownlint's MD060 measures it: the source
-// length, less one for every backslash escape of a character other than `|`
-// (`\w` renders as one glyph; an escaped pipe `\|` keeps both source bytes).
+// mdWidth — a cell's width as markdownlint's MD060 measures it: the raw
+// source length in code points, with no adjustment for backslash escapes.
+// Verified directly against the pinned engine (markdownlint-cli2 0.23.2 /
+// markdownlint 0.41.1): a cell rendered with an escape-narrowing adjustment
+// (treating `\w` as one glyph) misaligns MD060's "aligned" style, while the
+// unadjusted source length does not (#3695).
 export function mdWidth(cell) {
-  const backslashEscapes = (cell.match(/\\./g) ?? []).length;
-  const escapedPipes = cell.split('\\|').length - 1;
-  return codePoints(cell) - (backslashEscapes - escapedPipes);
+  return codePoints(cell);
 }
 
 // alignedTable — the lines of a Markdown table whose pipes land where MD060's
@@ -168,28 +169,20 @@ export function buildTables(entries) {
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-// The backslash escapes unescapeTemplate() resolves to one character.
-const TEMPLATE_ESCAPES = { '\\': '\\', a: '\x07', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' };
-
-// unescapeTemplate — the body as docs/coverage.md carries it: backslash
-// escapes resolved the way a regular-expression replacement template resolves
-// them (`\\` -> `\`, `\n` -> newline, and so on; any other escape of a
-// non-letter is kept as written). An escape of a letter, a digit, or a
-// trailing lone backslash has no meaning there and throws. The Probe column
-// therefore shows a ledger probe's `\\` as `\` (#3695).
-export function unescapeTemplate(body) {
-  return body.replace(/\\([\s\S]?)/g, (whole, c) => {
-    if (Object.hasOwn(TEMPLATE_ESCAPES, c)) return TEMPLATE_ESCAPES[c];
-    if (c === '' || /[A-Za-z0-9]/.test(c)) throw new Error(`bad escape ${JSON.stringify(whole)} in a rendered block`);
-    return whole;
-  });
-}
-
-// splice — `doc` with everything between `begin` and `end` replaced by
-// `body` (after unescapeTemplate).
+// splice — `doc` with everything between `begin` and `end` replaced by `body`,
+// verbatim. `body` is inserted through a replacer FUNCTION rather than a
+// replacement string, which is what makes this safe: String.replace only
+// special-cases `$&`/`$1`/... inside a replacement STRING, never inside a
+// function's return value, so `body`'s own backslashes (a ledger probe's
+// `\\`, or the `\|` renderHead() writes to escape a literal pipe) land in the
+// document exactly as written. mdWidth()/alignedTable() pad the table to
+// that same literal text, so the two must stay in agreement (#3695: an
+// earlier version ran `body` through a needless escape-resolution pass here,
+// collapsing a probe's own `\\` to `\` and desyncing it from the padding
+// mdWidth had already computed for the un-collapsed text).
 export function splice(doc, begin, end, body) {
   const re = new RegExp(`${escapeRegExp(begin)}[\\s\\S]*?${escapeRegExp(end)}`, 'g');
-  const block = `${begin}\n\n${unescapeTemplate(body)}\n${end}`;
+  const block = `${begin}\n\n${body}\n${end}`;
   return doc.replace(re, () => block);
 }
 

@@ -319,7 +319,7 @@ The `Probe` column is the exact query the ledger evaluates for that symbol.
 | `json`    | `{service_name="shop"} \| json`                       | Supported |
 | `logfmt`  | `{service_name="gateway"} \| logfmt`                  | Supported |
 | `pattern` | `{service_name="proxy"} \| pattern "<method> <path>"` | Supported |
-| `regexp`  | `{service_name="gateway"} \| regexp "(?P<lvl>\w+)"`   | Supported |
+| `regexp`  | `{service_name="gateway"} \| regexp "(?P<lvl>\\w+)"`  | Supported |
 | `unpack`  | `{service_name="packer"} \| unpack`                   | Supported |
 
 #### Label / format stages
