@@ -69,6 +69,7 @@ const baseParams = {
   toolchain: { version: 'go version go1.26.4 linux/amd64', env: { CGO_ENABLED: '1', GOEXPERIMENT: '', GOFLAGS: '' } },
   gremlins: { module: 'github.com/tsouza/gremlins/cmd/gremlins', ref: 'r1', commit: 'a'.repeat(40) },
   scripts: { 'mutation-run.mjs': 'h1', 'lib/gh.mjs': 'h2' },
+  runner: { RUNNER_OS: 'Linux', RUNNER_ARCH: 'X64', ImageOS: 'ubuntu24', ImageVersion: '20260901.1', kernel: '6.8.0', node: 'v24.0.0' },
 };
 
 function keyOf(root, over = {}) {
@@ -94,6 +95,10 @@ const flips = [
   ['a scope source file', (root) => edit(root, 'a/a.go', 'package a\n\nimport "example.com/m/b"\n\nfunc A() int { return b.B() }\n')],
   ['a test file', (root) => edit(root, 'a/a_test.go', `${readFileSync(join(root, 'a/a_test.go'), 'utf8')}// more\n`)],
   ['a testdata file', (root) => edit(root, 'a/testdata/golden.txt', 'changed\n')],
+  ['an embedded subdirectory file', (root) => {
+    mkdirSync(join(root, 'a/templates'), { recursive: true });
+    edit(root, 'a/templates/t.tmpl', 'changed\n');
+  }],
   ['a data root a test reads by literal path', (root) => edit(root, 'fixtures/data.txt', 'changed\n')],
   ['go.sum', (root) => edit(root, 'go.sum', 'example.com/x v1.0.0 h1:AAAA=\n')],
   ['go.mod', (root) => edit(root, 'go.mod', 'module example.com/m\n\ngo 1.22\n')],
@@ -119,6 +124,9 @@ const paramFlips = [
   ['the runner bounds', { runnerEnv: { ...baseParams.runnerEnv, MUTANT_TIMEOUT_MAX: '90s' } }],
   ['a runner script', { scripts: { ...baseParams.scripts, 'mutation-run.mjs': 'h9' } }],
   ['a runner lib', { scripts: { ...baseParams.scripts, 'lib/gh.mjs': 'h9' } }],
+  ['the runner image version', { runner: { ...baseParams.runner, ImageVersion: '20260915.2' } }],
+  ['the node version', { runner: { ...baseParams.runner, node: 'v26.0.0' } }],
+  ['the build tags in GOFLAGS', { toolchain: { ...baseParams.toolchain, env: { ...baseParams.toolchain.env, GOFLAGS: '-tags=chdb' } } }],
 ];
 for (const [name, over] of paramFlips) {
   test(`the key changes with ${name}`, (t) => {
@@ -180,7 +188,10 @@ test('runnerScriptHashes follows local imports transitively', (t) => {
 
 test('the real runner-script set covers the runner, the guard, the gate and their libs', () => {
   const names = Object.keys(runnerScriptHashes(here));
-  for (const n of ['mutation-run.mjs', 'mutant-memory-guard.mjs', 'gremlins-threshold.mjs', 'lib/gh.mjs', 'lib/mutation-cache.mjs']) {
+  for (const n of [
+    'mutation-run.mjs', 'mutant-memory-guard.mjs', 'gremlins-threshold.mjs', 'lib/gh.mjs', 'lib/mutation-cache.mjs',
+    '../workflows/mutation.yml', '../actions/setup-go/action.yml',
+  ]) {
     assert.ok(names.includes(n), `${n} missing from ${names.join(', ')}`);
   }
 });
@@ -244,7 +255,7 @@ test('the aggregator accepts runs and validated hits, and rejects anything unver
   const matrix = { include: [{ phase: 'p1', efficacy: 90 }] };
   const entry = good();
   const hit = { phase: 'p1', source: 'cache', key, digest: entry.digest, sourceRunUrl: runUrl };
-  const ok = (rec) => aggregateProblems(matrix, () => rec);
+  const ok = (rec) => aggregateProblems(matrix, () => rec, { cacheAllowed: true });
   assert.deepEqual(ok({ provenance: { phase: 'p1', source: 'run', key } }), []);
   assert.deepEqual(ok({ provenance: hit, entry }), []);
   assert.equal(ok({}).length, 1, 'missing provenance');
@@ -254,7 +265,11 @@ test('the aggregator accepts runs and validated hits, and rejects anything unver
   assert.equal(ok({ provenance: { ...hit, digest: 'f'.repeat(64) }, entry }).length, 1, 'digest mismatch');
   assert.equal(ok({ provenance: { ...hit, source: 'trust-me' }, entry }).length, 1, 'unknown source');
   assert.equal(ok({ provenance: { ...hit, phase: 'p2' }, entry }).length, 1, 'wrong phase');
-  assert.equal(aggregateProblems({ include: [{ phase: 'p1', efficacy: 80 }] }, () => ({ provenance: hit, entry })).length, 1, 'threshold drift');
+  assert.equal(aggregateProblems({ include: [{ phase: 'p1', efficacy: 80 }] }, () => ({ provenance: hit, entry }), { cacheAllowed: true }).length, 1, 'threshold drift');
+  // Where the cache is off (main, nightly, dispatch, the kill switch) even a
+  // valid hit is refused, and a run still passes.
+  assert.equal(aggregateProblems(matrix, () => ({ provenance: hit, entry }), { cacheAllowed: false }).length, 1, 'hit where off');
+  assert.deepEqual(aggregateProblems(matrix, () => ({ provenance: { phase: 'p1', source: 'run', key } }), { cacheAllowed: false }), []);
   assert.equal(validateProvenance(null, { phase: 'p1', threshold: 90 }) !== null, true);
 });
 
@@ -270,6 +285,7 @@ test('check mode: a valid entry is a hit that writes the report; a corrupt or mi
     KEY: key, PHASE: 'p1', THRESHOLD: '90',
     ENTRY: join(dir, 'entry.json'), REPORT: join(dir, 'gremlins.json'),
     PROVENANCE: join(dir, 'provenance.json'), GITHUB_OUTPUT: join(dir, 'out'),
+    MUTATION_CACHE: 'read-write',
   };
   writeFileSync(env.GITHUB_OUTPUT, '');
   let r = cli(t, env);
@@ -294,4 +310,16 @@ test('check mode: a valid entry is a hit that writes the report; a corrupt or mi
   assert.match(r.stdout, new RegExp(runUrl));
   assert.deepEqual(JSON.parse(readFileSync(env.REPORT, 'utf8')), good().report);
   assert.equal(JSON.parse(readFileSync(env.PROVENANCE, 'utf8')).source, 'cache');
+
+  // The kill switch: the same valid entry is ignored and discarded.
+  rmSync(env.REPORT);
+  writeFileSync(env.GITHUB_OUTPUT, '');
+  for (const off of ['off', '']) {
+    writeFileSync(env.ENTRY, canonicalJson(good()));
+    r = cli(t, { ...env, MUTATION_CACHE: off });
+    assert.equal(r.status, 0, r.stdout);
+    assert.match(readFileSync(env.GITHUB_OUTPUT, 'utf8'), /hit=false/);
+    assert.equal(existsSync(env.REPORT), false);
+    assert.equal(existsSync(env.ENTRY), false);
+  }
 });

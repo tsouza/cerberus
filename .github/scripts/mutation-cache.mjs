@@ -25,15 +25,20 @@
 //              Env: KEY, PHASE, THRESHOLD, ENTRY, REPORT, PROVENANCE, RUN_URL.
 //
 //   aggregate  In the `mutation` aggregator. Every phase of MATRIX must have a
-//              provenance record under PROVENANCE_DIR/mutation-provenance-<phase>/,
-//              and every `cache` record must carry an entry that validates
-//              against the record's key and the phase's own threshold.
-//              Env: MATRIX, PROVENANCE_DIR.
+//              provenance record under PROVENANCE_DIR/<phase>/, every `cache`
+//              record must carry an entry that validates against the record's
+//              key and the phase's own threshold, and no `cache` record is
+//              accepted unless MUTATION_CACHE is on.
+//              Env: MATRIX, PROVENANCE_DIR, MUTATION_CACHE.
+//
+// MUTATION_CACHE (check, store, aggregate): `read-write` enables the cache;
+// any other value, or none, makes every leg run gremlins and store nothing.
 //
 // Exit: 0 on success (a miss is a success of `check`); 1 on any failure.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { release } from 'node:os';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -59,14 +64,42 @@ export const RUNNER_SCRIPT_ENTRIES = Object.freeze([
   'mutant-memory-guard.mjs',
   'gremlins-threshold.mjs',
   'mutation-cache.mjs',
+  // The workflow declares the leg's job env, step flags and runner; the
+  // setup-go action decides how the toolchain is installed.
+  '../workflows/mutation.yml',
+  '../actions/setup-go/action.yml',
 ]);
 
 export const RUNNER_ENV_NAMES = Object.freeze(['MUTANT_TIMEOUT_MIN', 'MUTANT_TIMEOUT_MAX']);
 
 // The Go environment that changes what a test binary is, beside `go version`.
-const toolchainGoEnv = ['CGO_ENABLED', 'GOEXPERIMENT', 'GOFLAGS'];
+const toolchainGoEnv = [
+  'GOOS',
+  'GOARCH',
+  'GOAMD64',
+  'CGO_ENABLED',
+  'CC',
+  'CXX',
+  'CGO_CFLAGS',
+  'CGO_CPPFLAGS',
+  'CGO_CXXFLAGS',
+  'CGO_LDFLAGS',
+  'GOEXPERIMENT',
+  'GOFLAGS',
+];
 
-const testdataDirName = 'testdata';
+// The runner the leg executes on: the hosted image and its version, the
+// kernel, and the node that runs the harness.
+const runnerImageEnv = ['RUNNER_OS', 'RUNNER_ARCH', 'ImageOS', 'ImageVersion'];
+
+export function runnerFingerprint(env = process.env) {
+  return {
+    ...Object.fromEntries(runnerImageEnv.map((k) => [k, String(env[k] ?? '')])),
+    kernel: release(),
+    node: process.version,
+  };
+}
+
 const localImportPattern = /(?:\bfrom\s+|\bimport\s*\(?\s*)['"](\.{1,2}\/[^'"]+)['"]/g;
 const joinCallPattern = /filepath\.Join\(([^()]*)\)/g;
 const goStringLiteralPattern = /^\s*"((?:[^"\\]|\\.)*)"\s*$/;
@@ -165,10 +198,10 @@ export function goPackageInputs(root, scope) {
   for (const dir of [...dirs].sort()) {
     if (!inside(dir)) throw new Error(`package directory ${dir} is outside ${absRoot}`);
     const rel = relative(absRoot, dir).split(sep).join('/') || '.';
-    packages[rel] = {
-      ...hashTree(absRoot, dir, { recursive: false }),
-      ...hashTree(absRoot, join(dir, testdataDirName), { recursive: true }),
-    };
+    // Recursive: testdata/, embedded subdirectories and generated files all
+    // sit under the package directory. A nested package is counted in its
+    // parent too, which only costs a miss.
+    packages[rel] = hashTree(absRoot, dir, { recursive: true });
     for (const name of readdirSync(dir).sort()) {
       if (!name.endsWith('.go')) continue;
       for (const lit of literalRelativePaths(readFileSync(join(dir, name), 'utf8'))) {
@@ -205,9 +238,10 @@ export function scopeDiff(root, scope, diffRef) {
   return sha256(run('git', ['diff', '--no-ext-diff', '--no-color', '-U0', diffRef, '--', dir], root));
 }
 
-export function collectKeyInputs({ root, scope, phaseRow, diffRef, runnerEnv, toolchain, gremlins, scripts }) {
+export function collectKeyInputs({ root, scope, phaseRow, diffRef, runnerEnv, toolchain, gremlins, scripts, runner }) {
   return {
     toolchain,
+    runner,
     gremlins,
     phaseRow: phaseRowForKey(phaseRow),
     runnerEnv,
@@ -256,6 +290,7 @@ function modeKey() {
     toolchain: toolchainFingerprint(root),
     gremlins: gremlinsFingerprint(),
     scripts: runnerScriptHashes(),
+    runner: runnerFingerprint(),
   });
   const key = legCacheKey(inputs);
   const files = (m) => Object.values(m).reduce((n, v) => n + Object.keys(v).length, 0);
@@ -267,6 +302,15 @@ function modeKey() {
   log(`scope diff: ${inputs.scopeDiff === '' ? '(full phase)' : inputs.scopeDiff}`);
   notice(`mutation leg cache key ${key}`);
   setOutput('key', key);
+}
+
+// MUTATION_CACHE is the switch: only `read-write` reads or writes an entry.
+// The workflow sets it on pull requests alone, and a repository variable
+// turns it off there too.
+export const CACHE_ON = 'read-write';
+
+function cacheEnabled() {
+  return String(process.env.MUTATION_CACHE ?? '').trim() === CACHE_ON;
 }
 
 function threshold() {
@@ -289,6 +333,12 @@ function modeCheck() {
   const phase = required('PHASE');
   const entryPath = required('ENTRY');
   const report = required('REPORT');
+  if (!cacheEnabled()) {
+    notice(`mutation leg cache OFF for ${phase} (MUTATION_CACHE=${process.env.MUTATION_CACHE ?? ''}); running gremlins`);
+    rmSync(entryPath, { force: true });
+    setOutput('hit', 'false');
+    return;
+  }
   if (!existsSync(entryPath)) {
     notice(`mutation leg cache MISS for ${phase}: no entry under key ${key}; running gremlins`);
     setOutput('hit', 'false');
@@ -322,6 +372,11 @@ function modeStore() {
   const sourceRunUrl = required('RUN_URL');
   const t = threshold();
   writeProvenance({ phase, source: 'run', key });
+  if (!cacheEnabled()) {
+    notice(`mutation leg ${phase} is not cached: MUTATION_CACHE=${process.env.MUTATION_CACHE ?? ''}`);
+    setOutput('cacheable', 'false');
+    return;
+  }
   const stability = timingStability(report, t);
   if (!stability.stable) {
     notice(`mutation leg ${phase} is not cached: ${stability.reason}`);
@@ -336,7 +391,9 @@ function modeStore() {
 
 // aggregateProblems checks every selected phase's provenance. `readRecord`
 // returns { provenance, entry } (either may be undefined) for a phase.
-export function aggregateProblems(matrix, readRecord) {
+// A `cache` record is refused outright where the cache is off: a hit can
+// never stand in for a run the event requires.
+export function aggregateProblems(matrix, readRecord, { cacheAllowed }) {
   const problems = [];
   const include = matrix?.include;
   if (!Array.isArray(include)) return ['MATRIX has no include array'];
@@ -344,6 +401,10 @@ export function aggregateProblems(matrix, readRecord) {
     const { provenance, entry } = readRecord(row.phase);
     if (provenance === undefined) {
       problems.push(`${row.phase}: no provenance record — its verdict's source is unknown`);
+      continue;
+    }
+    if (provenance?.source === 'cache' && !cacheAllowed) {
+      problems.push(`${row.phase}: a cache hit where the cache is off — this event requires a gremlins run`);
       continue;
     }
     const problem = validateProvenance(provenance, { phase: row.phase, threshold: row.efficacy, entry });
@@ -356,23 +417,26 @@ function readJsonIfPresent(path) {
   return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : undefined;
 }
 
-export const PROVENANCE_ARTIFACT_PREFIX = 'mutation-provenance-';
 export const PROVENANCE_FILE = 'provenance.json';
 export const ENTRY_FILE = 'entry.json';
 
 function modeAggregate() {
   const matrix = JSON.parse(required('MATRIX'));
   const dir = required('PROVENANCE_DIR');
-  const problems = aggregateProblems(matrix, (phase) => {
-    const d = join(dir, `${PROVENANCE_ARTIFACT_PREFIX}${phase}`);
-    return { provenance: readJsonIfPresent(join(d, PROVENANCE_FILE)), entry: readJsonIfPresent(join(d, ENTRY_FILE)) };
-  });
+  const problems = aggregateProblems(
+    matrix,
+    (phase) => {
+      const d = join(dir, phase);
+      return { provenance: readJsonIfPresent(join(d, PROVENANCE_FILE)), entry: readJsonIfPresent(join(d, ENTRY_FILE)) };
+    },
+    { cacheAllowed: cacheEnabled() },
+  );
   if (problems.length > 0) {
     for (const p of problems) error(`mutation provenance: ${p}`);
     process.exit(1);
   }
   const hits = matrix.include.filter((row) => {
-    const p = readJsonIfPresent(join(dir, `${PROVENANCE_ARTIFACT_PREFIX}${row.phase}`, PROVENANCE_FILE));
+    const p = readJsonIfPresent(join(dir, row.phase, PROVENANCE_FILE));
     return p.source === 'cache';
   });
   notice(

@@ -56,6 +56,16 @@ on:
 permissions:
   contents: read
 
+env:
+  # The leg verdict cache (.github/scripts/lib/mutation-cache.mjs) is read and
+  # written on pull requests only. actions/cache scopes a PR's entries to that
+  # PR's own ref, so nothing a PR writes is readable by main, another PR, or a
+  # merge group. Main pushes, the nightly, dispatches and merge groups never
+  # read or write it and always run gremlins, and the `mutation` aggregator
+  # refuses a cache hit on them. Setting the repository variable
+  # MUTATION_CACHE_DISABLED to `true` turns it off on pull requests too.
+  MUTATION_CACHE: ${{ (github.event_name == 'pull_request' && vars.MUTATION_CACHE_DISABLED != 'true') && 'read-write' || 'off' }}
+
 concurrency:
   # Main pushes and the exact nightly cron replace only their own modes. Scoped
   # PR/queue and manual or release-head qualification remain unique.
@@ -190,6 +200,7 @@ jobs:
           PHASE_ROW: ${{ toJSON(matrix) }}
           DIFF_REF: ${{ matrix.diff_ref }}
       - name: restore a cached verdict
+        if: env.MUTATION_CACHE == 'read-write'
         uses: actions/cache/restore@v6
         with:
           path: .mutation-cache
@@ -203,7 +214,7 @@ jobs:
           THRESHOLD: ${{ matrix.efficacy }}
           ENTRY: .mutation-cache/entry.json
           REPORT: gremlins.json
-          PROVENANCE: provenance/provenance.json
+          PROVENANCE: provenance/${{ matrix.phase }}/provenance.json
       # We install gremlins directly via `go install` so we don't
       # depend on a third-party Action's release-download path.
       # The setup-go composite's module cache keeps subsequent runs fast.
@@ -420,10 +431,10 @@ jobs:
           THRESHOLD: ${{ matrix.efficacy }}
           ENTRY: .mutation-cache/entry.json
           REPORT: gremlins.json
-          PROVENANCE: provenance/provenance.json
+          PROVENANCE: provenance/${{ matrix.phase }}/provenance.json
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
       - name: save the verdict
-        if: steps.store.outputs.cacheable == 'true'
+        if: steps.store.outputs.cacheable == 'true' && env.MUTATION_CACHE == 'read-write'
         uses: actions/cache/save@v6
         with:
           path: .mutation-cache
@@ -432,7 +443,9 @@ jobs:
       # the leg's word for it, so the entry travels with the provenance record.
       - name: attach the cache entry to the provenance record
         if: steps.cache.outputs.hit == 'true'
-        run: cp .mutation-cache/entry.json provenance/entry.json
+        run: cp .mutation-cache/entry.json "provenance/${PHASE}/entry.json"
+        env:
+          PHASE: ${{ matrix.phase }}
       - name: upload the verdict's provenance
         if: always()
         uses: actions/upload-artifact@v7
@@ -517,6 +530,7 @@ jobs:
         with:
           pattern: mutation-provenance-*
           path: provenance
+          merge-multiple: true
       - name: validate every phase's verdict provenance
         if: needs.mutate.result == 'success'
         run: node .github/scripts/mutation-cache.mjs aggregate

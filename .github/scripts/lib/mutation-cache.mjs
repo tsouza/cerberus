@@ -10,8 +10,12 @@
 // KEY INPUT CLASSES (KEY_INPUT_CLASSES below; the key refuses an input object
 // that lacks any of them, so a class cannot be dropped silently):
 //
-//   toolchain      `go version` plus the Go environment knobs that change what
-//                  a test binary is (CGO_ENABLED, GOEXPERIMENT, GOFLAGS).
+//   toolchain      `go version` plus the Go environment that changes what a
+//                  test binary is: GOOS/GOARCH/GOAMD64, CGO_ENABLED and the C
+//                  toolchain and flags, GOEXPERIMENT, and GOFLAGS (which is
+//                  where build tags reach an untagged `go test`).
+//   runner         the runner image (RUNNER_OS, RUNNER_ARCH, ImageOS,
+//                  ImageVersion), the kernel release, and the node version.
 //   gremlins       the gremlins module path, the fork ref the workflow
 //                  installs, and the commit that ref resolves to.
 //   phaseRow       the leg's matrix row (scope, efficacy, workers,
@@ -26,13 +30,15 @@
 //   runnerScripts  every script the leg executes to reach its verdict
 //                  (mutation-run.mjs, mutant-memory-guard.mjs,
 //                  gremlins-threshold.mjs, the cache itself) and, transitively,
-//                  every local module they import.
+//                  every local module they import; plus mutation.yml, which
+//                  declares the leg's job env, step flags and runner, and the
+//                  setup-go action.
 //   goModule       go.mod, go.sum and .gremlins.yaml; go.sum pins the content
 //                  of every third-party module in the closure.
-//   packages       every file in the directory of every main-module package in
-//                  `go list -deps -test <scope>/...` — sources, tests, embeds,
-//                  cgo, and any data file sitting beside them — plus each
-//                  package's testdata/ tree.
+//   packages       every file under the directory, recursively, of every
+//                  main-module package in `go list -deps -test <scope>/...` —
+//                  sources, tests, cgo, generated files, testdata/, embedded
+//                  subdirectories, and any data file sitting beside them.
 //   dataRoots      files the tests read from outside their own package: every
 //                  all-literal relative path (`"../x"` or
 //                  `filepath.Join("..", "..", "test", "spec")`) written in any
@@ -55,6 +61,22 @@
 // A report that still holds a RUNNABLE mutant (the run was interrupted) or a
 // status the threshold gate does not know is never cached.
 //
+// WHO MAY READ AND WRITE. The cache is on only on `pull_request` events
+// (MUTATION_CACHE=read-write, set in mutation.yml; the repository variable
+// MUTATION_CACHE_DISABLED=true turns it off there too). actions/cache stores
+// entries in the repository's GitHub cache service, not on the runner, and
+// scopes each write to the ref that made it: a pull request's entries live
+// under that PR's merge ref and are readable by that PR alone. So no entry a
+// PR writes can reach main, another PR, or a merge group. Main pushes, the
+// nightly, dispatches and merge groups neither read nor write, always run
+// gremlins, and the aggregator refuses any cache record on them.
+//
+// CONCURRENCY. Each key includes the phase row, so two legs never share one.
+// actions/cache entries are immutable per key: two runs racing to save the
+// same key leave the first complete upload and the second save is refused.
+// An entry is written to disk in full before the save step starts, and a
+// truncated or otherwise partial entry fails its digest and is a miss.
+//
 // AN ENTRY IS BELIEVED ONLY AFTER VALIDATION. validateEntry() recomputes the
 // entry's digest over everything it carries, requires its key to equal the key
 // computed from this checkout, and re-applies the timing-stability rule. A
@@ -69,6 +91,7 @@ export const CACHE_SCHEMA = 'cerberus-mutation-leg-cache/v1';
 
 export const KEY_INPUT_CLASSES = Object.freeze([
   'toolchain',
+  'runner',
   'gremlins',
   'phaseRow',
   'runnerEnv',
