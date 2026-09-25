@@ -1,6 +1,7 @@
 package traceql_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -115,7 +116,7 @@ func TestComparisonGuardsAttributeExistence(t *testing.T) {
 			name:  "regex_match",
 			query: `{ span.color =~ ".*" }`,
 			s:     plain,
-			want:  "mapContains(`SpanAttributes`, ?) AND match(`SpanAttributes`[?], ?)",
+			want:  "mapContains(`SpanAttributes`, ?) AND " + regexMatchSQL("`SpanAttributes`[?]"),
 		},
 		{
 			// ” sorts below every non-empty string.
@@ -389,14 +390,14 @@ func TestRegexArrayFoldLowersLikeItsScalarSpelling(t *testing.T) {
 			// array branch).
 			name:     "match_any_is_an_or_of_the_scalar_form",
 			query:    `{ span.flavor =~ "van.*" || span.flavor =~ "man.*" }`,
-			combined: "(match(`SpanAttributes`[?], ?) OR match(`SpanAttributes`[?], ?))",
+			combined: "(" + regexMatchSQL("`SpanAttributes`[?]") + " OR " + regexMatchSQL("`SpanAttributes`[?]") + ")",
 		},
 		{
 			// OpRegexMatchNone -> element op OpNotRegex, matchAll true, so
 			// `matchCount == elemCount`: an AND (same branch).
 			name:     "match_none_is_an_and_of_the_scalar_form",
 			query:    `{ span.flavor !~ "van.*" && span.flavor !~ "man.*" }`,
-			combined: "NOT match(`SpanAttributes`[?], ?) AND NOT match(`SpanAttributes`[?], ?)",
+			combined: "NOT " + regexMatchSQL("`SpanAttributes`[?]") + " AND NOT " + regexMatchSQL("`SpanAttributes`[?]"),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -438,8 +439,9 @@ func TestRegexArrayFoldOverANumericMaterializedColumn(t *testing.T) {
 	const col = "`__cerberus_materialized_http.status_code`"
 
 	sqlStr := emitTraceQL(t, `{ span.http.status_code =~ "5.." || span.http.status_code =~ "4.." }`, on)
-	if strings.Count(sqlStr, "toString("+col+")") != 2 {
-		t.Fatalf("every element of the fold must stringify the numeric materialized column; got: %s", sqlStr)
+	element := regexMatchSQL("toString(" + col + ")")
+	if want := "(" + element + " OR " + element + ")"; !strings.Contains(sqlStr, want) {
+		t.Fatalf("every element of the fold must stringify the numeric materialized column as %q; got: %s", want, sqlStr)
 	}
 }
 
@@ -510,4 +512,15 @@ func guardedPredicateBody(t *testing.T, sqlStr string) string {
 		t.Fatalf("guarded predicate has no conjunct after the probe: %s", pred)
 	}
 	return after
+}
+
+// regexMatchSQLTemplate is the exact shape the emitter gives a regex match
+// on subject %[1]s: RE2's match on a value isValidUTF8 accepts, and on any
+// other value a match against its Go-rune spelling, where every byte that
+// does not begin a valid UTF-8 sequence reads as U+FFFD.
+const regexMatchSQLTemplate = "if(isValidUTF8(%[1]s), match(%[1]s, ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', %[1]s)))), ?))"
+
+// regexMatchSQL renders [regexMatchSQLTemplate] for subject.
+func regexMatchSQL(subject string) string {
+	return fmt.Sprintf(regexMatchSQLTemplate, subject)
 }

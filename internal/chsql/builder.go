@@ -846,28 +846,18 @@ func (b *Builder) exprNestedArrayExists(n *chplan.NestedArrayExists) error {
 		return nil
 	}
 	b.sb.WriteString("arrayExists(x -> ")
-	elem := func() {
-		b.sb.WriteByte('x')
-		if n.Key != "" {
-			b.sb.WriteByte('[')
-			b.Arg(n.Key)
-			b.sb.WriteByte(']')
-		}
+	elem := BareIdent("x")
+	if n.Key != "" {
+		elem = Subscript(elem, Lit(n.Key))
 	}
 	switch n.Op {
 	case chplan.OpMatch, chplan.OpNotMatch:
-		if n.Op == chplan.OpNotMatch {
-			b.sb.WriteString("NOT ")
+		b.regexMatcher(n.Op, elem, n.Value)
+		if b.err != nil {
+			return b.err
 		}
-		b.sb.WriteString("match(")
-		elem()
-		b.sb.WriteString(", ")
-		if err := b.Expr(anchoredRegexPattern(n.Value)); err != nil {
-			return err
-		}
-		b.sb.WriteByte(')')
 	default:
-		elem()
+		elem(b)
 		b.sb.WriteByte(' ')
 		b.sb.WriteString(string(n.Op))
 		b.sb.WriteByte(' ')
@@ -936,22 +926,29 @@ func anchoredRegexPattern(v chplan.Expr) chplan.Expr {
 	}
 }
 
+// regexMatcher renders a label matcher — `match(<subject>, <anchored
+// pattern>)`, negated for OpNotMatch — through [goRegexMatch], so a
+// subject that is not valid UTF-8 is matched as the reference engines'
+// Go regexp matches it. A pattern known only at query time is always
+// guarded. A pattern that fails to render latches its error on b.
+func (b *Builder) regexMatcher(op chplan.BinaryOp, subject Frag, pattern chplan.Expr) {
+	anchored := anchoredRegexPattern(pattern)
+	readsInvalid := true
+	if lit, ok := anchored.(*chplan.LitString); ok {
+		readsInvalid = regexReadsInvalidUTF8(lit.V)
+	}
+	m := goRegexMatch(subject, func(fb *Builder) { _ = fb.Expr(anchored) }, readsInvalid)
+	if op == chplan.OpNotMatch {
+		m = Not(m)
+	}
+	m(b)
+}
+
 func (b *Builder) exprBinary(bx *chplan.Binary) error {
 	switch bx.Op {
 	case chplan.OpMatch, chplan.OpNotMatch:
-		if bx.Op == chplan.OpNotMatch {
-			b.sb.WriteString("NOT ")
-		}
-		b.sb.WriteString("match(")
-		if err := b.Expr(bx.Left); err != nil {
-			return err
-		}
-		b.sb.WriteString(", ")
-		if err := b.Expr(anchoredRegexPattern(bx.Right)); err != nil {
-			return err
-		}
-		b.sb.WriteByte(')')
-		return nil
+		b.regexMatcher(bx.Op, func(fb *Builder) { _ = fb.Expr(bx.Left) }, bx.Right)
+		return b.err
 	case chplan.OpPow:
 		b.sb.WriteString("pow(")
 		if err := b.Expr(bx.Left); err != nil {
@@ -1151,6 +1148,12 @@ func (b *Builder) exprFunc(f *chplan.FuncCall) error {
 	}
 	if render != nil {
 		return render(b, f.Args)
+	}
+	if spec, ok := regexFns[f.Fn]; ok {
+		if frag, ok := goRegexCall(name, spec, f.Args); ok {
+			frag(b)
+			return b.err
+		}
 	}
 	b.sb.WriteString(name)
 	b.sb.WriteByte('(')
@@ -1479,75 +1482,104 @@ func (b *Builder) exprMapWithoutEmptyValues(m *chplan.MapWithoutEmptyValues) err
 // that same harness CH), so emit-side and reference-side moved in
 // lock-step — the short-circuit stays because it is forward-safe and
 // keeps emission byte-identical across the version move.
+//
+// When an invalid UTF-8 byte can take part in the regex's match, the
+// match test and the substituted value read an invalid source value as
+// Go's regexp does: see [goRegexMatch] and [labelReplaceValue].
 func (b *Builder) exprLabelReplace(l *chplan.LabelReplace) error {
-	anchored := anchorLabelReplaceRegex(l.Regex)
-	b.sb.WriteString("mapFilter((k, v) -> v != '', if(match(")
-	if err := b.Expr(l.Map); err != nil {
-		return err
-	}
-	b.sb.WriteByte('[')
-	b.Arg(l.Src)
-	b.sb.WriteString("], ")
-	b.Arg(anchored)
-	b.sb.WriteString("), mapUpdate(")
-	if err := b.Expr(l.Map); err != nil {
-		return err
-	}
-	b.sb.WriteString(", map(")
-	b.Arg(l.Dst)
-	b.sb.WriteString(", if(empty(")
-	if err := b.Expr(l.Map); err != nil {
-		return err
-	}
-	b.sb.WriteByte('[')
-	b.Arg(l.Src)
-	b.sb.WriteString("]), ")
-	b.Arg(l.EmptyReplacement)
-	b.sb.WriteString(", ")
-	if err := b.labelReplaceSubstitution(l, anchored); err != nil {
-		return err
-	}
-	b.sb.WriteString("))), ")
-	if err := b.Expr(l.Map); err != nil {
-		return err
-	}
-	b.sb.WriteString("))")
-	return nil
+	pats := labelReplacePatternsOf(l)
+	src := labelReplaceSource(l)
+	readsInvalid := pats.readInvalidUTF8()
+	m := func(fb *Builder) { _ = fb.Expr(l.Map) }
+	Call(
+		"mapFilter",
+		Lambda2("k", "v", Neq(BareIdent("v"), InlineLit(""))),
+		If(
+			goRegexMatch(src, Lit(pats.anchored), readsInvalid),
+			Call("mapUpdate", m, Call("map", Lit(l.Dst), If(
+				Call("empty", src),
+				Lit(l.EmptyReplacement),
+				labelReplaceValue(l, src, pats, readsInvalid),
+			))),
+			m,
+		),
+	)(b)
+	return b.err
 }
 
-// labelReplaceSubstitution renders the substituted value itself — the
-// branch taken when the regex matched and the source value is non-empty.
+// labelReplacePatterns are the patterns a label_replace reads its source
+// value with: anchored drives the match test and the `replaceRegexpOne`
+// template, extract the `extractGroups` capture reads, and wholeMatch the
+// read of `$0` when the regex's anchors may split.
+type labelReplacePatterns struct {
+	anchored, extract, wholeMatch string
+}
+
+func labelReplacePatternsOf(l *chplan.LabelReplace) labelReplacePatterns {
+	anchored := anchorLabelReplaceRegex(l.Regex)
+	return labelReplacePatterns{
+		anchored:   anchored,
+		extract:    labelReplaceExtractRegex(l, anchored),
+		wholeMatch: wholeMatchExtractRegex(l.Regex),
+	}
+}
+
+// readInvalidUTF8 reports whether an invalid UTF-8 byte can change what
+// any of the patterns matches; see [regexReadsInvalidUTF8].
+func (p labelReplacePatterns) readInvalidUTF8() bool {
+	return regexReadsInvalidUTF8(p.anchored) || regexReadsInvalidUTF8(p.extract) || regexReadsInvalidUTF8(p.wholeMatch)
+}
+
+// substituted returns the block the source is spelled through and the
+// patterns that read [substituteRunes] of it as these read its U+FFFD
+// form, from [substituteFor]; ok is false when there are none.
+func (p labelReplacePatterns) substituted() (k substituteBlock, sub labelReplacePatterns, ok bool) {
+	k, rewritten, ok := substituteFor([]string{p.anchored, p.extract, p.wholeMatch}, []bool{true})
+	if !ok {
+		return substituteBlock{}, labelReplacePatterns{}, false
+	}
+	return k, labelReplacePatterns{anchored: rewritten[0], extract: rewritten[1], wholeMatch: rewritten[2]}, true
+}
+
+// labelReplaceValue renders the substituted value — the branch taken when
+// the regex matched and the source value is non-empty.
+//
+// When an invalid UTF-8 byte can take part in the match, a source value
+// isValidUTF8 rejects is substituted on its U+FFFD form, and the bytes Go
+// would copy from it are written back with [restoreInvalidBytes]. A regex
+// whose patterns [substituteFor] cannot serve keeps the U+FFFD form's
+// result.
+func labelReplaceValue(l *chplan.LabelReplace, src Frag, pats labelReplacePatterns, readsInvalid bool) Frag {
+	plain := labelReplaceSubstitution(l, src, pats)
+	if !readsInvalid {
+		return plain
+	}
+	fffd := labelReplaceSubstitution(l, replacementRunes(src), pats)
+	invalid := fffd
+	if k, sub, ok := pats.substituted(); ok {
+		invalid = restoreInvalidBytes(labelReplaceSubstitution(l, substituteRunes(src, k), sub), fffd)
+	}
+	return If(isValidUTF8(src), plain, invalid)
+}
+
+// labelReplaceSubstitution renders the substituted value of src under
+// pats.
 //
 // Two forms, per chplan.LabelReplace: the `replaceRegexpOne` template,
 // and the `concat` over `extractGroups` that carries templates
 // referencing a capture group above CH's `\9` ceiling.
-func (b *Builder) labelReplaceSubstitution(l *chplan.LabelReplace, anchored string) error {
+func labelReplaceSubstitution(l *chplan.LabelReplace, src Frag, pats labelReplacePatterns) Frag {
 	if len(l.Segments) == 0 {
-		b.sb.WriteString("replaceRegexpOne(")
-		if err := b.srcValue(l); err != nil {
-			return err
-		}
-		b.sb.WriteString(", ")
-		b.Arg(anchored)
-		b.sb.WriteString(", ")
-		b.Arg(l.Replacement)
-		b.sb.WriteByte(')')
-		return nil
+		return Call("replaceRegexpOne", src, Lit(pats.anchored), Lit(l.Replacement))
 	}
 	// `concat` needs at least one argument, and a decomposition is never
 	// empty when it exists — a template that produced no segments has an
 	// empty replacement and takes the template path above.
-	b.sb.WriteString("concat(")
-	for i, seg := range l.Segments {
-		if i > 0 {
-			b.sb.WriteString(", ")
-		}
-		if err := b.labelReplaceSegment(l, seg, anchored); err != nil {
-			return err
-		}
+	segs := make([]Frag, 0, len(l.Segments))
+	for _, seg := range l.Segments {
+		segs = append(segs, labelReplaceSegment(l, seg, src, pats))
 	}
-	b.sb.WriteByte(')')
-	return nil
+	return Call("concat", segs...)
 }
 
 // labelReplaceSegment renders one decomposed replacement segment.
@@ -1580,30 +1612,19 @@ func (b *Builder) labelReplaceSubstitution(l *chplan.LabelReplace, anchored stri
 // when no element qualifies, which is what ExpandString substitutes when
 // none of the like-named groups took part. See
 // chplan.LabelReplaceSegment.Fallbacks.
-func (b *Builder) labelReplaceSegment(l *chplan.LabelReplace, seg chplan.LabelReplaceSegment, anchored string) error {
+func labelReplaceSegment(l *chplan.LabelReplace, seg chplan.LabelReplaceSegment, src Frag, pats labelReplacePatterns) Frag {
 	switch seg.Group {
 	case chplan.NoCaptureGroup:
-		b.Arg(seg.Literal)
-		return nil
+		return Lit(seg.Literal)
 	case chplan.WholeMatchGroup:
 		if labelReplaceAnchorsMaySplit(l.Regex) {
-			return b.wholeMatchGroupValue(l)
+			return captureGroupAt(src, pats.wholeMatch, 1)
 		}
-		return b.srcValue(l)
+		return src
 	}
-	// srcValue renders a plan sub-expression and can fail, while a Frag
-	// cannot report an error. The closure records the first failure and
-	// the caller surfaces it once rendering is done.
-	var srcErr error
-	src := Frag(func(fb *Builder) {
-		if err := fb.srcValue(l); err != nil && srcErr == nil {
-			srcErr = err
-		}
-	})
-	extract := labelReplaceExtractRegex(l, anchored)
+	extract := pats.extract
 	if len(seg.Fallbacks) == 0 {
-		captureGroupAt(src, extract, seg.Group)(b)
-		return srcErr
+		return captureGroupAt(src, extract, seg.Group)
 	}
 	candidates := make([]Frag, 0, 1+len(seg.Fallbacks))
 	candidates = append(candidates, captureGroupAt(src, extract, seg.Group))
@@ -1630,16 +1651,14 @@ func (b *Builder) labelReplaceSegment(l *chplan.LabelReplace, seg chplan.LabelRe
 			args = append(args, condition, candidate)
 		}
 		args = append(args, Lit(""))
-		Call("multiIf", args...)(b)
-		return srcErr
+		return Call("multiIf", args...)
 	}
 	if len(seg.Probes) == 0 {
-		Call(
+		return Call(
 			"arrayFirst",
 			Lambda1(labelReplaceCandidateParam, Neq(BareIdent(labelReplaceCandidateParam), Lit(""))),
 			Array(candidates...),
-		)(b)
-		return srcErr
+		)
 	}
 	// A probed carrier is one whose own capture cannot say whether it took
 	// part in the match, so the test and the answer read different groups.
@@ -1650,14 +1669,13 @@ func (b *Builder) labelReplaceSegment(l *chplan.LabelReplace, seg chplan.LabelRe
 	for _, idx := range seg.Probes {
 		witnesses = append(witnesses, captureGroupAt(src, extract, idx))
 	}
-	Call(
+	return Call(
 		"arrayFirst",
 		Lambda2(labelReplaceCandidateParam, labelReplaceWitnessParam,
 			Neq(BareIdent(labelReplaceWitnessParam), Lit(""))),
 		Array(candidates...),
 		Array(witnesses...),
-	)(b)
-	return srcErr
+	)
 }
 
 // labelReplaceExtractRegex is the pattern the `extractGroups` calls read.
@@ -1685,7 +1703,7 @@ func labelReplaceExtractRegex(l *chplan.LabelReplace, anchored string) string {
 //
 // When this reports false, the anchored pattern is guaranteed to match the
 // ENTIRE source value whenever it matches at all, so the whole-match group
-// ($0) is exactly the source value and [Builder.srcValue] is both cheaper
+// ($0) is exactly the source value and [labelReplaceSource] is both cheaper
 // and correct. When it reports true, no such guarantee holds — see
 // [chplan.LabelReplace] and the `label_replace` emitter's doc comment — so
 // $0 must be read back from [wholeMatchExtractRegex] instead.
@@ -1708,7 +1726,7 @@ func labelReplaceAnchorsMaySplit(regex string) bool {
 // `extractGroups`, which exposes captured groups only and never the whole
 // match. Used only for a $0 reference against a regex whose anchors may
 // split (see [labelReplaceAnchorsMaySplit]); every other $0 reference
-// reads [Builder.srcValue] directly instead.
+// reads [labelReplaceSource] directly instead.
 //
 // The added group is the pattern's first (its opening parenthesis is the
 // leftmost), so it is always capture-group 1 regardless of how many
@@ -1716,19 +1734,6 @@ func labelReplaceAnchorsMaySplit(regex string) bool {
 // numbering, so no other index needs to account for the shift.
 func wholeMatchExtractRegex(regex string) string {
 	return "^((?s:" + regex + "))$"
-}
-
-// wholeMatchGroupValue renders a $0 reference against a regex that is not
-// self-contained: `extractGroups(<src>, <wholeMatchExtractRegex>)[1]`.
-func (b *Builder) wholeMatchGroupValue(l *chplan.LabelReplace) error {
-	var srcErr error
-	src := Frag(func(fb *Builder) {
-		if err := fb.srcValue(l); err != nil && srcErr == nil {
-			srcErr = err
-		}
-	})
-	captureGroupAt(src, wholeMatchExtractRegex(l.Regex), 1)(b)
-	return srcErr
 }
 
 // labelReplaceCandidateParam is the lambda parameter naming one
@@ -1753,17 +1758,12 @@ func captureGroupAt(src Frag, anchored string, group int) Frag {
 	)
 }
 
-// srcValue renders the source label's value: `<map>[<src>]`. CH map
-// subscript of a missing key returns the empty string, which is how
-// PromQL reads an absent source label.
-func (b *Builder) srcValue(l *chplan.LabelReplace) error {
-	if err := b.Expr(l.Map); err != nil {
-		return err
-	}
-	b.sb.WriteByte('[')
-	b.Arg(l.Src)
-	b.sb.WriteByte(']')
-	return nil
+// labelReplaceSource renders the source label's value: `<map>[<src>]`. CH
+// map subscript of a missing key returns the empty string, which is how
+// PromQL reads an absent source label. A Map that cannot render latches its
+// error on the Builder, which Build and exprLabelReplace report.
+func labelReplaceSource(l *chplan.LabelReplace) Frag {
+	return Subscript(func(fb *Builder) { _ = fb.Expr(l.Map) }, Lit(l.Src))
 }
 
 // exprLabelJoin renders PromQL `label_join(v, dst, separator, src1, src2, ...)`
@@ -1863,8 +1863,13 @@ func escapeLikeLiteral(s string) string {
 // constant's doc). A literal with no qualifying word returns nil, telling
 // the caller to skip the prefilter and fall back to the exact predicate
 // alone.
+//
+// U+FFFD also delimits words: a regex line filter's U+FFFD matches any
+// invalid UTF-8 byte of the line as well as U+FFFD itself (see
+// [goRegexMatch]), so a word holding one is not a substring every match
+// contains.
 func textIndexLikeTokens(literal string) []string {
-	fields := strings.Fields(literal)
+	fields := strings.FieldsFunc(literal, func(r rune) bool { return unicode.IsSpace(r) || r == utf8.RuneError })
 	tokens := make([]string, 0, len(fields))
 	for _, f := range fields {
 		if utf8.RuneCountInString(f) >= textIndexLikeMinTokenLength {
@@ -1988,17 +1993,13 @@ func textIndexPrefilterArgs(l *chplan.LineContent) []string {
 
 func (b *Builder) exprLineContent(l *chplan.LineContent) error {
 	renderMatch := func() error {
+		pattern := lineFilterRegex(l.Pattern)
+		m := goRegexMatch(func(fb *Builder) { _ = fb.Expr(l.Source) }, Lit(pattern), regexReadsInvalidUTF8(pattern))
 		if l.Negated {
-			b.sb.WriteString("NOT ")
+			m = Not(m)
 		}
-		b.sb.WriteString("match(")
-		if err := b.Expr(l.Source); err != nil {
-			return err
-		}
-		b.sb.WriteString(", ")
-		b.Arg(lineFilterRegex(l.Pattern))
-		b.sb.WriteByte(')')
-		return nil
+		m(b)
+		return b.err
 	}
 	renderRow := func() error {
 		if l.IsRegex {

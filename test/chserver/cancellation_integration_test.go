@@ -436,6 +436,20 @@ func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules e
 	p.assertPoolReleased(t)
 }
 
+// dryRunShape emits shape's calibrated query to ClickHouse SQL against the
+// metrics schema at cancelEvalTime. Both the natural run and every
+// concurrent dispatch (the routed-siblings probe and its calibration replica)
+// share this one emission path.
+func dryRunShape(ctx context.Context, t *testing.T, shape cancelShape) engine.DryRun {
+	t.Helper()
+	eng := &engine.Engine{Optimizer: optimizer.Default()}
+	dr, err := eng.DryRunSQL(ctx, prom.NewExplainLang(schema.DefaultOTelMetrics(), cancelEvalTime, promql.ResourceBounds{}), shape.query)
+	if err != nil {
+		t.Fatalf("emit %s: %v", shape.query, err)
+	}
+	return dr
+}
+
 func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape cancelShape, want cancelExpectation) {
 	client := s.client(t, adminUser, adminPassword, chclient.Config{
 		Database:       shardedDB,
@@ -443,11 +457,7 @@ func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape can
 		MaxOpenConns:   shardedPoolConns,
 		MaxIdleConns:   shardedPoolConns,
 	})
-	eng := &engine.Engine{Optimizer: optimizer.Default()}
-	dr, err := eng.DryRunSQL(ctx, prom.NewExplainLang(schema.DefaultOTelMetrics(), cancelEvalTime, promql.ResourceBounds{}), shape.query)
-	if err != nil {
-		t.Fatalf("emit %s: %v", shape.query, err)
-	}
+	dr := dryRunShape(ctx, t, shape)
 
 	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
 	defer cancelDispatch()
@@ -455,7 +465,8 @@ func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape can
 	cursors := make([]chclient.Cursor, siblingCount)
 	for i := range cursors {
 		ids[i] = cancelQueryID(shape, fmt.Sprintf("sibling%d", i))
-		cursors[i], err = client.QueryCursor(chclient.WithQueryID(dispatchCtx, ids[i]), dr.SQL, dr.Args...)
+		cur, err := client.QueryCursor(chclient.WithQueryID(dispatchCtx, ids[i]), dr.SQL, dr.Args...)
+		cursors[i] = cur
 		if err != nil {
 			t.Fatalf("dispatch sibling %d: %v", i, err)
 		}
@@ -677,11 +688,7 @@ func (s *server) workSpan(ctx context.Context, t *testing.T, ids []string) (star
 // its work can be counted as the call's.
 func (s *server) naturalRun(ctx context.Context, t *testing.T, shape cancelShape) (natural, entered time.Duration) {
 	t.Helper()
-	eng := &engine.Engine{Optimizer: optimizer.Default()}
-	dr, err := eng.DryRunSQL(ctx, prom.NewExplainLang(schema.DefaultOTelMetrics(), cancelEvalTime, promql.ResourceBounds{}), shape.query)
-	if err != nil {
-		t.Fatalf("emit %s: %v", shape.query, err)
-	}
+	dr := dryRunShape(ctx, t, shape)
 	qid := cancelQueryID(shape, "natural")
 	done := make(chan error, 1)
 	go func() {
@@ -749,14 +756,18 @@ var shardedTables = []string{"otel_metrics_gauge", "otel_metrics_sum"}
 // proportion until the work left after the latest cancellation a probe makes
 // clears calibrationTarget or the size reaches maxSize, for at most
 // calibrationRounds rounds. That latest cancellation is the routed-sibling
-// probe's: it runs siblingCount statements at once on the server's one
-// throttled CPU, so each reaches the call about siblingCount times later than
-// the lone natural run, and the work left is natural less siblingCount times
-// entered. It returns the shape with its calibrated query,
-// that query's natural duration and the point it entered the call. A run
-// still short of the target at maxSize is returned as is: the scenario
-// assertions then fail with the separation they could not get, rather than
-// judging a probe that cannot tell the two outcomes apart.
+// probe's, and the work left for it is measured by actually running that
+// probe's own dispatch shape (siblingsElapsedToCall), not estimated from the
+// lone run: two statements sharing cancelProbeNanoCPUs's one throttled CPU do
+// not reach the call in siblingCount times the lone run's entered — measured
+// on this substrate, the two-statement contention cost far more than the
+// even split a linear scale-up assumes (a calibration that estimated 10.7s
+// of remaining work this way left only 4.9s at the real cancellation). It
+// returns the shape with its calibrated query, that query's natural duration
+// and the point the lone run entered the call. A run still short of the
+// target at maxSize is returned as is: the scenario assertions then fail
+// with the separation they could not get, rather than judging a probe that
+// cannot tell the two outcomes apart.
 func (s *server) calibrateShape(ctx context.Context, t *testing.T, shape cancelShape) (cancelShape, time.Duration, time.Duration) {
 	t.Helper()
 	size := shape.baseSize
@@ -768,9 +779,10 @@ func (s *server) calibrateShape(ctx context.Context, t *testing.T, shape cancelS
 		s.exec(ctx, t, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s.otel_metrics_gauge WHERE MetricName = ?", local, serverDB), metric)
 		shape.query = shape.queryFor(metric)
 		natural, entered = s.naturalRun(ctx, t, shape)
-		left := natural - siblingCount*entered
-		t.Logf("calibration round %d: %s at size %d ran %s and entered the call after %s, leaving %s (target %s)",
-			round, shape.name, size, natural, entered, left, calibrationTarget)
+		siblingsEntered := s.siblingsElapsedToCall(ctx, t, shape)
+		left := natural - siblingsEntered
+		t.Logf("calibration round %d: %s at size %d ran %s, lone entered after %s, siblings entered after %s, leaving %s (target %s)",
+			round, shape.name, size, natural, entered, siblingsEntered, left, calibrationTarget)
 		if left >= calibrationTarget || size >= shape.maxSize {
 			break
 		}
@@ -781,6 +793,67 @@ func (s *server) calibrateShape(ctx context.Context, t *testing.T, shape cancelS
 		size = min(max(next, size+1), shape.maxSize)
 	}
 	return shape, natural, entered
+}
+
+// siblingsElapsedToCall dispatches siblingCount concurrent statements of
+// shape's calibrated query over the sharded tables — the same dispatch
+// probeRoutedSiblings performs against the real scenario — and returns how
+// long, from dispatch, the last of them took to reach the call. Calibration
+// measures this directly instead of scaling the lone run's entered by
+// siblingCount, because the two figures diverge substantially on the
+// throttled substrate cancelProbeNanoCPUs creates: contending for the one
+// available CPU costs the pair more than an even split of it would, an
+// effect a linear model has no way to capture. The dispatch is cancelled and
+// its siblings closed before returning, so calibration leaves no statement
+// running past this call.
+func (s *server) siblingsElapsedToCall(ctx context.Context, t *testing.T, shape cancelShape) time.Duration {
+	t.Helper()
+	client := s.client(t, adminUser, adminPassword, chclient.Config{
+		Database:       shardedDB,
+		DataShardCount: shardCount,
+		MaxOpenConns:   shardedPoolConns,
+		MaxIdleConns:   shardedPoolConns,
+	})
+	dr := dryRunShape(ctx, t, shape)
+
+	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
+	defer cancelDispatch()
+	start := time.Now()
+	ids := make([]string, siblingCount)
+	cursors := make([]chclient.Cursor, siblingCount)
+	for i := range cursors {
+		ids[i] = cancelQueryID(shape, fmt.Sprintf("calibsibling%d", i))
+		cur, err := client.QueryCursor(chclient.WithQueryID(dispatchCtx, ids[i]), dr.SQL, dr.Args...)
+		if err != nil {
+			t.Fatalf("dispatch calibration sibling %d: %v", i, err)
+		}
+		cursors[i] = cur
+	}
+	for _, id := range ids {
+		s.waitInCall(ctx, t, shape, id)
+	}
+	elapsed := time.Since(start)
+
+	cancelDispatch()
+	var wg sync.WaitGroup
+	for _, cur := range cursors {
+		wg.Add(1)
+		go func(cur chclient.Cursor) {
+			defer wg.Done()
+			_ = cur.Close()
+		}(cur)
+	}
+	closed := make(chan struct{})
+	go func() { wg.Wait(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(closeBudget):
+		t.Fatalf("closing calibration siblings did not return within %s", closeBudget)
+	}
+	if !s.goneWithin(ctx, t, ids, naturalRunBudget) {
+		t.Fatalf("calibration siblings for %v still running after %s", ids, naturalRunBudget)
+	}
+	return elapsed
 }
 
 // calibrationGrowth multiplies a seed whose run left no work to judge, which

@@ -20,6 +20,14 @@
 //     marks as compilable, so the equality above is never vacuously RE2
 //     against RE2.
 //
+// On values that are not valid UTF-8 the same requirement holds against Go's
+// regexp in every mode: the selectors, line filters and label_replace
+// values the handlers return, and — through
+// TestRegexJIT_InvalidUTF8ShapesMatchGo, which renders every emitted regex
+// shape with the production emitter and reads the answers raw — the exact
+// bytes of each matcher, line filter, label_replace and regex function
+// result.
+//
 // BenchmarkRegexJIT measures the same emitted shapes over large seeded
 // tables: cold and warm requests, a changing pattern per request, and
 // concurrent clients, with compilation on and off. It runs only under
