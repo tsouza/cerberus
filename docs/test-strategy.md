@@ -1170,7 +1170,8 @@ workflow — and looks it up with `actions/cache`. A validated hit skips
 gremlins, prints the key, the producing run and the stored survivors, and
 re-gates the stored report in the efficacy threshold step; a miss runs
 gremlins and stores the verdict, failing ones included. A leg whose tests link
-rapid without a pinned seed is never cached, and neither is a verdict that a
+rapid without a pinned seed (`CERBERUS_RAPID_SEED`, set by the workflow, applied
+by the package's `rapid.seed` hook) is never cached, and neither is a verdict that a
 re-scoring of its own timed-out mutants could flip; a mutant that completed on
 the producing runner and would time out on a slower one is not covered. Every
 leg uploads a provenance record. For each cache hit the `mutation` aggregator
