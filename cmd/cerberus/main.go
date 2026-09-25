@@ -637,11 +637,7 @@ func run() error {
 	}
 	grpcServer := heads.grpcServer
 
-	// Periodic capability re-probe: re-resolves the optimization set against the
-	// connected server and swaps a changed result into the heads mounted above,
-	// so an upgraded ClickHouse is picked up without restarting cerberus. Bound
-	// to the run ctx, so SIGTERM stops it.
-	go reprobeCHOptimizations(ctx, logger, cfg, chOpts, heads.consumers, chOptReprobeInterval, optRes.RawQueryWorkload, liveFleetProber(cfg))
+	startCHOptReprobe(ctx, logger, cfg, chOpts, heads.consumers, optRes.RawQueryWorkload)
 
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
@@ -1399,6 +1395,14 @@ func startCHOptimizations(ctx context.Context, logger *slog.Logger, client *chcl
 		return chopt.EnabledSet{}, nil, chOptResolution{}, err
 	}
 	return optRes.Set, newCHOptLive(optRes), optRes, nil
+}
+
+// startCHOptReprobe starts the periodic capability re-probe: it re-resolves the
+// optimization set against the fleet cerberus can reach and swaps a changed
+// result into the mounted heads, so an upgraded ClickHouse is picked up without
+// restarting cerberus. Bound to ctx, so SIGTERM stops it.
+func startCHOptReprobe(ctx context.Context, logger *slog.Logger, cfg config.Config, live *chOptLive, consumers chOptConsumers, rawQueryWorkload string) {
+	go reprobeCHOptimizations(ctx, logger, cfg, live, consumers, chOptReprobeInterval, rawQueryWorkload, liveFleetProber(cfg))
 }
 
 // resolveCHOptimizations probes the build of every ClickHouse node cerberus
