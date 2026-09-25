@@ -1,6 +1,7 @@
 package logql
 
 import (
+	"math"
 	"time"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
@@ -123,12 +124,20 @@ func newDurationParse(raw chplan.Expr) durationParse {
 		Args: []chplan.Expr{raw, &chplan.LitString{V: `^[+-]`}, &chplan.LitString{V: ``}},
 	}
 	isZero := &chplan.Binary{Op: chplan.OpEq, Left: stripped, Right: &chplan.LitString{V: "0"}}
+	// A regex-shaped value is only valid when it also fits Go's int64
+	// nanosecond range — the regex alone accepts "123456789h", which Go
+	// rejects at overflow (cerberus issue #3686). The bare-zero special
+	// case never overflows, so isZero skips the overflow check.
 	valid := &chplan.Binary{
 		Op:   chplan.OpOr,
 		Left: isZero,
-		Right: &chplan.FuncCall{
-			Fn:   chplan.FnRegexMatch,
-			Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationValidRe}},
+		Right: &chplan.Binary{
+			Op: chplan.OpAnd,
+			Left: &chplan.FuncCall{
+				Fn:   chplan.FnRegexMatch,
+				Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationValidRe}},
+			},
+			Right: notExpr(goDurationOverflows(raw, stripped)),
 		},
 	}
 
@@ -300,6 +309,10 @@ const goFractionSaturationLastDigit = 8
 // scale by per digit.
 const decimalRadix = 10
 
+// maxSafeIntegerDigits is the digit-length of 1<<63
+// (9223372036854775808, 19 digits) — see [goDurationOverflows].
+const maxSafeIntegerDigits = 19
+
 // Lambda parameter names for the fraction fold. They are emitted
 // verbatim into the SQL, so they are named to be unmistakable in a
 // golden and impossible to confuse with a column.
@@ -345,6 +358,185 @@ var (
 //
 // Every function on this path is total over strings, so the expression
 // never aborts a query.
+//
+// unitNanosExpr maps a captured unit token (bound to the given ident
+// expression) to its length in nanoseconds via Go's time.unitMap
+// ([goDurationUnitNames] / [goDurationUnitNanos]). Shared by
+// [goDurationSeconds] and [goDurationOverflows] so both read the same
+// unit table.
+func unitNanosExpr(u chplan.Expr) chplan.Expr {
+	unitNames := make([]chplan.Expr, len(goDurationUnitNames))
+	for i, name := range goDurationUnitNames {
+		unitNames[i] = &chplan.LitString{V: name}
+	}
+	unitNanosLits := make([]chplan.Expr, len(goDurationUnitNanos))
+	for i, n := range goDurationUnitNanos {
+		unitNanosLits[i] = &chplan.LitInt{V: n}
+	}
+	return &chplan.FuncCall{
+		Fn: chplan.FnTransform,
+		Args: []chplan.Expr{
+			u,
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: unitNames},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: unitNanosLits},
+			&chplan.LitInt{V: 0},
+		},
+	}
+}
+
+// pow2_63 is `1<<63` as a UInt64 expression — one past
+// [math.MaxInt64], the magnitude bound Go's ParseDuration checks
+// against. It cannot be a [chplan.LitInt] (a signed field, so the
+// literal itself would overflow); built at runtime via bitShiftLeft
+// instead. A fresh instance every call — the emitter does not require
+// Expr sharing, and CH's own common-subexpression handling collapses
+// the repeats.
+func pow2_63() chplan.Expr {
+	return &chplan.FuncCall{
+		Fn: chplan.FnBitShiftLeft,
+		Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{&chplan.LitInt{V: 1}}},
+			&chplan.LitInt{V: 63},
+		},
+	}
+}
+
+// goDurationOverflows is a UInt8 predicate: Go's time.ParseDuration
+// would reject stripped with the overflow error (cerberus issue
+// #3686), computed by replaying its uint64 accumulator loop
+// (time/format.go's ParseDuration) component by component:
+//
+//   - a component's integer part times its unit is past 1<<63
+//     (`v > 1<<63/unit`, checked via integer division before the
+//     multiply, exactly as Go checks it);
+//   - adding the fractional nanoseconds pushes that component past
+//     1<<63 (`v > 1<<63` after the fraction add — Go reaches this
+//     line only when the component has a fraction, but the prior
+//     bound already keeps a fraction-less v at or under 1<<63, so
+//     checking it unconditionally agrees with Go either way);
+//   - the running sum over all components so far goes past 1<<63
+//     (`d > 1<<63` inside Go's loop).
+//
+// After the fold, Go applies one more check outside the loop: a
+// non-negative total must not exceed 1<<63-1 (MaxInt64) — a negative
+// total may legitimately reach -1<<63 (MinInt64), the one case where
+// the running sum hits 1<<63 exactly without erroring.
+//
+// CH's UInt64 arithmetic wraps mod 2^64 exactly as Go's uint64 does,
+// so mirroring Go's explicit bound checks — each evaluated before the
+// value it guards could wrap — reproduces its overflow behaviour
+// bit-for-bit rather than merely approximating it.
+func goDurationOverflows(raw, stripped chplan.Expr) chplan.Expr {
+	groups := &chplan.FuncCall{
+		Fn:   chplan.FnRegexExtractAllGroupsHorizontal,
+		Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationComponentRe}},
+	}
+	group := func(n int64) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnArrayElement, Args: []chplan.Expr{groups, &chplan.LitInt{V: n}}}
+	}
+
+	const (
+		accParam    = "__dur_ovf_acc"
+		digitIParam = "__dur_ovf_i"
+		digitFParam = "__dur_ovf_f"
+		digitUParam = "__dur_ovf_u"
+	)
+	acc := &chplan.BareIdent{Name: accParam}
+	accD := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{acc, &chplan.LitInt{V: 1}}}
+	accOvf := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{acc, &chplan.LitInt{V: 2}}}
+
+	whole := &chplan.FuncCall{Fn: chplan.FnToUInt64OrZero, Args: []chplan.Expr{&chplan.BareIdent{Name: digitIParam}}}
+	unit := unitNanosExpr(&chplan.BareIdent{Name: digitUParam})
+	// Go's own leadingInt (time/format.go) overflows — and errors —
+	// before ParseDuration ever reaches the unit multiply, once the
+	// integer-part digit run itself exceeds 1<<63. `toUInt64OrZero`
+	// has no such check: past UInt64's own range (20+ digits) it
+	// silently returns 0, which would hide the overflow from bound1
+	// below (0 times anything is never past the bound). 1<<63 is a
+	// 19-digit number, so any 20-plus-digit run is unconditionally
+	// past it regardless of unit — maxSafeIntegerDigits catches that
+	// case directly instead of trusting the (possibly zeroed) parse.
+	tooManyDigits := &chplan.Binary{
+		Op:    chplan.OpGt,
+		Left:  &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.BareIdent{Name: digitIParam}}},
+		Right: &chplan.LitInt{V: maxSafeIntegerDigits},
+	}
+	bound1 := &chplan.Binary{
+		Op:   chplan.OpOr,
+		Left: tooManyDigits,
+		Right: &chplan.Binary{
+			Op:    chplan.OpGt,
+			Left:  whole,
+			Right: &chplan.FuncCall{Fn: chplan.FnIntDiv, Args: []chplan.Expr{pow2_63(), unit}},
+		},
+	}
+	v := &chplan.Binary{Op: chplan.OpMul, Left: whole, Right: unit}
+
+	fraction := goLeadingFraction(&chplan.BareIdent{Name: digitFParam})
+	frac := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{fraction, &chplan.LitInt{V: 1}}}
+	scale := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{fraction, &chplan.LitInt{V: 2}}}
+	fracNanos := &chplan.FuncCall{
+		Fn: chplan.FnToUInt64,
+		Args: []chplan.Expr{&chplan.Binary{
+			Op:   chplan.OpMul,
+			Left: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{frac}},
+			Right: &chplan.Binary{
+				Op:    chplan.OpDiv,
+				Left:  &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{unit}},
+				Right: scale,
+			},
+		}},
+	}
+	v2 := &chplan.Binary{Op: chplan.OpAdd, Left: v, Right: fracNanos}
+	bound2 := &chplan.Binary{Op: chplan.OpGt, Left: v2, Right: pow2_63()}
+
+	newD := &chplan.Binary{Op: chplan.OpAdd, Left: accD, Right: v2}
+	bound3 := &chplan.Binary{Op: chplan.OpGt, Left: newD, Right: pow2_63()}
+
+	newOvf := &chplan.Binary{
+		Op:   chplan.OpOr,
+		Left: accOvf,
+		Right: &chplan.Binary{
+			Op: chplan.OpOr, Left: bound1,
+			Right: &chplan.Binary{Op: chplan.OpOr, Left: bound2, Right: bound3},
+		},
+	}
+	step := &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{newD}},
+		&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{newOvf}},
+	}}
+
+	folded := &chplan.FuncCall{
+		Fn: chplan.FnArrayFold,
+		Args: []chplan.Expr{
+			&chplan.Lambda{Params: []string{accParam, digitIParam, digitFParam, digitUParam}, Body: step},
+			group(1), group(2), group(3),
+			&chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{
+				&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{&chplan.LitInt{V: 0}}},
+				&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{&chplan.LitInt{V: 0}}},
+			}},
+		},
+	}
+	foldedD := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{folded, &chplan.LitInt{V: 1}}}
+	foldedOvf := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{folded, &chplan.LitInt{V: 2}}}
+
+	isNeg := &chplan.FuncCall{Fn: chplan.FnStartsWith, Args: []chplan.Expr{raw, &chplan.LitString{V: "-"}}}
+	finalBound := &chplan.Binary{
+		Op:   chplan.OpAnd,
+		Left: notExpr(isNeg),
+		Right: &chplan.Binary{
+			Op:    chplan.OpGt,
+			Left:  foldedD,
+			Right: &chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{&chplan.LitInt{V: math.MaxInt64}}},
+		},
+	}
+	return &chplan.Binary{
+		Op:    chplan.OpOr,
+		Left:  &chplan.Binary{Op: chplan.OpEq, Left: foldedOvf, Right: &chplan.LitInt{V: 1}},
+		Right: finalBound,
+	}
+}
+
 func goDurationSeconds(stripped chplan.Expr) chplan.Expr {
 	groups := &chplan.FuncCall{
 		Fn:   chplan.FnRegexExtractAllGroupsHorizontal,
@@ -354,23 +546,7 @@ func goDurationSeconds(stripped chplan.Expr) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnArrayElement, Args: []chplan.Expr{groups, &chplan.LitInt{V: n}}}
 	}
 
-	unitNames := make([]chplan.Expr, len(goDurationUnitNames))
-	for i, name := range goDurationUnitNames {
-		unitNames[i] = &chplan.LitString{V: name}
-	}
-	unitNanosLits := make([]chplan.Expr, len(goDurationUnitNanos))
-	for i, n := range goDurationUnitNanos {
-		unitNanosLits[i] = &chplan.LitInt{V: n}
-	}
-	unitNanos := &chplan.FuncCall{
-		Fn: chplan.FnTransform,
-		Args: []chplan.Expr{
-			&chplan.BareIdent{Name: "u"},
-			&chplan.FuncCall{Fn: chplan.FnArray, Args: unitNames},
-			&chplan.FuncCall{Fn: chplan.FnArray, Args: unitNanosLits},
-			&chplan.LitInt{V: 0},
-		},
-	}
+	unitNanos := unitNanosExpr(&chplan.BareIdent{Name: "u"})
 	whole := &chplan.Binary{
 		Op:    chplan.OpMul,
 		Left:  &chplan.FuncCall{Fn: chplan.FnToUInt64OrZero, Args: []chplan.Expr{&chplan.BareIdent{Name: "i"}}},

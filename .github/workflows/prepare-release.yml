@@ -75,7 +75,7 @@ jobs:
       # `just capture-release-perf-baseline` below — the same recipe
       # `just release-prep` runs, so the two release paths stage the same
       # artefact the same way.
-      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
+      - uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12  # v2.87.18
         with:
           tool: just@1.46.0
 

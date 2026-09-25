@@ -5,18 +5,22 @@
       "site": "internal/promql/date_fns.go:projectDateFnOverInner#2f3ea020",
       "message": "promql: unknown date function %s",
       "class": "internal",
-      "rationale": "lowerCall routes only the eight known value-reading date functions plus timestampFunctionName to lowerDateFn, the sole caller of projectDateFnOverInner. The timestamp spelling is excluded by this guard and takes the timestamp branch; every other dispatched name is implemented by dateFnExpr. A parseable wire query therefore cannot supply an unknown name here; the error is reachable only through a forged internal parser.Call in tests.",
+      "rationale": "lowerCall routes only the eight known value-reading date functions plus timestampFunctionName to lowerDateFn, and lowerSubqueryOverInstantTransform's own reorder path (lowerSubqueryIdentityDateReorder, #3692) gates on isDateComponentFn before ever calling projectDateFnOverInner directly. Both callers already restrict call.Func.Name to a name dateFnExpr recognises (or the timestamp spelling, excluded by this guard and taking the timestamp branch) before this function ever runs. A parseable wire query therefore cannot supply an unknown name here through either caller; the error is reachable only through a forged internal parser.Call in tests.",
       "evidence": {
         "guard": [
           "if c.Func.Name != timestampFunctionName \u0026\u0026 dateFnExpr(c.Func.Name, nil, nil) == nil"
         ],
         "callers": [
-          "lowerDateFn"
+          "lowerDateFn",
+          "lowerSubqueryIdentityDateReorder"
         ],
         "cited": [
           "dateFnExpr",
+          "isDateComponentFn",
           "lowerCall",
           "lowerDateFn",
+          "lowerSubqueryIdentityDateReorder",
+          "lowerSubqueryOverInstantTransform",
           "projectDateFnOverInner"
         ]
       }

@@ -106,7 +106,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
+      - uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12  # v2.87.18
         with:
           tool: just@1.46.0
       - name: test
@@ -143,7 +143,7 @@ jobs:
         with:
           also-warm: test/oracle/go.mod
 
-      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
+      - uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12  # v2.87.18
         with:
           tool: just@1.46.0
       - name: build + type-check the tagged lanes
@@ -708,7 +708,7 @@ jobs:
       # script; the suite pins the rendering and the verdict truth table.
       - name: Self-test the docs-only filter
         run: node --test .github/scripts/docs-only-filter.test.mjs
-      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908  # v2.87.15
+      - uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12  # v2.87.18
         with:
           tool: just@1.46.0
       # The four steps below are cerberus issue #3436's merge fence: the
