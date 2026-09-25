@@ -143,7 +143,8 @@ func seedAutoScopeClient(t *testing.T) (*chclienttest.Client, time.Time, time.Ti
 	seed.WriteString(autoScopeSeedTable)
 	for i, r := range rows {
 		ts := autoScopeWindowBase.Add(time.Duration(i) * time.Second).Format(tsFmt)
-		fmt.Fprintf(&seed,
+		fmt.Fprintf(
+			&seed,
 			"\nINSERT INTO otel_traces (Timestamp, SpanAttributes, ResourceAttributes) VALUES"+
 				" (toDateTime64('%s', 9), %s, %s);",
 			ts, r.spanMapSQL, r.resourceMapSQL,

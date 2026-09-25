@@ -1065,3 +1065,41 @@ func TestInsertSelect(t *testing.T) {
 		t.Errorf("unqualified Build() sql = %q; want %q", unqualified, wantUnqualified)
 	}
 }
+
+// TestDropView pins DropViewBuilder: IF EXISTS always present (the drop is
+// part of an idempotent re-provision), optional database qualifier, and a
+// backtick-quoted ON CLUSTER clause.
+func TestDropView(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		database string
+		view     string
+		cluster  string
+		want     string
+	}{
+		{
+			name: "unqualified",
+			view: "otel_metrics_sum_downsample_tier_mv",
+			want: "DROP VIEW IF EXISTS otel_metrics_sum_downsample_tier_mv",
+		},
+		{
+			name:     "database-qualified",
+			database: "otel",
+			view:     "otel_metrics_sum_downsample_tier_mv",
+			want:     "DROP VIEW IF EXISTS otel.otel_metrics_sum_downsample_tier_mv",
+		},
+		{
+			name:    "on-cluster-name-needing-quotes",
+			view:    "otel_metrics_sum_downsample_tier_mv",
+			cluster: "prod cluster",
+			want:    "DROP VIEW IF EXISTS otel_metrics_sum_downsample_tier_mv ON CLUSTER `prod cluster`",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DropView(tc.database, tc.view).OnCluster(tc.cluster).SQL()
+			if got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}

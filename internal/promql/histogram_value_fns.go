@@ -10,6 +10,18 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
+// isHistogramValueFn reports whether fn is a native-histogram value
+// accessor [lowerHistogramValueFn] lowers — the one list of their names,
+// which lowerCall dispatches on.
+func isHistogramValueFn(fn string) bool {
+	switch fn {
+	case "histogram_count", "histogram_sum", "histogram_avg",
+		"histogram_stddev", "histogram_stdvar", "histogram_fraction":
+		return true
+	}
+	return false
+}
+
 // This file lowers PromQL's native-histogram value functions —
 // histogram_count / histogram_sum / histogram_avg / histogram_stddev /
 // histogram_stdvar / histogram_fraction — against the OTel-CH
@@ -229,6 +241,9 @@ func lowerHistogramValueFnPerSample(
 	if pred := buildPredicate(vs.LabelMatchers, s); pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
 	}
+	// Each inner step is an instant selection, so a stale-marker row is
+	// carried as the encoded marker, which the enclosing subquery drops at
+	// the steps it wins (see [subqueryIdentityEncodesStaleMarker]).
 	return &chplan.Project{
 		Roles: metricRoles(s),
 		Input: input,
@@ -236,7 +251,7 @@ func lowerHistogramValueFnPerSample(
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-			{Expr: value, Alias: s.ValueColumn},
+			{Expr: staleMarkerValueExpr(value, histogramInstantStaleMode(s), s), Alias: s.ValueColumn},
 		},
 	}
 }
@@ -386,7 +401,7 @@ func lowerHistogramValueFnRange(
 	pred := buildPredicate(vs.LabelMatchers, s)
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 
-	agg := buildHistogramBucketFanout(
+	agg := buildLatestHistogramBucketFanout(
 		scan, pred, nil, windowFor(vs, instantLookback),
 		[]chplan.Expr{histogramIdentityExpr(s)},
 		[]string{s.AttributesColumn},

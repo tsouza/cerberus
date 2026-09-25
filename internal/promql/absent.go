@@ -316,9 +316,9 @@ func lowerAbsenceOverWindow(
 // marker is the latest sample: the instant selection then has no sample
 // for that series, so `absent()` fires at the marker, while any raw sample
 // earlier in the lookback would still read as present. It applies whenever
-// the schema can carry stale markers (a Flags column) and the selector
-// reads the scalar Value pipeline; ok is false otherwise, and the caller
-// falls back to [lowerAbsenceOverWindow], which is exact without markers.
+// the schema can carry stale markers (a Flags column); ok is false
+// otherwise, and the caller falls back to [lowerAbsenceOverWindow], which
+// is exact without markers.
 //
 // The AbsentOverTime window then only has to recognise the instant
 // selection's own rows: a single-anchor selection emits them at their
@@ -331,9 +331,6 @@ func lowerAbsenceOfLatestSample(vs *parser.VectorSelector, s schema.Metrics, ctx
 	if s.StaleMarkerFlagsColumn() == "" {
 		return nil, false, nil
 	}
-	if pinsExpHistogramMetric(metricNameFromMatchers(vs.LabelMatchers), s) {
-		return nil, false, nil
-	}
 	anchor, err := anchorFromSelector(vs, ctx)
 	if err != nil {
 		return nil, true, err
@@ -343,7 +340,17 @@ func lowerAbsenceOfLatestSample(vs *parser.VectorSelector, s schema.Metrics, ctx
 	if shape == gridBroadcast {
 		latestCtx.step = 0
 	}
-	inner, err := lowerVectorSelector(vs, s, latestCtx)
+	// A native-histogram selector has no scalar Value pipeline; its
+	// instant selection is the newest-sample-timestamp pick
+	// `timestamp(<selector>)` lowers, which drops a series whose newest
+	// sample is a stale marker and emits the same rows the scalar
+	// selection does: at the sample's own time in instant form, at the step
+	// anchor in range form.
+	lowerLatest := lowerVectorSelector
+	if pinsExpHistogramMetric(metricNameFromMatchers(vs.LabelMatchers), s) {
+		lowerLatest = lowerTimestampOverExpHistogramBareSelector
+	}
+	inner, err := lowerLatest(vs, s, latestCtx)
 	if err != nil {
 		return nil, true, err
 	}
@@ -429,8 +436,11 @@ func lowerAbsencePresenceSelector(vs *parser.VectorSelector, s schema.Metrics, c
 		return lowerVectorSelector(vs, s, ctx)
 	}
 
+	// Presence over a window is a range selection: a stale-marker row is
+	// not a sample. (With an established Flags column, instant absent()
+	// reads the instant selection instead — [lowerAbsenceOfLatestSample].)
 	var input chplan.Node = &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
-	if pred := buildPredicate(vs.LabelMatchers, s); pred != nil {
+	if pred := withHistogramRangeStaleDrop(buildPredicate(vs.LabelMatchers, s), s); pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
 	}
 	return &chplan.Project{

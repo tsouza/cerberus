@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/value"
 
 	"github.com/tsouza/cerberus/internal/testsql"
 	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
@@ -72,7 +73,7 @@ func readSeededNativeHistograms(
 	q := "SELECT MetricName, toJSONString(Attributes), " +
 		resourceAttributesProjection(seedCols) + ", " + serviceNameProjection(seedCols) + ", " +
 		"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols) + ", " +
-		strings.Join(nativeHistogramProjections(seedCols), ", ") +
+		strings.Join(nativeHistogramProjections(seedCols), ", ") + ", " + flagsProjection(seedCols) +
 		" FROM " + nativeHistogramTable + " ORDER BY MetricName, TimeUnix"
 	rows, err := db.Query(q)
 	if err != nil {
@@ -88,10 +89,11 @@ func readSeededNativeHistograms(
 		var count, sum, zeroCount float64
 		var scale, positiveOffset, negativeOffset int64
 		var positiveJSON, negativeJSON string
+		var flags uint32
 		if err := rows.Scan(
 			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis, &temporality,
 			&count, &sum, &scale, &zeroCount,
-			&positiveOffset, &positiveJSON, &negativeOffset, &negativeJSON,
+			&positiveOffset, &positiveJSON, &negativeOffset, &negativeJSON, &flags,
 		); err != nil {
 			return err
 		}
@@ -134,6 +136,15 @@ func readSeededNativeHistograms(
 		}
 		if !countDeclared {
 			h.Count = totalObservations(h)
+		}
+		if flags&otelNoRecordedValueFlag != 0 {
+			// A NoRecordedValue row is the stale marker the collector
+			// translated from a scrape: Prometheus stores a native
+			// histogram's stale marker as a histogram whose Sum carries the
+			// stale-marker NaN, and the float companions carry that NaN too.
+			stale := math.Float64frombits(value.StaleNaN)
+			h = &oracle.Histogram{Sum: stale}
+			count, sum = stale, stale
 		}
 
 		isInfoSecondArg := false

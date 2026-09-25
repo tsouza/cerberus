@@ -565,7 +565,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	schemaReady := setupSchema(ctx, logger, client, cfg.ClickHouse, applyCfg, cfg.AutoCreateSchema, cfg.AutoCreateDatabase)
+	schemaReady := setupSchema(ctx, logger, client, cfg.ClickHouse, applyCfg, cfg.Schema, cfg.AutoCreateSchema, cfg.AutoCreateDatabase)
 
 	// Boot-time requirements preflight (ON by default). It MUST run AFTER
 	// the schema-create step above — on a fresh DB cerberus has just
@@ -2015,6 +2015,7 @@ func setupSchema(
 	client *chclient.Client,
 	chCfg chclient.Config,
 	applyCfg ddl.Config,
+	metrics schema.Metrics,
 	autoCreateSchema, autoCreateDatabase bool,
 ) health.SchemaReadyFunc {
 	ready := new(atomic.Bool)
@@ -2066,10 +2067,21 @@ func setupSchema(
 		// family — see planHasTSGridNative). Stamped only when the tier is
 		// actually enabled, so a deployment that never opts in issues
 		// byte-identical DDL sessions to today.
-		if applyCfg.DownsampleTierEnabled {
+		cfg := applyCfg
+		if cfg.DownsampleTierEnabled {
 			ctx = chclient.WithTSGridSetting(ctx)
+			// The tier's views skip stale-marker rows under the same
+			// condition the read path recognises them: probed before this
+			// apply provisions any absent table (with the column).
+			established, err := preflight.StaleMarkerFlagsEstablishable(ctx, client, cfg.Database, metrics)
+			if err != nil {
+				return err
+			}
+			if established {
+				cfg.DownsampleTierFlagsColumn = metrics.FlagsColumn
+			}
 		}
-		return ddl.ApplyWithConfig(ctx, applyConn, applyCfg, ddl.All)
+		return ddl.ApplyWithConfig(ctx, applyConn, cfg, ddl.All)
 	}
 	if err := apply(ctx); err != nil {
 		logger.Warn(

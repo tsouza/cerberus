@@ -346,7 +346,7 @@ func wrapSubqueryIdentity(
 // ClickHouse reject the query outright (`toYear(fromUnixTimestamp64Nano(...))`
 // on a NaN operand raises `CANNOT_CONVERT_TYPE: Unexpected inf or nan to
 // integer conversion`), so this deliberately excludes them rather than
-// trade a stale answer for a 502.
+// trade a stale answer for a 502 (tracked by #3692).
 func subqueryIdentityValuePreserving(fn string) bool {
 	switch fn {
 	case fnLabelReplace, fnLabelJoin, "info",
@@ -715,10 +715,22 @@ func lowerSubqueryOverInstantTransform(
 	if err != nil {
 		return nil, err
 	}
-	if valuePreserving {
+	if rw, ok := windowed.(*chplan.RangeWindow); ok && valuePreserving {
+		boundStaleMarkerLayoutsToIdentity(rw)
+	}
+	if valuePreserving || subqueryIdentityEncodesStaleMarker(call.Func.Name) {
 		return dropStaleLatestSamples(windowed, s), nil
 	}
 	return windowed, nil
+}
+
+// subqueryIdentityEncodesStaleMarker reports whether an instantTransformFns
+// member's own subquery-inner arm writes the encoded stale marker as each
+// marker row's Value: the native-histogram value accessors, whose per-row
+// arm ([lowerHistogramValueFnPerSample]) reads the Flags column itself
+// rather than transforming an already-encoded Value.
+func subqueryIdentityEncodesStaleMarker(fn string) bool {
+	return isHistogramValueFn(fn)
 }
 
 // lowerSubqueryOverCall — `<range-vector-fn>(<inner>[<inner_range>])[<outer_range>:<step>]`.
@@ -1109,7 +1121,7 @@ func lowerSubqueryOverVectorSelector(
 		return nil, err
 	}
 
-	return dropStaleLatestSamples(&chplan.RangeWindow{
+	rw := &chplan.RangeWindow{
 		Input:           inner,
 		Identity:        true,
 		Range:           subqueryStalenessLookback,
@@ -1121,7 +1133,9 @@ func lowerSubqueryOverVectorSelector(
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, s), nil
+	}
+	boundStaleMarkerLayoutsToIdentity(rw)
+	return dropStaleLatestSamples(rw, s), nil
 }
 
 // lowerOuterRangeFnOverSubquery — `max_over_time(rate(m[5m])[1h:5m])`,
@@ -1927,6 +1941,9 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 		// arithmetic — chplan.ReanchorRange and the solver planner's grid
 		// prediction call the same method so all three stay consistent (#1464).
 		inStart, inEnd := v.InputWindow(start, end)
+		// A stale-marker bucket layout beneath this window reads the same
+		// widened input, one step earlier for the epoch-aligned grid.
+		rebindStaleMarkerLayouts(v.Input, staleLayoutWindowBound(v.TimestampColumn, inStart.Add(-v.Step), inEnd))
 		widenSubquerySpine(v.Input, inStart, inEnd)
 	case *chplan.RangeBucketFanout:
 		// Gated on OuterRange > 0 (already-set, not merely Step > 0): a

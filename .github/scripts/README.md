@@ -98,6 +98,17 @@ and `chart-kubeconform.mjs`'s image probe apply the same classification to
 commands rather than to a single ref. Everything hits the same quota bucket and
 fails the same way, so nothing re-derives the policy.
 
+The loop is written once, as a generator of steps (`docker` / `sleep` / output),
+with two drivers. `pullImageWithRetry` performs each step synchronously as it is
+yielded. `pullImageAsync` performs the same steps without blocking and holds the
+image's output; `pullImages(refs, …)` runs a pool of at most
+`MAX_CONCURRENT_PULLS` of them — one pull per vCPU of the GitHub-hosted runner,
+since each pull's layer downloads are already parallel and its extraction is
+not — emits each image's output as one contiguous block when that image
+finishes, and returns the images that failed and, under `stopOnFailure`, the
+ones never started. `pull-images.mjs` and `compose-pull-images.mjs` acquire
+their lists through the pool.
+
 `go-module-fetch.mjs` applies the same three-class classification one registry
 over, to the **Go module proxy**. `lib/registry.mjs`'s transport list already
 carried the Go-proxy signatures (`http2: stream error`, `INTERNAL_ERROR;
@@ -3429,6 +3440,37 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` when every leg passed, `1` on a failed leg, bad input, or a
     half-declared outer shard.
 
+- **`go-test-fanout.mjs`** — `chdb.yml`, the `probe` job, through `just
+  test-chdb`. Runs the `go test` invocation it is handed as arguments, with
+  each package in its `FANOUT` table (`internal/api/prom`) split across that
+  many concurrent processes: it resolves the package patterns with `go list`
+  under the invocation's own `-tags`, lists each split package's top-level
+  tests with `go test -json -list`, and hash-partitions them into `-run`
+  selectors with `lib/coverage-partition.mjs`. Every other package runs in one
+  ordinary `go test` process alongside. Each partition runs with `-json` and
+  fails unless exactly the tests its selector names passed, so a selector that
+  matched nothing cannot pass. libchdb executes one query at a time
+  per process, so a package's chDB suite is serial inside its own test binary
+  and its whole wall-clock counts against the one `-timeout`; separate
+  processes are the only parallelism it can get (#3674). Each process keeps
+  the invocation's own flags, including `-timeout`. Output is buffered per
+  process and printed in a group as soon as that process exits.
+  `go-test-fanout.test.mjs` is the `node --test` guard (`ci.yml`'s
+  `forbid-skip` job): every listed test lands in exactly one partition, a
+  partition that runs none of its tests fails the script, and the `test-chdb`
+  recipe routes through the script.
+  - Args: `go test [flags] <./-relative packages>`, with flags in any of
+    the `-name`, `--name`, `-test.name` spellings, `=value` or separate. The
+    script sets `-run`, `-list` and `-json` itself, so they are rejected.
+    `-skip` is rejected because the inventory would still list the skipped
+    tests, `-bench` and `-fuzz` because they run what the inventory does not
+    describe, and the output and profile flags (`-o`, `-outputdir`,
+    `-coverprofile`, `-cpuprofile`, `-memprofile`, `-blockprofile`,
+    `-mutexprofile`, `-trace`) because every process would write the same
+    file.
+  - Exit: `0` when every process passed; `1` on a failed process, a failed
+    listing, or an argv it cannot run faithfully.
+
 - **`roundtrip-promql-aggregate.mjs`** — `chdb.yml`, the `roundtrip-promql`
   job. Rolls the sharded `roundtrip-promql-shard` matrix (tsouza/cerberus#2629)
   up into the single `roundtrip (promql)` status check `release.yml`'s
@@ -3807,9 +3849,12 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   source of truth: `k3d image import` and testcontainers just know their refs.
   It exists so `_pull-retry` stops hand-rolling `docker pull` in a shell loop —
   a hand-rolled loop reaches Docker Hub directly, so it never consults the GHCR
-  mirror and spends the quota the mirror exists to stop spending. The first
-  failure ends the run: the lane cannot start without the image, and a second
-  pull into a spent quota only deepens the deficit for every concurrent job.
+  mirror and spends the quota the mirror exists to stop spending. The refs are
+  acquired through `pullImages`' bounded pool. The first failure stops the
+  pool from starting another pull (in-flight ones finish): the lane cannot
+  start without the image, and a further pull into a spent quota only deepens
+  the deficit for every concurrent job. The run then fails with one error
+  naming every failed ref and every ref left unstarted.
   - Args: the image refs to acquire.
   - Env: `IMAGE_PULL_BACKOFF_SECONDS` (optional; default `3`);
     `IMAGE_PULL_EXCLUDE` (optional; whitespace-separated `lib/image-globs.mjs`

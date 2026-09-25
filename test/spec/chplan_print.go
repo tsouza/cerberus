@@ -1235,6 +1235,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnCount:                            "FnCount",
 	chplan.FnCountEqual:                       "FnCountEqual",
 	chplan.FnGroupArray:                       "FnGroupArray",
+	chplan.FnGroupUniqArrayArray:              "FnGroupUniqArrayArray",
 	chplan.FnMax:                              "FnMax",
 	chplan.FnMin:                              "FnMin",
 	chplan.FnQuantile:                         "FnQuantile",

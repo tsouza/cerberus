@@ -43,6 +43,12 @@
 //   pullImageWithRetry(image, options)     acquire one image into the local
 //                                          daemon under that policy, from the
 //                                          GHCR mirror when there is one.
+//   pullImageAsync(image, options)         the same acquisition without
+//                                          blocking, its output held.
+//   pullImages(images, options)            acquire a list through a bounded
+//                                          pool of pullImageAsync.
+//   MAX_CONCURRENT_PULLS                   that pool's default size.
+//   presentLocally(image)                  is the image in the local daemon?
 //   buildBaseImageRef(image)               the ref a BUILD should resolve image
 //                                          from — the mirrored copy when this
 //                                          runner can read it, else upstream.
@@ -81,7 +87,9 @@
 // secret that is simply wrong, and neither is a reason to run a job in a
 // degraded mode.
 
+import { spawn } from 'node:child_process';
 import process from 'node:process';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { capture, error, log, notice } from './gh.mjs';
 import { isDockerHubRef, mirroredRef } from './mirror.mjs';
@@ -275,11 +283,34 @@ export function isTransientRegistryFailure(text) {
 // because a build's `FROM` resolution sits behind a much longer tail.
 const defaultPullBackoffStepSeconds = 3;
 
-function presentLocally(image) {
+// presentLocally — is `image` already in the local daemon? Exported so a
+// caller that skips an image it already holds (the compose pre-pull) asks the
+// same question the local-copy fallback below asks.
+export function presentLocally(image) {
   return capture('docker', ['image', 'inspect', image]).status === 0;
 }
 
-// acquireFromMirror — try the GHCR copy first and re-tag it to the ref the
+// THE POLICY AS STEPS. Every decision below — mirror first, mirror-only mode,
+// rate limit versus transport fault, the backoff, the local-copy fallback — is
+// written ONCE, as a generator that yields what it needs done and never does it
+// itself:
+//
+//   { op: 'docker', args }         run `docker <args>`; resume with
+//                                  { status, stdout, stderr } (`capture`'s shape).
+//   { op: 'sleep', seconds }       wait; resume with nothing.
+//   { op: 'log' | 'notice' | 'error', message }
+//   { op: 'stderr', text }         output, in the order the policy produced it.
+//
+// Two drivers run it. `pullImageWithRetry` performs each step synchronously as
+// it is yielded (spawnSync, a blocking sleep, output straight to the log),
+// which is what the single-image callers are: linear scripts with nothing to
+// overlap. `pullImages` performs the same steps asynchronously, so a bounded
+// pool of acquisitions overlaps — one image's backoff sleep is a timer, not a
+// blocked thread — and it holds each image's output until that image finishes.
+// The retry loop therefore exists exactly once, and neither driver can drift
+// from the other on a decision the module exists to make.
+
+// acquireFromMirrorSteps — try the GHCR copy first and re-tag it to the ref the
 // caller asked for.
 //
 // The re-tag is the whole point. What the caller wants is the image PRESENT in
@@ -295,7 +326,7 @@ function presentLocally(image) {
 // where it can be fixed — in `mirror-images.mjs` and the inventory test — not
 // here, where the only available response would be to fail a lane over an
 // image that is perfectly reachable upstream.
-function acquireFromMirror(image) {
+function* acquireFromMirrorSteps(image) {
   const mirror = mirroredRef(image);
   if (mirror === null) return false;
 
@@ -305,23 +336,25 @@ function acquireFromMirror(image) {
   // notice: it sends the next reader looking for a pull in the log.
   const next = mirrorOnly() ? 'and this job is mirror-only, so the acquisition fails' : 'falling back to Docker Hub';
 
-  log(`    docker pull ${mirror} (mirror of ${image})`);
-  const pull = capture('docker', ['pull', mirror]);
+  yield { op: 'log', message: `    docker pull ${mirror} (mirror of ${image})` };
+  const pull = yield { op: 'docker', args: ['pull', mirror] };
   if (pull.status !== 0) {
-    notice(
-      `${mirror} could not be pulled, ${next}. The mirror is stale or the ` +
+    yield {
+      op: 'notice',
+      message:
+        `${mirror} could not be pulled, ${next}. The mirror is stale or the ` +
         `package is not public; \`mirror-images.mjs\` is what fixes that.\n${pull.stderr.trim()}`,
-    );
+    };
     return false;
   }
 
-  const tag = capture('docker', ['tag', mirror, image]);
+  const tag = yield { op: 'docker', args: ['tag', mirror, image] };
   if (tag.status !== 0) {
-    notice(`pulled ${mirror} but could not tag it as ${image}, ${next}.\n${tag.stderr.trim()}`);
+    yield { op: 'notice', message: `pulled ${mirror} but could not tag it as ${image}, ${next}.\n${tag.stderr.trim()}` };
     return false;
   }
 
-  log(`    ${image} acquired from the mirror`);
+  yield { op: 'log', message: `    ${image} acquired from the mirror` };
   return true;
 }
 
@@ -386,10 +419,11 @@ export function buildBaseImageRef(image) {
   return mirror;
 }
 
-// pullImageWithRetry — acquire one image into the local daemon under the policy
-// above, and report every outcome in the shared vocabulary. This is the one
-// implementation: a caller that hand-rolls the loop is a call site that will
-// eventually diverge on the question the module exists to answer.
+// pullImageSteps — acquire one image into the local daemon under the policy
+// above, and report every outcome in the shared vocabulary, as steps for one of
+// the two drivers below. This is the one implementation: a caller that
+// hand-rolls the loop is a call site that will eventually diverge on the
+// question the module exists to answer.
 //
 // Options:
 //   backoffStepSeconds  linear step; attempt N sleeps N × this.
@@ -408,47 +442,54 @@ export function buildBaseImageRef(image) {
 // outcome that must not be available here.
 //
 // Returns true when the image is in the local daemon, false otherwise.
-export function pullImageWithRetry(image, options = {}) {
+function* pullImageSteps(image, options = {}) {
   const {
     backoffStepSeconds = defaultPullBackoffStepSeconds,
     acceptLocalCopy = false,
     consequence = '',
   } = options;
+  const presentLocallyStep = function* () {
+    return (yield { op: 'docker', args: ['image', 'inspect', image] }).status === 0;
+  };
 
-  if (acquireFromMirror(image)) return true;
+  if (yield* acquireFromMirrorSteps(image)) return true;
 
   if (mirrorOnly() && blockedByMirrorOnly(image)) {
     // Asked before the mode, exactly as it is inside the loop: a copy already
     // in the daemon satisfies this caller's postcondition no matter which
     // registry is reachable, and no pull is needed to honour it.
-    if (acceptLocalCopy && presentLocally(image)) {
-      notice(
-        `${image} could not be acquired from the mirror, but it is already in the local daemon — ` +
+    if (acceptLocalCopy && (yield* presentLocallyStep())) {
+      yield {
+        op: 'notice',
+        message:
+          `${image} could not be acquired from the mirror, but it is already in the local daemon — ` +
           'the caller accepts the local copy.',
-      );
+      };
       return true;
     }
-    error(mirrorOnlyDiagnosis(image, consequence));
+    yield { op: 'error', message: mirrorOnlyDiagnosis(image, consequence) };
     return false;
   }
 
   for (let attempt = 1; attempt <= registryAttempts; attempt++) {
-    log(`    docker pull ${image} (attempt ${attempt}/${registryAttempts})`);
-    const res = capture('docker', ['pull', image]);
+    yield { op: 'log', message: `    docker pull ${image} (attempt ${attempt}/${registryAttempts})` };
+    const res = yield { op: 'docker', args: ['pull', image] };
     if (res.status === 0) {
-      log(res.stdout.trim());
+      yield { op: 'log', message: res.stdout.trim() };
       return true;
     }
-    process.stderr.write(res.stderr);
+    yield { op: 'stderr', text: res.stderr };
 
     // A quota refusal is checked only after the local-copy fallback, because a
     // copy already in the daemon satisfies that caller's postcondition no
     // matter why the pull failed.
-    if (acceptLocalCopy && presentLocally(image)) {
-      notice(
-        `docker pull ${image} failed, but the image is already in the local daemon — ` +
+    if (acceptLocalCopy && (yield* presentLocallyStep())) {
+      yield {
+        op: 'notice',
+        message:
+          `docker pull ${image} failed, but the image is already in the local daemon — ` +
           'the caller accepts the local copy.',
-      );
+      };
       return true;
     }
 
@@ -456,17 +497,152 @@ export function pullImageWithRetry(image, options = {}) {
     // the window outlasts the budget, so the remaining attempts would only
     // deepen the deficit failing this job and every concurrent one.
     if (isRegistryRateLimit(res.stderr + res.stdout)) {
-      error(rateLimitDiagnosis(`docker pull ${image}`));
+      yield { op: 'error', message: rateLimitDiagnosis(`docker pull ${image}`) };
       return false;
     }
 
     if (attempt < registryAttempts) {
-      sleepSeconds(attempt * backoffStepSeconds);
+      yield { op: 'sleep', seconds: attempt * backoffStepSeconds };
     }
   }
 
   const absent = acceptLocalCopy ? ' and the image is absent from the local daemon' : '';
   const because = consequence === '' ? '.' : `, so ${consequence}`;
-  error(`docker pull ${image} failed ${registryAttempts} times on transport faults${absent}${because}`);
+  yield {
+    op: 'error',
+    message: `docker pull ${image} failed ${registryAttempts} times on transport faults${absent}${because}`,
+  };
   return false;
+}
+
+// emitStep — write one output step to the job log, in the shared vocabulary.
+function emitStep(step) {
+  if (step.op === 'log') log(step.message);
+  else if (step.op === 'notice') notice(step.message);
+  else if (step.op === 'error') error(step.message);
+  else if (step.op === 'stderr') process.stderr.write(step.text);
+}
+
+// pullImageWithRetry — the synchronous driver: acquire ONE image, performing
+// each step as the policy yields it. Returns true when the image is in the
+// local daemon, false otherwise.
+export function pullImageWithRetry(image, options = {}) {
+  const steps = pullImageSteps(image, options);
+  let next = steps.next();
+  while (!next.done) {
+    const step = next.value;
+    let reply;
+    if (step.op === 'docker') reply = capture('docker', step.args);
+    else if (step.op === 'sleep') sleepSeconds(step.seconds);
+    else emitStep(step);
+    next = steps.next(reply);
+  }
+  return next.value;
+}
+
+// dockerAsync — `capture('docker', args)` without blocking the event loop, with
+// the same result shape and the same spawn-failure mapping (status 127).
+function dockerAsync(args) {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const settle = (res) => {
+      if (!settled) {
+        settled = true;
+        resolve(res);
+      }
+    };
+    const child = spawn('docker', args, { env: process.env });
+    child.stdout.setEncoding('utf8').on('data', (d) => (stdout += d));
+    child.stderr.setEncoding('utf8').on('data', (d) => (stderr += d));
+    child.on('error', (err) => settle({ status: 127, stdout, stderr: String(err.message) }));
+    child.on('close', (code) => settle({ status: code === null ? 1 : code, stdout, stderr }));
+  });
+}
+
+// pullImageAsync — the asynchronous driver: acquire ONE image without blocking,
+// holding every output step instead of writing it. Resolves to
+// { acquired, output }, where `output` is the image's steps in order, for the
+// caller to emit as one contiguous block. `runDocker` (default: spawn the real
+// CLI) is the tests' seam for the daemon.
+export async function pullImageAsync(image, options = {}) {
+  const { runDocker = dockerAsync, ...policy } = options;
+  const output = [];
+  const steps = pullImageSteps(image, policy);
+  let next = steps.next();
+  while (!next.done) {
+    const step = next.value;
+    let reply;
+    if (step.op === 'docker') reply = await runDocker(step.args);
+    else if (step.op === 'sleep') await sleep(step.seconds * msPerSecond);
+    else output.push(step);
+    next = steps.next(reply);
+  }
+  return { acquired: next.value, output };
+}
+
+// How many acquisitions `pullImages` runs at once, derived from the runner the
+// longest list runs on: 15 ClickHouse images for `ch-server-safety`, on a
+// GitHub-hosted ubuntu-24.04 runner (4 vCPUs, one SSD), at 7–15 s per image
+// when pulled one at a time. A pull is two kinds of work. The download is
+// already parallel inside each pull — dockerd fetches up to three layers at
+// once (`max-concurrent-downloads`) — so 4 pulls are 12 layer streams, well
+// inside what GHCR serves one runner. The extraction is not: dockerd
+// decompresses and applies each layer on a single core, so one pull per vCPU
+// is the point past which extra pulls only time-slice the same four cores
+// while still multiplying the in-flight network and memory. Disk: the bytes
+// that land are the same whatever the order; concurrency adds only the
+// compressed layers of the pulls in flight, which dockerd deletes as each
+// layer is extracted.
+export const MAX_CONCURRENT_PULLS = 4;
+
+// pullImages — acquire a LIST of independent images through a pool of at most
+// `concurrency` acquisitions, each under the full per-image policy above.
+//
+// Output is never interleaved: each image's steps are held until that image
+// finishes and then emitted as one contiguous block, in completion order.
+//
+// Options (plus every `pullImageWithRetry` option, passed to each image):
+//   concurrency     pool size; default MAX_CONCURRENT_PULLS.
+//   stopOnFailure   once an image fails, start no further image (in-flight ones
+//                   finish). For callers whose lane cannot start on a partial
+//                   set: a further pull into a spent quota only deepens the
+//                   deficit for every concurrent job. Default false.
+//   pull            (image, options) => Promise<{ acquired, output }>; default
+//                   pullImageAsync. Injected by the tests.
+//   emit            writes one output step; default the job log.
+//
+// Resolves to { failed, skipped }: the images that could not be acquired, and
+// the images never started because an earlier one failed under stopOnFailure.
+export async function pullImages(images, options = {}) {
+  const {
+    concurrency = MAX_CONCURRENT_PULLS,
+    stopOnFailure = false,
+    pull = pullImageAsync,
+    emit = emitStep,
+    ...pullOptions
+  } = options;
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new RangeError(`pullImages: concurrency must be a positive integer, got ${concurrency}`);
+  }
+
+  const queue = [...images];
+  const failed = [];
+  let stopped = false;
+
+  async function worker() {
+    while (queue.length > 0 && !stopped) {
+      const image = queue.shift();
+      const { acquired, output } = await pull(image, pullOptions);
+      for (const step of output) emit(step);
+      if (!acquired) {
+        failed.push(image);
+        if (stopOnFailure) stopped = true;
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
+  return { failed, skipped: queue };
 }

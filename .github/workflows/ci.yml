@@ -1085,6 +1085,13 @@ jobs:
       - name: Assert the chDB round-trip legs are bounded and diagnosable
         run: node --test .github/scripts/chdb-roundtrip.test.mjs
 
+      # `just test-chdb` (the `probe` lane) runs its go test through this
+      # fan-out: the partitions of a split package must run every listed test
+      # exactly once, and every process must keep the recipe's own -timeout.
+      # Pure in-process test over the module plus a read of just/test.just.
+      - name: Assert the go test fan-out runs every test exactly once
+        run: node --test .github/scripts/go-test-fanout.test.mjs
+
       # `chdb-install` (just/chdb.just) delegates its platform-detection /
       # URL-construction to this module (CLAUDE.md invariant 15, #3094). The
       # asset-name mapping is the one part of it that used to be invisible to
@@ -1145,6 +1152,13 @@ jobs:
       # fails the lane minutes in. Cheap to pin here, expensive to learn there.
       - name: Assert the compose pre-pull fetches only fetchable images
         run: node --test .github/scripts/compose-pull-images.test.mjs
+
+      # The pooled image acquisition every `_pull-retry` lane uses: at most
+      # MAX_CONCURRENT_PULLS pulls in flight, one image's backoff never holding
+      # up another, each image's log lines emitted as one block, and every
+      # failure named in the aggregate before exit 1.
+      - name: Assert the image pull pool is bounded, non-blocking and non-interleaving
+        run: node --test .github/scripts/lib/registry.test.mjs
 
       # runTeed's argv handling — every image-building command in the tree runs
       # through it (see the module's own header). Pins that an argv element

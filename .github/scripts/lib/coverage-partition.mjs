@@ -1,6 +1,8 @@
-// Complete top-level Go test partitioning for instrumented coverage.
-// Every test/example/fuzz seed discovered by go test -json -list . belongs
-// to exactly one shard. No source-file parser, exclusion list or timing file.
+// Complete top-level Go test partitioning. Every test/example/fuzz seed
+// discovered by go test -json -list belongs to exactly one shard. No
+// source-file parser, exclusion list or timing file. Two consumers: the
+// instrumented coverage lane (coverage-chdb.mjs, which also uses the profile
+// receipt and merge helpers below) and go-test-fanout.mjs.
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -46,16 +48,16 @@ export function parseTestInventory(jsonLines) {
     if (tests.has(testKey(test))) throw new Error(`duplicate listed test: ${testKey(test)}`);
     tests.set(testKey(test), test);
   }
-  if (!tests.size) throw new Error('coverage inventory contains no tests');
+  if (!tests.size) throw new Error('test inventory contains no tests');
   return [...tests.values()].sort((a, b) => testKey(a).localeCompare(testKey(b), 'en'));
 }
 
 export function partitionTests(inventory, index, count = COVERAGE_SHARDS) {
-  if (!Number.isInteger(index) || index < 1 || index > count) throw new Error(`invalid coverage shard ${index}/${count}`);
+  if (!Number.isInteger(index) || index < 1 || index > count) throw new Error(`invalid test shard ${index}/${count}`);
   const keys = new Set();
   for (const entry of inventory) {
     if (typeof entry.package !== 'string' || !entry.package || !testName.test(entry.name) || keys.has(testKey(entry))) {
-      throw new Error('invalid or duplicate coverage inventory entry');
+      throw new Error('invalid or duplicate test inventory entry');
     }
     keys.add(testKey(entry));
   }
@@ -63,10 +65,10 @@ export function partitionTests(inventory, index, count = COVERAGE_SHARDS) {
     const hash = createHash('sha256').update(name).digest().readUInt32BE();
     return hash % count + 1 === index;
   });
-  if (!selected.length) throw new Error(`coverage shard ${index}/${count} is empty`);
+  if (!selected.length) throw new Error(`test shard ${index}/${count} is empty`);
   const names = [...new Set(selected.map(({ name }) => name))].sort();
   const pattern = testSelector(names);
-  if (Buffer.byteLength(pattern) > maxRunPatternBytes) throw new Error(`coverage test selector is ${Buffer.byteLength(pattern)} bytes for ${names.length} names, exceeding the argument budget; increase the complete shard count`);
+  if (Buffer.byteLength(pattern) > maxRunPatternBytes) throw new Error(`test selector is ${Buffer.byteLength(pattern)} bytes for ${names.length} names, exceeding the argument budget; increase the complete shard count`);
   return { index, count, inventory, selected, pattern };
 }
 
@@ -74,7 +76,7 @@ export function assertExecuted(plan, passed) {
   const expected = new Set(plan.selected.map(testKey));
   const missing = [...expected].filter((key) => !passed.has(key));
   const unexpected = [...passed].filter((key) => !expected.has(key));
-  if (missing.length || unexpected.length) throw new Error(`coverage execution mismatch: missing=${missing.join(',')} unexpected=${unexpected.join(',')}`);
+  if (missing.length || unexpected.length) throw new Error(`test execution mismatch: missing=${missing.join(',')} unexpected=${unexpected.join(',')}`);
 }
 
 export function writePartitionReceipt(cwd, plan, passed, revision) {

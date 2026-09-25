@@ -8,6 +8,7 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -133,4 +134,141 @@ func TestStaleMarkers_MetadataIgnoresFlags(t *testing.T) {
 	if strings.Contains(sql, "Flags") {
 		t.Errorf("metadata lowering must not read Flags:\n%s", sql)
 	}
+}
+
+// TestStaleMarkers_BucketLayoutIsTimeBounded pins the scan contract of the
+// `_bucket` stale-marker layout window: on every instant-selection shape
+// the window's input is filtered on the timestamp from both sides — beneath
+// the window, where ClickHouse can still prune on it — and the window
+// aggregate is the flat `groupUniqArrayArray`, never a per-row
+// `groupArray` of every array in the partition. For a range-mode subquery
+// the bound is the subquery's widened input window.
+func TestStaleMarkers_BucketLayoutIsTimeBounded(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	const step = time.Minute
+	cases := []struct {
+		name      string
+		query     string
+		rangeMode bool
+		// earliest is the latest the bound's lower edge may sit at: the
+		// earliest sample the consumer reads.
+		earliest time.Time
+		// literal: the bound spans the query range, so its edges are
+		// literal instants rather than anchor-relative.
+		literal bool
+	}{
+		{name: "instant", query: `http_duration_seconds_bucket`, earliest: end.Add(-instantLookback)},
+		{name: "instant le", query: `http_duration_seconds_bucket{le="1"}`, earliest: end.Add(-instantLookback)},
+		{name: "instant regex", query: `{__name__=~"http_duration_seconds_bucket"}`, earliest: end.Add(-instantLookback)},
+		{name: "range", query: `http_duration_seconds_bucket`, rangeMode: true, earliest: start.Add(-instantLookback), literal: true},
+		{name: "range at", query: `http_duration_seconds_bucket @ 1767225600`, rangeMode: true, earliest: start.Add(-instantLookback)},
+		{name: "instant subquery", query: `max_over_time(http_duration_seconds_bucket[10m:1m])`, earliest: end.Add(-10*time.Minute - subqueryStalenessLookback)},
+		{name: "range subquery", query: `max_over_time(http_duration_seconds_bucket[10m:1m])`, rangeMode: true, earliest: start.Add(-10*time.Minute - subqueryStalenessLookback), literal: true},
+		{name: "instant label_replace subquery", query: `max_over_time(label_replace(http_duration_seconds_bucket, "x", "y", "", "")[10m:1m])`, earliest: end.Add(-10*time.Minute - subqueryStalenessLookback)},
+		{name: "range label_replace subquery", query: `max_over_time(label_replace(http_duration_seconds_bucket, "x", "y", "", "")[10m:1m])`, rangeMode: true, earliest: start.Add(-10*time.Minute - subqueryStalenessLookback), literal: true},
+	}
+	s := schema.DefaultOTelMetrics()
+	s.FlagsColumnProbed = true
+	p := parser.NewParser(parser.Options{})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("parse %q: %v", tc.query, err)
+			}
+			var plan chplan.Node
+			if tc.rangeMode {
+				plan, err = LowerAtRange(context.Background(), expr, s, start, end, step)
+			} else {
+				plan, err = LowerAt(context.Background(), expr, s, end, end)
+			}
+			if err != nil {
+				t.Fatalf("lower %q: %v", tc.query, err)
+			}
+			layouts := 0
+			chplan.Walk(plan, func(n chplan.Node) bool {
+				proj, ok := n.(*chplan.Project)
+				if !ok {
+					return true
+				}
+				for _, pr := range proj.Projections {
+					chplan.InspectExpr(pr.Expr, func(e chplan.Expr) bool {
+						if w, ok := e.(*chplan.WindowExpr); ok && w.Fn != chplan.FnGroupUniqArrayArray {
+							t.Errorf("layout window aggregate is %s, want %s", w.Fn, chplan.FnGroupUniqArrayArray)
+						}
+						return true
+					})
+				}
+				bound, ok := staleMarkerLayoutBoundFilter(proj)
+				if !ok {
+					return true
+				}
+				layouts++
+				lower, upper := timestampBoundSides(bound.Predicate, s.TimestampColumn)
+				if !lower || !upper {
+					t.Errorf("layout input bound must bound %s from both sides (lower %v, upper %v): %#v",
+						s.TimestampColumn, lower, upper, bound.Predicate)
+				}
+				lo, ok := literalLowerBound(bound.Predicate)
+				switch {
+				case tc.literal && !ok:
+					t.Errorf("layout input bound must span the query range with literal edges: %#v", bound.Predicate)
+				case ok && lo.After(tc.earliest):
+					t.Errorf("layout input bound starts at %s, after the earliest sample read at %s", lo, tc.earliest)
+				}
+				return true
+			})
+			if layouts == 0 {
+				t.Fatalf("no time-bounded stale-marker layout in the plan of %q", tc.query)
+			}
+		})
+	}
+}
+
+// timestampBoundSides reports whether pred compares col against a lower
+// and an upper edge.
+func timestampBoundSides(pred chplan.Expr, col string) (lower, upper bool) {
+	chplan.InspectExpr(pred, func(e chplan.Expr) bool {
+		b, ok := e.(*chplan.Binary)
+		if !ok {
+			return true
+		}
+		if ref, ok := b.Left.(*chplan.ColumnRef); ok && ref.Name == col {
+			switch b.Op {
+			case chplan.OpGt, chplan.OpGe:
+				lower = true
+			case chplan.OpLe, chplan.OpLt:
+				upper = true
+			}
+		}
+		return true
+	})
+	return lower, upper
+}
+
+// literalLowerBound reads the lower edge of a literal layout bound
+// ([staleLayoutWindowBound]); ok is false for an anchor-relative bound.
+func literalLowerBound(pred chplan.Expr) (time.Time, bool) {
+	var lo time.Time
+	found := false
+	chplan.InspectExpr(pred, func(e chplan.Expr) bool {
+		b, ok := e.(*chplan.Binary)
+		if !ok || b.Op != chplan.OpGe {
+			return true
+		}
+		call, ok := b.Right.(*chplan.FuncCall)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		if lit, ok := call.Args[0].(*chplan.LitString); ok {
+			if parsed, err := time.Parse("2006-01-02 15:04:05.000000000", lit.V); err == nil {
+				lo, found = parsed, true
+			}
+		}
+		return true
+	})
+	return lo, found
 }

@@ -218,6 +218,7 @@ func expHistogramResetsWindowed(shape histogramAggShape, s schema.Metrics, ctx l
 	}
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
+	pred = withHistogramRangeStaleDrop(pred, s)
 
 	var input chplan.Node = scan
 	if pred != nil {
@@ -255,7 +256,7 @@ func lowerExpHistogramResetsRange(shape histogramAggShape, s schema.Metrics, ctx
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 
 	perSeries := expHistogramPairCountStage(
-		buildHistogramBucketFanout(
+		buildRangeHistogramBucketFanout(
 			scan, pred, nil, aggWindowFor(shape),
 			[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 			expHistogramPairCountAggs(shape.windowFn, s), s, ctx,

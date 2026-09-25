@@ -134,7 +134,7 @@ func lowerTsOfFirstLastOverExpHistogram(fn string, ms *parser.MatrixSelector, vs
 	case gridFanout:
 		scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 		pred := buildPredicate(vs.LabelMatchers, s)
-		fanout := buildHistogramBucketFanout(
+		fanout := buildRangeHistogramBucketFanout(
 			scan, pred, nil, windowFor(vs, ms.Range),
 			[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 			tsOfSampleTimestampAgg(fn, s), s, ctx,
@@ -175,6 +175,7 @@ func tsOfSampleTimestampSelected(fn string, ms *parser.MatrixSelector, vs *parse
 	pred := buildPredicate(vs.LabelMatchers, s)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, ms.Range))
+	pred = withHistogramRangeStaleDrop(pred, s)
 	var input chplan.Node = &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	if pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}

@@ -129,7 +129,7 @@ func lowerTimestampOverExpHistogramBareSelector(vs *parser.VectorSelector, s sch
 	case gridFanout:
 		scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 		pred := buildPredicate(vs.LabelMatchers, s)
-		fanout := buildHistogramBucketFanout(
+		fanout := buildLatestHistogramBucketFanout(
 			scan, pred, nil, windowFor(vs, instantLookback),
 			[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 			histogramSampleTimestampAgg(s), s, ctx,

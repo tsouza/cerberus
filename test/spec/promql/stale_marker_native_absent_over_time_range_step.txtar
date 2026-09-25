@@ -1,0 +1,131 @@
+# Seed: the native histogram `stale_exp_hist` is scraped every 30s. Series
+# job="a" is scraped until 23:59:00; its target then disappears and the
+# collector writes a NoRecordedValue data point (Flags = 1, empty bucket
+# arrays) at 23:59:30, and the target returns at 00:02:00 with its counters
+# continuing. Series job="b" is scraped throughout. Reference Prometheus holds
+# that data point as a native-histogram stale marker on job="a".
+#
+# A range selection never contains a stale marker, so absent_over_time fires
+# at every step whose 1m window holds only the marker or nothing.
+
+-- query.promql --
+absent_over_time(stale_exp_hist{job="a"}[1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64),
+    Flags UInt32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts, Flags) VALUES
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:56:00', 9), 4, 1.5, 0, 0, 0, [1, 2, 1], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:56:30', 9), 8, 3.0, 0, 0, 0, [2, 4, 2], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:57:00', 9), 12, 4.5, 0, 0, 0, [3, 6, 3], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:57:30', 9), 16, 6.0, 0, 0, 0, [4, 8, 4], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:58:00', 9), 20, 7.5, 0, 0, 0, [5, 10, 5], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:58:30', 9), 24, 9.0, 0, 0, 0, [6, 12, 6], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:59:00', 9), 28, 10.5, 0, 0, 0, [7, 14, 7], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 0, 0.0, 0, 0, 0, [], 0, [], 1),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 34, 13.5, 0, 0, 0, [8, 15, 11], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:02:30', 9), 40, 16.5, 0, 0, 0, [9, 16, 15], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:03:00', 9), 46, 19.5, 0, 0, 0, [10, 17, 19], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:03:30', 9), 52, 22.5, 0, 0, 0, [11, 18, 23], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:04:00', 9), 58, 25.5, 0, 0, 0, [12, 19, 27], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:04:30', 9), 64, 28.5, 0, 0, 0, [13, 20, 31], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:05:00', 9), 70, 31.5, 0, 0, 0, [14, 21, 35], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:56:00', 9), 5, 4.0, 0, 0, 0, [1, 1, 3], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:56:30', 9), 10, 8.0, 0, 0, 0, [2, 2, 6], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:57:00', 9), 15, 12.0, 0, 0, 0, [3, 3, 9], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:57:30', 9), 20, 16.0, 0, 0, 0, [4, 4, 12], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:58:00', 9), 25, 20.0, 0, 0, 0, [5, 5, 15], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:58:30', 9), 30, 24.0, 0, 0, 0, [6, 6, 18], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:59:00', 9), 35, 28.0, 0, 0, 0, [7, 7, 21], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:59:30', 9), 40, 32.0, 0, 0, 0, [8, 8, 24], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 45, 36.0, 0, 0, 0, [9, 9, 27], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:00:30', 9), 50, 40.0, 0, 0, 0, [10, 10, 30], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:01:00', 9), 55, 44.0, 0, 0, 0, [11, 11, 33], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:01:30', 9), 60, 48.0, 0, 0, 0, [12, 12, 36], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:02:00', 9), 65, 52.0, 0, 0, 0, [13, 13, 39], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:02:30', 9), 70, 56.0, 0, 0, 0, [14, 14, 42], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:03:00', 9), 75, 60.0, 0, 0, 0, [15, 15, 45], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:03:30', 9), 80, 64.0, 0, 0, 0, [16, 16, 48], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:04:00', 9), 85, 68.0, 0, 0, 0, [17, 17, 51], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:04:30', 9), 90, 72.0, 0, 0, 0, [18, 18, 54], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:05:00', 9), 95, 76.0, 0, 0, 0, [19, 19, 57], 0, [], 0);
+-- expected_rows --
+[
+  ["", {"job": "a"}, "2026-01-01T00:00:00Z", 1],
+  ["", {"job": "a"}, "2026-01-01T00:00:30Z", 1],
+  ["", {"job": "a"}, "2026-01-01T00:01:00Z", 1],
+  ["", {"job": "a"}, "2026-01-01T00:01:30Z", 1]
+]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "a"
+[3] float64 = 1
+[4] string = "stale_exp_hist"
+[5] string = "stale.exp.hist"
+[6] string = "stale.exp/hist"
+[7] string = "stale.exp_hist"
+[8] string = "stale/exp/hist"
+[9] string = "stale/exp_hist"
+[10] string = "stale_exp.hist"
+[11] string = "job"
+[12] string = ""
+[13] string = "job"
+[14] string = ""
+[15] string = ""
+[16] string = "a"
+[17] int64 = 1
+[18] int64 = 0
+-- args_optimized --
+[0] string = ""
+[1] string = "job"
+[2] string = "a"
+[3] float64 = 1
+[4] string = "stale_exp_hist"
+[5] string = "stale.exp.hist"
+[6] string = "stale.exp/hist"
+[7] string = "stale.exp_hist"
+[8] string = "stale/exp/hist"
+[9] string = "stale/exp_hist"
+[10] string = "stale_exp.hist"
+[11] string = "job"
+[12] string = ""
+[13] string = "job"
+[14] string = ""
+[15] string = ""
+[16] string = "a"
+[17] int64 = 1
+[18] int64 = 0
+-- chplan --
+AbsentOverTime range=1m0s step=30s ts=TimeUnix value=Value name=MetricName attrs=Attributes synth=[job="a"] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+  Project [TimeUnix AS TimeUnix]
+    Filter predicate=(((FnCoalesce(FnNullIf(Attributes["job"], ""), FnNullIf(ResourceAttributes["job"], ""), "") = "a") AND (MetricName IN ("stale_exp_hist", "stale.exp.hist", "stale.exp/hist", "stale.exp_hist", "stale/exp/hist", "stale/exp_hist", "stale_exp.hist"))) AND FnNot((FnBitAnd(Flags, 1) != 0)))
+      Scan(otel_metrics_exponential_histogram)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:aot;aot
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(0, 11))) AS `anchor_ts` FROM (SELECT 1)) WHERE anchor_ts GLOBAL NOT IN ((SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) - 1, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) - 1, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) + 59999999999, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) + 59999999999, toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT `TimeUnix` AS `TimeUnix` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND not((bitAnd(`Flags`, ?) != ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9))))
+-- sql_optimized --
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(0, 11))) AS `anchor_ts` FROM (SELECT 1)) WHERE anchor_ts GLOBAL NOT IN ((SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) - 1, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) - 1, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) + 59999999999, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) + 59999999999, toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT `TimeUnix` AS `TimeUnix` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `TimeUnix` FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND not((bitAnd(`Flags`, ?) != ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9))))

@@ -255,7 +255,7 @@ func expHistogramCountInstant(agg *parser.AggregateExpr, vs *parser.VectorSelect
 func lowerExpHistogramCountRange(agg *parser.AggregateExpr, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
-	perSeries := buildHistogramBucketFanout(
+	perSeries := buildLatestHistogramBucketFanout(
 		scan, pred, nil, windowFor(vs, instantLookback),
 		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 		expHistogramCountLatestAggs(s), s, ctx,
@@ -274,7 +274,7 @@ func lowerExpHistogramCountRange(agg *parser.AggregateExpr, vs *parser.VectorSel
 // the bucket ladders would put eight arrays into the emitted SELECT for a
 // query whose answer is one integer per group.
 func expHistogramCountLatestAggs(s schema.Metrics) []chplan.AggFunc {
-	return []chplan.AggFunc{latestArgMax(s.TimestampColumn, s)}
+	return histogramSampleTimestampAgg(s)
 }
 
 // expHistogramGroupCount is the across-SERIES stage: it counts the rows

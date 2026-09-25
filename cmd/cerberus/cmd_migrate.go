@@ -1288,6 +1288,9 @@ func writeSchema(w io.Writer, cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("build schema config: %w", err)
 	}
+	// The rendered schema provisions every metric table, each carrying the
+	// Flags column, so the tier's views read it.
+	ddlCfg.DownsampleTierFlagsColumn = cfg.Schema.FlagsColumn
 	stmts, err := ddl.RenderAll(ddlCfg, ddl.All)
 	if err != nil {
 		return fmt.Errorf("render schema: %w", err)
