@@ -224,7 +224,10 @@ func TestRegexShapes_GuardInvalidUTF8(t *testing.T) {
 		{"fn-extract", &chplan.FuncCall{Fn: chplan.FnRegexExtractFirst, Args: []chplan.Expr{v, &chplan.LitString{V: "a(.)"}}}, true, true},
 		{"fn-extract-dynamic", &chplan.FuncCall{Fn: chplan.FnRegexExtractFirst, Args: []chplan.Expr{v, &chplan.ColumnRef{Name: "p"}}}, false, false},
 		{"fn-extractAll", &chplan.FuncCall{Fn: chplan.FnRegexExtractAll, Args: []chplan.Expr{v, &chplan.LitString{V: "[^0-9]+"}}}, true, true},
-		{"fn-extractAll-nullable", &chplan.FuncCall{Fn: chplan.FnRegexExtractAll, Args: []chplan.Expr{v, &chplan.LitString{V: "[^0-9]*"}}}, true, false},
+		// A nullable pattern (`[^0-9]*`, matching the empty string) is no
+		// longer reachable here: rejectNullablePattern rejects every-match
+		// functions with a nullable pattern before SQL emission (#3726),
+		// so there is no invalid-UTF8 guard behavior left to assert for it.
 		{"fn-groups", &chplan.FuncCall{Fn: chplan.FnRegexExtractAllGroupsHorizontal, Args: []chplan.Expr{v, &chplan.LitString{V: "(.)(.)"}}}, true, true},
 		{"fn-replaceOne", &chplan.FuncCall{Fn: chplan.FnRegexReplaceFirst, Args: []chplan.Expr{v, &chplan.LitString{V: "[^a]"}, &chplan.LitString{V: "_"}}}, true, true},
 		{"fn-replaceAll-plain", &chplan.FuncCall{Fn: chplan.FnRegexReplaceAll, Args: []chplan.Expr{v, &chplan.LitString{V: "^[+-]"}, &chplan.LitString{V: ""}}}, false, false},

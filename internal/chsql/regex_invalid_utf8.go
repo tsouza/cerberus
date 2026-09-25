@@ -720,28 +720,28 @@ func nullable(pattern string) bool {
 	if err != nil {
 		return true
 	}
-	return matchesEmpty(re)
+	return astMatchesEmpty(re)
 }
 
-func matchesEmpty(re *syntax.Regexp) bool {
+func astMatchesEmpty(re *syntax.Regexp) bool {
 	switch re.Op {
 	case syntax.OpLiteral, syntax.OpCharClass, syntax.OpAnyChar, syntax.OpAnyCharNotNL, syntax.OpNoMatch:
 		return false
 	case syntax.OpStar, syntax.OpQuest:
 		return true
 	case syntax.OpRepeat:
-		return re.Min == 0 || matchesEmpty(re.Sub[0])
+		return re.Min == 0 || astMatchesEmpty(re.Sub[0])
 	case syntax.OpConcat:
 		for _, sub := range re.Sub {
-			if !matchesEmpty(sub) {
+			if !astMatchesEmpty(sub) {
 				return false
 			}
 		}
 		return true
 	case syntax.OpAlternate:
-		return slices.ContainsFunc(re.Sub, matchesEmpty)
+		return slices.ContainsFunc(re.Sub, astMatchesEmpty)
 	case syntax.OpCapture, syntax.OpPlus:
-		return matchesEmpty(re.Sub[0])
+		return astMatchesEmpty(re.Sub[0])
 	}
 	// Empty-width assertions and the empty match.
 	return true
