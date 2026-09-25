@@ -40,6 +40,9 @@ const (
 	// its source, and coverage-chdb.mjs's own header for the full account.
 	coverageChdbRecipe          = "coverage-chdb"
 	coverageChdbExecutionScript = ".github/scripts/coverage-chdb.mjs"
+	// goTestFanoutScript runs the go test invocation it is handed, with some
+	// packages split across concurrent processes; see taggedExecutable.
+	goTestFanoutScript = ".github/scripts/go-test-fanout.mjs"
 )
 
 type taggedTestSymbol struct {
@@ -1021,9 +1024,23 @@ func taggedExecutable(tokens []taggedShellToken) (int, string) {
 		if tokens[index].Dynamic {
 			return -1, ""
 		}
+		if text == "node" && taggedRunsGoTestFanout(tokens[index+1:]) {
+			// `node <go-test-fanout.mjs> go test ...` runs exactly the
+			// trailing go test invocation, split across processes, so the
+			// go test is the command's execution evidence.
+			return index + 2, "go"
+		}
 		return index, text
 	}
 	return -1, ""
+}
+
+// taggedRunsGoTestFanout reports whether args are go-test-fanout.mjs followed
+// by the go command it runs.
+func taggedRunsGoTestFanout(args []taggedShellToken) bool {
+	return len(args) >= 2 && !args[0].Dynamic && !args[1].Dynamic &&
+		filepath.ToSlash(strings.TrimPrefix(args[0].Text, "./")) == goTestFanoutScript &&
+		args[1].Text == "go"
 }
 
 func parseTaggedGoTestArgs(args []taggedShellToken) (taggedTestInvocation, error) {
@@ -2286,4 +2303,33 @@ func TestTaggedTestEnrollmentNegativeControls(t *testing.T) {
 			t.Fatal("coverage evidence survived removal of its summary join")
 		}
 	})
+}
+
+// TestTaggedStaticCommandsReadThroughGoTestFanout pins that the go test a
+// go-test-fanout.mjs invocation carries is read as that command's execution
+// evidence, and that no other node script gets the same treatment.
+func TestTaggedStaticCommandsReadThroughGoTestFanout(t *testing.T) {
+	t.Parallel()
+	commands, err := taggedStaticCommands("node .github/scripts/go-test-fanout.mjs go test -tags chdb ./internal/example/...\n" +
+		"node .github/scripts/other.mjs go test -tags chdb ./internal/example/...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("got %d commands, want 2", len(commands))
+	}
+	fanout := commands[0]
+	if fanout.Executable != "go" || len(fanout.Args) == 0 || fanout.Args[0].Text != "test" {
+		t.Fatalf("fan-out command read as %q %v, want go test", fanout.Executable, fanout.Args)
+	}
+	invocation, err := parseTaggedGoTestArgs(fanout.Args[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !invocation.Tags["chdb"] || len(invocation.Packages) != 1 || invocation.Packages[0] != "./internal/example/..." {
+		t.Fatalf("fan-out go test parsed as tags=%v packages=%v", invocation.Tags, invocation.Packages)
+	}
+	if other := commands[1]; other.Executable != "node" {
+		t.Fatalf("an arbitrary node script was read as %q", other.Executable)
+	}
 }

@@ -1072,6 +1072,13 @@ jobs:
       - name: Assert the chDB round-trip legs are bounded and diagnosable
         run: node --test .github/scripts/chdb-roundtrip.test.mjs
 
+      # `just test-chdb` (the `probe` lane) runs its go test through this
+      # fan-out: the partitions of a split package must run every listed test
+      # exactly once, and every process must keep the recipe's own -timeout.
+      # Pure in-process test over the module plus a read of just/test.just.
+      - name: Assert the go test fan-out runs every test exactly once
+        run: node --test .github/scripts/go-test-fanout.test.mjs
+
       # `chdb-install` (just/chdb.just) delegates its platform-detection /
       # URL-construction to this module (CLAUDE.md invariant 15, #3094). The
       # asset-name mapping is the one part of it that used to be invisible to
