@@ -56,7 +56,7 @@
 // itself runs only when this file is invoked as the program.
 
 import process from 'node:process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { capture, error, log, notice } from './lib/gh.mjs';
 
@@ -121,15 +121,23 @@ export function selectLintableCommits(baseSha, headSha, opts = {}) {
   return { lintable, skipped };
 }
 
+// COMMITLINT_CLI — the commitlint entry point installed from
+// package-lock.json by the `.github/actions/setup-commitlint`
+// composite action (or `npm ci` locally). Invoked
+// with `node` directly rather than through `npx`, so a job whose node_modules
+// came from the cache needs no npm on PATH at all.
+export const COMMITLINT_CLI = fileURLToPath(
+  new URL('../../node_modules/@commitlint/cli/cli.js', import.meta.url),
+);
+
 // defaultLintOne — lints a single commit message via the real commitlint
 // CLI, stdin mode (equivalent to `commitlint --edit` reading from a file: no
 // `--from`/`--to`, so commitlint's own range enumeration never runs — this
-// module IS the range enumeration now). `npx --no` refuses to fetch from the
-// registry, so this only succeeds when commitlint is already installed
-// (the workflow step installs it immediately before invoking this module).
+// module IS the range enumeration now). It never fetches from the registry:
+// it only succeeds when the pinned toolchain is already installed.
 export function defaultLintOne(message, opts = {}) {
   const config = opts.config ?? '.commitlintrc.json';
-  return capture('npx', ['--no', '--', 'commitlint', '--config', config, '--verbose'], {
+  return capture(process.execPath, [COMMITLINT_CLI, '--config', config, '--verbose'], {
     cwd: opts.cwd,
     input: message,
   });

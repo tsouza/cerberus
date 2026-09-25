@@ -117,3 +117,4 @@ test/e2e/playwright/playwright-report/
 # worktree against a value that is meaningless anywhere but the machine that
 # wrote it.
 .claude/scheduled_tasks.lock
+/node_modules/

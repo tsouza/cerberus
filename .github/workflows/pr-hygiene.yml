@@ -129,17 +129,20 @@ jobs:
       # pull_request only: a title exists only on that event. The merge_group
       # and push paths carry the same required context, and by the time a commit
       # reaches them its subject was already gated on the pull request.
-      - name: Set up Node for commitlint
+      #
+      # The toolchain comes from package-lock.json through a
+      # cache: a warm run downloads neither Node nor a single npm package, so
+      # this 5-minute job no longer spends its budget on an install.
+      - name: Set up commitlint
         if: github.event_name == 'pull_request'
-        uses: actions/setup-node@v7
-        with:
-          node-version: '20'
+        uses: ./.github/actions/setup-commitlint
 
       - name: Guard the squash-subject gate logic
         if: github.event_name == 'pull_request'
         run: |
           node --test .github/scripts/commitlint-pr-title.test.mjs
           node --test .github/scripts/dependabot-pr-title.test.mjs
+          node --test .github/scripts/commitlint-toolchain.test.mjs
 
       # PR_TITLE is attacker-controlled, so it is passed via env and read by the
       # script — never interpolated into a shell `run:` line, exactly as PR_BODY
@@ -153,9 +156,7 @@ jobs:
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          npm install --no-save @commitlint/cli@19 @commitlint/config-conventional@19
-          node .github/scripts/commitlint-pr-title.mjs
+        run: node .github/scripts/commitlint-pr-title.mjs
 
       # cerberus#2739: prepare-release.mjs generates CHANGELOG.md's new
       # `[vX.Y.Z]` section exactly ONCE, at release-PR-creation time. A commit

@@ -416,14 +416,16 @@ jobs:
         if: github.event_name == 'pull_request'
         run: node --test .github/scripts/commitlint-range.test.mjs
 
+      - name: Set up commitlint
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/setup-commitlint
+
       - name: commitlint
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          npm install --no-save @commitlint/cli@19 @commitlint/config-conventional@19
-          node .github/scripts/commitlint-range.mjs
+        run: node .github/scripts/commitlint-range.mjs
 
       # Markdown lint. This ran DavidAnson/markdownlint-cli2-action, which
       # bundles its own markdownlint-cli2 (v24.2.0 -> 0.23.2 -> markdownlint
