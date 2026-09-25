@@ -1141,6 +1141,10 @@ func (b *Builder) exprFunc(f *chplan.FuncCall) error {
 	if jsonFullMapFns[f.Fn] {
 		f = b.substituteJSONFullMapArgs(f)
 	}
+	if err := checkAllMatchesPattern(f); err != nil {
+		return err
+	}
+	f = withGoDefaultFlagsPattern(f)
 	name, render, err := resolveFn(f.Fn)
 	if err != nil {
 		return err

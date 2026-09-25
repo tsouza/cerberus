@@ -1127,6 +1127,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnRegexExtractFirst:                "FnRegexExtractFirst",
 	chplan.FnRegexExtractAll:                  "FnRegexExtractAll",
 	chplan.FnRegexExtractAllGroupsHorizontal:  "FnRegexExtractAllGroupsHorizontal",
+	chplan.FnRegexExtractGroup:                "FnRegexExtractGroup",
 	chplan.FnExtractKeyValuePairs:             "FnExtractKeyValuePairs",
 	chplan.FnIsValidJSON:                      "FnIsValidJSON",
 	chplan.FnJSONExtractKeysAndValuesRaw:      "FnJSONExtractKeysAndValuesRaw",

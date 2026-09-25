@@ -413,7 +413,7 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.No
 //
 //   - `| logfmt`  → extractKeyValuePairs(Body, '=', ' ', '"')
 //   - `| json`    → CAST(JSONExtractKeysAndValues(Body, 'String') AS Map(...))
-//   - `| regexp`  → map(<name>, extractAllGroupsHorizontal(Body, <pat>)[i][1], ...)
+//   - `| regexp`  → map(<name>, regexpExtract(Body, <pat>, i), ...)
 //
 // Downstream label filters resolve against this composite labels map.
 // Loki's documented contract is "parsed labels appended; on conflict
@@ -1877,12 +1877,13 @@ func jsonExtractStringExpr(s schema.Logs, path string) (chplan.Expr, error) {
 // regexpMergeLabels lowers a `| regexp "<pattern>"` stage to a label-map
 // merge. The pattern is compiled in Go so we can discover the
 // named-capture positions (Go's regexp/syntax matches RE2 — the same
-// engine CH uses for extractAllGroupsHorizontal). Each named capture
-// becomes a key in a `map(<name>, extractAllGroupsHorizontal(Body,
-// <pattern>)[<i>][1], ...)` literal that gets mapConcat'd onto the
-// running labels expression. The `[i][1]` indexing reaches into group
-// `i`'s array of matches and picks the first — Loki's regexp parser
-// records only the first match per group on each line. Each capture name
+// engine CH uses for regexpExtract). Each named capture becomes a key in
+// a `map(<name>, regexpExtract(Body, <pattern>, <i>), ...)` literal that
+// gets mapConcat'd onto the running labels expression. regexpExtract
+// reads group `i` of the leftmost-first match only — Loki's regexp parser
+// records only the first match per group on each line — so an every-match
+// function, which diverges from Go on a pattern that can match the empty
+// string, is never needed. Each capture name
 // goes through [mergeParsedFields], so one that collides with a stream
 // label lands under `<name>_extracted` and the stream label wins.
 func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.Expr, error) {
@@ -1912,30 +1913,22 @@ func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.
 	if len(named) == 0 {
 		return nil, fmt.Errorf("logql: `| regexp` pattern %q has no named captures", pattern)
 	}
-	groupsCall := func() *chplan.FuncCall {
-		return &chplan.FuncCall{
-			Fn: chplan.FnRegexExtractAllGroupsHorizontal,
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.BodyColumn},
-				&chplan.LitString{V: pattern},
-			},
-		}
-	}
 	fields := make([]parsedField, 0, len(named))
 	for _, g := range named {
 		fields = append(fields, parsedField{
 			name: g.name,
-			// extractAllGroupsHorizontal(...)[<group>][1] — group i,
-			// first match. CH 1-indexes both dimensions. Allocate a
-			// fresh FuncCall per named capture so the chplan tree
-			// stays free of shared sub-pointers an optimizer rule
-			// might rewrite in place.
-			value: &chplan.MapAccess{
-				Map: &chplan.MapAccess{
-					Map: groupsCall(),
-					Key: &chplan.LitInt{V: int64(g.index)},
+			// regexpExtract(Body, <pattern>, <group>) — group i of the
+			// first match, the one Loki's regexp parser records. A
+			// fresh FuncCall per named capture keeps the chplan tree
+			// free of shared sub-pointers an optimizer rule might
+			// rewrite in place.
+			value: &chplan.FuncCall{
+				Fn: chplan.FnRegexExtractGroup,
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: s.BodyColumn},
+					&chplan.LitString{V: pattern},
+					&chplan.LitInt{V: int64(g.index)},
 				},
-				Key: &chplan.LitInt{V: 1},
 			},
 		})
 	}

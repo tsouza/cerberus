@@ -184,8 +184,12 @@ func newBytesParse(raw chplan.Expr) bytesParse {
 			&chplan.FuncCall{
 				Fn: chplan.FnLower,
 				Args: []chplan.Expr{
+					// bytesNumberRe is anchored, so it matches once; the
+					// first-match replace is exact where an every-match one
+					// would meet the empty-match divergence (chsql's
+					// allMatchesFns).
 					&chplan.FuncCall{
-						Fn:   chplan.FnRegexReplaceAll,
+						Fn:   chplan.FnRegexReplaceFirst,
 						Args: []chplan.Expr{raw, &chplan.LitString{V: bytesNumberRe}, &chplan.LitString{V: ""}},
 					},
 				},
