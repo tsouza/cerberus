@@ -8,8 +8,8 @@
 // (internal/schema/ddl) and the rebuild / backfill INSERT ... SELECT
 // (internal/downsampletier).
 //
-// The seeded counter reads 10@00:01, 20@00:02, then a stale marker @00:03 —
-// its target disappeared. Folded as a sample, the marker becomes the bucket's
+// The seeded counter reads 10 at 00:01 and 20 at 00:02, then a stale marker
+// at 00:03 — its target disappeared. Folded as a sample, the marker becomes the bucket's
 // trailing sample and the trailing pair (20, 0) reads as a counter reset:
 // irate 0 and last_over_time 0. Excluded, the trailing pair is (10, 20):
 // irate 10/60 and last_over_time 20, which is what reference Prometheus
