@@ -10,6 +10,11 @@
 //     newly skips — everything else (an ordinary-PR push, an unresolved
 //     source PR, a maintenance-line hotfix push with no PR at all) still
 //     runs heavy, so the fail-safe default is "run it", never "skip it".
+//   - tsouza/cerberus#3708: a schedule event ALSO skips when told an
+//     overlapping push-to-main run already holds or is about to hold
+//     cerberus-heavy — the one exception to "schedule is unconditional" the
+//     other lib/run-heavy.mjs consumers keep. No overlap (including the
+//     null fail-safe default) leaves schedule heavy, unchanged.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -27,11 +32,30 @@ test('pull_request and merge_group are unchanged: release/*-headed runs heavy, e
   assert.equal(decide({ eventName: 'merge_group', headRef: '' }).runHeavy, false);
 });
 
-test('schedule and workflow_dispatch always run heavy, sourcePR or not', () => {
+test('schedule and workflow_dispatch run heavy by default, sourcePR or not', () => {
   for (const eventName of ['schedule', 'workflow_dispatch']) {
     assert.equal(decide({ eventName }).runHeavy, true, eventName);
     assert.equal(decide({ eventName, sourcePR: { number: 1, headRef: 'release/1.14.x' } }).runHeavy, true, eventName);
   }
+});
+
+test('tsouza/cerberus#3708: schedule yields ONLY when an overlapping push run is reported', () => {
+  const overlap = { runId: 4242, status: 'in_progress', headSha: 'deadbeef' };
+
+  const v = decide({ eventName: 'schedule', scheduleOverlap: overlap });
+  assert.equal(v.runHeavy, false);
+  assert.match(v.reason, /main-push run #4242/);
+  assert.match(v.reason, /in_progress/);
+  assert.match(v.reason, /cerberus-heavy/);
+
+  // No overlap reported (null, the fail-safe default) — unchanged, heavy.
+  assert.equal(decide({ eventName: 'schedule', scheduleOverlap: null }).runHeavy, true);
+  assert.equal(decide({ eventName: 'schedule' }).runHeavy, true);
+
+  // The override is schedule-only: a push or workflow_dispatch event must
+  // never consult scheduleOverlap, even if a caller passed one by mistake.
+  assert.equal(decide({ eventName: 'push', scheduleOverlap: overlap, sourcePR: null }).runHeavy, true);
+  assert.equal(decide({ eventName: 'workflow_dispatch', scheduleOverlap: overlap }).runHeavy, true);
 });
 
 test('push produced by a release/*-headed source PR is redundant — skips', () => {
