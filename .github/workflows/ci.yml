@@ -1646,7 +1646,15 @@ jobs:
           exit 1
       - uses: actions/checkout@v7
 
+      # `go list -deps` reads module metadata only — it never compiles
+      # anything, so it never touches GOCACHE. The shared setup-go cache
+      # bundles GOCACHE with GOMODCACHE and had grown to ~5GB, so restoring
+      # it here cost 10+ minutes for a job whose own work takes ~10 seconds.
+      # `cache: false` skips that restore/save; the wrapper's unconditional
+      # warm step still runs `go mod download`, which is all this job needs.
       - uses: ./.github/actions/setup-go
+        with:
+          cache: false
 
       - name: AGPL clean-build gate
         run: node .github/scripts/agpl-clean.mjs
