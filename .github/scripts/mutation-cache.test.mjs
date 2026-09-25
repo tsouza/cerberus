@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -273,6 +273,18 @@ test('the aggregator accepts runs and validated hits, and rejects anything unver
   assert.equal(validateProvenance(null, { phase: 'p1', threshold: 90 }) !== null, true);
 });
 
+// absent reports whether a path is gone by trying to read it, rather than a
+// stat followed by a later write to the same path.
+function absent(path) {
+  try {
+    readFileSync(path);
+    return false;
+  } catch (cause) {
+    if (cause.code === 'ENOENT') return true;
+    throw cause;
+  }
+}
+
 function cli(t, env) {
   const r = spawnSync(process.execPath, [join(here, 'mutation-cache.mjs'), 'check'], { env: { ...process.env, ...env }, encoding: 'utf8' });
   return r;
@@ -291,15 +303,15 @@ test('check mode: a valid entry is a hit that writes the report; a corrupt or mi
   let r = cli(t, env);
   assert.equal(r.status, 0, r.stdout);
   assert.match(readFileSync(env.GITHUB_OUTPUT, 'utf8'), /hit=false/);
-  assert.equal(existsSync(env.REPORT), false);
+  assert.ok(absent(env.REPORT));
 
   writeFileSync(env.ENTRY, '{corrupt');
   writeFileSync(env.GITHUB_OUTPUT, '');
   r = cli(t, env);
   assert.equal(r.status, 0, r.stdout);
   assert.match(readFileSync(env.GITHUB_OUTPUT, 'utf8'), /hit=false/);
-  assert.equal(existsSync(env.ENTRY), false, 'a corrupt entry is discarded');
-  assert.equal(existsSync(env.PROVENANCE), false);
+  assert.ok(absent(env.ENTRY), 'a corrupt entry is discarded');
+  assert.ok(absent(env.PROVENANCE));
 
   writeFileSync(env.ENTRY, canonicalJson(good()));
   writeFileSync(env.GITHUB_OUTPUT, '');
@@ -319,7 +331,7 @@ test('check mode: a valid entry is a hit that writes the report; a corrupt or mi
     r = cli(t, { ...env, MUTATION_CACHE: off });
     assert.equal(r.status, 0, r.stdout);
     assert.match(readFileSync(env.GITHUB_OUTPUT, 'utf8'), /hit=false/);
-    assert.equal(existsSync(env.REPORT), false);
-    assert.equal(existsSync(env.ENTRY), false);
+    assert.ok(absent(env.REPORT));
+    assert.ok(absent(env.ENTRY));
   }
 });
