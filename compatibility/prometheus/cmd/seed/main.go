@@ -12,7 +12,7 @@
 //     reproducible.
 //
 // Replaces the previous seed.sql + seed.sh shell pair. Invoked by
-// scripts/run-compatibility.sh against a docker-compose ClickHouse exposed
+// .github/scripts/run-prometheus-compatibility.mjs against a docker-compose ClickHouse exposed
 // on localhost:29000 (override via CERBERUS_CH_ADDR).
 //
 // The fixture covers the metrics enumerated in upstream
@@ -41,7 +41,7 @@ const anchor = "2026-05-11 00:00:00"
 
 // fixtureStepSeconds is the scrape interval every fixture series is written
 // at. fixtureSteps × fixtureStepSeconds must equal TESTER_RANGE in
-// scripts/run-compatibility.sh, or the tester's window runs off the fixture.
+// .github/scripts/run-prometheus-compatibility.mjs, or the tester's window runs off the fixture.
 const fixtureStepSeconds = 15
 
 // fixtureSteps is the number of samples per series. 240 × fixtureStepSeconds

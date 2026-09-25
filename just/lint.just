@@ -43,7 +43,7 @@ lint-actions:
 #
 # NOT everything `lint-md` reports is auto-fixable by `fmt-md`. MD060
 # (table-column-style) has no fixer in markdownlint at all — realign tables
-# with `python3 scripts/align-md-tables.py <file>...`, which lefthook runs as
+# with `node .github/scripts/align-md-tables.mjs <file>...`, which lefthook runs as
 # its own `md-table-align` pre-commit hook. `fmt-md` says so when MD060
 # survives the fix pass, rather than leaving a clean-looking run that still
 # fails `lint-md`.
@@ -52,7 +52,7 @@ lint-actions:
 lint-md:
     node .github/scripts/markdownlint-run.mjs
 
-# Auto-fix Markdown lint issues where possible (MD060 needs align-md-tables.py).
+# Auto-fix Markdown lint issues where possible (MD060 needs align-md-tables.mjs).
 fmt-md:
     node .github/scripts/markdownlint-run.mjs --fix
 

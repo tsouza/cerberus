@@ -13,7 +13,7 @@
 # asks compose for the resulting names rather than reconstructing them.
 #
 # The project-name suffix is empty in a primary checkout and in CI, and
-# per-worktree otherwise. See scripts/compose-project-suffix.sh.
+# per-worktree otherwise. See .github/scripts/compose-project-suffix.mjs.
 name: histbench-ab5${COMPOSE_PROJECT_SUFFIX:-}
 
 services:

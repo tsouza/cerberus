@@ -76,7 +76,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function main() {
   const reportDir = process.env.REPORT_DIR || `${ROOT_DIR}/reports`;
 
-  deriveComposeProjectSuffix(process.cwd());
+  deriveComposeProjectSuffix();
 
   const scratchDir = mkdtempSync(join(tmpdir(), 'cerberus-tempo-compat-'));
   registerComposeTeardown({ composeCwd: ROOT_DIR, scratchDir });

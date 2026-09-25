@@ -267,7 +267,7 @@ linters:
         linters:
           - lll
       # forbidigo fires ONLY inside internal/** — invert via `path-except`
-      # so every other path (cmd/, test/, compatibility/, scripts/, …) is
+      # so every other path (cmd/, test/, compatibility/, …) is
       # excluded. Previously the scope was just `internal/(traceql|api/tempo)/`;
       # widened to all of `internal/` as project-wide hygiene against the
       # parser-internal shim pattern retired in #148.

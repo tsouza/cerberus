@@ -441,6 +441,11 @@ jobs:
       - name: markdownlint self-test (engine pin + finding parser)
         run: node --test .github/scripts/markdownlint-run.test.mjs
 
+      - name: Markdown generator self-tests (table aligner + coverage renderer)
+        run: |
+          node --test .github/scripts/align-md-tables.test.mjs
+          node --test .github/scripts/gen-coverage.test.mjs
+
       - name: markdownlint
         run: node .github/scripts/markdownlint-run.mjs
 
@@ -1278,6 +1283,13 @@ jobs:
         run: node .github/scripts/repo-hygiene.mjs
         env:
           CHECK: root-allowlist
+      # Step logic is Node ESM in .github/scripts/ (CLAUDE.md invariant 15):
+      # no Python anywhere, and shell only beside the harness it serves
+      # (test/, bench/) or in .envrc.
+      - name: Reject Python / shell step logic
+        run: node .github/scripts/repo-hygiene.mjs
+        env:
+          CHECK: step-logic
       # docker/login-action has no retry input, so a login that loses one
       # handshake fails the job before it pulls anything — and a failed GHCR
       # login is SILENT at the point of use, because a mirror miss falls back

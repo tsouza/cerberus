@@ -29,7 +29,7 @@
 #   docker compose down -v
 
 # Empty suffix in a primary checkout (and in CI); a per-worktree one otherwise,
-# so two checkouts don't share one stack. See scripts/compose-project-suffix.sh.
+# so two checkouts don't share one stack. See .github/scripts/compose-project-suffix.mjs.
 name: cerberus-tempo-compatibility${COMPOSE_PROJECT_SUFFIX:-}
 
 services:

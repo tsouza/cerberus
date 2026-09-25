@@ -45,7 +45,7 @@ just ci                                               # lint + test + build
 ```
 
 Hooks are lightweight and layered: `pre-commit` runs `gofumpt -w` /
-`goimports -w` / `scripts/align-md-tables.py` / `markdownlint-cli2 --fix` on
+`goimports -w` / `.github/scripts/align-md-tables.mjs` / `markdownlint-cli2 --fix` on
 staged files (auto-fixes; restages), `commit-msg` runs `commitlint` so a
 malformed subject is caught locally instead of in CI, and `pre-push` runs the
 `forbid-skip` and `repo-hygiene` scans plus `actionlint` in about a second.
