@@ -23,26 +23,24 @@ INSERT INTO otel_logs (Body) VALUES
 [4] string = "level"
 [5] string = "level=(?P<level>\\w+)"
 [6] int64 = 1
-[7] int64 = 1
-[8] string = "level_extracted"
-[9] string = "level"
-[10] string = "level_extracted"
-[11] string = "level"
-[12] string = "level=(?P<level>\\w+)"
-[13] int64 = 1
-[14] int64 = 1
+[7] string = "level_extracted"
+[8] string = "level"
+[9] string = "level_extracted"
+[10] string = "level"
+[11] string = "level=(?P<level>\\w+)"
+[12] int64 = 1
+[13] string = "level_extracted"
+[14] string = "level_extracted"
 [15] string = "level_extracted"
-[16] string = "level_extracted"
-[17] string = "level_extracted"
-[18] string = "level.extracted"
-[19] string = "level.extracted"
-[20] string = "level/extracted"
-[21] string = "warn"
+[16] string = "level.extracted"
+[17] string = "level.extracted"
+[18] string = "level/extracted"
+[19] string = "warn"
 -- chplan --
-Filter predicate=((ResourceAttributes["level"] = "error") AND (FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "level"), "level_extracted", "level"), FnRegexExtractAllGroupsHorizontal(Body, "level=(?P<level>\\w+)")[1][1])), "level_extracted"), FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "level"), "level_extracted", "level"), FnRegexExtractAllGroupsHorizontal(Body, "level=(?P<level>\\w+)")[1][1]))["level_extracted"], FnIf(FnMapContainsKey(LogAttributes, "level_extracted"), LogAttributes["level_extracted"], FnIf(FnMapContainsKey(LogAttributes, "level.extracted"), LogAttributes["level.extracted"], LogAttributes["level/extracted"]))) = "warn"))
+Filter predicate=((ResourceAttributes["level"] = "error") AND (FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "level"), "level_extracted", "level"), FnRegexExtractGroup(Body, "level=(?P<level>\\w+)", 1))), "level_extracted"), FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "level"), "level_extracted", "level"), FnRegexExtractGroup(Body, "level=(?P<level>\\w+)", 1)))["level_extracted"], FnIf(FnMapContainsKey(LogAttributes, "level_extracted"), LogAttributes["level_extracted"], FnIf(FnMapContainsKey(LogAttributes, "level.extracted"), LogAttributes["level.extracted"], LogAttributes["level/extracted"]))) = "warn"))
   Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractAllGroupsHorizontal(`Body`, ?)[?][?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractAllGroupsHorizontal(`Body`, ?)[?][?]))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), regexpExtract(`Body`, ?, ?))), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), regexpExtract(`Body`, ?, ?)))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{level="error"} | regexp "level=(?P<level>\\w+)" | level_extracted="warn"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
@@ -54,21 +52,19 @@ detail: log query `{level="error"} | regexp "level=(?P<level>\\w+)" | level_extr
 [4] string = "level"
 [5] string = "level=(?P<level>\\w+)"
 [6] int64 = 1
-[7] int64 = 1
-[8] string = "level_extracted"
-[9] string = "level"
-[10] string = "level_extracted"
-[11] string = "level"
-[12] string = "level=(?P<level>\\w+)"
-[13] int64 = 1
-[14] int64 = 1
+[7] string = "level_extracted"
+[8] string = "level"
+[9] string = "level_extracted"
+[10] string = "level"
+[11] string = "level=(?P<level>\\w+)"
+[12] int64 = 1
+[13] string = "level_extracted"
+[14] string = "level_extracted"
 [15] string = "level_extracted"
-[16] string = "level_extracted"
-[17] string = "level_extracted"
-[18] string = "level.extracted"
-[19] string = "level.extracted"
-[20] string = "level/extracted"
-[21] string = "warn"
+[16] string = "level.extracted"
+[17] string = "level.extracted"
+[18] string = "level/extracted"
+[19] string = "warn"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -77,4 +73,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractAllGroupsHorizontal(`Body`, ?)[?][?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractAllGroupsHorizontal(`Body`, ?)[?][?]))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), regexpExtract(`Body`, ?, ?))), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), regexpExtract(`Body`, ?, ?)))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)

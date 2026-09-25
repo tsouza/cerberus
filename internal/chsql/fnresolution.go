@@ -105,6 +105,7 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnRegexExtractFirst:               {Name: "extract"},
 	chplan.FnRegexExtractAll:                 {Name: "extractAll"},
 	chplan.FnRegexExtractAllGroupsHorizontal: {Name: "extractAllGroupsHorizontal"},
+	chplan.FnRegexExtractGroup:               {Name: "regexpExtract"},
 	chplan.FnExtractKeyValuePairs:            {Name: "extractKeyValuePairs"},
 	chplan.FnIsValidJSON:                     {Name: "isValidJSON"},
 	chplan.FnJSONExtract:                     {Name: "JSONExtract"},
