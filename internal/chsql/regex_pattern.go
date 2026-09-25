@@ -3,6 +3,7 @@ package chsql
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"regexp/syntax"
 	"slices"
@@ -339,14 +340,18 @@ func matchesEmpty(pattern string) (bool, error) {
 
 // boundedProgIndex converts a [syntax.Prog] instruction index (documented
 // non-negative and less than instCount, the same bound reach's own seen[pc]
-// check relies on) to the uint32 [syntax.Inst] indexing expects. Routed
-// through a real range check rather than a bare conversion so gosec's G115
-// int->uint32 rule has something other than the cast itself to see —
-// unlike a #nosec comment (unused anywhere else in this tree), the checked
-// error path is real, not just silenced.
+// check relies on) to the uint32 [syntax.Inst] indexing expects. The
+// instCount bound alone doesn't satisfy gosec's G115 int->uint32 rule,
+// which checks the converted value against the target type's own range
+// rather than an application-level bound — mirroring clampU32
+// (internal/engine/engine.go) by also checking against math.MaxUint32
+// gives it that.
 func boundedProgIndex(n, instCount int) (uint32, error) {
 	if n < 0 || n >= instCount {
 		return 0, fmt.Errorf("regexp/syntax: program index %d out of range [0, %d)", n, instCount)
+	}
+	if n > math.MaxUint32 {
+		return 0, fmt.Errorf("regexp/syntax: program index %d exceeds uint32 range", n)
 	}
 	return uint32(n), nil
 }
