@@ -515,11 +515,29 @@ func caseHTTPDispatchesObservedFromQueryLog(ctx context.Context, t *testing.T, r
 	// The HTTP transport opens a connection by running its hello under the
 	// dispatch's own query_id and log_comment, so the log holds a second
 	// finished initiator row with the statement's identity that is not the
-	// statement: the row the reader must not take for it.
-	if hello := rig.a.uint64Of(ctx, t,
-		"SELECT count() FROM system.query_log WHERE type = 'QueryFinish' AND is_initial_query = 1 AND log_comment = ? AND query != ? AND query_id IN (?)",
-		single, shardQuery, slices.Collect(maps.Keys(singleStatement))); hello == 0 {
-		t.Fatalf("the first statement over a fresh HTTP connection logged no connection hello under its identity")
+	// statement: the row the reader must not take for it, and exactly the
+	// statement the reader excludes.
+	helloRows, err := rig.a.admin.Conn().Query(ctx,
+		"SELECT DISTINCT query FROM system.query_log WHERE type = 'QueryFinish' AND is_initial_query = 1 AND log_comment = ? AND query != ? AND query_id IN (?)",
+		single, shardQuery, slices.Collect(maps.Keys(singleStatement)))
+	if err != nil {
+		t.Fatalf("connection hello rows: %v", err)
+	}
+	var hellos []string
+	for helloRows.Next() {
+		var q string
+		if err := helloRows.Scan(&q); err != nil {
+			t.Fatalf("connection hello rows: scan: %v", err)
+		}
+		hellos = append(hellos, q)
+	}
+	if err := helloRows.Err(); err != nil {
+		t.Fatalf("connection hello rows: %v", err)
+	}
+	_ = helloRows.Close()
+	if len(hellos) != 1 || hellos[0] != chclient.HTTPConnectionHelloQuery {
+		t.Fatalf("other statements logged under the HTTP statement's identity: %q, want exactly the connection hello %q",
+			hellos, chclient.HTTPConnectionHelloQuery)
 	}
 
 	reconcile(ctx, t, rig.a.admin, tracker, false, repeatPolls)

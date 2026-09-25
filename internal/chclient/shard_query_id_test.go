@@ -5,8 +5,12 @@ import (
 	"testing"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/tsouza/cerberus/internal/actuals"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 func TestShardQueryID_RoundTrips(t *testing.T) {
@@ -119,4 +123,84 @@ func observationsOf(tracker *actuals.Tracker, shape string) int {
 		return 0
 	}
 	return report.Observations
+}
+
+// TestNew_WiresTheProtocolIntoTheTransportGate: the transport gate reads the
+// Config's protocol through Client construction, on the client and on every
+// per-head view of it. Native is the zero value, so only an HTTP config shows
+// the wiring.
+func TestNew_WiresTheProtocolIntoTheTransportGate(t *testing.T) {
+	for _, tc := range []struct {
+		protocol clickhouse.Protocol
+		want     bool
+	}{{clickhouse.Native, true}, {clickhouse.HTTP, false}} {
+		m, _ := newTestConnMetrics(t)
+		c := assembleClientFromConn(Config{Protocol: tc.protocol}, &execRecordingConn{}, m)
+		t.Cleanup(func() { _ = c.Close() })
+		if got := c.deliversProgressPackets(); got != tc.want {
+			t.Errorf("protocol %v: deliversProgressPackets = %v, want %v", tc.protocol, got, tc.want)
+		}
+		if got := c.ForHead(HeadProm).deliversProgressPackets(); got != tc.want {
+			t.Errorf("protocol %v, per-head view: deliversProgressPackets = %v, want %v", tc.protocol, got, tc.want)
+		}
+	}
+}
+
+// TestQueryContext_NoReadHistogramSampleWithoutProgressPackets: over HTTP a
+// dispatch's recorder never saw a packet, so a zero on the rows/bytes-read
+// histograms would be a measurement that never happened. Over the native
+// protocol the dispatch records its sample as before. Not parallel: it swaps
+// the global MeterProvider.
+func TestQueryContext_NoReadHistogramSampleWithoutProgressPackets(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	telemetry.Reset()
+	t.Cleanup(func() {
+		otel.SetMeterProvider(prev)
+		telemetry.Reset()
+	})
+
+	for _, tc := range []struct {
+		ql       string
+		protocol clickhouse.Protocol
+		want     uint64
+	}{
+		{ql: "transport-gate-native", protocol: clickhouse.Native, want: 1},
+		{ql: "transport-gate-http", protocol: clickhouse.HTTP, want: 0},
+	} {
+		c := &Client{protocol: tc.protocol}
+		ctx := c.queryContext(WithProgressFor(context.Background(), tc.ql))
+		flushProgress(ctx)
+		if got := rowsReadSamples(t, reader, tc.ql); got != tc.want {
+			t.Errorf("%v: %d rows-read histogram samples, want %d", tc.protocol, got, tc.want)
+		}
+	}
+}
+
+// rowsReadSamples is how many samples the rows-read histogram holds for ql.
+func rowsReadSamples(t *testing.T, reader *sdkmetric.ManualReader, ql string) uint64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	var n uint64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "cerberus_clickhouse_rows_read" {
+				continue
+			}
+			hist, ok := m.Data.(metricdata.Histogram[int64])
+			if !ok {
+				t.Fatalf("%s is %T, want an int64 histogram", m.Name, m.Data)
+			}
+			for _, dp := range hist.DataPoints {
+				if v, ok := dp.Attributes.Value(telemetry.AttrQL); ok && v.AsString() == ql {
+					n += dp.Count
+				}
+			}
+		}
+	}
+	return n
 }

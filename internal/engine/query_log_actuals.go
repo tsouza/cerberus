@@ -82,9 +82,10 @@ type QueryLogActualsReconciler struct {
 	interval time.Duration
 	lookback time.Duration
 	settle   time.Duration
-	// foldTTL is how long a routed request's partial shard fold outlives its
-	// earliest row (actuals.Config.QueryLogFoldTTL).
-	foldTTL time.Duration
+	// shardFoldHorizon is how far past a routed request's first shard row the
+	// cursor moves before the request's partial fold is dropped
+	// (actuals.Config.ShardFoldHorizon).
+	shardFoldHorizon time.Duration
 	// union reports whether the query_log_union feature is in force right
 	// now (the live chopt resolution). nil reads the local log only.
 	union  func() bool
@@ -112,11 +113,12 @@ func NewQueryLogActualsReconciler(client QueryLogQuerier, tracker *actuals.Track
 		tracker:  tracker,
 		interval: cfg.QueryLogPollInterval,
 		lookback: cfg.QueryLogLookback,
-		foldTTL:  cfg.QueryLogFoldTTL(),
 		settle:   cfg.QueryLogSettleDelay,
-		union:    union,
-		logger:   logger,
-		now:      time.Now,
+
+		shardFoldHorizon: cfg.ShardFoldHorizon(),
+		union:            union,
+		logger:           logger,
+		now:              time.Now,
 
 		shardFolds: make(map[shardFoldKey]*shardFold),
 	}
@@ -152,11 +154,10 @@ func (r *QueryLogActualsReconciler) Run(ctx context.Context) {
 // misconfiguration must only leave this ONE source degraded — logged when a
 // logger is wired, silently swallowed otherwise.
 func (r *QueryLogActualsReconciler) Poll(ctx context.Context) {
-	floor := r.now().Add(-r.lookback)
-	if r.cursor.EventTime.Before(floor) {
+	if floor := r.now().Add(-r.lookback); r.cursor.EventTime.Before(floor) {
 		r.cursor = chclient.QueryLogCursor{EventTime: floor}
 	}
-	r.evictShardFolds(r.now().Add(-r.foldTTL))
+	defer r.evictShardFolds()
 	union := r.union != nil && r.union()
 	for range queryLogActualsMaxPagesPerPoll {
 		rows, err := r.readPage(ctx, &union)
@@ -265,8 +266,9 @@ type shardFold struct {
 	// owned is whether the packet path claimed any shard statement: the
 	// dispatching process recorded the whole request from its connection.
 	owned bool
-	// oldest is the earliest event time among the rows folded in.
-	oldest time.Time
+	// first is the event time of the first row folded in. The reader reads
+	// rows in ascending event time, so no later row of the request is older.
+	first time.Time
 }
 
 // foldShardRow folds one shard row into its routed request and reports the
@@ -283,12 +285,13 @@ type shardFold struct {
 // re-dispatched under a fresh id — adds nothing. A request whose shards do
 // not all finish is never reported, exactly as the packet path's fold never
 // records a request some shard of which did not complete; its partial fold
-// is dropped once it ages out of the lookback (evictShardFolds).
+// is dropped once the cursor has passed every row it could still have
+// (evictShardFolds).
 func (r *QueryLogActualsReconciler) foldShardRow(shard chclient.ShardQueryIDParts, row chclient.QueryLogActualRow, actual actuals.Actual, owned bool) (*shardFold, bool) {
 	key := shardFoldKey{request: shard.Request, count: shard.Count}
 	fold, ok := r.shardFolds[key]
 	if !ok {
-		fold = &shardFold{shapeID: row.LogComment, shards: make(map[int]struct{}, shard.Count), oldest: row.EventTime}
+		fold = &shardFold{shapeID: row.LogComment, shards: make(map[int]struct{}, shard.Count), first: row.EventTime}
 		r.shardFolds[key] = fold
 	}
 	if _, seen := fold.shards[shard.Index]; seen {
@@ -297,9 +300,6 @@ func (r *QueryLogActualsReconciler) foldShardRow(shard chclient.ShardQueryIDPart
 	fold.shards[shard.Index] = struct{}{}
 	fold.total = fold.total.FoldShard(actual)
 	fold.owned = fold.owned || owned
-	if row.EventTime.Before(fold.oldest) {
-		fold.oldest = row.EventTime
-	}
 	if len(fold.shards) < shard.Count {
 		return nil, false
 	}
@@ -307,14 +307,18 @@ func (r *QueryLogActualsReconciler) foldShardRow(shard chclient.ShardQueryIDPart
 	return fold, true
 }
 
-// evictShardFolds drops every partial fold whose earliest row finished before
-// cutoff, which is foldTTL (actuals.Config.QueryLogFoldTTL) before now: the
-// request's missing shards finished within the query timeout of its dispatch,
-// and a row whose finish time has left the lookback is never read, so by then
-// every row the request will ever have has been read, and it never completes.
-func (r *QueryLogActualsReconciler) evictShardFolds(cutoff time.Time) {
+// evictShardFolds drops every partial fold the cursor has moved more than the
+// shard-fold horizon past: the request's shards all finished within that
+// horizon of its first row, and the cursor reads rows in ascending event time,
+// so every row the request will ever have has been read (or fell behind the
+// lookback unread) and the fold never completes. Keyed on the cursor, not on
+// the wall clock, so a fold survives however long the reader takes to reach
+// the request's last shard row — a skew between shards wider than the
+// lookback, or a reader behind by more pages than a poll reads. It runs after
+// a poll's reads, so a row read in this poll still completes its fold.
+func (r *QueryLogActualsReconciler) evictShardFolds() {
 	for key, fold := range r.shardFolds {
-		if fold.oldest.Before(cutoff) {
+		if r.cursor.EventTime.Sub(fold.first) > r.shardFoldHorizon {
 			delete(r.shardFolds, key)
 		}
 	}

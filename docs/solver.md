@@ -1059,10 +1059,10 @@ same shard appends `-<n>`), so the reconciler folds a request's K rows into one
 observation — rows and bytes summed, peak memory the maximum, the rule the
 packet path's own fold applies — and records it once all K are read. A second
 row for a shard adds nothing; a request with a shard that never finished is
-never recorded, and its partial fold is dropped once its earliest row is older
-than the lookback plus the query timeout (`CERBERUS_QUERY_TIMEOUT`) and a
-one-minute clock allowance — the last point at which a slower shard's row can
-still be read.
+never recorded, and its partial fold is dropped once the reader's cursor is
+more than `CERBERUS_SOLVER_TIMEOUT` plus a clock allowance past its first
+shard row — keyed on the cursor, so a fold survives shard skew wider than the
+lookback and a reader that fell behind.
 If the packet path claimed any of its shards, the request is not recorded.
 
 **Record selection.** One row per physical query: `type = 'QueryFinish'`,

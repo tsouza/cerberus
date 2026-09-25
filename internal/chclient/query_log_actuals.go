@@ -39,7 +39,7 @@ import (
 //     summarises all received and local values), so a child row is a
 //     fragment of work already accounted, never a query of its own.
 //   - query != the HTTP connection hello: clickhouse-go's HTTP transport
-//     opens a connection by running httpConnectionHelloQuery under the
+//     opens a connection by running HTTPConnectionHelloQuery under the
 //     context of the query that needed the connection, so the server logs it
 //     as an initiator row carrying that dispatch's query_id and log_comment
 //     and one row read. It is the driver's, not the dispatch's; left in, it
@@ -100,11 +100,12 @@ ORDER BY event_time_microseconds, hostname, query_id
 LIMIT 1 BY hostname, query_id
 LIMIT ?`
 
-// httpConnectionHelloQuery is the statement clickhouse-go's HTTP transport
+// HTTPConnectionHelloQuery is the statement clickhouse-go's HTTP transport
 // runs to open a connection (conn_http.go's queryHello), learning the server's
-// name, version, revision and timezone. test/querylog measures it in a real
-// server's log under a dispatch's query_id and log_comment.
-const httpConnectionHelloQuery = "SELECT displayName(), version(), revision(), timezone()"
+// name, version, revision and timezone. Exported so test/querylog can pin it
+// against the row a real server logs under a dispatch's query_id and
+// log_comment.
+const HTTPConnectionHelloQuery = "SELECT displayName(), version(), revision(), timezone()"
 
 // ErrQueryLogUnionRefused wraps a server's refusal of the system.all_query_log
 // read as not provisioned (isQueryLogUnionRefusal): the table is absent (the
@@ -176,20 +177,11 @@ func (c *Client) QueryLogActuals(ctx context.Context, req QueryLogActualsRequest
 	if req.Union {
 		sql = queryLogActualsUnionSQL
 	}
-	afterSeconds := req.After.EventTime.Unix()
 	ctx = c.queryContext(ctx)
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
 	defer span.End()
 	defer flushProgress(ctx)
-	rows, err := c.queryOpen(
-		ctx, sql,
-		req.ShapeIDPrefix,
-		httpConnectionHelloQuery,
-		afterSeconds, afterSeconds,
-		req.After.EventTime.UnixMicro(), req.After.Hostname, req.After.QueryID,
-		req.SettleDelay.Milliseconds(),
-		req.Limit,
-	)
+	rows, err := c.queryOpen(ctx, sql, queryLogActualsArgs(req)...)
 	c.br.record(ctx, err)
 	if err != nil {
 		if !req.Union && IsUnknownTable(err) {
@@ -216,6 +208,20 @@ func (c *Client) QueryLogActuals(ctx context.Context, req QueryLogActualsRequest
 		return nil, c.queryLogActualsErr(ctx, req.Union, err)
 	}
 	return out, nil
+}
+
+// queryLogActualsArgs binds req to the record-selection statement's
+// placeholders, in their order in the statement.
+func queryLogActualsArgs(req QueryLogActualsRequest) []any {
+	afterSeconds := req.After.EventTime.Unix()
+	return []any{
+		req.ShapeIDPrefix,
+		HTTPConnectionHelloQuery,
+		afterSeconds, afterSeconds,
+		req.After.EventTime.UnixMicro(), req.After.Hostname, req.After.QueryID,
+		req.SettleDelay.Milliseconds(),
+		req.Limit,
+	}
 }
 
 // Server error codes that mean system.all_query_log is not provisioned for

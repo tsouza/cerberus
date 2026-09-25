@@ -579,87 +579,161 @@ func TestQueryLogActualsReconciler_RedispatchedShardCountsOnce(t *testing.T) {
 
 // TestQueryLogActualsReconciler_IncompleteRoutedRequestIsNeverRecorded: a
 // request one of whose shards never finished leaves k-1 rows. They are never
-// recorded — k-1 fragments are not the query — and the partial fold is kept
-// until QueryLogFoldTTL after its earliest row and dropped after it, so it
-// holds no memory forever.
+// recorded — k-1 fragments are not the query — and the partial fold is
+// dropped once the cursor has moved past the shard-fold horizon, so it holds
+// no memory forever. Short of the horizon it is kept.
 func TestQueryLogActualsReconciler_IncompleteRoutedRequestIsNeverRecorded(t *testing.T) {
 	const (
 		shape = "cerb:agg;rw;routed-failed"
 		k     = 4
 	)
+	horizon := testActualsConfig().ShardFoldHorizon()
 	rows := routedRequestRows(shape, "trace-span-13", k, 100, testRowTime)
+	fake := &fakeQueryLog{local: sortedLog(rows[:k-1]...)}
 	tracker := actuals.NewTracker(testActualsConfig())
-	r := newTestReconciler(&fakeQueryLog{local: sortedLog(rows[:k-1]...)}, tracker, nil, nil)
+	r := newTestReconciler(fake, tracker, nil, nil)
 
 	r.Poll(context.Background())
 	if len(r.shardFolds) != 1 {
 		t.Fatalf("%d partial folds after reading %d of %d shard rows, want 1", len(r.shardFolds), k-1, k)
 	}
 
-	ttl := testActualsConfig().QueryLogFoldTTL()
-	atTTL := testRowTime.Add(ttl)
-	r.now = func() time.Time { return atTTL }
+	// Later traffic moves the cursor to just inside the horizon: kept.
+	within := chclient.QueryLogActualRow{Hostname: "ch-0", LogComment: "cerb:agg;rw;other", QueryID: "trace-span-14", ReadRows: 1, EventTime: testRowTime.Add(horizon)}
+	beyond := chclient.QueryLogActualRow{Hostname: "ch-0", LogComment: "cerb:agg;rw;other", QueryID: "trace-span-15", ReadRows: 1, EventTime: testRowTime.Add(horizon + time.Second)}
+	fake.mu.Lock()
+	fake.local = sortedLog(append(rows[:k-1:k-1], within)...)
+	fake.mu.Unlock()
 	r.Poll(context.Background())
 	if len(r.shardFolds) != 1 {
-		t.Fatalf("%d partial folds exactly QueryLogFoldTTL after the earliest row, want 1 (kept)", len(r.shardFolds))
+		t.Fatalf("%d partial folds with the cursor at the horizon, want the fold kept", len(r.shardFolds))
 	}
 
-	later := atTTL.Add(time.Nanosecond)
-	r.now = func() time.Time { return later }
+	fake.mu.Lock()
+	fake.local = sortedLog(append(rows[:k-1:k-1], within, beyond)...)
+	fake.mu.Unlock()
 	r.Poll(context.Background())
-
 	if report, ok := tracker.Snapshot(shape); ok {
 		t.Fatalf("recorded %+v from an incomplete routed request, want nothing", report)
 	}
 	if len(r.shardFolds) != 0 {
-		t.Fatalf("%d partial folds left once the request aged out of the lookback, want 0", len(r.shardFolds))
+		t.Fatalf("%d partial folds left once the cursor passed the horizon, want 0", len(r.shardFolds))
 	}
 }
 
-// TestQueryLogActualsReconciler_SlowRoutedRequestCompletesPastLookback: a
-// routed request whose shards run in waves can finish its last shard up to
-// the query timeout after its first. That last row becomes readable only after
-// the settle delay, by which time the first row can be older than the
-// lookback. The partial fold must survive until then, so the request is
-// recorded once, from all k rows, rather than dropped.
-func TestQueryLogActualsReconciler_SlowRoutedRequestCompletesPastLookback(t *testing.T) {
+// TestQueryLogActualsReconciler_ShardSkewWiderThanTheLookbackStillFolds: a
+// routed request's shards run in waves, so its last shard row can finish long
+// after its first — here further apart than the lookback less a poll and the
+// settle delay, which lets the wall-clock lookback floor pass the first row
+// before the last is readable. The fold is kept until the cursor has passed
+// the shard-fold horizon, so the request is still recorded once, whole.
+func TestQueryLogActualsReconciler_ShardSkewWiderThanTheLookbackStillFolds(t *testing.T) {
 	const (
-		shape        = "cerb:agg;rw;routed-slow"
-		k            = 3
-		rowsPerShard = 300
+		shape        = "cerb:agg;rw;routed-skewed"
+		rowsPerShard = 700
 	)
 	cfg := testActualsConfig()
-	cfg.MaxQueryDuration = 2 * time.Minute
-	rows := routedRequestRows(shape, "trace-span-14", k, rowsPerShard, testRowTime)
-	// The last shard finishes just inside the query timeout of the first.
-	rows[k-1].EventTime = testRowTime.Add(cfg.MaxQueryDuration - time.Second)
-	fake := &fakeQueryLog{local: sortedLog(rows[:k-1]...)}
+	cfg.MaxRoutedRequestDuration = 2 * time.Minute
+	skew := cfg.QueryLogLookback - cfg.QueryLogPollInterval - cfg.QueryLogSettleDelay + 5*time.Second
+	if skew >= cfg.ShardFoldHorizon() {
+		t.Fatalf("fixture: skew %s must be inside the shard-fold horizon %s", skew, cfg.ShardFoldHorizon())
+	}
+	base := testNow
+	first := chclient.QueryLogActualRow{Hostname: "ch-0", LogComment: shape, QueryID: chclient.ShardQueryID("trace-span-16", 0, 2), ReadRows: rowsPerShard, EventTime: base}
+	last := chclient.QueryLogActualRow{Hostname: "ch-1", LogComment: shape, QueryID: chclient.ShardQueryID("trace-span-16", 1, 2), ReadRows: rowsPerShard, EventTime: base.Add(skew)}
+	fake := &fakeQueryLog{local: sortedLog(first)}
 	tracker := actuals.NewTracker(cfg)
 	r := NewQueryLogActualsReconciler(fake, tracker, cfg, nil, nil)
-	r.now = func() time.Time { return testNow }
+	now := base.Add(cfg.QueryLogSettleDelay)
+	r.now = func() time.Time { return now }
 
 	r.Poll(context.Background())
-	if len(r.shardFolds) != 1 {
-		t.Fatalf("%d partial folds after reading %d of %d shard rows, want 1", len(r.shardFolds), k-1, k)
-	}
 
-	// The next poll that can read the last row: past its settle delay and one
-	// poll interval on, which puts the first row outside the lookback.
-	next := rows[k-1].EventTime.Add(cfg.QueryLogSettleDelay + cfg.QueryLogPollInterval)
-	if !testRowTime.Before(next.Add(-cfg.QueryLogLookback)) {
-		t.Fatalf("fixture: the first row (%v) is still inside the lookback at %v", testRowTime, next)
+	// The last shard row becomes readable a settle delay after it finished,
+	// and the poll that reads it comes up to a poll interval later; by then
+	// the lookback floor is past the first row.
+	now = base.Add(skew + cfg.QueryLogSettleDelay + cfg.QueryLogPollInterval)
+	if floor := now.Add(-cfg.QueryLogLookback); !floor.After(first.EventTime) {
+		t.Fatalf("fixture: lookback floor %s is not past the first shard row %s", floor, first.EventTime)
 	}
 	fake.mu.Lock()
-	fake.local = sortedLog(rows...)
+	fake.local = sortedLog(first, last)
 	fake.mu.Unlock()
-	r.now = func() time.Time { return next }
 	r.Poll(context.Background())
 
 	report, ok := tracker.Snapshot(shape)
-	if !ok || report.Observations != 1 || report.ActualEMARows != k*rowsPerShard {
-		t.Fatalf("%+v (ok=%v), want 1 observation of %d rows", report, ok, k*rowsPerShard)
+	if !ok || report.Observations != 1 || report.ActualEMARows != 2*rowsPerShard {
+		t.Fatalf("%+v (ok=%v), want 1 observation of %d rows", report, ok, 2*rowsPerShard)
 	}
-	if len(r.shardFolds) != 0 {
-		t.Fatalf("%d partial folds left after the request completed, want 0", len(r.shardFolds))
+}
+
+// TestQueryLogActualsReconciler_ReaderBehindThePageCapStillFolds: a reader
+// that fell behind reads at most a poll's pages at a time, so a request's
+// shard rows separated by a backlog are read polls apart while the wall clock
+// moves the lookback floor past the first. The fold survives until the
+// cursor, not the clock, has passed the horizon.
+func TestQueryLogActualsReconciler_ReaderBehindThePageCapStillFolds(t *testing.T) {
+	const (
+		shape        = "cerb:agg;rw;routed-backlog"
+		rowsPerShard = 900
+	)
+	cfg := testActualsConfig()
+	base := testNow
+	rows := []chclient.QueryLogActualRow{
+		{Hostname: "ch-0", LogComment: shape, QueryID: chclient.ShardQueryID("trace-span-17", 0, 2), ReadRows: rowsPerShard, EventTime: base},
+		{Hostname: "ch-0", LogComment: shape, QueryID: chclient.ShardQueryID("trace-span-17", 1, 2), ReadRows: rowsPerShard, EventTime: base.Add(20 * time.Second)},
+	}
+	// A backlog of one poll's worth of unrelated rows between the two shards.
+	backlog := queryLogActualsMaxPagesPerPoll * queryLogActualsBatchLimit
+	for i := range backlog {
+		rows = append(rows, chclient.QueryLogActualRow{Hostname: "ch-0", QueryID: fmt.Sprintf("backlog-%06d", i), EventTime: base.Add(10 * time.Second)})
+	}
+	fake := &fakeQueryLog{local: sortedLog(rows...)}
+	tracker := actuals.NewTracker(cfg)
+	r := NewQueryLogActualsReconciler(fake, tracker, cfg, nil, nil)
+	now := base.Add(time.Minute)
+	r.now = func() time.Time { return now }
+
+	r.Poll(context.Background())
+	if _, ok := tracker.Snapshot(shape); ok {
+		t.Fatal("fixture: the first poll already reached the last shard row; the backlog does not hold it back")
+	}
+
+	now = base.Add(cfg.QueryLogLookback + 5*time.Second)
+	if floor := now.Add(-cfg.QueryLogLookback); !floor.After(base) || !floor.Before(r.cursor.EventTime) {
+		t.Fatalf("fixture: lookback floor %s must be past the first shard row %s and short of the cursor %s", floor, base, r.cursor.EventTime)
+	}
+	r.Poll(context.Background())
+
+	report, ok := tracker.Snapshot(shape)
+	if !ok || report.Observations != 1 || report.ActualEMARows != 2*rowsPerShard {
+		t.Fatalf("%+v (ok=%v), want 1 observation of %d rows", report, ok, 2*rowsPerShard)
+	}
+}
+
+// TestQueryLogActualsReconciler_AnyClaimedShardOwnsTheRequest: when the
+// packet path claimed only some of a request's shards — the rest's marks
+// expired, or the request straddled a restart — the dispatching process has
+// the request's observation, so the fold records nothing whichever shard was
+// the claimed one.
+func TestQueryLogActualsReconciler_AnyClaimedShardOwnsTheRequest(t *testing.T) {
+	const k = 3
+	for claimed := range k {
+		t.Run(fmt.Sprintf("shard %d claimed", claimed), func(t *testing.T) {
+			shape := fmt.Sprintf("cerb:agg;rw;routed-mixed-%d", claimed)
+			rows := routedRequestRows(shape, "trace-span-18", k, 100, testRowTime)
+			tracker := actuals.NewTracker(testActualsConfig())
+			tracker.MarkPacketObserved(rows[claimed].QueryID)
+			r := newTestReconciler(&fakeQueryLog{local: sortedLog(rows...)}, tracker, nil, nil)
+
+			r.Poll(context.Background())
+
+			if report, ok := tracker.Snapshot(shape); ok {
+				t.Fatalf("recorded %+v for a request whose shard %d the packet path claimed, want nothing", report, claimed)
+			}
+			if len(r.shardFolds) != 0 {
+				t.Fatalf("%d partial folds left after the request completed, want 0", len(r.shardFolds))
+			}
+		})
 	}
 }

@@ -140,6 +140,15 @@ type Config struct {
 	// of its own. It extends the packet path's query-id marks (PacketMarkTTL)
 	// by the gap between a dispatch and its query-log row's finish time.
 	MaxQueryDuration time.Duration
+
+	// MaxRoutedRequestDuration is the longest a routed (route-B) request can
+	// run end to end — cmd/cerberus sets it from CERBERUS_SOLVER_TIMEOUT, which
+	// cancels every shard statement of a request still running at that point.
+	// Not an env knob of its own. A request's shard statements run in waves,
+	// so their query-log rows can finish up to this far apart; it sizes how
+	// long the query-log reader keeps a request's partial fold
+	// (ShardFoldHorizon).
+	MaxRoutedRequestDuration time.Duration
 }
 
 // Default tuning constants (this package's own calibration surface — no
@@ -215,14 +224,15 @@ func (c Config) PacketMarkTTL() time.Duration {
 	return c.QueryLogLookback + c.MaxQueryDuration + packetMarkClockAllowance
 }
 
-// QueryLogFoldTTL is how long the query-log reconciler keeps a routed
-// request's partial shard fold, counted from the finish time of the earliest
-// shard row it has read. Every shard finishes at most MaxQueryDuration after
-// the request's dispatch, which precedes that earliest finish, and a row stays
-// readable until its finish time leaves QueryLogLookback — the same window,
-// give or take the same clock allowance, that PacketMarkTTL holds a mark for.
-func (c Config) QueryLogFoldTTL() time.Duration {
-	return c.PacketMarkTTL()
+// ShardFoldHorizon is how far past a routed request's first shard row, in the
+// query log's event time, its last shard row can finish: the request runs
+// within MaxRoutedRequestDuration, give or take packetMarkClockAllowance for
+// the clock offset between the servers its shard statements ran on. Once the
+// query-log reader's cursor is past a partial fold's first row by more than
+// this, every row the request will ever have has been read, so the fold is
+// never going to complete.
+func (c Config) ShardFoldHorizon() time.Duration {
+	return c.MaxRoutedRequestDuration + packetMarkClockAllowance
 }
 
 // DefaultConfig returns the conservative library defaults. Enabled is false
@@ -270,6 +280,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxQueryDuration < 0 {
 		return fmt.Errorf("actuals: MaxQueryDuration must be >= 0, got %s", c.MaxQueryDuration)
+	}
+	if c.MaxRoutedRequestDuration < 0 {
+		return fmt.Errorf("actuals: MaxRoutedRequestDuration must be >= 0, got %s", c.MaxRoutedRequestDuration)
 	}
 	if c.QueryLogSettleDelay < 0 {
 		return fmt.Errorf("actuals: QueryLogSettleDelay must be >= 0, got %s", c.QueryLogSettleDelay)

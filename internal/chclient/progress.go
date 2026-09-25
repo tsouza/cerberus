@@ -21,8 +21,9 @@ import (
 // Rationale for going through clickhouse.WithProgress rather than the
 // older X-ClickHouse-Summary HTTP header: clickhouse-go/v2 uses the
 // native protocol by default, where Progress is a streamed packet not
-// an HTTP header. The progress callback is the only stable surface the
-// driver exposes that covers both the HTTP and native paths.
+// an HTTP header. Over its HTTP transport the driver never invokes the
+// callback, so a dispatch over HTTP records nothing here
+// (standDownProgressRecorder).
 //
 // Aggregation lives in a heap-allocated closure rather than a context
 // value because the driver invokes the callback off-goroutine from the
@@ -136,16 +137,17 @@ func WithActualsCapture(ctx context.Context, tracker *actuals.Tracker, shapeID s
 	return clickhouse.Context(ctx, clickhouse.WithProfileEvents(rec.onProfileEvents))
 }
 
-// disarmPacketActuals stands the packet path down for the dispatch ctx
-// carries: its progress recorder keeps feeding the rows/bytes histograms but
-// records no actuals observation and folds nothing into a routed request's
-// ShardActualsFold, which therefore never completes and records nothing.
-// Client.queryContext calls it for a transport that delivers no progress
-// packets (Client.deliversProgressPackets). A no-op when ctx has no recorder.
-func disarmPacketActuals(ctx context.Context) {
+// standDownProgressRecorder marks the recorder ctx carries as observing a
+// dispatch whose transport delivers no progress packets
+// (Client.deliversProgressPackets): its flush then records nothing — no
+// sample on the rows/bytes-read histograms, whose zero would be a
+// measurement that never happened, and no actuals observation, directly or
+// folded into a routed request's ShardActualsFold, which therefore never
+// completes and records nothing either. Client.queryContext calls it for
+// every dispatch over such a transport. A no-op when ctx has no recorder.
+func standDownProgressRecorder(ctx context.Context) {
 	if rec := recorderFromContext(ctx); rec != nil {
-		rec.tracker = nil
-		rec.shapeID = ""
+		rec.noPackets = true
 	}
 }
 
@@ -170,6 +172,10 @@ type progressRecorder struct {
 	peakMemory uint64
 	shapeID    string
 	tracker    *actuals.Tracker
+
+	// noPackets is set when the dispatch's transport delivers no progress
+	// packets (standDownProgressRecorder): flush then records nothing.
+	noPackets bool
 }
 
 // onProgress is the driver-facing callback. Each packet is an
@@ -236,7 +242,7 @@ func (r *progressRecorder) onProfileEvents(events []clickhouse.ProfileEvent) {
 // off), are byte-unchanged: they still call tracker.RecordActual here,
 // directly, exactly as before this issue.
 func (r *progressRecorder) flush() {
-	if r == nil {
+	if r == nil || r.noPackets {
 		return
 	}
 	telemetry.RecordClickHouseProgress(r.ctx, r.ql, r.rows, r.bytes)

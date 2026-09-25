@@ -1057,16 +1057,16 @@ func (c *Client) queryContext(ctx context.Context) context.Context {
 	// shard statements alike. Inert unless actuals capture is armed on ctx.
 	//
 	// A transport that streams no progress packets gives the packet path
-	// nothing to observe: it would record an observation of zero rows and zero
-	// memory, and its claim would make the poller refuse the query-log row
-	// that carries the real totals. There the packet path stands down for this
-	// dispatch — no claim, no observation — and the query log is its source.
-	if intent, ok := actualsIntentFromContext(ctx); ok {
-		if c.deliversProgressPackets() {
-			intent.tracker.MarkPacketObserved(queryID)
-		} else {
-			disarmPacketActuals(ctx)
-		}
+	// nothing to observe: it would record zero rows and zero bytes on the
+	// read histograms and an actuals observation of zero rows and zero memory,
+	// and its claim would make the poller refuse the query-log row that
+	// carries the real totals. There the recorder stands down for this
+	// dispatch — no claim, no histogram sample, no observation — and the query
+	// log is the actuals source.
+	if !c.deliversProgressPackets() {
+		standDownProgressRecorder(ctx)
+	} else if intent, ok := actualsIntentFromContext(ctx); ok {
+		intent.tracker.MarkPacketObserved(queryID)
 	}
 	ctx = hiddenDeadlineContext(ctx)
 	opts := make([]clickhouse.QueryOption, 0, 3)
