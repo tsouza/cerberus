@@ -1171,7 +1171,12 @@ threshold step; a miss runs gremlins and stores the verdict, failing ones
 included. A verdict that a different runner speed could flip through its
 timed-out mutants is not stored. Every leg uploads a provenance record, and the
 `mutation` aggregator re-validates each cache hit's entry against its key and
-the phase's threshold; a missing or unverifiable record fails the check.
+the phase's threshold; a missing or unverifiable record fails the check. The
+cache is read and written on pull requests only, where `actions/cache` scopes
+each entry to the PR that wrote it. Main pushes, the nightly, dispatches and
+merge groups always run gremlins, and the aggregator refuses a cache record
+there. Setting the repository variable `MUTATION_CACHE_DISABLED` to `true`
+turns the cache off on pull requests as well.
 `.github/scripts/lib/mutation-cache.mjs` states the key classes and the
 validation rules.
 
