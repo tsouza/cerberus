@@ -360,14 +360,17 @@ spec-chdb:
 # `roundtrip-promql-shard` (chdb.yml) already covers this package, but only
 # on a `run_heavy` push/release run, so a regression like #3699's three
 # TestMixedSetOpOr_Nested* failures ran on no CI lane an ordinary PR
-# triggers. Bumped the shared -timeout from 10m to 20m for it: at 1110
-# top-level tests it is far larger than the packages this recipe already
-# lists, and FANOUT splits it six ways rather than raising the timeout
-# further.
+# triggers. FANOUT splits it 4 ways — matching internal/api/prom's
+# concurrency, the one level actually proven to fit the runner's core
+# count — rather than more shards, which only adds CPU contention past
+# that ceiling (see FANOUT's own comment in go-test-fanout.mjs). Bumped
+# the shared -timeout from 10m to 40m for it: at 1110 top-level tests, run
+# 4-way rather than the 15-way split that made timeouts worse, it needs a
+# real wall-clock budget increase, not another concurrency bump.
 
 # Run the chdb-tagged handler, emitter, optimizer, solver, corpus and promql lowering lanes. Needs libchdb.so.
 test-chdb:
-    node .github/scripts/go-test-fanout.mjs go test -timeout 20m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/optimizer/... ./internal/promql/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
+    node .github/scripts/go-test-fanout.mjs go test -timeout 40m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/optimizer/... ./internal/promql/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle) for all three
 # query heads. The synthetic composite tag activates the LogQL live runner.

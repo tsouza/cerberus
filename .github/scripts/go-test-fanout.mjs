@@ -60,17 +60,25 @@ import { assertExecuted, parseTestInventory, partitionTests, testKey } from './l
  * separately) at past 23 minutes unpartitioned. Enrolled here by #3699,
  * whose three TestMixedSetOpOr_Nested* regressions had run on no CI lane
  * at all — `roundtrip-promql-shard` covers this package too, but only on
- * a `run_heavy` push/release run, never an ordinary PR. A first 6-way split
- * still hit the recipe's 20m per-process timeout in CI (1117 top-level
- * tests, ~186/shard): internal/api/prom's known-working 4-way split carries
- * only 430 tests (~107/shard), so 15-way — ~75/shard, below that ratio with
- * margin for promql's chDB round-trips being heavier per test — is a safer
- * upper bound. Still not a measurement; retune once a real CI run reports
- * its per-process times.
+ * a `run_heavy` push/release run, never an ordinary PR.
+ *
+ * A chDB test process serializes every query through one embedded
+ * ClickHouse session, so wall time drops only as far as concurrent
+ * processes actually get concurrent CPU — past the runner's core count,
+ * more shards means more processes contending for the same cores, not more
+ * throughput. A first 6-way split hit the recipe's 20m per-process timeout
+ * (1117 tests, ~186/shard); widening to 15-way made it WORSE, not better —
+ * several shards still timed out at the same 20m ceiling, evidence of
+ * contention rather than raw per-shard test count. internal/api/prom's
+ * 4-way split is the one concurrency level actually proven to fit this
+ * runner (430 tests, ~107/shard, passes within 10m), so promql matches
+ * that same concurrency and instead gets a much larger timeout budget for
+ * its ~2.6x larger test count. Still not a measurement; retune once a real
+ * CI run reports its per-process times.
  */
 export const FANOUT = {
   'github.com/tsouza/cerberus/internal/api/prom': 4,
-  'github.com/tsouza/cerberus/internal/promql': 15,
+  'github.com/tsouza/cerberus/internal/promql': 4,
 };
 
 /**
