@@ -62,7 +62,27 @@ test('the action restores node_modules keyed on the lockfile and installs with n
   assert.match(action, /npm ci --no-audit/);
   assert.doesNotMatch(action, /npm install/);
   const skips = action.match(/if: steps\.cache\.outputs\.cache-hit != 'true'/g) ?? [];
-  assert.equal(skips.length, 2, 'both the Node download and the install must be skipped on a cache hit');
+  assert.equal(skips.length, 1, 'only the package install must be skipped on a cache hit');
+});
+
+test('Node itself is set up unconditionally, even on a cache hit', () => {
+  // These self-hosted runner pods are ephemeral and do not ship Node
+  // preinstalled: gating setup-node on the SAME cache-hit condition as
+  // npm ci leaves npm/node off PATH entirely whenever node_modules is
+  // restored from cache, which is every run after the first.
+  const action = readFileSync(join(ROOT, ACTION, 'action.yml'), 'utf8');
+  const setupNode = action.indexOf('uses: actions/setup-node@');
+  assert.ok(setupNode >= 0, 'setup-commitlint must set up Node');
+  const precedingLines = action.slice(0, setupNode).split('\n');
+  const stepStart = precedingLines.lastIndexOf(
+    precedingLines.slice().reverse().find((l) => /^\s*- name:/.test(l)),
+  );
+  const stepText = precedingLines.slice(stepStart).join('\n');
+  assert.doesNotMatch(
+    stepText,
+    /if: steps\.cache\.outputs\.cache-hit/,
+    'setup-node must not be gated on the node_modules cache-hit — it installs the Node runtime, not the packages',
+  );
 });
 
 test('the gates run the CLI from the pinned lockfile', () => {
