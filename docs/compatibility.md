@@ -251,21 +251,21 @@ The emitted shape (`internal/chsql/regex_invalid_utf8.go`):
 - Any other pattern is evaluated as written on a value `isValidUTF8` accepts,
   and on the value's U+FFFD form (one U+FFFD per invalid byte) otherwise.
 - A function that returns input text is evaluated on an invalid value a second
-  time, with each invalid byte `b` spelled as the code point `U+10FF00 + b`
-  (the substitute block, U+10FF80..U+10FFFF); the two results align rune for
-  rune, and the invalid bytes are written back where they differ.
+  time, with each invalid byte `b` spelled as the code point `base + b` of a
+  substitute block (`base` a multiple of 256 in planes 15 and 16, the highest
+  one whose 256 code points the pattern reads alike), and each genuine
+  character of that block spelled as `base`; a pattern that tells U+FFFD from
+  the block is rewritten so that it reads the block as U+FFFD, with every bare
+  `.` left bare. The two results align rune for rune, and the invalid bytes
+  are written back where the U+FFFD form holds U+FFFD and the other does not.
 
 Where the answer is not Go's:
 
-- A pattern that tells U+FFFD apart from the substitute block — one naming
-  U+FFFD, `\p{Co}`, or a class with a bound between them — is read through a
-  rewrite of itself. On a value holding both an invalid byte and a
-  substitute-block character, its text result carries U+FFFD in place of the
-  invalid bytes it copies.
 - A `replaceRegexpAll`, `extractAll` or `extractAllGroupsHorizontal` pattern
-  that can match the empty string, and a `replaceRegexpOne` /
-  `replaceRegexpAll` pattern of that kind whose rewrite depends on whether `.`
-  matches a newline, likewise carry U+FFFD in place of the invalid bytes.
+  that can match the empty string. ClickHouse steps one byte past an empty
+  match and skips or doubles empty matches where Go does not, so these answer
+  differently from Go's `regexp` on valid values too (#3710); on an invalid
+  value the text carries U+FFFD in place of the invalid bytes.
 - A literal U+FFFD in a matcher or line-filter pattern matches any invalid
   byte, as in Go's `regexp`. Prometheus's matcher and Loki's line filter
   compare a pattern's literal parts byte for byte where they can, so there it

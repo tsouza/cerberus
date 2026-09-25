@@ -189,16 +189,34 @@ against `utf8.DecodeRuneInString` agreed on all three builds.
 Replacing each invalid byte by U+FFFD makes a match exact but loses the byte
 a capture or a replaced string must carry, and U+FFFD cannot be mapped back:
 the value may hold U+FFFD itself. Evaluating a second time over a spelling in
-which each invalid byte is its own code point keeps the byte recoverable. The
-block U+10FF80..U+10FFFF was chosen because a pattern treats all of it the way
-it treats U+FFFD unless it singles out private-use characters or U+FFFD, and
-because each code point's UTF-8 encoding carries the byte in its last two
-bytes, so it is recovered with integer arithmetic. The two evaluations parse
-identically, so their results align rune for rune and differ only where an
-invalid byte was copied. A pattern that does tell the block from U+FFFD is
-rewritten so that it does not; the rewrite cannot also keep a genuine
-block character apart from U+FFFD, which is why such a value falls back to the
-U+FFFD form.
+which each invalid byte is its own code point keeps the byte recoverable. A
+block of 256 code points at a multiple of 256 in planes 15 and 16 has two
+properties that make it work: each code point's UTF-8 encoding carries the
+byte in its last two bytes, so it is recovered with integer arithmetic, and
+the planes are private use, so a pattern names them only on purpose.
+
+A single fixed block does not work. A pattern that singles out U+FFFD must be
+rewritten to read the block as U+FFFD, and the rewrite then also reads a
+genuine block character of the value as U+FFFD — so a value holding both an
+invalid byte and such a character would answer wrongly. Picking the block per
+pattern, as one the pattern reads uniformly, removes that: a genuine block
+character can be spelled as the block's base, which the pattern reads exactly
+as it reads the character, and restoring then only has to look where the
+U+FFFD form holds U+FFFD. `\p{Co}` is the reason the uniformity is taken over
+the whole 256 code points rather than the 128 the bytes use: it ends at
+U+10FFFD, inside the top block.
+
+The rewrite is printed with Go's `regexp/syntax`, which spells `.` with the
+flag it was parsed under and hoists that flag over the whole pattern.
+`replaceRegexpOne` and `replaceRegexpAll` read `.` as matching a newline on
+26.x and not on the 24.8 floor, so a rewritten pattern must leave a bare `.`
+bare; every `.` is therefore replaced by a mark before printing and spelled
+back afterwards.
+
+Nullable all-matches patterns keep the U+FFFD form: ClickHouse's empty-match
+stepping is byte-wise, which already differs from Go on valid values, and on
+an invalid value the U+FFFD (three bytes) and substitute (four bytes)
+spellings step differently, so their results do not align.
 
 ### Why the guard is `isValidUTF8`, and what it costs
 

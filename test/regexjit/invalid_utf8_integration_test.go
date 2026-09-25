@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
-	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -23,10 +21,11 @@ import (
 
 // byteCorpus is the input of the byte-exact checks: values that are not
 // valid UTF-8 — lone and consecutive invalid bytes, truncated sequences,
-// overlong forms, an encoded surrogate — next to U+FFFD itself, characters
-// of the substitute block the emitter restores invalid bytes through
-// (U+10FF80..U+10FFFF), and valid values, which must keep answering as
-// before.
+// overlong forms, an encoded surrogate — next to U+FFFD itself, private-use
+// characters of planes 15 and 16 (where the emitter picks the block it
+// restores invalid bytes through: characters of the top two blocks, of
+// their bases and of their edges), and valid values, which must keep
+// answering as before.
 var byteCorpus = []string{
 	"", "a", "api-7", "host-1", "a\nb", "café", "�",
 	"\xff", "\xff\xfe", "a\xffb", "api\xff", "\x85", "caf\xe9", "\xe2\x82",
@@ -34,6 +33,7 @@ var byteCorpus = []string{
 	"host-\xff\xfe", "host-\n\xff", "é\xff", "\xff\n\xfe", "k\xffelvin",
 	"api-\xff-7", "a-\xff\xfe-b", "\xffb\xfe", "x\U0010FF80\xff", "\U0010FFBF",
 	"\xf4\x8f\xbf\xbf\xff", "\xe0\x80\x80", "\xf4\x90\x80\x80", "a\xed\xbf\xbfb",
+	"\U0010FF00\xff\U0010FF81", "\xff\U0010FE80\U0010FEFF\xfe", "\U0010FE00\xff\uFFFD\U0010FFFD",
 }
 
 // byteTable holds byteCorpus: v as a column, as the `v` key of a map, and
@@ -59,15 +59,8 @@ var byteMatcherPatterns = func() []string {
 // does, and is held to that here (docs/compatibility.md, "Invalid UTF-8").
 var byteLiteralFFFDPatterns = []string{`\x{FFFD}`, `a\x{FFFD}b`, `\x{FFFD}.*`}
 
-// byteLabelReplaceCase is a label_replace the byte-exact checks run;
-// fffdForm marks a regex that singles out U+FFFD or the substitute block,
-// for which a value holding both an invalid byte and a substitute-block
-// character is substituted on its U+FFFD form (docs/compatibility.md,
-// "Invalid UTF-8").
-type byteLabelReplaceCase struct {
-	regex, repl string
-	fffdForm    bool
-}
+// byteLabelReplaceCase is a label_replace the byte-exact checks run.
+type byteLabelReplaceCase struct{ regex, repl string }
 
 var byteLabelReplaceCases = func() []byteLabelReplaceCase {
 	out := []byteLabelReplaceCase{
@@ -77,9 +70,10 @@ var byteLabelReplaceCases = func() []byteLabelReplaceCase {
 		{regex: `(.)(.)(.)(.)(.)(.)(.)(.)(.)(.*)`, repl: `$10<$1>`},
 		{regex: `(.*)`, repl: `$0!`},
 		{regex: `(?P<head>.)(.*)`, repl: `${head}`},
-		{regex: `(\x{FFFD}+)(.*)`, repl: `[$1|$2]`, fffdForm: true},
-		{regex: `([^\x{FFFD}]*)(.*)`, repl: `$1/$2`, fffdForm: true},
-		{regex: `(\p{Co}*)(.*)`, repl: `$2$1`, fffdForm: true},
+		{regex: `(\x{FFFD}+)(.*)`, repl: `[$1|$2]`},
+		{regex: `([^\x{FFFD}]*)(.*)`, repl: `$1/$2`},
+		{regex: `(\p{Co}*)(.*)`, repl: `$2$1`},
+		{regex: `([^\x{10FF81}]*)(\x{10FF81}?)(.*)`, repl: `$3|$2|$1`},
 	}
 	for _, c := range labelReplaceCases {
 		out = append(out, byteLabelReplaceCase{regex: c.regex, repl: c.repl})
@@ -88,12 +82,11 @@ var byteLabelReplaceCases = func() []byteLabelReplaceCase {
 }()
 
 // byteFnCase is a regex function call the byte-exact checks run over the
-// v column; fffdForm is as for byteLabelReplaceCase.
+// v column.
 type byteFnCase struct {
-	fn       chplan.Fn
-	pattern  string
-	repl     string
-	fffdForm bool
+	fn      chplan.Fn
+	pattern string
+	repl    string
 }
 
 var byteFnCases = []byteFnCase{
@@ -101,17 +94,22 @@ var byteFnCases = []byteFnCase{
 	{fn: chplan.FnRegexMatch, pattern: `^[^-]+$`},
 	{fn: chplan.FnRegexExtractFirst, pattern: `a(.)`},
 	{fn: chplan.FnRegexExtractFirst, pattern: `[^a-z]+`},
-	{fn: chplan.FnRegexExtractFirst, pattern: `\x{FFFD}.`, fffdForm: true},
+	{fn: chplan.FnRegexExtractFirst, pattern: `\x{FFFD}.`},
 	{fn: chplan.FnRegexExtractAll, pattern: `.`},
 	{fn: chplan.FnRegexExtractAll, pattern: `[^a-z]+`},
-	{fn: chplan.FnRegexExtractAll, pattern: `[\x{FFFD}]`, fffdForm: true},
+	{fn: chplan.FnRegexExtractAll, pattern: `[\x{FFFD}]`},
 	{fn: chplan.FnRegexExtractAllGroupsHorizontal, pattern: `(\w*)(\W)`},
 	{fn: chplan.FnRegexExtractAllGroupsHorizontal, pattern: `(.)(.)`},
 	{fn: chplan.FnRegexReplaceFirst, pattern: `([^a-z])`, repl: `<$1>`},
 	{fn: chplan.FnRegexReplaceFirst, pattern: `-([^-]*)`, repl: `+$1`},
 	{fn: chplan.FnRegexReplaceAll, pattern: `[^a-z]`, repl: `_`},
 	{fn: chplan.FnRegexReplaceAll, pattern: `([^\n])`, repl: `[$1]`},
-	{fn: chplan.FnRegexReplaceAll, pattern: `\x{FFFD}`, repl: `?`, fffdForm: true},
+	{fn: chplan.FnRegexReplaceAll, pattern: `\x{FFFD}`, repl: `?`},
+	{fn: chplan.FnRegexExtractAll, pattern: `[\x{FFFD}\x{10FF81}]|\p{Co}`},
+	{fn: chplan.FnRegexExtractAllGroupsHorizontal, pattern: `(\x{FFFD}?)([^\x{FFFD}])`},
+	{fn: chplan.FnRegexReplaceFirst, pattern: `(\x{FFFD})(.)`, repl: `$2$1`},
+	{fn: chplan.FnRegexReplaceAll, pattern: `\x{FFFD}.`, repl: `?`},
+	{fn: chplan.FnRegexReplaceAll, pattern: `(\p{Co})(.?)`, repl: `<$2$1>`},
 }
 
 // TestRegexJIT_InvalidUTF8ShapesMatchGo renders every emitted regex
@@ -249,7 +247,7 @@ func checkByteLabelReplace(ctx context.Context, t *testing.T, conn driver.Conn) 
 			got := queryStrings(ctx, t, conn, &chplan.MapAccess{Map: lr, Key: &chplan.LitString{V: dstLabel}})
 			re := regexp.MustCompile("^(?s:" + c.regex + ")$")
 			assertPerValue(t, got, func(s string) any {
-				return goLabelReplace(re, c.repl, referenceInput(s, c.fffdForm))
+				return goLabelReplace(re, c.repl, s)
 			})
 		})
 	}
@@ -257,18 +255,25 @@ func checkByteLabelReplace(ctx context.Context, t *testing.T, conn driver.Conn) 
 
 // checkByteFns runs byteFnCases, each held to Go's regexp reading the
 // pattern as ClickHouse does: match and the extract family read `.` as
-// matching a newline. The replaceRegexp cases use no `.`, which the 24.8
-// floor reads differently from later builds.
+// matching a newline, and the replaceRegexp pair as the server at hand
+// reads it (the 24.8 floor does not match a newline there, later builds
+// do).
 func checkByteFns(ctx context.Context, t *testing.T, conn driver.Conn) {
 	v := &chplan.ColumnRef{Name: probeLabel}
+	replaceFlag := "(?-s)"
+	if replaceDotMatchesNewline(ctx, t, conn) {
+		replaceFlag = "(?s)"
+	}
 	for _, c := range byteFnCases {
 		t.Run(fmt.Sprintf("fn/%s/%s/%s", c.fn, c.pattern, c.repl), func(t *testing.T) {
 			args := []chplan.Expr{v, &chplan.LitString{V: c.pattern}}
+			flag := "(?s)"
 			if c.fn == chplan.FnRegexReplaceFirst || c.fn == chplan.FnRegexReplaceAll {
 				args = append(args, &chplan.LitString{V: chReplacement(c.repl)})
+				flag = replaceFlag
 			}
 			call := &chplan.FuncCall{Fn: c.fn, Args: args}
-			re := regexp.MustCompile("(?s)" + c.pattern)
+			re := regexp.MustCompile(flag + c.pattern)
 			var got []any
 			switch c.fn {
 			case chplan.FnRegexMatch:
@@ -280,33 +285,21 @@ func checkByteFns(ctx context.Context, t *testing.T, conn driver.Conn) {
 			default:
 				got = queryStrings(ctx, t, conn, call)
 			}
-			assertPerValue(t, got, func(s string) any { return goRegexFn(re, c.fn, c.repl, referenceInput(s, c.fffdForm)) })
+			assertPerValue(t, got, func(s string) any { return goRegexFn(re, c.fn, c.repl, s) })
 		})
 	}
 }
 
-// referenceInput is the value the reference reads: s itself, except for a
-// fffdForm case over a value holding both an invalid byte and a
-// substitute-block character, which is read in its U+FFFD form.
-func referenceInput(s string, fffdForm bool) string {
-	if !fffdForm || utf8.ValidString(s) || !strings.ContainsFunc(s, inSubstituteBlock) {
-		return s
+// replaceDotMatchesNewline asks the server how its replaceRegexp functions
+// read `.`: whether it matches a newline.
+func replaceDotMatchesNewline(ctx context.Context, t *testing.T, conn driver.Conn) bool {
+	t.Helper()
+	var got string
+	if err := conn.QueryRow(ctx, "SELECT replaceRegexpOne('\\n', '.', 'x')").Scan(&got); err != nil {
+		t.Fatalf("probe replaceRegexp's reading of `.`: %v", err)
 	}
-	var b strings.Builder
-	for i := 0; i < len(s); {
-		r, w := utf8.DecodeRuneInString(s[i:])
-		if r == utf8.RuneError && w == 1 {
-			b.WriteRune(utf8.RuneError)
-		} else {
-			b.WriteString(s[i : i+w])
-		}
-		i += w
-	}
-	return b.String()
+	return got == "x"
 }
-
-// inSubstituteBlock reports whether r is one of U+10FF80..U+10FFFF.
-func inSubstituteBlock(r rune) bool { return r >= 0x10FF80 && r <= utf8.MaxRune }
 
 // goLabelReplace is Prometheus's funcLabelReplace for one source value:
 // the expanded replacement when re matches, else no label.

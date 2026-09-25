@@ -1526,22 +1526,15 @@ func (p labelReplacePatterns) readInvalidUTF8() bool {
 	return regexReadsInvalidUTF8(p.anchored) || regexReadsInvalidUTF8(p.extract) || regexReadsInvalidUTF8(p.wholeMatch)
 }
 
-// substituted returns the patterns that read [substituteRunes] of the
-// source as these read its U+FFFD form, from [substitutePattern]; ok is
-// false when one of them does not parse.
-func (p labelReplacePatterns) substituted() (sub labelReplacePatterns, guard, ok bool) {
-	for _, pair := range []struct {
-		from string
-		to   *string
-	}{{p.anchored, &sub.anchored}, {p.extract, &sub.extract}, {p.wholeMatch, &sub.wholeMatch}} {
-		rewritten, g, parsed := substitutePattern(pair.from, true)
-		if !parsed {
-			return labelReplacePatterns{}, false, false
-		}
-		*pair.to = rewritten
-		guard = guard || g
+// substituted returns the block the source is spelled through and the
+// patterns that read [substituteRunes] of it as these read its U+FFFD
+// form, from [substituteFor]; ok is false when there are none.
+func (p labelReplacePatterns) substituted() (k substituteBlock, sub labelReplacePatterns, ok bool) {
+	k, rewritten, ok := substituteFor([]string{p.anchored, p.extract, p.wholeMatch}, []bool{true})
+	if !ok {
+		return substituteBlock{}, labelReplacePatterns{}, false
 	}
-	return sub, guard, true
+	return k, labelReplacePatterns{anchored: rewritten[0], extract: rewritten[1], wholeMatch: rewritten[2]}, true
 }
 
 // labelReplaceValue renders the substituted value — the branch taken when
@@ -1549,11 +1542,9 @@ func (p labelReplacePatterns) substituted() (sub labelReplacePatterns, guard, ok
 //
 // When an invalid UTF-8 byte can take part in the match, a source value
 // isValidUTF8 rejects is substituted on its U+FFFD form, and the bytes Go
-// would copy from it are written back with [restoreInvalidBytes]. A
-// pattern that singles out the substitute block reads a genuine
-// substitute-block character as U+FFFD (see [substitutePattern]); a value
-// holding one keeps the U+FFFD form's result, as does a regex whose
-// patterns do not all parse.
+// would copy from it are written back with [restoreInvalidBytes]. A regex
+// whose patterns [substituteFor] cannot serve keeps the U+FFFD form's
+// result.
 func labelReplaceValue(l *chplan.LabelReplace, src Frag, pats labelReplacePatterns, readsInvalid bool) Frag {
 	plain := labelReplaceSubstitution(l, src, pats)
 	if !readsInvalid {
@@ -1561,11 +1552,8 @@ func labelReplaceValue(l *chplan.LabelReplace, src Frag, pats labelReplacePatter
 	}
 	fffd := labelReplaceSubstitution(l, replacementRunes(src), pats)
 	invalid := fffd
-	if sub, guard, ok := pats.substituted(); ok {
-		invalid = restoreInvalidBytes(labelReplaceSubstitution(l, substituteRunes(src), sub), fffd)
-		if guard {
-			invalid = If(Call("match", src, Lit(substituteBlockClass)), fffd, invalid)
-		}
+	if k, sub, ok := pats.substituted(); ok {
+		invalid = restoreInvalidBytes(labelReplaceSubstitution(l, substituteRunes(src, k), sub), fffd)
 	}
 	return If(isValidUTF8(src), plain, invalid)
 }
