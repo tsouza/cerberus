@@ -81,13 +81,16 @@ import { pathToFileURL } from 'node:url';
 
 import { error, log, notice } from './lib/gh.mjs';
 
-// The acquisition primitive R3 is about. A script that imports this name — at
-// any depth through relative imports — acquires through the GHCR mirror first,
-// so the job running it needs mirror credentials whatever ref it ends up
-// naming. Spelled once here because it is the join between this gate and
-// lib/registry.mjs; if the primitive is ever renamed, this gate goes quiet and
-// the rename is the only place to notice.
-const sharedPolicySymbol = 'pullImageWithRetry';
+// The acquisition primitives R3 is about: lib/registry.mjs's one policy, under
+// its synchronous single-image driver, its asynchronous one, and the bounded
+// pool over the latter. A script that calls any of them — at any depth through
+// relative imports — acquires through the GHCR mirror first, so the job running
+// it needs mirror credentials whatever ref it ends up naming. Spelled once here
+// because it is the join between this gate and lib/registry.mjs; if a primitive
+// is ever renamed, this gate goes quiet for its callers and the rename is the
+// only place to notice.
+const sharedPolicySymbols = ['pullImageWithRetry', 'pullImageAsync', 'pullImages'];
+const sharedPolicySymbol = `(?:${sharedPolicySymbols.join('|')})`;
 
 // Docker Hub under the two names the toolchain uses for it. `docker login` with
 // no host argument targets exactly this, which is why the empty registry is
@@ -597,7 +600,7 @@ function policyRefs(source) {
     consts[m[1]] = m[3];
   }
   const refs = [];
-  for (const m of source.matchAll(new RegExp(`${sharedPolicySymbol}\\(\\s*([^,)]+)`, 'g'))) {
+  for (const m of source.matchAll(new RegExp(`\\b${sharedPolicySymbol}\\(\\s*([^,)]+)`, 'g'))) {
     const arg = m[1].trim();
     const lit = /^(['"])([^'"]+)\1$/.exec(arg);
     if (lit) refs.push(lit[2]);

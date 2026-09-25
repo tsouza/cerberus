@@ -59,7 +59,7 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import { capture, error, log, notice } from './lib/gh.mjs';
-import { pullImageWithRetry, readBackoffStepSeconds } from './lib/registry.mjs';
+import { presentLocally, pullImages, readBackoffStepSeconds } from './lib/registry.mjs';
 
 // Matches the buildx bootstrap step: a compose stack's images are a manifest
 // and some layers apiece, not a build's dependency closure.
@@ -122,11 +122,7 @@ function resolveModel(files, services) {
   }
 }
 
-function presentLocally(image) {
-  return capture('docker', ['image', 'inspect', image]).status === 0;
-}
-
-function main(argv) {
+async function main(argv) {
   const { files, services } = splitArgs(argv);
   if (files.length === 0) {
     error('compose-pull-images: no compose file given. Pass every `-f` file the lane brings up.');
@@ -141,18 +137,16 @@ function main(argv) {
   }
 
   const backoffStepSeconds = readBackoffStepSeconds('COMPOSE_PULL_BACKOFF_SECONDS', composeBackoffStepSeconds);
-  let failed = 0;
+  const missing = [];
   for (const image of images) {
-    if (presentLocally(image)) {
-      log(`    ${image} already in the local daemon`);
-      continue;
-    }
-    if (!pullImageWithRetry(image, { backoffStepSeconds })) failed++;
+    if (presentLocally(image)) log(`    ${image} already in the local daemon`);
+    else missing.push(image);
   }
+  const { failed } = await pullImages(missing, { backoffStepSeconds });
 
-  if (failed > 0) {
+  if (failed.length > 0) {
     error(
-      `${failed} of ${images.length} compose image(s) could not be acquired; \`docker compose up\` would pull ` +
+      `${failed.length} of ${images.length} compose image(s) could not be acquired (${failed.join(', ')}); \`docker compose up\` would pull ` +
         'them itself, single-attempt and unretried.',
     );
     return 1;
@@ -164,5 +158,5 @@ function main(argv) {
 // can import `pullableImages` without the import pulling images as a side
 // effect.
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exit(main(process.argv.slice(2)));
+  process.exit(await main(process.argv.slice(2)));
 }

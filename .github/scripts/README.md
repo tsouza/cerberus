@@ -98,6 +98,17 @@ and `chart-kubeconform.mjs`'s image probe apply the same classification to
 commands rather than to a single ref. Everything hits the same quota bucket and
 fails the same way, so nothing re-derives the policy.
 
+The loop is written once, as a generator of steps (`docker` / `sleep` / output),
+with two drivers. `pullImageWithRetry` performs each step synchronously as it is
+yielded. `pullImageAsync` performs the same steps without blocking and holds the
+image's output; `pullImages(refs, …)` runs a pool of at most
+`MAX_CONCURRENT_PULLS` of them — one pull per vCPU of the GitHub-hosted runner,
+since each pull's layer downloads are already parallel and its extraction is
+not — emits each image's output as one contiguous block when that image
+finishes, and returns the images that failed and, under `stopOnFailure`, the
+ones never started. `pull-images.mjs` and `compose-pull-images.mjs` acquire
+their lists through the pool.
+
 `go-module-fetch.mjs` applies the same three-class classification one registry
 over, to the **Go module proxy**. `lib/registry.mjs`'s transport list already
 carried the Go-proxy signatures (`http2: stream error`, `INTERNAL_ERROR;
@@ -3838,9 +3849,12 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   source of truth: `k3d image import` and testcontainers just know their refs.
   It exists so `_pull-retry` stops hand-rolling `docker pull` in a shell loop —
   a hand-rolled loop reaches Docker Hub directly, so it never consults the GHCR
-  mirror and spends the quota the mirror exists to stop spending. The first
-  failure ends the run: the lane cannot start without the image, and a second
-  pull into a spent quota only deepens the deficit for every concurrent job.
+  mirror and spends the quota the mirror exists to stop spending. The refs are
+  acquired through `pullImages`' bounded pool. The first failure stops the
+  pool from starting another pull (in-flight ones finish): the lane cannot
+  start without the image, and a further pull into a spent quota only deepens
+  the deficit for every concurrent job. The run then fails with one error
+  naming every failed ref and every ref left unstarted.
   - Args: the image refs to acquire.
   - Env: `IMAGE_PULL_BACKOFF_SECONDS` (optional; default `3`);
     `IMAGE_PULL_EXCLUDE` (optional; whitespace-separated `lib/image-globs.mjs`

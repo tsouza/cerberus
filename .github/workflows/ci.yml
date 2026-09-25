@@ -1153,6 +1153,13 @@ jobs:
       - name: Assert the compose pre-pull fetches only fetchable images
         run: node --test .github/scripts/compose-pull-images.test.mjs
 
+      # The pooled image acquisition every `_pull-retry` lane uses: at most
+      # MAX_CONCURRENT_PULLS pulls in flight, one image's backoff never holding
+      # up another, each image's log lines emitted as one block, and every
+      # failure named in the aggregate before exit 1.
+      - name: Assert the image pull pool is bounded, non-blocking and non-interleaving
+        run: node --test .github/scripts/lib/registry.test.mjs
+
       # runTeed's argv handling — every image-building command in the tree runs
       # through it (see the module's own header). Pins that an argv element
       # shaped like a shell-metacharacter payload reaches the command as a
