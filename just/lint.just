@@ -14,8 +14,8 @@ lint:
     golangci-lint run --build-tags {{LINT_UNTAGGED_BUILD}} ./...
     node .github/scripts/go-fix-check.mjs
 
-# `go fix` rewrites over the same two build configurations `lint` checks: the
-# tag union from `.golangci.yml`, then untagged. Review the diff before
+# `go fix` rewrites in every Go module, over the same two build configurations
+# `lint` checks: the tag union from `.golangci.yml`, then untagged. Review the diff before
 # committing it.
 
 # Apply the pinned toolchain's go fix modernizers.

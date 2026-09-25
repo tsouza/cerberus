@@ -7,9 +7,11 @@
 // removed. Only a check that fails on a non-empty `go fix -diff` holds the tree
 // at the fixed point.
 //
-// Two passes, mirroring golangci-lint's two build configurations (ci.yml's
-// `lint` job): one with every build tag in `.golangci.yml`'s `run.build-tags`
-// union, and one untagged. Every `//go:build` line in the tree is a single term,
+// Every module in the repository is checked — the root one and each nested
+// `go.mod` (`git ls-files`), since `./...` from the root stops at a nested
+// module boundary. Each module gets two passes, mirroring golangci-lint's two
+// build configurations (ci.yml's `lint` job): one with every build tag in
+// `.golangci.yml`'s `run.build-tags` union, and one untagged. Every `//go:build` line in the tree is a single term,
 // so between them they see every file. test/regression/lint_build_tags_test.go
 // already holds the union to the tree's constraints. Reading the union from the
 // same file keeps this gate on that pinned list instead of a second hand-kept
@@ -22,12 +24,17 @@
 //   GOLANGCI_FILE  — the config whose `run.build-tags` is the tag union.
 //                    Default `.golangci.yml`.
 //
+// `go fix -diff` exits 1 both when it has a rewrite to report (the diff on
+// stdout, stderr empty) and when it cannot run (a load or build error on
+// stderr), so the exit status alone does not tell the two apart: a run is a
+// pending rewrite only when it exits 1 with a diff and nothing on stderr.
+//
 // Exit: 0 when both passes leave the tree unchanged (or, in apply mode, when
 // both passes ran), 1 on a pending rewrite or a `go fix` failure, 2 on a usage
 // error.
 
 import { readFileSync } from 'node:fs';
-import { relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
@@ -69,25 +76,60 @@ export function passes(tags) {
   ];
 }
 
+// moduleDirs — every directory holding a tracked go.mod, relative to root,
+// root itself (`.`) first.
+export function moduleDirs(lsFilesOutput) {
+  const dirs = lsFilesOutput
+    .split('\0')
+    .filter((f) => f === 'go.mod' || f.endsWith('/go.mod'))
+    .map((f) => dirname(f));
+  return [...new Set(dirs)].sort((a, b) => (a === '.' ? -1 : b === '.' ? 1 : a.localeCompare(b)));
+}
+
+// classify — what one `go fix` invocation's result means: `clean`, `pending`
+// (check mode: a rewrite to report) or `failed`.
+export function classify(mode, res) {
+  if (res.status === 0) return mode === 'check' && diffFiles(res.stdout).length > 0 ? 'pending' : 'clean';
+  if (mode === 'check' && res.status === 1 && res.stderr.trim() === '' && diffFiles(res.stdout).length > 0) {
+    return 'pending';
+  }
+  return 'failed';
+}
+
 export function run({ mode = 'check', configPath = '.golangci.yml', root = process.cwd(), runner = capture } = {}) {
   const tags = parseBuildTags(readFileSync(configPath, 'utf8'));
+  const ls = runner('git', ['ls-files', '-z', '--', 'go.mod', '*/go.mod'], { cwd: root });
+  if (ls.status !== 0) {
+    error(`go-fix-check: \`git ls-files\` failed: ${ls.stderr.trim()}`);
+    return 1;
+  }
+  const modules = moduleDirs(ls.stdout);
+  if (modules.length === 0) {
+    error('go-fix-check: no go.mod is tracked under the repository root');
+    return 1;
+  }
   const pending = new Set();
-  for (const pass of passes(tags)) {
-    const args = ['fix', ...(mode === 'check' ? ['-diff'] : []), ...pass.args, './...'];
-    const res = runner('go', args, { cwd: root });
-    if (res.status !== 0) {
-      error(`go-fix-check: \`go ${args.join(' ')}\` failed (${pass.name} pass): ${res.stderr.trim()}`);
-      return 1;
+  for (const mod of modules) {
+    const cwd = join(root, mod);
+    for (const pass of passes(tags)) {
+      const args = ['fix', ...(mode === 'check' ? ['-diff'] : []), ...pass.args, './...'];
+      const res = runner('go', args, { cwd });
+      const outcome = classify(mode, res);
+      if (outcome === 'failed') {
+        error(
+          `go-fix-check: \`go ${args.join(' ')}\` failed in ${mod} (${pass.name} pass, exit ${res.status}): ` +
+            res.stderr.trim(),
+        );
+        return 1;
+      }
+      if (outcome === 'clean') continue;
+      for (const f of diffFiles(res.stdout)) {
+        const rel = relative(root, f);
+        pending.add(rel);
+        error(`go fix (${pass.name} pass) would rewrite this file`, { file: rel, title: 'go-fix-check' });
+      }
+      group(`go fix -diff (${mod}, ${pass.name} pass)`, () => log(res.stdout));
     }
-    if (mode === 'apply') continue;
-    const files = diffFiles(res.stdout);
-    if (files.length === 0) continue;
-    for (const f of files) {
-      const rel = relative(root, f);
-      pending.add(rel);
-      error(`go fix (${pass.name} pass) would rewrite this file`, { file: rel, title: 'go-fix-check' });
-    }
-    group(`go fix -diff (${pass.name} pass)`, () => log(res.stdout));
   }
   if (pending.size > 0) {
     error(
@@ -98,8 +140,8 @@ export function run({ mode = 'check', configPath = '.golangci.yml', root = proce
   }
   notice(
     mode === 'apply'
-      ? 'go-fix-check: applied go fix over the tagged and untagged build configurations'
-      : 'go-fix-check: the tree is a fixed point of go fix in both build configurations',
+      ? `go-fix-check: applied go fix over the tagged and untagged build configurations of ${modules.length} module(s)`
+      : `go-fix-check: ${modules.length} module(s) are a fixed point of go fix in both build configurations`,
   );
   return 0;
 }

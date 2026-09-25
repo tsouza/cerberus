@@ -24,7 +24,8 @@ toolchain.
 - `just build` — build cerberus into `./bin`.
 - `just lint` — `golangci-lint run` over both the untagged and the tagged build configurations,
   plus the `go fix` fixed-point check over the same two.
-- `just go-fix` — apply the pinned toolchain's `go fix` modernizers over both build configurations.
+- `just go-fix` — apply the pinned toolchain's `go fix` modernizers to every Go module, over both build
+  configurations.
 - `just lint-actions` — `actionlint` over the workflow files.
 - `just lint-md` / `just fmt-md` — markdownlint-cli2 verify / auto-fix.
 - `just fmt` — `gofumpt` + `goimports -local` over the tree.
