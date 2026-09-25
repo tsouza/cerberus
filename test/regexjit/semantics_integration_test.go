@@ -156,6 +156,24 @@ var logQLOnlyEqualityCases = []struct {
 	{"line-format-regexReplaceAllLiteral", `{service_name="` + probeService + `"} | line_format "{{ regexReplaceAllLiteral \"[0-9]+\" __line__ \"#\" }}"`},
 }
 
+// regexpParserGroup is the named capture the nullable `| regexp` cases read.
+const regexpParserGroup = "m"
+
+// nullableRegexpParserPatterns are `| regexp` patterns that can match the
+// empty string — the patterns on which ClickHouse's every-match functions
+// diverge from Go's FindAll. Each holds the named group
+// [regexpParserGroup], and the parsed label must be group
+// [regexpParserGroup] of Go's leftmost-first match, as Loki's regexp parser
+// reports it.
+var nullableRegexpParserPatterns = []string{
+	`(?P<m>x*)`,
+	`(?P<m>.*)`,
+	`(?P<m>[a-z]*)-?`,
+	`(?P<m>\d*)`,
+	`(?:(?P<m>é)|)`,
+	`(?P<m>t*)e?`,
+}
+
 // TestRegexJIT_EmittedShapesMatchReference drives the corpus through the
 // production handlers on every semantic build.
 func TestRegexJIT_EmittedShapesMatchReference(t *testing.T) {
@@ -223,6 +241,13 @@ func TestRegexJIT_EmittedShapesMatchReference(t *testing.T) {
 			r.check(ctx, t, "unwrap-bytes", true, func(ctx context.Context) []byte {
 				return h.lokiRange(ctx, t, bytesQ, probeEnd, probeEnd, probeRangeStep, probeLineLimit)
 			}, func(body []byte) { assertUnwrap(t, body, unwrapBytes, parseHumanBytes) })
+
+			for _, pattern := range nullableRegexpParserPatterns {
+				q := fmt.Sprintf(`{service_name=%q} | regexp %s`, probeService, strconv.Quote(pattern))
+				r.check(ctx, t, "loki-regexp-nullable/"+pattern, false, func(ctx context.Context) []byte {
+					return h.lokiRange(ctx, t, q, probeEnd.Add(-probeWindow), probeEnd, probeRangeStep, probeLineLimit)
+				}, func(body []byte) { assertRegexpParser(t, body, pattern) })
+			}
 
 			for _, c := range logQLOnlyEqualityCases {
 				r.check(ctx, t, "loki-stage/"+c.name, false, func(ctx context.Context) []byte {
@@ -683,4 +708,29 @@ func describe(values []string, idx []int) string {
 		parts = append(parts, strconv.Quote(values[i]))
 	}
 	return "[" + strings.Join(parts, " ") + "]"
+}
+
+// assertRegexpParser requires every line of a `| regexp` response to carry,
+// as label [regexpParserGroup], the group Go's FindStringSubmatch reports
+// for it — "" (the label absent) when the group or the whole pattern did
+// not match — and every seeded line to be returned.
+func assertRegexpParser(t testing.TB, body []byte, pattern string) {
+	t.Helper()
+	re := regexp.MustCompile(pattern)
+	group := re.SubexpIndex(regexpParserGroup)
+	lines, streams := decodeLines(t, body)
+	if len(lines) != len(probeValues) {
+		t.Errorf("regexp %q returned %d lines; want %d", pattern, len(lines), len(probeValues))
+	}
+	for _, r := range streams.Data.Result {
+		for _, v := range r.Values {
+			var want string
+			if m := re.FindStringSubmatch(v[1]); m != nil {
+				want = m[group]
+			}
+			if got := r.Stream[regexpParserGroup]; got != want {
+				t.Errorf("regexp %q on line %q: label %s=%q; Go's first match gives %q", pattern, v[1], regexpParserGroup, got, want)
+			}
+		}
+	}
 }

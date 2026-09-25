@@ -1,11 +1,15 @@
 package chsql
 
 import (
+	"errors"
+	"fmt"
 	"regexp"
 	"regexp/syntax"
 	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/tsouza/cerberus/internal/chplan"
 )
 
 // This file renders the pattern strings bound as the regular-expression
@@ -236,4 +240,118 @@ func lineFilterLiteralPrefix(pattern string) string {
 	}
 	prefix, _ := re.LiteralPrefix()
 	return prefix
+}
+
+// allMatchesFns are the ClickHouse functions that report every match of a
+// pattern rather than the first. For a pattern that can match the empty
+// string they disagree with Go's FindAll / ReplaceAll, which the reference
+// engines use: ClickHouse steps one byte past an empty match (splitting a
+// multi-byte rune), does not skip an empty match abutting the previous
+// match, extractAll drops empty matches altogether, and 24.8 and 26.8
+// disagree on the trailing empty match. A first-match function
+// (extract, regexpExtract, replaceRegexpOne) starts at offset 0 exactly as
+// Go does and is unaffected.
+var allMatchesFns = map[chplan.Fn]bool{
+	chplan.FnRegexExtractAll:                 true,
+	chplan.FnRegexExtractAllGroupsHorizontal: true,
+	chplan.FnRegexReplaceAll:                 true,
+}
+
+// regexPatternArg is the position of the pattern among an
+// [allMatchesFns] or [chplan.FnRegexExtractGroup] function's arguments
+// (haystack, pattern, ...).
+const regexPatternArg = 1
+
+// ErrNullableAllMatchesPattern rejects an [allMatchesFns] call whose pattern
+// can match the empty string, or whose pattern is not a literal the emitter
+// can prove cannot.
+var ErrNullableAllMatchesPattern = errors.New("chsql: every-match regex function needs a pattern that cannot match the empty string")
+
+// checkAllMatchesPattern refuses to emit an [allMatchesFns] call whose
+// answer would diverge from Go's. A lowering that needs only the first
+// match emits a first-match function instead.
+func checkAllMatchesPattern(f *chplan.FuncCall) error {
+	if !allMatchesFns[f.Fn] {
+		return nil
+	}
+	var pattern string
+	if len(f.Args) > regexPatternArg {
+		switch p := f.Args[regexPatternArg].(type) {
+		case *chplan.LitString:
+			pattern = p.V
+		case *chplan.InlineString:
+			pattern = p.V
+		default:
+			return fmt.Errorf("%w: %s pattern is %T, not a literal", ErrNullableAllMatchesPattern, f.Fn, p)
+		}
+	} else {
+		return fmt.Errorf("%w: %s has no pattern argument", ErrNullableAllMatchesPattern, f.Fn)
+	}
+	nullable, err := matchesEmpty(pattern)
+	if err != nil {
+		return fmt.Errorf("%w: %s pattern %q: %w", ErrNullableAllMatchesPattern, f.Fn, pattern, err)
+	}
+	if nullable {
+		return fmt.Errorf("%w: %s pattern %q", ErrNullableAllMatchesPattern, f.Fn, pattern)
+	}
+	return nil
+}
+
+// matchesEmpty reports whether pattern can match the empty string at some
+// position of some input: whether its program reaches a match without
+// consuming a rune. Empty-width assertions (`^`, `\b`, ...) are treated as
+// satisfiable, which over-approximates and so never calls a nullable
+// pattern safe.
+func matchesEmpty(pattern string) (bool, error) {
+	re, err := syntax.Parse(pattern, goRegexpFlags)
+	if err != nil {
+		return false, err
+	}
+	prog, err := syntax.Compile(re.Simplify())
+	if err != nil {
+		return false, err
+	}
+	seen := make([]bool, len(prog.Inst))
+	var reach func(pc uint32) bool
+	reach = func(pc uint32) bool {
+		if seen[pc] {
+			return false
+		}
+		seen[pc] = true
+		inst := prog.Inst[pc]
+		switch inst.Op {
+		case syntax.InstMatch:
+			return true
+		case syntax.InstAlt, syntax.InstAltMatch:
+			return reach(inst.Out) || reach(inst.Arg)
+		case syntax.InstCapture, syntax.InstEmptyWidth, syntax.InstNop:
+			return reach(inst.Out)
+		default:
+			return false
+		}
+	}
+	return reach(uint32(prog.Start)), nil
+}
+
+// withGoDefaultFlagsPattern returns f with its pattern respelled by
+// [lineFilterRegex] when f is a [chplan.FnRegexExtractGroup] call, whose
+// contract is Go's FindStringSubmatch under Go's default flags — where `.`
+// does not match a newline, while regexpExtract's does. The respelling adds
+// no capture group, so the group index still names the same group. Any
+// other call is returned as is.
+func withGoDefaultFlagsPattern(f *chplan.FuncCall) *chplan.FuncCall {
+	if f.Fn != chplan.FnRegexExtractGroup || len(f.Args) <= regexPatternArg {
+		return f
+	}
+	lit, ok := f.Args[regexPatternArg].(*chplan.LitString)
+	if !ok {
+		return f
+	}
+	respelled := lineFilterRegex(lit.V)
+	if respelled == lit.V {
+		return f
+	}
+	args := slices.Clone(f.Args)
+	args[regexPatternArg] = &chplan.LitString{V: respelled}
+	return &chplan.FuncCall{Fn: f.Fn, Args: args}
 }

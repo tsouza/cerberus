@@ -228,6 +228,11 @@ const (
 	// as Array(Array(String)), outer array indexed by match, inner by group.
 	FnRegexExtractAllGroupsHorizontal Fn = "extractAllGroupsHorizontal"
 
+	// regexpExtract(haystack, pattern, group) — capture group `group` of the
+	// leftmost-first match, as Go's FindStringSubmatch reports it; '' if no
+	// match or the group did not participate.
+	FnRegexExtractGroup Fn = "regexpExtract"
+
 	// extractKeyValuePairs(s) — s's `key=value`-shaped substrings parsed into
 	// Map(String, String).
 	FnExtractKeyValuePairs Fn = "extractKeyValuePairs"
