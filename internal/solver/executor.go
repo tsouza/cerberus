@@ -308,6 +308,11 @@ func (x *Executor) Execute(
 		ShardQueryIDs: make([]string, k),
 		PhysicalScans: make([]int, k),
 	}
+	// One request id shared by the K shard statements; each shard's query_id
+	// carries it with the shard's coordinates (chclient.ShardQueryID), so a
+	// query-log reader that did not dispatch this request folds the K rows it
+	// finds into one observation instead of recording K fractional ones.
+	request := chclient.MintQueryID(ctx)
 	for i := range d.Slices {
 		sql, args, physicalScans, err := x.Emitter.Emit(ctx, d.Slices[i].Plan)
 		if err != nil {
@@ -322,7 +327,7 @@ func (x *Executor) Execute(
 		// One query_id per shard, fixed here so the caller can record the whole
 		// fan-out at the dispatch seam and runShard stamps the same id onto the
 		// query ClickHouse actually runs.
-		info.ShardQueryIDs[i] = chclient.MintQueryID(ctx)
+		info.ShardQueryIDs[i] = chclient.ShardQueryID(request, i, k)
 	}
 
 	// 2. TWO-STAGE WEIGHTED ADMISSION and 3. ATOMIC GATE ACQUISITION —
