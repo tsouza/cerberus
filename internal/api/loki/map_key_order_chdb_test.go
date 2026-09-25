@@ -101,7 +101,8 @@ func seedKeyOrderServer(t *testing.T, rows []keyOrderSeedRow) (*httptest.Server,
 	seed.WriteString(keyOrderSeedTable)
 	for i, r := range rows {
 		ts := keyOrderWindowBase.Add(time.Duration(i) * time.Second).Format(tsFmt)
-		fmt.Fprintf(&seed,
+		fmt.Fprintf(
+			&seed,
 			"\nINSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES"+
 				" (toDateTime64('%s', 9), '%s', %s);",
 			ts, r.body, r.mapSQL,
