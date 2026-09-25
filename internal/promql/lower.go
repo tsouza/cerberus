@@ -1204,13 +1204,10 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// outer Filter on `Attributes['le']` (the column doesn't exist on
 	// the raw scan row).
 	staleMode := ctx.staleMarkerMode(s)
-	var layoutBound chplan.Expr
-	if bucketSuffixed != "" && staleMode == staleMarkersEncoded {
-		bound, err := staleLayoutBoundFor(v, ctx, s)
-		if err != nil {
-			return nil, err
-		}
-		layoutBound = bound
+	// Read only by a `_bucket` fan-out under staleMarkersEncoded.
+	layoutBound, err := staleLayoutBoundFor(v, ctx, s)
+	if err != nil {
+		return nil, err
 	}
 	selectorInput, pred, attributesPreMerged := lowerHistogramSelectorInput(
 		scan, pred, bucketSuffixed, bucketLeMatchers, companionValueColumn, s, ctx.catalog, staleMode, layoutBound,

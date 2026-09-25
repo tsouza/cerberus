@@ -243,13 +243,10 @@ func lowerRegexHistogramSelector(v *parser.VectorSelector, s schema.Metrics, ctx
 		}
 		inputs = append(inputs, buildRegexHistogramCompanionArm(s, ctx.catalog, names, scanMatchers, suffix, sourceColumn, staleMode))
 	}
-	var layoutBound chplan.Expr
-	if staleMode == staleMarkersEncoded {
-		bound, err := staleLayoutBoundFor(v, ctx, s)
-		if err != nil {
-			return nil, err
-		}
-		layoutBound = bound
+	// Read only by the bucket arm's fan-out under staleMarkersEncoded.
+	layoutBound, err := staleLayoutBoundFor(v, ctx, s)
+	if err != nil {
+		return nil, err
 	}
 	inputs = append(inputs, buildRegexHistogramBucketArm(s, ctx.catalog, names, scanMatchers, leMatchers, staleMode, layoutBound))
 
