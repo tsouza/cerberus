@@ -1,7 +1,7 @@
 -- query.logql --
 {job="api"} | regexp "(?P<status>\\d{3})" | status="500"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractAllGroupsHorizontal(`Body`, ?)[?][?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractAllGroupsHorizontal(`Body`, ?)[?][?]))[?], `LogAttributes`[?]) = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), regexpExtract(`Body`, ?, ?))), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), regexpExtract(`Body`, ?, ?)))[?], `LogAttributes`[?]) = ?)
 -- args --
 [0] string = "job"
 [1] string = "api"
@@ -10,17 +10,15 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContain
 [4] string = "status"
 [5] string = "(?P<status>\\d{3})"
 [6] int64 = 1
-[7] int64 = 1
+[7] string = "status"
 [8] string = "status"
-[9] string = "status"
-[10] string = "status_extracted"
-[11] string = "status"
-[12] string = "(?P<status>\\d{3})"
-[13] int64 = 1
-[14] int64 = 1
-[15] string = "status"
-[16] string = "status"
-[17] string = "500"
+[9] string = "status_extracted"
+[10] string = "status"
+[11] string = "(?P<status>\\d{3})"
+[12] int64 = 1
+[13] string = "status"
+[14] string = "status"
+[15] string = "500"
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String) MATERIALIZED map(),
@@ -37,7 +35,7 @@ INSERT INTO otel_logs (Body) VALUES
   ["POST /api 500 took=22ms"]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "status"), "status_extracted", "status"), FnRegexExtractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1])), "status"), FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "status"), "status_extracted", "status"), FnRegexExtractAllGroupsHorizontal(Body, "(?P<status>\\d{3})")[1][1]))["status"], LogAttributes["status"]) = "500"))
+Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "status"), "status_extracted", "status"), FnRegexExtractGroup(Body, "(?P<status>\\d{3})", 1))), "status"), FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "status"), "status_extracted", "status"), FnRegexExtractGroup(Body, "(?P<status>\\d{3})", 1)))["status"], LogAttributes["status"]) = "500"))
   Scan(otel_logs)
 -- parity_exempt --
 reason: log-query-answer
@@ -50,17 +48,15 @@ detail: log query `{job="api"} | regexp "(?P<status>\\d{3})" | status="500"` ans
 [4] string = "status"
 [5] string = "(?P<status>\\d{3})"
 [6] int64 = 1
-[7] int64 = 1
+[7] string = "status"
 [8] string = "status"
-[9] string = "status"
-[10] string = "status_extracted"
-[11] string = "status"
-[12] string = "(?P<status>\\d{3})"
-[13] int64 = 1
-[14] int64 = 1
-[15] string = "status"
-[16] string = "status"
-[17] string = "500"
+[9] string = "status_extracted"
+[10] string = "status"
+[11] string = "(?P<status>\\d{3})"
+[12] int64 = 1
+[13] string = "status"
+[14] string = "status"
+[15] string = "500"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -69,4 +65,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractAllGroupsHorizontal(`Body`, ?)[?][?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), extractAllGroupsHorizontal(`Body`, ?)[?][?]))[?], `LogAttributes`[?]) = ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), regexpExtract(`Body`, ?, ?))), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), regexpExtract(`Body`, ?, ?)))[?], `LogAttributes`[?]) = ?)
