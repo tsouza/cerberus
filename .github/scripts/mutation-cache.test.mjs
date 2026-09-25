@@ -320,7 +320,8 @@ function fakeApi(over = {}) {
   const pr = { head: { repo: { full_name: over.prRepo ?? repo }, ref: 'feature' } };
   const blobs = { '.github/scripts/x.mjs': 'a1', ...over.blobs };
   return async (path) => {
-    if (path === '/repos/o/r/actions/runs/123') return run;
+    if (path === '/repos/o/r/actions/runs/123/attempts/1') return run;
+    if (path === '/repos/o/r/actions/runs/123') return { ...run, status: 'in_progress' };
     if (path === '/repos/o/r/pulls/7') return pr;
     const m = path.match(/^\/repos\/o\/r\/contents\/(.+)\?ref=(.+)$/);
     if (m && m[2] === run.head_sha) return { sha: blobs[m[1]] };

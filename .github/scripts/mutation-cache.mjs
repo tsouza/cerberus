@@ -507,7 +507,10 @@ export async function verifyProducingRun({ repo, prNumber, sourceRunUrl, harness
   const m = String(sourceRunUrl).match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/([0-9]+)(\/attempts\/[0-9]+)?$/);
   if (m === null) return 'source run URL is malformed';
   if (m[1] !== repo) return `source run is in ${m[1]}, not ${repo}`;
-  const run = await api(`/repos/${repo}/actions/runs/${m[2]}`);
+  // The attempt that wrote the entry, not the run's latest attempt: a re-run
+  // of the same run is the common way to hit an entry, and while it runs the
+  // run as a whole is in progress.
+  const run = await api(`/repos/${repo}/actions/runs/${m[2]}${m[3] ?? ''}`);
   if (run?.repository?.full_name !== repo) return 'source run belongs to another repository';
   if (run.path !== PRODUCING_WORKFLOW) return `source run is of ${run.path}, not ${PRODUCING_WORKFLOW}`;
   if (run.event !== 'pull_request') return `source run was a ${run.event} event, not pull_request`;
