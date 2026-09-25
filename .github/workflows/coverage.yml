@@ -265,6 +265,7 @@ jobs:
           node --test .github/scripts/coverage-summary.test.mjs
           node --test .github/scripts/coverage-package-floor.test.mjs
           node --test .github/scripts/coverage-run-heavy.test.mjs
+          node --test .github/scripts/lib/coverage-schedule-overlap.test.mjs
           node --test .github/scripts/coverage-aggregate.test.mjs
           node --test .github/scripts/coverage-verdict.test.mjs
           node --test .github/scripts/perf-coverage-fanout.test.mjs
