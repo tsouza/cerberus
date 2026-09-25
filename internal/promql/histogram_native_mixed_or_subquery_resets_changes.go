@@ -231,11 +231,17 @@ func mixedPairVerdictExpr(windowFn string, histSchema schema.Metrics, densified 
 
 	ladderParams, ladderArgs := expHistogramPairBucketLadderArgs()
 	return hqLet(paramMixedOrderedRows, orderedRows, func(rows chplan.Expr) chplan.Expr {
-		args := []chplan.Expr{
-			&chplan.Lambda{Params: append([]string{prevParam, currParam}, ladderParams...), Body: body},
-			&chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{rows}},
-			&chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{rows}},
+		prevRows := &chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{rows}}
+		currRows := &chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{rows}}
+		params := []string{prevParam, currParam}
+		args := []chplan.Expr{nil, prevRows, currRows}
+		// The reset verdict reads the pair's reconciled scale as a lambda
+		// argument — see [expHistogramPairScalesArg].
+		if windowFn != changesWindowFn {
+			params = append(params, paramResetPairScale)
+			args = append(args, expHistogramPairScalesArg(prevRows, currRows))
 		}
+		args[0] = &chplan.Lambda{Params: append(params, ladderParams...), Body: body}
 		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: append(args, ladderArgs...)}
 	})
 }
