@@ -231,7 +231,7 @@ func TestReprobeCHOptimizations_SwapsWhenTheAnswerChanges(t *testing.T) {
 	go func() {
 		defer close(done)
 		reprobeCHOptimizations(ctx, quietLogger(), cfg, live,
-			chOptConsumers{engines: []*engine.Engine{e}}, time.Millisecond, "", probeVersionOverBootstrap)
+			chOptConsumers{engines: []*engine.Engine{e}}, time.Millisecond, "", liveFleetProber(cfg))
 	}()
 
 	deadline := time.Now().Add(20 * time.Second)
@@ -266,7 +266,7 @@ func TestReprobeCHOptimizations_StopsOnContextCancel(t *testing.T) {
 	go func() {
 		defer close(done)
 		reprobeCHOptimizations(ctx, quietLogger(), config.Config{}, newCHOptLive(chOptResolution{}),
-			chOptConsumers{}, time.Hour, "", probeVersionOverBootstrap)
+			chOptConsumers{}, time.Hour, "", liveFleetProber(config.Config{}))
 	}()
 
 	select {

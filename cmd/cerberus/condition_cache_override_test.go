@@ -29,17 +29,17 @@ func TestConditionCacheOverride_ConservativeAcrossTheFleet(t *testing.T) {
 
 	cases := []struct {
 		name    string
-		fv      fleetVersions
+		fv      chclient.FleetVersions
 		current bool
 		want    bool
 	}{
-		{"single unsafe node", fleetVersions{versions: []chopt.Version{ccUnsafeBuild}, complete: true}, false, true},
-		{"mixed fleet, one unsafe replica", fleetVersions{versions: []chopt.Version{ccFixedBuild, ccUnsafeBuild}, complete: true}, false, true},
-		{"unsafe node seen, others unreachable", fleetVersions{versions: []chopt.Version{ccUnsafeBuild}}, false, true},
-		{"every node fixed", fleetVersions{versions: []chopt.Version{ccFixedBuild, ccFixedBuild}, complete: true}, true, false},
-		{"fixed nodes seen, one unreachable, override on", fleetVersions{versions: []chopt.Version{ccFixedBuild}}, true, true},
-		{"fixed nodes seen, one unreachable, override off", fleetVersions{versions: []chopt.Version{ccFixedBuild}}, false, false},
-		{"nothing reachable", fleetVersions{}, true, true},
+		{"single unsafe node", chclient.FleetVersions{Versions: []chopt.Version{ccUnsafeBuild}, Complete: true}, false, true},
+		{"mixed fleet, one unsafe replica", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild, ccUnsafeBuild}, Complete: true}, false, true},
+		{"unsafe node seen, others unreachable", chclient.FleetVersions{Versions: []chopt.Version{ccUnsafeBuild}}, false, true},
+		{"every node fixed", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild, ccFixedBuild}, Complete: true}, true, false},
+		{"fixed nodes seen, one unreachable, override on", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild}}, true, true},
+		{"fixed nodes seen, one unreachable, override off", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild}}, false, false},
+		{"nothing reachable", chclient.FleetVersions{}, true, true},
 	}
 	for _, tc := range cases {
 		if got := conditionCacheOverride(tc.fv, tc.current); got != tc.want {
@@ -77,13 +77,10 @@ func TestReprobe_ConditionCacheOverrideEngagesWhenResolveFails(t *testing.T) {
 
 	boot := resolutionAt(t, ccFixedBuild, chopt.FeatureConditionCache)
 	live := newCHOptLive(boot)
-	consumers := chOptConsumers{
-		client: client,
-		fleet: func(context.Context) fleetVersions {
-			return fleetVersions{versions: []chopt.Version{ccUnsafeBuild}, complete: true}
-		},
+	consumers := chOptConsumers{client: client}
+	rolledBack := func(context.Context) chclient.FleetVersions {
+		return chclient.FleetVersions{Versions: []chopt.Version{ccUnsafeBuild}, Complete: true}
 	}
-	rolledBack := func(context.Context, chclient.Config) (chopt.Version, error) { return ccUnsafeBuild, nil }
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -118,17 +115,15 @@ func TestRefreshConditionCacheOverride_SharedByHeadViews(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	view := client.ForHead(chclient.HeadProm)
-	probe := func(v chopt.Version) fleetProber {
-		return func(context.Context) fleetVersions {
-			return fleetVersions{versions: []chopt.Version{v}, complete: true}
-		}
+	probe := func(v chopt.Version) chclient.FleetVersions {
+		return chclient.FleetVersions{Versions: []chopt.Version{v}, Complete: true}
 	}
 
-	refreshConditionCacheOverride(context.Background(), quietLogger(), client, probe(ccUnsafeBuild))
+	refreshConditionCacheOverride(quietLogger(), client, probe(ccUnsafeBuild))
 	if !view.QueryConditionCacheDisabled() {
 		t.Fatal("override off on a head view after an unsafe fleet probe")
 	}
-	refreshConditionCacheOverride(context.Background(), quietLogger(), client, probe(ccFixedBuild))
+	refreshConditionCacheOverride(quietLogger(), client, probe(ccFixedBuild))
 	if view.QueryConditionCacheDisabled() {
 		t.Fatal("override still on on a head view after every node answered from a fixed build")
 	}
@@ -172,10 +167,90 @@ func TestLiveFleetProber_UnreachableNodesMakeAnIncompletePass(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	fv := liveFleetProber(cfg)(ctx)
-	if fv.complete || len(fv.versions) != 0 {
+	if fv.Complete || len(fv.Versions) != 0 {
 		t.Fatalf("fleet probe over unreachable addresses = %+v; want an incomplete pass with no versions", fv)
 	}
 	if !conditionCacheOverride(fv, true) {
 		t.Fatal("an incomplete pass lifted the override")
+	}
+}
+
+// Builds on either side of join_spill's 26.4 floor.
+var (
+	fleetOldBuild = chopt.Version{Major: 25, Minor: 3, Patch: 14, Build: 14}
+	fleetNewBuild = chopt.Version{Major: 26, Minor: 6, Patch: 1, Build: 1193}
+)
+
+// TestFleetResolutionVersion pins the version feature resolution runs
+// against: the oldest reached build; an incomplete pass never raises it above
+// the version in force, except off a floor fallback; nothing reached is an
+// error.
+func TestFleetResolutionVersion(t *testing.T) {
+	t.Parallel()
+
+	held := &chOptResolution{ResolvedVersion: fleetOldBuild}
+	fallback := &chOptResolution{ResolvedVersion: supportedFloorVersion, VersionFallback: true}
+	cases := []struct {
+		name    string
+		fv      chclient.FleetVersions
+		inForce *chOptResolution
+		want    chopt.Version
+		wantErr bool
+	}{
+		{"boot, mixed fleet", chclient.FleetVersions{Versions: []chopt.Version{fleetNewBuild, fleetOldBuild}, Complete: true}, nil, fleetOldBuild, false},
+		{"boot, partial fleet", chclient.FleetVersions{Versions: []chopt.Version{fleetNewBuild}}, nil, fleetNewBuild, false},
+		{"complete pass raises", chclient.FleetVersions{Versions: []chopt.Version{fleetNewBuild}, Complete: true}, held, fleetNewBuild, false},
+		{"incomplete pass never raises", chclient.FleetVersions{Versions: []chopt.Version{fleetNewBuild}}, held, fleetOldBuild, false},
+		{"incomplete pass lowers", chclient.FleetVersions{Versions: []chopt.Version{fleetOldBuild}}, &chOptResolution{ResolvedVersion: fleetNewBuild}, fleetOldBuild, false},
+		{"incomplete pass lifts a floor fallback", chclient.FleetVersions{Versions: []chopt.Version{fleetNewBuild}}, fallback, fleetNewBuild, false},
+		{"nothing reached", chclient.FleetVersions{}, held, chopt.Version{}, true},
+	}
+	for _, tc := range cases {
+		got, err := fleetResolutionVersion(tc.fv, tc.inForce)
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Errorf("%s: fleetResolutionVersion = %v, %v; want %v, err=%v", tc.name, got, err, tc.want, tc.wantErr)
+		}
+	}
+}
+
+// TestReprobe_ResolvesAgainstTheOldestNode — a fleet whose probed nodes sit
+// on either side of join_spill's floor must resolve without it, however new
+// the node the resolution in force was read from.
+func TestReprobe_ResolvesAgainstTheOldestNode(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		CHOptimizations:     "auto",
+		CHOptimizationsMode: chopt.Permissive,
+		Schema:              schema.DefaultOTelMetrics(),
+	}
+	cfg.ClickHouse.Addr = unreachableAddr(t)
+	cfg.ClickHouse.DialTimeout = 100 * time.Millisecond
+
+	boot := resolutionAt(t, fleetNewBuild, chopt.FeatureJoinSpill)
+	live := newCHOptLive(boot)
+	mixed := func(context.Context) chclient.FleetVersions {
+		return chclient.FleetVersions{Versions: []chopt.Version{fleetNewBuild, fleetOldBuild}, Complete: true}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reprobeCHOptimizations(ctx, quietLogger(), cfg, live, chOptConsumers{}, time.Millisecond, "", mixed)
+	}()
+
+	deadline := time.Now().Add(20 * time.Second)
+	for live.get().ResolvedVersion != fleetOldBuild {
+		if time.Now().After(deadline) {
+			t.Fatalf("the re-probe never resolved against the oldest node: %+v", live.get())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if got := live.get(); got.Set.Has(chopt.FeatureJoinSpill) || got.VersionFallback {
+		t.Fatalf("resolved against %s but enabled=%v fallback=%v; want join_spill off", got.ResolvedVersion, got.Set.IDs(), got.VersionFallback)
 	}
 }
