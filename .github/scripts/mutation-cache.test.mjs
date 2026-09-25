@@ -7,8 +7,15 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  PRODUCING_WORKFLOW,
   aggregateProblems,
   collectKeyInputs,
+  gitBlobSha,
+  harnessBlobs,
+  provenanceDir,
+  rapidDeterminismProblems,
+  toolchainFingerprint,
+  verifyProducingRun,
   literalRelativePaths,
   runnerScriptHashes,
 } from './mutation-cache.mjs';
@@ -66,7 +73,12 @@ const baseParams = {
   phaseRow: { phase: 'p1', scope: './a', efficacy: 90, workers: 0, exclude_files: '' },
   diffRef: '',
   runnerEnv: { MUTANT_TIMEOUT_MIN: '15s', MUTANT_TIMEOUT_MAX: '120s' },
-  toolchain: { version: 'go version go1.26.4 linux/amd64', env: { CGO_ENABLED: '1', GOEXPERIMENT: '', GOFLAGS: '' } },
+  toolchain: {
+    version: 'go version go1.26.4 linux/amd64',
+    env: { CGO_ENABLED: '1', GOEXPERIMENT: '', GOFLAGS: '' },
+    git: 'git version 2.55.0',
+    gitConfig: { 'diff.renames': 'true', 'diff.renameLimit': '1000', 'diff.algorithm': 'myers' },
+  },
   gremlins: { module: 'github.com/tsouza/gremlins/cmd/gremlins', ref: 'r1', commit: 'a'.repeat(40) },
   scripts: { 'mutation-run.mjs': 'h1', 'lib/gh.mjs': 'h2' },
   runner: { RUNNER_OS: 'Linux', RUNNER_ARCH: 'X64', ImageOS: 'ubuntu24', ImageVersion: '20260901.1', kernel: '6.8.0', node: 'v24.0.0' },
@@ -126,6 +138,8 @@ const paramFlips = [
   ['a runner lib', { scripts: { ...baseParams.scripts, 'lib/gh.mjs': 'h9' } }],
   ['the runner image version', { runner: { ...baseParams.runner, ImageVersion: '20260915.2' } }],
   ['the node version', { runner: { ...baseParams.runner, node: 'v26.0.0' } }],
+  ['the git version', { toolchain: { ...baseParams.toolchain, git: 'git version 2.56.0' } }],
+  ['the pinned rename setting', { toolchain: { ...baseParams.toolchain, gitConfig: { ...baseParams.toolchain.gitConfig, 'diff.renames': 'false' } } }],
   ['the build tags in GOFLAGS', { toolchain: { ...baseParams.toolchain, env: { ...baseParams.toolchain.env, GOFLAGS: '-tags=chdb' } } }],
 ];
 for (const [name, over] of paramFlips) {
@@ -211,7 +225,7 @@ function report(statuses) {
 const rep = (k, l, t = 0, r = 0) =>
   report([...Array(k).fill('KILLED'), ...Array(l).fill('LIVED'), ...Array(t).fill('TIMED OUT'), ...Array(r).fill('RUN TIMED OUT')]);
 
-test('timingStability caches a verdict no re-timing can flip, and refuses one it can', () => {
+test('timingStability stores a verdict no re-scoring of its timed-out mutants can flip, and refuses one it can', () => {
   assert.equal(timingStability(rep(9, 1), 80).stable, true);
   // 90 killed, 5 lived, 5 timed out: 90..95% under re-timing, all >= 80.
   assert.deepEqual([timingStability(rep(90, 5, 3, 2), 80).stable, timingStability(rep(90, 5, 3, 2), 80).pass], [true, true]);
@@ -251,26 +265,109 @@ test('validateEntry accepts a sound entry and treats every defect as a miss', ()
   }
 });
 
-test('the aggregator accepts runs and validated hits, and rejects anything unverified', () => {
-  const matrix = { include: [{ phase: 'p1', efficacy: 90 }] };
+const hitFixture = () => {
   const entry = good();
-  const hit = { phase: 'p1', source: 'cache', key, digest: entry.digest, sourceRunUrl: runUrl };
-  const ok = (rec) => aggregateProblems(matrix, () => rec, { cacheAllowed: true });
-  assert.deepEqual(ok({ provenance: { phase: 'p1', source: 'run', key } }), []);
-  assert.deepEqual(ok({ provenance: hit, entry }), []);
-  assert.equal(ok({}).length, 1, 'missing provenance');
-  assert.equal(ok({ provenance: hit }).length, 1, 'hit without entry');
-  assert.equal(ok({ provenance: hit, entry: { ...entry, report: rep(1, 9) } }).length, 1, 'tampered entry');
-  assert.equal(ok({ provenance: { ...hit, key: 'f'.repeat(64) }, entry }).length, 1, 'key mismatch');
-  assert.equal(ok({ provenance: { ...hit, digest: 'f'.repeat(64) }, entry }).length, 1, 'digest mismatch');
-  assert.equal(ok({ provenance: { ...hit, source: 'trust-me' }, entry }).length, 1, 'unknown source');
-  assert.equal(ok({ provenance: { ...hit, phase: 'p2' }, entry }).length, 1, 'wrong phase');
-  assert.equal(aggregateProblems({ include: [{ phase: 'p1', efficacy: 80 }] }, () => ({ provenance: hit, entry }), { cacheAllowed: true }).length, 1, 'threshold drift');
-  // Where the cache is off (main, nightly, dispatch, the kill switch) even a
-  // valid hit is refused, and a run still passes.
-  assert.equal(aggregateProblems(matrix, () => ({ provenance: hit, entry }), { cacheAllowed: false }).length, 1, 'hit where off');
-  assert.deepEqual(aggregateProblems(matrix, () => ({ provenance: { phase: 'p1', source: 'run', key } }), { cacheAllowed: false }), []);
-  assert.equal(validateProvenance(null, { phase: 'p1', threshold: 90 }) !== null, true);
+  return { entry, hit: { phase: 'p1', source: 'cache', key, digest: entry.digest, sourceRunUrl: runUrl, runner: {} } };
+};
+const agg = (matrix, rec, over = {}) =>
+  aggregateProblems(matrix, () => rec, {
+    cacheAllowed: true,
+    recompute: async () => ({ key, cacheable: true, reason: '' }),
+    verifyRun: async () => null,
+    ...over,
+  });
+
+test('the aggregator accepts runs and verified hits, and rejects anything unverified', async () => {
+  const matrix = { include: [{ phase: 'p1', efficacy: 90 }] };
+  const { entry, hit } = hitFixture();
+  assert.deepEqual(await agg(matrix, { provenance: { phase: 'p1', source: 'run', key } }), []);
+  assert.deepEqual(await agg(matrix, { provenance: hit, entry }), []);
+  const one = async (name, rec, over) => assert.equal((await agg(matrix, rec, over)).length, 1, name);
+  await one('missing provenance', {});
+  await one('hit without entry', { provenance: hit });
+  await one('tampered entry', { provenance: hit, entry: { ...entry, report: rep(1, 9) } });
+  await one('digest mismatch', { provenance: { ...hit, digest: 'f'.repeat(64) }, entry });
+  await one('unknown source', { provenance: { ...hit, source: 'trust-me' }, entry });
+  await one('wrong phase', { provenance: { ...hit, phase: 'p2' }, entry });
+  // The key the aggregator holds against is its own recomputation. A leg that
+  // wrote a matching key into its record and a matching forged entry is still
+  // refused when this checkout keys differently.
+  const forgedKey = 'f'.repeat(64);
+  const forged = buildEntry({ key: forgedKey, phase: 'p1', threshold: 90, sourceRunUrl: runUrl, report: rep(10, 0) });
+  await one('leg key differs from recomputed', { provenance: { ...hit, key: forgedKey, digest: forged.digest }, entry: forged });
+  await one('recompute says not cacheable', { provenance: hit, entry }, { recompute: async () => ({ key, cacheable: false, reason: 'rapid' }) });
+  await one('producing run unverified', { provenance: hit, entry }, { verifyRun: async () => 'harness differs' });
+  await one('recompute throws', { provenance: hit, entry }, { recompute: async () => { throw new Error('go list failed'); } });
+  await one('hit where the cache is off', { provenance: hit, entry }, { cacheAllowed: false });
+  assert.deepEqual(await agg(matrix, { provenance: { phase: 'p1', source: 'run', key } }, { cacheAllowed: false }), []);
+  assert.equal((await agg({ include: [{ phase: 'p1', efficacy: 80 }] }, { provenance: hit, entry })).length, 1, 'threshold drift');
+  assert.notEqual(validateProvenance(null, { phase: 'p1', threshold: 90 }), null);
+});
+
+function fakeApi(over = {}) {
+  const repo = 'o/r';
+  const run = {
+    repository: { full_name: repo },
+    path: PRODUCING_WORKFLOW,
+    event: 'pull_request',
+    status: 'completed',
+    pull_requests: [{ number: 7 }],
+    head_repository: { full_name: repo },
+    head_branch: 'feature',
+    head_sha: 'h'.repeat(40),
+    ...over.run,
+  };
+  const pr = { head: { repo: { full_name: over.prRepo ?? repo }, ref: 'feature' } };
+  const blobs = { '.github/scripts/x.mjs': 'a1', ...over.blobs };
+  return async (path) => {
+    if (path === '/repos/o/r/actions/runs/123') return run;
+    if (path === '/repos/o/r/pulls/7') return pr;
+    const m = path.match(/^\/repos\/o\/r\/contents\/(.+)\?ref=(.+)$/);
+    if (m && m[2] === run.head_sha) return { sha: blobs[m[1]] };
+    throw new Error(`unexpected ${path}`);
+  };
+}
+
+test('verifyProducingRun accepts only a completed mutation.yml pull_request run of this PR with this harness', async () => {
+  const base = { repo: 'o/r', prNumber: 7, sourceRunUrl: 'https://github.com/o/r/actions/runs/123/attempts/1', harness: { '.github/scripts/x.mjs': 'a1' } };
+  assert.equal(await verifyProducingRun({ ...base, api: fakeApi() }), null);
+  // A fork PR's run lists no pull_requests; head repo + branch identify it.
+  assert.equal(await verifyProducingRun({ ...base, api: fakeApi({ run: { pull_requests: [] } }) }), null);
+  const bad = {
+    'another repo in the URL': [{ sourceRunUrl: 'https://github.com/x/y/actions/runs/123' }, {}],
+    'a malformed URL': [{ sourceRunUrl: 'nope' }, {}],
+    'another workflow': [{}, { run: { path: '.github/workflows/evil.yml' } }],
+    'a push event': [{}, { run: { event: 'push' } }],
+    'a run still in progress': [{}, { run: { status: 'in_progress' } }],
+    'another PR': [{}, { run: { pull_requests: [{ number: 8 }], head_branch: 'other' } }],
+    'a modified harness': [{}, { blobs: { '.github/scripts/x.mjs': 'b2' } }],
+    'another repository': [{}, { run: { repository: { full_name: 'x/y' } } }],
+  };
+  for (const [name, [args, over]] of Object.entries(bad)) {
+    assert.notEqual(await verifyProducingRun({ ...base, ...args, api: fakeApi(over) }), null, name);
+  }
+});
+
+test('harnessBlobs uses git blob ids and covers the workflow and scripts', () => {
+  assert.equal(gitBlobSha('hello\n'), 'ce013625030ba8dba906f756967f9e9ca394464a');
+  const blobs = harnessBlobs(join(here, '..', '..'));
+  for (const p of ['.github/workflows/mutation.yml', '.github/scripts/mutation-run.mjs', '.github/scripts/lib/mutation-cache.mjs']) {
+    assert.match(blobs[p] ?? '', /^[0-9a-f]{40}$/, p);
+  }
+});
+
+test('provenanceDir reads a phase only from its own artifact', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'mutation-cache-prov-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // Leg p2 wrote a p1 record into its own artifact.
+  mkdirSync(join(dir, 'mutation-provenance-p2', 'p1'), { recursive: true });
+  mkdirSync(join(dir, 'mutation-provenance-p1', 'p1'), { recursive: true });
+  assert.equal(provenanceDir(dir, 'p1', 2), join(dir, 'mutation-provenance-p1', 'p1'));
+  rmSync(join(dir, 'mutation-provenance-p1'), { recursive: true });
+  assert.equal(provenanceDir(dir, 'p1', 2), join(dir, 'mutation-provenance-p1', 'p1'), 'never falls back to a foreign artifact');
+  const lone = mkdtempSync(join(tmpdir(), 'mutation-cache-lone-'));
+  t.after(() => rmSync(lone, { recursive: true, force: true }));
+  assert.equal(provenanceDir(lone, 'p1', 1), join(lone, 'p1'));
 });
 
 // absent reports whether a path is gone by trying to read it, rather than a
@@ -298,7 +395,9 @@ test('check mode: a valid entry is a hit that writes the report; a corrupt or mi
     ENTRY: join(dir, 'entry.json'), REPORT: join(dir, 'gremlins.json'),
     PROVENANCE: join(dir, 'provenance.json'), GITHUB_OUTPUT: join(dir, 'out'),
     MUTATION_CACHE: 'read-write',
+    RESTORED: 'true', KEY_CACHEABLE: 'true', RUNNER_FILE: join(dir, 'runner.json'),
   };
+  writeFileSync(env.RUNNER_FILE, '{}');
   writeFileSync(env.GITHUB_OUTPUT, '');
   let r = cli(t, env);
   assert.equal(r.status, 0, r.stdout);
@@ -323,8 +422,22 @@ test('check mode: a valid entry is a hit that writes the report; a corrupt or mi
   assert.deepEqual(JSON.parse(readFileSync(env.REPORT, 'utf8')), good().report);
   assert.equal(JSON.parse(readFileSync(env.PROVENANCE, 'utf8')).source, 'cache');
 
+  // An entry that was already in the checkout (committed by the change) is
+  // not a restore: without the restore step's hit signal it is discarded,
+  // and so is any entry of a leg the key step found not cacheable.
+  for (const over of [{ RESTORED: '' }, { RESTORED: 'false' }, { KEY_CACHEABLE: 'false' }]) {
+    rmSync(env.REPORT, { force: true });
+    writeFileSync(env.ENTRY, canonicalJson(good()));
+    writeFileSync(env.GITHUB_OUTPUT, '');
+    r = cli(t, { ...env, ...over });
+    assert.equal(r.status, 0, r.stdout);
+    assert.match(readFileSync(env.GITHUB_OUTPUT, 'utf8'), /hit=false/, JSON.stringify(over));
+    assert.ok(absent(env.REPORT));
+    assert.ok(absent(env.ENTRY));
+  }
+
   // The kill switch: the same valid entry is ignored and discarded.
-  rmSync(env.REPORT);
+  rmSync(env.REPORT, { force: true });
   writeFileSync(env.GITHUB_OUTPUT, '');
   for (const off of ['off', '']) {
     writeFileSync(env.ENTRY, canonicalJson(good()));
@@ -334,4 +447,73 @@ test('check mode: a valid entry is a hit that writes the report; a corrupt or mi
     assert.ok(absent(env.REPORT));
     assert.ok(absent(env.ENTRY));
   }
+});
+
+function commitAll(root, msg) {
+  sh(root, 'git', ['add', '-A']);
+  sh(root, 'git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', msg]);
+  return sh(root, 'git', ['rev-parse', 'HEAD']).trim();
+}
+
+test('a changed-line key moves with the merge base even when the checkout is identical', (t) => {
+  const root = repo(t);
+  const b1 = sh(root, 'git', ['rev-parse', 'HEAD']).trim();
+  edit(root, 'notes/readme.txt', 'second base\n');
+  const b2 = commitAll(root, 'b2');
+  edit(root, 'a/a.go', `${readFileSync(join(root, 'a/a.go'), 'utf8')}// head\n`);
+  commitAll(root, 'head');
+  const at = (ref) => keyOf(root, { diffRef: ref, phaseRow: { ...baseParams.phaseRow, diff_ref: ref } });
+  assert.notEqual(at(b1), at(b2));
+});
+
+test('a changed-line key sees a rename whose source lies outside the scope', (t) => {
+  const body = `package a\n\n${Array.from({ length: 40 }, (_, i) => `func F${i}() int { return ${i} }`).join('\n')}\n`;
+  const build = (keepSource) => {
+    const root = repo(t);
+    mkdirSync(join(root, 'other'), { recursive: true });
+    edit(root, 'other/f.go', body);
+    const base = commitAll(root, 'base');
+    edit(root, 'a/f.go', body);
+    if (!keepSource) rmSync(join(root, 'other/f.go'));
+    commitAll(root, 'move');
+    return keyOf(root, { diffRef: base, phaseRow: { ...baseParams.phaseRow, diff_ref: base } });
+  };
+  assert.notEqual(build(true), build(false));
+});
+
+test('toolchainFingerprint reads the real go env and the pinned git diff settings', (t) => {
+  const root = repo(t);
+  const plain = toolchainFingerprint(root, { ...process.env, GOFLAGS: '' });
+  assert.match(plain.version, /^go version go/);
+  assert.match(plain.git, /^git version /);
+  const tagged = toolchainFingerprint(root, { ...process.env, GOFLAGS: '-tags=chdb' });
+  assert.equal(tagged.env.GOFLAGS, '-tags=chdb');
+  assert.notEqual(canonicalJson(tagged), canonicalJson(plain));
+  const cgo = toolchainFingerprint(root, { ...process.env, GOFLAGS: '', CGO_ENABLED: plain.env.CGO_ENABLED === '1' ? '0' : '1' });
+  assert.notEqual(cgo.env.CGO_ENABLED, plain.env.CGO_ENABLED);
+  const renames = toolchainFingerprint(root, {
+    ...process.env, GOFLAGS: '', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'diff.renames', GIT_CONFIG_VALUE_0: 'false',
+  });
+  assert.equal(renames.gitConfig['diff.renames'], 'false');
+  assert.notEqual(canonicalJson(renames), canonicalJson(plain));
+});
+
+test('a leg whose tests link rapid is cacheable only with the seed set and the pin hook present', (t) => {
+  const root = repo(t);
+  const bin = join(root, 'fakebin');
+  mkdirSync(bin);
+  // A `go` that reports package a's test binary as linking rapid.
+  writeFileSync(
+    join(bin, 'go'),
+    `#!/bin/sh\nprintf 'example.com/m/a\\t%s\\tfmt pgregory.net/rapid\\n' ${JSON.stringify(join(root, 'a'))}\n`,
+    { mode: 0o755 },
+  );
+  const env = (seed) => ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, CERBERUS_RAPID_SEED: seed });
+  assert.equal(rapidDeterminismProblems(root, './a', env('')).length, 2, 'no seed, no hook');
+  assert.equal(rapidDeterminismProblems(root, './a', env('1')).length, 1, 'seed, no hook');
+  edit(root, 'a/rapid_seed_test.go', 'package a\n\n// CERBERUS_RAPID_SEED applies to flag.Lookup("rapid.seed")\n');
+  assert.deepEqual(rapidDeterminismProblems(root, './a', env('1')), []);
+  assert.equal(rapidDeterminismProblems(root, './a', env('')).length, 1, 'hook, no seed');
+  // A scope whose tests do not link rapid needs neither.
+  assert.deepEqual(rapidDeterminismProblems(root, './a', { ...process.env, CERBERUS_RAPID_SEED: '' }), []);
 });

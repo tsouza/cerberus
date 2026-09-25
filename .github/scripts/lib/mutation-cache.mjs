@@ -47,16 +47,21 @@
 //                  to repository data at runtime from anything but literals is
 //                  outside what this discovers; write such paths as literals.
 //
-// TIMED-OUT MUTANTS. `RUN TIMED OUT` and `TIMED OUT` are the only outcomes
-// that depend on how fast the runner was, not only on the inputs above. An
-// entry is written only when its verdict is PROVEN STABLE under every
-// re-timing: the gate is evaluated with every timed-out mutant (both kinds)
-// scored as KILLED and again as LIVED, and those two extremes bound every
-// assignment in between (a mutant leaving the ratio as unadjudicated lies
-// between them too). If both extremes give the same pass/fail as the
-// report itself, no runner speed can flip the verdict, and the entry is stored;
-// otherwise the leg is not cached and runs again next time. The stored report
-// keeps its real counts, and the threshold step re-gates it on a hit.
+// TIMED-OUT MUTANTS. `RUN TIMED OUT` and `TIMED OUT` depend on how fast the
+// runner was, not only on the inputs above. What the store rule covers, and
+// what it does not:
+//
+//   covered      re-timing of the mutants that DID time out on the producing
+//                run. An entry is written only when the verdict is the same
+//                with every one of them scored as KILLED and again as LIVED;
+//                those extremes bound every re-scoring of them (a mutant that
+//                leaves the ratio instead lies between the two).
+//   not covered  a mutant that completed on the producing run and would time
+//                out on a slower runner (KILLED -> TIMED OUT lowers the score),
+//                or complete on a faster one. A stored verdict is the verdict
+//                of the producing run's runner; a later run on a slower runner
+//                could score lower. The lane has the same exposure without the
+//                cache, between two runs of one commit.
 //
 // A report that still holds a RUNNABLE mutant (the run was interrupted) or a
 // status the threshold gate does not know is never cached.
@@ -77,11 +82,35 @@
 // An entry is written to disk in full before the save step starts, and a
 // truncated or otherwise partial entry fails its digest and is a miss.
 //
-// AN ENTRY IS BELIEVED ONLY AFTER VALIDATION. validateEntry() recomputes the
-// entry's digest over everything it carries, requires its key to equal the key
-// computed from this checkout, and re-applies the timing-stability rule. A
-// missing, unparsable, tampered, mismatched or unstable entry is a MISS and the
-// leg runs gremlins; it is never a pass.
+// AN ENTRY IS BELIEVED ONLY AFTER VALIDATION, AT TWO INDEPENDENT LAYERS.
+//
+//   the leg      mutation.yml deletes any .mutation-cache/ and provenance/
+//                already in the checkout before restoring, and `check` reads
+//                an entry only when the restore step reported a hit on the
+//                exact key (RESTORED=true) and the leg is cacheable. It then
+//                recomputes the entry's digest, requires its key, phase and
+//                threshold to match, and re-applies the timed-out rule.
+//   the aggregator  recomputes each hit's key from its own checkout (taking
+//                only the runner description from the leg), rejects a leg that
+//                is not cacheable, validates the entry against that key, and
+//                verifies through the API that the entry's producing run is a
+//                completed pull_request run of mutation.yml for this PR whose
+//                head carried harness files byte-identical to the ones running
+//                now. An entry written by a run of a modified harness is
+//                therefore refused.
+//
+// A missing, unparsable, tampered, mismatched or unverifiable entry is a miss
+// at the leg and a failure at the aggregator; it is never a pass.
+//
+// NONDETERMINISTIC LEGS. A leg whose test binaries link rapid is cacheable only
+// when every such binary's package applies CERBERUS_RAPID_SEED to `rapid.seed`
+// and the variable is set (the workflow sets it; its value is in the key).
+// Anything else draws different inputs per run and is never cached.
+//
+// WHAT THE CACHE CANNOT ADD. The change under test runs inside the producing
+// leg and can already influence that leg's report; an entry records exactly
+// what that run reported, under that run's own key, so a hit never shows more
+// than the producing run showed.
 
 import { createHash } from 'node:crypto';
 
@@ -220,20 +249,22 @@ export function validateEntry(raw, { key, phase, threshold }) {
   return { ok: true, entry };
 }
 
-// PROVENANCE: every leg records where its verdict came from, and the
-// `mutation` aggregator checks the record of every selected phase. A cache
-// record carries the entry itself so the aggregator re-verifies it instead of
-// trusting the leg's word.
+// PROVENANCE: every leg records where its verdict came from. The `mutation`
+// aggregator checks the record of every selected phase; for a cache record it
+// validates the carried entry against the key IT recomputed from the checkout
+// (`key`), never against the key the leg wrote into the record.
 export const PROVENANCE_SOURCES = Object.freeze(['run', 'cache']);
 
-export function validateProvenance(record, { phase, threshold, entry }) {
+export function validateProvenance(record, { phase, threshold, entry, key }) {
   if (record === null || typeof record !== 'object') return 'provenance is not an object';
   if (record.phase !== phase) return `provenance phase ${JSON.stringify(record.phase)} is not ${phase}`;
   if (!PROVENANCE_SOURCES.includes(record.source)) return `provenance source ${JSON.stringify(record.source)}`;
   if (!hexDigestPattern.test(String(record.key))) return 'provenance key is malformed';
   if (record.source === 'run') return null;
+  if (!hexDigestPattern.test(String(key))) return 'no recomputed key to check the hit against';
+  if (record.key !== key) return 'the leg\'s key differs from the key recomputed from this checkout';
   if (entry === undefined) return 'cache hit carries no entry to verify';
-  const verdict = validateEntry(entry, { key: record.key, phase, threshold });
+  const verdict = validateEntry(entry, { key, phase, threshold });
   if (!verdict.ok) return `cache entry fails validation: ${verdict.reason}`;
   if (record.digest !== entry.digest) return 'provenance digest does not name the carried entry';
   return null;

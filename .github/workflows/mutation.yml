@@ -65,6 +65,28 @@ env:
   # refuses a cache hit on them. Setting the repository variable
   # MUTATION_CACHE_DISABLED to `true` turns it off on pull requests too.
   MUTATION_CACHE: ${{ (github.event_name == 'pull_request' && vars.MUTATION_CACHE_DISABLED != 'true') && 'read-write' || 'off' }}
+  # Read by the install step, and by the cache key (in the legs and again in
+  # the aggregator), which resolves the ref to the fork commit it names.
+  GREMLINS_INSTALL: github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-workdir-fd-leak-consume
+  # The runner's per-mutant bounds (see the `gremlins unleash` step); part
+  # of the cache key because they can move a verdict.
+  MUTANT_TIMEOUT_MIN: 15s
+  MUTANT_TIMEOUT_MAX: 120s
+  # Pins every rapid property test's seed in a package carrying the pin hook
+  # (internal/chplan/rapid_seed_test.go), so a mutant's verdict does not
+  # depend on the draw. A leg linking rapid without the hook is never cached.
+  CERBERUS_RAPID_SEED: '1'
+  # gremlins builds a changed-line leg's mutant set from `git diff
+  # --merge-base <ref>`, and the cache key hashes that same output. Rename
+  # detection and the diff algorithm change it, so they are pinned here for
+  # both instead of inherited from whatever git config the runner carries.
+  GIT_CONFIG_COUNT: '3'
+  GIT_CONFIG_KEY_0: diff.renames
+  GIT_CONFIG_VALUE_0: 'true'
+  GIT_CONFIG_KEY_1: diff.renameLimit
+  GIT_CONFIG_VALUE_1: '1000'
+  GIT_CONFIG_KEY_2: diff.algorithm
+  GIT_CONFIG_VALUE_2: myers
 
 concurrency:
   # Main pushes and the exact nightly cron replace only their own modes. Scoped
@@ -153,14 +175,6 @@ jobs:
     # for a pass over work that should have run.
     if: ${{ needs.select.outputs.has_phases == 'true' }}
     runs-on: ubuntu-latest
-    env:
-      # Read by the install step, and by the cache key, which resolves the ref
-      # to the fork commit it names.
-      GREMLINS_INSTALL: github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-workdir-fd-leak-consume
-      # The runner's per-mutant bounds (see the `gremlins unleash` step); part
-      # of the cache key because they can move a verdict.
-      MUTANT_TIMEOUT_MIN: 15s
-      MUTANT_TIMEOUT_MAX: 120s
     # 90 (not 60): the parser legs run workers=1 (see mutation-phases.mjs) to
     # stay under the runner memory ceiling, which serialises their ~109 timeout
     # mutants and pushes wall-clock toward an hour on a 2-core runner. The faster
@@ -192,15 +206,19 @@ jobs:
       # stored report below; a miss runs gremlins and stores the result. Key
       # composition, the timed-out-mutant rule, and validation are in the
       # header of .github/scripts/lib/mutation-cache.mjs.
+      # Nothing the change under test committed may pose as a cache entry or a
+      # provenance record: both directories are cleared before the restore.
+      - name: clear any committed cache entry or provenance record
+        run: rm -rf .mutation-cache provenance
       - id: key
         name: compute the leg's content key
         run: node .github/scripts/mutation-cache.mjs key
         env:
-          SCOPE: ${{ matrix.scope }}
           PHASE_ROW: ${{ toJSON(matrix) }}
-          DIFF_REF: ${{ matrix.diff_ref }}
-      - name: restore a cached verdict
-        if: env.MUTATION_CACHE == 'read-write'
+          RUNNER_FILE: ${{ runner.temp }}/mutation-runner.json
+      - id: restore
+        name: restore a cached verdict
+        if: env.MUTATION_CACHE == 'read-write' && steps.key.outputs.cacheable == 'true'
         uses: actions/cache/restore@v6
         with:
           path: .mutation-cache
@@ -215,6 +233,9 @@ jobs:
           ENTRY: .mutation-cache/entry.json
           REPORT: gremlins.json
           PROVENANCE: provenance/${{ matrix.phase }}/provenance.json
+          RESTORED: ${{ steps.restore.outputs.cache-hit }}
+          KEY_CACHEABLE: ${{ steps.key.outputs.cacheable }}
+          RUNNER_FILE: ${{ runner.temp }}/mutation-runner.json
       # We install gremlins directly via `go install` so we don't
       # depend on a third-party Action's release-download path.
       # The setup-go composite's module cache keeps subsequent runs fast.
@@ -432,6 +453,8 @@ jobs:
           ENTRY: .mutation-cache/entry.json
           REPORT: gremlins.json
           PROVENANCE: provenance/${{ matrix.phase }}/provenance.json
+          KEY_CACHEABLE: ${{ steps.key.outputs.cacheable }}
+          RUNNER_FILE: ${{ runner.temp }}/mutation-runner.json
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
       - name: save the verdict
         if: steps.store.outputs.cacheable == 'true' && env.MUTATION_CACHE == 'read-write'
@@ -439,8 +462,8 @@ jobs:
         with:
           path: .mutation-cache
           key: mutation-leg-${{ steps.key.outputs.key }}
-      # On a hit the aggregator re-verifies the entry itself rather than taking
-      # the leg's word for it, so the entry travels with the provenance record.
+      # On a hit the aggregator validates the entry against a key it recomputes
+      # itself, so the entry travels with the provenance record.
       - name: attach the cache entry to the provenance record
         if: steps.cache.outputs.hit == 'true'
         run: cp .mutation-cache/entry.json "provenance/${PHASE}/entry.json"
@@ -485,6 +508,11 @@ jobs:
     name: mutation
     needs: [select, mutate]
     if: always()
+    permissions:
+      contents: read
+      # Read the producing run of a cache entry and the PR it belongs to.
+      actions: read
+      pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -518,22 +546,29 @@ jobs:
           fi
           echo "all selected mutation phases green."
       # Green legs are not enough: every selected phase must say where its
-      # verdict came from, and a cache hit must carry an entry that re-validates
-      # here against its key and the phase's own threshold. An unverified hit is
-      # a failure, never a pass.
+      # verdict came from. For a cache hit this job recomputes the leg's key
+      # from its own checkout, validates the carried entry against it, and
+      # verifies through the API that the entry's producing run ran the same
+      # harness on this PR. An unverified hit is a failure, never a pass.
       - if: needs.mutate.result == 'success'
         uses: actions/checkout@v7
         with:
-          sparse-checkout: .github/scripts
+          # A changed-line leg's key hashes a merge-base diff.
+          fetch-depth: 0
+      - if: needs.mutate.result == 'success'
+        uses: ./.github/actions/setup-go
+      # Not merged: each artifact stays under its own name, so one leg cannot
+      # write another phase's record.
       - if: needs.mutate.result == 'success'
         uses: actions/download-artifact@v8
         with:
           pattern: mutation-provenance-*
           path: provenance
-          merge-multiple: true
       - name: validate every phase's verdict provenance
         if: needs.mutate.result == 'success'
         run: node .github/scripts/mutation-cache.mjs aggregate
         env:
           MATRIX: ${{ needs.select.outputs.matrix }}
           PROVENANCE_DIR: provenance
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
