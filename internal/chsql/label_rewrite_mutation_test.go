@@ -10,7 +10,7 @@ import (
 )
 
 // The label-rewrite renderers (exprLabelReplace, labelReplaceSubstitution,
-// labelReplaceSegment, srcValue, exprLabelJoin) reach the emitter only through
+// labelReplaceSegment, labelReplaceSource, exprLabelJoin) reach the emitter only through
 // PromQL lowering, so for a long time nothing in this package rendered one and
 // their mutants were reported NOT COVERED rather than killed. Coverage that
 // arrives incidentally — a plan-shape test that happens to lower
@@ -61,13 +61,10 @@ func assertRender(t *testing.T, gotSQL string, gotArgs []any, wantSQL string, wa
 // chplan.LabelReplace describes the value with Replacement and leaves Segments
 // empty.
 //
-// Kills every CONDITIONALS_NEGATION on the `err != nil` guards in
-// exprLabelReplace (the four Map recursions and the substitution call),
-// labelReplaceSubstitution and srcValue: negated to `err == nil`, each guard
-// fires on the success path and returns nil early, truncating the SQL at that
-// point. It also kills labelReplaceSubstitution's `len(l.Segments) == 0`
-// guard, which under negation sends an empty decomposition down the concat
-// path and renders `concat()`.
+// Kills labelReplaceSubstitution's `len(l.Segments) == 0` guard, which under
+// negation sends an empty decomposition down the concat path and renders
+// `concat()`. The regex reads no invalid UTF-8 byte, so the shape is the
+// unguarded one (see labelReplaceValue).
 func TestMutation_ExprLabelReplace_TemplateForm(t *testing.T) {
 	t.Parallel()
 
@@ -76,7 +73,7 @@ func TestMutation_ExprLabelReplace_TemplateForm(t *testing.T) {
 		Dst:              "dst",
 		Replacement:      "v-$1",
 		Src:              "src",
-		Regex:            "(.*)",
+		Regex:            "([a-z]*)",
 		EmptyReplacement: "",
 	})
 
@@ -85,7 +82,7 @@ func TestMutation_ExprLabelReplace_TemplateForm(t *testing.T) {
 		"mapFilter((k, v) -> v != '', if(match(`Attributes`[?], ?), "+
 			"mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, "+
 			"replaceRegexpOne(`Attributes`[?], ?, ?)))), `Attributes`))",
-		[]any{"src", "(?s)^(?:(.*))$", "dst", "src", "", "src", "(?s)^(?:(.*))$", "v-$1"},
+		[]any{"src", "(?s)^(?:([a-z]*))$", "dst", "src", "", "src", "(?s)^(?:([a-z]*))$", "v-$1"},
 	)
 }
 
@@ -96,7 +93,7 @@ func TestMutation_ExprLabelReplace_TemplateForm(t *testing.T) {
 //
 // Kills labelReplaceSegment's switch arms — a segment routed to the wrong arm
 // renders a bound literal where an `extractGroups` subscript belongs, or vice
-// versa — and the `err != nil` guard on its srcValue recursion.
+// versa.
 func TestMutation_ExprLabelReplace_SegmentForm(t *testing.T) {
 	t.Parallel()
 
@@ -106,7 +103,7 @@ func TestMutation_ExprLabelReplace_SegmentForm(t *testing.T) {
 		Map:              attrsMap(),
 		Dst:              "dst",
 		Src:              "src",
-		Regex:            "(.*)",
+		Regex:            "([a-z]*)",
 		EmptyReplacement: "empty",
 		Segments: []chplan.LabelReplaceSegment{
 			{Literal: "pre-", Group: chplan.NoCaptureGroup},
@@ -121,8 +118,8 @@ func TestMutation_ExprLabelReplace_SegmentForm(t *testing.T) {
 			"mapUpdate(`Attributes`, map(?, if(empty(`Attributes`[?]), ?, "+
 			"concat(?, `Attributes`[?], extractGroups(`Attributes`[?], ?)[?])))), `Attributes`))",
 		[]any{
-			"src", "(?s)^(?:(.*))$", "dst", "src", "empty",
-			"pre-", "src", "src", "(?s)^(?:(.*))$", int64(groupAboveTemplateCeiling),
+			"src", "(?s)^(?:([a-z]*))$", "dst", "src", "empty",
+			"pre-", "src", "src", "(?s)^(?:([a-z]*))$", int64(groupAboveTemplateCeiling),
 		},
 	)
 }
@@ -137,7 +134,7 @@ func TestMutation_ExprLabelReplace_SegmentForm(t *testing.T) {
 // capturing wrapper instead.
 //
 // Contrast with TestMutation_ExprLabelReplace_SegmentForm, whose regex
-// `(.*)` cannot split: there the whole-match segment renders the bare
+// `([a-z]*)` cannot split: there the whole-match segment renders the bare
 // `Attributes[?]` subscript. Swapping in a splitting regex must change
 // that rendering — this test is what would fail if
 // labelReplaceAnchorsMaySplit's result were ignored (or negated) in

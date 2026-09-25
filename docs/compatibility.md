@@ -224,6 +224,61 @@ dedicated `datashard` e2e leg instead. See
 [`operations.md`](operations.md#compat-and-migration-lane-scope-single-clickhouse-data-shard)
 for the full reasoning.
 
+## Invalid UTF-8
+
+Label values, attribute values and log lines that are not valid UTF-8 are in
+scope. Every regular expression cerberus has ClickHouse evaluate reads them as
+Go's `regexp` — the Prometheus, Loki and Tempo reference engines' — does: each
+byte that does not begin a valid UTF-8 sequence is one U+FFFD rune, which `.`,
+a negated class and a class or literal holding U+FFFD match. This holds on
+every supported build, with ClickHouse's regex compilation on or off, for:
+
+- label matchers: PromQL selectors, LogQL stream selectors and label filters,
+  TraceQL attribute and event/link comparisons;
+- LogQL line filters (`|~`, `!~`);
+- `label_replace` (PromQL and LogQL);
+- the LogQL `regexp` parser and every other regex function a lowering emits
+  (`match`, `extract`, `extractAll`, `extractAllGroupsHorizontal`,
+  `replaceRegexpOne`, `replaceRegexpAll`).
+
+A result that carries text of its input — a `label_replace` value, a captured
+group, a replaced string — carries the original bytes wherever Go's does.
+
+The emitted shape (`internal/chsql/regex_invalid_utf8.go`):
+
+- A pattern no invalid byte can take part in — no `.`, no class or literal
+  holding U+FFFD or a surrogate, no `\b` / `\B` — is emitted as before.
+- Any other pattern is evaluated as written on a value `isValidUTF8` accepts,
+  and on the value's U+FFFD form (one U+FFFD per invalid byte) otherwise.
+- A function that returns input text is evaluated on an invalid value a second
+  time, with each invalid byte `b` spelled as the code point `U+10FF00 + b`
+  (the substitute block, U+10FF80..U+10FFFF); the two results align rune for
+  rune, and the invalid bytes are written back where they differ.
+
+Where the answer is not Go's:
+
+- A pattern that tells U+FFFD apart from the substitute block — one naming
+  U+FFFD, `\p{Co}`, or a class with a bound between them — is read through a
+  rewrite of itself. On a value holding both an invalid byte and a
+  substitute-block character, its text result carries U+FFFD in place of the
+  invalid bytes it copies.
+- A `replaceRegexpAll`, `extractAll` or `extractAllGroupsHorizontal` pattern
+  that can match the empty string, and a `replaceRegexpOne` /
+  `replaceRegexpAll` pattern of that kind whose rewrite depends on whether `.`
+  matches a newline, likewise carry U+FFFD in place of the invalid bytes.
+- A literal U+FFFD in a matcher or line-filter pattern matches any invalid
+  byte, as in Go's `regexp`. Prometheus's matcher and Loki's line filter
+  compare a pattern's literal parts byte for byte where they can, so there it
+  can match only U+FFFD itself.
+
+Evidence: `just regex-jit-integration` (`test/regexjit`, the `regex-jit` job of
+`strict-scan.yml`) — `TestRegexJIT_InvalidUTF8ShapesMatchGo` renders every
+shape above with the production emitter and compares the raw bytes of each
+answer against Go's `regexp`, and `TestRegexJIT_EmittedShapesMatchReference`'s
+`invalid-utf8` subtest drives selectors, line filters and `label_replace`
+through the production handlers, on 26.7.13.12, 26.8.10.6 and 24.8, with
+compilation off and on.
+
 ## Local run
 
 ```sh
