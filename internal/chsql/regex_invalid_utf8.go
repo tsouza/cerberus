@@ -86,12 +86,7 @@ func readsInvalidByte(re *syntax.Regexp) bool {
 			}
 		}
 	}
-	for _, sub := range re.Sub {
-		if readsInvalidByte(sub) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(re.Sub, readsInvalidByte)
 }
 
 // The UTF-16 surrogate code points, which UTF-8 may not encode.
@@ -744,12 +739,7 @@ func matchesEmpty(re *syntax.Regexp) bool {
 		}
 		return true
 	case syntax.OpAlternate:
-		for _, sub := range re.Sub {
-			if matchesEmpty(sub) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(re.Sub, matchesEmpty)
 	case syntax.OpCapture, syntax.OpPlus:
 		return matchesEmpty(re.Sub[0])
 	}
