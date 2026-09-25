@@ -448,6 +448,15 @@ jobs:
           node --test .github/scripts/align-md-tables.test.mjs
           node --test .github/scripts/gen-coverage.test.mjs
 
+      # docs/coverage.md's coverage-tables block is rendered from
+      # test/surface-parity/inventory/ by gen-coverage.mjs, but nothing ran
+      # its --check mode before this, so a re-pinned ledger could leave the
+      # tables stale (#3696). Mirrors config-docs.yml's regenerate-then-diff
+      # gate for docs/configuration.md; gen-coverage.mjs's own --check mode
+      # already diffs in-memory without writing.
+      - name: Fail on docs/coverage.md drift
+        run: node .github/scripts/gen-coverage.mjs --check
+
       - name: markdownlint
         run: node .github/scripts/markdownlint-run.mjs
 
