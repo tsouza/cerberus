@@ -715,6 +715,9 @@ func lowerSubqueryOverInstantTransform(
 	if err != nil {
 		return nil, err
 	}
+	if rw, ok := windowed.(*chplan.RangeWindow); ok && valuePreserving {
+		boundStaleMarkerLayoutsToIdentity(rw)
+	}
 	if valuePreserving || subqueryIdentityEncodesStaleMarker(call.Func.Name) {
 		return dropStaleLatestSamples(windowed, s), nil
 	}
@@ -1118,7 +1121,7 @@ func lowerSubqueryOverVectorSelector(
 		return nil, err
 	}
 
-	return dropStaleLatestSamples(&chplan.RangeWindow{
+	rw := &chplan.RangeWindow{
 		Input:           inner,
 		Identity:        true,
 		Range:           subqueryStalenessLookback,
@@ -1130,7 +1133,9 @@ func lowerSubqueryOverVectorSelector(
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, s), nil
+	}
+	boundStaleMarkerLayoutsToIdentity(rw)
+	return dropStaleLatestSamples(rw, s), nil
 }
 
 // lowerOuterRangeFnOverSubquery — `max_over_time(rate(m[5m])[1h:5m])`,
@@ -1936,6 +1941,9 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 		// arithmetic — chplan.ReanchorRange and the solver planner's grid
 		// prediction call the same method so all three stay consistent (#1464).
 		inStart, inEnd := v.InputWindow(start, end)
+		// A stale-marker bucket layout beneath this window reads the same
+		// widened input, one step earlier for the epoch-aligned grid.
+		rebindStaleMarkerLayouts(v.Input, staleLayoutWindowBound(v.TimestampColumn, inStart.Add(-v.Step), inEnd))
 		widenSubquerySpine(v.Input, inStart, inEnd)
 	case *chplan.RangeBucketFanout:
 		// Gated on OuterRange > 0 (already-set, not merely Step > 0): a

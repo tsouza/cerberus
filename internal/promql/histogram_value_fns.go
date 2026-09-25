@@ -11,8 +11,8 @@ import (
 )
 
 // isHistogramValueFn reports whether fn is a native-histogram value
-// accessor [lowerHistogramValueFn] lowers — the set lowerCall's dispatch
-// switch routes to it.
+// accessor [lowerHistogramValueFn] lowers — the one list of their names,
+// which lowerCall dispatches on.
 func isHistogramValueFn(fn string) bool {
 	switch fn {
 	case "histogram_count", "histogram_sum", "histogram_avg",

@@ -110,7 +110,9 @@ func TestDownsampleTier_StaleMarkerExcludedByRebuild(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("tier holds %d rows after dropping its views; the rebuild below would not be what populated it", n)
 	}
-	cols := downsampletier.FromSchema(currentDB, schema.DefaultOTelMetrics())
+	m := schema.DefaultOTelMetrics()
+	m.FlagsColumnProbed = true
+	cols := downsampletier.FromSchema(currentDB, m)
 	for _, stmt := range downsampletier.RebuildSQL(cols) {
 		if _, err := db.Exec(stmt.SQL, stmt.Args...); err != nil {
 			t.Fatalf("rebuild insert: %v\n%s", err, stmt.SQL)

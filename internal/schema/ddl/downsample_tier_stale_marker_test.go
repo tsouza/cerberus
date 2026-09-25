@@ -16,14 +16,22 @@ const downsampleTierRecordedValueWhere = " WHERE bitAnd(`Flags`, 1) = 0 GROUP BY
 // the exporter's placeholder 0, which timeSeriesLastTwoSamplesState would
 // otherwise keep as the bucket's trailing sample — a counter reset for
 // irate(), a spurious 0 for last_over_time().
+//
+// The filter is gated on DownsampleTierFlagsColumn: a deployment whose metric
+// tables do not all carry the Flags column reads every row as a sample on
+// the PromQL read path, and its views must not name the column at all.
 func TestRenderDownsampleTierViews_ExcludeStaleMarkers(t *testing.T) {
-	cfg := Config{DownsampleTierEnabled: true}.withDefaults()
-	for name, stmt := range map[string]string{
-		"sum":   renderDownsampleTierView(cfg),
-		"gauge": renderDownsampleTierGaugeView(cfg),
+	cfg := Config{DownsampleTierEnabled: true, DownsampleTierFlagsColumn: "Flags"}.withDefaults()
+	unprobed := Config{DownsampleTierEnabled: true}.withDefaults()
+	for name, stmts := range map[string][2]string{
+		"sum":   {renderDownsampleTierView(cfg), renderDownsampleTierView(unprobed)},
+		"gauge": {renderDownsampleTierGaugeView(cfg), renderDownsampleTierGaugeView(unprobed)},
 	} {
-		if !strings.Contains(stmt, downsampleTierRecordedValueWhere) {
-			t.Errorf("%s tier view lacks %q:\n%s", name, downsampleTierRecordedValueWhere, stmt)
+		if !strings.Contains(stmts[0], downsampleTierRecordedValueWhere) {
+			t.Errorf("%s tier view lacks %q:\n%s", name, downsampleTierRecordedValueWhere, stmts[0])
+		}
+		if strings.Contains(stmts[1], "Flags") {
+			t.Errorf("%s tier view without a Flags column names one:\n%s", name, stmts[1])
 		}
 	}
 }

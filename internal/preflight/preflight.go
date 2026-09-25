@@ -536,6 +536,38 @@ func anyMetricTableAbsent(m schema.Metrics, absent []string) bool {
 	return false
 }
 
+// StaleMarkerFlagsEstablishable reports whether every metric table the
+// Flags probe covers either carries m.FlagsColumn or is absent — schema
+// apply provisions an absent table from the collector exporter's template,
+// which carries the column. It is the verdict [Run] reaches for
+// StaleMarkerFlagsPresent once the schema is provisioned, taken before the
+// provisioning, so the downsample tier's views — created by that
+// provisioning — skip stale-marker rows exactly when the PromQL read path
+// recognises them (schema.Metrics.StaleMarkerFlagsColumn). A schema naming
+// no Flags column reports false.
+func StaleMarkerFlagsEstablishable(ctx context.Context, q Querier, database string, m schema.Metrics) (bool, error) {
+	if m.FlagsColumn == "" {
+		return false, nil
+	}
+	for _, table := range []string{m.GaugeTable, m.SumTable, m.HistogramTable, m.ExpHistogramTable} {
+		if table == "" {
+			continue
+		}
+		sql, args := tableColumnsSQL(database, table)
+		rows, err := q.QueryNameTypePairs(ctx, sql, args...)
+		if err != nil {
+			return false, fmt.Errorf("preflight: introspect table %s: %w", table, err)
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		if !slices.ContainsFunc(rows, func(r chclient.NameTypePair) bool { return r.Name == m.FlagsColumn }) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // ResolveStaleMarkerFlags returns m with FlagsColumnProbed set to r's
 // StaleMarkerFlagsPresent. Stale markers are recognised only when every
 // table a metrics scan may cover — a merge()/UnionTables scan reads gauge
@@ -1066,6 +1098,19 @@ func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, ab
 	return problems, absent, warnings, jsonColsByTable, flagsMissing, nil
 }
 
+// tableColumnsSQL lists one table's (name, type) columns from
+// system.columns; a table that does not exist lists none.
+func tableColumnsSQL(database, table string) (string, []any) {
+	return chsql.NewQuery().
+		Select(chsql.Col("name"), chsql.Col("type")).
+		From(chsql.Qual("system", "columns")).
+		Where(
+			chsql.Eq(chsql.Col("database"), chsql.Lit(database)),
+			chsql.Eq(chsql.Col("table"), chsql.Lit(table)),
+		).
+		Build()
+}
+
 // checkTable introspects one table via system.columns and validates its
 // shape. It returns the per-table wrong-shape problems, the boot-probe
 // warnings, plus an absent flag.
@@ -1088,14 +1133,7 @@ func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, ab
 // flagsMissing reports a table that exists without its t.staleMarkerFlags
 // column, and comes with a warning naming the consequence.
 func checkTable(ctx context.Context, q Querier, database string, t tableReq) (problems, warnings, jsonCols []string, absent, flagsMissing bool, unreachable error) {
-	sql, args := chsql.NewQuery().
-		Select(chsql.Col("name"), chsql.Col("type")).
-		From(chsql.Qual("system", "columns")).
-		Where(
-			chsql.Eq(chsql.Col("database"), chsql.Lit(database)),
-			chsql.Eq(chsql.Col("table"), chsql.Lit(t.name)),
-		).
-		Build()
+	sql, args := tableColumnsSQL(database, t.name)
 	rows, err := q.QueryNameTypePairs(ctx, sql, args...)
 	if err != nil {
 		if isUnreachable(err) {

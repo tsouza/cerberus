@@ -149,8 +149,9 @@ func fanoutWindowBoundsExpr(anchorRef chplan.Expr, win histogramWindow) (start, 
 // latestSampleAgg collapses a filtered histogram scan to the newest
 // sample per series, and drops a series whose newest sample is a stale
 // marker ([staleLatestHaving]); a caller reading a range selection drops
-// the marker rows from its scan instead, so there the HAVING never fires. Reference PromQL resolves a bare selector to at most
-// ONE sample per series, so without this collapse the quantile is
+// the marker rows from its scan instead, so there the HAVING never fires.
+// Reference PromQL resolves a bare selector to at most ONE sample per
+// series, so without this collapse the quantile is
 // evaluated against every stored sample and the same series is emitted
 // once per row it happens to have. The range lowerings get the identical
 // collapse from [chplan.RangeBucketFanout], keyed by (series, anchor)

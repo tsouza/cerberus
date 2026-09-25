@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,10 +16,36 @@ import (
 )
 
 // testColumns builds a Columns value the way a deployment resolving
-// schema.DefaultOTelMetrics() would — mirrors internal/deltaprefix's own
-// testColumns.
+// schema.DefaultOTelMetrics() with its Flags column established would —
+// mirrors internal/deltaprefix's own testColumns.
 func testColumns() Columns {
-	return FromSchema("otel", schema.DefaultOTelMetrics())
+	m := schema.DefaultOTelMetrics()
+	m.FlagsColumnProbed = true
+	return FromSchema("otel", m)
+}
+
+// TestFromSchema_FlagsFollowTheProbe pins that the tier's SELECTs read the
+// Flags column only when the schema established it — the condition the
+// PromQL read path recognises stale markers under — and otherwise read every
+// row as a sample, naming no Flags column.
+func TestFromSchema_FlagsFollowTheProbe(t *testing.T) {
+	unprobed := FromSchema("otel", schema.DefaultOTelMetrics())
+	if unprobed.FlagsColumn != "" {
+		t.Fatalf("unprobed schema: FlagsColumn = %q, want empty", unprobed.FlagsColumn)
+	}
+	for _, stmt := range RebuildSQL(unprobed) {
+		if strings.Contains(stmt.SQL, "Flags") {
+			t.Errorf("rebuild over an unprobed schema names Flags:\n%s", stmt.SQL)
+		}
+	}
+	if sql, _ := baseBucketsSQL(unprobed, unprobed.SumTable, testBefore, time.Time{}, false); strings.Contains(sql, "Flags") {
+		t.Errorf("verify over an unprobed schema names Flags:\n%s", sql)
+	}
+	for _, stmt := range RebuildSQL(testColumns()) {
+		if !strings.Contains(stmt.SQL, recordedValueSQL) {
+			t.Errorf("rebuild over a probed schema lacks %q:\n%s", recordedValueSQL, stmt.SQL)
+		}
+	}
 }
 
 var testBefore = time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC)
@@ -608,6 +635,28 @@ func TestRebuild_ReprovisionsViewsBeforeTruncate(t *testing.T) {
 	}
 	if len(failing.execSQL) != 1 {
 		t.Errorf("Exec calls after a failing view statement = %d; want 1 (no TRUNCATE)", len(failing.execSQL))
+	}
+
+	// A failure after the DROP has run leaves the tier unfed: the error has
+	// to say so and name the recovery, while a failure of the first
+	// statement changed nothing and must not claim otherwise.
+	const unfed = "no longer fed"
+	_, firstErr := Rebuild(context.Background(), &fakeConn{execErrOn: 1, execErr: errors.New("drop failed")}, c, 0, views)
+	if strings.Contains(firstErr.Error(), unfed) {
+		t.Errorf("a failing first view statement claims the views were dropped: %v", firstErr)
+	}
+	afterDrop := &fakeConn{execErrOn: 2, execErr: errors.New("create failed")}
+	_, err := Rebuild(context.Background(), afterDrop, c, 0, views)
+	if err == nil {
+		t.Fatal("expected error from a failing CREATE")
+	}
+	for _, want := range []string{unfed, "re-run `cerberus schema downsample-tier-rebuild`", "create failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("CREATE failure after the DROP: error %q lacks %q", err, want)
+		}
+	}
+	if len(afterDrop.execSQL) != 2 {
+		t.Errorf("Exec calls after a failing CREATE = %d; want 2 (no TRUNCATE)", len(afterDrop.execSQL))
 	}
 }
 

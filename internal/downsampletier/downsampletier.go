@@ -119,7 +119,9 @@ type Columns struct {
 	AggregationTemporalityColumn string
 	// FlagsColumn is the OTel data-point Flags column whose
 	// schema.NoRecordedValueFlag bit marks a Prometheus stale marker — see
-	// recordedValuePredicate.
+	// recordedValueConds. Empty (a schema whose Flags column is not
+	// established, schema.Metrics.StaleMarkerFlagsColumn) reads every row
+	// as a sample, exactly as the tier's views then do.
 	FlagsColumn string
 }
 
@@ -138,7 +140,7 @@ func FromSchema(database string, m schema.Metrics) Columns {
 		TimestampColumn:              m.TimestampColumn,
 		ValueColumn:                  m.ValueColumn,
 		AggregationTemporalityColumn: m.AggregationTemporalityColumn,
-		FlagsColumn:                  m.FlagsColumn,
+		FlagsColumn:                  m.StaleMarkerFlagsColumn(),
 	}
 }
 
@@ -205,19 +207,23 @@ func bucketEndExpr(col string) chsql.Frag {
 
 func bucketSeconds() int64 { return int64(schema.DownsampleTierBucket / time.Second) }
 
-// recordedValuePredicate renders the SAME stale-marker exclusion
+// recordedValueConds renders the SAME stale-marker exclusion
 // internal/schema/ddl's downsampleTierRecordedValuePredicate applies on the
-// live MVs: `bitAnd(Flags, NoRecordedValue) = 0`. A NoRecordedValue row is a
+// live MVs — `bitAnd(Flags, NoRecordedValue) = 0` — as the conditions to
+// conjoin, or none when c names no Flags column. A NoRecordedValue row is a
 // Prometheus stale marker whose Value is the exporter's placeholder 0, so a
 // backfilled or rebuilt tier must skip it exactly as the live MV does, and
 // Verify must not count a bucket holding only markers as one the tier lacks.
 // Like bucketEndExpr it is a copy rather than a shared helper; both
 // packages' tests pin the rendered text.
-func recordedValuePredicate(c Columns) chsql.Frag {
-	return chsql.Eq(
+func recordedValueConds(c Columns) []chsql.Frag {
+	if c.FlagsColumn == "" {
+		return nil
+	}
+	return []chsql.Frag{chsql.Eq(
 		chsql.Call("bitAnd", chsql.Col(c.FlagsColumn), chsql.InlineLit(int64(schema.NoRecordedValueFlag))),
 		chsql.InlineLit(int64(0)),
-	)
+	)}
 }
 
 // backfillSelectSQL renders the SELECT half shared by BackfillSQL (bounded
@@ -240,11 +246,14 @@ func backfillSelectSQL(c Columns, src downsampleTierSource, before *time.Time) *
 			chsql.As(src.temporality, schema.DownsampleTierTemporalityColumn),
 		).
 		From(chsql.Qual(c.Database, src.table))
-	conds := []chsql.Frag{recordedValuePredicate(c)}
+	conds := recordedValueConds(c)
 	if before != nil {
 		conds = append(conds, chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(*before)))
 	}
-	return q.Where(conds...).GroupBy(
+	if len(conds) > 0 {
+		q = q.Where(conds...)
+	}
+	return q.GroupBy(
 		chsql.Col(c.MetricNameColumn),
 		chsql.Col(c.AttributesColumn),
 		chsql.Col(c.ResourceAttributesColumn),
@@ -439,9 +448,20 @@ func Rebuild(ctx context.Context, conn Conn, c Columns, retention time.Duration,
 			return Result{}, err
 		}
 	}
-	for _, stmt := range views {
+	for i, stmt := range views {
 		if err := conn.Exec(withCaps(ctx), stmt); err != nil {
-			return Result{}, fmt.Errorf("downsampletier: re-provision %s views: %w", schema.DownsampleTierTable, err)
+			if i == 0 {
+				return Result{}, fmt.Errorf("downsampletier: re-provision %s views: %w", schema.DownsampleTierTable, err)
+			}
+			// A statement after the first DROP failed: the views this pass
+			// dropped are gone, so nothing feeds the tier until they exist
+			// again. Every statement is idempotent (DROP IF EXISTS, CREATE
+			// IF NOT EXISTS), so re-running the rebuild recovers.
+			return Result{}, fmt.Errorf(
+				"downsampletier: re-provision %s views: %w; the tier's materialized views may be dropped, "+
+					"so the tier is no longer fed from new inserts — re-run `cerberus schema downsample-tier-rebuild` "+
+					"to re-create them and re-populate the tier", schema.DownsampleTierTable, err,
+			)
 		}
 	}
 	if err := conn.Exec(withCaps(ctx), TruncateSQL(c)); err != nil {
@@ -465,7 +485,7 @@ func Rebuild(ctx context.Context, conn Conn, c Columns, retention time.Duration,
 // entry's table (cerberus issue #2858: previously always c.SumTable).
 func baseBucketsSQL(c Columns, source string, before, boundary time.Time, retentionActive bool) (string, []any) {
 	bucket := bucketEndExpr(c.TimestampColumn)
-	conds := []chsql.Frag{recordedValuePredicate(c), chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(before))}
+	conds := append(recordedValueConds(c), chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(before)))
 	if retentionActive {
 		conds = append(conds, chsql.Gte(bucket, chsql.Lit(boundary)))
 	}

@@ -2,8 +2,10 @@ package promql
 
 import (
 	"slices"
+	"time"
 
 	"github.com/prometheus/prometheus/model/value"
+	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -84,17 +86,22 @@ func (c lowerCtx) staleMarkerMode(s schema.Metrics) staleMarkerMode {
 	}
 }
 
-// staleMarkerRowExpr is true on a raw metric row that carries the
-// NoRecordedValue flag.
-func staleMarkerRowExpr(s schema.Metrics) chplan.Expr {
+// staleMarkerFlagSet is true when flags carries the NoRecordedValue bit.
+func staleMarkerFlagSet(flags chplan.Expr) chplan.Expr {
 	return &chplan.Binary{
 		Op: chplan.OpNe,
 		Left: &chplan.FuncCall{
 			Fn:   chplan.FnBitAnd,
-			Args: []chplan.Expr{&chplan.ColumnRef{Name: s.StaleMarkerFlagsColumn()}, &chplan.LitInt{V: schema.NoRecordedValueFlag}},
+			Args: []chplan.Expr{flags, &chplan.LitInt{V: schema.NoRecordedValueFlag}},
 		},
 		Right: &chplan.LitInt{V: 0},
 	}
+}
+
+// staleMarkerRowExpr is true on a raw metric row that carries the
+// NoRecordedValue flag.
+func staleMarkerRowExpr(s schema.Metrics) chplan.Expr {
+	return staleMarkerFlagSet(&chplan.ColumnRef{Name: s.StaleMarkerFlagsColumn()})
 }
 
 // staleMarkerBitsExpr is [value.StaleNaN]'s bit pattern as a literal. The
@@ -110,7 +117,7 @@ func withStaleMarkerDrop(pred chplan.Expr, mode staleMarkerMode, s schema.Metric
 	if mode != staleMarkersDropped {
 		return pred
 	}
-	keep := &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{staleMarkerRowExpr(s)}}
+	keep := notStaleMarkerFlags(&chplan.ColumnRef{Name: s.StaleMarkerFlagsColumn()})
 	if pred == nil {
 		return keep
 	}
@@ -192,14 +199,7 @@ func staleLatestFlagsExpr(s schema.Metrics) *chplan.FuncCall {
 // notStaleMarkerFlags is true when flags does not carry the
 // NoRecordedValue bit.
 func notStaleMarkerFlags(flags chplan.Expr) chplan.Expr {
-	return &chplan.Binary{
-		Op: chplan.OpEq,
-		Left: &chplan.FuncCall{
-			Fn:   chplan.FnBitAnd,
-			Args: []chplan.Expr{flags, &chplan.LitInt{V: schema.NoRecordedValueFlag}},
-		},
-		Right: &chplan.LitInt{V: 0},
-	}
+	return &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{staleMarkerFlagSet(flags)}}
 }
 
 // staleLatestHaving is the HAVING of a newest-row-per-series Aggregate over
@@ -245,50 +245,178 @@ func dropStaleLatestHistograms(fanout chplan.Node, s schema.Metrics) chplan.Node
 // histogram scan the bucket layout of its series, so the `_bucket` fan-out
 // turns the marker into one row per bucket bound instead of into none. A
 // marker row carries empty BucketCounts / ExplicitBounds; it takes the
-// sorted union of every bound its series carried in the scanned rows, and
-// BucketCounts sized to that layout plus the `+Inf` bucket. The fanned rows'
-// Value is the encoded marker ([staleMarkerValueExpr]), so each `le` series
-// ends at the marker in the latest-sample pick. Every other row passes
-// through unchanged.
-func staleMarkerBucketLayout(input chplan.Node, s schema.Metrics) chplan.Node {
+// sorted union of every bound its series carried in the scanned rows
+// (`groupUniqArrayArray` over a window partitioned by series), and
+// BucketCounts sized to that layout plus the `+Inf` bucket. The fan-out
+// reads the arrays from [staleLayoutBoundsAlias] / [staleLayoutCountsAlias]
+// and writes the encoded marker ([staleMarkerValueExpr]) as each fanned
+// row's Value, so each `le` series ends at the marker in the latest-sample
+// pick. Every other row passes through unchanged.
+//
+// The plan is three stages:
+//
+//	Project [rows..., stale_layout_bounds, stale_layout_counts]   -- the window
+//	  Project [rows..., ExplicitBounds, BucketCounts]              -- row columns
+//	    Filter bound
+//	      input
+//
+// rows are the fan-out's own row projections, evaluated once in the middle
+// stage so the window stage reads them by name; the window publishes its
+// arrays under names of their own because an alias that shadows the column
+// its own window reads is a cyclic reference to ClickHouse 24.8.
+//
+// bound is the time window the consumer reads ([staleLayoutBoundFor]). It
+// filters the rows beneath the window, because ClickHouse does not push a
+// filter on a non-partition column through a window step: applied only
+// above it, the scan would read the metric's whole history.
+func staleMarkerBucketLayout(input chplan.Node, rows []chplan.Projection, bound chplan.Expr, s schema.Metrics) chplan.Node {
+	rowStage := &chplan.Project{
+		Roles: metricRoles(s),
+		Input: &chplan.Filter{Input: input, Predicate: bound},
+		Projections: append(
+			slices.Clone(rows),
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
+		),
+	}
 	bounds := &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}
+	counts := &chplan.ColumnRef{Name: s.BucketCountsColumn}
 	seriesBounds := &chplan.FuncCall{
 		Fn: chplan.FnArraySort,
-		Args: []chplan.Expr{&chplan.FuncCall{
-			Fn: chplan.FnArrayDistinct,
-			Args: []chplan.Expr{&chplan.FuncCall{
-				Fn: chplan.FnArrayFlatten,
-				Args: []chplan.Expr{&chplan.WindowExpr{
-					Fn:   chplan.FnGroupArray,
-					Args: []chplan.Expr{bounds},
-					PartitionBy: []chplan.Expr{
-						&chplan.ColumnRef{Name: s.MetricNameColumn},
-						histogramIdentityExpr(s),
-					},
-				}},
-			}},
+		Args: []chplan.Expr{&chplan.WindowExpr{
+			Fn:   chplan.FnGroupUniqArrayArray,
+			Args: []chplan.Expr{bounds},
+			PartitionBy: []chplan.Expr{
+				&chplan.ColumnRef{Name: s.MetricNameColumn},
+				&chplan.ColumnRef{Name: s.AttributesColumn},
+			},
 		}},
 	}
 	markerCounts := &chplan.FuncCall{
 		Fn: chplan.FnArrayResize,
 		Args: []chplan.Expr{
-			&chplan.ColumnRef{Name: s.BucketCountsColumn},
+			counts,
 			addExpr(&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{seriesBounds}}, &chplan.LitInt{V: 1}),
 		},
 	}
 	marker := staleMarkerRowExpr(s)
-	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: input,
-		Replacements: []chplan.Projection{
-			{
-				Expr:  &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{marker, markerCounts, &chplan.ColumnRef{Name: s.BucketCountsColumn}}},
-				Alias: s.BucketCountsColumn,
-			},
-			{
-				Expr:  &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{marker, seriesBounds, bounds}},
-				Alias: s.ExplicitBoundsColumn,
-			},
+	projections := make([]chplan.Projection, 0, len(rows)+2)
+	for _, p := range rows {
+		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: p.Alias}, Alias: p.Alias})
+	}
+	projections = append(
+		projections,
+		chplan.Projection{
+			Expr:  &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{marker, seriesBounds, bounds}},
+			Alias: staleLayoutBoundsAlias,
 		},
+		chplan.Projection{
+			Expr:  &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{marker, markerCounts, counts}},
+			Alias: staleLayoutCountsAlias,
+		},
+	)
+	return &chplan.Project{Roles: metricRoles(s), Input: rowStage, Projections: projections}
+}
+
+// staleLayoutBoundsAlias / staleLayoutCountsAlias name the marker-aware
+// ExplicitBounds / BucketCounts [staleMarkerBucketLayout] publishes.
+const (
+	staleLayoutBoundsAlias = "stale_layout_bounds"
+	staleLayoutCountsAlias = "stale_layout_counts"
+)
+
+// staleMarkerLayoutBoundFilter returns the bound Filter beneath a layout
+// stage [staleMarkerBucketLayout] built, and whether p is one.
+func staleMarkerLayoutBoundFilter(p *chplan.Project) (*chplan.Filter, bool) {
+	if len(p.Projections) == 0 || p.Projections[len(p.Projections)-1].Alias != staleLayoutCountsAlias {
+		return nil, false
+	}
+	rowStage, ok := p.Input.(*chplan.Project)
+	if !ok {
+		return nil, false
+	}
+	f, ok := rowStage.Input.(*chplan.Filter)
+	return f, ok
+}
+
+// staleLayoutWindowBound is the literal time bound [lo, hi] on col.
+func staleLayoutWindowBound(col string, lo, hi time.Time) chplan.Expr {
+	return &chplan.Binary{
+		Op:    chplan.OpAnd,
+		Left:  &chplan.Binary{Op: chplan.OpGe, Left: &chplan.ColumnRef{Name: col}, Right: metadataBoundExpr(lo)},
+		Right: &chplan.Binary{Op: chplan.OpLe, Left: &chplan.ColumnRef{Name: col}, Right: metadataBoundExpr(hi)},
+	}
+}
+
+// staleLayoutAnchoredBound is the time bound `(anchor - lookback, anchor]`
+// on col, shifted by the anchor's offset.
+func staleLayoutAnchoredBound(col string, anchor evalAnchor, lookback time.Duration) chplan.Expr {
+	return &chplan.Binary{
+		Op:    chplan.OpAnd,
+		Left:  stalenessLowerBoundExpr(col, anchor, lookback),
+		Right: timeBoundExpr(col, anchor),
+	}
+}
+
+// staleLayoutBoundFor is the time window a `_bucket` selector's consumer
+// reads, which bounds the stale-marker layout window beneath the fan-out:
+//
+//   - an instant selection, or a range-mode selection pinned by an absolute
+//     `@`: the lookback ending at the selector's anchor;
+//   - a range-mode selection: every step's lookback, from the first step
+//     (less one step, for an epoch-aligned grid) to the last;
+//   - a subquery's inner selection: [staleLayoutPendingBound], which the
+//     subquery lowering replaces with its Identity window's input window
+//     ([boundStaleMarkerLayoutsToIdentity]).
+func staleLayoutBoundFor(v *parser.VectorSelector, ctx lowerCtx, s schema.Metrics) (chplan.Expr, error) {
+	if ctx.inRangeVector {
+		return staleLayoutPendingBound(), nil
+	}
+	anchor, err := selectorAnchor(v, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if ctx.rangeMode() && !hasAbsoluteAt(v) {
+		lo := ctx.start.UTC().Add(-anchor.Offset - instantLookback - ctx.step)
+		hi := ctx.end.UTC().Add(-anchor.Offset)
+		return staleLayoutWindowBound(s.TimestampColumn, lo, hi), nil
+	}
+	return staleLayoutAnchoredBound(s.TimestampColumn, anchor, instantLookback), nil
+}
+
+// staleLayoutPendingBound is the placeholder bound of a layout whose
+// consumer is a subquery's Identity window: that window is built after its
+// inner selection, and [boundStaleMarkerLayoutsToIdentity] replaces the
+// placeholder with the window's input bound.
+func staleLayoutPendingBound() chplan.Expr {
+	return &chplan.LitBool{V: true}
+}
+
+// boundStaleMarkerLayoutsToIdentity bounds every stale-marker bucket layout
+// beneath a subquery's Identity window to the window's input:
+// `(End - Offset - OuterRange - Range - Step, End - Offset]`, the step
+// covering the epoch-aligned inner grid. [widenSubquerySpine] re-bounds it
+// once the grid is widened onto the query range.
+func boundStaleMarkerLayoutsToIdentity(rw *chplan.RangeWindow) {
+	anchor := evalAnchor{End: rw.End, Offset: rw.Offset}
+	rebindStaleMarkerLayouts(rw.Input, staleLayoutAnchoredBound(rw.TimestampColumn, anchor, rw.OuterRange+rw.Range+rw.Step))
+}
+
+// rebindStaleMarkerLayouts re-bounds every stale-marker bucket layout on
+// n's selector spine to bound — the input window of the subquery Identity
+// window n feeds ([boundStaleMarkerLayoutsToIdentity], [widenSubquerySpine]). The walk stops at a windowed node
+// ([chplan.GridCarrier]): a nested window owns its own input.
+func rebindStaleMarkerLayouts(n chplan.Node, bound chplan.Expr) {
+	if _, windowed := n.(chplan.GridCarrier); windowed {
+		return
+	}
+	if p, ok := n.(*chplan.Project); ok {
+		if f, ok := staleMarkerLayoutBoundFilter(p); ok {
+			f.Predicate = bound
+			return
+		}
+	}
+	for _, child := range n.Children() {
+		rebindStaleMarkerLayouts(child, bound)
 	}
 }

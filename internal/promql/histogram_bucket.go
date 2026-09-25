@@ -132,21 +132,20 @@ func splitBucketMatchers(matchers []*labels.Matcher, bareName string) (scanMatch
 // reserved-internal range; `le_idx` falls outside both).
 //
 // Under staleMarkersEncoded a stale-marker row first takes its series'
-// bucket layout ([staleMarkerBucketLayout]) and every row it fans into
-// carries the encoded marker as Value, so the downstream latest-sample pick
-// ends each `le` series at the marker.
-func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s schema.Metrics, cat *metadataCatalog, mode staleMarkerMode) chplan.Node {
-	if mode == staleMarkersEncoded {
-		scanOrFilter = staleMarkerBucketLayout(scanOrFilter, s)
-	}
+// bucket layout ([staleMarkerBucketLayout], over the rows layoutBound
+// admits) and every row it fans into carries the encoded marker as Value,
+// so the downstream latest-sample pick ends each `le` series at the marker.
+// layoutBound is read only under staleMarkersEncoded.
+func wrapHistogramBucketFanout(
+	scanOrFilter chplan.Node, suffixedName string, s schema.Metrics, cat *metadataCatalog,
+	mode staleMarkerMode, layoutBound chplan.Expr,
+) chplan.Node {
 	// Inner Project — pass the histogram row's identity columns through
 	// and add the fanned bucket index via arrayJoin. Every output row
 	// carries one (MetricName, Attributes, TimeUnix, ExplicitBounds,
 	// BucketCounts, le_idx) tuple — the same row repeats N+1 times,
 	// once per BucketCounts entry, with le_idx running 1..length(BucketCounts).
-	fanoutProjections := []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
-	}
+	//
 	// Merge resource attributes here, where the raw ResourceAttributes
 	// column is still in scope (this Project reads the histogram Scan
 	// directly). The arrayJoin fan-out + the outer `mapConcat(Attributes,
@@ -155,33 +154,45 @@ func wrapHistogramBucketFanout(scanOrFilter chplan.Node, suffixedName string, s 
 	// bucket branch) and does not re-reference ResourceAttributes. Catalog
 	// mode passes the raw sources through instead — see
 	// [catalogAttributesProjections].
-	fanoutProjections = append(fanoutProjections,
-		selectorLabelProjections(cat, s)...)
-	fanoutProjections = append(
-		fanoutProjections,
+	rowProjections := []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+	}
+	rowProjections = append(rowProjections, selectorLabelProjections(cat, s)...)
+	rowProjections = append(
+		rowProjections,
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
-		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
-		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
+	)
+	bounds := chplan.Expr(&chplan.ColumnRef{Name: s.ExplicitBoundsColumn})
+	counts := chplan.Expr(&chplan.ColumnRef{Name: s.BucketCountsColumn})
+	fanInput := scanOrFilter
+	if mode == staleMarkersEncoded {
+		// The layout stage reads every row column by the name this stage
+		// would have given it, and publishes the marker-aware bucket
+		// arrays under their own names ([staleMarkerBucketLayout]).
+		flags := chplan.Projection{Expr: &chplan.ColumnRef{Name: s.StaleMarkerFlagsColumn()}, Alias: s.StaleMarkerFlagsColumn()}
+		rowProjections = append(rowProjections, flags)
+		fanInput = staleMarkerBucketLayout(scanOrFilter, rowProjections, layoutBound, s)
+		passThrough := make([]chplan.Projection, len(rowProjections))
+		for i, p := range rowProjections {
+			passThrough[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: p.Alias}, Alias: p.Alias}
+		}
+		rowProjections = passThrough
+		bounds = &chplan.ColumnRef{Name: staleLayoutBoundsAlias}
+		counts = &chplan.ColumnRef{Name: staleLayoutCountsAlias}
+	}
+	fanoutProjections := append(
+		rowProjections,
+		chplan.Projection{Expr: bounds, Alias: s.ExplicitBoundsColumn},
+		chplan.Projection{Expr: counts, Alias: s.BucketCountsColumn},
 		chplan.Projection{
 			Expr: &chplan.FuncCall{
-				Fn: chplan.FnArrayJoin,
-				Args: []chplan.Expr{
-					&chplan.FuncCall{
-						Fn:   chplan.FnArrayEnumerate,
-						Args: []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
-					},
-				},
+				Fn:   chplan.FnArrayJoin,
+				Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnArrayEnumerate, Args: []chplan.Expr{counts}}},
 			},
 			Alias: bucketIdxAlias,
 		},
 	)
-	if mode == staleMarkersEncoded {
-		fanoutProjections = append(fanoutProjections, chplan.Projection{
-			Expr:  &chplan.ColumnRef{Name: s.StaleMarkerFlagsColumn()},
-			Alias: s.StaleMarkerFlagsColumn(),
-		})
-	}
-	fanout := &chplan.Project{Roles: metricRoles(s), Input: scanOrFilter, Projections: fanoutProjections}
+	fanout := &chplan.Project{Roles: metricRoles(s), Input: fanInput, Projections: fanoutProjections}
 
 	// Outer Project — synthesize the canonical Sample shape with the
 	// suffixed metric name + the `le` label baked into Attributes + the

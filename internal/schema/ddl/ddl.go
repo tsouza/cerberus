@@ -279,6 +279,16 @@ type Config struct {
 	// separate later "backfill verified" declaration.
 	DownsampleTierEnabled bool
 
+	// DownsampleTierFlagsColumn names the Flags column the downsample tier's
+	// materialized views read to skip OTel NoRecordedValue (stale-marker)
+	// rows — see downsampleTierRecordedValuePredicate. Empty renders views
+	// that fold every row. It is set from the same condition the PromQL read
+	// path recognises stale markers under (schema.Metrics.
+	// StaleMarkerFlagsColumn): every metric table carries the column, or is
+	// provisioned by this apply with it — see
+	// preflight.StaleMarkerFlagsEstablishable.
+	DownsampleTierFlagsColumn string
+
 	// TraceMaterializedAttributesEnabled gates the curated `ADD COLUMN IF
 	// NOT EXISTS <col> LowCardinality(String) DEFAULT <map>['<key>']` +
 	// `MATERIALIZE COLUMN <col>` ALTER pairs (cerberus issue #2776) that
@@ -1436,11 +1446,6 @@ const (
 	metricResourceAttributesColumn = "ResourceAttributes"
 	metricServiceNameColumn        = "ServiceName"
 	metricValueColumn              = "Value"
-	// metricFlagsColumn is the OTel-CH exporter's fixed data-point Flags
-	// column (UInt32 bitfield) on the gauge and sum tables. Its
-	// schema.NoRecordedValueFlag bit marks a Prometheus stale marker — see
-	// downsampleTierRecordedValuePredicate.
-	metricFlagsColumn = "Flags"
 )
 
 // metricProjection is one curated aggregating projection the DDL apply path
@@ -1987,14 +1992,25 @@ func DownsampleTierReprovisionSQL(cfg Config) ([]string, error) {
 // with the NoRecordedValue bit is a Prometheus stale marker whose Value is
 // the exporter's empty placeholder 0; folded into the tier's
 // timeSeriesLastTwoSamples state it would read as a real 0 — a counter reset
-// for irate(), a spurious last_over_time() value. Both tier MVs apply it, and
+// for irate(), a spurious last_over_time() value. Both tier MVs apply it when
+// Config.DownsampleTierFlagsColumn names the column, and
 // internal/downsampletier's backfill/rebuild/verify SELECTs apply the same
-// predicate, rendered to the same text (each package's tests pin that text).
-func downsampleTierRecordedValuePredicate() chsql.Frag {
+// predicate under the same condition, rendered to the same text (each
+// package's tests pin that text).
+func downsampleTierRecordedValuePredicate(flagsColumn string) chsql.Frag {
 	return chsql.Eq(
-		chsql.Call("bitAnd", chsql.Col(metricFlagsColumn), chsql.InlineLit(int64(schema.NoRecordedValueFlag))),
+		chsql.Call("bitAnd", chsql.Col(flagsColumn), chsql.InlineLit(int64(schema.NoRecordedValueFlag))),
 		chsql.InlineLit(int64(0)),
 	)
+}
+
+// withDownsampleTierRecordedValueFilter applies the stale-marker exclusion
+// to a tier view body when cfg names the Flags column to read.
+func withDownsampleTierRecordedValueFilter(body *chsql.QueryBuilder, cfg Config) *chsql.QueryBuilder {
+	if cfg.DownsampleTierFlagsColumn == "" {
+		return body
+	}
+	return body.Where(downsampleTierRecordedValuePredicate(cfg.DownsampleTierFlagsColumn))
 }
 
 // renderDownsampleTierView renders the CREATE MATERIALIZED VIEW feeding
@@ -2034,7 +2050,6 @@ func renderDownsampleTierView(cfg Config) string {
 			chsql.As(chsql.Call("any", chsql.Col(aggregationTemporalityColumn)), schema.DownsampleTierTemporalityColumn),
 		).
 		From(chsql.Qual(cfg.Database, cfg.Tables.MetricsSum)).
-		Where(downsampleTierRecordedValuePredicate()).
 		GroupBy(
 			chsql.Col(metricNameColumn),
 			chsql.Col(metricAttributesColumn),
@@ -2042,6 +2057,7 @@ func renderDownsampleTierView(cfg Config) string {
 			chsql.Col(metricServiceNameColumn),
 			bucketEnd,
 		)
+	body = withDownsampleTierRecordedValueFilter(body, cfg)
 	stmt := chsql.CreateMaterializedView(downsampleTierSumViewName).
 		Database(cfg.Database).
 		IfNotExists().
@@ -2097,7 +2113,6 @@ func renderDownsampleTierGaugeView(cfg Config) string {
 			chsql.As(chsql.InlineLit(schema.DownsampleTierGaugeTemporalitySentinel), schema.DownsampleTierTemporalityColumn),
 		).
 		From(chsql.Qual(cfg.Database, cfg.Tables.MetricsGauge)).
-		Where(downsampleTierRecordedValuePredicate()).
 		GroupBy(
 			chsql.Col(metricNameColumn),
 			chsql.Col(metricAttributesColumn),
@@ -2105,6 +2120,7 @@ func renderDownsampleTierGaugeView(cfg Config) string {
 			chsql.Col(metricServiceNameColumn),
 			bucketEnd,
 		)
+	body = withDownsampleTierRecordedValueFilter(body, cfg)
 	stmt := chsql.CreateMaterializedView(downsampleTierGaugeViewName).
 		Database(cfg.Database).
 		IfNotExists().
