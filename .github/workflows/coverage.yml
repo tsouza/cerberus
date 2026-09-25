@@ -305,9 +305,15 @@ jobs:
     # until a `main`-push coverage run's own 7-way matrix (this job plus
     # coverage-chdb's 4 shards and coverage-chdb-ratchet's 2) occupied every
     # light-pool runner simultaneously, starving those trivial jobs for
-    # 20+ minutes on two open PRs. The heavy pool's own contention (lint,
-    # check-test, check-build) is a tolerable queue among equally long jobs;
-    # blocking a job that should complete in seconds is not.
+    # 20+ minutes on two open PRs.
+    #
+    # The heavy pool (3 runners) also carries the required PR jobs `lint`,
+    # `check-test` and `check-build`, so this run may hold at most 2 of them at
+    # once and one always stays free for a PR. Two serial lanes enforce that:
+    # coverage-chdb's shards one at a time (max-parallel: 1), and this job
+    # followed by coverage-chdb-ratchet's legs one at a time.
+    # test/regression/runner_pool_reservation_test.go fails if any change lets
+    # non-required jobs fill the pool again.
     runs-on: [self-hosted, cerberus-heavy]
     # `just coverage-default`'s own `go test` is capped at `-timeout 40m`
     # (see the recipe's comment for why); this leaves headroom for checkout,
@@ -345,6 +351,8 @@ jobs:
     runs-on: [self-hosted, cerberus-heavy]
     strategy:
       fail-fast: false
+      # One heavy runner for this lane — see coverage-default's comment.
+      max-parallel: 1
       matrix:
         shard: [1, 2, 3, 4]
     # Four disjoint groups split serial and parallel top-level tests, not just
@@ -413,8 +421,11 @@ jobs:
   # past it.
   coverage-chdb-ratchet:
     name: coverage-chdb-ratchet (${{ matrix.leg }})
-    needs: coverage-plan
-    if: needs.coverage-plan.outputs.run_heavy == 'true'
+    # Runs after coverage-default, one leg at a time on one heavy runner — see
+    # coverage-default's comment. `!cancelled()` keeps a failed
+    # coverage-default from skipping these legs' own measurement.
+    needs: [coverage-plan, coverage-default]
+    if: ${{ !cancelled() && needs.coverage-plan.outputs.run_heavy == 'true' }}
     # `cerberus-heavy`, not the light pool — see coverage-default's comment.
     runs-on: [self-hosted, cerberus-heavy]
     # perf-coverage-fanout.mjs's RATCHET_TIMEOUT_MINUTES=35 is this leg's own
@@ -432,6 +443,8 @@ jobs:
       # leg's failure (a real corpus-wide regression usually trips several
       # shards at once) must not cancel its sibling mid-profile.
       fail-fast: false
+      # One heavy runner for this lane — see coverage-default's comment.
+      max-parallel: 1
       matrix:
         # Shards 2..RATCHET_FANOUT — shard 1 is coverage-chdb's own main
         # sweep, above. RATCHET_FANOUT is perf-coverage-fanout.mjs's own
