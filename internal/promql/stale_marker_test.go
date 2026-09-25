@@ -94,12 +94,17 @@ func TestStaleMarkers_EverySelectorShapeReadsFlags(t *testing.T) {
 				t.Errorf("instant-selection encoding present = %v, want %v:\n%s", got, tc.wantEncode, sql)
 			}
 
-			if sql := emit(schema.DefaultOTelMetrics()); strings.Contains(sql, "Flags") || strings.Contains(sql, "reinterpretAs") {
+			// reinterpretAsUInt8 is unrelated to the marker encoding: the
+			// invalid-UTF-8 regex guard (internal/chsql/regex_invalid_utf8.go)
+			// reads a pattern's matched bytes with it regardless of Flags,
+			// so only the marker-specific reinterpret calls the encode/latest
+			// marks above name are checked here.
+			if sql := emit(schema.DefaultOTelMetrics()); strings.Contains(sql, "Flags") || strings.Contains(sql, "reinterpretAsFloat64") || strings.Contains(sql, "reinterpretAsUInt64") {
 				t.Errorf("a schema whose Flags column was never probed must not read one:\n%s", sql)
 			}
 			noFlags := probed
 			noFlags.FlagsColumn = ""
-			if sql := emit(noFlags); strings.Contains(sql, "Flags") || strings.Contains(sql, "reinterpretAs") {
+			if sql := emit(noFlags); strings.Contains(sql, "Flags") || strings.Contains(sql, "reinterpretAsFloat64") || strings.Contains(sql, "reinterpretAsUInt64") {
 				t.Errorf("a schema with no Flags column must not read one:\n%s", sql)
 			}
 		})

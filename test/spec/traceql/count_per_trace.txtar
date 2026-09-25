@@ -20,15 +20,18 @@ INSERT INTO otel_traces VALUES
 [0] int64 = 1
 [1] string = "service.name"
 [2] string = "service.name"
-[3] string = "^(?:.+)$"
-[4] int64 = 0
+[3] string = "service.name"
+[4] string = "^(?:.+)$"
+[5] string = "service.name"
+[6] string = "^(?:.+)$"
+[7] int64 = 0
 -- chplan --
 Filter predicate=(Value > 0)
   Aggregate groupBy=[TraceId AS TraceId] funcs=[FnCount(1) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
     Filter predicate=(FnMapContainsKey(ResourceAttributes, "service.name") AND (ResourceAttributes["service.name"] =~ ".+"))
       Scan(otel_traces)
 -- sql --
-SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND match(`ResourceAttributes`[?], ?)) GROUP BY `TraceId`) WHERE (`Value` > ?)
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND if(isValidUTF8(`ResourceAttributes`[?]), match(`ResourceAttributes`[?], ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', `ResourceAttributes`[?])))), ?))) GROUP BY `TraceId`) WHERE (`Value` > ?)
 -- expected_rows --
 [
   ["GET /a", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "2030000000", "__cerberus_traceID": "t1", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 3],
@@ -45,8 +48,11 @@ detail: `{ resource.service.name =~ ".+" } | count() > 0` reduces the spanset to
 [3] int64 = 1
 [4] string = "service.name"
 [5] string = "service.name"
-[6] string = "^(?:.+)$"
-[7] int64 = 0
+[6] string = "service.name"
+[7] string = "^(?:.+)$"
+[8] string = "service.name"
+[9] string = "^(?:.+)$"
+[10] int64 = 0
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -55,4 +61,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `MetricName` AS `MetricName`, mapConcat(`ResourceAttrs`, map(?, `TraceId`, ?, `ParentSpanId`, ?, toString((`TraceEndNs` - `TraceStartNs`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Value`) AS `Value` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND match(`ResourceAttributes`[?], ?)) GROUP BY `TraceId`) WHERE (`Value` > ?))
+SELECT `MetricName` AS `MetricName`, mapConcat(`ResourceAttrs`, map(?, `TraceId`, ?, `ParentSpanId`, ?, toString((`TraceEndNs` - `TraceStartNs`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Value`) AS `Value` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND if(isValidUTF8(`ResourceAttributes`[?]), match(`ResourceAttributes`[?], ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', `ResourceAttributes`[?])))), ?))) GROUP BY `TraceId`) WHERE (`Value` > ?))

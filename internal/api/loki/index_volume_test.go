@@ -395,18 +395,21 @@ func TestIndexVolume_TargetLabelsRequirePresence(t *testing.T) {
 	}
 
 	// The matcher lowering anchors a Loki regexp matcher, so `.+`
-	// reaches ClickHouse as `^(?:.+)$`.
+	// reaches ClickHouse as `^(?:.+)$`. `.` can match an invalid UTF-8
+	// byte, so the matcher is emitted guarded and binds its pattern once
+	// for a valid value and once for the value's U+FFFD form.
 	const anchoredMatchAny = `^(?:.+)$`
+	const bindingsPerGuardedMatcher = 2
 	var matchAny int
 	for _, a := range q.LastArgs() {
 		if s, ok := a.(string); ok && s == anchoredMatchAny {
 			matchAny++
 		}
 	}
-	if matchAny != 1 {
-		t.Fatalf("bound %d `.+` presence patterns, want exactly 1 (env needs one, "+
+	if matchAny != bindingsPerGuardedMatcher {
+		t.Fatalf("bound %d `.+` presence patterns, want one matcher's %d (env needs one, "+
 			"job is already constrained by the selector)\nsql=%s\nargs=%v",
-			matchAny, q.LastSQL(), q.LastArgs())
+			matchAny, bindingsPerGuardedMatcher, q.LastSQL(), q.LastArgs())
 	}
 }
 

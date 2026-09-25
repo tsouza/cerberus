@@ -24,18 +24,30 @@ detail: log query `{job="api",env!="prod",region=~"us-.*",cell!~"staging.*"}` an
 [2] string = "env"
 [3] string = "prod"
 [4] string = "region"
-[5] string = "^(?:us-.*)$"
-[6] string = "cell"
-[7] string = "^(?:staging.*)$"
+[5] string = "region"
+[6] string = "^(?:us-.*)$"
+[7] string = "region"
+[8] string = "^(?:us-.*)$"
+[9] string = "cell"
+[10] string = "cell"
+[11] string = "^(?:staging.*)$"
+[12] string = "cell"
+[13] string = "^(?:staging.*)$"
 -- args_optimized --
 [0] string = "job"
 [1] string = "api"
 [2] string = "env"
 [3] string = "prod"
 [4] string = "region"
-[5] string = "^(?:us-.*)$"
-[6] string = "cell"
-[7] string = "^(?:staging.*)$"
+[5] string = "region"
+[6] string = "^(?:us-.*)$"
+[7] string = "region"
+[8] string = "^(?:us-.*)$"
+[9] string = "cell"
+[10] string = "cell"
+[11] string = "^(?:staging.*)$"
+[12] string = "cell"
+[13] string = "^(?:staging.*)$"
 -- chplan --
 Filter predicate=((((ResourceAttributes["job"] = "api") AND (ResourceAttributes["env"] != "prod")) AND (ResourceAttributes["region"] =~ "us-.*")) AND (ResourceAttributes["cell"] !~ "staging.*"))
   Scan(otel_logs)
@@ -47,6 +59,6 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] != ?) AND match(`ResourceAttributes`[?], ?) AND NOT match(`ResourceAttributes`[?], ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] != ?) AND if(isValidUTF8(`ResourceAttributes`[?]), match(`ResourceAttributes`[?], ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', `ResourceAttributes`[?])))), ?)) AND NOT if(isValidUTF8(`ResourceAttributes`[?]), match(`ResourceAttributes`[?], ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', `ResourceAttributes`[?])))), ?))
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] != ?) AND match(`ResourceAttributes`[?], ?) AND NOT match(`ResourceAttributes`[?], ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (`ResourceAttributes`[?] != ?) AND if(isValidUTF8(`ResourceAttributes`[?]), match(`ResourceAttributes`[?], ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', `ResourceAttributes`[?])))), ?)) AND NOT if(isValidUTF8(`ResourceAttributes`[?]), match(`ResourceAttributes`[?], ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', `ResourceAttributes`[?])))), ?))

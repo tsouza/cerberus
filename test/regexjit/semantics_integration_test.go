@@ -72,10 +72,11 @@ var probeValues = []string{
 }
 
 // invalidUTF8Values are byte strings no OTLP pipeline produces but a direct
-// INSERT can. The compiled engine matches bytes; RE2 decodes UTF-8 and never
-// matches an invalid byte with `.` or a negated class. Go's regexp — the
-// reference engines' — reads an invalid byte as U+FFFD, which both match.
-var invalidUTF8Values = []string{"\xff", "a\xffb", "api\xff", "\x85", "caf\xe9"}
+// INSERT can. Go's regexp — the reference engines' — reads each invalid byte
+// as U+FFFD, which `.` and a negated class match; the emitted shapes read
+// them the same way on every build (see TestRegexJIT_InvalidUTF8ShapesMatchGo
+// for the byte-exact checks).
+var invalidUTF8Values = []string{"\xff", "a\xffb", "api\xff", "\x85", "caf\xe9", "\xff\xfe", "a\xe2\x82b", "\xed\xa0\x80", "host-\xff\n"}
 
 // matcherCase is a pattern the corpus lowers as a label matcher (anchored)
 // and as a line filter (unanchored). The two flags record whether ClickHouse
@@ -255,9 +256,7 @@ func TestRegexJIT_EmittedShapesMatchReference(t *testing.T) {
 				}, nil)
 			}
 
-			if s.regexpJIT {
-				t.Run("invalid-utf8", func(t *testing.T) { checkInvalidUTF8(ctx, t, s, h) })
-			}
+			t.Run("invalid-utf8", func(t *testing.T) { checkInvalidUTF8(ctx, t, s, h, modes) })
 		})
 	}
 }
@@ -667,31 +666,33 @@ func parseHumanBytes(s string) (float64, bool) {
 	return float64(b), true
 }
 
-// checkInvalidUTF8 pins what the compiled engine does on bytes outside
-// UTF-8: for every shape it compiles, a selector, a label_replace and a line
-// filter answer as the reference engines do. The interpreted engine is not
-// held to this — see the package documentation.
-func checkInvalidUTF8(ctx context.Context, t *testing.T, s *server, h handlers) {
-	jitCtx := s.modeCtx(ctx, jitNow)
-	for _, c := range matcherCases {
-		if c.anchoredJIT {
+// checkInvalidUTF8 requires a selector, a line filter and a label_replace
+// over values that are not valid UTF-8 to answer as the reference engines
+// do, for every corpus pattern, in every mode the build offers.
+func checkInvalidUTF8(ctx context.Context, t *testing.T, s *server, h handlers, modes []jitMode) {
+	for _, mode := range modes {
+		modeCtx := s.modeCtx(ctx, mode)
+		fresh := func() {
+			if mode == jitNow {
+				s.dropCompiled(ctx, t)
+			}
+		}
+		for _, c := range matcherCases {
 			q := fmt.Sprintf(`%s{%s=~%s}`, bytesMetric, probeLabel, strconv.Quote(c.pattern))
-			s.dropCompiled(ctx, t)
-			assertSelectedJSON(t, h.promInstant(jitCtx, t, q, probeEnd), c.pattern)
+			fresh()
+			assertSelectedJSON(t, h.promInstant(modeCtx, t, q, probeEnd), c.pattern)
+			lq := fmt.Sprintf(`{service_name=%q} |~ %s`, bytesService, strconv.Quote(c.pattern))
+			fresh()
+			assertLines(t, h.lokiRange(modeCtx, t, lq, probeEnd.Add(-probeWindow), probeEnd, probeRangeStep, probeLineLimit), invalidUTF8Values, c.pattern, false)
+			nlq := fmt.Sprintf(`{service_name=%q} !~ %s`, bytesService, strconv.Quote(c.pattern))
+			fresh()
+			assertLines(t, h.lokiRange(modeCtx, t, nlq, probeEnd.Add(-probeWindow), probeEnd, probeRangeStep, probeLineLimit), invalidUTF8Values, c.pattern, true)
 		}
-		if c.lineFilterJIT {
-			q := fmt.Sprintf(`{service_name=%q} |~ %s`, bytesService, strconv.Quote(c.pattern))
-			s.dropCompiled(ctx, t)
-			assertLines(t, h.lokiRange(jitCtx, t, q, probeEnd.Add(-probeWindow), probeEnd, probeRangeStep, probeLineLimit), invalidUTF8Values, c.pattern, false)
+		for _, c := range labelReplaceCases {
+			q := fmt.Sprintf(`label_replace(%s, %q, %s, %q, %s)`, bytesMetric, dstLabel, strconv.Quote(c.repl), probeLabel, strconv.Quote(c.regex))
+			fresh()
+			assertLabelReplace(t, h.promInstant(modeCtx, t, q, probeEnd), invalidUTF8Values, c.regex, c.repl)
 		}
-	}
-	for _, c := range labelReplaceCases {
-		if !c.jit {
-			continue
-		}
-		q := fmt.Sprintf(`label_replace(%s, %q, %s, %q, %s)`, bytesMetric, dstLabel, strconv.Quote(c.repl), probeLabel, strconv.Quote(c.regex))
-		s.dropCompiled(ctx, t)
-		assertLabelReplace(t, h.promInstant(jitCtx, t, q, probeEnd), invalidUTF8Values, c.regex, c.repl)
 	}
 }
 

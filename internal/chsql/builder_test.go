@@ -843,15 +843,17 @@ func TestBuilder_Expr(t *testing.T) {
 			// issue #1741) so ClickHouse's substring-searching match()
 			// reproduces Prometheus/Loki/Tempo's always-anchored regex
 			// matcher semantics. A pattern that already carries its own
-			// anchors (as here) nests safely under the wrap.
+			// anchors (as here) nests safely under the wrap. No invalid
+			// UTF-8 byte can take part in this pattern's match, so it
+			// renders unguarded (see goRegexMatch).
 			name: "binary_match",
 			expr: &chplan.Binary{
 				Op:    chplan.OpMatch,
 				Left:  &chplan.ColumnRef{Name: "ServiceName"},
-				Right: &chplan.LitString{V: "^api-.*"},
+				Right: &chplan.LitString{V: "^api-[0-9]+"},
 			},
 			wantSQL: "match(`ServiceName`, ?)",
-			wantArg: []any{"^(?:^api-.*)$"},
+			wantArg: []any{"^(?:^api-[0-9]+)$"},
 		},
 		{
 			// anchoredRegexPattern's non-literal branch: a TraceQL dynamic
@@ -869,8 +871,10 @@ func TestBuilder_Expr(t *testing.T) {
 				Left:  &chplan.ColumnRef{Name: "ServiceName"},
 				Right: &chplan.ColumnRef{Name: "Pattern"},
 			},
-			wantSQL: "match(`ServiceName`, concat(?, `Pattern`, ?))",
-			wantArg: []any{"^(?:", ")$"},
+			// The pattern is unknown until query time, so the match is
+			// guarded against invalid UTF-8 (see goRegexMatch).
+			wantSQL: guardedMatchSQL("`ServiceName`", "concat(?, `Pattern`, ?)"),
+			wantArg: []any{"^(?:", ")$", "^(?:", ")$"},
 		},
 		{
 			// TraceQL link / event spanset filters lower to this shape

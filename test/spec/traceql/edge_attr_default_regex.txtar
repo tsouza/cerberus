@@ -6,9 +6,16 @@
 [2] string = "path"
 [3] string = "path"
 [4] string = "path"
-[5] string = "^(?:/api/.*)$"
+[5] string = "path"
+[6] string = "path"
+[7] string = "path"
+[8] string = "^(?:/api/.*)$"
+[9] string = "path"
+[10] string = "path"
+[11] string = "path"
+[12] string = "^(?:/api/.*)$"
 -- sql --
-SELECT * FROM `otel_traces` WHERE (mapContains(`SpanAttributes`, ?) OR mapContains(`ResourceAttributes`, ?)) AND match(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?]), ?)
+SELECT * FROM `otel_traces` WHERE (mapContains(`SpanAttributes`, ?) OR mapContains(`ResourceAttributes`, ?)) AND if(isValidUTF8(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?])), match(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?]), ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?]))))), ?))
 -- seed --
 CREATE TABLE otel_traces (
     Duration UInt64,
@@ -41,7 +48,14 @@ scope: full
 [5] string = "path"
 [6] string = "path"
 [7] string = "path"
-[8] string = "^(?:/api/.*)$"
+[8] string = "path"
+[9] string = "path"
+[10] string = "path"
+[11] string = "^(?:/api/.*)$"
+[12] string = "path"
+[13] string = "path"
+[14] string = "path"
+[15] string = "^(?:/api/.*)$"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -50,4 +64,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (mapContains(`SpanAttributes`, ?) OR mapContains(`ResourceAttributes`, ?)) AND match(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?]), ?))
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (mapContains(`SpanAttributes`, ?) OR mapContains(`ResourceAttributes`, ?)) AND if(isValidUTF8(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?])), match(if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?]), ?), match(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', if(mapContains(`SpanAttributes`, ?), `SpanAttributes`[?], `ResourceAttributes`[?]))))), ?)))
