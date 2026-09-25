@@ -1159,6 +1159,22 @@ around an existing phase, or deleting the same scope from both mutable
 declarations therefore fails. On a scoped change, a registry-owned changed path
 with no phase owner also fails instead of selecting an empty matrix.
 
+Each selected leg first computes a content key over everything its verdict
+depends on — every file of every main-module package in its Go test closure,
+the data its tests read by literal path, `go.mod` / `go.sum` /
+`.gremlins.yaml`, the Go toolchain, the gremlins fork commit, its matrix row
+(with the scope diff in place of `diff_ref`), the runner's per-mutant bounds,
+and the runner scripts with their imports — and looks it up with
+`actions/cache`. A validated hit skips gremlins, prints the key, the producing
+run and the stored survivors, and re-gates the stored report in the efficacy
+threshold step; a miss runs gremlins and stores the verdict, failing ones
+included. A verdict that a different runner speed could flip through its
+timed-out mutants is not stored. Every leg uploads a provenance record, and the
+`mutation` aggregator re-validates each cache hit's entry against its key and
+the phase's threshold; a missing or unverifiable record fails the check.
+`.github/scripts/lib/mutation-cache.mjs` states the key classes and the
+validation rules.
+
 The selector also pins the phase table's efficacy threshold to an independent
 95% minimum. Lowering the shared phase constant cannot turn every leg into a
 green zero-evidence run.

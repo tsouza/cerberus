@@ -143,6 +143,14 @@ jobs:
     # for a pass over work that should have run.
     if: ${{ needs.select.outputs.has_phases == 'true' }}
     runs-on: ubuntu-latest
+    env:
+      # Read by the install step, and by the cache key, which resolves the ref
+      # to the fork commit it names.
+      GREMLINS_INSTALL: github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-workdir-fd-leak-consume
+      # The runner's per-mutant bounds (see the `gremlins unleash` step); part
+      # of the cache key because they can move a verdict.
+      MUTANT_TIMEOUT_MIN: 15s
+      MUTANT_TIMEOUT_MAX: 120s
     # 90 (not 60): the parser legs run workers=1 (see mutation-phases.mjs) to
     # stay under the runner memory ceiling, which serialises their ~109 timeout
     # mutants and pushes wall-clock toward an hour on a 2-core runner. The faster
@@ -167,6 +175,35 @@ jobs:
           # diff path, not because the checkout was sufficient).
           fetch-depth: 0
       - uses: ./.github/actions/setup-go
+      # The leg's verdict is cached by the CONTENT of everything it depends on
+      # (its Go test closure, the data its tests read, go.mod/go.sum, the
+      # toolchain, the gremlins commit, its matrix row, and the runner scripts),
+      # never by SHA, branch or time. A hit skips gremlins and re-gates the
+      # stored report below; a miss runs gremlins and stores the result. Key
+      # composition, the timed-out-mutant rule, and validation are in the
+      # header of .github/scripts/lib/mutation-cache.mjs.
+      - id: key
+        name: compute the leg's content key
+        run: node .github/scripts/mutation-cache.mjs key
+        env:
+          SCOPE: ${{ matrix.scope }}
+          PHASE_ROW: ${{ toJSON(matrix) }}
+          DIFF_REF: ${{ matrix.diff_ref }}
+      - name: restore a cached verdict
+        uses: actions/cache/restore@v6
+        with:
+          path: .mutation-cache
+          key: mutation-leg-${{ steps.key.outputs.key }}
+      - id: cache
+        name: validate the cached verdict
+        run: node .github/scripts/mutation-cache.mjs check
+        env:
+          KEY: ${{ steps.key.outputs.key }}
+          PHASE: ${{ matrix.phase }}
+          THRESHOLD: ${{ matrix.efficacy }}
+          ENTRY: .mutation-cache/entry.json
+          REPORT: gremlins.json
+          PROVENANCE: provenance/provenance.json
       # We install gremlins directly via `go install` so we don't
       # depend on a third-party Action's release-download path.
       # The setup-go composite's module cache keeps subsequent runs fast.
@@ -258,9 +295,10 @@ jobs:
       # single mutant ran. The wrapper's never-retry set is what keeps a bad
       # version pin, or gremlins failing to COMPILE, from being retried.
       - name: install gremlins
+        if: steps.cache.outputs.hit != 'true'
         run: >
           node .github/scripts/go-module-fetch.mjs --
-          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-workdir-fd-leak-consume
+          go install "${GREMLINS_INSTALL}"
       # `workers: 0` keeps gremlins' default (runtime.NumCPU()); a
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.
@@ -354,10 +392,10 @@ jobs:
       # the final report executed at least one mutant. Keeping the zero-mutant
       # fallback out of shell prevents a missing or malformed JSON field from
       # being read as a cheap successful phase.
-      - name: gremlins unleash
+      - id: run
+        name: gremlins unleash
+        if: steps.cache.outputs.hit != 'true'
         env:
-          MUTANT_TIMEOUT_MIN: 15s
-          MUTANT_TIMEOUT_MAX: 120s
           SCOPE: ${{ matrix.scope }}
           WORKERS: ${{ matrix.workers }}
           EXCLUDE_FILES: ${{ matrix.exclude_files }}
@@ -369,6 +407,40 @@ jobs:
       # (measured < threshold -> fail). The pinned fork DOES exit non-zero on a
       # violation; it just does so mid-run, before the report is written and
       # uploaded, leaving an opaque `gremlins exited N` and no artifact.
+      # A real run records its provenance and, when its verdict is
+      # timing-stable, a cache entry — BEFORE the threshold step, so a failing
+      # verdict is cached too and an unchanged red leg fails from cache.
+      - id: store
+        name: record the verdict for the cache
+        if: steps.run.outcome == 'success'
+        run: node .github/scripts/mutation-cache.mjs store
+        env:
+          KEY: ${{ steps.key.outputs.key }}
+          PHASE: ${{ matrix.phase }}
+          THRESHOLD: ${{ matrix.efficacy }}
+          ENTRY: .mutation-cache/entry.json
+          REPORT: gremlins.json
+          PROVENANCE: provenance/provenance.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+      - name: save the verdict
+        if: steps.store.outputs.cacheable == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .mutation-cache
+          key: mutation-leg-${{ steps.key.outputs.key }}
+      # On a hit the aggregator re-verifies the entry itself rather than taking
+      # the leg's word for it, so the entry travels with the provenance record.
+      - name: attach the cache entry to the provenance record
+        if: steps.cache.outputs.hit == 'true'
+        run: cp .mutation-cache/entry.json provenance/entry.json
+      - name: upload the verdict's provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-provenance-${{ matrix.phase }}
+          path: provenance/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: enforce efficacy threshold
         run: node .github/scripts/gremlins-threshold.mjs
         env:
@@ -432,3 +504,22 @@ jobs:
             exit 1
           fi
           echo "all selected mutation phases green."
+      # Green legs are not enough: every selected phase must say where its
+      # verdict came from, and a cache hit must carry an entry that re-validates
+      # here against its key and the phase's own threshold. An unverified hit is
+      # a failure, never a pass.
+      - if: needs.mutate.result == 'success'
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+      - if: needs.mutate.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: mutation-provenance-*
+          path: provenance
+      - name: validate every phase's verdict provenance
+        if: needs.mutate.result == 'success'
+        run: node .github/scripts/mutation-cache.mjs aggregate
+        env:
+          MATRIX: ${{ needs.select.outputs.matrix }}
+          PROVENANCE_DIR: provenance
