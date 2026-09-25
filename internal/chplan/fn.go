@@ -648,6 +648,10 @@ const (
 	// CH's groupArrayIf.
 	FnGroupArray Fn = "groupArray"
 
+	// groupUniqArrayArray(arr) aggregate — the distinct elements of every
+	// arr in the group, flattened into one Array in an unspecified order.
+	FnGroupUniqArrayArray Fn = "groupUniqArrayArray"
+
 	// max(x) aggregate — the maximum non-NULL x in the group.
 	FnMax Fn = "max"
 

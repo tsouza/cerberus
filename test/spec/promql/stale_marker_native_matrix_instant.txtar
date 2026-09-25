@@ -1,0 +1,131 @@
+# Seed: the native histogram `stale_exp_hist` is scraped every 30s. Series
+# job="a" is scraped until 23:59:00; its target then disappears and the
+# collector writes a NoRecordedValue data point (Flags = 1, empty bucket
+# arrays) at 23:59:30, and the target returns at 00:02:00 with its counters
+# continuing. Series job="b" is scraped throughout. Reference Prometheus holds
+# that data point as a native-histogram stale marker on job="a".
+#
+# A range selection never contains a stale marker, so the 23:59:30 marker is
+# not one of job="a"'s samples in (23:55:01, 00:00:01].
+
+-- query.promql --
+stale_exp_hist[5m]
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64),
+    Flags UInt32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts, Flags) VALUES
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:56:00', 9), 4, 1.5, 0, 0, 0, [1, 2, 1], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:56:30', 9), 8, 3.0, 0, 0, 0, [2, 4, 2], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:57:00', 9), 12, 4.5, 0, 0, 0, [3, 6, 3], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:57:30', 9), 16, 6.0, 0, 0, 0, [4, 8, 4], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:58:00', 9), 20, 7.5, 0, 0, 0, [5, 10, 5], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:58:30', 9), 24, 9.0, 0, 0, 0, [6, 12, 6], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:59:00', 9), 28, 10.5, 0, 0, 0, [7, 14, 7], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 0, 0.0, 0, 0, 0, [], 0, [], 1),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 34, 13.5, 0, 0, 0, [8, 15, 11], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:02:30', 9), 40, 16.5, 0, 0, 0, [9, 16, 15], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:03:00', 9), 46, 19.5, 0, 0, 0, [10, 17, 19], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:03:30', 9), 52, 22.5, 0, 0, 0, [11, 18, 23], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:04:00', 9), 58, 25.5, 0, 0, 0, [12, 19, 27], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:04:30', 9), 64, 28.5, 0, 0, 0, [13, 20, 31], 0, [], 0),
+    ('stale_exp_hist', map('job', 'a'), toDateTime64('2026-01-01 00:05:00', 9), 70, 31.5, 0, 0, 0, [14, 21, 35], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:56:00', 9), 5, 4.0, 0, 0, 0, [1, 1, 3], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:56:30', 9), 10, 8.0, 0, 0, 0, [2, 2, 6], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:57:00', 9), 15, 12.0, 0, 0, 0, [3, 3, 9], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:57:30', 9), 20, 16.0, 0, 0, 0, [4, 4, 12], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:58:00', 9), 25, 20.0, 0, 0, 0, [5, 5, 15], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:58:30', 9), 30, 24.0, 0, 0, 0, [6, 6, 18], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:59:00', 9), 35, 28.0, 0, 0, 0, [7, 7, 21], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2025-12-31 23:59:30', 9), 40, 32.0, 0, 0, 0, [8, 8, 24], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 45, 36.0, 0, 0, 0, [9, 9, 27], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:00:30', 9), 50, 40.0, 0, 0, 0, [10, 10, 30], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:01:00', 9), 55, 44.0, 0, 0, 0, [11, 11, 33], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:01:30', 9), 60, 48.0, 0, 0, 0, [12, 12, 36], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:02:00', 9), 65, 52.0, 0, 0, 0, [13, 13, 39], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:02:30', 9), 70, 56.0, 0, 0, 0, [14, 14, 42], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:03:00', 9), 75, 60.0, 0, 0, 0, [15, 15, 45], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:03:30', 9), 80, 64.0, 0, 0, 0, [16, 16, 48], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:04:00', 9), 85, 68.0, 0, 0, 0, [17, 17, 51], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:04:30', 9), 90, 72.0, 0, 0, 0, [18, 18, 54], 0, [], 0),
+    ('stale_exp_hist', map('job', 'b'), toDateTime64('2026-01-01 00:05:00', 9), 95, 76.0, 0, 0, 0, [19, 19, 57], 0, [], 0);
+-- expected_rows --
+[
+  ["stale_exp_hist", {"job": "a"}, "2025-12-31T23:56:00Z", 0, 4, 1.5, 0, 0, 0, 0, [1,2,1], 0, []],
+  ["stale_exp_hist", {"job": "a"}, "2025-12-31T23:56:30Z", 0, 8, 3, 0, 0, 0, 0, [2,4,2], 0, []],
+  ["stale_exp_hist", {"job": "a"}, "2025-12-31T23:57:00Z", 0, 12, 4.5, 0, 0, 0, 0, [3,6,3], 0, []],
+  ["stale_exp_hist", {"job": "a"}, "2025-12-31T23:57:30Z", 0, 16, 6, 0, 0, 0, 0, [4,8,4], 0, []],
+  ["stale_exp_hist", {"job": "a"}, "2025-12-31T23:58:00Z", 0, 20, 7.5, 0, 0, 0, 0, [5,10,5], 0, []],
+  ["stale_exp_hist", {"job": "a"}, "2025-12-31T23:58:30Z", 0, 24, 9, 0, 0, 0, 0, [6,12,6], 0, []],
+  ["stale_exp_hist", {"job": "a"}, "2025-12-31T23:59:00Z", 0, 28, 10.5, 0, 0, 0, 0, [7,14,7], 0, []],
+  ["stale_exp_hist", {"job": "b"}, "2025-12-31T23:56:00Z", 0, 5, 4, 0, 0, 0, 0, [1,1,3], 0, []],
+  ["stale_exp_hist", {"job": "b"}, "2025-12-31T23:56:30Z", 0, 10, 8, 0, 0, 0, 0, [2,2,6], 0, []],
+  ["stale_exp_hist", {"job": "b"}, "2025-12-31T23:57:00Z", 0, 15, 12, 0, 0, 0, 0, [3,3,9], 0, []],
+  ["stale_exp_hist", {"job": "b"}, "2025-12-31T23:57:30Z", 0, 20, 16, 0, 0, 0, 0, [4,4,12], 0, []],
+  ["stale_exp_hist", {"job": "b"}, "2025-12-31T23:58:00Z", 0, 25, 20, 0, 0, 0, 0, [5,5,15], 0, []],
+  ["stale_exp_hist", {"job": "b"}, "2025-12-31T23:58:30Z", 0, 30, 24, 0, 0, 0, 0, [6,6,18], 0, []],
+  ["stale_exp_hist", {"job": "b"}, "2025-12-31T23:59:00Z", 0, 35, 28, 0, 0, 0, 0, [7,7,21], 0, []],
+  ["stale_exp_hist", {"job": "b"}, "2025-12-31T23:59:30Z", 0, 40, 32, 0, 0, 0, 0, [8,8,24], 0, []],
+  ["stale_exp_hist", {"job": "b"}, "2026-01-01T00:00:00Z", 0, 45, 36, 0, 0, 0, 0, [9,9,27], 0, []]
+]
+-- args --
+[0] float64 = 0
+[1] string = "stale_exp_hist"
+[2] string = "stale.exp.hist"
+[3] string = "stale.exp/hist"
+[4] string = "stale.exp_hist"
+[5] string = "stale/exp/hist"
+[6] string = "stale/exp_hist"
+[7] string = "stale_exp.hist"
+[8] string = "2026-01-01 00:00:01.000000000"
+[9] int64 = 9
+[10] string = "2026-01-01 00:00:01.000000000"
+[11] int64 = 9
+[12] int64 = 300000000000
+[13] int64 = 1
+[14] int64 = 0
+-- args_optimized --
+[0] float64 = 0
+[1] string = "stale_exp_hist"
+[2] string = "stale.exp.hist"
+[3] string = "stale.exp/hist"
+[4] string = "stale.exp_hist"
+[5] string = "stale/exp/hist"
+[6] string = "stale/exp_hist"
+[7] string = "stale_exp.hist"
+[8] string = "2026-01-01 00:00:01.000000000"
+[9] int64 = 9
+[10] string = "2026-01-01 00:00:01.000000000"
+[11] int64 = 9
+[12] int64 = 300000000000
+[13] int64 = 1
+[14] int64 = 0
+-- chplan --
+HistogramProjection project=[MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, 0 AS Value]
+  Filter predicate=((((MetricName IN ("stale_exp_hist", "stale.exp.hist", "stale.exp/hist", "stale.exp_hist", "stale/exp/hist", "stale/exp_hist", "stale_exp.hist")) AND (TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000)))) AND FnNot((FnBitAnd(Flags, 1) != 0)))
+    Scan(otel_metrics_exponential_histogram, columns=[MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts, AggregationTemporality])
+-- settings --
+enable_analyzer=0
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:node
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(?) AS `Value`, toFloat64(`Count`) AS `HistogramCount`, toFloat64(`Sum`) AS `HistogramSum`, toInt32(`Scale`) AS `HistogramScale`, toFloat64(0.) AS `HistogramZeroThreshold`, toFloat64(`ZeroCount`) AS `HistogramZeroCount`, toInt32(`PositiveOffset`) AS `HistogramPositiveOffset`, arrayMap(x -> toFloat64(x), `PositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, toInt32(`NegativeOffset`) AS `HistogramNegativeOffset`, arrayMap(x -> toFloat64(x), `NegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT `_cerb_histogram_input`.1 AS `MetricName`, `_cerb_histogram_input`.2 AS `Attributes`, `_cerb_histogram_input`.3 AS `TimeUnix`, `_cerb_histogram_input`.4 AS `Count`, `_cerb_histogram_input`.5 AS `Sum`, `_cerb_histogram_input`.6 AS `Scale`, `_cerb_histogram_input`.7 AS `ZeroCount`, `_cerb_histogram_input`.8 AS `PositiveOffset`, `_cerb_histogram_input`.9 AS `PositiveBucketCounts`, `_cerb_histogram_input`.10 AS `NegativeOffset`, `_cerb_histogram_input`.11 AS `NegativeBucketCounts`, `_cerb_histogram_input`.12 AS `AggregationTemporality` FROM (SELECT arrayJoin([(`MetricName`, `Attributes`, `TimeUnix`, `Count`, `Sum`, `Scale`, `ZeroCount`, `PositiveOffset`, `PositiveBucketCounts`, `NegativeOffset`, `NegativeBucketCounts`, `AggregationTemporality`)]) AS `_cerb_histogram_input` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Count`, `Sum`, `Scale`, `ZeroCount`, `PositiveOffset`, `PositiveBucketCounts`, `NegativeOffset`, `NegativeBucketCounts`, `AggregationTemporality` FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))) AND not((bitAnd(`Flags`, ?) != ?)))))
+-- sql_optimized --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(?) AS `Value`, toFloat64(`Count`) AS `HistogramCount`, toFloat64(`Sum`) AS `HistogramSum`, toInt32(`Scale`) AS `HistogramScale`, toFloat64(0.) AS `HistogramZeroThreshold`, toFloat64(`ZeroCount`) AS `HistogramZeroCount`, toInt32(`PositiveOffset`) AS `HistogramPositiveOffset`, arrayMap(x -> toFloat64(x), `PositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, toInt32(`NegativeOffset`) AS `HistogramNegativeOffset`, arrayMap(x -> toFloat64(x), `NegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT `_cerb_histogram_input`.1 AS `MetricName`, `_cerb_histogram_input`.2 AS `Attributes`, `_cerb_histogram_input`.3 AS `TimeUnix`, `_cerb_histogram_input`.4 AS `Count`, `_cerb_histogram_input`.5 AS `Sum`, `_cerb_histogram_input`.6 AS `Scale`, `_cerb_histogram_input`.7 AS `ZeroCount`, `_cerb_histogram_input`.8 AS `PositiveOffset`, `_cerb_histogram_input`.9 AS `PositiveBucketCounts`, `_cerb_histogram_input`.10 AS `NegativeOffset`, `_cerb_histogram_input`.11 AS `NegativeBucketCounts`, `_cerb_histogram_input`.12 AS `AggregationTemporality` FROM (SELECT arrayJoin([(`MetricName`, `Attributes`, `TimeUnix`, `Count`, `Sum`, `Scale`, `ZeroCount`, `PositiveOffset`, `PositiveBucketCounts`, `NegativeOffset`, `NegativeBucketCounts`, `AggregationTemporality`)]) AS `_cerb_histogram_input` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Count`, `Sum`, `Scale`, `ZeroCount`, `PositiveOffset`, `PositiveBucketCounts`, `NegativeOffset`, `NegativeBucketCounts`, `AggregationTemporality` FROM `otel_metrics_exponential_histogram` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))) AND not((bitAnd(`Flags`, ?) != ?)))))

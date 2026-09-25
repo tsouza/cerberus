@@ -86,20 +86,22 @@ branch as shields.io badge JSON; the README shows them live. On
   marker as a data point carrying the `NoRecordedValue` flag (bit 0 of the
   `Flags` column) and `Value = 0`. Once the boot requirements check has
   found the `Flags` column on every metric table, cerberus reads such a row
-  as the stale marker it was scraped as, on the gauge, sum and
-  classic-histogram `_count` / `_sum` selector paths: a range selection
-  (every range function, a top-level range vector) excludes it, and an
-  instant selection (a bare selector, each inner step of a subquery over a
-  bare selector, `absent()`) has no sample for a series whose latest sample
-  in the lookback is the marker. Metadata endpoints list the series as
-  usual. Every other deployment reads each row as a sample and never names
-  the column: a metric table without it (the check logs a warning naming
-  the table), a metric table not yet provisioned at boot, the check
-  disabled (`CERBERUS_REQUIREMENTS_CHECK=false`), or a schema whose
-  `schema.Metrics.FlagsColumn` is empty. The classic `_bucket` and
-  `histogram_quantile` paths, native histograms, an instant function inside
-  a subquery and the downsampled long-range tier still read a stale marker
-  as a sample (#3655). `internal/promql/stale_marker.go` holds both rules;
+  as the stale marker it was scraped as, on every gauge, sum, classic- and
+  native-histogram read path: a range selection (every range function, a
+  top-level range vector, `absent_over_time()`) excludes it, and an instant
+  selection (a bare selector including `<x>_bucket`, `histogram_quantile()`
+  and the native-histogram accessors over one, each inner step of a
+  subquery, `absent()`) has no sample for a series whose latest sample in
+  the lookback is the marker. A classic histogram's marker ends every `le`
+  series its series carried. Metadata endpoints list the series as usual.
+  Every other deployment reads each row as a sample and never names the
+  column: a metric table without it (the check logs a warning naming the
+  table), a metric table not yet provisioned at boot, the check disabled
+  (`CERBERUS_REQUIREMENTS_CHECK=false`), or a schema whose
+  `schema.Metrics.FlagsColumn` is empty. A date-component function inside
+  a subquery still reads past a marker (#3692). The downsampled long-range
+  tier's views skip marker rows (see `docs/operations.md`).
+  `internal/promql/stale_marker.go` holds both rules;
   `schema.Metrics.StaleMarkerFlagsColumn` gates them.
 - **Native-grid duplicate-timestamp NaN survivor**: when a query lowers
   onto a `timeSeries*ToGrid` aggregate (the auto-enabled `ts_grid_*`

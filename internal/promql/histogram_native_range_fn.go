@@ -481,6 +481,7 @@ func expHistogramRangeFnWindowed(shape histogramAggShape, s schema.Metrics, ctx 
 	rangeStart := windowLeftBoundExpr(anchor, shape.windowRange)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
+	pred = withHistogramRangeStaleDrop(pred, s)
 
 	var input chplan.Node = scan
 	if pred != nil {
@@ -508,7 +509,7 @@ func lowerExpHistogramRangeFnRange(shape histogramAggShape, s schema.Metrics, ct
 	winIn = winIn.withLowerers(ctx.lowerers)
 
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
-	grouped := buildHistogramBucketFanout(
+	grouped := buildRangeHistogramBucketFanout(
 		scan, pred, nil, win,
 		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 		aggs, s, ctx,

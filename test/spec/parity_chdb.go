@@ -1388,7 +1388,7 @@ func readSeededClassicHistograms(
 	q := "SELECT MetricName, toJSONString(Attributes), " +
 		resourceAttributesProjection(seedCols) + ", " + serviceNameProjection(seedCols) + ", " +
 		"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols) + ", Count, Sum, " +
-		"toJSONString(BucketCounts), toJSONString(ExplicitBounds) " +
+		"toJSONString(BucketCounts), toJSONString(ExplicitBounds), " + flagsProjection(seedCols) + " " +
 		"FROM " + classicHistogramTable + " ORDER BY MetricName, TimeUnix"
 	rows, err := db.Query(q)
 	if err != nil {
@@ -1397,19 +1397,35 @@ func readSeededClassicHistograms(
 	defer func() { _ = rows.Close() }()
 
 	countDeclared := hasColumn(seedCols, colCount)
+	// seenBounds records, per histogram series, every `le` its rows have
+	// carried so far: a stale-marker row has no bucket layout of its own,
+	// and the scrape it was translated from staled every bucket series the
+	// target exposed.
+	seenBounds := map[string]map[string]bool{}
 	for rows.Next() {
 		var name, attrsJSON, resAttrsJSON, serviceName, countsJSON, boundsJSON string
 		var tsMillis, temporality int64
 		var count, sum float64
+		var flags uint32
 		if err := rows.Scan(
 			&name, &attrsJSON, &resAttrsJSON, &serviceName, &tsMillis, &temporality,
-			&count, &sum, &countsJSON, &boundsJSON,
+			&count, &sum, &countsJSON, &boundsJSON, &flags,
 		); err != nil {
 			return err
 		}
 		base, err := labelsFromSeededRow("", attrsJSON, resAttrsJSON, serviceName, allow)
 		if err != nil {
 			return err
+		}
+		histKey := seriesKey(base, name, nil)
+		if seenBounds[histKey] == nil {
+			seenBounds[histKey] = map[string]bool{}
+		}
+		if flags&otelNoRecordedValueFlag != 0 {
+			if err := appendClassicStaleMarker(byKey, nameRestorer, base, name, seenBounds[histKey], tsMillis); err != nil {
+				return err
+			}
+			continue
 		}
 		var counts, bounds []float64
 		if err := json.Unmarshal([]byte(countsJSON), &counts); err != nil {
@@ -1440,6 +1456,7 @@ func readSeededClassicHistograms(
 
 		cumulative := 0.0
 		for i, bound := range bounds {
+			seenBounds[histKey][formatBucketBound(bound)] = true
 			cumulative += counts[i]
 			if err := appendPoint(byKey, nameRestorer, base, name+bucketSuffix,
 				map[string]string{leLabel: formatBucketBound(bound)}, tsMillis, cumulative); err != nil {
@@ -1464,6 +1481,34 @@ func readSeededClassicHistograms(
 		markDeltaSeries(deltaSeries, seriesKey(base, name+sumSuffix, nil), temporality)
 	}
 	return rows.Err()
+}
+
+// appendClassicStaleMarker writes the stale marker a classic histogram's
+// NoRecordedValue row stands for into every float series the histogram
+// exposes: each `_bucket` series the histogram has carried (the bounds in
+// les, plus `+Inf`), `_count` and `_sum`.
+func appendClassicStaleMarker(
+	byKey map[string]*oracle.Series, nameRestorer *metricNameRestorer, base map[string]string,
+	name string, les map[string]bool, tsMillis int64,
+) error {
+	stale := math.Float64frombits(value.StaleNaN)
+	bucketLes := make([]string, 0, len(les)+1)
+	for le := range les {
+		bucketLes = append(bucketLes, le)
+	}
+	bucketLes = append(bucketLes, positiveInfSTR)
+	for _, le := range bucketLes {
+		if err := appendPoint(byKey, nameRestorer, base, name+bucketSuffix,
+			map[string]string{leLabel: le}, tsMillis, stale); err != nil {
+			return err
+		}
+	}
+	for _, suffix := range []string{countSuffix, sumSuffix} {
+		if err := appendPoint(byKey, nameRestorer, base, name+suffix, nil, tsMillis, stale); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func totalClassicHistogramObservations(counts []float64) float64 {

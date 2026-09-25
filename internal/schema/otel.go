@@ -784,6 +784,13 @@ func hasSuffix(s, suffix string) bool {
 	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
 }
 
+// NoRecordedValueFlag is the OTel data-point flag bit
+// (pmetric.DataPointFlags.NoRecordedValue, `FLAG_NO_RECORDED_VALUE` in the
+// OTLP proto) the collector's prometheusreceiver sets on a scraped
+// Prometheus stale marker. A row carrying it holds no sample: its Value is
+// the exporter's empty-value placeholder.
+const NoRecordedValueFlag = 1
+
 // StaleMarkerFlagsColumn is the Flags column the PromQL read path may
 // reference to recognise a Prometheus stale marker: FlagsColumn once
 // FlagsColumnProbed established it on every metric table, "" otherwise.

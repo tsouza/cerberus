@@ -1,0 +1,11 @@
+{
+  "query": "stale_marker_native_matrix_instant/native",
+  "lowering": "native",
+  "routed": false,
+  "k": 0,
+  "reason": "extraction-failed",
+  "n_anchors": 0,
+  "fanout": 0,
+  "cumulative_d": "0s",
+  "outer_range": "0s"
+}

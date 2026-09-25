@@ -896,6 +896,7 @@ func lowerHistogramSelectorInput(
 	s schema.Metrics,
 	cat *metadataCatalog,
 	mode staleMarkerMode,
+	layoutBound chplan.Expr,
 ) (chplan.Node, chplan.Expr, bool) {
 	switch {
 	case bucketSuffixed != "":
@@ -903,7 +904,7 @@ func lowerHistogramSelectorInput(
 		if pred = withStaleMarkerDrop(pred, mode, s); pred != nil {
 			fanInput = &chplan.Filter{Input: scan, Predicate: pred}
 		}
-		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s, cat)
+		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s, cat, mode, layoutBound)
 		leSchema := s
 		leSchema.ResourceAttributesColumn = ""
 		if lePred := buildPredicate(bucketLeMatchers, leSchema); lePred != nil {
@@ -1203,8 +1204,17 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// outer Filter on `Attributes['le']` (the column doesn't exist on
 	// the raw scan row).
 	staleMode := ctx.staleMarkerMode(s)
+	// Read only by a `_bucket` fan-out under staleMarkersEncoded, so it is
+	// built only there.
+	var layoutBound chplan.Expr
+	if bucketSuffixed != "" && staleMode == staleMarkersEncoded {
+		var err error
+		if layoutBound, err = staleLayoutBoundFor(v, ctx, s); err != nil {
+			return nil, err
+		}
+	}
 	selectorInput, pred, attributesPreMerged := lowerHistogramSelectorInput(
-		scan, pred, bucketSuffixed, bucketLeMatchers, companionValueColumn, s, ctx.catalog, staleMode,
+		scan, pred, bucketSuffixed, bucketLeMatchers, companionValueColumn, s, ctx.catalog, staleMode, layoutBound,
 	)
 
 	// Resolve the effective evaluation anchor for this selector.
@@ -2939,6 +2949,9 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 			return lowerCallOverSubquery(c, sq, s, ctx)
 		}
 	}
+	if isHistogramValueFn(c.Func.Name) {
+		return lowerHistogramValueFn(c, s, ctx)
+	}
 	switch c.Func.Name {
 	case "absent":
 		return lowerAbsent(c, s, ctx)
@@ -2948,9 +2961,6 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerHistogramQuantile(c, s, ctx)
 	case "histogram_quantiles":
 		return lowerHistogramQuantiles(c, s, ctx)
-	case "histogram_count", "histogram_sum", "histogram_avg",
-		"histogram_stddev", "histogram_stdvar", "histogram_fraction":
-		return lowerHistogramValueFn(c, s, ctx)
 	case fnLabelReplace:
 		return lowerLabelReplace(c, s, ctx)
 	case fnLabelJoin:
