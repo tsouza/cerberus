@@ -2880,7 +2880,7 @@ func expHistogramBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, para
 // width) total — once, not once per target.
 //
 // The row's scale ratio is left unbound here: a binding around the slice
-// would capture the row's whole bucket array once per row and target.
+// would copy the row's whole bucket array once per row and target.
 func expHistogramBucketPositionPickerExpr(mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
 	rowBuckets := chplan.Expr(&chplan.BareIdent{Name: paramExpRowBuckets})
 	sliceStart, sliceLen := expHistogramBucketSliceBoundsExpr(
@@ -2895,17 +2895,6 @@ func expHistogramBucketPositionPickerExpr(mergedScale, mergedStart chplan.Expr, 
 		Args: []chplan.Expr{rowBuckets, sliceStart, sliceLen},
 	}
 }
-
-// Lambda parameter names [expHistogramDenseContribsExpr] binds one row's
-// scale ratio ([expHistogramScaleRatioExpr]), offset and bucket count to.
-// The slice bounds read each several times, and under the older ClickHouse
-// analyzer every rendered copy is re-analysed once per derived-query level
-// above it, so each is bound once and read as a bare identifier.
-const (
-	paramExpScaleRatio = "bsr"
-	paramExpRowOff     = "bof"
-	paramExpRowLength  = "bln"
-)
 
 // expHistogramScaleRatioExpr renders 2^(rowScale - mergedScale): how many
 // consecutive absolute buckets at the row's scale fold onto one bucket at
@@ -2937,9 +2926,7 @@ func expHistogramScaleRatioExpr(rowScale, mergedScale chplan.Expr) chplan.Expr {
 //
 // ratio is the row's [expHistogramScaleRatioExpr] — every ratio
 // consecutive absolute buckets at row scale fold onto one merged-scale
-// bucket — and rowLength is length(<row's bucket array>). The ratio is read
-// three times below, the offset four times and the length twice;
-// [expHistogramDenseContribsExpr] passes all three bound.
+// bucket — and rowLength is length(<row's bucket array>).
 func expHistogramBucketSliceBoundsExpr(
 	ratio, rowOffset, rowLength, mergedStart, target chplan.Expr,
 ) (sliceStart, sliceLen chplan.Expr) {
@@ -3026,26 +3013,20 @@ const paramExpDenseTarget = "dk"
 // form, and it is why this rendering is confined to callers folding
 // STORED counts.
 //
-// ratio is the row's [expHistogramScaleRatioExpr]. It is bound once per
-// row together with the row's offset and bucket count, around the
-// target-index lambda only, so none of them repeats per target bucket in
-// the text or in evaluation, and neither the binding nor the target-index
-// lambda reads the row's bucket array: that array reaches
-// `arrayReduceInRanges` as a plain argument outside both.
+// ratio is the row's [expHistogramScaleRatioExpr]. It stays unbound: a
+// one-element binding around the target-index lambda, per row, measured
+// more execution CPU than the renders it saves in planning.
 func expHistogramDenseContribsExpr(
 	ratio, rowOffset, rowBuckets, mergedStart, mergedLength chplan.Expr,
 ) chplan.Expr {
+	sliceStart, sliceLen := expHistogramBucketSliceBoundsExpr(
+		ratio, rowOffset, &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{rowBuckets}}, mergedStart,
+		&chplan.BareIdent{Name: paramExpDenseTarget},
+	)
 	toUInt64 := func(e chplan.Expr) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{e}}
 	}
-	sliceStart, sliceLen := expHistogramBucketSliceBoundsExpr(
-		&chplan.BareIdent{Name: paramExpScaleRatio},
-		&chplan.BareIdent{Name: paramExpRowOff},
-		&chplan.BareIdent{Name: paramExpRowLength},
-		mergedStart,
-		&chplan.BareIdent{Name: paramExpDenseTarget},
-	)
-	perTarget := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+	ranges := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
 			Params: []string{paramExpDenseTarget},
 			Body: &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{
@@ -3054,21 +3035,6 @@ func expHistogramDenseContribsExpr(
 		},
 		&chplan.FuncCall{Fn: chplan.FnRange, Args: []chplan.Expr{toUInt64(mergedLength)}},
 	}}
-	one := func(e chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{e}}
-	}
-	ranges := &chplan.Subscript{
-		Container: &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramExpScaleRatio, paramExpRowOff, paramExpRowLength},
-				Body:   perTarget,
-			},
-			one(ratio),
-			one(rowOffset),
-			one(&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{rowBuckets}}),
-		}},
-		Key: &chplan.LitInt{V: 1},
-	}
 	return &chplan.FuncCall{Fn: chplan.FnArrayReduceInRanges, Args: []chplan.Expr{
 		&chplan.LitString{V: expHistogramDenseSumAggName},
 		ranges,

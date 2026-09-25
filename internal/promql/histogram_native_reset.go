@@ -336,24 +336,6 @@ func expHistogramResetMaskExpr(densified bool) chplan.Expr {
 	return hqLet(paramResetOrderedRows, orderedRows, func(rows chplan.Expr) chplan.Expr {
 		prevRows := &chplan.FuncCall{Fn: chplan.FnArrayPopBack, Args: []chplan.Expr{rows}}
 		currRows := &chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{rows}}
-		// Each pair's reconciled scale is read by both ladders' merged
-		// range bounds and by every row's scale ratio, so it arrives as
-		// one more lambda ARGUMENT, computed once per pair by its own
-		// small lambda, instead of being rendered at every read. An
-		// argument rather than a one-element binding inside the verdict,
-		// because that binding would capture the pair's bucket ladders
-		// once more per pair — see [expHistogramPairBucketLadderArgs].
-		pairScales := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramResetPrevRow, paramResetCurrRow},
-				Body: expHistogramResetPairScaleExpr(
-					&chplan.BareIdent{Name: paramResetPrevRow},
-					&chplan.BareIdent{Name: paramResetCurrRow},
-				),
-			},
-			prevRows,
-			currRows,
-		}}
 		args := []chplan.Expr{
 			&chplan.Lambda{
 				Params: append([]string{paramResetPrevRow, paramResetCurrRow, paramResetPairScale}, ladderParams...),
@@ -361,10 +343,37 @@ func expHistogramResetMaskExpr(densified bool) chplan.Expr {
 			},
 			prevRows,
 			currRows,
-			pairScales,
+			expHistogramPairScalesArg(prevRows, currRows),
 		}
 		return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: append(args, ladderArgs...)}
 	})
+}
+
+// expHistogramPairScalesArg renders the pair lambda's [paramResetPairScale]
+// argument: every pair's reconciled scale
+// ([expHistogramResetPairScaleExpr]), positionally aligned with the
+// prevRows / currRows position arrays the pair lambda also takes. Every
+// lambda whose body is [expHistogramResetVerdictExpr] takes this argument
+// right after its two row positions.
+//
+// Each pair's scale is read by both ladders' merged range bounds and by
+// every row's scale ratio, so it arrives as one more lambda ARGUMENT,
+// computed once per pair by its own small lambda, instead of being
+// rendered at every read. An argument rather than a one-element binding
+// inside the verdict, because that binding would copy the pair's bucket
+// ladders once more per pair — see [expHistogramPairBucketLadderArgs].
+func expHistogramPairScalesArg(prevRows, currRows chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramResetPrevRow, paramResetCurrRow},
+			Body: expHistogramResetPairScaleExpr(
+				&chplan.BareIdent{Name: paramResetPrevRow},
+				&chplan.BareIdent{Name: paramResetCurrRow},
+			),
+		},
+		prevRows,
+		currRows,
+	}}
 }
 
 // expHistogramResetPairScaleExpr renders the pair's reconciled scale: the

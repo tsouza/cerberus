@@ -19,8 +19,6 @@ const (
 	// mergedEndRenderSQL heads the merged bucket range's end: the arrayMax
 	// over the per-row downscaled last indices.
 	mergedEndRenderSQL = "arrayMax(arrayMap((" + paramExpMergeRowScale + ", " + paramExpMergeRowOffset + ", " + paramExpMergeRowBuckets + ") -> "
-	// scaleRatioRenderSQL heads a row's scale ratio.
-	scaleRatioRenderSQL = "bitShiftLeft(toInt64(?), "
 	// pairScaleRenderSQL is the reset mask's reconciled pair scale.
 	pairScaleRenderSQL = "least(`" + hqAggScalesArrayAlias + "`[" + paramResetPrevRow + "], `" + hqAggScalesArrayAlias + "`[" + paramResetCurrRow + "])"
 	// mergedRangeBindingSQL heads the one binding of a merged range's
@@ -73,8 +71,7 @@ func TestExpHistogramRepeatedSubexpressionsRenderOnce(t *testing.T) {
 		},
 		{
 			// One ladder's closed-form window fold: the merged length is
-			// read per row and by the resize, the row's scale ratio three
-			// times per target.
+			// read per row and by the resize.
 			name: "window_fold_closed_form",
 			expr: expHistogramWindowClosedFormBucketsExpr(
 				hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias,
@@ -83,7 +80,6 @@ func TestExpHistogramRepeatedSubexpressionsRenderOnce(t *testing.T) {
 			want: map[string]int{
 				mergedEndRenderSQL:   1,
 				mergedStartRenderSQL: 1,
-				scaleRatioRenderSQL:  1,
 			},
 		},
 		{
@@ -100,14 +96,12 @@ func TestExpHistogramRepeatedSubexpressionsRenderOnce(t *testing.T) {
 			},
 		},
 		{
-			// The densified reset mask: one pair scale per pair, one ratio
-			// per dense row contribution (two rows by two signed ladders),
-			// and one merged range per signed ladder.
+			// The densified reset mask: one pair scale per pair and one
+			// merged range per signed ladder.
 			name: "reset_mask_densified",
 			expr: expHistogramResetMaskExpr(true),
 			want: map[string]int{
 				pairScaleRenderSQL:   1,
-				scaleRatioRenderSQL:  4,
 				mergedEndRenderSQL:   2,
 				mergedStartRenderSQL: 2,
 			},
