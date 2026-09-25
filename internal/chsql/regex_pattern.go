@@ -330,6 +330,12 @@ func matchesEmpty(pattern string) (bool, error) {
 			return false
 		}
 	}
+	// prog.Start indexes prog.Inst; it is documented non-negative and always
+	// less than len(prog.Inst), but that isn't visible to a bare int->uint32
+	// conversion (gosec G115). Same bound seen already checks pc against.
+	if prog.Start < 0 || prog.Start >= len(prog.Inst) {
+		return false, fmt.Errorf("regexp/syntax: program start %d out of range [0, %d)", prog.Start, len(prog.Inst))
+	}
 	return reach(uint32(prog.Start)), nil
 }
 
