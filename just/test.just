@@ -348,10 +348,16 @@ spec-chdb:
 # entry whose own text said the kind it excused "IS round-tripped" — a
 # self-contradiction the ledger's own contract test rejects, and which nothing
 # in CI could see.
+#
+# The go test runs through go-test-fanout.mjs, which splits the packages its
+# FANOUT table names (./internal/api/prom) across concurrent processes: libchdb
+# runs one query at a time per process, so a package's chDB suite is serial
+# inside its own binary and its whole wall-clock counts against the one
+# -timeout (#3674).
 
 # Run the chdb-tagged handler, emitter, optimizer, solver and corpus lanes. Needs libchdb.so.
 test-chdb:
-    go test -timeout 10m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/optimizer/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
+    node .github/scripts/go-test-fanout.mjs go test -timeout 10m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/optimizer/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle) for all three
 # query heads. The synthetic composite tag activates the LogQL live runner.

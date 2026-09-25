@@ -3429,6 +3429,37 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` when every leg passed, `1` on a failed leg, bad input, or a
     half-declared outer shard.
 
+- **`go-test-fanout.mjs`** — `chdb.yml`, the `probe` job, through `just
+  test-chdb`. Runs the `go test` invocation it is handed as arguments, with
+  each package in its `FANOUT` table (`internal/api/prom`) split across that
+  many concurrent processes: it resolves the package patterns with `go list`
+  under the invocation's own `-tags`, lists each split package's top-level
+  tests with `go test -json -list`, and hash-partitions them into `-run`
+  selectors with `lib/coverage-partition.mjs`. Every other package runs in one
+  ordinary `go test` process alongside. Each partition runs with `-json` and
+  fails unless exactly the tests its selector names passed, so a selector that
+  matched nothing cannot pass. libchdb executes one query at a time
+  per process, so a package's chDB suite is serial inside its own test binary
+  and its whole wall-clock counts against the one `-timeout`; separate
+  processes are the only parallelism it can get (#3674). Each process keeps
+  the invocation's own flags, including `-timeout`. Output is buffered per
+  process and printed in a group as soon as that process exits.
+  `go-test-fanout.test.mjs` is the `node --test` guard (`ci.yml`'s
+  `forbid-skip` job): every listed test lands in exactly one partition, a
+  partition that runs none of its tests fails the script, and the `test-chdb`
+  recipe routes through the script.
+  - Args: `go test [flags] <./-relative packages>`, with flags in any of
+    the `-name`, `--name`, `-test.name` spellings, `=value` or separate. The
+    script sets `-run`, `-list` and `-json` itself, so they are rejected.
+    `-skip` is rejected because the inventory would still list the skipped
+    tests, `-bench` and `-fuzz` because they run what the inventory does not
+    describe, and the output and profile flags (`-o`, `-outputdir`,
+    `-coverprofile`, `-cpuprofile`, `-memprofile`, `-blockprofile`,
+    `-mutexprofile`, `-trace`) because every process would write the same
+    file.
+  - Exit: `0` when every process passed; `1` on a failed process, a failed
+    listing, or an argv it cannot run faithfully.
+
 - **`roundtrip-promql-aggregate.mjs`** — `chdb.yml`, the `roundtrip-promql`
   job. Rolls the sharded `roundtrip-promql-shard` matrix (tsouza/cerberus#2629)
   up into the single `roundtrip (promql)` status check `release.yml`'s

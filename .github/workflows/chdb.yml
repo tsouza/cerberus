@@ -254,11 +254,13 @@ jobs:
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
-    # Stays on ubuntu-latest: internal/api/prom's chDB suite reliably hangs
-    # to the 10-minute test timeout on the self-hosted cerberus runners
-    # across repeated resource-tuning attempts (CPU/memory requests,
-    # GOMAXPROCS, open-file limit) while completing in ~3.5 min here. See
-    # #3674.
+    # Stays on ubuntu-latest (#3674). `just test-chdb` is CPU-bound and
+    # libchdb runs one query at a time per process, so its wall-clock tracks
+    # the CPU the runner actually delivers. The self-hosted cerberus pods
+    # share one oversubscribed host with the rest of the k3d fleet, where
+    # `limits.cpu` is a ceiling rather than a floor; there the suite ran past
+    # go test's 10-minute alarm while still making progress (every timeout
+    # dump showed the running test at 0-1s old, not a blocked goroutine).
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
