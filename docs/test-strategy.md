@@ -2303,3 +2303,5 @@ network beyond the seven packages `npm ci` fetches.
 ---
 
 For the rationale behind these choices — alternatives considered, incidents, measurements — see [test-strategy.background.md](test-strategy.background.md).
+
+<!-- proof-of-cache-hit: docs-only push, outside every leg closure -->
