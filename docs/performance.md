@@ -540,8 +540,6 @@ the size of the expressions beneath each level. Emitters keep nesting shallow:
     reads both bindings;
   - the counter-reset mask's per-pair lambda takes the pair's reconciled scale
     as an argument;
-  - a dense row contribution binds the row's scale ratio, offset and bucket
-    count once, outside its per-target lambda;
   - the merge budget guard binds each ladder's clamped width before squaring it.
 - The native `histogram_quantile` reads its input's histogram fields straight
   off the ARRAY JOIN materialization boundary's tuple when its output keys are
