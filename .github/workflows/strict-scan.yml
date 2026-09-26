@@ -529,15 +529,7 @@ jobs:
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
-    # EXPERIMENT (cerberus#3751): this lane's array_fold cancellation-timing
-    # margin is a wall-clock race (interruptedFraction), which shared
-    # ubuntu-latest CPU contention can push past threshold without any real
-    # behavior regression — #3749/#3737's recurring flake, escalated on
-    # PR #3758's own run to both pinned builds failing plus the whole binary
-    # blowing its 20-minute timeout. Pinned here to a dedicated
-    # ubicloud-standard-8 runner to test whether less-contended CPU alone
-    # clears it, before deciding whether to make this the permanent lane.
-    runs-on: ubicloud-standard-8
+    runs-on: ubuntu-latest
     # Fourteen pinned ClickHouse images, thirteen condition-cache servers run
     # three at a time, and three cancellation servers whose probes calibrate
     # each workload to about ten seconds of uncancelled work.
