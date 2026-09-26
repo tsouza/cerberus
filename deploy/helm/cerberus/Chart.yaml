@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.17.0
+version: 0.17.1
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.21.0"
+appVersion: "1.21.1"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,25 +45,25 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.21.0
+      image: ghcr.io/tsouza/cerberus:v1.21.1
   artifacthub.io/changes: |
     - kind: added
-      description: "telemetry: remove the legacy cerberus_queries_duration_seconds instrument (#3583)"
+      description: "observability: reconcile query actuals across rotated and replica query logs (#3670)"
     - kind: added
-      description: "test: report bounded semantic-mutant escape and detector blind spots (#3534)"
-    - kind: added
-      description: "test: execute contract-linked semantic mutants in isolation (#3517)"
-    - kind: added
-      description: "test: route semantic counterexamples to their real replay tests (#3516)"
-    - kind: added
-      description: "test: register verified historical semantic counterexamples (#3498)"
-    - kind: added
-      description: "test: attach revision-bound execution observations to semantic coverage (#3496)"
-    - kind: added
-      description: "test: explain patch impact using the existing dependency closure (#3494)"
-    - kind: added
-      description: "test: generate semantic evidence coverage and assurance deficits (#3491)"
-    - kind: added
-      description: "test: map lifecycle, real-substrate, performance and migration verifier limits (#3492)"
-    - kind: added
-      description: "test: register LogQL pipeline contracts and correlated oracle evidence (#3488)"
+      description: "telemetry: add metrics endpoint and signal controls (#3623)"
+    - kind: fixed
+      description: "promql: re-lower a computed phi when the native bucket-rates path takes over (#3755)"
+    - kind: fixed
+      description: "promql: key a classic histogram_quantile's computed phi on the row it lands in (#3753)"
+    - kind: fixed
+      description: "chserver: widen cancellation calibration margin under CPU contention (#3748)"
+    - kind: fixed
+      description: "testsql: exclude lambda parameters from fanout self-sufficiency check (#3734)"
+    - kind: fixed
+      description: "chsql: hoist large repeated subplans into CTEs to shrink SQL (#3744)"
+    - kind: fixed
+      description: "chsql: resolve matchesEmpty name collision breaking main's build (#3742)"
+    - kind: fixed
+      description: "chserver: measure siblings' real time-to-call instead of extrapolating (#3738)"
+    - kind: fixed
+      description: "query: read invalid UTF-8 in emitted regex shapes as Go's regexp does (#3705)"

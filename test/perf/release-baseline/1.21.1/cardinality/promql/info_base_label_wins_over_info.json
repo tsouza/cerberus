@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/info_base_label_wins_over_info",
+  "fan_factor": 1,
+  "scan_rows": 1,
+  "peak_intermediate": 1,
+  "has_cross_join": false,
+  "has_array_join": false,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}

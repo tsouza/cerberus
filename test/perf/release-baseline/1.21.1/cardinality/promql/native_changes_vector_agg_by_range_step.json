@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/native_changes_vector_agg_by_range_step",
+  "fan_factor": 1,
+  "scan_rows": 24,
+  "peak_intermediate": 24,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}

@@ -4,6 +4,79 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.21.1] — 2026-09-26
+
+### Added
+
+- **observability:** reconcile query actuals across rotated and replica query logs (#3670)
+- **telemetry:** add metrics endpoint and signal controls (#3623)
+
+### Fixed
+
+- **promql:** re-lower a computed phi when the native bucket-rates path takes over (#3755)
+- **promql:** key a classic histogram_quantile's computed phi on the row it lands in (#3753)
+- **chserver:** widen cancellation calibration margin under CPU contention (#3748)
+- **testsql:** exclude lambda parameters from fanout self-sufficiency check (#3734)
+- **chsql:** hoist large repeated subplans into CTEs to shrink SQL (#3744)
+- **chsql:** resolve matchesEmpty name collision breaking main's build (#3742)
+- **chserver:** measure siblings' real time-to-call instead of extrapolating (#3738)
+- **query:** read invalid UTF-8 in emitted regex shapes as Go's regexp does (#3705)
+- **chsql:** never emit an every-match regex function with a nullable pattern (#3726)
+- **docs:** preserve probe backslashes and gate coverage.md freshness (#3724)
+- **ci:** set up Node unconditionally in setup-commitlint (#3722)
+- **ci:** stop nightly coverage schedule from overlapping a main-push run (#3725)
+- **logql:** reject duration literals past int64 nanosecond range (#3721)
+- **promql:** honour stale markers on date-component subquery paths (#3723)
+- **ci:** skip the shared Go cache in agpl-clean (#3728)
+- **ci:** keep a heavy runner free for required jobs and cache commitlint (#3707)
+- **promql:** honour stale markers on histogram paths and the downsample tier (#3701)
+- **test:** cancel chserver probes only once the query is inside its call (#3700)
+- **ci:** fan internal/api/prom's chDB suite out across processes (#3704)
+- **actuals:** observe HTTP dispatches and routed requests once from the query log (#3690)
+- **logql:** compute duration() seconds with Go's integer arithmetic (#3687)
+- **chopt:** resolve optimizations against the lowest build across the fleet (#3688)
+- **promql:** apply a subquery instant-transform after the stale-marker window (#3684)
+- **chsql:** rank NaN lowest in the fan-out duplicate-timestamp tie-break (#3683)
+- **promql:** stop label_replace splicing text around an early-closed anchor (#3682)
+- **ci:** resolve the go binary explicitly instead of trusting inherited PATH (#3681)
+- **ci:** route coverage.yml's heavy matrix jobs to the cerberus-heavy pool (#3679)
+- **test:** accept both cancellation outcomes for routed_siblings on a build with a gap (#3676)
+- **promql:** read the OTel NoRecordedValue flag as a Prometheus stale marker (#3656)
+- **ci:** route check-test/check-build/lint to a dedicated heavy runner pool (#3678)
+- **chsql:** reconcile native time-series tests with the 26.7/26.8 boundaries (#3650)
+- **chopt:** gate condition cache and bound cancellation on real-server evidence (#3652)
+- **helm:** define the ClickHouse 26.7/26.8 upgrade compatibility contract (#3651)
+- **promql:** bound classic histogram quantile queries (#3643)
+- **chsql:** bound native histogram dashboard memory (#3641)
+- **release:** sync maintenance changelog to main (#3639)
+- **ci:** partition complete instrumented coverage test inventory (#3637)
+- **ci:** preserve staged images across maintenance release commits (#3635)
+- **schema:** enable experimental aggregates for downsample DDL (#3634)
+- **schema:** avoid duplicate body text index (#3622)
+
+### Performance
+
+- **promql:** bind repeated native histogram window/merge subexpressions once (#3694)
+- **chsql:** cut native histogram quantile planning depth (#3665)
+- **query:** verify ClickHouse 26.7 regex compilation on emitted shapes (#3667)
+
+### Changed
+
+- apply go 1.26 go fix modernizers and gate the fixed point in CI (#3685)
+
+### CI
+
+- **mutation:** cache leg verdicts by a content key of their dependency closure (#3709)
+- pull the _pull-retry image list through a bounded concurrent pool (#3714)
+- port scripts/ step logic to .github/scripts and guard against its return (#3698)
+- route Docker-free heavy jobs to self-hosted cerberus runners (#3672)
+- **dependabot:** push nested-module tidy fixups from a scheduled run (#3661)
+- **dependabot:** shorten over-long dependabot PR titles to fit landing subject (#3658)
+
+### Documentation
+
+- **chserver:** stop claiming a disproven interrupted-call margin as fact (#3752)
+
 ## [v1.21.1] — 2026-09-20
 
 ### Fixed
