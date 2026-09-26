@@ -256,7 +256,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 			}
 			return lowerHistogramQuantileNativeAgg(shape, phi, s, ctx)
 		}
-		if plan, ok, err := tryLowerHistogramQuantileNativeBucketRates(shape, phi, s, ctx, func() (chplan.Node, error) {
+		if plan, ok, err := tryLowerHistogramQuantileNativeBucketRates(shape, phi, c.Args[0], s, ctx, func() (chplan.Node, error) {
 			return lower(c.Args[1], s, ctx)
 		}); ok {
 			return plan, err
@@ -413,21 +413,16 @@ func histogramScalarArgCtx(vs *parser.VectorSelector, ctx lowerCtx) lowerCtx {
 // argument through the ordinary sample pipeline, so their scope carries
 // the Sample timestamp column and ctx passes through unchanged.
 //
-// The aggregated-idiom branch is further split by histogram kind. An
-// exp-histogram idiom keeps evaluating above the native per-anchor
-// fan-out (histogramScalarArgCtx's stepGridAnchorColumn scope), matching
-// lowerHistogramQuantileNativeAgg{,Range}'s row shape. A CLASSIC idiom's
-// fold — whether the array-domain rung fold or the native-bucket-rates
-// float-domain reuse (lowerHistogramQuantileClassicFloatOverPlan) —
-// always re-forms a Sample-row contract keyed on the Sample timestamp
-// column before phi is consumed, so keying it on stepGridAnchorColumn
-// instead reached "ClickHouse rejected the query" / code 47 "Unknown
-// expression or function identifier `anchor_ts`" the moment the outer
-// reference landed inside the fold's arrayFirstIndex lambda, which
-// cannot see the fold's true anchor column (TimeUnix) under that name. A
-// classic BARE selector (the default branch below, no rate/agg wrapper)
-// is unaffected: lowerHistogramQuantileClassicBareRange fans out over
-// stepGridAnchorColumn directly, with no intervening Sample-row fold.
+// A matched-and-lowerable idiom — exp-histogram or classic alike — keeps
+// evaluating above its per-anchor fan-out (histogramScalarArgCtx's
+// stepGridAnchorColumn scope): lowerHistogramQuantileNativeAgg{,Range}
+// for exp-histogram, lowerHistogramQuantileAgg/…AggRange's array-domain
+// rung fold for classic. tryLowerHistogramQuantileNativeBucketRates is
+// the one exception — its float-domain reuse
+// (lowerHistogramQuantileClassicFloatOverPlan) re-forms a Sample-row
+// contract keyed on the Sample timestamp column instead, so it re-lowers
+// phi itself under the ordinary ctx when it takes over, rather than
+// reusing the stepGridAnchorColumn-scoped phi built here.
 func phiScalarArgCtx(
 	shape histogramAggShape,
 	matched bool,
@@ -437,10 +432,8 @@ func phiScalarArgCtx(
 	ctx lowerCtx,
 ) lowerCtx {
 	switch {
-	case matched && histogramAggShapeLowerable(shape, s) && s.IsExpHistogramMetric(shape.selector.Name):
-		return histogramScalarArgCtx(shape.selector, ctx)
 	case matched && histogramAggShapeLowerable(shape, s):
-		return ctx
+		return histogramScalarArgCtx(shape.selector, ctx)
 	case matched, !isBare:
 		return ctx
 	default:
