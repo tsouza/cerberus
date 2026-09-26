@@ -148,25 +148,7 @@ var cancelShapes = []cancelShape{
 		// window's samples; one series whose size samples all fall inside
 		// the window makes that single call the bulk of the query. The fold
 		// holds about 4 KiB per sample, and the routed-sibling scenario runs
-		// two at once, so maxSize keeps both inside the container's memory —
-		// 1,000,000 samples is ~8 GiB for the pair, comfortably inside
-		// GitHub-hosted ubuntu-latest's 16 GiB.
-		//
-		// maxSize was 700,000 until #3749: on GitHub's faster runners the
-		// interrupted-call assertion (assertServerWorkEnds) failed because
-		// the delay between cancellation and the server actually stopping
-		// exceeded a quarter of the remaining work. Measurement (issue #3749)
-		// showed that delay does not track the fold's own CPU-bound work the
-		// way remaining does — a local run 5x slower than GitHub's runner
-		// (natural 67s vs 13.6s at the same 700,000 samples) still measured
-		// a similar absolute delay (3.4s vs GitHub's 1.9-2.3s), while
-		// remaining scaled with substrate speed as expected (51s vs 6s). The
-		// delay is dominated by KILL QUERY's own propagation latency, not by
-		// freeing this fold's few-MiB of state, so it does not grow with
-		// size the way an earlier version of this comment assumed. Growing
-		// maxSize instead grows remaining (CPU-bound work scales with size
-		// on a given substrate) without proportionally growing the
-		// roughly-fixed teardown delay, widening the margin on fast runners.
+		// two at once, so maxSize keeps both inside the container's memory.
 		name:     "array_fold",
 		function: "arrayFold",
 		queryFor: func(metric string) string { return "double_exponential_smoothing(" + metric + "[10m], 0.5, 0.5)" },
@@ -177,7 +159,7 @@ SELECT 'svc', '%s', map('host', 'a'), toDateTime64(%d, 9) - toIntervalMicrosecon
 FROM numbers(%d)`, metric, cancelEvalTime.Unix(), foldSampleSpacingMicros, size)
 		},
 		baseSize: 200_000,
-		maxSize:  1_000_000,
+		maxSize:  700_000,
 		bounded:  func(fold, _ bool) bool { return fold },
 		inCall:   foldLoopRunning,
 	},
