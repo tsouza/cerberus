@@ -25,6 +25,7 @@ package promql_test
 
 import (
 	"database/sql"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -32,6 +33,10 @@ import (
 
 	"github.com/tsouza/cerberus/internal/testsql"
 )
+
+// createOrReplaceTable matches a seed's `CREATE OR REPLACE TABLE <name> …`
+// header and captures the table name, backtick-quoted or bare.
+var createOrReplaceTable = regexp.MustCompile(`(?is)^CREATE\s+OR\s+REPLACE\s+TABLE\s+` + "`?([A-Za-z0-9_.]+)`?")
 
 // chdbFixture pairs the process-shared chDB session with the seed script
 // that is allowed to satisfy the queries run against it.
@@ -44,6 +49,25 @@ type chdbFixture struct {
 // seed to it. Seeds spell their tables `CREATE OR REPLACE TABLE` — the
 // session outlives any one test, so a bare `CREATE TABLE` would trip
 // TABLE_ALREADY_EXISTS on the second fixture to declare the same table.
+//
+// A `CREATE OR REPLACE TABLE` statement is rewritten here to
+// `CREATE TABLE IF NOT EXISTS` followed by a `TRUNCATE TABLE` of the same
+// name, rather than executed as written. The rewrite is load-bearing, not
+// cosmetic: this package's embedded chDB session is process-global
+// (comment above) and outlives every one of its ~1110 top-level tests, but
+// unlike a real `clickhouse-server` it never runs a background
+// part-cleanup scheduler. Repeatedly dropping and recreating a MergeTree
+// table therefore leaks that table's old native (non-Go) parts metadata
+// for the remaining life of the test binary — confirmed by isolating the
+// two operations in a standalone probe: 500 `CREATE OR REPLACE TABLE`
+// cycles against one MergeTree table grew RSS monotonically with no
+// plateau, while 500 `TRUNCATE` + `INSERT` cycles against a table created
+// once plateaued after warm-up. Because the leak lives in libchdb's native
+// heap, it is invisible to Go's own GC and `GODEBUG=gctrace` — the process
+// is killed by the OS's OOM killer, never by a Go panic, matching exactly
+// how this package's chDB CI lane kept dying. TRUNCATE gives every fixture
+// the same empty table its CREATE-OR-REPLACE gave it, without the
+// repeated DDL that leaks.
 func newChDBFixture(t *testing.T, seed string) *chdbFixture {
 	t.Helper()
 	db, err := sql.Open("chdb", "")
@@ -57,6 +81,17 @@ func newChDBFixture(t *testing.T, seed string) *chdbFixture {
 	for _, stmt := range testsql.SplitStatements(seed) {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
+			continue
+		}
+		if m := createOrReplaceTable.FindStringSubmatchIndex(stmt); m != nil {
+			table := stmt[m[2]:m[3]]
+			rewritten := "CREATE TABLE IF NOT EXISTS " + table + stmt[m[1]:]
+			if _, err := db.Exec(rewritten); err != nil {
+				t.Fatalf("seed %q: %v", rewritten, err)
+			}
+			if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
+				t.Fatalf("truncate %q: %v", table, err)
+			}
 			continue
 		}
 		if _, err := db.Exec(stmt); err != nil {
