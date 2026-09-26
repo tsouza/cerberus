@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"github.com/prometheus/prometheus/promql/parser"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -30,9 +32,20 @@ func isClassicBucketRateGrid(input chplan.Node, s schema.Metrics) bool {
 // histogram arrays only AFTER that reduction avoids retaining each source
 // histogram's full ladder inside the cross-series quantile merge.
 // Older servers and non-eligible grids keep their specialized bounded path.
+//
+// phiArgAST is the ORIGINAL, un-lowered `histogram_quantile` phi argument.
+// The caller lowers phi eagerly under the array-domain rung fold's
+// stepGridAnchorColumn scope — the right scope for the fold this function
+// bypasses — but lowerHistogramQuantileClassicFloatOverPlan's float-domain
+// reuse re-forms a Sample-row contract keyed on the Sample timestamp
+// column instead. A computed phi (phi.expr != nil) is therefore re-lowered
+// from phiArgAST under the ordinary ctx once this route is confirmed, so
+// its per-anchor lookup keys on the column this route actually exposes
+// rather than the one the fold it bypassed would have.
 func tryLowerHistogramQuantileNativeBucketRates(
 	shape histogramAggShape,
 	phi phiArg,
+	phiArgAST parser.Expr,
 	s schema.Metrics,
 	ctx lowerCtx,
 	lowerInput func() (chplan.Node, error),
@@ -44,11 +57,22 @@ func tryLowerHistogramQuantileNativeBucketRates(
 	if err != nil {
 		return nil, true, err
 	}
-	plan, ok := lowerHistogramQuantileNativeBucketRates(inner, phi, s, ctx)
-	return plan, ok, nil
+	if !nativeBucketRateEligible(inner) {
+		return nil, false, nil
+	}
+	if phi.expr != nil {
+		expr, err := lowerScalarArg(phiArgAST, s, ctx)
+		if err != nil {
+			return nil, true, err
+		}
+		phi.expr = expr
+	}
+	return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), true, nil
 }
 
-func lowerHistogramQuantileNativeBucketRates(inner chplan.Node, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool) {
+// nativeBucketRateEligible reports whether inner's rate lowering produced
+// native grids throughout, with no fan-out fallback anywhere in the tree.
+func nativeBucketRateEligible(inner chplan.Node) bool {
 	native, fallback := false, false
 	chplan.Walk(inner, func(node chplan.Node) bool {
 		switch node.(type) {
@@ -59,8 +83,5 @@ func lowerHistogramQuantileNativeBucketRates(inner chplan.Node, phi phiArg, s sc
 		}
 		return true
 	})
-	if !native || fallback {
-		return nil, false
-	}
-	return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), true
+	return native && !fallback
 }
