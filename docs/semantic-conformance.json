@@ -1352,6 +1352,16 @@
         "id": "chdb.integration-promql"
       },
       {
+        "lane_id": "chdb.probe-promql",
+        "context_name": "probe-promql",
+        "merge_required": false,
+        "release_required": true,
+        "binding_ids": [
+          "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY"
+        ],
+        "id": "chdb.probe-promql"
+      },
+      {
         "lane_id": "compatibility.promql-surface",
         "context_name": "compatibility/promql-surface",
         "merge_required": false,
@@ -9681,6 +9691,12 @@
             {
               "lane_id": "chdb.perf-guards",
               "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.probe-promql",
+              "context_name": "probe-promql",
               "merge_required": false,
               "release_required": true
             },

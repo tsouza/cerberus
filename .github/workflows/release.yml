@@ -254,6 +254,7 @@ jobs:
             compatibility/tempo
             compatibility/prometheus-forced-route
             probe
+            probe-promql
             roundtrip (promql)
             roundtrip (logql)
             roundtrip (traceql)

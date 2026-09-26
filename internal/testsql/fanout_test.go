@@ -171,3 +171,18 @@ func TestCheckSeedCoversFanOut_MergeSuffixIsNotACall(t *testing.T) {
 		t.Fatalf("arrayMerge() must not be read as merge(): %v", err)
 	}
 }
+
+// TestCheckSeedCoversFanOut_IgnoresLambdaParameters pins tsouza/cerberus#3699:
+// a CH lambda parameter that shares its name with an emitter-chosen
+// helper-column constant (as the native histogram_quantile kernel's
+// `_cerb_hq_buckets`, `_cerb_hq_cum`, … do) and is read back inside the
+// lambda body through a backtick-quoted [Col] must not be demanded of the
+// fan-out arms — it is bound locally by the enclosing arrayMap, not
+// declared by any seeded table.
+func TestCheckSeedCoversFanOut_IgnoresLambdaParameters(t *testing.T) {
+	sqlText := "SELECT arrayMap((_cerb_hq_buckets) -> arrayCumSum(`_cerb_hq_buckets`), `Value`) " +
+		"FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$')"
+	if err := CheckSeedCoversFanOut(bothArmsSeed, sqlText); err != nil {
+		t.Fatalf("a lambda-bound parameter must not be treated as a base column: %v", err)
+	}
+}

@@ -350,14 +350,36 @@ spec-chdb:
 # in CI could see.
 #
 # The go test runs through go-test-fanout.mjs, which splits the packages its
-# FANOUT table names (./internal/api/prom) across concurrent processes: libchdb
-# runs one query at a time per process, so a package's chDB suite is serial
-# inside its own binary and its whole wall-clock counts against the one
-# -timeout (#3674).
+# FANOUT table names (./internal/api/prom, ./internal/promql) across
+# concurrent processes: libchdb runs one query at a time per process, so a
+# package's chDB suite is serial inside its own binary and its whole
+# wall-clock counts against the one -timeout (#3674).
 
 # Run the chdb-tagged handler, emitter, optimizer, solver and corpus lanes. Needs libchdb.so.
 test-chdb:
     node .github/scripts/go-test-fanout.mjs go test -timeout 10m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/optimizer/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
+
+# ./internal/promql/... (#3699) has its own recipe and CI job (`probe-promql`
+# in chdb.yml), not folded into test-chdb above: its chdb-tagged
+# TestLower*/TestMixedSetOpOr_Nested* suite needs to actually RUN on every
+# PR — `roundtrip-promql-shard` already covers this package, but only on a
+# `run_heavy` push/release run, so a regression like #3699's three
+# TestMixedSetOpOr_Nested* failures ran on no CI lane an ordinary PR
+# triggers — but bundling it into test-chdb's shared runner made every PR's
+# `probe` wait on it (40+ minutes) and, at higher fanout, contended for the
+# SAME runner's memory against test-chdb's other packages: a package with
+# far larger plan trees per chDB session got the process killed mid-run
+# rather than timing out. A dedicated job gives it its own runner's CPU and
+# memory instead, and lets `probe` go back to its original (fast) duration.
+# FANOUT splits it 2 ways: 4-way (matching internal/api/prom's CPU-bound
+# concurrency) got the test binary OOM-killed; at 2-way that's gone, but the
+# shared -timeout of 70m (bumped from 10m) is now the binding constraint,
+# since fewer shards means more of the package's own serial chDB work lands
+# in each one.
+
+# Run the promql chdb-tagged lowering lane on its own runner. Needs libchdb.so.
+test-chdb-promql:
+    node .github/scripts/go-test-fanout.mjs go test -timeout 70m -tags chdb -count=1 ./internal/promql/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle) for all three
 # query heads. The synthetic composite tag activates the LogQL live runner.

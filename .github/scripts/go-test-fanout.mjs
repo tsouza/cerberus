@@ -53,9 +53,35 @@ import { assertExecuted, parseTestInventory, partitionTests, testKey } from './l
  * to 1172s; the name-hash partition splits that 291/354/331/197s four ways,
  * where three ways put 727s on one process (a few fold-family tests of
  * 80-213s each share a partition).
+ *
+ * internal/promql: 1110 top-level tests. chdb-roundtrip.mjs's own header
+ * measured this package's hand-written suite alone (a distinct concern
+ * from the fixture-driven TXTAR walk that script already shards
+ * separately) at past 23 minutes unpartitioned. Enrolled here by #3699,
+ * whose three TestMixedSetOpOr_Nested* regressions had run on no CI lane
+ * at all — `roundtrip-promql-shard` covers this package too, but only on
+ * a `run_heavy` push/release run, never an ordinary PR.
+ *
+ * A chDB test process serializes every query through one embedded
+ * ClickHouse session, so wall time drops only as far as concurrent
+ * processes actually get concurrent CPU — past the runner's core count,
+ * more shards means more processes contending for the same cores, not more
+ * throughput. A first 6-way split hit the recipe's 20m per-process timeout
+ * (1117 tests, ~186/shard); widening to 15-way made it WORSE, not better —
+ * several shards still timed out at the same 20m ceiling, evidence of
+ * contention rather than raw per-shard test count. Matching
+ * internal/api/prom's proven 4-way split then hit a different failure: the
+ * test binary was killed mid-run (no Go panic or assertion, an abrupt
+ * process exit) — each of promql's own chDB sessions carries far larger
+ * plan trees than api/prom's, so four of them concurrently, plus the
+ * fanout's own fifth "every other package" process, exceeds the
+ * GitHub-hosted runner's memory rather than its CPU. 2-way trades some of
+ * the wall-clock win for enough headroom to actually finish. Still not a
+ * measurement; retune once a real CI run reports its per-process times.
  */
 export const FANOUT = {
   'github.com/tsouza/cerberus/internal/api/prom': 4,
+  'github.com/tsouza/cerberus/internal/promql': 2,
 };
 
 /**

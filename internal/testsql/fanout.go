@@ -255,10 +255,25 @@ func seededTables(seed string) map[string][]string {
 // false positive in this check, not a real gap in any fixture's seed.
 // See [CheckSeedCoversFanOut] for why the subtraction is applied
 // globally (and is therefore under-approximate).
+//
+// A lambda parameter is excluded the same way. ClickHouse lambda syntax
+// (`(<p1>, <p2>, ...) -> <body>`, [Builder.Lambda]'s own rendering) binds
+// its parameter names locally to the lambda body; they are never base
+// columns even when — as in the native histogram_quantile kernel's
+// hqNativeLet helper — the parameter is spelled the same as an
+// emitter-chosen helper-column constant (`_cerb_hq_buckets`,
+// `_cerb_hq_cum`, …) and is read back inside the body through a
+// backtick-quoted [Col], which renders indistinguishably from a real
+// column reference. Treating that read as a base-column reference is a
+// category error: the name is bound by the enclosing arrayMap's lambda,
+// not declared by any seeded table.
 func referencedColumns(sql string) []string {
 	seen := map[string]bool{}
 	notColumn := map[string]bool{}
 	for _, name := range rawAliasTargets(sql) {
+		notColumn[name] = true
+	}
+	for _, name := range lambdaParamTargets(sql) {
 		notColumn[name] = true
 	}
 	for i := 0; i < len(sql); i++ {
@@ -320,6 +335,79 @@ func rawAliasTargets(sql string) []string {
 		}
 	}
 	return out
+}
+
+// lambdaArrow is the token [Builder.Lambda] renders between a lambda's
+// parameter list and its body.
+const lambdaArrow = "->"
+
+// lambdaParamTargets returns every bare identifier bound as a parameter
+// of a CH lambda `(<p1>, <p2>, ...) -> <body>` in sql — the shape
+// [Builder.Lambda] renders for arrayMap / arrayFilter / mapFilter and
+// friends. A parenthesised, comma-separated list immediately preceding
+// "->" (modulo whitespace) is a lambda parameter list only when every
+// element is a bare identifier; anything else (an expression such as
+// `(a + b) -> ...` never occurs in CH's arrow position, but a stray
+// "->" inside a string literal is skipped rather than misread).
+func lambdaParamTargets(sql string) []string {
+	var out []string
+	for i := 0; i+len(lambdaArrow) <= len(sql); i++ {
+		if sql[i] == '\'' {
+			i = skipStringLiteral(sql, i)
+			continue
+		}
+		if sql[i:i+len(lambdaArrow)] != lambdaArrow {
+			continue
+		}
+		j := i
+		for j > 0 && isBlank(sql[j-1]) {
+			j--
+		}
+		if j == 0 || sql[j-1] != ')' {
+			continue
+		}
+		closeParen := j - 1
+		open := matchParenBackward(sql, closeParen)
+		if open < 0 {
+			continue
+		}
+		params := splitTopLevelCommas(sql[open+1 : closeParen])
+		names := make([]string, 0, len(params))
+		allIdents := len(params) > 0
+		for _, p := range params {
+			name := strings.TrimSpace(p)
+			if !isIdentWord(name) {
+				allIdents = false
+				break
+			}
+			names = append(names, name)
+		}
+		if allIdents {
+			out = append(out, names...)
+		}
+	}
+	return out
+}
+
+// matchParenBackward returns the index of the `(` that balances the `)`
+// at position close in s, scanning backward, or -1 when unbalanced.
+// close must index a `)`. Unlike [matchParen] it does not shield string
+// literals: it is used only to bound a lambda's parameter list, which is
+// a bare identifier list and never contains one.
+func matchParenBackward(s string, close int) int {
+	depth := 0
+	for i := close; i >= 0; i-- {
+		switch s[i] {
+		case ')':
+			depth++
+		case '(':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // hasWordPrefix reports whether s starts with word (case-insensitive)
