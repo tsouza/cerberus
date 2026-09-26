@@ -4,6 +4,7 @@
   "bucket": "32",
   "cases": [
     "abs(-demo_memory_usage_bytes)",
+    "delta(demo_disappearing_requests_total[1s])",
     "delta(demo_shifting_latency_exp_hist[1m])",
     "demo_memory_usage_bytes ^ time()",
     "demo_num_cpus != bool on(instance) demo_num_cpus",

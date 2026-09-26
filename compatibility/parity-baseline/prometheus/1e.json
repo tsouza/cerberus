@@ -6,6 +6,7 @@
     "avg_over_time(demo_memory_usage_bytes[5m] offset -10m)",
     "avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1m]) * 2",
     "delta(demo_cpu_usage_seconds_total[1s])",
+    "delta(demo_disappearing_requests_total[1h])",
     "demo_memory_usage_bytes <= bool on(instance, job, type) demo_memory_usage_bytes",
     "demo_memory_usage_bytes ^ (1 * 2 + 4 / 6 - 10)",
     "quantile_over_time(0.1, demo_memory_usage_bytes[15m])",

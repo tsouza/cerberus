@@ -7,6 +7,7 @@
     "1 * 2 + 4 / 6 - 10 % 2 ^ 2",
     "1 / time()",
     "avg by(nonexistent) (demo_memory_usage_bytes)",
+    "count(demo_disappearing_requests_total)",
     "days_in_month(demo_batch_last_success_timestamp_seconds offset 10m)",
     "delta(demo_cpu_usage_seconds_total[5m] offset 10m)",
     "demo_memory_usage_bytes * 1.2345",

@@ -8,6 +8,7 @@
     "avg(max by(type) (demo_memory_usage_bytes))",
     "avg_over_time(demo_memory_usage_bytes[5m] offset 10m)",
     "avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1s]) * 2",
+    "demo_disappearing_requests_total",
     "demo_memory_usage_bytes > on(instance, job, type) demo_memory_usage_bytes",
     "demo_memory_usage_bytes and on(instance, job, type) demo_sparse_memory_bytes",
     "demo_memory_usage_bytes offset -5m",

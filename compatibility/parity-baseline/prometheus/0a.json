@@ -20,6 +20,8 @@
     "min by(instance, type) (demo_memory_usage_bytes)",
     "quantile_over_time(0.90, demo_memory_usage_bytes[1m])",
     "rate(demo_cpu_usage_seconds_total[1s] offset 1m)",
+    "rate(demo_disappearing_requests_total[15s])",
+    "rate(demo_disappearing_requests_total[1m])",
     "stddev without(instance) (demo_memory_usage_bytes)",
     "sum by (instance) (demo_latency_exp_hist)",
     "sum without(job) (demo_memory_usage_bytes) / on(instance, type) demo_memory_usage_bytes",
