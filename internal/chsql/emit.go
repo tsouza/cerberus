@@ -162,16 +162,30 @@ func EmitCounted(ctx context.Context, n chplan.Node) (sql string, args []any, ph
 	// node past the canonicalising projection — cannot emit SQL that splits one
 	// series across two Map key orders.
 	n = chplan.CanonicalizeSeriesIdentityKeys(n, attributeMapColumns)
-	e := newEmitter(ctx)
-	e.rootPlan = n
 	// Collapse a structure-tab plan's repeated top-N trace-id gates onto one
 	// single-evaluation scalar binding hoisted to the outermost statement
 	// (#1672). No-op — returns nil, leaves the tree untouched — for every
 	// plan that carries no gate at all, which is every PromQL / LogQL plan
 	// and every unbounded TraceQL one.
-	if err := e.emitBound(chplan.BindBoundedTraceScope(n), n); err != nil {
+	scope := chplan.BindBoundedTraceScope(n)
+	// Pass 1 renders inline and records which sub-statements render more
+	// than once; only when one does, pass 2 re-renders hoisting each of them
+	// into a single CTE (emit_shared_subplan.go).
+	e := newEmitter(ctx)
+	e.rootPlan = n
+	e.shared = newSharedSubplans(nil)
+	if err := e.emitBound(scope, n); err != nil {
 		span.RecordError(err)
 		return "", nil, 0, err
+	}
+	if repeated := e.shared.repeated; len(repeated) > 0 {
+		e = newEmitter(ctx)
+		e.rootPlan = n
+		e.shared = newSharedSubplans(repeated)
+		if err := e.emitBound(scope, n); err != nil {
+			span.RecordError(err)
+			return "", nil, 0, err
+		}
 	}
 	sql = e.b.String()
 	if err := GuardEmittedSQL(ctx, sql); err != nil {
@@ -222,16 +236,22 @@ func EmitCounted(ctx context.Context, n chplan.Node) (sql string, args []any, ph
 // and every clause that shapes the result (ORDER BY, LIMIT, LIMIT n BY) stays
 // inside the subquery where it already was.
 func (e *emitter) emitBound(scope *chplan.BoundedTraceScope, n chplan.Node) error {
-	if scope == nil {
+	hoisting := e.shared != nil && e.shared.hoist != nil
+	if scope == nil && !hoisting {
 		return e.emitNode(n)
 	}
 	planFrag, err := e.subqueryFrag(n)
 	if err != nil {
 		return err
 	}
-	return e.emitSelect(NewQuery().
-		WithScalar(chplan.BoundedTraceScopeAlias, boundedRootScopeIDsQuery(scope)).
-		From(planFrag))
+	q := NewQuery()
+	if scope != nil {
+		q.WithScalar(chplan.BoundedTraceScopeAlias, boundedRootScopeIDsQuery(scope))
+	}
+	if hoisting {
+		e.shared.withSharedSubplans(q)
+	}
+	return e.emitSelect(q.From(planFrag))
 }
 
 // boundedRootScopeIDsQuery is the scalar-CTE body backing
@@ -409,6 +429,12 @@ type emitter struct {
 	// zero value; nextCTESeq allocates on first use so an emitter built
 	// without newEmitter still hands out unique names within itself.
 	cteSeq *int
+
+	// shared is the statement's shared-subplan hoisting state
+	// (emit_shared_subplan.go), set by EmitCounted and carried by pointer to
+	// every sub-emitter, since their text lands in the same statement. nil —
+	// every emitter built outside EmitCounted — renders every node inline.
+	shared *sharedSubplans
 }
 
 // newEmitter seeds an emitter from the emit context: the spans table under
@@ -491,6 +517,7 @@ func (e *emitter) sub() *emitter {
 		emittedSQLMaxBytes: e.emittedSQLMaxBytes,
 		attrStrategies:     e.attrStrategies,
 		cteSeq:             e.cteSeq,
+		shared:             e.shared,
 	}
 }
 
