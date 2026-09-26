@@ -708,6 +708,21 @@ jobs:
       # reported clean on exactly this shape locally (issue #1938).
       - name: Self-test the forbid-skip CLI
         run: node --test .github/scripts/forbid-skip.test.mjs
+      # Fails loudly the moment main's Chart.yaml falls behind a version
+      # already published as a git tag (app or chart line) — the drift
+      # class that let PRs #3756/#3757 attempt to re-cut v1.21.1 and
+      # chart-v0.17.1, both already published from the release/1.21.x
+      # maintenance branch, six days after that branch's own release
+      # commit bumped Chart.yaml there and never round-tripped it back to
+      # main. Runs here (ubuntu-latest, this job's existing fetch-depth: 0
+      # checkout already gives it every tag) rather than only at release-cut
+      # time, so a maintenance-line publish is caught within the next push
+      # or PR instead of silently sitting stale until the next release
+      # attempt recomputes an already-published version and collides.
+      - name: Verify main's chart version is not behind a published tag
+        run: |
+          node .github/scripts/verify-chart-version-not-stale.mjs --self-test
+          node .github/scripts/verify-chart-version-not-stale.mjs
       - name: Validate the CI lane registry contract
         run: |
           node --test .github/scripts/ci-lane-contract.test.mjs
