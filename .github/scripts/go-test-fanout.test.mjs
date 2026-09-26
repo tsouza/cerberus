@@ -95,16 +95,17 @@ test('a fanned-out package with no inventory is an error, not a silent skip', ()
   );
 });
 
-test('just test-chdb runs its go test through the fan-out, over every FANOUT package', () => {
+test('the test-chdb* recipes run their go test through the fan-out, over every FANOUT package between them', () => {
   const recipes = readFileSync(new URL('../../just/test.just', import.meta.url), 'utf8');
-  const body = recipes.split(/\n(?=\S)/).find((block) => /^test-chdb:/m.test(block));
-  assert.ok(body, 'just/test.just has no test-chdb recipe');
-  assert.match(body, /node \.github\/scripts\/go-test-fanout\.mjs go test /);
+  const blocks = recipes.split(/\n(?=\S)/).filter((block) => /^test-chdb[\w-]*:/m.test(block));
+  assert.ok(blocks.length > 0, 'just/test.just has no test-chdb* recipe');
+  for (const body of blocks) assert.match(body, /node \.github\/scripts\/go-test-fanout\.mjs go test /);
+  const combined = blocks.join('\n');
   for (const pkg of Object.keys(FANOUT)) {
     const rel = `./${pkg.replace(/^github\.com\/tsouza\/cerberus\//, '')}`;
     const parent = rel.split('/').slice(0, -1).join('/');
-    assert.ok(body.includes(`${rel} `) || body.includes(`${rel}/...`) || body.includes(`${parent}/...`),
-      `test-chdb does not select ${rel}`);
+    assert.ok(combined.includes(`${rel} `) || combined.includes(`${rel}/...`) || combined.includes(`${parent}/...`),
+      `no test-chdb* recipe selects ${rel}`);
   }
 });
 
