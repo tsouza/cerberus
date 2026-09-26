@@ -6,6 +6,7 @@
     "(1 * 2 + 4 / 6 - (10%7)^2) >= demo_memory_usage_bytes",
     "0x3d",
     "avg without(instance, type) (demo_memory_usage_bytes)",
+    "last_over_time(demo_disappearing_requests_total[15m])",
     "quantile(0.95, demo_memory_usage_bytes)",
     "quantile_over_time(1.5, demo_memory_usage_bytes[1m])",
     "rate(demo_cpu_usage_seconds_total[15m] offset 10m)",

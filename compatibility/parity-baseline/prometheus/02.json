@@ -5,8 +5,10 @@
   "cases": [
     "bottomk(3, demo_latency_exp_hist)",
     "changes(demo_gauge_with_nan_run[15m])",
+    "delta(demo_disappearing_requests_total[15s])",
     "demo_latency_exp_hist{instance=\"demo.promlabs.com:10001\"}",
     "demo_memory_usage_bytes ^ 1.2345",
+    "increase(demo_disappearing_requests_total[1h])",
     "last_over_time(demo_memory_usage_bytes[5m] offset -10m)",
     "max_over_time((-demo_memory_usage_bytes)[5m:1m])",
     "max_over_time(absent(nonexistent_metric_name)[5m:1m])",

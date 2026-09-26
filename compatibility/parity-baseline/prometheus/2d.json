@@ -9,6 +9,7 @@
     "histogram_quantile(0.9, nonexistent_metric)",
     "increase(demo_cpu_usage_seconds_total[1s] offset 1m)",
     "increase(demo_cpu_usage_seconds_total[5m] offset -10m)",
+    "increase(demo_disappearing_requests_total[5m])",
     "label_join(demo_num_cpus, \"instance\", \"-\")",
     "max_over_time(demo_memory_usage_bytes[1h])",
     "max_over_time(demo_memory_usage_bytes[5m] offset -10m)",

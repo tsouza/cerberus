@@ -21,6 +21,7 @@
     "rate(demo_cpu_usage_seconds_total[15m]) or rate(demo_http_requests_total[15m])",
     "rate(demo_cpu_usage_seconds_total[1m] offset 10m)",
     "rate(demo_cpu_usage_seconds_total[1m]) / rate(demo_cpu_usage_seconds_total[1m])",
+    "rate(demo_disappearing_requests_total[5m])",
     "stddev(nonexistent_metric_name)",
     "stdvar_over_time(demo_memory_usage_bytes[5m] offset -10m)",
     "sum by(instance, type) (demo_memory_usage_bytes) + on(instance, type) group_left(job) demo_memory_usage_bytes",

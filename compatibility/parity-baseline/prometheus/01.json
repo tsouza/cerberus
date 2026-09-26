@@ -4,6 +4,7 @@
   "bucket": "01",
   "cases": [
     "2 atan2 demo_memory_usage_bytes",
+    "absent(demo_disappearing_requests_total{instance=\"demo.promlabs.com:10001\"})",
     "absent(demo_memory_usage_bytes + demo_memory_usage_bytes)",
     "avg by() (demo_memory_usage_bytes)",
     "count_over_time(demo_memory_usage_bytes[1s])",

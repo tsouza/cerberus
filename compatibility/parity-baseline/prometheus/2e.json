@@ -9,6 +9,7 @@
     "floor(-demo_memory_usage_bytes)",
     "histogram_quantile(0.5, sum(rate(demo_shifting_latency_exp_hist[5m])))",
     "idelta(demo_cpu_usage_seconds_total[5m] offset 10m)",
+    "increase(demo_disappearing_requests_total[15m])",
     "label_replace(demo_num_cpus, \"job\", \"value-$1\", \"instance\", \"non-matching-regex\")",
     "minute(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1m]))",
     "predict_linear(demo_disk_usage_bytes[1s], 600)",
