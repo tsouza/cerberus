@@ -28,6 +28,15 @@ import (
 // text is spliced into, once per splice — so a sub-statement embedded twice
 // is counted twice, matching what ClickHouse executes.
 func (e *emitter) renderNode(n chplan.Node) (sql string, args []any, physicalScans int, err error) {
+	if sql, args, physicalScans, handled, err := e.renderShared(n); handled {
+		return sql, args, physicalScans, err
+	}
+	return e.renderInline(n)
+}
+
+// renderInline is renderNode without shared-subplan hoisting
+// (emit_shared_subplan.go): n's own statement text, always.
+func (e *emitter) renderInline(n chplan.Node) (sql string, args []any, physicalScans int, err error) {
 	saveB, saveArgs, saveScans := e.b, e.args, e.physicalScans
 	e.b = strings.Builder{}
 	e.args = nil
