@@ -69,16 +69,19 @@ import { assertExecuted, parseTestInventory, partitionTests, testKey } from './l
  * throughput. A first 6-way split hit the recipe's 20m per-process timeout
  * (1117 tests, ~186/shard); widening to 15-way made it WORSE, not better —
  * several shards still timed out at the same 20m ceiling, evidence of
- * contention rather than raw per-shard test count. internal/api/prom's
- * 4-way split is the one concurrency level actually proven to fit this
- * runner (430 tests, ~107/shard, passes within 10m), so promql matches
- * that same concurrency and instead gets a much larger timeout budget for
- * its ~2.6x larger test count. Still not a measurement; retune once a real
- * CI run reports its per-process times.
+ * contention rather than raw per-shard test count. Matching
+ * internal/api/prom's proven 4-way split then hit a different failure: the
+ * test binary was killed mid-run (no Go panic or assertion, an abrupt
+ * process exit) — each of promql's own chDB sessions carries far larger
+ * plan trees than api/prom's, so four of them concurrently, plus the
+ * fanout's own fifth "every other package" process, exceeds the
+ * GitHub-hosted runner's memory rather than its CPU. 2-way trades some of
+ * the wall-clock win for enough headroom to actually finish. Still not a
+ * measurement; retune once a real CI run reports its per-process times.
  */
 export const FANOUT = {
   'github.com/tsouza/cerberus/internal/api/prom': 4,
-  'github.com/tsouza/cerberus/internal/promql': 4,
+  'github.com/tsouza/cerberus/internal/promql': 2,
 };
 
 /**
