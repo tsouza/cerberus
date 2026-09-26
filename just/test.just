@@ -360,17 +360,17 @@ spec-chdb:
 # `roundtrip-promql-shard` (chdb.yml) already covers this package, but only
 # on a `run_heavy` push/release run, so a regression like #3699's three
 # TestMixedSetOpOr_Nested* failures ran on no CI lane an ordinary PR
-# triggers. FANOUT splits it 4 ways — matching internal/api/prom's
-# concurrency, the one level actually proven to fit the runner's core
-# count — rather than more shards, which only adds CPU contention past
-# that ceiling (see FANOUT's own comment in go-test-fanout.mjs). Bumped
-# the shared -timeout from 10m to 40m for it: at 1110 top-level tests, run
-# 4-way rather than the 15-way split that made timeouts worse, it needs a
-# real wall-clock budget increase, not another concurrency bump.
+# triggers. FANOUT splits it 2 ways: 4-way (matching internal/api/prom's
+# CPU-bound concurrency) got the test binary killed mid-run instead of
+# timing out — each promql chDB session carries far larger plan trees, so
+# four concurrently exhausted the runner's memory rather than its CPU. At
+# 2-way that OOM is gone, but the shared -timeout of 40m (bumped from 10m)
+# is now the binding constraint, since fewer shards means more of the
+# package's own serial chDB work lands in each one.
 
 # Run the chdb-tagged handler, emitter, optimizer, solver, corpus and promql lowering lanes. Needs libchdb.so.
 test-chdb:
-    node .github/scripts/go-test-fanout.mjs go test -timeout 40m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/optimizer/... ./internal/promql/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
+    node .github/scripts/go-test-fanout.mjs go test -timeout 70m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/optimizer/... ./internal/promql/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
 
 # Run the chDB-tagged property tests (rapid + from-scratch oracle) for all three
 # query heads. The synthetic composite tag activates the LogQL live runner.
