@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/subquery_over_rate_range",
+  "fan_factor": 6.947368421052632,
+  "scan_rows": 19,
+  "peak_intermediate": 132,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
