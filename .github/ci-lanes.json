@@ -323,7 +323,7 @@
     },
     {
       "id": "chdb.probe-promql",
-      "description": "internal/promql's chdb-tagged lowering tests, on their own runner (#3699). Not a branch-protection-required check: its own SLO (70m) exceeds the 20-minute ceiling a PR-blocking merge lane must fit, so it runs on every ordinary PR for visibility but only gates the release preflight, which affords a longer window.",
+      "description": "internal/promql's chdb-tagged lowering tests, on their own runner (#3699). Not a branch-protection-required check: its own SLO (70m) exceeds the 20-minute ceiling a PR-blocking merge lane must fit. A release-gate lane (#2230 pattern): it short-circuits to a no-op on an ordinary PR and only runs for real on push / schedule / dispatch and on a release/* PR, gating the release preflight where the longer SLO window fits.",
       "owner": {
         "workflow": ".github/workflows/chdb.yml",
         "jobs": ["changes", "probe-promql"],
