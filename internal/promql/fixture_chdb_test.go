@@ -27,6 +27,7 @@ import (
 	"database/sql"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
@@ -37,6 +38,16 @@ import (
 // createOrReplaceTable matches a seed's `CREATE OR REPLACE TABLE <name> …`
 // header and captures the table name, backtick-quoted or bare.
 var createOrReplaceTable = regexp.MustCompile(`(?is)^CREATE\s+OR\s+REPLACE\s+TABLE\s+` + "`?([A-Za-z0-9_.]+)`?")
+
+// tableSchemaMu guards tableSchemaDDL, a process-wide record of the exact
+// `CREATE TABLE` statement (schema) last used to declare each table name
+// in the shared chDB session. Chdb-tagged tests can run with t.Parallel,
+// so both the map and the DDL it records are read and updated under this
+// lock.
+var (
+	tableSchemaMu  sync.Mutex
+	tableSchemaDDL = map[string]string{}
+)
 
 // chdbFixture pairs the process-shared chDB session with the seed script
 // that is allowed to satisfy the queries run against it.
@@ -50,9 +61,13 @@ type chdbFixture struct {
 // session outlives any one test, so a bare `CREATE TABLE` would trip
 // TABLE_ALREADY_EXISTS on the second fixture to declare the same table.
 //
-// A `CREATE OR REPLACE TABLE` statement is rewritten here to
-// `CREATE TABLE IF NOT EXISTS` followed by a `TRUNCATE TABLE` of the same
-// name, rather than executed as written. The rewrite is load-bearing, not
+// A `CREATE OR REPLACE TABLE` statement is only executed as written when
+// its schema is new for that table name — either the table has never been
+// declared in this session, or a previous fixture declared it with
+// different DDL. In that case it also records the DDL in tableSchemaDDL so
+// later callers can recognise a repeat. Otherwise it is rewritten to a
+// `TRUNCATE TABLE` of the same name, giving the fixture the same clean-
+// table guarantee without the DDL churn. The rewrite is load-bearing, not
 // cosmetic: this package's embedded chDB session is process-global
 // (comment above) and outlives every one of its ~1110 top-level tests, but
 // unlike a real `clickhouse-server` it never runs a background
@@ -65,9 +80,17 @@ type chdbFixture struct {
 // once plateaued after warm-up. Because the leak lives in libchdb's native
 // heap, it is invisible to Go's own GC and `GODEBUG=gctrace` — the process
 // is killed by the OS's OOM killer, never by a Go panic, matching exactly
-// how this package's chDB CI lane kept dying. TRUNCATE gives every fixture
-// the same empty table its CREATE-OR-REPLACE gave it, without the
-// repeated DDL that leaks.
+// how this package's chDB CI lane kept dying.
+//
+// Skipping the DDL whenever the table name merely already exists is
+// unsound: two fixtures can share a table name while seeding it with
+// different columns (for example one `otel_metrics_exponential_histogram`
+// seed omitting `AggregationTemporality` that a later test needs), and
+// `TRUNCATE` only clears rows — it never reconciles a schema mismatch. The
+// DDL text itself is therefore the cache key, not the table name alone, so
+// a genuine schema change still pays for a real `CREATE OR REPLACE TABLE`
+// while the common case — the same table declared with the same schema
+// across many tests — takes the cheap `TRUNCATE` path.
 func newChDBFixture(t *testing.T, seed string) *chdbFixture {
 	t.Helper()
 	db, err := sql.Open("chdb", "")
@@ -85,9 +108,19 @@ func newChDBFixture(t *testing.T, seed string) *chdbFixture {
 		}
 		if m := createOrReplaceTable.FindStringSubmatchIndex(stmt); m != nil {
 			table := stmt[m[2]:m[3]]
-			rewritten := "CREATE TABLE IF NOT EXISTS " + table + stmt[m[1]:]
-			if _, err := db.Exec(rewritten); err != nil {
-				t.Fatalf("seed %q: %v", rewritten, err)
+
+			tableSchemaMu.Lock()
+			schemaChanged := tableSchemaDDL[table] != stmt
+			if schemaChanged {
+				tableSchemaDDL[table] = stmt
+			}
+			tableSchemaMu.Unlock()
+
+			if schemaChanged {
+				if _, err := db.Exec(stmt); err != nil {
+					t.Fatalf("seed %q: %v", stmt, err)
+				}
+				continue
 			}
 			if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
 				t.Fatalf("truncate %q: %v", table, err)
