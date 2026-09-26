@@ -5,6 +5,13 @@ self-hosted-runner:
   # cirunners/manifests/cerberus-runner.yaml (light pool, label `cerberus`)
   # and cirunners/manifests/cerberus-heavy-runner.yaml (dedicated pool for
   # check-test/check-build/lint, label `cerberus-heavy`, #3677).
+  #
+  # ubicloud-standard-8 is Ubicloud's partner-managed 8-vCPU runner
+  # (github.com organization settings -> Actions -> Runners -> partner
+  # runner groups), not a cirunners label — used by ch-server-safety
+  # (cerberus#3751) to test whether its array_fold cancellation-timing
+  # margin is a shared-runner CPU-contention artifact.
   labels:
     - cerberus
     - cerberus-heavy
+    - ubicloud-standard-8
