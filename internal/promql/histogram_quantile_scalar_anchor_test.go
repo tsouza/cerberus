@@ -45,14 +45,23 @@ func TestHistogramQuantileComputedPhiKeysOnItsOwnScope(t *testing.T) {
 		wantRange string
 	}{
 		{
+			// A classic idiom's rung fold always re-forms a Sample-row
+			// contract (the array-domain fold's own projection, or the
+			// native-bucket-rates float-domain reuse) keyed on the Sample
+			// timestamp column before phi is consumed — unlike the native
+			// exp-histogram idiom below, which evaluates directly above the
+			// per-anchor fan-out. Keying this on stepGridAnchorColumn
+			// instead reached ClickHouse code 47 "Unknown expression or
+			// function identifier `anchor_ts`" the moment the reference
+			// landed inside the fold's arrayFirstIndex lambda.
 			name:      "classic agg idiom",
 			query:     `histogram_quantile(scalar(vector(0.9)), sum by(le) (rate(http_duration_bucket[1m])))`,
-			wantRange: stepGridAnchorAlias,
+			wantRange: s.TimestampColumn,
 		},
 		{
 			name:      "classic rate without aggregation",
 			query:     `histogram_quantile(scalar(vector(0.9)), rate(http_duration_bucket[1m]))`,
-			wantRange: stepGridAnchorAlias,
+			wantRange: s.TimestampColumn,
 		},
 		{
 			name:      "classic bare selector",

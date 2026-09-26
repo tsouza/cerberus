@@ -412,6 +412,22 @@ func histogramScalarArgCtx(vs *parser.VectorSelector, ctx lowerCtx) lowerCtx {
 // shaping aggregation and an unrecognised inner shape — lower their
 // argument through the ordinary sample pipeline, so their scope carries
 // the Sample timestamp column and ctx passes through unchanged.
+//
+// The aggregated-idiom branch is further split by histogram kind. An
+// exp-histogram idiom keeps evaluating above the native per-anchor
+// fan-out (histogramScalarArgCtx's stepGridAnchorColumn scope), matching
+// lowerHistogramQuantileNativeAgg{,Range}'s row shape. A CLASSIC idiom's
+// fold — whether the array-domain rung fold or the native-bucket-rates
+// float-domain reuse (lowerHistogramQuantileClassicFloatOverPlan) —
+// always re-forms a Sample-row contract keyed on the Sample timestamp
+// column before phi is consumed, so keying it on stepGridAnchorColumn
+// instead reached "ClickHouse rejected the query" / code 47 "Unknown
+// expression or function identifier `anchor_ts`" the moment the outer
+// reference landed inside the fold's arrayFirstIndex lambda, which
+// cannot see the fold's true anchor column (TimeUnix) under that name. A
+// classic BARE selector (the default branch below, no rate/agg wrapper)
+// is unaffected: lowerHistogramQuantileClassicBareRange fans out over
+// stepGridAnchorColumn directly, with no intervening Sample-row fold.
 func phiScalarArgCtx(
 	shape histogramAggShape,
 	matched bool,
@@ -421,8 +437,10 @@ func phiScalarArgCtx(
 	ctx lowerCtx,
 ) lowerCtx {
 	switch {
-	case matched && histogramAggShapeLowerable(shape, s):
+	case matched && histogramAggShapeLowerable(shape, s) && s.IsExpHistogramMetric(shape.selector.Name):
 		return histogramScalarArgCtx(shape.selector, ctx)
+	case matched && histogramAggShapeLowerable(shape, s):
+		return ctx
 	case matched, !isBare:
 		return ctx
 	default:
