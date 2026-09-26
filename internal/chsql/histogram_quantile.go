@@ -504,16 +504,31 @@ func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperCol
 	// machinery expects (newer CH accepts it). Wrapping the predicate as
 	// `(if(<cmp>, 1, 0) = 1)` restores the constant-folded UInt8 the 24.8
 	// filter path requires. The literal path keeps the bare comparison.
+	//
+	// A computed phi's target also embeds PhiExpr's correlated
+	// per-anchor lookup (it closes over the outer row's `anchor_ts`).
+	// ClickHouse's lambda analyzer only resolves a bound lambda
+	// parameter or another enclosing lambda's parameter inside a
+	// lambda body — not an arbitrary outer-SELECT column or subquery
+	// — so embedding target directly in `c -> ...` fails with
+	// "Unknown expression or function identifier `anchor_ts` in scope
+	// c -> ...". hqNativeLet evaluates target once, outside any
+	// lambda, and rebinds it as a genuine lambda parameter that the
+	// nested `c -> ...` may then reference like any enclosing closure.
 	w.idx = func() Frag {
 		if helpers.idx != "" {
 			return Col(helpers.idx)
 		}
-		cmp := Gte(BareIdent("c"), w.target())
-		pred := cmp
 		if h.PhiExpr != nil {
-			pred = Paren(Eq(If(cmp, InlineLit(1), InlineLit(0)), InlineLit(1)))
+			const targetAlias = "_cerb_hqc_target"
+			return hqNativeLet([]hqNativeBinding{{targetAlias, w.target()}}, func() Frag {
+				cmp := Gte(BareIdent("c"), BareIdent(targetAlias))
+				pred := Paren(Eq(If(cmp, InlineLit(1), InlineLit(0)), InlineLit(1)))
+				return Call("arrayFirstIndex", Lambda1("c", pred), w.cum())
+			})
 		}
-		return Call("arrayFirstIndex", Lambda1("c", pred), w.cum())
+		cmp := Gte(BareIdent("c"), w.target())
+		return Call("arrayFirstIndex", Lambda1("c", cmp), w.cum())
 	}
 	// idxAtOffset renders `<idx>` or `<idx> - 1` (the `idx - 1` lower-edge
 	// lookups). offsetMinusOne selects the `- 1` form.
