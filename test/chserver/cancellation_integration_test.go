@@ -195,14 +195,13 @@ const (
 	handlerSlack            = 3 * time.Second
 	naturalRunBudget        = 120 * time.Second
 	// runningBudget bounds waitInCall: how long a dispatched statement gets
-	// to reach its probed function's call. Quartering cancelProbeNanoCPUs
-	// (see its own comment) and sampling siblingsElapsedToCall multiple
-	// times per calibration round (calibrationSiblingSamples) both lengthen
-	// how long that can legitimately take, and calibration's own re-seeding
-	// grows the same table round over round, so a later round's entry can
-	// take noticeably longer than an earlier one at a smaller size; 90s
-	// covers that observed growth with headroom to spare.
-	runningBudget    = 90 * time.Second
+	// to reach its probed function's call. Sampling siblingsElapsedToCall
+	// multiple times per calibration round (calibrationSiblingSamples)
+	// lengthens how long that can legitimately take, and calibration's own
+	// re-seeding grows the same table round over round, so a later round's
+	// entry can take noticeably longer than an earlier one at a smaller
+	// size; 60s covers that observed growth with headroom to spare.
+	runningBudget    = 60 * time.Second
 	closeBudget      = 30 * time.Second
 	pollInterval     = 50 * time.Millisecond
 	shardedDB        = "sharded"
@@ -230,38 +229,20 @@ const calibrationTarget = minRemaining * 3 / 2
 // 700,000 samples unthrottled, interrupted siblings took 2.5 s to end; at
 // half a CPU with calibrated sizes, every interrupted call ended within 1.4 s.
 //
-// 30% of a CPU (down from half) buys more of that same wall-clock stretch
-// without touching a shape's maxSize or its memory footprint at all: on
-// GitHub's shared ubuntu-latest runners the routed-sibling scenario was
-// observed reaching only ~2.8-4.4 s of remaining work at array_fold's
-// maxSize ceiling (700,000 samples), against the required minRemaining of
-// 6 s — contention between two statements sharing the throttled CPU delays
-// entering the call by well more than a proportional 2x, so the ceiling was
-// hit before the target margin was. Raising maxSize instead would grow the
-// fold's ~4 KiB/sample x 2 concurrent siblings footprint further (already
-// ~5.6 GB at 700,000) against GitHub-hosted ubuntu-latest's standard 16 GB
-// of RAM, trading a timing-margin failure for a harder-to-diagnose OOM.
-// Throttling the CPU further instead lengthens every phase of the query
-// (read, pre-call work, and the call itself), so calibration converges on
-// the same target margin at a size well under the ceiling: local,
-// memory-constrained (16 GB) measurement at 30% of a CPU converged at
-// array_fold's baseSize (200,000, well under maxSize) with 10 of 10 real
-// routed-sibling probe runs leaving between 9.1 s and 62 s — every one
-// clearing minRemaining, several with the margin the single-sample
-// siblingsElapsedToCall measurement alone cannot guarantee (see
-// calibrateShape's calibrationSiblingSamples).
-//
-// A quarter of a CPU (tried first) stretched natural runs enough on the
-// slowest pinned build (26.6.1.1193, which interrupts nothing so its
-// natural run goes uninterrupted every time) that a fixed per-query
-// warm-up cost the calibrated `natural` measurement pays once — observed
-// as long as 130 s at a quarter CPU — no longer predicted a same-shaped
-// probe query's real duration: a later request_deadline probe against the
-// identical query finished in under half that time, so its deadline (set
-// from `natural`) never fired. 30% of a CPU keeps natural runs short
-// enough that this warm-up cost stays a small fraction of them, so
-// requestDeadline's arithmetic (anchored on `natural`) keeps holding.
-const cancelProbeNanoCPUs = 300_000_000
+// A lower throttle (tried at both a quarter and 30% of a CPU) was rejected:
+// besides stretching natural runs enough that a fixed per-query warm-up cost
+// the calibrated `natural` measurement pays once no longer predicted a
+// same-shaped probe query's real duration (observed on the slowest pinned
+// build, 26.6.1.1193), the heavier throttle also starved the ClickHouse
+// server's own thread pool enough that KILL QUERY's confirmation itself
+// missed its deadline repeatedly under real GitHub Actions contention —
+// #3746's regression, surfaced as calibration retrying past the whole
+// test's 20-minute timeout rather than a wrong margin. Half a CPU keeps
+// query cancellation itself reliable; calibrateShape's
+// calibrationSiblingSamples (below) is what actually fixes #3746's margin
+// noise, by taking the worst of several sibling samples per round instead
+// of trusting one.
+const cancelProbeNanoCPUs = 500_000_000
 
 // cancelEvalTime is the instant every probe evaluates at.
 var cancelEvalTime = time.Date(2026, 5, 14, 11, 0, 0, 0, time.UTC)
