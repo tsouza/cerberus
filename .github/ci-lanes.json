@@ -141,7 +141,7 @@
         "context_job": "ch-server-safety"
       },
       "executions": ["default"],
-      "context": { "match": "exact", "name": "ch-server-safety", "protected": false },
+      "context": { "match": "exact", "name": "ch-server-safety", "protected": true },
       "purpose": "correctness",
       "layers": ["6e", "6f"],
       "oracle_class": "execution",
@@ -153,7 +153,7 @@
       "risk_domains": ["clickhouse-client", "clickhouse-floor", "correctness"],
       "merge_posture": "always",
       "main_posture": "coalesced",
-      "release_posture": "advisory",
+      "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
       "timeout_minutes": 25,

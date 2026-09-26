@@ -259,6 +259,7 @@ jobs:
             roundtrip (traceql)
             perf-guards
             strict-scan
+            ch-server-safety
             pr-body
             quickstart
             compose-smoke
