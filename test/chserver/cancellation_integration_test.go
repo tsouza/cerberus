@@ -610,10 +610,13 @@ func (w cancelExpectation) requestDeadline() time.Duration {
 // uninterrupted one runs the call out and must end no sooner than
 // remaining/uninterruptedFraction. Both scale with the calibrated workload,
 // so neither is tied to a runner's speed, and the band between a quarter and
-// a half of the remainder separates them. Observed under cancelProbeNanoCPUs:
-// interrupted calls ended within 0.14 of the remainder, uninterrupted ones
-// after 0.7 or more of it. minRemaining is the least remainder the probe will
-// judge, so that a quarter of it still stands clear of scheduling noise.
+// a half of the remainder separates them. This band holds for the smaller,
+// slower-natural-run shapes calibration settles on most substrates; on
+// GitHub's fastest runners, array_fold's largest calibrated size has been
+// observed exceeding the interrupted side of this band (ratios of 0.31-0.39
+// against the 0.25 limit — see #3749, open and unresolved). minRemaining is
+// the least remainder the probe will judge, so that a quarter of it still
+// stands clear of scheduling noise on substrates where the band holds.
 const (
 	interruptedFraction   = 4
 	uninterruptedFraction = 2
