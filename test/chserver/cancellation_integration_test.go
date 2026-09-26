@@ -219,30 +219,40 @@ const (
 // (cancelExpectation.requestDeadline).
 const calibrationTarget = minRemaining * 3 / 2
 
-// cancelProbeNanoCPUs throttles the cancellation probes' server to half a
-// CPU. The probed functions are single-threaded, so the throttle stretches
-// one call's wall time without growing its memory. That matters twice: the
-// fold holds about 4 KiB per sample, so reaching calibrationTarget on a fast
-// runner by size alone would exhaust memory once two siblings run at once;
-// and an interrupted call's own teardown — freeing that memory — grows with
-// the size, which would narrow the gap to an uninterrupted one. Measured at
-// 700,000 samples unthrottled, interrupted siblings took 2.5 s to end; at
-// half a CPU with calibrated sizes, every interrupted call ended within 1.4 s.
+// cancelProbeNanoCPUs throttles the cancellation probes' server to a
+// quarter CPU. The probed functions are single-threaded, so the throttle
+// stretches one call's wall time without growing its memory. That matters
+// twice: the fold holds about 4 KiB per sample, so reaching
+// calibrationTarget on a fast runner by size alone would exhaust memory
+// once two siblings run at once; and an interrupted call's own teardown —
+// freeing that memory — grows with the size, which would narrow the gap to
+// an uninterrupted one. Measured at 700,000 samples unthrottled, interrupted
+// siblings took 2.5 s to end; at half a CPU with calibrated sizes, every
+// interrupted call ended within 1.4 s.
 //
-// A lower throttle (tried at both a quarter and 30% of a CPU) was rejected:
-// besides stretching natural runs enough that a fixed per-query warm-up cost
-// the calibrated `natural` measurement pays once no longer predicted a
-// same-shaped probe query's real duration (observed on the slowest pinned
-// build, 26.6.1.1193), the heavier throttle also starved the ClickHouse
-// server's own thread pool enough that KILL QUERY's confirmation itself
-// missed its deadline repeatedly under real GitHub Actions contention —
-// #3746's regression, surfaced as calibration retrying past the whole
-// test's 20-minute timeout rather than a wrong margin. Half a CPU keeps
-// query cancellation itself reliable; calibrateShape's
-// calibrationSiblingSamples (below) is what actually fixes #3746's margin
-// noise, by taking the worst of several sibling samples per round instead
-// of trusting one.
-const cancelProbeNanoCPUs = 500_000_000
+// A lower throttle (tried at both a quarter and 30% of a CPU) was rejected
+// at half a CPU's introduction: besides stretching natural runs enough that
+// a fixed per-query warm-up cost the calibrated `natural` measurement pays
+// once no longer predicted a same-shaped probe query's real duration
+// (observed on the slowest pinned build, 26.6.1.1193), the heavier throttle
+// also starved the ClickHouse server's own thread pool enough that
+// KILL QUERY's confirmation itself missed its deadline repeatedly under
+// real GitHub Actions contention — #3746's regression, surfaced as
+// calibration retrying past the whole test's 20-minute timeout rather than
+// a wrong margin.
+//
+// cerberus#3751 moved this job to a dedicated ubicloud-standard-8 runner,
+// which reopened the quarter-CPU question on different terms: half a CPU
+// of a genuinely fast, non-oversold core reached calibrationTarget at
+// maxSize with no headroom to spare and then fell short on two of the
+// pinned builds (observed directly — array_fold left only 2.5-4.2s of a
+// ~7-9s run, short of the 6s calibrationTarget needs). #3746's KILL QUERY
+// starvation was measured under REAL GHA host contention stacking on top
+// of the cgroup throttle; a dedicated, non-oversold core removes that
+// compounding, so a quarter CPU — which stretches the same run further,
+// buying the missing margin back — is worth re-trying here specifically,
+// not as a universal replacement for half a CPU on a shared runner.
+const cancelProbeNanoCPUs = 250_000_000
 
 // cancelEvalTime is the instant every probe evaluates at.
 var cancelEvalTime = time.Date(2026, 5, 14, 11, 0, 0, 0, time.UTC)
