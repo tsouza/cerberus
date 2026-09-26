@@ -128,7 +128,8 @@ func nativeGridInstantAcceptedWindow(s schema.Metrics) *chplan.RangeWindow {
 
 // TestNativeTSGridInstantNode_RejectsEachDisqualifyingClause kills both
 // INVERT_LOGICAL mutants on nativeTSGridInstantNode's `rw.Identity ||
-// rw.Step > 0 || rw.End.IsZero()` guard (lower.go:3914): each disjunct is
+// rw.Step > 0 || rw.End.IsZero()` guard (lower.go:`nativeTSGridInstantNode`):
+// each disjunct is
 // independently sufficient to fall back to the fan-out path, so collapsing
 // any one `||` into `&&` would require the OTHER two clauses to also hold
 // before the reject fires. Each case below perturbs exactly one clause off
@@ -162,7 +163,7 @@ func TestNativeTSGridInstantNode_RejectsEachDisqualifyingClause(t *testing.T) {
 
 // TestNativeTSGridInstantNode_WholeSecondsConjunction kills the
 // INVERT_LOGICAL mutant on `!wholeSeconds(rw.Range) || !wholeSeconds(rw.Offset)`
-// (lower.go:3923): a sub-second Range or a sub-second Offset must each
+// (lower.go:`nativeTSGridInstantNode`): a sub-second Range or a sub-second Offset must each
 // independently fall back to the fan-out path (issue #3068's truncation
 // hazard — see gremlins_kill_native_grid_guard_test.go's sibling tests for
 // the full rationale), so collapsing this `||` into `&&` would require BOTH
