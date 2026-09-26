@@ -194,14 +194,21 @@ const (
 	settleBudget            = 2 * time.Second
 	handlerSlack            = 3 * time.Second
 	naturalRunBudget        = 120 * time.Second
-	runningBudget           = 30 * time.Second
-	closeBudget             = 30 * time.Second
-	pollInterval            = 50 * time.Millisecond
-	shardedDB               = "sharded"
-	shardCluster            = "chserver"
-	shardCount              = 2
-	siblingCount            = 2
-	shardedPoolConns        = shardCount * siblingCount * 2
+	// runningBudget bounds waitInCall: how long a dispatched statement gets
+	// to reach its probed function's call. Sampling siblingsElapsedToCall
+	// multiple times per calibration round (calibrationSiblingSamples)
+	// lengthens how long that can legitimately take, and calibration's own
+	// re-seeding grows the same table round over round, so a later round's
+	// entry can take noticeably longer than an earlier one at a smaller
+	// size; 60s covers that observed growth with headroom to spare.
+	runningBudget    = 60 * time.Second
+	closeBudget      = 30 * time.Second
+	pollInterval     = 50 * time.Millisecond
+	shardedDB        = "sharded"
+	shardCluster     = "chserver"
+	shardCount       = 2
+	siblingCount     = 2
+	shardedPoolConns = shardCount * siblingCount * 2
 )
 
 // calibrationTarget is how much of a calibrated shape's natural run the call
@@ -221,6 +228,20 @@ const calibrationTarget = minRemaining * 3 / 2
 // the size, which would narrow the gap to an uninterrupted one. Measured at
 // 700,000 samples unthrottled, interrupted siblings took 2.5 s to end; at
 // half a CPU with calibrated sizes, every interrupted call ended within 1.4 s.
+//
+// A lower throttle (tried at both a quarter and 30% of a CPU) was rejected:
+// besides stretching natural runs enough that a fixed per-query warm-up cost
+// the calibrated `natural` measurement pays once no longer predicted a
+// same-shaped probe query's real duration (observed on the slowest pinned
+// build, 26.6.1.1193), the heavier throttle also starved the ClickHouse
+// server's own thread pool enough that KILL QUERY's confirmation itself
+// missed its deadline repeatedly under real GitHub Actions contention —
+// #3746's regression, surfaced as calibration retrying past the whole
+// test's 20-minute timeout rather than a wrong margin. Half a CPU keeps
+// query cancellation itself reliable; calibrateShape's
+// calibrationSiblingSamples (below) is what actually fixes #3746's margin
+// noise, by taking the worst of several sibling samples per round instead
+// of trusting one.
 const cancelProbeNanoCPUs = 500_000_000
 
 // cancelEvalTime is the instant every probe evaluates at.
@@ -762,12 +783,18 @@ var shardedTables = []string{"otel_metrics_gauge", "otel_metrics_sum"}
 // not reach the call in siblingCount times the lone run's entered — measured
 // on this substrate, the two-statement contention cost far more than the
 // even split a linear scale-up assumes (a calibration that estimated 10.7s
-// of remaining work this way left only 4.9s at the real cancellation). It
-// returns the shape with its calibrated query, that query's natural duration
-// and the point the lone run entered the call. A run still short of the
-// target at maxSize is returned as is: the scenario assertions then fail
-// with the separation they could not get, rather than judging a probe that
-// cannot tell the two outcomes apart.
+// of remaining work this way left only 4.9s at the real cancellation). A
+// single siblingsElapsedToCall measurement is itself noisy under contention
+// — repeated measurements at the same size were observed to disagree by
+// several seconds, one round leaving 11.3 s and the very next probe of the
+// same calibrated size leaving only 2.4 s — so each round takes
+// calibrationSiblingSamples measurements and keeps the worst (the one
+// leaving the least work), the same way a single slow sample would sink the
+// real probe. It returns the shape with its calibrated query, that query's
+// natural duration and the point the lone run entered the call. A run still
+// short of the target at maxSize is returned as is: the scenario assertions
+// then fail with the separation they could not get, rather than judging a
+// probe that cannot tell the two outcomes apart.
 func (s *server) calibrateShape(ctx context.Context, t *testing.T, shape cancelShape) (cancelShape, time.Duration, time.Duration) {
 	t.Helper()
 	size := shape.baseSize
@@ -779,10 +806,18 @@ func (s *server) calibrateShape(ctx context.Context, t *testing.T, shape cancelS
 		s.exec(ctx, t, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s.otel_metrics_gauge WHERE MetricName = ?", local, serverDB), metric)
 		shape.query = shape.queryFor(metric)
 		natural, entered = s.naturalRun(ctx, t, shape)
-		siblingsEntered := s.siblingsElapsedToCall(ctx, t, shape)
+		var siblingsEntered time.Duration
+		for sample := range calibrationSiblingSamples {
+			elapsed := s.siblingsElapsedToCall(ctx, t, shape)
+			t.Logf("calibration round %d sample %d: %s at size %d siblings entered after %s",
+				round, sample, shape.name, size, elapsed)
+			if elapsed > siblingsEntered {
+				siblingsEntered = elapsed
+			}
+		}
 		left := natural - siblingsEntered
-		t.Logf("calibration round %d: %s at size %d ran %s, lone entered after %s, siblings entered after %s, leaving %s (target %s)",
-			round, shape.name, size, natural, entered, siblingsEntered, left, calibrationTarget)
+		t.Logf("calibration round %d: %s at size %d ran %s, lone entered after %s, worst of %d sibling samples entered after %s, leaving %s (target %s)",
+			round, shape.name, size, natural, entered, calibrationSiblingSamples, siblingsEntered, left, calibrationTarget)
 		if left >= calibrationTarget || size >= shape.maxSize {
 			break
 		}
@@ -863,3 +898,9 @@ const calibrationGrowth = 2
 // calibrationOvershoot scales a re-seed a little past the proportional size,
 // since a shape's run is not exactly linear in its size.
 const calibrationOvershoot = 1.2
+
+// calibrationSiblingSamples is how many siblingsElapsedToCall measurements
+// calibrateShape takes per round, keeping the worst. See calibrateShape's
+// own comment for the measured variance that makes a single sample
+// unreliable.
+const calibrationSiblingSamples = 3
