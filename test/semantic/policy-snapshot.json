@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "captured_at": "2026-09-15T22:56:16.942Z",
+  "captured_at": "2026-09-26T07:50:39.531Z",
   "main_ruleset": {
     "required_checks": [
       "CodeQL",
@@ -56,6 +56,7 @@
     "compatibility/tempo",
     "compatibility/prometheus-forced-route",
     "probe",
+    "probe-promql",
     "roundtrip (promql)",
     "roundtrip (logql)",
     "roundtrip (traceql)",

@@ -322,6 +322,35 @@
       "accountable_owner": "query-quality"
     },
     {
+      "id": "chdb.probe-promql",
+      "description": "internal/promql's chdb-tagged lowering tests, on their own runner (#3699). Not a branch-protection-required check: its own SLO (70m) exceeds the 20-minute ceiling a PR-blocking merge lane must fit, so it runs on every ordinary PR for visibility but only gates the release preflight, which affords a longer window.",
+      "owner": {
+        "workflow": ".github/workflows/chdb.yml",
+        "jobs": ["changes", "probe-promql"],
+        "producer_jobs": [],
+        "context_job": "probe-promql"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "probe-promql", "protected": false },
+      "purpose": "correctness",
+      "layers": ["7", "7b"],
+      "oracle_class": "execution",
+      "recipes": ["test-chdb-promql"],
+      "command": "just test-chdb-promql",
+      "build_tags": ["chdb"],
+      "package_globs": ["internal/promql/**"],
+      "substrate": "chdb",
+      "risk_domains": ["query-lowering"],
+      "merge_posture": "never",
+      "main_posture": "coalesced",
+      "release_posture": "required",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 80,
+      "slo_minutes": 70,
+      "accountable_owner": "query-quality"
+    },
+    {
       "id": "chdb.query-log-union",
       "description": "Real-ClickHouse evidence for the query-actuals query-log source: local-log gaps after failover and rotation, native packet coverage, and the system.all_query_log union's single accounting across two data shards and an upgrade.",
       "owner": {

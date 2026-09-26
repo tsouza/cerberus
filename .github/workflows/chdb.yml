@@ -262,12 +262,11 @@ jobs:
     # go test's 10-minute alarm while still making progress (every timeout
     # dump showed the running test at 0-1s old, not a blocked goroutine).
     runs-on: ubuntu-latest
-    # Bumped from 15 alongside `just test-chdb`'s own -timeout going from
-    # 10m to 70m (tsouza/cerberus#3699, enrolling ./internal/promql/...): a
-    # safe upper bound over that per-process ceiling plus the job's fixed
-    # checkout/toolchain/libchdb-install overhead, not a measurement of this
-    # job.
-    timeout-minutes: 80
+    # internal/promql moved to its own `probe-promql` job below (#3699):
+    # bundled here it made every PR's `probe` wait 40+ minutes and contended
+    # for this job's own runner memory against the other chdb-tagged
+    # packages. Back to the pre-#3699 ceiling.
+    timeout-minutes: 15
     steps:
       - name: gate on the changes job
         if: needs.changes.result != 'success'
@@ -289,6 +288,42 @@ jobs:
 
       - name: Run handler tests (chDB)
         run: just test-chdb
+
+  # internal/promql's chdb-tagged TestLower*/TestMixedSetOpOr_Nested* suite,
+  # split out of `probe` above onto its own runner (#3699): bundled into
+  # `probe`'s shared job it made every PR wait 40+ minutes and contended for
+  # that job's own runner memory against test-chdb's other packages, killing
+  # the process mid-run at higher fanout rather than merely timing out. A
+  # dedicated job gives it its own CPU and memory instead.
+  probe-promql:
+    name: probe-promql
+    needs: changes
+    if: >-
+      always() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
+    runs-on: ubuntu-latest
+    # Matches just test-chdb-promql's own -timeout (70m, see that recipe's
+    # comment for the fanout/OOM history) plus this job's fixed
+    # checkout/toolchain/libchdb-install overhead.
+    timeout-minutes: 80
+    steps:
+      - name: gate on the changes job
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::changes did not succeed (${{ needs.changes.result }}); a required check must not be skipped into green."
+          exit 1
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go
+
+      - uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12  # v2.87.18
+        with:
+          tool: just@1.46.0
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Run promql chDB tests
+        run: just test-chdb-promql
 
   # `roundtrip` walks every *.txtar fixture under test/spec/<ql>/ and,
   # for fixtures that declare both `seed:` and `expected_rows:`, runs
