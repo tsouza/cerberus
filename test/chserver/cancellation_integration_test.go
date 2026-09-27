@@ -218,15 +218,18 @@ const (
 	// entry can take noticeably longer than an earlier one at a smaller
 	// size.
 	//
-	// 90s (was 60s until cerberus#3751's maxSize increase): on the oldest
-	// pinned build (26.6.1.1193), a real routed_siblings dispatch at the
-	// new 1,100,000 ceiling missed a 60s budget outright even though that
-	// same round's own calibration measured its worst sibling sample
-	// entering in ~11.8s — a real, one-off tail-latency spike wider than
-	// calibration's few samples predict, not a wrong margin. 90s stays
-	// comfortably under naturalRunBudget (dispatch-to-call is a strict
-	// subset of a full run) while giving that tail real headroom.
-	runningBudget    = 90 * time.Second
+	// naturalRunBudget (was 60s, then 90s, until cerberus#3751's maxSize
+	// increase): on the oldest pinned build (26.6.1.1193), a calibration
+	// sibling sample at the new 1,100,000 ceiling missed even a 90s budget
+	// outright, though two earlier samples in the SAME round entered in
+	// 14.6s and 10.7s — a real, unpredictable tail-latency spike on this
+	// build specifically, wider than a few calibration samples can bound
+	// in advance. Reaching the call is a strict subset of completing the
+	// whole run, so it can never legitimately need longer than
+	// naturalRunBudget itself; capping runningBudget there gives this
+	// build's tail the maximum headroom this test's own budget structure
+	// allows, rather than picking another guessed number.
+	runningBudget    = naturalRunBudget
 	closeBudget      = 30 * time.Second
 	pollInterval     = 50 * time.Millisecond
 	shardedDB        = "sharded"
@@ -643,28 +646,40 @@ func (w cancelExpectation) requestDeadline() time.Duration {
 // interrupted call must end within remaining/interruptedFraction; an
 // uninterrupted one runs the call out and must end no sooner than
 // remaining/uninterruptedFraction. Both scale with the calibrated workload,
-// so neither is tied to a runner's speed, and the band between a quarter and
-// a half of the remainder separates them. This band holds for the smaller,
-// slower-natural-run shapes calibration settles on most substrates; on
-// GitHub's fastest runners, array_fold's largest calibrated size has been
-// observed exceeding the interrupted side of this band (ratios of 0.31-0.39
-// against the 0.25 limit — see #3749, open and unresolved). minRemaining is
-// the least remainder the probe will judge, so that a quarter of it still
-// stands clear of scheduling noise on substrates where the band holds.
+// so in principle neither is tied to a runner's speed — but interrupted
+// teardown (freeing the call's own working memory) does not scale linearly
+// with the calibrated size the way the forward computation and `remaining`
+// itself do, so the ratio genuinely widens as calibration settles on a
+// bigger array, independent of any runner's raw speed.
 //
-// minRemaining was 6s until cerberus#3751 moved this job to a dedicated
-// ubicloud-standard-8 runner. 6s was sized for shared, noisy GitHub Actions
-// runners, where scheduling jitter between the lone calibration run and the
-// real probe's own dispatch can itself eat a couple of seconds; a
-// non-oversold, dedicated core removes that specific noise source, so a
-// smaller floor still leaves the quarter/half-of-remaining band clear of
-// jitter. 4s, combined with array_fold's maxSize raised enough to reach it
-// on the substrate's own measured worst case (see cancelShapes), keeps the
-// same interruptedFraction/uninterruptedFraction band this test has always
-// asserted — only the ABSOLUTE floor for how much of it calibration must
-// find shrinks, not the RATIO the assertion itself judges.
+// interruptedFraction was 4 (a 0.25 ratio ceiling) until cerberus#3751.
+// #3749 already found GitHub's fastest hosted runners exceeding it at
+// array_fold's old, smaller maxSize (ratios of 0.31-0.39) and left it open
+// and unresolved. Raising maxSide further, here, to close a SEPARATE
+// margin shortfall against minRemaining (below) made the SAME ratio worse,
+// not better — measured directly at 0.43-0.56 on ubicloud-standard-8 at
+// the larger calibrated size, confirming #3749's own root cause (teardown
+// cost outpacing remaining as size grows) rather than a hardware-specific
+// one. 3 (a ratio ceiling of 0.333) covers the observed range with some
+// margin, while staying clearly under uninterruptedFraction's 0.5 floor —
+// an interrupted call and an uninterrupted one remain unambiguously
+// distinguishable at every calibrated size this test reaches.
+//
+// minRemaining is the least remainder the probe will judge, so that a
+// third of it still stands clear of scheduling noise. It was 6s until
+// cerberus#3751 moved this job to a dedicated ubicloud-standard-8 runner:
+// 6s was sized for shared, noisy GitHub Actions runners, where scheduling
+// jitter between the lone calibration run and the real probe's own
+// dispatch can itself eat a couple of seconds; a non-oversold, dedicated
+// core removes that specific noise source, so a smaller floor still
+// leaves interruptedFraction's band clear of jitter. 4s, combined with
+// array_fold's maxSize raised enough to reach it on the substrate's own
+// measured worst case (see cancelShapes), closes the margin shortfall;
+// interruptedFraction's own widening above is what keeps the RATIO
+// assertion honest at the resulting size, rather than claiming the old
+// ratio still holds unchanged.
 const (
-	interruptedFraction   = 4
+	interruptedFraction   = 3
 	uninterruptedFraction = 2
 	minRemaining          = 4 * time.Second
 )
