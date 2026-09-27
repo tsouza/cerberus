@@ -424,8 +424,8 @@ func lowerSubqueryIdentityMathReorder(
 // lowerSubqueryIdentityDateReorder implements the same reorder
 // [lowerSubqueryIdentityMathReorder] applies to the math/clamp/round
 // family, for the date-component family (`year`, `month`, `day_of_month`,
-// `day_of_week`, `day_of_year`, `days_in_month`, `hour`, `minute`,
-// `timestamp`) — issue #3692. Windows the BARE argument first through
+// `day_of_week`, `day_of_year`, `days_in_month`, `hour`, `minute`)
+// — issue #3692. Windows the BARE argument first through
 // [lowerSubqueryOverVectorSelector], the identical pipeline a
 // bare-selector subquery uses, which encodes the stale marker, picks
 // each anchor's own latest sample, and drops the anchor a marker wins —
@@ -435,13 +435,10 @@ func lowerSubqueryIdentityMathReorder(
 // (see [subqueryIdentityValuePreserving]'s own doc for the exact CH
 // error).
 //
-// The windowed inner keeps each surviving sample's OWN TimeUnix (it is a
-// per-anchor pick of a real row, not a re-stamp to the anchor), so
-// projectDateFnOverInner is invoked under a range-vector ctx —
-// `timestamp(v)` then reads that row's own timestamp column directly
-// rather than the RangeLWR sample-timestamp column an aggregated instant
-// seam would otherwise require (see [timestampResultExpr] /
-// [readsRangeSampleTimestamp]).
+// The window stamps TimeUnix with the evaluation anchor. Date-component
+// functions read Value, so this preserves their input. timestamp(selector)
+// instead needs the original sample time and is routed through the
+// per-anchor selector lowering by lowerSubqueryOverInstantTransform.
 //
 // matched is false for a call shape this reorder doesn't cover — its
 // value argument is not vs at all, or its function isn't a
@@ -750,6 +747,12 @@ func lowerSubqueryOverInstantTransform(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
+	// Identity windows stamp the selected row with the evaluation anchor.
+	// timestamp(selector) needs the selected sample's original timestamp,
+	// which the per-anchor selector lowering carries in its own column.
+	if call.Func.Name == timestampFunctionName {
+		return lowerSubqueryOverInstantCall(sub, call, step, s, ctx)
+	}
 	if vs, ok := call.Args[0].(*parser.VectorSelector); ok {
 		if plan, matched, err := lowerSubqueryIdentityMathReorder(sub, call, vs, step, s, ctx); matched {
 			return plan, err
