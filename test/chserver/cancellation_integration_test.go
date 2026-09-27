@@ -216,8 +216,17 @@ const (
 	// lengthens how long that can legitimately take, and calibration's own
 	// re-seeding grows the same table round over round, so a later round's
 	// entry can take noticeably longer than an earlier one at a smaller
-	// size; 60s covers that observed growth with headroom to spare.
-	runningBudget    = 60 * time.Second
+	// size.
+	//
+	// 90s (was 60s until cerberus#3751's maxSize increase): on the oldest
+	// pinned build (26.6.1.1193), a real routed_siblings dispatch at the
+	// new 1,100,000 ceiling missed a 60s budget outright even though that
+	// same round's own calibration measured its worst sibling sample
+	// entering in ~11.8s — a real, one-off tail-latency spike wider than
+	// calibration's few samples predict, not a wrong margin. 90s stays
+	// comfortably under naturalRunBudget (dispatch-to-call is a strict
+	// subset of a full run) while giving that tail real headroom.
+	runningBudget    = 90 * time.Second
 	closeBudget      = 30 * time.Second
 	pollInterval     = 50 * time.Millisecond
 	shardedDB        = "sharded"
