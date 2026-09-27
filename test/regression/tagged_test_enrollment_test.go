@@ -1443,12 +1443,7 @@ func taggedWorkingDirectory(workflow, job taggedWorkflowDefaults, step taggedWor
 
 func taggedWorkflowRunsOnLinux(runsOn any) bool {
 	if value, ok := runsOn.(string); ok {
-		value = strings.TrimSpace(value)
-		// ubicloud-standard-* / ubicloud-standard-*-arm are Ubicloud's
-		// partner-managed runners (cerberus#3751): Linux VMs, same as every
-		// GitHub-hosted ubuntu-* runner this regex already recognizes.
-		return regexp.MustCompile(`^ubuntu-(?:latest|[0-9]+\.[0-9]+)$`).MatchString(value) ||
-			regexp.MustCompile(`^ubicloud-standard-[0-9]+(?:-arm)?$`).MatchString(value)
+		return regexp.MustCompile(`^ubuntu-(?:latest|[0-9]+\.[0-9]+)$`).MatchString(strings.TrimSpace(value))
 	}
 	// A list form (`runs-on: [self-hosted, cerberus]`) targets one of the
 	// project's own self-hosted runner pods, every one of which is Linux
@@ -2209,10 +2204,6 @@ func TestTaggedTestEnrollmentNegativeControls(t *testing.T) {
 		if !taggedWorkflowRunsOnLinux("ubuntu-latest") || taggedWorkflowRunsOnLinux("windows-latest") ||
 			taggedWorkflowRunsOnLinux("${{ matrix.os }}") {
 			t.Fatal("runner build context was not bound to static Linux")
-		}
-		if !taggedWorkflowRunsOnLinux("ubicloud-standard-8") || !taggedWorkflowRunsOnLinux("ubicloud-standard-4-arm") ||
-			taggedWorkflowRunsOnLinux("ubicloud-windows") {
-			t.Fatal("a ubicloud-standard-* runner was not recognized as Linux")
 		}
 		if !taggedWorkflowRunsOnLinux([]any{"self-hosted", "cerberus"}) {
 			t.Fatal("a self-hosted runs-on list was not recognized as Linux")

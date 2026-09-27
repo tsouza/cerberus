@@ -148,23 +148,7 @@ var cancelShapes = []cancelShape{
 		// window's samples; one series whose size samples all fall inside
 		// the window makes that single call the bulk of the query. The fold
 		// holds about 4 KiB per sample, and the routed-sibling scenario runs
-		// two at once, so maxSize keeps both inside the container's memory
-		// (see cancelServerMemoryBytes, sized to match this ceiling).
-		//
-		// maxSize was 700,000 until cerberus#3751 moved this job to a
-		// dedicated ubicloud-standard-8 runner: at 700,000 with half a CPU
-		// (cancelProbeNanoCPUs's floor — see its own doc), calibration left
-		// only 2.5-4.2s of a ~7-9s run on two pinned builds, short of even
-		// the reduced 4s minRemaining floor (see minRemaining's own doc).
-		// 1,100,000 clears the worse of the two with real headroom
-		// (measured worst case 2.469s x 1.57 ≈ 3.9s was the borderline
-		// estimate; rounded up for calibration noise) while costing far
-		// less wall-clock time across all 14 pinned builds than the
-		// ~3.5x size this test previously (and unsuccessfully) tried —
-		// that attempt made a single build take ~13 minutes and blew the
-		// whole job's time budget. Stays comfortably inside
-		// foldSampleSpacingMicros's 6-million-sample 10-minute-window
-		// ceiling.
+		// two at once, so maxSize keeps both inside the container's memory.
 		name:     "array_fold",
 		function: "arrayFold",
 		queryFor: func(metric string) string { return "double_exponential_smoothing(" + metric + "[10m], 0.5, 0.5)" },
@@ -175,7 +159,7 @@ SELECT 'svc', '%s', map('host', 'a'), toDateTime64(%d, 9) - toIntervalMicrosecon
 FROM numbers(%d)`, metric, cancelEvalTime.Unix(), foldSampleSpacingMicros, size)
 		},
 		baseSize: 200_000,
-		maxSize:  1_100_000,
+		maxSize:  700_000,
 		bounded:  func(fold, _ bool) bool { return fold },
 		inCall:   foldLoopRunning,
 	},
@@ -216,20 +200,8 @@ const (
 	// lengthens how long that can legitimately take, and calibration's own
 	// re-seeding grows the same table round over round, so a later round's
 	// entry can take noticeably longer than an earlier one at a smaller
-	// size.
-	//
-	// naturalRunBudget (was 60s, then 90s, until cerberus#3751's maxSize
-	// increase): on the oldest pinned build (26.6.1.1193), a calibration
-	// sibling sample at the new 1,100,000 ceiling missed even a 90s budget
-	// outright, though two earlier samples in the SAME round entered in
-	// 14.6s and 10.7s — a real, unpredictable tail-latency spike on this
-	// build specifically, wider than a few calibration samples can bound
-	// in advance. Reaching the call is a strict subset of completing the
-	// whole run, so it can never legitimately need longer than
-	// naturalRunBudget itself; capping runningBudget there gives this
-	// build's tail the maximum headroom this test's own budget structure
-	// allows, rather than picking another guessed number.
-	runningBudget    = naturalRunBudget
+	// size; 60s covers that observed growth with headroom to spare.
+	runningBudget    = 60 * time.Second
 	closeBudget      = 30 * time.Second
 	pollInterval     = 50 * time.Millisecond
 	shardedDB        = "sharded"
@@ -257,26 +229,20 @@ const calibrationTarget = minRemaining * 3 / 2
 // 700,000 samples unthrottled, interrupted siblings took 2.5 s to end; at
 // half a CPU with calibrated sizes, every interrupted call ended within 1.4 s.
 //
-// A lower throttle (tried at both a quarter and 30% of a CPU, and re-tried
-// at a quarter on cerberus#3751's dedicated ubicloud-standard-8 runner) was
-// rejected both times: besides stretching natural runs enough that a fixed
-// per-query warm-up cost the calibrated `natural` measurement pays once no
-// longer predicted a same-shaped probe query's real duration (observed on
-// the slowest pinned build, 26.6.1.1193), the heavier throttle also starved
-// the ClickHouse server's own thread pool enough that KILL QUERY's
-// confirmation itself missed its deadline repeatedly — #3746's regression,
-// reproduced identically on a dedicated, non-oversold core with zero host
-// contention, which rules out host noise as the cause: the starvation is a
-// property of the query's OWN throttled CPU share. Half a CPU is the real
-// floor on any substrate; calibrateShape's calibrationSiblingSamples
-// (below) is what actually fixes #3746's margin noise, by taking the worst
-// of several sibling samples per round instead of trusting one. See
-// array_fold's maxSize and minRemaining (below) for the substrate-specific
-// margin fix instead.
-const (
-	cancelServerMemoryBytes = 12 << 30 // see array_fold's maxSize doc
-	cancelProbeNanoCPUs     = 500_000_000
-)
+// A lower throttle (tried at both a quarter and 30% of a CPU) was rejected:
+// besides stretching natural runs enough that a fixed per-query warm-up cost
+// the calibrated `natural` measurement pays once no longer predicted a
+// same-shaped probe query's real duration (observed on the slowest pinned
+// build, 26.6.1.1193), the heavier throttle also starved the ClickHouse
+// server's own thread pool enough that KILL QUERY's confirmation itself
+// missed its deadline repeatedly under real GitHub Actions contention —
+// #3746's regression, surfaced as calibration retrying past the whole
+// test's 20-minute timeout rather than a wrong margin. Half a CPU keeps
+// query cancellation itself reliable; calibrateShape's
+// calibrationSiblingSamples (below) is what actually fixes #3746's margin
+// noise, by taking the worst of several sibling samples per round instead
+// of trusting one.
+const cancelProbeNanoCPUs = 500_000_000
 
 // cancelEvalTime is the instant every probe evaluates at.
 var cancelEvalTime = time.Date(2026, 5, 14, 11, 0, 0, 0, time.UTC)
@@ -314,10 +280,7 @@ func TestCancellation_CPUBoundEmittedShapesAcrossBuilds(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
 			s := startServer(ctx, t, build.image, tcclickhouse.WithConfigFile(clusterConfig),
-				testcontainers.WithHostConfigModifier(func(hc *container.HostConfig) {
-					hc.NanoCPUs = cancelProbeNanoCPUs
-					hc.Memory = cancelServerMemoryBytes
-				}))
+				testcontainers.WithHostConfigModifier(func(hc *container.HostConfig) { hc.NanoCPUs = cancelProbeNanoCPUs }))
 			seedCancellationProbe(ctx, t, s)
 
 			// The fleet probe's cluster arm reads every replica's build
@@ -646,42 +609,18 @@ func (w cancelExpectation) requestDeadline() time.Duration {
 // interrupted call must end within remaining/interruptedFraction; an
 // uninterrupted one runs the call out and must end no sooner than
 // remaining/uninterruptedFraction. Both scale with the calibrated workload,
-// so in principle neither is tied to a runner's speed — but interrupted
-// teardown (freeing the call's own working memory) does not scale linearly
-// with the calibrated size the way the forward computation and `remaining`
-// itself do, so the ratio genuinely widens as calibration settles on a
-// bigger array, independent of any runner's raw speed.
-//
-// interruptedFraction was 4 (a 0.25 ratio ceiling) until cerberus#3751.
-// #3749 already found GitHub's fastest hosted runners exceeding it at
-// array_fold's old, smaller maxSize (ratios of 0.31-0.39) and left it open
-// and unresolved. Raising maxSide further, here, to close a SEPARATE
-// margin shortfall against minRemaining (below) made the SAME ratio worse,
-// not better — measured directly at 0.43-0.56 on ubicloud-standard-8 at
-// the larger calibrated size, confirming #3749's own root cause (teardown
-// cost outpacing remaining as size grows) rather than a hardware-specific
-// one. 3 (a ratio ceiling of 0.333) covers the observed range with some
-// margin, while staying clearly under uninterruptedFraction's 0.5 floor —
-// an interrupted call and an uninterrupted one remain unambiguously
-// distinguishable at every calibrated size this test reaches.
-//
-// minRemaining is the least remainder the probe will judge, so that a
-// third of it still stands clear of scheduling noise. It was 6s until
-// cerberus#3751 moved this job to a dedicated ubicloud-standard-8 runner:
-// 6s was sized for shared, noisy GitHub Actions runners, where scheduling
-// jitter between the lone calibration run and the real probe's own
-// dispatch can itself eat a couple of seconds; a non-oversold, dedicated
-// core removes that specific noise source, so a smaller floor still
-// leaves interruptedFraction's band clear of jitter. 4s, combined with
-// array_fold's maxSize raised enough to reach it on the substrate's own
-// measured worst case (see cancelShapes), closes the margin shortfall;
-// interruptedFraction's own widening above is what keeps the RATIO
-// assertion honest at the resulting size, rather than claiming the old
-// ratio still holds unchanged.
+// so neither is tied to a runner's speed, and the band between a quarter and
+// a half of the remainder separates them. This band holds for the smaller,
+// slower-natural-run shapes calibration settles on most substrates; on
+// GitHub's fastest runners, array_fold's largest calibrated size has been
+// observed exceeding the interrupted side of this band (ratios of 0.31-0.39
+// against the 0.25 limit — see #3749, open and unresolved). minRemaining is
+// the least remainder the probe will judge, so that a quarter of it still
+// stands clear of scheduling noise on substrates where the band holds.
 const (
-	interruptedFraction   = 3
+	interruptedFraction   = 4
 	uninterruptedFraction = 2
-	minRemaining          = 4 * time.Second
+	minRemaining          = 6 * time.Second
 )
 
 // assertServerWorkEnds runs the moment cerberus has released the capacity a
