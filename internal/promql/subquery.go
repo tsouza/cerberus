@@ -2141,14 +2141,14 @@ var instantTransformFns = map[string]struct{}{
 	// [isInstantTransformCall]. timestamp is evaluated through the grid
 	// lowering: the identity window stamps TimeUnix with its anchor and
 	// cannot preserve the original sample time that timestamp(selector) reads.
-	"year":                {},
-	"month":               {},
-	"day_of_month":        {},
-	"day_of_week":         {},
-	"day_of_year":         {},
-	"days_in_month":       {},
-	"hour":                {},
-	"minute":              {},
+	"year":          {},
+	"month":         {},
+	"day_of_month":  {},
+	"day_of_week":   {},
+	"day_of_year":   {},
+	"days_in_month": {},
+	"hour":          {},
+	"minute":        {},
 
 	// Sorting: reference discards the ordering when it folds each
 	// anchor's instant result into the subquery's matrix, so these are
