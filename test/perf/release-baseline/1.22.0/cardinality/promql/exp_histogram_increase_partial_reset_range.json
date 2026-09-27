@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/exp_histogram_increase_partial_reset_range",
+  "fan_factor": 3.375,
+  "scan_rows": 8,
+  "peak_intermediate": 27,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
