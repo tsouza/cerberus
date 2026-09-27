@@ -1,6 +1,9 @@
 package logql
 
 import (
+	"math"
+	"strconv"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
@@ -144,9 +147,19 @@ type bytesParse struct {
 
 // The two multiplier bases of humanize's bytesSizeTable: a unit spelled
 // with an `i` (`ki`, `kib`, `mi`, `mib`, …) is a power of 1024, every
-// other spelling a power of 1000. Both are exactly representable in
-// Float64 up to the sixth power (2^60 and 1e18), so the multiplication
-// carries no rounding the reference does not also carry.
+// other spelling a power of 1000.
+//
+// Neither base is exactly representable in Float64 at every whole-number
+// magnitude the reference now accepts: go-humanize v1.1.0 (the version
+// this module's dependency graph actually resolves — its own MVS pulls
+// v1.1.0 in transitively above the v1.0.1 floor in go.mod's direct
+// `require`, per `go list -m all`) fixed exactly this gap by routing a
+// whole-number input through exact `uint64` arithmetic
+// (`strconv.ParseUint` + `bits.Mul64`'s overflow check) instead of
+// `float64(f) *= float64(m)`. [bytesExactMultiplierAndOverflowThreshold]
+// mirrors that fast path; [bytesScaledExpr]'s float64 multiply remains
+// the fallback for a fractional number, exactly as v1.1.0 itself falls
+// back to it.
 const (
 	bytesDecimalUnitBase = 1000
 	bytesBinaryUnitBase  = 1024
@@ -209,11 +222,41 @@ func newBytesParse(raw chplan.Expr) bytesParse {
 		Args: []chplan.Expr{rest, &chplan.LitString{V: bytesUnitRe}},
 	}
 
+	// isWholeNumber / numFitsUInt64 gate the exact-integer fast path
+	// ([bytesExactMultiplierAndOverflowThreshold]) that go-humanize
+	// v1.1.0 takes for a whole-number input its own `strconv.ParseUint`
+	// accepts. `numStripped` is digit-only once whole (no sign, no
+	// dot), so ParseUint fails on it only by overflowing UInt64 — which
+	// toUInt64OrZero cannot distinguish from a literal all-zero input,
+	// hence the explicit `^0*$` check.
+	isWholeNumber := notExpr(&chplan.Binary{
+		Op:    chplan.OpGt,
+		Left:  &chplan.FuncCall{Fn: chplan.FnStringPosition, Args: []chplan.Expr{numStripped, &chplan.LitString{V: "."}}},
+		Right: &chplan.LitInt{V: 0},
+	})
+	numExact := &chplan.FuncCall{Fn: chplan.FnToUInt64OrZero, Args: []chplan.Expr{numStripped}}
+	numFitsUInt64 := &chplan.Binary{
+		Op:   chplan.OpOr,
+		Left: &chplan.Binary{Op: chplan.OpGt, Left: numExact, Right: &chplan.LitInt{V: 0}},
+		Right: &chplan.FuncCall{
+			Fn:   chplan.FnRegexMatch,
+			Args: []chplan.Expr{numStripped, &chplan.LitString{V: `^0*$`}},
+		},
+	}
+	useExact := &chplan.Binary{Op: chplan.OpAnd, Left: isWholeNumber, Right: numFitsUInt64}
+
+	multiplierExact, overflowThresholdExact := bytesExactMultiplierAndOverflowThreshold(rest)
+	exactValue := &chplan.Binary{Op: chplan.OpMul, Left: numExact, Right: multiplierExact}
+	overflowExact := &chplan.Binary{Op: chplan.OpGt, Left: numExact, Right: overflowThresholdExact}
+
 	scaled := bytesScaledExpr(numStripped, rest)
-	inRange := &chplan.Binary{
-		Op:    chplan.OpLt,
-		Left:  scaled,
-		Right: &chplan.LitFloat{V: bytesTooLargeThreshold},
+	inRange := &chplan.FuncCall{
+		Fn: chplan.FnIf,
+		Args: []chplan.Expr{
+			useExact,
+			notExpr(overflowExact),
+			&chplan.Binary{Op: chplan.OpLt, Left: scaled, Right: &chplan.LitFloat{V: bytesTooLargeThreshold}},
+		},
 	}
 	valid := &chplan.Binary{
 		Op:   chplan.OpAnd,
@@ -223,10 +266,20 @@ func newBytesParse(raw chplan.Expr) bytesParse {
 		// accepted — mirroring the order of ParseBytes's own returns.
 		Right: inRange,
 	}
-	// value: humanize's `uint64(f)`, i.e. truncation toward zero. The
-	// scaled value is never negative (bytesNumberRe admits no sign), so
-	// floor and truncate coincide. Only ever read under `valid`.
-	value := &chplan.FuncCall{Fn: chplan.FnFloor, Args: []chplan.Expr{scaled}}
+	// value: humanize's `uint64(f)`, i.e. truncation toward zero, taken
+	// through the exact-integer path when it applies (see `useExact`
+	// above) and through the float64 multiply otherwise — matching
+	// go-humanize v1.1.0's own branch. The scaled value is never
+	// negative (bytesNumberRe admits no sign), so floor and truncate
+	// coincide on the fallback branch. Only ever read under `valid`.
+	value := &chplan.FuncCall{
+		Fn: chplan.FnIf,
+		Args: []chplan.Expr{
+			useExact,
+			&chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{exactValue}},
+			&chplan.FuncCall{Fn: chplan.FnFloor, Args: []chplan.Expr{scaled}},
+		},
+	}
 	// details: classify in humanize's scan order — number, then unit,
 	// then overflow.
 	details := &chplan.FuncCall{
@@ -304,5 +357,79 @@ func bytesScaledExpr(numStripped, rest chplan.Expr) chplan.Expr {
 		Op:    chplan.OpMul,
 		Left:  &chplan.FuncCall{Fn: chplan.FnToFloat64OrZero, Args: []chplan.Expr{numStripped}},
 		Right: &chplan.FuncCall{Fn: chplan.FnPow, Args: []chplan.Expr{base, exponent}},
+	}
+}
+
+// bytesExactMultiplierAndOverflowThreshold builds go-humanize v1.1.0's
+// exact-integer fast path for a whole-number input: the UInt64
+// multiplier its unit names, and the largest UInt64 that multiplier can
+// scale without overflowing UInt64 (`bits.Mul64`'s own overflow check,
+// restated as `numExact > threshold` so the caller never has to divide
+// at query time). Both are literals per unit, computed once in Go.
+func bytesExactMultiplierAndOverflowThreshold(rest chplan.Expr) (multiplier, overflowThreshold chplan.Expr) {
+	head := &chplan.FuncCall{
+		Fn:   chplan.FnSubstring,
+		Args: []chplan.Expr{rest, &chplan.LitInt{V: 1}, &chplan.LitInt{V: 1}},
+	}
+	isBinary := &chplan.Binary{
+		Op: chplan.OpEq,
+		Left: &chplan.FuncCall{
+			Fn:   chplan.FnSubstring,
+			Args: []chplan.Expr{rest, &chplan.LitInt{V: 2}, &chplan.LitInt{V: 1}},
+		},
+		Right: &chplan.LitString{V: "i"},
+	}
+
+	multArgs := make([]chplan.Expr, 0, 2*len(bytesUnitPrefixLetters)+1)
+	thresholdArgs := make([]chplan.Expr, 0, 2*len(bytesUnitPrefixLetters)+1)
+	for i, letter := range bytesUnitPrefixLetters {
+		exp := i + 1
+		decMult := uint64PowLit(bytesDecimalUnitBase, exp)
+		binMult := uint64PowLit(bytesBinaryUnitBase, exp)
+		cond := &chplan.Binary{Op: chplan.OpEq, Left: head, Right: &chplan.LitString{V: string(letter)}}
+		multArgs = append(multArgs, cond, &chplan.FuncCall{
+			Fn:   chplan.FnIf,
+			Args: []chplan.Expr{isBinary, binMult, decMult},
+		})
+		thresholdArgs = append(thresholdArgs, cond, &chplan.FuncCall{
+			Fn: chplan.FnIf,
+			Args: []chplan.Expr{
+				isBinary,
+				uint64Lit(math.MaxUint64 / pow(bytesBinaryUnitBase, exp)),
+				uint64Lit(math.MaxUint64 / pow(bytesDecimalUnitBase, exp)),
+			},
+		})
+	}
+	// The empty unit and a bare `b` both carry multiplier 1 (exponent 0).
+	multArgs = append(multArgs, uint64Lit(1))
+	thresholdArgs = append(thresholdArgs, uint64Lit(math.MaxUint64))
+
+	return &chplan.FuncCall{Fn: chplan.FnMultiIf, Args: multArgs},
+		&chplan.FuncCall{Fn: chplan.FnMultiIf, Args: thresholdArgs}
+}
+
+// pow raises base to exp using plain uint64 arithmetic. exp never
+// exceeds len(bytesUnitPrefixLetters) (6), so the largest result —
+// 1024^6 — fits UInt64 with no risk of Go-side overflow.
+func pow(base uint64, exp int) uint64 {
+	r := uint64(1)
+	for range exp {
+		r *= base
+	}
+	return r
+}
+
+// uint64PowLit is uint64Lit(pow(base, exp)).
+func uint64PowLit(base uint64, exp int) chplan.Expr {
+	return uint64Lit(pow(base, exp))
+}
+
+// uint64Lit is a UInt64 literal too large for LitInt's int64 field
+// (every threshold above 1<<63 is, including math.MaxUint64 itself):
+// the decimal digits as a string, parsed back to UInt64 by ClickHouse.
+func uint64Lit(v uint64) chplan.Expr {
+	return &chplan.FuncCall{
+		Fn:   chplan.FnToUInt64,
+		Args: []chplan.Expr{&chplan.LitString{V: strconv.FormatUint(v, 10)}},
 	}
 }
