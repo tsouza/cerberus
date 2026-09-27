@@ -438,7 +438,7 @@ func lowerSubqueryIdentityMathReorder(
 // The window stamps TimeUnix with the evaluation anchor. Date-component
 // functions read Value, so this preserves their input. timestamp(selector)
 // instead needs the original sample time and is routed through the
-// per-anchor selector lowering by lowerSubqueryOverInstantTransform.
+// per-anchor selector lowering by lowerSubqueryOverCall.
 //
 // matched is false for a call shape this reorder doesn't cover — its
 // value argument is not vs at all, or its function isn't a
@@ -747,12 +747,6 @@ func lowerSubqueryOverInstantTransform(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	// Identity windows stamp the selected row with the evaluation anchor.
-	// timestamp(selector) needs the selected sample's original timestamp,
-	// which the per-anchor selector lowering carries in its own column.
-	if call.Func.Name == timestampFunctionName {
-		return lowerSubqueryOverInstantCall(sub, call, step, s, ctx)
-	}
 	if vs, ok := call.Args[0].(*parser.VectorSelector); ok {
 		if plan, matched, err := lowerSubqueryIdentityMathReorder(sub, call, vs, step, s, ctx); matched {
 			return plan, err
@@ -2141,11 +2135,12 @@ var instantTransformFns = map[string]struct{}{
 	// models `info(m)[5m:1m]` exactly as it models `label_replace(m,…)[5m:1m]`.
 	"info": {},
 
-	// Date components and `timestamp`, in their ONE-ARGUMENT form only.
-	// `year(v)` maps the row's Value (or, for `timestamp`, the row's own
-	// TimeUnix) to a float; the zero-arg forms synthesise an
+	// Date components, in their ONE-ARGUMENT form only.
+	// `year(v)` maps the row's Value to a float; the zero-arg forms synthesise an
 	// anchor-stamped row instead and are rejected by the arity half of
-	// [isInstantTransformCall].
+	// [isInstantTransformCall]. timestamp is evaluated through the grid
+	// lowering: the identity window stamps TimeUnix with its anchor and
+	// cannot preserve the original sample time that timestamp(selector) reads.
 	"year":                {},
 	"month":               {},
 	"day_of_month":        {},
@@ -2154,7 +2149,6 @@ var instantTransformFns = map[string]struct{}{
 	"days_in_month":       {},
 	"hour":                {},
 	"minute":              {},
-	timestampFunctionName: {},
 
 	// Sorting: reference discards the ordering when it folds each
 	// anchor's instant result into the subquery's matrix, so these are
