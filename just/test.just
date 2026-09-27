@@ -515,10 +515,16 @@ query-log-integration:
 # CPU and memory limits. Requires Docker; gated behind the `integration` build
 # tag. See test/chserver/doc.go and .github/workflows/strict-scan.yml.
 
+# 25m (was 20m until cerberus#3751): array_fold's maxSize grew from 700,000
+# to 1,100,000 to restore its cancellation-timing margin on
+# ubicloud-standard-8 (see cancellation_integration_test.go's own doc on
+# minRemaining/maxSize), which costs real wall-clock time across all 14
+# pinned builds. 5m of headroom over the ~1.57x size increase.
+
 # Run the condition-cache and cancellation probes across pinned ClickHouse builds. Needs Docker.
 ch-server-safety-integration:
     @just _pull-retry {{CH_SERVER_SAFETY_IMAGES}} {{CH_HISTOGRAM_REPORT_IMAGE}}
-    go test -timeout 20m -tags=integration -count=1 ./test/chserver/...
+    go test -timeout 25m -tags=integration -count=1 ./test/chserver/...
 
 # Run the strict-scan differential: execute the matrix-shaped spec golden
 # SQL corpus against a REAL ClickHouse (testcontainers-go) through the

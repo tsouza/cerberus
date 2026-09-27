@@ -529,11 +529,24 @@ jobs:
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
-    runs-on: ubuntu-latest
+    # cerberus#3751: this lane's array_fold cancellation-timing margin is a
+    # wall-clock race, which shared ubuntu-latest CPU contention pushed past
+    # threshold without any real behavior regression — #3749/#3737's
+    # recurring flake, escalated on PR #3758's own run to both pinned builds
+    # failing plus the whole binary blowing its 20-minute timeout. Moved to
+    # a dedicated ubicloud-standard-8 runner; a lower CPU throttle was tried
+    # and rejected here too (reproduces #3746's KILL QUERY starvation
+    # regardless of host contention — see cancelProbeNanoCPUs's own doc), so
+    # the actual fix raised array_fold's calibrated size and lowered
+    # minRemaining's floor instead (justified by this runner's lower
+    # scheduling jitter — see cancellation_integration_test.go).
+    runs-on: ubicloud-standard-8
     # Fourteen pinned ClickHouse images, thirteen condition-cache servers run
     # three at a time, and three cancellation servers whose probes calibrate
-    # each workload to about ten seconds of uncancelled work.
-    timeout-minutes: 25
+    # each workload to about ten seconds of uncancelled work. 30m (was 25m):
+    # array_fold's maxSize grew ~1.57x to restore its margin on this runner,
+    # matching just/test.just's ch-server-safety-integration timeout bump.
+    timeout-minutes: 30
     steps:
       - name: gate on the changes job
         if: needs.changes.result != 'success'
