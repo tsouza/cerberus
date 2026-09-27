@@ -496,7 +496,7 @@ services:
       GF_PLUGINS_PREINSTALL: >-
         grafana-exploretraces-app@2.1.0,
         grafana-lokiexplore-app@2.5.0,
-        grafana-metricsdrilldown-app@2.4.0,
+        grafana-metricsdrilldown-app@2.5.1,
         grafana-pyroscope-app@2.2.0
     volumes:
       - ./test/e2e/grafana/compose/datasources:/etc/grafana/provisioning/datasources:ro
