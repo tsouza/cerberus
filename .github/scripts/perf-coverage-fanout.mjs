@@ -235,7 +235,9 @@ async function main() {
 
     if (result.code !== 0) {
       error(`perf-coverage: ${leg.name} failed after ${elapsedSeconds}s`);
-      process.exit(result.code);
+      // An immediate exit discards the tail of the buffered child output.
+      process.exitCode = result.code;
+      return;
     }
     notice(`perf-coverage: ${leg.name} passed in ${elapsedSeconds}s`);
     return;
@@ -257,7 +259,8 @@ async function main() {
   const failed = results.filter((r) => r.code !== 0);
   if (failed.length > 0) {
     error(`perf-coverage: ${failed.length} of ${results.length} shard(s) failed after ${elapsedSeconds}s`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   notice(`perf-coverage: ${results.length} extra shard(s) passed in ${elapsedSeconds}s`);

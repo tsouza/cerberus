@@ -264,7 +264,9 @@ async function main() {
   const failed = results.filter((r) => !r.ok);
   if (failed.length > 0) {
     error(`go-test-fanout: ${failed.length} of ${results.length} process(es) failed after ${elapsedSeconds}s`);
-    process.exit(1);
+    // Let stdout drain: a failed process can have megabytes of diagnostics.
+    process.exitCode = 1;
+    return;
   }
   notice(`go-test-fanout: ${results.length} process(es) passed in ${elapsedSeconds}s`);
 }
