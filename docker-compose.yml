@@ -443,7 +443,7 @@ services:
       start_period: 5s
 
   grafana:
-    image: ghcr.io/tsouza/cerberus@sha256:b2e2491881cec9ac14439bb8211bcac68a39494e6f9b361db53efbd9b20de987
+    image: ghcr.io/tsouza/cerberus@sha256:37306fa251ae7e82d71b9179907782c30d9321c5a601c18dd1ac00362a79654e
     networks: [cerberus-dev]
     environment:
       GF_SECURITY_ADMIN_USER: admin

@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { main, filterCoverpkgLine } from './coverage-chdb.mjs';
+import { RATCHET_FANOUT } from './perf-coverage-fanout.mjs';
 
 test('filterCoverpkgLine rewrites only the -coverpkg echo tail, leaving everything else untouched', () => {
   assert.equal(
@@ -218,12 +219,13 @@ test('SKIP_RATCHET_FANOUT unset: the real fan-out runs and produces the extra sh
       env: floorlessEnv({ CHDB_INSTALL_PATH: libchdb, CERBERUS_RAPID_SEED: '20260903', GO: go }),
     });
     assert.equal(status, 0);
-    // RATCHET_FANOUT=3: the main sweep above covers shard 1, this fan-out
-    // covers shards 2 and 3 — proving main() really invoked
+    // The main sweep above covers shard 1; this fan-out covers all
+    // remaining shards — proving main() really invoked
     // perf-coverage-fanout.mjs (with GO/TAGS/COVERPKG wired through), not
     // just logged that it would.
-    assert.equal(readFileSync(join(dir, 'cover-chdb-ratchet-2.out'), 'utf8'), 'mode: set\n');
-    assert.equal(readFileSync(join(dir, 'cover-chdb-ratchet-3.out'), 'utf8'), 'mode: set\n');
+    for (let shard = 2; shard <= RATCHET_FANOUT; shard++) {
+      assert.equal(readFileSync(join(dir, `cover-chdb-ratchet-${shard}.out`), 'utf8'), 'mode: set\n');
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

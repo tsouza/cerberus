@@ -33,13 +33,13 @@
 // Two modes
 // ---------
 // Local (no LEG_INDEX — `just coverage` / `just coverage-chdb` outside CI):
-// runs every remaining shard (2..RATCHET_FANOUT) CONCURRENTLY as sibling
+// runs every remaining shard (2..RATCHET_FANOUT) in bounded pairs of sibling
 // PROCESSES on whichever single machine is available, the same technique
 // property-fanout.mjs already established for the identical problem shape
 // in test/property. A bare local run has no separate-job substrate to hand
 // shards to, so this stays the only option there.
 //
-// CI matrix (LEG_INDEX=2|3 — tsouza/cerberus#2645's `coverage-chdb-ratchet`
+// CI matrix (LEG_INDEX=2..9 — tsouza/cerberus#2645's `coverage-chdb-ratchet`
 // job in coverage.yml): runs exactly the ONE shard LEG_INDEX names and exits
 // with its code, nothing concurrent. Each matrix leg is its own runner, so
 // two shards never contend for one runner's cores — the oversubscription
@@ -113,40 +113,19 @@ export const RATCHET_RUN_PATTERN = `^${RATCHET_TEST}$`;
  * Justfile's main `./...` sweep (see its own comment); this script runs
  * shards 2..RATCHET_FANOUT.
  *
- * A GitHub-hosted `ubuntu-latest` runner has 4 cores, and chDB threads WITHIN
- * a single query too (the same effect chdb-roundtrip.mjs's FANOUT and
- * property-fanout.mjs's HISTOGRAM_FANOUT both name), so process-count
- * fan-out oversubscribes before it reaches the core count. This script's
- * legs run only AFTER the main sweep has already finished (they do not
- * compete with it for cores), so RATCHET_FANOUT - 1 = 2 concurrent
- * processes here, matching the same conservative 3-way split
- * chdb-roundtrip.mjs's promql FANOUT and property-fanout.mjs's
- * HISTOGRAM_FANOUT already use for this runner shape.
+ * Three-way coverage shards exceeded the 45-minute execution budget. Nine
+ * shards split each previous shard into three disjoint pieces under the same
+ * FNV partition: old shard 2 becomes shards 2, 5, and 8. No fixture is omitted.
+ * Shard count is independent of local concurrency: at most two extra shards
+ * run together, preserving the original local process budget.
  */
-export const RATCHET_FANOUT = 3;
+export const RATCHET_FANOUT = 9;
+export const RATCHET_LOCAL_CONCURRENCY = 2;
 
 /**
- * Per-leg `go test -timeout`, in minutes.
- *
- * Covers one shard (1/RATCHET_FANOUT of the corpus). Measured locally
- * (nothing else chdb-tagged running concurrently, per the perf-chdb
- * recipe's own caveat about untrustworthy contended timings): shard 1/3
- * of the corpus took 979s (~16.3 minutes). 30 minutes leaves ~1.8x margin
- * over that measurement for a busier or smaller-core CI runner — chdb.yml's
- * own perf-guards-shard job independently confirms an 8-way shard of the
- * SAME test completes in low single-digit minutes of actual test time on
- * real CI hardware, so a 3-way shard landing well inside 30 minutes is the
- * conservative case, not the risky one. In CI matrix mode (LEG_INDEX set)
- * this is the ONLY per-process timeout coverage.yml's `coverage-chdb-ratchet`
- * job's own `timeout-minutes` has to leave room for — go_test_timeout_budget_
- * test.go's static scanner cannot see inside this script's own spawned `go
- * test` (it only walks Justfile recipes a workflow's `run:` invokes via
- * `just`, and this job calls the node script directly), so
- * perf-coverage-fanout.test.mjs is what pins this number against that job's
- * `timeout-minutes` with the same 3-minute abort-reporting margin
- * go_test_timeout_budget_test.go holds every OTHER `go test` in this repo
- * to, so Go's own alarm — which dumps every goroutine's stack — always
- * fires before the runner takes the container away.
+ * Per-leg execution budget, unchanged from the reproduced three-way timeout.
+ * CI's outer job deadline also includes compilation and setup. The unit suite
+ * pins the abort-reporting margin so Go can emit its own timeout diagnostics.
  */
 export const RATCHET_TIMEOUT_MINUTES = 45;
 
@@ -249,7 +228,7 @@ async function main() {
   );
 
   const started = Date.now();
-  const results = await Promise.all(legs.map(runLegBuffered));
+  const results = await runLocalLegs(legs);
   const elapsedSeconds = Math.round((Date.now() - started) / 1000);
 
   for (const r of results) {
@@ -264,6 +243,15 @@ async function main() {
   }
 
   notice(`perf-coverage: ${results.length} extra shard(s) passed in ${elapsedSeconds}s`);
+}
+
+// Keep local execution bounded even when the corpus needs more shards.
+export async function runLocalLegs(legs, runLeg = runLegBuffered) {
+  const results = [];
+  for (let offset = 0; offset < legs.length; offset += RATCHET_LOCAL_CONCURRENCY) {
+    results.push(...await Promise.all(legs.slice(offset, offset + RATCHET_LOCAL_CONCURRENCY).map(runLeg)));
+  }
+  return results;
 }
 
 // Import-safe: the tests import legCommands without running a leg.

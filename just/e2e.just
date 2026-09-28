@@ -38,7 +38,7 @@ CERBERUS_BUILD_TAGS := env_var_or_default("CERBERUS_BUILD_TAGS", "")
 # because the convention it replaces had already failed silently: #1263 moved the
 # k3d ClickHouse to 26.6-alpine and left this line on 26.5-alpine, so for ten days
 # the one image the pre-pull was written for was the one it did not cover (#1461).
-E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.6-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 ghcr.io/tsouza/cerberus@sha256:b2e2491881cec9ac14439bb8211bcac68a39494e6f9b361db53efbd9b20de987 otel/opentelemetry-collector-contrib:0.152.1 busybox:1.37"
+E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.6-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 ghcr.io/tsouza/cerberus@sha256:37306fa251ae7e82d71b9179907782c30d9321c5a601c18dd1ac00362a79654e otel/opentelemetry-collector-contrib:0.152.1 busybox:1.37"
 
 # Extra images the bundled-ClickHouse ("bwc") object-storage lane needs on top
 # of E2E_EXTERNAL_IMAGES: the MinIO object store + its `mc` client (the

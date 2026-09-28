@@ -20,10 +20,30 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { RATCHET_TEST, RATCHET_RUN_PATTERN, RATCHET_FANOUT, RATCHET_TIMEOUT_MINUTES, legCommands, selectLeg } from './perf-coverage-fanout.mjs';
+import { RATCHET_TEST, RATCHET_RUN_PATTERN, RATCHET_FANOUT, RATCHET_TIMEOUT_MINUTES, RATCHET_LOCAL_CONCURRENCY, runLocalLegs, legCommands, selectLeg } from './perf-coverage-fanout.mjs';
 import { CHDB_TAGS, mainSweepArgv } from './coverage-chdb.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+test('local fanout executes every shard once without increasing concurrent process count', async () => {
+  let active = 0;
+  let peak = 0;
+  const legs = legCommands({ tags: 'chdb', coverpkg: 'example.test/package' });
+  const seen = [];
+  const results = await runLocalLegs(legs, async (leg) => {
+    active++;
+    peak = Math.max(peak, active);
+    seen.push(leg.name);
+    await new Promise((resolve) => setImmediate(resolve));
+    active--;
+    return { leg, code: leg === legs[0] ? 1 : 0, out: '' };
+  });
+  assert.equal(peak, RATCHET_LOCAL_CONCURRENCY);
+  assert.equal(RATCHET_LOCAL_CONCURRENCY, 2);
+  assert.deepEqual(seen, legs.map((leg) => leg.name));
+  assert.equal(results.length, legs.length);
+  assert.equal(results[0].code, 1, 'a failed shard must remain failed while all other shards execute');
+});
 const coverageWorkflow = readFileSync(path.join(here, '..', 'workflows', 'coverage.yml'), 'utf8');
 const TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle';
 const COVERPKG = 'github.com/tsouza/cerberus/internal/promql,github.com/tsouza/cerberus/test/perf';
