@@ -102,3 +102,20 @@ export function runLegBuffered(leg) {
     child.on('close', (code) => resolve({ leg, code: code ?? 1, out }));
   });
 }
+
+// Each child receives its runtime budget only when a worker starts it.
+// Nonzero results do not stop the queue; retain every result in input order.
+export async function runLegsBounded(legs, concurrency, runLeg = runLegBuffered) {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new RangeError('leg concurrency must be a positive integer');
+  }
+  const results = new Array(legs.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, legs.length) }, async () => {
+    while (next < legs.length) {
+      const index = next++;
+      results[index] = await runLeg(legs[index]);
+    }
+  }));
+  return results;
+}

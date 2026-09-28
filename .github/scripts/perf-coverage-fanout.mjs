@@ -92,7 +92,7 @@
 //              Required.
 //   LEG_INDEX  CI matrix mode: an integer in [2, RATCHET_FANOUT] selecting
 //              the ONE shard to run on this runner. Unset (the default):
-//              local mode, every remaining shard concurrently. Optional.
+//              local mode, every remaining shard in a bounded worker pool. Optional.
 //   GO         go executable; default `go`. Test seam.
 //
 // Exit: 0 when every shard this invocation is responsible for passes; 1 on
@@ -102,7 +102,7 @@
 
 import process from 'node:process';
 import { error, notice, log, group } from './lib/gh.mjs';
-import { runLegBuffered } from './lib/spawn-tagged.mjs';
+import { runLegBuffered, runLegsBounded } from './lib/spawn-tagged.mjs';
 
 /** The corpus-wide ratchet this lane fans out. */
 export const RATCHET_TEST = 'TestCardinalityRatchet';
@@ -246,12 +246,8 @@ async function main() {
 }
 
 // Keep local execution bounded even when the corpus needs more shards.
-export async function runLocalLegs(legs, runLeg = runLegBuffered) {
-  const results = [];
-  for (let offset = 0; offset < legs.length; offset += RATCHET_LOCAL_CONCURRENCY) {
-    results.push(...await Promise.all(legs.slice(offset, offset + RATCHET_LOCAL_CONCURRENCY).map(runLeg)));
-  }
-  return results;
+export function runLocalLegs(legs, runLeg = runLegBuffered) {
+  return runLegsBounded(legs, RATCHET_LOCAL_CONCURRENCY, runLeg);
 }
 
 // Import-safe: the tests import legCommands without running a leg.

@@ -11,7 +11,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,6 +26,10 @@ import {
   HISTOGRAM_TIMEOUT_MINUTES,
   ROSTER_TIMEOUT_MINUTES,
   REST_TIMEOUT_MINUTES,
+  ISOLATED_SWEEPS,
+  REST_SKIP_PATTERN,
+  PROPERTY_CONCURRENCY,
+  runPropertyLegs,
   splitRapidChecks,
   legCommands,
   findTruncatedRapidRuns,
@@ -34,6 +38,27 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const workflow = readFileSync(path.join(here, '..', 'workflows', 'property.yml'), 'utf8');
 const TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle';
+
+test('property workers bound native processes and retain every result after a failure', async () => {
+  const legs = legCommands({ tags: TAGS });
+  let active = 0;
+  let peak = 0;
+  const started = [];
+  const results = await runPropertyLegs(legs, async (leg) => {
+    active++;
+    peak = Math.max(peak, active);
+    started.push(leg);
+    await new Promise((resolve) => setImmediate(resolve));
+    active--;
+    return { leg, code: leg === legs[0] ? 1 : 0, out: leg.name };
+  });
+  assert.equal(peak, PROPERTY_CONCURRENCY);
+  assert.equal(active, 0);
+  assert.deepEqual(started, legs);
+  assert.deepEqual(results.map((result) => result.leg), legs);
+  assert.equal(results[0].code, 1);
+  assert.equal(results.at(-1).code, 0);
+});
 
 /** The `timeout-minutes:` of the property job, read out of property.yml. */
 function propertyJobTimeoutMinutes() {
@@ -59,9 +84,9 @@ function restLeg(opts = {}) {
   return legs[legs.length - 1];
 }
 
-test('legCommands returns HISTOGRAM_FANOUT sweep shares, one roster leg, and one rest leg', () => {
+test('legCommands returns histogram shares, roster, isolated sweeps, and rest', () => {
   const legs = legCommands({ tags: TAGS });
-  assert.equal(legs.length, HISTOGRAM_FANOUT + 2);
+  assert.equal(legs.length, HISTOGRAM_FANOUT + ISOLATED_SWEEPS.length + 2);
   assert.equal(legs[HISTOGRAM_FANOUT].name, 'histogram-roster');
   assert.equal(legs[legs.length - 1].name, 'rest');
 });
@@ -84,6 +109,17 @@ test('every per-process timeout stays strictly below the job cap', () => {
   ]) {
     assert.ok(minutes < jobCap, `${name} leg -timeout=${minutes}m must be < the property job's timeout-minutes: ${jobCap}`);
   }
+});
+
+test('the bounded queue leaves setup time below the workflow deadline', () => {
+  // In the slowest schedule the histogram shares keep their workers while
+  // one remaining worker drains every other leg. Earlier histogram exits
+  // only add workers to that queue.
+  assert.ok(PROPERTY_CONCURRENCY > HISTOGRAM_FANOUT);
+  const queuedRuntime = ROSTER_TIMEOUT_MINUTES + (ISOLATED_SWEEPS.length + 1) * REST_TIMEOUT_MINUTES;
+  const runtimeBound = Math.max(HISTOGRAM_TIMEOUT_MINUTES, queuedRuntime);
+  const minimumSetupMinutes = 5;
+  assert.ok(runtimeBound + minimumSetupMinutes <= propertyJobTimeoutMinutes());
 });
 
 test('HISTOGRAM_RUN_PATTERN matches exactly HISTOGRAM_TESTS at the top level', () => {
@@ -128,12 +164,44 @@ test('every histogram-touching leg runs ONLY test/property, not its subpackages'
   }
 });
 
-test('the rest leg sweeps every property package and skips exactly the histogram tests', () => {
+test('the rest leg sweeps every property package and excludes exactly the separately assigned tests', () => {
   const rest = restLeg();
   assert.ok(rest.argv.includes('./test/property/...'), 'must sweep every property package');
   const skipIndex = rest.argv.indexOf('-skip');
   assert.ok(skipIndex >= 0, 'must exclude the histogram tests with -skip');
-  assert.equal(rest.argv[skipIndex + 1], HISTOGRAM_RUN_PATTERN);
+  assert.equal(rest.argv[skipIndex + 1], REST_SKIP_PATTERN);
+});
+
+test('every actual top-level property test has exactly one owner except the partitioned histogram sweep', () => {
+  const directory = path.join(here, '../../test/property');
+  const names = readdirSync(directory)
+    .filter((file) => file.endsWith('_test.go'))
+    .flatMap((file) => [...readFileSync(path.join(directory, file), 'utf8').matchAll(/^func (Test\w+)\(\w+ \*testing\.T\)/gm)].map((match) => match[1]));
+  for (const name of ISOLATED_SWEEPS) assert.ok(names.includes(name), `${name}: isolated test must exist`);
+  assert.ok(names.length > ISOLATED_SWEEPS.length + HISTOGRAM_TESTS.length);
+  const legs = legCommands({ tags: TAGS });
+  for (const name of names) {
+    const owners = legs.filter(({ argv }) => {
+      const run = argv.indexOf('-run');
+      const skip = argv.indexOf('-skip');
+      return (run < 0 || new RegExp(argv[run + 1]).test(name)) &&
+        (skip < 0 || !new RegExp(argv[skip + 1]).test(name));
+    });
+    assert.equal(owners.length, name === HISTOGRAM_SWEEP_TEST ? HISTOGRAM_FANOUT : 1, `${name}: incorrect ownership`);
+  }
+});
+
+test('isolated sweeps retain full rapid depth and their ten-minute execution budget', () => {
+  const legs = legCommands({ tags: TAGS, rapidChecks: '500' });
+  for (const name of ISOLATED_SWEEPS) {
+    const leg = legs.find((candidate) => candidate.name === name);
+    assert.ok(leg, `${name}: missing leg`);
+    assert.equal(leg.expectRapidChecks, 500);
+    assert.ok(leg.argv.includes('-rapid.checks=500'));
+    assert.ok(leg.argv.includes(`-timeout=${REST_TIMEOUT_MINUTES}m`));
+    assert.ok(leg.argv.includes('./test/property'));
+    assert.equal(leg.argv[leg.argv.indexOf('-run') + 1], `^${name}$`);
+  }
 });
 
 test('splitRapidChecks sums back to the total and stays within +/-1 per share', () => {
@@ -219,4 +287,3 @@ test('findTruncatedRapidRuns: passing MORE than expected (should not happen, but
   const out = '[rapid] OK, passed 501 tests (10s)';
   assert.deepEqual(findTruncatedRapidRuns(out, 500), []);
 });
-
