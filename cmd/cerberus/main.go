@@ -2024,7 +2024,7 @@ func setupSchema(
 		return ready.Load
 	}
 
-	// Pick the connection the DDL runs over. When cerberus creates the
+	// Pick the client for both capability probes and DDL. When cerberus creates the
 	// database, the CREATE DATABASE must run from a session whose default
 	// database EXISTS — and the configured database may not yet — so it goes
 	// over a bootstrap connection bound to ClickHouse's always-present
@@ -2032,7 +2032,7 @@ func setupSchema(
 	// from there too). When the database is externally managed
 	// (CERBERUS_AUTO_CREATE_DATABASE=false) the table creates run over the
 	// normal target-bound connection and the CREATE DATABASE is skipped.
-	applyConn := client.Conn()
+	applyClient := client
 	cleanup := func() {} // no-op unless a bootstrap client is opened
 	applyCfg.SkipDatabaseCreate = !autoCreateDatabase
 	if autoCreateDatabase {
@@ -2044,7 +2044,7 @@ func setupSchema(
 			// (the apply will surface the real error via the retry + /readyz).
 			logger.Warn("could not open bootstrap connection for database create; using the configured connection", "err", err)
 		} else {
-			applyConn = bootClient.Conn()
+			applyClient = bootClient
 			cleanup = func() { _ = bootClient.Close() }
 		}
 	}
@@ -2073,7 +2073,7 @@ func setupSchema(
 			// The tier's views skip stale-marker rows under the same
 			// condition the read path recognises them: probed before this
 			// apply provisions any absent table (with the column).
-			established, err := preflight.StaleMarkerFlagsEstablishable(ctx, client, cfg.Database, metrics)
+			established, err := preflight.StaleMarkerFlagsEstablishable(ctx, applyClient, cfg.Database, metrics)
 			if err != nil {
 				return err
 			}
@@ -2081,7 +2081,7 @@ func setupSchema(
 				cfg.DownsampleTierFlagsColumn = metrics.FlagsColumn
 			}
 		}
-		return ddl.ApplyWithConfig(ctx, applyConn, cfg, ddl.All)
+		return ddl.ApplyWithConfig(ctx, applyClient.Conn(), cfg, ddl.All)
 	}
 	if err := apply(ctx); err != nil {
 		logger.Warn(
