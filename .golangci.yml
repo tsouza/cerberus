@@ -101,7 +101,7 @@ run:
   # passed at 3m07s on retry) hit the OLD 5m cap at 5m05s on pure runner
   # contention (issue #2388), which set the previous 10m value.
   #
-  # The `cerberus-heavy` self-hosted pool (#3677) is real, measurably slower
+  # The previous `cerberus-heavy` self-hosted pool (#3677) was measurably slower
   # hardware for this specific workload — a real, scheduler-guaranteed 1 CPU
   # per pod against a burst ceiling of 3, not a fixed multi-core GitHub-hosted
   # box — and the tagged pass completed clean (0 issues) at 11m24s on PR
@@ -109,7 +109,8 @@ run:
   # that measurement as margin, comfortably past ordinary self-hosted
   # contention while still catching an actual runaway; the outer job timeout
   # (.github/workflows/ci.yml) scales with this value — see that file's
-  # comment.
+  # comment. Lint now runs on a hosted runner after the tagged analysis
+  # exceeded this deadline on the shared node; the deadline remains intact.
   timeout: 18m
 
   # golangci-lint analyses ONE build configuration per invocation, so a run

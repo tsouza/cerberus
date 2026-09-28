@@ -14,7 +14,7 @@ import (
 )
 
 // The `cerberus-heavy` self-hosted runner pool carries the required PR jobs
-// `lint`, `check-test` and `check-build` (and, through them, the `check`
+// `check-test` and `check-build` (and, through them, the `check`
 // rollup). Any other job routed to the pool competes with them for the same
 // runners. When those other jobs can fill every runner at once, a single
 // push to main blocks every open pull request's merge gate until they drain.
@@ -42,7 +42,7 @@ const (
 // each must still be routed to the pool, so the reservation cannot silently
 // protect jobs that have moved elsewhere.
 var requiredHeavyJobs = map[string][]string{
-	"ci.yml": {"check-build", "check-test", "lint"},
+	"ci.yml": {"check-build", "check-test"},
 }
 
 type poolWorkflow struct {

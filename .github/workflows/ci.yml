@@ -232,17 +232,10 @@ jobs:
   #   - Markdown (markdownlint-cli2)
   lint:
     name: lint
-    # `cerberus-heavy`, a runner pool dedicated to this job plus check-test
-    # and check-build (#3677): on PR #3656's first run under real parallel
-    # load on the single shared `cerberus` pool, golangci-lint's own
-    # internal analysis timeout fired (`Timeout exceeded: try increasing
-    # it by passing --timeout option`) after ~15 minutes on a job that
-    # normally settles in a couple — every runner Deployment sharing the
-    # ../cirunners node could burst to its own `limits.cpu` simultaneously,
-    # well past the node's real core count. The dedicated pool gives each
-    # of the three a real, scheduler-enforced CPU floor instead of
-    # whatever the shared pool's contention left over.
-    runs-on: [self-hosted, cerberus-heavy]
+    # Cold tagged analysis exceeded its 18-minute deadline on the shared
+    # self-hosted node. Keep the analysis bound and give this gate the fixed
+    # CPU allocation of a hosted runner, independent of coverage fan-out.
+    runs-on: ubuntu-latest
     # Undeclared here defaults to GitHub's 360-minute cap, which is no bound
     # at all and would silently become the tighter constraint once the two
     # golangci-lint steps' own `run.timeout` (.golangci.yml) grew a real
