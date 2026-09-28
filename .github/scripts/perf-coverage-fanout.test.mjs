@@ -181,6 +181,7 @@ test('coverage-chdb.mjs main sweep carries PERF_SHARD_INDEX=1 and a PERF_SHARD_C
   );
 
   const argv = mainSweepArgv(COVERPKG);
+  assert.ok(argv.includes('-count=1'), 'coverage must execute against current source coordinates, not cached metadata');
   assert.equal(argv[argv.indexOf('-tags') + 1], CHDB_TAGS, 'main sweep: missing composite tag set');
   assert.equal(argv[argv.indexOf('-coverprofile') + 1], 'cover-chdb.out', 'main sweep: missing -coverprofile=cover-chdb.out');
   assert.ok(argv.includes('./...'), 'main sweep: must target the whole tree');

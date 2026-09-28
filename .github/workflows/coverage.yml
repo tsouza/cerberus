@@ -302,9 +302,8 @@ jobs:
     # Coverage moved off the light pool after long instrumented jobs starved
     # trivial PR checks for 20+ minutes (#3677). The heavy pool has three
     # runners and also carries required check-test and check-build jobs.
-    # Default-tag coverage and the serial coverage-chdb matrix use at most
-    # two of the three heavy runners, leaving one for required PR checks.
-    # The additional ratchet shards run on independent hosted runners.
+    # Default-tag coverage uses one heavy runner, leaving two for required
+    # PR checks. All chDB partitions use independent hosted runners.
     # test/regression/runner_pool_reservation_test.go enforces the reservation.
     runs-on: [self-hosted, cerberus-heavy]
     # `just coverage-default`'s own `go test` is capped at `-timeout 40m`
@@ -339,12 +338,12 @@ jobs:
     name: coverage-chdb (${{ matrix.shard }})
     needs: coverage-plan
     if: needs.coverage-plan.outputs.run_heavy == 'true'
-    # `cerberus-heavy`, not the light pool — see coverage-default's comment.
-    runs-on: [self-hosted, cerberus-heavy]
+    # One complete instrumented partition per independent hosted runner.
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # One heavy runner for this lane — see coverage-default's comment.
-      max-parallel: 1
+      # Four independent VMs preserve capacity for required PR checks.
+      max-parallel: 4
       matrix:
         shard: [1, 2, 3, 4]
     # Four disjoint groups split serial and parallel top-level tests, not just

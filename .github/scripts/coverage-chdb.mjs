@@ -98,6 +98,8 @@ const FANOUT_SCRIPT = new URL('./perf-coverage-fanout.mjs', import.meta.url);
 export function mainSweepArgv(coverpkg, plan = null) {
   return [
     'test',
+    // Cached -coverpkg metadata can retain zero-count blocks from older source.
+    '-count=1',
     '-timeout', `${MAIN_SWEEP_TIMEOUT_MINUTES}m`,
     '-tags', CHDB_TAGS,
     '-coverpkg', coverpkg,
