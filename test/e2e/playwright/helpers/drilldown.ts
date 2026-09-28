@@ -23,17 +23,14 @@
  * cerberus does not ship profiling.
  *
  * The drilldown-app surface churns hard on every Grafana upgrade —
- * pin the Grafana version (currently `grafana/grafana:12.2.9`, see
+ * pin the Grafana version (currently the maintained Grafana 12.2.9 image, see
  * helpers/README.md) and re-audit the click paths in the same PR
  * when bumping.
  *
- * IMPORTANT: the three apps are also NOT pinned to a Grafana version
- * on their own. They're grafana.com-hosted plugins the core image
- * downloads asynchronously at boot (see `waitForAppInstalled` above),
- * and every fresh container pulls whatever the CURRENT published
- * version is — independent of the pinned core Grafana tag. Selectors
- * here can therefore drift even with zero changes to
- * `docker-compose.yml` / the k3d Grafana manifest. This bit cerberus
+ * Plugin versions are fixed in the maintained image and runtime downloads
+ * are disabled. The former upstream-image setup downloaded apps at boot,
+ * allowing selectors to drift independently of the Grafana core version.
+ * This bit cerberus
  * for real: `EXPECTED_DRILL_DEPTH` (#1502 / #1661) went from
  * annotation-only to a hard gate and immediately failed on the very
  * next push-to-main run, purely from app auto-updates

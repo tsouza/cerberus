@@ -31,6 +31,8 @@ jobs:
       GRAFANA_OUTPUT_IMAGE: ghcr.io/tsouza/cerberus:grafana-${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Log in to GHCR
         env:
           REGISTRY: ghcr.io

@@ -35,3 +35,11 @@ To rebuild from the distributed source, extract the archive, apply the patch, wr
 source commit into `src/version.ts`, then use the package manager pinned in `package.json`
 to install with `--frozen-lockfile` and run
 `pnpm exec rspack build -c ./rspack.config.ts --env production`.
+
+Grafana's upstream image downloads its first-party plugins at startup. Those
+versions can change independently of the Grafana image tag, changing routes,
+tabs, and picker options covered by the browser crawl. Its preinstall list also
+merges with configured entries, so pinning only some entries leaves others free
+to update. Installing all four plugins in the maintained image fixes their
+versions and removes the startup download race after `/api/health` becomes ready.
+Plugin version changes require reviewing the browser surface inventory.

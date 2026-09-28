@@ -2377,10 +2377,6 @@
   ],
   "non_lane_workflows": [
     {
-      "workflow": ".github/workflows/grafana-image.yml",
-      "reason": "publication"
-    },
-    {
       "workflow": ".github/workflows/auto-merge-deps.yml",
       "reason": "automation"
     },
@@ -2388,6 +2384,11 @@
       "workflow": ".github/workflows/dependabot-tidy-nested-modules.yml",
       "reason": "dependency_maintenance"
     },
+    {
+      "workflow": ".github/workflows/grafana-image.yml",
+      "reason": "publication"
+    },
+
     { "workflow": ".github/workflows/issue-label.yml", "reason": "labeling" },
     {
       "workflow": ".github/workflows/mirror-images.yml",

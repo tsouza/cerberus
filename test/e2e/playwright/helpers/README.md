@@ -41,23 +41,20 @@ phase 1 will retire its bespoke `driveCerberusQLPartition` /
 
 ## Pinned Grafana version
 
-The compose stack pins `grafana/grafana:12.2.9` (see
-`docker-compose.yml`). The drilldown-app catalogue in `drilldown.ts`
-and the panel-schema flattening in `dashboard.ts` both assume the
+The compose and k3d stacks pin the maintained Grafana image by digest (see
+`deploy/grafana/README.md`). It contains Grafana 12.2.9 and fixed plugin builds.
+The drilldown-app catalogue in `drilldown.ts` and panel-schema flattening in
+`dashboard.ts` both assume the
 Grafana 12.x dashboard JSON shape:
 
 - Rows nest their contents under `panel.panels[]`.
 - Panel headers expose `data-testid="data-testid Panel header <title>"`.
 - Drilldown-app affordances expose stable `data-testid` prefixes
   (`data-testid metric-select`, `data-testid detected-label`, …).
-- Grafana 12.x preinstalls `grafana-metricsdrilldown-app`,
-  `grafana-lokiexplore-app`, and `grafana-exploretraces-app`
-  first-party (hardcoded in `pkg/setting/setting_plugins.go`). The
-  preinstall is an async boot-time download from grafana.com that
-  completes AFTER `/api/health` goes green (grafana/grafana#106871) —
-  specs synchronize on it via `waitForAppInstalled` (bounded 120s
-  poll) before hard-asserting install status. `grafana-pyroscope-app`
-  is NOT in the catalogue — cerberus ships no profiling backend.
+- The image contains Metrics, Logs, Traces, and Profiles Drilldown; runtime
+  preinstallation is disabled. Specs synchronize on plugin readiness via
+  `waitForAppInstalled` before hard-asserting install status. Profiles is not
+  in the catalogue because Cerberus ships no profiling backend.
 
 **Bumping Grafana requires updating the phase specs in the same PR**
 (resolved decision Q4, `~/.claude/plans/e2e-enhance.md` §9). The

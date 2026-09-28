@@ -31,7 +31,7 @@
  * posture buys a 24h buffer before a regression blocks a PR.
  *
  * Grafana version pinning: selectors and per-app root URLs are tied to
- * `grafana/grafana:12.2.9` (the tag pinned in `docker-compose.yml`).
+ * the maintained Grafana 12.2.9 image pinned by digest in `docker-compose.yml`.
  * When the compose stack bumps Grafana, this spec MUST be updated in
  * the same PR — see helpers/README.md "Pinned Grafana version" for
  * the upgrade checklist.
