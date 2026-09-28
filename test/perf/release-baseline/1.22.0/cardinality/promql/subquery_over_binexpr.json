@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/subquery_over_binexpr",
+  "fan_factor": 1.6666666666666667,
+  "scan_rows": 3,
+  "peak_intermediate": 5,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}

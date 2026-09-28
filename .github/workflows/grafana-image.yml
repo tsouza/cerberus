@@ -1,0 +1,53 @@
+name: grafana-image
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/grafana/**'
+      - '.github/scripts/grafana-plugin-build.mjs'
+      - '.github/workflows/grafana-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/grafana/**'
+      - '.github/scripts/grafana-plugin-build.mjs'
+      - '.github/workflows/grafana-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: grafana-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GRAFANA_OUTPUT_IMAGE: ghcr.io/tsouza/cerberus:grafana-${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Log in to GHCR
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
+        env:
+          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
+          USERNAME: tsouza
+          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
+          ON_TRANSPORT_FAULT: fail
+        run: node .github/scripts/registry-login.mjs
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+      - uses: ./.github/actions/setup-buildx
+      - name: Build and publish maintained Grafana image
+        run: node .github/scripts/build-with-registry-retry.mjs docker buildx build --platform linux/amd64,linux/arm64 --build-arg NODE_IMAGE --build-arg GRAFANA_BASE_IMAGE --file deploy/grafana/Dockerfile --tag "$GRAFANA_OUTPUT_IMAGE" --push .

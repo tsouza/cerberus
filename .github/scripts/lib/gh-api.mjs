@@ -29,6 +29,10 @@
 //                           A 204 resolves to null. `init` is passed to fetch
 //                           (method, body) with the headers merged in;
 //                           `fetchImpl` is injectable for tests.
+//                           GET/HEAD transport failures receive three attempts
+//                           with linear backoff. HTTP failures, aborts, malformed
+//                           requests, and writes are not retried. `waitImpl` is
+//                           injectable so retry tests do not sleep.
 //   withPage(url, page, perPage)
 //                           `url` with `per_page` and `page` appended.
 //   ghPaginate({ url, token, headers, what, pick, perPage, maxPages, fetchImpl })
@@ -40,6 +44,8 @@
 //                           set, a walk that never shortens throws rather
 //                           than returning a silent prefix.
 
+import { setTimeout as wait } from 'node:timers/promises';
+
 export const GITHUB_API_VERSION = '2022-11-28';
 export const DEFAULT_API_BASE = 'https://api.github.com';
 export const GITHUB_PER_PAGE = 100;
@@ -49,6 +55,8 @@ export const NOT_FOUND_NULL = 'null';
 export const NOT_FOUND_THROW = 'throw';
 
 const DEFAULT_ACCEPT = 'application/vnd.github+json';
+const readTransportAttempts = 3;
+const readTransportBackoffMs = 1000;
 
 export function ghHeaders(token, { accept = DEFAULT_ACCEPT, userAgent } = {}) {
   const headers = {
@@ -62,7 +70,7 @@ export function ghHeaders(token, { accept = DEFAULT_ACCEPT, userAgent } = {}) {
 
 export async function ghJSON(
   url,
-  { token, headers, what, notFound, init = {}, fetchImpl = globalThis.fetch } = {},
+  { token, headers, what, notFound, init = {}, fetchImpl = globalThis.fetch, waitImpl = wait } = {},
 ) {
   if (notFound !== NOT_FOUND_NULL && notFound !== NOT_FOUND_THROW) {
     throw new Error(
@@ -71,10 +79,27 @@ export async function ghJSON(
     );
   }
   const method = init.method ?? 'GET';
-  const res = await fetchImpl(url, {
+  const request = {
     ...init,
     headers: { ...(token ? ghHeaders(token) : {}), ...(headers ?? {}), ...(init.headers ?? {}) },
-  });
+  };
+  const isRead = ['GET', 'HEAD'].includes(method.toUpperCase());
+  let res;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      res = await fetchImpl(url, request);
+      break;
+    } catch (cause) {
+      // Fetch rejects with this TypeError on transport failures. AbortError,
+      // malformed requests, HTTP errors, and non-idempotent writes are not retried.
+      const transportFailure = cause instanceof TypeError && cause.message === 'fetch failed';
+      if (!isRead || !transportFailure || init.signal?.aborted) throw cause;
+      if (attempt === readTransportAttempts) {
+        throw new Error(`${what ?? method}: fetch failed after ${attempt} attempts for ${url}`, { cause });
+      }
+      await waitImpl(attempt * readTransportBackoffMs);
+    }
+  }
   if (res.status === HTTP_NOT_FOUND && notFound === NOT_FOUND_NULL) return null;
   if (!res.ok) {
     throw new Error(`${what ?? method}: HTTP ${res.status} ${res.statusText} for ${url}`);

@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/at_modifier_range_mode_collapse",
+  "fan_factor": 1,
+  "scan_rows": 11,
+  "peak_intermediate": 11,
+  "has_cross_join": true,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}

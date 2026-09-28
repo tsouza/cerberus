@@ -31,12 +31,14 @@ import (
 // files mirrored verbatim, carry that project's licence, and rewriting them
 // would be a lie rather than a fix. That is the same structural boundary
 // `forbid-skip`'s pathspecs already draw, not a tolerance list: nothing under
-// that prefix is ours to label.
+// that prefix is ours to label. Images bundling separately licensed components
+// declare those terms with AND; Apache-2.0 must remain an unconditional term.
 const wantImageLicense = `org.opencontainers.image.licenses="Apache-2.0"`
 
 var (
 	anyOCILabel  = regexp.MustCompile(`org\.opencontainers\.image\.[a-z]+`)
 	licenseLabel = regexp.MustCompile(`org\.opencontainers\.image\.licenses\s*=\s*"([^"]*)"`)
+	licenseTerm  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+-]*$`)
 )
 
 // dockerfilesAuthoredHere walks the tree for Dockerfiles this repo owns.
@@ -103,7 +105,7 @@ func TestEveryAuthoredImageDeclaresTheProjectLicense(t *testing.T) {
 			continue
 		}
 		for _, got := range m {
-			if got[1] != "Apache-2.0" {
+			if !requiresProjectImageLicense(got[1]) {
 				t.Errorf(
 					"%s labels the image licenses=%q, but this project is Apache-2.0 (see LICENSE). "+
 						"The label is a machine-readable redistribution claim, so a wrong value "+
@@ -116,5 +118,54 @@ func TestEveryAuthoredImageDeclaresTheProjectLicense(t *testing.T) {
 
 	if checked == 0 {
 		t.Fatal("no Dockerfile in the tree carries OCI image labels — the scan is broken, not the tree")
+	}
+}
+
+func requiresProjectImageLicense(expression string) bool {
+	// An OR would offer an alternative to the project's license. Conjunctions
+	// retain its requirements while also declaring bundled components' terms.
+	terms := strings.Fields(expression)
+	if len(terms)%2 == 0 {
+		return false
+	}
+	hasProjectLicense := false
+	for index, term := range terms {
+		if index%2 == 1 {
+			if term != "AND" {
+				return false
+			}
+			continue
+		}
+		if !licenseTerm.MatchString(term) || term == "AND" || term == "OR" || term == "WITH" {
+			return false
+		}
+		hasProjectLicense = hasProjectLicense || term == "Apache-2.0"
+	}
+	return hasProjectLicense
+}
+
+func TestImageLicenseKeepsProjectTermsUnconditional(t *testing.T) {
+	for _, tc := range []struct {
+		expression string
+		want       bool
+	}{
+		{"Apache-2.0", true},
+		{"Apache-2.0 AND AGPL-3.0-only", true},
+		{"AGPL-3.0-only AND Apache-2.0", true},
+		{"MIT", false},
+		{"AGPL-3.0-only", false},
+		{"Apache-2.0 OR MIT", false},
+		{"Apache-2.0 AND MIT\tOR\tBSD-2-Clause", false},
+		{"Apache-2.0\nOR\nMIT", false},
+		{"Apache-2.0\tAND\tAGPL-3.0-only", true},
+		{"Apache-2.0 AND", false},
+		{"Apache-2.0 AND AND", false},
+		{"", false},
+	} {
+		t.Run(tc.expression, func(t *testing.T) {
+			if got := requiresProjectImageLicense(tc.expression); got != tc.want {
+				t.Fatalf("requiresProjectImageLicense(%q) = %v, want %v", tc.expression, got, tc.want)
+			}
+		})
 	}
 }

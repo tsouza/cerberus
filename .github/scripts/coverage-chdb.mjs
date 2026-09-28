@@ -98,6 +98,8 @@ const FANOUT_SCRIPT = new URL('./perf-coverage-fanout.mjs', import.meta.url);
 export function mainSweepArgv(coverpkg, plan = null) {
   return [
     'test',
+    // Cached -coverpkg metadata can retain zero-count blocks from older source.
+    '-count=1',
     '-timeout', `${MAIN_SWEEP_TIMEOUT_MINUTES}m`,
     '-tags', CHDB_TAGS,
     '-coverpkg', coverpkg,
@@ -271,4 +273,4 @@ export async function main({ cwd = process.cwd(), env = process.env, go = env.GO
 // Import-safe: coverage-chdb.test.mjs and perf-coverage-fanout.test.mjs both
 // import mainSweepArgv()/CHDB_TAGS without triggering a real run.
 const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (invokedDirectly) process.exit(await main({ planOnly: process.argv.includes('--plan') }));
+if (invokedDirectly) process.exitCode = await main({ planOnly: process.argv.includes('--plan') });

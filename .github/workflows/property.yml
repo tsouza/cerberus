@@ -119,11 +119,13 @@ concurrency:
 jobs:
   property:
     name: property (PromQL + LogQL + TraceQL, rapid N=500)
-    runs-on: [self-hosted, cerberus]
-    # Must stay comfortably above HISTOGRAM_TIMEOUT_MINUTES in
-    # property-fanout.mjs (the slowest leg the job waits on) plus setup —
-    # see that constant's comment for the real measured per-check cost this
-    # is derived from, and why 30 was too tight in practice.
+    # The native chDB test fanout exceeds the generic runner's 2 GiB
+    # memory budget. Keep their iteration counts and deadlines on a hosted VM.
+    runs-on: ubuntu-latest
+    # Four workers give the three histogram shares their own slots while the
+    # remaining slot can drain roster + isolated sweeps + rest in at most
+    # 35 minutes of test runtime. This cap also reserves five minutes for
+    # setup/compilation; property-fanout.test.mjs checks the queue budget.
     timeout-minutes: 40
     # RUN_HEAVY gates the real work: true on push / schedule / dispatch (unless
     # a resolved source PR proves this push redundant — see the `decide
@@ -196,8 +198,8 @@ jobs:
         # behind the rest of the package's tests in one binary, which is
         # what pushed the combined run past the timeout on every push since.
         # The script splits the histogram sweep's -rapid.checks across
-        # several concurrent processes, runs the deterministic histogram
-        # roster in its own process, and runs everything else in a fourth —
+        # several concurrent processes, isolates the two long non-histogram
+        # sweeps and deterministic histogram roster, and runs the rest separately —
         # which removes the serial stacking without touching product code
         # or dropping a single test. It also cross-checks every rapid-based
         # leg's log for a real, measured hazard: pgregory.net/rapid derives

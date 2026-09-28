@@ -54,8 +54,9 @@
 //   build-failed          the mutated overlay compiles to nothing: go test's
 //                         own `[build failed]` signature, distinct from a
 //                         real assertion failure.
-//   timeout                the detector did not finish inside its declared
-//                         timeout_seconds. Go's own `-timeout` flag is the
+//   timeout                compilation exceeded its own resource budget, or
+//                         the detector exceeded timeout_seconds. Go's own
+//                         `-test.timeout` flag is the
 //                         PRIMARY mechanism (it dumps every goroutine's
 //                         stack before the process exits on its own,
 //                         printing `panic: test timed out after ...`); this
@@ -87,17 +88,19 @@
 // directory (RUNNER_TEMP when set, the OS temp dir otherwise), which is
 // unique per process by construction — concurrent runs never share a path,
 // and nothing is ever written into the real target file. The memory bound on
-// each detector run reuses .github/scripts/mutant-memory-guard.mjs entirely
-// unchanged, via `go test -exec`, exactly as its own header documents.
+// each compiled detector binary reuses .github/scripts/mutant-memory-guard.mjs
+// unchanged, with the same binary-and-arguments interface as go test -exec.
 //
 // Node builtins only.
 
 import { spawn, spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  rmSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
@@ -125,7 +128,7 @@ import { locateRegions, parsePatchHunks, patchFingerprints } from "./semantic-fi
 // name (lib/semantic-mutation-report.mjs, the runner's tests); the
 // implementation is lib/semantic-model.mjs's.
 export { sha256Hex };
-import { byteSize, goDurationSeconds } from "../mutant-memory-guard.mjs";
+import { byteSize, goDurationSeconds, residentBytes } from "../mutant-memory-guard.mjs";
 
 // Bumped 1 -> 2 when the whole-file source_fingerprint /
 // expected_mutated_fingerprint pair became the patch-region
@@ -484,7 +487,7 @@ export function renderMutantsSummary(records) {
 // watchdog prints when it fires: `panic: test timed out after <duration>`,
 // immediately followed by every goroutine's stack — the signature
 // mutant-memory-guard.mjs's own header already documents for the sibling
-// gremlins lane. runGoTest always passes `-timeout` (see below), so this is
+// gremlins lane. runGoTest passes `-test.timeout` to the binary, so this is
 // the FIRST mechanism a stuck detector should ever trip, ahead of this
 // runner's own wall-clock backstop.
 const GO_TEST_TIMEOUT_PANIC_RE = /^panic: test timed out after /m;
@@ -750,7 +753,7 @@ const runGoTestPollIntervalMs = 100;
 
 // outerTimeoutBackstopSeconds is the headroom this runner's own wall-clock
 // kill adds ON TOP of a detector's declared timeout_seconds, which is passed
-// to Go's own `-timeout` flag. Go's watchdog is meant to fire FIRST — it
+// to the compiled binary's `-test.timeout` flag. Go's watchdog is meant to fire FIRST — it
 // dumps every goroutine's stack before the process exits on its own, which a
 // runner-level SIGKILL cannot produce (this repo's own documented timeout
 // doctrine: just/test.just's own comment, pinned by
@@ -759,119 +762,109 @@ const runGoTestPollIntervalMs = 100;
 // not fire — it is deliberately never the first mechanism to act.
 const outerTimeoutBackstopSeconds = 5;
 
-// runGoTest spawns exactly one `go test` invocation — a clean control when
-// `overlayPath` is null, a mutant run when it names an overlay JSON file —
-// wrapped by mutant-memory-guard.mjs via `-exec` exactly as its own header
-// documents. `spawnFn` defaults to node:child_process's real spawn and is
-// injectable so callers can test the orchestration above this function
-// without compiling or running any Go code.
-export function runGoTest({
-  root,
-  pkg,
-  testRun,
-  buildTags,
-  overlayPath,
-  timeoutSeconds,
-  memoryMax,
-  memoryHold,
-  memoryLedgerPath,
-  memoryGuardPath,
-  spawnFn = spawn,
-}) {
-  // -v is required, not cosmetic: go test's default (non-verbose) success
-  // output is a bare `ok  <pkg>  <duration>` line with no literal `PASS`,
-  // while a FAILURE prints `--- FAIL:`/`FAIL\t` either way. Without -v,
-  // classifyGoTestOutput's PASS check would misread every real pass as
-  // infrastructure-error (no interpretable success marker) — verbose output
-  // is what makes PASS and FAIL symmetric enough to classify from text alone.
-  //
-  // -timeout is Go's OWN watchdog (see outerTimeoutBackstopSeconds above) —
-  // set to the detector's declared bound exactly, so it is what normally
-  // ends a hang; this runner's SIGKILL below is only the backstop.
-  //
-  // -exec's value is double-quoted because go test -exec is whitespace-split
-  // with no shell involved, so an unquoted path containing a space (a
-  // worktree directory name, say) would silently truncate at the first one
-  // — confirmed empirically: unquoted, `node` receives only the text before
-  // the space as its entry script and fails with MODULE_NOT_FOUND; quoted,
-  // go's own splitter keeps the quoted text as one field.
-  const args = ["test", "-v", `-run=${testRun}`, `-timeout=${timeoutSeconds}s`];
-  if (buildTags.length > 0) args.push(`-tags=${buildTags.join(",")}`);
-  args.push(`-exec=node "${memoryGuardPath}"`);
-  if (overlayPath) args.push(`-overlay=${overlayPath}`);
-  args.push(pkg);
+// Compilation has its own finite budget: an overlay invalidates dependencies
+// even when its detector runs in milliseconds. Never spend the detector's
+// execution timeout compiling the test binary.
+const compileTimeoutSeconds = 10 * 60;
+// Compile/link allocations belong to the toolchain, not the mutant. A clean
+// LogQL build exceeds the record's 1GiB test-binary ceiling; cap its single
+// compiler plus driver at 4GiB while retaining the declared runtime ceiling.
+const compileMemoryLimitBytes = 4 * 1024 ** 3;
 
-  const startedAt = Date.now();
+export function processGroupResidentBytes(group, procRoot = "/proc") {
+  let total = 0;
+  for (const pid of readdirSync(procRoot)) {
+    if (!/^\d+$/.test(pid)) continue;
+    try {
+      const stat = readFileSync(join(procRoot, pid, "stat"), "utf8");
+      // comm is parenthesized and can contain spaces or closing parentheses.
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      if (Number(fields[2]) === group) {
+        total += residentBytes(pid, () => readFileSync(join(procRoot, pid, "status"), "utf8"));
+      }
+    } catch {
+      // Processes can disappear between the procfs listing and either read.
+    }
+  }
+  return total;
+}
+
+// Every phase owns a detached process group, so a bound reaps both the Go
+// driver and compiler/linker descendants. The compile memory ceiling applies
+// to their aggregate RSS; the runtime additionally retains its usual guard.
+async function runDetectorPhase({ cmd, args, cwd, env, seconds, memoryLimit,
+  memoryLedgerPath, spawnFn, memoryUsageFn, killFn, nowFn, pollMs }) {
+  const startedAt = nowFn();
   return new Promise((resolvePromise) => {
-    // detached so the child becomes its own process-group leader: `go test`
-    // spawns the test binary as a descendant via `-exec`, and killing only
-    // the top-level `go` PID (the default, non-detached shape) leaves that
-    // descendant — and mutant-memory-guard.mjs's own hold loop, should it be
-    // mid-breach — running orphaned for up to Go's own timeout. Killing the
-    // whole group (the negative-pid form below) reaps all of it at once.
-    const child = spawnFn("go", args, {
-      cwd: root,
-      detached: true,
-      env: {
-        ...process.env,
-        MUTANT_MEMORY_MAX: memoryMax,
-        MUTANT_MEMORY_HOLD: memoryHold,
-        MUTANT_MEMORY_LEDGER: memoryLedgerPath,
-      },
-    });
-
+    const child = spawnFn(cmd, args, { cwd, detached: true, env });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk;
-    });
-
-    const deadline = startedAt + (timeoutSeconds + outerTimeoutBackstopSeconds) * 1000;
+    child.stdout?.on("data", (chunk) => { stdout += chunk; });
+    child.stderr?.on("data", (chunk) => { stderr += chunk; });
     const poller = setInterval(() => {
-      // child.exitCode is set (non-null) the instant the child has already
-      // exited on its own — Go's own -timeout watchdog firing first is
-      // exactly that case. Without this guard a poll landing in the ~100ms
-      // window right after a clean exit could still flag a healthy run as
-      // timedOut.
-      if (Date.now() < deadline || child.exitCode !== null) return;
+      if (child.exitCode !== null || child.pid === undefined) return;
+      const rss = memoryLimit ? memoryUsageFn(child.pid) : 0;
+      const memoryExceeded = rss > memoryLimit;
+      if (nowFn() - startedAt < seconds * 1000 && !memoryExceeded) return;
       timedOut = true;
       clearInterval(poller);
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {
-        // The group may already be gone (a race with a natural exit right at
-        // the deadline) — nothing left to kill is not a failure here.
-      }
-    }, runGoTestPollIntervalMs);
-
+      if (memoryExceeded) appendFileSync(memoryLedgerPath, `${JSON.stringify({
+        binary: cmd, resident_bytes: rss, limit_bytes: memoryLimit,
+      })}\n`);
+      try { killFn(-child.pid, "SIGKILL"); } catch { /* group already exited */ }
+    }, pollMs);
     child.on("error", (cause) => {
       clearInterval(poller);
-      resolvePromise({
-        exitCode: null,
-        signal: null,
-        stdout,
-        stderr: `${stderr}\ncannot execute go: ${cause.message}`,
-        timedOut: false,
-        durationMs: Date.now() - startedAt,
-      });
+      resolvePromise({ exitCode: null, signal: null, stdout,
+        stderr: `${stderr}\ncannot execute ${cmd}: ${cause.message}`,
+        timedOut: false, durationMs: nowFn() - startedAt });
     });
-
     child.on("close", (exitCode, signal) => {
       clearInterval(poller);
-      resolvePromise({
-        exitCode,
-        signal,
-        stdout,
-        stderr,
-        timedOut,
-        durationMs: Date.now() - startedAt,
-      });
+      resolvePromise({ exitCode, signal, stdout, stderr, timedOut,
+        durationMs: nowFn() - startedAt });
     });
   });
+}
+
+export async function runGoTest({
+  root, pkg, testRun, buildTags, overlayPath, timeoutSeconds,
+  memoryMax, memoryHold, memoryLedgerPath, memoryGuardPath,
+  spawnFn = spawn, memoryUsageFn = processGroupResidentBytes,
+  killFn = process.kill, nowFn = Date.now, pollMs = runGoTestPollIntervalMs,
+}) {
+  const scratch = mkdtempSync(join(tmpdir(), "semantic-detector-"));
+  const binary = join(scratch, "detector.test");
+  const compileArgs = ["test", "-c", "-o", binary, "-p=1"];
+  if (buildTags.length > 0) compileArgs.push(`-tags=${buildTags.join(",")}`);
+  if (overlayPath) compileArgs.push(`-overlay=${overlayPath}`);
+  compileArgs.push(pkg);
+  const env = { ...process.env, MUTANT_MEMORY_MAX: memoryMax,
+    MUTANT_MEMORY_HOLD: memoryHold, MUTANT_MEMORY_LEDGER: memoryLedgerPath };
+  const common = { env, memoryLedgerPath, spawnFn, memoryUsageFn, killFn, nowFn, pollMs };
+  try {
+    const compile = await runDetectorPhase({ ...common, cmd: "go", args: compileArgs,
+      cwd: root, seconds: compileTimeoutSeconds, memoryLimit: compileMemoryLimitBytes });
+    if (compile.exitCode !== 0 || compile.signal || compile.timedOut) {
+      // A compiler diagnostic must never be mistaken for an assertion kill.
+      return { ...compile, phase: "compile", ...(compile.exitCode !== null && !compile.signal && !compile.timedOut
+        ? { stdout: `${compile.stdout}\n[build failed]\n` } : {}) };
+    }
+    const execution = await runDetectorPhase({ ...common, cmd: process.execPath,
+      args: [memoryGuardPath, binary, "-test.v", `-test.run=${testRun}`, `-test.timeout=${timeoutSeconds}s`],
+      // go test executes the test binary in the package directory. Fixtures
+      // and relative paths depend on retaining that contract.
+      cwd: resolve(root, pkg), seconds: timeoutSeconds + outerTimeoutBackstopSeconds,
+      memoryLimit: 0 });
+    // Direct binaries write panic stacks to stderr, whereas go test merges
+    // them into stdout. Preserve that stream contract for the verdict reader.
+    return { ...execution, stdout: execution.stdout + execution.stderr,
+      phase: "execute", durationMs: compile.durationMs + execution.durationMs,
+      compileDurationMs: compile.durationMs };
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 // runMutant executes the full protocol for one mutant record against its

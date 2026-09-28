@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/histogram_quantile_native_ladder_offset",
+  "fan_factor": 3.4285714285714284,
+  "scan_rows": 7,
+  "peak_intermediate": 24,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}

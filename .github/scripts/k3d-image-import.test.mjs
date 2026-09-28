@@ -29,6 +29,36 @@ const overlay2DriverStatus =
   '[["Backing Filesystem","extfs"],["Supports d_type","true"],["Using metacopy","false"],["Native Overlay Diff","true"],["userxattr","false"]]\n';
 const containerdDriverStatus = '[["driver-type","io.containerd.snapshotter.v1"]]\n';
 
+for (const store of Object.values(imageStore)) {
+  test(`digest-pinned images are pulled and verified on the node with ${store}`, async () => {
+    const ref = `ghcr.io/example/grafana@sha256:${'a'.repeat(64)}`;
+    const serverContainer = 'k3d-digest-test-server-0';
+    const calls = [];
+    const result = await importAndVerifyOne(ref, {
+      cluster: 'digest-test', serverContainer, store, attempts: 1, backoffStepSeconds: 0,
+      captureImpl: (cmd, args) => {
+        calls.push([cmd, ...args]);
+        return { status: 0, stdout: args.includes('ls') ? `${ref}\n` : '', stderr: '' };
+      },
+    });
+    assert.equal(result.landed, true);
+    assert.deepEqual(calls, [
+      ['docker', 'exec', serverContainer, 'ctr', '-n', 'k8s.io', 'images', 'pull', ref],
+      ['docker', 'exec', serverContainer, 'ctr', '-n', 'k8s.io', 'images', 'ls', '-q'],
+    ]);
+  });
+}
+
+test('a successful digest pull without the exact installed reference still fails', async () => {
+  const ref = `ghcr.io/example/grafana@sha256:${'a'.repeat(64)}`;
+  const result = await importAndVerifyOne(ref, {
+    cluster: 'digest-test', serverContainer: 'k3d-digest-test-server-0',
+    store: imageStore.graphdriver, attempts: 1, backoffStepSeconds: 0,
+    captureImpl: () => ({ status: 0, stdout: 'ghcr.io/example/grafana:latest\n', stderr: '' }),
+  });
+  assert.equal(result.landed, false);
+});
+
 test('normalizeRef leaves a ref with a registry host untouched', () => {
   assert.equal(normalizeRef('ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0'),
     'ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0');

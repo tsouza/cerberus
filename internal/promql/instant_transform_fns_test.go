@@ -54,7 +54,8 @@ var instantTransformSubqueryProbe = map[string]string{
 	"label_join":    `max_over_time(label_join(temperature, "joined", "-", "host")[5m:1m])`,
 	"info":          `max_over_time(info(temperature)[5m:1m])`,
 
-	// Date components + timestamp, one-argument form.
+	// Date components, one-argument form. Timestamp has a separate chDB
+	// regression asserting the selected sample time through the grid path.
 	"year":          `max_over_time(year(temperature)[5m:1m])`,
 	"month":         `max_over_time(month(temperature)[5m:1m])`,
 	"day_of_month":  `max_over_time(day_of_month(temperature)[5m:1m])`,
@@ -63,7 +64,6 @@ var instantTransformSubqueryProbe = map[string]string{
 	"days_in_month": `max_over_time(days_in_month(temperature)[5m:1m])`,
 	"hour":          `max_over_time(hour(temperature)[5m:1m])`,
 	"minute":        `max_over_time(minute(temperature)[5m:1m])`,
-	"timestamp":     `max_over_time(timestamp(temperature)[5m:1m])`,
 
 	// Sorting.
 	"sort":               `max_over_time(sort(temperature)[5m:1m])`,

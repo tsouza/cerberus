@@ -131,6 +131,8 @@ export const mirroredImages = [
 
   // The observability surface the e2e + migration lanes stand up.
   'grafana/grafana:12.2.9',
+  // Build the maintained Metrics Drilldown plugin from its frozen source.
+  'node:24.13.0-bookworm',
   'otel/opentelemetry-collector-contrib:0.152.1',
 
   // The k3s node image every k3d cluster boots from. The Justfile pre-pulls it
@@ -151,9 +153,8 @@ export const mirroredImages = [
   // runs, so a refusal here fails the job before it has done anything.
   'moby/buildkit:buildx-stable-1',
 
-  // The Go toolchain image every cerberus image builds FROM, and the ONLY
-  // Docker Hub ref this tree reaches through a `FROM` rather than a compose
-  // `image:` key or a `docker pull` — every other base image is
+  // The Go toolchain image every cerberus image builds FROM. The maintained
+  // Grafana image also uses Docker Hub base images; final Cerberus stages use
   // `gcr.io/distroless/*`, which is not metered this way. That distinction
   // matters because the two acquisition shapes need different treatment: the
   // re-tag in `pullImageWithRetry` populates the HOST daemon, and the
@@ -182,7 +183,11 @@ export const mirroredImages = [
 // checks it against the Dockerfiles and against the inventory above, so an arg
 // renamed in one place and not the other fails rather than silently reverting
 // every build to Docker Hub.
-export const buildBaseImageArgs = Object.freeze({ GO_IMAGE: 'golang:1.26' });
+export const buildBaseImageArgs = Object.freeze({
+  GO_IMAGE: 'golang:1.26',
+  NODE_IMAGE: 'node:24.13.0-bookworm',
+  GRAFANA_BASE_IMAGE: 'grafana/grafana:12.2.9',
+});
 
 const inventory = new Set(mirroredImages);
 

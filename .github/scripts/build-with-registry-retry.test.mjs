@@ -19,12 +19,33 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT = fileURLToPath(new URL('./build-with-registry-retry.mjs', import.meta.url));
 
-function run(argv) {
+function run(argv, env = {}) {
   return spawnSync('node', [SCRIPT, ...argv], {
     encoding: 'utf8',
-    env: { ...process.env, GO_IMAGE: 'golang:1.26' },
+    env: { ...process.env, GO_IMAGE: 'golang:1.26', ...env },
   });
 }
+
+test('Go-only builds do not resolve unrelated base images in mirror-only mode', () => {
+  const res = run(['echo', '--build-arg', 'GO_IMAGE'], {
+    CERBERUS_REGISTRY_MIRROR_ONLY: '1',
+    IMAGE_MIRROR_REGISTRY: '127.0.0.1:1/unavailable',
+    NODE_IMAGE: '',
+    GRAFANA_BASE_IMAGE: '',
+  });
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+});
+
+test('explicit base-image values need no registry resolution', () => {
+  const res = run(['echo', '--build-arg=NODE_IMAGE=node:local', '--build-arg', 'GRAFANA_BASE_IMAGE=grafana:local'], {
+    CERBERUS_REGISTRY_MIRROR_ONLY: '1',
+    IMAGE_MIRROR_REGISTRY: '127.0.0.1:1/unavailable',
+    GO_IMAGE: '',
+    NODE_IMAGE: '',
+    GRAFANA_BASE_IMAGE: '',
+  });
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+});
 
 test('a normal command runs, streams, and exits with its own status', () => {
   const res = run(['echo', 'hello world']);

@@ -71,8 +71,11 @@
 //      budget, the property sweep alone used 696 of a 720s (12m) deadline,
 //      leaving the roster only 24s — not enough — and the hard `go test`
 //      alarm fired mid-roster. Isolating the roster removes that entirely.
-//   3. Everything else in the package (the "rest" leg) runs in a fourth,
-//      concurrent process via -skip.
+//   3. The instant-window and LogQL randomized sweeps each run in their own
+//      process. Together they consumed over nine minutes before the remaining
+//      tests began, exhausting the rest leg's ten-minute deadline at full depth.
+//   4. Everything else runs in the rest process, including property subpackages
+//      and deterministic rosters not assigned above.
 //
 // No product code changes and no test is skipped: every property test
 // still runs exactly once, and TestPromQL_Property_NativeHistogram's checks
@@ -98,7 +101,7 @@
 
 import process from 'node:process';
 import { error, notice, log, group } from './lib/gh.mjs';
-import { runLegBuffered } from './lib/spawn-tagged.mjs';
+import { runLegsBounded } from './lib/spawn-tagged.mjs';
 
 /** The randomized native-histogram sweep, fanned out across HISTOGRAM_FANOUT processes. */
 export const HISTOGRAM_SWEEP_TEST = 'TestPromQL_Property_NativeHistogram';
@@ -118,6 +121,11 @@ export const HISTOGRAM_SWEEP_RUN_PATTERN = `^${HISTOGRAM_SWEEP_TEST}$`;
 /** Matches exactly HISTOGRAM_ROSTER_TEST at the top level. Used by the roster leg's -run. */
 export const HISTOGRAM_ROSTER_RUN_PATTERN = `^${HISTOGRAM_ROSTER_TEST}$`;
 
+// Each sweep now costs several minutes at full depth. They must not share
+// the rest leg's deadline with every other property test.
+export const ISOLATED_SWEEPS = ['TestPromQL_InstantWindowSweep_FromScratch', 'TestLogQL_Property'];
+export const REST_SKIP_PATTERN = `^(${[...HISTOGRAM_TESTS, ...ISOLATED_SWEEPS].join('|')})$`;
+
 /**
  * How many PROCESSES the native-histogram sweep's -rapid.checks fans out to.
  *
@@ -127,11 +135,20 @@ export const HISTOGRAM_ROSTER_RUN_PATTERN = `^${HISTOGRAM_ROSTER_TEST}$`;
  * oversubscribes well before the process count reaches the core count —
  * measured locally as a ~2x per-check slowdown (2.38s/check serial vs
  * ~5.2s/check with 3 sweep shares + the rest leg all concurrent, even on an
- * 8-core box). 3 sweep shares + 1 roster leg (light) + 1 rest leg keeps the
- * heavy concurrent processes at 4, matching the runner's core count without
- * adding a 5th.
+ * 8-core box). The three histogram shares remain unchanged. The expanded
+ * non-histogram corpus now needs isolated sweeps to keep each complete
+ * randomized run inside its own deadline; the hosted runner supplies memory
+ * for those additional processes.
  */
 export const HISTOGRAM_FANOUT = 3;
+
+// The hosted VM has four cores; more simultaneous native sweeps stretch
+// each other's deadlines without reducing the amount of work.
+export const PROPERTY_CONCURRENCY = 4;
+
+export function runPropertyLegs(legs, runLeg) {
+  return runLegsBounded(legs, PROPERTY_CONCURRENCY, runLeg);
+}
 
 /**
  * Per-process go test -timeout, in minutes.
@@ -161,10 +178,11 @@ export const HISTOGRAM_FANOUT = 3;
  * under the same heavy contention, so its full pass is a low-tens-of-
  * seconds cost. 5 minutes leaves at least an order of magnitude of margin.
  *
- * REST_TIMEOUT_MINUTES covers every other property test in the package —
- * every one of them completed its own full -rapid.checks=500 sweep in
- * 30-90s in the measured run, ~350s total; 10 minutes leaves more than 6x
- * headroom.
+ * REST_TIMEOUT_MINUTES applies separately to each isolated sweep and the
+ * remaining tests. The former combined leg timed out at ten minutes even
+ * with 7 GiB available: instant-window took 211s and LogQL 336s, leaving
+ * insufficient time for the PromQL range/instant and TraceQL sweeps. Giving
+ * those two sweeps independent deadlines retains all 500 checks per test.
  */
 export const HISTOGRAM_TIMEOUT_MINUTES = 30;
 export const ROSTER_TIMEOUT_MINUTES = 5;
@@ -185,12 +203,11 @@ export function splitRapidChecks(total, n) {
 }
 
 /**
- * The leg commands: HISTOGRAM_FANOUT sweep shares, one roster leg, one rest
- * leg.
+ * The leg commands: histogram shares, roster, isolated sweeps, and rest.
  *
  * Every histogram-touching leg targets `./test/property` (not `/...`)
  * because the tests it selects all live in that one package; the rest leg
- * targets `./test/property/...` with `-skip` for HISTOGRAM_RUN_PATTERN, so
+ * targets `./test/property/...` with `-skip` for REST_SKIP_PATTERN, so
  * test/property/gen and test/property/oracle/{promql,traceql} — already
  * separate packages Go builds and runs concurrently on their own — run
  * exactly once, and every OTHER top-level test in test/property runs
@@ -255,7 +272,7 @@ export function legCommands({
       `-timeout=${REST_TIMEOUT_MINUTES}m`,
       './test/property/...',
       '-skip',
-      HISTOGRAM_RUN_PATTERN,
+      REST_SKIP_PATTERN,
       `-rapid.checks=${rapidChecks}`,
       `-rapid.shrinktime=${rapidShrinktime}`,
     ],
@@ -264,7 +281,23 @@ export function legCommands({
     expectRapidChecks: Number(rapidChecks),
   };
 
-  return [...sweepLegs, rosterLeg, restLeg];
+  const isolatedLegs = ISOLATED_SWEEPS.map((name) => ({
+    name,
+    argv: [
+      go,
+      'test',
+      ...common,
+      `-timeout=${REST_TIMEOUT_MINUTES}m`,
+      './test/property',
+      '-run',
+      `^${name}$`,
+      `-rapid.checks=${rapidChecks}`,
+      `-rapid.shrinktime=${rapidShrinktime}`,
+    ],
+    expectRapidChecks: Number(rapidChecks),
+  }));
+
+  return [...sweepLegs, rosterLeg, ...isolatedLegs, restLeg];
 }
 
 /**
@@ -305,11 +338,11 @@ async function main() {
   const legs = legCommands({ tags, go });
   notice(
     `property: ${legs.length} leg(s) — histogram sweep fanned out ${HISTOGRAM_FANOUT} ways, ` +
-      'roster and rest isolated',
+      `${ISOLATED_SWEEPS.length} long sweeps, roster and rest isolated; at most ${PROPERTY_CONCURRENCY} active processes`,
   );
 
   const started = Date.now();
-  const results = await Promise.all(legs.map(runLegBuffered));
+  const results = await runPropertyLegs(legs);
   const elapsedSeconds = Math.round((Date.now() - started) / 1000);
 
   for (const r of results) {

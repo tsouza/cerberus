@@ -310,20 +310,26 @@ func TestClassicBucketMergeBudget_ChDB_Range_WithinBudget(t *testing.T) {
 }
 
 // TestClassicBucketMergeBudget_ChDB_EnvOverrideRaisesBudget proves the full
-// operator-override plumbing end to end (cerberus issue #2667): it seeds the
-// EXACT 2,000-series/width-100 shape TestClassicBucketMergeBudget_ChDB_Instant_Exceeded
-// proves the compiled-in 10,000,000 default rejects (real cost 20,000,000),
+// operator-override plumbing end to end (cerberus issue #2667): it seeds two
+// disjoint 2,500-bucket series and proves the compiled-in 10,000,000 default
+// rejects their 12,500,000-unit merge cost,
 // sets CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS above that real
 // cost, confirms promql.ResourceBoundsFromEnv actually picked up the
 // override, and asserts the SAME instant query now SUCCEEDS once that
 // resolved ResourceBounds is threaded through promql.LowerOpts — same
 // query, same seed, opposite outcome, purely from the operator override
-// reaching the emitted SQL's throwIf threshold.
+// reaching the emitted SQL's throwIf threshold. Keeping the union to 5,000
+// bounds avoids the 200,000-bound fixture's multi-GiB allocation while still
+// crossing the real default budget; this tests admission, not host capacity.
 func TestClassicBucketMergeBudget_ChDB_EnvOverrideRaisesBudget(t *testing.T) {
-	const seriesOverDefaultBudget = 2000
-	const widthOverDefaultBudget = 100
-	const raisedBudget = 30_000_000 // > 20,000,000 (2000 x 100 x 100 real cost), > the 10M default
+	const seriesOverDefaultBudget = 2
+	const widthOverDefaultBudget = 2500
+	const raisedBudget = 30_000_000 // > 12,500,000 (2 x 2500 x 2500 real cost), > the 10M default
 
+	var b strings.Builder
+	b.WriteString(classicBucketMergeBoundSeedDDL)
+	b.WriteString(seedClassicBucketMergeBoundRows(seriesOverDefaultBudget, widthOverDefaultBudget) + ";\n")
+	fixture := newChDBFixture(t, b.String())
 	t.Setenv(promql.EnvClassicBucketMergeMaxCostUnits, strconv.FormatInt(raisedBudget, 10))
 	bounds, err := promql.ResourceBoundsFromEnv()
 	if err != nil {
@@ -334,15 +340,16 @@ func TestClassicBucketMergeBudget_ChDB_EnvOverrideRaisesBudget(t *testing.T) {
 			bounds.ClassicBucketMergeMaxCostUnits, raisedBudget, promql.EnvClassicBucketMergeMaxCostUnits)
 	}
 
-	var b strings.Builder
-	b.WriteString(classicBucketMergeBoundSeedDDL)
-	b.WriteString(seedClassicBucketMergeBoundRows(seriesOverDefaultBudget, widthOverDefaultBudget) + ";\n")
-	fixture := newChDBFixture(t, b.String())
-
 	if err := runClassicBucketMergeBoundInstantQueryWithOpts(t, fixture, promql.LowerOpts{ResourceBounds: bounds}); err != nil {
-		t.Fatalf("the same merge TestClassicBucketMergeBudget_ChDB_Instant_Exceeded proves the 10M "+
-			"default rejects must succeed once %s raises the budget to %d: %v",
+		t.Fatalf("the same merge rejected by the default budget must succeed once %s raises the budget to %d: %v",
 			promql.EnvClassicBucketMergeMaxCostUnits, raisedBudget, err)
+	}
+	// Decode the admitted result before the deliberate rejection: chDB's
+	// Parquet output after a throwIf error is malformed (cerberus #3761).
+	// Both outcomes use the same seeded rows and emitted merge shape.
+	if err := runClassicBucketMergeBoundInstantQuery(t, fixture); err == nil ||
+		!strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) {
+		t.Fatalf("the default budget must reject this merge with its own guard: %v", err)
 	}
 }
 

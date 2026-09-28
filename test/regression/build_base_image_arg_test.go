@@ -55,7 +55,7 @@ var (
 	// `ARG NAME=default` — the declaration that makes a `FROM` substitutable.
 	dockerfileArgDecl = regexp.MustCompile(`(?m)^\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)\s*$`)
 	// The image ref of a `FROM`, before any `AS <stage>`.
-	dockerfileFrom = regexp.MustCompile(`(?m)^\s*FROM\s+(\S+)`)
+	dockerfileFrom = regexp.MustCompile(`(?m)^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)`)
 	// `${NAME}` or `$NAME` as the whole ref.
 	dockerfileFromArg = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$`)
 	// The `buildBaseImageArgs` table in lib/mirror.mjs.

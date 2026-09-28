@@ -34,6 +34,7 @@ import {
   loadMutants,
   renderMutantsSummary,
   runGoTest,
+  processGroupResidentBytes,
   runMutant,
   scratchRootFor,
   selectDetectors,
@@ -818,118 +819,131 @@ test("createScratchDir: two calls under the same root never collide", () => {
 // actually touches (stdout/stderr streams, pid, exitCode, and a close event
 // this helper fires on the next tick so the promise's own listeners are
 // already attached).
-function fakeChild({ exitCode = 0, signal = null } = {}) {
+function fakeChild({ exitCode = 0, signal = null, stderr = "" } = {}) {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.pid = 4242;
   child.exitCode = null;
   queueMicrotask(() => {
+    child.stderr.emit("data", stderr);
     child.exitCode = exitCode;
     child.emit("close", exitCode, signal);
   });
   return child;
 }
 
-test("runGoTest: constructs the exact argv — -v, -run, -timeout, -tags, quoted -exec, -overlay, package last", async () => {
+function detectorOptions(extra = {}) {
+  return { root: "/repo", pkg: "./pkg", testRun: "^TestX$", buildTags: [],
+    overlayPath: null, timeoutSeconds: 5, memoryMax: "1GiB", memoryHold: "1s",
+    memoryLedgerPath: "/scratch/ledger.jsonl", memoryGuardPath: "/repo/guard.mjs", ...extra };
+}
+
+test("runGoTest: compile uses overlay and tags; execution preserves package cwd and watchdog", async () => {
   const calls = [];
-  const child = fakeChild({ exitCode: 0 });
-  const spawnFn = (cmd, args, opts) => {
-    calls.push({ cmd, args, opts });
-    return child;
-  };
-
-  const result = await runGoTest({
-    root: "/repo",
-    pkg: "./test/semantic/mutants/testdata/fixtures",
-    testRun: "^TestExample$",
-    buildTags: ["chdb"],
-    overlayPath: "/scratch/overlay.json",
-    timeoutSeconds: 15,
-    memoryMax: "1GiB",
-    memoryHold: "1s",
-    memoryLedgerPath: "/scratch/ledger.jsonl",
-    memoryGuardPath: "/repo/.github/scripts/mutant-memory-guard.mjs",
-    spawnFn,
-  });
-
-  assert.equal(calls.length, 1);
+  const result = await runGoTest(detectorOptions({ buildTags: ["chdb"], overlayPath: "/scratch/overlay.json",
+    spawnFn: (cmd, args, opts) => { calls.push({ cmd, args, opts }); return fakeChild(); } }));
+  assert.equal(calls.length, 2);
   assert.equal(calls[0].cmd, "go");
-  assert.deepEqual(calls[0].args, [
-    "test",
-    "-v",
-    "-run=^TestExample$",
-    "-timeout=15s",
-    "-tags=chdb",
-    '-exec=node "/repo/.github/scripts/mutant-memory-guard.mjs"',
-    "-overlay=/scratch/overlay.json",
-    "./test/semantic/mutants/testdata/fixtures",
-  ]);
+  assert.deepEqual(calls[0].args.slice(0, 3), ["test", "-c", "-o"]);
+  assert.deepEqual(calls[0].args.slice(4), ["-p=1", "-tags=chdb", "-overlay=/scratch/overlay.json", "./pkg"]);
   assert.equal(calls[0].opts.cwd, "/repo");
-  assert.equal(calls[0].opts.detached, true);
-  assert.equal(calls[0].opts.env.MUTANT_MEMORY_MAX, "1GiB");
-  assert.equal(calls[0].opts.env.MUTANT_MEMORY_HOLD, "1s");
-  assert.equal(calls[0].opts.env.MUTANT_MEMORY_LEDGER, "/scratch/ledger.jsonl");
+  assert.equal(calls[1].cmd, process.execPath);
+  assert.deepEqual(calls[1].args, ["/repo/guard.mjs", calls[0].args[3], "-test.v", "-test.run=^TestX$", "-test.timeout=5s"]);
+  assert.equal(calls[1].opts.cwd, "/repo/pkg");
+  for (const call of calls) {
+    assert.equal(call.opts.detached, true);
+    assert.equal(call.opts.env.MUTANT_MEMORY_MAX, "1GiB");
+  }
   assert.equal(result.exitCode, 0);
+  assert.equal(result.phase, "execute");
 });
 
-test("runGoTest: omits -tags when build_tags is empty and -overlay when overlayPath is null (the clean-control shape)", async () => {
-  const calls = [];
-  const child = fakeChild({ exitCode: 0 });
-  const spawnFn = (cmd, args) => {
-    calls.push(args);
-    return child;
-  };
-
-  await runGoTest({
-    root: "/repo",
-    pkg: "./pkg",
-    testRun: "^TestX$",
-    buildTags: [],
-    overlayPath: null,
-    timeoutSeconds: 5,
-    memoryMax: "1GiB",
-    memoryHold: "1s",
-    memoryLedgerPath: "/scratch/ledger.jsonl",
-    memoryGuardPath: "/repo/guard.mjs",
-    spawnFn,
-  });
-
-  assert.deepEqual(calls[0], [
-    "test",
-    "-v",
-    "-run=^TestX$",
-    "-timeout=5s",
-    '-exec=node "/repo/guard.mjs"',
-    "./pkg",
-  ]);
+test("runGoTest: cold compilation longer than detector timeout does not consume execution budget", async () => {
+  let clock = 0;
+  let calls = 0;
+  let kills = 0;
+  const result = await runGoTest(detectorOptions({ timeoutSeconds: 1, pollMs: 1,
+    nowFn: () => clock, memoryUsageFn: () => 0, killFn: () => { kills++; },
+    spawnFn: () => {
+      calls++;
+      const child = new EventEmitter();
+      child.pid = 4242; child.exitCode = null;
+      child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+      // Compile takes a simulated minute; detector itself only 100ms.
+      clock += calls === 1 ? 60000 : 100;
+      setTimeout(() => {
+        child.stdout.emit("data", calls === 2 ? "PASS\n" : "");
+        child.exitCode = 0; child.emit("close", 0, null);
+      }, 20);
+      return child;
+    } }));
+  assert.equal(kills, 0);
+  assert.equal(calls, 2);
+  assert.equal(classifyGoTestOutput(result), "survived");
+  assert.equal(result.compileDurationMs, 60000);
 });
 
-test("runGoTest: a spawn error resolves (never rejects) with an infrastructure-error-shaped result", async () => {
-  const child = new EventEmitter();
-  child.stdout = new EventEmitter();
-  child.stderr = new EventEmitter();
-  child.pid = undefined;
-  child.exitCode = null;
-  const spawnFn = () => {
-    queueMicrotask(() => child.emit("error", new Error("ENOENT: go not found")));
+test("runGoTest: compile failures never run or claim an assertion kill", async () => {
+  let calls = 0;
+  const result = await runGoTest(detectorOptions({ spawnFn: () => { calls++; return fakeChild({ exitCode: 1 }); } }));
+  assert.equal(calls, 1);
+  assert.equal(classifyGoTestOutput(result), "build-failed");
+  assert.equal(result.phase, "compile");
+});
+
+test("runGoTest: compile timeout and aggregate memory ceiling reap the process group", async () => {
+  for (const breach of ["time", "memory"]) {
+    const scratch = mkdtempSync(join(tmpdir(), "semantic-phase-test-"));
+    const ledger = join(scratch, "ledger.jsonl");
+    let clock = 0;
+    let child;
+    let killed;
+    try {
+      const result = await runGoTest(detectorOptions({ memoryLedgerPath: ledger, pollMs: 1,
+        nowFn: () => clock, memoryUsageFn: () => breach === "memory" ? 2 ** 33 : 0,
+        killFn: (pid, signal) => { killed = [pid, signal]; child.emit("close", null, signal); },
+        spawnFn: () => {
+          child = new EventEmitter(); child.pid = 4242; child.exitCode = null;
+          if (breach === "time") clock = 601000;
+          return child;
+        } }));
+      assert.deepEqual(killed, [-4242, "SIGKILL"]);
+      assert.equal(result.phase, "compile");
+      assert.equal(classifyGoTestOutput(result), "timeout");
+      if (breach === "memory") assert.equal(JSON.parse(readFileSync(ledger, "utf8")).resident_bytes, 2 ** 33);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  }
+});
+
+test("runGoTest: direct binary panic on stderr remains a timeout, not a semantic kill", async () => {
+  let calls = 0;
+  const result = await runGoTest(detectorOptions({ spawnFn: () => {
+    calls++;
+    return fakeChild({ exitCode: calls === 2 ? 2 : 0,
+      stderr: calls === 2 ? "panic: test timed out after 5s\n" : "" });
+  } }));
+  assert.equal(classifyGoTestOutput(result), "timeout");
+});
+
+test("runGoTest: spawn error resolves as infrastructure-error", async () => {
+  const result = await runGoTest(detectorOptions({ spawnFn: () => {
+    const child = new EventEmitter(); child.exitCode = null;
+    queueMicrotask(() => child.emit("error", new Error("ENOENT")));
     return child;
-  };
-
-  const result = await runGoTest({
-    root: "/repo",
-    pkg: "./pkg",
-    testRun: "^TestX$",
-    buildTags: [],
-    overlayPath: null,
-    timeoutSeconds: 5,
-    memoryMax: "1GiB",
-    memoryHold: "1s",
-    memoryLedgerPath: "/scratch/ledger.jsonl",
-    memoryGuardPath: "/repo/guard.mjs",
-    spawnFn,
-  });
-
+  } }));
   assert.equal(result.exitCode, null);
   assert.equal(classifyGoTestOutput(result), "infrastructure-error");
+});
+
+test("processGroupResidentBytes includes compiler children and excludes unrelated processes", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "semantic-proc-test-"));
+  try {
+    for (const [pid, group, rss] of [[10, 10, 100], [11, 10, 200], [12, 12, 999]]) {
+      mkdirSync(join(scratch, String(pid)));
+      writeFileSync(join(scratch, String(pid), "stat"), `${pid} (a name with ) parens) S 1 ${group} 0`);
+      writeFileSync(join(scratch, String(pid), "status"), `VmRSS: ${rss} kB\n`);
+    }
+    assert.equal(processGroupResidentBytes(10, scratch), 300 * 1024);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

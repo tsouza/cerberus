@@ -32,6 +32,48 @@ function fakeFetch(handler) {
   return impl;
 }
 
+test('ghJSON retries a failed read transport before verifying the response', async () => {
+  let calls = 0;
+  const waits = [];
+  const body = await ghJSON('https://api.invalid/provenance', {
+    notFound: NOT_FOUND_THROW,
+    waitImpl: async (ms) => waits.push(ms),
+    fetchImpl: async () => {
+      if (++calls === 1) throw new TypeError('fetch failed', { cause: new Error('socket reset') });
+      return response({ body: { verified: true } });
+    },
+  });
+  assert.deepEqual(body, { verified: true });
+  assert.equal(calls, 2);
+  assert.equal(waits.length, 1);
+});
+
+test('ghJSON never retries a write transport or an aborted read', async () => {
+  for (const [init, failure] of [
+    [{ method: 'POST' }, new TypeError('fetch failed')],
+    [{}, new DOMException('aborted', 'AbortError')],
+  ]) {
+    let calls = 0;
+    await assert.rejects(() => ghJSON('https://api.invalid/x', {
+      notFound: NOT_FOUND_THROW, init,
+      fetchImpl: async () => { calls++; throw failure; },
+      waitImpl: async () => assert.fail('must not retry'),
+    }));
+    assert.equal(calls, 1);
+  }
+});
+
+test('ghJSON fails closed with request context after bounded transport retries', async () => {
+  const expectedReadAttempts = 3;
+  let calls = 0;
+  await assert.rejects(() => ghJSON('https://api.invalid/provenance', {
+    what: 'mutation provenance', notFound: NOT_FOUND_THROW,
+    waitImpl: async () => {},
+    fetchImpl: async () => { calls++; throw new TypeError('fetch failed'); },
+  }), /mutation provenance: fetch failed after 3 attempts for https:\/\/api.invalid\/provenance/);
+  assert.equal(calls, expectedReadAttempts);
+});
+
 test('ghHeaders pins the API version and carries the bearer token', () => {
   const headers = ghHeaders('t0k');
   assert.equal(headers.Authorization, 'Bearer t0k');

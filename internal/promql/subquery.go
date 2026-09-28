@@ -424,8 +424,8 @@ func lowerSubqueryIdentityMathReorder(
 // lowerSubqueryIdentityDateReorder implements the same reorder
 // [lowerSubqueryIdentityMathReorder] applies to the math/clamp/round
 // family, for the date-component family (`year`, `month`, `day_of_month`,
-// `day_of_week`, `day_of_year`, `days_in_month`, `hour`, `minute`,
-// `timestamp`) — issue #3692. Windows the BARE argument first through
+// `day_of_week`, `day_of_year`, `days_in_month`, `hour`, `minute`)
+// — issue #3692. Windows the BARE argument first through
 // [lowerSubqueryOverVectorSelector], the identical pipeline a
 // bare-selector subquery uses, which encodes the stale marker, picks
 // each anchor's own latest sample, and drops the anchor a marker wins —
@@ -435,13 +435,10 @@ func lowerSubqueryIdentityMathReorder(
 // (see [subqueryIdentityValuePreserving]'s own doc for the exact CH
 // error).
 //
-// The windowed inner keeps each surviving sample's OWN TimeUnix (it is a
-// per-anchor pick of a real row, not a re-stamp to the anchor), so
-// projectDateFnOverInner is invoked under a range-vector ctx —
-// `timestamp(v)` then reads that row's own timestamp column directly
-// rather than the RangeLWR sample-timestamp column an aggregated instant
-// seam would otherwise require (see [timestampResultExpr] /
-// [readsRangeSampleTimestamp]).
+// The window stamps TimeUnix with the evaluation anchor. Date-component
+// functions read Value, so this preserves their input. timestamp(selector)
+// instead needs the original sample time and is routed through the
+// per-anchor selector lowering by lowerSubqueryOverCall.
 //
 // matched is false for a call shape this reorder doesn't cover — its
 // value argument is not vs at all, or its function isn't a
@@ -2138,20 +2135,20 @@ var instantTransformFns = map[string]struct{}{
 	// models `info(m)[5m:1m]` exactly as it models `label_replace(m,…)[5m:1m]`.
 	"info": {},
 
-	// Date components and `timestamp`, in their ONE-ARGUMENT form only.
-	// `year(v)` maps the row's Value (or, for `timestamp`, the row's own
-	// TimeUnix) to a float; the zero-arg forms synthesise an
+	// Date components, in their ONE-ARGUMENT form only.
+	// `year(v)` maps the row's Value to a float; the zero-arg forms synthesise an
 	// anchor-stamped row instead and are rejected by the arity half of
-	// [isInstantTransformCall].
-	"year":                {},
-	"month":               {},
-	"day_of_month":        {},
-	"day_of_week":         {},
-	"day_of_year":         {},
-	"days_in_month":       {},
-	"hour":                {},
-	"minute":              {},
-	timestampFunctionName: {},
+	// [isInstantTransformCall]. timestamp is evaluated through the grid
+	// lowering: the identity window stamps TimeUnix with its anchor and
+	// cannot preserve the original sample time that timestamp(selector) reads.
+	"year":          {},
+	"month":         {},
+	"day_of_month":  {},
+	"day_of_week":   {},
+	"day_of_year":   {},
+	"days_in_month": {},
+	"hour":          {},
+	"minute":        {},
 
 	// Sorting: reference discards the ordering when it folds each
 	// anchor's instant result into the subquery's matrix, so these are

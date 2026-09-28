@@ -1043,7 +1043,9 @@ coverage-default:
     # everything on stderr pass through untouched. `fflush()` keeps the pipe
     # line-buffered — a block-buffered filter would show nothing at all until
     # a 4 KiB chunk fills, which on a lane this long reads as a hung job.
-    CERBERUS_RAPID_SEED={{COVERAGE_RAPID_SEED}} go test -timeout 40m -coverpkg="$(go list ./... | paste -sd, -)" -coverprofile=cover.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'
+    # Cached tests can retain obsolete zero-count -coverpkg source locations.
+    # Execute every test against this revision before comparing coverage floors.
+    CERBERUS_RAPID_SEED={{COVERAGE_RAPID_SEED}} go test -timeout 40m -count=1 -coverpkg="$(go list ./... | paste -sd, -)" -coverprofile=cover.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'
     @test -s cover.out
     @just _coverage-fold cover.out
 

@@ -159,7 +159,21 @@ if (command.length === 0) {
 // not started: `buildBaseImageRef` has already said which image and why, and
 // running the build anyway would bury that under a BuildKit timeout against the
 // registry the job has already established it cannot reach.
-for (const [argName, upstreamRef] of Object.entries(buildBaseImageArgs)) {
+// Direct builds declare their base arguments on argv. Compose builds use the
+// Go base through environment interpolation. Explicit NAME=value arguments
+// already select a ref and must not cause a registry probe.
+const requestedBaseArgs = new Map();
+for (let index = 0; index < command.length; index++) {
+  const token = command[index];
+  const value = token === '--build-arg' ? command[++index] : token.startsWith('--build-arg=') ? token.slice('--build-arg='.length) : undefined;
+  if (value === undefined) continue;
+  const [name] = value.split('=');
+  if (Object.hasOwn(buildBaseImageArgs, name)) requestedBaseArgs.set(name, !value.includes('='));
+}
+if (requestedBaseArgs.size === 0) requestedBaseArgs.set('GO_IMAGE', true);
+for (const [argName, needsEnvironment] of requestedBaseArgs) {
+  if (!needsEnvironment) continue;
+  const upstreamRef = buildBaseImageArgs[argName];
   if ((process.env[argName] ?? '') !== '') continue;
   const ref = buildBaseImageRef(upstreamRef);
   if (ref === null) process.exit(1);
