@@ -1,0 +1,7 @@
+**
+!.github/
+!.github/scripts/
+!.github/scripts/grafana-plugin-build.mjs
+!deploy/
+!deploy/grafana/
+!deploy/grafana/**

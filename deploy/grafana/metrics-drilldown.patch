@@ -1,0 +1,15 @@
+--- a/src/MetricScene/Breakdown/LabelBreakdownScene.tsx
++++ b/src/MetricScene/Breakdown/LabelBreakdownScene.tsx
+@@ -115,6 +115,12 @@
+   // would briefly query with the wrong function. Wait here -- the mainPanel subscription above re-triggers
+   // this once it resolves, for whichever call site got skipped.
+   private updateBody(groupByVariable: QueryVariable) {
++    // Label discovery assigns the initial selection asynchronously. Its value
++    // subscription calls updateBody again once a label or All is selected.
++    if (!groupByVariable.state.value) {
++      return;
++    }
++
+     const mainPanel = this.getMainPanel();
+     if (mainPanel && !mainPanel.state.metricTypeResolved) {
+       return;

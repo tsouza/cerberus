@@ -62,7 +62,7 @@ var inventoryEntry = regexp.MustCompile(`(?m)^\s*'([^']+)',\s*$`)
 // every `host:port` in a datasource URL. A shape-only scan flags all of them.
 var imageRefContexts = []*regexp.Regexp{
 	regexp.MustCompile(`^\s*-?\s*image:\s*["']?([^"'\s]+)["']?\s*$`),
-	regexp.MustCompile(`^\s*FROM\s+(\S+)`),
+	regexp.MustCompile(`^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)`),
 	regexp.MustCompile(`\bdocker\s+pull\s+(\S+)`),
 	regexp.MustCompile(`^[A-Z0-9_]*IMAGE[A-Z0-9_]*\s*:=\s*"([^"]+)"`),
 	regexp.MustCompile(`^\s*default:\s*([^"'\s]+)\s*$`),

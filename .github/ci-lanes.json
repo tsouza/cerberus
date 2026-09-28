@@ -2377,6 +2377,10 @@
   ],
   "non_lane_workflows": [
     {
+      "workflow": ".github/workflows/grafana-image.yml",
+      "reason": "publication"
+    },
+    {
       "workflow": ".github/workflows/auto-merge-deps.yml",
       "reason": "automation"
     },
