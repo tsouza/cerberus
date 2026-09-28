@@ -55,7 +55,7 @@ require (
 	golang.org/x/tools v0.50.0
 	google.golang.org/grpc v1.84.0
 	gopkg.in/yaml.v3 v3.0.1
-	k8s.io/apimachinery v0.37.0
+	k8s.io/apimachinery v0.37.1
 	pgregory.net/rapid v1.3.0
 )
 
