@@ -146,13 +146,15 @@ func TestCoverageProducersMeasureCurrentSource(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			const currentBlock = "example.test/coveragecache/a/value.go:4.18,6.2 1 "
+			const sourceFile = "example.test/coveragecache/a/value.go"
+			const currentBlock = "4.18,6.2 1 "
 			found := false
 			for line := range strings.SplitSeq(string(data), "\n") {
-				if !strings.Contains(line, "/a/value.go:") {
+				file, block, ok := strings.Cut(line, ":")
+				if !ok || file != sourceFile {
 					continue
 				}
-				if !strings.HasPrefix(line, currentBlock) {
+				if !strings.HasPrefix(block, currentBlock) {
 					t.Fatalf("obsolete coverage block after source shift: %s", line)
 				}
 				found = true
