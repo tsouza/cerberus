@@ -35,6 +35,12 @@
 // containerd-store tarball. The store is detected once from `docker info`
 // and the overlay2 path is the unchanged `k3d image import` CI runs today.
 //
+// Digest-pinned public images are acquired directly by node containerd. Docker
+// archives can discard digest-only names; graphdriver exports also reconstruct
+// manifests and cannot preserve the registry's original digest. Pulling the
+// digest on the node verifies the original registry content and installs the
+// exact reference the pod requests, on either host image store.
+//
 // Designed for reuse from day one (cerberus issue #3096's own scope note):
 // the `e2e-bwc-up` lane (sub-issue #3097) imports an EXTENDED image list
 // while EXCLUDING the standalone ClickHouse image
@@ -152,6 +158,9 @@ export function detectImageStore(captureImpl = capture) {
 // exact `k3d image import` invocation CI has always run; on the containerd
 // store it is the `docker save | ctr import` pipeline (module header).
 export function importOnce(img, store, { cluster, serverContainer, captureImpl = capture }) {
+  if (img.includes('@sha256:')) {
+    return captureImpl('docker', ['exec', serverContainer, 'ctr', '-n', 'k8s.io', 'images', 'pull', normalizeRef(img)]);
+  }
   if (store === imageStore.containerd) {
     return captureImpl('sh', ['-c', containerdStoreImportPipeline, 'sh', img, serverContainer]);
   }
@@ -164,8 +173,9 @@ export function importOnce(img, store, { cluster, serverContainer, captureImpl =
 // and output say nothing — see the module header).
 export function exhaustedMessage(ref, attempts, store, lastStderr) {
   const { store: storeName, path } = storeDescription[store];
+  const acquisitionPath = ref.includes('@sha256:') ? 'node containerd digest pull' : path;
   const tail = lastStderr.trim() === '' ? '' : `; last import error: ${lastStderr.trim()}`;
-  return `${ref} missing from k3d node containerd after ${attempts} import attempts (host image store: ${storeName}; import path: ${path}${tail})`;
+  return `${ref} missing from k3d node containerd after ${attempts} import attempts (host image store: ${storeName}; import path: ${acquisitionPath}${tail})`;
 }
 
 // normalizeRef — the exact `case` translation the extracted bash used to
