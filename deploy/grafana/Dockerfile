@@ -20,4 +20,5 @@ COPY --from=metrics-plugin /build/metrics-drilldown-source.tar.gz /usr/share/gra
 COPY deploy/grafana/metrics-drilldown.patch /usr/share/grafana/plugin-source/metrics-drilldown.patch
 COPY deploy/grafana/README.md /usr/share/grafana/plugin-source/README.md
 LABEL org.opencontainers.image.source="https://github.com/tsouza/cerberus"
+LABEL org.opencontainers.image.licenses="Apache-2.0 AND AGPL-3.0-only"
 USER 472
