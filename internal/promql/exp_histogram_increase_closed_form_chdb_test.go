@@ -349,7 +349,8 @@ func closedFormRun(t *testing.T, fixture *chdbFixture, opts promql.LowerOpts, wa
 			"renderings this test believes it is comparing", closedFormCoeffsAlias, got, wantClosedForm)
 	}
 	const joinLadder = "arrayStringConcat(arrayMap(x -> toString(x), `%s`), ',')"
-	rows, err := fixture.db.Query(
+	rows, err := fixture.Query(
+		context.Background(),
 		"SELECT `Attributes`['series'], "+
 			fmt.Sprintf(joinLadder, "HistogramPositiveBucketCounts")+", "+
 			fmt.Sprintf(joinLadder, "HistogramNegativeBucketCounts")+

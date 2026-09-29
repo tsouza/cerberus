@@ -127,7 +127,7 @@ func runHistogramMergeBoundQueryWithOpts(t *testing.T, fixture *chdbFixture, opt
 		t.Fatalf("seed does not cover the emitted fan-out: %v\nSQL: %s", err, sqlStr)
 	}
 	wrapped := "SELECT count() FROM (" + sqlStr + ")"
-	rows, qerr := fixture.db.Query(wrapped, args...)
+	rows, qerr := fixture.Query(context.Background(), wrapped, args...)
 	if qerr != nil {
 		return qerr
 	}

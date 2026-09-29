@@ -53,7 +53,7 @@ func readMergedHistogramShapes(t *testing.T, fixture *chdbFixture, query string,
 	}
 	wrapped := "SELECT toInt64(" + chplan.HistogramScaleColumn + "), toInt64(length(" + chplan.HistogramPositiveBucketCountsColumn + ")), toFloat64(" + chplan.HistogramCountColumn + ")" +
 		" FROM (" + sqlStr + ") ORDER BY " + s.MetricNameColumn + ", " + s.AttributesColumn + ", " + s.TimestampColumn
-	rows, qerr := fixture.db.Query(wrapped, args...)
+	rows, qerr := fixture.Query(context.Background(), wrapped, args...)
 	if qerr != nil {
 		return nil, qerr
 	}

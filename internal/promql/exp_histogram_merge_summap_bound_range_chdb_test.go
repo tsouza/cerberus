@@ -57,7 +57,7 @@ func runExpHistSumMapRangeBoundQuery(t *testing.T, fixture *chdbFixture, query s
 		t.Fatalf("Emit(%q): %v", query, err)
 	}
 	wrapped := "SELECT count() FROM (" + sqlStr + ")"
-	rows, qerr := fixture.db.Query(wrapped, args...)
+	rows, qerr := fixture.Query(context.Background(), wrapped, args...)
 	if qerr != nil {
 		return qerr
 	}
