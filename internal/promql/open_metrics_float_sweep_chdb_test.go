@@ -179,7 +179,8 @@ func openMetricsFloatLabelAt(t *testing.T, fixture *chdbFixture, at time.Time) s
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	rows, err := fixture.db.Query(
+	rows, err := fixture.Query(
+		context.Background(),
 		"SELECT `Attributes`['"+openMetricsFloatLabel+"'] FROM ("+sqlStr+")", args...,
 	)
 	if err != nil {

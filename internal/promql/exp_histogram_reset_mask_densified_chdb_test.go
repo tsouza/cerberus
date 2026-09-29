@@ -353,7 +353,8 @@ func resetMaskLower(t *testing.T, expr string, opts promql.LowerOpts, wantDensif
 func resetMaskResetsRun(t *testing.T, fixture *chdbFixture, opts promql.LowerOpts, wantDensified bool) map[string][]float64 {
 	t.Helper()
 	sqlStr, args := resetMaskLower(t, "resets("+resetMaskMetric+"[5m])", opts, wantDensified)
-	rows, err := fixture.db.Query(
+	rows, err := fixture.Query(
+		context.Background(),
 		"SELECT `Attributes`['series'], toString(`Value`) FROM ("+sqlStr+
 			") WHERE `TimeUnix` = toDateTime64('"+resetMaskBaseline.Format("2006-01-02 15:04:05")+"', 9)",
 		args...,
@@ -386,7 +387,8 @@ func resetMaskResetsRun(t *testing.T, fixture *chdbFixture, opts promql.LowerOpt
 func resetMaskIncreaseRun(t *testing.T, fixture *chdbFixture, opts promql.LowerOpts, wantDensified bool) map[string][]float64 {
 	t.Helper()
 	sqlStr, args := resetMaskLower(t, "increase("+resetMaskMetric+"[5m])", opts, wantDensified)
-	rows, err := fixture.db.Query(
+	rows, err := fixture.Query(
+		context.Background(),
 		"SELECT `Attributes`['series'], arrayStringConcat(arrayMap(x -> toString(x), "+
 			"arrayConcat(`HistogramPositiveBucketCounts`, `HistogramNegativeBucketCounts`)), ',') FROM ("+sqlStr+
 			") WHERE `TimeUnix` = toDateTime64('"+resetMaskBaseline.Format("2006-01-02 15:04:05")+"', 9)",

@@ -24,6 +24,7 @@
 package promql_test
 
 import (
+	"context"
 	"database/sql"
 	"regexp"
 	"strings"
@@ -32,6 +33,7 @@ import (
 
 	_ "github.com/chdb-io/chdb-go/chdb/driver"
 
+	"github.com/tsouza/cerberus/internal/chdbsession"
 	"github.com/tsouza/cerberus/internal/testsql"
 )
 
@@ -134,6 +136,22 @@ func newChDBFixture(t *testing.T, seed string) *chdbFixture {
 	return &chdbFixture{db: db, seed: seed}
 }
 
+// Query runs query against the fixture's shared session through
+// [chdbsession.SafeQuery] rather than calling f.db.Query directly.
+//
+// This package's ~1110 chdb-tagged tests all share ONE process-wide chdb-go
+// session (see this file's own header comment), and several of them
+// deliberately run a query a `throwIf` guard rejects (the histogram merge
+// budget tests among them) immediately before another decodes a real
+// Parquet-encoded result on the same session — the exact sequence cerberus
+// issue #3761 corrupts. Every caller that reads rows back from this fixture
+// must go through this method instead of f.db.Query so that sequence is
+// safe package-wide, not just for whichever test happened to be written
+// with the workaround already in mind.
+func (f *chdbFixture) Query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return chdbsession.SafeQuery(ctx, f.db, query, args...)
+}
+
 // queryOverEmitted runs `SELECT <projection> FROM (<emitted>)` and
 // returns the rows for the caller to close.
 //
@@ -151,7 +169,7 @@ func (f *chdbFixture) queryOverEmitted(t *testing.T, projection, emitted string,
 		t.Fatalf("this fixture's seed does not stand on its own — it would pass only while a sibling fixture's tables happen to be present in the shared chDB session: %v\nemitted SQL: %s", err, emitted)
 	}
 	wrapped := "SELECT " + projection + " FROM (" + emitted + ")"
-	rows, err := f.db.Query(wrapped, args...)
+	rows, err := f.Query(context.Background(), wrapped, args...)
 	if err != nil {
 		t.Fatalf("query: %v\nSQL: %s", err, wrapped)
 	}
