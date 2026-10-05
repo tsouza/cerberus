@@ -173,7 +173,7 @@ jobs:
         working-directory: target
         run: node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"
 
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172  # v2.87.20
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0  # v2.87.22
         with:
           tool: just@1.46.0
       - name: Install libchdb.so
@@ -321,7 +321,7 @@ jobs:
         working-directory: target
         run: node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"
 
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172  # v2.87.20
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0  # v2.87.22
         with:
           tool: just@1.46.0
       # Deliberately NOT cached, unlike perf-guards-shard's identical-looking
@@ -436,7 +436,7 @@ jobs:
         working-directory: target
         run: node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"
 
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172  # v2.87.20
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0  # v2.87.22
         with:
           tool: just@1.46.0
       # Deliberately NOT cached — same read-only trust-boundary reasoning as
