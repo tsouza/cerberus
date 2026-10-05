@@ -317,7 +317,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172  # v2.87.20
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0  # v2.87.22
         with:
           tool: just@1.46.0
       - name: Run default-tag coverage lane
@@ -356,7 +356,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172  # v2.87.20
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0  # v2.87.22
         with:
           tool: just@1.46.0
       - name: Install libchdb.so
@@ -437,7 +437,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172  # v2.87.20
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0  # v2.87.22
         with:
           tool: just@1.46.0
       - name: Install libchdb.so
@@ -504,7 +504,7 @@ jobs:
           CHDB_RATCHET_RESULT: ${{ needs.coverage-chdb-ratchet.result }}
 
       - if: env.RUN_HEAVY == 'true'
-        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172  # v2.87.20
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0  # v2.87.22
         with:
           tool: just@1.46.0
       # No `pattern:`-per-name repetition and no explicit `path:` needed:
