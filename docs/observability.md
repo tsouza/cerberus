@@ -138,10 +138,23 @@ The remaining schema knobs are opt-ins rather than table-name overrides:
 
 | Variable                                            | Default | Effect                                                                                                                                                                                                                                                                                                                |
 | --------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_SCHEMA_TRACES_TS_LOOKUP`                  | `false` | When truthy, the Tempo trace-by-ID path window-prunes the spans scan through the OTel-CH `<spans>_trace_id_ts` lookup MV. Enable only after confirming that MV is populated; the lookup-table name derives from the (possibly overridden) spans table as `<spans>_trace_id_ts`.                                       |
+| `CERBERUS_SCHEMA_TRACES_TS_LOOKUP`                  | `false` | When truthy, Tempo trace-by-ID and search-root enrichment window-prune spans through the OTel-CH `<spans>_trace_id_ts` lookup MV. Enable only after confirming that MV covers all retained spans; the lookup-table name derives from the (possibly overridden) spans table as `<spans>_trace_id_ts`.                  |
 | `CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED`              | `false` | Provision the DELTA-temporality prefix-reconstruction aggregate table and its materialized view (`schema.Metrics.DeltaPrefixTable`); a no-op unless `CERBERUS_AUTO_CREATE_SCHEMA` is also `true`. Provisioning only — the read path is gated separately by `CERBERUS_DELTA_PREFIX_READ_ENABLED` (`configuration.md`). |
 | `CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED` | `false` | Provision and route to the curated materialized span/resource attribute columns on the spans table (`http.status_code`, `rpc.method`, `k8s.namespace.name`); a no-op unless `CERBERUS_AUTO_CREATE_SCHEMA` is also `true`.                                                                                             |
 | `CERBERUS_PROM_RESOURCE_LABELS`                     | `""`    | Allowlist of OTel `ResourceAttributes` keys (dotted form, e.g. `k8s.namespace.name`) projected as Prometheus labels; empty promotes every resource key. Config-file key `prom.resourceLabels`.                                                                                                                        |
+
+For search-root enrichment, Cerberus reads the cohort's minimum Start, maximum
+End and distinct trace-ID coverage once, then applies constant timestamp bounds
+with the shared one-second End padding. These are span-start bounds; the trace
+duration still includes each span's Duration. The bounds come from the lookup,
+not the search time range, so roots older than a matching child remain eligible.
+An absent lookup table or incomplete ID coverage retains the full-retention
+trace-ID lookup. Other lookup errors propagate through the existing root
+enrichment error path. Present but incomplete bounds cannot be detected by ID
+coverage: the operator must verify backfill, ingestion consistency and retention
+before enabling the option. The two reads do not form a snapshot; a span arriving
+between the envelope read and the spans read can lie outside the envelope. No schema migration or result cache is enabled by
+this setting.
 
 The active ClickHouse **database** is set by `CERBERUS_CH_DATABASE`
 (default `default`) — that single knob covers both the connection's

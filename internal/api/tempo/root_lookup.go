@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -81,6 +82,16 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 	}
 
 	plan := buildRootLookupPlan(h.Schema, traceIDs)
+	if h.Schema.TraceIDTsEnabled {
+		start, end, covered, err := h.rootLookupEnvelope(ctx, traceIDs)
+		if err != nil {
+			if !chclient.IsUnknownTable(err) {
+				return nil, fmt.Errorf("root lookup: timestamp envelope: %w", err)
+			}
+		} else if covered {
+			plan = buildRootLookupPlanInWindow(h.Schema, traceIDs, start, end)
+		}
+	}
 	// The root-lookup plan scans the spans table bounded by a literal
 	// `TraceId IN (<padded ids>)` set (form-b). Thread the spans table onto the
 	// emit context so chsql.Emit's RequireSpansScansBounded verifies that bound
@@ -170,6 +181,10 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 // span within the same GROUP BY group — keeping the lookup a single
 // round trip while distinguishing root vs. non-root rows.
 func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
+	return buildRootLookupPlanInWindow(s, traceIDs, time.Time{}, time.Time{})
+}
+
+func buildRootLookupPlanInWindow(s schema.Traces, traceIDs []string, start, end time.Time) chplan.Node {
 	// Filter predicate: TraceId IN (<padded-id-1>, <padded-id-2>, ...)
 	// as a single flat chplan.InList. The flatness is load-bearing: the
 	// previous shape rendered a nested OR-chain of Eq predicates, whose
@@ -185,6 +200,13 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	// restriction on the root-span identifying aggregates so the same
 	// group computes both.
 	traceMatch := inStringList(s.TraceIDColumn, padTraceIDs(traceIDs))
+	if !start.IsZero() && !end.IsZero() {
+		traceMatch = &chplan.Binary{Op: chplan.OpAnd, Left: traceMatch, Right: &chplan.Binary{
+			Op:    chplan.OpAnd,
+			Left:  tsScanBound(s.TimestampColumn, chplan.OpGe, start),
+			Right: tsScanBound(s.TimestampColumn, chplan.OpLe, end),
+		}}
+	}
 
 	// rootCond expresses ParentSpanId IN ('', '0000000000000000') — the
 	// on-disk root marker (pre-strip empty form + canonical 16-char

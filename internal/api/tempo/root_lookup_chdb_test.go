@@ -18,6 +18,7 @@ package tempo_test
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
@@ -73,5 +74,61 @@ func TestResolveMissingRoots_ParseDepthFlatAt1500IDs_ChDB(t *testing.T) {
 	// 0.5s — max(ts+dur) - min(ts) = 1.5s.
 	if summaries[0].DurationMs != 1500 {
 		t.Errorf("DurationMs = %d, want 1500 (trace-wide wall-clock span)", summaries[0].DurationMs)
+	}
+}
+
+// Timestamp envelopes must include roots older than the search window and the
+// final fractional-second span. An incomplete cohort must use full retention.
+func TestResolveMissingRoots_TimestampEnvelope_ChDB(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		lookup       string
+		createLookup bool
+	}{
+		{name: "complete", createLookup: true, lookup: `('a0000000000000000000000000000001', '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+   ('a0000000000000000000000000000001', '2026-05-01 10:00:00', '2026-05-01 10:00:01'),
+   ('b0000000000000000000000000000002', '2026-03-01 10:00:00', '2026-03-01 10:00:00')`},
+		{name: "partial", createLookup: true, lookup: `('a0000000000000000000000000000001', '2026-04-01 10:00:00', '2026-05-01 10:00:01')`},
+		{name: "empty", createLookup: true},
+		{name: "absent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := chclienttest.NewChDB(t)
+			c.Seed(t, `CREATE TABLE otel_traces (
+   TraceId String, SpanId String, ParentSpanId String, SpanName String,
+   Duration Int64, Timestamp DateTime64(9), ResourceAttributes Map(String,String)
+  ) ENGINE=MergeTree() PARTITION BY toDate(Timestamp) ORDER BY Timestamp;`)
+			c.Seed(t, `INSERT INTO otel_traces VALUES
+   ('a0000000000000000000000000000001','1000000000000001','','old root',1000000000,toDateTime64('2026-04-01 10:00:00',9),map('service.name','frontend')),
+   ('a0000000000000000000000000000001','1000000000000002','1000000000000001','child',3000000000,toDateTime64('2026-05-01 10:00:01.999999999',9),map('service.name','worker')),
+   ('b0000000000000000000000000000002','2000000000000001','','older root',1000000000,toDateTime64('2026-03-01 10:00:00',9),map('service.name','backend'));`)
+			if tc.createLookup {
+				c.Seed(t, `CREATE TABLE otel_traces_trace_id_ts (TraceId String,Start DateTime,End DateTime) ENGINE=MergeTree() ORDER BY (TraceId,Start);`)
+				if tc.lookup != "" {
+					c.Seed(t, "INSERT INTO otel_traces_trace_id_ts VALUES "+tc.lookup)
+				}
+			}
+			ids := []string{"a0000000000000000000000000000001", "b0000000000000000000000000000002", "a0000000000000000000000000000001"}
+			run := func(enabled bool) []tempo.TraceSummary {
+				s := schema.DefaultOTelTraces()
+				s.TraceIDTsEnabled = enabled
+				h := tempo.New(c, s, "test", nil)
+				summaries := []tempo.TraceSummary{{TraceID: ids[0]}, {TraceID: ids[1]}}
+				if err := h.ResolveMissingRoots(context.Background(), summaries, ids); err != nil {
+					t.Fatal(err)
+				}
+				return summaries
+			}
+			want, got := run(false), run(true)
+			if !reflect.DeepEqual(want, got) {
+				t.Fatalf("bounded summaries differ: got %+v, want %+v", got, want)
+			}
+			if got[0].RootTraceName != "old root" || got[1].RootTraceName != "older root" {
+				t.Fatalf("old roots missing: %+v", got)
+			}
+			if got[0].DurationMs <= 0 || got[1].DurationMs != 1000 {
+				t.Fatalf("duration missing: %+v", got)
+			}
+		})
 	}
 }

@@ -93,12 +93,12 @@ type Traces struct {
 	SpansTable string
 
 	// TraceIDTsTable names the `<spans>_trace_id_ts` lookup table the
-	// OTel-CH exporter populates via a materialized view: one row per
-	// TraceId carrying (Start, End) = (min, max) of the trace's span
+	// OTel-CH exporter populates via a materialized view: rows per ingested
+	// TraceId batch carrying (Start, End) = (min, max) of the batch's span
 	// Timestamps. Cerberus reads it to inject a Timestamp-window
-	// pre-filter into the trace-by-ID spans scan so the spans table can
-	// Partition/PrimaryKey/MinMax-prune to ~1 granule instead of scanning
-	// every part to apply the bloom filter. Defaults to
+	// pre-filter into trace-by-ID and search-root spans scans so the spans
+	// table can Partition/PrimaryKey/MinMax-prune the actual trace window
+	// instead of scanning every part to apply the bloom filter. Defaults to
 	// `<SpansTable>_trace_id_ts`.
 	TraceIDTsTable string
 	// TraceIDTsStartColumn names the trace-window lower-bound column on
@@ -118,7 +118,10 @@ type Traces struct {
 	// confirming the MV is populated — matching the AutoCreateSchema
 	// "operator owns DDL" posture and avoiding an emit-time table-existence
 	// probe (a layering violation). With the gate off, lowerTraceByID emits
-	// today's plain `TraceId = ?` filter unchanged.
+	// today's plain `TraceId = ?` filter unchanged. Search root enrichment
+	// also uses this opt-in, reading one cohort envelope before its spans query;
+	// empty/incomplete coverage or an absent lookup table retains its unbounded
+	// trace-ID lookup. Present rows must cover all retained spans of their trace.
 	TraceIDTsEnabled bool
 
 	// TraceIDColumn names the trace-id column. Upstream `traces_table.sql`
