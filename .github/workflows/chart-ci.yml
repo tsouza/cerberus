@@ -147,7 +147,7 @@ jobs:
 
       - name: chart-testing (ct) lint
         if: steps.changes.outputs.chart == 'true'
-        uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f  # v2
+        uses: helm/chart-testing-action@720270857a28afd41e2426521a7801db09e9b510  # v2.9.0
 
       # No `--charts` override: let ct's changed-chart detection drive the
       # version-bump enforcement. A PR that touches CI/scripts but not the
