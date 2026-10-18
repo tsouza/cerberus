@@ -67,7 +67,7 @@ env:
   MUTATION_CACHE: ${{ (github.event_name == 'pull_request' && vars.MUTATION_CACHE_DISABLED != 'true') && 'read-write' || 'off' }}
   # Read by the install step, and by the cache key (in the legs and again in
   # the aggregator), which resolves the ref to the fork commit it names.
-  GREMLINS_INSTALL: github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-verdict-cache-consume
+  GREMLINS_INSTALL: github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-env-ignore-commas-consume
   # The runner's per-mutant bounds (see the `gremlins unleash` step); part
   # of the cache key because they can move a verdict.
   MUTANT_TIMEOUT_MIN: 15s
@@ -366,6 +366,11 @@ jobs:
       #
       #   --cache-dir / --cache-salt     the per-mutant verdict cache wired in
       #     above (#3712).
+      #
+      #   --cache-env-ignore splits a comma-separated value
+      #     The flag took the whole comma-joined list mutation-run.mjs passes as
+      #     one pattern that no variable matched, so every key kept the per-run
+      #     Actions variables and no run could hit another's entry (#3828).
       # Routed through go-module-fetch.mjs because gremlins is NOT in go.mod, so
       # the warm step in ./.github/actions/setup-go — which runs
       # `go mod download` over the main module's own requirements — does not
