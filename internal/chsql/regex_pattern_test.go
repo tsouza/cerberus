@@ -94,6 +94,10 @@ func TestLineFilterRegex_MeansUnderDotNLWhatGoDefaultsMean(t *testing.T) {
 		{`[^]]x.`, `[^]]x[^\n]`},
 		{`[[:alpha:].]+.`, `[[:alpha:].]+[^\n]`},
 		{`\Qa.b\E.`, `\Qa.b\E[^\n]`},
+		{`\Q\E.`, `\Q\E[^\n]`},
+		{`[^].]x.`, `[^].]x[^\n]`},
+		{`(?s:a).`, `(?s:a)[^\n]`},
+		{`(?i:a)(?-s).`, `(?i:a)(?-s)[^\n]`},
 		{`\Qa.b`, `\Qa.b`},
 		{`status=5..`, `status=5[^\n][^\n]`},
 		{`x(?s:.)y.`, `(?-s)x(?s:.)y.`},
@@ -229,6 +233,35 @@ func TestLineFilterLiteralPrefix_EveryMatchContainsIt(t *testing.T) {
 			if re.MatchString(in) && !strings.Contains(in, prefix) {
 				t.Errorf("%q matches %q, which lacks its literal prefix %q", p, in, prefix)
 			}
+		}
+	}
+}
+
+// TestClassEnd pins where spellDotsAsNotNewline's class scan ends, on its
+// own: a class that does not close — one lineFilterRegex never hands it,
+// since such a pattern does not parse — is reported as such, never read
+// past the end of the pattern.
+func TestClassEnd(t *testing.T) {
+	for _, tc := range []struct {
+		pattern string
+		end     int
+		ok      bool
+	}{
+		{`[a]x`, 3, true},
+		{`[]a]`, 4, true},
+		{`[^]a]`, 5, true},
+		{`[\]]`, 4, true},
+		{`[[:alpha:].]`, 12, true},
+		{`[`, 0, false},
+		{`[^`, 0, false},
+		{`[]`, 0, false},
+		{`[a`, 0, false},
+		{`[\`, 0, false},
+		{`[[:alpha`, 0, false},
+	} {
+		end, ok := classEnd(tc.pattern, 0)
+		if end != tc.end || ok != tc.ok {
+			t.Errorf("classEnd(%q, 0) = %d, %v; want %d, %v", tc.pattern, end, ok, tc.end, tc.ok)
 		}
 	}
 }

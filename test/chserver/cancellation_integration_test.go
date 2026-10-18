@@ -90,97 +90,6 @@ type cancelShape struct {
 	query string
 }
 
-// callProgress is the part of one system.processes row the inCall
-// predicates read.
-type callProgress struct {
-	elapsed             time.Duration
-	readRows, totalRows uint64
-	// filterPassedRows and functionExecutions are the query's
-	// FilterTransformPassedRows and FunctionExecute profile events: the rows
-	// its FilterTransforms have passed, and the function executions it has
-	// started — once per block for an ordinary function, once per element
-	// for a lambda a higher-order function applies element by element.
-	filterPassedRows, functionExecutions uint64
-}
-
-// workMeter is the unit in which a probe measures how much of a shape's work
-// a cancellation left and how much of it the server performed afterwards.
-type workMeter int
-
-const (
-	// wallClock measures work as server time: what was left is the natural
-	// run's duration less the time the query had run, and what was performed
-	// is how long after the cancellation the query_log shows the work ending.
-	// It suits a call whose own teardown is negligible next to its run.
-	wallClock workMeter = iota
-	// loopExecutions measures work as the FunctionExecute profile events the
-	// call's per-element loop performs. An interrupted arrayFold still frees
-	// the per-element slices its loop had not consumed, and that teardown
-	// costs time in proportion to the work left, so server time cannot tell
-	// it from the loop running on; the loop's own executions can, because
-	// teardown executes no function. What was left is the natural run's loop
-	// executions less those the query had performed at the cancellation, and
-	// what was performed is the query's final count less its count then.
-	loopExecutions
-)
-
-// inputRead reports that the query's sources have read every row they will
-// read.
-func (p callProgress) inputRead() bool { return p.totalRows > 0 && p.readRows >= p.totalRows }
-
-// foldLoopRunning is array_fold's inCall. The fold is evaluated by the
-// ExpressionTransform that follows the emitted `WHERE length(window_vals) >=
-// 2`, whose FilterTransform passes the aggregated series row last. By then
-// the query has executed its functions once per block, a few hundred times.
-// arrayFold first splits its input into per-element arguments, which no
-// pinned build interrupts, and then applies its lambda once per element: the
-// loop ClickHouse#108192 made check for cancellation. The fold's own
-// expression executes only a handful of functions outside that loop, so the
-// count passing foldLoopGrowth times its value at the filter's pass is the
-// loop running.
-func foldLoopRunning(readings []callProgress) bool {
-	base, ok := foldLoopBaseline(readings)
-	return ok && readings[len(readings)-1].functionExecutions > foldLoopGrowth*base
-}
-
-// foldLoopBaseline is array_fold's function-execution count at the filter's
-// pass, the first reading at which the fold's expression has its input: the
-// count the query had performed before the fold's loop began. ok is false
-// while no reading has seen the filter pass.
-func foldLoopBaseline(readings []callProgress) (base uint64, ok bool) {
-	i := slices.IndexFunc(readings, func(p callProgress) bool { return p.filterPassedRows > 0 })
-	if i < 0 {
-		return 0, false
-	}
-	return readings[i].functionExecutions, true
-}
-
-// foldLoopGrowth is the factor by which array_fold's function executions
-// must grow past their count at the filter's pass; see foldLoopRunning.
-const foldLoopGrowth = 2
-
-// regexCallRunning is regex_replace's inCall. The normalization runs
-// replaceRegexpAll once over the block the read produced, so for the whole
-// call the query's function-execution count stands still. The actions ahead
-// of it in the same expression each run briefly over bytes the read already
-// produced; on 26.7.13.12 a cancellation landing after the read's progress
-// report but before the call was observed to end the query at once. None of
-// those actions takes as long as producing its input took, so the count
-// standing still, with the input read, for longer than the query needed to
-// read that input is the call running.
-func regexCallRunning(readings []callProgress) bool {
-	i := slices.IndexFunc(readings, callProgress.inputRead)
-	if i < 0 {
-		return false
-	}
-	last := len(readings) - 1
-	since := last
-	for since > i && readings[since-1].functionExecutions == readings[last].functionExecutions {
-		since--
-	}
-	return readings[last].elapsed-readings[since].elapsed > readings[i].elapsed
-}
-
 var cancelShapes = []cancelShape{
 	{
 		// double_exponential_smoothing lowers to an arrayFold over the
@@ -248,7 +157,6 @@ const (
 	// size; 60s covers that observed growth with headroom to spare.
 	runningBudget    = 60 * time.Second
 	closeBudget      = 30 * time.Second
-	pollInterval     = 50 * time.Millisecond
 	shardedDB        = "sharded"
 	shardCluster     = "chserver"
 	shardCount       = 2
@@ -450,46 +358,69 @@ func assertErrorType(t *testing.T, rec *httptest.ResponseRecorder, want string) 
 	}
 }
 
+// probeRequestDeadline drives the production handler's request deadline. The
+// deadline is fixed when the request starts, so where its cancellation lands
+// depends on how long the query takes to reach the call; landRequestDeadline
+// re-arms it until one lands inside the call, and only that dispatch is
+// judged. Every dispatch, judged or not, must be answered 503
+// errorType=timeout within budget and free its admission slot.
 func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, want cancelExpectation) {
-	deadline := want.requestDeadline()
-	p := newPromProbe(t, s, rules, deadline)
-	qid := cancelQueryID(shape, "deadline")
-	start := time.Now()
-	cutoff := start.Add(deadline)
-	done := make(chan *httptest.ResponseRecorder, 1)
-	go func() { done <- p.serve(chclient.WithQueryID(ctx, qid), shape) }()
-	// Every reading that completed before the deadline shows the query as
-	// it was at the cancellation or earlier.
 	var (
-		seen []callProgress
-		rec  *httptest.ResponseRecorder
+		p      promProbe
+		qid    string
+		cutoff time.Time
 	)
-	for rec == nil {
-		select {
-		case rec = <-done:
-		case <-time.After(pollInterval):
-			if pr, running := s.callProgress(ctx, t, qid); running && time.Now().Before(cutoff) {
-				seen = append(seen, pr)
+	dispatch := func(deadline time.Duration) []callProgress {
+		p = newPromProbe(t, s, rules, deadline)
+		qid = cancelQueryID(shape, "deadline")
+		start := time.Now()
+		cutoff = start.Add(deadline)
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() { done <- p.serve(chclient.WithQueryID(ctx, qid), shape) }()
+		// Every reading that completed before the deadline shows the query as
+		// it was at the cancellation or earlier.
+		var (
+			seen []callProgress
+			rec  *httptest.ResponseRecorder
+		)
+		for rec == nil {
+			select {
+			case rec = <-done:
+			case <-time.After(pollInterval):
+				if pr, running := s.callProgress(ctx, t, qid); running && time.Now().Before(cutoff) {
+					seen = append(seen, pr)
+				}
 			}
 		}
+		answered := time.Since(start)
+		assertErrorType(t, rec, "timeout")
+		// The answer waits for cerberus's KILL QUERY ... SYNC, which confirms
+		// promptly where the call is interruptible and gives up after
+		// chclient.KillDataShardQueryTimeout where it is not.
+		budget := deadline + handlerSlack
+		if !want.bounded {
+			budget += chclient.KillDataShardQueryTimeout
+		}
+		if answered > budget {
+			t.Errorf("the client was answered after %s; want within %s", answered, budget)
+		}
+		p.assertAdmissionFree(t)
+		return seen
 	}
-	answered := time.Since(start)
-	assertErrorType(t, rec, "timeout")
-	// The answer waits for cerberus's KILL QUERY ... SYNC, which confirms
-	// promptly where the call is interruptible and gives up after
-	// chclient.KillDataShardQueryTimeout where it is not.
-	budget := deadline + handlerSlack
-	if !want.bounded {
-		budget += chclient.KillDataShardQueryTimeout
+	// A dispatch that cannot be judged still runs on where its call cannot be
+	// interrupted; the next one must not share the server with it.
+	discard := func() {
+		if !s.goneWithin(ctx, t, []string{qid}, naturalRunBudget) {
+			t.Fatalf("server work for unjudged dispatch %s still running after %s", qid, naturalRunBudget)
+		}
+		p.assertPoolReleased(t)
 	}
-	if answered > budget {
-		t.Errorf("the client was answered after %s; want within %s", answered, budget)
+	deadline, seen, err := want.landRequestDeadline(shape.inCall, dispatch, discard)
+	if err != nil {
+		t.Fatalf("%s request deadline: %v", shape.function, err)
 	}
-	p.assertAdmissionFree(t)
-	if !shape.inCall(seen) {
-		t.Fatalf("the %s request deadline passed before query %s reached its %s call; the probe judges only a "+
-			"cancellation inside the call", deadline, qid, shape.function)
-	}
+	t.Logf("request deadline %s (calibrated %s) landed query %s inside its %s call", deadline, want.requestDeadline(), qid,
+		shape.function)
 	// The server's own max_execution_time is the cancellation here.
 	s.assertServerWorkEnds(ctx, t, []string{qid}, want, cutoff, map[string][]callProgress{qid: seen})
 	p.assertPoolReleased(t)
@@ -698,77 +629,6 @@ func (s *server) callProgress(ctx context.Context, t *testing.T, qid string) (p 
 	return p, n > 0
 }
 
-// cancelExpectation is what one shape must show on one build: whether the
-// build interrupts its CPU-bound call, the meter its work is judged in, and
-// the shape's natural run (see naturalProfile).
-type cancelExpectation struct {
-	bounded bool
-	meter   workMeter
-	naturalProfile
-}
-
-// requestDeadline is the request timeout the deadline probe sends. Unlike
-// the other probes it cannot wait for inCall: the deadline is fixed before
-// the query starts. It sits midway between the natural run's entry into the
-// call and the latest instant that still leaves the least work the probe
-// judges — minRemaining of server time under wallClock, 1/minLoopLeftFraction
-// of the loop under loopExecutions, whose executions advance at an even rate
-// from the entry to the end of the run — so the deadline clears the entry,
-// and the probe's remainder clears that floor, by the same margin.
-func (w cancelExpectation) requestDeadline() time.Duration {
-	call := w.natural - w.entered
-	if w.meter == loopExecutions {
-		return w.entered + (call-call/minLoopLeftFraction)/2
-	}
-	return w.entered + (call-minRemaining)/2
-}
-
-// loopLeft is how many of the natural run's loop executions a query whose
-// readings up to its cancellation are seen still had to perform. ok is false
-// when no reading saw the fold's input arrive.
-func (w cancelExpectation) loopLeft(seen []callProgress) (left uint64, ok bool) {
-	base, ok := foldLoopBaseline(seen)
-	if !ok {
-		return 0, false
-	}
-	done := seen[len(seen)-1].functionExecutions - base
-	return w.loopExecutions - min(done, w.loopExecutions), true
-}
-
-// Separation, relative to the work left at the cancellation (left) in the
-// shape's meter. An interrupted call may perform at most
-// left/interruptedFraction of it after the cancellation; an uninterrupted one
-// runs the call out and must perform at least left/uninterruptedFraction.
-// Both scale with the calibrated workload, so neither is tied to a runner's
-// speed, and the band between a quarter and a half of the remainder separates
-// them. Under wallClock the work performed is the time the query ran on,
-// which on an interrupted build is its own teardown and scheduling noise:
-// minRemaining is the least remainder judged, so a quarter of it stands clear
-// of both. Under loopExecutions the work performed by an interrupted call is
-// the executions between the last reading and the cancellation taking effect
-// — measured locally on 26.7.13.12 and 26.8.10.6 at no more than two percent of
-// what was left — and minLoopLeftFraction keeps the remainder at least half
-// the loop, so that even a quarter of it is many times that, and an
-// uninterrupted call's run out is at least a quarter of the whole loop.
-const (
-	interruptedFraction   = 4
-	uninterruptedFraction = 2
-	minRemaining          = 6 * time.Second
-	minLoopLeftFraction   = 2
-)
-
-// separated reports whether after, the work the server performed past the
-// cancellation, lies on the side of left, the work the cancellation left,
-// that the build must show, and the bound it was held to.
-func separated(bounded bool, after, left float64) (ok bool, bound float64) {
-	if bounded {
-		bound = left / interruptedFraction
-		return after <= bound, bound
-	}
-	bound = left / uninterruptedFraction
-	return after >= bound, bound
-}
-
 // assertServerWorkEnds runs the moment cerberus has released the capacity a
 // cancelled dispatch held — its admission slot or its fan-out gate weight.
 // seen holds each statement's readings up to the cancellation at cancelAt.
@@ -837,33 +697,20 @@ func (s *server) assertWallClockSeparation(ctx context.Context, t *testing.T, id
 // performed from that reading to its end, by its query_log row.
 func (s *server) assertLoopSeparation(ctx context.Context, t *testing.T, id string, want cancelExpectation, seen []callProgress) {
 	t.Helper()
-	left, ok := want.loopLeft(seen)
-	if !ok {
-		t.Fatalf("no reading of %s before the cancellation saw the fold's input arrive", id)
+	j, err := want.judgeLoop(seen, s.finalExecutions(ctx, t, id))
+	if err != nil {
+		t.Fatalf("%s: %v", id, err)
 	}
-	atCancel := seen[len(seen)-1].functionExecutions
-	final := s.finalExecutions(ctx, t, id)
-	if final < atCancel {
-		t.Fatalf("query_log reports %d function executions for %s, fewer than the %d system.processes read before its end",
-			final, id, atCancel)
-	}
-	after := final - atCancel
 	t.Logf("server work for %s: natural loop %d executions, %d left at the cancellation, %d performed after it",
-		id, want.loopExecutions, left, after)
-	if left*minLoopLeftFraction < want.loopExecutions {
-		t.Fatalf("only %d of the call's %d loop executions were left at the cancellation of %s; the probe needs at least "+
-			"1/%d of the loop to separate an interrupted call from an uninterrupted one", left, want.loopExecutions, id,
-			minLoopLeftFraction)
-	}
-	ok, bound := separated(want.bounded, float64(after), float64(left))
+		id, want.loopExecutions, j.left, j.after)
 	switch {
-	case ok:
+	case j.ok:
 	case want.bounded:
 		t.Errorf("%s performed %d loop executions after the cancellation; want at most %.0f (a quarter of the %d left) "+
-			"on a build that interrupts the call", id, after, bound, left)
+			"on a build that interrupts the call", id, j.after, j.bound, j.left)
 	default:
 		t.Errorf("%s performed %d loop executions after the cancellation; want at least %.0f (half of the %d left) on a "+
-			"build that cannot interrupt the call", id, after, bound, left)
+			"build that cannot interrupt the call", id, j.after, j.bound, j.left)
 	}
 }
 
@@ -922,17 +769,6 @@ func (s *server) workSpan(ctx context.Context, t *testing.T, ids []string) (star
 		t.Fatalf("query_log has no terminal row for %v", ids)
 	}
 	return time.UnixMicro(startMicros), time.UnixMicro(endMicros)
-}
-
-// naturalProfile is a shape's uncancelled run, the yardstick
-// assertServerWorkEnds measures a cancellation against: how long the server
-// took, how far into that run shape.inCall first held, and how many function
-// executions the fold's loop performed in it (zero for a shape whose inCall
-// is not foldLoopRunning). A run inCall was never seen to hold in reports
-// entered as natural: none of its work can be counted as the call's.
-type naturalProfile struct {
-	natural, entered time.Duration
-	loopExecutions   uint64
 }
 
 // runShape dispatches shape's emitted SQL as qid on the administrative
