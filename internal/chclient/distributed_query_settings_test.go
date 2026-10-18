@@ -22,6 +22,7 @@ func TestDistributedQuerySettings_ExactNames(t *testing.T) {
 		{"settingLoadBalancing", settingLoadBalancing, "load_balancing"},
 		{"settingLoadBalancingFirstOffset", settingLoadBalancingFirstOffset, "load_balancing_first_offset"},
 		{"loadBalancingFirstOrRandom", loadBalancingFirstOrRandom, "first_or_random"},
+		{"settingUseHedgedRequests", settingUseHedgedRequests, "use_hedged_requests"},
 		{"settingDistributedProductMode", settingDistributedProductMode, "distributed_product_mode"},
 		{"distributedProductModeGlobal", distributedProductModeGlobal, "global"},
 	}
@@ -53,6 +54,31 @@ func TestQuerySettings_LoadBalancingPin(t *testing.T) {
 		}
 		if got := s[settingFallbackToStaleReplicasForDistributedQueries]; got != 0 {
 			t.Errorf("%s = %v; want 0 (must not be clobbered)", settingFallbackToStaleReplicasForDistributedQueries, got)
+		}
+	}
+}
+
+// TestQuerySettings_HedgedRequestsDisabled — cerberus issue #3148: every
+// querySettings() call stamps use_hedged_requests=0 UNCONDITIONALLY,
+// alongside (never clobbering) the load_balancing pin it completes. With
+// hedged requests left at ClickHouse's default (1), a remote-shard replica
+// that is merely slow to answer is raced against the next replica and
+// demoted via slowdown_count, splitting one request's statements across
+// two replicas of the same shard while system.clusters.errors_count stays
+// 0 — the load_balancing pin alone does not hold.
+func TestQuerySettings_HedgedRequestsDisabled(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []*Client{{}, {maxMemory: 1 << 30}} {
+		s := c.querySettings(context.Background())
+		if got, ok := s[settingUseHedgedRequests]; !ok || got != 0 {
+			t.Errorf("%s = %v (present=%v); want 0", settingUseHedgedRequests, got, ok)
+		}
+		if got := s[settingLoadBalancing]; got != loadBalancingFirstOrRandom {
+			t.Errorf("%s = %v; want %q (must not be clobbered)", settingLoadBalancing, got, loadBalancingFirstOrRandom)
+		}
+		if got := s[settingLoadBalancingFirstOffset]; got != 0 {
+			t.Errorf("%s = %v; want 0 (must not be clobbered)", settingLoadBalancingFirstOffset, got)
 		}
 	}
 }

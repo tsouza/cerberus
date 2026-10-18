@@ -111,9 +111,16 @@ export const clusterHealthDefaultDeadlineSeconds =
 const clusterHealthPollIntervalMs = 5_000;
 
 // waitForClusterHealth polls `system.clusters` until every (shard, replica)
-// row's errors_count is 0, or deadlineMs elapses (cerberus issue #3148,
-// promoted to this shared module by issue #3172 — same class as #3109/PR
-// #3125's mode-toggle readiness race).
+// row's errors_count is 0 on EVERY node of the cluster, or deadlineMs
+// elapses (cerberus issue #3148, promoted to this shared module by issue
+// #3172 — same class as #3109/PR #3125's mode-toggle readiness race).
+//
+// The error counts are per NODE: each ClickHouse server keeps its own
+// `PoolWithFailoverBase` state for the peers it dials, and any data-shard-0
+// replica can be the initiator a cerberus pod's sessionAffinity lands on.
+// Reading only `target`'s own `system.clusters` would pass while another
+// initiator still carries a refused dial, so the poll reads every node's
+// view through `clusterAllReplicas`.
 //
 // THE RACE THIS EXISTS TO CLOSE: `just e2e-datashard-up`'s readiness gate
 // is `kubectl rollout status`, which only proves each ClickHouse pod's own
@@ -143,20 +150,22 @@ export async function waitForClusterHealth(kubectl, target, chOpts, { cluster, d
         kubectl,
         target,
         { ...chOpts, format: 'TSVRaw' },
-        `SELECT shard_num, replica_num, errors_count
-         FROM system.clusters WHERE cluster = '${cluster}'
-         ORDER BY shard_num, replica_num`,
+        `SELECT hostName() AS node, shard_num, replica_num, errors_count
+         FROM clusterAllReplicas('${cluster}', system.clusters) WHERE cluster = '${cluster}'
+         ORDER BY node, shard_num, replica_num`,
       );
       const rows = out.split('\n').map((l) => l.trimEnd()).filter((l) => l.length > 0);
-      lastDirty = rows.map((r) => r.split('\t')).filter(([, , errorsCount]) => Number(errorsCount) !== 0);
+      lastDirty = rows.map((r) => r.split('\t')).filter(([, , , errorsCount]) => Number(errorsCount) !== 0);
       return lastDirty.length === 0;
     },
     { deadlineMs, intervalMs, label: 'cluster-health' },
   );
   if (!ok) {
-    const detail = lastDirty.map(([shard, replica, n]) => `shard=${shard} replica=${replica} errors_count=${n}`).join('; ');
+    const detail = lastDirty
+      .map(([node, shard, replica, n]) => `node=${node} shard=${shard} replica=${replica} errors_count=${n}`)
+      .join('; ');
     throw new Error(
-      `system.clusters never reached a clean state (errors_count=0 for every replica) within ` +
+      `system.clusters never reached a clean state (errors_count=0 for every replica, on every node) within ` +
         `${(deadlineMs / 1000).toFixed(0)}s: ${detail} — firing load now would risk observing a ` +
         `decision still influenced by the connection errors this poll exists to wait out`,
     );

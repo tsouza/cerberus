@@ -888,9 +888,9 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 }
 
 // querySettings returns the per-query ClickHouse settings map applied
-// to every data-plane query. It always carries at least the four
-// distributed-query pins below (cerberus issues #3078, #3086), so it is
-// never nil. It carries:
+// to every data-plane query. It always carries at least the six
+// distributed-query pins below (cerberus issues #3078, #3086, #3118,
+// #3148), so it is never nil. It carries:
 //
 //   - `skip_unavailable_shards=0` +
 //     `fallback_to_stale_replicas_for_distributed_queries=0` —
@@ -903,6 +903,12 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 //     see distributed_query_settings.go for the full citation and its
 //     documented read-concentration trade-off); likewise a no-op against a
 //     single-shard/non-Distributed deployment.
+//   - `use_hedged_requests=0` — UNCONDITIONAL pin that keeps a merely SLOW
+//     offset-0 replica from being raced and replaced mid-request by
+//     ClickHouse's hedged-request path, which would otherwise move the
+//     load_balancing pin above without recording a single connection error
+//     (cerberus issue #3148 — see distributed_query_settings.go); likewise
+//     a no-op against a single-shard/non-Distributed deployment.
 //   - `distributed_product_mode=global` — UNCONDITIONAL, version-safe pin
 //     that rewrites any self-referencing JOIN/IN subquery against the SAME
 //     Distributed table (TraceQL's structural-child/sibling/descendant
@@ -949,9 +955,10 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	timeout := c.effectiveQueryTimeout(ctx)
 	blockSize := maxBlockSizeFromContext(ctx)
 	// skip_unavailable_shards=0, fallback_to_stale_replicas_for_distributed_queries=0,
-	// load_balancing=first_or_random, load_balancing_first_offset=0 and
-	// distributed_product_mode=global are all pinned UNCONDITIONALLY
-	// (cerberus issues #3078, #3086 and #3118 — see
+	// load_balancing=first_or_random, load_balancing_first_offset=0,
+	// use_hedged_requests=0 and distributed_product_mode=global are all
+	// pinned UNCONDITIONALLY (cerberus issues #3078, #3086, #3148 and
+	// #3118 — see
 	// distributed_query_settings.go for the full citation of each
 	// setting's documented behavior and why its stamped value is correct
 	// for a correctness-focused gateway), so this map is never empty and
@@ -962,6 +969,7 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 		settingFallbackToStaleReplicasForDistributedQueries: 0,
 		settingLoadBalancing:                                loadBalancingFirstOrRandom,
 		settingLoadBalancingFirstOffset:                     0,
+		settingUseHedgedRequests:                            0,
 		settingDistributedProductMode:                       distributedProductModeGlobal,
 	}
 	if c.maxMemory > 0 {

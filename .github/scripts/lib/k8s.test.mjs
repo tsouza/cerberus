@@ -72,7 +72,7 @@ test('chQuery returns trimmed stdout on success', () => {
 });
 
 test('waitForClusterHealth resolves once every replica reports errors_count=0', async () => {
-  const { capture, calls } = fakeCapture([{ status: 0, stdout: '0\t0\t0\n0\t1\t0\n', stderr: '' }]);
+  const { capture, calls } = fakeCapture([{ status: 0, stdout: 'ch-0-0\t1\t1\t0\nch-0-1\t1\t2\t0\n', stderr: '' }]);
   const kubectl = makeKubectl(capture, 'cerberus');
   const elapsed = await waitForClusterHealth(kubectl, 'chpod', { database: 'otel' }, {
     cluster: 'bwc_cluster', deadlineMs: 1000, intervalMs: 0,
@@ -81,12 +81,14 @@ test('waitForClusterHealth resolves once every replica reports errors_count=0', 
   assert.equal(calls.length, 1);
   assert.match(calls[0].join(' '), /--format TSVRaw/);
   assert.match(calls[0].join(' '), /cluster = 'bwc_cluster'/);
+  // Every node's own selection state, not only the exec target's.
+  assert.match(calls[0].join(' '), /clusterAllReplicas\('bwc_cluster', system\.clusters\)/);
 });
 
 test('waitForClusterHealth retries until errors_count clears', async () => {
   const { capture, calls } = fakeCapture([
-    { status: 0, stdout: '0\t0\t3\n', stderr: '' }, // dirty — retries
-    { status: 0, stdout: '0\t0\t0\n', stderr: '' }, // clean — resolves
+    { status: 0, stdout: 'ch-0-0\t1\t1\t0\nch-0-1\t2\t1\t3\n', stderr: '' }, // another node dirty — retries
+    { status: 0, stdout: 'ch-0-0\t1\t1\t0\nch-0-1\t2\t1\t0\n', stderr: '' }, // clean — resolves
   ]);
   const kubectl = makeKubectl(capture, 'cerberus');
   await waitForClusterHealth(kubectl, 'chpod', {}, { cluster: 'bwc_cluster', deadlineMs: 1000, intervalMs: 0 });
@@ -94,11 +96,11 @@ test('waitForClusterHealth retries until errors_count clears', async () => {
 });
 
 test('waitForClusterHealth rejects with dirty-row detail once deadlineMs elapses', async () => {
-  const capture = () => ({ status: 0, stdout: '0\t0\t7\n1\t0\t2\n', stderr: '' });
+  const capture = () => ({ status: 0, stdout: 'ch-0-0\t1\t1\t7\nch-0-1\t2\t1\t2\n', stderr: '' });
   const kubectl = makeKubectl(capture, 'cerberus');
   await assert.rejects(
     () => waitForClusterHealth(kubectl, 'chpod', {}, { cluster: 'bwc_cluster', deadlineMs: 15, intervalMs: 5 }),
-    /shard=0 replica=0 errors_count=7; shard=1 replica=0 errors_count=2/,
+    /node=ch-0-0 shard=1 replica=1 errors_count=7; node=ch-0-1 shard=2 replica=1 errors_count=2/,
   );
 });
 

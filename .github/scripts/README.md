@@ -2942,19 +2942,26 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   confirming the `load_balancing=first_or_random` +
   `load_balancing_first_offset=0` mechanism
   (`internal/chclient/distributed_query_settings.go`), not just its
-  consequence. Before firing the burst, polls `system.clusters.errors_count`
-  to a clean state (bounded by `HEALTH_POLL_SECONDS`, default 60) — pod
-  readiness (`e2e-datashard-up`'s own gate) proves a container passed its
-  probe, not that every node can already reach every peer replica, and a
-  burst fired during that gap can observe a replica-selection decision still
-  influenced by the connection errors ClickHouse's own error-count decay
-  window has not yet cleared (cerberus issue #3148). INFORMATIONAL — never a
-  PR gate.
+  consequence. Also asserts every statement of those traces reached the
+  initiator with `use_hedged_requests=0` and recorded zero
+  `HedgedRequestsChangeReplica` profile events (`system.query_log`). Before
+  firing the burst, polls every node's `system.clusters.errors_count` (via
+  `clusterAllReplicas`) to a clean state (bounded by `HEALTH_POLL_SECONDS`,
+  default two `distributed_replica_error_half_life` periods) — pod readiness
+  (`e2e-datashard-up`'s own gate) proves a container passed its probe, not
+  that every node can already reach every peer replica. On any failure it
+  prints the replica-selection evidence captured at that moment: every
+  node's `system.clusters` row (`errors_count`, `slowdowns_count`,
+  `estimated_recovery_time`), and per multi-statement trace the initiator
+  rows' hedging settings and profile events plus the child statements
+  grouped by (hostname, type). INFORMATIONAL — never a PR gate.
   - Env: `NAMESPACE` (default `cerberus`), `CERBERUS_URL` (default
     `http://localhost:8080`), `DB` (default `otel`), `CH_USER`/`CH_PASSWORD`
     (default `cerberus`/`cerberus`), `CH_CLUSTER` (default `bwc_cluster`),
     `DATA_SHARD_COUNT` (required, `>= 2`), `REPLICAS` (required, `>= 2`),
-    `REQUEST_COUNT` (default `3`), `FLUSH_WAIT_SECONDS` (default `10`).
+    `REQUEST_COUNT` (default `3`), `FLUSH_WAIT_SECONDS` (default `10`),
+    `HEALTH_POLL_SECONDS` (default `lib/k8s.mjs`'s
+    `clusterHealthDefaultDeadlineSeconds`).
   - Exit: `0` all assertions passed, `1` on any failure.
 - **`e2e-datashard-verify.mjs`** — `e2e.yml`, the `datashard` job (multi-data-shard
   lane, cerberus issue #3079), invoked via `just e2e-datashard-verify <count>`

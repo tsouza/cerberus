@@ -181,6 +181,29 @@ window." `internal/chclient/distributed_query_settings.go`'s own doc comment
 carries the full citation chain, including why `first_or_random` was chosen
 over the equally deterministic `in_order`.
 
+**Why `use_hedged_requests` is pinned off too (issue #3148).** The pin above
+was first verified with a pre-burst wait for `system.clusters.errors_count`
+to read 0 on every replica, on the theory that only recorded connection
+errors could move it. A later run (e2e run 39099569653) still split one
+trace's 48 statements on data-shard 1 across both of its replicas with every
+`errors_count` at 0. The cause is ClickHouse's hedged-request path, on by
+default: when the offset-0 replica takes longer than
+`hedged_connection_timeout_ms` (50ms) to finish establishing a connection, or
+longer than `receive_data_timeout_ms` (2s) to send its first packet, the
+initiator races the next replica and takes whichever answers first. It
+records the switch as that replica's `slowdown_count`, not its
+`error_count`, and the hedged path sorts replicas by `slowdown_count` ahead of
+the `load_balancing` priority — so one slow handshake on a loaded node moves
+every later statement to the other replica until the count decays. A local
+two-shard, two-replica ClickHouse 26.6 rig reproduced it: with 80ms, or
+20ms ± 15ms, of added latency on the offset-0 replica of shard 2, 40 concurrent
+`first_or_random` reads all landed on the second replica with
+`errors_count=0` and `slowdowns_count>0`, and with `use_hedged_requests=0`
+all 40 landed on the offset-0 replica. Hedged requests trade replica
+determinism for tail latency; cerberus takes determinism, the same posture
+as the rest of these pins, and a replica that cannot accept a connection
+still fails over within `connect_timeout_with_failover_ms`.
+
 **The read-concentration trade-off is PERMANENT, not a bug to keep chasing.**
 Concentrating every cerberus read against a remote shard's `Distributed`
 connection on that shard's ONE offset-0 replica is the same

@@ -65,7 +65,8 @@ package chclient
 //     `first_or_random` (`src/Common/GetPriorityForLoadBalancing.cpp`,
 //     confirmed at the pinned tag) assigns priority 0 to the replica at
 //     index `load_balancing_first_offset` (default 0) and priority 1 to
-//     every other replica, so — absent any recorded connection errors —
+//     every other replica, so — absent any recorded connection errors, and
+//     with hedged requests off (settingUseHedgedRequests below) —
 //     EVERY query against the SAME `Distributed` table's remote-shard
 //     connection pool deterministically selects that ONE offset-0 replica.
 //     Selection state (`PoolWithFailoverBase::Pool::error_count`) lives on
@@ -121,6 +122,50 @@ package chclient
 // above; this is the same posture applied one level further down the
 // replica-selection stack. See docs/helm-clickhouse.md's multi-replica
 // consistency section for the full decision record.
+//
+// settingUseHedgedRequests (cerberus issue #3148) closes the hole the two
+// load_balancing pins above leave open on their own: `first_or_random`
+// orders a shard's replicas, but ClickHouse's HEDGED-request path — on by
+// default (`use_hedged_requests=1`) and used for every remote-shard read
+// whenever `max_parallel_replicas <= 1` — does not simply take the first
+// replica of that order. `HedgedConnectionsFactory`
+// (src/Client/HedgedConnectionsFactory.cpp, confirmed at `v26.6.8.7-stable`)
+// starts a SECOND connection to the next replica whenever the first one has
+// not finished establishing (connect + hello + the TablesStatus staleness
+// probe) within `hedged_connection_timeout_ms` (50ms default), and
+// `HedgedConnections` does the same whenever the first data packet takes
+// longer than `receive_data_timeout_ms` (2000ms default); whichever replica
+// answers first serves the statement. Each such switch increments that
+// replica's `slowdown_count`, NOT its `error_count`, and the hedged path
+// sorts replicas by `(error_count, slowdown_count, config_priority,
+// priority, random)` (`PoolWithFailoverBase::PoolState::compare` with
+// `use_slowdown_count=true`) — so one slow handshake demotes offset 0 for
+// every later statement until `distributed_replica_error_half_life` decays
+// it, while `system.clusters.errors_count` stays 0 throughout. A loaded but
+// perfectly healthy offset-0 replica therefore splits ONE request's
+// statements across two replicas of the same shard: exactly the divergence
+// this file's load_balancing pins exist to close, observed on a real
+// two-replica-per-shard cluster in e2e run 39099569653 with every
+// replica's `errors_count` at 0.
+//
+//   - use_hedged_requests=0 — routes remote-shard connection acquisition
+//     through `ConnectionPoolWithFailover`'s plain `getMany` instead, which
+//     walks the `first_or_random` order SEQUENTIALLY and only moves past a
+//     replica when connecting to it FAILS (`connect_timeout_with_failover_ms`,
+//     1000ms default, or a refusal) — a failure that does increment
+//     `error_count`. Slowness alone no longer moves the pin; only a real
+//     connection failure does, which is the one precondition the
+//     load_balancing doc above states. The plain path also sorts WITHOUT
+//     `slowdown_count` (`getShuffledPools`'s `use_slowdown_count=false`
+//     default), so a slowdown recorded by some OTHER client's hedged query
+//     cannot demote offset 0 for cerberus's statements either.
+//
+// TRADE-OFF, DOCUMENTED NOT HIDDEN: hedged requests trade replica
+// determinism for tail latency — a slow replica is raced rather than waited
+// on. With this pin a statement waits for the offset-0 replica it is pinned
+// to, the same correctness-over-throughput posture every other pin in this
+// file takes; a replica that cannot even accept a connection still fails
+// over within the connect timeout.
 //
 // settingDistributedProductMode (cerberus issue #3118, epic #3074) closes a
 // THIRD gap DataShardCount > 1 opens: several of cerberus's own query shapes
@@ -245,7 +290,7 @@ const settingDistributedProductMode = "distributed_product_mode"
 // correct under cerberus's default (`rand()`) data-shard sharding key.
 const distributedProductModeGlobal = "global"
 
-// All five settings are stamped UNCONDITIONALLY on every data-plane read-path
+// All six settings are stamped UNCONDITIONALLY on every data-plane read-path
 // query (see Client.querySettings), mirroring how settingTimeoutOverflowMode
 // is pinned outright rather than exposed as an operator knob: they are
 // harmless, version-safe no-ops against a single-shard/non-Distributed
@@ -254,12 +299,13 @@ const distributedProductModeGlobal = "global"
 // touches no Distributed-engine table — so pinning them unconditionally
 // costs nothing on the common case and only changes behavior once
 // internal/chopt.ClusterTopology.DataShardCount > 1 (cerberus issues #3077,
-// #3086, #3118).
+// #3086, #3118, #3148).
 const (
 	settingSkipUnavailableShards                        = "skip_unavailable_shards"
 	settingFallbackToStaleReplicasForDistributedQueries = "fallback_to_stale_replicas_for_distributed_queries"
 	settingLoadBalancing                                = "load_balancing"
 	settingLoadBalancingFirstOffset                     = "load_balancing_first_offset"
+	settingUseHedgedRequests                            = "use_hedged_requests"
 
 	// loadBalancingFirstOrRandom is settingLoadBalancing's stamped value —
 	// see this file's own doc for why it, not in_order, is the pick.

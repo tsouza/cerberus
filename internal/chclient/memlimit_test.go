@@ -132,10 +132,11 @@ func TestApportionMemoryBytes(t *testing.T) {
 // pins UNCONDITIONALLY on every querySettings() call (cerberus issue #3078:
 // skip_unavailable_shards + fallback_to_stale_replicas_for_distributed_queries;
 // cerberus issue #3086: load_balancing + load_balancing_first_offset;
-// cerberus issue #3118: distributed_product_mode).
+// cerberus issue #3118: distributed_product_mode;
+// cerberus issue #3148: use_hedged_requests).
 // Every exact-entry-count assertion in this file adds this in, so a future
-// sixth unconditional pin only needs updating here.
-const distributedPinCount = 5
+// seventh unconditional pin only needs updating here.
+const distributedPinCount = 6
 
 // TestQuerySettings_MaxMemoryUsage — the per-query settings map carries
 // max_memory_usage with the configured byte value, and carries ONLY the
