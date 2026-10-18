@@ -257,6 +257,14 @@ twelve copies of `@echo` / `@echo "Diff of regenerated <thing>:"` /
 absent `label` prints the bare diff-stat with no banner, matching
 `update-parity-enrolment-baseline`'s one exception to the pattern.
 
+`lib/rejection-catalogue.mjs` reads `test/rejection-parity/catalogue/`, the
+rejection-parity catalogue stored as one JSON shard per lowering source file:
+`readCatalogueShards(dir)` returns each shard with its path, and
+`mergeShards(shards)` concatenates their entries. Both throw on an empty
+directory or a shard without an `entries` array. Shared by
+`rejection-parity-divergence-liveness.mjs` and
+`rejection-parity-classification.mjs`.
+
 ## CI lane registry
 
 `.github/ci-lanes.json` is the machine-readable inventory of Cerberus's test
@@ -1520,6 +1528,24 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     divergence entries); `1` on a missing / closed / PR-shaped citation, a
     malformed entry, or a capability fault. ENFORCING and a required status
     check on `main` (as a step of the required `forbid-deferral` context).
+- **`rejection-parity-classification.mjs`** — no workflow step of its own; the
+  last step of `just update-parity-ledgers`, so it runs in every local
+  `just update-golden parity` and in every `update-golden.yml` leg that runs the
+  `parity` shard. Lists each `test/rejection-parity/catalogue/` entry whose
+  `class` is not `rejection`, `internal` or `divergence` — a new rejection site,
+  or an `internal` entry demoted by evidence drift — with its site key, head,
+  message and shard file, what each class requires, and the command that
+  verifies the classification. The recipe's own validation leaves out
+  `TestCatalogueEntriesAreClassified`; that gate stays in
+  `go test ./test/rejection-parity/` and fails until the entry is classified by
+  hand. `rejection-parity-classification.test.mjs` (wired in `ci.yml`) pins
+  the report and ties its class vocabulary to the `Class*` constants in
+  `test/rejection-parity/catalogue.go`.
+  - Env: `CATALOGUE_DIR` (optional; default `test/rejection-parity/catalogue`),
+    `GITHUB_STEP_SUMMARY` (optional; runner-provided — the report is appended
+    to the job summary).
+  - Exit: `0` whether or not entries need classification; `1` when the
+    catalogue is missing, holds no shard, or a shard is malformed.
 - **`repo-hygiene.mjs`** — `ci.yml`, the `forbid-skip` job's committed-artefact
   gate. Every other gate asks whether the tree COMPILES and PASSES; none asks
   what it CONTAINS, so a build artefact that is `git add`-ed by accident

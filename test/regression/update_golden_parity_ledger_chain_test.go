@@ -26,7 +26,7 @@ const parityLedgerEnv = "CERBERUS_UPDATE_INVENTORY"
 const (
 	parityPrimaryWritersCommand = "CERBERUS_UPDATE_INVENTORY=1 go test -count=1 -run '^(TestInventoryIsRegenerable|TestCatalogueIsRegenerable)$' ./test/surface-parity/ ./test/rejection-parity/"
 	parityCeilingWriterCommand  = "CERBERUS_UPDATE_INVENTORY=1 go test -count=1 -run '^TestDivergenceCeilingRatchet$' ./test/rejection-parity/"
-	parityReadOnlyCheckCommand  = "CERBERUS_UPDATE_INVENTORY= go test -count=1 ./test/surface-parity/ ./test/rejection-parity/"
+	parityReadOnlyCheckCommand  = "CERBERUS_UPDATE_INVENTORY= go test -count=1 -skip '^TestCatalogueEntriesAreClassified$' ./test/surface-parity/ ./test/rejection-parity/"
 )
 
 // parityEnrolmentEnv switches the roster assertion into rewrite mode.
@@ -78,9 +78,11 @@ const dockerBackedVerdicts = "promql-reference-verdicts.json"
 //     either the parser source or `-- parity --` sections it records.
 //  4. The closing diff-stat actually covers all three artefact directories.
 //  5. The two primary ledgers finish writing before the derived divergence
-//     ceiling updates, and complete package validation runs last with update
-//     mode explicitly disabled. Otherwise parallel tests read files while the
-//     generators are rewriting or pruning them.
+//     ceiling updates, and package validation runs last with update mode
+//     explicitly disabled. Otherwise parallel tests read files while the
+//     generators are rewriting or pruning them. That validation leaves out
+//     only the manual-classification gate, which
+//     TestUpdateGoldenRegeneratesPastAnUnclassifiedRejectionSite pins.
 func TestUpdateGoldenChainsParityArtifacts(t *testing.T) {
 	t.Parallel()
 
@@ -154,7 +156,7 @@ func TestUpdateGoldenChainsParityArtifacts(t *testing.T) {
 	if !slices.Equal(gotParityGoTests, wantParityGoTests) {
 		t.Errorf("%s: the %q recipe's Go commands are\n  %s\nwant the ordered writer/writer/read-only-validator phases\n  %s. "+
 			"The primary writers must run alone, the divergence ceiling must read their finished catalogue, "+
-			"and the complete package check must explicitly disable %s so parallel validators never race a writer.",
+			"and the package check must explicitly disable %s so parallel validators never race a writer.",
 			justfilePath, parityLedgerRecipeName,
 			strings.Join(gotParityGoTests, "\n  "), strings.Join(wantParityGoTests, "\n  "), parityLedgerEnv)
 	}
