@@ -272,7 +272,9 @@ func TestTemplateFunc_LineAndTimestampParity(t *testing.T) {
 	if err := tplTs.Execute(&bt, nil); err != nil {
 		t.Fatalf("exec __timestamp__: %v", err)
 	}
-	wantTs := time.Unix(0, ns).UTC().Format("2006-01-02T15:04:05Z07:00")
+	// sprig's `date` formats in the process-local zone (as reference Loki
+	// does), so the expected string is built in time.Local too.
+	wantTs := time.Unix(0, ns).Local().Format("2006-01-02T15:04:05Z07:00")
 	if got := bt.String(); got != wantTs {
 		t.Errorf("__timestamp__|date: got %q want %q", got, wantTs)
 	}

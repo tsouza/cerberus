@@ -256,7 +256,9 @@ func TestHandler_LineFormat_Timestamp_RendersRealValue(t *testing.T) {
 		t.Fatalf("unexpected shape: %+v", streams)
 	}
 	got := streams[0].Values[0].Line
-	want := ts.Format("2006-01-02T15:04:05Z07:00")
+	// sprig's `date` renders in the process-local zone (as reference Loki
+	// does), so the expected string is built in time.Local too.
+	want := ts.Local().Format("2006-01-02T15:04:05Z07:00")
 	if got != want {
 		t.Errorf("__timestamp__ render: got %q, want %q (must NOT be blank)", got, want)
 	}
