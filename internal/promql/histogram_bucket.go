@@ -76,16 +76,9 @@ func splitBucketMatchers(matchers []*labels.Matcher, bareName string) (scanMatch
 				scanMatchers = append(scanMatchers, m)
 				continue
 			}
-			copied, err := labels.NewMatcher(m.Type, m.Name, bareName)
-			if err != nil {
-				// labels.NewMatcher only fails on regex compile for the
-				// match-regex types; MatchEqual cannot fail. Fall back
-				// to the original matcher so the lowering still produces
-				// a valid plan even on the impossible path.
-				scanMatchers = append(scanMatchers, m)
-				continue
-			}
-			scanMatchers = append(scanMatchers, copied)
+			// A pinned matcher is an equality, which labels.NewMatcher
+			// builds without compiling a pattern, so building it cannot fail.
+			scanMatchers = append(scanMatchers, labels.MustNewMatcher(labels.MatchEqual, m.Name, bareName))
 		default: // WireArmStorage, WireArmWireNameUnpinned
 			scanMatchers = append(scanMatchers, m)
 		}
@@ -132,13 +125,12 @@ func splitBucketMatchers(matchers []*labels.Matcher, bareName string) (scanMatch
 // reserved-internal range; `le_idx` falls outside both).
 //
 // Under staleMarkersEncoded a stale-marker row first takes its series'
-// bucket layout ([staleMarkerBucketLayout], over the rows layoutBound
-// admits) and every row it fans into carries the encoded marker as Value,
-// so the downstream latest-sample pick ends each `le` series at the marker.
-// layoutBound is read only under staleMarkersEncoded.
+// bucket layout ([staleMarkerBucketLayout], over the rows layout admits)
+// and every row it fans into carries the encoded marker as Value, so the
+// downstream latest-sample pick ends each `le` series at the marker.
 func wrapHistogramBucketFanout(
 	scanOrFilter chplan.Node, suffixedName string, s schema.Metrics, cat *metadataCatalog,
-	mode staleMarkerMode, layoutBound chplan.Expr,
+	mode staleMarkerMode, layout staleLayoutWindow,
 ) chplan.Node {
 	// Inner Project — pass the histogram row's identity columns through
 	// and add the fanned bucket index via arrayJoin. Every output row
@@ -171,7 +163,7 @@ func wrapHistogramBucketFanout(
 		// arrays under their own names ([staleMarkerBucketLayout]).
 		flags := chplan.Projection{Expr: &chplan.ColumnRef{Name: s.StaleMarkerFlagsColumn()}, Alias: s.StaleMarkerFlagsColumn()}
 		rowProjections = append(rowProjections, flags)
-		fanInput = staleMarkerBucketLayout(scanOrFilter, rowProjections, layoutBound, s)
+		fanInput = staleMarkerBucketLayout(scanOrFilter, rowProjections, layout.bound(s.TimestampColumn), s)
 		passThrough := make([]chplan.Projection, len(rowProjections))
 		for i, p := range rowProjections {
 			passThrough[i] = chplan.Projection{Expr: &chplan.ColumnRef{Name: p.Alias}, Alias: p.Alias}

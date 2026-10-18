@@ -547,3 +547,47 @@ func mustAggregateExpr(t *testing.T, query string, groups int) *parser.Aggregate
 	}
 	return agg
 }
+
+// TestTemporalityUnionAvgVectorAgg_CapHintMutantKilled kills the
+// ARITHMETIC_BASE mutant gremlins reports on
+// lower.go:buildTemporalityUnionAvgVectorAgg:`len(combineAliases)+1`.
+//
+// Escape surface: the slice IS the returned [chplan.Project]'s exported
+// `Projections`. One grouping key gives two combine aliases (the key and
+// the step anchor), so the `+1` hint is three and the mutated `-1` hint
+// one, which the three appends grow to four rather than back to three. A
+// three-key grouping is the case the mutant is equivalent on: its two-slot
+// pre-allocation grows to the same four the unmutated hint sizes.
+func TestTemporalityUnionAvgVectorAgg_CapHintMutantKilled(t *testing.T) {
+	t.Parallel()
+
+	const keys = 1
+
+	s := schema.DefaultOTelMetrics()
+	aliases := capHintAliases(keys)
+	groupBy := make([]chplan.Expr, 0, keys)
+	for _, alias := range aliases {
+		groupBy = append(groupBy, &chplan.ColumnRef{Name: alias})
+	}
+	_, combineAliases := temporalityUnionCombineGroupBy(aliases)
+
+	capmutant.AssertKilled(t, capmutant.Hint{
+		Construct: "lower.go:buildTemporalityUnionAvgVectorAgg:`len(combineAliases)+1`",
+		Positions: []capmutant.Position{{Name: "the `+1`", Op: "+"}},
+		Eval: func(t testing.TB, ops []string) (int, bool) {
+			return capmutant.Eval(t, []int{len(combineAliases), 1}, ops)
+		},
+		Observe: func(t *testing.T) (int, int) {
+			node := buildTemporalityUnionAvgVectorAgg(&chplan.RangeWindowGridNative{}, &chplan.RangeWindow{}, groupBy, aliases, s)
+			return len(node.Projections), cap(node.Projections)
+		},
+		Build: func(hint int) (int, int) {
+			projs := make([]chplan.Projection, 0, hint)
+			for range combineAliases {
+				projs = append(projs, chplan.Projection{})
+			}
+			projs = append(projs, chplan.Projection{}) // the sum / count division
+			return len(projs), cap(projs)
+		},
+	})
+}

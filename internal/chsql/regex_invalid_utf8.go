@@ -334,8 +334,8 @@ func goRegexMatch(subject, pattern Frag, readsInvalid bool) Frag {
 // substituteFor picks the block a text-returning function spells an
 // invalid value through, and returns it with the patterns — one per
 // pattern given, in order — the function reads [substituteRunes] of the
-// value with. readings lists how ClickHouse may read `.` in them: matching
-// a newline (true) or not; there is at least one.
+// value with. eitherDot reports whether ClickHouse may read `.` in them
+// either way — matching a newline or not — rather than only matching one.
 //
 // The block is the highest one whose whole span every pattern reads
 // uniformly under every reading: it names no code point of the span and
@@ -350,10 +350,10 @@ func goRegexMatch(subject, pattern Frag, readsInvalid bool) Frag {
 // ok is false when a pattern does not parse, when no block in planes 15
 // and 16 is read uniformly, or when a rewrite cannot keep `.` open to both
 // readings (see [renderUnderReadings]).
-func substituteFor(patterns []string, readings []bool) (k substituteBlock, rewritten []string, ok bool) {
+func substituteFor(patterns []string, eitherDot bool) (k substituteBlock, rewritten []string, ok bool) {
 	parsed := make([][]*syntax.Regexp, len(patterns))
 	for i, pattern := range patterns {
-		for _, dotNL := range readings {
+		for _, dotNL := range dotReadings(eitherDot) {
 			re, err := syntax.Parse(pattern, readingFlags(dotNL))
 			if err != nil {
 				return substituteBlock{}, nil, false
@@ -374,13 +374,23 @@ func substituteFor(patterns []string, readings []bool) (k substituteBlock, rewri
 		for _, re := range parsed[i] {
 			substituteLikeReplacement(re, k)
 		}
-		r, rendered := renderUnderReadings(parsed[i], readings, k)
+		r, rendered := renderUnderReadings(parsed[i], k)
 		if !rendered {
 			return substituteBlock{}, nil, false
 		}
 		rewritten[i] = r
 	}
 	return k, rewritten, true
+}
+
+// dotReadings lists the readings of `.` [substituteFor] parses each pattern
+// under, in the order [renderUnderReadings] reads the parses: matching a
+// newline (true) and, when eitherDot, not matching one.
+func dotReadings(eitherDot bool) []bool {
+	if eitherDot {
+		return []bool{true, false}
+	}
+	return []bool{true}
 }
 
 // readingFlags are the parse flags a pattern is read under when `.` does
@@ -498,27 +508,21 @@ func substituteLikeReplacement(re *syntax.Regexp, k substituteBlock) {
 	}
 }
 
-// literalWithSubstitutes splits a literal at each U+FFFD into a
-// concatenation in which that rune is a class holding U+FFFD and k.
+// literalWithSubstitutes splits a literal containing U+FFFD into a
+// concatenation of one-rune parts, in which each U+FFFD is a class holding
+// U+FFFD and k and every other rune stays a literal. Go's printer writes a
+// run of one-rune literals exactly as it writes the one literal they spell.
 func literalWithSubstitutes(re *syntax.Regexp, k substituteBlock) *syntax.Regexp {
 	if !slices.Contains(re.Rune, utf8.RuneError) {
 		return re
 	}
-	var parts []*syntax.Regexp
+	parts := make([]*syntax.Regexp, 0, len(re.Rune))
 	for _, r := range re.Rune {
+		part := &syntax.Regexp{Op: syntax.OpLiteral, Flags: re.Flags, Rune: []rune{r}}
 		if r == utf8.RuneError {
-			parts = append(parts, &syntax.Regexp{
-				Op:    syntax.OpCharClass,
-				Flags: re.Flags,
-				Rune:  withSubstituteBlock([]rune{r, r}, k, true),
-			})
-			continue
+			part = &syntax.Regexp{Op: syntax.OpCharClass, Flags: re.Flags, Rune: withSubstituteBlock([]rune{r, r}, k, true)}
 		}
-		if last := len(parts) - 1; last >= 0 && parts[last].Op == syntax.OpLiteral {
-			parts[last].Rune = append(parts[last].Rune, r)
-			continue
-		}
-		parts = append(parts, &syntax.Regexp{Op: syntax.OpLiteral, Flags: re.Flags, Rune: []rune{r}})
+		parts = append(parts, part)
 	}
 	if len(parts) == 1 {
 		return parts[0]
@@ -530,8 +534,8 @@ func literalWithSubstitutes(re *syntax.Regexp, k substituteBlock) *syntax.Regexp
 // when include is true.
 func withSubstituteBlock(ranges []rune, k substituteBlock, include bool) []rune {
 	var out []rune
-	for i := 0; i+1 < len(ranges); i += 2 {
-		lo, hi := ranges[i], ranges[i+1]
+	for pair := range slices.Chunk(ranges, 2) {
+		lo, hi := pair[0], pair[1]
 		if lo < k.first() {
 			out = append(out, lo, min(hi, k.first()-1))
 		}
@@ -546,8 +550,8 @@ func withSubstituteBlock(ranges []rune, k substituteBlock, include bool) []rune 
 }
 
 // renderUnderReadings renders a rewritten pattern, parsed once per reading
-// in readings, so that ClickHouse reads it under each reading as it reads
-// the original. Go's printer spells `.` with the reading it was parsed
+// [dotReadings] lists, so that ClickHouse reads it under each reading as it
+// reads the original. Go's printer spells `.` with the reading it was parsed
 // under, hoisting the flag over the whole pattern, so under one reading
 // the parse is printed as it is. Under two, every `.` is marked with a
 // code point of k's span no pattern k serves names or bounds a class at,
@@ -556,21 +560,11 @@ func withSubstituteBlock(ranges []rune, k substituteBlock, include bool) []rune 
 // reading open, and one with an explicit flag by `.` under that flag. ok
 // is false when the two parses differ in shape anywhere else, or a mark
 // does not print as often as it was placed.
-func renderUnderReadings(parses []*syntax.Regexp, readings []bool, k substituteBlock) (string, bool) {
+func renderUnderReadings(parses []*syntax.Regexp, k substituteBlock) (string, bool) {
 	if len(parses) == 1 {
 		return parses[0].String(), true
 	}
-	var dotNL, plain *syntax.Regexp
-	for i, reading := range readings {
-		if reading {
-			dotNL = parses[i]
-		} else {
-			plain = parses[i]
-		}
-	}
-	if len(parses) != 2 || dotNL == nil || plain == nil {
-		return "", false
-	}
+	dotNL, plain := parses[0], parses[1]
 	marks := dotMarks{bare: k.base + 1, anyChar: k.base + 2, notNL: k.base + 3}
 	var placed [3]int
 	if !marks.place(dotNL, plain, &placed) {
@@ -643,11 +637,11 @@ const (
 // pattern.
 type regexFn struct {
 	result regexResult
-	// dotNL lists how ClickHouse builds may read `.` in the pattern:
-	// matching a newline (true) or not. replaceRegexpOne and
-	// replaceRegexpAll read it one way on 26.7 and 26.8 and the other on
-	// the 24.8 floor.
-	dotNL []bool
+	// eitherDot marks a function ClickHouse builds may read `.` in
+	// either way: matching a newline or not. Every other function reads
+	// it matching one. replaceRegexpOne and replaceRegexpAll read it one
+	// way on 26.7 and 26.8 and the other on the 24.8 floor.
+	eitherDot bool
 	// allMatches marks a function that scans for every match. ClickHouse
 	// steps one byte past an empty match, where Go steps one rune, so the
 	// two evaluations [restoreInvalidBytes] pairs can fall out of
@@ -656,12 +650,12 @@ type regexFn struct {
 }
 
 var regexFns = map[chplan.Fn]regexFn{
-	chplan.FnRegexMatch:                      {result: regexResultMatch, dotNL: []bool{true}},
-	chplan.FnRegexExtractFirst:               {result: regexResultText, dotNL: []bool{true}},
-	chplan.FnRegexExtractAll:                 {result: regexResultTexts, dotNL: []bool{true}, allMatches: true},
-	chplan.FnRegexExtractAllGroupsHorizontal: {result: regexResultTextGroups, dotNL: []bool{true}, allMatches: true},
-	chplan.FnRegexReplaceFirst:               {result: regexResultText, dotNL: []bool{true, false}},
-	chplan.FnRegexReplaceAll:                 {result: regexResultText, dotNL: []bool{true, false}, allMatches: true},
+	chplan.FnRegexMatch:                      {result: regexResultMatch},
+	chplan.FnRegexExtractFirst:               {result: regexResultText},
+	chplan.FnRegexExtractAll:                 {result: regexResultTexts, allMatches: true},
+	chplan.FnRegexExtractAllGroupsHorizontal: {result: regexResultTextGroups, allMatches: true},
+	chplan.FnRegexReplaceFirst:               {result: regexResultText, eitherDot: true},
+	chplan.FnRegexReplaceAll:                 {result: regexResultText, eitherDot: true, allMatches: true},
 }
 
 // goRegexCall renders a regex function call so that a subject that is
@@ -694,7 +688,7 @@ func goRegexCall(name string, spec regexFn, args []chplan.Expr) (Frag, bool) {
 	fffd := call(replacementRunes(subject), lit.V)
 	invalid := fffd
 	if !spec.allMatches || !nullable(lit.V) {
-		if k, sub, ok := substituteFor([]string{lit.V}, spec.dotNL); ok {
+		if k, sub, ok := substituteFor([]string{lit.V}, spec.eitherDot); ok {
 			invalid = restoreByResult(spec.result, call(substituteRunes(subject, k), sub[0]), fffd)
 		}
 	}

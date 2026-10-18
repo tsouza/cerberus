@@ -2,7 +2,9 @@ package chsql
 
 import (
 	"errors"
+	"math"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -85,5 +87,43 @@ func TestRegexExtractGroupReadsGoDefaultFlags(t *testing.T) {
 	}
 	if f := call(chplan.FnRegexExtractFirst); withGoDefaultFlagsPattern(f) != f {
 		t.Errorf("extract call was rewritten")
+	}
+}
+
+// TestRegexPatternArgAbsent pins the calls that carry no pattern argument:
+// an every-match function is refused, and regexpExtract's respelling leaves
+// the call as it is.
+func TestRegexPatternArgAbsent(t *testing.T) {
+	haystackOnly := []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}
+	err := checkAllMatchesPattern(&chplan.FuncCall{Fn: chplan.FnRegexExtractAll, Args: haystackOnly})
+	if !errors.Is(err, ErrNullableAllMatchesPattern) || !strings.Contains(err.Error(), "has no pattern argument") {
+		t.Errorf("extractAll with no pattern: err = %v; want ErrNullableAllMatchesPattern naming the missing argument", err)
+	}
+	f := &chplan.FuncCall{Fn: chplan.FnRegexExtractGroup, Args: haystackOnly}
+	if got := withGoDefaultFlagsPattern(f); got != f {
+		t.Errorf("regexpExtract with no pattern was rewritten to %#v", got)
+	}
+}
+
+// TestBoundedProgIndex pins the conversion's range check at each edge: the
+// first and last instruction convert, one past either end does not.
+func TestBoundedProgIndex(t *testing.T) {
+	const insts = 3
+	for _, tc := range []struct {
+		n, count int
+		want     uint32
+		ok       bool
+	}{
+		{0, insts, 0, true},
+		{insts - 1, insts, insts - 1, true},
+		{-1, insts, 0, false},
+		{insts, insts, 0, false},
+		{math.MaxUint32, math.MaxUint32 + 1, math.MaxUint32, true},
+		{math.MaxUint32 + 1, math.MaxUint32 + 2, 0, false},
+	} {
+		got, err := boundedProgIndex(tc.n, tc.count)
+		if got != tc.want || (err == nil) != tc.ok {
+			t.Errorf("boundedProgIndex(%d, %d) = %d, %v; want %d, ok %v", tc.n, tc.count, got, err, tc.want, tc.ok)
+		}
 	}
 }

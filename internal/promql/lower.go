@@ -3,6 +3,8 @@ package promql
 import (
 	"context"
 	"fmt"
+	"math"
+	"slices"
 	"time"
 
 	"github.com/prometheus/common/model"
@@ -896,7 +898,7 @@ func lowerHistogramSelectorInput(
 	s schema.Metrics,
 	cat *metadataCatalog,
 	mode staleMarkerMode,
-	layoutBound chplan.Expr,
+	layout staleLayoutWindow,
 ) (chplan.Node, chplan.Expr, bool) {
 	switch {
 	case bucketSuffixed != "":
@@ -904,7 +906,7 @@ func lowerHistogramSelectorInput(
 		if pred = withStaleMarkerDrop(pred, mode, s); pred != nil {
 			fanInput = &chplan.Filter{Input: scan, Predicate: pred}
 		}
-		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s, cat, mode, layoutBound)
+		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s, cat, mode, layout)
 		leSchema := s
 		leSchema.ResourceAttributesColumn = ""
 		if lePred := buildPredicate(bucketLeMatchers, leSchema); lePred != nil {
@@ -1204,17 +1206,14 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// outer Filter on `Attributes['le']` (the column doesn't exist on
 	// the raw scan row).
 	staleMode := ctx.staleMarkerMode(s)
-	// Read only by a `_bucket` fan-out under staleMarkersEncoded, so it is
-	// built only there.
-	var layoutBound chplan.Expr
-	if bucketSuffixed != "" && staleMode == staleMarkersEncoded {
-		var err error
-		if layoutBound, err = staleLayoutBoundFor(v, ctx, s); err != nil {
-			return nil, err
-		}
+	// Its one error is selectorAnchor's, which the anchor resolution below
+	// returns for the same selector anyway.
+	layout, err := staleLayoutWindowFor(v, ctx)
+	if err != nil {
+		return nil, err
 	}
 	selectorInput, pred, attributesPreMerged := lowerHistogramSelectorInput(
-		scan, pred, bucketSuffixed, bucketLeMatchers, companionValueColumn, s, ctx.catalog, staleMode, layoutBound,
+		scan, pred, bucketSuffixed, bucketLeMatchers, companionValueColumn, s, ctx.catalog, staleMode, layout,
 	)
 
 	// Resolve the effective evaluation anchor for this selector.
@@ -1413,15 +1412,10 @@ func needCompanionUnion(s schema.Metrics, companionValueColumn, companionSuffixe
 // precedes Gauge for a stable union arm order; empties and duplicates drop.
 func literalCompanionValueTables(s schema.Metrics) []string {
 	var out []string
-	seen := map[string]struct{}{}
 	for _, t := range []string{s.SumTable, s.GaugeTable} {
-		if t == "" || t == s.HistogramTable {
+		if t == "" || t == s.HistogramTable || slices.Contains(out, t) {
 			continue
 		}
-		if _, ok := seen[t]; ok {
-			continue
-		}
-		seen[t] = struct{}{}
 		out = append(out, t)
 	}
 	return out
@@ -1651,14 +1645,12 @@ func augmentSelectorAttributesValue(input chplan.Node, ctx lowerCtx, s schema.Me
 	// Histogram-table scan needs the AggregationTemporality column past
 	// this Project's otherwise-canonical 4-column narrowing — see
 	// lowerCtx.wantsTemporalityColumn and issue #1628.
+	roles := metricRoles(s)
 	if ctx.wantsTemporalityColumn && s.AggregationTemporalityColumn != "" {
 		projections = append(projections, chplan.Projection{
 			Expr:  &chplan.ColumnRef{Name: s.AggregationTemporalityColumn},
 			Alias: s.AggregationTemporalityColumn,
 		})
-	}
-	roles := metricRoles(s)
-	if ctx.wantsTemporalityColumn && s.AggregationTemporalityColumn != "" {
 		roles = append(roles, chplan.Column{Name: s.AggregationTemporalityColumn, Role: chplan.RoleTemporality})
 	}
 	return &chplan.Project{
@@ -1985,12 +1977,9 @@ func rewriteMetricName(matchers []*labels.Matcher, name string) []*labels.Matche
 	w := wireArms(matchers)
 	for i, m := range matchers {
 		if w.Arms[i] == WireArmWireNamePinned && m.Value != name {
-			copied, err := labels.NewMatcher(m.Type, m.Name, name)
-			if err != nil {
-				out[i] = m
-				continue
-			}
-			out[i] = copied
+			// A pinned matcher is an equality, which labels.NewMatcher builds
+			// without compiling a pattern, so building it cannot fail.
+			out[i] = labels.MustNewMatcher(labels.MatchEqual, m.Name, name)
 			continue
 		}
 		out[i] = m
@@ -2782,9 +2771,6 @@ func metricNamePredicateOn(m *labels.Matcher, s schema.Metrics, nameExpr func() 
 		return single
 	}
 	candidates := format.PromLabelToOTelCandidates(m.Value)
-	if len(candidates) <= 1 {
-		return single
-	}
 	// Render the candidate set as a single flat, parameterised
 	// `MetricName IN (?, …)` (NOT IN for the `!=` matcher) rather than a
 	// left-associative OR/AND chain of equality Binary nodes. The flat IN
@@ -2847,11 +2833,7 @@ func attributeLookupKeys(key string) []string {
 	if !format.PromLabelNeedsDottedFallback(key) {
 		return []string{key}
 	}
-	candidates := format.PromLabelToOTelCandidates(key)
-	if len(candidates) <= 1 {
-		return []string{key}
-	}
-	return candidates
+	return format.PromLabelToOTelCandidates(key)
 }
 
 func attributeLookup(col, key string) chplan.Expr {
@@ -2868,18 +2850,7 @@ func attributeLookupExpr(m chplan.Expr, key string) chplan.Expr {
 			Key: &chplan.LitString{V: key},
 		}
 	}
-	candidates := format.PromLabelToOTelCandidates(key)
-	if len(candidates) <= 1 {
-		// Belt-and-braces — `PromLabelNeedsDottedFallback` already
-		// returned true so we expect >= 2 candidates. Falling through
-		// to the bare MapAccess keeps the contract sane if the helper
-		// ever drifts.
-		return &chplan.MapAccess{
-			Map: m,
-			Key: &chplan.LitString{V: key},
-		}
-	}
-	return qlcommon.OTelDottedFallbackChain(m, candidates)
+	return qlcommon.OTelDottedFallbackChain(m, format.PromLabelToOTelCandidates(key))
 }
 
 func matchOp(t labels.MatchType) chplan.BinaryOp {
@@ -3801,7 +3772,7 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 // columns stay below this Project and therefore remain in scope.
 func closeNativeMatrixInput(input chplan.Node, groupBy []chplan.Expr, s schema.Metrics) (chplan.Node, bool) {
 	names := make([]string, 0, len(groupBy)+2)
-	seen := make(map[string]bool, len(groupBy)+2)
+	seen := map[string]bool{}
 	for _, expr := range groupBy {
 		ref, ok := expr.(*chplan.ColumnRef)
 		if !ok || ref.Name == "" {
@@ -6007,15 +5978,17 @@ func limitRatioPredicate(
 		if err != nil {
 			return nil, err
 		}
+		// Past the domain check r is neither zero (empty) nor NaN, so its
+		// sign bit alone picks the arm.
 		switch {
 		case empty:
 			return &chplan.LitBool{V: false}, nil
-		case r > 0:
-			// keep offset < r
-			return &chplan.Binary{Op: chplan.OpLt, Left: offset(), Right: &chplan.LitFloat{V: r}}, nil
-		default:
+		case math.Signbit(r):
 			// keep offset >= 1 + r (r < 0 here, so 1+r in [0,1))
 			return &chplan.Binary{Op: chplan.OpGe, Left: offset(), Right: &chplan.LitFloat{V: 1.0 + r}}, nil
+		default:
+			// keep offset < r
+			return &chplan.Binary{Op: chplan.OpLt, Left: offset(), Right: &chplan.LitFloat{V: r}}, nil
 		}
 	}
 
