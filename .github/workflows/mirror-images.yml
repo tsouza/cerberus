@@ -26,6 +26,12 @@
 # `TestMirrorInventoryCoversEveryUpstreamImage` closes the other direction, on
 # the required `check` lane — a new upstream image in the tree fails there
 # rather than quietly never being mirrored.
+#
+# RETAINED IMAGES. A ref in `retainedImages` (lib/mirror.mjs) has no upstream
+# left to copy from; its mirrored copy, pinned by digest, is the source of
+# record. This job reads that copy back instead of copying it and fails when it
+# no longer resolves, and a consumer's miss on it is a hard error, not a
+# fallback.
 name: mirror-images
 
 on:

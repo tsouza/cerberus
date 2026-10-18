@@ -60,7 +60,12 @@ directory's own `scripts/`.
 
 ## Upstream corpus
 
-The snapshot pins `grafana/loki` directly. This vendored
+The snapshot pins `grafana/loki` directly, at the tag recorded in
+`upstream/loki-bench/VERSION` (`v3.7.0`). It is frozen there and is the
+LogQL corpus of record: upstream deleted `pkg/logql/bench` on `main`
+(commit `d1c3d8c3ac8370032c4e32a8029d7633c1f5cf49`), so there is no
+newer source to track, and cerberus-owned cases go in
+`cerberus-queries/` rather than into the snapshot. This vendored
 `pkg/logql/bench/` corpus is reference test material only — it is never
 linked into `cmd/cerberus`; the shipped LogQL parser is cerberus's own
 in-house reimplementation (`internal/logql/lsyntax`).
@@ -124,12 +129,9 @@ that lives OUTSIDE the AGPL `upstream/` boundary:
   and merges its cases into the vendored corpus's before either set is
   expanded and run — every case here runs and is graded exactly like a
   vendored one, through the same pipeline, with no skip/tolerance
-  semantics of its own. It exists for LogQL behaviour the vendored
-  corpus has zero coverage for at all (see
-  [issue #1611](https://github.com/tsouza/cerberus/issues/1611), which
-  found `| unpack` had none — the vendored corpus never queried it and
-  the seeder never emitted a packed-payload line for it to run
-  against). See `cerberus-queries/README.md` for the full rationale.
+  semantics of its own. Every new LogQL case goes here: the vendored
+  snapshot is frozen (see "Snapshot maintenance"). See
+  `cerberus-queries/README.md` for the layout and YAML shape.
 - `cerberus-test-queries.yml` — schema placeholder only. The driver
   carries no `should_skip:` consumer code, so any entry would be
   silently ignored. Every diff against reference Loki must surface
@@ -148,7 +150,8 @@ that lives OUTSIDE the AGPL `upstream/` boundary:
   pins what the *upstream corpus itself* declines to run, so a silent
   upstream flip can't move the scored boundary unnoticed. Regenerate
   via `loki-compliance-tester -regen-baseline -skip-baseline=...`
-  after auditing the corpus diff a re-snapshot introduces. See
+  after auditing the corpus diff a change to the snapshot's recorded
+  local patches introduces. See
   [Upstream-skip baseline](#upstream-skip-baseline) for the procedure.
 - `dataset_metadata.json` — pinned dataset metadata that maps
   `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template vars to
@@ -164,8 +167,8 @@ that lives OUTSIDE the AGPL `upstream/` boundary:
   build if any cerberus-licensed code reaches for the writer, or if the
   `_comment` key goes missing. `SaveMetadata` itself stays in the vendored
   snapshot untouched: it is upstream's code, unused only in the subset
-  cerberus vendors, and the bump procedure below re-copies `metadata.go`
-  verbatim, so deleting it locally would be undone at the next bump.
+  cerberus vendors, and `metadata.go` must stay byte-identical to the
+  pinned tag (see "Snapshot maintenance").
 
 The `/patterns` differential does not use `dataset_metadata.json`.
 Reference Loki serves recent patterns from a wall-clock-retained in-memory
@@ -310,14 +313,14 @@ upstream-skipped, and diffs the upstream-skipped set against the file.
 Drift either way fails the run:
 
 - Added keys (the corpus marks `skip: true` but the baseline does not)
-  mean the re-snapshot introduced new boundaries cerberus needs to
-  triage.
+  mean a change to the vendored corpus introduced new boundaries
+  cerberus needs to triage.
 - Removed keys (the baseline expects `skip: true` but the corpus no
   longer carries it) mean upstream re-enabled a previously-skipped
   query; the operator must decide whether cerberus is ready to diff
   against it.
 
-Regenerate after a corpus bump (or any deliberate baseline update):
+Regenerate after a deliberate change to the vendored corpus (or any deliberate baseline update):
 
 ```sh
 go run ./compatibility/loki/cmd/loki-compliance-tester \
@@ -398,47 +401,32 @@ Cerberus itself is independently licensed (see the repo root
 `upstream/loki-bench/`. The driver code (`cmd/`)
 lives OUTSIDE `upstream/` and is cerberus-licensed.
 
-## Bump procedure
+## Snapshot maintenance
 
-Re-snapshot when:
+The snapshot is never bumped and never edited — the one exception is the
+local patch `upstream/loki-bench/VERSION` records under
+`local_patches:`. A new LogQL case goes in `cerberus-queries/`
+(see "Cerberus overlay files").
 
-1. Upstream Loki adds queries to `queries/fast/` that cerberus wants
-   to cover, **or**
-2. The shape of `QueryRegistry` / `remote_test.go` / any support file
-   changes meaningfully (new template var, new diff semantics, new
-   transitive dep).
-
-To re-snapshot:
+The vendored bytes are reproducible from the pinned tag, which is how a
+reviewer confirms nothing but the recorded local patch differs from
+upstream:
 
 ```sh
-# 1. Pick the new tag (typically matches the `loki:X.Y.Z` Docker image
-#    cerberus runs as the reference target in docker-compose.yml).
-TAG=v3.7.1
+# 1. Shallow clone at the pinned tag (upstream_tag in upstream/loki-bench/VERSION).
+git clone --depth=1 -b v3.7.0 https://github.com/grafana/loki /tmp/loki-upstream
 
-# 2. Shallow clone at that tag.
-git clone --depth=1 -b "$TAG" https://github.com/grafana/loki /tmp/loki-upstream
-
-# 3. Wipe + re-copy the vendored paths. The `vendored_paths:` block in
-#    upstream/loki-bench/VERSION is the canonical inventory.
-rm -rf compatibility/loki/upstream/loki-bench/{queries,LICENSE,*.go}
-mkdir -p compatibility/loki/upstream/loki-bench/queries/{fast,regression,exhaustive}
-cp /tmp/loki-upstream/pkg/logql/bench/queries/fast/*.yaml \
-   compatibility/loki/upstream/loki-bench/queries/fast/
-cp /tmp/loki-upstream/pkg/logql/bench/queries/schema.json \
-   compatibility/loki/upstream/loki-bench/queries/schema.json
+# 2. Compare every vendored path. The `vendored_paths:` block in
+#    upstream/loki-bench/VERSION is the canonical inventory; only the
+#    files listed under `local_patches:` may differ.
+diff -r /tmp/loki-upstream/pkg/logql/bench/queries \
+        compatibility/loki/upstream/loki-bench/queries
 for f in query_registry remote_test metadata metadata_resolver testcase \
          assertions_test convert_test generator faker; do
-    cp "/tmp/loki-upstream/pkg/logql/bench/${f}.go" \
-       "compatibility/loki/upstream/loki-bench/${f}.go"
+    diff "/tmp/loki-upstream/pkg/logql/bench/${f}.go" \
+         "compatibility/loki/upstream/loki-bench/${f}.go"
 done
-cp /tmp/loki-upstream/LICENSE \
-   compatibility/loki/upstream/loki-bench/LICENSE
-
-# 4. Update upstream/loki-bench/VERSION with the new tag + commit SHA.
-$EDITOR compatibility/loki/upstream/loki-bench/VERSION
-
-# 5. PR the diff. Reviewer checks the bump procedure was followed
-#    verbatim; no sanitisation of vendored sources is permitted.
+diff /tmp/loki-upstream/LICENSE compatibility/loki/upstream/loki-bench/LICENSE
 ```
 
 ## Related docs
