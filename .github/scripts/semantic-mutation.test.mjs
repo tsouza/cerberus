@@ -32,6 +32,7 @@ import {
   classifyGoTestOutput,
   createScratchDir,
   loadMutants,
+  outerTimeoutBackstopSeconds,
   renderMutantsSummary,
   runGoTest,
   processGroupResidentBytes,
@@ -882,6 +883,47 @@ test("runGoTest: cold compilation longer than detector timeout does not consume 
   assert.equal(calls, 2);
   assert.equal(classifyGoTestOutput(result), "survived");
   assert.equal(result.compileDurationMs, 60000);
+});
+
+test("runGoTest: a hung detector after a slow compile is reaped by the backstop measured from execution start", async () => {
+  const timeoutSeconds = 1;
+  const backstopMs = (timeoutSeconds + outerTimeoutBackstopSeconds) * 1000;
+  const compileMs = 60000;
+  const pollAdvanceMs = 250;
+  let clock = 0;
+  let calls = 0;
+  let executing = false;
+  let child;
+  let killed;
+  const result = await runGoTest(detectorOptions({ timeoutSeconds, pollMs: 1, memoryUsageFn: () => 0,
+    // Simulated time advances only while the detector binary runs, so the
+    // compile phase's minute is either charged to the backstop or it is not.
+    nowFn: () => { if (executing) clock += pollAdvanceMs; return clock; },
+    killFn: (pid, signal) => { killed = { pid, signal, at: clock }; child.emit("close", null, signal); },
+    spawnFn: () => {
+      calls++;
+      child = new EventEmitter();
+      child.pid = 4242; child.exitCode = null;
+      child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+      if (calls === 1) {
+        clock += compileMs;
+        const compiled = child;
+        setTimeout(() => { compiled.exitCode = 0; compiled.emit("close", 0, null); }, 1);
+      } else {
+        // The detector hangs and Go's own watchdog never fires.
+        executing = true;
+      }
+      return child;
+    } }));
+  assert.equal(calls, 2);
+  assert.equal(killed.pid, -4242);
+  assert.equal(killed.signal, "SIGKILL");
+  const executedMs = killed.at - compileMs;
+  assert.ok(executedMs >= backstopMs, `backstop fired after ${executedMs}ms of execution, before its ${backstopMs}ms deadline`);
+  assert.ok(executedMs < backstopMs + 2 * pollAdvanceMs, `backstop fired late, after ${executedMs}ms of execution`);
+  assert.equal(result.phase, "execute");
+  assert.equal(result.timedOut, true);
+  assert.equal(classifyGoTestOutput(result), "timeout");
 });
 
 test("runGoTest: compile failures never run or claim an assertion kill", async () => {

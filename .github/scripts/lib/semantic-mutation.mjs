@@ -760,7 +760,7 @@ const runGoTestPollIntervalMs = 100;
 // test/regression/go_test_timeout_budget_test.go). This runner's SIGKILL
 // exists only as a backstop for the case where Go's watchdog somehow does
 // not fire — it is deliberately never the first mechanism to act.
-const outerTimeoutBackstopSeconds = 5;
+export const outerTimeoutBackstopSeconds = 5;
 
 // Compilation has its own finite budget: an overlay invalidates dependencies
 // even when its detector runs in milliseconds. Never spend the detector's
