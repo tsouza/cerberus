@@ -219,36 +219,35 @@ func durationMillis(d time.Duration) int64 {
 	return int64(d / time.Millisecond)
 }
 
-// satAdd is a+b saturated at the int64 range.
+// satAdd is a+b saturated at the int64 range. The sum overflows exactly
+// when a and b share a sign that the wrapped sum does not, and a wrapped
+// sum carries the sign opposite to the true one.
 func satAdd(a, b int64) int64 {
 	sum := a + b
-	switch {
-	case a > 0 && b > 0 && sum < 0:
-		return math.MaxInt64
-	case a < 0 && b < 0 && sum >= 0:
+	if (a^sum)&(b^sum) < 0 {
+		if sum < 0 {
+			return math.MaxInt64
+		}
 		return math.MinInt64
 	}
 	return sum
 }
 
-// satSub is a-b saturated at the int64 range.
+// satSub is a-b saturated at the int64 range. The difference overflows
+// exactly when a and b differ in sign and the wrapped difference does not
+// carry a's, and then the true difference has a's sign.
 func satSub(a, b int64) int64 {
-	if b == math.MinInt64 {
+	diff := a - b
+	if (a^b)&(a^diff) < 0 {
 		if a >= 0 {
 			return math.MaxInt64
 		}
-		return a - b
+		return math.MinInt64
 	}
-	return satAdd(a, -b)
+	return diff
 }
 
 // satAbs is |a| saturated at the int64 range.
 func satAbs(a int64) int64 {
-	switch {
-	case a == math.MinInt64:
-		return math.MaxInt64
-	case a < 0:
-		return -a
-	}
-	return a
+	return max(a, satSub(0, a))
 }

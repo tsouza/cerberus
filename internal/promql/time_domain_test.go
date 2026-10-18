@@ -65,6 +65,24 @@ func TestLeavesEvaluationDomain(t *testing.T) {
 		{name: "request end past the domain", query: `vector(1)`, start: domainEvalTime, end: evaluationDomainMax.Add(time.Millisecond), want: true},
 		{name: "request at the domain edges", query: `vector(1)`, start: evaluationDomainMin, end: evaluationDomainMax, want: false},
 		{name: "lookback crossing the domain floor", query: `up`, start: evaluationDomainMin, end: evaluationDomainMin, want: true},
+		{
+			// An explicit subquery step is part of the inner window; only
+			// an omitted one falls back to DefaultSubqueryStep.
+			name: "explicit subquery step reaching below 1900", query: `max_over_time(vector(1)[1h:130y])`, want: true,
+		},
+		{name: "aggregation without a parameter over a pin past 2262", query: `sum(up @ 9300000000)`, want: true},
+		{
+			// An unpinned selector evaluates at every request instant, so
+			// the request start's lookback crosses the floor.
+			name:  "unpinned selector over a request starting at the floor",
+			query: `up`, start: evaluationDomainMin, end: domainEvalTime, want: true,
+		},
+		{
+			// `@ end()` evaluates only at the request end, so the request
+			// start's lookback is never read.
+			name:  "@ end() of a request starting at the floor",
+			query: `up @ end()`, start: evaluationDomainMin, end: domainEvalTime, want: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,10 +154,50 @@ func TestSaturatingArithmetic(t *testing.T) {
 		{"millis past int64", timeMillis(time.Unix(math.MaxInt64/1000+1, 0)), math.MaxInt64},
 		{"millis before int64", timeMillis(time.Unix(math.MinInt64/1000-1, 0)), math.MinInt64},
 		{"millis truncate sub-millisecond", timeMillis(time.Unix(1, 1_999_999)), 1001},
+		{"add of zero", satAdd(0, 0), 0},
+		{"add of zero right operand", satAdd(7, 0), 7},
+		{"add of two MinInt64", satAdd(math.MinInt64, math.MinInt64), math.MinInt64},
+		{"add of two MaxInt64", satAdd(math.MaxInt64, math.MaxInt64), math.MaxInt64},
+		{"sub of equals", satSub(5, 5), 0},
+		{"sub of MaxInt64 from MinInt64", satSub(math.MinInt64, math.MaxInt64), math.MinInt64},
+		{"abs of zero", satAbs(0), 0},
+		{"abs of MaxInt64", satAbs(math.MaxInt64), math.MaxInt64},
+		{"abs of -MaxInt64", satAbs(-math.MaxInt64), math.MaxInt64},
+		// The last whole second whose milliseconds fit is not saturated.
+		{"millis of the last whole second", timeMillis(time.Unix(math.MaxInt64/1000, 0)), math.MaxInt64 / 1000 * 1000},
+		{"millis of the first whole second", timeMillis(time.Unix(math.MinInt64/1000, 0)), math.MinInt64 / 1000 * 1000},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
 			t.Errorf("%s: got %d, want %d", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// TestPinnedDistanceBoundary pins where reference Prometheus's pin
+// offset starts to wrap: a pin exactly maxPinDistanceMillis from an eval
+// instant still converts, one millisecond further does not, measured
+// from either end of the eval span.
+func TestPinnedDistanceBoundary(t *testing.T) {
+	t.Parallel()
+	d := domainWalk{minMs: math.MinInt64, maxMs: math.MaxInt64}
+	pin := int64(-1_000_000)
+	cases := []struct {
+		name   string
+		lo, hi int64
+		want   bool
+	}{
+		{"low end exactly at the limit", pin + maxPinDistanceMillis, pin + maxPinDistanceMillis, false},
+		{"low end past the limit", pin + maxPinDistanceMillis + 1, pin + maxPinDistanceMillis + 1, true},
+		{"high end exactly at the limit", pin, pin + maxPinDistanceMillis, false},
+		{"high end past the limit", pin, pin + maxPinDistanceMillis + 1, true},
+		{"below the pin exactly at the limit", pin - maxPinDistanceMillis, pin, false},
+		{"below the pin past the limit", pin - maxPinDistanceMillis - 1, pin, true},
+	}
+	for _, tc := range cases {
+		gotLo, gotHi, far := d.pinned(&pin, 0, tc.lo, tc.hi)
+		if far != tc.want || gotLo != pin || gotHi != pin {
+			t.Errorf("%s: pinned = (%d, %d, %v), want (%d, %d, %v)", tc.name, gotLo, gotHi, far, pin, pin, tc.want)
 		}
 	}
 }
@@ -157,6 +215,14 @@ func TestSampleReads(t *testing.T) {
 		}
 		if got, want := reads[0].String(), `up[1m1ms] @ 61.000`; got != want {
 			t.Errorf("selector %s, want %s", got, want)
+		}
+	})
+
+	t.Run("a one-millisecond window", func(t *testing.T) {
+		t.Parallel()
+		reads := SampleReads(matchers, 5000, 5000)
+		if len(reads) != 1 || sampleFrom(reads[0]) != 5000 || samplePin(reads[0]) != 5000 {
+			t.Fatalf("got %+v, want one piece reading exactly 5000", reads)
 		}
 	})
 

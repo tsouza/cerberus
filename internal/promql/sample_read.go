@@ -17,6 +17,12 @@ import (
 // 362, so [SampleReads] splits a wider window into consecutive pieces.
 const maxSampleReadSpanMillis = int64(100 * 365 * 24 * time.Hour / time.Millisecond)
 
+// maxSampleReads is how many pieces of at most maxSampleReadSpanMillis
+// cover the whole storage domain, and so the most [SampleReads] ever
+// builds. Bounding the loop by it keeps the piece count finite whatever
+// the window arithmetic does.
+var maxSampleReads = (timeMillis(StorageDomainMax)-timeMillis(StorageDomainMin))/(maxSampleReadSpanMillis+1) + 1
+
 // SampleReads builds the pinned range selectors that read every stored
 // sample matching matchers whose timestamp lies in
 // (startMs - 1ms, endMs]: `{matchers}[to-from+1ms] @ to` for consecutive
@@ -39,18 +45,21 @@ func SampleReads(matchers []*labels.Matcher, startMs, endMs int64) []*parser.Mat
 	startMs = max(startMs, timeMillis(StorageDomainMin))
 	endMs = min(endMs, timeMillis(StorageDomainMax))
 	var reads []*parser.MatrixSelector
-	for from := startMs; from <= endMs; {
-		to := min(endMs, from+maxSampleReadSpanMillis)
-		pin := to
-		reads = append(reads, &parser.MatrixSelector{
-			VectorSelector: &parser.VectorSelector{
-				Name:          metricNameFromMatchers(matchers),
-				LabelMatchers: matchers,
-				Timestamp:     &pin,
-			},
-			Range: time.Duration(to-from+1) * time.Millisecond,
-		})
-		from = to + 1
+	from := startMs
+	for range maxSampleReads {
+		if from <= endMs {
+			to := min(endMs, from+maxSampleReadSpanMillis)
+			pin := to
+			reads = append(reads, &parser.MatrixSelector{
+				VectorSelector: &parser.VectorSelector{
+					Name:          metricNameFromMatchers(matchers),
+					LabelMatchers: matchers,
+					Timestamp:     &pin,
+				},
+				Range: time.Duration(to-from+1) * time.Millisecond,
+			})
+			from = to + 1
+		}
 	}
 	return reads
 }
