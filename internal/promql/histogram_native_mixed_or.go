@@ -116,7 +116,7 @@ import (
 // [chplan.VectorSetOp.Mixed]'s doc comment for the full picture.
 func mixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.BinaryExpr, bool) {
 	b, isBin := unwrapBinaryExpr(expr)
-	if !isBin || b.Op != parser.LOR {
+	if !isBin {
 		return nil, false
 	}
 	// cerberus issue #2571: either side may only become histogram-valued
@@ -129,15 +129,46 @@ func mixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*
 	// it; [lowerMixedExpHistogramOperands] below re-derives histOnLeft
 	// with the identical combined check so the two functions cannot
 	// disagree about which side is which.
-	lhsHist := isExpHistogramValuedOrForwarded(b.LHS, s, ctx)
-	rhsHist := isExpHistogramValuedOrForwarded(b.RHS, s, ctx)
-	if lhsHist == rhsHist {
-		// Both histogram-valued is [expHistogramSetOp]'s shape; neither
-		// histogram-valued is the plain float [lowerVectorSetOp] path.
-		// Either way this recognizer has nothing to add.
+	histOnLeft, ok := oneSideHistogramOr(b, s, ctx)
+	if !ok {
+		return nil, false
+	}
+	// The side that is not histogram-valued is only the FLOAT arm this
+	// construction needs when it is not itself a live mixed relation — a
+	// nested mixed `or`, or a wrapper carrying one ([isMixedRelationShape]).
+	// A mixed arm has already resolved its own float/histogram split, so
+	// the pair is `or` between a Mixed operand and a histogram-valued one:
+	// [lowerVectorSetOp] answers it from the arms' lowered sample kinds
+	// (its Mixed arm), the same way it answers a mixed arm paired with a
+	// float or another mixed arm. Claiming it here would lower the mixed
+	// arm through [lowerMixedExpHistogramOperands]'s float-only path, which
+	// cannot carry its histogram rows.
+	otherSide := b.LHS
+	if histOnLeft {
+		otherSide = b.RHS
+	}
+	if isMixedRelationShape(otherSide, s, ctx) {
 		return nil, false
 	}
 	return b, true
+}
+
+// oneSideHistogramOr reports whether b is an `or` with exactly one
+// histogram-valued side ([isExpHistogramValuedOrForwarded]) and, when it
+// is, whether that side is the left one. Both histogram-valued is
+// [expHistogramSetOp]'s shape; neither histogram-valued is the plain
+// [lowerVectorSetOp] path. It does not look at whether the other side is
+// a float or a live mixed relation: [mixedExpHistogramSetOp] adds that
+// check, and [isMixedRelationShape] uses this pair test on its own, since
+// an `or` over a histogram-valued side and a mixed side is a mixed relation
+// either way.
+func oneSideHistogramOr(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (histOnLeft, ok bool) {
+	if b.Op != parser.LOR {
+		return false, false
+	}
+	lhsHist := isExpHistogramValuedOrForwarded(b.LHS, s, ctx)
+	rhsHist := isExpHistogramValuedOrForwarded(b.RHS, s, ctx)
+	return lhsHist, lhsHist != rhsHist
 }
 
 // lowerMixedExpHistogramSetOp lowers the shape [mixedExpHistogramSetOp]

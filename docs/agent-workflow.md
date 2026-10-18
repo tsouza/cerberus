@@ -62,7 +62,10 @@ Never push to the head branch of a PR that has already merged. A merged PR is cl
 advancing, and the commit reaches no branch anyone reads. Confirm with
 `gh pr view <n> --json state` first; if it has merged, cut a fresh branch off `origin/main`.
 
-Merge with `gh pr merge --squash --delete-branch` once every required check is green. Never
+Merge through the Mergify merge queue (`.github/mergify.yml`): add the `queue` label to the PR. The queue
+brings the PR up to date with `main` by a merge commit, waits for every check the main ruleset
+requires to pass on that updated head, then squash-merges it and deletes its branch. One PR is
+checked at a time, on the PR itself. Never merge around the queue, and never
 `gh pr merge --admin`. The ruleset's single bypass actor is the `admin` RepositoryRole in `always`
 mode, which makes this policy discipline rather than a mechanical block — honour it regardless. A
 red required check is fixed at the code or at the workflow, never bypassed.

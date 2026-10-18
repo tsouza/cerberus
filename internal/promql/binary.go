@@ -682,6 +682,9 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 			// "which side is which" flag is needed the way the
 			// construct-from-two-pure-shapes case
 			// ([lowerMixedExpHistogramSetOp]) needs MixedHistogramOnLeft.
+			// A Mixed arm paired with a histogram-valued one reaches this
+			// arm too: [mixedExpHistogramSetOp] declines that pair rather
+			// than reading the Mixed arm as its float side.
 			return &chplan.VectorSetOp{
 				Left:             left,
 				Right:            right,

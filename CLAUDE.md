@@ -97,7 +97,8 @@ per-layer "catches X / misses Y" guidance.
    More than one ruleset can govern a branch, so the union across every `required_status_checks`
    rule is what a merge must pass. `docs/test-strategy.md` is the per-gate reference. **Never `gh pr merge --admin`** — if a required
    check is red, fix the code or fix the workflow. Ship with
-   `gh pr merge --squash --delete-branch`.
+   the Mergify merge queue: add the `queue` label (`.github/mergify.yml`). Never merge around the queue —
+   a direct merge skips the re-test against the current `main`.
 2. **A pushed branch gets a PR in the same breath.** The push and the `gh pr create` are one step. A
    branch with no PR is invisible: no gate reports on it, no reviewer sees it, and its commits get
    stranded. "Not ready to review" is a reason to open the PR as a draft, never a reason to skip it.
