@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -164,12 +165,7 @@ func (c planCommand) covers(pkg, name string) bool {
 	if c.run != nil && !c.run.MatchString(name) {
 		return false
 	}
-	for _, p := range c.pkgs {
-		if p == pkg {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.pkgs, pkg)
 }
 
 // TestEveryGoldenWriterIsAShardGenerator pins that `just update-golden`
