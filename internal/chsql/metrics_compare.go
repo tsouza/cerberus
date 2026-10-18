@@ -262,7 +262,10 @@ func (e *emitter) boundedRootLeg(root Subqueryable, traceIDCol string, inner Fra
 // innerScanTsBoundsFrags' (Start-Offset-range, End-Offset] window, not the
 // raw [Start, End] request window) — a narrower bound here silently
 // excludes traces the "s" leg's own scan still includes.
-func compareSeedNode(inner chplan.Node, traceIDCol string, lo, hi chplan.Expr) chplan.Node {
+//
+// Every Inner is seedable, so the result is never nil; the concrete
+// *chplan.Project return type states that to callers.
+func compareSeedNode(inner chplan.Node, traceIDCol string, lo, hi chplan.Expr) *chplan.Project {
 	windowed := chplan.CloneNode(inner)
 	if pred := conjoinExpr(lo, hi); pred != nil {
 		windowed = &chplan.Filter{Input: windowed, Predicate: pred}
@@ -322,8 +325,8 @@ func rootLookupSpansTable(root chplan.Node) string {
 // rootLookupSpansTable derives from root itself, leaving any other shape
 // untouched (defensive — the compare lowering always produces the
 // Aggregate→Filter→Scan root lookup, but a future schema may not). Returns
-// the input unchanged and seeded=false when seed is nil or no matching
-// spans scan is found — the caller (emitRangeWindowCompare) uses seeded to
+// the input unchanged and seeded=false when no matching spans scan is
+// found — the caller (emitRangeWindowCompare) uses seeded to
 // decide whether boundedRootLeg's post-aggregate wrap is still needed as a
 // correctness fallback.
 //
@@ -339,10 +342,7 @@ func rootLookupSpansTable(root chplan.Node) string {
 // envelope; it contains each selected trace's full span lifetime. Without the
 // opt-in lookup, the caller passes nil tsLo/tsHi and keeps #1214's
 // unbounded-but-lossless behavior.
-func windowRootLookupTraceIDSeed(root chplan.Node, traceIDCol string, seed chplan.Node, tsLo, tsHi chplan.Expr) (windowed chplan.Node, seeded bool) {
-	if seed == nil {
-		return root, false
-	}
+func windowRootLookupTraceIDSeed(root chplan.Node, traceIDCol string, seed *chplan.Project, tsLo, tsHi chplan.Expr) (windowed chplan.Node, seeded bool) {
 	spansTable := rootLookupSpansTable(root)
 	if spansTable == "" {
 		return root, false
@@ -753,15 +753,12 @@ func (e *emitter) compareWindowedScanBound(
 		// A root-scoped selection can use the request window directly. For a
 		// non-root selection, use the enabled trace_id_ts relation instead: its
 		// selected-trace envelope retains roots older than the request window.
-		// compareSeedNode yields nil for an Inner it cannot seed; with no cohort
-		// to look up there is no envelope to derive either, so the scan keeps
-		// #1214's unbounded-but-lossless shape.
 		var rootLo, rootHi chplan.Expr
 		var envelope *QueryBuilder
 		switch {
 		case m.InnerRootScoped:
 			rootLo, rootHi = tsBoundExprs(rootTS, r.Start.UnixNano()-offsetNS-rangeNS, r.End.UnixNano()-offsetNS)
-		case seed != nil:
+		default:
 			rootLo, rootHi, envelope = rootLookupTraceIDTsBounds(m, seed, rootTS)
 		}
 		rootLookup, seeded := windowRootLookupTraceIDSeed(m.RootLookup, m.TraceIDColumn, seed, rootLo, rootHi)
