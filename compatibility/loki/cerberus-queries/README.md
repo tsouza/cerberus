@@ -2,19 +2,22 @@
 
 This directory is a cerberus-owned, additive companion to the vendored
 `grafana/loki:pkg/logql/bench` corpus under
-`compatibility/loki/upstream/loki-bench/queries/`. It exists for LogQL
-behaviour that the vendored corpus has no coverage for at all — see
-[issue #1611](https://github.com/tsouza/cerberus/issues/1611), which
-found `| unpack` had zero corpus coverage (the vendored corpus never
-queries it and the seeder never emitted packed-payload lines for it to
-run against).
+`compatibility/loki/upstream/loki-bench/queries/`. The vendored corpus
+is frozen at the tag `upstream/loki-bench/VERSION` pins, so this
+directory is where every new LogQL compatibility case goes. Its first
+case was `| unpack`, which the vendored corpus never queries
+([issue #1611](https://github.com/tsouza/cerberus/issues/1611)).
+
+To add a case, append a query to the YAML file for its topic under the
+suite it belongs to (`fast/`, `regression/` or `exhaustive/`), or create
+a new `<topic>.yaml` there, then run `just compat-logql`.
 
 ## Why a second directory instead of editing the vendor snapshot
 
 `compatibility/loki/upstream/loki-bench/` is a verbatim AGPL-3.0
 vendor snapshot (see its own `LICENSE` + `VERSION`); cerberus-side
-curation must never leak into it — that boundary is what lets the
-subtree be re-snapshotted mechanically from upstream. This directory
+curation must never leak into it — that boundary is what keeps the
+subtree byte-reproducible from its pinned upstream tag. This directory
 lives entirely outside `upstream/` and is cerberus-licensed.
 
 ## Why not the `cerberus-test-queries.yml` overlay
@@ -45,6 +48,8 @@ cerberus-queries/
   fast/                  suite dir required by QueryRegistry.Load;
                           currently empty (see fast/README.md)
   regression/
+    anchored-regex-matcher.yaml
+                          anchored regex matcher differential coverage (issue #1741)
     unpack.yaml           | unpack differential coverage (issue #1611)
     structured-metadata-generic.yaml
                           generic (non-detected_level) structured-

@@ -31,15 +31,14 @@ import (
 //
 // The writer is NOT deleted, and that is deliberate. `metadata.go` is a verbatim
 // AGPL-3.0 snapshot of grafana/loki's `pkg/logql/bench`, pinned by
-// `compatibility/loki/upstream/loki-bench/VERSION` and re-copied wholesale by the
-// bump procedure in `compatibility/loki/README.md`. `SaveMetadata` is upstream's
-// code, not cerberus's dead code; it is unused only in the subset cerberus
-// vendors. Deleting it would diverge the snapshot from its tag for a cosmetic
-// reason, edit AGPL code the repository quarantines rather than maintains, and
-// be silently undone at the next bump — a fix that deletes itself.
+// `compatibility/loki/upstream/loki-bench/VERSION` and kept byte-identical to that
+// tag (`compatibility/loki/README.md` § "Snapshot maintenance"). `SaveMetadata` is
+// upstream's code, not cerberus's dead code; it is unused only in the subset
+// cerberus vendors. Deleting it would diverge the snapshot from its tag for a
+// cosmetic reason and edit AGPL code the repository quarantines rather than
+// maintains.
 //
-// So the ambiguity is closed on the cerberus side, where cerberus owns the code
-// and where the guard survives re-vendoring: the curated key must still be there,
+// So the ambiguity is closed on the cerberus side, where cerberus owns the code: the curated key must still be there,
 // and no cerberus-licensed code may reach for the writer.
 
 const (
