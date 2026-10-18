@@ -600,13 +600,12 @@ jobs:
   ch-server-safety:
     name: ch-server-safety
     needs: [changes, ch-server-safety-setup, ch-server-safety-shard]
-    # `always()` for the same reason as strict-scan above, so a failed,
-    # cancelled or skipped shard fails this context rather than skipping it
-    # into green. A docs-only change still skips by design.
-    if: >-
-      always() &&
-      (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
-    # Reads three `needs` results and runs no tool: the smallest runner.
+    # Bare `always()`: this context reports on every run, so a failed,
+    # cancelled or skipped shard fails it rather than leaving it unposted. On a
+    # docs-only change the shards skip by design and the verdict reports green
+    # without work, as ci.yml's `check` aggregator does.
+    if: always()
+    # Reads four `needs` values and runs no tool: the smallest runner.
     runs-on: ubicloud-standard-2
     timeout-minutes: 5
     steps:
@@ -615,5 +614,6 @@ jobs:
         run: node .github/scripts/ch-server-safety-shards.mjs aggregate
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           SETUP_RESULT: ${{ needs.ch-server-safety-setup.result }}
           SHARDS_RESULT: ${{ needs.ch-server-safety-shard.result }}

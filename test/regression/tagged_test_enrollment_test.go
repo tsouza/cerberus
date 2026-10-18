@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,7 +45,15 @@ const (
 	// goTestFanoutScript runs the go test invocation it is handed, with some
 	// packages split across concurrent processes; see taggedExecutable.
 	goTestFanoutScript = ".github/scripts/go-test-fanout.mjs"
+	// chServerSafetyShardScript runs the go test invocation it is handed with
+	// one shard's selection appended; the shards it plans together run the
+	// whole invocation, which its own node:test guard pins.
+	chServerSafetyShardScript = ".github/scripts/ch-server-safety-shards.mjs"
 )
+
+// goTestWrapperScripts are the node scripts whose `node <script> go test ...`
+// form runs exactly the trailing go test invocation.
+var goTestWrapperScripts = []string{goTestFanoutScript, chServerSafetyShardScript}
 
 type taggedTestSymbol struct {
 	File       string
@@ -1025,10 +1034,10 @@ func taggedExecutable(tokens []taggedShellToken) (int, string) {
 		if tokens[index].Dynamic {
 			return -1, ""
 		}
-		if text == "node" && taggedRunsGoTestFanout(tokens[index+1:]) {
-			// `node <go-test-fanout.mjs> go test ...` runs exactly the
-			// trailing go test invocation, split across processes, so the
-			// go test is the command's execution evidence.
+		if text == "node" && taggedRunsGoTestWrapper(tokens[index+1:]) {
+			// `node <wrapper> go test ...` runs exactly the trailing go test
+			// invocation, split across processes or shards, so the go test is
+			// the command's execution evidence.
 			return index + 2, "go"
 		}
 		return index, text
@@ -1036,11 +1045,11 @@ func taggedExecutable(tokens []taggedShellToken) (int, string) {
 	return -1, ""
 }
 
-// taggedRunsGoTestFanout reports whether args are go-test-fanout.mjs followed
-// by the go command it runs.
-func taggedRunsGoTestFanout(args []taggedShellToken) bool {
+// taggedRunsGoTestWrapper reports whether args are one of goTestWrapperScripts
+// followed by the go command it runs.
+func taggedRunsGoTestWrapper(args []taggedShellToken) bool {
 	return len(args) >= 2 && !args[0].Dynamic && !args[1].Dynamic &&
-		filepath.ToSlash(strings.TrimPrefix(args[0].Text, "./")) == goTestFanoutScript &&
+		slices.Contains(goTestWrapperScripts, filepath.ToSlash(strings.TrimPrefix(args[0].Text, "./"))) &&
 		args[1].Text == "go"
 }
 
@@ -2301,30 +2310,34 @@ func TestTaggedTestEnrollmentNegativeControls(t *testing.T) {
 }
 
 // TestTaggedStaticCommandsReadThroughGoTestFanout pins that the go test a
-// go-test-fanout.mjs invocation carries is read as that command's execution
+// go-test wrapper invocation carries is read as that command's execution
 // evidence, and that no other node script gets the same treatment.
 func TestTaggedStaticCommandsReadThroughGoTestFanout(t *testing.T) {
 	t.Parallel()
-	commands, err := taggedStaticCommands("node .github/scripts/go-test-fanout.mjs go test -tags chdb ./internal/example/...\n" +
-		"node .github/scripts/other.mjs go test -tags chdb ./internal/example/...")
+	script := "SHARD=x node .github/scripts/other.mjs go test -tags chdb ./internal/example/..."
+	for _, wrapper := range goTestWrapperScripts {
+		script = "SHARD=x node " + wrapper + " go test -tags chdb ./internal/example/...\n" + script
+	}
+	commands, err := taggedStaticCommands(script)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 2 {
-		t.Fatalf("got %d commands, want 2", len(commands))
+	if len(commands) != len(goTestWrapperScripts)+1 {
+		t.Fatalf("got %d commands, want %d", len(commands), len(goTestWrapperScripts)+1)
 	}
-	fanout := commands[0]
-	if fanout.Executable != "go" || len(fanout.Args) == 0 || fanout.Args[0].Text != "test" {
-		t.Fatalf("fan-out command read as %q %v, want go test", fanout.Executable, fanout.Args)
+	for _, wrapped := range commands[:len(goTestWrapperScripts)] {
+		if wrapped.Executable != "go" || len(wrapped.Args) == 0 || wrapped.Args[0].Text != "test" {
+			t.Fatalf("wrapper command read as %q %v, want go test", wrapped.Executable, wrapped.Args)
+		}
+		invocation, err := parseTaggedGoTestArgs(wrapped.Args[1:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !invocation.Tags["chdb"] || len(invocation.Packages) != 1 || invocation.Packages[0] != "./internal/example/..." {
+			t.Fatalf("wrapped go test parsed as tags=%v packages=%v", invocation.Tags, invocation.Packages)
+		}
 	}
-	invocation, err := parseTaggedGoTestArgs(fanout.Args[1:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !invocation.Tags["chdb"] || len(invocation.Packages) != 1 || invocation.Packages[0] != "./internal/example/..." {
-		t.Fatalf("fan-out go test parsed as tags=%v packages=%v", invocation.Tags, invocation.Packages)
-	}
-	if other := commands[1]; other.Executable != "node" {
+	if other := commands[len(goTestWrapperScripts)]; other.Executable != "node" {
 		t.Fatalf("an arbitrary node script was read as %q", other.Executable)
 	}
 }

@@ -149,12 +149,18 @@ test('a shard whose owned tests all passed has no problems', () => {
 });
 
 test('the aggregate passes only when changes, setup and every shard succeeded', () => {
-  assert.deepEqual(aggregate({ changes: 'success', setup: 'success', shards: 'success' }), []);
+  const ok = { changes: 'success', docsOnly: 'false', setup: 'success', shards: 'success' };
+  assert.deepEqual(aggregate(ok), []);
   for (const bad of ['failure', 'cancelled', 'skipped', '', undefined]) {
-    assert.equal(aggregate({ changes: 'success', setup: 'success', shards: bad }).length, 1, `shards=${bad}`);
-    assert.equal(aggregate({ changes: 'success', setup: bad, shards: 'success' }).length, 1, `setup=${bad}`);
-    assert.equal(aggregate({ changes: bad, setup: 'success', shards: 'success' }).length, 1, `changes=${bad}`);
+    assert.equal(aggregate({ ...ok, shards: bad }).length, 1, `shards=${bad}`);
+    assert.equal(aggregate({ ...ok, setup: bad }).length, 1, `setup=${bad}`);
+    assert.equal(aggregate({ ...ok, changes: bad }).length, 1, `changes=${bad}`);
   }
+});
+
+test('a docs-only change passes with its shards skipped, but never when changes failed', () => {
+  assert.deepEqual(aggregate({ changes: 'success', docsOnly: 'true', setup: 'success', shards: 'skipped' }), []);
+  assert.equal(aggregate({ changes: 'failure', docsOnly: 'true', setup: 'success', shards: 'skipped' }).length, 2);
 });
 
 // The live package: the table parses, the cancellation test exists, and every

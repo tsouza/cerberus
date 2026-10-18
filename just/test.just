@@ -519,7 +519,7 @@ query-log-integration:
 # Run the condition-cache and cancellation probes across pinned ClickHouse builds. Needs Docker.
 ch-server-safety-integration SHARD="all":
     @just _pull-retry $(node .github/scripts/ch-server-safety-shards.mjs images {{SHARD}} {{CH_SERVER_SAFETY_IMAGES}} {{CH_HISTOGRAM_REPORT_IMAGE}})
-    @node .github/scripts/ch-server-safety-shards.mjs run {{SHARD}} -- go test -timeout 20m -tags=integration -count=1 ./test/chserver/...
+    @CH_SERVER_SAFETY_SHARD={{SHARD}} node .github/scripts/ch-server-safety-shards.mjs go test -timeout 20m -tags=integration -count=1 ./test/chserver/...
 
 # Run the strict-scan differential: execute the matrix-shaped spec golden
 # SQL corpus against a REAL ClickHouse (testcontainers-go) through the

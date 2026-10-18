@@ -21,21 +21,29 @@
 //     package pins (the recipe passes them from just/common.just): a
 //     cancellation shard's own build, or every image for `all` and `rest`.
 //
-//   run <shard> -- <go test command>...
-//     Runs the go test command with the shard's selection appended (`-json`,
-//     `-run`, `-skip`) and prints the test output. The run fails when go test
-//     fails or when any test the shard owns did not report a pass, so a
-//     selection that matches nothing cannot pass as an empty run.
+//   go test <args>...
+//     Runs that go test command with the selection of the shard named by
+//     CH_SERVER_SAFETY_SHARD appended (`-json`, `-run`, `-skip`) and prints the
+//     test output. The run fails when go test fails or when any test the shard
+//     owns did not report a pass, so a selection that matches nothing cannot
+//     pass as an empty run. The shards of `plan` together run the whole
+//     command; `all` runs it unselected.
 //
 //   <shard> is `all` (the whole package), `rest`, or a cancellation shard id
 //   from `plan`.
 //
+//   dump
+//     Prints the matrix rows `plan` emits as a JSON array, for the workflow
+//     meta-tests that index every check name a job can post.
+//
 //   aggregate
 //     The `ch-server-safety` job's verdict. Env:
 //       CHANGES_RESULT  needs.changes.result
+//       DOCS_ONLY       needs.changes.outputs.docs_only
 //       SETUP_RESULT    needs.ch-server-safety-setup.result
 //       SHARDS_RESULT   needs.ch-server-safety-shard.result
-//     Fails unless all three are `success`.
+//     Fails unless `changes` succeeded and, outside a docs-only change (whose
+//     shards skip by design), setup and every shard succeeded.
 //
 // Exit: 0 on success, 1 otherwise.
 
@@ -175,12 +183,10 @@ export function verdict(events, expect) {
 }
 
 // aggregate — the problems in the shard jobs' results.
-export function aggregate({ changes, setup, shards }) {
-  const results = [
-    ['changes', changes],
-    ['ch-server-safety-setup', setup],
-    ['ch-server-safety-shard', shards],
-  ];
+export function aggregate({ changes, docsOnly, setup, shards }) {
+  const results = [['changes', changes]];
+  if (changes === 'success' && docsOnly === 'true') return [];
+  results.push(['ch-server-safety-setup', setup], ['ch-server-safety-shard', shards]);
   return results
     .filter(([, result]) => result !== 'success')
     .map(([job, result]) => `${job} did not succeed (${result || 'no result'})`);
@@ -258,17 +264,22 @@ async function main(argv) {
     log(shardImages(selection(shard, readPackage(process.cwd())), pinned).join(' '));
     return 0;
   }
-  if (command === 'run') {
-    const [shard, separator, ...goTest] = rest;
-    if (shard === undefined || separator !== '--' || goTest.length === 0) {
-      error('usage: ch-server-safety-shards.mjs run <shard> -- <go test command>...');
+  if (command === 'dump') {
+    log(JSON.stringify(plan(readPackage(process.cwd()).cancellation).include));
+    return 0;
+  }
+  if (command === 'go') {
+    const shard = process.env.CH_SERVER_SAFETY_SHARD;
+    if (!shard || rest[0] !== 'test') {
+      error('usage: CH_SERVER_SAFETY_SHARD=<shard> ch-server-safety-shards.mjs go test <args>...');
       return 1;
     }
-    return runShard(shard, goTest);
+    return runShard(shard, argv);
   }
   if (command === 'aggregate') {
     const problems = aggregate({
       changes: process.env.CHANGES_RESULT,
+      docsOnly: process.env.DOCS_ONLY,
       setup: process.env.SETUP_RESULT,
       shards: process.env.SHARDS_RESULT,
     });
@@ -277,7 +288,7 @@ async function main(argv) {
     log('every ch-server-safety shard succeeded.');
     return 0;
   }
-  error('usage: ch-server-safety-shards.mjs plan | images <shard> <image>... | run <shard> -- <command>... | aggregate');
+  error('usage: ch-server-safety-shards.mjs plan | dump | images <shard> <image>... | go test <args>... | aggregate');
   return 1;
 }
 
