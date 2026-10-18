@@ -46,9 +46,20 @@
 // in this inventory, and `TestMirrorInventoryCoversEveryUpstreamImage` fails
 // when the tree names an upstream image this inventory omits.
 //
+// RETAINED IMAGES are the exception to both halves. An inventoried ref whose
+// upstream no longer serves it is listed in `retainedImages` with the index
+// digest of the copy the mirror holds. That copy is the only one, so it is the
+// source of record: `mirroredRef` names it by digest, `mirror-images.mjs`
+// verifies it resolves instead of re-copying it, and a consumer that cannot
+// pull it fails rather than falling back to an upstream that has nothing to
+// serve.
+//
 // Exports:
 //   mirrorRegistry         the GHCR namespace mirrored copies live under.
 //   mirroredImages         every upstream ref cerberus's CI pulls.
+//   retainedImages         inventoried refs with no upstream source, mapped to
+//                          the index digest of the mirror's copy.
+//   retainedDigest(ref)    that digest for a retained ref, else null.
 //   mirroredRef(ref)       the mirrored ref for an inventoried image, else null.
 //   isDockerHubRef(ref)    is this ref metered by Docker Hub at all?
 
@@ -189,6 +200,26 @@ export const buildBaseImageArgs = Object.freeze({
   GRAFANA_BASE_IMAGE: 'grafana/grafana:12.2.9',
 });
 
+// retainedImages — inventoried refs whose upstream no longer serves them,
+// mapped to the index digest (every architecture) of the copy the mirror holds.
+// Each key must also be in `mirroredImages`; `mirror-images.test.mjs` pins that.
+//
+// The BWC lane's MinIO server and `mc` client: Docker Hub answers both
+// repositories with `pull access denied` and quay.io/minio with 401, for every
+// tag, so the mirror's linux/amd64 + linux/arm64 + linux/ppc64le copies are the
+// only source of these exact releases.
+export const retainedImages = Object.freeze({
+  'minio/minio:RELEASE.2025-09-07T16-13-09Z': 'sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e',
+  'minio/mc:RELEASE.2025-08-13T08-35-41Z': 'sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727',
+});
+
+// retainedDigest — the pinned digest of a retained ref, or null when `ref` is
+// not retained (its upstream still serves it, or it is not inventoried).
+export function retainedDigest(ref) {
+  const upstream = String(ref ?? '').trim();
+  return Object.hasOwn(retainedImages, upstream) ? retainedImages[upstream] : null;
+}
+
 const inventory = new Set(mirroredImages);
 
 // A ref's first path segment is a REGISTRY HOST rather than a Docker Hub owner
@@ -212,7 +243,9 @@ export function isDockerHubRef(ref) {
 // mirroredRef — the GHCR ref holding a copy of `ref`, or null when there is
 // none to reach for. Null is returned for anything not in the inventory, so an
 // image the mirror has never been told about resolves upstream exactly as
-// before rather than 404ing against a namespace that never held it.
+// before rather than 404ing against a namespace that never held it. A retained
+// ref maps to its repository at the pinned digest, so every consumer gets the
+// exact bytes the mirror retains.
 export function mirroredRef(ref) {
   const upstream = String(ref ?? '').trim();
   if (upstream === '' || !inventory.has(upstream) || !isDockerHubRef(upstream)) return null;
@@ -220,5 +253,7 @@ export function mirroredRef(ref) {
   // Docker Hub's own canonical form for a bare name, so `golang:1.26` and
   // `library/golang:1.26` cannot mirror to two different packages.
   const path = upstream.includes('/') ? upstream : `library/${upstream}`;
+  const digest = retainedDigest(upstream);
+  if (digest !== null) return `${mirrorRegistry}/${path.slice(0, path.lastIndexOf(':'))}@${digest}`;
   return `${mirrorRegistry}/${path}`;
 }
