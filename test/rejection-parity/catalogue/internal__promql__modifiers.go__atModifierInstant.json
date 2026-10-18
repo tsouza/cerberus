@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/modifiers.go:atModifierInstant#6b9b7620",
+      "message": "promql: @ modifier timestamp %s is outside the int64-nanosecond range cerberus evaluates in",
+      "class": "divergence",
+      "trigger_query": "count_over_time(demo_http_requests_total[5m:1m] @ -62135596800)",
+      "tracking_issue": 3824,
+      "evidence": {
+        "guard": [
+          "if !format.IsStorable(pin)"
+        ],
+        "callers": [
+          "anchorFromSelector",
+          "subqueryAnchor"
+        ]
+      },
+      "since": "2026-10-18"
+    }
+  ]
+}
