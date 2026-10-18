@@ -151,10 +151,10 @@ func buildRegexExpHistogramCompanionArm(
 
 func buildRegexHistogramBucketArm(
 	s schema.Metrics, cat *metadataCatalog, names, scanMatchers, leMatchers []*labels.Matcher, mode staleMarkerMode,
-	layoutBound chplan.Expr,
+	layout staleLayoutWindow,
 ) chplan.Node {
 	input := regexHistogramScan(s, scanMatchers, mode)
-	input = wrapHistogramBucketFanout(input, "", s, cat, mode, layoutBound)
+	input = wrapHistogramBucketFanout(input, "", s, cat, mode, layout)
 	if pred := regexHistogramNamePredicate(names, s); pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
 	}
@@ -243,12 +243,11 @@ func lowerRegexHistogramSelector(v *parser.VectorSelector, s schema.Metrics, ctx
 		}
 		inputs = append(inputs, buildRegexHistogramCompanionArm(s, ctx.catalog, names, scanMatchers, suffix, sourceColumn, staleMode))
 	}
-	// Read only by the bucket arm's fan-out under staleMarkersEncoded.
-	layoutBound, err := staleLayoutBoundFor(v, ctx, s)
+	layout, err := staleLayoutWindowFor(v, ctx)
 	if err != nil {
 		return nil, err
 	}
-	inputs = append(inputs, buildRegexHistogramBucketArm(s, ctx.catalog, names, scanMatchers, leMatchers, staleMode, layoutBound))
+	inputs = append(inputs, buildRegexHistogramBucketArm(s, ctx.catalog, names, scanMatchers, leMatchers, staleMode, layout))
 
 	// Exp-histogram companion arms (#1549 residue 1): same `_count`/`_sum`
 	// suffix set as the classic arms above, read from ExpHistogramTable
