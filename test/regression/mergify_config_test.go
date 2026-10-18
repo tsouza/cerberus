@@ -36,11 +36,9 @@ type mergifyConfig struct {
 	MergeQueue struct {
 		MaxParallelChecks *int `yaml:"max_parallel_checks"`
 	} `yaml:"merge_queue"`
-	PullRequestRules []struct {
-		Name       string               `yaml:"name"`
-		Conditions []string             `yaml:"conditions"`
-		Actions    map[string]yaml.Node `yaml:"actions"`
-	} `yaml:"pull_request_rules"`
+	MergeProtectionsSettings struct {
+		AutoMergeConditions yaml.Node `yaml:"auto_merge_conditions"`
+	} `yaml:"merge_protections_settings"`
 }
 
 // describeSetting renders an optional integer setting for a failure message.
@@ -92,20 +90,26 @@ func TestMergifyQueueBatchesOneAtATime(t *testing.T) {
 		if m := rule.BranchProtectionInjectionMode; m != "" && m != "queue" {
 			t.Errorf("queue rule %q: branch_protection_injection_mode = %q drops the ruleset's required checks from queueing", rule.Name, m)
 		}
-		if !slices.Contains(rule.QueueConditions, "base=main") || !slices.Contains(rule.QueueConditions, "label="+queueLabel) {
-			t.Errorf("queue rule %q: queue_conditions must include base=main and label=%s; got %v", rule.Name, queueLabel, rule.QueueConditions)
+		if !slices.Contains(rule.QueueConditions, "base=main") {
+			t.Errorf("queue rule %q: queue_conditions must include base=main; got %v", rule.Name, rule.QueueConditions)
 		}
 	}
 }
 
+// The label queues a pull request through auto_merge_conditions: true, which
+// queues every pull request that meets the queue conditions. A
+// pull_request_rules queue action needs Mergify's Workflow Automation, which
+// this repository does not run, so such a rule never fires.
 func TestMergifyQueueLabelQueuesThePullRequest(t *testing.T) {
 	cfg := loadMergifyConfig(t)
-	for _, rule := range cfg.PullRequestRules {
-		if _, ok := rule.Actions["queue"]; ok && slices.Contains(rule.Conditions, "label="+queueLabel) {
-			return
+	if n := cfg.MergeProtectionsSettings.AutoMergeConditions; n.Kind != yaml.ScalarNode || n.Value != "true" {
+		t.Errorf("%s: merge_protections_settings.auto_merge_conditions must be true, so a labelled pull request is queued", mergifyConfigPath)
+	}
+	for _, rule := range cfg.QueueRules {
+		if !slices.Contains(rule.QueueConditions, "label="+queueLabel) {
+			t.Errorf("queue rule %q: queue_conditions must include label=%s, or every pull request is queued", rule.Name, queueLabel)
 		}
 	}
-	t.Errorf("%s has no pull_request_rule that queues a pull request labelled %s", mergifyConfigPath, queueLabel)
 }
 
 // directMergePattern matches a workflow command that merges a pull request

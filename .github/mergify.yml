@@ -21,12 +21,7 @@ queue_rules:
 merge_queue:
   max_parallel_checks: 1
 
-pull_request_rules:
-  - name: queue a pull request labelled queue
-    conditions:
-      - base=main
-      - label=queue
-      - -draft
-    actions:
-      queue:
-        name: default
+# A pull request enters the queue as soon as it meets the queue conditions,
+# so the `queue` label is what queues it.
+merge_protections_settings:
+  auto_merge_conditions: true
