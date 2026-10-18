@@ -120,7 +120,7 @@ func lowerSumOrAvgOverMixedOrSubqueryFoldFn(agg *parser.AggregateExpr, sub *pars
 	}
 	step := sub.Step
 	if step == 0 {
-		step = defaultSubqueryStep
+		step = DefaultSubqueryStep
 	}
 	gridCtx, state, err := subqueryGridCtx(sub, step, ctx)
 	if err != nil {

@@ -2,7 +2,7 @@
 
 Cerberus parses each of its three query languages, then renders ClickHouse SQL. The parsers and the schema templates come from a mix of in-house code and upstream libraries:
 
-- **PromQL** — `github.com/prometheus/prometheus/promql/parser` (+ `model/labels`, `model/histogram`). Upstream, **Apache-2.0**.
+- **PromQL** — `github.com/prometheus/prometheus/promql/parser` (+ `model/labels`, `model/histogram`), and the `promql` engine with its `storage` interfaces for queries outside the evaluation domain ([`engine.md`](engine.md#promql-outside-the-evaluation-domain)). Upstream, **Apache-2.0**.
 - **LogQL** — cerberus's own **in-house, clean-room Apache reimplementation** of the LogQL grammar: `internal/logql/lsyntax` (parser), `internal/logql/logpattern` (the `pattern` parser), and `internal/drain` (the Drain log-pattern miner). No upstream parser library.
 - **TraceQL** — cerberus's own **in-house, clean-room Apache reimplementation** of the TraceQL grammar: `internal/traceql/ast`. No upstream parser library.
 - **Schema DDL** — `github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter/sqltemplates` (+ three sibling submodules). Upstream, **Apache-2.0**.
@@ -15,7 +15,7 @@ The shipped `cmd/cerberus` binary additionally links the **Apache-2.0** `github.
 
 Three upstream deps route through `github.com/tsouza/*` forks. The forks exist primarily as a *Dependabot watch boundary*: cerberus's `go.mod` `replace` directives point at semver tags on the forks, not pseudo-versions on upstream. A dedicated cron repo, [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor), decides daily whether anything cerberus cares about landed upstream and only then mints a new fork tag. Dependabot in cerberus sees a clean stream of patch bumps it can grouped-PR on.
 
-- **[`tsouza/prometheus`](https://github.com/tsouza/prometheus)** — branch `cerberus-parser`, **zero patches**. Pure Dependabot watch boundary. Cerberus consumes a narrow subtree (`promql/parser`, `model/labels`, `model/histogram`, a couple of adjacent files); the fork lets us mint tags only when those paths change.
+- **[`tsouza/prometheus`](https://github.com/tsouza/prometheus)** — branch `cerberus-parser`, **zero patches**. Pure Dependabot watch boundary. Cerberus consumes a narrow subtree (`promql/parser`, `promql` and `storage` for the reference evaluation, `model/labels`, `model/histogram`, a couple of adjacent files); the fork lets us mint tags only when those paths change.
 - **[`tsouza/tempo`](https://github.com/tsouza/tempo)** — branch `cerberus-accessors`, **accessor-only patches**, consumed by test-only code. Most are `pkg/traceql` accessors that retired an `unsafe.Pointer` shim. The newest is `vparquet4.NewSpan`, and it is what makes a TraceQL reference oracle possible at all: `DescendantOf` / `ChildOf` / `SiblingOf` are declared on the `traceql.Span` *interface* but implemented in `tempodb/encoding/vparquet4` on an unexported concrete type, which each of them type-asserts its arguments back to. A caller supplying its own `traceql.Span` cannot reach those methods, so it would have to reimplement `>>` / `>` / `~` — turning the oracle into a mirror of the code under test. The three methods read nothing but the nested-set integers (no parquet page, no row number), so a span built from plain data drives them exactly as a decoded one does; upstream's own `TestDescendantOf` already builds spans as bare struct literals on that basis. `NewSpan` is an exported spelling of that literal.
 - **[`tsouza/opentelemetry-collector-contrib`](https://github.com/tsouza/opentelemetry-collector-contrib)** — branch `cerberus-ddl`, **one patch (sqltemplates hoist)**. Surfaces the OTel-CH exporter's DDL templates (`sqltemplates`) as a Go API: `internal/schema/ddl/` renders `CREATE TABLE` from upstream's own templates — no hand-maintained DDL. Matches stock exporter DDL except the five metrics tables carry a **MetricName-first sort key**; the one deliberate divergence (see below).
 
@@ -29,7 +29,7 @@ Routing tempo through a fork does not move it into the binary. The replace appli
 
 A fork that we never patch is still valuable as a **Dependabot watch boundary**. The motivation:
 
-- Cerberus consumes a **tiny slice** of the prometheus library (the PromQL parser tree + a couple of `model` packages).
+- Cerberus consumes a **small slice** of the prometheus library (the PromQL parser tree, the PromQL engine and its `storage` interfaces, and a couple of `model` packages).
 - Upstream releases happen ~weekly. Without a fork, Dependabot would open a PR per release regardless of whether the change touched anything cerberus actually imports.
 - A fork lets *us* decide "is this commit relevant?" before it ever becomes a tag. That decision is automated by `cerberus-forks-monitor`.
 
