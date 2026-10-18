@@ -340,8 +340,8 @@ func lowerMixedOrSubqueryResetsOrChangesInput(mixedRel chplan.Node, sub *parser.
 		), nil
 	}
 	tsExpr := chplan.NowNano()
-	if !anchor.End.IsZero() {
-		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})
+	if anchor.anchored() {
+		tsExpr = windowRightBoundExpr(anchorAt(anchor.End()))
 	}
 	return expHistogramPairCountProjection(windowed, tsExpr, s), nil
 }

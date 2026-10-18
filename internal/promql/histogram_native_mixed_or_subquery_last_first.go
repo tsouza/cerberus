@@ -118,8 +118,8 @@ func lowerMixedOrSubqueryLastFirstInput(mixedRel chplan.Node, sub *parser.Subque
 		), nil
 	}
 	tsExpr := chplan.NowNano()
-	if !anchor.End.IsZero() {
-		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})
+	if anchor.anchored() {
+		tsExpr = windowRightBoundExpr(anchorAt(anchor.End()))
 	}
 	return mixedLastFirstProjection(windowed, tsExpr, histSchema, s), nil
 }

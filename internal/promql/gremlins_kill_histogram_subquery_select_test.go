@@ -153,8 +153,8 @@ func TestBareExpHistogramMatrixSelector_MetadataFullRangeShortCircuits(t *testin
 }
 
 // TestLowerExpHistogramBareMatrix_PinnedAtNotOverwrittenByQueryEnd kills
-// the INVERT_LOGICAL mutant at histogram_native_bare.go:`anchor.End.IsZero() && !ctx.end.IsZero()`
-// (`anchor.End.IsZero() && !ctx.end.IsZero()` -> `||`).
+// the INVERT_LOGICAL mutant at histogram_native_bare.go:`!anchor.anchored() && !ctx.end.IsZero()`
+// (`!anchor.anchored() && !ctx.end.IsZero()` -> `||`).
 //
 // The original AND only back-fills anchor.End from ctx.end when the
 // selector carries NO pin of its own. An `@`-pinned top-level matrix
@@ -191,7 +191,7 @@ func TestLowerExpHistogramBareMatrix_PinnedAtNotOverwrittenByQueryEnd(t *testing
 	}
 	if strings.Contains(got, "2030-05-05") {
 		t.Fatalf("emitted parameters leaked the query end (2030-05-05) instead of the pinned @ "+
-			"timestamp (mutant `&&`->`||` at histogram_native_bare.go:`if anchor.End.IsZero() && !ctx.end.IsZero()` overwrites the pin "+
+			"timestamp (mutant `&&`->`||` at histogram_native_bare.go:`if !anchor.anchored() && !ctx.end.IsZero()` overwrites the pin "+
 			"with ctx.end):\n%s", got)
 	}
 }

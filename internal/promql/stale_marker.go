@@ -423,7 +423,11 @@ func staleLayoutPendingBound() chplan.Expr {
 // covering the epoch-aligned inner grid. [widenSubquerySpine] re-bounds it
 // once the grid is widened onto the query range.
 func boundStaleMarkerLayoutsToIdentity(rw *chplan.RangeWindow) {
-	anchor := evalAnchor{End: rw.End, Offset: rw.Offset}
+	// A RangeWindow leaves End zero when it has no absolute anchor.
+	anchor := evalAnchor{Offset: rw.Offset}
+	if !rw.End.IsZero() {
+		anchor.setEnd(rw.End)
+	}
 	rebindStaleMarkerLayouts(rw.Input, staleLayoutAnchoredBound(rw.TimestampColumn, anchor, rw.OuterRange+rw.Range+rw.Step))
 }
 

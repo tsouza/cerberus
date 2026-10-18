@@ -262,8 +262,8 @@ func lowerExpHistogramBareMatrix(ms *parser.MatrixSelector, vs *parser.VectorSel
 	if err != nil {
 		return nil, err
 	}
-	if anchor.End.IsZero() && !ctx.end.IsZero() {
-		anchor.End = ctx.end.UTC()
+	if !anchor.anchored() && !ctx.end.IsZero() {
+		anchor.setEnd(ctx.end.UTC())
 	}
 
 	// (anchor − range, anchor] window — left-open / right-closed, the

@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_domain.go:instantDomainError#31995eff",
+      "message": "promql: the query needs instant %s, outside the range cerberus supports (%s to %s): ClickHouse cannot represent it exactly",
+      "class": "divergence",
+      "trigger_query": "count_over_time(vector(1)[5m:1m] @ -62135596800)",
+      "tracking_issue": 3824,
+      "evidence": {
+        "guard": null,
+        "callers": [
+          "checkInstantDomain"
+        ]
+      },
+      "since": "2026-10-18"
+    }
+  ]
+}

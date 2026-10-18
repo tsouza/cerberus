@@ -88,7 +88,7 @@ func buildOuterRangeSubqueryFanout(
 ) *chplan.RangeBucketFanout {
 	return &chplan.RangeBucketFanout{
 		Input:          wideInner,
-		End:            anchor.End,
+		End:            anchor.End(),
 		OuterRange:     grid.outerSub.Range,
 		Step:           grid.step,
 		StepAlign:      true,
@@ -440,7 +440,7 @@ func lowerMixedFoldOverCallSubqueryInput(wideInner chplan.Node, grid histogramCa
 		OuterRange:      grid.outerSub.Range,
 		Step:            grid.step,
 		StepAlign:       true,
-		End:             anchor.End,
+		End:             anchor.End(),
 		Offset:          anchor.Offset,
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,

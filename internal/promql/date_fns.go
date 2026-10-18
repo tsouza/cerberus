@@ -352,7 +352,7 @@ func evalInstantExpr(s schema.Metrics, ctx lowerCtx) chplan.Expr {
 		return &chplan.ColumnRef{Name: s.TimestampColumn}
 	}
 	if !ctx.end.IsZero() {
-		return anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
+		return anchorBaseExpr(anchorAt(ctx.end.UTC()))
 	}
 	return anchorBaseExpr(evalAnchor{})
 }

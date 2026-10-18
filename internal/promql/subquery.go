@@ -324,7 +324,7 @@ func wrapSubqueryIdentity(
 		OuterRange:      sub.Range,
 		Step:            step,
 		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
-		End:             anchor.End,
+		End:             anchor.End(),
 		Offset:          anchor.Offset,
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
@@ -556,15 +556,15 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 	}
 	var windowEnd, windowStart time.Time
 	switch {
-	case subqueryPinned(sub) && !anchor.End.IsZero():
-		windowEnd = anchor.End
-		windowStart = anchor.End.Add(-sub.Range)
+	case subqueryPinned(sub):
+		windowEnd = anchor.End()
+		windowStart = anchor.End().Add(-sub.Range)
 	case ctx.rangeMode():
 		windowEnd = ctx.end
 		windowStart = ctx.start.Add(-sub.Range)
-	case !anchor.End.IsZero():
-		windowEnd = anchor.End
-		windowStart = anchor.End.Add(-sub.Range)
+	case anchor.anchored():
+		windowEnd = anchor.End()
+		windowStart = anchor.End().Add(-sub.Range)
 	default:
 		return lowerCtx{}, subqueryGridUnavailable, nil
 	}
@@ -906,7 +906,7 @@ func lowerSubqueryOverCall(
 		OuterRange:      sub.Range,
 		Step:            step,
 		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
-		End:             anchor.End,
+		End:             anchor.End(),
 		Offset:          anchor.Offset,
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
@@ -1182,7 +1182,7 @@ func lowerSubqueryOverVectorSelector(
 		OuterRange:      sub.Range,
 		Step:            step,
 		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
-		End:             anchor.End,
+		End:             anchor.End(),
 		Offset:          anchor.Offset,
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
@@ -1324,12 +1324,12 @@ func lowerOuterRangeFnOverSubquery(
 		// spine to exactly the pinned window, then broadcast the single
 		// per-series value across the step grid. The range-vector sibling
 		// of this guard lives in `lowerRangeVectorCall`.
-		rw.End = anchor.End
+		rw.End = anchor.End()
 		// Widen by Offset+Range, matching RangeWindow.InputWindow (#1464) —
 		// rw.Step is still 0 here (this branch keeps the outer reducer
 		// instant-shaped), so InputWindow's Step<=0 guard can't be reused
 		// directly; the same Offset+Range arithmetic is inlined instead.
-		widenSubquerySpine(inner, anchor.End.Add(-rw.Offset-sub.Range), anchor.End)
+		widenSubquerySpine(inner, anchor.End().Add(-rw.Offset-sub.Range), anchor.End())
 		// A preserving outer fn over a name-dropping spine still projects
 		// the EMPTY LITERAL rather than nothing, so the API handler's own
 		// canonical-shape branch finds the MetricName output it is about
@@ -1397,11 +1397,11 @@ func lowerOuterRangeFnOverSubquery(
 		// scanned the whole table). Reuses the same spine walk + the existing
 		// maybePushInnerScanTimeBounds emit path; anchoring rw.End on the eval
 		// ts keeps the outer reducer and the widened inner grid on one base.
-		if !anchor.End.IsZero() {
-			rw.End = anchor.End
+		if anchor.anchored() {
+			rw.End = anchor.End()
 			// Widen by Offset+Range, matching RangeWindow.InputWindow and the
 			// range-mode branch above (#1464).
-			widenSubquerySpine(inner, anchor.End.Add(-rw.Offset-sub.Range), anchor.End)
+			widenSubquerySpine(inner, anchor.End().Add(-rw.Offset-sub.Range), anchor.End())
 		}
 	}
 	if replaceValue {
@@ -2289,9 +2289,9 @@ func lowerSubqueryOverAbsent(
 	// above, so the unpinned range check is exactly ctx.rangeMode().)
 	var gridStart, gridEnd time.Time
 	switch {
-	case subqueryPinned(sub) && !anchor.End.IsZero():
-		gridEnd = anchor.End
-		gridStart = anchor.End.Add(-sub.Range)
+	case subqueryPinned(sub):
+		gridEnd = anchor.End()
+		gridStart = anchor.End().Add(-sub.Range)
 	case ctx.rangeMode():
 		gridEnd = ctx.end
 		gridStart = ctx.start.Add(-sub.Range)
@@ -2422,7 +2422,7 @@ func lowerAbsentOverTimeOverSubquery(
 		},
 		SynthLabels:      nil,
 		Range:            sub.Range,
-		End:              anchor.End,
+		End:              anchor.End(),
 		Offset:           anchor.Offset,
 		TimestampColumn:  s.TimestampColumn,
 		ValueColumn:      s.ValueColumn,
@@ -2437,7 +2437,7 @@ func lowerAbsentOverTimeOverSubquery(
 	// Offset+Range so every outer anchor's lookback finds inner anchors.
 	switch {
 	case ctx.rangeMode() && subqueryPinned(sub):
-		widenSubquerySpine(a.Input, anchor.End.Add(-a.Offset-sub.Range), anchor.End)
+		widenSubquerySpine(a.Input, anchor.End().Add(-a.Offset-sub.Range), anchor.End())
 		return wrapAbsentOverTimeAtBroadcast(a, ctx, s), nil
 	case ctx.rangeMode():
 		a.Start = ctx.start.UTC()
@@ -2475,31 +2475,31 @@ func subqueryAnchor(e *parser.SubqueryExpr, ctx lowerCtx) (evalAnchor, error) {
 		if ctx.start.IsZero() {
 			return evalAnchor{}, fmt.Errorf("promql: subquery `@ start()` modifier requires query range context (use LowerAt)")
 		}
-		a.End = ctx.start.UTC()
+		a.setEnd(ctx.start.UTC())
 	case parser.END:
 		if ctx.end.IsZero() {
 			return evalAnchor{}, fmt.Errorf("promql: subquery `@ end()` modifier requires query range context (use LowerAt)")
 		}
-		a.End = ctx.end.UTC()
+		a.setEnd(ctx.end.UTC())
 	case 0:
 		// no start/end modifier
 	default:
 		return evalAnchor{}, fmt.Errorf("promql: unexpected subquery StartOrEnd token %v", e.StartOrEnd)
 	}
 	if e.Timestamp != nil {
-		a.End = time.UnixMilli(*e.Timestamp).UTC()
+		a.setEnd(time.UnixMilli(*e.Timestamp).UTC())
 	}
-	// Instant eval (step == 0): with no `@` pin (offset alone doesn't set End),
+	// Instant eval (step == 0): with no `@` pin (offset alone sets no anchor),
 	// anchor the subquery on the query's eval timestamp (ctx.end) — the same fill the non-subquery
-	// instant path does in anchorFromSelector. Leaving End zero anchors the
+	// instant path does in anchorFromSelector. Leaving the anchor unset anchors the
 	// grid on now64(9) at execution time (silently ignoring `?time=`) AND
 	// leaves the inner scan unbounded, since maybePushInnerScanTimeBounds
 	// no-ops on a zero End — the #1109 GAP-2 instant-subquery full-retention
 	// read. Range mode (step > 0) sets rw.End/rw.Start + widens the inner spine
 	// itself (lowerOuterRangeFnOverSubquery), so the fill is gated off there to
 	// keep range-mode lowering byte-identical.
-	if ctx.step == 0 && a.End.IsZero() && !ctx.end.IsZero() {
-		a.End = ctx.end.UTC()
+	if ctx.step == 0 && !a.anchored() && !ctx.end.IsZero() {
+		a.setEnd(ctx.end.UTC())
 	}
 	return a, nil
 }
@@ -3273,7 +3273,7 @@ func lowerSubqueryOverSubquery(
 		OuterRange:      sub.Range,
 		Step:            step,
 		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
-		End:             anchor.End,
+		End:             anchor.End(),
 		Offset:          anchor.Offset,
 		TimestampColumn: "anchor_ts",
 		ValueColumn:     s.ValueColumn,
@@ -3371,9 +3371,9 @@ func lowerSubqueryOverCallSubquery(
 	if err != nil {
 		return nil, err
 	}
-	if subqueryPinned(sub) && !anchor.End.IsZero() {
+	if subqueryPinned(sub) {
 		wideCtx.step = 0
-		wideCtx.end = anchor.End
+		wideCtx.end = anchor.End()
 	}
 
 	wideInner, err := lowerSubquery(&widened, s, wideCtx)
@@ -3422,7 +3422,7 @@ func lowerSubqueryOverCallSubquery(
 		OuterRange:      sub.Range,
 		Step:            step,
 		StepAlign:       true, // epoch-align inner subquery sample grid (PromQL)
-		End:             anchor.End,
+		End:             anchor.End(),
 		Offset:          anchor.Offset,
 		TimestampColumn: "anchor_ts",
 		ValueColumn:     s.ValueColumn,

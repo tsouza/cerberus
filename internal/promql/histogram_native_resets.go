@@ -213,8 +213,8 @@ func expHistogramResetsWindowed(shape histogramAggShape, s schema.Metrics, ctx l
 	if err != nil {
 		return nil, err
 	}
-	if anchor.End.IsZero() && !ctx.end.IsZero() {
-		anchor.End = ctx.end.UTC()
+	if !anchor.anchored() && !ctx.end.IsZero() {
+		anchor.setEnd(ctx.end.UTC())
 	}
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
 	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))

@@ -153,7 +153,7 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		}
 		timeExpr = &chplan.ColumnRef{Name: "anchor_ts"}
 	} else if !ctx.end.IsZero() {
-		timeExpr = anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
+		timeExpr = anchorBaseExpr(anchorAt(ctx.end.UTC()))
 	} else {
 		timeExpr = anchorBaseExpr(evalAnchor{})
 	}
@@ -384,8 +384,8 @@ func lowerAbsenceOfLatestSample(vs *parser.VectorSelector, s schema.Metrics, ctx
 // (the query's eval time for instant queries). A zero result falls back to
 // CH's `now64(9)` at emit time.
 func absenceEnd(anchor evalAnchor, ctx lowerCtx) time.Time {
-	if !anchor.End.IsZero() {
-		return anchor.End
+	if anchor.anchored() {
+		return anchor.End()
 	}
 	return ctx.end.UTC()
 }

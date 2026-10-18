@@ -512,8 +512,8 @@ func lowerHistFoldOverPureSubqueryBranch(shape sumOrAvgMixedOrSubqueryShape, inp
 	}
 	windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema, ctx)
 	tsExpr := chplan.NowNano()
-	if !anchor.End.IsZero() {
-		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})
+	if anchor.anchored() {
+		tsExpr = windowRightBoundExpr(anchorAt(anchor.End()))
 	}
 	return aggregatedHistogramProjection(windowed, tsExpr, histSchema), nil
 }
@@ -541,11 +541,11 @@ func lowerFloatFoldOverPureSubqueryBranch(shape sumOrAvgMixedOrSubqueryShape, in
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 	if ctx.rangeMode() && subqueryPinned(sub) {
-		rw.End = anchor.End
+		rw.End = anchor.End()
 		return wrapRangeWindowAtBroadcast(rw, ctx, s, nil, &chplan.ColumnRef{Name: s.ValueColumn})
 	}
-	if !anchor.End.IsZero() {
-		rw.End = anchor.End
+	if anchor.anchored() {
+		rw.End = anchor.End()
 	}
 	return rw
 }

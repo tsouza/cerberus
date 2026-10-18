@@ -292,7 +292,7 @@ func TestLowerFloatFoldOverSubqueryInput_InstantPinnedNoCrossJoin(t *testing.T) 
 	sub := &parser.SubqueryExpr{Range: 5 * time.Minute, Step: time.Minute, Timestamp: &pin}
 	input := &chplan.Scan{Table: "dummy"}
 	ctx := lowerCtx{start: at, end: at} // instant: rangeMode() == false.
-	anchor := evalAnchor{End: at}
+	anchor := anchorAt(at)
 
 	plan := lowerFloatFoldOverSubqueryInput(input, sub, rateWindowFn, anchor, s, ctx)
 	found := false

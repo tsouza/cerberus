@@ -242,8 +242,8 @@ func lowerSelectFnOverExpHistogramSubqueryInput(input chplan.Node, sub *parser.S
 	}
 	windowed := selectFnOverSubqueryWindowed(windowFn, input, histSchema, ctx)
 	tsExpr := chplan.NowNano()
-	if !anchor.End.IsZero() {
-		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})
+	if anchor.anchored() {
+		tsExpr = windowRightBoundExpr(anchorAt(anchor.End()))
 	}
 	return capSelectFnOverSubquery(windowFn, windowed, tsExpr, histSchema), nil
 }
