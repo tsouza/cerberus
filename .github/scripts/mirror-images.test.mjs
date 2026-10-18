@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { mirrorRegistry, mirroredImages, mirroredRef } from './lib/mirror.mjs';
+import { mirrorRegistry, mirroredImages, mirroredRef, retainedDigest, retainedImages } from './lib/mirror.mjs';
 import { plan } from './mirror-images.mjs';
 
 test('every inventoried image maps to a mirror ref under the mirror registry', () => {
@@ -63,4 +63,26 @@ test('a ref already on another registry is never mirrored', () => {
   for (const ref of ['gcr.io/distroless/static-debian12:nonroot', 'ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.140.0', 'localhost:5000/scratch:dev']) {
     assert.equal(mirroredRef(ref), null, `${ref} is not a Docker Hub ref and must not be mirrored`);
   }
+});
+
+test('every retained image is inventoried and maps to its mirrored copy at the pinned digest', () => {
+  // A retained ref has no upstream: the mirrored copy at this digest is the
+  // only source, so a consumer must be pointed at exactly those bytes, and the
+  // mirroring job must verify rather than copy it.
+  const retained = Object.keys(retainedImages);
+  assert.ok(retained.length > 0, 'retainedImages is empty, so this test would pin nothing');
+  for (const upstream of retained) {
+    assert.ok(mirroredImages.includes(upstream), `${upstream} is retained but not inventoried`);
+    const digest = retainedImages[upstream];
+    assert.match(digest, /^sha256:[0-9a-f]{64}$/, `${upstream} is pinned to a malformed digest`);
+    assert.equal(retainedDigest(upstream), digest);
+    const repo = upstream.slice(0, upstream.lastIndexOf(':'));
+    assert.equal(mirroredRef(upstream), `${mirrorRegistry}/${repo}@${digest}`);
+  }
+  assert.deepEqual(
+    plan().filter((r) => r.retained).map((r) => r.upstream),
+    mirroredImages.filter((ref) => retained.includes(ref)),
+    'the plan must mark exactly the retained refs as verify-only',
+  );
+  assert.equal(retainedDigest('grafana/loki:3.7.0'), null, 'a copied ref must not be retained');
 });

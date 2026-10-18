@@ -1,8 +1,15 @@
 # Vendored from github.com/grafana/loki.
 #
 # This file records the EXACT upstream coordinates of the snapshot under
-# this directory. See ../../README.md and ../../../docs/loki-compliance-plan.md
-# for the bump procedure.
+# this directory.
+#
+# MAINTENANCE: this snapshot is FROZEN at the coordinates below and is
+# the LogQL corpus of record. grafana/loki deleted pkg/logql/bench on
+# main (commit d1c3d8c3ac8370032c4e32a8029d7633c1f5cf49), so there is no
+# upstream to track. The snapshot is never bumped; cerberus-owned LogQL
+# cases go in ../../cerberus-queries/, which the driver merges in
+# alongside this corpus. ../../README.md § "Snapshot maintenance" shows
+# how to reproduce these bytes from the pinned tag.
 #
 # This `pkg/logql/bench/` corpus is reference test material only — it is
 # never linked into cmd/cerberus (the shipped LogQL parser is cerberus's
@@ -16,16 +23,14 @@ upstream_commit:   3361de24b692875d77bd7433cd6baa7c68dc0ef9
 local_patches:
   # query_registry.go: loadFile() defaults Kind BEFORE Directions and
   # infers a missing `kind` from the query shape (inferQueryKind, via
-  # syntax.ParseExpr on a placeholder-substituted query). Upstream
-  # (verified identical on grafana/loki main as of 2026-06-10) defaults
-  # Directions first, gated on `Kind == "log"`, so a definition with
+  # syntax.ParseExpr on a placeholder-substituted query). Upstream at
+  # the pinned tag defaults Directions first, gated on `Kind == "log"`, so a definition with
   # neither `kind` nor `directions` gets Directions="" and ExpandQuery
   # emits ZERO test cases — eight metric-shaped definitions in
   # queries/exhaustive/aggregations.yaml silently vanished from the
-  # corpus. Candidate for an upstream contribution; re-apply (or drop,
-  # if upstream fixed it) on the next snapshot bump. The driver's
-  # zero-expansion rail (cmd/loki-compliance-tester checkExpansion)
-  # hard-fails if a bump reintroduces the bug.
+  # corpus. The driver's zero-expansion rail
+  # (cmd/loki-compliance-tester checkExpansion) hard-fails if the patch
+  # is ever lost.
   - query_registry.go
 
 vendored_paths:

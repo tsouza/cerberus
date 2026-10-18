@@ -18,6 +18,7 @@ import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
+import { mirroredRef, retainedImages } from './mirror.mjs';
 import { MAX_CONCURRENT_PULLS, pullImageAsync, pullImages } from './registry.mjs';
 
 const pullImagesScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'pull-images.mjs');
@@ -132,6 +133,34 @@ test('the async driver keeps the per-image policy: transport faults exhaust the 
     op: 'error',
     message: `docker pull ${ref} failed 5 times on transport faults, so nothing starts`,
   });
+});
+
+test('a retained image is acquired from its pinned mirror copy and tagged to the upstream name', async () => {
+  const [ref] = Object.keys(retainedImages);
+  const mirror = mirroredRef(ref);
+  const calls = [];
+  const { acquired } = await pullImageAsync(ref, { backoffStepSeconds: 0, runDocker: scriptedDocker({}, 0, calls) });
+  assert.equal(acquired, true);
+  assert.deepEqual(calls, [`pull ${mirror}`, `tag ${mirror} ${ref}`]);
+});
+
+test('a retained image whose mirror copy cannot be pulled fails without trying its upstream', async () => {
+  // The upstream serves nothing, so the retry loop would only spend its budget
+  // on a refusal. The miss is final and names the retained copy.
+  const [ref] = Object.keys(retainedImages);
+  const mirror = mirroredRef(ref);
+  const calls = [];
+  const { acquired, output } = await pullImageAsync(ref, {
+    backoffStepSeconds: 0,
+    consequence: 'the lane has no object store',
+    runDocker: scriptedDocker({ [mirror]: [transportFault] }, 0, calls),
+  });
+  assert.equal(acquired, false);
+  assert.deepEqual(calls, [`pull ${mirror}`], 'the upstream ref must never be pulled');
+  assert.equal(output.at(-1).op, 'error');
+  assert.match(output.at(-1).message, /is retained/);
+  assert.match(output.at(-1).message, /so the lane has no object store\./);
+  assert.ok(output.at(-1).message.includes(mirror));
 });
 
 test('the async driver accepts a local copy when the caller does', async () => {
