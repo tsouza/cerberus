@@ -12,6 +12,8 @@
 //
 //   - GITHUB_*, RUNNER_*, ACTIONS_*, INVOCATION_ID, JOURNAL_STREAM: the
 //     Actions runner's per-run and per-step identifiers, tokens and paths.
+//   - SYSTEMD_EXEC_PID: the pid systemd started the runner service with, set
+//     on hosted runners and different on every job.
 //   - DIFF_REF: the leg's merge base, which moves with every push.
 //   - MUTANT_MEMORY_HOLD, MUTANT_MEMORY_LEDGER: read by the memory guard that
 //     wraps each test binary, never by a test; the hold follows the leg's
@@ -26,6 +28,7 @@ export const MUTANT_CACHE_ENV_IGNORE = Object.freeze([
   'ACTIONS_*',
   'INVOCATION_ID',
   'JOURNAL_STREAM',
+  'SYSTEMD_EXEC_PID',
   'DIFF_REF',
   'MUTANT_MEMORY_HOLD',
   'MUTANT_MEMORY_LEDGER',
