@@ -6,6 +6,8 @@
 # so the description- and commit-scanning gates (pr-body, forbid-deferral,
 # commitlint) judge every pull request on the pull request itself. One batch
 # is checked at a time: each check is a full CI run on the shared runners.
+# A failed batch gets one split-and-recheck round; the pull requests still
+# failing after it leave the queue.
 # test/regression/mergify_config_test.go pins this shape.
 
 queue_rules:
@@ -17,6 +19,7 @@ queue_rules:
     merge_method: squash
     update_method: merge
     batch_size: 5
+    batch_max_failure_resolution_attempts: 1
 
 merge_queue:
   max_parallel_checks: 1

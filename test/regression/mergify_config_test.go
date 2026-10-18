@@ -31,6 +31,7 @@ type mergifyConfig struct {
 		MergeMethod                   string   `yaml:"merge_method"`
 		UpdateMethod                  string   `yaml:"update_method"`
 		BatchSize                     *int     `yaml:"batch_size"`
+		BatchMaxFailureResolution     *int     `yaml:"batch_max_failure_resolution_attempts"`
 		BranchProtectionInjectionMode string   `yaml:"branch_protection_injection_mode"`
 	} `yaml:"queue_rules"`
 	MergeQueue struct {
@@ -66,6 +67,12 @@ func loadMergifyConfig(t *testing.T) mergifyConfig {
 // request per CI run.
 const minBatchSize = 2
 
+// batchFailureResolutionAttempts is how many split-and-recheck rounds a failed
+// batch gets before its failing pull requests leave the queue. Each round is
+// another full CI run, so one spurious red costs the whole batch at most one
+// extra run.
+const batchFailureResolutionAttempts = 1
+
 func TestMergifyQueueBatchesOneAtATime(t *testing.T) {
 	cfg := loadMergifyConfig(t)
 	if p := cfg.MergeQueue.MaxParallelChecks; p == nil || *p != 1 {
@@ -77,6 +84,9 @@ func TestMergifyQueueBatchesOneAtATime(t *testing.T) {
 	for _, rule := range cfg.QueueRules {
 		if rule.BatchSize == nil || *rule.BatchSize < minBatchSize {
 			t.Errorf("queue rule %q: batch_size must be at least %d (batching); got %s", rule.Name, minBatchSize, describeSetting(rule.BatchSize))
+		}
+		if a := rule.BatchMaxFailureResolution; a == nil || *a != batchFailureResolutionAttempts {
+			t.Errorf("queue rule %q: batch_max_failure_resolution_attempts must be set to %d; got %s", rule.Name, batchFailureResolutionAttempts, describeSetting(a))
 		}
 		if rule.MergeMethod != "squash" {
 			t.Errorf("queue rule %q: merge_method = %q, want squash", rule.Name, rule.MergeMethod)
