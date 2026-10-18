@@ -28,19 +28,31 @@ CREATE TABLE otel_metrics_gauge (
 [0] string = ""
 [1] string = "Map(String,String)"
 [2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000Z"
+[4] int64 = 9
+[5] int64 = 1000000000
+[6] int64 = 9223372028741760000
+[7] int64 = 86400
+[8] int64 = 3600
 -- chplan --
-Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, FnToFloat64(FnToHour(FnNow())) AS Value]
+Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, FnToFloat64(FnIntDiv(FnModulo((FnReinterpretAsUInt64(FnIntDiv(FnToUnixNanos(FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9)), 1000000000)) + FnToUInt64(9223372028741760000)), 86400), 3600)) AS Value]
   OneRow
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(toHour(now())) AS `Value` FROM (SELECT 1)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(intDiv(modulo((reinterpretAsUInt64(intDiv(toUnixTimestamp64Nano(parseDateTime64BestEffort(?, ?)), ?)) + toUInt64(?)), ?), ?)) AS `Value` FROM (SELECT 1)
 -- args_optimized --
 [0] string = ""
 [1] string = "Map(String,String)"
 [2] int64 = 9
+[3] string = "2026-01-01 00:00:01.000000000Z"
+[4] int64 = 9
+[5] int64 = 1000000000
+[6] int64 = 9223372028741760000
+[7] int64 = 86400
+[8] int64 = 3600
 -- settings --
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
 log_comment=cerb:project
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 -- sql_optimized --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(toHour(now())) AS `Value` FROM (SELECT 1)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(intDiv(modulo((reinterpretAsUInt64(intDiv(toUnixTimestamp64Nano(parseDateTime64BestEffort(?, ?)), ?)) + toUInt64(?)), ?), ?)) AS `Value` FROM (SELECT 1)
