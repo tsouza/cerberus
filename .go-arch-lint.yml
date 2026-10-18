@@ -38,9 +38,10 @@
 #                       chdb-tagged TEST binaries. A test package's TestMain
 #                       closes the cached chdb-go session before os.Exit so
 #                       the C++ destructors `-race`'s racefini runs do not
-#                       tear a live embedded ClickHouse down (#1971). Depends
-#                       on nothing but chdb-go, and is a no-op leaf in the
-#                       default (non-chdb) build.
+#                       tear a live embedded ClickHouse down (#1971), and its
+#                       chdb-build init pins the embedded server's timezone
+#                       to UTC. Depends on nothing but chdb-go, and is a
+#                       no-op leaf in the default (non-chdb) build.
 #     chsqltest       — the chDB harness internal/chsql's round-trip tests
 #                       share: an isolated database per test plus the metric
 #                       seed-DDL renderer. Depends on nothing; it sits outside

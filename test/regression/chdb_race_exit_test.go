@@ -32,7 +32,9 @@ import (
 // every chdb-tagged test package actually CALLS it from its TestMain, and
 // TestMain is per-package by language design — there is no single root to
 // fix. This test is that root: it makes the per-package wiring a checked
-// property instead of a convention a new package can silently skip.
+// property instead of a convention a new package can silently skip. The same
+// wiring links chdbsession's init, which pins the embedded server's timezone
+// to UTC, so a package this test admits also seeds host-independently.
 
 const (
 	// chdbSessionSelector / chdbSessionFunc name the wiring this test
@@ -109,7 +111,7 @@ func chdbTaggedPackageDirs(t *testing.T) []string {
 	t.Helper()
 
 	seen := map[string]bool{}
-	for _, tree := range []string{"internal", "test"} {
+	for _, tree := range []string{"cmd", "internal", "test"} {
 		root := filepath.Join(repoRootFromRegression, tree)
 		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
