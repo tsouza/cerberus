@@ -186,7 +186,7 @@ func (e *emitter) emitOneRow(_ *chplan.OneRow) error {
 // emitStepGrid renders a single-column SELECT that fans out one row
 // per Prom query_range step in `[Start, End]` spaced by Step:
 //
-//	SELECT arrayJoin(arrayMap(i -> toDateTime64('<start>', 9) + toIntervalNanosecond(i * <step_ns>), range(0, <N>))) AS anchor_ts
+//	SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('<start>Z', 9) + toIntervalNanosecond(i * <step_ns>), range(0, <N>))) AS anchor_ts
 //
 // where N = (End-Start)/Step + 1 (end-inclusive). The output column is
 // named `anchor_ts` — the PromQL no-driving-vector lowerings

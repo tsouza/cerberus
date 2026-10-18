@@ -1011,7 +1011,7 @@ func structuralAnchorNodeBounds(j *chplan.StructuralJoin) []Frag {
 //
 // Each arm of a `WITH RECURSIVE` is its own scope and ClickHouse cannot push a
 // predicate from OUTSIDE the CTE into one, so an enclosing window — the metrics
-// RangeWindow wrap's `Timestamp > toDateTime64(…)`, the outer search filter —
+// RangeWindow wrap's `Timestamp > parseDateTime64BestEffort(…)`, the outer search filter —
 // never reaches the seed. `otel_traces` is `PARTITION BY toDate(Timestamp)`, so
 // without a bound in the anchor's OWN scope the seed reads full retention: the
 // anchor-arm half of the whole-table read #1109 fixed on the step arm (#1942).

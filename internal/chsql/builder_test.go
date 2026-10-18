@@ -201,7 +201,7 @@ func TestBuilder_DateTime64Lit(t *testing.T) {
 	tm := time.Date(2026, 5, 13, 6, 7, 8, 123456789, time.UTC)
 	b := NewBuilder()
 	b.DateTime64Lit(tm)
-	want := "toDateTime64('2026-05-13 06:07:08.123456789', 9)"
+	want := "parseDateTime64BestEffort('2026-05-13 06:07:08.123456789Z', 9)"
 	if got := b.String(); got != want {
 		t.Errorf("DateTime64Lit = %q; want %q", got, want)
 	}
@@ -220,7 +220,7 @@ func TestBuilder_DateTime64Lit_NormalisesToUTC(t *testing.T) {
 	tm := time.Date(2026, 5, 13, 0, 0, 0, 0, loc)
 	b := NewBuilder()
 	b.DateTime64Lit(tm)
-	want := "toDateTime64('2026-05-13 03:00:00.000000000', 9)"
+	want := "parseDateTime64BestEffort('2026-05-13 03:00:00.000000000Z', 9)"
 	if got := b.String(); got != want {
 		t.Errorf("DateTime64Lit = %q; want %q", got, want)
 	}

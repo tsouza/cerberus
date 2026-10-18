@@ -166,8 +166,13 @@ func NewChDBWithError(_ *testing.T, err error) *Client {
 // mechanism. Centralising it in chdbsession rather than duplicating it here
 // is what lets every other chdb-tagged caller that opens its own *sql.DB
 // (internal/promql's chdbFixture among them) share the same fix.
+//
+// It is also where the per-query settings stamped on ctx reach the query
+// (withQuerySettings), so every Querier method carries them — as
+// production's *chclient.Client does for every method through its own
+// single queryContext.
 func (c *Client) queryContext(ctx context.Context, queryText string, args ...any) (*sql.Rows, error) {
-	return chdbsession.SafeQuery(ctx, c.db, queryText, args...)
+	return chdbsession.SafeQuery(ctx, c.db, withQuerySettings(ctx, queryText), args...)
 }
 
 // Seed runs ddl (a multi-statement script of `CREATE …; INSERT …;` etc)
@@ -251,7 +256,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 	if c.err != nil {
 		return nil, c.err
 	}
-	rewritten := withQuerySettings(ctx, c.prepareQuery(query))
+	rewritten := c.prepareQuery(query)
 	rows, err := c.queryContext(ctx, rewritten, args...)
 	if err != nil {
 		return nil, fmt.Errorf("chclienttest: query: %w", err)
@@ -738,6 +743,10 @@ func (c *Client) QueryIndexVolume(ctx context.Context, query string, args ...any
 // production satisfies via the protocol setting. The clause is a no-op for
 // every query that carries no stamped setting (the common case), so the
 // non-native paths are byte-unchanged.
+//
+// A string-valued setting (`session_timezone`, for instance) renders as a
+// quoted string literal, the form the SETTINGS clause requires for it;
+// every other value renders through %v.
 func withQuerySettings(ctx context.Context, sql string) string {
 	settings := chclient.QuerySettingsFromContext(ctx)
 	if len(settings) == 0 {
@@ -757,9 +766,19 @@ func withQuerySettings(ctx context.Context, sql string) string {
 		}
 		b.WriteString(k)
 		b.WriteByte('=')
+		if s, ok := settings[k].(string); ok {
+			b.WriteString(settingStringLiteral(s))
+			continue
+		}
 		fmt.Fprintf(&b, "%v", settings[k])
 	}
 	return b.String()
+}
+
+// settingStringLiteral quotes s as a ClickHouse string literal: single
+// quotes, with backslash and single quote backslash-escaped.
+func settingStringLiteral(s string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"
 }
 
 // decodeMapJSON unmarshals the toJSONString(…) output. An empty

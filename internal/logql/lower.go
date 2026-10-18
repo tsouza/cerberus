@@ -2686,11 +2686,10 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 
 // andFoldTimeWindow AND-folds a `<TimestampColumn> >= start AND
 // <TimestampColumn> {<|<=} end` predicate onto pred when the lowering
-// context carries a non-zero window. The bounds render as
-// `toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)` so the placeholders
-// land on the DateTime64(9) Timestamp column without an implicit
-// conversion. Mirror of the prom-side anchor rendering in
-// internal/promql/modifiers.go::anchorBaseExpr.
+// context carries a non-zero window. The bounds render as the canonical
+// [chplan.TimeLiteral], a DateTime64(9) like the Timestamp column, so the
+// comparison needs no implicit conversion. Mirror of the prom-side anchor
+// rendering in internal/promql/modifiers.go::anchorBaseExpr.
 //
 // The upper bound is STRICT for a log-line query and inclusive for a
 // metric one, because reference Loki's two paths differ exactly there —
@@ -2728,15 +2727,8 @@ func andFoldTimeWindow(pred chplan.Expr, s schema.Logs, lc lowerCtx) chplan.Expr
 	return &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: window}
 }
 
-// timeLiteralExpr renders an absolute timestamp as a CH DateTime64(9)
-// literal. The format string mirrors prom's anchorBaseExpr so the two
-// paths emit identical placeholder shapes.
+// timeLiteralExpr renders an absolute timestamp as the canonical
+// [chplan.TimeLiteral], the same literal prom's anchorBaseExpr emits.
 func timeLiteralExpr(t time.Time) chplan.Expr {
-	return &chplan.FuncCall{
-		Fn: chplan.FnToDateTime64,
-		Args: []chplan.Expr{
-			&chplan.LitString{V: t.UTC().Format("2006-01-02 15:04:05.000000000")},
-			&chplan.LitInt{V: chplan.NanoScale},
-		},
-	}
+	return chplan.TimeLiteral(t)
 }

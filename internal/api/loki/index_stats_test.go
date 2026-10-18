@@ -62,7 +62,7 @@ func TestIndexStats_HappyPath(t *testing.T) {
 	if !strings.Contains(lastSQL, "sum(length(`Body`))") {
 		t.Errorf("missing bytes agg in SQL: %q", lastSQL)
 	}
-	if !strings.Contains(lastSQL, "toDateTime64(") {
+	if !strings.Contains(lastSQL, "parseDateTime64BestEffort(") {
 		t.Errorf("missing time bounds in SQL: %q", lastSQL)
 	}
 }

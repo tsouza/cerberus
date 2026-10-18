@@ -438,7 +438,7 @@ func distinctNestedMapKeysFrag(col string) chsql.Frag {
 	return chsql.Distinct(chsql.Call("arrayJoin", nestedMapKeysFlatFrag(col)))
 }
 
-// tempoTimeGteFrag emits "`<col>` >= toDateTime64('...', 9)" — the
+// tempoTimeGteFrag emits "`<col>` >= parseDateTime64BestEffort('...Z', 9)" — the
 // lower-bound predicate of a Tempo `start` query parameter. The >=
 // operator routes through the typed chsql.Gte constructor; the
 // DateTime64 literal is rendered via a small Frag wrapper that
@@ -448,7 +448,7 @@ func tempoTimeGteFrag(col string, t time.Time) chsql.Frag {
 	return chsql.Gte(chsql.Col(col), dateTime64LitFrag(t))
 }
 
-// tempoTimeLteFrag emits "`<col>` <= toDateTime64('...', 9)" — the
+// tempoTimeLteFrag emits "`<col>` <= parseDateTime64BestEffort('...Z', 9)" — the
 // upper-bound counterpart to tempoTimeGteFrag.
 func tempoTimeLteFrag(col string, t time.Time) chsql.Frag {
 	return chsql.Lte(chsql.Col(col), dateTime64LitFrag(t))

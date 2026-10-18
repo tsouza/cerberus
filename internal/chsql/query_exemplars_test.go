@@ -52,8 +52,8 @@ func TestEmitQueryExemplars_GoldenSQL(t *testing.T) {
 		"`Exemplars`.`FilteredAttributes` AS `attrs_arr`, " +
 		"arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` " +
 		"FROM `%TABLE%` " +
-		"WHERE (`MetricName` = ?) AND `TimeUnix` >= toDateTime64(?, ?) " +
-		"AND `TimeUnix` <= toDateTime64(?, ?) " +
+		"WHERE (`MetricName` = ?) AND `TimeUnix` >= parseDateTime64BestEffort(?, ?) " +
+		"AND `TimeUnix` <= parseDateTime64BestEffort(?, ?) " +
 		"AND length(`Exemplars`.`TimeUnix`) > 0)"
 
 	cases := []struct {
@@ -91,9 +91,9 @@ func TestEmitQueryExemplars_GoldenSQL(t *testing.T) {
 			// (formatted string + precision 9), then end (same).
 			wantArgs := []any{
 				"http_request_duration_seconds",
-				"2026-01-01 00:00:00.000000000",
+				"2026-01-01 00:00:00.000000000Z",
 				int64(9),
-				"2026-01-01 01:00:00.000000000",
+				"2026-01-01 01:00:00.000000000Z",
 				int64(9),
 			}
 			if len(args) != len(wantArgs) {
@@ -241,8 +241,8 @@ func TestEmitQueryExemplars_PredicateWoven(t *testing.T) {
 	// last) and the parenthesisation of the predicate as a single
 	// WHERE conjunct.
 	wantSub := "WHERE (`MetricName` = ? AND `Attributes`[?] = ?) " +
-		"AND `TimeUnix` >= toDateTime64(?, ?) " +
-		"AND `TimeUnix` <= toDateTime64(?, ?) " +
+		"AND `TimeUnix` >= parseDateTime64BestEffort(?, ?) " +
+		"AND `TimeUnix` <= parseDateTime64BestEffort(?, ?) " +
 		"AND length(`Exemplars`.`TimeUnix`) > 0"
 	if !strings.Contains(sql, wantSub) {
 		t.Errorf("SQL missing expected WHERE shape\nwant substring: %s\n           got: %s", wantSub, sql)
@@ -254,9 +254,9 @@ func TestEmitQueryExemplars_PredicateWoven(t *testing.T) {
 		"http_request_duration_seconds",
 		"job",
 		"api",
-		"2026-01-01 00:00:00.000000000",
+		"2026-01-01 00:00:00.000000000Z",
 		int64(9),
-		"2026-01-01 01:00:00.000000000",
+		"2026-01-01 01:00:00.000000000Z",
 		int64(9),
 	}
 	if len(args) != len(wantArgs) {
@@ -297,17 +297,17 @@ func TestEmitQueryExemplars_NilPredicate(t *testing.T) {
 		t.Fatalf("EmitQueryExemplars: %v", err)
 	}
 
-	wantSub := "WHERE `TimeUnix` >= toDateTime64(?, ?) " +
-		"AND `TimeUnix` <= toDateTime64(?, ?) " +
+	wantSub := "WHERE `TimeUnix` >= parseDateTime64BestEffort(?, ?) " +
+		"AND `TimeUnix` <= parseDateTime64BestEffort(?, ?) " +
 		"AND length(`Exemplars`.`TimeUnix`) > 0"
 	if !strings.Contains(sql, wantSub) {
 		t.Errorf("SQL missing expected WHERE shape\nwant substring: %s\n           got: %s", wantSub, sql)
 	}
 	// No predicate args; just the two time bounds.
 	wantArgs := []any{
-		"2026-01-01 00:00:00.000000000",
+		"2026-01-01 00:00:00.000000000Z",
 		int64(9),
-		"2026-01-01 01:00:00.000000000",
+		"2026-01-01 01:00:00.000000000Z",
 		int64(9),
 	}
 	if len(args) != len(wantArgs) {
@@ -411,14 +411,14 @@ func TestEmitQueryExemplarsUnion_JoinsArms(t *testing.T) {
 	// followed by its two time bounds (formatted string + precision 9).
 	wantArgs := []any{
 		"http_request_duration_seconds",
-		"2026-01-01 00:00:00.000000000", int64(9),
-		"2026-01-01 01:00:00.000000000", int64(9),
+		"2026-01-01 00:00:00.000000000Z", int64(9),
+		"2026-01-01 01:00:00.000000000Z", int64(9),
 		"http_request_duration_seconds_count",
-		"2026-01-01 00:00:00.000000000", int64(9),
-		"2026-01-01 01:00:00.000000000", int64(9),
+		"2026-01-01 00:00:00.000000000Z", int64(9),
+		"2026-01-01 01:00:00.000000000Z", int64(9),
 		"http_request_duration_seconds_count",
-		"2026-01-01 00:00:00.000000000", int64(9),
-		"2026-01-01 01:00:00.000000000", int64(9),
+		"2026-01-01 00:00:00.000000000Z", int64(9),
+		"2026-01-01 01:00:00.000000000Z", int64(9),
 	}
 	if len(args) != len(wantArgs) {
 		t.Fatalf("Args length = %d; want %d (args=%v)", len(args), len(wantArgs), args)

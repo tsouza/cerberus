@@ -74,7 +74,7 @@ func TestDetectedLabels_HappyPath(t *testing.T) {
 	if !strings.Contains(last, "GROUP BY `labels`") {
 		t.Errorf("missing GROUP BY in SQL: %q", last)
 	}
-	if !strings.Contains(last, "toDateTime64(") {
+	if !strings.Contains(last, "parseDateTime64BestEffort(") {
 		t.Errorf("missing time bounds in SQL: %q", last)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -26,8 +27,8 @@ import (
 //
 //	rows WHERE cursor <= Timestamp <= end, ORDER BY Timestamp ASC, LIMIT n
 //
-// The time bounds are rendered inline as `toDateTime64('YYYY-MM-DD
-// HH:MM:SS.fffffffff', 9)` literals (lower = cursor `>=`, upper = end `<=`);
+// The time bounds are rendered inline as `parseDateTime64BestEffort('YYYY-MM-DD
+// HH:MM:SS.fffffffffZ', 9)` literals (lower = cursor `>=`, upper = end `<=`);
 // the limit is rendered as `LIMIT n` (NOT positional args). This is what lets
 // the test catch the overflow-drop bug: when a window holds more than `limit`
 // matching rows, a correct cursor-advance must re-query the truncated tail on
@@ -83,11 +84,11 @@ func (q *cursorAwareQuerier) mint(start time.Time) []chclient.Sample {
 }
 
 var (
-	dt64Re  = regexp.MustCompile(`toDateTime64\('([^']+)', 9\)`)
+	dt64Re  = regexp.MustCompile(`parseDateTime64BestEffort\('([^']+)', 9\)`)
 	limitRe = regexp.MustCompile(`LIMIT (\d+)`)
 )
 
-const dt64Layout = "2006-01-02 15:04:05.000000000"
+const dt64Layout = chplan.TimeLiteralLayout
 
 const (
 	// tailRowLeadTime is how far after the tail's start the seeded rows

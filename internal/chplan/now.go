@@ -5,8 +5,9 @@ import "time"
 // NanoScale is the DateTime64 sub-second scale (fractional-digit count)
 // every cerberus timestamp expression uses: 9 digits = nanosecond
 // precision, matching the OTel-CH schema's `Timestamp DateTime64(9)`
-// columns. It is the scale arg to `now64(scale)` and `toDateTime64(s,
-// scale)` everywhere a server-side or literal timestamp is stamped.
+// columns. It is the scale arg to `now64(scale)` and
+// `parseDateTime64BestEffort(s, scale)` everywhere a server-side or
+// literal timestamp is stamped.
 const NanoScale = 9
 
 // NanoToSecondDivisor converts a nanosecond timestamp/duration into

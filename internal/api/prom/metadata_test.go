@@ -233,7 +233,7 @@ func TestMetadataDiscovery_WindowPrune(t *testing.T) {
 				t.Fatalf("GET windowed: %v", err)
 			}
 			resp.Body.Close()
-			if !strings.Contains(qw.lastSQL, "toDateTime64(") ||
+			if !strings.Contains(qw.lastSQL, "parseDateTime64BestEffort(") ||
 				!strings.Contains(qw.lastSQL, "TimeUnix") {
 				t.Errorf("windowed %s must push a TimeUnix partition bound; got %q",
 					tc.path, qw.lastSQL)
@@ -256,7 +256,7 @@ func TestMetadataDiscovery_WindowPrune(t *testing.T) {
 				t.Fatalf("GET unbounded: %v", err)
 			}
 			resp.Body.Close()
-			if !strings.Contains(qn.lastSQL, "toDateTime64(") ||
+			if !strings.Contains(qn.lastSQL, "parseDateTime64BestEffort(") ||
 				!strings.Contains(qn.lastSQL, "TimeUnix") {
 				t.Errorf("windowless %s must push a default TimeUnix partition bound; got %q",
 					tc.path, qn.lastSQL)

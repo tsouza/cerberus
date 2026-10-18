@@ -35,14 +35,17 @@ package prom_test
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/api/prom"
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chclienttest"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -164,10 +167,10 @@ INSERT INTO otel_metrics_sum (
         'http_requests_total',
         map('job', 'api'),
         'checkout',
-        toDateTime64('%s', 9),
+        toDateTime64('%s', 9, 'UTC'),
         100.0,
         [map('request_id', 'req-a1'), map('request_id', 'req-a2'), map('request_id', 'req-a3')],
-        [toDateTime64('%s', 9), toDateTime64('%s', 9), toDateTime64('%s', 9)],
+        [toDateTime64('%s', 9, 'UTC'), toDateTime64('%s', 9, 'UTC'), toDateTime64('%s', 9, 'UTC')],
         [0.001, 0.002, 0.003],
         ['span-a1', 'span-a2', 'span-a3'],
         ['trace-a1', 'trace-a2', 'trace-a3']
@@ -176,10 +179,10 @@ INSERT INTO otel_metrics_sum (
         'http_requests_total',
         map('job', 'db'),
         'checkout',
-        toDateTime64('%s', 9),
+        toDateTime64('%s', 9, 'UTC'),
         200.0,
         [map('request_id', 'req-b1'), map('request_id', 'req-b2'), map('request_id', 'req-b3')],
-        [toDateTime64('%s', 9), toDateTime64('%s', 9), toDateTime64('%s', 9)],
+        [toDateTime64('%s', 9, 'UTC'), toDateTime64('%s', 9, 'UTC'), toDateTime64('%s', 9, 'UTC')],
         [0.004, 0.005, 0.006],
         ['span-b1', 'span-b2', 'span-b3'],
         ['trace-b1', 'trace-b2', 'trace-b3']
@@ -352,10 +355,10 @@ INSERT INTO otel_metrics_sum (
     'http_requests_total',
     map('job', 'api'),
     'checkout',
-    toDateTime64('%s', 9),
+    toDateTime64('%s', 9, 'UTC'),
     100.0,
     [map()],
-    [toDateTime64('%s', 9)],
+    [toDateTime64('%s', 9, 'UTC')],
     [0.001],
     ['span-a1'],
     ['trace-a1']
@@ -419,10 +422,10 @@ INSERT INTO otel_metrics_histogram (
     'http_request_duration_seconds',
     map('job', 'api'),
     'checkout',
-    toDateTime64('%s', 9),
+    toDateTime64('%s', 9, 'UTC'),
     0.0,
     [map('request_id', 'req-h1')],
-    [toDateTime64('%s', 9)],
+    [toDateTime64('%s', 9, 'UTC')],
     [0.042],
     ['span-h1'],
     ['trace-h1']
@@ -529,10 +532,10 @@ INSERT INTO otel_metrics_histogram (
     'http_request_duration_seconds',
     map('job', 'api'),
     'checkout',
-    toDateTime64('%s', 9),
+    toDateTime64('%s', 9, 'UTC'),
     0.0,
     [map('request_id', 'req-h1')],
-    [toDateTime64('%s', 9)],
+    [toDateTime64('%s', 9, 'UTC')],
     [0.042],
     ['span-h1'],
     ['trace-h1']
@@ -579,13 +582,13 @@ INSERT INTO otel_metrics_sum (
     Exemplars.FilteredAttributes, Exemplars.TimeUnix, Exemplars.Value,
     Exemplars.SpanId, Exemplars.TraceId
 ) VALUES
-    ('http_requests_total', map('job', 'api'), 'checkout', toDateTime64('%[1]s', 9), 1.0,
+    ('http_requests_total', map('job', 'api'), 'checkout', toDateTime64('%[1]s', 9, 'UTC'), 1.0,
      [map(), map(), map()],
-     [toDateTime64('%[2]s', 9), toDateTime64('%[3]s', 9), toDateTime64('%[4]s', 9)],
+     [toDateTime64('%[2]s', 9, 'UTC'), toDateTime64('%[3]s', 9, 'UTC'), toDateTime64('%[4]s', 9, 'UTC')],
      [0.001, 0.002, 0.003], ['span-a1', 'span-a2', 'span-a3'], ['trace-a1', 'trace-a2', 'trace-a3']),
-    ('http_requests_total', map('job', 'db'), 'checkout', toDateTime64('%[1]s', 9), 2.0,
+    ('http_requests_total', map('job', 'db'), 'checkout', toDateTime64('%[1]s', 9, 'UTC'), 2.0,
      [map(), map(), map()],
-     [toDateTime64('%[2]s', 9), toDateTime64('%[3]s', 9), toDateTime64('%[4]s', 9)],
+     [toDateTime64('%[2]s', 9, 'UTC'), toDateTime64('%[3]s', 9, 'UTC'), toDateTime64('%[4]s', 9, 'UTC')],
      [0.004, 0.005, 0.006], ['span-b1', 'span-b2', 'span-b3'], ['trace-b1', 'trace-b2', 'trace-b3']);`,
 		ts, ex(10), ex(250), ex(500))
 
@@ -615,4 +618,97 @@ func exemplarSeriesKeys(m map[string]prom.ExemplarSeries) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// withServerTimezone stamps `session_timezone = zone` on every ClickHouse
+// query a request issues. session_timezone overrides the server's implicit
+// timezone for that query exactly as a server-level `timezone` setting
+// would, so a handler behind it runs as if ClickHouse were configured in
+// zone — without depending on the host timezone chDB inherits.
+func withServerTimezone(zone string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(chclient.WithQuerySetting(r.Context(), "session_timezone", zone)))
+	})
+}
+
+// TestQueryExemplars_ChDB_WindowIsServerTimezoneIndependent pins that the
+// /api/v1/query_exemplars window names the requested instants on a
+// ClickHouse whose timezone is not UTC. The seed stores exemplars at real
+// UTC instants: two inside [start, end] (one 1s inside the end edge) and
+// one 1s past it. A window shifted by the server's UTC offset returns
+// none of the in-window exemplars (or the out-of-window one).
+func TestQueryExemplars_ChDB_WindowIsServerTimezoneIndependent(t *testing.T) {
+	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	start := base.Add(-1 * time.Minute)
+	end := base.Add(1 * time.Minute)
+	const tsFmt = "2006-01-02 15:04:05.000000000"
+	inWindow := []time.Time{base.Add(250 * time.Millisecond), end.Add(-1 * time.Second)}
+	pastEnd := end.Add(1 * time.Second)
+
+	seed := exemplarsDDL() + fmt.Sprintf(
+		`
+INSERT INTO otel_metrics_sum (
+    MetricName, Attributes, ServiceName, TimeUnix, Value,
+    Exemplars.FilteredAttributes, Exemplars.TimeUnix, Exemplars.Value,
+    Exemplars.SpanId, Exemplars.TraceId
+) VALUES
+    ('http_requests_total', map('job', 'api'), 'checkout', toDateTime64('%s', 9, 'UTC'), 100.0,
+     [map()], [toDateTime64('%s', 9, 'UTC')], [0.001], ['span-1'], ['trace-1']),
+    ('http_requests_total', map('job', 'api'), 'checkout', toDateTime64('%s', 9, 'UTC'), 101.0,
+     [map()], [toDateTime64('%s', 9, 'UTC')], [0.002], ['span-2'], ['trace-2']),
+    ('http_requests_total', map('job', 'api'), 'checkout', toDateTime64('%s', 9, 'UTC'), 102.0,
+     [map()], [toDateTime64('%s', 9, 'UTC')], [0.003], ['span-3'], ['trace-3']);`,
+		inWindow[0].Format(tsFmt), inWindow[0].Format(tsFmt),
+		inWindow[1].Format(tsFmt), inWindow[1].Format(tsFmt),
+		pastEnd.Format(tsFmt), pastEnd.Format(tsFmt),
+	)
+
+	for _, zone := range []string{"UTC", "Pacific/Chatham", "America/Los_Angeles", "Asia/Kolkata"} {
+		t.Run(zone, func(t *testing.T) {
+			c := chclienttest.NewChDB(t)
+			c.Seed(t, seed)
+			mux := http.NewServeMux()
+			prom.New(c, schema.DefaultOTelMetrics(), nil).Mount(mux)
+			srv := httptest.NewServer(withServerTimezone(zone, mux))
+			t.Cleanup(srv.Close)
+
+			url := fmt.Sprintf(
+				`%s/api/v1/query_exemplars?query=http_requests_total%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d`,
+				srv.URL, start.Unix(), end.Unix(),
+			)
+			resp, err := http.Get(url)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+			}
+			var out struct {
+				Data []prom.ExemplarSeries `json:"data"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+
+			// Compared at millisecond resolution — the exemplar wire format
+			// is float seconds, whose last bits round differently from a
+			// Go-side float64(UnixNano)/1e9.
+			var got []int64
+			for _, s := range out.Data {
+				for _, ex := range s.Exemplars {
+					got = append(got, int64(math.Round(ex.Timestamp*float64(time.Second/time.Millisecond))))
+				}
+			}
+			slices.Sort(got)
+			want := make([]int64, len(inWindow))
+			for i, ts := range inWindow {
+				want[i] = ts.UnixMilli()
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("session_timezone=%s: exemplar timestamps (ms) = %v, want exactly the in-window %v (past-end exemplar at %d excluded)",
+					zone, got, want, pastEnd.UnixMilli())
+			}
+		})
+	}
 }

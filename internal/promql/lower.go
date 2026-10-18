@@ -2194,19 +2194,12 @@ func metadataWindowPredicate(pred chplan.Expr, start, end time.Time, s schema.Me
 	return combined
 }
 
-// metadataBoundExpr renders a metadata window bound as a
-// `toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)` literal — the same
-// literal shape [anchorBaseExpr] emits for an absolute eval anchor, so
-// the metadata window bounds read identically to the instant-query
-// bounds in emitted SQL.
+// metadataBoundExpr renders a metadata window bound as the canonical
+// [chplan.TimeLiteral] — the same literal [anchorBaseExpr] emits for an
+// absolute eval anchor, so the metadata window bounds read identically to
+// the instant-query bounds in emitted SQL.
 func metadataBoundExpr(t time.Time) chplan.Expr {
-	return &chplan.FuncCall{
-		Fn: chplan.FnToDateTime64,
-		Args: []chplan.Expr{
-			&chplan.LitString{V: t.UTC().Format("2006-01-02 15:04:05.000000000")},
-			&chplan.LitInt{V: chplan.NanoScale},
-		},
-	}
+	return chplan.TimeLiteral(t)
 }
 
 // wrapRangeLatestPerSeries builds the per-step LWR for a vector

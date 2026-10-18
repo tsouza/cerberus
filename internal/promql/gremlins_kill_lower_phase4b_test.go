@@ -74,7 +74,7 @@ func TestLowerMatrixSelector_AnchorFillRequiresBothConditions(t *testing.T) {
 
 // matrixSelectorUpperBoundLiteral digs out the literal DateTime64 upper
 // bound [timeBoundExpr] renders for a matrix selector's window predicate:
-// Filter{Predicate: (Timestamp <= toDateTime64(<lit>, ...)) AND ...}.
+// Filter{Predicate: (Timestamp <= parseDateTime64BestEffort(<lit>, ...)) AND ...}.
 func matrixSelectorUpperBoundLiteral(t *testing.T, plan chplan.Node) time.Time {
 	t.Helper()
 	var lit *chplan.LitString
@@ -92,7 +92,7 @@ func matrixSelectorUpperBoundLiteral(t *testing.T, plan chplan.Node) time.Time {
 			return true
 		}
 		fc, ok := le.Right.(*chplan.FuncCall)
-		if !ok || fc.Fn != "toDateTime64" || len(fc.Args) == 0 {
+		if !ok || fc.Fn != chplan.FnParseDateTime64BestEffort || len(fc.Args) == 0 {
 			return true
 		}
 		if s, ok := fc.Args[0].(*chplan.LitString); ok {
@@ -103,7 +103,7 @@ func matrixSelectorUpperBoundLiteral(t *testing.T, plan chplan.Node) time.Time {
 	if lit == nil {
 		t.Fatal("no matrix-selector window-bound literal found in the plan")
 	}
-	parsed, err := time.Parse("2006-01-02 15:04:05.999999999", lit.V)
+	parsed, err := time.Parse(chplan.TimeLiteralLayout, lit.V)
 	if err != nil {
 		t.Fatalf("parsing literal %q: %v", lit.V, err)
 	}

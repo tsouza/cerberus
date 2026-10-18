@@ -1684,7 +1684,7 @@ func (h *Handler) unionResourceLabelNamesSQL(tables []string, start, end time.Ti
 	return sql, physicalScans
 }
 
-// dateTime64Frag renders the `toDateTime64('<ts>', 9)` literal used to
+// dateTime64Frag renders the `parseDateTime64BestEffort('<ts>Z', 9)` literal used to
 // bound the metadata-discovery window. It mirrors the matched-path bound
 // emitted by promql.metadataBoundExpr so the unmatched (no-`match[]`)
 // discovery arms carry byte-identical time semantics.

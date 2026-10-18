@@ -1165,7 +1165,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnAssumeNotNull:                    "FnAssumeNotNull",
 	chplan.FnCast:                             "FnCast",
 	chplan.FnToDateTime:                       "FnToDateTime",
-	chplan.FnToDateTime64:                     "FnToDateTime64",
+	chplan.FnParseDateTime64BestEffort:        "FnParseDateTime64BestEffort",
 	chplan.FnReinterpretAsFloat64:             "FnReinterpretAsFloat64",
 	chplan.FnReinterpretAsUInt64:              "FnReinterpretAsUInt64",
 	chplan.FnToFloat64:                        "FnToFloat64",

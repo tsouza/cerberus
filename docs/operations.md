@@ -3890,9 +3890,16 @@ reference Prom / Loki / Tempo for differential parity.
 
 Time, locale, and clock sources are not mocked in cerberus's own code
 path — `time.Now()` calls are real, and date formatting always uses
-UTC. A production deployment that puts cerberus in a non-UTC timezone
-container does not change behaviour because every CH-touching path
-emits explicit `toDateTime64(...)` literals with explicit precision.
+UTC. Neither the cerberus container's timezone nor the ClickHouse
+server's `timezone` changes which instants a query reads: every absolute
+time bound and evaluation anchor is emitted as
+`parseDateTime64BestEffort('YYYY-MM-DD HH:MM:SS.NNNNNNNNNZ', 9)`, whose
+`Z` designator pins the literal to UTC, and the remaining time
+predicates bind epoch values (`fromUnixTimestamp64Nano(...)` and
+friends). Day-boundary functions (`toStartOfDay` over the DELTA-prefix
+buckets and their materialized view) evaluate in the ClickHouse server's
+timezone, on the query side and the ingest side alike. PromQL's date
+functions (`hour()`, `day_of_week()`, …) evaluate in UTC.
 
 ## Logs
 

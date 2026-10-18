@@ -138,7 +138,7 @@ func TestSearchTags_NestedScopeSQLShape(t *testing.T) {
 }
 
 // TestSearchTags_TimeBounds — `start` / `end` query parameters thread
-// into the WHERE clause as toDateTime64 literals. Tempo accepts unix
+// into the WHERE clause as parseDateTime64BestEffort literals. Tempo accepts unix
 // seconds; the handler also accepts nanoseconds.
 func TestSearchTags_TimeBounds(t *testing.T) {
 	t.Parallel()
@@ -154,8 +154,8 @@ func TestSearchTags_TimeBounds(t *testing.T) {
 	if !strings.Contains(q.lastSQL, "WHERE") {
 		t.Errorf("expected WHERE clause, got: %s", q.lastSQL)
 	}
-	if !strings.Contains(q.lastSQL, "toDateTime64") {
-		t.Errorf("expected toDateTime64 bound, got: %s", q.lastSQL)
+	if !strings.Contains(q.lastSQL, "parseDateTime64BestEffort") {
+		t.Errorf("expected parseDateTime64BestEffort bound, got: %s", q.lastSQL)
 	}
 }
 
@@ -181,7 +181,7 @@ func TestSearchTags_WindowlessDefaultsToRecentBound(t *testing.T) {
 	if !strings.Contains(q.lastSQL, "WHERE") {
 		t.Errorf("windowless tags request must default to a bounded scan, got no WHERE: %s", q.lastSQL)
 	}
-	if !strings.Contains(q.lastSQL, "`Timestamp`") || !strings.Contains(q.lastSQL, "toDateTime64") {
+	if !strings.Contains(q.lastSQL, "`Timestamp`") || !strings.Contains(q.lastSQL, "parseDateTime64BestEffort") {
 		t.Errorf("windowless tags request must bound on Timestamp, got: %s", q.lastSQL)
 	}
 }

@@ -54,7 +54,7 @@ func TestLabels_HappyPath(t *testing.T) {
 	if !strings.Contains(lastSQL, "arrayJoin(`ResourceAttributes`.`keys`)") {
 		t.Errorf("missing arrayJoin(<col>.keys) in SQL: %q", lastSQL)
 	}
-	if !strings.Contains(lastSQL, "toDateTime64(") {
+	if !strings.Contains(lastSQL, "parseDateTime64BestEffort(") {
 		t.Errorf("missing time bounds in SQL: %q", lastSQL)
 	}
 }

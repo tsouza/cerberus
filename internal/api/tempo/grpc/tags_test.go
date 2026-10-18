@@ -346,7 +346,7 @@ func TestSearchTags_WindowlessDefaultsToRecentBound(t *testing.T) {
 		t.Fatal("no CH lookup fired for windowless SearchTags")
 	}
 	for _, sql := range sqls {
-		if !strings.Contains(sql, "`Timestamp`") || !strings.Contains(sql, "toDateTime64") {
+		if !strings.Contains(sql, "`Timestamp`") || !strings.Contains(sql, "parseDateTime64BestEffort") {
 			t.Errorf("windowless gRPC tags lookup must bound on Timestamp, got: %s", sql)
 		}
 	}

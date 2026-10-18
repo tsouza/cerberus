@@ -343,7 +343,7 @@ func timestampResultExpr(arg parser.Expr, s schema.Metrics, ctx lowerCtx) chplan
 // lwr_ts`, i.e. the newest in-window SAMPLE's own timestamp, which is
 // what makes the selector and non-selector forms differ. There the eval
 // instant is the request anchor, rendered as the same literal
-// `toDateTime64(...)` [anchorBaseExpr] gives every other anchor-reading
+// [chplan.TimeLiteral] [anchorBaseExpr] gives every other anchor-reading
 // lowering, falling back to `now64(9)` when no anchor was threaded (a
 // plain [Lower] without range threading) — exactly the fallback `time()`
 // uses in the same situation.

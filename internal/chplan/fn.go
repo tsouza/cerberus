@@ -393,9 +393,11 @@ const (
 	// resolution).
 	FnToDateTime Fn = "toDateTime"
 
-	// toDateTime64(x, precision) — x cast to DateTime64 at the given fractional-
-	// second precision.
-	FnToDateTime64 Fn = "toDateTime64"
+	// parseDateTime64BestEffort(s, precision) — the string s parsed as a
+	// DateTime64 at the given fractional-second precision, honouring any
+	// timezone designator s carries. TimeLiteral builds every absolute time
+	// literal with it.
+	FnParseDateTime64BestEffort Fn = "parseDateTime64BestEffort"
 
 	// reinterpretAsFloat64(x) — the Float64 whose IEEE-754 bit pattern is the
 	// integer x's bytes: a bit-exact reinterpretation, not a numeric cast, so a

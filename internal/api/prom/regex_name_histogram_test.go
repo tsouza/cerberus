@@ -285,7 +285,7 @@ func TestExpandMetadataMatchers_EnumerationIsWindowBounded(t *testing.T) {
 	if !strings.Contains(enumeration, h.Schema.HistogramTable) {
 		t.Errorf("enumeration does not read the histogram table: %s", enumeration)
 	}
-	if !strings.Contains(enumeration, "toDateTime64(") {
+	if !strings.Contains(enumeration, "parseDateTime64BestEffort(") {
 		t.Errorf("enumeration carries no TimeUnix bound — unbounded scan: %s", enumeration)
 	}
 	want := []string{
@@ -344,7 +344,7 @@ func TestExpandMetadataMatchers_FanOutStaysChunked(t *testing.T) {
 		if len(sql) > maxRenderedQueryBytes {
 			t.Fatalf("statement %d rendered %d bytes, over the %d-byte cap", i, len(sql), maxRenderedQueryBytes)
 		}
-		if !strings.Contains(sql, "toDateTime64(") {
+		if !strings.Contains(sql, "parseDateTime64BestEffort(") {
 			t.Errorf("statement %d carries no TimeUnix bound — unbounded scan: %s", i, sql)
 		}
 	}

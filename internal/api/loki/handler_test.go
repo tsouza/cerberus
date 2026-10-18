@@ -689,10 +689,10 @@ func TestQueryRange_PushesStartEndToSQL(t *testing.T) {
 	if strings.Contains(lastSQL, "`Timestamp` <=") {
 		t.Fatalf("log-line query used an INCLUSIVE end bound; reference Loki's entry path is [start, end): %s", lastSQL)
 	}
-	// The bound is rendered as toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)
+	// The bound is rendered as parseDateTime64BestEffort('YYYY-MM-DD HH:MM:SS.fffffffffZ', 9)
 	// so both bound strings must appear as positional args.
-	const wantStart = "2026-05-14 12:03:20.000000000"
-	const wantEnd = "2026-05-14 12:05:00.000000000"
+	const wantStart = "2026-05-14 12:03:20.000000000Z"
+	const wantEnd = "2026-05-14 12:05:00.000000000Z"
 	if !containsArg(lastArgs, wantStart) {
 		t.Errorf("expected args to contain start bound %q; got: %#v", wantStart, lastArgs)
 	}
@@ -736,8 +736,8 @@ func TestQuery_PushesInstantWindowToSQL(t *testing.T) {
 	if strings.Contains(lastSQL, "`Timestamp` <=") {
 		t.Fatalf("log-line query used an INCLUSIVE end bound; reference Loki's entry path is [start, end): %s", lastSQL)
 	}
-	const wantStart = "2026-05-14 12:00:00.000000000"
-	const wantEnd = "2026-05-14 12:05:00.000000000"
+	const wantStart = "2026-05-14 12:00:00.000000000Z"
+	const wantEnd = "2026-05-14 12:05:00.000000000Z"
 	if !containsArg(lastArgs, wantStart) {
 		t.Errorf("expected args to contain start bound %q; got: %#v", wantStart, lastArgs)
 	}

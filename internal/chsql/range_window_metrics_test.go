@@ -44,7 +44,7 @@ func TestRangeWindowMetricsExplicitTimeGrid(t *testing.T) {
 	}
 
 	// Anchor base: explicit DateTime64 literal at end.
-	if !strings.Contains(sql, "toDateTime64('2026-05-13 12:05:00.000000000', 9)") {
+	if !strings.Contains(sql, "parseDateTime64BestEffort('2026-05-13 12:05:00.000000000Z', 9)") {
 		t.Errorf("expected DateTime64 anchor base, SQL=%s", sql)
 	}
 	// 5-minute span / 1-minute step = 6 anchors (end-inclusive). The
