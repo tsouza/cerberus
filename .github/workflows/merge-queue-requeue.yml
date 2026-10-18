@@ -1,0 +1,45 @@
+name: merge-queue-requeue
+
+# A push to a pull request in the Mergify merge queue removes it from the
+# queue, and Mergify does not re-add it while the `queue` label stays on. This
+# workflow re-applies the label after every push to a labelled pull request;
+# the logic and its rationale are in .github/scripts/merge-queue-requeue.mjs.
+#
+# `pull_request_target` gives a token that can write labels on a pull request
+# from a fork too. It checks out the BASE commit's scripts without persisted
+# credentials and never runs the pull request's own code.
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: merge-queue-requeue-${{ github.event.pull_request.number }}
+
+jobs:
+  requeue:
+    name: requeue
+    if: contains(github.event.pull_request.labels.*.name, 'queue')
+    runs-on: ubicloud-standard-2
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Guard the requeue logic
+        run: node --test .github/scripts/merge-queue-requeue.test.mjs
+
+      - name: Re-apply the queue label
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/merge-queue-requeue.mjs

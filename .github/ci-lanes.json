@@ -2396,6 +2396,10 @@
 
     { "workflow": ".github/workflows/issue-label.yml", "reason": "labeling" },
     {
+      "workflow": ".github/workflows/merge-queue-requeue.yml",
+      "reason": "automation"
+    },
+    {
       "workflow": ".github/workflows/mirror-images.yml",
       "reason": "infrastructure"
     },
