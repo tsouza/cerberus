@@ -92,7 +92,7 @@ import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { capture, error, log, notice } from './gh.mjs';
-import { isDockerHubRef, mirroredRef } from './mirror.mjs';
+import { isDockerHubRef, mirroredRef, retainedDigest } from './mirror.mjs';
 
 // Five attempts with a linear backoff: long enough to ride out a registry blip
 // or a transport fault, short enough that a genuinely unreachable registry
@@ -325,7 +325,9 @@ export function presentLocally(image) {
 // exactly the behaviour that existed before the mirror. Completeness is gated
 // where it can be fixed — in `mirror-images.mjs` and the inventory test — not
 // here, where the only available response would be to fail a lane over an
-// image that is perfectly reachable upstream.
+// image that is perfectly reachable upstream. A RETAINED image is the
+// exception: nothing upstream can serve it, so `pullImageSteps` turns its miss
+// into a failure instead of a fallback.
 function* acquireFromMirrorSteps(image) {
   const mirror = mirroredRef(image);
   if (mirror === null) return false;
@@ -334,7 +336,9 @@ function* acquireFromMirrorSteps(image) {
   // rather than asserting a fallback that mirror-only mode has removed. A
   // notice promising a Docker Hub pull that never happens is worse than no
   // notice: it sends the next reader looking for a pull in the log.
-  const next = mirrorOnly() ? 'and this job is mirror-only, so the acquisition fails' : 'falling back to Docker Hub';
+  let next = 'falling back to Docker Hub';
+  if (retainedDigest(image) !== null) next = 'and the mirror holds the only copy, so the acquisition fails';
+  else if (mirrorOnly()) next = 'and this job is mirror-only, so the acquisition fails';
 
   yield { op: 'log', message: `    docker pull ${mirror} (mirror of ${image})` };
   const pull = yield { op: 'docker', args: ['pull', mirror] };
@@ -453,6 +457,21 @@ function* pullImageSteps(image, options = {}) {
   };
 
   if (yield* acquireFromMirrorSteps(image)) return true;
+
+  // A retained image's upstream serves nothing (lib/mirror.mjs § RETAINED
+  // IMAGES), so the upstream loop below could only spend its retry budget on a
+  // refusal. The mirror's copy is the source of record and its miss is final.
+  if (retainedDigest(image) !== null) {
+    const because = consequence === '' ? '.' : `, so ${consequence}.`;
+    yield {
+      op: 'error',
+      message:
+        `${image} is retained: its upstream no longer serves it and ${mirroredRef(image)} is the only copy, ` +
+        `which this job could not pull${because} Check that this job logs in to ghcr.io before it acquires ` +
+        'anything and that the package still exists; `mirror-images.yml` verifies it daily.',
+    };
+    return false;
+  }
 
   if (mirrorOnly() && blockedByMirrorOnly(image)) {
     // Asked before the mode, exactly as it is inside the loop: a copy already
