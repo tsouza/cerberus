@@ -602,3 +602,20 @@ func TestDateFnOverMixedExpHistogramSetOp_ArgCountAndTimestampExclusion(t *testi
 			"would accept it)")
 	}
 }
+
+// TestLowerVectorSetOp_MixedOr_RightOperandMayBeMixed pins that the
+// Mixed arm of lowerVectorSetOp's `or` is taken when the RIGHT operand is
+// the one already Mixed: a float left operand unioned with a Mixed right
+// one lowers to a Mixed VectorSetOp, not to a float-shaped set op that
+// would read the Mixed arm as plain samples.
+func TestLowerVectorSetOp_MixedOr_RightOperandMayBeMixed(t *testing.T) {
+	t.Parallel()
+	query := `up or (latency_exp_hist or histogram_quantile(0.5, latency_exp_hist))`
+	setOp, ok := lowerMixedOrAt(t, query).(*chplan.VectorSetOp)
+	if !ok {
+		t.Fatalf("lower(%q): plan is not a *chplan.VectorSetOp", query)
+	}
+	if !setOp.Mixed || setOp.Histogram {
+		t.Errorf("lower(%q): Mixed = %v, Histogram = %v; want a Mixed set op", query, setOp.Mixed, setOp.Histogram)
+	}
+}

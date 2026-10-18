@@ -625,7 +625,10 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 		if ref.num <= g.count {
 			out.group = g.probe.probedIndex(ref.num)
 		}
-	case len(carriers) > 1:
+	case len(carriers) > 0:
+		// A lone carrier takes this path too: it is the last surviving
+		// carrier, so expressibleCarriers clears it and returns it alone,
+		// with no fallbacks and no probes.
 		searched, probes, negativeProbes, ambiguous, ok := g.expressibleCarriers(carriers)
 		if !ok {
 			return resolvedRef{}, fmt.Errorf(
@@ -640,8 +643,6 @@ func (g captureGroups) resolve(ref templateRef) (resolvedRef, error) {
 			)
 		}
 		out.group, out.fallbacks, out.probes, out.negativeProbes = searched[0], searched[1:], probes, negativeProbes
-	case len(carriers) == 1:
-		out.group = g.probe.probedIndex(carriers[0])
 	}
 	return out, nil
 }

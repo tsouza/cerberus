@@ -266,3 +266,18 @@ func TestFloatOnlyAggOverMixedExpHistogramSetOp_QuantileKeepsItsParam(t *testing
 			"a nil Param; the phi argument is what the exception admits", q)
 	}
 }
+
+// TestSanitizePromLabelChars_KeepsExactlyTheLabelAlphabet pins the
+// character ranges at both of their ends: each range's first and last
+// member is kept, and the byte just outside each end becomes `_`.
+func TestSanitizePromLabelChars_KeepsExactlyTheLabelAlphabet(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ in, want string }{
+		{"azAZ09_", "azAZ09_"},
+		{"`{@[/:", "______"},
+	} {
+		if got := sanitizePromLabelChars(tc.in); got != tc.want {
+			t.Errorf("sanitizePromLabelChars(%q) = %q; want %q", tc.in, got, tc.want)
+		}
+	}
+}

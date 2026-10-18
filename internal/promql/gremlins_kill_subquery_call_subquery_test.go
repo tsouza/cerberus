@@ -18,6 +18,7 @@ package promql
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -190,5 +191,50 @@ func TestGremlinsKill_CallSubqueryFold_AnchorErrorPropagates(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "`@ start()` modifier requires query range context") {
 		t.Errorf("lower(%q): got error %q, want it to mention the `@ start()` range-context requirement", query, err)
+	}
+}
+
+// TestLowerSubqueryOverTopK_WithoutPartition pins the TopK partition a
+// subquery's `topk ... without(...)` builds: `without()` with no labels
+// partitions by the whole label set, while `without(job)` partitions by
+// the label set minus job — never by the whole set, which would keep K
+// series per distinct job instead of K across the jobs.
+func TestLowerSubqueryOverTopK_WithoutPartition(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		query    string
+		wantKeys []string // nil: the whole label set
+	}{
+		{`max_over_time(topk without() (2, up)[5m:1m])`, nil},
+		{`max_over_time(topk without(job) (2, up)[5m:1m])`, []string{"job"}},
+	} {
+		plan, err := LowerAt(context.Background(), mustParseExperimental(t, tc.query), s, at, at)
+		if err != nil {
+			t.Fatalf("LowerAt(%q): %v", tc.query, err)
+		}
+		var topk *chplan.TopK
+		chplan.Walk(plan, func(n chplan.Node) bool {
+			if v, ok := n.(*chplan.TopK); ok && topk == nil {
+				topk = v
+			}
+			return true
+		})
+		if topk == nil || len(topk.By) == 0 {
+			t.Fatalf("lower(%q): no TopK with a partition in the plan", tc.query)
+		}
+		switch by := topk.By[0].(type) {
+		case *chplan.ColumnRef:
+			if tc.wantKeys != nil || by.Name != s.AttributesColumn {
+				t.Errorf("lower(%q): partition = the column %q; want the label set without %v", tc.query, by.Name, tc.wantKeys)
+			}
+		case *chplan.MapWithoutKeys:
+			if !slices.Equal(by.Keys, tc.wantKeys) || len(tc.wantKeys) == 0 {
+				t.Errorf("lower(%q): partition drops %v; want %v", tc.query, by.Keys, tc.wantKeys)
+			}
+		default:
+			t.Errorf("lower(%q): partition = %T", tc.query, by)
+		}
 	}
 }

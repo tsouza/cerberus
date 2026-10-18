@@ -390,15 +390,15 @@ func foldSyntheticBinary(left, right chplan.Node, op chplan.BinaryOp, returnBool
 
 	var newValue chplan.Expr
 	switch {
-	case isComparison(op) && returnBool:
+	case !isComparison(op):
+		newValue = cmpExpr
+	case returnBool:
 		newValue = &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{cmpExpr}}
-	case isComparison(op):
+	default:
 		// Bare V-V comparison: Value is the LHS sample value (Prom's
 		// "preserve LHS where comparison holds" rule); the Filter
 		// below drops non-matching rows.
 		newValue = lhsVal
-	default:
-		newValue = cmpExpr
 	}
 
 	combined := &chplan.Project{
