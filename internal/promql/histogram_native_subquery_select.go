@@ -162,7 +162,7 @@ func lowerSelectFnOverExpHistogramSubquery(shape histogramSubquerySelectShape, s
 	sub := shape.sub
 	step := sub.Step
 	if step == 0 {
-		step = defaultSubqueryStep
+		step = DefaultSubqueryStep
 	}
 	if step < 0 {
 		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", sub.Step)

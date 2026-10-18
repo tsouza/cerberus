@@ -2,6 +2,7 @@ package promql
 
 import (
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
@@ -10,12 +11,12 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// defaultSubqueryStep is the step cerberus substitutes when a subquery
+// DefaultSubqueryStep is the step cerberus substitutes when a subquery
 // omits an explicit `step` (`expr[5m:]`). Prom defines empty-step
 // semantics as "use the engine's eval step"; cerberus doesn't thread
 // that through lowering, so we hardcode 1m, which matches Prom's
 // default eval step.
-const defaultSubqueryStep = time.Minute
+const DefaultSubqueryStep = time.Minute
 
 // lowerSubquery handles `<expr>[<range>:<step>]`. Supports VectorSelector
 // inners (`up[5m:1m]`), inner Call shapes (`rate(m[5m])[1h:5m]`), and
@@ -32,7 +33,7 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 	}
 	step := e.Step
 	if step == 0 {
-		step = defaultSubqueryStep
+		step = DefaultSubqueryStep
 	}
 	if step < 0 {
 		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", e.Step)
@@ -556,7 +557,7 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 	}
 	var windowEnd, windowStart time.Time
 	switch {
-	case subqueryPinned(sub) && !anchor.End.IsZero():
+	case subqueryPinned(sub):
 		windowEnd = anchor.End
 		windowStart = anchor.End.Add(-sub.Range)
 	case ctx.rangeMode():
@@ -660,14 +661,20 @@ func emptySubqueryGrid(inner chplan.Node) chplan.Node {
 
 // epochFloor snaps t down to the nearest absolute-epoch multiple of
 // step (phase 0) — the SQL-side twin of chsql's epochAlignedEndFrag.
+//
+// It computes t's offset from the Unix epoch in arbitrary precision, so
+// it is exact for every instant a time.Time names, including those
+// outside the int64-nanosecond window `UnixNano()` covers.
 func epochFloor(t time.Time, step time.Duration) time.Time {
-	stepNS := step.Nanoseconds()
-	ns := t.UTC().UnixNano()
-	floor := ns / stepNS
-	if ns%stepNS != 0 && ns < 0 {
-		floor--
-	}
-	return time.Unix(0, floor*stepNS).UTC()
+	const nanosPerSecond = int64(time.Second)
+	ns := new(big.Int).Mul(big.NewInt(t.Unix()), big.NewInt(nanosPerSecond))
+	ns.Add(ns, big.NewInt(int64(t.Nanosecond())))
+	stepNS := big.NewInt(step.Nanoseconds())
+	// big.Int.Div is Euclidean: for a positive step it rounds toward
+	// negative infinity, which is the floor.
+	ns.Mul(ns.Div(ns, stepNS), stepNS)
+	sec, nsec := new(big.Int).DivMod(ns, big.NewInt(nanosPerSecond), new(big.Int))
+	return time.Unix(sec.Int64(), nsec.Int64()).UTC()
 }
 
 // subqueryAnchorShape re-exposes a grid-evaluated subquery inner under
@@ -2289,7 +2296,7 @@ func lowerSubqueryOverAbsent(
 	// above, so the unpinned range check is exactly ctx.rangeMode().)
 	var gridStart, gridEnd time.Time
 	switch {
-	case subqueryPinned(sub) && !anchor.End.IsZero():
+	case subqueryPinned(sub):
 		gridEnd = anchor.End
 		gridStart = anchor.End.Add(-sub.Range)
 	case ctx.rangeMode():
@@ -2487,7 +2494,7 @@ func subqueryAnchor(e *parser.SubqueryExpr, ctx lowerCtx) (evalAnchor, error) {
 		return evalAnchor{}, fmt.Errorf("promql: unexpected subquery StartOrEnd token %v", e.StartOrEnd)
 	}
 	if e.Timestamp != nil {
-		a.End = time.UnixMilli(*e.Timestamp).UTC()
+		a.End = atModifierInstant(*e.Timestamp)
 	}
 	// Instant eval (step == 0): with no `@` pin (offset alone doesn't set End),
 	// anchor the subquery on the query's eval timestamp (ctx.end) — the same fill the non-subquery
@@ -3371,7 +3378,7 @@ func lowerSubqueryOverCallSubquery(
 	if err != nil {
 		return nil, err
 	}
-	if subqueryPinned(sub) && !anchor.End.IsZero() {
+	if subqueryPinned(sub) {
 		wideCtx.step = 0
 		wideCtx.end = anchor.End
 	}

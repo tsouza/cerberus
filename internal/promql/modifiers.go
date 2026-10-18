@@ -19,6 +19,12 @@ import (
 // when the API layer threads them through via [LowerAt]. Plain [Lower]
 // (no range context) rejects start/end modifiers because the anchor
 // times are not known at lowering time.
+//
+// A resolved pin never has a zero End: an expression whose `@ <ts>`
+// leaves the evaluation domain is refused before lowering starts (see
+// [atModifierInstant]), and `@ start()` / `@ end()` are rejected when
+// the bound they name is zero. So "pinned" implies "End is set", and a guard on a pinned
+// subquery needs no second check of End.
 type evalAnchor struct {
 	End    time.Time
 	Offset time.Duration
@@ -356,10 +362,9 @@ func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, er
 		return evalAnchor{}, fmt.Errorf("promql: unexpected StartOrEnd token %v", vs.StartOrEnd)
 	}
 	if vs.Timestamp != nil {
-		// Upstream stores @ as Unix milliseconds. A literal @<ts>
-		// modifier takes precedence over start()/end() (they can't
-		// both be set — the parser enforces that).
-		a.End = time.UnixMilli(*vs.Timestamp).UTC()
+		// A literal @<ts> modifier takes precedence over start()/end()
+		// (they can't both be set — the parser enforces that).
+		a.End = atModifierInstant(*vs.Timestamp)
 	}
 	// No absolute @-pin: anchor the window to the query's eval instant
 	// (ctx.end) so an instant /api/v1/query at time=T evaluates the
@@ -385,6 +390,23 @@ func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, er
 		a.End = ctx.end.UTC()
 	}
 	return a, nil
+}
+
+// atModifierInstant converts a literal `@ <ts>` modifier — which the
+// upstream parser stores as Unix milliseconds — into the absolute
+// instant an [evalAnchor] pins to, for a vector selector and a subquery
+// alike.
+//
+// Every pin reaching it lies inside [evaluationDomain]: the lowering
+// entry points refuse an expression whose evaluation leaves that domain
+// ([checkEvaluationDomain]) before any anchor is resolved. That is what
+// keeps the zero `time.Time` free to mean "no anchor" in
+// [evalAnchor.End] — the zero value is 0001-01-01T00:00:00Z, far outside
+// the domain, so no pin can be mistaken for the absence of one — and
+// what keeps every grid, window and DateTime64(9) literal derived from a
+// pin faithful.
+func atModifierInstant(ms int64) time.Time {
+	return time.UnixMilli(ms).UTC()
 }
 
 // hasModifier reports whether vs has anything that affects the time
