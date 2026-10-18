@@ -1201,9 +1201,12 @@ per-mutant bounds and rapid seed, and the runner scripts) are handed to it as
 `--cache-env-ignore`; `mutation-run.test.mjs` fails if any Go source under
 `internal/` names one of them. The directory is restored with `actions/cache` under the same
 pull-request scoping as the leg cache, only when the leg cache is on and the
-leg is cacheable, and is used only when the run that saved it passes the same
-producing-run verification the aggregator applies to a leg hit; anything else
-starts the leg with an empty directory.
+leg is cacheable. Before the restore, the leg lists the pull request's own
+per-mutant entries through the API and takes the newest one whose producing
+run passes the same producing-run verification the aggregator applies to a
+leg hit, passing over entries of a run still in progress; it restores that
+exact key, and uses the directory only when its provenance names the verified
+run. Anything else starts the leg with an empty directory.
 
 The selector also pins the phase table's efficacy threshold to an independent
 95% minimum. Lowering the shared phase constant cannot turn every leg into a
