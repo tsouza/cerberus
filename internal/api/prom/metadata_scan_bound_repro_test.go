@@ -10,13 +10,13 @@ package prom_test
 // on prod.
 //
 // The honest knob that makes this visible without chDB: the metadata
-// emitters bound the scan with a `toDateTime64('…', 9)` TimeUnix literal
+// emitters bound the scan with a `parseDateTime64BestEffort('…Z', 9)` TimeUnix literal
 // (dateTime64Frag for the no-`match[]` arms, metadataBoundExpr for the
 // matched path) ONLY when a window is present. metadataWindowPred returns
 // nil for the zero/zero case, so every windowless arm emits a WHERE-less
 // (or, for /api/v1/metadata, GROUP-BY-only) full-table scan. This test
 // asserts the inverse — that EVERY windowless arm carries the
-// `toDateTime64(` bound — so it is RED on current main and turns green
+// `parseDateTime64BestEffort(` bound — so it is RED on current main and turns green
 // once a default lookback is bounded onto the windowless path.
 //
 // These assertions are the SQL-shape side of the bug. The result-identity
@@ -35,7 +35,7 @@ import (
 
 // dt64Bound is the inline TimeUnix window literal both metadata emit paths
 // render — present in the SQL iff a partition-pruning bound was pushed.
-const dt64Bound = "toDateTime64("
+const dt64Bound = "parseDateTime64BestEffort("
 
 // anyContains reports whether any recorded statement contains sub.
 func anyContains(stmts []string, sub string) bool {

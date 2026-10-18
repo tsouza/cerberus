@@ -196,7 +196,7 @@ func isSyntheticScalarPlan(plan chplan.Node, s schema.Metrics) bool {
 		return false
 	}
 	// Projection 2 — TimeUnix slot: alias-only check (the value
-	// expression varies between `now64(9)` / a `toDateTime64` literal
+	// expression varies between `now64(9)` / a chplan.TimeLiteral
 	// / a `ColumnRef{anchor_ts}` depending on instant/range mode).
 	if p.Projections[2].Alias != s.TimestampColumn {
 		return false

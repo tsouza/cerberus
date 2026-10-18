@@ -694,17 +694,9 @@ func cardinalityProbeTimeBound(carrier *cardinalityProbeCarrier) chplan.Expr {
 	}
 }
 
-// cardinalityProbeTimeLit renders t as a `toDateTime64('YYYY-MM-DD
-// HH:MM:SS.fffffffff', 9)` literal — the exact same shape
-// internal/promql/lower.go's metadataBoundExpr already uses for an absolute
-// window bound, reused here (not re-derived) so this file introduces no new
-// literal-time idiom for a reviewer to separately trust.
+// cardinalityProbeTimeLit renders t as the canonical [chplan.TimeLiteral] —
+// the same literal every lowerer uses for an absolute window bound, so this
+// file introduces no literal-time idiom of its own.
 func cardinalityProbeTimeLit(t time.Time) chplan.Expr {
-	return &chplan.FuncCall{
-		Fn: chplan.FnToDateTime64,
-		Args: []chplan.Expr{
-			&chplan.LitString{V: t.UTC().Format("2006-01-02 15:04:05.000000000")},
-			&chplan.LitInt{V: chplan.NanoScale},
-		},
-	}
+	return chplan.TimeLiteral(t)
 }

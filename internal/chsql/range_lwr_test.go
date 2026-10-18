@@ -99,7 +99,7 @@ func TestEmitRangeLWR_OffsetShiftsWindowNotAnchor(t *testing.T) {
 		t.Errorf("offset emit must fold the offset onto the membership base; got:\n%s", sql)
 	}
 	// The emitted anchor still walks back from the unshifted End grid.
-	if !strings.Contains(sql, "toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 60000000000)") {
+	if !strings.Contains(sql, "parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000)") {
 		t.Errorf("offset emit must keep the anchor on the unshifted grid base; got:\n%s", sql)
 	}
 }

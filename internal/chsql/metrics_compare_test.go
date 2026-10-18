@@ -123,7 +123,7 @@ func TestEmitRangeWindowCompareResolvesPerRelationTimestamps(t *testing.T) {
 	}
 	for _, want := range []string{
 		"dateDiff('nanosecond', `cohort_time`",
-		"`cohort_time` > toDateTime64",
+		"`cohort_time` > parseDateTime64BestEffort",
 		"`root_time` >= fromUnixTimestamp64Nano(?)",
 		"`root_time` <= fromUnixTimestamp64Nano(?)",
 	} {
@@ -191,8 +191,8 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 
-	lo := "`Timestamp` > toDateTime64('2026-05-12 10:00:00.000000000', 9) - toIntervalNanosecond(60000000000)"
-	hi := "`Timestamp` <= toDateTime64('2026-05-12 10:03:00.000000000', 9)"
+	lo := "`Timestamp` > parseDateTime64BestEffort('2026-05-12 10:00:00.000000000Z', 9) - toIntervalNanosecond(60000000000)"
+	hi := "`Timestamp` <= parseDateTime64BestEffort('2026-05-12 10:03:00.000000000Z', 9)"
 
 	// The 's' span leg: bound sits in the WHERE immediately preceding the
 	// `AS s` alias — i.e. inside the scan, below the join.
@@ -213,7 +213,7 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 	// seed inside the scan, below the GROUP BY. The seed's own bound
 	// (tsBoundExprs) renders as fromUnixTimestamp64Nano(?) — the same
 	// parameterized shape the search lowering's tsBound uses — not the
-	// inlined toDateTime64(...) literal the 's' leg's lo/hi above use.
+	// inlined parseDateTime64BestEffort(...) literal the 's' leg's lo/hi above use.
 	rSeededScan := "PREWHERE (`ParentSpanId` = ?) WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` " +
 		"WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)))))"
 	if !strings.Contains(sql, rSeededScan) {
@@ -796,8 +796,8 @@ func TestEmitRangeWindowCompare_MatrixShape(t *testing.T) {
 	for _, want := range []string{
 		"AS `anchor_ts`",
 		"GROUP BY `is_selection`, `attr`, `val`, `anchor_ts`",
-		"`Timestamp` > toDateTime64('2026-05-12 10:00:00.000000000', 9) - toIntervalNanosecond(60000000000)",
-		"`Timestamp` <= toDateTime64('2026-05-12 10:03:00.000000000', 9)",
+		"`Timestamp` > parseDateTime64BestEffort('2026-05-12 10:00:00.000000000Z', 9) - toIntervalNanosecond(60000000000)",
+		"`Timestamp` <= parseDateTime64BestEffort('2026-05-12 10:03:00.000000000Z', 9)",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("matrix SQL missing %q:\n%s", want, sql)

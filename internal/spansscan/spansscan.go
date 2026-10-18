@@ -42,11 +42,11 @@ const (
 	// bound (`Timestamp >= fromUnixTimestamp64Nano(<nanos>)`) — the shape the
 	// structural / nested-set recursive arms and the trace-id seed leaves emit.
 	// It is NOT the only rendering: the metrics range-window grid bounds its
-	// matrix wrapper with `Timestamp > toDateTime64('<ts>', 9)` instead, never
+	// matrix wrapper with `Timestamp > parseDateTime64BestEffort('<ts>Z', 9)` instead, never
 	// emitting fromUnixTimestamp64Nano. So the matcher must NOT key its
 	// window-present precondition on this literal alone (that left the metrics
 	// path uncovered — a windowless recursive scan under a `| rate()` slipped
-	// through because the grid emits toDateTime64). The precondition instead
+	// through because the grid emits parseDateTime64BestEffort). The precondition instead
 	// arms on any `Timestamp` range comparison (reTimestampCmp), which subsumes
 	// both renderings. This const is retained as the canonical search-window
 	// marker for callers/tests that assert on that specific shape.
@@ -93,7 +93,7 @@ func spansFromRegexp(spansTable string) *regexp.Regexp {
 //   - spansTable is empty or sql is blank;
 //   - the statement carries no request window at all (no `Timestamp` range
 //     comparison in any rendering — neither fromUnixTimestamp64Nano nor the
-//     metrics grid's toDateTime64) — there is nothing to push down, so the
+//     metrics grid's parseDateTime64BestEffort) — there is nothing to push down, so the
 //     unbounded concern belongs to the resource-bound gate, not this
 //     partition-pruning matcher;
 //   - the scan is the table of a DERIVED TABLE — a subquery in `FROM (…)` /
@@ -125,7 +125,7 @@ func UnwindowedSpansScans(sql, spansTable string) []Finding {
 	// partition-pruning matcher. A request window is ANY `Timestamp` range
 	// comparison, however it is rendered — the search / leaf path emits
 	// `fromUnixTimestamp64Nano(<nanos>)` (RequestWindowBound), the metrics
-	// range-window grid emits `toDateTime64('<ts>', 9)`. Keying on the
+	// range-window grid emits `parseDateTime64BestEffort('<ts>Z', 9)`. Keying on the
 	// `Timestamp` comparison itself (reTimestampCmp) rather than one function
 	// rendering is what closes the metrics-path gap: a `{ } >> { } | rate()`
 	// whose recursive arm lost its window would otherwise slip through here

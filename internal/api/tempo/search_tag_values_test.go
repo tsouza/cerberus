@@ -141,7 +141,7 @@ func TestSearchTagValues_WindowlessDefaultsToRecentBound(t *testing.T) {
 		t.Fatalf("GET: %v", err)
 	}
 	resp.Body.Close()
-	if !strings.Contains(q.lastSQL, "`Timestamp`") || !strings.Contains(q.lastSQL, "toDateTime64") {
+	if !strings.Contains(q.lastSQL, "`Timestamp`") || !strings.Contains(q.lastSQL, "parseDateTime64BestEffort") {
 		t.Errorf("windowless tag-values lookup must bound on Timestamp, got: %s", q.lastSQL)
 	}
 }

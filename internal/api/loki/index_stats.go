@@ -89,8 +89,8 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 //	  sum(length(`Body`))                     AS bytes
 //	FROM `otel_logs`
 //	WHERE <matcher predicate>
-//	  AND `Timestamp` >= toDateTime64(<start>, 9)
-//	  AND `Timestamp` <= toDateTime64(<end>, 9)
+//	  AND `Timestamp` >= parseDateTime64BestEffort('<start>Z', 9)
+//	  AND `Timestamp` <= parseDateTime64BestEffort('<end>Z', 9)
 //
 // All identifiers and time-range bounds flow through Builder helpers so
 // no SQL string concatenation happens at this level (the CLAUDE.md
@@ -156,7 +156,7 @@ func bytesAggFrag(bodyCol string) chsql.Frag {
 	return chsql.Call("sum", chsql.Call("length", chsql.Col(bodyCol)))
 }
 
-// timeBoundFrag emits "`<col>` <op> toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff', 9)".
+// timeBoundFrag emits "`<col>` <op> parseDateTime64BestEffort('YYYY-MM-DD HH:MM:SS.fffffffffZ', 9)".
 // Only ">=" and "<=" are used by callers; anything else panics so a
 // typo lands at boot rather than as a silent SQL syntax error.
 func timeBoundFrag(col, op string, t time.Time) chsql.Frag {

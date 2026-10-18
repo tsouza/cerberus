@@ -5,11 +5,11 @@
 -- end --
 2026-05-14T12:05:00Z
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` < toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)
+SELECT * FROM `otel_logs` WHERE (`Timestamp` >= parseDateTime64BestEffort(?, ?)) AND (`Timestamp` < parseDateTime64BestEffort(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)
 -- args --
-[0] string = "2026-05-14 12:03:20.000000000"
+[0] string = "2026-05-14 12:03:20.000000000Z"
 [1] int64 = 9
-[2] string = "2026-05-14 12:05:00.000000000"
+[2] string = "2026-05-14 12:05:00.000000000Z"
 [3] int64 = 9
 [4] string = ""
 [5] string = "service_name"
@@ -36,15 +36,15 @@ INSERT INTO otel_logs (Timestamp) VALUES
   ["2026-05-14T12:03:20Z"]
 ]
 -- chplan --
-Filter predicate=((FnCoalesce(FnNullIf(ServiceName, ""), FnIf(FnMapContainsKey(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], FnIf(FnMapContainsKey(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "api") AND ((Timestamp >= FnToDateTime64("2026-05-14 12:03:20.000000000", 9)) AND (Timestamp < FnToDateTime64("2026-05-14 12:05:00.000000000", 9))))
+Filter predicate=((FnCoalesce(FnNullIf(ServiceName, ""), FnIf(FnMapContainsKey(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], FnIf(FnMapContainsKey(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "api") AND ((Timestamp >= FnParseDateTime64BestEffort("2026-05-14 12:03:20.000000000Z", 9)) AND (Timestamp < FnParseDateTime64BestEffort("2026-05-14 12:05:00.000000000Z", 9))))
   Scan(otel_logs)
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{service_name="api"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
 -- args_optimized --
-[0] string = "2026-05-14 12:03:20.000000000"
+[0] string = "2026-05-14 12:03:20.000000000Z"
 [1] int64 = 9
-[2] string = "2026-05-14 12:05:00.000000000"
+[2] string = "2026-05-14 12:05:00.000000000Z"
 [3] int64 = 9
 [4] string = ""
 [5] string = "service_name"
@@ -61,4 +61,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` < toDateTime64(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)
+SELECT * FROM `otel_logs` WHERE (`Timestamp` >= parseDateTime64BestEffort(?, ?)) AND (`Timestamp` < parseDateTime64BestEffort(?, ?)) AND (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)

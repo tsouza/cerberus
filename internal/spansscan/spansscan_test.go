@@ -18,7 +18,7 @@ import (
 // The matcher arms on ANY `Timestamp` range comparison in the statement,
 // regardless of rendering: the search / leaf path emits the window as
 // `fromUnixTimestamp64Nano(<nanos>)`, the metrics range-window grid as
-// `toDateTime64('<ts>', 9)`. The metricsWindow* fixtures below are the
+// `parseDateTime64BestEffort('<ts>Z', 9)`. The metricsWindow* fixtures below are the
 // regression guard for that second rendering — keying only on
 // fromUnixTimestamp64Nano (the pre-fix behaviour) left the metrics path
 // uncovered.
@@ -92,7 +92,7 @@ const recursiveArmMaskedBySibling = "WITH RECURSIVE _struct_closure_1 AS (" +
 
 // metricsWindowRecursiveUnwindowed is THE regression guard for the metrics-path
 // gap: a `{ } >> { } | rate()` shape where the request window appears ONLY as the
-// range-window grid's `toDateTime64(...)` wrapper predicate — there is no
+// range-window grid's `parseDateTime64BestEffort(...)` wrapper predicate — there is no
 // fromUnixTimestamp64Nano anywhere — and the recursive STEP arm is windowless.
 // Pre-fix the matcher keyed solely on fromUnixTimestamp64Nano and therefore
 // DEFERRED on this statement, shipping a full-retention recursive scan. It must
@@ -107,18 +107,18 @@ const metricsWindowRecursiveUnwindowed = "SELECT `anchor_ts`, sum(in_window) AS 
 	"WHERE c._depth < 128 AND t.`TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`SpanAttributes`[?] = ?)) AS _seed_ids)" +
 	") SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure_1 WHERE _depth > 0" +
 	") AS L) " +
-	"WHERE `Timestamp` > toDateTime64('2026-06-27 14:43:12.000000000', 9) AND `Timestamp` <= toDateTime64('2026-06-27 15:13:12.000000000', 9) " +
+	"WHERE `Timestamp` > parseDateTime64BestEffort('2026-06-27 14:43:12.000000000Z', 9) AND `Timestamp` <= parseDateTime64BestEffort('2026-06-27 15:13:12.000000000Z', 9) " +
 	"GROUP BY `anchor_ts`"
 
 // matrixFamilyWrapper is the CONFIRMED-FINE range-window matrix shape: a derived
 // table `(SELECT * FROM otel_traces WHERE …)` whose Timestamp window sits on the
 // enclosing wrapper — CH pushes it into the scan. The outer GROUP BY must NOT
 // cause a flag, because the scan sits in a derived table. Renders its window as
-// toDateTime64, so it also pins that the broadened precondition does not
+// parseDateTime64BestEffort, so it also pins that the broadened precondition does not
 // over-fire on the derived-table shape.
 const matrixFamilyWrapper = "SELECT `anchor_ts`, toFloat64(sum(in_window)) / 300 AS `Value` " +
 	"FROM (SELECT arrayJoin(range(0, 61)) AS `anchor_ts`, 1 AS `in_window` " +
-	"FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) WHERE `Timestamp` > toDateTime64('2026-06-27 14:43:12.000000000', 9) AND `Timestamp` <= toDateTime64('2026-06-27 15:13:12.000000000', 9)) " +
+	"FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) WHERE `Timestamp` > parseDateTime64BestEffort('2026-06-27 14:43:12.000000000Z', 9) AND `Timestamp` <= parseDateTime64BestEffort('2026-06-27 15:13:12.000000000Z', 9)) " +
 	"GROUP BY `anchor_ts`"
 
 // plainWindowedScan is a direct (non-pass-through) scan that carries its own
@@ -197,7 +197,7 @@ func positiveFixtures() []struct {
 		// POSITIVE — these read the whole table.
 		{"recursive_arm_unwindowed", recursiveArmUnwindowed, 1},
 		{"group_by_root_lookup_unwindowed", groupByRootLookupUnwindowed, 1},
-		// POSITIVE regression: metrics window rendered as toDateTime64 only.
+		// POSITIVE regression: metrics window rendered as parseDateTime64BestEffort only.
 		{"metrics_window_recursive_unwindowed", metricsWindowRecursiveUnwindowed, 1},
 		// POSITIVE regression (F3): a windowed sibling arm must not mask a
 		// windowless one across a UNION ALL.
@@ -235,7 +235,7 @@ func TestUnwindowedSpansScans(t *testing.T) {
 }
 
 // TestUnwindowedSpansScans_MetricsWindowRendering is the focused regression for
-// the toDateTime64 rendering: the metrics fixture carries NO fromUnixTimestamp64Nano
+// the parseDateTime64BestEffort rendering: the metrics fixture carries NO fromUnixTimestamp64Nano
 // at all, yet is still recognised as windowed (so its windowless recursive arm is
 // flagged). This is the exact case the pre-fix `Contains(RequestWindowBound)`
 // precondition let slip.
@@ -245,7 +245,7 @@ func TestUnwindowedSpansScans_MetricsWindowRendering(t *testing.T) {
 		t.Fatalf("test setup: metrics fixture should not contain the search-window marker %q", spansscan.RequestWindowBound)
 	}
 	if n := len(spansscan.UnwindowedSpansScans(metricsWindowRecursiveUnwindowed, spansTable)); n != 1 {
-		t.Fatalf("metrics-window recursive arm: got %d finding(s), want 1 (toDateTime64 window must arm the matcher)", n)
+		t.Fatalf("metrics-window recursive arm: got %d finding(s), want 1 (parseDateTime64BestEffort window must arm the matcher)", n)
 	}
 }
 
@@ -286,8 +286,8 @@ func TestUnwindowedSpansScans_NoWindowDefers(t *testing.T) {
 	if strings.Contains(noWindow, spansscan.RequestWindowBound) {
 		t.Fatalf("test setup: expected no window bound, but found %q", spansscan.RequestWindowBound)
 	}
-	if strings.Contains(noWindow, "toDateTime64") {
-		t.Fatalf("test setup: expected no toDateTime64 window either")
+	if strings.Contains(noWindow, "parseDateTime64BestEffort") {
+		t.Fatalf("test setup: expected no parseDateTime64BestEffort window either")
 	}
 	if n := len(spansscan.UnwindowedSpansScans(noWindow, spansTable)); n != 0 {
 		t.Fatalf("window-less query: got %d finding(s), want 0 (must defer to the resource-bound gate)", n)

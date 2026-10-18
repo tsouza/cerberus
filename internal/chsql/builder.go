@@ -466,17 +466,21 @@ func (b *Builder) SubtractNanos(lhs func(b *Builder), ns int64) {
 	b.sb.WriteString("))")
 }
 
-// DateTime64Lit appends a CH DateTime64(9) literal in the form
+// DateTime64Lit appends the inline form of [chplan.TimeLiteral]:
 //
-//	toDateTime64('YYYY-MM-DD HH:MM:SS.NNNNNNNNN', 9)
+//	parseDateTime64BestEffort('YYYY-MM-DD HH:MM:SS.NNNNNNNNNZ', 9)
 //
-// The format mirrors timeOrNow in range_window.go. The time is
-// rendered in UTC; the 9-digit fractional second covers nanosecond
-// precision exactly.
+// The time is rendered in UTC with the explicit `Z` designator
+// ([chplan.FormatTimeLiteral]), so the literal names the same instant
+// whatever the ClickHouse server's timezone; the 9-digit fractional
+// second covers nanosecond precision exactly.
 func (b *Builder) DateTime64Lit(t time.Time) {
-	b.sb.WriteString("toDateTime64('")
-	b.sb.WriteString(t.UTC().Format("2006-01-02 15:04:05.000000000"))
-	b.sb.WriteString("', 9)")
+	b.sb.WriteString(string(chplan.FnParseDateTime64BestEffort))
+	b.sb.WriteString("('")
+	b.sb.WriteString(chplan.FormatTimeLiteral(t))
+	b.sb.WriteString("', ")
+	b.sb.WriteString(strconv.Itoa(nanoScale))
+	b.sb.WriteString(")")
 }
 
 // Lambda appends "(<p1>, <p2>, ...) -> " and runs body() to write the

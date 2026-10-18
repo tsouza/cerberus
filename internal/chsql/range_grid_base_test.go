@@ -26,8 +26,8 @@ var (
 )
 
 const (
-	gridBaseStartAnchored = "toDateTime64('2026-05-13 12:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000)"
-	gridBaseRawEnd        = "toDateTime64('2026-05-13 12:05:15.000000000', 9) - toIntervalNanosecond(i * 30000000000)"
+	gridBaseStartAnchored = "parseDateTime64BestEffort('2026-05-13 12:05:00.000000000Z', 9) - toIntervalNanosecond(i * 30000000000)"
+	gridBaseRawEnd        = "parseDateTime64BestEffort('2026-05-13 12:05:15.000000000Z', 9) - toIntervalNanosecond(i * 30000000000)"
 )
 
 func TestRangeGridBaseIsStartAnchored(t *testing.T) {

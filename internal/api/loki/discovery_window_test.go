@@ -21,7 +21,7 @@ import (
 // 27327766381; the audit found cerberus already windowed all five —
 // this test keeps it that way).
 //
-// The emitted bound is an inline `toDateTime64('…', 9)` literal (see
+// The emitted bound is an inline `parseDateTime64BestEffort('…Z', 9)` literal (see
 // timeBoundFrag), so the assertions check the rendered SQL itself for
 // both half-open bounds carrying the requested epochs.
 func TestDiscoveryEndpoints_HonorStartEnd(t *testing.T) {
@@ -61,8 +61,8 @@ func TestDiscoveryEndpoints_HonorStartEnd(t *testing.T) {
 			if sql == "" {
 				t.Fatalf("no SQL captured for %s", path)
 			}
-			lowerBound := "`Timestamp` >= toDateTime64('" + wantStart
-			upperBound := "`Timestamp` <= toDateTime64('" + wantEnd
+			lowerBound := "`Timestamp` >= parseDateTime64BestEffort('" + wantStart
+			upperBound := "`Timestamp` <= parseDateTime64BestEffort('" + wantEnd
 			if !strings.Contains(sql, lowerBound) {
 				t.Errorf("SQL missing start clamp %q:\n%s", lowerBound, sql)
 			}

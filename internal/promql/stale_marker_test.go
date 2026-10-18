@@ -264,7 +264,7 @@ func literalLowerBound(pred chplan.Expr) (time.Time, bool) {
 			return true
 		}
 		if lit, ok := call.Args[0].(*chplan.LitString); ok {
-			if parsed, err := time.Parse("2006-01-02 15:04:05.000000000", lit.V); err == nil {
+			if parsed, err := time.Parse(chplan.TimeLiteralLayout, lit.V); err == nil {
 				lo, found = parsed, true
 			}
 		}

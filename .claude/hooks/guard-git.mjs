@@ -64,6 +64,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import process from 'node:process';
 
+import { readPayload } from './hook-payload.mjs';
 import { segments } from './shell-words.mjs';
 
 const ALLOW = 0;
@@ -80,14 +81,6 @@ const GIT_GLOBAL_OPTS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tre
 // `git push` options that consume the following argument, so a value is never
 // read as the remote or a refspec.
 const PUSH_OPTS_WITH_VALUE = new Set(['-o', '--push-option', '--receive-pack', '--exec', '--repo']);
-
-function readPayload() {
-  try {
-    return JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return null;
-  }
-}
 
 function resolveDir(dir, base) {
   const abs = isAbsolute(dir) ? dir : join(base, dir);
@@ -214,8 +207,8 @@ function block(lines) {
   return BLOCK;
 }
 
-function main() {
-  const payload = readPayload();
+async function main() {
+  const payload = await readPayload();
   if (!payload || payload.tool_name !== 'Bash') return ALLOW;
 
   const command = payload?.tool_input?.command;
@@ -286,5 +279,5 @@ function main() {
 
 // Only dispatch when run as the hook — a test may import the module.
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  process.exit(main());
+  process.exit(await main());
 }

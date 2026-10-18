@@ -11,6 +11,7 @@ binop_vv_add_on.txtar
 binop_vv_compare_filter.txtar
 binop_vv_group_left_with_agg_legs.txtar
 bottomk.txtar
+count_over_time_instant_past_window.txtar
 label_replace_backref_above_ch_ceiling.txtar
 label_replace_probed_shared_capture_name.txtar
 label_replace_shared_capture_name.txtar

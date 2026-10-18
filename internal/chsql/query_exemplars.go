@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/cerbtrace"
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -55,8 +56,8 @@ import (
 //	        arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i`
 //	    FROM `<exemplarsTable>`
 //	    WHERE <predicate>
-//	      AND `TimeUnix` >= toDateTime64(?, ?)
-//	      AND `TimeUnix` <= toDateTime64(?, ?)
+//	      AND `TimeUnix` >= parseDateTime64BestEffort(?, ?)
+//	      AND `TimeUnix` <= parseDateTime64BestEffort(?, ?)
 //	      AND length(`Exemplars`.`TimeUnix`) > 0
 //	)
 //
@@ -64,8 +65,8 @@ import (
 // attrs_arr, i) bare — without backticks — matching the convention
 // the existing exemplars / range-window emitters use for
 // emitter-pinned synthetic alias references via BareIdent. The time
-// bounds bind as parameterised toDateTime64(?, ?) calls — the first
-// `?` is the UTC-formatted timestamp string, the second is the
+// bounds bind as parameterised parseDateTime64BestEffort(?, ?) calls — the
+// first `?` is the UTC timestamp string with its `Z` designator, the second is the
 // precision constant 9 — mirroring the bind shape PromQL lowering
 // produces in internal/promql/modifiers.go::anchorBaseExpr.
 //
@@ -303,8 +304,8 @@ func queryExemplarsSelect(
 		From(physicalTableFrag(exemplarsTable))
 
 	// Predicate composition: (matcher_predicate) AND
-	// (TimeUnix >= toDateTime64(start, 9)) AND
-	// (TimeUnix <= toDateTime64(end, 9)) AND
+	// (TimeUnix >= parseDateTime64BestEffort(start, 9)) AND
+	// (TimeUnix <= parseDateTime64BestEffort(end, 9)) AND
 	// (length(Exemplars.TimeUnix) > 0).
 	//
 	// The matcher predicate is rendered first so it lands in argument
@@ -354,13 +355,13 @@ func queryExemplarsSelect(
 	return outer, nil
 }
 
-// dateTime64Frag returns a Frag emitting `toDateTime64(?, ?)` with the
-// time formatted at nanosecond precision and the precision constant 9
-// bound as a second positional argument. Matches the bind pattern the
-// promql lowering produces for time-bound predicates
-// (see internal/promql/modifiers.go::anchorBaseExpr), so the args
-// section in fixtures across the codebase stays uniform: a string
-// "2026-01-01 00:00:00.000000000" followed by an int64 9.
+// dateTime64Frag returns a Frag emitting `parseDateTime64BestEffort(?, ?)`
+// with the time formatted by [chplan.FormatTimeLiteral] and the precision
+// constant 9 bound as a second positional argument. Matches the bind
+// pattern the promql lowering produces for time-bound predicates
+// ([chplan.TimeLiteral], via internal/promql/modifiers.go::anchorBaseExpr),
+// so the args section in fixtures across the codebase stays uniform: a
+// string "2026-01-01 00:00:00.000000000Z" followed by an int64 9.
 //
 // It formats whatever it is handed, including Go's zero time — the
 // bound is validated by its one caller, queryExemplarsSelect, which
@@ -368,8 +369,8 @@ func queryExemplarsSelect(
 // so this never renders `0001-01-01 00:00:00.000000000`.
 func dateTime64Frag(t time.Time) Frag {
 	return Call(
-		"toDateTime64",
-		Lit(t.UTC().Format("2006-01-02 15:04:05.000000000")),
+		string(chplan.FnParseDateTime64BestEffort),
+		Lit(chplan.FormatTimeLiteral(t)),
 		Lit(int64(nanoScale)),
 	)
 }

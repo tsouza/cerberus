@@ -185,7 +185,7 @@ func intervalNanosecondsAfter(t *testing.T, sqlText, marker string, n int) []int
 // subquery's own windowLo probe (`\`TimeUnix\` > <end literal> -
 // toIntervalNanosecond((numAnchors-1)*stepNS) - toIntervalNanosecond
 // (rangeNS) AND \`TimeUnix\` <= <end literal>` — anchored on
-// "`TimeUnix` > toDateTime64(" specifically (not just "`TimeUnix` > "),
+// "`TimeUnix` > parseDateTime64BestEffort(" specifically (not just "`TimeUnix` > "),
 // since the regroup stage's own window_pairs construction ALSO uses a
 // strict `TimeUnix` > comparison, but against `anchor_ts`, not the end
 // literal, and renders earlier in the text). With numAnchors=3, stepNS=10s:
@@ -197,7 +197,7 @@ func TestMatrixWindowScanBoundsFrags_EarliestAnchorArithmetic(t *testing.T) {
 	r, _ := matrixDeltaGuardTestWindow()
 	sqlText := matrixDeltaGuardEmit(t, r)
 
-	const windowLoMarker = "`TimeUnix` > toDateTime64("
+	const windowLoMarker = "`TimeUnix` > parseDateTime64BestEffort("
 	const wantEarliestAnchorTerm = 20_000_000_000 // (numAnchors-1)*stepNS = (3-1)*10s
 	const wantRangeTerm = 60_000_000_000          // rangeNS = 1 minute
 

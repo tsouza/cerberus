@@ -24,7 +24,7 @@ import (
 // The tests below pin both halves of the gate:
 //
 //   - Start AND End set → WHERE clause MUST carry the `<tsCol> >
-//     toDateTime64(...)` / `<tsCol> <= toDateTime64(...)` pair.
+//     parseDateTime64BestEffort(...)` / `<tsCol> <= parseDateTime64BestEffort(...)` pair.
 //   - Either Start or End zero → WHERE clause MUST NOT carry that pair
 //     (so OuterRange-only PromQL shapes stay byte-stable).
 //
@@ -40,8 +40,8 @@ import (
 // scan's actual timestamp column (`Timestamp`) rather than the inner
 // `ts` alias — so a substring hit uniquely identifies the pushdown.
 const (
-	pushdownLowerSubstr = "`Timestamp` > toDateTime64("
-	pushdownUpperSubstr = "`Timestamp` <= toDateTime64("
+	pushdownLowerSubstr = "`Timestamp` > parseDateTime64BestEffort("
+	pushdownUpperSubstr = "`Timestamp` <= parseDateTime64BestEffort("
 )
 
 func TestRangeWindowMetricsInnerScanPushdown_BothSet(t *testing.T) {
@@ -132,7 +132,7 @@ func TestRangeWindowMetricsInnerScanPushdown_OnlyOneSet(t *testing.T) {
 // interval from both edges; a negative offset subtracts a negative
 // interval (CH folds `End - toIntervalNanosecond(-N)` to `End + N`),
 // widening the upper bound to the RIGHT past End. Offset == 0 reduces
-// to the bare `> toDateTime64(...)` / `<= toDateTime64(...)` pair the
+// to the bare `> parseDateTime64BestEffort(...)` / `<= parseDateTime64BestEffort(...)` pair the
 // Tempo-path tests above already pin.
 func TestPromQLMatrixInnerScanPushdown_OffsetAware(t *testing.T) {
 	t.Parallel()
@@ -168,7 +168,7 @@ func TestPromQLMatrixInnerScanPushdown_OffsetAware(t *testing.T) {
 				t.Fatalf("Emit: %v", err)
 			}
 			// The offset-shifted edges render as
-			// `(toDateTime64(...) - toIntervalNanosecond(<offsetNS>))`,
+			// `(parseDateTime64BestEffort(...) - toIntervalNanosecond(<offsetNS>))`,
 			// so the offset interval must appear in the pushdown WHERE.
 			if !strings.Contains(sql, c.wantShift) {
 				t.Errorf("expected offset-shifted bound carrying %q in SQL=%s", c.wantShift, sql)
@@ -594,13 +594,13 @@ func TestRangeLWRInnerScanTimeBound_OffsetAndSpanEdges(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	// The full lower-bound expression: offset shift then span widening.
-	wantLower := "`TimeUnix` > (toDateTime64('2026-05-13 12:00:00.000000000', 9) - " +
+	wantLower := "`TimeUnix` > (parseDateTime64BestEffort('2026-05-13 12:00:00.000000000Z', 9) - " +
 		rangeScanOffsetShift + ") - " + rangeScanSpanShift
 	if !strings.Contains(sql, wantLower) {
 		t.Errorf("expected RangeLWR offset+span lower bound %q in SQL=%s", wantLower, sql)
 	}
 	// The upper bound carries the offset shift but NO span term.
-	wantUpper := "`TimeUnix` <= (toDateTime64('2026-05-13 12:05:00.000000000', 9) - " +
+	wantUpper := "`TimeUnix` <= (parseDateTime64BestEffort('2026-05-13 12:05:00.000000000Z', 9) - " +
 		rangeScanOffsetShift + ")"
 	if !strings.Contains(sql, wantUpper) {
 		t.Errorf("expected RangeLWR offset-only upper bound %q in SQL=%s", wantUpper, sql)
@@ -803,12 +803,12 @@ func TestRangeBucketFanoutInnerScanTimeBound_OffsetAndSpanEdges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	wantLower := "`TimeUnix` > (toDateTime64('2026-05-13 12:00:00.000000000', 9) - " +
+	wantLower := "`TimeUnix` > (parseDateTime64BestEffort('2026-05-13 12:00:00.000000000Z', 9) - " +
 		rangeScanOffsetShift + ") - " + rangeScanSpanShift
 	if !strings.Contains(sql, wantLower) {
 		t.Errorf("expected RangeBucketFanout offset+span lower bound %q in SQL=%s", wantLower, sql)
 	}
-	wantUpper := "`TimeUnix` <= (toDateTime64('2026-05-13 12:05:00.000000000', 9) - " +
+	wantUpper := "`TimeUnix` <= (parseDateTime64BestEffort('2026-05-13 12:05:00.000000000Z', 9) - " +
 		rangeScanOffsetShift + ")"
 	if !strings.Contains(sql, wantUpper) {
 		t.Errorf("expected RangeBucketFanout offset-only upper bound %q in SQL=%s", wantUpper, sql)
@@ -904,12 +904,12 @@ func TestRangeWindowGridNativeInnerScanTimeBound(t *testing.T) {
 	// Lower bound: offset shift then Range (5m) widening; upper bound:
 	// offset shift only. The Range term (300000000000) reuses the same
 	// 5m literal as Lookback above.
-	wantLower := "`TimeUnix` > (toDateTime64('2026-05-13 12:00:00.000000000', 9) - " +
+	wantLower := "`TimeUnix` > (parseDateTime64BestEffort('2026-05-13 12:00:00.000000000Z', 9) - " +
 		rangeScanOffsetShift + ") - " + rangeScanSpanShift
 	if !strings.Contains(sql, wantLower) {
 		t.Errorf("expected RangeWindowGridNative offset+Range lower bound %q in SQL=%s", wantLower, sql)
 	}
-	wantUpper := "`TimeUnix` <= (toDateTime64('2026-05-13 12:05:00.000000000', 9) - " +
+	wantUpper := "`TimeUnix` <= (parseDateTime64BestEffort('2026-05-13 12:05:00.000000000Z', 9) - " +
 		rangeScanOffsetShift + ")"
 	if !strings.Contains(sql, wantUpper) {
 		t.Errorf("expected RangeWindowGridNative offset-only upper bound %q in SQL=%s", wantUpper, sql)
@@ -1004,12 +1004,12 @@ func TestRangeWindowStaleResampleInnerScanTimeBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	wantLower := "`TimeUnix` > (toDateTime64('2026-05-13 12:00:00.000000000', 9) - " +
+	wantLower := "`TimeUnix` > (parseDateTime64BestEffort('2026-05-13 12:00:00.000000000Z', 9) - " +
 		rangeScanOffsetShift + ") - " + rangeScanSpanShift
 	if !strings.Contains(sql, wantLower) {
 		t.Errorf("expected RangeWindowStaleResample offset+Lookback lower bound %q in SQL=%s", wantLower, sql)
 	}
-	wantUpper := "`TimeUnix` <= (toDateTime64('2026-05-13 12:05:00.000000000', 9) - " +
+	wantUpper := "`TimeUnix` <= (parseDateTime64BestEffort('2026-05-13 12:05:00.000000000Z', 9) - " +
 		rangeScanOffsetShift + ")"
 	if !strings.Contains(sql, wantUpper) {
 		t.Errorf("expected RangeWindowStaleResample offset-only upper bound %q in SQL=%s", wantUpper, sql)

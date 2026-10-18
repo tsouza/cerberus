@@ -53,7 +53,7 @@ func assertEverySpansFromBounded(t *testing.T, sql string) {
 	boundTokens := strings.Count(sql, "`TraceId` IN") +
 		strings.Count(sql, "IN (SELECT `TraceId`")
 	windowTokens := strings.Count(sql, "fromUnixTimestamp64Nano") +
-		strings.Count(sql, "toDateTime64")
+		strings.Count(sql, "parseDateTime64BestEffort")
 	depthTokens := strings.Count(sql, "_depth <")
 	if boundTokens+windowTokens+depthTokens < scans {
 		t.Errorf("found %d %q scans but only %d bound tokens (traceID=%d window=%d depth=%d):\n%s",

@@ -494,7 +494,7 @@ func windowRightBoundExpr(a evalAnchor) chplan.Expr {
 
 // timeBoundExpr builds `<col> <= <anchor>` for an instant-vector
 // VectorSelector with `@` or `offset`. The anchor is `now64(9)` (or a
-// literal toDateTime64) optionally minus a nanosecond interval.
+// chplan.TimeLiteral) optionally minus a nanosecond interval.
 func timeBoundExpr(col string, a evalAnchor) chplan.Expr {
 	return &chplan.Binary{
 		Op:    chplan.OpLe,
@@ -527,19 +527,12 @@ func andInstantWindow(pred chplan.Expr, vs *parser.VectorSelector, col string, c
 
 // anchorBaseExpr returns the SQL expression for an `evalAnchor`'s
 // reference time. Zero anchor renders as `now64(9)`; an absolute
-// anchor renders as `toDateTime64('YYYY-MM-DD HH:MM:SS.fffffffff',
-// 9)`. The Offset field is NOT applied here — callers compose the
+// anchor renders as the canonical [chplan.TimeLiteral]. The Offset field is NOT applied here — callers compose the
 // subtract themselves (timeBoundExpr applies an offset; the LWR
 // staleness predicate composes its own offset+lookback delta).
 func anchorBaseExpr(a evalAnchor) chplan.Expr {
 	if a.End.IsZero() {
 		return chplan.NowNano()
 	}
-	return &chplan.FuncCall{
-		Fn: chplan.FnToDateTime64,
-		Args: []chplan.Expr{
-			&chplan.LitString{V: a.End.Format("2006-01-02 15:04:05.000000000")},
-			&chplan.LitInt{V: chplan.NanoScale},
-		},
-	}
+	return chplan.TimeLiteral(a.End)
 }

@@ -220,6 +220,14 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		rw.End = lc.End.UTC()
 		rw.Step = lc.Step
 		rw.OuterRange = lc.End.Sub(lc.Start)
+	} else if !lc.End.IsZero() {
+		// Instant mode: anchor the single evaluation point at the
+		// request's `time`. Left zero, the emitter anchors at `now64(9)`
+		// and only the overlap of the requested window with
+		// (now - range, now] is counted — `count_over_time({...}[24h])`
+		// for yesterday returns the last few hours of it, or nothing.
+		// Mirrors the PromQL instant evalAnchor{End: ctx.end}.
+		rw.End = lc.End.UTC()
 	}
 	if e.Operation == syntax.OpRangeTypeQuantile {
 		if e.Params == nil {

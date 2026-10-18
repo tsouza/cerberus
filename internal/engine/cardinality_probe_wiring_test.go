@@ -599,7 +599,7 @@ func TestBuildCardinalityProbePlan_EmitsExpectedShape(t *testing.T) {
 	// doc for why), and uniqCombined64 (#2840's uncapped sibling) takes no
 	// parameter at all. cardinalityProbeUniqUpToCap must still reach CH as
 	// an arg.
-	for _, want := range []string{"toFloat64(count())", "uniqUpTo(?)", "uniqCombined64(", "otel_metrics_sum", "toDateTime64"} {
+	for _, want := range []string{"toFloat64(count())", "uniqUpTo(?)", "uniqCombined64(", "otel_metrics_sum", "parseDateTime64BestEffort"} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("emitted SQL missing %q:\n%s", want, sql)
 		}

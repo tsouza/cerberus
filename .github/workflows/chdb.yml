@@ -259,12 +259,16 @@ jobs:
     # (#3674): a runner whose CPU is a contended ceiling rather than a fixed
     # allocation runs the suite past go test's 10-minute alarm while it is
     # still making progress (every timeout dump shows the running test at
-    # 0-1s old, not a blocked goroutine).
-    runs-on: ubuntu-latest
-    # internal/promql moved to its own `probe-promql` job below (#3699):
-    # bundled here it made every PR's `probe` wait 40+ minutes and contended
-    # for this job's own runner memory against the other chdb-tagged
-    # packages. Back to the pre-#3699 ceiling.
+    # 0-1s old, not a blocked goroutine). The runner's vCPUs are sized to
+    # the suite's real parallelism: go-test-fanout.mjs runs internal/api/prom
+    # as four partition processes beside one process for every other
+    # package, and that process's long chDB packages (internal/chsql,
+    # internal/solver, test/consumer-corpus, internal/api/loki) run as
+    # concurrent test binaries, so about eight libchdb sessions are busy at
+    # once. Eight dedicated vCPUs give each its own core; more would sit idle.
+    runs-on: ubicloud-standard-8
+    # The suite's own `-timeout 10m` plus checkout, toolchain, libchdb
+    # install and the chdb-tagged compile ahead of it.
     timeout-minutes: 15
     steps:
       - name: gate on the changes job

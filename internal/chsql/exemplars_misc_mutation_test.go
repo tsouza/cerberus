@@ -149,7 +149,7 @@ func TestRangeBucketFanoutEmptyGroupBy(t *testing.T) {
 // emitting a full-retention scan. This kills the INVERT_LOGICAL mutant on
 // the guard's `rw.Start.IsZero() || rw.End.IsZero()` (flip to `&&` and a
 // half-open window would slip through). The both-ends case proves the
-// guard is non-vacuous: it passes and DOES push the toDateTime64 bound.
+// guard is non-vacuous: it passes and DOES push the parseDateTime64BestEffort bound.
 func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 	t.Parallel()
 
@@ -173,7 +173,7 @@ func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 		t.Fatalf("Start-only window over spans inner must fail closed with ErrUnboundedSpansScan, got %v", err)
 	}
 
-	// Both ends set -> bound IS pushed (toDateTime64 present). Proves the
+	// Both ends set -> bound IS pushed (parseDateTime64BestEffort present). Proves the
 	// assertion above is non-vacuous.
 	rwBoth := &chplan.RangeWindow{
 		Input:           compareNode(),
@@ -187,7 +187,7 @@ func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit (both ends): %v", err)
 	}
-	if !strings.Contains(sqlBoth, "toDateTime64") {
+	if !strings.Contains(sqlBoth, "parseDateTime64BestEffort") {
 		t.Errorf("scan bound MUST be pushed with both Start and End set:\n%s", sqlBoth)
 	}
 }
