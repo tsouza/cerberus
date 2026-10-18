@@ -1188,6 +1188,23 @@ refuses a cache record there. Setting the repository variable
 `MUTATION_CACHE_DISABLED` to `true` turns the cache off on pull requests as
 well.
 
+A leg that misses runs gremlins with a per-mutant verdict cache
+(`--cache-dir`), so a push that changes one file of a leg's closure re-runs
+only the mutants whose verdicts that file can move. gremlins keys each verdict
+on its own binary, the toolchain, the environment, the mutation, and the
+content of the mutated package's `go test` dependency closure, and records every
+file and environment variable the tests read through `-test.testlogfile`; a
+lookup misses on any difference. The leg's runner inputs (the runner image, the
+per-mutant bounds and rapid seed, and the runner scripts) are handed to it as
+`--cache-salt`, and the variables that change on every run
+(`.github/scripts/lib/mutant-cache-env.mjs`) are left out of the key with
+`--cache-env-ignore`; `mutation-run.test.mjs` fails if any Go source under
+`internal/` names one of them. The directory is restored with `actions/cache` under the same
+pull-request scoping as the leg cache, only when the leg cache is on and the
+leg is cacheable, and is used only when the run that saved it passes the same
+producing-run verification the aggregator applies to a leg hit; anything else
+starts the leg with an empty directory.
+
 The selector also pins the phase table's efficacy threshold to an independent
 95% minimum. Lowering the shared phase constant cannot turn every leg into a
 green zero-evidence run.

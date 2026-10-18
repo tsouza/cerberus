@@ -88,7 +88,22 @@ const (
 //     Reverting to an earlier tag makes every report carry the undifferentiated
 //     status, and the gate FAILS on it rather than silently scoring the union:
 //     the closed status set there refuses to score a report it cannot read.
-const gremlinsForkTag = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-workdir-fd-leak-consume"
+//   - the `workdir-fd-leak` family: closes both file handles of every copy in
+//     the working-directory dealer, so a run's open-file count stops growing
+//     with tree size times workers.
+//   - the `cover-gaps` family (#3802): runs a mutant the cover profile leaves
+//     between blocks -- a condition after a closure argument, by its enclosing
+//     statement's block; a `case` expression, only when a clause body proves
+//     the switch evaluated it -- where earlier tags booked it NOT COVERED
+//     whether the tests reached it or not.
+//     It also matches `--diff` lines from a run scoped below the module root,
+//     where earlier tags matched none and skipped every changed-line mutant.
+//     Reverting moves those mutants back outside the denominator.
+//   - the `verdict-cache` family (#3712): `--cache-dir` reuses a verdict whose
+//     key -- the binary, toolchain, environment, mutation and the mutated
+//     package's test closure -- and recorded test-log inputs are unchanged. It
+//     changes no verdict, only which ones are recomputed.
+const gremlinsForkTag = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-verdict-cache-consume"
 
 // TestMutationLaneCapsPerMutantTimeout (#1294) pins the one bound that keeps the
 // mutation lane from killing its own runner.

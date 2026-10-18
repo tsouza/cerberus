@@ -107,7 +107,7 @@ that fast path is the default.
 `mutation.yml` installs the `tsouza/gremlins` fork rather than upstream `go-gremlins/gremlins@v0.6.0`:
 
 ```bash
-go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-workdir-fd-leak-consume
+go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-verdict-cache-consume
 ```
 
 The fork carries these behaviours on top of upstream; each is what the lane relies on.
@@ -165,10 +165,44 @@ root, and the matcher is RE2 with no lookahead. A path in the wrong form silentl
 **`workdir.CachedDealer` closes both copy handles** in `doCopy`, so a run's open-file count does not
 grow with the tree size times the worker count.
 
-The fork ships two branches. `cerberus-sigterm-fix` at tag `v0.6.0-cerberus-workdir-fd-leak` keeps
+**A mutant between cover blocks is run, not skipped.** A Go cover profile has no block for a `case`
+expression or for the part of a condition after a closure argument, so upstream reports every
+mutant there `NOT COVERED`. The fork keeps every block of the profile, executed or not. A `case`
+expression is reached when a clause body proves the switch evaluated it: the default body, or the
+body of a later clause, or — for the list's first expression only — its own clause's body, a body
+entered by `fallthrough` proving nothing. A select receive's left-hand side is reached when its case
+body ran. Any other position in no block takes the block of its innermost enclosing statement that
+has one; a position whose nearest such ancestor is a function literal or declaration stays
+`NOT COVERED`.
+
+**`--diff` matches changed lines from a run scoped below the module root.** The diff is read with
+`git -C <module root> diff --merge-base --relative`, every run of consecutive added lines in a hunk
+is its own change, and a mutant's position is joined onto the run's directory before it is matched.
+
+**`--cache-dir` reuses verdicts by the content they depend on.** Each adjudicated verdict is stored
+under a key over the gremlins binary, the toolchain and its build environment, the environment the
+test binaries inherit less the names `--cache-env-ignore` lists, `--cache-salt`, the test tags and
+`-cpu`, the mutation, and the content of the mutated package's `go test -deps` closure — the build
+files of every package outside the module, the whole directory tree of every package inside it (the
+test files of packages other than the mutated one excepted), `go.mod` and `go.sum`. The test binary
+runs with `-test.testlogfile` and `-test.memprofile`, and the entry records a digest of every file
+the tests opened or stat-ed and every environment variable they read; a lookup misses on any
+difference. The digests are taken from the copy the test ran in, and an entry is stored only when
+that copy still holds the closure the key describes. Only verdicts the run can prove are stored:
+
+| status                                          | stored                                                     |
+| ----------------------------------------------- | ---------------------------------------------------------- |
+| `KILLED`                                        | only when the memory profile proves the log complete       |
+| `LIVED`                                         | only with a complete log and a `go test` that exited 0     |
+| `NOT VIABLE`                                    | only when a compiler diagnostic names the mutated file     |
+| `TIMED OUT`, `RUN TIMED OUT`, a shutdown status | never                                                      |
+
+A malformed, corrupted or mismatched entry is a miss.
+
+The fork ships two branches. `cerberus-sigterm-fix` at tag `v0.6.0-cerberus-verdict-cache` keeps
 the upstream module path `github.com/go-gremlins/gremlins` and is the branch the upstream pull
 requests are built from. `cerberus-sigterm-fix-consume` at tag
-`v0.6.0-cerberus-workdir-fd-leak-consume` is the branch `mutation.yml` installs; it adds one commit
+`v0.6.0-cerberus-verdict-cache-consume` is the branch `mutation.yml` installs; it adds one commit
 renaming the `go.mod` module path to `github.com/tsouza/gremlins` and rewriting the internal imports,
 because `go install` otherwise rejects the module with `module declares its path as:
 github.com/go-gremlins/gremlins`. The fixes themselves are identical across the two. Both branches

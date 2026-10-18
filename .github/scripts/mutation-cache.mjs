@@ -24,6 +24,17 @@
 //              only when the verdict is timing-stable.
 //              Env: KEY, PHASE, THRESHOLD, ENTRY, REPORT, PROVENANCE, RUN_URL.
 //
+//   mutant-verify  After the per-mutant cache restore. Believes the restored
+//              DIR only when MUTATION_CACHE is on, the leg is cacheable, and
+//              the run that saved it passes verifyProducingRun; otherwise it
+//              empties DIR, so gremlins starts cold. Sets `enabled=true` when
+//              gremlins may use DIR.
+//              Env: DIR, RESTORED_KEY, KEY_CACHEABLE, PR_NUMBER, GITHUB_TOKEN.
+//
+//   mutant-seal  Before the per-mutant cache save. Records RUN_URL as the run
+//              that produced DIR.
+//              Env: DIR, RUN_URL.
+//
 //   aggregate  In the `mutation` aggregator. Every phase of MATRIX must have a
 //              provenance record under PROVENANCE_DIR/<phase>/, every `cache`
 //              record must carry an entry that validates against the record's
@@ -402,6 +413,19 @@ export function computeLegKey({ root, row, runner, env = process.env }) {
   return { key: legCacheKey(inputs), inputs, nondeterminism };
 }
 
+// MUTANT_CACHE_SALT_SCHEMA names the layout of mutantCacheSalt's input.
+export const MUTANT_CACHE_SALT_SCHEMA = 'cerberus-mutant-cache-salt/v1';
+
+// mutantCacheSalt is the part of a leg's key that gremlins' per-mutant cache
+// key cannot see for itself: the runner, the bounds the harness derives the
+// per-mutant budget from, and every harness file, including the memory guard
+// that wraps each test binary through GOFLAGS. gremlins hashes its own binary,
+// the toolchain, the mutated package's dependency closure and the mutation, and
+// records what the tests read at run time.
+export function mutantCacheSalt({ runner, runnerEnv, runnerScripts }) {
+  return sha256(canonicalJson({ schema: MUTANT_CACHE_SALT_SCHEMA, runner, runnerEnv, runnerScripts }));
+}
+
 function modeKey() {
   const row = JSON.parse(required('PHASE_ROW'));
   const runner = runnerFingerprint();
@@ -419,6 +443,7 @@ function modeKey() {
   }
   setOutput('key', key);
   setOutput('cacheable', String(nondeterminism.length === 0));
+  setOutput('mutant_salt', mutantCacheSalt(inputs));
   writeCreating(required('RUNNER_FILE'), `${JSON.stringify(runner)}\n`);
 }
 
@@ -677,7 +702,93 @@ async function modeAggregate() {
   );
 }
 
-const modes = { key: modeKey, check: modeCheck, store: modeStore, aggregate: modeAggregate };
+// MUTANT_PROVENANCE_FILE names the run that saved a per-mutant cache
+// directory. gremlins reads only `<key[:2]>/<key>.json` entries under it.
+export const MUTANT_PROVENANCE_FILE = 'provenance.json';
+export const MUTANT_PROVENANCE_SCHEMA = 'cerberus-mutant-cache-provenance/v1';
+
+function emptyDir(dir) {
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+}
+
+function countEntries(dir) {
+  if (!existsSync(dir)) return 0;
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .reduce((n, d) => n + readdirSync(join(dir, d.name)).filter((f) => f.endsWith('.json')).length, 0);
+}
+
+// mutantVerifyProblem decides whether a restored per-mutant cache directory may
+// be used. null means it may; a string says why it is discarded. An entry is
+// trusted only as far as the run that wrote it: the same check the aggregator
+// applies to a leg cache hit, that the producing run is a completed
+// pull_request run of mutation.yml for this PR whose harness is byte-identical
+// to the one running now.
+export async function mutantVerifyProblem({ provenance, verifyRun }) {
+  if (provenance === undefined) return 'the restored directory names no producing run';
+  if (provenance === null || typeof provenance !== 'object') return 'the provenance record is not an object';
+  if (provenance.schema !== MUTANT_PROVENANCE_SCHEMA) return `provenance schema ${JSON.stringify(provenance.schema)}`;
+  const problem = await verifyRun(String(provenance.sourceRunUrl ?? ''));
+  return problem === null ? null : `its producing run fails verification: ${problem}`;
+}
+
+async function modeMutantVerify() {
+  const dir = required('DIR');
+  if (!cacheEnabled() || String(process.env.KEY_CACHEABLE ?? '') !== 'true') {
+    rmSync(dir, { recursive: true, force: true });
+    notice('per-mutant verdict cache OFF: the leg cache is off here, or this leg is not cacheable');
+    setOutput('enabled', 'false');
+    return;
+  }
+  const restored = String(process.env.RESTORED_KEY ?? '').trim();
+  if (restored === '') {
+    emptyDir(dir);
+    notice('per-mutant verdict cache: nothing restored; every mutant runs');
+    setOutput('enabled', 'true');
+    return;
+  }
+  const repo = required('GITHUB_REPOSITORY');
+  const token = required('GITHUB_TOKEN');
+  const base = process.env.GITHUB_API_URL || DEFAULT_API_BASE;
+  const api = (path) => ghJSON(`${base}${path}`, { token, what: 'mutation-cache', notFound: NOT_FOUND_THROW });
+  const root = process.cwd();
+  let problem;
+  try {
+    problem = await mutantVerifyProblem({
+      provenance: readJsonIfPresent(join(dir, MUTANT_PROVENANCE_FILE)),
+      verifyRun: (sourceRunUrl) =>
+        verifyProducingRun({ repo, prNumber: Number(required('PR_NUMBER')), sourceRunUrl, harness: harnessBlobs(root), api }),
+    });
+  } catch (cause) {
+    problem = `cannot verify it: ${cause instanceof Error ? cause.message : String(cause)}`;
+  }
+  if (problem !== null) {
+    emptyDir(dir);
+    notice(`per-mutant verdict cache: discarding ${restored}, ${problem}; every mutant runs`);
+  } else {
+    notice(`per-mutant verdict cache: ${countEntries(dir)} entries restored from ${restored}, producing run verified`);
+  }
+  setOutput('enabled', 'true');
+}
+
+function modeMutantSeal() {
+  const dir = required('DIR');
+  writeCreating(
+    join(dir, MUTANT_PROVENANCE_FILE),
+    `${JSON.stringify({ schema: MUTANT_PROVENANCE_SCHEMA, sourceRunUrl: required('RUN_URL') })}\n`,
+  );
+  notice(`per-mutant verdict cache: saving ${countEntries(dir)} entries`);
+}
+
+const modes = {
+  key: modeKey,
+  check: modeCheck,
+  store: modeStore,
+  aggregate: modeAggregate,
+  'mutant-verify': modeMutantVerify,
+  'mutant-seal': modeMutantSeal,
+};
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const mode = String(process.env.MODE ?? process.argv[2] ?? '').trim();

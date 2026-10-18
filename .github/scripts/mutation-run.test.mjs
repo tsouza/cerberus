@@ -7,6 +7,11 @@ import { test } from 'node:test';
 // The runner's process boundary is intentional: it must prove the exact env
 // contract and two-invocation fallback, not a helper that bypasses main().
 import { spawnSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
+import { dirname, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { MUTANT_CACHE_ENV_IGNORE } from './lib/mutant-cache-env.mjs';
 
 // fixture builds a self-contained leg: a fake `gremlins` that records its argv
 // and writes the report totals it is told to, a fake `go` that records its argv
@@ -402,4 +407,58 @@ test('a stale breach ledger is discarded before the run', (t) => {
   const result = run(f, { DIFF_REF: '' });
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /hit the 1GiB per-mutant memory ceiling/);
+});
+
+test('the per-mutant verdict cache reaches both invocations only when the workflow hands it over', (t) => {
+  const f = fixture(t, [0, 7]);
+  const cacheDir = join(f.root, 'mutant-cache');
+  const on = run(f, { DIFF_REF: 'a'.repeat(40), MUTANT_CACHE_DIR: cacheDir, MUTANT_CACHE_SALT: 'salt' });
+  assert.equal(on.status, 0, on.stderr);
+  const calls = invocations(f);
+  assert.equal(calls.length, 2);
+  for (const args of calls) {
+    assert.equal(args[args.indexOf('--cache-dir') + 1], cacheDir);
+    assert.equal(args[args.indexOf('--cache-salt') + 1], 'salt');
+    assert.equal(args[args.indexOf('--cache-env-ignore') + 1], MUTANT_CACHE_ENV_IGNORE.join(','));
+    assert.equal(args.at(-1), f.scope);
+  }
+
+  const g = fixture(t, [3]);
+  const off = run(g, { MUTANT_CACHE_DIR: '', MUTANT_CACHE_SALT: 'salt' });
+  assert.equal(off.status, 0, off.stderr);
+  for (const args of invocations(g)) {
+    assert.equal(args.includes('--cache-dir'), false);
+    assert.equal(args.includes('--cache-salt'), false);
+    assert.equal(args.includes('--cache-env-ignore'), false);
+  }
+
+  const h = fixture(t, [3]);
+  const unsalted = run(h, { MUTANT_CACHE_DIR: cacheDir, MUTANT_CACHE_SALT: '' });
+  assert.notEqual(unsalted.status, 0);
+  assert.match(unsalted.stderr + unsalted.stdout, /MUTANT_CACHE_SALT is required/);
+  assert.deepEqual(invocations(h), []);
+});
+
+// The ignore list is sound only while nothing that runs before a test's log
+// starts reads one of its variables. Every package the lane mutates lives
+// under internal/, so no Go source there may name one.
+test('no Go source under internal/ names a variable the per-mutant cache leaves out of its key', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const patterns = MUTANT_CACHE_ENV_IGNORE.map((p) =>
+    p.endsWith('*') ? new RegExp(`"${p.slice(0, -1)}[A-Za-z0-9_]*"`) : new RegExp(`"${p}"`),
+  );
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.go')) {
+        const src = readFileSync(p, 'utf8');
+        for (const re of patterns) if (re.test(src)) offenders.push(`${relative(root, p)}: ${re.source}`);
+      }
+    }
+  };
+  walk(join(root, 'internal'));
+  assert.ok(existsSync(join(root, 'internal')));
+  assert.deepEqual(offenders, []);
 });

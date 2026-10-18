@@ -3,7 +3,13 @@
 // on this runner.
 //
 // Required env: SCOPE, REPORT, MUTANT_TIMEOUT_MIN, MUTANT_TIMEOUT_MAX.
-// Optional env: WORKERS, EXCLUDE_FILES, DIFF_REF.
+// Optional env: WORKERS, EXCLUDE_FILES, DIFF_REF, MUTANT_CACHE_DIR,
+// MUTANT_CACHE_SALT.
+//
+// A non-empty MUTANT_CACHE_DIR hands gremlins its per-mutant verdict cache
+// (`--cache-dir`), with MUTANT_CACHE_SALT as `--cache-salt` and
+// lib/mutant-cache-env.mjs's list as `--cache-env-ignore`; the workflow sets
+// it only after mutation-cache.mjs's `mutant-verify` accepted the directory.
 //
 // A non-empty DIFF_REF first invokes gremlins' native merge-base line filter.
 // If that report contains zero executable mutants, the script deletes it and
@@ -21,6 +27,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { error, notice } from './lib/gh.mjs';
+import { MUTANT_CACHE_ENV_IGNORE } from './lib/mutant-cache-env.mjs';
 
 // gremlins derives each mutant's RUN bound as
 // `min(timeout-coefficient * max(coverage_elapsed, 1s), timeout-max)` and hands
@@ -361,6 +368,17 @@ function runGremlins({ report, budgetSeconds, ledger, diffRef = '' }) {
   const exclude = String(process.env.EXCLUDE_FILES ?? '').trim();
   if (exclude !== '') args.push('--exclude-files', exclude);
   if (diffRef !== '') args.push('--diff', diffRef);
+  const cacheDir = String(process.env.MUTANT_CACHE_DIR ?? '').trim();
+  if (cacheDir !== '') {
+    args.push(
+      '--cache-dir',
+      cacheDir,
+      '--cache-salt',
+      required('MUTANT_CACHE_SALT'),
+      '--cache-env-ignore',
+      MUTANT_CACHE_ENV_IGNORE.join(','),
+    );
+  }
   args.push(required('SCOPE'));
 
   const result = spawnSync('gremlins', args, {

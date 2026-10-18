@@ -7,6 +7,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  MUTANT_PROVENANCE_FILE,
+  MUTANT_PROVENANCE_SCHEMA,
   PRODUCING_WORKFLOW,
   aggregateProblems,
   collectKeyInputs,
@@ -17,6 +19,8 @@ import {
   toolchainFingerprint,
   verifyProducingRun,
   literalRelativePaths,
+  mutantCacheSalt,
+  mutantVerifyProblem,
   runnerScriptHashes,
 } from './mutation-cache.mjs';
 import {
@@ -533,4 +537,83 @@ test('a leg whose tests link rapid is cacheable only with the seed set and the p
   assert.equal(rapidDeterminismProblems(root, './a', env('')).length, 1, 'hook, no seed');
   // A scope whose tests do not link rapid needs neither.
   assert.deepEqual(rapidDeterminismProblems(root, './a', { ...process.env, CERBERUS_RAPID_SEED: '' }), []);
+});
+
+test('the per-mutant cache salt moves with every runner input and only with them', () => {
+  const base = { runner: { go: '1.25.3', gremlins: 'v1' }, runnerEnv: { MUTANT_TIMEOUT_MAX: '15s' }, runnerScripts: { 'a.mjs': 'x' } };
+  const salt = mutantCacheSalt(base);
+  assert.match(salt, /^[0-9a-f]{64}$/);
+  assert.equal(mutantCacheSalt(structuredClone(base)), salt, 'the same inputs give the same salt');
+  for (const changed of [
+    { ...base, runner: { ...base.runner, gremlins: 'v2' } },
+    { ...base, runnerEnv: { MUTANT_TIMEOUT_MAX: '30s' } },
+    { ...base, runnerScripts: { 'a.mjs': 'y' } },
+  ]) {
+    assert.notEqual(mutantCacheSalt(changed), salt, JSON.stringify(changed));
+  }
+});
+
+test('a restored per-mutant cache is used only when its producing run verifies', async () => {
+  const good = { schema: MUTANT_PROVENANCE_SCHEMA, sourceRunUrl: runUrl };
+  const seen = [];
+  const verifies = async (url) => {
+    seen.push(url);
+    return null;
+  };
+  assert.equal(await mutantVerifyProblem({ provenance: good, verifyRun: verifies }), null);
+  assert.deepEqual(seen, [runUrl], 'the recorded run is the one verified');
+
+  const refuses = async () => 'not a run of this PR';
+  assert.match(await mutantVerifyProblem({ provenance: good, verifyRun: refuses }), /not a run of this PR/);
+  for (const provenance of [undefined, null, 'x', { ...good, schema: 'other/v1' }]) {
+    assert.notEqual(await mutantVerifyProblem({ provenance, verifyRun: verifies }), null, JSON.stringify(provenance));
+  }
+});
+
+function mutantCli(mode, env) {
+  return spawnSync(process.execPath, [join(here, 'mutation-cache.mjs'), mode], { env: { ...process.env, ...env }, encoding: 'utf8' });
+}
+
+test('mutant-verify discards what it cannot trust and mutant-seal names the run that saved it', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'mutation-cache-mutant-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dir = join(root, 'cache');
+  const out = join(root, 'out');
+  const entry = join(dir, 'ab', 'abcd.json');
+  const plant = () => {
+    mkdirSync(dirname(entry), { recursive: true });
+    writeFileSync(entry, '{}');
+  };
+  const env = { DIR: dir, GITHUB_OUTPUT: out, MUTATION_CACHE: 'read-write', KEY_CACHEABLE: 'true', RESTORED_KEY: '' };
+
+  // Off, or a leg the key step found not cacheable: no directory reaches gremlins.
+  for (const over of [{ MUTATION_CACHE: 'off' }, { KEY_CACHEABLE: 'false' }]) {
+    plant();
+    writeFileSync(out, '');
+    const r = mutantCli('mutant-verify', { ...env, ...over });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(readFileSync(out, 'utf8'), /enabled=false/);
+    assert.ok(absent(entry), JSON.stringify(over));
+  }
+
+  // Nothing restored: whatever sits at the path is not from a restore.
+  plant();
+  writeFileSync(out, '');
+  let r = mutantCli('mutant-verify', env);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(readFileSync(out, 'utf8'), /enabled=true/);
+  assert.ok(absent(entry));
+
+  // Restored but naming no producing run: discarded before any API call.
+  plant();
+  writeFileSync(out, '');
+  r = mutantCli('mutant-verify', { ...env, RESTORED_KEY: 'mutation-mutants-p1-s-1-1', GITHUB_REPOSITORY: 'o/r', GITHUB_TOKEN: 't', PR_NUMBER: '1' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /discarding/);
+  assert.match(readFileSync(out, 'utf8'), /enabled=true/);
+  assert.ok(absent(entry));
+
+  r = mutantCli('mutant-seal', { DIR: dir, RUN_URL: runUrl });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, MUTANT_PROVENANCE_FILE), 'utf8')), { schema: MUTANT_PROVENANCE_SCHEMA, sourceRunUrl: runUrl });
 });

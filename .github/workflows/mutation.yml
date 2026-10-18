@@ -67,7 +67,7 @@ env:
   MUTATION_CACHE: ${{ (github.event_name == 'pull_request' && vars.MUTATION_CACHE_DISABLED != 'true') && 'read-write' || 'off' }}
   # Read by the install step, and by the cache key (in the legs and again in
   # the aggregator), which resolves the ref to the fork commit it names.
-  GREMLINS_INSTALL: github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-workdir-fd-leak-consume
+  GREMLINS_INSTALL: github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-verdict-cache-consume
   # The runner's per-mutant bounds (see the `gremlins unleash` step); part
   # of the cache key because they can move a verdict.
   MUTANT_TIMEOUT_MIN: 15s
@@ -175,6 +175,13 @@ jobs:
     # for a pass over work that should have run.
     if: ${{ needs.select.outputs.has_phases == 'true' }}
     runs-on: ubuntu-latest
+    # The per-mutant verdict cache's restore is verified through the API
+    # (mutation-cache.mjs mutant-verify), which reads the producing run and the
+    # pull request it belongs to.
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     # 90 (not 60): the parser legs run workers=1 (see mutation-phases.mjs) to
     # stay under the runner memory ceiling, which serialises their ~109 timeout
     # mutants and pushes wall-clock toward an hour on a 2-core runner. The faster
@@ -236,6 +243,34 @@ jobs:
           RESTORED: ${{ steps.restore.outputs.cache-hit }}
           KEY_CACHEABLE: ${{ steps.key.outputs.cacheable }}
           RUNNER_FILE: ${{ runner.temp }}/mutation-runner.json
+      # On a leg miss, gremlins still reuses the verdict of every mutant whose
+      # own inputs are unchanged: its per-mutant cache keys a mutant on its
+      # mutated file, its package's `go test` closure, the toolchain and the
+      # gremlins binary, and re-checks every file and variable the tests read
+      # (the fork's internal/cache package documents the rules). The key's
+      # `mutant_salt` adds what gremlins cannot see: the runner, the budget
+      # bounds and every harness file. The directory lives outside the checkout,
+      # is restored from this PR's own earlier runs only (same scoping as the
+      # leg cache), and is believed only after mutant-verify checks the run that
+      # saved it; otherwise it is emptied and every mutant runs.
+      - id: mutant-restore
+        name: restore the per-mutant verdict cache
+        if: steps.cache.outputs.hit != 'true' && env.MUTATION_CACHE == 'read-write' && steps.key.outputs.cacheable == 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/mutant-cache
+          key: mutation-mutants-${{ matrix.phase }}-${{ steps.key.outputs.mutant_salt }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: mutation-mutants-${{ matrix.phase }}-${{ steps.key.outputs.mutant_salt }}-
+      - id: mutant-verify
+        name: verify the per-mutant verdict cache
+        if: steps.cache.outputs.hit != 'true'
+        run: node .github/scripts/mutation-cache.mjs mutant-verify
+        env:
+          DIR: ${{ runner.temp }}/mutant-cache
+          RESTORED_KEY: ${{ steps.mutant-restore.outputs.cache-matched-key }}
+          KEY_CACHEABLE: ${{ steps.key.outputs.cacheable }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
       # We install gremlins directly via `go install` so we don't
       # depend on a third-party Action's release-download path.
       # The setup-go composite's module cache keeps subsequent runs fast.
@@ -246,7 +281,7 @@ jobs:
       # opaque `gremlins exited N` with no artifact and no measured-vs-threshold
       # numbers.
       #
-      # We consume gremlins via the tsouza/gremlins fork, which carries five
+      # We consume gremlins via the tsouza/gremlins fork, which carries the
       # fixes cerberus needs:
       #
       #   --on-shutdown-status=not-run   in-flight mutants killed by the
@@ -317,6 +352,20 @@ jobs:
       #     its meaning: 78 mutants that used to leave the ratio as NOT VIABLE
       #     now get a real verdict, and one that nothing kills is a genuine gap
       #     in the suite (#2933).
+      #
+      #   mutants between cover blocks are run
+      #     Go's cover tool puts a `case` expression, and a condition after a
+      #     closure argument, in no block at all, so the fork used to report
+      #     every mutant there NOT COVERED whatever the tests did. It now reads
+      #     such a position's coverage off its enclosing statement (#3802).
+      #
+      #   --diff matches changed lines in a scoped run
+      #     `git diff` named files from the repository root while gremlins
+      #     looked them up relative to the scope, so a changed-line leg
+      #     matched nothing and always fell back to the full phase.
+      #
+      #   --cache-dir / --cache-salt     the per-mutant verdict cache wired in
+      #     above (#3712).
       # Routed through go-module-fetch.mjs because gremlins is NOT in go.mod, so
       # the warm step in ./.github/actions/setup-go — which runs
       # `go mod download` over the main module's own requirements — does not
@@ -433,6 +482,8 @@ jobs:
           EXCLUDE_FILES: ${{ matrix.exclude_files }}
           DIFF_REF: ${{ matrix.diff_ref }}
           REPORT: gremlins.json
+          MUTANT_CACHE_DIR: ${{ steps.mutant-verify.outputs.enabled == 'true' && format('{0}/mutant-cache', runner.temp) || '' }}
+          MUTANT_CACHE_SALT: ${{ steps.key.outputs.mutant_salt }}
         run: node .github/scripts/mutation-run.mjs
       # The lane withholds --threshold-efficacy from gremlins on purpose and
       # gates in gremlins-threshold.mjs against the parsed report JSON
@@ -462,6 +513,18 @@ jobs:
         with:
           path: .mutation-cache
           key: mutation-leg-${{ steps.key.outputs.key }}
+      - name: seal the per-mutant verdict cache
+        if: steps.run.outcome == 'success' && steps.mutant-verify.outputs.enabled == 'true'
+        run: node .github/scripts/mutation-cache.mjs mutant-seal
+        env:
+          DIR: ${{ runner.temp }}/mutant-cache
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+      - name: save the per-mutant verdict cache
+        if: steps.run.outcome == 'success' && steps.mutant-verify.outputs.enabled == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/mutant-cache
+          key: mutation-mutants-${{ matrix.phase }}-${{ steps.key.outputs.mutant_salt }}-${{ github.run_id }}-${{ github.run_attempt }}
       # On a hit the aggregator validates the entry against a key it recomputes
       # itself, so the entry travels with the provenance record.
       - name: attach the cache entry to the provenance record
