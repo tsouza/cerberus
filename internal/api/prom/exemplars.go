@@ -6,6 +6,8 @@ import (
 	"maps"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/common/model"
@@ -44,21 +46,25 @@ type Exemplar struct {
 // https://prometheus.io/docs/prometheus/latest/querying/api/#querying-exemplars
 //
 // Required params: `query` (PromQL string), `start` and `end` (RFC3339 or
-// unix seconds). The `query` must be a single VectorSelector (Prom rejects
-// anything else); cerberus mirrors that. Every matcher shape a selector
-// can carry is answered — a regex `__name__`, or no `__name__` at all —
-// because the table fan-out is resolved from the matcher set rather than
-// from a literal metric name. The response is the canonical Prom envelope
-// with `data` shaped as []ExemplarSeries.
+// unix seconds). The `query` is any PromQL expression: as upstream does,
+// every vector selector in it is extracted ([promparser.ExtractSelectors])
+// and the response carries the exemplars of every series any of those
+// selectors match, each series once. An expression with no vector
+// selector (`vector(1)`, a scalar) selects no series and answers a
+// success envelope with no `data` key, upstream's exact body. Every
+// matcher shape a selector can carry is answered — a regex `__name__`,
+// or no `__name__` at all — because the table fan-out is resolved from
+// the matcher set rather than from a literal metric name. The response
+// is the canonical Prom envelope with `data` shaped as []ExemplarSeries.
 //
 // Implementation flow:
 //
 //  1. Validate the query / start / end parameters (existing behaviour).
-//  2. Parse the PromQL, walk through any ParenExpr, and require a single
-//     `*parser.VectorSelector`. Anything more complex returns ErrBadData —
-//     upstream Prometheus also restricts this endpoint to one selector.
-//  3. Resolve the candidate tables and their per-table row keys via
-//     [exemplarArms], which routes through
+//  2. Parse the PromQL (a parse error is ErrBadData carrying the parser's
+//     message) and extract its distinct vector selectors via
+//     [exemplarSelectors].
+//  3. Resolve, per selector, the candidate tables and their per-table row
+//     keys via [exemplarArms], which routes through
 //     [schema.Metrics.ExemplarSources]. An empty candidate set (a
 //     summary-only deployment — the OTel-CH summary table has no
 //     Exemplars column upstream) short-circuits with `data:[]`:
@@ -68,19 +74,21 @@ type Exemplar struct {
 //     [promql.BuildMatcherPredicate] helper PromQL `handleQuery` /
 //     `handleQueryRange` use.
 //  5. Call [chsql.EmitQueryExemplarsUnion] to render the SQL + args —
-//     one arm per candidate table, unioned.
+//     one arm per (selector, candidate table), unioned into one statement.
 //  6. Run the SQL via Querier.QueryExemplars; decode each row positionally
 //     into a [chclient.ExemplarRow].
 //  7. Group rows by `(MetricName, Attributes, ServiceName)` into one
-//     ExemplarSeries each, then project per-exemplar Labels with the
-//     reserved-key merge: ExemplarAttributes carries the SDK-recorded
-//     FilteredAttributes, and `trace_id` / `span_id` from the dedicated
-//     columns are overlaid (the columns are authoritative; empty values
-//     are dropped). See plan §3 + §7 "Reserved-key precedence".
+//     ExemplarSeries each — dropping the duplicate an exemplar gets when
+//     two selectors' arms read the same row — then project per-exemplar
+//     Labels with the reserved-key merge: ExemplarAttributes carries the
+//     SDK-recorded FilteredAttributes, and `trace_id` / `span_id` from
+//     the dedicated columns are overlaid (the columns are authoritative;
+//     empty values are dropped). See plan §3 + §7 "Reserved-key
+//     precedence".
 //
-// Returns `data:[]` (not nil) so the JSON envelope renders `"data":[]`
-// rather than `"data":null`; Grafana's exemplars probe distinguishes
-// the two.
+// An expression with at least one selector that matches nothing returns
+// `data:[]` (not nil) so the JSON envelope renders `"data":[]` rather
+// than `"data":null`; Grafana's exemplars probe distinguishes the two.
 func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 	// r.FormValue merges URL query params with POST form-encoded body
 	// (auto-calling ParseForm). Matches the consistent surface used by
@@ -111,21 +119,25 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vs, err := singleVectorSelector(expr)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, ErrBadData, err)
+	selectors := exemplarSelectors(expr)
+	if len(selectors) == 0 {
+		// No vector selector selects no series. Upstream answers with a
+		// nil data payload, which its envelope omits: `{"status":"success"}`.
+		writeJSON(w, http.StatusOK, Response{Status: "success"})
 		return
 	}
 
-	metricName := exemplarMetricName(vs.LabelMatchers)
-
-	arms, err := exemplarArms(vs.LabelMatchers, metricName, h.Schema)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, ErrInternal, err)
-		return
+	var arms []chsql.ExemplarArm
+	for _, matchers := range selectors {
+		selectorArms, err := exemplarArms(matchers, exemplarMetricName(matchers), h.Schema)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, ErrInternal, err)
+			return
+		}
+		arms = append(arms, selectorArms...)
 	}
 	if len(arms) == 0 {
-		// No configured table can carry exemplars for this selector —
+		// No configured table can carry exemplars for any selector —
 		// a summary-only deployment, or a schema with every
 		// exemplar-carrying table elided. Return an empty data array,
 		// which is Prom's answer for an exemplar-free metric type, with
@@ -159,19 +171,50 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	series := groupExemplars(rows, metricName)
+	series := groupExemplars(rows)
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   series,
 	})
 }
 
+// exemplarSelectors returns the matcher set of every vector selector in
+// expr, in [promparser.ExtractSelectors] order — upstream's own
+// extraction for this endpoint — with repeats dropped. A selector named
+// twice (`x / x offset 1h`; offset and `@` modifiers do not change the
+// series a selector matches) selects the same series both times, so its
+// second copy would only add a duplicate scan per candidate table.
+func exemplarSelectors(expr promparser.Expr) [][]*labels.Matcher {
+	all := promparser.ExtractSelectors(expr)
+	out := make([][]*labels.Matcher, 0, len(all))
+	seen := make(map[string]struct{}, len(all))
+	for _, matchers := range all {
+		key := matcherSetKey(matchers)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, matchers)
+	}
+	return out
+}
+
+// matcherSetKey renders a matcher set as an order-independent identity
+// key: the sorted String() forms, which quote each value, joined by a
+// separator no quoted matcher can contain unescaped.
+func matcherSetKey(matchers []*labels.Matcher) string {
+	parts := make([]string, len(matchers))
+	for i, m := range matchers {
+		parts[i] = m.String()
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\n")
+}
+
 // singleVectorSelector returns the unique [promparser.VectorSelector] in
 // expr or an error if the expression is anything else. ParenExpr wrappers
-// are unwrapped recursively. The upstream Prom contract restricts this
-// endpoint's `query` to a single VectorSelector (see
-// `prometheus/web/api/v1/api.go::queryExemplars`); anything else is
-// rejected with `ErrBadData`.
+// are unwrapped recursively. The `match[]`-shaped helpers use it to read
+// the one selector a matcher string carries.
 func singleVectorSelector(expr promparser.Expr) (*promparser.VectorSelector, error) {
 	for {
 		switch e := expr.(type) {
@@ -180,7 +223,7 @@ func singleVectorSelector(expr promparser.Expr) (*promparser.VectorSelector, err
 		case *promparser.ParenExpr:
 			expr = e.Expr
 		default:
-			return nil, fmt.Errorf("query_exemplars requires a single vector selector, got %T", expr)
+			return nil, fmt.Errorf("expected a single vector selector, got %T", expr)
 		}
 	}
 }
@@ -225,8 +268,15 @@ func exemplarMetricName(ms []*labels.Matcher) string {
 // applies — or it would filter on a name no row carries and contribute
 // nothing.
 //
+// Every arm reports its rows under metricName, the selector's pinned
+// name ([chsql.ExemplarArm.SeriesName]): the caller asked for exactly
+// that series, while the row can be keyed by the bare base name of a
+// classic histogram (the arm that serves `<base>_count` reads the `<base>`
+// row) or by the dotted OTel spelling of the same name. An unpinned
+// selector has no such name, and the row's own MetricName is reported.
+//
 // An empty result means no configured table can carry exemplars for the
-// selector; the caller answers with an empty data array.
+// selector.
 func exemplarArms(matchers []*labels.Matcher, metricName string, s schema.Metrics) ([]chsql.ExemplarArm, error) {
 	sources := s.ExemplarSources(metricName)
 	arms := make([]chsql.ExemplarArm, 0, len(sources))
@@ -239,7 +289,7 @@ func exemplarArms(matchers []*labels.Matcher, metricName string, s schema.Metric
 		if err != nil {
 			return nil, err
 		}
-		arms = append(arms, chsql.ExemplarArm{Table: src.Table, Predicate: predicate})
+		arms = append(arms, chsql.ExemplarArm{Table: src.Table, Predicate: predicate, SeriesName: metricName})
 	}
 	return arms, nil
 }
@@ -277,21 +327,22 @@ func buildExemplarsPredicate(matchers []*labels.Matcher, s schema.Metrics) (chsq
 // is deterministically ordered by the canonical series-key so two runs
 // against the same row set produce identical wire envelopes.
 //
-// metricName is the resolved `__name__` equality-matcher value, and it
-// wins over row.MetricName whenever the selector pinned one: the caller
-// asked for exactly that series name, while the row can be keyed by the
-// bare base name of a classic histogram (the arm that serves
-// `<base>_count` reads the `<base>` row) or by the dotted OTel spelling
-// of the same name. An unpinned selector has no such name, and
-// row.MetricName — which then varies row to row across the fan-out — is
-// the only truth available.
+// row.MetricName is already the reported series name — each arm projects
+// its selector's pinned name there ([exemplarArms]).
+//
+// A series two selectors both match is read once per selector, so the
+// same exemplar arrives on two rows; an exemplar identical to one the
+// series already holds is dropped, leaving each series with each
+// exemplar once — what upstream's exemplar storage returns, as it keeps
+// a series when it matches some matcher set and never stores a
+// duplicate exemplar.
 //
 // Per-exemplar Labels: ExemplarAttributes (the SDK-recorded
 // FilteredAttributes map) is the base, then `trace_id` / `span_id`
 // from the dedicated row columns overlay. Empty TraceID / SpanID
 // columns are dropped to match Prom's behaviour for exemplars without
 // trace linkage.
-func groupExemplars(rows []chclient.ExemplarRow, metricName string) []ExemplarSeries {
+func groupExemplars(rows []chclient.ExemplarRow) []ExemplarSeries {
 	if len(rows) == 0 {
 		return []ExemplarSeries{}
 	}
@@ -299,16 +350,13 @@ func groupExemplars(rows []chclient.ExemplarRow, metricName string) []ExemplarSe
 	type bucket struct {
 		labels    map[string]string
 		exemplars []Exemplar
+		seen      map[string]struct{}
 	}
 	bySeries := map[string]*bucket{}
 	keys := make([]string, 0, len(rows))
 
 	for _, r := range rows {
-		name := metricName
-		if name == "" {
-			name = r.MetricName
-		}
-		seriesLabels := format.WithMetricName(r.Attributes, name)
+		seriesLabels := format.WithMetricName(r.Attributes, r.MetricName)
 		if r.ServiceName != "" {
 			// The dedicated LowCardinality column is the OTel exporter's
 			// reserved place for service.name. Stamp it under the OTel
@@ -322,11 +370,17 @@ func groupExemplars(rows []chclient.ExemplarRow, metricName string) []ExemplarSe
 		key := format.CanonicalKey(seriesLabels)
 		b, ok := bySeries[key]
 		if !ok {
-			b = &bucket{labels: seriesLabels}
+			b = &bucket{labels: seriesLabels, seen: map[string]struct{}{}}
 			bySeries[key] = b
 			keys = append(keys, key)
 		}
-		b.exemplars = append(b.exemplars, projectExemplar(r))
+		ex := projectExemplar(r)
+		exKey := exemplarKey(r, ex)
+		if _, dup := b.seen[exKey]; dup {
+			continue
+		}
+		b.seen[exKey] = struct{}{}
+		b.exemplars = append(b.exemplars, ex)
 	}
 
 	sort.Strings(keys)
@@ -339,6 +393,16 @@ func groupExemplars(rows []chclient.ExemplarRow, metricName string) []ExemplarSe
 		})
 	}
 	return out
+}
+
+// exemplarKey is an exemplar's identity within its series: the row's
+// nanosecond timestamp (the wire float would merge exemplars a few
+// hundred nanoseconds apart), its value, and the projected label set
+// (trace_id / span_id included).
+func exemplarKey(r chclient.ExemplarRow, ex Exemplar) string {
+	return r.Timestamp.UTC().Format(time.RFC3339Nano) + " " +
+		strconv.FormatFloat(r.Value, 'g', -1, 64) + " " +
+		format.CanonicalKey(ex.Labels)
 }
 
 // projectExemplar shapes one row into a wire-format Exemplar. The

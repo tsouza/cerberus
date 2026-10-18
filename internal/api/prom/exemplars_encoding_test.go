@@ -119,7 +119,7 @@ func TestGroupExemplars_TraceIDByteExactPassthrough(t *testing.T) {
 				},
 			}
 
-			series := groupExemplars(rows, metricName)
+			series := groupExemplars(rows)
 			if len(series) != 1 {
 				t.Fatalf("len(series) = %d; want 1", len(series))
 			}
