@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -194,11 +195,11 @@ INSERT INTO otel_metrics_sum (
 	// `query=http_requests_total{job=~"api|db"}` — concrete __name__
 	// matcher (handler requires it per PR #520) plus a regex label
 	// matcher that selects both seeded series.
-	url := fmt.Sprintf(
+	reqURL := fmt.Sprintf(
 		`%s/api/v1/query_exemplars?query=http_requests_total%%7Bjob%%3D~%%22api%%7Cdb%%22%%7D&start=%d&end=%d`,
 		srv.URL, startUnix, endUnix,
 	)
-	resp, err := http.Get(url)
+	resp, err := http.Get(reqURL)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -365,11 +366,11 @@ INSERT INTO otel_metrics_sum (
 	// Window 1 hour after the seed — excludes every row.
 	startUnix := base.Add(1 * time.Hour).Unix()
 	endUnix := base.Add(2 * time.Hour).Unix()
-	url := fmt.Sprintf(
+	reqURL := fmt.Sprintf(
 		`%s/api/v1/query_exemplars?query=http_requests_total%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d`,
 		srv.URL, startUnix, endUnix,
 	)
-	resp, err := http.Get(url)
+	resp, err := http.Get(reqURL)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -431,11 +432,11 @@ INSERT INTO otel_metrics_histogram (
 
 	startUnix := base.Add(-1 * time.Minute).Unix()
 	endUnix := base.Add(1 * time.Minute).Unix()
-	url := fmt.Sprintf(
+	reqURL := fmt.Sprintf(
 		`%s/api/v1/query_exemplars?query=http_request_duration_seconds_count%%7Bjob%%3D%%22api%%22%%7D&start=%d&end=%d`,
 		srv.URL, startUnix, endUnix,
 	)
-	resp, err := http.Get(url)
+	resp, err := http.Get(reqURL)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -476,6 +477,129 @@ INSERT INTO otel_metrics_histogram (
 	}
 	if ex.Value != 0.042 {
 		t.Errorf("exemplar value=%v; want the seeded 0.042", ex.Value)
+	}
+}
+
+// getChDBExemplars issues one query_exemplars request for query over a
+// window framing base and decodes the success envelope.
+func getChDBExemplars(t *testing.T, srv *httptest.Server, query string, base time.Time) []prom.ExemplarSeries {
+	t.Helper()
+	v := url.Values{
+		"query": {query},
+		"start": {fmt.Sprint(base.Add(-1 * time.Minute).Unix())},
+		"end":   {fmt.Sprint(base.Add(1 * time.Minute).Unix())},
+	}
+	resp, err := http.Get(srv.URL + "/api/v1/query_exemplars?" + v.Encode())
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Status string                `json:"status"`
+		Error  string                `json:"error"`
+		Data   []prom.ExemplarSeries `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || out.Status != "success" {
+		t.Fatalf("status=%d %q error=%q", resp.StatusCode, out.Status, out.Error)
+	}
+	return out.Data
+}
+
+// TestQueryExemplars_ChDB_ExpressionOverCompanionSelectors — the
+// expression Grafana sends for a latency panel names the classic
+// histogram twice, once as `<base>_bucket` and once as `<base>_count`.
+// Both selectors read the same bare-named histogram row, and upstream
+// reports one series per selector match, each under its own `__name__`.
+// The union therefore must keep the two apart: each arm projects its
+// selector's name, so the one seeded exemplar surfaces on both series
+// rather than once under the row key `<base>`.
+func TestQueryExemplars_ChDB_ExpressionOverCompanionSelectors(t *testing.T) {
+	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	const tsFmt = "2006-01-02 15:04:05.000000000"
+
+	seed := exemplarsDDL() + fmt.Sprintf(`
+INSERT INTO otel_metrics_histogram (
+    MetricName, Attributes, ServiceName, TimeUnix, Value,
+    Exemplars.FilteredAttributes, Exemplars.TimeUnix, Exemplars.Value,
+    Exemplars.SpanId, Exemplars.TraceId
+) VALUES (
+    'http_request_duration_seconds',
+    map('job', 'api'),
+    'checkout',
+    toDateTime64('%s', 9),
+    0.0,
+    [map('request_id', 'req-h1')],
+    [toDateTime64('%s', 9)],
+    [0.042],
+    ['span-h1'],
+    ['trace-h1']
+);`, base.Format(tsFmt), base.Add(10*time.Millisecond).Format(tsFmt))
+
+	srv, _ := newChDBExemplarsServer(t, seed)
+
+	data := getChDBExemplars(t, srv,
+		`sum(rate(http_request_duration_seconds_bucket{job="api"}[1m])) / sum(rate(http_request_duration_seconds_count{job="api"}[1m]))`,
+		base)
+	if len(data) != 2 {
+		t.Fatalf("data has %d series; want 2 (the _bucket and the _count selector): %+v", len(data), data)
+	}
+	names := map[string]prom.ExemplarSeries{}
+	for _, series := range data {
+		names[series.SeriesLabels["__name__"]] = series
+	}
+	for _, want := range []string{"http_request_duration_seconds_bucket", "http_request_duration_seconds_count"} {
+		series, ok := names[want]
+		if !ok {
+			t.Errorf("no series named %q; got %v", want, data)
+			continue
+		}
+		if len(series.Exemplars) != 1 || series.Exemplars[0].Labels["trace_id"] != "trace-h1" {
+			t.Errorf("%s exemplars=%+v; want the one seeded trace-h1", want, series.Exemplars)
+		}
+	}
+}
+
+// TestQueryExemplars_ChDB_OverlappingSelectorsReturnEachSeriesOnce — the
+// job=api series is matched by both selectors of the expression, and the
+// job=db series by the second only. The union reads the api row twice;
+// the response must still carry each series once with each of its three
+// exemplars once, as upstream's single pass over its series index does.
+func TestQueryExemplars_ChDB_OverlappingSelectorsReturnEachSeriesOnce(t *testing.T) {
+	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	const tsFmt = "2006-01-02 15:04:05.000000000"
+	ts := base.Format(tsFmt)
+	ex := func(ms int) string { return base.Add(time.Duration(ms) * time.Millisecond).Format(tsFmt) }
+
+	seed := exemplarsDDL() + fmt.Sprintf(`
+INSERT INTO otel_metrics_sum (
+    MetricName, Attributes, ServiceName, TimeUnix, Value,
+    Exemplars.FilteredAttributes, Exemplars.TimeUnix, Exemplars.Value,
+    Exemplars.SpanId, Exemplars.TraceId
+) VALUES
+    ('http_requests_total', map('job', 'api'), 'checkout', toDateTime64('%[1]s', 9), 1.0,
+     [map(), map(), map()],
+     [toDateTime64('%[2]s', 9), toDateTime64('%[3]s', 9), toDateTime64('%[4]s', 9)],
+     [0.001, 0.002, 0.003], ['span-a1', 'span-a2', 'span-a3'], ['trace-a1', 'trace-a2', 'trace-a3']),
+    ('http_requests_total', map('job', 'db'), 'checkout', toDateTime64('%[1]s', 9), 2.0,
+     [map(), map(), map()],
+     [toDateTime64('%[2]s', 9), toDateTime64('%[3]s', 9), toDateTime64('%[4]s', 9)],
+     [0.004, 0.005, 0.006], ['span-b1', 'span-b2', 'span-b3'], ['trace-b1', 'trace-b2', 'trace-b3']);`,
+		ts, ex(10), ex(250), ex(500))
+
+	srv, _ := newChDBExemplarsServer(t, seed)
+
+	data := getChDBExemplars(t, srv, `http_requests_total{job="api"} or {__name__="http_requests_total", job=~"api|db"}`, base)
+	if len(data) != 2 {
+		t.Fatalf("data has %d series; want 2 (api, db): %+v", len(data), data)
+	}
+	for _, series := range data {
+		if len(series.Exemplars) != 3 {
+			t.Errorf("series %v carries %d exemplars; want each of its 3 once: %+v",
+				series.SeriesLabels, len(series.Exemplars), series.Exemplars)
+		}
 	}
 }
 

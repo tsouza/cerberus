@@ -8,8 +8,11 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/api/prom"
+	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -493,4 +496,217 @@ func TestQueryExemplars_Route(t *testing.T) {
 	}
 	// Discard body to satisfy the request lifecycle.
 	_ = fmt.Sprintf("%v", readBody(t, resp))
+}
+
+// getExemplars issues one GET /api/v1/query_exemplars against srv for
+// query over a fixed window and returns the status code and raw body.
+func getExemplars(t *testing.T, srv *httptest.Server, query string) (int, string) {
+	t.Helper()
+	v := url.Values{"query": {query}, "start": {"1717995600"}, "end": {"1717999200"}}
+	resp, err := http.Get(srv.URL + "/api/v1/query_exemplars?" + v.Encode())
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	return resp.StatusCode, readBody(t, resp)
+}
+
+// argsContain reports whether want is bound as one of args.
+func argsContain(args []any, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestQueryExemplars_AnyExpression — upstream Prometheus answers
+// `/api/v1/query_exemplars` for any PromQL expression: it runs
+// `parser.ExtractSelectors` over the parsed AST and reads the exemplars of
+// every series any of the selectors match. Grafana sends the panel's own
+// expression, which for a heatmap or a latency quantile is always an
+// aggregate or a function call, so the endpoint must read the selectors out
+// of those shapes rather than reject them. Each case pins that every
+// selector's metric name reaches the emitted SQL.
+func TestQueryExemplars_AnyExpression(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		query     string
+		wantNames []string
+	}{
+		{
+			name:      "aggregate",
+			query:     `sum by (le) (rate(traces_span_metrics_duration_bucket{service_name="payments"}[1m]))`,
+			wantNames: []string{"traces_span_metrics_duration"},
+		},
+		{
+			name:      "histogram_quantile call",
+			query:     `histogram_quantile(0.99, sum by (le) (rate(traces_span_metrics_duration_bucket{service_name="payments"}[1m])))`,
+			wantNames: []string{"traces_span_metrics_duration"},
+		},
+		{
+			name:      "binary expression over two selectors",
+			query:     `rate(http_requests_total{job="api"}[5m]) / rate(http_errors_total{job="api"}[5m])`,
+			wantNames: []string{"http_requests_total", "http_errors_total"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &stubQuerier{}
+			srv := newServer(q)
+			t.Cleanup(srv.Close)
+
+			status, body := getExemplars(t, srv, tc.query)
+			if status != http.StatusOK {
+				t.Fatalf("status: got %d, want 200; body=%s", status, body)
+			}
+			if q.lastSQL == "" {
+				t.Fatal("exemplars handler did not reach CH; lastSQL is empty")
+			}
+			for _, name := range tc.wantNames {
+				if !argsContain(q.lastArgs, name) {
+					t.Errorf("selector name %q is not bound in the exemplar SQL; args=%v", name, q.lastArgs)
+				}
+			}
+		})
+	}
+}
+
+// TestQueryExemplars_SeriesMatchedByTwoSelectorsIsReturnedOnce — a series
+// two selectors both match is one series in the response, carrying each of
+// its exemplars once. Upstream's exemplar storage walks its series index
+// once and keeps a series when it matches SOME matcher set, so neither the
+// series nor its exemplars can be doubled. The stub hands back the rows the
+// union would produce when both selectors' arms read the same row.
+func TestQueryExemplars_SeriesMatchedByTwoSelectorsIsReturnedOnce(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	row := chclient.ExemplarRow{
+		MetricName:  "http_requests_total",
+		Attributes:  map[string]string{"job": "api", "env": "prod"},
+		ServiceName: "checkout",
+		Timestamp:   ts,
+		Value:       0.25,
+		TraceID:     "trace-1",
+		SpanID:      "span-1",
+	}
+	other := row
+	other.Timestamp = ts.Add(time.Second)
+	other.TraceID = "trace-2"
+	other.SpanID = "span-2"
+	q := &stubQuerier{exemplarRows: []chclient.ExemplarRow{row, other, row, other}}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	status, body := getExemplars(t, srv, `http_requests_total{job="api"} + http_requests_total{env="prod"}`)
+	if status != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", status, body)
+	}
+	var parsed exemplarsResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, body)
+	}
+	if len(parsed.Data) != 1 {
+		t.Fatalf("got %d series, want 1: %s", len(parsed.Data), body)
+	}
+	got := parsed.Data[0].Exemplars
+	if len(got) != 2 {
+		t.Fatalf("series carries %d exemplars, want 2 (each once): %+v", len(got), got)
+	}
+	if got[0].Labels["trace_id"] == got[1].Labels["trace_id"] {
+		t.Errorf("both exemplars carry trace_id %q; want trace-1 and trace-2", got[0].Labels["trace_id"])
+	}
+}
+
+// TestQueryExemplars_IdenticalSelectorsReadOnce — an expression that names
+// the same selector twice (`x / x offset 1h`) reads it once: the selectors
+// select the same series, so a second arm per table is a wasted scan.
+func TestQueryExemplars_IdenticalSelectorsReadOnce(t *testing.T) {
+	t.Parallel()
+
+	single := &stubQuerier{}
+	srvSingle := newServer(single)
+	t.Cleanup(srvSingle.Close)
+	if status, body := getExemplars(t, srvSingle, `rate(http_requests_total{job="api"}[5m])`); status != http.StatusOK {
+		t.Fatalf("single selector: status %d; body=%s", status, body)
+	}
+
+	twice := &stubQuerier{}
+	srvTwice := newServer(twice)
+	t.Cleanup(srvTwice.Close)
+	if status, body := getExemplars(t, srvTwice, `rate(http_requests_total{job="api"}[5m]) / rate(http_requests_total{job="api"}[5m] offset 1h)`); status != http.StatusOK {
+		t.Fatalf("repeated selector: status %d; body=%s", status, body)
+	}
+	if twice.lastSQL != single.lastSQL {
+		t.Errorf("a repeated selector changed the SQL:\nsingle: %s\ntwice:  %s", single.lastSQL, twice.lastSQL)
+	}
+}
+
+// TestQueryExemplars_NoSelector — an expression with no vector selector at
+// all (`vector(1)`, a scalar literal) selects no series. Upstream returns a
+// success envelope with no `data` key and does not consult its exemplar
+// storage; cerberus answers the same way without a ClickHouse round trip.
+func TestQueryExemplars_NoSelector(t *testing.T) {
+	t.Parallel()
+
+	for _, query := range []string{`vector(1)`, `1 + 2`, `time()`} {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+
+			q := &stubQuerier{}
+			srv := newServer(q)
+			t.Cleanup(srv.Close)
+
+			status, body := getExemplars(t, srv, query)
+			if status != http.StatusOK {
+				t.Fatalf("status: got %d, want 200; body=%s", status, body)
+			}
+			if strings.TrimSpace(body) != `{"status":"success"}` {
+				t.Errorf("body: got %s, want {\"status\":\"success\"}", body)
+			}
+			if q.lastSQL != "" {
+				t.Errorf("a selector-free expression reached CH: %s", q.lastSQL)
+			}
+		})
+	}
+}
+
+// TestQueryExemplars_ParseError — an unparseable expression is a 400
+// bad_data carrying the parser's own message, as upstream answers, and
+// never reaches ClickHouse.
+func TestQueryExemplars_ParseError(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{}
+	srv := newServer(q)
+	t.Cleanup(srv.Close)
+
+	const query = `sum(rate(http_requests_total[5m])`
+	status, body := getExemplars(t, srv, query)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400; body=%s", status, body)
+	}
+	var got prom.Response
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ErrorType != prom.ErrBadData {
+		t.Errorf("errorType: got %q, want %q", got.ErrorType, prom.ErrBadData)
+	}
+	_, perr := promparse.New().ParseExpr(query)
+	if perr == nil {
+		t.Fatal("the fixture parses; the assertion below would be vacuous")
+	}
+	if got.Error != perr.Error() {
+		t.Errorf("error: got %q, want the parser's %q", got.Error, perr.Error())
+	}
+	if q.lastSQL != "" {
+		t.Errorf("an unparseable expression reached CH: %s", q.lastSQL)
+	}
 }

@@ -471,3 +471,57 @@ func TestEmitQueryExemplarsUnion_RejectsSummaryArm(t *testing.T) {
 		t.Fatalf("err = %v; want ErrUnsupported", err)
 	}
 }
+
+// TestEmitQueryExemplarsUnion_SeriesName pins the per-arm reported name:
+// an arm with a SeriesName projects it as a bound literal under the
+// MetricName alias — so two arms reading the same physical row surface
+// two distinct series — while an arm without one projects the row's own
+// MetricName column. The name binds ahead of the arm's predicate and time
+// bounds because the outer SELECT list renders before its FROM subquery.
+func TestEmitQueryExemplarsUnion_SeriesName(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
+	rowKey := chsql.Eq(chsql.Col(s.MetricNameColumn), chsql.Lit("http_request_duration_seconds"))
+
+	sql, args, _, err := chsql.EmitQueryExemplarsUnion(context.Background(), []chsql.ExemplarArm{
+		{Table: s.HistogramTable, Predicate: rowKey, SeriesName: "http_request_duration_seconds_bucket"},
+		{Table: s.HistogramTable, Predicate: rowKey, SeriesName: "http_request_duration_seconds_count"},
+		{Table: s.SumTable, Predicate: rowKey},
+	}, start, end, s)
+	if err != nil {
+		t.Fatalf("EmitQueryExemplarsUnion: %v", err)
+	}
+
+	arms := strings.Split(sql, " UNION ALL ")
+	if len(arms) != 3 {
+		t.Fatalf("got %d arms, want 3:\n%s", len(arms), sql)
+	}
+	const named = "(SELECT ? AS `MetricName`, `Attributes`"
+	const unnamed = "(SELECT `MetricName`, `Attributes`"
+	for i, want := range []string{named, named, unnamed} {
+		if !strings.HasPrefix(arms[i], want) {
+			t.Errorf("arm %d: want prefix %q, got:\n%s", i, want, arms[i])
+		}
+	}
+
+	// Per arm: [series name], predicate literal, start (2 args), end (2 args).
+	const argsPerUnnamedArm = 5
+	want := []any{"http_request_duration_seconds_bucket", "http_request_duration_seconds"}
+	if len(args) != 2*(argsPerUnnamedArm+1)+argsPerUnnamedArm {
+		t.Fatalf("got %d args, want %d: %v", len(args), 2*(argsPerUnnamedArm+1)+argsPerUnnamedArm, args)
+	}
+	for i, w := range want {
+		if args[i] != w {
+			t.Errorf("args[%d] = %v, want %v", i, args[i], w)
+		}
+	}
+	if got := args[argsPerUnnamedArm+1]; got != "http_request_duration_seconds_count" {
+		t.Errorf("second arm's first arg = %v, want its series name", got)
+	}
+	if got := args[2*(argsPerUnnamedArm+1)]; got != "http_request_duration_seconds" {
+		t.Errorf("third arm's first arg = %v, want its predicate literal (no series name)", got)
+	}
+}

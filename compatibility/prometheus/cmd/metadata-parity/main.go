@@ -33,16 +33,14 @@
 //
 // query_exemplars (also named in #1729's title) is deliberately NOT
 // covered here: its parse boundary is a structurally different
-// contract (a `query=` parameter walked through the general ParseExpr
-// grammar and the post-parse singleVectorSelector check in
-// internal/api/prom/exemplars.go, not match[]'s ParseMetricSelector),
-// its required-parameter shape differs (mandatory `start`/`end`, no
-// bare-window default), and — unlike the map[] endpoints — `offset`
-// and `@` are valid there on both backends (they set fields on the
-// same *parser.VectorSelector node, so singleVectorSelector's type
-// assertion accepts them same as upstream's identical check), so the
-// case table this driver deliberately keeps in lock-step with the
-// match[] unit tests does not transfer. Exercising it soundly would
+// contract (a `query=` parameter parsed with the general ParseExpr
+// grammar, whose every vector selector is extracted the way upstream's
+// parser.ExtractSelectors does in internal/api/prom/exemplars.go, not
+// match[]'s ParseMetricSelector), its required-parameter shape differs
+// (mandatory `start`/`end`, no bare-window default), and — unlike the
+// map[] endpoints — any expression, `offset` and `@` included, is valid
+// there on both backends, so the case table this driver deliberately
+// keeps in lock-step with the match[] unit tests does not transfer. Exercising it soundly would
 // also need the reference container's exemplar-storage feature state
 // confirmed live — this environment cannot run the compose stack (see
 // docs/test-strategy.md's CI-only compat lanes). #1729 stays open for

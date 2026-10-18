@@ -125,9 +125,20 @@ func EmitQueryExemplars(
 // histogram table, where the OTel-CH exporter serves the companion series
 // off the bare-named row's columns. See [schema.Metrics.ExemplarSources],
 // which resolves the (table, row key) pairs the caller turns into arms.
+//
+// SeriesName, when set, is the `__name__` the arm's rows are reported
+// under: the outer projection binds it as the MetricName column in place
+// of the row's own key. The caller sets it to the selector's pinned
+// metric name, which differs from the row key on a histogram-shaped
+// table (`<base>_count` read off a row keyed `<base>`); because it is
+// per arm, two selectors that read the same physical row under different
+// names (`<base>_bucket` and `<base>_count`) each surface their own
+// series. Empty leaves the row's MetricName column as the reported name,
+// which is the only name available to a selector that pins none.
 type ExemplarArm struct {
-	Table     string
-	Predicate Frag
+	Table      string
+	Predicate  Frag
+	SeriesName string
 }
 
 // EmitQueryExemplarsUnion renders one statement reading every arm in
@@ -144,8 +155,9 @@ type ExemplarArm struct {
 // boundary makes some ClickHouse drivers refuse to cast a Map back
 // (see [Render]).
 //
-// Each arm's args bind in emit order — arm 0's predicate literal, arm 0's
-// two time bounds, then arm 1's, and so on.
+// Each arm's args bind in emit order — arm 0's SeriesName (when set),
+// arm 0's predicate literal, arm 0's two time bounds, then arm 1's, and
+// so on.
 //
 // Returns ErrUnsupported for an empty arm list: a caller with no candidate
 // table must answer with an empty result rather than ask for SQL, and the
@@ -320,9 +332,15 @@ func queryExemplarsSelect(
 	// rows by: positional binding to MetricName / Attributes /
 	// ServiceName / Timestamp / Value / TraceID / SpanID /
 	// ExemplarAttributes.
+	// An arm with a SeriesName projects it as a bound literal under the
+	// MetricName alias, so the column contract is unchanged.
+	metricName := Col(s.MetricNameColumn)
+	if arm.SeriesName != "" {
+		metricName = As(Lit(arm.SeriesName), s.MetricNameColumn)
+	}
 	outer := NewQuery().
 		Select(
-			Col(s.MetricNameColumn),
+			metricName,
 			Col(s.AttributesColumn),
 			Col(s.ServiceNameColumn),
 			As(Subscript(BareIdent("ts"), BareIdent("i")), "Timestamp"),
