@@ -5,14 +5,21 @@
 // mutant is reported KILLED. See gremlins_kill_test.go's own header for
 // the mutant-citation convention.
 //
-// The CONDITIONALS_BOUNDARY mutant at subquery.go:`if step < 0` has no
-// killing test because it is a mathematically equivalent mutant, not a
-// coverage gap. `step` is reassigned to the
-// positive `DefaultSubqueryStep` constant whenever it was zero (the
-// `if step == 0` arm just above it), so `step` can never be exactly 0
-// by the time the boundary check runs — `<` and `<=` decide identically
-// over every reachable value. No test can kill it without the
-// underlying code changing shape.
+// Two CONDITIONALS_BOUNDARY mutants reported for this file have no killing
+// test (subquery.go:`if step < 0` and subquery.go:`if ns%stepNS != 0 && ns < 0`):
+// both are mathematically equivalent mutants, not coverage gaps. At
+// subquery.go:`if step < 0`, `step` is reassigned to the positive
+// `defaultSubqueryStep` constant whenever it was zero (the
+// `if step == 0` arm just above it), so
+// `step` can never be exactly 0 by the time the boundary check runs —
+// `<` and `<=` decide identically over every reachable value. At
+// subquery.go:`if ns%stepNS != 0 && ns < 0`, the `<`/`<=`
+// boundary sits at ns==0, but ns==0 forces `ns%stepNS == 0` for any
+// nonzero stepNS, which makes the left `&&` operand false and
+// short-circuits the whole expression regardless of the right operand's
+// boundary — so no input can ever reach a state where the two operators
+// disagree. No test can kill either mutant without the underlying code
+// changing shape.
 package promql
 
 import (

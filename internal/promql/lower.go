@@ -44,10 +44,6 @@ var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/promql")
 func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
-	if err := checkEvaluationDomain(expr, time.Time{}, time.Time{}); err != nil {
-		span.RecordError(err)
-		return nil, err
-	}
 	plan, err := lowerRoot(expr, s, lowerCtx{
 		lowerers:       RangeLowerers{}.withDefaults(),
 		resourceBounds: DefaultResourceBounds().withDefaults(),
@@ -167,21 +163,7 @@ type LowerOpts struct {
 // experimental native-rate path can be enabled per deployment; every
 // other caller uses [Lower] / [LowerAt] / [LowerAtRange] and gets the
 // zero-options (default) behaviour.
-//
-// Every entry point refuses, with [ErrOutsideEvaluationDomain], an
-// expression whose evaluation leaves the span the lowering represents
-// exactly ([LeavesEvaluationDomain]).
 func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time, step time.Duration, opts LowerOpts) (chplan.Node, error) {
-	if err := checkEvaluationDomain(expr, start, end); err != nil {
-		return nil, err
-	}
-	return lowerAtRangeOpts(ctx, expr, s, start, end, step, opts)
-}
-
-// lowerAtRangeOpts is [LowerAtRangeOpts] after its domain check, shared
-// with [LowerSampleRead], whose read is bounded by the storage domain
-// instead.
-func lowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time, step time.Duration, opts LowerOpts) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
 	plan, err := lowerRoot(expr, s, lowerCtx{

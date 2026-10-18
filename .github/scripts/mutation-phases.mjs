@@ -268,9 +268,8 @@ export const PHASES = [
   },
 
   // ---------------------------------------------------------------------------
-  // phase4-promql — thirteen sibling legs over ./internal/promql (split from one
-  // by cerberus issue #2636; phase4-promql-domain peeled off the catch-all
-  // later).
+  // phase4-promql — twelve sibling legs over ./internal/promql (split from one
+  // by cerberus issue #2636).
   //
   // Unsplit, phase4-promql was the FAST leg when phase2 was first split ("the
   // next-slowest leg... finished in 13" minutes — see phase2's own history
@@ -454,19 +453,6 @@ export const PHASES = [
       '^(histogram_native_bare|histogram_native_binop_eq|histogram_native_count|histogram_native_count_values|histogram_native_mixed_or_label|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_comparison|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_value_producing_call)\\.go$',
   },
   {
-    phase: 'phase4-promql-domain',
-    scope: './internal/promql',
-    efficacy: EFFICACY,
-    workers: DEFAULT_WORKERS,
-    // time_domain + sample_read: the evaluation-domain predicate the lowering
-    // entry points refuse by, and the pinned sample reads the prom handler's
-    // reference evaluation feeds through the pipeline. Their own leg rather
-    // than the catch-all, so the catch-all's run time stays bounded and this
-    // boundary arithmetic is adjudicated on its own.
-    include_files:
-      '^(sample_read|time_domain)\\.go$',
-  },
-  {
     phase: 'phase4-promql-other',
     scope: './internal/promql',
     efficacy: EFFICACY,
@@ -482,7 +468,7 @@ export const PHASES = [
     // internal/promql needs no edit here — it is picked up automatically, which is
     // why this leg keeps no positive file list to fall out of sync.
     exclude_files:
-      '^(absent|binary|classic_bucket_merge_bound|classic_bucket_merge_summap|date_fns|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_scaling_binop|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_timestamp|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_native_window|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|range_fns|regex_histogram_lower|resource_attributes|sample_read|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|time_domain|unary)\\.go$',
+      '^(absent|binary|classic_bucket_merge_bound|classic_bucket_merge_summap|date_fns|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_scaling_binop|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_timestamp|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_native_window|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|range_fns|regex_histogram_lower|resource_attributes|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
   },
 
   // ---------------------------------------------------------------------------

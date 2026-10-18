@@ -105,53 +105,6 @@ cannot be attributed to one; `telemetry.ObserveStage` takes the language
 alongside the stage for that reason, and the OTel span tree and the
 stage-duration histograms are aligned because they share that one helper.
 
-## Why PromQL outside the evaluation domain runs on the upstream engine
-
-Reference Prometheus accepts any `@` timestamp that fits int64
-milliseconds, roughly 292 million years either side of 1970, and answers
-it. Its answers there are partly artefacts of its own arithmetic: it turns
-each pin into an offset in int64 nanoseconds, which wraps beyond about 292
-years, so a year-1 pin evaluates its subtree near 1754, and a 1675 pin
-near 2259. A selector pinned that far reads nothing, while a constant
-inner such as `vector(1)` still has an answer, and the matrix of a bare
-top-level subquery carries timestamps in those centuries.
-
-Cerberus cannot reproduce that by lowering. Every grid, window and literal
-the lowering derives is a `DateTime64(9)` value or `UnixNano()`
-arithmetic. Outside their common span, ClickHouse silently clamps a
-literal below 1900 to 1900-01-01 or fails on one past 2262, and
-`UnixNano()` wraps into an unrelated century. Before the evaluation
-domain existed, a pin at Go's zero time read as "no pin", and a subquery
-window below 1677 wrapped its grid to 2262; both answered wrongly without
-an error. Rejecting those queries was the interim answer, and it was a
-divergence from the reference.
-
-Evaluating them with the reference engine itself gives the reference's
-answer by construction, wrap artefacts included, for data-free and
-data-reading shapes alike, with no second implementation of PromQL
-semantics to keep in step. The cost is a slower, in-memory evaluation,
-paid only by queries outside the domain, and linking the engine package,
-which is Apache-2.0 like the parser cerberus already links.
-
-The domain is narrower than what each representation allows by a day at
-each end, because the walk that decides it models each selector's
-lookback, matrix range and subquery range, while individual lowerings
-widen a scan further by up to a step or a lookback. A false positive
-costs only the slower evaluation.
-
-The query endpoints used to clamp a request instant outside the
-int64-nanosecond window to the window's edge, which answered at an
-instant the reference never evaluates at. With the reference engine
-available the clamp has nothing left to protect, so those instants are
-parsed as Prometheus parses them. The metadata and exemplar endpoints
-keep the clamp: there an instant only bounds a scan, and no stored row
-lies beyond the edge.
-
-Sample reads are not subject to the domain: a pinned range selector needs
-only a `DateTime64(9)` literal for its pin, and its lower bound is
-ClickHouse arithmetic on that literal, which is exact below 1900. That is
-what lets a read reach a sample stored at 1900-01-01T00:00:00.
-
 ## Why the engine's scope is narrow
 
 The boundaries in "What the engine is not" keep the engine's surface small
