@@ -375,4 +375,4 @@ func TestCloneNodeScalarSubqueryIsolation(t *testing.T) {
 	}
 }
 
-// cache probe 2
+// cache probe 4
