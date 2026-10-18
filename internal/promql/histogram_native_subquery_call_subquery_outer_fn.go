@@ -88,7 +88,7 @@ func widenNestedCallSubqueryInner(inner chplan.Node, sub *parser.SubqueryExpr, c
 		return err
 	}
 	switch {
-	case ctx.rangeMode() && subqueryPinned(sub):
+	case ctx.rangeMode() && subqueryPinned(sub) && !anchor.End.IsZero():
 		widenSubquerySpine(inner, anchor.End.Add(-anchor.Offset-sub.Range), anchor.End)
 	case ctx.rangeMode():
 		// NOT gated on a resolvable anchor.End: [subqueryAnchor] fills End

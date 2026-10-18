@@ -21,13 +21,13 @@
 //
 //     step := sub.Step
 //     if step == 0 {
-//     step = DefaultSubqueryStep
+//     step = defaultSubqueryStep
 //     }
 //     if step < 0 {
 //
-//     DefaultSubqueryStep is the fixed positive constant time.Minute
+//     defaultSubqueryStep is the fixed positive constant time.Minute
 //     (subquery.go), so step is NEVER literally 0 by the time the `< 0`
-//     check runs — it is either DefaultSubqueryStep (always > 0, when the
+//     check runs — it is either defaultSubqueryStep (always > 0, when the
 //     original sub.Step was exactly 0) or sub.Step unchanged (which the
 //     real PromQL grammar can only produce as positive; a negative value
 //     requires hand-building the AST, same as the parser bypass this
@@ -245,7 +245,7 @@ func TestLowerSumOrAvgMixedOrSubqueryFoldFnRange_StepAlignedFalseAtZeroStep(t *t
 	}
 	effStep := shape.sub.Step
 	if effStep == 0 {
-		effStep = DefaultSubqueryStep
+		effStep = defaultSubqueryStep
 	}
 	gridCtx, state, err := subqueryGridCtx(shape.sub, effStep, realCtx)
 	if err != nil || state != subqueryGridDerived {

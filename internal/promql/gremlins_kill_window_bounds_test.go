@@ -210,7 +210,7 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 //	histogram_native_subquery_select.go:lowerSelectFnOverExpHistogramSubquery:`step < 0`
 //
 // `<` -> `<=` differs only at zero, and zero cannot reach these guards. Each
-// `step` is assigned `DefaultSubqueryStep` (a positive constant) by an
+// `step` is assigned `defaultSubqueryStep` (a positive constant) by an
 // immediately preceding `if step == 0`.
 //
 // 3. A LOOP OVER A REGISTRY THAT HOLDS ONE ENTRY.
