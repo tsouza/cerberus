@@ -138,43 +138,34 @@ const notNewlineClass = `[^\n]`
 
 // spellDotsAsNotNewline replaces every `.` metacharacter in pattern — one
 // outside a character class, an escape and a `\Q...\E` quotation — with
-// [notNewlineClass]. It declines (ok false) a pattern that sets or clears
-// the `s` flag anywhere, where a `.`'s meaning depends on its position.
-// lineFilterRegex checks the result against the parser, so this scanner
-// only has to be right for the rewrite to be used, never for it to be
-// correct.
+// [notNewlineClass]. It declines (ok false) a pattern with a character class
+// [classEnd] cannot close. A `.` the pattern reads under the `s` flag is
+// replaced too, which changes what the pattern means; lineFilterRegex checks
+// the result against the parser and keeps it only when it parses to the
+// pattern's own program, so this scanner only has to be right for the
+// rewrite to be used, never for it to be correct.
 func spellDotsAsNotNewline(pattern string) (string, bool) {
 	var out []byte
 	for i := 0; i < len(pattern); i++ {
 		c := pattern[i]
 		switch {
 		case c == '\\' && i+1 < len(pattern) && pattern[i+1] == 'Q':
-			end := len(pattern)
-			if j := indexFrom(pattern, `\E`, i+2); j >= 0 {
-				end = j + len(`\E`)
-			}
+			// An unterminated quotation runs to the end of the pattern, where
+			// Cut leaves nothing after it.
+			_, after, _ := strings.Cut(pattern[i+len(`\Q`):], `\E`)
+			end := len(pattern) - len(after)
 			out = append(out, pattern[i:end]...)
 			i = end - 1
 		case c == '\\' && i+1 < len(pattern):
 			out = append(out, c, pattern[i+1])
 			i++
 		case c == '[':
-			end := classEnd(pattern, i)
-			if end < 0 {
+			end, ok := classEnd(pattern, i)
+			if !ok {
 				return "", false
 			}
 			out = append(out, pattern[i:end]...)
 			i = end - 1
-		case c == '(' && i+1 < len(pattern) && pattern[i+1] == '?':
-			j := i + 2
-			for j < len(pattern) && pattern[j] != ')' && pattern[j] != ':' && pattern[j] != '<' && pattern[j] != 'P' {
-				if pattern[j] == 's' {
-					return "", false
-				}
-				j++
-			}
-			out = append(out, pattern[i:j]...)
-			i = j - 1
 		case c == '.':
 			out = append(out, notNewlineClass...)
 		default:
@@ -185,10 +176,10 @@ func spellDotsAsNotNewline(pattern string) (string, bool) {
 }
 
 // classEnd returns the index just past the character class opening at
-// pattern[start], or -1 when it does not close. A `]` directly after `[` or
-// `[^` is a member, an escape is skipped whole, and a POSIX `[:name:]` is
-// skipped to its own `:]`.
-func classEnd(pattern string, start int) int {
+// pattern[start], with ok false when it does not close. A `]` directly after
+// `[` or `[^` is a member, an escape is skipped whole, and a POSIX
+// `[:name:]` is skipped to its own `:]`.
+func classEnd(pattern string, start int) (end int, ok bool) {
 	i := start + 1
 	if i < len(pattern) && pattern[i] == '^' {
 		i++
@@ -201,27 +192,18 @@ func classEnd(pattern string, start int) int {
 		case pattern[i] == '\\':
 			i += 2
 		case pattern[i] == '[' && i+1 < len(pattern) && pattern[i+1] == ':':
-			j := indexFrom(pattern, ":]", i+2)
-			if j < 0 {
-				return -1
+			_, after, named := strings.Cut(pattern[i+len("[:"):], ":]")
+			if !named {
+				return 0, false
 			}
-			i = j + len(":]")
+			i = len(pattern) - len(after)
 		case pattern[i] == ']':
-			return i + 1
+			return i + 1, true
 		default:
 			i++
 		}
 	}
-	return -1
-}
-
-// indexFrom is strings.Index over pattern[from:], offset back into pattern.
-// Callers pass a from no greater than len(pattern).
-func indexFrom(pattern, sub string, from int) int {
-	if i := strings.Index(pattern[from:], sub); i >= 0 {
-		return from + i
-	}
-	return -1
+	return 0, false
 }
 
 // lineFilterLiteralPrefix returns the literal every match of a line-filter

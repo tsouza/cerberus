@@ -3,9 +3,11 @@ package chsql
 import (
 	"reflect"
 	"regexp"
+	"regexp/syntax"
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -115,16 +117,17 @@ func TestSubstituteFor_ReadsSpellingsAsReplacement(t *testing.T) {
 		{`(?i:\x{FFFD}x)`, true},
 		{`[\x{0}-\x{FFFF}]+`, true},
 		{`\x{FFFD}.(?s:.)(?-s:.)`, true},
+		{`[\x{F0000}-\x{10FFFF}]`, true},
 	}
 	type unit struct{ fffd, sub string }
-	for _, readings := range [][]bool{{true}, {true, false}} {
+	for _, eitherDot := range []bool{false, true} {
 		for _, p := range patterns {
-			k, rewritten, ok := substituteFor([]string{p.pattern}, readings)
+			k, rewritten, ok := substituteFor([]string{p.pattern}, eitherDot)
 			if !ok {
-				t.Fatalf("substituteFor(%q, %v) did not serve it", p.pattern, readings)
+				t.Fatalf("substituteFor(%q, eitherDot %v) did not serve it", p.pattern, eitherDot)
 			}
 			if (rewritten[0] != p.pattern) != p.rewritten {
-				t.Fatalf("substituteFor(%q, %v) = %q; want a rewrite: %v", p.pattern, readings, rewritten[0], p.rewritten)
+				t.Fatalf("substituteFor(%q, eitherDot %v) = %q; want a rewrite: %v", p.pattern, eitherDot, rewritten[0], p.rewritten)
 			}
 			// Each input rune as the U+FFFD form and the substitute form
 			// hold it: an invalid byte (U+FFFD vs its spelling), a genuine
@@ -149,7 +152,7 @@ func TestSubstituteFor_ReadsSpellingsAsReplacement(t *testing.T) {
 				}
 			}
 			grow(nil, 3)
-			for _, dotNL := range readings {
+			for _, dotNL := range dotReadings(eitherDot) {
 				flag := "(?-s)"
 				if dotNL {
 					flag = "(?s)"
@@ -298,14 +301,14 @@ func TestSubstituteFor_PicksUniformBlock(t *testing.T) {
 		{`[^\x{10FF00}-\x{10FFFF}]`, top, true},
 	}
 	for _, c := range cases {
-		k, got, ok := substituteFor([]string{c.pattern}, []bool{true})
+		k, got, ok := substituteFor([]string{c.pattern}, false)
 		if !ok || k.base != c.base || (got[0] != c.pattern) != c.rewritten {
 			t.Errorf("substituteFor(%q) = %#x, %q, ok %v; want base %#x, rewritten: %v", c.pattern, k.base, got, ok, c.base, c.rewritten)
 		}
 	}
 	// A block serves every pattern of a call: the one that leaves the top
 	// block moves them all.
-	k, _, ok := substituteFor([]string{`[^a]`, `\x{10FF81}`}, []bool{true})
+	k, _, ok := substituteFor([]string{`[^a]`, `\x{10FF81}`}, false)
 	if !ok || k.base != next {
 		t.Errorf("substituteFor of two patterns picked %#x, ok %v; want %#x", k.base, ok, next)
 	}
@@ -321,9 +324,12 @@ func TestSubstituteFor_KeepsBareDotOpen(t *testing.T) {
 		`\x{FFFD}.`:         fffdOrBlock + ".",
 		`\x{FFFD}.*(?s:.)`:  fffdOrBlock + ".*(?s:.)",
 		`(\x{FFFD})(.)|x.y`: "(" + fffdOrBlock + ")(.)|x.y",
+		// The code points just below the block the pattern is served by
+		// are its own to name: none of them may serve as a mark.
+		`\x{FFFD}.(?s:.)(?-s:.)\x{10FEFF}\x{10FEFE}\x{10FEFD}`: fffdOrBlock + `.(?s:.)(?-s:.)\x{10feff}\x{10fefe}\x{10fefd}`,
 	}
 	for pattern, want := range cases {
-		_, got, ok := substituteFor([]string{pattern}, []bool{true, false})
+		_, got, ok := substituteFor([]string{pattern}, true)
 		if !ok || got[0] != want {
 			t.Errorf("substituteFor(%q) = %q, ok %v; want %q", pattern, got, ok, want)
 		}
@@ -343,7 +349,7 @@ func TestLiteralWithSubstitutes(t *testing.T) {
 		`x\x{FFFD}\x{FFFD}`: "x" + fffdOrBlock + fffdOrBlock,
 	}
 	for pattern, want := range cases {
-		_, got, ok := substituteFor([]string{pattern}, []bool{true})
+		_, got, ok := substituteFor([]string{pattern}, false)
 		if !ok || got[0] != want {
 			t.Errorf("substituteFor(%q) = %q; want %q", pattern, got, want)
 		}
@@ -379,5 +385,83 @@ func TestInvalidUTF8Frags(t *testing.T) {
 	want := "arrayStringConcat(arrayMap((utf8_sub, utf8_rune) -> if(utf8_sub = utf8_rune OR utf8_rune != '\uFFFD', utf8_rune, concat(char(bitOr(bitShiftLeft(bitAnd(reinterpretAsUInt8(substring(utf8_sub, 3, 1)), 3), 6), bitAnd(reinterpretAsUInt8(substring(utf8_sub, 4, 1)), 63))), substring(utf8_sub, 5))), " + strs("s") + ", " + strs("f") + "))"
 	if got, _ := Render(restoreInvalidBytes(BareIdent("s"), BareIdent("f"))); got != want {
 		t.Errorf("restoreInvalidBytes:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TestSubstituteFor_ServesEveryPatternOfACall pins that a pattern served
+// unchanged does not end the call: every later pattern is still rewritten.
+func TestSubstituteFor_ServesEveryPatternOfACall(t *testing.T) {
+	t.Parallel()
+	const fffdOrBlock = "[\uFFFD\\x{10ff80}-\\x{10ffff}]"
+	_, got, ok := substituteFor([]string{`[^a]`, `\x{FFFD}`}, false)
+	if want := []string{`[^a]`, fffdOrBlock}; !ok || !slices.Equal(got, want) {
+		t.Errorf("substituteFor([^a], \\x{FFFD}) = %q, ok %v; want %q", got, ok, want)
+	}
+}
+
+// TestSubstituteFor_ReachesTheLowestBlock pins the bottom of the search:
+// the lowest block of plane 15 serves a pattern that names a code point of
+// every block above it, and nothing serves one that names its own too.
+func TestSubstituteFor_ReachesTheLowestBlock(t *testing.T) {
+	t.Parallel()
+	var above strings.Builder
+	for base := substituteBaseFirst + substituteBlockSpan; base <= substituteBaseLast; base += substituteBlockSpan {
+		above.WriteString(regexp.QuoteMeta(string(base + 1)))
+	}
+	k, _, ok := substituteFor([]string{above.String()}, false)
+	if !ok || k.base != substituteBaseFirst {
+		t.Errorf("substituteFor(a code point of every block above the lowest) = %#x, ok %v; want %#x", k.base, ok, substituteBaseFirst)
+	}
+	every := above.String() + regexp.QuoteMeta(string(substituteBaseFirst+1))
+	if k, _, ok := substituteFor([]string{every}, false); ok {
+		t.Errorf("substituteFor(a code point of every block) = %#x, ok; want no block", k.base)
+	}
+}
+
+// TestWithSubstituteBlock pins the class arithmetic on ranges that meet the
+// block at either end, as well as ranges around and away from it.
+func TestWithSubstituteBlock(t *testing.T) {
+	t.Parallel()
+	k := substituteBlock{base: substituteBaseFirst}
+	first, last := k.first(), k.last()
+	cases := []struct {
+		name    string
+		ranges  []rune
+		include bool
+		want    []rune
+	}{
+		{"away from the block", []rune{'a', 'z'}, false, []rune{'a', 'z'}},
+		{"from the block's first code point", []rune{first, first + 5}, false, nil},
+		{"to the block's last code point", []rune{last - 5, last}, false, nil},
+		{"up to the block's last code point", []rune{'a', last}, false, []rune{'a', first - 1}},
+		{"above the block", []rune{last + 1, last + 5}, false, []rune{last + 1, last + 5}},
+		{"around the block", []rune{'a', unicode.MaxRune}, false, []rune{'a', first - 1, last + 1, unicode.MaxRune}},
+		{"added back", []rune{utf8.RuneError, utf8.RuneError}, true, []rune{utf8.RuneError, utf8.RuneError, first, last}},
+	}
+	for _, c := range cases {
+		if got := withSubstituteBlock(c.ranges, k, c.include); !slices.Equal(got, c.want) {
+			t.Errorf("%s: withSubstituteBlock(%#x, include %v) = %#x; want %#x", c.name, c.ranges, c.include, got, c.want)
+		}
+	}
+}
+
+// TestDotMarksPlace_RejectsParsesOfDifferentShape pins place's refusal of
+// two trees that differ anywhere but at a `.`.
+func TestDotMarksPlace_RejectsParsesOfDifferentShape(t *testing.T) {
+	t.Parallel()
+	lit := func(r rune) *syntax.Regexp { return &syntax.Regexp{Op: syntax.OpLiteral, Rune: []rune{r}} }
+	marks := dotMarks{bare: 1, anyChar: 2, notNL: 3}
+	cases := []struct {
+		name         string
+		dotNL, plain *syntax.Regexp
+	}{
+		{"another op", lit('a'), &syntax.Regexp{Op: syntax.OpCharClass, Rune: []rune{'a', 'a'}}},
+		{"another arity", &syntax.Regexp{Op: syntax.OpConcat, Sub: []*syntax.Regexp{lit('a'), lit('b')}}, &syntax.Regexp{Op: syntax.OpConcat, Sub: []*syntax.Regexp{lit('a')}}},
+	}
+	for _, c := range cases {
+		var placed [3]int
+		if marks.place(c.dotNL, c.plain, &placed) {
+			t.Errorf("%s: place accepted %v against %v", c.name, c.dotNL, c.plain)
+		}
 	}
 }
