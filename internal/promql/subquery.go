@@ -556,7 +556,7 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 	}
 	var windowEnd, windowStart time.Time
 	switch {
-	case subqueryPinned(sub) && !anchor.End.IsZero():
+	case subqueryPinned(sub):
 		windowEnd = anchor.End
 		windowStart = anchor.End.Add(-sub.Range)
 	case ctx.rangeMode():
@@ -2289,7 +2289,7 @@ func lowerSubqueryOverAbsent(
 	// above, so the unpinned range check is exactly ctx.rangeMode().)
 	var gridStart, gridEnd time.Time
 	switch {
-	case subqueryPinned(sub) && !anchor.End.IsZero():
+	case subqueryPinned(sub):
 		gridEnd = anchor.End
 		gridStart = anchor.End.Add(-sub.Range)
 	case ctx.rangeMode():
@@ -2487,7 +2487,11 @@ func subqueryAnchor(e *parser.SubqueryExpr, ctx lowerCtx) (evalAnchor, error) {
 		return evalAnchor{}, fmt.Errorf("promql: unexpected subquery StartOrEnd token %v", e.StartOrEnd)
 	}
 	if e.Timestamp != nil {
-		a.End = time.UnixMilli(*e.Timestamp).UTC()
+		pin, err := atModifierInstant(*e.Timestamp)
+		if err != nil {
+			return evalAnchor{}, err
+		}
+		a.End = pin
 	}
 	// Instant eval (step == 0): with no `@` pin (offset alone doesn't set End),
 	// anchor the subquery on the query's eval timestamp (ctx.end) — the same fill the non-subquery
@@ -3371,7 +3375,7 @@ func lowerSubqueryOverCallSubquery(
 	if err != nil {
 		return nil, err
 	}
-	if subqueryPinned(sub) && !anchor.End.IsZero() {
+	if subqueryPinned(sub) {
 		wideCtx.step = 0
 		wideCtx.end = anchor.End
 	}

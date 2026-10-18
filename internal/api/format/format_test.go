@@ -290,3 +290,28 @@ func TestCrossHandlerCanonicalKey(t *testing.T) {
 		t.Fatalf("CanonicalKey diverged from pre-extraction output:\n got: %q\nwant: %q", got, want)
 	}
 }
+
+// TestIsStorable pins both edges of the storable window as inclusive and
+// the instant one nanosecond past each as outside, plus Go's zero
+// time.Time, which sits far below the window.
+func TestIsStorable(t *testing.T) {
+	tests := []struct {
+		name string
+		in   time.Time
+		want bool
+	}{
+		{"min-edge", minStorable, true},
+		{"max-edge", maxStorable, true},
+		{"epoch", time.Unix(0, 0), true},
+		{"below-min-edge", minStorable.Add(-time.Nanosecond), false},
+		{"above-max-edge", maxStorable.Add(time.Nanosecond), false},
+		{"go-zero-time", time.Time{}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := format.IsStorable(tc.in); got != tc.want {
+				t.Errorf("IsStorable(%s) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}

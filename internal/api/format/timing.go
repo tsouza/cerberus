@@ -48,6 +48,13 @@ const (
 	maxStorableUnixSeconds = float64(math.MaxInt64) / float64(time.Second)
 )
 
+// IsStorable reports whether t lies inside the representable window
+// described above: an instant both `time.Time.UnixNano()` and a
+// DateTime64(9) literal name exactly.
+func IsStorable(t time.Time) bool {
+	return !t.Before(minStorableTime) && !t.After(maxStorableTime)
+}
+
 // clampStorable pins t into the representable window described above.
 // Callers must hand it a time.Time built without an overflowing
 // conversion; the seconds helpers below guarantee that.
