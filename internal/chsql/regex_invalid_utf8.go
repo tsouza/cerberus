@@ -534,8 +534,8 @@ func literalWithSubstitutes(re *syntax.Regexp, k substituteBlock) *syntax.Regexp
 // when include is true.
 func withSubstituteBlock(ranges []rune, k substituteBlock, include bool) []rune {
 	var out []rune
-	for i := 0; i < len(ranges); i += 2 {
-		lo, hi := ranges[i], ranges[i+1]
+	for pair := range slices.Chunk(ranges, 2) {
+		lo, hi := pair[0], pair[1]
 		if lo < k.first() {
 			out = append(out, lo, min(hi, k.first()-1))
 		}
