@@ -497,7 +497,12 @@ real bug rather than a silent wrong-rejection:
    parity corpus is derived 1:1 from the `rejection` and `divergence`
    entries. Adding a new rejection to a lowering therefore *requires* a
    catalogue entry, a trigger query, and — by construction — a parity
-   case.
+   case. Regeneration (`just update-golden parity`, and every
+   `update-golden.yml` leg that runs the `parity` shard) writes a new
+   site's entry unclassified and lists each entry still waiting for a
+   class, the shard file holding it, and what each class requires;
+   classifying it is a manual edit of that file, and the
+   every-entry-classified test fails until it is made.
 3. **Parity driver** — `compatibility/cmd/rejection-parity` runs
    inside each harness (wired into the three run scripts, after the
    main tester) and sends every trigger query to both backends. It

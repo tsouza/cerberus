@@ -41,56 +41,24 @@
 // reused unchanged here for the same 404-means-two-things reason its own
 // header documents).
 
-import { readdirSync, readFileSync } from 'node:fs';
-import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import { issuesReadability } from './forbid-deferral.mjs';
 import { appendStepSummary, error, log, notice } from './lib/gh.mjs';
 import { NOT_FOUND_NULL, ghHeaders, ghJSON } from './lib/gh-api.mjs';
-
-
-// SHARD_EXT is the suffix of every catalogue shard; the directory holds
-// nothing else.
-const SHARD_EXT = '.json';
+import { DEFAULT_CATALOGUE_DIR, mergeShards, readCatalogueShards } from './lib/rejection-catalogue.mjs';
 
 // --- pure halves --------------------------------------------------------
 
-// mergeShards — the catalogue is stored as one shard per lowering SOURCE FILE
-// (test/rejection-parity/catalogue/internal__promql__lower.go.json and
-// friends), so this gate reads the directory and concatenates. Order does not
-// matter here: every entry is examined, and the entries carry their own site
-// key. A shard with no `entries` array throws rather than contributing
-// nothing — an unreadable shard must never be indistinguishable from a
-// catalogue with no divergence entries, which would pass silently.
-export function mergeShards(shards) {
-  const entries = [];
-  for (const { path: shardPath, doc } of shards) {
-    const shardEntries = doc && Array.isArray(doc.entries) ? doc.entries : null;
-    if (shardEntries === null) {
-      throw new Error(`${shardPath} has no "entries" array — malformed or wrong file`);
-    }
-    entries.push(...shardEntries);
-  }
-  return { entries };
-}
+// mergeShards — the catalogue is stored as one shard per lowering SOURCE FILE,
+// so this gate reads the directory and concatenates; lib/rejection-catalogue.mjs
+// owns both halves and documents why a malformed or empty catalogue throws.
+export { mergeShards };
 
-// readCatalogue — mergeShards over a real directory. An empty (or shardless)
-// directory is an error for the same reason a malformed shard is: this gate
-// reports "no divergence entries" as a PASS, so it must never reach that
-// conclusion by having read nothing.
-export function readCatalogue(dir, { readDir = readdirSync, readFile = (p) => readFileSync(p, 'utf8') } = {}) {
-  const names = readDir(dir).filter((n) => n.endsWith(SHARD_EXT)).sort();
-  if (names.length === 0) {
-    throw new Error(`${dir} holds no ${SHARD_EXT} shard — the catalogue is a directory of per-source-file shards`);
-  }
-  return mergeShards(
-    names.map((name) => {
-      const shardPath = path.join(dir, name);
-      return { path: shardPath, doc: JSON.parse(readFile(shardPath)) };
-    }),
-  );
+// readCatalogue — mergeShards over a real directory.
+export function readCatalogue(dir, opts) {
+  return mergeShards(readCatalogueShards(dir, opts));
 }
 
 // divergenceEntries — every class="divergence" entry in the catalogue,
@@ -190,7 +158,7 @@ async function main() {
   const repo = requireEnv('GITHUB_REPOSITORY', 'the gate cannot resolve a cited issue without it');
   const token = requireEnv('GITHUB_TOKEN', 'resolving a cited issue needs issues:read');
   const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
-  const catalogueDir = process.env.CATALOGUE_DIR || 'test/rejection-parity/catalogue';
+  const catalogueDir = process.env.CATALOGUE_DIR || DEFAULT_CATALOGUE_DIR;
 
   const entries = divergenceEntries(readCatalogue(catalogueDir));
 

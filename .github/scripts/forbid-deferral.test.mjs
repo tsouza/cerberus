@@ -28,6 +28,8 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { API as DRAFT_API, REPO as DRAFT_REPO, draftPullRequest, fakeApi } from './lib/merge-queue-draft.fixture.mjs';
+
 import {
   CITATION_WINDOW_LINES,
   DEFERRAL_MARKERS,
@@ -1058,4 +1060,61 @@ test('a marker may not span a blank continuation line inside one comment', () =>
   // A bare `//` line is the paragraph break inside a doc comment; the two
   // halves are separate statements, not one wrapped sentence.
   assert.equal(findMarkers(`// this is not\n//\n// ${NOT_DONE_TAIL} is another thought`).length, 0);
+});
+
+// --- a merge-queue draft -----------------------------------------------------
+
+// withPullRequestEvent runs fn as a pull_request run whose payload carries pr,
+// with `fetch` answering from api.
+async function withPullRequestEvent(pr, api, fn) {
+  const saved = { body: process.env.PR_BODY, path: process.env.GITHUB_EVENT_PATH, fetch: globalThis.fetch };
+  process.env.PR_BODY = pr.body;
+  process.env.GITHUB_EVENT_PATH = withPayload(JSON.stringify({ pull_request: pr }));
+  globalThis.fetch = api.fetchImpl;
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of [['PR_BODY', saved.body], ['GITHUB_EVENT_PATH', saved.path]]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    globalThis.fetch = saved.fetch;
+  }
+}
+
+const resolveOnPullRequest = () =>
+  descriptionSurface({ eventName: 'pull_request', repo: DRAFT_REPO, head: 'unused', token: 't', apiBase: DRAFT_API });
+
+test('a merge-queue draft is scanned as the descriptions of its batch, not the text Mergify wrote', async () => {
+  const draft = draftPullRequest({ numbers: [7, 8] });
+  const api = fakeApi({
+    draft,
+    members: { 7: { body: 'First change.', author: HUMAN }, 8: { body: GENERATED_BODY, author: BOT } },
+  });
+  const description = await withPullRequestEvent(draft, api, resolveOnPullRequest);
+  assert.deepEqual(
+    description.parts.map((p) => [p.number, p.author, p.text]),
+    [
+      [7, HUMAN, 'First change.'],
+      [8, BOT, GENERATED_BODY],
+    ],
+  );
+  assert.ok(!description.parts.some((p) => p.text === draft.body), 'the draft text was scanned');
+  assert.match(description.origin, /#7, #8, checked by merge-queue draft #900/);
+});
+
+test('a deferral in a batch member\'s description is reported on its draft', async () => {
+  const draft = draftPullRequest({ numbers: [7] });
+  const api = fakeApi({ draft, members: { 7: { body: `Ships the parser.\n\n${lit('TO', 'DO')}: wire the cache.` } } });
+  const description = await withPullRequestEvent(draft, api, resolveOnPullRequest);
+  const candidates = candidatesFor({ descriptionParts: description.parts, commits: [], diffText: '', repoSlug: DRAFT_REPO });
+  assert.equal(candidates.length, 1);
+});
+
+test('an ordinary pull request is still read from its own event payload', async () => {
+  const pr = { ...draftPullRequest({ numbers: [7] }), user: { login: HUMAN, type: 'User' }, body: 'Adds a guardrail.' };
+  const api = fakeApi({ draft: pr, members: {} });
+  const description = await withPullRequestEvent(pr, api, resolveOnPullRequest);
+  assert.deepEqual(description.parts.map((p) => p.text), ['Adds a guardrail.']);
+  assert.equal(api.calls.length, 0);
 });
