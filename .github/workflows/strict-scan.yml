@@ -514,25 +514,60 @@ jobs:
   # The query condition cache's result equivalence and ClickHouse's
   # cancellation of CPU-bound expressions are server-side mechanisms cerberus
   # relies on but cannot implement, and upstream fixes show both failing on
-  # specific builds. This job boots the exact builds that bracket each fix,
-  # drives cerberus-emitted shapes through the production handlers and client,
-  # and requires what each build does to match the version policy
+  # specific builds. These jobs boot the exact builds that bracket each fix,
+  # drive cerberus-emitted shapes through the production handlers and client,
+  # and require what each build does to match the version policy
   # internal/chopt records for it (condition_cache's UnsafeBuilds,
-  # CancellationGaps). See test/chserver/doc.go. It is its own job, beside
-  # strict-scan rather than a step inside it, so neither lane's wall clock
-  # grows with the other's.
-  ch-server-safety:
-    name: ch-server-safety
-    needs: changes
+  # CancellationGaps). See test/chserver/doc.go. They run beside strict-scan
+  # rather than as steps inside it, so neither lane's wall clock grows with
+  # the other's.
+  #
+  # The cancellation builds run one after another inside their test, and
+  # dominate the package's run time, so each build is its own parallel shard,
+  # and a `rest` shard runs everything else (the condition-cache builds and
+  # the fleet probe) as the complement of those selections. The shard plan is
+  # derived from test/chserver's own build table by
+  # .github/scripts/ch-server-safety-shards.mjs, so a new test or build is
+  # never left unselected. `ch-server-safety` is the one status context; it
+  # aggregates the shards.
+  ch-server-safety-setup:
+    name: ch-server-safety-setup
+    # Runs a Node unit suite and the planner over two source files: the
+    # smallest runner.
+    runs-on: ubicloud-standard-2
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      # The planner's own guard first: the shards cover every test, and an
+      # empty selection or a failed shard cannot pass.
+      - name: Guard the shard planner
+        run: node --test .github/scripts/ch-server-safety-shards.test.mjs
+      - name: Plan the shards from test/chserver's build table
+        id: plan
+        run: node .github/scripts/ch-server-safety-shards.mjs plan
+
+  ch-server-safety-shard:
+    name: ch-server-safety-shard (${{ matrix.name }})
+    needs: [changes, ch-server-safety-setup]
     # `always()` for the same reason as strict-scan above: a failed `changes`
-    # must fail this job, never skip it into green.
+    # must fail this job, never skip it into green. A failed setup leaves no
+    # matrix to fan out; the aggregate reports it.
     if: >-
       always() &&
+      needs.ch-server-safety-setup.result == 'success' &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
+    # A GitHub-hosted runner: the cancellation probes calibrate each workload
+    # to the runner at hand, and their margins are measured on this one.
     runs-on: ubuntu-latest
-    # Fourteen pinned ClickHouse images, thirteen condition-cache servers run
-    # three at a time, and three cancellation servers whose probes calibrate
-    # each workload to the runner at hand.
+    strategy:
+      # One shard's failure must not cancel its siblings into an ambiguous
+      # `cancelled`: every build's verdict is reported.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.ch-server-safety-setup.outputs.matrix) }}
+    # One cancellation build's probes are bounded by their 20-minute test
+    # context; `rest` runs thirteen condition-cache servers three at a time.
     timeout-minutes: 25
     steps:
       - name: gate on the changes job
@@ -542,10 +577,12 @@ jobs:
           exit 1
       - uses: actions/checkout@v7
 
-      # Fourteen ClickHouse images plus their running containers outgrow the
-      # runner's ~14 GB of free root fs. Reclaim the unused pre-baked
-      # toolchains first; Docker's own images are kept.
-      - uses: ./.github/actions/free-disk-space
+      # `rest` boots every pinned image: fourteen ClickHouse images plus their
+      # running containers outgrow the runner's ~14 GB of free root fs.
+      # Reclaim the unused pre-baked toolchains first; Docker's own images are
+      # kept. A cancellation shard boots one image and needs no reclaim.
+      - if: matrix.kind == 'rest'
+        uses: ./.github/actions/free-disk-space
 
       - uses: ./.github/actions/setup-go
 
@@ -557,5 +594,26 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
-      - name: Run condition-cache and cancellation probes across pinned builds (real ClickHouse)
-        run: just ch-server-safety-integration
+      - name: Run shard ${{ matrix.name }} of the condition-cache and cancellation probes (real ClickHouse)
+        run: just ch-server-safety-integration ${{ matrix.id }}
+
+  ch-server-safety:
+    name: ch-server-safety
+    needs: [changes, ch-server-safety-setup, ch-server-safety-shard]
+    # `always()` for the same reason as strict-scan above, so a failed,
+    # cancelled or skipped shard fails this context rather than skipping it
+    # into green. A docs-only change still skips by design.
+    if: >-
+      always() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
+    # Reads three `needs` results and runs no tool: the smallest runner.
+    runs-on: ubicloud-standard-2
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: gate on every shard
+        run: node .github/scripts/ch-server-safety-shards.mjs aggregate
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          SETUP_RESULT: ${{ needs.ch-server-safety-setup.result }}
+          SHARDS_RESULT: ${{ needs.ch-server-safety-shard.result }}

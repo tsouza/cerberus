@@ -511,12 +511,15 @@ query-log-integration:
 # wrong-result reproductions and the CPU-bound cancellation probes, each
 # against the pinned builds that bracket its upstream fixes, with container
 # CPU and memory limits. Requires Docker; gated behind the `integration` build
-# tag. See test/chserver/doc.go and .github/workflows/strict-scan.yml.
+# tag. See test/chserver/doc.go and .github/workflows/strict-scan.yml. SHARD
+# selects one CI shard: `rest`, or a `cancellation-<tag>` id that
+# `node .github/scripts/ch-server-safety-shards.mjs plan` lists; the default
+# `all` runs the whole package.
 
 # Run the condition-cache and cancellation probes across pinned ClickHouse builds. Needs Docker.
-ch-server-safety-integration:
-    @just _pull-retry {{CH_SERVER_SAFETY_IMAGES}} {{CH_HISTOGRAM_REPORT_IMAGE}}
-    go test -timeout 20m -tags=integration -count=1 ./test/chserver/...
+ch-server-safety-integration SHARD="all":
+    @just _pull-retry $(node .github/scripts/ch-server-safety-shards.mjs images {{SHARD}} {{CH_SERVER_SAFETY_IMAGES}} {{CH_HISTOGRAM_REPORT_IMAGE}})
+    @node .github/scripts/ch-server-safety-shards.mjs run {{SHARD}} -- go test -timeout 20m -tags=integration -count=1 ./test/chserver/...
 
 # Run the strict-scan differential: execute the matrix-shaped spec golden
 # SQL corpus against a REAL ClickHouse (testcontainers-go) through the

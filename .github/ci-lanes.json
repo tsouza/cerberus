@@ -136,8 +136,13 @@
       "description": "Real-ClickHouse evidence for server mechanisms cerberus relies on: query-condition-cache wrong-result reproductions and CPU-bound cancellation probes across pinned builds.",
       "owner": {
         "workflow": ".github/workflows/strict-scan.yml",
-        "jobs": ["changes", "ch-server-safety"],
-        "producer_jobs": [],
+        "jobs": [
+          "changes",
+          "ch-server-safety-setup",
+          "ch-server-safety-shard",
+          "ch-server-safety"
+        ],
+        "producer_jobs": ["ch-server-safety-setup", "ch-server-safety-shard"],
         "context_job": "ch-server-safety"
       },
       "executions": ["default"],

@@ -1045,6 +1045,19 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     (optional; default `just`).
   - Exit: `0` when every extracted invocation dry-runs clean; `1` naming
     every broken one, with its originating file:line(s).
+- **`ch-server-safety-shards.mjs`** — `strict-scan.yml`'s
+  `ch-server-safety-setup`, `ch-server-safety-shard` and `ch-server-safety`
+  jobs, and `just/test.just`'s `ch-server-safety-integration SHARD` recipe.
+  `plan` emits one shard per build of test/chserver's `cancellationBuilds`
+  table plus a `rest` shard; `images` prints the images a shard boots; `run`
+  appends the shard's `-json` / `-run` / `-skip` selection to the recipe's
+  `go test` command and fails when any test the shard owns did not pass, so an
+  empty selection cannot pass; `aggregate` is the `ch-server-safety` verdict.
+  `rest` is the complement of the cancellation shards (`-skip`), so a test or
+  build no shard names runs there. `ch-server-safety-shards.test.mjs` is the
+  `node --test` guard, run first in `ch-server-safety-setup`.
+  - Env (`aggregate`): `CHANGES_RESULT`, `SETUP_RESULT`, `SHARDS_RESULT`.
+  - Exit: `0` on success, `1` otherwise.
 - **`chdb-install.mjs`** — `just/chdb.just`'s `chdb-install` recipe (issue
   #3094, epic #3091). Owns the platform-detection, chdb-core release URL
   construction, `curl`/`tar`/`sudo install` sequence, and idempotency
