@@ -175,9 +175,10 @@ jobs:
     # for a pass over work that should have run.
     if: ${{ needs.select.outputs.has_phases == 'true' }}
     runs-on: ubuntu-latest
-    # The per-mutant verdict cache's restore is verified through the API
-    # (mutation-cache.mjs mutant-verify), which reads the producing run and the
-    # pull request it belongs to.
+    # The per-mutant verdict cache's restore is chosen and verified through the
+    # API (mutation-cache.mjs mutant-pick), which lists this PR's cache entries
+    # and reads each candidate's producing run and the pull request it belongs
+    # to.
     permissions:
       contents: read
       actions: read
@@ -249,18 +250,30 @@ jobs:
       # gremlins binary, and re-checks every file and variable the tests read
       # (the fork's internal/cache package documents the rules). The key's
       # `mutant_salt` adds what gremlins cannot see: the runner, the budget
-      # bounds and every harness file. The directory lives outside the checkout,
-      # is restored from this PR's own earlier runs only (same scoping as the
-      # leg cache), and is believed only after mutant-verify checks the run that
-      # saved it; otherwise it is emptied and every mutant runs.
+      # bounds and every harness file. The directory lives outside the checkout
+      # and is restored from this PR's own earlier runs only (same scoping as
+      # the leg cache). mutant-pick lists this PR's entries through the API and
+      # chooses the newest one whose producing run verifies, passing over
+      # entries of a run still in progress; the restore takes that exact key,
+      # and mutant-verify believes the directory only when its provenance names
+      # the verified run. Otherwise it is emptied and every mutant runs.
+      - id: mutant-pick
+        name: choose a verified per-mutant verdict cache entry
+        if: steps.cache.outputs.hit != 'true' && env.MUTATION_CACHE == 'read-write' && steps.key.outputs.cacheable == 'true'
+        run: node .github/scripts/mutation-cache.mjs mutant-pick
+        env:
+          PHASE: ${{ matrix.phase }}
+          MUTANT_SALT: ${{ steps.key.outputs.mutant_salt }}
+          KEY_CACHEABLE: ${{ steps.key.outputs.cacheable }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
       - id: mutant-restore
         name: restore the per-mutant verdict cache
-        if: steps.cache.outputs.hit != 'true' && env.MUTATION_CACHE == 'read-write' && steps.key.outputs.cacheable == 'true'
+        if: steps.mutant-pick.outputs.key != ''
         uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/mutant-cache
-          key: mutation-mutants-${{ matrix.phase }}-${{ steps.key.outputs.mutant_salt }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: mutation-mutants-${{ matrix.phase }}-${{ steps.key.outputs.mutant_salt }}-
+          key: ${{ steps.mutant-pick.outputs.key }}
       - id: mutant-verify
         name: verify the per-mutant verdict cache
         if: steps.cache.outputs.hit != 'true'
@@ -268,9 +281,9 @@ jobs:
         env:
           DIR: ${{ runner.temp }}/mutant-cache
           RESTORED_KEY: ${{ steps.mutant-restore.outputs.cache-matched-key }}
+          PICKED_KEY: ${{ steps.mutant-pick.outputs.key }}
+          PICKED_SOURCE_RUN_URL: ${{ steps.mutant-pick.outputs.source_run_url }}
           KEY_CACHEABLE: ${{ steps.key.outputs.cacheable }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          GITHUB_TOKEN: ${{ github.token }}
       # We install gremlins directly via `go install` so we don't
       # depend on a third-party Action's release-download path.
       # The setup-go composite's module cache keeps subsequent runs fast.
@@ -524,7 +537,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/mutant-cache
-          key: mutation-mutants-${{ matrix.phase }}-${{ steps.key.outputs.mutant_salt }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ steps.mutant-pick.outputs.save_key }}
       # On a hit the aggregator validates the entry against a key it recomputes
       # itself, so the entry travels with the provenance record.
       - name: attach the cache entry to the provenance record

@@ -24,12 +24,21 @@
 //              only when the verdict is timing-stable.
 //              Env: KEY, PHASE, THRESHOLD, ENTRY, REPORT, PROVENANCE, RUN_URL.
 //
+//   mutant-pick  Before the per-mutant cache restore. Writes `save_key`, the
+//              key this run saves its per-mutant cache under, and `key`, the
+//              newest entry of this PR's own cache scope whose producing run
+//              passes verifyProducingRun (empty when none does, or when the
+//              listing fails), with `source_run_url`, the run it verified.
+//              Env: PHASE, MUTANT_SALT, KEY_CACHEABLE, PR_NUMBER, GITHUB_TOKEN.
+//
 //   mutant-verify  After the per-mutant cache restore. Believes the restored
-//              DIR only when MUTATION_CACHE is on, the leg is cacheable, and
-//              the run that saved it passes verifyProducingRun; otherwise it
+//              DIR only when MUTATION_CACHE is on, the leg is cacheable, the
+//              restore matched exactly the key mutant-pick verified, and DIR's
+//              provenance names the run mutant-pick verified; otherwise it
 //              empties DIR, so gremlins starts cold. Sets `enabled=true` when
 //              gremlins may use DIR.
-//              Env: DIR, RESTORED_KEY, KEY_CACHEABLE, PR_NUMBER, GITHUB_TOKEN.
+//              Env: DIR, RESTORED_KEY, PICKED_KEY, PICKED_SOURCE_RUN_URL,
+//              KEY_CACHEABLE.
 //
 //   mutant-seal  Before the per-mutant cache save. Records RUN_URL as the run
 //              that produced DIR.
@@ -54,7 +63,7 @@ import { release } from 'node:os';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { DEFAULT_API_BASE, NOT_FOUND_THROW, ghJSON } from './lib/gh-api.mjs';
+import { DEFAULT_API_BASE, GITHUB_PER_PAGE, NOT_FOUND_THROW, ghJSON } from './lib/gh-api.mjs';
 import { assertSafeArg, capture, error, log, notice, setOutput } from './lib/gh.mjs';
 import {
   buildEntry,
@@ -719,18 +728,130 @@ function countEntries(dir) {
     .reduce((n, d) => n + readdirSync(join(dir, d.name)).filter((f) => f.endsWith('.json')).length, 0);
 }
 
+// MUTANT_CACHE_KEY_STEM starts every per-mutant cache key. A key is
+// `<stem><phase>-<mutant_salt>-<run id>-<run attempt>`: the phase and salt
+// select what the entry may serve, the run id and attempt name the run attempt
+// that saved it.
+export const MUTANT_CACHE_KEY_STEM = 'mutation-mutants-';
+
+// MUTANT_CACHE_MAX_CANDIDATES bounds how many of the newest matching entries
+// mutant-pick verifies before it settles for a miss. Each completed candidate
+// costs one contents call per harness file.
+export const MUTANT_CACHE_MAX_CANDIDATES = 10;
+
+export function mutantCacheKeyPrefix(phase, salt) {
+  if (!/^[0-9a-f]{64}$/.test(String(salt))) throw new Error(`MUTANT_SALT must be a sha256 hex digest, got ${JSON.stringify(salt)}`);
+  return `${MUTANT_CACHE_KEY_STEM}${phase}-${salt}-`;
+}
+
+// pullRequestCacheRef is the ref actions/cache scopes a pull_request run's
+// entries to.
+export function pullRequestCacheRef(prNumber) {
+  return `refs/pull/${prNumber}/merge`;
+}
+
+export function runAttemptUrl(repo, runId, attempt) {
+  return `https://github.com/${repo}/actions/runs/${runId}/attempts/${attempt}`;
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// pickMutantCacheEntry chooses the per-mutant cache entry a leg restores: the
+// newest entry under `prefix` in PR `prNumber`'s own cache scope whose
+// producing run attempt, named by the key, passes `verifyRun(url)`. An entry
+// of another ref, a key that names no run attempt, and this run attempt's own
+// entry are never candidates. A refused candidate does not end the search, so
+// an entry saved by a run still in progress gives way to an older entry of a
+// completed run. `api(path)` returns parsed JSON or throws. Returns
+// `{ key, sourceRunUrl, refused }`; `key` is null when nothing verifies.
+export async function pickMutantCacheEntry({ repo, prNumber, prefix, runId, runAttempt, api, verifyRun, maxCandidates = MUTANT_CACHE_MAX_CANDIDATES }) {
+  const ref = pullRequestCacheRef(prNumber);
+  const query = new URLSearchParams({ ref, key: prefix, sort: 'created_at', direction: 'desc', per_page: String(GITHUB_PER_PAGE) });
+  const listing = await api(`/repos/${repo}/actions/caches?${query}`);
+  if (!Array.isArray(listing?.actions_caches)) throw new Error('the cache listing has no actions_caches array');
+  const keyPattern = new RegExp(`^${escapeRegExp(prefix)}([0-9]+)-([0-9]+)$`);
+  const own = `${runId}-${runAttempt}`;
+  const candidates = listing.actions_caches
+    .filter((c) => c?.ref === ref && typeof c.key === 'string')
+    .map((c) => ({ key: c.key, created: Date.parse(c.created_at), m: c.key.match(keyPattern) }))
+    .filter((c) => c.m !== null && `${c.m[1]}-${c.m[2]}` !== own && Number.isFinite(c.created))
+    .sort((a, b) => b.created - a.created)
+    .slice(0, maxCandidates);
+  const refused = [];
+  for (const c of candidates) {
+    const sourceRunUrl = runAttemptUrl(repo, c.m[1], c.m[2]);
+    const problem = await verifyRun(sourceRunUrl);
+    if (problem === null) return { key: c.key, sourceRunUrl, refused };
+    refused.push(`${c.key}: ${problem}`);
+  }
+  return { key: null, sourceRunUrl: null, refused };
+}
+
 // mutantVerifyProblem decides whether a restored per-mutant cache directory may
-// be used. null means it may; a string says why it is discarded. An entry is
-// trusted only as far as the run that wrote it: the same check the aggregator
-// applies to a leg cache hit, that the producing run is a completed
-// pull_request run of mutation.yml for this PR whose harness is byte-identical
-// to the one running now.
-export async function mutantVerifyProblem({ provenance, verifyRun }) {
+// be used. null means it may; a string says why it is discarded. The restore
+// must have matched exactly the key mutant-pick chose, and the directory's
+// provenance must name the run attempt mutant-pick verified through
+// verifyProducingRun — the check the aggregator applies to a leg cache hit:
+// a completed pull_request run of mutation.yml for this PR whose harness is
+// byte-identical to the one running now.
+export function mutantVerifyProblem({ provenance, restoredKey, pickedKey, pickedSourceRunUrl }) {
+  if (!pickedKey || !pickedSourceRunUrl) return 'no entry was verified before the restore';
+  if (restoredKey !== pickedKey) return `the restore matched ${JSON.stringify(restoredKey)}, not the verified ${JSON.stringify(pickedKey)}`;
   if (provenance === undefined) return 'the restored directory names no producing run';
   if (provenance === null || typeof provenance !== 'object') return 'the provenance record is not an object';
   if (provenance.schema !== MUTANT_PROVENANCE_SCHEMA) return `provenance schema ${JSON.stringify(provenance.schema)}`;
-  const problem = await verifyRun(String(provenance.sourceRunUrl ?? ''));
-  return problem === null ? null : `its producing run fails verification: ${problem}`;
+  if (provenance.sourceRunUrl !== pickedSourceRunUrl) {
+    return `its provenance names ${JSON.stringify(provenance.sourceRunUrl)}, not the verified ${pickedSourceRunUrl}`;
+  }
+  return null;
+}
+
+async function modeMutantPick() {
+  const prefix = mutantCacheKeyPrefix(required('PHASE'), required('MUTANT_SALT'));
+  const runId = required('GITHUB_RUN_ID');
+  const runAttempt = required('GITHUB_RUN_ATTEMPT');
+  setOutput('save_key', `${prefix}${runId}-${runAttempt}`);
+  setOutput('key', '');
+  setOutput('source_run_url', '');
+  if (!cacheEnabled() || String(process.env.KEY_CACHEABLE ?? '') !== 'true') {
+    notice('per-mutant verdict cache OFF: the leg cache is off here, or this leg is not cacheable');
+    return;
+  }
+  const repo = required('GITHUB_REPOSITORY');
+  const token = required('GITHUB_TOKEN');
+  const prNumber = Number(required('PR_NUMBER'));
+  const base = process.env.GITHUB_API_URL || DEFAULT_API_BASE;
+  const api = (path) => ghJSON(`${base}${path}`, { token, what: 'mutation-cache', notFound: NOT_FOUND_THROW });
+  const root = process.cwd();
+  let harness;
+  let picked;
+  try {
+    picked = await pickMutantCacheEntry({
+      repo,
+      prNumber,
+      prefix,
+      runId,
+      runAttempt,
+      api,
+      verifyRun: (sourceRunUrl) => {
+        harness ??= harnessBlobs(root);
+        return verifyProducingRun({ repo, prNumber, sourceRunUrl, harness, api });
+      },
+    });
+  } catch (cause) {
+    notice(`per-mutant verdict cache: cannot choose an entry (${cause instanceof Error ? cause.message : String(cause)}); every mutant runs`);
+    return;
+  }
+  for (const r of picked.refused) log(`per-mutant verdict cache: passing over ${r}`);
+  if (picked.key === null) {
+    notice(`per-mutant verdict cache: no entry of this PR has a verified producing run (${picked.refused.length} refused); every mutant runs`);
+    return;
+  }
+  setOutput('key', picked.key);
+  setOutput('source_run_url', picked.sourceRunUrl);
+  notice(`per-mutant verdict cache: restoring ${picked.key}, producing run ${picked.sourceRunUrl} verified`);
 }
 
 async function modeMutantVerify() {
@@ -748,21 +869,12 @@ async function modeMutantVerify() {
     setOutput('enabled', 'true');
     return;
   }
-  const repo = required('GITHUB_REPOSITORY');
-  const token = required('GITHUB_TOKEN');
-  const base = process.env.GITHUB_API_URL || DEFAULT_API_BASE;
-  const api = (path) => ghJSON(`${base}${path}`, { token, what: 'mutation-cache', notFound: NOT_FOUND_THROW });
-  const root = process.cwd();
-  let problem;
-  try {
-    problem = await mutantVerifyProblem({
-      provenance: readJsonIfPresent(join(dir, MUTANT_PROVENANCE_FILE)),
-      verifyRun: (sourceRunUrl) =>
-        verifyProducingRun({ repo, prNumber: Number(required('PR_NUMBER')), sourceRunUrl, harness: harnessBlobs(root), api }),
-    });
-  } catch (cause) {
-    problem = `cannot verify it: ${cause instanceof Error ? cause.message : String(cause)}`;
-  }
+  const problem = mutantVerifyProblem({
+    provenance: readJsonIfPresent(join(dir, MUTANT_PROVENANCE_FILE)),
+    restoredKey: restored,
+    pickedKey: String(process.env.PICKED_KEY ?? '').trim(),
+    pickedSourceRunUrl: String(process.env.PICKED_SOURCE_RUN_URL ?? '').trim(),
+  });
   if (problem !== null) {
     emptyDir(dir);
     notice(`per-mutant verdict cache: discarding ${restored}, ${problem}; every mutant runs`);
@@ -786,6 +898,7 @@ const modes = {
   check: modeCheck,
   store: modeStore,
   aggregate: modeAggregate,
+  'mutant-pick': modeMutantPick,
   'mutant-verify': modeMutantVerify,
   'mutant-seal': modeMutantSeal,
 };
