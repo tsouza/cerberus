@@ -372,7 +372,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	ts, err := format.ParseTimeProm(r.FormValue("time"), time.Now())
+	ts, err := format.ParseEvalTimeProm(r.FormValue("time"), time.Now())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, ErrBadData, err)
 		return
@@ -393,6 +393,18 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	expr, err := h.parseExpr(ctx, q)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest})
+		return
+	}
+
+	// An evaluation reaching outside the span the lowering represents
+	// exactly (an instant, `@` pin or window before 1900 or after 2262,
+	// or a pin whose distance from the eval instant wraps reference
+	// Prometheus's own offset arithmetic) is answered by the reference
+	// engine. It runs before the Go-side folds below, whose timestamps
+	// would otherwise skip the reference's own conversion of the
+	// request instant.
+	if promql.LeavesEvaluationDomain(expr, ts, ts) {
+		h.respondByReference(ctx, w, r, q, ts, ts, 0)
 		return
 	}
 
@@ -566,13 +578,15 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing query parameter"))
 		return
 	}
-	start, err := format.ParseTimeProm(r.FormValue("start"), time.Time{})
-	if err != nil || start.IsZero() {
+	// Presence is checked on the raw value: 0001-01-01T00:00:00Z is Go's
+	// zero time.Time and a valid instant to evaluate at.
+	start, err := format.ParseEvalTimeProm(r.FormValue("start"), time.Time{})
+	if err != nil || r.FormValue("start") == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'start' parameter"))
 		return
 	}
-	end, err := format.ParseTimeProm(r.FormValue("end"), time.Time{})
-	if err != nil || end.IsZero() {
+	end, err := format.ParseEvalTimeProm(r.FormValue("end"), time.Time{})
+	if err != nil || r.FormValue("end") == "" {
 		writeError(w, http.StatusBadRequest, ErrBadData, errors.New("missing or invalid 'end' parameter"))
 		return
 	}
@@ -625,6 +639,13 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	if t := expr.Type(); t != promparser.ValueTypeVector && t != promparser.ValueTypeScalar {
 		writeError(w, http.StatusBadRequest, ErrBadData,
 			fmt.Errorf("invalid expression type %q for range query, must be Scalar or instant Vector", promparser.DocumentedType(t)))
+		return
+	}
+
+	// See handleQuery: an evaluation outside the lowering's exact span is
+	// answered by the reference engine.
+	if promql.LeavesEvaluationDomain(expr, start, end) {
+		h.respondByReference(ctx, w, r, q, start, end, step)
 		return
 	}
 
