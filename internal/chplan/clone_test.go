@@ -374,3 +374,5 @@ func TestCloneNodeScalarSubqueryIsolation(t *testing.T) {
 		t.Fatal("mutating the clone's ScalarSubquery.Input changed the original")
 	}
 }
+
+// cache probe 4
