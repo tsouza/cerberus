@@ -31,10 +31,12 @@ package chclient
 //     data that may be missing recent writes. This is the same "fail
 //     loud, never silently wrong" posture cerberus already applies
 //     elsewhere (skip_unavailable_shards above, timeout_overflow_mode=
-//     throw in this same package) — an operator who genuinely wants
-//     eventual-consistency-tolerant reads over a lagging replica can still
-//     override this via a server-side settings profile; cerberus's own
-//     default never chooses that trade-off silently.
+//     throw in this same package). The pin is fixed: no cerberus knob
+//     changes it, and nothing on the ClickHouse side can either (see
+//     docs/operations.md, "Distributed-read pins are fixed"). The
+//     replica-lag threshold itself,
+//     max_replica_delay_for_distributed_queries, is not stamped, so it
+//     keeps the server-side value.
 //
 // settingLoadBalancing / settingLoadBalancingFirstOffset (cerberus issue
 // #3086, epic #3074) close the SECOND consistency gap issue #3086 opened:

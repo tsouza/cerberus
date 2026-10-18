@@ -1324,6 +1324,27 @@ single-shard deployment, and the correct posture once
   reachable replicas are ALL stale aborts the query instead of silently
   answering from data that may be missing recent writes.
 
+#### Distributed-read pins are fixed
+
+`Client.querySettings` stamps these settings on every data-plane read-path
+query, and no cerberus configuration knob changes or omits them:
+
+- `skip_unavailable_shards=0`
+- `fallback_to_stale_replicas_for_distributed_queries=0`
+- `load_balancing=first_or_random`
+- `load_balancing_first_offset=0`
+- `use_hedged_requests=0`
+- `distributed_product_mode=global`
+
+They cannot be changed on the ClickHouse side either. A setting sent with a
+query takes precedence over the same setting's default in the user's settings
+profile, so a profile value for any of them has no effect on a cerberus query.
+A settings-profile constraint on one of them (`readonly`/`const`, or a
+`min`/`max` bound that excludes cerberus's value) makes ClickHouse reject every
+cerberus query that sends it, so no query is served. Settings cerberus does not
+stamp, such as `max_replica_delay_for_distributed_queries`, keep the value the
+server-side profile gives them.
+
 #### Distributed-query error taxonomy
 
 `internal/chclient/distributed_shard_error.go` extends the existing typed

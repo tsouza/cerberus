@@ -233,10 +233,15 @@ pins.
 Concentrating every cerberus read against a remote shard's `Distributed`
 connection on that shard's ONE offset-0 replica is the same
 correctness-over-throughput trade cerberus already makes for the issue #3078
-pins, applied one level further down the replica-selection stack. An operator
-who needs read-scaling across a shard's replicas overrides `load_balancing`
-via a server-side settings profile; cerberus's own default never silently
-reverts to unpredictable divergence risk instead.
+pins, applied one level further down the replica-selection stack.
+
+**Why the pins have no override knob.** Every one of these pins turns a
+silently wrong answer into a loud failure or a deterministic choice: a partial
+result from a missing shard, a stale result from a lagging replica, two
+replicas disagreeing within one request. A knob that relaxed them would hand
+that silent failure mode back, and the reader of a dashboard could not tell
+which deployments had chosen it. Read-scaling across a shard's replicas is
+therefore not offered.
 
 ## Why the router-calibration corpus emits its own engine
 

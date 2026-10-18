@@ -583,9 +583,10 @@ Two properties of the storage-tiering + `sessionAffinity` work hold under
   replica while it stays healthy; the shard's other replicas serve
   durability/failover only, not read-scaling, for as long as this pin
   stands, and a slow offset-0 replica is waited on rather than raced by
-  ClickHouse's hedged requests. An operator who needs read-scaling across a
-  shard's replicas overrides `load_balancing` via a server-side settings
-  profile. The
+  ClickHouse's hedged requests. The pin is fixed: no cerberus setting
+  changes it, and ClickHouse cannot override it either (see
+  [`operations.md`'s fixed-pins section](operations.md#distributed-read-pins-are-fixed)).
+  The
   behaviour is verified empirically on a real multi-replica-per-shard k3d
   cluster by the `datashard-replica-affinity` e2e leg
   (`.github/workflows/e2e.yml`,
