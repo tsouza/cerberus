@@ -1,0 +1,30 @@
+# Merge queue. A pull request labelled `queue` enters it; Mergify brings the
+# pull request up to date with main by a merge commit, waits for every check
+# the main ruleset requires to pass on that updated head, then squash-merges
+# it. One pull request is checked at a time, on the pull request itself, so
+# the description- and commit-scanning gates (pr-body, forbid-deferral,
+# commitlint) always judge the pull request they belong to.
+# test/regression/mergify_config_test.go pins this shape.
+
+queue_rules:
+  - name: default
+    queue_conditions:
+      - base=main
+      - label=queue
+      - -draft
+    merge_method: squash
+    update_method: merge
+    batch_size: 1
+
+merge_queue:
+  max_parallel_checks: 1
+
+pull_request_rules:
+  - name: queue a pull request labelled queue
+    conditions:
+      - base=main
+      - label=queue
+      - -draft
+    actions:
+      queue:
+        name: default

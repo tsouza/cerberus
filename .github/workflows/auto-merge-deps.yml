@@ -1,6 +1,7 @@
 name: auto-merge-deps
 
-# Enables auto-merge on Dependabot PRs that meet two conditions:
+# Queues Dependabot PRs that meet two conditions into the Mergify merge
+# queue (.github/mergify.yml) by adding the `queue` label:
 #
 #  1. The PR was opened by dependabot[bot] (job-level actor guard).
 #  2. The update-type matches the allowed set for the affected dep
@@ -9,33 +10,32 @@ name: auto-merge-deps
 # Trigger is `pull_request` — the pattern GitHub documents for
 # Dependabot auto-merge. An earlier revision chained off
 # `workflow_run: [ci]` so non-Dependabot PRs wouldn't grow a "Skipped"
-# `enable-auto-merge` entry in their checks list, but
+# `queue-trusted-bump` entry in their checks list, but
 # `dependabot/fetch-metadata` only reads `pull_request` /
 # `pull_request_target` event payloads — on `workflow_run` it
 # hard-fails with "Event payload missing pull_request key", so the
-# workflow never enabled auto-merge even once (0 successes across its
+# workflow never queued a PR even once (0 successes across its
 # entire run history; every real Dependabot CI completion produced a
 # red run). The skipped-check entry on human PRs is the accepted
 # cosmetic cost of using the action the way it's designed.
 #
 # Dependabot-triggered workflow runs get a read-only GITHUB_TOKEN by
-# default; the explicit `permissions` block elevates exactly the two
-# scopes `gh pr merge --auto` needs.
+# default; the explicit `permissions` block elevates exactly the scope
+# labelling a pull request needs.
 #
-# Branch protection on `main` still gates the actual merge —
-# auto-merge stays pending until every required status check goes
-# green and only then squash-merges. enforce_admins: true means this
-# workflow can't bypass required checks. See docs/upstream-forks.md
-# for the full rationale.
+# The queue still gates the actual merge: it brings the PR up to date
+# with main, waits for every check the main ruleset requires to pass on
+# that head, and only then squash-merges. Labelling never bypasses a
+# required check. See docs/upstream-forks.md for the full rationale.
 
 on: pull_request
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
 jobs:
-  enable-auto-merge:
+  queue-trusted-bump:
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -51,7 +51,7 @@ jobs:
       # opened by Dependabot here is by construction "an upstream change
       # that affects us". CI is still the merge gate via branch
       # protection.
-      - name: Enable auto-merge for trusted patch-only bumps
+      - name: Queue trusted patch-only bumps
         if: |
           (steps.meta.outputs.update-type == 'version-update:semver-patch' &&
             (contains(steps.meta.outputs.dependency-names, 'github.com/prometheus/prometheus') ||
@@ -71,4 +71,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: gh pr merge --auto --squash --delete-branch -R "$REPO" "$PR_NUMBER"
+        run: gh pr edit --add-label queue -R "$REPO" "$PR_NUMBER"
