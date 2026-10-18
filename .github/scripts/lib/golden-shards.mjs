@@ -187,6 +187,10 @@ export const SHARDS = {
     goldens: ['test/spec/promql'],
     generators: [
       { pkgs: ['./internal/promql/'], run: '^TestLower$' },
+      // The /api/v1/query_exemplars emitter's fixtures share this directory
+      // (`exemplars_*.txtar`) but are written by internal/chsql's own harness,
+      // not by the lowerer: neither `TestLower` nor the round trip touches them.
+      { pkgs: ['./internal/chsql/'], run: '^TestEmitQueryExemplars_Fixtures$' },
       {
         pkgs: ['./test/spec/promql/'],
         tags: ['chdb'],
