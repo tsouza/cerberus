@@ -78,6 +78,7 @@ import (
 var branchProtectionContexts = []string{
 	"CodeQL",
 	"agpl-clean",
+	"ch-server-safety",
 	"chart-validate",
 	"check",
 	"config-docs",
