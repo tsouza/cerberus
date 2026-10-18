@@ -358,7 +358,7 @@ func staleLayoutAnchoredBound(col string, anchor evalAnchor, lookback time.Durat
 	}
 }
 
-// staleLayoutBoundFor is the time window a `_bucket` selector's consumer
+// staleLayoutWindow is the time window a `_bucket` selector's consumer
 // reads, which bounds the stale-marker layout window beneath the fan-out:
 //
 //   - an instant selection, or a range-mode selection pinned by an absolute
@@ -368,20 +368,45 @@ func staleLayoutAnchoredBound(col string, anchor evalAnchor, lookback time.Durat
 //   - a subquery's inner selection: [staleLayoutPendingBound], which the
 //     subquery lowering replaces with its Identity window's input window
 //     ([boundStaleMarkerLayoutsToIdentity]).
-func staleLayoutBoundFor(v *parser.VectorSelector, ctx lowerCtx, s schema.Metrics) (chplan.Expr, error) {
+//
+// It holds the window's inputs only; [staleLayoutWindow.bound] builds the
+// predicate, which only a fan-out under staleMarkersEncoded reads.
+type staleLayoutWindow struct {
+	pending bool
+	ranged  bool
+	lo, hi  time.Time
+	anchor  evalAnchor
+}
+
+// staleLayoutWindowFor resolves the stale-marker layout window of a
+// `_bucket` selection. Its one error is selectorAnchor's.
+func staleLayoutWindowFor(v *parser.VectorSelector, ctx lowerCtx) (staleLayoutWindow, error) {
 	if ctx.inRangeVector {
-		return staleLayoutPendingBound(), nil
+		return staleLayoutWindow{pending: true}, nil
 	}
 	anchor, err := selectorAnchor(v, ctx)
 	if err != nil {
-		return nil, err
+		return staleLayoutWindow{}, err
 	}
 	if ctx.rangeMode() && !hasAbsoluteAt(v) {
-		lo := ctx.start.UTC().Add(-anchor.Offset - instantLookback - ctx.step)
-		hi := ctx.end.UTC().Add(-anchor.Offset)
-		return staleLayoutWindowBound(s.TimestampColumn, lo, hi), nil
+		return staleLayoutWindow{
+			ranged: true,
+			lo:     ctx.start.UTC().Add(-anchor.Offset - instantLookback - ctx.step),
+			hi:     ctx.end.UTC().Add(-anchor.Offset),
+		}, nil
 	}
-	return staleLayoutAnchoredBound(s.TimestampColumn, anchor, instantLookback), nil
+	return staleLayoutWindow{anchor: anchor}, nil
+}
+
+// bound is the window as a predicate on col.
+func (w staleLayoutWindow) bound(col string) chplan.Expr {
+	switch {
+	case w.pending:
+		return staleLayoutPendingBound()
+	case w.ranged:
+		return staleLayoutWindowBound(col, w.lo, w.hi)
+	}
+	return staleLayoutAnchoredBound(col, w.anchor, instantLookback)
 }
 
 // staleLayoutPendingBound is the placeholder bound of a layout whose
