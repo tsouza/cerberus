@@ -54,22 +54,14 @@
 // recipe is guarded without editing this file.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 
+import { readPayload } from './hook-payload.mjs';
 import { segments } from './shell-words.mjs';
 
 const ALLOW = 0;
 const BLOCK = 2;
 
 const OVERRIDE_ENV = 'CERBERUS_ALLOW_HEAVY_LOCAL';
-
-function readPayload() {
-  try {
-    return JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return null;
-  }
-}
 
 // A `just` recipe invocation, ignoring just's own flags that take a value.
 const JUST_OPTS_WITH_VALUE = new Set(['-f', '--justfile', '-d', '--working-directory', '--set']);
@@ -199,8 +191,8 @@ const GOLDEN_MESSAGE = [
   '  CERBERUS_ALLOW_HEAVY_LOCAL=1 <command>',
 ];
 
-function main() {
-  const payload = readPayload();
+async function main() {
+  const payload = await readPayload();
   if (!payload || payload.tool_name !== 'Bash') return ALLOW;
 
   const command = payload?.tool_input?.command;
@@ -222,5 +214,5 @@ function main() {
 // Only dispatch when run as the hook — the node:test suite imports the pure
 // classifier without firing it.
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  process.exit(main());
+  process.exit(await main());
 }

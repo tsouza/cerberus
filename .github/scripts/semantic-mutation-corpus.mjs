@@ -22,9 +22,11 @@
 // records (7 synthetic + 6 real, four of them chdb-tagged — issue #3449's
 // counter-reset mutant and both #3451 TraceQL mutants need a live
 // ClickHouse via libchdb.so, which ci.yml's "Install libchdb.so" step
-// installs immediately before this script runs); each completes in low
-// single-digit seconds (the slowest, MUTANT-SYNTH-TIMEOUT-LOOP, is bounded
-// by its own declared timeout_seconds), well under a minute total.
+// installs immediately before this script runs). Each detector run is a
+// compile of the (overlaid) test binary, bounded by the runner's own compile
+// budget and dominated by the host's load and build-cache warmth, followed by
+// an execution bounded by the record's declared timeout_seconds (the slowest,
+// MUTANT-SYNTH-TIMEOUT-LOOP, runs to that bound by design).
 //
 // Env: SEMANTIC_MUTANTS_DIR (optional; default test/semantic/mutants),
 // JUST_BIN (optional; default `just`).

@@ -33,25 +33,13 @@
 // Exit codes: always 0.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import process from 'node:process';
+
+import { readPayload } from './hook-payload.mjs';
 
 const LOCAL_IMPORT_PREFIX = 'github.com/tsouza/cerberus';
 const FORMATTED_EXTENSION = '.go';
-
-function readPayload() {
-  let raw = '';
-  try {
-    raw = readFileSync(0, 'utf8');
-  } catch {
-    return null;
-  }
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
 
 // run — execute a formatter over one file. Returns true when it ran cleanly.
 // A missing binary (ENOENT) and a non-zero exit are reported the same way and
@@ -67,8 +55,8 @@ function run(bin, args) {
   }
 }
 
-function main() {
-  const payload = readPayload();
+async function main() {
+  const payload = await readPayload();
   if (!payload) return 0;
 
   const file = payload?.tool_input?.file_path;
@@ -80,4 +68,4 @@ function main() {
   return 0;
 }
 
-process.exit(main());
+process.exit(await main());
