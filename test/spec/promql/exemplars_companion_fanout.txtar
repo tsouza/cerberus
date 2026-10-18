@@ -2,20 +2,20 @@
 reason: no-comparable-oracle
 detail: Same as exemplars_basic.txtar — a SQL-only golden with no query.promql section, pinning the UNION ALL fan-out across the histogram/sum/gauge Exemplars arrays for the /api/v1/query_exemplars-style endpoint. There is no PromQL expression to feed a reference PromQL engine and no exemplar-list comparator in RunParity's endpoint vocabulary.
 -- sql --
-(SELECT `MetricName`, `Attributes`, `ServiceName`, ts[i] AS `Timestamp`, val[i] AS `Value`, tid[i] AS `TraceID`, sid[i] AS `SpanID`, attrs_arr[i] AS `ExemplarAttributes` FROM (SELECT `MetricName`, `Attributes`, `ServiceName`, `Exemplars`.`TimeUnix` AS `ts`, `Exemplars`.`Value` AS `val`, `Exemplars`.`TraceId` AS `tid`, `Exemplars`.`SpanId` AS `sid`, `Exemplars`.`FilteredAttributes` AS `attrs_arr`, arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` FROM `otel_metrics_histogram` WHERE (`MetricName` = ?) AND `TimeUnix` >= toDateTime64(?, ?) AND `TimeUnix` <= toDateTime64(?, ?) AND length(`Exemplars`.`TimeUnix`) > 0)) UNION ALL (SELECT `MetricName`, `Attributes`, `ServiceName`, ts[i] AS `Timestamp`, val[i] AS `Value`, tid[i] AS `TraceID`, sid[i] AS `SpanID`, attrs_arr[i] AS `ExemplarAttributes` FROM (SELECT `MetricName`, `Attributes`, `ServiceName`, `Exemplars`.`TimeUnix` AS `ts`, `Exemplars`.`Value` AS `val`, `Exemplars`.`TraceId` AS `tid`, `Exemplars`.`SpanId` AS `sid`, `Exemplars`.`FilteredAttributes` AS `attrs_arr`, arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` FROM `otel_metrics_sum` WHERE (`MetricName` = ?) AND `TimeUnix` >= toDateTime64(?, ?) AND `TimeUnix` <= toDateTime64(?, ?) AND length(`Exemplars`.`TimeUnix`) > 0)) UNION ALL (SELECT `MetricName`, `Attributes`, `ServiceName`, ts[i] AS `Timestamp`, val[i] AS `Value`, tid[i] AS `TraceID`, sid[i] AS `SpanID`, attrs_arr[i] AS `ExemplarAttributes` FROM (SELECT `MetricName`, `Attributes`, `ServiceName`, `Exemplars`.`TimeUnix` AS `ts`, `Exemplars`.`Value` AS `val`, `Exemplars`.`TraceId` AS `tid`, `Exemplars`.`SpanId` AS `sid`, `Exemplars`.`FilteredAttributes` AS `attrs_arr`, arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` FROM `otel_metrics_gauge` WHERE (`MetricName` = ?) AND `TimeUnix` >= toDateTime64(?, ?) AND `TimeUnix` <= toDateTime64(?, ?) AND length(`Exemplars`.`TimeUnix`) > 0))
+(SELECT `MetricName`, `Attributes`, `ServiceName`, ts[i] AS `Timestamp`, val[i] AS `Value`, tid[i] AS `TraceID`, sid[i] AS `SpanID`, attrs_arr[i] AS `ExemplarAttributes` FROM (SELECT `MetricName`, `Attributes`, `ServiceName`, `Exemplars`.`TimeUnix` AS `ts`, `Exemplars`.`Value` AS `val`, `Exemplars`.`TraceId` AS `tid`, `Exemplars`.`SpanId` AS `sid`, `Exemplars`.`FilteredAttributes` AS `attrs_arr`, arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` FROM `otel_metrics_histogram` WHERE (`MetricName` = ?) AND `TimeUnix` >= parseDateTime64BestEffort(?, ?) AND `TimeUnix` <= parseDateTime64BestEffort(?, ?) AND length(`Exemplars`.`TimeUnix`) > 0)) UNION ALL (SELECT `MetricName`, `Attributes`, `ServiceName`, ts[i] AS `Timestamp`, val[i] AS `Value`, tid[i] AS `TraceID`, sid[i] AS `SpanID`, attrs_arr[i] AS `ExemplarAttributes` FROM (SELECT `MetricName`, `Attributes`, `ServiceName`, `Exemplars`.`TimeUnix` AS `ts`, `Exemplars`.`Value` AS `val`, `Exemplars`.`TraceId` AS `tid`, `Exemplars`.`SpanId` AS `sid`, `Exemplars`.`FilteredAttributes` AS `attrs_arr`, arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` FROM `otel_metrics_sum` WHERE (`MetricName` = ?) AND `TimeUnix` >= parseDateTime64BestEffort(?, ?) AND `TimeUnix` <= parseDateTime64BestEffort(?, ?) AND length(`Exemplars`.`TimeUnix`) > 0)) UNION ALL (SELECT `MetricName`, `Attributes`, `ServiceName`, ts[i] AS `Timestamp`, val[i] AS `Value`, tid[i] AS `TraceID`, sid[i] AS `SpanID`, attrs_arr[i] AS `ExemplarAttributes` FROM (SELECT `MetricName`, `Attributes`, `ServiceName`, `Exemplars`.`TimeUnix` AS `ts`, `Exemplars`.`Value` AS `val`, `Exemplars`.`TraceId` AS `tid`, `Exemplars`.`SpanId` AS `sid`, `Exemplars`.`FilteredAttributes` AS `attrs_arr`, arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` FROM `otel_metrics_gauge` WHERE (`MetricName` = ?) AND `TimeUnix` >= parseDateTime64BestEffort(?, ?) AND `TimeUnix` <= parseDateTime64BestEffort(?, ?) AND length(`Exemplars`.`TimeUnix`) > 0))
 -- args --
 [0] string = "http_request_duration_seconds"
-[1] string = "2026-01-01 00:00:00.000000000"
+[1] string = "2026-01-01 00:00:00.000000000Z"
 [2] int64 = 9
-[3] string = "2026-01-01 01:00:00.000000000"
+[3] string = "2026-01-01 01:00:00.000000000Z"
 [4] int64 = 9
 [5] string = "http_request_duration_seconds_count"
-[6] string = "2026-01-01 00:00:00.000000000"
+[6] string = "2026-01-01 00:00:00.000000000Z"
 [7] int64 = 9
-[8] string = "2026-01-01 01:00:00.000000000"
+[8] string = "2026-01-01 01:00:00.000000000Z"
 [9] int64 = 9
 [10] string = "http_request_duration_seconds_count"
-[11] string = "2026-01-01 00:00:00.000000000"
+[11] string = "2026-01-01 00:00:00.000000000Z"
 [12] int64 = 9
-[13] string = "2026-01-01 01:00:00.000000000"
+[13] string = "2026-01-01 01:00:00.000000000Z"
 [14] int64 = 9
