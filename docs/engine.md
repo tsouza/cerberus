@@ -298,6 +298,35 @@ These are API-layer orchestration paths, not alternate query-language
 pipelines. Main PromQL, LogQL, and TraceQL query execution still converges on
 the engine.
 
+## PromQL outside the evaluation domain
+
+The PromQL lowering represents an instant exactly only inside the
+evaluation domain, 1900-01-02 to 2262-04-10 UTC: the span where
+ClickHouse's `DateTime64(9)` and Go's `UnixNano()` both name every
+instant, less a day of headroom at each end.
+`promql.LeavesEvaluationDomain` reports whether an expression, evaluated
+over the request's instants, reaches outside it — through an eval
+instant, an `@` pin, a window derived from either, or a pin more than
+about 292 years from an eval instant, where reference Prometheus's own
+offset arithmetic wraps.
+
+- `/api/v1/query` and `/api/v1/query_range` parse their request instants
+  as Prometheus does, without clamping (`format.ParseEvalTimeProm`), and
+  ask it after parsing the expression, before any Go-side fold. For
+  such an expression they skip the pipeline above and answer with the
+  upstream Prometheus engine (`internal/api/prom/reference.go`),
+  configured as cerberus's lowering behaves: five-minute lookback,
+  one-minute default subquery step, `@` and negative offsets enabled,
+  immediate `__name__` removal, and the handler's own parser.
+- The engine's storage reads raw samples through the ordinary pipeline.
+  Each read is a pinned range selector built by `promql.SampleReads`,
+  clipped to the storage domain (1900-01-01 to the last `DateTime64(9)`
+  instant, outside which no sample can be stored), split into pieces of
+  at most 100 years, and lowered by `promql.LowerSampleRead`.
+- Every other lowering entry point (`promql.Lower`, `LowerAt`,
+  `LowerAtRange`, `LowerAtRangeOpts`) refuses such an expression with an
+  error wrapping `promql.ErrOutsideEvaluationDomain`.
+
 ## Pipeline stages in depth
 
 The middle of the pipeline — lower → optimize → emit → schema

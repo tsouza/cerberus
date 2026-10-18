@@ -21,7 +21,7 @@ import (
 //	}
 //	step := sub.Step
 //	if step == 0 {
-//		step = defaultSubqueryStep
+//		step = DefaultSubqueryStep
 //	}
 //
 // with `<` rewritten to `<=`. Every existing untagged case of this shape
@@ -34,7 +34,7 @@ import (
 // for "use the default step" — parses with `sub.Step == 0`. Under the
 // original `<`, zero is not negative, so the explicit-step rejection is
 // skipped and the immediately following `if step == 0` substitutes
-// [defaultSubqueryStep]: the query lowers successfully. Under the
+// [DefaultSubqueryStep]: the query lowers successfully. Under the
 // mutated `<=`, zero satisfies the (now inclusive) bound and the query
 // is wrongly rejected as if a NEGATIVE step had been written, even
 // though omitting the step is legal PromQL syntax with a well-defined

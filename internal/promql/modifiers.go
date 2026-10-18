@@ -6,7 +6,6 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
-	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/qlcommon"
 )
@@ -21,10 +20,10 @@ import (
 // (no range context) rejects start/end modifiers because the anchor
 // times are not known at lowering time.
 //
-// A resolved pin never has a zero End: a literal `@ <ts>` outside the
-// int64-nanosecond window is rejected by [atModifierInstant], and
-// `@ start()` / `@ end()` are rejected when the bound they name is
-// zero. So "pinned" implies "End is set", and a guard on a pinned
+// A resolved pin never has a zero End: an expression whose `@ <ts>`
+// leaves the evaluation domain is refused before lowering starts (see
+// [atModifierInstant]), and `@ start()` / `@ end()` are rejected when
+// the bound they name is zero. So "pinned" implies "End is set", and a guard on a pinned
 // subquery needs no second check of End.
 type evalAnchor struct {
 	End    time.Time
@@ -365,11 +364,7 @@ func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, er
 	if vs.Timestamp != nil {
 		// A literal @<ts> modifier takes precedence over start()/end()
 		// (they can't both be set — the parser enforces that).
-		pin, err := atModifierInstant(*vs.Timestamp)
-		if err != nil {
-			return evalAnchor{}, err
-		}
-		a.End = pin
+		a.End = atModifierInstant(*vs.Timestamp)
 	}
 	// No absolute @-pin: anchor the window to the query's eval instant
 	// (ctx.end) so an instant /api/v1/query at time=T evaluates the
@@ -402,24 +397,16 @@ func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, er
 // instant an [evalAnchor] pins to, for a vector selector and a subquery
 // alike.
 //
-// It rejects an instant outside the int64-nanosecond window
-// [format.IsStorable] describes. Every grid, window and literal the
-// lowering derives from a pin lives in that window — [epochFloor] works
-// in `UnixNano()`, and every anchor renders as a DateTime64(9)
-// [chplan.TimeLiteral] — so an instant outside it has no faithful
-// lowering. The check is also what keeps the zero `time.Time` free to
-// mean "no anchor" in [evalAnchor.End]: the zero value is
-// 0001-01-01T00:00:00Z, outside the window, so no pin that passes here
-// can be mistaken for the absence of one.
-func atModifierInstant(ms int64) (time.Time, error) {
-	pin := time.UnixMilli(ms).UTC()
-	if !format.IsStorable(pin) {
-		return time.Time{}, fmt.Errorf(
-			"promql: @ modifier timestamp %s is outside the int64-nanosecond range cerberus evaluates in",
-			pin.Format(time.RFC3339Nano),
-		)
-	}
-	return pin, nil
+// Every pin reaching it lies inside [evaluationDomain]: the lowering
+// entry points refuse an expression whose evaluation leaves that domain
+// ([checkEvaluationDomain]) before any anchor is resolved. That is what
+// keeps the zero `time.Time` free to mean "no anchor" in
+// [evalAnchor.End] — the zero value is 0001-01-01T00:00:00Z, far outside
+// the domain, so no pin can be mistaken for the absence of one — and
+// what keeps every grid, window and DateTime64(9) literal derived from a
+// pin faithful.
+func atModifierInstant(ms int64) time.Time {
+	return time.UnixMilli(ms).UTC()
 }
 
 // hasModifier reports whether vs has anything that affects the time

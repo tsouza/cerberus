@@ -84,6 +84,27 @@ func TestEpochFloorSnapsToAbsoluteEpochMultiples(t *testing.T) {
 			step: time.Second,
 			want: time.Unix(-2, 0).UTC(),
 		},
+		{
+			// #3825: just inside the int64-nanosecond floor, where a
+			// UnixNano()-based floor wrapped the result to 2262.
+			name: "below the int64-nanosecond floor does not wrap",
+			in:   time.Unix(-9223372037, 0).UTC(),
+			step: time.Minute,
+			want: time.Date(1677, time.September, 21, 0, 12, 0, 0, time.UTC),
+		},
+		{
+			// Go's zero time.Time, a `@ -62135596800` pin.
+			name: "year one",
+			in:   time.Date(1, time.January, 1, 0, 0, 30, 0, time.UTC),
+			step: time.Minute,
+			want: time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "above the int64-nanosecond ceiling",
+			in:   time.Date(2264, time.March, 3, 10, 7, 59, 999_999_999, time.UTC),
+			step: time.Minute,
+			want: time.Date(2264, time.March, 3, 10, 7, 0, 0, time.UTC),
+		},
 	}
 
 	for _, tc := range cases {

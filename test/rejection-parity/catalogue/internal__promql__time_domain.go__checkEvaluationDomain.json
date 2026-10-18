@@ -1,0 +1,26 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/time_domain.go:checkEvaluationDomain#86736910",
+      "message": "promql: evaluation reaches outside %s to %s, the span lowering represents exactly: %w",
+      "class": "internal",
+      "rationale": "unreachable from the HTTP query endpoints: the prom handler's query and query_range paths ask LeavesEvaluationDomain, the same predicate this site guards on, before anything is lowered, and answer a true verdict with the reference PromQL engine reading samples through LowerSampleRead, which skips this check; only a caller lowering through Lower or LowerAtRangeOpts directly reaches it",
+      "evidence": {
+        "guard": [
+          "if LeavesEvaluationDomain(expr, start, end)"
+        ],
+        "callers": [
+          "Lower",
+          "LowerAtRangeOpts"
+        ],
+        "cited": [
+          "LeavesEvaluationDomain",
+          "Lower",
+          "LowerAtRangeOpts",
+          "LowerSampleRead"
+        ]
+      }
+    }
+  ]
+}

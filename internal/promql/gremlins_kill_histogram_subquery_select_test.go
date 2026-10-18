@@ -17,7 +17,7 @@
 //
 //   - histogram_native_subquery_select.go:`step < 0` (CONDITIONALS_BOUNDARY,
 //     `step < 0` -> `<= 0`). Two lines above, `if step == 0 { step =
-//     defaultSubqueryStep }` (defaultSubqueryStep = time.Minute, a positive
+//     DefaultSubqueryStep }` (DefaultSubqueryStep = time.Minute, a positive
 //     constant) already eliminates step == 0 as a reachable value by the
 //     time `if step < 0` runs — step is either the caller's own non-zero
 //     sub.Step or the positive default. `<` and `<=` decide identically
@@ -87,7 +87,7 @@ func TestSelectFnOverExpHistogramSubquery_ZeroRangeRejected(t *testing.T) {
 // CONDITIONALS_NEGATION mutant at
 // histogram_native_subquery_select.go:`step == 0` (-> `step != 0`). A
 // subquery with no explicit step
-// (`[5m:]`) must fall back to defaultSubqueryStep. With the negation, step
+// (`[5m:]`) must fall back to DefaultSubqueryStep. With the negation, step
 // stays 0 and flows into subqueryGridCtx -> epochFloor, which divides by
 // the step duration — a genuine divide-by-zero panic, not merely a wrong
 // answer (the same signature

@@ -189,6 +189,10 @@ func MinPositiveDuration(a, b time.Duration) time.Duration {
 //
 // Loki and Tempo accept integer-nanoseconds as well, and gate their
 // float branch — handled by ParseTimeUnixScaled.
+//
+// It bounds a scan window: the metadata and exemplar endpoints. The
+// evaluation instants of /api/v1/query and /api/v1/query_range are
+// parsed by [ParseEvalTimeProm] instead.
 func ParseTimeProm(raw string, def time.Time) (time.Time, error) {
 	if raw == "" {
 		return def, nil
@@ -209,6 +213,60 @@ func ParseTimeProm(raw string, def time.Time) (time.Time, error) {
 		return time.Time{}, errors.New("time parameter must be Unix seconds/milliseconds or RFC3339")
 	}
 	return clampStorable(t.UTC()), nil
+}
+
+// Prometheus's own bounds for an absent range parameter
+// (web/api/v1/api.go's MinTime / MaxTime): the widest instants whose
+// Unix milliseconds fit int64 with a year to spare. Prometheus's
+// parseTime also accepts their RFC3339 spellings, which the standard
+// library cannot parse because the years have more than four digits.
+var (
+	promMinTime = time.Unix(math.MinInt64/millisPerSecond+unixToYearOneSeconds+1, 0).UTC()
+	promMaxTime = time.Unix(math.MaxInt64/millisPerSecond-unixToYearOneSeconds-1, int64(time.Second-1)).UTC()
+)
+
+// millisPerSecond and unixToYearOneSeconds are the two constants
+// Prometheus's MinTime / MaxTime are written in: milliseconds per second,
+// and the seconds between 0001-01-01 and the Unix epoch.
+const (
+	millisPerSecond      = int64(time.Second / time.Millisecond)
+	unixToYearOneSeconds = 62135596800
+)
+
+// ParseEvalTimeProm parses an evaluation instant — /api/v1/query's
+// `time`, /api/v1/query_range's `start` and `end` — as Prometheus's
+// parseTime (web/api/v1/api.go) does: Unix seconds as a float with the
+// fraction rounded to the millisecond, RFC3339, or the RFC3339 spelling
+// of Prometheus's MinTime / MaxTime. It keeps [ParseTimeProm]'s
+// integer-milliseconds branch for the values a Grafana resource proxy
+// sends.
+//
+// Unlike ParseTimeProm it never clamps. An instant outside the span the
+// PromQL lowering represents is answered by the reference engine, which
+// has to evaluate at the instant Prometheus would, even one that
+// Prometheus's own int64 arithmetic then wraps.
+func ParseEvalTimeProm(raw string, def time.Time) (time.Time, error) {
+	if raw == "" {
+		return def, nil
+	}
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n >= msEpochFloor {
+		return time.UnixMilli(n).UTC(), nil
+	}
+	if f, err := strconv.ParseFloat(raw, 64); err == nil {
+		sec, frac := math.Modf(f)
+		frac = math.Round(frac*float64(millisPerSecond)) / float64(millisPerSecond)
+		return time.Unix(int64(sec), int64(frac*float64(time.Second))).UTC(), nil
+	}
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return t.UTC(), nil
+	}
+	switch raw {
+	case promMinTime.Format(time.RFC3339Nano):
+		return promMinTime, nil
+	case promMaxTime.Format(time.RFC3339Nano):
+		return promMaxTime, nil
+	}
+	return time.Time{}, errors.New("time parameter must be Unix seconds/milliseconds or RFC3339")
 }
 
 // ParseTimeUnixScaled parses a time parameter in the widest wire shape
