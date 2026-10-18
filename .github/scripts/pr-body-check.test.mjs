@@ -14,7 +14,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { descriptionSurface } from './forbid-deferral.mjs';
+import { descriptionSurface, mergeQueueDraftSurface } from './forbid-deferral.mjs';
+import { API as DRAFT_API, DRAFT, REPO as DRAFT_REPO, draftPullRequest, fakeApi } from './lib/merge-queue-draft.fixture.mjs';
 import { classify, inspect, MIN_CHARS } from './pr-body-check.mjs';
 
 const HEAD = '0123456789abcdef0123456789abcdef01234567';
@@ -92,4 +93,33 @@ test('classify still rejects the stubs the inline self-test names', () => {
   }
   assert.equal(classify('x'.repeat(MIN_CHARS - 1)).stub, true, 'below the minimum length');
   assert.equal(classify('Fixes the Loki tail overflow by advancing the cursor.').stub, false);
+});
+
+// --- a merge-queue draft -----------------------------------------------------
+
+const draftSurface = (members) => {
+  const draft = draftPullRequest({ numbers: Object.keys(members).map(Number) });
+  const { fetchImpl } = fakeApi({ draft, members });
+  return mergeQueueDraftSurface({ number: DRAFT, repo: DRAFT_REPO, token: 't', apiBase: DRAFT_API, fetchImpl });
+};
+
+test('a merge-queue draft passes when every pull request in its batch has a real description', async () => {
+  const description = await draftSurface({
+    7: { body: 'Chains the parity ledgers into update-golden.' },
+    8: { body: 'Restores the epoch alignment the inner grid needs.' },
+  });
+  assert.equal(inspect(description).stub, false);
+});
+
+test('one stub in a merge-queue batch fails the draft and names the pull request', async () => {
+  // The draft text Mergify writes is long enough to pass on its own, so a
+  // verdict on it would be green whatever the batch holds. A long description
+  // in one member does not rescue a stub in another: they are separate changes.
+  const description = await draftSurface({
+    7: { body: 'Chains the parity ledgers into update-golden.' },
+    8: { body: 'cat' },
+  });
+  const verdict = inspect(description);
+  assert.equal(verdict.stub, true);
+  assert.match(verdict.reason, /^#8: .*placeholder/);
 });

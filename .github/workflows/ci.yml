@@ -871,6 +871,10 @@ jobs:
       # tip, never a silent HEAD.
       - name: Validate the golden-shard changed-file base
         run: node --test .github/scripts/lib/golden-shards.test.mjs
+      # The parity regeneration's report of catalogue entries still waiting
+      # for a manual classification, and its class vocabulary's tie to Go.
+      - name: Validate the rejection-parity classification report
+        run: node --test .github/scripts/rejection-parity-classification.test.mjs
       - name: Reject t.Skip in test files
         run: node .github/scripts/forbid-skip.mjs
         env:

@@ -140,6 +140,7 @@ import { pathToFileURL } from 'node:url';
 
 import { appendStepSummary, error, git, log, notice } from './lib/gh.mjs';
 import { NOT_FOUND_NULL, ghHeaders, ghJSON } from './lib/gh-api.mjs';
+import { isMergeQueueDraft, resolveMergeQueueBatch } from './lib/merge-queue-draft.mjs';
 
 // How far a citation may sit from its marker in a diff. A marker and the issue
 // that tracks it belong to the same comment block; three lines spans a short
@@ -559,6 +560,14 @@ function readEventPayload(eventPath) {
 export function eventPayloadAuthor(eventPath) {
   const login = readEventPayload(eventPath)?.pull_request?.user?.login;
   return typeof login === 'string' && login.trim() !== '' ? login.trim() : null;
+}
+
+// eventPayloadPullRequest — the pull request object of this event's payload,
+// or null on the same failure modes as eventPayloadAuthor. Used to recognise a
+// merge-queue draft; the draft is read again from the API before anything
+// about it is trusted.
+export function eventPayloadPullRequest(eventPath) {
+  return readEventPayload(eventPath)?.pull_request ?? null;
 }
 
 // eventPayloadNumber — the number of the pull request this event is about, or
@@ -1001,7 +1010,9 @@ export async function apiJson(url, token, what) {
 }
 
 // descriptionSurface — the PR description(s), however this event can reach
-// them. On a pull_request run it is the event payload, one pull request. On a
+// them. On a pull_request run it is the event payload, one pull request,
+// except on a merge-queue draft, where it is the batch the draft checks (see
+// mergeQueueDraftSurface). On a
 // push or a merge-queue run there is no payload body, so every pull request
 // associated with the head commit is resolved from the API — a merge-queue
 // batch groups several, so this is a LIST; a commit with none (a maintenance
@@ -1025,6 +1036,10 @@ export async function descriptionSurface({ eventName, repo, head, token, apiBase
         'PR_BODY is unset on a pull_request run — the description surface would go uninspected. ' +
           'Wire `PR_BODY: ${{ github.event.pull_request.body }}` into the step env.',
       );
+    }
+    const event = eventPayloadPullRequest(process.env.GITHUB_EVENT_PATH);
+    if (isMergeQueueDraft(event, repo)) {
+      return mergeQueueDraftSurface({ number: event.number, repo, token, apiBase });
     }
     const text = process.env.PR_BODY;
     const origin = 'the pull_request event payload';
@@ -1071,6 +1086,26 @@ export async function descriptionSurface({ eventName, repo, head, token, apiBase
     text: parts.map((p) => p.text).join('\n\n'),
     origin: `the description of ${pulls.map((p) => `#${p.number}`).join(', ')}`,
     parts,
+  };
+}
+
+// mergeQueueDraftSurface — the description surface of a merge-queue draft:
+// one part per pull request in the batch it checks, each under its own author,
+// in place of the text Mergify wrote for the draft. See
+// lib/merge-queue-draft.mjs.
+export async function mergeQueueDraftSurface({ number, repo, token, apiBase, fetchImpl }) {
+  const { draft, batch } = await resolveMergeQueueBatch({ number, repository: repo, apiBase, token, fetchImpl });
+  const parts = batch.map((p) => ({
+    text: p.body,
+    origin: `the description of #${p.number}`,
+    author: p.author,
+    number: p.number,
+  }));
+  return {
+    text: parts.map((p) => p.text).join('\n\n'),
+    origin: `the description of ${batch.map((p) => `#${p.number}`).join(', ')}, checked by merge-queue draft #${draft}`,
+    parts,
+    mergeQueueDraft: draft,
   };
 }
 

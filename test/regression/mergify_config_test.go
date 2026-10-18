@@ -12,13 +12,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The merge queue (.github/mergify.yml) checks one pull request at a time, on
-// the pull request itself. Mergify computes "in place" from three settings:
-// max_parallel_checks 1, batch_size 1 on every queue rule, and no
-// merge_conditions beyond the queue conditions. Any other shape makes Mergify
-// test on a draft pull request it writes itself, and the description- and
-// commit-scanning gates (pr-body, forbid-deferral, commitlint) would then
-// judge that draft instead of the pull request being merged.
+// The merge queue (.github/mergify.yml) checks queued pull requests in
+// batches, one batch at a time, on a draft pull request Mergify opens holding
+// main plus the batch. Each check is a full CI run on the shared runners, so
+// a second batch checked in parallel would double the load on them. The main
+// ruleset, whose required checks the queue inherits through injection, still
+// requires each pull request's own checks before it merges.
 
 const mergifyConfigPath = ".github/mergify.yml"
 
@@ -29,20 +28,18 @@ type mergifyConfig struct {
 	QueueRules []struct {
 		Name                          string   `yaml:"name"`
 		QueueConditions               []string `yaml:"queue_conditions"`
-		MergeConditions               []string `yaml:"merge_conditions"`
 		MergeMethod                   string   `yaml:"merge_method"`
 		UpdateMethod                  string   `yaml:"update_method"`
 		BatchSize                     *int     `yaml:"batch_size"`
+		BatchMaxFailureResolution     *int     `yaml:"batch_max_failure_resolution_attempts"`
 		BranchProtectionInjectionMode string   `yaml:"branch_protection_injection_mode"`
 	} `yaml:"queue_rules"`
 	MergeQueue struct {
 		MaxParallelChecks *int `yaml:"max_parallel_checks"`
 	} `yaml:"merge_queue"`
-	PullRequestRules []struct {
-		Name       string               `yaml:"name"`
-		Conditions []string             `yaml:"conditions"`
-		Actions    map[string]yaml.Node `yaml:"actions"`
-	} `yaml:"pull_request_rules"`
+	MergeProtectionsSettings struct {
+		AutoMergeConditions yaml.Node `yaml:"auto_merge_conditions"`
+	} `yaml:"merge_protections_settings"`
 }
 
 // describeSetting renders an optional integer setting for a failure message.
@@ -66,20 +63,30 @@ func loadMergifyConfig(t *testing.T) mergifyConfig {
 	return cfg
 }
 
-func TestMergifyQueueChecksInPlace(t *testing.T) {
+// minBatchSize is the smallest batch_size that checks more than one pull
+// request per CI run.
+const minBatchSize = 2
+
+// batchFailureResolutionAttempts is how many split-and-recheck rounds a failed
+// batch gets before its failing pull requests leave the queue. Each round is
+// another full CI run, so one spurious red costs the whole batch at most one
+// extra run.
+const batchFailureResolutionAttempts = 1
+
+func TestMergifyQueueBatchesOneAtATime(t *testing.T) {
 	cfg := loadMergifyConfig(t)
 	if p := cfg.MergeQueue.MaxParallelChecks; p == nil || *p != 1 {
-		t.Errorf("merge_queue.max_parallel_checks must be set to 1 (in-place checks); got %s", describeSetting(p))
+		t.Errorf("merge_queue.max_parallel_checks must be set to 1 (one batch at a time); got %s", describeSetting(p))
 	}
 	if len(cfg.QueueRules) == 0 {
 		t.Fatalf("%s declares no queue_rules", mergifyConfigPath)
 	}
 	for _, rule := range cfg.QueueRules {
-		if rule.BatchSize == nil || *rule.BatchSize != 1 {
-			t.Errorf("queue rule %q: batch_size must be set to 1 (in-place checks); got %s", rule.Name, describeSetting(rule.BatchSize))
+		if rule.BatchSize == nil || *rule.BatchSize < minBatchSize {
+			t.Errorf("queue rule %q: batch_size must be at least %d (batching); got %s", rule.Name, minBatchSize, describeSetting(rule.BatchSize))
 		}
-		if len(rule.MergeConditions) > 0 && !slices.Equal(rule.MergeConditions, rule.QueueConditions) {
-			t.Errorf("queue rule %q: merge_conditions beyond queue_conditions turn off in-place checks", rule.Name)
+		if a := rule.BatchMaxFailureResolution; a == nil || *a != batchFailureResolutionAttempts {
+			t.Errorf("queue rule %q: batch_max_failure_resolution_attempts must be set to %d; got %s", rule.Name, batchFailureResolutionAttempts, describeSetting(a))
 		}
 		if rule.MergeMethod != "squash" {
 			t.Errorf("queue rule %q: merge_method = %q, want squash", rule.Name, rule.MergeMethod)
@@ -93,20 +100,26 @@ func TestMergifyQueueChecksInPlace(t *testing.T) {
 		if m := rule.BranchProtectionInjectionMode; m != "" && m != "queue" {
 			t.Errorf("queue rule %q: branch_protection_injection_mode = %q drops the ruleset's required checks from queueing", rule.Name, m)
 		}
-		if !slices.Contains(rule.QueueConditions, "base=main") || !slices.Contains(rule.QueueConditions, "label="+queueLabel) {
-			t.Errorf("queue rule %q: queue_conditions must include base=main and label=%s; got %v", rule.Name, queueLabel, rule.QueueConditions)
+		if !slices.Contains(rule.QueueConditions, "base=main") {
+			t.Errorf("queue rule %q: queue_conditions must include base=main; got %v", rule.Name, rule.QueueConditions)
 		}
 	}
 }
 
+// The label queues a pull request through auto_merge_conditions: true, which
+// queues every pull request that meets the queue conditions. A
+// pull_request_rules queue action needs Mergify's Workflow Automation, which
+// this repository does not run, so such a rule never fires.
 func TestMergifyQueueLabelQueuesThePullRequest(t *testing.T) {
 	cfg := loadMergifyConfig(t)
-	for _, rule := range cfg.PullRequestRules {
-		if _, ok := rule.Actions["queue"]; ok && slices.Contains(rule.Conditions, "label="+queueLabel) {
-			return
+	if n := cfg.MergeProtectionsSettings.AutoMergeConditions; n.Kind != yaml.ScalarNode || n.Value != "true" {
+		t.Errorf("%s: merge_protections_settings.auto_merge_conditions must be true, so a labelled pull request is queued", mergifyConfigPath)
+	}
+	for _, rule := range cfg.QueueRules {
+		if !slices.Contains(rule.QueueConditions, "label="+queueLabel) {
+			t.Errorf("queue rule %q: queue_conditions must include label=%s, or every pull request is queued", rule.Name, queueLabel)
 		}
 	}
-	t.Errorf("%s has no pull_request_rule that queues a pull request labelled %s", mergifyConfigPath, queueLabel)
 }
 
 // directMergePattern matches a workflow command that merges a pull request

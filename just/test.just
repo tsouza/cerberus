@@ -1270,9 +1270,16 @@ update-golden *shards:
 # Curation survives: a site already in the catalogue keeps its class, trigger
 # query, endpoint and rationale. A site whose key MOVED — the key is derived
 # from the rejection message, so editing that message relocates the entry —
-# lands unclassified, and the verify test refuses an unclassified entry. That
-# is the loud outcome, and it is why this is worth chaining rather than leaving
-# to be rediscovered on a CI lane.
+# lands unclassified, exactly like a brand-new site. Classifying an entry is a
+# manual step, so this recipe does not assert it: the final validation runs
+# every test in both packages except TestCatalogueEntriesAreClassified, and
+# rejection-parity-classification.mjs then names each entry still waiting for
+# a class, the shard file holding it, and how to classify it. The curation gate
+# itself stays in `go test ./test/rejection-parity/`, which keeps failing until
+# the entry is classified by hand. A regeneration that asserted it would fail
+# on the one outcome it exists to produce, and every update-golden.yml leg runs
+# this recipe as predecessor context, so a branch adding a site could
+# regenerate no shard at all.
 #
 # test/surface-parity/promql-reference-verdicts.json / promql-reference-verdicts/
 # are deliberately NOT here: `REGENERATE=1 node .github/scripts/promql-surface-gate.mjs`
@@ -1294,10 +1301,11 @@ update-golden *shards:
 #   CERBERUS_UPDATE_TRACEQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle -run TestTraceQLReferenceVerdictsAreCurrent ./test/surface-parity/
 
 # The primary writers run alone before the divergence ceiling, which derives
-# from the freshly written rejection catalogue. Only then may the complete
-# packages validate the stable files: the writer and reader tests use
-# t.Parallel, so a single update-mode package run would let validation race
-# regeneration.
+# from the freshly written rejection catalogue. Only then may the packages
+# validate the stable files: the writer and reader tests use t.Parallel, so a
+# single update-mode package run would let validation race regeneration. The
+# validation leaves out only the manual-classification gate, reported instead
+# by the last step.
 
 # Regenerate the parser-surface and rejection parity ledgers, then
 # docs/coverage.md's per-symbol tables — rendered from the surface-parity
@@ -1308,9 +1316,10 @@ update-golden *shards:
 update-parity-ledgers: update-parity-enrolment-baseline
     CERBERUS_UPDATE_INVENTORY=1 go test -count=1 -run '^(TestInventoryIsRegenerable|TestCatalogueIsRegenerable)$' ./test/surface-parity/ ./test/rejection-parity/
     CERBERUS_UPDATE_INVENTORY=1 go test -count=1 -run '^TestDivergenceCeilingRatchet$' ./test/rejection-parity/
-    CERBERUS_UPDATE_INVENTORY= go test -count=1 ./test/surface-parity/ ./test/rejection-parity/
+    CERBERUS_UPDATE_INVENTORY= go test -count=1 -skip '^TestCatalogueEntriesAreClassified$' ./test/surface-parity/ ./test/rejection-parity/
     node .github/scripts/gen-coverage.mjs
     @node .github/scripts/lib/regen-diff.mjs --label "parity ledgers" test/surface-parity/ test/rejection-parity/ docs/coverage.md
+    @node .github/scripts/rejection-parity-classification.mjs
 
 CARDINALITY_BASELINE_TIMEOUT := "60m"
 
