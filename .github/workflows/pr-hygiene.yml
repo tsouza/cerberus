@@ -102,6 +102,7 @@ jobs:
         run: |
           node --test .github/scripts/pr-body-check.test.mjs
           node --test .github/scripts/pr-hygiene-metadata.test.mjs
+          node --test .github/scripts/lib/merge-queue-draft.test.mjs
 
       # Reject an empty / stub PR description (the `--body 'cat'` incident).
       # PR_BODY is attacker-controlled, so it is passed via env and read by the

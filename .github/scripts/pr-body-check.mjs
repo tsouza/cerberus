@@ -23,8 +23,17 @@
 // PR — is inspected.
 //
 // Env:
-//   GITHUB_EVENT_NAME  REQUIRED. `pull_request` reads PR_BODY; anything else
-//                      resolves the description from the head commit.
+// On a merge-queue draft (lib/merge-queue-draft.mjs) the description Mergify
+// wrote for the draft is not judged. Each pull request in the batch the draft
+// checks is judged by its own description, and one stub fails the draft: the
+// batch's pull requests are independent changes, so one's description says
+// nothing about another's.
+//
+//   GITHUB_EVENT_NAME  REQUIRED. `pull_request` reads the live pull request;
+//                      anything else resolves the description from the head
+//                      commit.
+//   GITHUB_EVENT_PATH  runner-provided event payload, read on a pull_request
+//                      run to recognise a merge-queue draft.
 //   PR_BODY            REQUIRED on a pull_request run — the description (pass
 //                      via env, NEVER interpolated into a shell `run:` line;
 //                      bodies are attacker-controlled).
@@ -38,8 +47,9 @@
 
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
-import { descriptionSurface } from './forbid-deferral.mjs';
+import { descriptionSurface, eventPayloadPullRequest, mergeQueueDraftSurface } from './forbid-deferral.mjs';
 import { error, notice } from './lib/gh.mjs';
+import { isMergeQueueDraft } from './lib/merge-queue-draft.mjs';
 import { fetchPullRequest } from './lib/pull-request.mjs';
 
 export const MIN_CHARS = 20;
@@ -157,6 +167,13 @@ export function inspect(description) {
   if (description.origin.startsWith(UNASSOCIATED_ORIGIN)) {
     return { stub: false, unassociated: true };
   }
+  if (description.mergeQueueDraft !== undefined) {
+    for (const part of description.parts) {
+      const verdict = classify(part.text);
+      if (verdict.stub) return { stub: true, reason: `#${part.number}: ${verdict.reason}` };
+    }
+    return { stub: false };
+  }
   return classify(description.text);
 }
 
@@ -170,7 +187,16 @@ async function main() {
   const eventName = requireEnv('GITHUB_EVENT_NAME', 'the description surface is resolved per event');
   const onPullRequest = eventName === 'pull_request' || eventName === 'pull_request_target';
 
-  const description = onPullRequest
+  const event = onPullRequest ? eventPayloadPullRequest(process.env.GITHUB_EVENT_PATH) : null;
+  const repository = process.env.GITHUB_REPOSITORY;
+  const description = isMergeQueueDraft(event, repository)
+    ? await mergeQueueDraftSurface({
+        number: event.number,
+        repo: repository,
+        token: requireEnv('GITHUB_TOKEN', 'the merge-queue batch must be fetched'),
+        apiBase: process.env.GITHUB_API_URL || 'https://api.github.com',
+      })
+    : onPullRequest
     ? {
         origin: `live pull request #${requireEnv('PR_NUMBER', 'the current pull request must be fetched')}`,
         text: (

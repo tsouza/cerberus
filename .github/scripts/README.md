@@ -42,8 +42,19 @@ walk that never shortens throws instead of returning a silent prefix).
 script that reads the API: `forbid-deferral`, `rejection-parity-divergence-
 liveness`, `update-golden-guard`, `issue-label`, `chaos-not-applicable-rate`,
 `release-gate-drift`, `coverage-verdict`, `release-source-pr-dashboard-gate`,
-`release-preflight`, `brew-smoke`, `lib/resolve-source-pr`. Tested by
-`lib/gh-api.test.mjs`.
+`release-preflight`, `brew-smoke`, `lib/resolve-source-pr`,
+`lib/merge-queue-draft`. Tested by `lib/gh-api.test.mjs`.
+
+`lib/merge-queue-draft.mjs` resolves a Mergify merge-queue draft pull request
+to the batch it checks: `isMergeQueueDraft(pr, repository)` (the
+`mergify[bot]` login, a `Bot` account, a head branch in this repository and the
+`mergify/merge-queue/` prefix, all four), `batchNumbers(body)` (the
+`pull_requests:` list of the metadata block Mergify writes into the draft) and
+`resolveMergeQueueBatch` (reads the live draft and each member, and requires
+each member's base to be the draft's and its head to be in the draft's head).
+`pr-body-check` and `forbid-deferral` judge a draft by its batch's own
+descriptions through it. Tested by `lib/merge-queue-draft.test.mjs`, with the
+draft fixture in `lib/merge-queue-draft.fixture.mjs`.
 
 `lib/k8s.mjs` (started as `lib/bwc-k8s.mjs`, promoted and renamed once a
 third consumer outside the bwc lane showed up — cerberus issue #3096) holds
