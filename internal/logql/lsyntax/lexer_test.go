@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // See parser_test.go's file comment: internal/logql/lsyntax has no
@@ -551,9 +552,8 @@ func TestLexComments(t *testing.T) {
 // `<=`). The extra iteration the mutant admits runs at j == len(l.src), where
 // `l.src[j:]` is the empty string — a legal slice, not a panic — and
 // utf8.DecodeRuneInString("") returns (utf8.RuneError, 0). isIdentPart
-// rejects U+FFFD (it is neither ASCII alphanumeric nor `_`, it is not below
-// utf8.RuneSelf, and unicode.IsLetter and unicode.IsDigit are both false for
-// it), so the mutant breaks at the same j the original's loop condition
+// rejects U+FFFD (it is not `_`, and unicode.IsLetter and unicode.IsDigit
+// are both false for it), so the mutant breaks at the same j the original's loop condition
 // stopped at.
 //
 // lexer.go:`if end < len(l.src)` (CONDITIONALS_BOUNDARY `<` -> `<=`, and
@@ -635,6 +635,22 @@ func TestLexDotOutsideANumberIsALexerRejection(t *testing.T) {
 		}
 		if len(toks) != 2 || toks[0].kind != tkNumber || toks[0].str != tc.want {
 			t.Errorf("lex(%q) = %+v, want a single tkNumber %q + EOF", tc.src, toks, tc.want)
+		}
+	}
+}
+
+// TestIsIdentPart pins the identifier alphabet at every edge of its ASCII
+// ranges and past them: `_`, letters and digits in any script continue an
+// identifier, and nothing else does.
+func TestIsIdentPart(t *testing.T) {
+	for _, r := range []rune{'a', 'z', 'A', 'Z', '0', '9', '_', 'é', 'ж', '٣'} {
+		if !isIdentPart(r) {
+			t.Errorf("isIdentPart(%q) = false, want true", r)
+		}
+	}
+	for _, r := range []rune{'`', '{', '@', '[', '/', ':', '-', '.', ' ', 0x80, utf8.RuneError, '€'} {
+		if isIdentPart(r) {
+			t.Errorf("isIdentPart(%q) = true, want false", r)
 		}
 	}
 }

@@ -624,3 +624,25 @@ func TestParserPeekAdvanceBounds(t *testing.T) {
 		t.Errorf("cur() after over-advancing = %v, want %v", p.cur().kind, lastKind)
 	}
 }
+
+// TestParseExpr_JuxtaposedLabelFiltersAreAComma pins the implicit `and`:
+// a label filter followed directly by another — opening with a label name
+// or a parenthesis — parses as the comma spelling does.
+func TestParseExpr_JuxtaposedLabelFiltersAreAComma(t *testing.T) {
+	for _, tc := range []struct{ juxtaposed, comma string }{
+		{`{app="api"} | a="1" b="2"`, `{app="api"} | a="1", b="2"`},
+		{`{app="api"} | a="1" (b="2" or c="3")`, `{app="api"} | a="1", (b="2" or c="3")`},
+	} {
+		got, err := ParseExpr(tc.juxtaposed)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", tc.juxtaposed, err)
+		}
+		want, err := ParseExpr(tc.comma)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", tc.comma, err)
+		}
+		if got.String() != want.String() {
+			t.Errorf("ParseExpr(%q) = %s; want %s, as %q parses", tc.juxtaposed, got, want, tc.comma)
+		}
+	}
+}

@@ -115,9 +115,9 @@ func EmitMetricsExemplars(
 // RangeWindow fan-out materialises: from OuterRange when set (`OuterRange/
 // Step + 1`, end-inclusive), else from the [Start, End] span, else a
 // single instant anchor. A Start > End span is rejected. The exemplar
-// fan-out and [rangeWindowGridEnd] (the Start-anchored grid base every
-// windowed emitter walks from) share it so the base and the walk count
-// cannot disagree.
+// fan-out, the metrics, quantile-bucket and histogram fan-outs, and
+// [rangeWindowGridEnd] (the Start-anchored grid base every windowed emitter
+// walks from) share it so the base and the walk count cannot disagree.
 func rangeWindowGridAnchorCount(rw *chplan.RangeWindow, stepNS int64) (int64, error) {
 	switch {
 	case rw.OuterRange > 0:

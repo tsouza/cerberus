@@ -337,6 +337,15 @@ func TestRequireSpansScansBounded_AccumulatesConjunctsDownTheFilterSpine(t *test
 	if err := RequireSpansScansBounded(spansTable, bare); err == nil {
 		t.Fatal("attribute-only filter must not satisfy the bound")
 	}
+	// Filter_attr(Filter_window(Scan)): the accumulation keeps the inner
+	// predicate too, not only the one carried down from above.
+	inner := &Filter{
+		Predicate: attr,
+		Input:     &Filter{Predicate: windowPred(), Input: spansScan()},
+	}
+	if err := RequireSpansScansBounded(spansTable, inner); err != nil {
+		t.Fatalf("inner window under an outer attribute filter must count: %v", err)
+	}
 }
 
 func TestRequireSpansScansBounded_LimitIsAMemoryStreamingBound(t *testing.T) {

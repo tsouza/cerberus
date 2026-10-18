@@ -768,13 +768,9 @@ func isLetter(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 func isIdentStart(b byte) bool { return isLetter(b) || b == '_' }
+
+// isIdentPart reports whether r continues an identifier: `_`, or a Unicode
+// letter or digit. Over ASCII that is exactly [A-Za-z0-9_].
 func isIdentPart(r rune) bool {
-	switch {
-	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
-		return true
-	case r < utf8.RuneSelf:
-		return false
-	default:
-		return unicode.IsLetter(r) || unicode.IsDigit(r)
-	}
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }

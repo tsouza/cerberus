@@ -456,6 +456,8 @@ func TestDotMarksPlace_RejectsParsesOfDifferentShape(t *testing.T) {
 		dotNL, plain *syntax.Regexp
 	}{
 		{"another op", lit('a'), &syntax.Regexp{Op: syntax.OpCharClass, Rune: []rune{'a', 'a'}}},
+		{"a dot read under s against another op", lit('a'), &syntax.Regexp{Op: syntax.OpAnyChar}},
+		{"a dot read without s against another op", lit('a'), &syntax.Regexp{Op: syntax.OpAnyCharNotNL}},
 		{"another arity", &syntax.Regexp{Op: syntax.OpConcat, Sub: []*syntax.Regexp{lit('a'), lit('b')}}, &syntax.Regexp{Op: syntax.OpConcat, Sub: []*syntax.Regexp{lit('a')}}},
 	}
 	for _, c := range cases {

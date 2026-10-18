@@ -203,18 +203,9 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	}
 	rangeNS := rangeDur.Nanoseconds()
 
-	var numAnchors int64
-	switch {
-	case r.OuterRange > 0:
-		numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1
-	case !r.Start.IsZero() && !r.End.IsZero():
-		span := r.End.Sub(r.Start).Nanoseconds()
-		if span < 0 {
-			return fmt.Errorf("%w: RangeWindow.Start > End", ErrUnsupported)
-		}
-		numAnchors = span/stepNS + 1
-	default:
-		numAnchors = 1
+	numAnchors, err := rangeWindowGridAnchorCount(r, stepNS)
+	if err != nil {
+		return err
 	}
 
 	inner, err := e.subqueryFrag(m.Inner)

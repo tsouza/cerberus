@@ -1254,19 +1254,9 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	// Anchor count: end-inclusive grid across [End-Span, End] spaced by
 	// Step. When OuterRange > 0 use it (PromQL subquery semantics);
 	// otherwise derive from [Start, End].
-	var numAnchors int64
-	switch {
-	case r.OuterRange > 0:
-		numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1
-	case !r.Start.IsZero() && !r.End.IsZero():
-		span := r.End.Sub(r.Start).Nanoseconds()
-		if span < 0 {
-			return fmt.Errorf("%w: RangeWindow.Start > End", ErrUnsupported)
-		}
-		numAnchors = span/stepNS + 1
-	default:
-		// Instant fallback — single anchor at End.
-		numAnchors = 1
+	numAnchors, err := rangeWindowGridAnchorCount(r, stepNS)
+	if err != nil {
+		return err
 	}
 
 	inner, err := e.subqueryFrag(m.Inner)
@@ -1600,18 +1590,9 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 	}
 	rangeNS := rangeDur.Nanoseconds()
 
-	var numAnchors int64
-	switch {
-	case r.OuterRange > 0:
-		numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1
-	case !r.Start.IsZero() && !r.End.IsZero():
-		span := r.End.Sub(r.Start).Nanoseconds()
-		if span < 0 {
-			return fmt.Errorf("%w: RangeWindow.Start > End", ErrUnsupported)
-		}
-		numAnchors = span/stepNS + 1
-	default:
-		numAnchors = 1
+	numAnchors, err := rangeWindowGridAnchorCount(r, stepNS)
+	if err != nil {
+		return err
 	}
 
 	inner, err := e.subqueryFrag(m.Inner)

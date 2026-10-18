@@ -178,8 +178,11 @@ func TestValidateVectorSetOpCols_DropCollisionsNeedsMixedOr(t *testing.T) {
 			tc.mutate(plan)
 			_, _, err := Emit(context.Background(), plan)
 			if tc.wantErr {
-				if !errors.Is(err, ErrUnsupported) {
-					t.Fatalf("Emit = %v, want ErrUnsupported (MixedDropCollisions is meaningless here and must not be ignored)", err)
+				// The error must name the flag: a plan this mis-built can
+				// also fail a later sample-kind check, which would hide a
+				// validator that let the flag through.
+				if !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "MixedDropCollisions") {
+					t.Fatalf("Emit = %v, want ErrUnsupported naming MixedDropCollisions (it is meaningless here and must not be ignored)", err)
 				}
 				return
 			}
@@ -317,6 +320,11 @@ func TestValidateVectorSetOpCols_AbortOnCollisionRejections(t *testing.T) {
 				t.Fatalf("Emit: got nil error, want one naming the mis-built flag")
 			case tc.wantErr && !errors.Is(err, ErrUnsupported):
 				t.Fatalf("Emit: got %v, want an ErrUnsupported", err)
+			case tc.wantErr && !strings.Contains(err.Error(), "MixedAbortOnCollision"):
+				// A later sample-kind check also rejects some of these
+				// plans; only an error naming the flag proves the
+				// validator refused it.
+				t.Fatalf("Emit: got %v, want an error naming MixedAbortOnCollision", err)
 			case !tc.wantErr && err != nil:
 				t.Fatalf("Emit: %v", err)
 			}

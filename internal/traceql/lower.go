@@ -2185,16 +2185,18 @@ func traceScopedInSubquery(valueNode chplan.Node, pred chplan.Expr, s schema.Tra
 // intrinsic (the caller continues with the next interceptor / generic
 // lowering).
 func lowerTraceScopedBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces) (chplan.Expr, bool, error) {
-	lAttr, lok := fieldExprAttribute(b.LHS)
-	rAttr, rok := fieldExprAttribute(b.RHS)
+	// An operand that is not an attribute reads as the zero Attribute, whose
+	// IntrinsicNone is not trace-scoped, so the intrinsic test alone decides.
+	lAttr, _ := fieldExprAttribute(b.LHS)
+	rAttr, _ := fieldExprAttribute(b.RHS)
 
 	var attr traceql.Attribute
 	var valueSide traceql.FieldExpression
 	effectiveOp := op
 	switch {
-	case lok && isTraceScopedIntrinsic(lAttr.Intrinsic):
+	case isTraceScopedIntrinsic(lAttr.Intrinsic):
 		attr, valueSide = lAttr, b.RHS
-	case rok && isTraceScopedIntrinsic(rAttr.Intrinsic):
+	case isTraceScopedIntrinsic(rAttr.Intrinsic):
 		attr, valueSide = rAttr, b.LHS
 		effectiveOp = flipComparisonOp(op)
 	default:

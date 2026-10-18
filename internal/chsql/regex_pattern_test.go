@@ -258,10 +258,34 @@ func TestClassEnd(t *testing.T) {
 		{`[a`, 0, false},
 		{`[\`, 0, false},
 		{`[[:alpha`, 0, false},
+		{`[a:]`, 4, true},
+		{`[a[`, 0, false},
 	} {
 		end, ok := classEnd(tc.pattern, 0)
 		if end != tc.end || ok != tc.ok {
 			t.Errorf("classEnd(%q, 0) = %d, %v; want %d, %v", tc.pattern, end, ok, tc.end, tc.ok)
+		}
+	}
+}
+
+// TestSpellDotsAsNotNewline pins the scanner on its own: a `Q` that does not
+// follow a backslash opens no quotation, and a trailing backslash — which
+// lineFilterRegex never hands it, since such a pattern does not parse — is
+// copied, never read past the end of the pattern.
+func TestSpellDotsAsNotNewline(t *testing.T) {
+	for _, tc := range []struct {
+		pattern, want string
+		ok            bool
+	}{
+		{`a.Q`, `a[^\n]Q`, true},
+		{`\Q.\E.`, `\Q.\E[^\n]`, true},
+		{`\..`, `\.[^\n]`, true},
+		{`a\`, `a\`, true},
+		{`[.`, ``, false},
+	} {
+		got, ok := spellDotsAsNotNewline(tc.pattern)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("spellDotsAsNotNewline(%q) = %q, %v; want %q, %v", tc.pattern, got, ok, tc.want, tc.ok)
 		}
 	}
 }

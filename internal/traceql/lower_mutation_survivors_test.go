@@ -255,3 +255,25 @@ func TestCoerceBoolFieldAccess_OpGuard(t *testing.T) {
 		t.Errorf("coerceBoolFieldAccess(OpAnd) = (%#v, %#v); want both operands unchanged (non-equality op must not coerce)", lhs2, rhs2)
 	}
 }
+
+// TestAlignUnionArms_SameShapePairsPassThrough pins that only a mixed pair
+// is reshaped: two wide arms and two narrow arms already line up column for
+// column, so both come back untouched.
+func TestAlignUnionArms_SameShapePairsPassThrough(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelTraces()
+	wide := func() chplan.Node { return spanScan(s) }
+	narrow := func() chplan.Node { return narrowSpanProjection(spanScan(s), s) }
+	for _, tc := range []struct {
+		name        string
+		left, right chplan.Node
+	}{
+		{"wide pair", wide(), wide()},
+		{"narrow pair", narrow(), narrow()},
+	} {
+		gotL, gotR := alignUnionArms(tc.left, tc.right, s)
+		if gotL != tc.left || gotR != tc.right {
+			t.Errorf("%s: alignUnionArms reshaped a same-shape pair: got %T, %T", tc.name, gotL, gotR)
+		}
+	}
+}

@@ -131,3 +131,16 @@ func TestEmitNaryVectorSetOp_RejectsSingleArm(t *testing.T) {
 		t.Fatal("expected error emitting a single-arm N-ary node")
 	}
 }
+
+// TestEmitNaryVectorSetOp_AcceptsTwoArms proves the smallest node the
+// flatten rule mints — two arms — is emitted, as one flat UNION ALL.
+func TestEmitNaryVectorSetOp_AcceptsTwoArms(t *testing.T) {
+	t.Parallel()
+	sql, _, err := chsql.Emit(context.Background(), naryOp(chplan.VectorSetOr, "a", "b"))
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if got := strings.Count(sql, "UNION ALL"); got != 1 {
+		t.Errorf("UNION ALL count = %d, want 1; sql=%s", got, sql)
+	}
+}
