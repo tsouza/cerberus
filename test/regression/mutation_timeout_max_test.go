@@ -103,7 +103,11 @@ const (
 //     key -- the binary, toolchain, environment, mutation and the mutated
 //     package's test closure -- and recorded test-log inputs are unchanged. It
 //     changes no verdict, only which ones are recomputed.
-const gremlinsForkTag = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-verdict-cache-consume"
+//   - the `env-ignore-commas` family (#3828): `--cache-env-ignore` splits a
+//     comma-separated value. Earlier tags took mutation-run.mjs's comma-joined
+//     list as one pattern that matched no variable, so every key held the
+//     per-run Actions variables and no run could reuse another's verdict.
+const gremlinsForkTag = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-env-ignore-commas-consume"
 
 // TestMutationLaneCapsPerMutantTimeout (#1294) pins the one bound that keeps the
 // mutation lane from killing its own runner.
