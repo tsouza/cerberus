@@ -389,10 +389,6 @@ const (
 	// not a bound value.
 	FnCast Fn = "CAST"
 
-	// toDateTime(x) — x (a number or a parseable string) cast to DateTime (second
-	// resolution).
-	FnToDateTime Fn = "toDateTime"
-
 	// parseDateTime64BestEffort(s, precision) — the string s parsed as a
 	// DateTime64 at the given fractional-second precision, honouring any
 	// timezone designator s carries. TimeLiteral builds every absolute time
@@ -404,9 +400,10 @@ const (
 	// NaN payload survives it.
 	FnReinterpretAsFloat64 Fn = "reinterpretAsFloat64"
 
-	// reinterpretAsUInt64(x) — the UInt64 whose bytes are the Float64 x's
-	// IEEE-754 bit pattern: a bit-exact reinterpretation, so two NaNs with
-	// different payloads compare unequal.
+	// reinterpretAsUInt64(x) — the UInt64 whose bytes are x's: a bit-exact
+	// reinterpretation, not a numeric cast. For a Float64 x it is the IEEE-754
+	// bit pattern, so two NaNs with different payloads compare unequal; for an
+	// Int64 x it is the two's-complement bit pattern, Go's uint64(x).
 	FnReinterpretAsUInt64 Fn = "reinterpretAsUInt64"
 
 	// toFloat64(x) — x cast to Float64; aborts the query if x cannot be
@@ -500,27 +497,6 @@ const (
 	// precision.
 	FnNow64 Fn = "now64"
 
-	// toDayOfMonth(d) — d's day of the calendar month (1-31).
-	FnToDayOfMonth Fn = "toDayOfMonth"
-
-	// toDayOfWeek(d) — d's ISO day of the week (1=Monday..7=Sunday).
-	FnToDayOfWeek Fn = "toDayOfWeek"
-
-	// toDayOfYear(d) — d's ordinal day within the calendar year (1-366).
-	FnToDayOfYear Fn = "toDayOfYear"
-
-	// toHour(dt) — dt's hour-of-day (0-23), in the column's timezone.
-	FnToHour Fn = "toHour"
-
-	// toLastDayOfMonth(d) — the Date of the last day of d's calendar month.
-	FnToLastDayOfMonth Fn = "toLastDayOfMonth"
-
-	// toMinute(dt) — dt's minute-of-hour (0-59), in the column's timezone.
-	FnToMinute Fn = "toMinute"
-
-	// toMonth(d) — d's calendar month (1-12).
-	FnToMonth Fn = "toMonth"
-
 	// toUnixTimestamp64Milli(dt) — dt (DateTime64) as an Int64 count of
 	// milliseconds since the Unix epoch, TRUNCATING any sub-millisecond
 	// tail. Used wherever a DateTime64(9) column must be compared against
@@ -531,9 +507,6 @@ const (
 	// toUnixTimestamp64Nano(dt) — dt (DateTime64) as an Int64 count of nanoseconds
 	// since the Unix epoch.
 	FnToUnixNanos Fn = "toUnixTimestamp64Nano"
-
-	// toYear(d) — d's calendar year.
-	FnToYear Fn = "toYear"
 
 	// Math functions.
 	// bitAnd(x, y) — the bitwise AND of two integers.
@@ -569,6 +542,12 @@ const (
 	// intDiv(a, b) — the integer quotient of a by b, rounded toward zero;
 	// both operands integers. Throws on b = 0.
 	FnIntDiv Fn = "intDiv"
+
+	// modulo(a, b) — the integer remainder of a by b, taking a's sign
+	// (truncated division, the partner of [FnIntDiv]); both operands
+	// integers. Throws on b = 0. Not PromQL's `%`, which [OpMod] renders
+	// with Go's float math.Mod semantics.
+	FnModulo Fn = "modulo"
 
 	// pow(base, exp) — base raised to the power exp.
 	FnPow Fn = "pow"

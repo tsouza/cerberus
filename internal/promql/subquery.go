@@ -340,12 +340,10 @@ func wrapSubqueryIdentity(
 // sort family rewrites neither column (see instantTransformFns's own
 // membership doc). Every other member goes through
 // [lowerSubqueryIdentityMathReorder] or [lowerSubqueryIdentityDateReorder]
-// instead: encoding a marker into their Value unreordered doesn't merely
-// risk a corrupted bit pattern, it makes ClickHouse reject the query
-// outright (`toYear(fromUnixTimestamp64Nano(...))` on a NaN operand
-// raises `CANNOT_CONVERT_TYPE: Unexpected inf or nan to integer
-// conversion`), so this deliberately excludes them rather than trade a
-// stale answer for a 502.
+// instead: encoding a marker into their Value unreordered hands the
+// transform a NaN it must never see — the date kernel reads it as Go's
+// `int64(NaN)` second count and answers a real-looking date for a sample
+// Prometheus drops — so this deliberately excludes them.
 func subqueryIdentityValuePreserving(fn string) bool {
 	switch fn {
 	case fnLabelReplace, fnLabelJoin, "info",
@@ -432,9 +430,8 @@ func lowerSubqueryIdentityMathReorder(
 // each anchor's own latest sample, and drops the anchor a marker wins —
 // and only then applies the date-component kernel
 // ([projectDateFnOverInner]) to the survivors, so a marker's encoded NaN
-// is never handed to `toYear`/`toDayOfWeek`/etc, which reject it outright
-// (see [subqueryIdentityValuePreserving]'s own doc for the exact CH
-// error).
+// is never handed to the kernel, which would answer a date for it (see
+// [subqueryIdentityValuePreserving]'s own doc).
 //
 // The window stamps TimeUnix with the evaluation anchor. Date-component
 // functions read Value, so this preserves their input. timestamp(selector)
@@ -738,8 +735,8 @@ const subqueryAnchorShapeMaxCols = 5
 // [lowerSubqueryIdentityMathReorder]'s own doc for the verified
 // per-function evidence and the reorder that sidesteps it. The
 // date-component family has the same unsoundness for a different reason
-// — `toYear`/`toDayOfWeek`/etc. reject a NaN operand outright rather than
-// silently mangling it — and the same reorder, [lowerSubqueryIdentityDateReorder].
+// — the date kernel turns a NaN operand into a date rather than dropping
+// it — and the same reorder, [lowerSubqueryIdentityDateReorder].
 //
 // The remaining instantTransformFns members that never rewrite Value
 // (label_replace / label_join / info rewrite Attributes only; the sort

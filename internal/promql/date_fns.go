@@ -2,6 +2,7 @@ package promql
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -20,8 +21,8 @@ const timestampFunctionName = "timestamp"
 // When called without an argument the PromQL spec defaults the input to
 // `vector(time())` — a single instant-vector entry whose value is the
 // current evaluation timestamp in seconds. cerberus lowers that to a
-// degenerate `OneRow` source projecting
-// `(MetricName=”, Attributes={}, TimeUnix=now64(9), Value=toFloat64(<fn>(now())))`.
+// degenerate `OneRow` source (a `StepGrid` in range mode) projecting the
+// date component of the evaluation instant ([lowerDateFnNoArg]).
 // The `timestamp` function does NOT have a zero-arg form in upstream
 // PromQL — Prometheus rejects it during parsing — so the no-arg branch
 // is unreachable for that name; we keep the same shape anyway for
@@ -29,14 +30,16 @@ const timestampFunctionName = "timestamp"
 //
 // Semantic notes:
 //
-//   - PromQL `day_of_week` returns 0-6 with Sunday=0; ClickHouse
-//     `toDayOfWeek(d)` returns 1-7 with Monday=1, Sunday=7. We lower as
-//     `toDayOfWeek(d) % 7` which yields Mon=1, Tue=2, …, Sat=6, Sun=0 —
-//     exactly the PromQL semantics.
+//   - Every date component is computed from a whole count of Unix seconds
+//     by [goCivilTime], an integer-arithmetic transcription of Go's own
+//     `time` package calendar. ClickHouse's DateTime and DateTime64 types
+//     are never involved, so no input is clamped to their ranges: the
+//     answer is Prometheus's for every int64 second count.
 //
-//   - `days_in_month` lowers to `toDayOfMonth(toLastDayOfMonth(d))`
-//     because CH has no direct `daysInMonth` builtin; the day-of-month
-//     of the last day in the month is the day count for that month.
+//   - The seconds are what Prometheus feeds `time.Unix`: `int64(v)` of the
+//     sample value for the one-argument form ([valueAsUnixSeconds]), the
+//     evaluation instant's milliseconds divided by 1000 for the no-argument
+//     form ([evalUnixSeconds]).
 //
 //   - `timestamp(v)` ignores `Value`. For a VECTOR SELECTOR argument it
 //     reads the sample's own TimeUnix column; for every other argument
@@ -45,16 +48,12 @@ const timestampFunctionName = "timestamp"
 //     chosen DateTime64(9) becomes fractional Unix seconds via
 //     `toUnixTimestamp64Nano(<ts>) / 1e9`.
 //
-// Type-coercion note: every CH date-component function (`toYear`,
-// `toMonth`, `toDayOfMonth`, `toDayOfWeek`, `toHour`, `toMinute`)
-// returns a small integer (`UInt8` / `UInt16`). The cerberus Sample
-// row is decoded into `*float64`, and clickhouse-go/v2 refuses to
-// convert a UInt8/UInt16 column into `*float64` (errors with
-// `converting UInt16 to *float64 is unsupported`). Wrap every emit
-// in `toFloat64(...)` so the Value column lands as Float64 on the
-// wire — this is the same shape every other Float-typed Value
-// projection ends up with. `timestamp(v)` is already Float64 (it
-// divides by `1e9`) but wrapping it is harmless.
+// Type-coercion note: the calendar arithmetic yields integers of assorted
+// widths, and clickhouse-go/v2 refuses to scan an integer column into the
+// cerberus Sample row's `*float64` Value. Every emit is wrapped in
+// `toFloat64(...)` so the Value column lands as Float64 on the wire.
+// `timestamp(v)` is already Float64 (it divides by `1e9`) but wrapping it
+// is harmless.
 func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) > 1 {
 		return nil, fmt.Errorf("promql: %s expects 0 or 1 argument, got %d", c.Func.Name, len(c.Args))
@@ -158,7 +157,7 @@ func projectDateFnOverInner(c *parser.Call, inner chplan.Node, s schema.Metrics,
 	}
 	return guardedValueProjection(inner, c.Args[0], s, ctx, family, func(refs sampleRoleRefs) chplan.Expr {
 		inputSchema := refs.sourceMetrics(s)
-		return asFloat64(dateFnExpr(c.Func.Name, valueAsDateTime(inputSchema), timestampResultExpr(c.Args[0], inputSchema, ctx)))
+		return asFloat64(dateFnExpr(c.Func.Name, valueAsUnixSeconds(inputSchema), timestampResultExpr(c.Args[0], inputSchema, ctx)))
 	}, carriedSampleTimestampColumns(c.Func.Name, c.Args[0], ctx)...)
 }
 
@@ -231,42 +230,37 @@ func readsRangeSampleTimestamp(name string, arg parser.Expr, ctx lowerCtx) bool 
 
 // lowerDateFnNoArg synthesises a single-row constant instant vector for
 // the no-arg form of a date function. PromQL spec: `year()` ≡
-// `year(vector(time()))`. The result is a one-row vector with the time
-// component of the current eval timestamp as its sample value.
-//
-// We emit `OneRow` (cerberus's no-FROM `SELECT 1` source) wrapped in a
-// Project that builds the canonical Sample shape:
-//
-//	MetricName  = ''
-//	Attributes  = CAST(map(), 'Map(String,String)')
-//	TimeUnix    = now64(9)
-//	Value       = toFloat64(<date-fn>(now()))
-//
-// — matching the shape produced by an unaggregated PromQL aggregation
-// over the same single instant vector. The `toFloat64` wrap is
-// load-bearing: see the type-coercion note on `lowerDateFn` for the
-// rationale (the CH date-component builtins return UInt8/UInt16 and
-// clickhouse-go/v2 refuses to scan those into `*float64`).
-//
-// Historical note: this previously emitted `Scan{Database:"system",
-// Table:"one"}` — a qualified scan over CH's standard one-row table.
-// The SQL works against real CH 24.x, but using the dedicated
-// `chplan.OneRow` source is cleaner: it bypasses the qualified-table
-// emit path entirely and reuses the same `SELECT 1` shape that
-// `time()` / `vector(scalar)` already rely on.
-//
-// In range mode (ctx.step > 0) the source is swapped for a StepGrid
-// emitting one anchor per step in `[start, end]`; `now()` references
-// inside the value expression are rewritten by [syntheticScalarVector]
-// to read the per-row `anchor_ts` column so each step's row reflects
-// that step's date components.
+// `year(vector(time()))`. The result is a one-row vector with the date
+// component of the evaluation instant as its sample value
+// ([syntheticScalarVector] supplies the canonical Sample shape and, in
+// range mode, the per-step `StepGrid` source).
 func lowerDateFnNoArg(name string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	now := &chplan.FuncCall{Fn: chplan.FnNow}
-	expr := dateFnExpr(name, now, now)
+	expr := dateFnExpr(name, evalUnixSeconds(ctx), nil)
 	if expr == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", name)
 	}
 	return syntheticScalarVector(asFloat64(expr), nil, s, ctx), nil
+}
+
+// evalUnixSeconds renders the whole Unix seconds Prometheus's no-argument
+// date functions read: `time.Unix(enh.Ts/1000, 0)`, the evaluation
+// instant's milliseconds divided by 1000 and truncated toward zero.
+// Truncating the instant's nanoseconds by 1e9 in one step is the same
+// number, and ClickHouse's `intDiv` truncates toward zero as Go's `/` does.
+//
+// In instant mode the instant is the request anchor ([anchorBaseExpr]:
+// the literal evaluation time, or `now64(9)` when no anchor was
+// threaded). In range mode it is `now64(9)`, which
+// [syntheticScalarVector] rewrites to each step's `anchor_ts`.
+func evalUnixSeconds(ctx lowerCtx) chplan.Expr {
+	instant := chplan.NowNano()
+	if ctx.step <= 0 {
+		instant = anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
+	}
+	return &chplan.FuncCall{Fn: chplan.FnIntDiv, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnToUnixNanos, Args: []chplan.Expr{instant}},
+		&chplan.LitInt{V: chplan.NanoToSecondDivisor},
+	}}
 }
 
 // timestampResultExpr returns the expression `timestamp(v)` reports as
@@ -358,8 +352,8 @@ func evalInstantExpr(s schema.Metrics, ctx lowerCtx) chplan.Expr {
 }
 
 // asFloat64 wraps e in `toFloat64(...)`. Used by the date-function
-// lowerings to coerce CH integer return types (toYear → UInt16,
-// toMonth/toHour/etc → UInt8) into Float64, matching the Sample.Value
+// lowerings to coerce the date kernel's integer results into Float64,
+// matching the Sample.Value
 // column type the cursor decodes into. Idempotent for Float64 inputs
 // (CH's `toFloat64` is a no-op identity on Float64) so the wrap is
 // safe even on the `timestamp(v)` path that already yields Float64.
@@ -367,52 +361,35 @@ func asFloat64(e chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{e}}
 }
 
-// dateFnExpr returns the CH expression that computes the date-component
-// for the given PromQL function name. valueDT is the DateTime expression
-// derived from the input sample's Value (interpreted as Unix seconds);
-// tsRef is the timestamp expression `timestamp(v)` reports, chosen by the
-// caller from the argument's shape (see [timestampResultExpr]) — the raw
-// `TimeUnix` column for a vector selector, the evaluation instant
-// otherwise. No other date function reads it.
+// dateFnExpr returns the CH expression that computes the date component
+// for the given PromQL function name. unixSeconds is the Int64 count of
+// Unix seconds the component is taken from ([valueAsUnixSeconds],
+// [evalUnixSeconds]); tsRef is the timestamp expression `timestamp(v)`
+// reports, chosen by the caller from the argument's shape (see
+// [timestampResultExpr]) — the raw `TimeUnix` column for a vector
+// selector, the evaluation instant otherwise. No other date function
+// reads it.
 //
 // Returns nil when name is not a recognised date function — caller
 // translates that into an "unsupported" error.
-func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
+func dateFnExpr(name string, unixSeconds, tsRef chplan.Expr) chplan.Expr {
 	switch name {
 	case "year":
-		return &chplan.FuncCall{Fn: chplan.FnToYear, Args: []chplan.Expr{valueDT}}
+		return goCivil(unixSeconds).year()
 	case "month":
-		return &chplan.FuncCall{Fn: chplan.FnToMonth, Args: []chplan.Expr{valueDT}}
+		return goCivil(unixSeconds).month()
 	case "day_of_month":
-		return &chplan.FuncCall{Fn: chplan.FnToDayOfMonth, Args: []chplan.Expr{valueDT}}
+		return goCivil(unixSeconds).dayOfMonth()
 	case "day_of_year":
-		// PromQL `day_of_year` returns 1-366 (Jan 1 = 1); CH's
-		// `toDayOfYear(d)` uses the identical 1-based convention, so it
-		// maps directly with no offset.
-		return &chplan.FuncCall{Fn: chplan.FnToDayOfYear, Args: []chplan.Expr{valueDT}}
+		return goCivil(unixSeconds).dayOfYear()
 	case "day_of_week":
-		// CH toDayOfWeek default returns Mon=1..Sun=7 (ISO).
-		// PromQL day_of_week returns Sun=0..Sat=6 (US).
-		// `toDayOfWeek(d) % 7` maps 7→0 and leaves 1..6 unchanged,
-		// yielding the PromQL semantics directly.
-		return &chplan.Binary{
-			Op:    chplan.OpMod,
-			Left:  &chplan.FuncCall{Fn: chplan.FnToDayOfWeek, Args: []chplan.Expr{valueDT}},
-			Right: &chplan.LitInt{V: 7},
-		}
+		return goCivil(unixSeconds).dayOfWeek()
 	case "days_in_month":
-		// CH has no direct daysInMonth; the day-of-month of the last
-		// day in the month IS the day count for that month.
-		return &chplan.FuncCall{
-			Fn: chplan.FnToDayOfMonth,
-			Args: []chplan.Expr{
-				&chplan.FuncCall{Fn: chplan.FnToLastDayOfMonth, Args: []chplan.Expr{valueDT}},
-			},
-		}
+		return goCivil(unixSeconds).daysInMonth()
 	case "hour":
-		return &chplan.FuncCall{Fn: chplan.FnToHour, Args: []chplan.Expr{valueDT}}
+		return goCivil(unixSeconds).hour()
 	case "minute":
-		return &chplan.FuncCall{Fn: chplan.FnToMinute, Args: []chplan.Expr{valueDT}}
+		return goCivil(unixSeconds).minute()
 	case timestampFunctionName:
 		// `timestamp(v)` returns tsRef as float seconds — NOT a
 		// function of Value. Convert the DateTime64(9) expression to
@@ -427,20 +404,31 @@ func dateFnExpr(name string, valueDT, tsRef chplan.Expr) chplan.Expr {
 	return nil
 }
 
-// valueAsDateTime renders `toDateTime(toInt64(Value), 'UTC')` — the
-// PromQL convention that Value is Unix seconds, which CH's date-component
-// functions consume after a cast through Int64 → DateTime. We pin the
-// timezone to UTC explicitly so the returned components don't drift with
-// the server's default timezone (PromQL specifies UTC).
-func valueAsDateTime(s schema.Metrics) chplan.Expr {
-	return &chplan.FuncCall{
-		Fn: chplan.FnToDateTime,
-		Args: []chplan.Expr{
-			&chplan.FuncCall{
-				Fn:   chplan.FnToInt64,
-				Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
-			},
-			&chplan.LitString{V: "UTC"},
-		},
+// goInt64ConversionMin and goInt64ConversionEnd bound the float64 values
+// Go's `int64(v)` converts by truncation: [-2^63, 2^63). Every other
+// value — NaN, ±Inf, and any finite value outside that span — converts to
+// math.MinInt64 on amd64, the architecture Prometheus releases are
+// measured on. Both bounds are exact float64 values.
+const (
+	goInt64ConversionMin = float64(math.MinInt64)
+	goInt64ConversionEnd = -goInt64ConversionMin
+)
+
+// valueAsUnixSeconds renders Go's `int64(Value)` as an Int64 — the
+// seconds Prometheus's date functions pass to `time.Unix`. A value inside
+// [goInt64ConversionMin, goInt64ConversionEnd) truncates toward zero, as
+// ClickHouse's `toInt64` does; every other value, NaN included, becomes
+// math.MinInt64. The out-of-range value is replaced BEFORE the cast
+// rather than after it, because ClickHouse's `toInt64` throws on NaN and
+// ±Inf and `if` evaluates both of its branches.
+func valueAsUnixSeconds(s schema.Metrics) chplan.Expr {
+	value := &chplan.ColumnRef{Name: s.ValueColumn}
+	convertible := &chplan.Binary{
+		Op:    chplan.OpAnd,
+		Left:  &chplan.Binary{Op: chplan.OpGe, Left: value, Right: &chplan.LitFloat{V: goInt64ConversionMin}},
+		Right: &chplan.Binary{Op: chplan.OpLt, Left: value, Right: &chplan.LitFloat{V: goInt64ConversionEnd}},
 	}
+	return &chplan.FuncCall{Fn: chplan.FnToInt64, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{convertible, value, &chplan.LitFloat{V: goInt64ConversionMin}}},
+	}}
 }
