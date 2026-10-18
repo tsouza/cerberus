@@ -1,5 +1,7 @@
-// Package chdbsession owns the process-exit half of libchdb's session
-// lifecycle for chdb-tagged TEST binaries.
+// Package chdbsession owns the process-wide half of libchdb's session
+// lifecycle for chdb-tagged TEST binaries: the embedded server's timezone,
+// pinned to UTC when the package initialises (see [ServerTimezone]), and the
+// session's shutdown at process exit.
 //
 // libchdb is an embedded ClickHouse loaded into the test process with
 // dlopen. chdb-go caches ONE process-wide `*chdb.Session` (its package-level
@@ -24,6 +26,10 @@
 // triggers run against an engine that has already been shut down cleanly.
 // Wire it into a package's TestMain — see [CloseForExit]'s example — and
 // that package's chdb-tagged tests become `-race`-safe.
+//
+// Linking the package is what pins the timezone, so the same TestMain
+// wiring that makes a package `-race`-safe also makes its chDB tests give the
+// same verdict on a UTC CI runner and on a non-UTC developer host.
 //
 // The non-chdb build of this package is a no-op, so an untagged TestMain
 // can call [CloseForExit] unconditionally without dragging libchdb into
