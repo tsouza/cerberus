@@ -29,7 +29,7 @@ var queryExemplarsFixtureDir = filepath.Join("..", "..", "test", "spec", "promql
 // fixture is:
 //  1. Create the .txtar with at least an empty `-- sql --` section.
 //  2. Register an entry here — one ExemplarArm per candidate table.
-//  3. Run `GOLDEN_UPDATE=1 just test-spec` to materialise the SQL.
+//  3. Run `just update-golden promql` to materialise the SQL.
 //  4. Review the diff and commit both files.
 //
 // The handler-side scenarios (multi-matcher predicate, large window,
