@@ -59,13 +59,16 @@ test('the batch resolves to each member with its own description and author', as
   const draft = draftPullRequest({ numbers: [7, 8] });
   const { fetchImpl } = fakeApi({
     draft,
-    members: { 7: { body: 'First change.', author: 'a' }, 8: { body: 'Second change.', author: 'b' } },
+    members: {
+      7: { title: 'fix: first', body: 'First change.', author: 'a' },
+      8: { title: 'feat: second', body: 'Second change.', author: 'b' },
+    },
   });
   const { draft: number, batch } = await resolveMergeQueueBatch({ number: DRAFT, repository: REPO, apiBase: API, token: 't', fetchImpl });
   assert.equal(number, DRAFT);
   assert.deepEqual(batch, [
-    { number: 7, body: 'First change.', author: 'a' },
-    { number: 8, body: 'Second change.', author: 'b' },
+    { number: 7, title: 'fix: first', body: 'First change.', author: 'a' },
+    { number: 8, title: 'feat: second', body: 'Second change.', author: 'b' },
   ]);
 });
 

@@ -51,7 +51,7 @@ export function draftPullRequest({ numbers, overrides = {} }) {
 }
 
 // fakeApi answers the draft, each batch member and each comparison. `members`
-// maps a number to { body, author, base, compare }.
+// maps a number to { title, body, author, base, compare }.
 export function fakeApi({ draft, members }) {
   const calls = [];
   const fetchImpl = async (url) => {
@@ -63,6 +63,7 @@ export function fakeApi({ draft, members }) {
       if (url === `${API}/repos/${REPO}/pulls/${n}`) {
         return ok({
           number: Number(n),
+          title: m.title ?? `fix: batch member ${n}`,
           body: m.body,
           user: { login: m.author ?? 'someone' },
           base: { ref: m.base ?? 'main' },

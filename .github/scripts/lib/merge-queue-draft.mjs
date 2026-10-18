@@ -30,7 +30,7 @@
 //   isMergeQueueDraft(pr, repository)
 //   batchNumbers(body)
 //   resolveMergeQueueBatch({ number, repository, apiBase, token, fetchImpl })
-//     → { draft, batch: [{ number, body, author }] }
+//     → { draft, batch: [{ number, title, body, author }] }
 
 import { ghJSON, NOT_FOUND_THROW } from './gh-api.mjs';
 
@@ -115,6 +115,7 @@ export async function resolveMergeQueueBatch({ number: draftNumber, repository, 
     }
     batch.push({
       number,
+      title: typeof pr.title === 'string' ? pr.title : '',
       body: typeof pr.body === 'string' ? pr.body : '',
       author: typeof pr?.user?.login === 'string' && pr.user.login.trim() !== '' ? pr.user.login.trim() : null,
     });

@@ -43,6 +43,11 @@
 //   COMMITLINT_CONFIG  Path to the commitlint config. Default: .commitlintrc.json
 //   GIT_CWD            Working directory for the commitlint invocation.
 //
+// On a merge-queue draft (lib/merge-queue-draft.mjs) the draft's own title
+// never lands: each pull request in the batch is squash-merged under its own
+// title. The gate lints each batch member's landing subject instead, and one
+// failure fails the draft.
+//
 // Exit codes: 0 = the landing subject passed commitlint; 1 = it failed, or
 // PR_TITLE / PR_NUMBER was absent. An absent input is a FAILURE and never a
 // silent pass: this gate runs only on `pull_request`, where both always exist,
@@ -57,6 +62,8 @@ import { pathToFileURL } from 'node:url';
 
 import { defaultLintOne } from './commitlint-range.mjs';
 import { error, log, notice } from './lib/gh.mjs';
+import { eventPayloadPullRequest } from './forbid-deferral.mjs';
+import { isMergeQueueDraft, resolveMergeQueueBatch } from './lib/merge-queue-draft.mjs';
 import { fetchPullRequest } from './lib/pull-request.mjs';
 
 // landingSubject — the subject GitHub's squash merge will actually write.
@@ -118,24 +125,48 @@ export function run({ title, number, cwd, config = '.commitlintrc.json', lintOne
   return 0;
 }
 
+// runBatch — lint the landing subject of every pull request in the list, each
+// under its own number: one pull request, or a merge-queue batch. Every one is
+// linted, so the log names each failure; the run fails if any does.
+export function runBatch({ batch, cwd, config = '.commitlintrc.json', lintOne = defaultLintOne }) {
+  if (batch.length === 0) {
+    error('commitlint-pr-title: no pull request to lint — the gate examined nothing.');
+    return 1;
+  }
+  let status = 0;
+  for (const member of batch) {
+    log(`commitlint-pr-title: #${member.number}`);
+    status = Math.max(status, run({ title: member.title, number: member.number, cwd, config, lintOne }));
+  }
+  return status;
+}
+
+// subjectsToLint — the pull requests whose landing subjects this run judges:
+// the batch on a merge-queue draft, otherwise the one pull request, its title
+// read live because the event payload can be stale.
+export async function subjectsToLint({ event, eventName, title, number, repository, apiBase, token, fetchImpl }) {
+  if (eventName === 'pull_request' && isMergeQueueDraft(event, repository)) {
+    const { batch } = await resolveMergeQueueBatch({ number: event.number, repository, apiBase, token, fetchImpl });
+    return batch;
+  }
+  if (eventName === 'pull_request') {
+    ({ title } = await fetchPullRequest({ apiUrl: apiBase, repository, number, token, fetchImpl }));
+  }
+  return [{ title, number }];
+}
+
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
-  let title = process.env.PR_TITLE;
-  if (process.env.GITHUB_EVENT_NAME === 'pull_request') {
-    title = (
-      await fetchPullRequest({
-        apiUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
-        repository: process.env.GITHUB_REPOSITORY,
-        number: process.env.PR_NUMBER,
-        token: process.env.GITHUB_TOKEN,
-      })
-    ).title;
-  }
-  const status = run({
-    title,
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  const subjects = await subjectsToLint({
+    event: eventPayloadPullRequest(process.env.GITHUB_EVENT_PATH),
+    eventName,
+    title: process.env.PR_TITLE,
     number: process.env.PR_NUMBER,
-    cwd: process.env.GIT_CWD,
-    config: process.env.COMMITLINT_CONFIG ?? '.commitlintrc.json',
+    repository: process.env.GITHUB_REPOSITORY,
+    apiBase: process.env.GITHUB_API_URL || 'https://api.github.com',
+    token: process.env.GITHUB_TOKEN,
   });
-  process.exit(status);
+  const lintArgs = { cwd: process.env.GIT_CWD, config: process.env.COMMITLINT_CONFIG ?? '.commitlintrc.json' };
+  process.exit(runBatch({ batch: subjects, ...lintArgs }));
 }

@@ -15,7 +15,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { landingSubject, run } from './commitlint-pr-title.mjs';
+import { landingSubject, run, runBatch, subjectsToLint } from './commitlint-pr-title.mjs';
+import { API, DRAFT, REPO, draftPullRequest, fakeApi } from './lib/merge-queue-draft.fixture.mjs';
 
 // The repository's own type-enum, verbatim from .commitlintrc.json.
 const TYPES = [
@@ -118,4 +119,57 @@ test('the injected linter is actually consulted (the fake is not a rubber stamp)
   };
   run({ title: 'fix(ci): thing', number: 1, lintOne: counting });
   assert.equal(calls, 1, 'run() must lint through the injected linter exactly once');
+});
+
+// --- a merge-queue draft -----------------------------------------------------
+
+// recording wraps fakeCommitlint and keeps every subject it was asked about.
+function recording() {
+  const seen = [];
+  return { seen, lintOne: (message) => (seen.push(message), fakeCommitlint(message)) };
+}
+
+test('a merge-queue draft lints each batch member\'s landing subject, never its own title', async () => {
+  // The draft is never merged; each member squashes onto main under its own
+  // title, so the draft's "merge queue: …" title is not a subject that lands.
+  const draft = draftPullRequest({
+    numbers: [7, 8],
+    overrides: { title: 'merge queue: checking #7, #8 on main (1db3f2d)' },
+  });
+  const { fetchImpl } = fakeApi({
+    draft,
+    members: { 7: { title: 'fix(promql): first', body: 'x' }, 8: { title: 'ci: second', body: 'y' } },
+  });
+  const batch = await subjectsToLint({ event: draft, eventName: 'pull_request', repository: REPO, apiBase: API, token: 't', fetchImpl });
+  const linter = recording();
+  assert.equal(runBatch({ batch, lintOne: linter.lintOne }), 0);
+  assert.deepEqual(linter.seen, ['fix(promql): first (#7)', 'ci: second (#8)']);
+});
+
+test('one batch member with a bad landing subject fails the draft, and every member is still linted', () => {
+  const linter = recording();
+  const batch = [
+    { number: 7, title: 'wibble: not a type' },
+    { number: 8, title: 'fix: fine' },
+  ];
+  assert.equal(runBatch({ batch, lintOne: linter.lintOne }), 1);
+  assert.equal(linter.seen.length, 2);
+});
+
+test('an empty batch fails rather than passing having linted nothing', () => {
+  assert.equal(runBatch({ batch: [], lintOne: fakeCommitlint }), 1);
+});
+
+test('an ordinary pull request is linted under its own live title and number', async () => {
+  const pr = { ...draftPullRequest({ numbers: [7] }), number: 42, user: { login: 'someone', type: 'User' } };
+  const fetchImpl = async (url) => ({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    json: async () => (url === `${API}/repos/${REPO}/pulls/42` ? { title: 'fix: live title', body: 'b' } : {}),
+  });
+  const subjects = await subjectsToLint({
+    event: pr, eventName: 'pull_request', title: 'fix: stale payload title', number: '42', repository: REPO, apiBase: API, token: 't', fetchImpl,
+  });
+  assert.deepEqual(subjects, [{ title: 'fix: live title', number: '42' }]);
 });
