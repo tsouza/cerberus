@@ -383,47 +383,10 @@ func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 	}
 	// `or` between a float-valued operand and a histogram-valued operand
 	// (cerberus issue #2330), and every wrapper composition around that
-	// same mixed shape (cerberus issues #2346/#2449) — split out into
-	// [lowerMixedExpHistogramFamily] purely to keep this function's own
-	// golangci-lint maintainability-index score over the repo's floor; the
-	// dispatch order and semantics are unchanged, see that function's own
-	// doc for the per-recognizer rationale each check used to carry here.
-	if plan, ok, err := lowerMixedExpHistogramFamily(expr, s, ctx); ok {
-		return plan, true, err
-	}
-	// Vector-vector `==`/`!=`/`<`/`<=`/`>`/`>=`, with or without `bool`,
-	// where BOTH operands are themselves a mixed `or` — neither side a
-	// scalar literal (cerberus issue #2449, the eighth wrapper family, and
-	// the piece PR #2521's own vector-vector arithmetic pass named as its
-	// next remaining scope). Checked here for the identical reason every
-	// sibling recognizer above is: a mixed `or` operand never resolves as
-	// purely histogram-valued, so nothing above this line can have
-	// consumed the shape yet, and this recognizer's own scalar-literal
-	// exclusion keeps it disjoint from
-	// [comparisonOverMixedExpHistogramSetOp] just above (that one requires
-	// exactly one side to fold to a scalar; this one requires neither side
-	// to). histogram_native_mixed_or_vector_comparison.go has the
-	// composition's own doc comment for the four-combination semantics
-	// decision — notably, that reference's `bool` modifier does NOT keep
-	// every matched pair regardless of type compatibility, contrary to
-	// what the arithmetic pass's own header had assumed.
-	if lhs, rhs, op, match, card, include, returnBool, ok := comparisonVectorVectorOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithBespokeMixedOperandPolicy(mixedVectorComparisonFamily, mixedRootAdmission, func() (chplan.Node, error) {
-			return lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhs, rhs, op, match, card, include, returnBool, s, ctx)
-		})
-		return plan, true, err
-	}
-	// `==`/`!=`/`<`/`<=`/`>`/`>=`, with or without `bool`, where exactly
-	// ONE operand is a mixed `or` and the OTHER is an ordinary, non-mixed,
-	// non-histogram-valued vector (cerberus issue #2449's tenth and final
-	// wrapper family's comparison half). Checked here for the identical
-	// reason its both-mixed sibling just above is, with the same
-	// disjointness guarantee. histogram_native_mixed_or_vector_plain_comparison.go
-	// has the composition's own doc comment.
-	if mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, returnBool, ok := comparisonVectorPlainOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerWithBespokeMixedOperandPolicy(mixedVectorComparisonFamily, mixedRootAdmission, func() (chplan.Node, error) {
-			return lowerComparisonVectorPlainOverMixedExpHistogramSetOp(mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, returnBool, s, ctx)
-		})
+	// same mixed shape (cerberus issues #2346/#2449) — see
+	// [lowerMixedRelationFamily] for the dispatch and the per-recognizer
+	// rationale.
+	if plan, ok, err := lowerMixedRelationFamily(expr, s, ctx); ok {
 		return plan, true, err
 	}
 	// sum_over_time() / avg_over_time() and last_over_time() /
@@ -543,12 +506,63 @@ func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 	return nil, false, nil
 }
 
+// lowerMixedRelationFamily is the one dispatch for a mixed float/histogram
+// `or` and every wrapper recognizer composed directly over one: the
+// [lowerMixedExpHistogramFamily] table, then the two vector-vector
+// comparison families. It runs wherever such an expression is lowered as a
+// whole relation — the query root ([lowerHistogramNativeRoot]) and an
+// operand of a vector set operator ([lowerVectorSetOpOperand]) — so a
+// wrapper [isMixedRelationShape] reports as a mixed relation lowers the
+// same way in both places. ok is false when no recognizer matched.
+func lowerMixedRelationFamily(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	if plan, ok, err := lowerMixedExpHistogramFamily(expr, s, ctx); ok {
+		return plan, true, err
+	}
+	// Vector-vector `==`/`!=`/`<`/`<=`/`>`/`>=`, with or without `bool`,
+	// where BOTH operands are themselves a mixed `or` — neither side a
+	// scalar literal (cerberus issue #2449, the eighth wrapper family, and
+	// the piece PR #2521's own vector-vector arithmetic pass named as its
+	// next remaining scope). Checked here for the identical reason every
+	// sibling recognizer above is: a mixed `or` operand never resolves as
+	// purely histogram-valued, so nothing above this line can have
+	// consumed the shape yet, and this recognizer's own scalar-literal
+	// exclusion keeps it disjoint from
+	// [comparisonOverMixedExpHistogramSetOp] just above (that one requires
+	// exactly one side to fold to a scalar; this one requires neither side
+	// to). histogram_native_mixed_or_vector_comparison.go has the
+	// composition's own doc comment for the four-combination semantics
+	// decision — notably, that reference's `bool` modifier does NOT keep
+	// every matched pair regardless of type compatibility, contrary to
+	// what the arithmetic pass's own header had assumed.
+	if lhs, rhs, op, match, card, include, returnBool, ok := comparisonVectorVectorOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedVectorComparisonFamily, mixedRootAdmission, func() (chplan.Node, error) {
+			return lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhs, rhs, op, match, card, include, returnBool, s, ctx)
+		})
+		return plan, true, err
+	}
+	// `==`/`!=`/`<`/`<=`/`>`/`>=`, with or without `bool`, where exactly
+	// ONE operand is a mixed `or` and the OTHER is an ordinary, non-mixed,
+	// non-histogram-valued vector (cerberus issue #2449's tenth and final
+	// wrapper family's comparison half). Checked here for the identical
+	// reason its both-mixed sibling just above is, with the same
+	// disjointness guarantee. histogram_native_mixed_or_vector_plain_comparison.go
+	// has the composition's own doc comment.
+	if mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, returnBool, ok := comparisonVectorPlainOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerWithBespokeMixedOperandPolicy(mixedVectorComparisonFamily, mixedRootAdmission, func() (chplan.Node, error) {
+			return lowerComparisonVectorPlainOverMixedExpHistogramSetOp(mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, returnBool, s, ctx)
+		})
+		return plan, true, err
+	}
+	return nil, false, nil
+}
+
 // lowerMixedExpHistogramFamily dispatches `or` between a float-valued
 // operand and a histogram-valued operand (cerberus issue #2330 — the
 // exactly-one-side sibling of [expHistogramSetOp]'s both-sides-histogram
 // case [lowerExpHistogramValuedShape] handles) and every wrapper
-// composition [lowerRoot] tries around that same mixed shape. Deliberately
-// checked only from [lowerRoot], never from inside
+// composition [lowerRoot] tries around that same mixed shape. Reached only
+// through [lowerMixedRelationFamily] — from [lowerRoot], a vector set
+// operator's operand and a mixed `or`'s float arm — never from inside
 // [lowerExpHistogramValuedShape]'s own recursive dispatch table; see
 // [mixedExpHistogramSetOp]'s doc comment for why. Split out of lowerRoot's
 // own body (this function used to be eight sequential `if` blocks inline

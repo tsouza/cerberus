@@ -113,7 +113,10 @@ import (
 // Histogram-shaped, Sample-shaped, or another Mixed-shaped other arm
 // (mixedVectorSetOpArmFrag) the same way it already composes the
 // two-pure-shapes case this function itself builds. See
-// [chplan.VectorSetOp.Mixed]'s doc comment for the full picture.
+// [chplan.VectorSetOp.Mixed]'s doc comment for the full picture. A
+// wrapper over a mixed `or` in that operand position, or in a mixed
+// `or`'s own float arm, routes through [lowerMixedRelationFamily] — the
+// same recognizers [lowerRoot] runs (cerberus issue #3823).
 func mixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.BinaryExpr, bool) {
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin {
@@ -261,7 +264,7 @@ func lowerMixedExpHistogramOperands(
 	if err != nil {
 		return nil, nil, false, err
 	}
-	floatNode, err = lower(floatExpr, s, ctx)
+	floatNode, err = lowerMixedFloatArm(floatExpr, s, ctx)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -277,6 +280,19 @@ func lowerMixedExpHistogramOperands(
 		return nil, nil, false, fmt.Errorf("promql: mixed 'or' float operand: %w", err)
 	}
 	return histNode, floatNode, histOnLeft, nil
+}
+
+// lowerMixedFloatArm lowers the float-valued side of a mixed `or`. A
+// float-narrowing wrapper composed directly over a further mixed `or` —
+// `count((a or b))`, `abs((a or b))`, `topk(2, (a or b))` — is a
+// float-valued operand that only [lowerMixedRelationFamily]'s recognizers
+// lower, so they run first, exactly as at the query root; every other
+// float operand lowers through the generic [lower].
+func lowerMixedFloatArm(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if plan, ok, err := lowerMixedRelationFamily(expr, s, ctx); ok {
+		return plan, err
+	}
+	return lower(expr, s, ctx)
 }
 
 // mixedExpHistogramMatch translates b's `on`/`ignoring` vector-matching
