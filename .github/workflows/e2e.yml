@@ -1883,8 +1883,11 @@ jobs:
   # every OTHER shard is decided entirely inside ClickHouse, invisible to any
   # k8s Service — see docs/helm-clickhouse.md's "#3075 compatibility"
   # section for the full investigation and the `load_balancing=
-  # first_or_random` + `load_balancing_first_offset=0` fix
-  # (`internal/chclient/distributed_query_settings.go`).
+  # first_or_random` + `load_balancing_first_offset=0` +
+  # `use_hedged_requests=0` fix (cerberus issues #3086, #3148;
+  # `internal/chclient/distributed_query_settings.go`) — without the last
+  # one, ClickHouse's hedged requests race a merely slow offset-0 replica
+  # and move the pin with every `errors_count` still at 0.
   #
   # Deliberately LIGHTER than `datashard`: fixed at count=2/replicas=2 (no
   # matrix — this leg's axis is replica count, not shard count, which

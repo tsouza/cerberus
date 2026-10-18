@@ -187,22 +187,47 @@ to read 0 on every replica, on the theory that only recorded connection
 errors could move it. A later run (e2e run 39099569653) still split one
 trace's 48 statements on data-shard 1 across both of its replicas with every
 `errors_count` at 0. The cause is ClickHouse's hedged-request path, on by
-default: when the offset-0 replica takes longer than
-`hedged_connection_timeout_ms` (50ms) to finish establishing a connection, or
-longer than `receive_data_timeout_ms` (2s) to send its first packet, the
-initiator races the next replica and takes whichever answers first. It
-records the switch as that replica's `slowdown_count`, not its
-`error_count`, and the hedged path sorts replicas by `slowdown_count` ahead of
-the `load_balancing` priority — so one slow handshake on a loaded node moves
-every later statement to the other replica until the count decays. A local
-two-shard, two-replica ClickHouse 26.6 rig reproduced it: with 80ms, or
-20ms ± 15ms, of added latency on the offset-0 replica of shard 2, 40 concurrent
-`first_or_random` reads all landed on the second replica with
-`errors_count=0` and `slowdowns_count>0`, and with `use_hedged_requests=0`
-all 40 landed on the offset-0 replica. Hedged requests trade replica
-determinism for tail latency; cerberus takes determinism, the same posture
-as the rest of these pins, and a replica that cannot accept a connection
-still fails over within `connect_timeout_with_failover_ms`.
+default. It has two replica switches, and neither touches `error_count`:
+
+- When the offset-0 replica takes longer than `hedged_connection_timeout_ms`
+  (50ms) to finish establishing a connection, the initiator races the next
+  replica and takes whichever is ready first. This switch records the slow
+  replica's `slowdown_count`, and the hedged path sorts replicas by
+  `slowdown_count` ahead of the `load_balancing` priority, so one slow
+  handshake on a loaded node moves every later statement to the other
+  replica until the count decays.
+- When the first data packet takes longer than `receive_data_timeout_ms`
+  (2s), the initiator races the next replica for that one statement. This
+  switch records only the `HedgedRequestsChangeReplica` profile event.
+
+A local two-shard, two-replica ClickHouse 26.6 rig reproduced the first
+switch: with 80ms, or 20ms ± 15ms, of added latency on the offset-0 replica
+of shard 2, 40 concurrent `first_or_random` reads all landed on the second
+replica with `errors_count=0` and `slowdowns_count>0`, and with
+`use_hedged_requests=0` all 40 landed on the offset-0 replica.
+
+With hedging off, the plain failover path still leaves the offset-0 replica
+when connecting to it fails (recorded in `error_count`), when it is stale
+past `max_replica_delay_for_distributed_queries` (300s), or when it lacks the
+table. The last two are not recorded in `error_count`, so a clean
+`errors_count` does not rule them out; they are the stated limits of the
+guarantee, not gaps in it.
+
+Hedged requests trade replica determinism for tail latency, and turning them
+off gives that latency back. A slow replica is waited on instead of raced
+after 50ms. A replica that accepts TCP but stalls before its hello costs a
+full `handshake_timeout_ms` (10s) before the statement fails over. A replica
+that is connected but slow to send data is never failed over: the statement
+waits up to `max_execution_time`, where hedging raced it after 2s.
+Single-statement queries pay this too, without a multi-statement consistency
+benefit. The pin stays unconditional anyway, for three reasons. One
+statement can read the same remote shard twice: every self-referencing
+IN/JOIN that `distributed_product_mode=global` rewrites computes its inner
+and outer sides as separate remote reads. Consecutive requests, such as one
+dashboard's panels, are as exposed to disagreeing replicas as one request's
+statements. And the transport layer that stamps the setting has no view of
+plan shape. Cerberus takes determinism, the same posture as the rest of these
+pins.
 
 **The read-concentration trade-off is PERMANENT, not a bug to keep chasing.**
 Concentrating every cerberus read against a remote shard's `Distributed`

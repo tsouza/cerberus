@@ -126,46 +126,71 @@ package chclient
 // settingUseHedgedRequests (cerberus issue #3148) closes the hole the two
 // load_balancing pins above leave open on their own: `first_or_random`
 // orders a shard's replicas, but ClickHouse's HEDGED-request path — on by
-// default (`use_hedged_requests=1`) and used for every remote-shard read
-// whenever `max_parallel_replicas <= 1` — does not simply take the first
-// replica of that order. `HedgedConnectionsFactory`
-// (src/Client/HedgedConnectionsFactory.cpp, confirmed at `v26.6.8.7-stable`)
-// starts a SECOND connection to the next replica whenever the first one has
-// not finished establishing (connect + hello + the TablesStatus staleness
-// probe) within `hedged_connection_timeout_ms` (50ms default), and
-// `HedgedConnections` does the same whenever the first data packet takes
-// longer than `receive_data_timeout_ms` (2000ms default); whichever replica
-// answers first serves the statement. Each such switch increments that
-// replica's `slowdown_count`, NOT its `error_count`, and the hedged path
-// sorts replicas by `(error_count, slowdown_count, config_priority,
-// priority, random)` (`PoolWithFailoverBase::PoolState::compare` with
-// `use_slowdown_count=true`) — so one slow handshake demotes offset 0 for
-// every later statement until `distributed_replica_error_half_life` decays
-// it, while `system.clusters.errors_count` stays 0 throughout. A loaded but
-// perfectly healthy offset-0 replica therefore splits ONE request's
-// statements across two replicas of the same shard: exactly the divergence
-// this file's load_balancing pins exist to close, observed on a real
-// two-replica-per-shard cluster in e2e run 39099569653 with every
-// replica's `errors_count` at 0.
+// default (`use_hedged_requests=1`); `RemoteQueryExecutor` picks it on that
+// setting alone, and parallel replicas switch it off themselves — does not
+// simply take the first replica of that order. Two switches exist
+// (confirmed at `v25.8.1.5101-lts` and `v26.6.8.7-stable`):
+//
+//   - connection setup: `HedgedConnectionsFactory` starts a SECOND
+//     connection to the next replica whenever the first one has not
+//     finished establishing (connect + hello + the TablesStatus staleness
+//     probe) within `hedged_connection_timeout_ms` (50ms default), and uses
+//     whichever is ready first. This switch increments the slow replica's
+//     `slowdown_count` (NOT its `error_count`), and the hedged path sorts
+//     replicas by `(error_count, slowdown_count, config_priority, priority,
+//     random)` (`PoolWithFailoverBase::PoolState::compare` with
+//     `use_slowdown_count=true`) — so one slow handshake demotes offset 0 for
+//     every LATER statement until `distributed_replica_error_half_life`
+//     decays it.
+//   - first data packet: `HedgedConnections` races the next replica whenever
+//     the first data packet takes longer than `receive_data_timeout_ms`
+//     (2000ms default). This switch records only the
+//     `HedgedRequestsChangeReplica` profile event and moves THAT one
+//     statement.
+//
+// Either way `system.clusters.errors_count` stays 0, so a loaded but healthy
+// offset-0 replica splits ONE request's statements across two replicas of
+// the same shard: exactly the divergence the load_balancing pins exist to
+// close, observed on a real two-replica-per-shard cluster in e2e run
+// 39099569653 with every replica's `errors_count` at 0.
 //
 //   - use_hedged_requests=0 — routes remote-shard connection acquisition
-//     through `ConnectionPoolWithFailover`'s plain `getMany` instead, which
-//     walks the `first_or_random` order SEQUENTIALLY and only moves past a
-//     replica when connecting to it FAILS (`connect_timeout_with_failover_ms`,
-//     1000ms default, or a refusal) — a failure that does increment
-//     `error_count`. Slowness alone no longer moves the pin; only a real
-//     connection failure does, which is the one precondition the
-//     load_balancing doc above states. The plain path also sorts WITHOUT
+//     through `ConnectionPoolWithFailover`'s plain `getMany`, which walks
+//     the `first_or_random` order SEQUENTIALLY and sorts WITHOUT
 //     `slowdown_count` (`getShuffledPools`'s `use_slowdown_count=false`
-//     default), so a slowdown recorded by some OTHER client's hedged query
-//     cannot demote offset 0 for cerberus's statements either.
+//     default), so slowness alone — this client's or a slowdown some OTHER
+//     client's hedged query recorded — never moves the pin. The plain path
+//     still leaves the offset-0 replica in exactly three cases, which bound
+//     the guarantee: connecting to it fails (a refusal, or
+//     `connect_timeout_with_failover_ms` / `handshake_timeout_ms` elapsing —
+//     recorded in `error_count`); it is stale, i.e. its replication delay
+//     reached `max_replica_delay_for_distributed_queries` (300s default,
+//     `DistributedConnectionStaleReplica`, NOT recorded in `error_count`);
+//     or it does not have the table (`ConnectionEstablisher`'s
+//     `is_usable=false`, NOT recorded in `error_count`). The last two are
+//     per-connection checks, so they move only the statements issued while
+//     the condition holds.
 //
 // TRADE-OFF, DOCUMENTED NOT HIDDEN: hedged requests trade replica
-// determinism for tail latency — a slow replica is raced rather than waited
-// on. With this pin a statement waits for the offset-0 replica it is pinned
-// to, the same correctness-over-throughput posture every other pin in this
-// file takes; a replica that cannot even accept a connection still fails
-// over within the connect timeout.
+// determinism for tail latency, and turning them off gives that latency
+// back in three ways. A replica that is merely slow is waited on rather
+// than raced after 50ms. A replica that accepts TCP but stalls before its
+// hello now costs a full `handshake_timeout_ms` (10s default) before the
+// statement fails over. A replica that is connected but slow to produce
+// data is never failed over at all — the statement waits up to its
+// `max_execution_time`, where hedging would have raced it after 2s.
+//
+// The pin is stamped on EVERY query, not only on solver-split plans,
+// although a single-statement query pays that latency without a
+// multi-statement consistency benefit: one statement can itself read the
+// same remote shard twice — every self-referencing IN/JOIN that
+// settingDistributedProductMode below rewrites to GLOBAL computes its inner
+// side and its outer side as separate remote reads — and consecutive
+// requests (one dashboard's panels) are just as exposed to two replicas
+// disagreeing as the statements of one request. The transport layer also has no view of plan
+// shape, the same reason every other pin in this file is unconditional.
+// This is the correctness-over-throughput posture every other pin here
+// takes.
 //
 // settingDistributedProductMode (cerberus issue #3118, epic #3074) closes a
 // THIRD gap DataShardCount > 1 opens: several of cerberus's own query shapes

@@ -2943,18 +2943,21 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   `load_balancing_first_offset=0` mechanism
   (`internal/chclient/distributed_query_settings.go`), not just its
   consequence. Also asserts every statement of those traces reached the
-  initiator with `use_hedged_requests=0` and recorded zero
-  `HedgedRequestsChangeReplica` profile events (`system.query_log`). Before
-  firing the burst, polls every node's `system.clusters.errors_count` (via
-  `clusterAllReplicas`) to a clean state (bounded by `HEALTH_POLL_SECONDS`,
-  default two `distributed_replica_error_half_life` periods) — pod readiness
+  initiator with `use_hedged_requests=0` (`system.query_log.Settings`).
+  Before firing the burst, polls every node's `system.clusters.errors_count`
+  (via `clusterAllReplicas`) to a clean state, retrying a poll query that
+  fails while a peer is not yet dialable and bounding each attempt with
+  `lib/k8s.mjs`'s `clusterHealthAttemptTimeoutMs` (overall bound
+  `HEALTH_POLL_SECONDS`, default two `distributed_replica_error_half_life`
+  periods) — pod readiness
   (`e2e-datashard-up`'s own gate) proves a container passed its probe, not
   that every node can already reach every peer replica. On any failure it
   prints the replica-selection evidence captured at that moment: every
   node's `system.clusters` row (`errors_count`, `slowdowns_count`,
   `estimated_recovery_time`), and per multi-statement trace the initiator
   rows' hedging settings and profile events plus the child statements
-  grouped by (hostname, type). INFORMATIONAL — never a PR gate.
+  grouped by (hostname, type), each read with `skip_unavailable_shards=1` so
+  a down replica does not empty the dump. INFORMATIONAL — never a PR gate.
   - Env: `NAMESPACE` (default `cerberus`), `CERBERUS_URL` (default
     `http://localhost:8080`), `DB` (default `otel`), `CH_USER`/`CH_PASSWORD`
     (default `cerberus`/`cerberus`), `CH_CLUSTER` (default `bwc_cluster`),

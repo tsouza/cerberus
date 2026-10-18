@@ -58,12 +58,15 @@ export function clickhousePodName(kubectl, ns) {
 // non-zero status means (e2e-wait-otel.mjs's poll loop treats a not-yet-
 // query-able ClickHouse as "count is 0 so far", never a hard failure).
 // `target` is anything `kubectl exec` accepts (a pod name, or `deploy/foo`).
-export function chQueryRaw(kubectl, target, { database, user = 'cerberus', password = 'cerberus', format } = {}, sql) {
+// `timeoutMs`, when set, kills the `kubectl exec` after that long (the
+// result then carries a non-zero status), so a query stuck on a hung peer
+// cannot hold the caller past its own deadline.
+export function chQueryRaw(kubectl, target, { database, user = 'cerberus', password = 'cerberus', format, timeoutMs } = {}, sql) {
   const args = ['exec', target, '--', 'clickhouse-client', '--user', user, '--password', password];
   if (database) args.push('--database', database);
   if (format) args.push('--format', format);
   args.push('--query', sql);
-  return kubectl(args);
+  return timeoutMs ? kubectl(args, { timeout: timeoutMs }) : kubectl(args);
 }
 
 // chQueryRaw, but exits 1 (with an ::error:: annotation) on a non-zero
@@ -110,6 +113,13 @@ export const clusterHealthDefaultDeadlineSeconds =
 // tracking.
 const clusterHealthPollIntervalMs = 5_000;
 
+// clusterHealthAttemptTimeoutMs bounds ONE poll attempt. A
+// `clusterAllReplicas` read waits on every peer, and a peer that accepts TCP
+// but never answers would otherwise hold the attempt for clickhouse-client's
+// own receive timeout (300s) — far past any caller's deadline. An attempt
+// that hits this bound counts as "not clean yet" and the poll retries.
+export const clusterHealthAttemptTimeoutMs = 20_000;
+
 // waitForClusterHealth polls `system.clusters` until every (shard, replica)
 // row's errors_count is 0 on EVERY node of the cluster, or deadlineMs
 // elapses (cerberus issue #3148, promoted to this shared module by issue
@@ -136,7 +146,7 @@ const clusterHealthPollIntervalMs = 5_000;
 // wait belongs here rather than in any ONE verify script: every datashard-
 // lane script that fires load right after cluster-up is exposed to it.
 //
-// `target` and `chOpts` are chQuery's own (a pod name or `deploy/foo`, and
+// `target` and `chOpts` are chQueryRaw's own (a pod name or `deploy/foo`, and
 // `{ database, user, password }`). Returns the elapsed seconds on success.
 // Throws with the last-seen dirty rows on timeout — firing load into a
 // cluster that never settled would only reproduce the exact race this poll
@@ -144,26 +154,39 @@ const clusterHealthPollIntervalMs = 5_000;
 export async function waitForClusterHealth(kubectl, target, chOpts, { cluster, deadlineMs, intervalMs = clusterHealthPollIntervalMs } = {}) {
   const start = Date.now();
   let lastDirty = [];
+  let lastQueryFailure = '';
   const ok = await pollUntil(
     async () => {
-      const out = chQuery(
+      const remainingMs = Math.max(1, deadlineMs - (Date.now() - start));
+      // chQueryRaw, never chQuery: a peer that is not dialable yet makes
+      // `clusterAllReplicas` fail (code 279) — that is exactly the
+      // not-settled state this poll waits out, so it retries instead of
+      // exiting the process on the first attempt.
+      const res = chQueryRaw(
         kubectl,
         target,
-        { ...chOpts, format: 'TSVRaw' },
+        { ...chOpts, format: 'TSVRaw', timeoutMs: Math.min(clusterHealthAttemptTimeoutMs, remainingMs) },
         `SELECT hostName() AS node, shard_num, replica_num, errors_count
          FROM clusterAllReplicas('${cluster}', system.clusters) WHERE cluster = '${cluster}'
          ORDER BY node, shard_num, replica_num`,
       );
-      const rows = out.split('\n').map((l) => l.trimEnd()).filter((l) => l.length > 0);
+      if (res.status !== 0) {
+        lastQueryFailure = res.stderr.trim();
+        return false;
+      }
+      lastQueryFailure = '';
+      const rows = res.stdout.split('\n').map((l) => l.trimEnd()).filter((l) => l.length > 0);
       lastDirty = rows.map((r) => r.split('\t')).filter(([, , , errorsCount]) => Number(errorsCount) !== 0);
       return lastDirty.length === 0;
     },
     { deadlineMs, intervalMs, label: 'cluster-health' },
   );
   if (!ok) {
-    const detail = lastDirty
-      .map(([node, shard, replica, n]) => `node=${node} shard=${shard} replica=${replica} errors_count=${n}`)
-      .join('; ');
+    const detail = lastQueryFailure
+      ? `last poll query failed: ${lastQueryFailure}`
+      : lastDirty
+          .map(([node, shard, replica, n]) => `node=${node} shard=${shard} replica=${replica} errors_count=${n}`)
+          .join('; ');
     throw new Error(
       `system.clusters never reached a clean state (errors_count=0 for every replica, on every node) within ` +
         `${(deadlineMs / 1000).toFixed(0)}s: ${detail} — firing load now would risk observing a ` +
