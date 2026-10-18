@@ -26,8 +26,8 @@ import { dirname, join, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { error, notice } from './lib/gh.mjs';
-import { MUTANT_CACHE_ENV_IGNORE } from './lib/mutant-cache-env.mjs';
+import { error, log, notice } from './lib/gh.mjs';
+import { MUTANT_CACHE_ENV_IGNORE, keyedEnvDigests } from './lib/mutant-cache-env.mjs';
 
 // gremlins derives each mutant's RUN bound as
 // `min(timeout-coefficient * max(coverage_elapsed, 1s), timeout-max)` and hands
@@ -381,10 +381,15 @@ function runGremlins({ report, budgetSeconds, ledger, diffRef = '' }) {
   }
   args.push(required('SCOPE'));
 
-  const result = spawnSync('gremlins', args, {
-    stdio: 'inherit',
-    env: memoryGuardedEnv(bounds.deadlineSeconds, ledger),
-  });
+  const env = memoryGuardedEnv(bounds.deadlineSeconds, ledger);
+  if (cacheDir !== '') {
+    // Every variable gremlins keys a verdict on, with a digest of its value:
+    // diffing two legs' lists names the variable that keeps them from sharing one.
+    const keyed = keyedEnvDigests(env);
+    log(`per-mutant cache key environment (${keyed.length} variables):`);
+    for (const line of keyed) log(`  ${line}`);
+  }
+  const result = spawnSync('gremlins', args, { stdio: 'inherit', env });
   if (result.error) throw new Error(`cannot execute gremlins: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`gremlins exited ${result.status}`);
   if (!existsSync(report)) throw new Error(`gremlins produced no report at ${report}`);
