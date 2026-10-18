@@ -110,7 +110,7 @@ export function summaryMarkdown(entries) {
     '| Site | Head | Message | File |',
     '| ---- | ---- | ------- | ---- |',
   ];
-  const cell = (v) => v.replace(/\|/g, '\\|');
+  const cell = (v) => v.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
   for (const e of entries) {
     md.push(`| \`${cell(e.site)}\` | ${cell(e.head)} | ${cell(e.message)} | \`${cell(e.shard)}\` |`);
   }

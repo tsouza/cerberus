@@ -49,9 +49,8 @@ const demoted = {
 
 test('the class vocabulary equals the Class constants in catalogue.go', () => {
   const src = readFileSync(path.join(repoRoot, 'test/rejection-parity/catalogue.go'), 'utf8');
-  const block = src.match(/const \(\s*\n((?:\s*Class\w+\s*=\s*"[^"]*"\s*\n)+)\s*\)/);
-  assert.ok(block, 'catalogue.go no longer declares its Class constants in one const block');
-  const goClasses = [...block[1].matchAll(/=\s*"([^"]*)"/g)].map((m) => m[1]).sort();
+  const goClasses = [...src.matchAll(/^\tClass[A-Za-z]+ += "([a-z]*)"$/gm)].map((m) => m[1]).sort();
+  assert.ok(goClasses.length > 0, 'catalogue.go no longer declares its Class constants');
   assert.deepEqual(Object.keys(CLASSES).sort(), goClasses);
 });
 
@@ -82,7 +81,7 @@ test('a fully classified catalogue reports nothing', () => {
 test('the report names the entry, its file, every class and the gate', () => {
   const dir = catalogue({ 'internal__promql__a.go__f.json': [fresh] });
   const text = reportLines(unclassifiedEntries(dir)).join('\n');
-  assert.match(text, new RegExp(fresh.site.replace(/[.#]/g, '\\$&')));
+  assert.ok(text.includes(fresh.site), text);
   assert.match(text, /promql: new site/);
   assert.match(text, /internal__promql__a\.go__f\.json/);
   assert.match(text, new RegExp(CLASSIFICATION_GATE));
