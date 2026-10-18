@@ -69,7 +69,6 @@ func referenceSeed() (string, []oracle.Series) {
 		{Count: 6, Sum: 3, ZeroCount: 1, PositiveOffset: -1, PositiveBuckets: []float64{2, 3}},
 		{Count: 30, Sum: 15, ZeroCount: 1, PositiveOffset: -1, PositiveBuckets: []float64{14, 15}},
 	} {
-		h := h
 		hist.Points = append(hist.Points, oracle.Point{
 			TMillis:   referenceEvalTime.Add(time.Duration(i-1) * time.Minute).UnixMilli(),
 			Histogram: &h,
