@@ -7,7 +7,7 @@ import (
 )
 
 // isMixedRelationShape reports whether expr lowers to a LIVE mixed
-// float/histogram relation: a mixed `or` ([mixedExpHistogramSetOp]) or one
+// float/histogram relation: a mixed `or` ([oneSideHistogramOr]) or one
 // of the wrappers that carry its two row shapes through — the static
 // mirror, for mixed relations, of what [histogramValuedProducerCall] is for
 // histogram-valued ones. The two histogram-vs-float-vector recognisers
@@ -31,8 +31,15 @@ import (
 // TestMixedRelationShapeAgreesWithEveryPolicyConsumer pins the predicate
 // and the lowerings in agreement over the policy dispatch inventory.
 func isMixedRelationShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) bool {
-	if _, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
-		return true
+	// An `or` with exactly one histogram-valued side is mixed whether its
+	// other side is a float ([mixedExpHistogramSetOp]'s construction) or
+	// itself mixed ([lowerVectorSetOp]'s Mixed arm), so the pair test alone
+	// decides it; consulting [mixedExpHistogramSetOp] here would re-walk the
+	// other side, which [isMixedRelationBinary] walks again below.
+	if b, isBin := unwrapBinaryExpr(expr); isBin {
+		if _, ok := oneSideHistogramOr(b, s, ctx); ok {
+			return true
+		}
 	}
 	switch e := peelWrappers(expr).(type) {
 	case *parser.Call:

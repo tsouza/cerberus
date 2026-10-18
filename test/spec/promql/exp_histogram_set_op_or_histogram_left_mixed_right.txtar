@@ -1,0 +1,34 @@
+-- query.promql --
+rpc_duration_exp_hist or (http_client_duration_exp_hist or histogram_quantile(0.5, http_server_duration_exp_hist))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Mirror of exp_histogram_set_op_or_mixed_left_histogram_right.txtar:
+-- the native histogram selector is the outer LEFT operand and the mixed
+-- float/histogram `or` is the RIGHT one. The left side wins every
+-- signature collision, so the inner `or`'s float histogram_quantile()
+-- row for service=api is shadowed by rpc_duration_exp_hist's service=api
+-- histogram, while the inner histogram row for service=web survives.
+-- Three rows, all histograms, carried in the mixed row shape.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'),   toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []),
+    ('http_client_duration_exp_hist', map('service', 'web'),   toDateTime64('2026-01-01 00:00:00', 9), 3,  3.0,  0, 0, 0, [9],          0, []),
+    ('rpc_duration_exp_hist',         map('service', 'api'),   toDateTime64('2026-01-01 00:00:00', 9), 5,  5.0,  0, 0, 0, [2, 3],       0, []),
+    ('rpc_duration_exp_hist',         map('service', 'queue'), toDateTime64('2026-01-01 00:00:00', 9), 7,  7.0,  0, 0, 0, [7],          0, []);
+-- expected_rows --
+[]
