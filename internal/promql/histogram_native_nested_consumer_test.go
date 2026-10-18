@@ -328,3 +328,43 @@ func TestLower_ExpHistogram_SubqueryMatrixPreservesHistogramContract(t *testing.
 		})
 	}
 }
+
+// TestLower_ExpHistogram_CountValuesNestedUnderWrapperGroupsHistograms pins
+// the plan of count_values over an exp-histogram operand nested under a
+// further wrapper: somewhere beneath the wrapper an Aggregate groups the
+// histogram rows themselves, which is the count_values that stringifies
+// each published histogram.
+func TestLower_ExpHistogram_CountValuesNestedUnderWrapperGroupsHistograms(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, query := range []string{
+		`sum(count_values("hist", latency_exp_hist))`,
+		`histogram_quantile(0.5, count_values("hist", latency_exp_hist))`,
+	} {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): %v", query, err)
+			}
+			groupsHistograms := false
+			chplan.Walk(plan, func(n chplan.Node) bool {
+				if agg, ok := n.(*chplan.Aggregate); ok && agg.Input != nil &&
+					chplan.RowShapeOf(agg.Input) == chplan.HistogramRowShape {
+					groupsHistograms = true
+				}
+				return !groupsHistograms
+			})
+			if !groupsHistograms {
+				t.Fatalf("LowerAt(%q) has no Aggregate over histogram rows:\n%#v", query, plan)
+			}
+		})
+	}
+}

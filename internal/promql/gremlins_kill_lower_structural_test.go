@@ -1,7 +1,10 @@
 package promql
 
 import (
+	"reflect"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
@@ -163,6 +166,87 @@ func TestResolveUnambiguousScanTable_RejectsAnUnpinnedNameOverAHistogramSchema(t
 		if got := resolveUnambiguousScanTable(unpinned, tc.s, lowerCtx{}); got != "" {
 			t.Errorf("resolveUnambiguousScanTable(regex name, %s) = %q; want \"\" — a regex name fans out to the multi-arm histogram union, which is not a single unambiguous scan", tc.name, got)
 		}
+	}
+}
+
+// TestResolveUnambiguousScanTable_RejectsHistogramComponentRoutes pins the
+// route-shape exclusion. A `_bucket` selector and a `_count` companion each
+// route to the histogram table alone, so `len(route.tables) != 1` lets both
+// through, and only the route's own bucket / companion fields keep them off
+// a single-scan strategy: their real output is a fan-out or a companion
+// projection, never the plain Scan the temporality read attaches to. Each
+// selector sets exactly one of those fields, so each fails on its own.
+func TestResolveUnambiguousScanTable_RejectsHistogramComponentRoutes(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	for _, name := range []string{"http_request_duration_seconds_bucket", "http_request_duration_seconds_count"} {
+		route, err := resolveSelectorRouting(name, s, lowerCtx{}, s.TablesFor(name), nil)
+		if err != nil || len(route.tables) != 1 || route.expHistogramCompanion {
+			t.Fatalf("resolveSelectorRouting(%s) = %+v, %v; want one table and no exp-histogram companion — the rejection below proves nothing otherwise", name, route, err)
+		}
+		vs := &promparser.VectorSelector{LabelMatchers: []*labels.Matcher{
+			mustMatcher(t, labels.MatchEqual, model.MetricNameLabel, name),
+		}}
+		if got := resolveUnambiguousScanTable(vs, s, lowerCtx{}); got != "" {
+			t.Errorf("resolveUnambiguousScanTable(%s) = %q; want \"\" — the selector's histogram routing is not a single plain scan", name, got)
+		}
+	}
+}
+
+// TestLiteralCompanionValueTables pins the value tables a `_count` / `_sum`
+// name is read from under its literal name: Sum then Gauge, skipping an
+// unset table, the histogram table and a repeat — each skip on either side
+// of the pair.
+func TestLiteralCompanionValueTables(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name             string
+		sum, gauge, hist string
+		want             []string
+	}{
+		{"both", "sums", "gauges", "hists", []string{"sums", "gauges"}},
+		{"no sum table", "", "gauges", "hists", []string{"gauges"}},
+		{"sum is the histogram table", "hists", "gauges", "hists", []string{"gauges"}},
+		{"no gauge table", "sums", "", "hists", []string{"sums"}},
+		{"gauge is the histogram table", "sums", "hists", "hists", []string{"sums"}},
+		{"one shared value table", "values", "values", "hists", []string{"values"}},
+		{"none", "", "", "hists", nil},
+	} {
+		s := schema.Metrics{SumTable: tc.sum, GaugeTable: tc.gauge, HistogramTable: tc.hist}
+		if got := literalCompanionValueTables(s); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: literalCompanionValueTables(sum %q, gauge %q, histogram %q) = %q; want %q", tc.name, tc.sum, tc.gauge, tc.hist, got, tc.want)
+		}
+	}
+}
+
+// TestLowerVectorSelector_RangeVectorModifierBoundsTheWindowInput pins the
+// time bound a modifier puts on a selector inside a range vector. The
+// default schema's selector projection already took the matchers into a
+// Filter beneath it, so the bound is the whole predicate of the Filter on
+// top — not a conjunction with a matcher predicate that is no longer there.
+func TestLowerVectorSelector_RangeVectorModifierBoundsTheWindowInput(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	expr, err := promparser.NewParser(promparser.Options{}).ParseExpr(`http_requests_total offset 1m`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vs := expr.(*promparser.VectorSelector)
+	ctx := lowerCtx{inRangeVector: true, end: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	anchor, err := selectorAnchor(vs, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := lowerVectorSelector(vs, s, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok := plan.(*chplan.Filter)
+	if !ok {
+		t.Fatalf("range-vector selector with a modifier lowered to %T; want the bounding *chplan.Filter", plan)
+	}
+	if want := timeBoundExpr(s.TimestampColumn, anchor); !reflect.DeepEqual(f.Predicate, want) {
+		t.Errorf("bounding Filter predicate = %#v; want the modifier's time bound %#v alone", f.Predicate, want)
 	}
 }
 
