@@ -12,13 +12,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The merge queue (.github/mergify.yml) checks one pull request at a time, on
-// the pull request itself. Mergify computes "in place" from three settings:
-// max_parallel_checks 1, batch_size 1 on every queue rule, and no
-// merge_conditions beyond the queue conditions. Any other shape makes Mergify
-// test on a draft pull request it writes itself, and the description- and
-// commit-scanning gates (pr-body, forbid-deferral, commitlint) would then
-// judge that draft instead of the pull request being merged.
+// The merge queue (.github/mergify.yml) checks queued pull requests in
+// batches, one batch at a time, on a draft pull request Mergify opens holding
+// main plus the batch. Each check is a full CI run on the shared runners, so
+// a second batch checked in parallel would double the load on them. The main
+// ruleset, whose required checks the queue inherits through injection, still
+// requires each pull request's own checks before it merges.
 
 const mergifyConfigPath = ".github/mergify.yml"
 
@@ -29,7 +28,6 @@ type mergifyConfig struct {
 	QueueRules []struct {
 		Name                          string   `yaml:"name"`
 		QueueConditions               []string `yaml:"queue_conditions"`
-		MergeConditions               []string `yaml:"merge_conditions"`
 		MergeMethod                   string   `yaml:"merge_method"`
 		UpdateMethod                  string   `yaml:"update_method"`
 		BatchSize                     *int     `yaml:"batch_size"`
@@ -66,20 +64,21 @@ func loadMergifyConfig(t *testing.T) mergifyConfig {
 	return cfg
 }
 
-func TestMergifyQueueChecksInPlace(t *testing.T) {
+// minBatchSize is the smallest batch_size that checks more than one pull
+// request per CI run.
+const minBatchSize = 2
+
+func TestMergifyQueueBatchesOneAtATime(t *testing.T) {
 	cfg := loadMergifyConfig(t)
 	if p := cfg.MergeQueue.MaxParallelChecks; p == nil || *p != 1 {
-		t.Errorf("merge_queue.max_parallel_checks must be set to 1 (in-place checks); got %s", describeSetting(p))
+		t.Errorf("merge_queue.max_parallel_checks must be set to 1 (one batch at a time); got %s", describeSetting(p))
 	}
 	if len(cfg.QueueRules) == 0 {
 		t.Fatalf("%s declares no queue_rules", mergifyConfigPath)
 	}
 	for _, rule := range cfg.QueueRules {
-		if rule.BatchSize == nil || *rule.BatchSize != 1 {
-			t.Errorf("queue rule %q: batch_size must be set to 1 (in-place checks); got %s", rule.Name, describeSetting(rule.BatchSize))
-		}
-		if len(rule.MergeConditions) > 0 && !slices.Equal(rule.MergeConditions, rule.QueueConditions) {
-			t.Errorf("queue rule %q: merge_conditions beyond queue_conditions turn off in-place checks", rule.Name)
+		if rule.BatchSize == nil || *rule.BatchSize < minBatchSize {
+			t.Errorf("queue rule %q: batch_size must be at least %d (batching); got %s", rule.Name, minBatchSize, describeSetting(rule.BatchSize))
 		}
 		if rule.MergeMethod != "squash" {
 			t.Errorf("queue rule %q: merge_method = %q, want squash", rule.Name, rule.MergeMethod)

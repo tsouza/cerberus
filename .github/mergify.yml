@@ -1,9 +1,11 @@
-# Merge queue. A pull request labelled `queue` enters it; Mergify brings the
-# pull request up to date with main by a merge commit, waits for every check
-# the main ruleset requires to pass on that updated head, then squash-merges
-# it. One pull request is checked at a time, on the pull request itself, so
-# the description- and commit-scanning gates (pr-body, forbid-deferral,
-# commitlint) always judge the pull request they belong to.
+# Merge queue. A pull request labelled `queue` enters it. Mergify checks up
+# to batch_size queued pull requests together, on a draft pull request it
+# opens holding main plus the batch, waits for every check the main ruleset
+# requires to pass there, then squash-merges each pull request in the batch.
+# The ruleset still requires each pull request's own checks before it merges,
+# so the description- and commit-scanning gates (pr-body, forbid-deferral,
+# commitlint) judge every pull request on the pull request itself. One batch
+# is checked at a time: each check is a full CI run on the shared runners.
 # test/regression/mergify_config_test.go pins this shape.
 
 queue_rules:
@@ -14,7 +16,7 @@ queue_rules:
       - -draft
     merge_method: squash
     update_method: merge
-    batch_size: 1
+    batch_size: 5
 
 merge_queue:
   max_parallel_checks: 1
