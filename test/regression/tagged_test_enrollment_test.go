@@ -1441,24 +1441,17 @@ func taggedWorkingDirectory(workflow, job taggedWorkflowDefaults, step taggedWor
 	return strings.TrimSpace(workflow.Run.WorkingDirectory)
 }
 
+// taggedWorkflowLinuxRunner matches the static runner labels known to be
+// Linux: GitHub's `ubuntu-*` images and Ubicloud's x64/arm64 runners, all of
+// which boot Ubuntu (`ubicloud`, `ubicloud-standard-8`,
+// `ubicloud-standard-8-ubuntu-2404`, `ubicloud-standard-4-arm`, ...).
+var taggedWorkflowLinuxRunner = regexp.MustCompile(
+	`^(?:ubuntu-(?:latest|[0-9]+\.[0-9]+)|ubicloud(?:-(?:standard|premium)-[0-9]+(?:-arm)?)?(?:-ubuntu-[0-9]{4})?)$`,
+)
+
 func taggedWorkflowRunsOnLinux(runsOn any) bool {
-	if value, ok := runsOn.(string); ok {
-		return regexp.MustCompile(`^ubuntu-(?:latest|[0-9]+\.[0-9]+)$`).MatchString(strings.TrimSpace(value))
-	}
-	// A list form (`runs-on: [self-hosted, cerberus]`) targets one of the
-	// project's own self-hosted runner pods, every one of which is Linux
-	// (registered with the "Linux" label in cirunners' bootstrap script).
-	// There is no Windows/macOS self-hosted runner in this repo.
-	labels, ok := runsOn.([]any)
-	if !ok {
-		return false
-	}
-	for _, label := range labels {
-		if s, ok := label.(string); ok && strings.EqualFold(strings.TrimSpace(s), "self-hosted") {
-			return true
-		}
-	}
-	return false
+	value, ok := runsOn.(string)
+	return ok && taggedWorkflowLinuxRunner.MatchString(strings.TrimSpace(value))
 }
 
 func taggedWorkflowPipelineIsFailClosed(workflow, job taggedWorkflowDefaults, step taggedWorkflowStep) bool {
@@ -2205,11 +2198,14 @@ func TestTaggedTestEnrollmentNegativeControls(t *testing.T) {
 			taggedWorkflowRunsOnLinux("${{ matrix.os }}") {
 			t.Fatal("runner build context was not bound to static Linux")
 		}
-		if !taggedWorkflowRunsOnLinux([]any{"self-hosted", "cerberus"}) {
-			t.Fatal("a self-hosted runs-on list was not recognized as Linux")
+		for _, label := range []string{"ubicloud", "ubicloud-standard-2", "ubicloud-standard-8-ubuntu-2404", "ubicloud-standard-4-arm"} {
+			if !taggedWorkflowRunsOnLinux(label) {
+				t.Fatalf("Ubicloud runner %q was not recognized as Linux", label)
+			}
 		}
-		if taggedWorkflowRunsOnLinux([]any{"windows-latest"}) || taggedWorkflowRunsOnLinux([]any{}) {
-			t.Fatal("a non-self-hosted runs-on list was accepted as Linux")
+		if taggedWorkflowRunsOnLinux("windows-2022") || taggedWorkflowRunsOnLinux("macos-latest") ||
+			taggedWorkflowRunsOnLinux([]any{"self-hosted", "linux"}) || taggedWorkflowRunsOnLinux([]any{}) {
+			t.Fatal("a runner with no statically known Linux image was accepted as Linux")
 		}
 	})
 

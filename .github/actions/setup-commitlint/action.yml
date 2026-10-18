@@ -1,9 +1,9 @@
 name: setup-commitlint
 description: >-
   Install the pinned commitlint toolchain (package-lock.json)
-  into node_modules. Node itself is set up on every run — these self-hosted
-  runner pods are ephemeral and do not ship Node preinstalled, so skipping
-  setup-node on a cache hit leaves npm/node off PATH entirely. A node_modules
+  into node_modules. Node itself is set up on every run — the action does not
+  assume the runner image ships Node on PATH, so skipping setup-node on a
+  cache hit could leave npm/node off PATH entirely. A node_modules
   cache hit only skips the (slow) package install; actions/setup-node@v7 has
   its own fast toolcache hit path, so running it unconditionally is cheap.
 

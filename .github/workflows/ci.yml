@@ -43,7 +43,11 @@ jobs:
   # file was a doc file → docs_only.
   changes:
     name: changes
-    runs-on: [self-hosted, cerberus]
+    # A path filter over the event's diff: no CPU-bound work, so the smallest
+    # Ubicloud runner. Settles well under a minute; 10m bounds a stuck
+    # checkout without ever firing on a real run.
+    runs-on: ubicloud-standard-2
+    timeout-minutes: 10
     outputs:
       docs_only: ${{ steps.docs.outputs.docs_only }}
     steps:
@@ -75,32 +79,22 @@ jobs:
     name: check-test
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    # `cerberus-heavy`, a runner pool dedicated to this job plus
-    # check-build and lint (#3677): PR #3656's first run under real
-    # parallel load on the single shared `cerberus` pool throttled
-    # `check-build` and `lint` into outright failures — every runner
-    # Deployment sharing the ../cirunners node could burst to its own
-    # `limits.cpu` simultaneously, well past the node's real core count,
-    # and this job's `go test -race ./...` is at least as CPU-heavy as
-    # those two. The dedicated pool gives each of the three a real,
-    # scheduler-enforced CPU floor instead of whatever the shared pool's
-    # contention left over.
-    runs-on: [self-hosted, cerberus-heavy]
-    # The lane settles around 5m30s on GitHub-hosted runners. On the
-    # `cerberus-heavy` pool (#3677) it measurably does not: PR #3678's own
-    # validating run passed all 101 packages (0 failures) but the job's
-    # total wall time reached this cap before the final steps could report,
-    # cancelling a clean result — the pool's real, scheduler-guaranteed 1
-    # CPU per pod is genuinely slower for `go test -race` than a hosted
-    # runner's fixed multi-core box, the same throughput gap `lint` hit
-    # (.golangci.yml's `run.timeout` comment has the fuller measurement).
+    # `go test -race ./...` parallelises across packages, so it runs on an
+    # 8-vCPU Ubicloud runner: Ubicloud bills per minute linearly in vCPU, so
+    # the wider box costs about what a narrower one would while finishing
+    # the gate's long pole sooner. The lane settles around 5m30s on a
+    # 4-vCPU runner and under that on this one.
+    #
     # This budget is the outer bound the runner enforces; the inner one is
     # `just test-unit`'s own `-timeout` (just/test.just), deliberately
     # shorter so a hang is a Go panic with every goroutine's stack rather
-    # than a killed container with no artefact — see that recipe's comment
-    # for the value this scales with. An undeclared budget here would be
-    # GitHub's 360-minute default, which says nothing.
-    timeout-minutes: 35
+    # than a killed job with no artefact — see that recipe's comment for the
+    # value this scales with. 20m = that 15m inner bound plus room for
+    # checkout, Go setup and `just test-chaos-sleep` ahead of it. An
+    # undeclared budget here would be GitHub's 360-minute default, which
+    # says nothing.
+    runs-on: ubicloud-standard-8
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -118,20 +112,13 @@ jobs:
     name: check-build
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    # `cerberus-heavy`, a runner pool dedicated to this job plus check-test
-    # and lint (#3677): on PR #3656's first run under real parallel load on
-    # the single shared `cerberus` pool, `go vet -tags=agpl_oracle` alone
-    # ran 6.5 minutes before the job's own 20-minute timeout cancelled it
-    # (run 36010670762) — every runner Deployment sharing the ../cirunners
-    # node could burst to its own `limits.cpu` simultaneously, well past
-    # the node's real core count, and this job's full build + three tagged
-    # `go vet` passes was CPU-heavy enough to starve under it. The
-    # dedicated pool gives each of the three a real, scheduler-enforced
-    # CPU floor instead of whatever the shared pool's contention left over.
-    runs-on: [self-hosted, cerberus-heavy]
-    # Settles around 3 minutes; same budget as `check-test` because the two
-    # halves are interchangeable in what a stall costs, and a single number
-    # is one fewer thing to keep in sync.
+    # The full build, three tagged `go vet` passes and the oracle module's
+    # tests are CPU-parallel compilation work, so this half runs on the same
+    # 8-vCPU Ubicloud runner as `check-test`, for the same per-vCPU-minute
+    # reason. Settles in a few minutes; same 20m budget as `check-test`
+    # because the two halves are interchangeable in what a stall costs, and
+    # a single number is one fewer thing to keep in sync.
+    runs-on: ubicloud-standard-8
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -199,7 +186,9 @@ jobs:
     name: check
     needs: [changes, check-test, check-build]
     if: always()
-    runs-on: [self-hosted, cerberus]
+    # Reads two `needs` results and runs no tool: the smallest Ubicloud
+    # runner, and 5m is already generous for a job that settles in seconds.
+    runs-on: ubicloud-standard-2
     timeout-minutes: 5
     steps:
       - name: gate on both halves
@@ -232,9 +221,8 @@ jobs:
   #   - Markdown (markdownlint-cli2)
   lint:
     name: lint
-    # Cold tagged analysis exceeded its 18-minute deadline on the shared
-    # self-hosted node. Keep the analysis bound and give this gate the fixed
-    # CPU allocation of a hosted runner, independent of coverage fan-out.
+    # A GitHub-hosted runner's fixed CPU allocation keeps cold tagged
+    # analysis well inside golangci-lint's 18-minute deadline (.golangci.yml).
     runs-on: ubuntu-latest
     # Undeclared here defaults to GitHub's 360-minute cap, which is no bound
     # at all and would silently become the tighter constraint once the two
@@ -671,15 +659,6 @@ jobs:
   # via branch protection.
   forbid-skip:
     name: forbid-skip
-    # Stays on ubuntu-latest: one of this job's own self-tests
-    # (semantic-replay.test.mjs, CTREX-3271) invokes `go test` via Node's
-    # spawnSync directly rather than a shell `run:` step, and that specific
-    # call can't resolve the `go` binary on the self-hosted runners — every
-    # other newly self-hosted-routed job (changes, forbid-deferral,
-    # config-docs, link-check) passed cleanly, and `go test -run
-    # '^TestPromQLOracleEngineParity$' ./test/regression/` reproduces fine
-    # locally, so this is narrow to the unshelled spawnSync path, not a
-    # general Go-toolchain problem. See #3675.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1597,7 +1576,11 @@ jobs:
   # reference material outside cerberus's authorship boundary.
   link-check:
     name: link-check
-    runs-on: [self-hosted, cerberus]
+    # An offline file walk: no CPU-bound work, so the smallest Ubicloud
+    # runner. Settles well under a minute; 10m leaves room for the retried
+    # lychee fetch in setup-lychee without leaving a hang unbounded.
+    runs-on: ubicloud-standard-2
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -1656,7 +1639,11 @@ jobs:
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
-    runs-on: [self-hosted, cerberus]
+    # `go list -deps` reads module metadata and compiles nothing, so the
+    # smallest Ubicloud runner. Settles in about a minute and a half; 10m
+    # leaves room for a cold module fetch without leaving a hang unbounded.
+    runs-on: ubicloud-standard-2
+    timeout-minutes: 10
     steps:
       - name: gate on the changes job
         if: needs.changes.result != 'success'

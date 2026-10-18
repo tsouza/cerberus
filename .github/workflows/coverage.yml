@@ -265,7 +265,6 @@ jobs:
           node --test .github/scripts/coverage-summary.test.mjs
           node --test .github/scripts/coverage-package-floor.test.mjs
           node --test .github/scripts/coverage-run-heavy.test.mjs
-          node --test .github/scripts/lib/coverage-schedule-overlap.test.mjs
           node --test .github/scripts/coverage-aggregate.test.mjs
           node --test .github/scripts/coverage-verdict.test.mjs
           node --test .github/scripts/perf-coverage-fanout.test.mjs
@@ -299,18 +298,18 @@ jobs:
     name: coverage-default
     needs: coverage-plan
     if: needs.coverage-plan.outputs.run_heavy == 'true'
-    # Coverage moved off the light pool after long instrumented jobs starved
-    # trivial PR checks for 20+ minutes (#3677). The heavy pool has three
-    # runners and also carries required check-test and check-build jobs.
-    # Default-tag coverage uses one heavy runner, leaving two for required
-    # PR checks. All chDB partitions use independent hosted runners.
-    # test/regression/runner_pool_reservation_test.go enforces the reservation.
-    runs-on: [self-hosted, cerberus-heavy]
-    # `just coverage-default`'s own `go test` is capped at `-timeout 40m`
-    # (see the recipe's comment for why); this leaves headroom for checkout,
-    # Go module/build caching and the recipe's own fold step on top of that,
-    # while still catching a genuine hang well inside the aggregator's own
-    # budget.
+    # The instrumented `go test -coverpkg ./...` parallelises across
+    # packages, so it runs on an 8-vCPU Ubicloud runner: Ubicloud bills per
+    # minute linearly in vCPU, so the wider box costs about what a narrower
+    # one would while finishing sooner.
+    runs-on: ubicloud-standard-8
+    # `just coverage-default`'s own `go test` is capped at `-timeout 40m`, a
+    # PER-BINARY bound set by the heaviest single binary (see the recipe's
+    # comment); one binary runs serially however many cores the runner has,
+    # so a wider runner shortens the job but not that bound. 50m leaves
+    # headroom for checkout, Go module/build caching and the recipe's own
+    # fold step on top of it, while still catching a genuine hang well
+    # inside the aggregator's own budget.
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v7
@@ -406,7 +405,7 @@ jobs:
   #
   # Each leg gets its own hosted runner, with four legs running concurrently.
   # Smaller partitions bound each process while the aggregator still merges
-  # the complete corpus without consuming the shared heavy runner pool.
+  # the complete corpus.
   coverage-chdb-ratchet:
     name: coverage-chdb-ratchet (${{ matrix.leg }})
     # `!cancelled()` keeps a failed coverage-default from skipping the legs'

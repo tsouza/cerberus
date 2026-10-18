@@ -31,7 +31,12 @@ concurrency:
 jobs:
   config-docs:
     name: config-docs
-    runs-on: [self-hosted, cerberus]
+    # Compiles and runs internal/config's tests plus the doc generator: some
+    # parallel compilation, little else, so a 4-vCPU Ubicloud runner.
+    # Settles in a few minutes; 15m bounds a hang with room for a cold
+    # module fetch and build cache.
+    runs-on: ubicloud-standard-4
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 

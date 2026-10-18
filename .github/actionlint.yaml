@@ -1,10 +1,10 @@
 self-hosted-runner:
-  # cirunners' k3d cluster (../cirunners in this host's workspace) registers
-  # runners against tsouza/cerberus carrying one of these labels, in addition
-  # to the runner's own `self-hosted`/`Linux`/`X64` labels — see
-  # cirunners/manifests/cerberus-runner.yaml (light pool, label `cerberus`)
-  # and cirunners/manifests/cerberus-heavy-runner.yaml (dedicated pool for
-  # check-test/check-build/lint, label `cerberus-heavy`, #3677).
+  # Ubicloud runner labels (https://www.ubicloud.com/docs/github-actions-integration/runner-types).
+  # actionlint knows only GitHub-hosted labels, so every Ubicloud label a
+  # workflow's `runs-on:` names is declared here. Each plain
+  # `ubicloud-standard-N` label is an N-vCPU x64 Ubuntu 24.04 runner, the
+  # same image generation as GitHub's `ubuntu-latest`.
   labels:
-    - cerberus
-    - cerberus-heavy
+    - ubicloud-standard-2
+    - ubicloud-standard-4
+    - ubicloud-standard-8

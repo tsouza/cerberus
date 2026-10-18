@@ -458,8 +458,8 @@ function commandString(cmd, args) {
 let cachedGoBinary;
 
 // resolveGoBinary finds an absolute path to the go binary rather than
-// relying on spawnSync("go", …) to search process.env.PATH itself. On the
-// project's self-hosted runners a bare, unshelled spawnSync("go", …)
+// relying on spawnSync("go", …) to search process.env.PATH itself. On a CI
+// runner a bare, unshelled spawnSync("go", …)
 // intermittently could not find the toolchain that every shell `run: go …`
 // step in the same job resolved without issue — spawnSync returned with no
 // output at all (an exec failure, not a real zero-match), which the caller
@@ -560,7 +560,7 @@ export function runMechanism(mechanism, { root = process.cwd() } = {}) {
   // A failed exec (binary not found, EACCES, …) leaves stdout/stderr both
   // empty, which the zero-selected check below cannot tell apart from a
   // `-run` pattern that genuinely matched nothing — the exact confusion
-  // issue #3675 traced a real self-hosted failure to. Surface it distinctly.
+  // issue #3675 traced a real CI failure to. Surface it distinctly.
   if (res.error) {
     return {
       status: REPLAY_STATUS.ERROR,

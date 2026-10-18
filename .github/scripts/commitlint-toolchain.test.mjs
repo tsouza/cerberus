@@ -66,10 +66,10 @@ test('the action restores node_modules keyed on the lockfile and installs with n
 });
 
 test('Node itself is set up unconditionally, even on a cache hit', () => {
-  // These self-hosted runner pods are ephemeral and do not ship Node
-  // preinstalled: gating setup-node on the SAME cache-hit condition as
-  // npm ci leaves npm/node off PATH entirely whenever node_modules is
-  // restored from cache, which is every run after the first.
+  // The action does not assume the runner image ships Node on PATH:
+  // gating setup-node on the SAME cache-hit condition as npm ci could
+  // leave npm/node off PATH entirely whenever node_modules is restored
+  // from cache, which is every run after the first.
   const action = readFileSync(join(ROOT, ACTION, 'action.yml'), 'utf8');
   const setupNode = action.indexOf('uses: actions/setup-node@');
   assert.ok(setupNode >= 0, 'setup-commitlint must set up Node');

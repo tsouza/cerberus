@@ -48,8 +48,8 @@ import { assertExecuted, parseTestInventory, partitionTests, testKey } from './l
  * runs serially inside one libchdb session.
  *
  * internal/api/prom: the whole package took 343-443s of go test's 600s
- * per-binary alarm on ubuntu-latest and ran past the alarm on the self-hosted
- * runners (#3674). Measured under a 3-CPU cap, its 415 top-level tests summed
+ * per-binary alarm on ubuntu-latest and ran past the alarm on a CPU-capped
+ * runner (#3674). Measured under a 3-CPU cap, its 415 top-level tests summed
  * to 1172s; the name-hash partition splits that 291/354/331/197s four ways,
  * where three ways put 727s on one process (a few fold-family tests of
  * 80-213s each share a partition).

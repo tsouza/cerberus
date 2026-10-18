@@ -150,7 +150,7 @@ const PROPERTY_SHAPE_EXPORT_PKG = "./test/semantic/cmd/property-shape-export";
 function defaultRunExporter(repoRoot) {
   // resolveGoBinary, not a bare "go": see its own comment in
   // semantic-replay.mjs (issue #3675) for why an unshelled spawnSync
-  // resolving "go" via inherited PATH is unreliable on self-hosted runners.
+  // resolving "go" via inherited PATH is unreliable on a CI runner.
   const result = spawnSync(resolveGoBinary(), ["run", PROPERTY_SHAPE_EXPORT_PKG], {
     cwd: repoRoot,
     encoding: "utf8",
