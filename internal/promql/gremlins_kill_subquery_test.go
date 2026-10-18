@@ -5,9 +5,9 @@
 // mutant is reported KILLED. See gremlins_kill_test.go's own header for
 // the mutant-citation convention.
 //
-// One CONDITIONALS_BOUNDARY mutant reported for this file is NOT
-// addressed here (subquery.go:`if step < 0`): it is a mathematically
-// equivalent mutant, not a coverage gap. `step` is reassigned to the
+// The CONDITIONALS_BOUNDARY mutant at subquery.go:`if step < 0` has no
+// killing test because it is a mathematically equivalent mutant, not a
+// coverage gap. `step` is reassigned to the
 // positive `DefaultSubqueryStep` constant whenever it was zero (the
 // `if step == 0` arm just above it), so `step` can never be exactly 0
 // by the time the boundary check runs — `<` and `<=` decide identically
