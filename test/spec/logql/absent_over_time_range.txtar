@@ -32,27 +32,27 @@ INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
 [1] string = "job"
 [2] string = "api"
 [3] float64 = 1
-[4] string = "2025-12-31 23:59:00.000000000"
+[4] string = "2025-12-31 23:59:00.000000000Z"
 [5] int64 = 9
-[6] string = "2026-01-01 00:04:00.000000000"
+[6] string = "2026-01-01 00:04:00.000000000Z"
 [7] int64 = 9
 [8] string = "job"
 [9] string = "api"
 -- chplan --
 AbsentOverTime range=1m0s step=1m0s ts=TimeUnix value=Value name=MetricName attrs=Attributes synth=[job="api"] start=2026-01-01T00:00:00Z end=2026-01-01T00:04:00Z
   Project [Timestamp AS TimeUnix]
-    Filter predicate=((ResourceAttributes["job"] = "api") AND ((Timestamp >= FnToDateTime64("2025-12-31 23:59:00.000000000", 9)) AND (Timestamp <= FnToDateTime64("2026-01-01 00:04:00.000000000", 9))))
+    Filter predicate=((ResourceAttributes["job"] = "api") AND ((Timestamp >= FnParseDateTime64BestEffort("2025-12-31 23:59:00.000000000Z", 9)) AND (Timestamp <= FnParseDateTime64BestEffort("2026-01-01 00:04:00.000000000Z", 9))))
       Scan(otel_logs)
 -- sql --
-SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts` FROM (SELECT 1)) WHERE anchor_ts GLOBAL NOT IN ((SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) - 1, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) - 1, toInt64(60000000000)) < 0) + 1), least(5, intDiv(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) + 59999999999, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) + 59999999999, toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT `Timestamp` AS `TimeUnix` FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (`ResourceAttributes`[?] = ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:04:00.000000000', 9))))
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts` FROM (SELECT 1)) WHERE anchor_ts GLOBAL NOT IN ((SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), `TimeUnix`) - 1, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), `TimeUnix`) - 1, toInt64(60000000000)) < 0) + 1), least(5, intDiv(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), `TimeUnix`) + 59999999999, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), `TimeUnix`) + 59999999999, toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT `Timestamp` AS `TimeUnix` FROM (SELECT * FROM `otel_logs` WHERE (`Timestamp` >= parseDateTime64BestEffort(?, ?)) AND (`Timestamp` <= parseDateTime64BestEffort(?, ?)) AND (`ResourceAttributes`[?] = ?))) WHERE `TimeUnix` > parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= parseDateTime64BestEffort('2026-01-01 00:04:00.000000000Z', 9))))
 -- args_optimized --
 [0] string = ""
 [1] string = "job"
 [2] string = "api"
 [3] float64 = 1
-[4] string = "2025-12-31 23:59:00.000000000"
+[4] string = "2025-12-31 23:59:00.000000000Z"
 [5] int64 = 9
-[6] string = "2026-01-01 00:04:00.000000000"
+[6] string = "2026-01-01 00:04:00.000000000Z"
 [7] int64 = 9
 [8] string = "job"
 [9] string = "api"
@@ -64,4 +64,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts` FROM (SELECT 1)) WHERE anchor_ts GLOBAL NOT IN ((SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) - 1, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) - 1, toInt64(60000000000)) < 0) + 1), least(5, intDiv(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) + 59999999999, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', toDateTime64('2026-01-01 00:00:00.000000000', 9), `TimeUnix`) + 59999999999, toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT `Timestamp` AS `TimeUnix` FROM (SELECT `ResourceAttributes`, `Timestamp` FROM `otel_logs` WHERE (`Timestamp` >= toDateTime64(?, ?)) AND (`Timestamp` <= toDateTime64(?, ?)) AND (`ResourceAttributes`[?] = ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:04:00.000000000', 9))))
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, anchor_ts AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT anchor_ts FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts` FROM (SELECT 1)) WHERE anchor_ts GLOBAL NOT IN ((SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), `TimeUnix`) - 1, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), `TimeUnix`) - 1, toInt64(60000000000)) < 0) + 1), least(5, intDiv(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), `TimeUnix`) + 59999999999, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), `TimeUnix`) + 59999999999, toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT `Timestamp` AS `TimeUnix` FROM (SELECT `ResourceAttributes`, `Timestamp` FROM `otel_logs` WHERE (`Timestamp` >= parseDateTime64BestEffort(?, ?)) AND (`Timestamp` <= parseDateTime64BestEffort(?, ?)) AND (`ResourceAttributes`[?] = ?))) WHERE `TimeUnix` > parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) - toIntervalNanosecond(60000000000) AND `TimeUnix` <= parseDateTime64BestEffort('2026-01-01 00:04:00.000000000Z', 9))))

@@ -36,7 +36,7 @@ CREATE TABLE otel_metrics_gauge (
 Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, 300 AS Value]
   StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=1m0s
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`)
 -- args_optimized --
 [0] string = ""
 [1] string = "Map(String,String)"
@@ -47,4 +47,4 @@ log_comment=cerb:project;sg
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 -- sql_optimized --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:00:00.000000000', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`)

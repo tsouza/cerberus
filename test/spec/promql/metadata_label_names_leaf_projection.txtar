@@ -14,7 +14,7 @@ yes
 reason: emitted-sql-only
 detail: carries neither `seed:` nor `expected_rows:` — it pins the emitted leaf projection for a /api/v1/labels-shaped list of label NAMES, so there is no answer for a reference engine to compare; even seeded, the answer shape has no comparator in RunParity's endpoint vocabulary (/api/v1/query, /api/v1/query_range, /api/search), which is what the metadata fixtures that do execute declare as no-comparable-oracle
 -- sql --
-SELECT arrayJoin(arrayConcat(mapKeys(`Attributes`), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`)))) AS `name` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))
+SELECT arrayJoin(arrayConcat(mapKeys(`Attributes`), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`)))) AS `name` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` >= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` <= parseDateTime64BestEffort(?, ?)))
 -- args --
 [0] string = "service.name"
 [1] string = "service_name"
@@ -27,13 +27,13 @@ SELECT arrayJoin(arrayConcat(mapKeys(`Attributes`), mapKeys(mapFilter((k, v) -> 
 [8] string = ""
 [9] string = ""
 [10] string = "api"
-[11] string = "1970-01-01 00:01:40.000000000"
+[11] string = "1970-01-01 00:01:40.000000000Z"
 [12] int64 = 9
-[13] string = "1970-01-01 00:08:20.000000000"
+[13] string = "1970-01-01 00:08:20.000000000Z"
 [14] int64 = 9
 -- chplan --
 Project [FnArrayJoin(FnArrayConcat(FnMapKeys(Attributes), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes)))) AS name]
-  Filter predicate=((((FnCoalesce(FnNullIf(Attributes["job"], ""), FnNullIf(ResourceAttributes["job"], ""), "") = "api") AND (MetricName IN ("requests_total", "requests.total", "requests/total"))) AND (TimeUnix >= FnToDateTime64("1970-01-01 00:01:40.000000000", 9))) AND (TimeUnix <= FnToDateTime64("1970-01-01 00:08:20.000000000", 9)))
+  Filter predicate=((((FnCoalesce(FnNullIf(Attributes["job"], ""), FnNullIf(ResourceAttributes["job"], ""), "") = "api") AND (MetricName IN ("requests_total", "requests.total", "requests/total"))) AND (TimeUnix >= FnParseDateTime64BestEffort("1970-01-01 00:01:40.000000000Z", 9))) AND (TimeUnix <= FnParseDateTime64BestEffort("1970-01-01 00:08:20.000000000Z", 9)))
     Scan(otel_metrics_sum)
 -- args_optimized --
 [0] string = "service.name"
@@ -47,9 +47,9 @@ Project [FnArrayJoin(FnArrayConcat(FnMapKeys(Attributes), FnMapKeys(FnMapFilter(
 [8] string = ""
 [9] string = ""
 [10] string = "api"
-[11] string = "1970-01-01 00:01:40.000000000"
+[11] string = "1970-01-01 00:01:40.000000000Z"
 [12] int64 = 9
-[13] string = "1970-01-01 00:08:20.000000000"
+[13] string = "1970-01-01 00:08:20.000000000Z"
 [14] int64 = 9
 -- settings --
 enable_analyzer=1
@@ -59,4 +59,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT arrayJoin(arrayConcat(mapKeys(`Attributes`), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`)))) AS `name` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `TimeUnix` FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` >= toDateTime64(?, ?)) AND (`TimeUnix` <= toDateTime64(?, ?)))
+SELECT arrayJoin(arrayConcat(mapKeys(`Attributes`), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`)))) AS `name` FROM (SELECT `Attributes`, `MetricName`, `ResourceAttributes`, `TimeUnix` FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?) AND (`TimeUnix` >= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` <= parseDateTime64BestEffort(?, ?)))
