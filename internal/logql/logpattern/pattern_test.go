@@ -451,5 +451,3 @@ func TestParse_NodeShape(t *testing.T) {
 		}
 	}
 }
-
-// cache probe 3
