@@ -107,7 +107,7 @@ that fast path is the default.
 `mutation.yml` installs the `tsouza/gremlins` fork rather than upstream `go-gremlins/gremlins@v0.6.0`:
 
 ```bash
-go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-verdict-cache-consume
+go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-env-ignore-commas-consume
 ```
 
 The fork carries these behaviours on top of upstream; each is what the lane relies on.
@@ -181,10 +181,11 @@ is its own change, and a mutant's position is joined onto the run's directory be
 
 **`--cache-dir` reuses verdicts by the content they depend on.** Each adjudicated verdict is stored
 under a key over the gremlins binary, the toolchain and its build environment, the environment the
-test binaries inherit less the names `--cache-env-ignore` lists, `--cache-salt`, the test tags and
-`-cpu`, the mutation, and the content of the mutated package's `go test -deps` closure — the build
-files of every package outside the module, the whole directory tree of every package inside it (the
-test files of packages other than the mutated one excepted), `go.mod` and `go.sum`. The test binary
+test binaries inherit less the names `--cache-env-ignore` lists (comma-separated, and repeatable),
+`--cache-salt`, the test tags and `-cpu`, the mutation, and the content of the mutated package's
+`go test -deps` closure — the build files of every package outside the module, the whole directory
+tree of every package inside it (the test files of packages other than the mutated one excepted),
+`go.mod` and `go.sum`. The test binary
 runs with `-test.testlogfile` and `-test.memprofile`, and the entry records a digest of every file
 the tests opened or stat-ed and every environment variable they read; a lookup misses on any
 difference. The digests are taken from the copy the test ran in, and an entry is stored only when
@@ -199,10 +200,10 @@ that copy still holds the closure the key describes. Only verdicts the run can p
 
 A malformed, corrupted or mismatched entry is a miss.
 
-The fork ships two branches. `cerberus-sigterm-fix` at tag `v0.6.0-cerberus-verdict-cache` keeps
+The fork ships two branches. `cerberus-sigterm-fix` at tag `v0.6.0-cerberus-env-ignore-commas` keeps
 the upstream module path `github.com/go-gremlins/gremlins` and is the branch the upstream pull
 requests are built from. `cerberus-sigterm-fix-consume` at tag
-`v0.6.0-cerberus-verdict-cache-consume` is the branch `mutation.yml` installs; it adds one commit
+`v0.6.0-cerberus-env-ignore-commas-consume` is the branch `mutation.yml` installs; it adds one commit
 renaming the `go.mod` module path to `github.com/tsouza/gremlins` and rewriting the internal imports,
 because `go install` otherwise rejects the module with `module declares its path as:
 github.com/go-gremlins/gremlins`. The fixes themselves are identical across the two. Both branches
