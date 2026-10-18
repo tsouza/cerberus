@@ -746,10 +746,10 @@ func (w cancelExpectation) loopLeft(seen []callProgress) (left uint64, ok bool) 
 // minRemaining is the least remainder judged, so a quarter of it stands clear
 // of both. Under loopExecutions the work performed by an interrupted call is
 // the executions between the last reading and the cancellation taking effect
-// — measured on 26.7.13.12 at under one percent of the loop — and
-// minLoopLeftFraction keeps the remainder at least half the loop, so that
-// even a quarter of it is many times that, and an uninterrupted call's run
-// out is at least a quarter of the whole loop.
+// — measured locally on 26.7.13.12 and 26.8.10.6 at no more than two percent of
+// what was left — and minLoopLeftFraction keeps the remainder at least half
+// the loop, so that even a quarter of it is many times that, and an
+// uninterrupted call's run out is at least a quarter of the whole loop.
 const (
 	interruptedFraction   = 4
 	uninterruptedFraction = 2
