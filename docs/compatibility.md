@@ -157,7 +157,7 @@ branch as shields.io badge JSON; the README shows them live. On
   JSON report with the Prom driver so both feed a single downstream
   analyser.
 - **Corpus**: vendored
-  [`grafana/loki:pkg/logql/bench/queries/{fast,regression,exhaustive}`](https://github.com/grafana/loki/tree/main/pkg/logql/bench/queries);
+  [`grafana/loki:pkg/logql/bench/queries/{fast,regression,exhaustive}`](https://github.com/grafana/loki/tree/v3.7.0/pkg/logql/bench/queries);
   the widened corpus's `${SELECTOR}` / `${LABEL_*}` templates resolve
   off `dataset_metadata.json`. Plus a small cerberus-owned additive
   corpus under `compatibility/loki/cerberus-queries/` (same suite/file

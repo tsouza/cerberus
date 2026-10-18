@@ -28,6 +28,9 @@ jobs:
   external-links:
     name: external-links
     runs-on: ubuntu-latest
+    env:
+      TRACKING_ISSUE_TITLE: Weekly external link check found dead links
+      TRACKING_ISSUE_LABEL: link-rot
     steps:
       - uses: actions/checkout@v7
 
@@ -46,9 +49,9 @@ jobs:
       # ONLINE check: no `--offline`. `--cache` + `--max-cache-age 1d` reuse
       # recent verdicts; `GITHUB_TOKEN` is passed so github.com links are
       # checked authenticated (dodging the anonymous API rate-limit that
-      # otherwise yields false 429/404 negatives). The exit code is captured
-      # rather than propagated, so the job stays green even with dead links;
-      # the report below carries the signal.
+      # otherwise yields false 429/404 negatives). The exit code is ignored:
+      # the JSON verdict is classified by the next step, which carries the
+      # signal, so the job stays green even with dead links.
       # The same upstream-snapshot + node_modules excludes as the internal gate.
       #
       # `--exclude 'https://slsa\.dev'`: slsa.dev has fired "Connection
@@ -58,32 +61,42 @@ jobs:
       # non-browser user agent, not an actual outage. The link itself is
       # valid; this checker cannot verify it, so stop asking it to.
       - name: lychee (external links)
-        id: lychee
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set +e
           lychee \
             --cache \
             --max-cache-age 1d \
-            --format markdown \
-            --output ./lychee-report.md \
+            --format json \
+            --output ./lychee.json \
             --exclude-path compatibility/prometheus/upstream \
             --exclude-path compatibility/tempo/upstream \
             --exclude-path compatibility/loki/upstream \
             --exclude-path node_modules \
             --exclude 'https://slsa\.dev' \
-            "**/*.md"
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+            "**/*.md" || true
 
-      # Open or update a single tracking issue when rot is found. `exit_code`
-      # is non-zero iff lychee saw at least one broken link. The action
-      # de-dupes by title, so reruns update the existing issue rather than
-      # spamming new ones. Never fails the job.
+      # Split lychee's errors into dead links and links a host hid behind a
+      # bot challenge (a vendor `*-mitigated: challenge` header on the
+      # re-probe), render the report, and find the open tracking issue so a
+      # rerun updates it instead of opening a duplicate.
+      - name: Classify link errors
+        id: classify
+        env:
+          LYCHEE_JSON: ./lychee.json
+          REPORT_PATH: ./lychee-report.md
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_TITLE: ${{ env.TRACKING_ISSUE_TITLE }}
+          ISSUE_LABEL: ${{ env.TRACKING_ISSUE_LABEL }}
+        run: node .github/scripts/link-check-external.mjs
+
+      # Open the tracking issue, or update the open one, when a link is dead.
+      # Never fails the job.
       - name: Open/update link-rot tracking issue
-        if: steps.lychee.outputs.exit_code != 0
+        if: steps.classify.outputs.dead_count != '0'
         uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710  # v6
         with:
-          title: Weekly external link check found dead links
+          title: ${{ env.TRACKING_ISSUE_TITLE }}
           content-filepath: ./lychee-report.md
-          labels: link-rot, automated
+          issue-number: ${{ steps.classify.outputs.issue_number }}
+          labels: ${{ env.TRACKING_ISSUE_LABEL }}, automated

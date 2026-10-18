@@ -1618,6 +1618,19 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` when every cited path exists + pins are in range (or self-test
     passes), `1` on any dead reference / out-of-range pin (or a failed
     self-test).
+- **`link-check-external.mjs`** — `link-check-external.yml`, after the
+  online lychee run. Reads lychee's JSON verdict and re-probes each error
+  that carries an HTTP status once; a response with a vendor bot-challenge
+  header (`x-vercel-mitigated: challenge`, `cf-mitigated: challenge`) is
+  reported as bot-challenged instead of dead. Renders the tracking-issue
+  markdown and looks up the open tracking issue (by exact title and label) so
+  the issue step updates it rather than opening a duplicate.
+  `link-check-external.test.mjs` is the `node --test` guard (ci.yml).
+  - Env: `LYCHEE_JSON`, `REPORT_PATH` (required); `GITHUB_TOKEN`,
+    `GITHUB_REPOSITORY`, `ISSUE_TITLE`, `ISSUE_LABEL` (issue lookup).
+  - Outputs: `dead_count`, `issue_number` (empty when none is open).
+  - Exit: `0` once the report is written; `1` on missing/unreadable input or
+    a failed issue lookup.
 - **`commitlint-range.mjs`** — `ci.yml`, the `lint` job's `commitlint` step
   (pull_request only). Lints a PR's commit range while skipping commits that
   touched no files — GitHub Copilot's coding-agent workflow opens every PR it

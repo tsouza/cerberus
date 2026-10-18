@@ -527,6 +527,13 @@ jobs:
           node --test .github/scripts/merge-crawl-slices.test.mjs
           node --test .github/scripts/property-fanout.test.mjs
 
+      # link-check-external.yml runs only on a schedule, so its classifier is
+      # tested here: a bot-challenge header (not a URL list) is what moves a
+      # 429/403 out of the dead set, and the tracking-issue lookup is what
+      # keeps a rerun from opening a duplicate issue.
+      - name: link-check-external self-test
+        run: node --test .github/scripts/link-check-external.test.mjs
+
       # Every .github/scripts/**/*.test.mjs must be invoked by some workflow.
       # Adding a suite and forgetting to wire it is silent — and was, three
       # times over, including for a gate added in this same release cycle.
