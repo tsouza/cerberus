@@ -241,7 +241,7 @@ func rangeFnOverExpHistogramSubquery(expr parser.Expr, s schema.Metrics, ctx low
 func subqueryHasEvalAnchor(sub *parser.SubqueryExpr, ctx lowerCtx) bool {
 	step := sub.Step
 	if step == 0 {
-		step = DefaultSubqueryStep
+		step = defaultSubqueryStep
 	}
 	if step < 0 {
 		// Let the lowering surface its own "subquery step must be
@@ -267,7 +267,7 @@ func lowerExpHistogramRangeFnOverSubquery(shape histogramSubqueryRangeShape, s s
 	sub := shape.sub
 	step := sub.Step
 	if step == 0 {
-		step = DefaultSubqueryStep
+		step = defaultSubqueryStep
 	}
 	if step < 0 {
 		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", sub.Step)

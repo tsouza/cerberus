@@ -749,7 +749,7 @@ test('every scope with sibling legs has exactly one catch-all to absorb a new fi
   // Every scope in the table is covered, and the conversion actually happened:
   // the allowlist legs are the majority now, not the chsql-only exception.
   assert.equal(byScope.size, 10);
-  assert.equal(PHASES.filter((p) => p.include_files !== undefined).length, 21);
+  assert.equal(PHASES.filter((p) => p.include_files !== undefined).length, 20);
 });
 
 test('resolvePhases leaves an exclude_files (or bare) leg completely untouched', () => {
@@ -767,9 +767,6 @@ test('the promql legs partition the package, one leg per file', () => {
   // test above does.
   assert.deepEqual(names(select(['internal/promql/histogram_quantile_window.go'])), ['phase4-promql-b']);
   assert.deepEqual(names(select(['internal/promql/subquery.go'])), ['phase4-promql-a']);
-  // The evaluation-domain files have their own leg, peeled off the catch-all.
-  assert.deepEqual(names(select(['internal/promql/time_domain.go'])), ['phase4-promql-domain']);
-  assert.deepEqual(names(select(['internal/promql/sample_read.go'])), ['phase4-promql-domain']);
   // The catch-all leg owns histogram_quantile_range.go and everything no
   // sibling names.
   assert.deepEqual(names(select(['internal/promql/histogram_quantile_range.go'])), ['phase4-promql-other']);

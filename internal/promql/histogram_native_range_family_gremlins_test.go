@@ -258,7 +258,7 @@ func TestRangeFnOverExpHistogramSubquery_ZeroRangeRejected(t *testing.T) {
 // (`step == 0` -> `step != 0`) inside lowerExpHistogramRangeFnOverSubquery.
 //
 // A subquery with no explicit step (`[5m:]`) must fall back to
-// DefaultSubqueryStep. With the negation, step stays 0 and flows into
+// defaultSubqueryStep. With the negation, step stays 0 and flows into
 // subqueryGridCtx -> epochFloor, which divides by the step duration —
 // a genuine divide-by-zero panic, not merely a wrong answer. The original
 // code lowers this query cleanly; the mutant panics.

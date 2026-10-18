@@ -261,6 +261,17 @@ per-layer "catches X / misses Y" guidance.
     catches a rounding error of rationale in a small doc; the absolute floor catches a stub carved
     out of a huge one, which the ratio alone waves through. `docs/configuration.md` is generated
     (invariant 9) — its shape changes in the generator, never by hand.
+21. **ClickHouse computes every answer — never embed a query engine.** Cerberus answers a query
+    only by lowering it to ClickHouse SQL. It never evaluates PromQL, LogQL or TraceQL over sample,
+    log or span data in its own process: no upstream engine (Prometheus `promql`, Loki `pkg/logql`,
+    Tempo `pkg/traceql`), and no in-house evaluator that reads raw rows out of ClickHouse and
+    computes the answer in Go. A query the lowering cannot yet answer exactly is a lowering bug to
+    fix in the plan, the optimizer or the emitter — never a reason to route it to a second
+    execution path. Upstream engines run only in the test-only parity oracles. A fix for a wrong
+    answer changes the SQL cerberus emits; a fix that adds a code path computing results in-process
+    is rejected in review. `test/regression/no_embedded_query_engine_test.go` fails the build if
+    `./cmd/cerberus` links an upstream engine; it cannot see a hand-written evaluator, so that half
+    of the rule is reviewer discipline.
 
 ## Workflow for a non-trivial change
 

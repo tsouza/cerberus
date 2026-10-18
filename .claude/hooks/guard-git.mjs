@@ -74,6 +74,9 @@ const PROTECTED_BRANCH = 'main';
 const GUARDED_SUBCOMMANDS = new Set(['commit', 'push']);
 const FULL_CI_ENV = 'CERBERUS_PRECOMMIT_FULL_CI';
 
+// LEFTHOOK_CONFIG is the file whose presence says a repository uses lefthook.
+const LEFTHOOK_CONFIG = 'lefthook.yml';
+
 // Git's own global options that consume the following argument, so the
 // subcommand scanner does not mistake their value for the subcommand.
 const GIT_GLOBAL_OPTS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
@@ -175,10 +178,13 @@ function hooksDir(cwd) {
 
 // lefthookInstalled — a hook file exists AND delegates to lefthook. The name
 // alone is not enough: an unrelated hook script at that path would satisfy a
-// bare existence check while running none of the repo's gates.
+// bare existence check while running none of the repo's gates. A repository
+// with no lefthook.yml at its top level (another repository worked on from
+// this session) has no lefthook layer to install, so the check passes there.
 function lefthookInstalled(cwd, hookNames) {
   let dir;
   try {
+    if (!existsSync(join(git(['rev-parse', '--show-toplevel'], cwd), LEFTHOOK_CONFIG))) return { ok: true };
     dir = hooksDir(cwd);
   } catch {
     return { ok: false, reason: 'not inside a git working tree' };
