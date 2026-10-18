@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { landingSubject, run, runBatch, subjectsToLint } from './commitlint-pr-title.mjs';
-import { API, DRAFT, REPO, draftPullRequest, fakeApi } from './lib/merge-queue-draft.fixture.mjs';
+import { API, REPO, draftPullRequest, fakeApi } from './lib/merge-queue-draft.fixture.mjs';
 
 // The repository's own type-enum, verbatim from .commitlintrc.json.
 const TYPES = [
