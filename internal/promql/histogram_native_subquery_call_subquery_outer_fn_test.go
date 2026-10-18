@@ -176,7 +176,7 @@ func TestWidenNestedCallSubqueryInner_GridModes(t *testing.T) {
 		// an ARITHMETIC_BASE on the `-anchor.Offset` term of each range-mode
 		// branch's widening call —
 		//
-		//	histogram_native_subquery_call_subquery_outer_fn.go:`case ctx.rangeMode() && subqueryPinned(sub):`
+		//	histogram_native_subquery_call_subquery_outer_fn.go:`case ctx.rangeMode() && subqueryPinned(sub) && !anchor.End.IsZero():`
 		//	histogram_native_subquery_call_subquery_outer_fn.go:`ctx.start.Add(-anchor.Offset-sub.Range), ctx.end`
 		//
 		// The `@`-pinned branch is cited by its `case` label rather than by

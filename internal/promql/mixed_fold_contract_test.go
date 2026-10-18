@@ -54,7 +54,7 @@ func TestMixedOuterAggregateFoldDefaultStepAndAlignment(t *testing.T) {
 		step time.Duration
 	}{
 		{name: "instant"},
-		{name: "range", step: 2 * DefaultSubqueryStep},
+		{name: "range", step: 2 * defaultSubqueryStep},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			expr := mustParse(t, `sum(rate((latency_exp_hist or other_metric)[5m:]))`)
@@ -93,8 +93,8 @@ func TestMixedOuterAggregateFoldDefaultStepAndAlignment(t *testing.T) {
 				// outer fold carriers begin at that start instead.
 				if !start.IsZero() && start.Before(ctx.start) {
 					innerGrids++
-					if step != DefaultSubqueryStep {
-						t.Errorf("inner %T step = %s, want default %s", node, step, DefaultSubqueryStep)
+					if step != defaultSubqueryStep {
+						t.Errorf("inner %T step = %s, want default %s", node, step, defaultSubqueryStep)
 					}
 				}
 				return true

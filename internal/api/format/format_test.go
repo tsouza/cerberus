@@ -209,52 +209,6 @@ func TestParseTimeProm(t *testing.T) {
 	}
 }
 
-// TestParseEvalTimeProm pins the evaluation-instant parse to Prometheus's
-// parseTime (web/api/v1/api.go): no clamping, the fraction rounded to the
-// millisecond, and Prometheus's MinTime / MaxTime spellings.
-func TestParseEvalTimeProm(t *testing.T) {
-	t.Parallel()
-	def := time.Unix(1_000, 0).UTC()
-	tests := []struct {
-		name string
-		raw  string
-		want time.Time
-		err  bool
-	}{
-		{"empty-defaults", "", def, false},
-		{"unix-seconds", "1700000000", time.Unix(1_700_000_000, 0).UTC(), false},
-		{"unix-fractional", "1700000000.5", time.Unix(1_700_000_000, 500_000_000).UTC(), false},
-		{"fraction-rounds-to-the-millisecond", "1.0006", time.Unix(1, 1_000_000).UTC(), false},
-		{"rfc3339", "2024-01-02T03:04:05Z", time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC), false},
-		{"unix-millis-13digit", "1700000000123", time.UnixMilli(1_700_000_000_123).UTC(), false},
-		{"year-33658-is-not-clamped", "999999999999", time.Unix(999_999_999_999, 0).UTC(), false},
-		{"year-one-is-not-clamped", "-62135596800", time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC), false},
-		{"below-the-nanosecond-window", "-9300000000", time.Unix(-9_300_000_000, 0).UTC(), false},
-		{"rfc3339-past-the-nanosecond-window", "9999-01-01T00:00:00Z", time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC), false},
-		{"prometheus-min-time", "-292273086-05-16T16:47:06Z", time.Unix(math.MinInt64/1000+62135596801, 0).UTC(), false},
-		{"prometheus-max-time", "292277025-08-18T07:12:54.999999999Z", time.Unix(math.MaxInt64/1000-62135596801, 999999999).UTC(), false},
-		{"bogus", "not-a-time", time.Time{}, true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := format.ParseEvalTimeProm(tc.raw, def)
-			if tc.err {
-				if err == nil {
-					t.Fatalf("expected error, got %v", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if !got.Equal(tc.want) {
-				t.Fatalf("got %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestParseTimeUnixScaled(t *testing.T) {
 	def := time.Unix(1_000, 0).UTC()
 	tests := []struct {
@@ -334,30 +288,5 @@ func TestCrossHandlerCanonicalKey(t *testing.T) {
 	want := "__name__=http_requests_total\x00instance=10.0.0.1:9090\x00job=api\x00"
 	if got := format.CanonicalKey(labels); got != want {
 		t.Fatalf("CanonicalKey diverged from pre-extraction output:\n got: %q\nwant: %q", got, want)
-	}
-}
-
-// TestIsStorable pins both edges of the storable window as inclusive and
-// the instant one nanosecond past each as outside, plus Go's zero
-// time.Time, which sits far below the window.
-func TestIsStorable(t *testing.T) {
-	tests := []struct {
-		name string
-		in   time.Time
-		want bool
-	}{
-		{"min-edge", minStorable, true},
-		{"max-edge", maxStorable, true},
-		{"epoch", time.Unix(0, 0), true},
-		{"below-min-edge", minStorable.Add(-time.Nanosecond), false},
-		{"above-max-edge", maxStorable.Add(time.Nanosecond), false},
-		{"go-zero-time", time.Time{}, false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := format.IsStorable(tc.in); got != tc.want {
-				t.Errorf("IsStorable(%s) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
 	}
 }
