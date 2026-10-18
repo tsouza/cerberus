@@ -1444,8 +1444,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -1626,8 +1626,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
