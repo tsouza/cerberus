@@ -21,6 +21,13 @@
 // copy fails the job, in the one place where the fix is to run the job again or
 // to correct the inventory.
 //
+// RETAINED IMAGES ARE VERIFIED, NOT COPIED. A ref in `retainedImages` has no
+// upstream left to copy from, and its mirrored copy is the source of record
+// (see `lib/mirror.mjs`). Re-copying it would only report the upstream refusal
+// again; skipping it would let the one remaining copy disappear unnoticed. So
+// the job reads it back at its pinned digest, and a copy that no longer
+// resolves fails the job exactly as a failed copy does.
+//
 // Usage:
 //   node .github/scripts/mirror-images.mjs           copy every inventoried ref
 //   node .github/scripts/mirror-images.mjs --list    print the plan, copy nothing
@@ -30,19 +37,25 @@
 //                          `lib/mirror.mjs`. Unset in CI.
 //   GITHUB_STEP_SUMMARY    (optional) appended with the per-image outcome table.
 //
-// Exit: 0 when every inventoried image is in the mirror, 1 otherwise.
+// Exit: 0 when every inventoried image is in the mirror (copied, or retained
+// and resolving at its pinned digest), 1 otherwise.
 
 import { appendFileSync } from 'node:fs';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import { capture, error, log, notice } from './lib/gh.mjs';
-import { mirrorRegistry, mirroredImages, mirroredRef } from './lib/mirror.mjs';
+import { mirrorRegistry, mirroredImages, mirroredRef, retainedDigest } from './lib/mirror.mjs';
 
 // plan — the (upstream, mirror) pairs this run would copy. Exported so the test
 // can assert the inventory maps cleanly without spawning docker.
+// `retained` marks a row whose mirrored copy is verified rather than copied.
 export function plan() {
-  return mirroredImages.map((upstream) => ({ upstream, mirror: mirroredRef(upstream) }));
+  return mirroredImages.map((upstream) => ({
+    upstream,
+    mirror: mirroredRef(upstream),
+    retained: retainedDigest(upstream) !== null,
+  }));
 }
 
 function copy(upstream, mirror) {
@@ -59,12 +72,12 @@ function copy(upstream, mirror) {
 // mirror that is empty and a mirror that is working look identical from every
 // consuming job. Reading it back is the only step that can tell them apart, and
 // this job is the one place where the answer is actionable.
-function verify(mirror) {
+function verify(mirror, verb = 'copied') {
   const res = capture('docker', ['buildx', 'imagetools', 'inspect', mirror]);
-  if (res.status === 0) return { ok: true, detail: 'copied + resolves' };
+  if (res.status === 0) return { ok: true, detail: `${verb} + resolves` };
   return {
     ok: false,
-    detail: `copied but does not resolve: ${(res.stderr + res.stdout).trim().split('\n').slice(-1)[0] ?? 'failed'}`,
+    detail: `${verb} but does not resolve: ${(res.stderr + res.stdout).trim().split('\n').slice(-1)[0] ?? 'failed'}`,
   };
 }
 
@@ -98,15 +111,22 @@ function main(argv) {
   }
 
   if (argv.includes('--list')) {
-    for (const { upstream, mirror } of pairs) log(`${upstream} -> ${mirror}`);
+    for (const { upstream, mirror, retained } of pairs) {
+      log(`${upstream} -> ${mirror}${retained ? ' (retained: verify only)' : ''}`);
+    }
     return 0;
   }
 
   const rows = [];
-  for (const { upstream, mirror } of pairs) {
-    log(`==> ${upstream} -> ${mirror}`);
-    const copied = copy(upstream, mirror);
-    const outcome = copied.ok ? verify(mirror) : copied;
+  for (const { upstream, mirror, retained } of pairs) {
+    log(`==> ${upstream} -> ${mirror}${retained ? ' (retained: verify only)' : ''}`);
+    let outcome;
+    if (retained) {
+      outcome = verify(mirror, 'retained, upstream serves no copy');
+    } else {
+      const copied = copy(upstream, mirror);
+      outcome = copied.ok ? verify(mirror) : copied;
+    }
     rows.push({ upstream, ...outcome });
     if (!outcome.ok) error(`could not mirror ${upstream}: ${outcome.detail}`);
   }
@@ -115,8 +135,9 @@ function main(argv) {
   const failed = rows.filter((r) => !r.ok);
   if (failed.length > 0) {
     error(
-      `${failed.length} of ${rows.length} image(s) were not mirrored. Consumers fall back to Docker Hub for ` +
-        'those, which is the exact quota exposure the mirror exists to remove.',
+      `${failed.length} of ${rows.length} image(s) were not mirrored. Consumers fall back to Docker Hub for a ` +
+        'copied image, which is the exact quota exposure the mirror exists to remove, and fail outright for a ' +
+        'retained one, whose mirrored copy is the only one.',
     );
     return 1;
   }

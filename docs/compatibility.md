@@ -43,7 +43,7 @@ below).
 | Harness | Location                    | Reference backend                  | Corpus source                                                                                |
 | ------- | --------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- |
 | PromQL  | `compatibility/prometheus/` | Reference Prometheus on `:29090`   | [`prometheus/compliance`](https://github.com/prometheus/compliance) submodule under upstream |
-| LogQL   | `compatibility/loki/`       | Reference Loki on `:23100`         | Vendored `grafana/loki/pkg/logql/bench` snapshot at `upstream/loki-bench/`                   |
+| LogQL   | `compatibility/loki/`       | Reference Loki on `:23100`         | Frozen `v3.7.0` snapshot of `grafana/loki/pkg/logql/bench` plus `cerberus-queries/`          |
 | TraceQL | `compatibility/tempo/`      | Reference Tempo on `:23200`        | Cerberus-owned TXTAR corpus under `compatibility/tempo/driver/corpus/`                       |
 
 Scores are published to the orphan
@@ -159,10 +159,10 @@ branch as shields.io badge JSON; the README shows them live. On
 - **Corpus**: vendored
   [`grafana/loki:pkg/logql/bench/queries/{fast,regression,exhaustive}`](https://github.com/grafana/loki/tree/v3.7.0/pkg/logql/bench/queries);
   the widened corpus's `${SELECTOR}` / `${LABEL_*}` templates resolve
-  off `dataset_metadata.json`. Plus a small cerberus-owned additive
-  corpus under `compatibility/loki/cerberus-queries/` (same suite/file
-  layout, merged in by the driver) for behaviour the vendored corpus
-  has no coverage for at all.
+  off `dataset_metadata.json`. The snapshot is frozen at `v3.7.0`
+  (`upstream/loki-bench/VERSION`) and is the corpus of record. Every
+  cerberus-owned case lives in `compatibility/loki/cerberus-queries/`
+  (same suite/file layout, merged in by the driver).
 - **Reference**: a real Loki container on `:23100`, seeded from the same
   in-memory fixture as cerberus.
 - **Beyond the corpus**: the range lane also diffs the routes Grafana's
@@ -444,7 +444,7 @@ in either direction fails the harness:
   gaining quantile support) would otherwise silently add a query to
   the scored set without anyone triaging cerberus's parity for it.
 
-After a corpus re-snapshot, inspect the skip-set diff, then regenerate
+After a deliberate change to the vendored corpus, inspect the skip-set diff, then regenerate
 the baseline with:
 
 ```sh
@@ -664,17 +664,18 @@ discover a query that cerberus mishandles but the corpus doesn't cover:
   [`prometheus/compliance`](https://github.com/prometheus/compliance)
   adding the query (so every adapter benefits), then bump the submodule
   SHA under `compatibility/prometheus/upstream`.
-- **LogQL**: same upstream path against `grafana/loki/pkg/logql/bench`
-  when the case would benefit every consumer of that corpus. For a
-  case that needs a real differential run against reference Loki but
-  is cerberus-fixture-specific (e.g. it needs a seeded stream shape
-  the vendored corpus's generator never produces), add it to
-  `compatibility/loki/cerberus-queries/` instead — a cerberus-owned,
-  additive query corpus mirroring the vendored suite/file layout that
-  the driver merges in alongside the vendored cases (see
+- **LogQL**: the vendored snapshot under
+  `compatibility/loki/upstream/loki-bench/` is frozen at the tag its
+  `VERSION` file pins (`v3.7.0`) and is never edited or bumped. Add the
+  case to `compatibility/loki/cerberus-queries/<suite>/<topic>.yaml`,
+  with `<suite>` one of `fast`, `regression` or `exhaustive`. That is a
+  cerberus-owned query corpus with the vendored suite/file layout and
+  YAML schema (`upstream/loki-bench/queries/schema.json`), and the
+  driver merges it in alongside the vendored cases (see
   `compatibility/loki/cerberus-queries/README.md`). It carries no
-  skip/tolerance mechanism: every case added there runs and is graded
-  like a vendored one.
+  skip/tolerance mechanism: every case added there runs against
+  reference Loki and is graded like a vendored one. `just compat-logql`
+  runs both.
 - **TraceQL**: the corpus is cerberus-owned; add a TXTAR case under
   `compatibility/tempo/driver/corpus/`.
 

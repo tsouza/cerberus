@@ -179,10 +179,18 @@ paths nobody has audited yet, and GHCR's budget is not the one every other
 tenant of the runner's IP is drawing on. The packages are **private**, so every consuming
 job needs a `registry-login.mjs` step against `ghcr.io` with its own `GITHUB_TOKEN`
 and `packages: read`; a job that forgets is slower and quota-exposed, never
-broken. Nothing in the tree names a mirrored ref — compose files, Kubernetes
+broken — except for a retained image, below. Nothing in the tree names a mirrored ref — compose files, Kubernetes
 manifests, the quickstart and the Helm chart keep naming Docker Hub, because
 operators read those files and should not be pointed at a mirror this project
 runs for its own CI.
+
+`retainedImages` (with `retainedDigest(ref)`) lists the inventoried refs whose
+upstream no longer serves them, each mapped to the index digest of the copy the
+mirror holds. That copy is the source of record: `mirroredRef` names it by
+digest, `mirror-images.mjs` reads it back instead of re-copying it and fails
+when it no longer resolves, and `pullImageWithRetry` / `pullImages` treat a
+mirror miss for it as a hard error instead of falling back to an upstream that
+has nothing to serve.
 
 `lib/scope-gate.mjs` answers "does THIS change touch the scope a heavy lane
 guards?" — `runsFullLane()` (which events must never take a scoped subset),
@@ -4001,12 +4009,15 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   and that tolerance is only honest if completeness is asked somewhere it can be
   answered. `TestMirrorInventoryCoversEveryUpstreamImage` closes the other
   direction on the required `check` lane — a new upstream image in the tree
-  fails there rather than quietly never being mirrored.
+  fails there rather than quietly never being mirrored. A ref in
+  `retainedImages` is not copied — its upstream serves nothing — but read back
+  at its pinned digest, and a copy that no longer resolves fails the job.
   - Args: `--list` prints the upstream→mirror plan and copies nothing.
   - Env: `IMAGE_MIRROR_REGISTRY` (optional; a scratch namespace to copy into
     while changing the job — unset in CI), `GITHUB_STEP_SUMMARY` (optional;
     appended with the per-image outcome table).
-  - Exit: `0` when every inventoried image is in the mirror, `1` otherwise.
+  - Exit: `0` when every inventoried image is in the mirror (copied, or
+    retained and resolving at its pinned digest), `1` otherwise.
   - Gated by `mirror-images.test.mjs` on the required `check` lane, which pins
     the inventory→ref mapping and rejects two upstream refs colliding on one
     mirror ref — the one mirror bug that presents as a WRONG image rather than
