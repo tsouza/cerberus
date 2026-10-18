@@ -775,8 +775,8 @@ func TestEmitMetricsAggregate_LogicalAndOnMetricArg(t *testing.T) {
 }
 
 // TestEmitMetricsAggregate_BadStartEndPin kills the boundary mutants on
-// range_window.go:emitRangeWindowMetrics:`span < 0` (mirror of
-// exemplars.go:`span < 0`).
+// exemplars.go:rangeWindowGridAnchorCount:`span < 0` through
+// emitRangeWindowMetrics, which takes its anchor count from that helper.
 // End < Start must error; End == Start must succeed (boundary case).
 func TestEmitMetricsAggregate_BadStartEndPin(t *testing.T) {
 	t.Parallel()
@@ -1011,8 +1011,8 @@ func TestEmitMetricsHistogramOverTime_RangeFallback(t *testing.T) {
 }
 
 // TestEmitMetricsHistogramOverTime_NumAnchorsBoundary kills the
-// histogram_over_time.go:`span < 0` boundary (mirror of the
-// exemplars / range_window check).
+// exemplars.go:rangeWindowGridAnchorCount:`span < 0` boundary through the
+// histogram fan-out, which takes its anchor count from that helper.
 func TestEmitMetricsHistogramOverTime_NumAnchorsBoundary(t *testing.T) {
 	t.Parallel()
 	inner := &chplan.MetricsHistogramOverTime{
@@ -1055,7 +1055,8 @@ func TestEmitMetricsHistogramOverTime_NumAnchorsBoundary(t *testing.T) {
 }
 
 // TestEmitMetricsHistogramOverTime_BadStartEndErrors kills the matrix
-// negation at histogram_over_time.go:`span < 0` by hitting the error path.
+// negation at exemplars.go:rangeWindowGridAnchorCount:`span < 0` by hitting
+// the error path through the histogram fan-out.
 func TestEmitMetricsHistogramOverTime_BadStartEndErrors(t *testing.T) {
 	t.Parallel()
 	inner := &chplan.MetricsHistogramOverTime{
@@ -2257,8 +2258,8 @@ func TestEmitWindowedArrayPairsMatrix_MinWindowNegation(t *testing.T) {
 }
 
 // TestEmitRangeWindowMetricsQuantileBuckets_SpanBoundary kills the
-// CONDITIONALS_BOUNDARY at
-// range_window.go:emitRangeWindowMetricsQuantileBuckets:`span < 0`. The
+// CONDITIONALS_BOUNDARY at exemplars.go:rangeWindowGridAnchorCount:`span < 0`
+// through emitRangeWindowMetricsQuantileBuckets, which calls it. The
 // mutant flips `<` to `<=`, which rejects Start == End (span == 0) — a
 // legitimate single-anchor grid the original accepts. We assert that
 // Start == End succeeds (the original branch) and Start > End errors
@@ -2318,7 +2319,8 @@ func TestEmitRangeWindowMetricsQuantileBuckets_SpanBoundary(t *testing.T) {
 
 // TestEmitRangeWindowMetricsQuantileBuckets_SpanAnchorArithmetic kills
 // the two ARITHMETIC_BASE mutants at
-// range_window.go:emitRangeWindowMetricsQuantileBuckets:`span/stepNS + 1`.
+// exemplars.go:rangeWindowGridAnchorCount:`span/stepNS + 1`, through
+// emitRangeWindowMetricsQuantileBuckets, which calls it.
 // The `/` mutates to `*` / `%` / `-` / `+`; the
 // `+` mutates to `-` / `*` / `%` / `/`. Setup: Start=t0, End=t0+4m,
 // Step=1m → span = 240s (in ns), span/stepNS = 4, numAnchors = 5.
