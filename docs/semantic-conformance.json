@@ -291,8 +291,8 @@
       {
         "lane_id": "chdb.ch-server-safety",
         "context_name": "ch-server-safety",
-        "merge_required": false,
-        "release_required": false,
+        "merge_required": true,
+        "release_required": true,
         "binding_ids": [
           "BINDING-ARCH-BREAKER-RESILIENCE-STATE-MACHINE",
           "BINDING-ARCH-CANCELLATION-CLEANUP-PANIC",
@@ -2143,8 +2143,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -2364,8 +2364,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -2722,8 +2722,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -2863,8 +2863,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -3004,8 +3004,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -3145,8 +3145,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -3455,8 +3455,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -3735,8 +3735,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -4540,8 +4540,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -4747,8 +4747,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -5443,8 +5443,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -5564,8 +5564,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -6824,8 +6824,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -9679,8 +9679,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.integration-promql",
@@ -10924,8 +10924,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -11062,8 +11062,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -11201,8 +11201,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -11340,8 +11340,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -11482,8 +11482,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -11636,8 +11636,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -11790,8 +11790,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -11944,8 +11944,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
@@ -12098,8 +12098,8 @@
             {
               "lane_id": "chdb.ch-server-safety",
               "context_name": "ch-server-safety",
-              "merge_required": false,
-              "release_required": false
+              "merge_required": true,
+              "release_required": true
             },
             {
               "lane_id": "chdb.perf-guards",
