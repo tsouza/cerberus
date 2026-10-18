@@ -65,6 +65,7 @@ func TestGuardGitHook(t *testing.T) {
 	onMain := newGuardRepo(t, "main", true)
 	onFeature := newGuardRepo(t, "fix/some-work", true)
 	noHooks := newGuardRepo(t, "fix/other-work", false)
+	foreign := newForeignRepo(t, "fix/elsewhere")
 
 	cases := []struct {
 		name    string
@@ -114,6 +115,12 @@ func TestGuardGitHook(t *testing.T) {
 			cwd:     noHooks,
 			command: "git commit -m msg",
 			want:    guardBlock,
+		},
+		{
+			name:    "commit in a repository that does not use lefthook is allowed",
+			cwd:     foreign,
+			command: "git commit -m msg",
+			want:    guardAllow,
 		},
 		{
 			name:    "a non-git command is allowed",
@@ -285,15 +292,15 @@ func runGuard(t *testing.T, hook, cwd, command string) (int, string) {
 	return 0, ""
 }
 
-// newGuardRepo builds a throwaway git repository on the named branch, with or
-// without lefthook's hook files, and returns its path.
+// newGuardRepo builds a throwaway git repository that uses lefthook, as this
+// one does (a lefthook.yml at its top level), on the named branch, with or
+// without lefthook's hook files installed, and returns its path.
 func newGuardRepo(t *testing.T, branch string, withLefthook bool) string {
 	t.Helper()
-	dir := t.TempDir()
-	runGit(t, dir, "init", "--quiet", "--initial-branch", branch)
-	runGit(t, dir, "config", "user.email", "regression@cerberus.invalid")
-	runGit(t, dir, "config", "user.name", "regression")
-	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "root")
+	dir := newForeignRepo(t, branch)
+	if err := os.WriteFile(filepath.Join(dir, "lefthook.yml"), []byte("pre-commit: {}\n"), 0o644); err != nil {
+		t.Fatalf("write lefthook.yml: %v", err)
+	}
 
 	if !withLefthook {
 		return dir
@@ -308,5 +315,17 @@ func newGuardRepo(t *testing.T, branch string, withLefthook bool) string {
 			t.Fatalf("write %s hook: %v", name, err)
 		}
 	}
+	return dir
+}
+
+// newForeignRepo builds a throwaway git repository on the named branch that
+// does not use lefthook (no lefthook.yml), and returns its path.
+func newForeignRepo(t *testing.T, branch string) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet", "--initial-branch", branch)
+	runGit(t, dir, "config", "user.email", "regression@cerberus.invalid")
+	runGit(t, dir, "config", "user.name", "regression")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "root")
 	return dir
 }
