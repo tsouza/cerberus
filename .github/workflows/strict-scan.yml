@@ -532,7 +532,7 @@ jobs:
     runs-on: ubuntu-latest
     # Fourteen pinned ClickHouse images, thirteen condition-cache servers run
     # three at a time, and three cancellation servers whose probes calibrate
-    # each workload to about ten seconds of uncancelled work.
+    # each workload to the runner at hand.
     timeout-minutes: 25
     steps:
       - name: gate on the changes job
