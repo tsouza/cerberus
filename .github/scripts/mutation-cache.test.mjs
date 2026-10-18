@@ -21,6 +21,7 @@ import {
   literalRelativePaths,
   mutantCacheSalt,
   mutantVerifyProblem,
+  pickMutantCacheEntry,
   runnerScriptHashes,
 } from './mutation-cache.mjs';
 import {
@@ -553,20 +554,151 @@ test('the per-mutant cache salt moves with every runner input and only with them
   }
 });
 
-test('a restored per-mutant cache is used only when its producing run verifies', async () => {
-  const good = { schema: MUTANT_PROVENANCE_SCHEMA, sourceRunUrl: runUrl };
-  const seen = [];
-  const verifies = async (url) => {
-    seen.push(url);
-    return null;
+// A per-mutant cache scope as the cache API lists it, with the runs its keys
+// name. Run 100 is a completed run of PR 7, run 200 a run of PR 7 still in
+// progress, run 300 a completed run of PR 8, and run 400 this run.
+const salt = 'f'.repeat(64);
+const prefix = `mutation-mutants-p1-${salt}-`;
+function scopeApi({ caches, runs }) {
+  const calls = [];
+  const api = async (path) => {
+    calls.push(path);
+    const list = path.match(/^\/repos\/o\/r\/actions\/caches\?(.+)$/);
+    if (list) {
+      const q = new URLSearchParams(list[1]);
+      assert.equal(q.get('ref'), 'refs/pull/7/merge', 'the listing is scoped to this PR');
+      assert.equal(q.get('key'), prefix);
+      return { total_count: caches.length, actions_caches: caches };
+    }
+    const run = path.match(/^\/repos\/o\/r\/actions\/runs\/([0-9]+)\/attempts\/([0-9]+)$/);
+    if (run && runs[run[1]]) return runs[run[1]];
+    if (path === '/repos/o/r/pulls/7') return { head: { repo: { full_name: 'o/r' }, ref: 'feature' } };
+    const m = path.match(/^\/repos\/o\/r\/contents\/(.+)\?ref=(.+)$/);
+    if (m) return { sha: 'a1' };
+    throw new Error(`unexpected ${path}`);
   };
-  assert.equal(await mutantVerifyProblem({ provenance: good, verifyRun: verifies }), null);
-  assert.deepEqual(seen, [runUrl], 'the recorded run is the one verified');
+  return { api, calls };
+}
+function prRun(over) {
+  return {
+    repository: { full_name: 'o/r' },
+    path: PRODUCING_WORKFLOW,
+    event: 'pull_request',
+    status: 'completed',
+    pull_requests: [{ number: 7 }],
+    head_repository: { full_name: 'o/r' },
+    head_branch: 'feature',
+    head_sha: 'h'.repeat(40),
+    ...over,
+  };
+}
+const scopeRuns = {
+  100: prRun({}),
+  200: prRun({ status: 'in_progress' }),
+  300: prRun({ pull_requests: [{ number: 8 }], head_branch: 'other' }),
+  400: prRun({ status: 'in_progress' }),
+};
+function entry(run, created, ref = 'refs/pull/7/merge') {
+  return { key: `${prefix}${run}-1`, ref, created_at: created };
+}
+async function pick(caches) {
+  const { api, calls } = scopeApi({ caches, runs: scopeRuns });
+  const verifyRun = (sourceRunUrl) => verifyProducingRun({ repo: 'o/r', prNumber: 7, sourceRunUrl, harness: { '.github/scripts/x.mjs': 'a1' }, api });
+  const picked = await pickMutantCacheEntry({ repo: 'o/r', prNumber: 7, prefix, runId: '400', runAttempt: '1', api, verifyRun });
+  return { ...picked, calls };
+}
 
-  const refuses = async () => 'not a run of this PR';
-  assert.match(await mutantVerifyProblem({ provenance: good, verifyRun: refuses }), /not a run of this PR/);
-  for (const provenance of [undefined, null, 'x', { ...good, schema: 'other/v1' }]) {
-    assert.notEqual(await mutantVerifyProblem({ provenance, verifyRun: verifies }), null, JSON.stringify(provenance));
+test('mutant-pick passes over an entry of a run in progress to an older entry of a completed run', async () => {
+  // Listed oldest first: the order of the listing is not trusted.
+  const picked = await pick([entry(100, '2026-10-18T10:00:00Z'), entry(200, '2026-10-18T11:00:00Z')]);
+  assert.equal(picked.key, `${prefix}100-1`);
+  assert.equal(picked.sourceRunUrl, 'https://github.com/o/r/actions/runs/100/attempts/1');
+  assert.equal(picked.refused.length, 1);
+  assert.match(picked.refused[0], /200-1: source run is in_progress, not completed/);
+});
+
+test('mutant-pick misses when every entry belongs to a run still in progress', async () => {
+  const picked = await pick([entry(200, '2026-10-18T11:00:00Z')]);
+  assert.equal(picked.key, null);
+  assert.equal(picked.sourceRunUrl, null);
+  assert.match(picked.refused[0], /in_progress/);
+  assert.equal((await pick([])).key, null, 'an empty scope is a miss');
+});
+
+test('mutant-pick refuses a completed producer of another pull request', async () => {
+  // A key naming a completed run of PR 8, listed in this PR's scope.
+  const foreign = await pick([entry(300, '2026-10-18T12:00:00Z')]);
+  assert.equal(foreign.key, null);
+  assert.match(foreign.refused[0], /not a run of pull request #7/);
+  // An entry of PR 8's scope is never a candidate, even naming a run that verifies.
+  const otherScope = await pick([entry(100, '2026-10-18T12:00:00Z', 'refs/pull/8/merge')]);
+  assert.equal(otherScope.key, null);
+  assert.ok(!otherScope.calls.some((c) => c.includes('/actions/runs/')), 'no run of another scope is even read');
+  // Behind it, this PR's own completed entry still serves.
+  assert.equal((await pick([entry(100, '2026-10-18T10:00:00Z'), entry(300, '2026-10-18T12:00:00Z')])).key, `${prefix}100-1`);
+});
+
+test('mutant-pick never considers its own run attempt or a key that names no run attempt', async () => {
+  const picked = await pick([
+    entry(400, '2026-10-18T13:00:00Z'),
+    { key: `${prefix}latest`, ref: 'refs/pull/7/merge', created_at: '2026-10-18T13:00:00Z' },
+    { key: `${prefix}100-1-x`, ref: 'refs/pull/7/merge', created_at: '2026-10-18T13:00:00Z' },
+  ]);
+  assert.equal(picked.key, null);
+  assert.deepEqual(picked.refused, []);
+  assert.ok(!picked.calls.some((c) => c.includes('/actions/runs/')));
+  await assert.rejects(pickMutantCacheEntry({ repo: 'o/r', prNumber: 7, prefix, runId: '1', runAttempt: '1', api: async () => ({}), verifyRun: async () => null }));
+});
+
+test('mutant-pick verifies at most the newest candidates it is allowed', async () => {
+  const caches = [entry(100, '2026-10-18T10:00:00Z'), entry(200, '2026-10-18T11:00:00Z')];
+  const { api } = scopeApi({ caches, runs: scopeRuns });
+  const seen = [];
+  const verifyRun = async (url) => {
+    seen.push(url);
+    return 'refused';
+  };
+  const picked = await pickMutantCacheEntry({ repo: 'o/r', prNumber: 7, prefix, runId: '400', runAttempt: '1', api, verifyRun, maxCandidates: 1 });
+  assert.equal(picked.key, null);
+  assert.deepEqual(seen, ['https://github.com/o/r/actions/runs/200/attempts/1']);
+});
+
+test('the per-mutant restore takes only the key mutant-pick verified', () => {
+  const wf = readFileSync(join(here, '..', 'workflows', 'mutation.yml'), 'utf8');
+  const step = (id) => {
+    const at = wf.indexOf(`- id: ${id}\n`);
+    assert.notEqual(at, -1, id);
+    const next = wf.slice(at + 1).search(/\n {6}- /);
+    return wf.slice(at, next === -1 ? undefined : at + 1 + next);
+  };
+  const restore = step('mutant-restore');
+  assert.doesNotMatch(restore, /restore-keys/, 'a prefix restore resolves to the newest entry, verified or not');
+  assert.match(restore, /key: \$\{\{ steps\.mutant-pick\.outputs\.key \}\}$/);
+  assert.match(restore, /if: steps\.mutant-pick\.outputs\.key != ''/);
+  const verify = step('mutant-verify');
+  assert.match(verify, /PICKED_KEY: \$\{\{ steps\.mutant-pick\.outputs\.key \}\}/);
+  assert.match(verify, /PICKED_SOURCE_RUN_URL: \$\{\{ steps\.mutant-pick\.outputs\.source_run_url \}\}/);
+  assert.match(wf, /key: \$\{\{ steps\.mutant-pick\.outputs\.save_key \}\}\n/);
+  assert.doesNotMatch(wf, /mutation-mutants-\$\{\{/, 'the key format lives in mutation-cache.mjs alone');
+});
+
+test('a restored per-mutant cache is used only when it is the entry whose producing run was verified', () => {
+  const url = 'https://github.com/o/r/actions/runs/100/attempts/1';
+  const key = `${prefix}100-1`;
+  const good = { schema: MUTANT_PROVENANCE_SCHEMA, sourceRunUrl: url };
+  const ok = { provenance: good, restoredKey: key, pickedKey: key, pickedSourceRunUrl: url };
+  assert.equal(mutantVerifyProblem(ok), null);
+  const bad = {
+    'nothing was verified': { pickedKey: '', pickedSourceRunUrl: '' },
+    'another key was restored': { restoredKey: `${prefix}200-1` },
+    'the provenance names another run': { provenance: { ...good, sourceRunUrl: 'https://github.com/o/r/actions/runs/200/attempts/1' } },
+    'no provenance': { provenance: undefined },
+    'a null provenance': { provenance: null },
+    'a string provenance': { provenance: 'x' },
+    'another schema': { provenance: { ...good, schema: 'other/v1' } },
+  };
+  for (const [name, over] of Object.entries(bad)) {
+    assert.notEqual(mutantVerifyProblem({ ...ok, ...over }), null, name);
   }
 });
 
@@ -604,10 +736,11 @@ test('mutant-verify discards what it cannot trust and mutant-seal names the run 
   assert.match(readFileSync(out, 'utf8'), /enabled=true/);
   assert.ok(absent(entry));
 
-  // Restored but naming no producing run: discarded before any API call.
+  // Restored but naming no producing run: discarded.
+  const picked = { RESTORED_KEY: 'mutation-mutants-p1-s-1-1', PICKED_KEY: 'mutation-mutants-p1-s-1-1', PICKED_SOURCE_RUN_URL: runUrl };
   plant();
   writeFileSync(out, '');
-  r = mutantCli('mutant-verify', { ...env, RESTORED_KEY: 'mutation-mutants-p1-s-1-1', GITHUB_REPOSITORY: 'o/r', GITHUB_TOKEN: 't', PR_NUMBER: '1' });
+  r = mutantCli('mutant-verify', { ...env, ...picked });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /discarding/);
   assert.match(readFileSync(out, 'utf8'), /enabled=true/);
@@ -616,4 +749,47 @@ test('mutant-verify discards what it cannot trust and mutant-seal names the run 
   r = mutantCli('mutant-seal', { DIR: dir, RUN_URL: runUrl });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, MUTANT_PROVENANCE_FILE), 'utf8')), { schema: MUTANT_PROVENANCE_SCHEMA, sourceRunUrl: runUrl });
+
+  // Sealed by the verified run and restored under the verified key: kept.
+  plant();
+  writeFileSync(out, '');
+  r = mutantCli('mutant-verify', { ...env, ...picked });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /1 entries restored/);
+  assert.ok(!absent(entry));
+
+  // The same directory restored when nothing was verified: discarded.
+  writeFileSync(out, '');
+  r = mutantCli('mutant-verify', { ...env, ...picked, PICKED_KEY: '', PICKED_SOURCE_RUN_URL: '' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /discarding/);
+  assert.ok(absent(entry));
+});
+
+test('mutant-pick names the save key and settles for a miss when it cannot list', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'mutation-cache-pick-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const out = join(root, 'out');
+  const env = {
+    GITHUB_OUTPUT: out,
+    MUTATION_CACHE: 'read-write',
+    KEY_CACHEABLE: 'true',
+    PHASE: 'p1',
+    MUTANT_SALT: salt,
+    GITHUB_RUN_ID: '400',
+    GITHUB_RUN_ATTEMPT: '2',
+    GITHUB_REPOSITORY: 'o/r',
+    GITHUB_TOKEN: 't',
+    PR_NUMBER: '7',
+    // Nothing listens here, so the listing fails.
+    GITHUB_API_URL: 'http://127.0.0.1:9',
+  };
+  writeFileSync(out, '');
+  const r = mutantCli('mutant-pick', env);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /cannot choose an entry/);
+  const outputs = readFileSync(out, 'utf8');
+  assert.match(outputs, new RegExp(`save_key=${prefix}400-2\n`));
+  assert.match(outputs, /^key=$/m);
+  assert.match(outputs, /^source_run_url=$/m);
 });

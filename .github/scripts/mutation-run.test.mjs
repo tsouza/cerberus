@@ -11,7 +11,7 @@ import { readdirSync } from 'node:fs';
 import { dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { MUTANT_CACHE_ENV_IGNORE } from './lib/mutant-cache-env.mjs';
+import { MUTANT_CACHE_ENV_IGNORE, keyedEnvDigests } from './lib/mutant-cache-env.mjs';
 
 // fixture builds a self-contained leg: a fake `gremlins` that records its argv
 // and writes the report totals it is told to, a fake `go` that records its argv
@@ -437,6 +437,40 @@ test('the per-mutant verdict cache reaches both invocations only when the workfl
   assert.notEqual(unsalted.status, 0);
   assert.match(unsalted.stderr + unsalted.stdout, /MUTANT_CACHE_SALT is required/);
   assert.deepEqual(invocations(h), []);
+});
+
+test('keyedEnvDigests lists exactly the variables gremlins keys on, with their values digested', () => {
+  const env = {
+    PATH: '/bin',
+    HOME: '/home/runner',
+    GITHUB_RUN_ID: '1',
+    RUNNER_TEMP: '/t',
+    INVOCATION_ID: 'x',
+    MUTANT_MEMORY_LEDGER: '/l',
+    MUTANT_MEMORY_MAX: '1GiB',
+    PWD: '/w',
+    _: '/usr/bin/node',
+    GOTMPDIR: '/g',
+    UNSET: undefined,
+  };
+  const lines = keyedEnvDigests(env);
+  assert.deepEqual(lines.map((l) => l.split(' ')[0]), ['HOME', 'MUTANT_MEMORY_MAX', 'PATH']);
+  for (const l of lines) assert.match(l, /^[A-Z_]+ [0-9a-f]{12}$/);
+  assert.ok(!lines.join('\n').includes('/home/runner'), 'a value is never printed');
+  assert.notEqual(keyedEnvDigests({ PATH: '/bin' })[0], keyedEnvDigests({ PATH: '/usr/bin' })[0]);
+});
+
+test('a leg with the per-mutant cache logs the environment its key holds', (t) => {
+  const f = fixture(t, [3]);
+  const on = run(f, { MUTANT_CACHE_DIR: join(f.root, 'mutant-cache'), MUTANT_CACHE_SALT: 'salt', GITHUB_RUN_ID: '9', KEYED_PROBE: 'v' });
+  assert.equal(on.status, 0, on.stderr);
+  assert.match(on.stdout, /per-mutant cache key environment \([0-9]+ variables\):/);
+  assert.match(on.stdout, /^ {2}KEYED_PROBE [0-9a-f]{12}$/m);
+  assert.doesNotMatch(on.stdout, /^ {2}GITHUB_RUN_ID /m);
+  const g = fixture(t, [3]);
+  const off = run(g, { MUTANT_CACHE_DIR: '', MUTANT_CACHE_SALT: 'salt' });
+  assert.equal(off.status, 0, off.stderr);
+  assert.doesNotMatch(off.stdout, /per-mutant cache key environment/);
 });
 
 // The ignore list is sound only while nothing that runs before a test's log
