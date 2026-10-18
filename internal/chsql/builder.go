@@ -1534,7 +1534,7 @@ func (p labelReplacePatterns) readInvalidUTF8() bool {
 // patterns that read [substituteRunes] of it as these read its U+FFFD
 // form, from [substituteFor]; ok is false when there are none.
 func (p labelReplacePatterns) substituted() (k substituteBlock, sub labelReplacePatterns, ok bool) {
-	k, rewritten, ok := substituteFor([]string{p.anchored, p.extract, p.wholeMatch}, []bool{true})
+	k, rewritten, ok := substituteFor([]string{p.anchored, p.extract, p.wholeMatch}, false)
 	if !ok {
 		return substituteBlock{}, labelReplacePatterns{}, false
 	}
