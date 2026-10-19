@@ -12,7 +12,6 @@
         "callers": [
           "checkBeyondRead",
           "checkInstantDomain",
-          "checkRootGrid",
           "fitSubquery",
           "fitWindow"
         ]
