@@ -298,6 +298,9 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		if v.TimeShiftMillis != 0 {
 			fmt.Fprintf(b, " timeShiftMillis=%d", v.TimeShiftMillis)
 		}
+		if v.StartBeyond != 0 || v.EndBeyond != 0 {
+			fmt.Fprintf(b, " startBeyond=%s endBeyond=%s", v.StartBeyond, v.EndBeyond)
+		}
 		if len(v.GroupBy) > 0 {
 			gb := make([]string, len(v.GroupBy))
 			for i, e := range v.GroupBy {

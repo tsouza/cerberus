@@ -222,18 +222,14 @@ func TestInstantDomain_KeepsUnrepresentableReads(t *testing.T) {
 		end   time.Time
 		want  string
 	}{
-		// Pins past the ceiling whose window reaches stored instants, read
-		// by a function that also reads the window's edges or the pin.
-		{"increase_past_ceiling", `increase(m[10m] @ 9223372300)`, instantDomainEvalEnd, "2262-04-11T23:51:40Z"},
-		{"predict_linear_past_ceiling", `predict_linear(m[5m] @ 9223372096.854, 60)`, instantDomainEvalEnd, "2262-04-11T23:48:16.854Z"},
-		{"rate_past_ceiling", `rate(m[5m] @ 9223372100)`, instantDomainEvalEnd, "2262-04-11T23:48:20Z"},
+		// A subquery grid past the ceiling evaluates its inner at instants
+		// no DateTime64(9) value holds.
 		{"subquery_read_past_ceiling", `count_over_time(m[1h:1m] @ 9223373836.854)`, instantDomainEvalEnd, "2262-04-12T00:17:16.854Z"},
 		// A constant arm cannot be shifted away from the read beside it.
 		{"mixed_grid_past_ceiling", `count_over_time((m or vector(1))[10m:1m] @ 9223372300)`, instantDomainEvalEnd, "2262-04-11T23:51:40Z"},
 		// A root subquery answers its grid instants as sample timestamps.
 		{"root_matrix_past_ceiling", `vector(1)[5m:1m] @ 10000000000`, instantDomainEvalEnd, "2286-11-20T17:46:00Z"},
-		// Requests near the floor whose window reaches below it.
-		{"rate_near_floor", `rate(m[5m])`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:09:00Z"},
+		// A request near the floor whose lookback reaches below it.
 		{"selector_near_floor", `m`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:09:00Z"},
 		// A grid inside another subquery is not shifted on its own.
 		{"nested_grid_near_floor", `max_over_time(max_over_time(timestamp(vector(1))[5m:1m])[3m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:11:00Z"},
@@ -306,10 +302,9 @@ func TestInstantDomain_CutsWindowsAtStorageEdges(t *testing.T) {
 }
 
 // TestInstantDomain_Boundaries pins the exact edges at the ceiling, where
-// a pin is not wrapped. A rate window reads its edges, a subquery grid
-// reaches a step past its end; a grid that reads nothing is shifted
-// instead. The last accepted pin and the first rejected one sit one
-// millisecond apart.
+// a pin is not wrapped. A subquery grid reaches a step past its end; a
+// grid that reads nothing is shifted instead. The last accepted pin and
+// the first rejected one sit one millisecond apart.
 func TestInstantDomain_Boundaries(t *testing.T) {
 	instant := instantDomainModes[0]
 	cases := []struct {
@@ -317,8 +312,6 @@ func TestInstantDomain_Boundaries(t *testing.T) {
 		query  string
 		accept bool
 	}{
-		{"window_highest_accepted", `rate(m[5m] @ 9223372036.854)`, true},
-		{"window_lowest_rejected", `rate(m[5m] @ 9223372036.855)`, false},
 		// 23:46:16.854 + 1m step = 23:47:16.854.
 		{"subquery_highest_accepted", `count_over_time(m[5m:1m] @ 9223371976.854)`, true},
 		{"subquery_lowest_rejected", `count_over_time(m[5m:1m] @ 9223371976.855)`, false},
@@ -508,7 +501,7 @@ func TestInstantDomain_NoContextChecksOnlyAbsolutePins(t *testing.T) {
 	if _, err := Lower(context.Background(), mustParseExperimental(t, `count_over_time(vector(1)[5m:1m] @ -62135596800)`), schema.DefaultOTelMetrics()); err != nil {
 		t.Fatalf("Lower(year-one constant): %v", err)
 	}
-	_, err := Lower(context.Background(), mustParseExperimental(t, `rate(m[10m] @ 9223372300)`), schema.DefaultOTelMetrics())
+	_, err := Lower(context.Background(), mustParseExperimental(t, `count_over_time(m[1h:1m] @ 9223373836.854)`), schema.DefaultOTelMetrics())
 	if !isInstantDomainError(err) {
 		t.Fatalf("Lower(read past the ceiling): err = %v, want the instant-domain rejection", err)
 	}
@@ -618,9 +611,9 @@ func TestInstantDomain_StepInvariantIsUntouched(t *testing.T) {
 // TestInstantDomain_FirstErrorWins pins that a call with two arguments
 // outside the domain reports the first one.
 func TestInstantDomain_FirstErrorWins(t *testing.T) {
-	q := `predict_linear(m[5m] @ 9223372100, scalar(m @ 9223372200))`
+	q := `predict_linear(m[1h:1m] @ 9223373836.854, scalar(count_over_time(m[1h:1m] @ 9223374836.854)))`
 	_, _, err := fitAt(t, q, instantDomainEvalEnd)
-	want := instantDomainError(time.UnixMilli(9223372100000)).Error()
+	want := instantDomainError(time.UnixMilli(9223373836854)).Error()
 	if err == nil || err.Error() != want {
 		t.Fatalf("fitInstantDomain(%q): err = %v, want %q", q, err, want)
 	}

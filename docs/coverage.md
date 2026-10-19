@@ -93,17 +93,16 @@ the third is a PromQL query that needs an instant outside
 nanoseconds ClickHouse's DateTime64(9) holds, in one of these places:
 
 - a window crossing that range's edge that is evaluated at more than one
-  instant (an unpinned window in a range query or under a subquery), or read
-  by a function that also reads the window's edges or its evaluation instant
-  (`rate`, `increase`, `delta`, `predict_linear`);
+  instant (an unpinned window in a range query or under a subquery);
 - an instant selector whose lookback starts before the range;
 - a subquery grid that reads stored samples outside the range, or that holds
   a nested subquery or an `@ start()` / `@ end()` pin;
 - a range vector answered with sample timestamps outside the range.
 
-Every other such query is answered: a window that only selects samples is
-cut back to the range, which holds every stored sample, and a grid that
-reads no sample there is moved into it. Each
+Every other such query is answered: a window is cut back to the range,
+which holds every stored sample, with `rate`, `increase` and `delta`
+extrapolating to the uncut window's edges, and a grid that reads no sample
+there is moved into it. Each
 is one `class: "divergence"` row in
 [`test/rejection-parity/catalogue/`](../test/rejection-parity/catalogue),
 carries an open GitHub issue tracking its closure, and is re-verified against

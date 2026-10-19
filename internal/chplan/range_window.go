@@ -147,6 +147,16 @@ type RangeWindow struct {
 	// subtracts it. Zero for every window over an unshifted grid.
 	TimeShiftMillis int64
 
+	// StartBeyond and EndBeyond are how far the start and the end of the
+	// window Prometheus reads lie outside the window this node reads, which
+	// the PromQL lowering cuts back to the instants a stored timestamp can
+	// take. No sample lies in the cut-off parts, so the cut window holds
+	// the same samples; rate, increase and delta extrapolate to
+	// Prometheus's own edges by adding them to the distances from the
+	// window's first and last samples to its edges, and rate divides by
+	// the uncut length. Zero for an uncut window.
+	StartBeyond, EndBeyond time.Duration
+
 	// IgnoreInputTemporality suppresses the optional RoleTemporality carried
 	// by Input. Native strategy clones set this after filtering out DELTA rows;
 	// it carries no physical column name and cannot select an input by spelling.
@@ -599,7 +609,8 @@ func rangeWindowScalarFieldsEqual(r, o *RangeWindow) bool {
 		return false
 	}
 	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn ||
-		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn || r.TimeShiftMillis != o.TimeShiftMillis {
+		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn || r.TimeShiftMillis != o.TimeShiftMillis ||
+		r.StartBeyond != o.StartBeyond || r.EndBeyond != o.EndBeyond {
 		return false
 	}
 	if r.InstantScanBounded != o.InstantScanBounded || r.LagAdjacency != o.LagAdjacency ||

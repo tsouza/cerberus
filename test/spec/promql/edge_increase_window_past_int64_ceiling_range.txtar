@@ -1,0 +1,27 @@
+-- query.promql --
+increase(http_requests_total[10m] @ 9223372140)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), fromUnixTimestamp64Nano(toInt64(9223371600000000000)), 40.0),
+    ('http_requests_total', map('job', 'api'), fromUnixTimestamp64Nano(toInt64(9223371900000000000)), 46.0);
+-- expected_rows --
+[
+  [{"job": "api"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 12],
+  [{"job": "api"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 12],
+  [{"job": "api"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 12],
+  [{"job": "api"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 12],
+  [{"job": "api"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 12],
+  [{"job": "api"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 12]
+]

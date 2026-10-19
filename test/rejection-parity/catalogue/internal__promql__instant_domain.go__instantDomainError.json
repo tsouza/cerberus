@@ -5,7 +5,7 @@
       "site": "internal/promql/instant_domain.go:instantDomainError#31995eff",
       "message": "promql: the query needs instant %s, outside the range cerberus supports (%s to %s): ClickHouse cannot represent it exactly",
       "class": "divergence",
-      "trigger_query": "rate(demo_http_requests_total[10m] @ 9223372300)",
+      "trigger_query": "count_over_time(demo_http_requests_total[1h:1m] @ 9223373836.854)",
       "tracking_issue": 3824,
       "evidence": {
         "guard": null,
