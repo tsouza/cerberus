@@ -18,7 +18,9 @@
         ],
         "cited": [
           "lowerMixedExpHistogramOperands",
-          "mixedExpHistogramSetOp"
+          "lowerMixedFloatArm",
+          "mixedExpHistogramSetOp",
+          "provenFloatRowsSchema"
         ]
       }
     },

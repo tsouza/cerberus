@@ -38,6 +38,7 @@
           "comparisonVectorPlainOverMixedExpHistogramSetOp",
           "lowerPlainOperandForMixedJoin",
           "mixedJoinOperand",
+          "provenFloatRowsSchema",
           "vectorPlainArithmeticOverMixedExpHistogramSetOp"
         ]
       }
