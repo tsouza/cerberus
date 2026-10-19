@@ -137,7 +137,7 @@ func idRow(labels map[string]string, at func(time.Time) float64) instantDomainRo
 	return instantDomainRow{labels: labels, at: at}
 }
 
-// TestInstantDomainParity_ChDB pins cerberus issue #3824's shapes against
+// TestInstantDomainParity_ChDB pins the shapes of out-of-domain pins against
 // the Prometheus reference engine, with the answers written out by hand.
 func TestInstantDomainParity_ChDB(t *testing.T) {
 	const fixturePermissions = 0o600
