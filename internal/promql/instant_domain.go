@@ -282,7 +282,7 @@ func checkInstantDomain(lo, hi time.Time, reach, margin time.Duration) error {
 	switch {
 	case lo.Before(instantDomainMin):
 		return instantDomainError(lo)
-	case lo.Add(-reach - margin).Before(instantDomainMin):
+	case lo.Add(-reach).Add(-margin).Before(instantDomainMin):
 		return instantDomainError(lo.Add(-reach))
 	case hi.Add(margin).After(instantDomainMax):
 		return instantDomainError(hi)

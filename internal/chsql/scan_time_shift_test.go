@@ -22,7 +22,8 @@ func shiftTestScan(shift int64) *chplan.Scan {
 // TestScanTimeShift_MovesTimestampsInInt64 pins the emission of a
 // time-shifted scan: the timestamp column is moved in Int64 nanoseconds
 // over the rows whose moved timestamp a DateTime64(9) holds, bounded on
-// the side the shift moves towards.
+// the side the shift moves towards in an inner query, where the bound
+// reads the stored timestamp rather than the moved one its alias names.
 func TestScanTimeShift_MovesTimestampsInInt64(t *testing.T) {
 	cases := []struct {
 		shift int64
@@ -30,11 +31,11 @@ func TestScanTimeShift_MovesTimestampsInInt64(t *testing.T) {
 	}{
 		{60000, []string{
 			"fromUnixTimestamp64Nano(toUnixTimestamp64Nano(`TimeUnix`) + 60000000000) AS `TimeUnix`",
-			"WHERE toUnixTimestamp64Nano(`TimeUnix`) <= 9223371976854775807",
+			"FROM (SELECT * FROM `otel_metrics_gauge` WHERE toUnixTimestamp64Nano(`TimeUnix`) <= 9223371976854775807)",
 		}},
 		{-60000, []string{
 			"fromUnixTimestamp64Nano(toUnixTimestamp64Nano(`TimeUnix`) + -60000000000) AS `TimeUnix`",
-			"WHERE toUnixTimestamp64Nano(`TimeUnix`) >= -9223371976854775808",
+			"FROM (SELECT * FROM `otel_metrics_gauge` WHERE toUnixTimestamp64Nano(`TimeUnix`) >= -9223371976854775808)",
 		}},
 	}
 	for _, tc := range cases {

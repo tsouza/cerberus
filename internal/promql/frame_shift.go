@@ -2,6 +2,7 @@ package promql
 
 import (
 	"errors"
+	"math"
 	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
@@ -114,21 +115,56 @@ func frameUnit(e parser.Expr) int64 {
 	return unit
 }
 
-// shiftPins returns e with every `@` pin moved by shift milliseconds. A
-// node that holds no pin is returned as it is, and e itself is never
-// modified.
+// shiftPins returns e with every `@` pin moved by shift milliseconds
+// ([mapPins]).
 func shiftPins(e parser.Expr, shift int64) parser.Expr {
+	return mapPins(e, func(p pin) pin {
+		if p.ts == nil {
+			return p
+		}
+		ts := *p.ts + shift
+		return pin{ts: &ts}
+	})
+}
+
+// resolveRequestPins returns e with every `@ start()` and `@ end()` pin
+// replaced by the instant it names, start or end milliseconds, as
+// Prometheus resolves it before evaluating ([mapPins]).
+func resolveRequestPins(e parser.Expr, start, end int64) parser.Expr {
+	return mapPins(e, func(p pin) pin {
+		switch p.startOrEnd {
+		case parser.START:
+			return pin{ts: &start}
+		case parser.END:
+			return pin{ts: &end}
+		}
+		return p
+	})
+}
+
+// pin is the `@` modifier of a selector or subquery: an instant in
+// milliseconds, or `start()` or `end()`.
+type pin struct {
+	ts         *int64
+	startOrEnd parser.ItemType
+}
+
+// mapPins returns e with the `@` pin of every selector and subquery
+// replaced by what fn maps it to; fn returns a pin unchanged to keep it.
+// A node whose subtree keeps every pin is returned as it is, and e itself
+// is never modified.
+func mapPins(e parser.Expr, fn func(pin) pin) parser.Expr {
 	switch n := e.(type) {
 	case *parser.VectorSelector:
-		if n.Timestamp == nil {
+		p := fn(pin{ts: n.Timestamp, startOrEnd: n.StartOrEnd})
+		if p.ts == n.Timestamp && p.startOrEnd == n.StartOrEnd {
 			return n
 		}
 		cp := *n
-		ts := *n.Timestamp + shift
-		cp.Timestamp = &ts
+		cp.Timestamp, cp.StartOrEnd = p.ts, p.startOrEnd
 		return &cp
 	case *parser.MatrixSelector:
-		vs := shiftPins(n.VectorSelector, shift)
+		vs := mapPins(n.VectorSelector, fn)
 		if vs == n.VectorSelector {
 			return n
 		}
@@ -136,17 +172,16 @@ func shiftPins(e parser.Expr, shift int64) parser.Expr {
 		cp.VectorSelector = vs
 		return &cp
 	case *parser.SubqueryExpr:
-		cp := *n
-		cp.Expr = shiftPins(n.Expr, shift)
-		if n.Timestamp != nil {
-			ts := *n.Timestamp + shift
-			cp.Timestamp = &ts
-		} else if cp.Expr == n.Expr {
+		inner := mapPins(n.Expr, fn)
+		p := fn(pin{ts: n.Timestamp, startOrEnd: n.StartOrEnd})
+		if inner == n.Expr && p.ts == n.Timestamp && p.startOrEnd == n.StartOrEnd {
 			return n
 		}
+		cp := *n
+		cp.Expr, cp.Timestamp, cp.StartOrEnd = inner, p.ts, p.startOrEnd
 		return &cp
 	case *parser.Call:
-		args := shiftPinsAll(n.Args, shift)
+		args := mapPinsAll(n.Args, fn)
 		if args == nil {
 			return n
 		}
@@ -154,9 +189,9 @@ func shiftPins(e parser.Expr, shift int64) parser.Expr {
 		cp.Args = args
 		return &cp
 	case *parser.AggregateExpr:
-		inner, param := shiftPins(n.Expr, shift), n.Param
+		inner, param := mapPins(n.Expr, fn), n.Param
 		if n.Param != nil {
-			param = shiftPins(n.Param, shift)
+			param = mapPins(n.Param, fn)
 		}
 		if inner == n.Expr && param == n.Param {
 			return n
@@ -165,7 +200,7 @@ func shiftPins(e parser.Expr, shift int64) parser.Expr {
 		cp.Expr, cp.Param = inner, param
 		return &cp
 	case *parser.BinaryExpr:
-		lhs, rhs := shiftPins(n.LHS, shift), shiftPins(n.RHS, shift)
+		lhs, rhs := mapPins(n.LHS, fn), mapPins(n.RHS, fn)
 		if lhs == n.LHS && rhs == n.RHS {
 			return n
 		}
@@ -173,7 +208,7 @@ func shiftPins(e parser.Expr, shift int64) parser.Expr {
 		cp.LHS, cp.RHS = lhs, rhs
 		return &cp
 	case *parser.ParenExpr:
-		inner := shiftPins(n.Expr, shift)
+		inner := mapPins(n.Expr, fn)
 		if inner == n.Expr {
 			return n
 		}
@@ -181,7 +216,7 @@ func shiftPins(e parser.Expr, shift int64) parser.Expr {
 		cp.Expr = inner
 		return &cp
 	case *parser.UnaryExpr:
-		inner := shiftPins(n.Expr, shift)
+		inner := mapPins(n.Expr, fn)
 		if inner == n.Expr {
 			return n
 		}
@@ -189,7 +224,7 @@ func shiftPins(e parser.Expr, shift int64) parser.Expr {
 		cp.Expr = inner
 		return &cp
 	case *parser.StepInvariantExpr:
-		inner := shiftPins(n.Expr, shift)
+		inner := mapPins(n.Expr, fn)
 		if inner == n.Expr {
 			return n
 		}
@@ -201,12 +236,12 @@ func shiftPins(e parser.Expr, shift int64) parser.Expr {
 	}
 }
 
-// shiftPinsAll returns args with [shiftPins] applied to each, or nil when
-// no argument holds a pin.
-func shiftPinsAll(args parser.Expressions, shift int64) parser.Expressions {
+// mapPinsAll returns args with [mapPins] applied to each, or nil when no
+// argument changes.
+func mapPinsAll(args parser.Expressions, fn func(pin) pin) parser.Expressions {
 	var out parser.Expressions
 	for i, a := range args {
-		moved := shiftPins(a, shift)
+		moved := mapPins(a, fn)
 		if moved == a {
 			continue
 		}
@@ -381,4 +416,61 @@ func (c lowerCtx) guardPlans() []chplan.Node {
 		plans = append(plans, g.Plan)
 	}
 	return plans
+}
+
+// maxRangeSpan is the longest span of request steps one lowering covers:
+// half of what a time.Duration holds, so that the Int64 nanoseconds
+// between any two instants of the span, widened by its windows, fit.
+const maxRangeSpan = time.Duration(math.MaxInt64 / 2)
+
+// errSplitOpenRows is why a range query split into runs of its steps is
+// not answered: its result names no closed list of columns the runs'
+// union could align.
+var errSplitOpenRows = errors.New("promql: a range query split into runs of its steps reports no closed list of result columns")
+
+// lowerRangeInParts lowers a range query whose steps span more than
+// [maxRangeSpan] as the union of consecutive runs of its steps, each
+// spanning at most that and fitted in a frame of its own
+// ([fitInFrame]). Prometheus evaluates every step of a range query on its
+// own, so the union answers what the whole range does. A pin naming the
+// request range, `@ start()` or `@ end()`, is resolved first to the
+// instant it names, as Prometheus resolves it, since a run's own range is
+// not the request's. It reports false for a range that needs no split.
+func lowerRangeInParts(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	// The span may exceed what a time.Duration holds, so it is measured in
+	// milliseconds.
+	stepMillis := ctx.step.Milliseconds()
+	if stepMillis <= 0 || ctx.end.UnixMilli()-ctx.start.UnixMilli() <= maxRangeSpan.Milliseconds() {
+		return nil, false, nil
+	}
+	expr = resolveRequestPins(expr, ctx.start.UnixMilli(), ctx.end.UnixMilli())
+	runSteps := time.Duration(maxRangeSpan.Milliseconds() / stepMillis)
+	var arms []chplan.Node
+	for from := ctx.start; !from.After(ctx.end); {
+		part := ctx
+		part.start, part.end = from, from.Add((runSteps-1)*ctx.step)
+		if part.end.After(ctx.end) {
+			part.end = ctx.end
+		}
+		plan, err := lowerFitted(expr, s, part)
+		if err != nil {
+			return nil, true, err
+		}
+		arms = append(arms, plan)
+		from = part.end.Add(ctx.step)
+	}
+	// UNION ALL matches columns by position, so every run lists the first
+	// run's columns in its order.
+	rows := arms[0].RowType()
+	if rows.Open {
+		return nil, true, errSplitOpenRows
+	}
+	for i, arm := range arms {
+		projections := make([]chplan.Projection, 0, len(rows.Columns))
+		for _, c := range rows.Columns {
+			projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: c.Name}, Alias: c.Name})
+		}
+		arms[i] = &chplan.Project{Roles: rows.Columns, Input: arm, Projections: projections}
+	}
+	return &chplan.UnionAll{Inputs: arms}, true, nil
 }

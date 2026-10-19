@@ -183,20 +183,29 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 		tagGroups:              opts.TagGroups,
 		throwDuplicateSeriesIf: opts.ThrowDuplicateSeriesIf,
 	}
-	expr, domain, err := fitInstantDomain(expr, lctx)
+	plan, split, err := lowerRangeInParts(expr, s, lctx)
+	if !split {
+		plan, err = lowerFitted(expr, s, lctx)
+	}
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
 	}
-	lctx = lctx.withDomain(domain)
-	plan, err := lowerRoot(expr, s, lctx)
-	if err != nil {
-		span.RecordError(err)
-		return nil, err
-	}
-	plan = stampDistinctSampleRows(plan)
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil
+}
+
+// lowerFitted fits expr at ctx ([fitInstantDomain]) and lowers it.
+func lowerFitted(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	expr, domain, err := fitInstantDomain(expr, ctx)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := lowerRoot(expr, s, ctx.withDomain(domain))
+	if err != nil {
+		return nil, err
+	}
+	return stampDistinctSampleRows(plan), nil
 }
 
 // LowerMetadataRange lowers a bare metadata matcher (one match[] selector

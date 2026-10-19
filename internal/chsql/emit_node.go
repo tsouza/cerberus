@@ -359,7 +359,7 @@ func scanTableFrag(s *chplan.Scan) Frag {
 // that moves the timestamp column by the shift in Int64 nanoseconds,
 //
 //	(SELECT * REPLACE (fromUnixTimestamp64Nano(toUnixTimestamp64Nano(ts) + N) AS ts)
-//	 FROM <table> WHERE toUnixTimestamp64Nano(ts) <= <max - N>)
+//	 FROM (SELECT * FROM <table> WHERE toUnixTimestamp64Nano(ts) <= <max - N>))
 //
 // with `>= <min - N>` for a negative N. The bound keeps exactly the rows
 // whose moved timestamp a DateTime64(9) holds; the Int64 sum never
@@ -384,7 +384,11 @@ func scanSourceFrag(s *chplan.Scan) (Frag, error) {
 		keep = Gte(raw, InlineLit(int64(math.MinInt64)-shiftNanos))
 	}
 	moved := As(Call("fromUnixTimestamp64Nano", Add(raw, InlineLit(shiftNanos))), ts.Name)
-	return Subquery(NewQuery().From(table).Select(StarReplace([]Frag{moved})).Where(keep)), nil
+	// The bound filters an inner query: ClickHouse resolves a WHERE name
+	// to a SELECT alias first, so beside the REPLACE it would read the
+	// moved timestamp.
+	kept := Subquery(NewQuery().From(table).Where(keep))
+	return Subquery(NewQuery().From(kept).Select(StarReplace([]Frag{moved}))), nil
 }
 
 // maxScanTimeShiftMillis is the largest scan time shift, in milliseconds,

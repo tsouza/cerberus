@@ -57,9 +57,9 @@ func TestFrameShift_FitsInShiftedFrame(t *testing.T) {
 }
 
 // TestFrameShift_KeepsRejections pins the queries no shifted frame
-// answers: one whose instants span more than the domain, and one holding
-// a subquery region that diverges from Prometheus whatever its instants.
-// Each keeps the rejection of Prometheus's own frame.
+// answers: one holding a subquery region that diverges from Prometheus
+// whatever its instants, at one instant or over a range spanning the
+// domain. Each keeps the rejection of Prometheus's own frame.
 func TestFrameShift_KeepsRejections(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -67,7 +67,7 @@ func TestFrameShift_KeepsRejections(t *testing.T) {
 		start, end time.Time
 		step       time.Duration
 	}{
-		{"range_spanning_the_domain", `m`, instantDomainNearFloor.Add(-6 * time.Minute), instantDomainNearCeiling, 24 * time.Hour},
+		{"range_spanning_the_domain_with_nested_subquery", `max_over_time(max_over_time(m[2m:1m])[5m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), instantDomainNearCeiling, 24 * time.Hour},
 		{"nested_subquery_near_floor", `max_over_time(max_over_time(m[2m:1m])[5m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), instantDomainNearFloor.Add(-6 * time.Minute), 0},
 	}
 	for _, tc := range cases {
@@ -157,4 +157,101 @@ func TestFrameShift_LowersStorageInFrame(t *testing.T) {
 	if !ok || len(root.Projections) == 0 {
 		t.Fatalf("root %T is not the projection moving timestamps back", plan)
 	}
+}
+
+// TestFrameShift_SplitsRangeSpanningTheDomain pins a range query whose
+// steps span more than one lowering covers: it is lowered as the union of
+// runs of its steps, each spanning at most maxRangeSpan, consecutive and
+// covering every step, with a pin naming the request range resolved to
+// the instant it names. A range within maxRangeSpan is not split.
+func TestFrameShift_SplitsRangeSpanningTheDomain(t *testing.T) {
+	start, end, step := instantDomainNearFloor.Add(-6*time.Minute), instantDomainNearCeiling, 24*time.Hour
+	for _, q := range []string{`m`, `m @ start() + m`} {
+		plan, err := LowerAtRange(context.Background(), mustParseExperimental(t, q), schema.DefaultOTelMetrics(), start, end, step)
+		if err != nil {
+			t.Fatalf("lower %q: %v", q, err)
+		}
+		union, ok := plan.(*chplan.UnionAll)
+		if !ok || len(union.Inputs) < 2 {
+			t.Fatalf("lower %q: root %T, want a union of runs", q, plan)
+		}
+	}
+	var runs [][2]time.Time
+	chplan.WalkDeep(mustLowerRange(t, `m`, start, end, step), func(n chplan.Node) bool {
+		if lwr, ok := n.(*chplan.RangeLWR); ok {
+			runs = append(runs, [2]time.Time{lwr.Start, lwr.End})
+		}
+		return true
+	})
+	if len(runs) < 2 {
+		t.Fatalf("got %d runs, want several", len(runs))
+	}
+	got := resolveRequestPins(mustParseExperimental(t, `m @ start() + n @ end() + o @ 5`), 1000, 2000)
+	if want := `m @ 1.000 + n @ 2.000 + o @ 5.000`; got.String() != want {
+		t.Fatalf("resolveRequestPins = %q, want %q", got, want)
+	}
+	short := mustLowerRange(t, `m`, instantDomainEvalEnd.Add(-maxRangeSpan.Truncate(time.Millisecond)), instantDomainEvalEnd, 24*time.Hour)
+	if _, ok := short.(*chplan.UnionAll); ok {
+		t.Fatal("a range within maxRangeSpan was split")
+	}
+}
+
+// TestFrameShift_RunsCoverEveryStep pins that the runs a split range is
+// lowered as are consecutive steps of the request, each spanning at most
+// maxRangeSpan, from the request's first step to its last.
+func TestFrameShift_RunsCoverEveryStep(t *testing.T) {
+	start, end, step := instantDomainNearFloor, instantDomainNearCeiling, 7*time.Hour
+	plan := mustLowerRange(t, `m`, start, end, step)
+	union, ok := plan.(*chplan.UnionAll)
+	if !ok {
+		t.Fatalf("root %T, want a union of runs", plan)
+	}
+	want := start
+	for i, arm := range union.Inputs {
+		var lwr *chplan.RangeLWR
+		chplan.WalkDeep(arm, func(n chplan.Node) bool {
+			if r, ok := n.(*chplan.RangeLWR); ok && lwr == nil {
+				lwr = r
+			}
+			return true
+		})
+		if lwr == nil {
+			t.Fatalf("run %d holds no RangeLWR", i)
+		}
+		scan := armShift(arm)
+		first := lwr.Start.Add(-time.Duration(scan) * time.Millisecond)
+		last := lwr.End.Add(-time.Duration(scan) * time.Millisecond)
+		if !first.Equal(want) {
+			t.Fatalf("run %d starts at %s, want %s", i, first, want)
+		}
+		if last.Sub(first) > maxRangeSpan {
+			t.Fatalf("run %d spans %s, more than %s", i, last.Sub(first), maxRangeSpan)
+		}
+		want = last.Add(step)
+	}
+	if last := want.Add(-step); last.After(end) || end.Sub(last) >= step {
+		t.Fatalf("runs end at %s, want the request's last step before %s", last, end)
+	}
+}
+
+// armShift returns the frame shift a run's scans read with.
+func armShift(arm chplan.Node) int64 {
+	shift := int64(0)
+	chplan.WalkDeep(arm, func(n chplan.Node) bool {
+		if sc, ok := n.(*chplan.Scan); ok && sc.TimeShiftMillis != 0 {
+			shift = sc.TimeShiftMillis
+		}
+		return true
+	})
+	return shift
+}
+
+// mustLowerRange lowers q as a range query.
+func mustLowerRange(t *testing.T, q string, start, end time.Time, step time.Duration) chplan.Node {
+	t.Helper()
+	plan, err := LowerAtRange(context.Background(), mustParseExperimental(t, q), schema.DefaultOTelMetrics(), start, end, step)
+	if err != nil {
+		t.Fatalf("lower %q: %v", q, err)
+	}
+	return plan
 }

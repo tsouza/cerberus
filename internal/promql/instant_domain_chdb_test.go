@@ -501,3 +501,60 @@ func instantDomainCells(t *testing.T, sql string, args []any, want []instantDoma
 	}
 	return sql, cells
 }
+
+// TestInstantDomainParity_RangeSpanningTheDomain_ChDB pins, against the
+// Prometheus reference engine, a range query whose steps span the whole
+// stored range: its first step's lookback reaches below the earliest
+// stored instant and its last step sits a minute before the latest one,
+// so no one shift of its instants fits, and each half of its steps is
+// answered in a frame of its own.
+func TestInstantDomainParity_RangeSpanningTheDomain_ChDB(t *testing.T) {
+	const fixturePermissions = 0o600
+	query := instantDomainMetric + `{job=~"first|edge"}`
+	start := instantDomainFirstSample.Add(2 * time.Minute)
+	end := instantDomainNearCeiling
+	// Ten thousand steps of about 21 days, under Prometheus's limit of
+	// 11000 points a series, land the last one exactly at end.
+	const steps = 10000
+	step := time.Duration((end.UnixMilli()-start.UnixMilli())/steps) * time.Millisecond
+	if start.UnixMilli()+steps*step.Milliseconds() != end.UnixMilli() {
+		t.Fatalf("%d steps of %s from %s miss %s", steps, step, start, end)
+	}
+	expr, err := parser.NewParser(parser.Options{}).ParseExpr(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := promql.LowerAtRange(context.Background(), expr, schema.DefaultOTelMetrics(), start, end, step)
+	if err != nil {
+		t.Fatalf("LowerAtRange(%q): %v", query, err)
+	}
+	plan = spec.AssertScanTimeBoundAccepts(t, plan)
+	sql, args, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cells := [][]any{
+		{instantDomainMetric, map[string]string{"job": "first"}, start.Format(time.RFC3339Nano), 9.0},
+		{instantDomainMetric, map[string]string{"job": "edge"}, end.Format(time.RFC3339Nano), 6.0},
+	}
+	expected, err := json.Marshal(cells)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := &txtar.Archive{Files: []txtar.File{
+		{Name: "query.promql", Data: []byte(query + "\n")},
+		{Name: "parity", Data: []byte("oracle: prometheus\nendpoint: /api/v1/query_range\nscope: full\n")},
+		{Name: "seed", Data: []byte(instantDomainSeed)},
+		{Name: "expected_rows", Data: expected},
+	}}
+	path := filepath.Join(t.TempDir(), "instant_domain_span.txtar")
+	if err := os.WriteFile(path, txtar.Format(archive), fixturePermissions); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := spec.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := spec.RunRoundTripSQL(t, fixture, sql, args)
+	spec.RunParity(t, fixture, spec.ParityEval{Start: start, End: end, Step: step}, actual)
+}
