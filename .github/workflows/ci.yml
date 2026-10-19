@@ -100,7 +100,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe  # v2.87.27
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
         with:
           tool: just@1.46.0
       - name: test
@@ -130,7 +130,7 @@ jobs:
         with:
           also-warm: test/oracle/go.mod
 
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe  # v2.87.27
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
         with:
           tool: just@1.46.0
       - name: build + type-check the tagged lanes
@@ -615,7 +615,7 @@ jobs:
         run: node --test .github/scripts/goreleaser-deprecations.test.mjs
 
       - name: install goreleaser
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de  # v7
         with:
           distribution: goreleaser
           version: '~> v2'
@@ -711,7 +711,7 @@ jobs:
       # script; the suite pins the rendering and the verdict truth table.
       - name: Self-test the docs-only filter
         run: node --test .github/scripts/docs-only-filter.test.mjs
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe  # v2.87.27
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
         with:
           tool: just@1.46.0
       # The four steps below are cerberus issue #3436's merge fence: the
