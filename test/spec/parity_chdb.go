@@ -2021,10 +2021,23 @@ func rowAttrs(cell any, row int) (map[string]string, error) {
 	return out, nil
 }
 
+// rowTimeMillis reads a TimeUnix cell: an RFC3339 string, the form a
+// DateTime64 column takes, or a number of Unix milliseconds, the form an
+// Int64 column takes for an instant no DateTime64(9) holds.
 func rowTimeMillis(cell any, row int) (int64, error) {
+	switch v := cell.(type) {
+	case float64:
+		return int64(v), nil
+	case json.Number:
+		ms, err := v.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("expected_rows[%d].TimeUnix %q: %w", row, v.String(), err)
+		}
+		return ms, nil
+	}
 	s, ok := cell.(string)
 	if !ok {
-		return 0, fmt.Errorf("expected_rows[%d].TimeUnix is %T, want an RFC3339 string", row, cell)
+		return 0, fmt.Errorf("expected_rows[%d].TimeUnix is %T, want an RFC3339 string or Unix milliseconds", row, cell)
 	}
 	ts, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {

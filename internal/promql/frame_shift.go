@@ -272,6 +272,16 @@ func unframeInstant(ts chplan.Expr, shift int64) chplan.Expr {
 	}}}
 }
 
+// unframeMillis renders the Int64 Unix milliseconds of the instant ts
+// moved back by shift milliseconds.
+func unframeMillis(ts chplan.Expr, shift int64) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnToInt64, Args: []chplan.Expr{&chplan.Binary{
+		Op:    chplan.OpSub,
+		Left:  &chplan.FuncCall{Fn: chplan.FnToUnixMillis, Args: []chplan.Expr{ts}},
+		Right: &chplan.LitInt{V: shift},
+	}}}
+}
+
 // errFramedStorage is why a plan lowered in a shifted frame is not
 // answered: it reads a table whose rows carry no sample timestamp the
 // scan could move.
@@ -312,10 +322,14 @@ func frameStorage(f *domainFit, plans ...chplan.Node) error {
 
 // unshiftRoot returns plan, the lowering of the query root, with the
 // timestamps it reports moved back by the shift they were lowered with:
-// the frame's, plus a shifted subquery root's own. A subquery root answers
-// its grid instants themselves, which [domainFit.checkRootGrid] admits
-// only when they lie in the domain; every other root answers evaluation
-// instants of the request or stored timestamps, which lie there too.
+// the frame's, plus a shifted subquery root's own. Every root but a
+// subquery answers evaluation instants of the request or stored
+// timestamps, which lie in the domain, and reports them as a
+// DateTime64(9). A subquery root answers its grid instants themselves;
+// when they leave the domain ([domainFit.rootGridInDomain]) it reports
+// them as Int64 Unix milliseconds, the precision of a PromQL timestamp,
+// which hold every instant Prometheus evaluates at; so it does when its
+// shift has no Int64 nanosecond form.
 func unshiftRoot(plan chplan.Node, root parser.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	shift := int64(0)
 	if ctx.domain != nil {
@@ -338,6 +352,9 @@ func unshiftRoot(plan chplan.Node, root parser.Expr, s schema.Metrics, ctx lower
 		ts = chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp, HistogramField: named.HistogramField}
 	}
 	moved := chplan.Projection{Expr: unframeInstant(&chplan.ColumnRef{Name: ts.Name}, shift), Alias: ts.Name}
+	if !ctx.domain.rootGridInDomain(root) || !offsetFits(shift) {
+		moved.Expr = unframeMillis(&chplan.ColumnRef{Name: ts.Name}, shift)
+	}
 	if rows.Open {
 		return &chplan.Project{Roles: []chplan.Column{ts}, Input: plan, Replacements: []chplan.Projection{moved}}
 	}

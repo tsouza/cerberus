@@ -83,9 +83,7 @@ func (r *chaosRows) Scan(dest ...any) error {
 	if p, ok := dest[1].(*map[string]string); ok {
 		*p = s.Labels
 	}
-	if p, ok := dest[2].(*time.Time); ok {
-		*p = s.Timestamp
-	}
+	setFakeTime(dest[2], s.Timestamp)
 	if p, ok := dest[3].(*float64); ok {
 		*p = s.Value
 	}

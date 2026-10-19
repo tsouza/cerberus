@@ -222,8 +222,6 @@ func TestInstantDomain_KeepsUnrepresentableReads(t *testing.T) {
 		end   time.Time
 		want  string
 	}{
-		// A root subquery answers its grid instants as sample timestamps.
-		{"root_matrix_past_ceiling", `vector(1)[5m:1m] @ 10000000000`, instantDomainEvalEnd, "2286-11-20T17:46:00Z"},
 		// A grid inside another subquery is not shifted on its own.
 		{"nested_grid_near_floor", `max_over_time(max_over_time(timestamp(vector(1))[5m:1m])[3m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:11:00Z"},
 		// A region holding a nested subquery or a request pin is neither

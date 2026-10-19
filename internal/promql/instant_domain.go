@@ -194,7 +194,6 @@ func fitDomain(expr parser.Expr, ctx lowerCtx, frameShift int64) (parser.Expr, *
 	}
 	if res.err == nil {
 		f.recordRootGrid(out, env)
-		res.err = f.checkRootGrid(out)
 	}
 	if res.err != nil {
 		return nil, nil, res.err
@@ -232,26 +231,26 @@ func rootSubquery(e parser.Expr) *parser.SubqueryExpr {
 	}
 }
 
-// checkRootGrid rejects a query whose root is a shifted subquery whose
-// grid instants, which it answers as sample timestamps, lie outside the
-// domain, or whose shift a nanosecond Interval cannot carry back
-// ([unshiftRootGrid]).
-func (f *domainFit) checkRootGrid(root parser.Expr) error {
+// rootGridInDomain reports whether root, the fitted query, answers
+// timestamps a DateTime64(9) holds: it is not a shifted subquery, or the
+// instants of its grid, which it answers as sample timestamps, lie in the
+// domain in Prometheus's frame.
+func (f *domainFit) rootGridInDomain(root parser.Expr) bool {
+	if f == nil {
+		return true
+	}
 	sub := rootSubquery(root)
 	grid, ok := f.grids[sub]
 	if sub == nil || !ok {
-		return nil
+		return true
 	}
 	frame := time.Duration(f.frameShift) * time.Millisecond
-	if shift, _ := f.shiftOf(sub); !offsetFits(shift) {
-		return instantDomainError(grid[1].Add(-frame))
-	}
-	return checkInstantDomain(grid[0].Add(-frame), grid[1].Add(-frame), 0, 0)
+	return checkInstantDomain(grid[0].Add(-frame), grid[1].Add(-frame), 0, 0) == nil
 }
 
 // recordRootGrid records the grid of root, the fitted query, when root is
 // a subquery lowered in a shifted frame that no region shift recorded:
-// such a root answers its grid instants, which [domainFit.checkRootGrid]
+// such a root answers its grid instants, which [domainFit.rootGridInDomain]
 // judges in Prometheus's frame.
 func (f *domainFit) recordRootGrid(root parser.Expr, env domainEnv) {
 	sub := rootSubquery(root)

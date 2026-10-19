@@ -67,6 +67,8 @@ const instantDomainRangeSteps = 2
 // instants and so is rejected there (TestInstantDomain_RangeStepMargin).
 var instantDomainInstantOnlyCases = map[string]bool{
 	"root_matrix_near_ceiling":               true,
+	"root_matrix_past_ceiling":               true,
+	"root_matrix_reads_past_ceiling":         true,
 	"root_matrix_read_at_year_one":           true,
 	"window_below_floor_at_request":          true,
 	"increase_window_below_floor_at_request": true,
@@ -105,6 +107,30 @@ func idFloorRate(step time.Time) float64 {
 	last := time.Unix(-9223371300, 0)
 	factor := (sampled + toStartLimit + step.Sub(last).Seconds()) / sampled / window
 	return increase * factor
+}
+
+// edgeGridRows is the answer of the job "edge" selector over the grid of
+// a 10m:1m subquery pinned at 2262-04-11 23:49, which reaches past the
+// last stored instant: at each minute from 23:40 the newest sample of its
+// lookback, 4 from 23:40 and 6 from 23:45.
+func edgeGridRows() []instantDomainRow {
+	const (
+		gridStart     = 9223371600
+		gridPoints    = 10
+		firstSampleOf = 5
+	)
+	rows := make([]instantDomainRow, 0, gridPoints)
+	for i := range gridPoints {
+		v := 4.0
+		if i >= firstSampleOf {
+			v = 6
+		}
+		rows = append(rows, instantDomainRow{
+			name: instantDomainMetric, labels: map[string]string{"job": "edge"}, at: idConst(v),
+			sampleAt: time.Unix(gridStart, 0).Add(time.Duration(i) * time.Minute).UTC(),
+		})
+	}
+	return rows
 }
 
 func idRow(labels map[string]string, at func(time.Time) float64) instantDomainRow {
@@ -206,6 +232,14 @@ func TestInstantDomainParity_ChDB(t *testing.T) {
 			{labels: noLabels, at: idConst(1), sampleAt: time.UnixMilli(9223371960000).UTC()},
 			{labels: noLabels, at: idConst(1), sampleAt: time.UnixMilli(9223372020000).UTC()},
 		}},
+		// A root subquery whose grid leaves the stored range reports its
+		// instants as Unix milliseconds.
+		{name: "root_matrix_past_ceiling", query: `vector(1)[3m:1m] @ 10000000000`, eval: instantDomainEval, rows: []instantDomainRow{
+			{labels: noLabels, at: idConst(1), sampleAt: time.Unix(9999999840, 0).UTC()},
+			{labels: noLabels, at: idConst(1), sampleAt: time.Unix(9999999900, 0).UTC()},
+			{labels: noLabels, at: idConst(1), sampleAt: time.Unix(9999999960, 0).UTC()},
+		}},
+		{name: "root_matrix_reads_past_ceiling", query: instantDomainMetric + `{job="edge"}[10m:1m] @ 9223372140`, eval: instantDomainEval, rows: edgeGridRows()},
 		{name: "root_matrix_read_at_year_one", query: instantDomainMetric + `[5m] @ -62135596800`, eval: instantDomainEval},
 		// Windows reaching past the stored range read the samples inside
 		// it, for every function fixed by the samples a window holds.
@@ -424,6 +458,14 @@ func instantDomainCells(t *testing.T, sql string, args []any, want []instantDoma
 	if err != nil {
 		t.Fatalf("result columns: %v", err)
 	}
+	// A root reports an instant no DateTime64(9) holds as Int64 Unix
+	// milliseconds.
+	millis := false
+	if slices.Contains(cols, "TimeUnix") {
+		var typ string
+		err := db.QueryRow("SELECT toTypeName(`TimeUnix`) FROM ("+q+") LIMIT 1", a...).Scan(&typ)
+		millis = err == nil && typ == "Int64"
+	}
 	if slices.Contains(cols, "anchor_ts") && slices.Contains(cols, "TimeUnix") {
 		cols = slices.DeleteFunc(cols, func(c string) bool { return c == "anchor_ts" })
 		sql = "SELECT `" + strings.Join(cols, "`, `") + "` FROM (" + sql + ")"
@@ -444,6 +486,12 @@ func instantDomainCells(t *testing.T, sql string, args []any, want []instantDoma
 					cell = append(cell, r.labels)
 				case "Value":
 					cell = append(cell, r.at(at))
+				case "TimeUnix":
+					if millis {
+						cell = append(cell, ts.UnixMilli())
+					} else {
+						cell = append(cell, ts.Format(time.RFC3339Nano))
+					}
 				default:
 					cell = append(cell, ts.Format(time.RFC3339Nano))
 				}

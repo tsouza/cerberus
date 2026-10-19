@@ -189,9 +189,7 @@ func (r *genRows) Scan(dest ...any) error {
 	if p, ok := dest[1].(*map[string]string); ok {
 		*p = nil
 	}
-	if p, ok := dest[2].(*time.Time); ok {
-		*p = time.Unix(0, 0)
-	}
+	setFakeTime(dest[2], time.Unix(0, 0))
 	if p, ok := dest[3].(*float64); ok {
 		*p = 1.0
 	}

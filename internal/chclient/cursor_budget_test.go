@@ -45,9 +45,7 @@ func (r *freshLabelRows) Scan(dest ...any) error {
 		maps.Copy(m, s.Labels)
 		*p = m
 	}
-	if p, ok := dest[2].(*time.Time); ok {
-		*p = s.Timestamp
-	}
+	setFakeTime(dest[2], s.Timestamp)
 	if p, ok := dest[3].(*float64); ok {
 		*p = s.Value
 	}

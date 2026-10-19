@@ -307,7 +307,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 			// binds concrete types against the emitter's pinned CH
 			// types instead — see internal/chclient/cursor.go.
 			cells := make([]any, histogramColumnCount)
-			dest := []any{&name, &attrsJSON, &ts, &value}
+			dest := []any{&name, &attrsJSON, (*chclient.SampleTime)(&ts), &value}
 			for i := range cells {
 				dest = append(dest, &cells[i])
 			}
@@ -330,7 +330,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 			// integer type rather than a Go bool.
 			cells := make([]any, histogramColumnCount)
 			var discriminator any
-			dest := []any{&name, &attrsJSON, &ts, &value}
+			dest := []any{&name, &attrsJSON, (*chclient.SampleTime)(&ts), &value}
 			for i := range cells {
 				dest = append(dest, &cells[i])
 			}
@@ -361,7 +361,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]chclie
 				return nil, fmt.Errorf("chclienttest: scan: %w", err)
 			}
 		default:
-			if err := rows.Scan(&name, &attrsJSON, &ts, &value); err != nil {
+			if err := rows.Scan(&name, &attrsJSON, (*chclient.SampleTime)(&ts), &value); err != nil {
 				return nil, fmt.Errorf("chclienttest: scan: %w", err)
 			}
 		}

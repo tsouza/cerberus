@@ -1,6 +1,7 @@
 package chclient
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,9 +61,7 @@ func scanLeadingThree(dest []any, s Sample) {
 	if p, ok := dest[1].(*map[string]string); ok {
 		*p = s.Labels
 	}
-	if p, ok := dest[2].(*time.Time); ok {
-		*p = s.Timestamp
-	}
+	setFakeTime(dest[2], s.Timestamp)
 }
 
 // scanMetadataJSON binds a trailing metadata destination the way the server
@@ -520,5 +519,16 @@ func TestRowsCursor_BaseFourColumnPathUnaffected(t *testing.T) {
 	}
 	if got.Value != 1 {
 		t.Errorf("Value: got %v, want 1", got.Value)
+	}
+}
+
+// setFakeTime stores t through dest, a TimeUnix destination a fake
+// driver scans into: a *time.Time, or a sql.Scanner such as *SampleTime.
+func setFakeTime(dest any, t time.Time) {
+	switch p := dest.(type) {
+	case *time.Time:
+		*p = t
+	case sql.Scanner:
+		_ = p.Scan(t)
 	}
 }

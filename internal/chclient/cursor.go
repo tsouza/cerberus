@@ -415,7 +415,7 @@ func (c *rowsCursor) Next() bool {
 	switch c.shape {
 	case shapeSampleHistogram:
 		if err := c.rows.Scan(
-			&s.MetricName, &labels, &s.Timestamp, &s.Value,
+			&s.MetricName, &labels, (*SampleTime)(&s.Timestamp), &s.Value,
 			&hv.Count, &hv.Sum, &hv.Scale, &hv.ZeroThreshold, &hv.ZeroCount,
 			&hv.PositiveOffset, &hv.PositiveBucketCounts,
 			&hv.NegativeOffset, &hv.NegativeBucketCounts,
@@ -434,7 +434,7 @@ func (c *rowsCursor) Next() bool {
 		// whether hv is the real answer or the unread placeholder.
 		var isHistogram uint8
 		if err := c.rows.Scan(
-			&s.MetricName, &labels, &s.Timestamp, &s.Value,
+			&s.MetricName, &labels, (*SampleTime)(&s.Timestamp), &s.Value,
 			&hv.Count, &hv.Sum, &hv.Scale, &hv.ZeroThreshold, &hv.ZeroCount,
 			&hv.PositiveOffset, &hv.PositiveBucketCounts,
 			&hv.NegativeOffset, &hv.NegativeBucketCounts,
@@ -463,7 +463,7 @@ func (c *rowsCursor) Next() bool {
 			return false
 		}
 	default:
-		if err := c.rows.Scan(&s.MetricName, &labels, &s.Timestamp, &s.Value); err != nil {
+		if err := c.rows.Scan(&s.MetricName, &labels, (*SampleTime)(&s.Timestamp), &s.Value); err != nil {
 			c.err = fmt.Errorf("chclient: scan: %w", err)
 			return false
 		}
@@ -688,4 +688,22 @@ func (c *Client) QueryCursor(ctx context.Context, sql string, args ...any) (Curs
 	// per-block matrix-shape / bindable-args decision internally before
 	// delegating to its row fallback.
 	return c.cursorDecoder.decode(c, ctx, sql, args...)
+}
+
+// SampleTime scans the TimeUnix of a sample row: a DateTime or
+// DateTime64 value, or Int64 Unix milliseconds, the form a query reports a
+// timestamp in when a DateTime64(9) cannot hold it.
+type SampleTime time.Time
+
+// Scan implements sql.Scanner.
+func (t *SampleTime) Scan(src any) error {
+	switch v := src.(type) {
+	case time.Time:
+		*t = SampleTime(v)
+	case int64:
+		*t = SampleTime(time.UnixMilli(v).UTC())
+	default:
+		return fmt.Errorf("chclient: sample timestamp of type %T", src)
+	}
+	return nil
 }
