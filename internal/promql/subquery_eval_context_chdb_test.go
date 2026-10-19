@@ -135,3 +135,53 @@ func TestSubqueryEvalContextParity_ChDB(t *testing.T) {
 		}
 	}
 }
+
+// selectorOffsetSeed holds `m{job="edge"}` at 00:40:00 (4), 00:45:00 (6)
+// and 00:47:00 (30) on 2026-01-01.
+const selectorOffsetSeed = "" +
+	"CREATE TABLE otel_metrics_gauge (MetricName String, Attributes Map(String, String), TimeUnix DateTime64(9), Value Float64) " +
+	"ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);\n" +
+	"INSERT INTO otel_metrics_gauge VALUES\n" +
+	"    ('m', map('job', 'edge'), toDateTime64('2026-01-01 00:40:00', 9), 4.0),\n" +
+	"    ('m', map('job', 'edge'), toDateTime64('2026-01-01 00:45:00', 9), 6.0),\n" +
+	"    ('m', map('job', 'edge'), toDateTime64('2026-01-01 00:47:00', 9), 30.0);\n"
+
+// idFrom is the value of a series that answers before at every step
+// before from, and after from it on.
+func idFrom(from time.Time, before, after float64) func(time.Time) float64 {
+	return func(step time.Time) float64 {
+		if step.Before(from) {
+			return before
+		}
+		return after
+	}
+}
+
+// TestSubqueryRangeFnSelectorOffsetParity_ChDB pins cerberus issue #3886
+// against the Prometheus reference engine: the offset on a range
+// function's own selector below a subquery shifts that selector's window
+// back from every step of the subquery's grid.
+func TestSubqueryRangeFnSelectorOffsetParity_ChDB(t *testing.T) {
+	edge := map[string]string{"job": "edge"}
+	eval := time.Date(2026, 1, 1, 0, 46, 10, 0, time.UTC)
+	cases := []struct {
+		name      string
+		query     string
+		rows      []instantDomainRow
+		rangeMode bool
+	}{
+		{"offset_2m/instant", `max_over_time(sum_over_time(m[10m] offset 2m)[2m:1m])`, []instantDomainRow{idRow(edge, idConst(4))}, false},
+		{"offset_2m/range", `max_over_time(sum_over_time(m[10m] offset 2m)[2m:1m])`, []instantDomainRow{idRow(edge, idConst(4))}, true},
+		{
+			"offset_30s/range", `max_over_time(sum_over_time(m[10m] offset 30s)[2m:1m])`,
+			[]instantDomainRow{idRow(edge, idFrom(eval, 4, 10))},
+			true,
+		},
+		{"predict_linear_offset_30s/instant", `max_over_time(predict_linear(m[10m] offset 30s, 60)[2m:1m])`, []instantDomainRow{idRow(edge, idConst(6.8))}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runHandWrittenParity(t, selectorOffsetSeed, tc.query, eval, tc.rows, tc.rangeMode)
+		})
+	}
+}
