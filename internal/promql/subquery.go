@@ -982,7 +982,7 @@ func lowerSubqueryOverCall(
 // 1 argument".
 func subqueryInnerRangeFnShape(fn string) (arity, matrixArg int) {
 	switch fn {
-	case "predict_linear":
+	case fnPredictLinear:
 		return 2, 0
 	case holtWintersFunctionName, "double_exponential_smoothing":
 		return 3, 0
@@ -1309,7 +1309,7 @@ func lowerOuterRangeFnOverSubquery(
 	if err != nil {
 		return nil, err
 	}
-	if rw.Func == "predict_linear" {
+	if rw.Func == fnPredictLinear {
 		// Prometheus forecasts from the evaluation instant, which the
 		// subquery's offset puts past the right edge of the window the
 		// regression is fitted at (see [instantPredictLinearShift]). A
@@ -1892,7 +1892,7 @@ func histogramSubqueryFloatOnlyDropFunc(outerFn string) bool {
 		return true
 	}
 	switch canonicalRangeWindowFunc(outerFn) {
-	case "predict_linear", holtWintersFunctionName, "quantile_over_time":
+	case fnPredictLinear, holtWintersFunctionName, "quantile_over_time":
 		return true
 	default:
 		return false
@@ -1924,7 +1924,7 @@ func threadOuterRangeFnScalars(
 ) (value chplan.Expr, replaceValue bool, err error) {
 	value = &chplan.ColumnRef{Name: s.ValueColumn}
 	switch outer.Func.Name {
-	case "predict_linear":
+	case fnPredictLinear:
 		if len(outer.Args) != 2 {
 			return nil, false, fmt.Errorf("promql: predict_linear expects 2 arguments, got %d", len(outer.Args))
 		}

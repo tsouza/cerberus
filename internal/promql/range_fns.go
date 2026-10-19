@@ -79,7 +79,7 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	}
 	rw := &chplan.RangeWindow{
 		Input:           inner,
-		Func:            "predict_linear",
+		Func:            fnPredictLinear,
 		Range:           ms.Range,
 		End:             anchor.End(),
 		Offset:          anchor.Offset,
@@ -166,8 +166,8 @@ func offsetSecondsExpr(offset time.Duration) chplan.Expr {
 // predict_linear window rw, so that a regression fitted at the window's right
 // edge forecasts from an instant by seconds later: `intercept + slope*(t + by)`
 // at the edge is `intercept' + slope*t` at that later instant. A literal shift
-// folds into a literal horizon, which keeps the native
-// timeSeriesPredictLinearToGrid lowering eligible for a whole-second result; a
+// folds into a literal horizon, so the native timeSeriesPredictLinearToGrid
+// lowering stays eligible whenever the sum is a whole number of seconds; a
 // zero shift leaves rw untouched.
 func advancePredictLinearHorizon(rw *chplan.RangeWindow, by chplan.Expr) {
 	lit, isLit := by.(*chplan.LitFloat)

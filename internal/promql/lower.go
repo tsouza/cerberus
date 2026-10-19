@@ -3043,7 +3043,7 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 // resolving histogram-native, so retrying them here is sound regardless of
 // what wraps this call.
 func lowerCallOverSubquery(c *parser.Call, sq *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if c.Func.Name == "predict_linear" && subqueryPinned(sq) {
+	if c.Func.Name == fnPredictLinear && subqueryPinned(sq) {
 		// Reference Prometheus answers no sample here. Its PreprocessExpr
 		// wraps an `@`-pinned subquery argument in a StepInvariantExpr
 		// unless the call itself is step invariant, and predict_linear is
@@ -3189,7 +3189,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		return node, err
 	}
 	switch c.Func.Name {
-	case "predict_linear":
+	case fnPredictLinear:
 		return lowerPredictLinear(c, s, ctx)
 	case holtWintersFunctionName, "double_exponential_smoothing":
 		// `double_exponential_smoothing` (and its legacy `holt_winters`

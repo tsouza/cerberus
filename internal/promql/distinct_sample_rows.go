@@ -145,7 +145,7 @@ var distinctSampleRowsFuncs = map[string]bool{
 	"irate":                 true,
 	"idelta":                true,
 	"deriv":                 true,
-	"predict_linear":        true,
+	fnPredictLinear:         true,
 	holtWintersFunctionName: true,
 	"changes":               true,
 	"resets":                true,
