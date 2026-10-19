@@ -3,6 +3,7 @@ package promql
 import (
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -12,7 +13,9 @@ import (
 
 // lowerPredictLinear handles `predict_linear(v range-vector, t scalar)`:
 // fits a simple linear regression to the samples in the lookback window
-// and projects the line t seconds forward from the window's anchor.
+// and projects the line t seconds past the evaluation instant, which `@`
+// and `offset` move away from the window's right edge (see
+// [instantPredictLinearShift]).
 //
 // IR: a RangeWindow with Func="predict_linear" and Scalars=[t_seconds].
 // The chsql emitter renders the regression using CH's native
@@ -72,7 +75,7 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	}
 	rw := &chplan.RangeWindow{
 		Input:           inner,
-		Func:            "predict_linear",
+		Func:            fnPredictLinear,
 		Range:           ms.Range,
 		End:             anchor.End(),
 		Offset:          anchor.Offset,
@@ -91,7 +94,10 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 		// [start, end] emits its own per-window prediction. Without this
 		// the outer `RangeWindow` defaults to Step=0 and the matrix pivot
 		// collapses every step bucket onto a single anchor at end_ts.
+		// Every step forecasts from its own evaluation instant, which an
+		// offset puts past the window's right edge.
 		applyStepGridFanout(rw, ctx)
+		advancePredictLinearHorizon(rw, offsetSecondsExpr(anchor.Offset))
 	case gridBroadcast:
 		// The sample window stays pinned, but Prometheus forecasts from each
 		// request-grid evaluation instant. Fit once, broadcast the prediction
@@ -110,6 +116,7 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 		}
 		return wrapRangeWindowAtBroadcast(rw, ctx, s, nil, value), nil
 	case gridSingleAnchor:
+		advancePredictLinearHorizon(rw, instantPredictLinearShift(anchor, ctx))
 	}
 	// Route through the boot-wired PredictLinear strategy: the native impl
 	// emits a RangeWindowGridNative (timeSeriesPredictLinearToGrid) for an eligible
@@ -119,6 +126,62 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	// strategy always returns a valid lowering (never nil). Mirrors the
 	// rate/changes/resets dispatch in lowerRangeVectorCall.
 	return ctx.lowerers.PredictLinear.LowerPredictLinear(rw, s), nil
+}
+
+// instantPredictLinearShift returns the seconds from the right edge of an
+// instant predict_linear window, anchored by a, to the evaluation instant.
+//
+// Reference Prometheus's funcPredictLinear fits its regression with the
+// evaluation instant as the intercept time (`linearRegression(samples.Floats,
+// enh.Ts)`), whatever `@` and `offset` did to the window: they only choose
+// which samples it holds. The windowed-array emitter fits the regression at
+// the window's right edge, `anchor - offset`, so the horizon has to advance by
+// the distance between the two. Without a pin the evaluation instant is the
+// anchor and the distance is the offset. With a pin it is the request's
+// evaluation instant, in milliseconds as Prometheus's own timestamps are, or
+// ClickHouse's now64(9) for a lowering that carries none.
+func instantPredictLinearShift(a evalAnchor, ctx lowerCtx) chplan.Expr {
+	switch {
+	case !a.anchored() || a.End().Equal(ctx.end):
+		return offsetSecondsExpr(a.Offset)
+	case ctx.end.IsZero():
+		return secondsBetweenTsExpr(windowRightBoundExpr(a), chplan.NowNano())
+	}
+	edgeMillis := a.End().UnixMilli() - promDurationMilliseconds(a.Offset)
+	return &chplan.LitFloat{V: float64(ctx.end.UnixMilli()-edgeMillis) / millisPerSecond}
+}
+
+// offsetSecondsExpr renders an `offset` as the seconds it moves a window's
+// right edge before the evaluation instant, at Prometheus's millisecond
+// resolution.
+func offsetSecondsExpr(offset time.Duration) chplan.Expr {
+	return &chplan.LitFloat{V: float64(promDurationMilliseconds(offset)) / millisPerSecond}
+}
+
+// advancePredictLinearHorizon adds by seconds to the horizon of the
+// predict_linear window rw, so that a regression fitted at the window's right
+// edge forecasts from an instant by seconds later: `intercept + slope*(t + by)`
+// at the edge is `intercept' + slope*t` at that later instant. A literal shift
+// folds into a literal horizon, so the native timeSeriesPredictLinearToGrid
+// lowering stays eligible whenever the sum is a whole number of seconds; a
+// zero shift leaves rw untouched.
+func advancePredictLinearHorizon(rw *chplan.RangeWindow, by chplan.Expr) {
+	lit, isLit := by.(*chplan.LitFloat)
+	switch {
+	case isLit && lit.V == 0:
+		return
+	case isLit && len(rw.Scalars) == 1:
+		rw.Scalars[0] += lit.V
+		return
+	}
+	var t chplan.Expr
+	if len(rw.ScalarExprs) == 1 {
+		t = rw.ScalarExprs[0]
+	} else {
+		t = &chplan.LitFloat{V: rw.Scalars[0]}
+	}
+	rw.Scalars = nil
+	rw.ScalarExprs = []chplan.Expr{&chplan.Binary{Op: chplan.OpAdd, Left: t, Right: by}}
 }
 
 // lowerHoltWinters handles `holt_winters(v range-vector, sf scalar, tf

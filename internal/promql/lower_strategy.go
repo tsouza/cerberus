@@ -1305,11 +1305,11 @@ type NativePredictLinearLowerer struct {
 // nativeTSGridInstantNode before falling to Fallback.
 func (n NativePredictLinearLowerer) LowerPredictLinear(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
 	if nativePredictLinearHorizonEligible(rw) {
-		if native := nativeTSGridMatrixNode(rw, "predict_linear", s, noRecollapse); native != nil {
+		if native := nativeTSGridMatrixNode(rw, fnPredictLinear, s, noRecollapse); native != nil {
 			return native
 		}
 		if n.Instant {
-			if native := nativeTSGridInstantNode(rw, "predict_linear", s); native != nil {
+			if native := nativeTSGridInstantNode(rw, fnPredictLinear, s); native != nil {
 				return native
 			}
 		}
