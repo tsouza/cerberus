@@ -723,11 +723,12 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 			// [lowerVectorSetOpOperand]'s generic [lower] fallback —
 			// but the static recognizer upstream could not, so this
 			// error path was reached instead of the dedicated Mixed
-			// construction. What remains unreached here is only a
-			// genuinely unrecognised composition — e.g. a mixed `or`
-			// nested as the operand of an unrelated wrapper (a math
-			// function, an aggregate) that has not itself been taught
-			// to accept a Mixed-shaped input.
+			// construction. A wrapper with its own mixed recognizer is
+			// lowered through that recognizer as an operand
+			// ([lowerVectorSetOpOperand], cerberus issue #3823), so what
+			// remains unreached here is only a genuinely unrecognised
+			// composition — a mixed `or` nested under a wrapper that
+			// has not itself been taught to accept a Mixed-shaped input.
 			return nil, fmt.Errorf(
 				"promql: 'or' between a float-valued and a histogram-valued operand is not supported; " +
 					"'and'/'unless' support mixing them",
