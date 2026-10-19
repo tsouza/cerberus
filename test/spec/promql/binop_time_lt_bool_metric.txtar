@@ -29,7 +29,7 @@ INSERT INTO otel_metrics_sum VALUES
 [0] string = ""
 [1] string = "2026-01-01 00:00:01.000000000Z"
 [2] int64 = 9
-[3] int64 = 1000000000
+[3] float64 = 1000
 [4] string = "service_name"
 [5] string = "service.name"
 [6] string = "service_name"
@@ -54,7 +54,7 @@ INSERT INTO otel_metrics_sum VALUES
 [25] int64 = 300000000000
 [26] int64 = 9218868437227405314
 -- chplan --
-Project ["" AS MetricName, Attributes, TimeUnix, FnToFloat64((FnToFloat64((FnToUnixNanos(FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9)) / 1000000000)) < Value)) AS Value]
+Project ["" AS MetricName, Attributes, TimeUnix, FnToFloat64(((FnToFloat64(FnToUnixMillis(FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9))) / 1000) < Value)) AS Value]
   Filter predicate=(FnReinterpretAsUInt64(Value) != 9218868437227405314)
     Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
       Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
@@ -63,12 +63,12 @@ Project ["" AS MetricName, Attributes, TimeUnix, FnToFloat64((FnToFloat64((FnToU
             Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total"))
               Scan(otel_metrics_sum)
 -- sql --
-SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, toFloat64((toFloat64((toUnixTimestamp64Nano(parseDateTime64BestEffort(?, ?)) / ?)) < `Value`)) AS `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) WHERE (reinterpretAsUInt64(`Value`) != ?))
+SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, toFloat64(((toFloat64(toUnixTimestamp64Milli(parseDateTime64BestEffort(?, ?))) / toFloat64(?)) < `Value`)) AS `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) WHERE (reinterpretAsUInt64(`Value`) != ?))
 -- args_optimized --
 [0] string = ""
 [1] string = "2026-01-01 00:00:01.000000000Z"
 [2] int64 = 9
-[3] int64 = 1000000000
+[3] float64 = 1000
 [4] string = "service_name"
 [5] string = "service.name"
 [6] string = "service_name"
@@ -101,4 +101,4 @@ max_bytes_before_external_sort=536870912
 optimize_aggregation_in_order=1
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, toFloat64((toFloat64((toUnixTimestamp64Nano(parseDateTime64BestEffort(?, ?)) / ?)) < `Value`)) AS `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) WHERE (reinterpretAsUInt64(`Value`) != ?))
+SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, toFloat64(((toFloat64(toUnixTimestamp64Milli(parseDateTime64BestEffort(?, ?))) / toFloat64(?)) < `Value`)) AS `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE ((`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) WHERE (reinterpretAsUInt64(`Value`) != ?))

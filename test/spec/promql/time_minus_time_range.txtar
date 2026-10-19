@@ -25,29 +25,29 @@ CREATE TABLE otel_metrics_gauge (
 [2] int64 = 9
 [3] string = "2026-01-01 00:00:01.000000000Z"
 [4] int64 = 9
-[5] int64 = 1000000000
+[5] float64 = 1000
 [6] string = "2026-01-01 00:00:01.000000000Z"
 [7] int64 = 9
-[8] int64 = 1000000000
+[8] float64 = 1000
 -- chplan --
-Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, (FnToFloat64((FnToUnixNanos(FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9)) / 1000000000)) - FnToFloat64((FnToUnixNanos(FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9)) / 1000000000))) AS Value]
+Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, ((FnToFloat64(FnToUnixMillis(FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9))) / 1000) - (FnToFloat64(FnToUnixMillis(FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9))) / 1000)) AS Value]
   OneRow
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, (toFloat64((toUnixTimestamp64Nano(parseDateTime64BestEffort(?, ?)) / ?)) - toFloat64((toUnixTimestamp64Nano(parseDateTime64BestEffort(?, ?)) / ?))) AS `Value` FROM (SELECT 1)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, ((toFloat64(toUnixTimestamp64Milli(parseDateTime64BestEffort(?, ?))) / toFloat64(?)) - (toFloat64(toUnixTimestamp64Milli(parseDateTime64BestEffort(?, ?))) / toFloat64(?))) AS `Value` FROM (SELECT 1)
 -- args_optimized --
 [0] string = ""
 [1] string = "Map(String,String)"
 [2] int64 = 9
 [3] string = "2026-01-01 00:00:01.000000000Z"
 [4] int64 = 9
-[5] int64 = 1000000000
+[5] float64 = 1000
 [6] string = "2026-01-01 00:00:01.000000000Z"
 [7] int64 = 9
-[8] int64 = 1000000000
+[8] float64 = 1000
 -- settings --
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
 log_comment=cerb:project
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 -- sql_optimized --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, (toFloat64((toUnixTimestamp64Nano(parseDateTime64BestEffort(?, ?)) / ?)) - toFloat64((toUnixTimestamp64Nano(parseDateTime64BestEffort(?, ?)) / ?))) AS `Value` FROM (SELECT 1)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, ((toFloat64(toUnixTimestamp64Milli(parseDateTime64BestEffort(?, ?))) / toFloat64(?)) - (toFloat64(toUnixTimestamp64Milli(parseDateTime64BestEffort(?, ?))) / toFloat64(?))) AS `Value` FROM (SELECT 1)
