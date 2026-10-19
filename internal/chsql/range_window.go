@@ -400,6 +400,9 @@ func metricsMultiQuantileFanoutFrag(qs []float64, qsCol string) Frag {
 // the last sample in the window — used by bare-vector subqueries like
 // `up[5m:1m]`.
 func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
+	if err := validateRangeWindowBeyond(r); err != nil {
+		return err
+	}
 	// DownsampleTier (cerberus issue #2751) is checked FIRST, ahead of even
 	// the Input-shape dispatches below: when set, r.Input is deliberately
 	// unused and r.DownsampleTierInput answers the query completely on its
@@ -463,6 +466,25 @@ func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
 	default:
 		return fmt.Errorf("%w: range function %q", ErrUnsupported, r.Func)
 	}
+}
+
+// validateRangeWindowBeyond admits a window whose edges lie beyond the
+// window it reads ([chplan.RangeWindow.StartBeyond],
+// [chplan.RangeWindow.EndBeyond]) only on the path that extrapolates to
+// them: rate, increase or delta over a single instant's window, read from
+// raw samples alone.
+func validateRangeWindowBeyond(r *chplan.RangeWindow) error {
+	if r.StartBeyond == 0 && r.EndBeyond == 0 {
+		return nil
+	}
+	switch {
+	case r.Func != "rate" && r.Func != "increase" && r.Func != "delta":
+	case r.DownsampleTier, len(r.Variants) > 0, r.Identity, r.OuterRange > 0, r.Step > 0:
+	case r.FixedAccumulatorExtrapolated, r.DeltaPrefixAggregateInput != nil:
+	default:
+		return nil
+	}
+	return fmt.Errorf("%w: %s over a window whose edges lie beyond the window it reads", ErrUnsupported, r.Func)
 }
 
 // emitRangeWindowPredictLinear emits SQL for `predict_linear(v[range], t)`.
@@ -4388,7 +4410,9 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
-	rangeSeconds := r.Range.Seconds()
+	// Prometheus divides a rate by its own window's length, which a window
+	// cut back to the stored range extends on either side.
+	rangeSeconds := (r.Range + r.StartBeyond + r.EndBeyond).Seconds()
 	rangeStart := rangeStartFrag(end, rangeNS)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
@@ -4504,8 +4528,8 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	extrap.Select(Col("counter_delta"))
 	extrap.Select(Col("first_val"))
 	extrap.Select(As(sampledIntervalFrag(), "sampled_interval"))
-	extrap.Select(As(durationToStartFrag(rangeStart), "duration_to_start"))
-	extrap.Select(As(durationToEndFrag(end), "duration_to_end"))
+	extrap.Select(As(extrapThresholdClampFrag(secondsBetweenBeyondFrag(rangeStart, BareIdent("first_ts"), r.StartBeyond)), "duration_to_start"))
+	extrap.Select(As(extrapThresholdClampFrag(secondsBetweenBeyondFrag(BareIdent("last_ts"), end, r.EndBeyond)), "duration_to_end"))
 
 	// Outer SELECT — final value per series.
 	outer := NewQuery().From(extrap.Frag())
@@ -5245,6 +5269,21 @@ func deltaFirstValFrag(temporality, reconstructedLevel, rawFirst Frag) Frag {
 // rangeNS bound is inline.
 func rangeStartFrag(end Frag, rangeNS int64) Frag {
 	return Sub(end, Call("toIntervalNanosecond", InlineLit(rangeNS)))
+}
+
+// secondsBetweenBeyondFrag is [secondsBetweenFrag] widened by beyond, the
+// part of the distance that lies outside the instants a DateTime64(9)
+// holds: `toFloat64(dateDiff('nanosecond', from, to) + <beyond ns>) / 1e9`.
+// The sum is Int64 nanoseconds, so the Float64 conversion rounds once, as
+// for an unwidened distance; a zero beyond renders [secondsBetweenFrag].
+func secondsBetweenBeyondFrag(from, to Frag, beyond time.Duration) Frag {
+	if beyond == 0 {
+		return secondsBetweenFrag(from, to)
+	}
+	return Div(
+		Call("toFloat64", Add(Call("dateDiff", InlineLit("nanosecond"), from, to), InlineLit(beyond.Nanoseconds()))),
+		BareIdent("1e9"),
+	)
 }
 
 // secondsBetweenFrag renders `toFloat64(dateDiff('nanosecond', <from>, <to>)) / 1e9`

@@ -255,6 +255,9 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if err != nil {
 		return nil, err
 	}
+	if err := ctx.domain.checkBeyondRead(); err != nil {
+		return nil, err
+	}
 	return unshiftRootGrid(plan, expr, s, ctx), nil
 }
 
@@ -3180,7 +3183,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	switch c.Func.Name {
 	case "predict_linear":
 		return lowerPredictLinear(c, s, ctx)
-	case holtWintersFunctionName, "double_exponential_smoothing":
+	case fnHoltWinters, "double_exponential_smoothing":
 		// `double_exponential_smoothing` (and its legacy `holt_winters`
 		// alias) applies Holt-Winters double-exponential smoothing over
 		// the lookback window. The chsql emitter renders the sequential
@@ -3271,8 +3274,14 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
-	attachDeltaPrefixAggregateArm(rw, c.Func.Name, vs, s, temporalityCol, rangeCtx)
-	attachDownsampleTierArm(rw, c.Func.Name, vs, s, rangeCtx)
+	rw.StartBeyond, rw.EndBeyond = ctx.domain.windowBeyond(ms)
+	if rw.StartBeyond == 0 && rw.EndBeyond == 0 {
+		// The DELTA-prefix aggregate and the downsample tier answer from
+		// bucket rows aligned to the window's own edges, which a cut
+		// window does not carry; the raw samples answer it alone.
+		attachDeltaPrefixAggregateArm(rw, c.Func.Name, vs, s, temporalityCol, rangeCtx)
+		attachDownsampleTierArm(rw, c.Func.Name, vs, s, rangeCtx)
+	}
 	// Name-drop collision guard. When the function drops `__name__` and the
 	// selector spans several metrics, two source series that differ only by
 	// name land on one label set — the case reference Prometheus refuses
@@ -3729,6 +3738,11 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 	if rw.Identity || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
 		return nil
 	}
+	// The aggregate extrapolates to the edges of the window it reads, never
+	// past a window cut back to the stored range.
+	if rw.StartBeyond != 0 || rw.EndBeyond != 0 {
+		return nil
+	}
 	// timeSeries*ToGrid (here timeSeriesRateToGrid / timeSeriesPredictLinearToGrid
 	// per wantFunc) takes grid_step and window as whole-second integers and its
 	// start/end as whole-second DateTime bounds (nativeGridTimeBoundFrag), so a
@@ -3902,6 +3916,11 @@ func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.M
 		return nil
 	}
 	if rw.Identity || rw.Step > 0 || rw.End.IsZero() {
+		return nil
+	}
+	// As in nativeTSGridMatrixNode, the aggregate cannot extrapolate past a
+	// window cut back to the stored range.
+	if rw.StartBeyond != 0 || rw.EndBeyond != 0 {
 		return nil
 	}
 	// Same whole-second contract as nativeTSGridMatrixNode /

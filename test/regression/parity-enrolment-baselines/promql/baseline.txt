@@ -123,6 +123,7 @@ edge_hq_native_p999.txtar
 edge_hq_native_positive_only_p0.txtar
 edge_hq_native_trailing_empty_p1.txtar
 edge_increase_at_start.txtar
+edge_increase_window_past_int64_ceiling_range.txtar
 edge_join_ignoring_extra.txtar
 edge_join_ignoring_group_right.txtar
 edge_join_on_extra_labels.txtar
@@ -140,6 +141,7 @@ edge_quantile_over_time_at_pinned_phi_above_one.txtar
 edge_quantile_over_time_at_timestamp_range_pinned.txtar
 edge_rate_at_timestamp_range_pinned.txtar
 edge_rate_negative_offset.txtar
+edge_rate_window_past_int64_ceiling.txtar
 edge_round_step_half.txtar
 edge_selector_at_year_one_or_vector.txtar
 edge_selector_lookback_past_int64_ceiling.txtar

@@ -24,9 +24,9 @@ var storageStart = time.UnixMilli(instantDomainMin.UnixMilli() + 1).Add(-time.Na
 
 // sampleSetRangeFunctions are the range functions whose value is fixed by
 // the samples the window holds, not by where the window starts or ends:
-// they never read the window's edges or the evaluation instant. rate,
-// increase and delta extrapolate to the edges, and predict_linear
-// predicts from the evaluation instant, so they are absent.
+// they never read the window's edges. predict_linear also reads the
+// evaluation instant, which a cut leaves where it is. rate, increase and
+// delta extrapolate to the edges, so they are absent.
 var sampleSetRangeFunctions = map[string]bool{
 	"absent_over_time":             true,
 	"avg_over_time":                true,
@@ -35,15 +35,16 @@ var sampleSetRangeFunctions = map[string]bool{
 	"deriv":                        true,
 	"double_exponential_smoothing": true,
 	"first_over_time":              true,
-	holtWintersFunctionName:        true,
+	fnHoltWinters:                  true,
 	"idelta":                       true,
 	"irate":                        true,
 	"last_over_time":               true,
 	"mad_over_time":                true,
 	"max_over_time":                true,
 	"min_over_time":                true,
+	"predict_linear":               true,
 	"present_over_time":            true,
-	"quantile_over_time":           true,
+	fnQuantileOverTime:             true,
 	"resets":                       true,
 	"stddev_over_time":             true,
 	"stdvar_over_time":             true,
@@ -54,48 +55,62 @@ var sampleSetRangeFunctions = map[string]bool{
 	"ts_of_min_over_time":          true,
 }
 
+// storageCut is a window (end - rng, end] cut back to the stored range.
+type storageCut struct {
+	// endMillis is the cut window's end in milliseconds and rng its length.
+	endMillis int64
+	rng       time.Duration
+	// startBeyond and endBeyond are how far the window's own start and
+	// end lie outside the cut window's, zero for an edge it kept.
+	startBeyond, endBeyond time.Duration
+}
+
 // storageWindow returns the window (end - rng, end] a selector evaluated
-// over env reads, cut back to the stored range: its end in milliseconds
-// and its length. It reports false unless the selector is evaluated at a
-// single instant Prometheus reads at, its window reaches past an edge,
-// and the window still overlaps the stored range (one that does not is
-// empty, which the fit answers on its own).
-func storageWindow(env domainEnv, rng time.Duration) (int64, time.Duration, bool) {
+// over env reads, cut back to the stored range. It reports false unless
+// the selector is evaluated at a single instant Prometheus reads at, its
+// window reaches past an edge, and the window still overlaps the stored
+// range (one that does not is empty, which the fit answers on its own).
+func storageWindow(env domainEnv, rng time.Duration) (storageCut, bool) {
 	if !env.known || env.wrapped || !env.lo.Equal(env.hi) {
-		return 0, 0, false
+		return storageCut{}, false
 	}
 	end, start := env.hi, env.hi.Add(-rng)
 	if checkInstantDomain(end, end, rng, 0) == nil || outsideStorage(start, end) {
-		return 0, 0, false
+		return storageCut{}, false
 	}
-	if end.After(time.UnixMilli(storageEndMillis)) {
-		end = time.UnixMilli(storageEndMillis).UTC()
+	cutEnd, cutStart := end, start
+	if cutEnd.After(time.UnixMilli(storageEndMillis)) {
+		cutEnd = time.UnixMilli(storageEndMillis).UTC()
 	}
-	if start.Before(storageStart) {
-		start = storageStart
+	if cutStart.Before(storageStart) {
+		cutStart = storageStart
 	}
-	return end.UnixMilli(), end.Sub(start), true
+	return storageCut{
+		endMillis:   cutEnd.UnixMilli(),
+		rng:         cutEnd.Sub(cutStart),
+		startBeyond: cutStart.Sub(start),
+		endBeyond:   end.Sub(cutEnd),
+	}, true
 }
 
-// cutMatrix returns the matrix selector arg, read by a function of
-// sampleSetRangeFunctions over env, pinned at the end of its cut window
-// with the cut window's range, when its window reaches past the stored
-// range.
-func cutMatrix(arg parser.Expr, env domainEnv) (parser.Expr, bool) {
+// cutMatrix returns the matrix selector arg, evaluated over env, pinned at
+// the end of its cut window with the cut window's range, when its window
+// reaches past the stored range, and the cut.
+func cutMatrix(arg parser.Expr, env domainEnv) (*parser.MatrixSelector, storageCut, bool) {
 	ms, ok := unwrapParens(arg).(*parser.MatrixSelector)
 	if !ok {
-		return nil, false
+		return nil, storageCut{}, false
 	}
 	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
 	if !ok {
-		return nil, false
+		return nil, storageCut{}, false
 	}
 	at, _ := pinnedEnv(vs.Timestamp, vs.StartOrEnd, vs.OriginalOffset, env)
-	end, rng, ok := storageWindow(at, ms.Range)
+	cut, ok := storageWindow(at, ms.Range)
 	if !ok {
-		return nil, false
+		return nil, storageCut{}, false
 	}
-	return &parser.MatrixSelector{VectorSelector: pinSelector(vs, end), Range: rng, EndPos: ms.EndPos}, true
+	return &parser.MatrixSelector{VectorSelector: pinSelector(vs, cut.endMillis), Range: cut.rng, EndPos: ms.EndPos}, cut, true
 }
 
 // cutSelector returns the instant selector vs, evaluated over env, as an
@@ -111,11 +126,12 @@ func cutMatrix(arg parser.Expr, env domainEnv) (parser.Expr, bool) {
 // `vs @ E` would start there too.
 func cutSelector(vs *parser.VectorSelector, env domainEnv) (parser.Expr, bool) {
 	at, _ := pinnedEnv(vs.Timestamp, vs.StartOrEnd, vs.OriginalOffset, env)
-	end, _, ok := storageWindow(at, instantLookback)
+	cut, ok := storageWindow(at, instantLookback)
 	start := at.hi.Add(-instantLookback)
-	if !ok || !at.hi.After(time.UnixMilli(storageEndMillis)) || start.Before(instantDomainMin) {
+	if !ok || cut.endBeyond == 0 || start.Before(instantDomainMin) {
 		return nil, false
 	}
+	end := cut.endMillis
 	pinnedAt := pinSelector(vs, end)
 	return &parser.BinaryExpr{
 		Op:  parser.LAND,
@@ -143,4 +159,90 @@ func pinSelector(vs *parser.VectorSelector, ms int64) *parser.VectorSelector {
 	cp.StartOrEnd = 0
 	cp.OriginalOffset, cp.Offset = 0, 0
 	return &cp
+}
+
+// extrapolatedRangeFunctions are the range functions that extrapolate
+// their samples to the window's edges. Over a cut window the lowering
+// carries how far the edges lie beyond it ([chplan.RangeWindow.StartBeyond],
+// [chplan.RangeWindow.EndBeyond]).
+var extrapolatedRangeFunctions = map[string]bool{
+	"delta":    true,
+	"increase": true,
+	"rate":     true,
+}
+
+// cutWindowArg returns the call n with its range-vector argument cut back
+// to the stored range when its window reaches past it and the cut changes
+// nothing n answers. A function of sampleSetRangeFunctions reads the cut
+// window as it is. One of extrapolatedRangeFunctions also reads how far
+// the window's edges lie beyond the cut, which the fit records for the
+// lowering ([domainFit.windowBeyond]).
+func (f *domainFit) cutWindowArg(n *parser.Call, env domainEnv) (*parser.Call, bool) {
+	name := n.Func.Name
+	pos := 0
+	if name == fnQuantileOverTime {
+		pos = 1
+	}
+	if len(n.Args) <= pos {
+		return nil, false
+	}
+	if !sampleSetRangeFunctions[name] && !extrapolatedRangeFunctions[name] {
+		return nil, false
+	}
+	ms, cut, ok := cutMatrix(n.Args[pos], env)
+	if !ok {
+		return nil, false
+	}
+	cp := *n
+	cp.Args = append(parser.Expressions(nil), n.Args...)
+	cp.Args[pos] = ms
+	if extrapolatedRangeFunctions[name] {
+		f.beyond = append(f.beyond, &beyondCut{ms: ms, cut: cut})
+	}
+	return &cp, true
+}
+
+// beyondCut is a matrix selector cut for a function that extrapolates
+// to the window's edges, and whether its lowering read the cut.
+type beyondCut struct {
+	ms   *parser.MatrixSelector
+	cut  storageCut
+	read bool
+}
+
+// windowBeyond returns how far the edges of the window Prometheus reads
+// for ms lie beyond the cut window ms reads, and records that the
+// lowering read them.
+func (f *domainFit) windowBeyond(ms *parser.MatrixSelector) (start, end time.Duration) {
+	if f == nil {
+		return 0, 0
+	}
+	for _, b := range f.beyond {
+		if b.ms == ms {
+			b.read = true
+			return b.cut.startBeyond, b.cut.endBeyond
+		}
+	}
+	return 0, 0
+}
+
+// checkBeyondRead rejects a query holding a cut window whose edges no
+// lowering read: one lowered by a path that extrapolates to the cut
+// window's own edges, which are not Prometheus's. It names the first such
+// window's instant outside the stored range.
+func (f *domainFit) checkBeyondRead() error {
+	if f == nil {
+		return nil
+	}
+	for _, b := range f.beyond {
+		if b.read {
+			continue
+		}
+		end := time.UnixMilli(b.cut.endMillis).UTC()
+		if b.cut.endBeyond != 0 {
+			return instantDomainError(end.Add(b.cut.endBeyond))
+		}
+		return instantDomainError(end.Add(-b.cut.rng - b.cut.startBeyond))
+	}
+	return nil
 }
