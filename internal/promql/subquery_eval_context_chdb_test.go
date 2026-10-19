@@ -177,7 +177,8 @@ func TestSubqueryRangeFnSelectorOffsetParity_ChDB(t *testing.T) {
 			[]instantDomainRow{idRow(edge, idFrom(eval, 4, 10))},
 			true,
 		},
-		{"predict_linear_offset_30s/instant", `max_over_time(predict_linear(m[10m] offset 30s, 60)[2m:1m])`, []instantDomainRow{idRow(edge, idConst(6.8))}, false},
+		{"pinned_window/range", `max_over_time(sum_over_time(m[1m] @ 1767228330)[2m:1m])`, []instantDomainRow{idRow(edge, idConst(6))}, true},
+		{"predict_linear_offset_30s/instant", `max_over_time(predict_linear(m[10m] offset 30s, 90)[2m:1m])`, []instantDomainRow{idRow(edge, idConst(7))}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

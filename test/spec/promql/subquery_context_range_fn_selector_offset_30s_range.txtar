@@ -1,0 +1,24 @@
+# The offset on a range function's own selector below a subquery shifts
+# that selector's window back from every step of the subquery's grid.
+
+-- query.promql --
+max_over_time(sum_over_time(m[10m] offset 30s)[2m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('m', map('job', 'edge'), toDateTime64('2025-12-31 23:54:00', 9), 4),
+    ('m', map('job', 'edge'), toDateTime64('2025-12-31 23:59:00', 9), 6),
+    ('m', map('job', 'edge'), toDateTime64('2026-01-01 00:01:00', 9), 30);
+-- expected_rows --
+[]
