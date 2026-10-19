@@ -138,7 +138,7 @@ func TestBuildOptions_ReadTimeoutKnobBeatsDerived(t *testing.T) {
 func TestBuildOptions_ReadTimeoutDerivedWhenKnobZero(t *testing.T) {
 	t.Parallel()
 	opts := buildOptions(Config{Addr: "a:9000", QueryTimeout: 30 * time.Second})
-	if opts.ReadTimeout != 30*time.Second {
-		t.Fatalf("ReadTimeout = %v; want 30s (derived from QueryTimeout)", opts.ReadTimeout)
+	if want := BackstopTimeout(30 * time.Second); opts.ReadTimeout != want {
+		t.Fatalf("ReadTimeout = %v; want %v (derived from QueryTimeout)", opts.ReadTimeout, want)
 	}
 }

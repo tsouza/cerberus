@@ -6,7 +6,8 @@ import (
 )
 
 // TestBuildOptions_ReadTimeoutFromQueryTimeout asserts that a positive
-// Config.QueryTimeout is stamped onto clickhouse.Options.ReadTimeout. This is
+// Config.QueryTimeout derives clickhouse.Options.ReadTimeout: its context
+// backstop, BackstopTimeout(QueryTimeout). This is
 // the root-cause fix for slow breaker recovery after a force-killed CH pod: a
 // half-open socket handed to a recovery query would otherwise block on a read
 // for the driver's 300s ReadTimeout default. Tying ReadTimeout to the per-query
@@ -16,8 +17,8 @@ func TestBuildOptions_ReadTimeoutFromQueryTimeout(t *testing.T) {
 	t.Parallel()
 	const queryTimeout = 5 * time.Second
 	opts := buildOptions(Config{Addr: "localhost:9000", QueryTimeout: queryTimeout})
-	if opts.ReadTimeout != queryTimeout {
-		t.Fatalf("ReadTimeout = %v, want %v (= QueryTimeout)", opts.ReadTimeout, queryTimeout)
+	if want := BackstopTimeout(queryTimeout); opts.ReadTimeout != want {
+		t.Fatalf("ReadTimeout = %v, want %v (= BackstopTimeout(QueryTimeout))", opts.ReadTimeout, want)
 	}
 }
 
@@ -48,7 +49,25 @@ func TestNew_ReadTimeoutDerivedFromQueryTimeout(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 
-	if got := buildOptions(cfg).ReadTimeout; got != queryTimeout {
-		t.Fatalf("New would set ReadTimeout = %v, want %v", got, queryTimeout)
+	if got, want := buildOptions(cfg).ReadTimeout, BackstopTimeout(queryTimeout); got != want {
+		t.Fatalf("New would set ReadTimeout = %v, want %v", got, want)
+	}
+}
+
+// TestBuildOptions_ReadTimeoutNoEarlierThanBackstop pins that an explicit
+// ReadTimeout below the query budget's context backstop is raised to it, on
+// the row and the columnar path alike: a call ClickHouse cannot interrupt
+// streams nothing past its cap, and a read ceiling expiring first fails the
+// query as a transport error instead of the timeout the backstop reports.
+func TestBuildOptions_ReadTimeoutNoEarlierThanBackstop(t *testing.T) {
+	t.Parallel()
+	const queryTimeout = 5 * time.Second
+	cfg := Config{Addr: "localhost:9000", QueryTimeout: queryTimeout, ReadTimeout: queryTimeout}
+	want := BackstopTimeout(queryTimeout)
+	if got := buildOptions(cfg).ReadTimeout; got != want {
+		t.Fatalf("row ReadTimeout = %v, want %v", got, want)
+	}
+	if got := socketReadTimeout(cfg); got != want {
+		t.Fatalf("socketReadTimeout = %v, want %v", got, want)
 	}
 }

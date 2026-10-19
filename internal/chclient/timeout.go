@@ -166,6 +166,21 @@ func BackstopTimeout(budget time.Duration) time.Duration {
 	return budget + serverAbortGrace
 }
 
+// socketReadTimeout resolves the socket read ceiling for cfg: the explicit
+// ReadTimeout when set, else one derived from QueryTimeout, and in either
+// case no earlier than BackstopTimeout(QueryTimeout). A call ClickHouse
+// cannot interrupt streams nothing past its cap, so a read ceiling expiring
+// before the context backstop would fail the query as a transport error
+// instead of the timeout the backstop reports. Zero leaves the driver's
+// default.
+func socketReadTimeout(cfg Config) time.Duration {
+	rt := cfg.ReadTimeout
+	if cfg.QueryTimeout > 0 {
+		rt = max(rt, BackstopTimeout(cfg.QueryTimeout))
+	}
+	return rt
+}
+
 // WithQueryTimeout returns a ctx that overrides the Client's configured
 // per-query execution timeout for this one request. The API heads call
 // it when an inbound request carries the standard Prometheus

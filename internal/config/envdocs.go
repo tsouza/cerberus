@@ -250,7 +250,7 @@ var envDocs = []EnvDoc{
 	{envCHDialTimeout, docTypeDuration, groupClickHouseConn, "ClickHouse dial timeout. `0` leaves the clickhouse-go driver's own 30s default in place."},
 	{envCHProtocol, "enum", groupClickHouseConn, "Wire protocol: `native` (port 9000) or `http` (port 8123). The HTTP-only knobs below require `http`."},
 	{envCHConnOpenStrategy, "enum", groupClickHouseConn, "Multi-host selection: `in_order` (try hosts in order) or `round_robin` (rotate). Pointless but benign with a single host."},
-	{envCHReadTimeout, docTypeDuration, groupClickHouseConn, "Socket read ceiling. Unset - or `0` - derives it from `CERBERUS_QUERY_TIMEOUT`. When set `> 0` it must be `>=` `CERBERUS_QUERY_TIMEOUT`. clickhouse-go has no write-timeout knob."},
+	{envCHReadTimeout, docTypeDuration, groupClickHouseConn, "Socket read ceiling. Unset - or `0` - derives it from `CERBERUS_QUERY_TIMEOUT`. When set `> 0` it must be `>=` `CERBERUS_QUERY_TIMEOUT`. Either way it is no earlier than the query budget's context backstop, one second past `CERBERUS_QUERY_TIMEOUT`, so a query ClickHouse cannot interrupt fails as a timeout, not a socket error. clickhouse-go has no write-timeout knob."},
 	{envCHCompression, "enum", groupClickHouseConn, "Wire compression: `none`, `lz4`, or `zstd`."},
 	{envCHCompressionLevel, "int", groupClickHouseConn, "Compression level. `0` = method default. Requires a method. lz4: `0..12`; zstd: `1..22`."},
 	{envCHBlockBufferSize, "int", groupClickHouseConn, "Per-connection block buffer count (`0` -> driver default 2; valid `1..255`)."},

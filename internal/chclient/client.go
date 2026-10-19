@@ -150,11 +150,12 @@ type Config struct {
 	// ReadTimeout caps how long a single socket read may block waiting for data
 	// from ClickHouse. When zero, buildOptions DERIVES it from QueryTimeout (the
 	// per-query wall-clock budget) so a stale half-open socket to a force-killed
-	// pod cannot block past the query budget — the deterministic restart-recovery
-	// ceiling. A positive ReadTimeout overrides that derivation verbatim (the
-	// first-class CERBERUS_CH_READ_TIMEOUT knob); internal/config enforces
+	// pod cannot block much past the query budget — the deterministic
+	// restart-recovery ceiling. A positive ReadTimeout overrides that derivation
+	// (the first-class CERBERUS_CH_READ_TIMEOUT knob); internal/config enforces
 	// ReadTimeout >= QueryTimeout so a socket read shorter than the query budget
-	// can never kill a legitimate long query. clickhouse-go has NO native
+	// can never kill a legitimate long query. Either way the ceiling is no
+	// earlier than BackstopTimeout(QueryTimeout) (socketReadTimeout). clickhouse-go has NO native
 	// write-timeout knob, so there is no symmetric WriteTimeout field.
 	ReadTimeout time.Duration
 
@@ -776,16 +777,18 @@ func buildOptions(cfg Config) *clickhouse.Options {
 	// We tie ReadTimeout to the per-query wall-clock budget (QueryTimeout =
 	// CERBERUS_QUERY_TIMEOUT, stamped as max_execution_time): the longest
 	// legitimate single read is the wait for a query's first block, which
-	// max_execution_time already bounds, so ReadTimeout = QueryTimeout is the
-	// correct tight upper bound — never shorter than any healthy read.
+	// max_execution_time already bounds, so the query budget's context
+	// backstop (BackstopTimeout(QueryTimeout), a grace past the cap) is the
+	// tight upper bound — never shorter than any healthy read, and never
+	// earlier than the backstop that reports a stalled call as a timeout.
 	//
 	// It ALSO bounds the failure mode that made breaker recovery flaky after
 	// a CH restart: a force-killed pod leaves a half-open socket (ESTABLISHED,
 	// no FIN/RST). A pooled conn handed to a recovery query blocks on a READ
 	// that, without ReadTimeout, hangs for the driver's full 300s — so the
 	// breaker only re-closes ~300s after the kill (CI chaos run 27513891381:
-	// kill→CLOSED took 339s). With ReadTimeout = QueryTimeout the stale read
-	// fails in ~QueryTimeout regardless of whether TCP keepalive fired,
+	// kill→CLOSED took 339s). With ReadTimeout derived from QueryTimeout the
+	// stale read fails in ~QueryTimeout regardless of whether TCP keepalive fired,
 	// making recovery deterministic. The keepalive dialer is complementary —
 	// it detects the dead peer faster when the kernel probes fire; ReadTimeout
 	// is the hard ceiling when they don't.
@@ -794,15 +797,11 @@ func buildOptions(cfg Config) *clickhouse.Options {
 	// the ones tests build — keeps the driver's out-of-the-box behaviour.
 	//
 	// An explicit Config.ReadTimeout (CERBERUS_CH_READ_TIMEOUT) is first-class
-	// and OVERRIDES the QueryTimeout derivation verbatim: an operator who wants
-	// a socket-read ceiling decoupled from the query budget sets it directly.
-	// internal/config guarantees ReadTimeout >= QueryTimeout, so the explicit
-	// value can never be shorter than a legitimate query's first-block wait.
-	switch {
-	case cfg.ReadTimeout > 0:
-		opts.ReadTimeout = cfg.ReadTimeout
-	case cfg.QueryTimeout > 0:
-		opts.ReadTimeout = cfg.QueryTimeout
+	// and OVERRIDES the QueryTimeout derivation: an operator who wants a
+	// socket-read ceiling decoupled from the query budget sets it directly.
+	// It is raised to the backstop when set below it (socketReadTimeout).
+	if rt := socketReadTimeout(cfg); rt > 0 {
+		opts.ReadTimeout = rt
 	}
 	return opts
 }

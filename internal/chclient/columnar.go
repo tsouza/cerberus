@@ -199,13 +199,9 @@ func chPoolOptions(cfg Config) chpool.Options {
 	if cfg.DialTimeout > 0 {
 		opts.DialTimeout = cfg.DialTimeout
 	}
-	// ReadTimeout mirrors the row path's derivation: the explicit knob wins,
-	// else the per-query wall-clock budget bounds a stale half-open read.
-	switch {
-	case cfg.ReadTimeout > 0:
-		opts.ReadTimeout = cfg.ReadTimeout
-	case cfg.QueryTimeout > 0:
-		opts.ReadTimeout = cfg.QueryTimeout
+	// ReadTimeout is the row path's ceiling (socketReadTimeout).
+	if rt := socketReadTimeout(cfg); rt > 0 {
+		opts.ReadTimeout = rt
 	}
 	poolOpts := chpool.Options{ClientOptions: opts}
 	if cfg.MaxOpenConns > 0 {
