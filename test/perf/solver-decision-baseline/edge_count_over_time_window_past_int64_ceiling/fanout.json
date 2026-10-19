@@ -1,0 +1,11 @@
+{
+  "query": "edge_count_over_time_window_past_int64_ceiling/fanout",
+  "lowering": "fanout",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 0,
+  "cumulative_d": "5m36.854s",
+  "outer_range": "1h0m0s"
+}
