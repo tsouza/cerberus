@@ -1,0 +1,30 @@
+-- query.promql --
+ts_of_last_over_time(before_epoch_exp_hist[10m] @ -315618900)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- A histogram-only window whose last sample lies before 1970: reference
+-- Prometheus reports max(tf, th) with the absent float timestamp tf
+-- defaulting to 0, so the answer is 0, not the sample's -315619080.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('before_epoch_exp_hist', map('job', 'h'), toDateTime64('1960-01-01 00:01:00', 9), 2, 4.0, 0, 0, 0, [2], 0, []),
+    ('before_epoch_exp_hist', map('job', 'h'), toDateTime64('1960-01-01 00:02:00', 9), 3, 9.0, 0, 0, 0, [3], 0, []);
+-- expected_rows --
+[
+  ["", {"job": "h"}, "2026-01-01T00:00:01Z", 0]
+]
