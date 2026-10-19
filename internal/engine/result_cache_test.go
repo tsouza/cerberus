@@ -212,3 +212,18 @@ func TestApply_ResultCache_NotStampedWithoutIngestLagMargin(t *testing.T) {
 		t.Errorf("window closed 1s ago under a 5m ingest lag: %s = %v; want absent", chclient.SettingUseQueryCache, got)
 	}
 }
+
+// TestEligibleForResultCache_TimeShiftedScan_NotEligible pins that a plan
+// reading a scan at shifted instants is never cached: its literals do not
+// name the window the scan reads.
+func TestEligibleForResultCache_TimeShiftedScan_NotEligible(t *testing.T) {
+	grid := stepGrid(fixedNow.Add(-2*time.Hour), fixedNow.Add(-10*time.Minute))
+	scan := &chplan.Scan{Table: "otel_metrics_gauge", Roles: []chplan.Column{{Name: "TimeUnix", Role: chplan.RoleTimestamp}}}
+	if !eligibleForResultCache(shapeOf(&chplan.CrossJoin{Left: grid, Right: scan}), fixedNow, testIngestLag) {
+		t.Fatal("closed window over an unshifted scan: want eligible")
+	}
+	scan.TimeShiftMillis = 60000
+	if eligibleForResultCache(shapeOf(&chplan.CrossJoin{Left: grid, Right: scan}), fixedNow, testIngestLag) {
+		t.Fatal("closed window over a time-shifted scan: want not eligible")
+	}
+}

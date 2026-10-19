@@ -222,15 +222,8 @@ func TestInstantDomain_KeepsUnrepresentableReads(t *testing.T) {
 		end   time.Time
 		want  string
 	}{
-		// A subquery grid past the ceiling evaluates its inner at instants
-		// no DateTime64(9) value holds.
-		{"subquery_read_past_ceiling", `count_over_time(m[1h:1m] @ 9223373836.854)`, instantDomainEvalEnd, "2262-04-12T00:17:16.854Z"},
-		// A constant arm cannot be shifted away from the read beside it.
-		{"mixed_grid_past_ceiling", `count_over_time((m or vector(1))[10m:1m] @ 9223372300)`, instantDomainEvalEnd, "2262-04-11T23:51:40Z"},
 		// A root subquery answers its grid instants as sample timestamps.
 		{"root_matrix_past_ceiling", `vector(1)[5m:1m] @ 10000000000`, instantDomainEvalEnd, "2286-11-20T17:46:00Z"},
-		// A request near the floor whose lookback reaches below it.
-		{"selector_near_floor", `m`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:09:00Z"},
 		// A grid inside another subquery is not shifted on its own.
 		{"nested_grid_near_floor", `max_over_time(max_over_time(timestamp(vector(1))[5m:1m])[3m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:11:00Z"},
 		// A region holding a nested subquery or a request pin is neither
@@ -304,7 +297,8 @@ func TestInstantDomain_CutsWindowsAtStorageEdges(t *testing.T) {
 // TestInstantDomain_Boundaries pins the exact edges at the ceiling, where
 // a pin is not wrapped. A subquery grid reaches a step past its end; a
 // grid that reads nothing is shifted instead. The last accepted pin and
-// the first rejected one sit one millisecond apart.
+// the first rejected one sit one millisecond apart in Prometheus's frame;
+// the lowering answers both, the rejected one in a shifted frame.
 func TestInstantDomain_Boundaries(t *testing.T) {
 	instant := instantDomainModes[0]
 	cases := []struct {
@@ -322,12 +316,17 @@ func TestInstantDomain_Boundaries(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := lowerInstantDomainCase(t, tc.query, instant)
+			ctx := lowerCtx{start: instant.start, end: instantDomainEvalEnd}
+			_, _, err := fitDomain(mustParseExperimental(t, tc.query), ctx, 0)
 			if tc.accept && err != nil {
-				t.Fatalf("lower %q: unexpected error %v", tc.query, err)
+				t.Fatalf("fit %q in Prometheus's frame: unexpected error %v", tc.query, err)
 			}
 			if !tc.accept && !isInstantDomainError(err) {
-				t.Fatalf("lower %q: err = %v, want the instant-domain rejection", tc.query, err)
+				t.Fatalf("fit %q in Prometheus's frame: err = %v, want the instant-domain rejection", tc.query, err)
+			}
+			// A query rejected there is answered in a shifted frame.
+			if err := lowerInstantDomainCase(t, tc.query, instant); err != nil {
+				t.Fatalf("lower %q: unexpected error %v", tc.query, err)
 			}
 		})
 	}
@@ -335,7 +334,8 @@ func TestInstantDomain_Boundaries(t *testing.T) {
 
 // TestInstantDomain_RangeStepMargin pins that a range query's own step
 // widens every window it evaluates, on top of a subquery's step, at the
-// int64-nanosecond floor.
+// int64-nanosecond floor in Prometheus's frame; the lowering answers a
+// query rejected there in a shifted frame.
 func TestInstantDomain_RangeStepMargin(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -357,13 +357,18 @@ func TestInstantDomain_RangeStepMargin(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			start := mustUTC(t, tc.start)
-			_, err := LowerAtRange(context.Background(), mustParseExperimental(t, tc.query), schema.DefaultOTelMetrics(),
-				start, start.Add(time.Hour), time.Minute)
+			ctx := lowerCtx{start: start, end: start.Add(time.Hour), step: time.Minute}
+			_, _, err := fitDomain(mustParseExperimental(t, tc.query), ctx, 0)
 			if tc.accept && err != nil {
-				t.Fatalf("lower %q from %s: unexpected error %v", tc.query, tc.start, err)
+				t.Fatalf("fit %q from %s in Prometheus's frame: unexpected error %v", tc.query, tc.start, err)
 			}
 			if !tc.accept && !isInstantDomainError(err) {
-				t.Fatalf("lower %q from %s: err = %v, want the instant-domain rejection", tc.query, tc.start, err)
+				t.Fatalf("fit %q from %s in Prometheus's frame: err = %v, want the instant-domain rejection", tc.query, tc.start, err)
+			}
+			// A query rejected there is answered in a shifted frame.
+			if _, err := LowerAtRange(context.Background(), mustParseExperimental(t, tc.query), schema.DefaultOTelMetrics(),
+				ctx.start, ctx.end, ctx.step); err != nil {
+				t.Fatalf("lower %q from %s: unexpected error %v", tc.query, tc.start, err)
 			}
 		})
 	}
@@ -609,10 +614,11 @@ func TestInstantDomain_StepInvariantIsUntouched(t *testing.T) {
 }
 
 // TestInstantDomain_FirstErrorWins pins that a call with two arguments
-// outside the domain reports the first one.
+// outside the domain reports the first one when fitted in Prometheus's
+// frame.
 func TestInstantDomain_FirstErrorWins(t *testing.T) {
 	q := `predict_linear(m[1h:1m] @ 9223373836.854, scalar(count_over_time(m[1h:1m] @ 9223374836.854)))`
-	_, _, err := fitAt(t, q, instantDomainEvalEnd)
+	_, _, err := fitDomain(mustParseExperimental(t, q), lowerCtx{start: instantDomainEvalEnd, end: instantDomainEvalEnd}, 0)
 	want := instantDomainError(time.UnixMilli(9223373836854)).Error()
 	if err == nil || err.Error() != want {
 		t.Fatalf("fitInstantDomain(%q): err = %v, want %q", q, err, want)

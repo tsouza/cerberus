@@ -116,3 +116,15 @@ func TestIsSliceInvariant_Nil(t *testing.T) {
 		t.Fatal("IsSliceInvariant(nil) should be false")
 	}
 }
+
+// TestIsSliceInvariant_TimeShiftedScan pins that a scan read at shifted
+// instants is not slice-invariant, while the same scan unshifted is.
+func TestIsSliceInvariant_TimeShiftedScan(t *testing.T) {
+	t.Parallel()
+	if !chplan.IsSliceInvariant(&chplan.Scan{Table: "t"}) {
+		t.Fatal("unshifted Scan should be slice-invariant")
+	}
+	if chplan.IsSliceInvariant(&chplan.Scan{Table: "t", TimeShiftMillis: 1}) {
+		t.Fatal("time-shifted Scan should not be slice-invariant")
+	}
+}
