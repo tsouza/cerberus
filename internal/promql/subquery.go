@@ -984,9 +984,9 @@ func subqueryInnerRangeFnShape(fn string) (arity, matrixArg int) {
 	switch fn {
 	case fnPredictLinear:
 		return 2, 0
-	case holtWintersFunctionName, "double_exponential_smoothing":
+	case fnHoltWinters, "double_exponential_smoothing":
 		return 3, 0
-	case "quantile_over_time":
+	case fnQuantileOverTime:
 		return 2, 1
 	}
 	return 1, 0
@@ -1863,7 +1863,7 @@ func projectCarriesMetricName(p *chplan.Project, s schema.Metrics) bool {
 // spelling.
 func canonicalRangeWindowFunc(name string) string {
 	if name == "double_exponential_smoothing" {
-		return holtWintersFunctionName
+		return fnHoltWinters
 	}
 	return name
 }
@@ -1892,7 +1892,7 @@ func histogramSubqueryFloatOnlyDropFunc(outerFn string) bool {
 		return true
 	}
 	switch canonicalRangeWindowFunc(outerFn) {
-	case fnPredictLinear, holtWintersFunctionName, "quantile_over_time":
+	case fnPredictLinear, fnHoltWinters, fnQuantileOverTime:
 		return true
 	default:
 		return false

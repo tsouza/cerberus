@@ -77,6 +77,9 @@ type domainFit struct {
 	// gridShifts maps the inner expression of each shifted subquery,
 	// parentheses removed, to the shift of its grid ([domainFit.gridShift]).
 	gridShifts map[parser.Expr]int64
+	// beyond holds, in the order the fit met them, the matrix selectors it
+	// cut for a function that extrapolates to the window's edges.
+	beyond []*beyondCut
 	// keepSelectors is set while the fit walks an argument whose selector
 	// a function reads by its matchers (absent, info's second argument),
 	// which must stay a selector ([cutSelector]).
@@ -723,9 +726,12 @@ func (f *domainFit) fitCall(n *parser.Call, env domainEnv) (parser.Expr, fitResu
 	if vs, ok := unwrapParens(firstArg(n)).(*parser.VectorSelector); ok && n.Func.Name == "absent" {
 		// absent(v) answers exactly when v's lookback holds no sample, as
 		// absent_over_time(v[lookback]) does, whose window can be cut.
-		if cut, ok := cutMatrix(&parser.MatrixSelector{VectorSelector: vs, Range: instantLookback}, env); ok {
+		if cut, _, ok := cutMatrix(&parser.MatrixSelector{VectorSelector: vs, Range: instantLookback}, env); ok {
 			return f.fitCall(&parser.Call{Func: parser.Functions["absent_over_time"], Args: parser.Expressions{cut}, PosRange: n.PosRange}, env)
 		}
+	}
+	if cut, ok := f.cutWindowArg(n, env); ok {
+		return f.fitCall(cut, env)
 	}
 	if vs, arg, ok := absentSelector(n); ok {
 		if _, r := f.fitExpr(arg, env); r.err != nil && r.empty {
@@ -749,17 +755,13 @@ func (f *domainFit) fitCall(n *parser.Call, env domainEnv) (parser.Expr, fitResu
 			out parser.Expr
 			r   fitResult
 		)
-		in := a
-		if cut, ok := cutMatrix(a, env); ok && sampleSetRangeFunctions[n.Func.Name] {
-			in = cut
-		}
 		if selectorArgPosition(n, i) {
 			keep := f.keepSelectors
 			f.keepSelectors = true
-			out, r = f.fitExpr(in, env)
+			out, r = f.fitExpr(a, env)
 			f.keepSelectors = keep
 		} else {
-			out, r = f.fitReplacing(in, env)
+			out, r = f.fitReplacing(a, env)
 		}
 		res.merge(r)
 		if t := a.Type(); !seenSeries && (t == parser.ValueTypeVector || t == parser.ValueTypeMatrix) {

@@ -61,9 +61,10 @@ const instantDomainRangeSteps = 2
 // window crossing the floor, which a range query evaluates at many
 // instants and so is rejected there (TestInstantDomain_RangeStepMargin).
 var instantDomainInstantOnlyCases = map[string]bool{
-	"root_matrix_near_ceiling":      true,
-	"root_matrix_read_at_year_one":  true,
-	"window_below_floor_at_request": true,
+	"root_matrix_near_ceiling":               true,
+	"root_matrix_read_at_year_one":           true,
+	"window_below_floor_at_request":          true,
+	"increase_window_below_floor_at_request": true,
 }
 
 // instantDomainRow is one series of a case's answer. at maps a step
@@ -204,6 +205,39 @@ func TestInstantDomainParity_ChDB(t *testing.T) {
 		{
 			"deriv_window_past_ceiling", `deriv(` + instantDomainMetric + `{job="edge"}[20m] @ 9223372300)`, instantDomainEval,
 			[]instantDomainRow{idRow(edge, idConst(2.0/300))},
+		},
+		// rate, increase and delta extrapolate to the window's edges: the
+		// last sample sits 240s before the pin, under the 330s threshold,
+		// so the 103.145...s past the ceiling count, the first sample 60s
+		// after the window's start. 2 over 300s extrapolated to 600s.
+		{
+			"rate_window_past_ceiling", `rate(` + instantDomainMetric + `{job="edge"}[10m] @ 9223372140)`, instantDomainEval,
+			[]instantDomainRow{idRow(edge, idConst(4.0/600))},
+		},
+		{
+			"increase_window_past_ceiling", `increase(` + instantDomainMetric + `{job="edge"}[10m] @ 9223372140)`, instantDomainEval,
+			[]instantDomainRow{idRow(edge, idConst(4))},
+		},
+		{
+			"delta_window_past_ceiling", `delta(` + instantDomainMetric + `{job="edge"}[10m] @ 9223372140)`, instantDomainEval,
+			[]instantDomainRow{idRow(edge, idConst(4))},
+		},
+		// Both edges lie past the threshold: each extrapolates 150s.
+		{
+			"rate_window_past_ceiling_clamped", `rate(` + instantDomainMetric + `{job="edge"}[20m] @ 9223372300)`, instantDomainEval,
+			[]instantDomainRow{idRow(edge, idConst(4.0/1200))},
+		},
+		// The regression line through (23:40, 4) and (23:45, 6), read 60s
+		// past the evaluation instant, which the pin leaves where it is.
+		// Below the floor the window's start lies 510s before the first
+		// sample, past the threshold: 150s, plus 30s to the pin.
+		{
+			"rate_window_below_floor", `rate(` + instantDomainMetric + `{job="floor"}[14m] @ -9223371270)`, instantDomainNearFloor,
+			[]instantDomainRow{idRow(floor, idConst(3.2/840))},
+		},
+		{
+			"increase_window_below_floor_at_request", `increase(` + instantDomainMetric + `{job="floor"}[14m])`, instantDomainNearFloor.Add(5*time.Minute + 30*time.Second),
+			[]instantDomainRow{idRow(floor, idConst(3.2))},
 		},
 		{"absent_over_time_window_past_ceiling", `absent_over_time(` + instantDomainMetric + `{job="edge"}[10m] @ 9223372300)`, instantDomainEval, nil},
 		{

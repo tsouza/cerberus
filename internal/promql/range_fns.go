@@ -11,10 +11,6 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// holtWintersFunctionName is the PromQL and plan IR name of holt_winters,
-// to which its double_exponential_smoothing alias is lowered.
-const holtWintersFunctionName = "holt_winters"
-
 // lowerPredictLinear handles `predict_linear(v range-vector, t scalar)`:
 // fits a simple linear regression to the samples in the lookback window
 // and projects the line t seconds past the evaluation instant, which `@`
@@ -245,7 +241,7 @@ func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 		// of whether the source query used the legacy name or the new
 		// `double_exponential_smoothing` alias — the emitter switches
 		// on the IR name only.
-		Func:            holtWintersFunctionName,
+		Func:            fnHoltWinters,
 		Range:           ms.Range,
 		End:             anchor.End(),
 		Offset:          anchor.Offset,
@@ -430,7 +426,7 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 
 	window := &chplan.RangeWindow{
 		Input:           inner,
-		Func:            "quantile_over_time",
+		Func:            fnQuantileOverTime,
 		Range:           ms.Range,
 		End:             anchor.End(),
 		Offset:          anchor.Offset,

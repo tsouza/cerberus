@@ -137,7 +137,7 @@ var distinctSampleRowsFuncs = map[string]bool{
 	"stddev_over_time":      true,
 	"stdvar_over_time":      true,
 	"mad_over_time":         true,
-	"quantile_over_time":    true,
+	fnQuantileOverTime:      true,
 	"ts_of_first_over_time": true,
 	"ts_of_last_over_time":  true,
 	"ts_of_max_over_time":   true,
@@ -146,7 +146,7 @@ var distinctSampleRowsFuncs = map[string]bool{
 	"idelta":                true,
 	"deriv":                 true,
 	fnPredictLinear:         true,
-	holtWintersFunctionName: true,
+	fnHoltWinters:           true,
 	"changes":               true,
 	"resets":                true,
 }
