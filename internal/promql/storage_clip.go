@@ -35,7 +35,7 @@ var sampleSetRangeFunctions = map[string]bool{
 	"deriv":                        true,
 	"double_exponential_smoothing": true,
 	"first_over_time":              true,
-	holtWintersFunctionName:        true,
+	fnHoltWinters:                  true,
 	"idelta":                       true,
 	"irate":                        true,
 	"last_over_time":               true,
@@ -44,7 +44,7 @@ var sampleSetRangeFunctions = map[string]bool{
 	"min_over_time":                true,
 	"predict_linear":               true,
 	"present_over_time":            true,
-	"quantile_over_time":           true,
+	fnQuantileOverTime:             true,
 	"resets":                       true,
 	"stddev_over_time":             true,
 	"stdvar_over_time":             true,
@@ -180,7 +180,7 @@ var extrapolatedRangeFunctions = map[string]bool{
 func (f *domainFit) cutWindowArg(n *parser.Call, env domainEnv) (*parser.Call, bool) {
 	name := n.Func.Name
 	pos := 0
-	if name == "quantile_over_time" {
+	if name == fnQuantileOverTime {
 		pos = 1
 	}
 	if len(n.Args) <= pos {

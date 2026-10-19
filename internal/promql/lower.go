@@ -3183,7 +3183,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	switch c.Func.Name {
 	case "predict_linear":
 		return lowerPredictLinear(c, s, ctx)
-	case holtWintersFunctionName, "double_exponential_smoothing":
+	case fnHoltWinters, "double_exponential_smoothing":
 		// `double_exponential_smoothing` (and its legacy `holt_winters`
 		// alias) applies Holt-Winters double-exponential smoothing over
 		// the lookback window. The chsql emitter renders the sequential
