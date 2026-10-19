@@ -810,6 +810,16 @@ func epochFloor(t time.Time, step time.Duration) time.Time {
 // `__name__` at all, since the enclosing reducer reads its name off
 // THIS relation.
 func subqueryAnchorShape(inner chplan.Node, s schema.Metrics) chplan.Node {
+	return subqueryMatrixShape(inner, s, true)
+}
+
+// subqueryMatrixShape is [subqueryAnchorShape]'s projection with the
+// grid marker left to the caller. onOwnGrid is true for a relation
+// already evaluated at the subquery's own grid, which a re-anchoring pass
+// ([widenSubquerySpine]) must leave as it is, and false for one whose
+// windowing spine below this projection is still re-anchored to the
+// enclosing window, as an OuterRange-mode [chplan.RangeBucketFanout] is.
+func subqueryMatrixShape(inner chplan.Node, s schema.Metrics, onOwnGrid bool) chplan.Node {
 	projections := make([]chplan.Projection, 0, subqueryAnchorShapeMaxCols)
 	if nodeCarriesMetricName(inner, s) {
 		projections = append(projections, chplan.Projection{
@@ -820,7 +830,7 @@ func subqueryAnchorShape(inner chplan.Node, s schema.Metrics) chplan.Node {
 	return &chplan.Project{
 		Roles:        metricRoles(s),
 		Input:        inner,
-		SubqueryGrid: true,
+		SubqueryGrid: onOwnGrid,
 		Projections: append(
 			projections,
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -3526,7 +3536,19 @@ func lowerSubqueryOverCallSubquery(
 			return nil, err
 		}
 		if node, matched, err := lowerHistogramOrMixedCallSubqueryInput(wideInner, kind, call.Func.Name, sub, innerSub, step, s, ctx); matched {
-			return node, err
+			if err != nil || rowsMayContainHistograms(node) {
+				return node, err
+			}
+			// A float-valued answer (count_over_time, present_over_time,
+			// resets, changes, ts_of_first/last_over_time) leaves the
+			// continuation as a plain sample quartet whose TimeUnix is the
+			// outer-subquery anchor, with no anchor_ts column. Every other
+			// float relation lowerSubquery returns publishes the matrix
+			// contract an enclosing reducer folds over, anchor_ts
+			// included, so this one is shaped the same way. Its
+			// OuterRange-mode fanout is not on its own grid yet: an
+			// enclosing range query re-anchors it through this projection.
+			return subqueryMatrixShape(node, s, false), nil
 		}
 		if !histogramSubqueryFloatOnlyDropFunc(call.Func.Name) {
 			return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", call.Func.Name)
