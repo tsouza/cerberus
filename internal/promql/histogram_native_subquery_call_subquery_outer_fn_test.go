@@ -177,13 +177,14 @@ func TestWidenNestedCallSubqueryInner_GridModes(t *testing.T) {
 		// branch's widening call —
 		//
 		//	histogram_native_subquery_call_subquery_outer_fn.go:`case ctx.rangeMode() && subqueryPinned(sub):`
-		//	histogram_native_subquery_call_subquery_outer_fn.go:`ctx.start.Add(-anchor.Offset-sub.Range), ctx.end`
+		//	histogram_native_subquery_call_subquery_outer_fn.go:`widenSubquerySpineReadBy(inner, ctx.start, ctx.end, anchor.Offset, sub.Range)`
 		//
 		// The `@`-pinned branch is cited by its `case` label rather than by
 		// its widening call, because that call is spelled identically in the
 		// instant branch below it and no substring of it tells the two apart;
-		// the mutants are on the single `widenSubquerySpine` line inside that
-		// arm. The plain query_range branch's call is unique as written.
+		// the offset reaches the span through the single
+		// `widenSubquerySpineReadBy` line inside that arm. The plain
+		// query_range branch's call is unique as written.
 		//
 		// Both rewrites of that unary term collapse it to `+anchor.Offset`,
 		// which is indistinguishable from `-anchor.Offset` at offset zero and

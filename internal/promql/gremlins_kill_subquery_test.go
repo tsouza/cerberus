@@ -78,7 +78,8 @@ func TestLowerOuterRangeFnOverSubquery_PinnedRangeModeWidensByOffsetPlusRange(t 
 // TestLowerAbsentOverTimeOverSubquery_RangeModeWidensByOffsetPlusRange
 // kills the ARITHMETIC_BASE + INVERT_NEGATIVES pair on the `-a.Offset`
 // term of lowerAbsentOverTimeOverSubquery's range-mode (not pinned) arm,
-// subquery.go:`widenSubquerySpine(a.Input, ctx.start.Add(-a.Offset-sub.Range), ctx.end)`.
+// subquery.go:`widenSubquerySpineReadBy(a.Input, ctx.start, ctx.end, a.Offset, sub.Range)`,
+// whose span is [chplan.OffsetSpan].
 func TestLowerAbsentOverTimeOverSubquery_RangeModeWidensByOffsetPlusRange(t *testing.T) {
 	t.Parallel()
 
@@ -109,7 +110,7 @@ func TestLowerAbsentOverTimeOverSubquery_RangeModeWidensByOffsetPlusRange(t *tes
 	wantStart := start.Add(-offset).Add(-subRange)
 	if !inner.Start.Equal(wantStart) {
 		t.Errorf("inner.Start = %s, want %s (ctx.start - offset - subRange) — "+
-			"mutants on subquery.go:`widenSubquerySpine(a.Input, ctx.start.Add(-a.Offset-sub.Range), ctx.end)` would yield %s (ctx.start + offset - subRange)",
+			"mutants on subquery.go:`widenSubquerySpineReadBy(a.Input, ctx.start, ctx.end, a.Offset, sub.Range)` would yield %s (ctx.start + offset - subRange)",
 			inner.Start, wantStart, start.Add(offset).Add(-subRange))
 	}
 }
@@ -117,7 +118,8 @@ func TestLowerAbsentOverTimeOverSubquery_RangeModeWidensByOffsetPlusRange(t *tes
 // TestLowerAbsentOverTimeOverSubquery_InstantModeWidensByOffsetPlusRange
 // kills the ARITHMETIC_BASE + INVERT_NEGATIVES pair on the `-a.Offset`
 // term of the default (instant-mode) arm's widenSubquerySpine call,
-// subquery.go:`widenSubquerySpine(a.Input, a.End.Add(-a.Offset-sub.Range), a.End)`.
+// subquery.go:`widenSubquerySpineReadBy(a.Input, a.End, a.End, a.Offset, sub.Range)`,
+// whose span is [chplan.OffsetSpan].
 func TestLowerAbsentOverTimeOverSubquery_InstantModeWidensByOffsetPlusRange(t *testing.T) {
 	t.Parallel()
 
@@ -147,7 +149,7 @@ func TestLowerAbsentOverTimeOverSubquery_InstantModeWidensByOffsetPlusRange(t *t
 	wantStart := evalTS.Add(-offset).Add(-subRange)
 	if !inner.Start.Equal(wantStart) {
 		t.Errorf("inner.Start = %s, want %s (a.End - offset - subRange) — "+
-			"mutants on subquery.go:`widenSubquerySpine(a.Input, a.End.Add(-a.Offset-sub.Range), a.End)` would yield %s (a.End + offset - subRange)",
+			"mutants on subquery.go:`widenSubquerySpineReadBy(a.Input, a.End, a.End, a.Offset, sub.Range)` would yield %s (a.End + offset - subRange)",
 			inner.Start, wantStart, evalTS.Add(offset).Add(-subRange))
 	}
 }
