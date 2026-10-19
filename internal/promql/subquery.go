@@ -1305,6 +1305,23 @@ func lowerSubqueryOverVectorSelector(
 	return dropStaleLatestSamples(rw, s), nil
 }
 
+// callSubqueryMatrix shapes the answer of
+// [lowerHistogramOrMixedCallSubqueryInput] as the relation lowerSubquery
+// returns. A float-valued answer (count_over_time, present_over_time,
+// resets, changes, ts_of_first/last_over_time) leaves that continuation as
+// a plain sample quartet whose TimeUnix is the outer-subquery anchor, with
+// no anchor_ts column. Every other float relation lowerSubquery returns
+// publishes the matrix contract an enclosing reducer folds over, anchor_ts
+// included, so this one is shaped the same way. Its OuterRange-mode fanout
+// is not on its own grid yet: an enclosing range query re-anchors it
+// through this projection. A histogram or mixed answer passes through.
+func callSubqueryMatrix(node chplan.Node, err error, s schema.Metrics) (chplan.Node, error) {
+	if err != nil || rowsMayContainHistograms(node) {
+		return node, err
+	}
+	return subqueryMatrixShape(node, s, false), nil
+}
+
 // lowerOuterRangeFnOverSubquery — `max_over_time(rate(m[5m])[1h:5m])`,
 // the canonical Grafana subquery shape. The outer call is a
 // range-vector function reducing over the inner matrix output.
@@ -3536,19 +3553,7 @@ func lowerSubqueryOverCallSubquery(
 			return nil, err
 		}
 		if node, matched, err := lowerHistogramOrMixedCallSubqueryInput(wideInner, kind, call.Func.Name, sub, innerSub, step, s, ctx); matched {
-			if err != nil || rowsMayContainHistograms(node) {
-				return node, err
-			}
-			// A float-valued answer (count_over_time, present_over_time,
-			// resets, changes, ts_of_first/last_over_time) leaves the
-			// continuation as a plain sample quartet whose TimeUnix is the
-			// outer-subquery anchor, with no anchor_ts column. Every other
-			// float relation lowerSubquery returns publishes the matrix
-			// contract an enclosing reducer folds over, anchor_ts
-			// included, so this one is shaped the same way. Its
-			// OuterRange-mode fanout is not on its own grid yet: an
-			// enclosing range query re-anchors it through this projection.
-			return subqueryMatrixShape(node, s, false), nil
+			return callSubqueryMatrix(node, err, s)
 		}
 		if !histogramSubqueryFloatOnlyDropFunc(call.Func.Name) {
 			return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", call.Func.Name)
