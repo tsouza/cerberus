@@ -150,6 +150,22 @@ func maxBlockSizeFromContext(ctx context.Context) uint64 {
 	return n
 }
 
+// serverAbortGrace is how long past a query's max_execution_time
+// ClickHouse is given to abort the query itself before the caller's
+// context backstop cancels it. ClickHouse measures the limit from when the
+// query starts on the server, which is after the caller's clock starts,
+// and checks it while the query streams; a backstop expiring with the cap
+// would race that check, and a cancellation that wins it reaches ClickHouse
+// as QUERY_WAS_CANCELLED instead of TIMEOUT_EXCEEDED.
+const serverAbortGrace = time.Second
+
+// BackstopTimeout returns the context timeout that backs up a ClickHouse
+// max_execution_time of budget: it expires serverAbortGrace after the cap,
+// so it unblocks a caller only when the server cap did not fire.
+func BackstopTimeout(budget time.Duration) time.Duration {
+	return budget + serverAbortGrace
+}
+
 // WithQueryTimeout returns a ctx that overrides the Client's configured
 // per-query execution timeout for this one request. The API heads call
 // it when an inbound request carries the standard Prometheus

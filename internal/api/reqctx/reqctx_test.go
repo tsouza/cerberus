@@ -43,7 +43,7 @@ func deadlineWithin(t *testing.T, want time.Duration, dl time.Time, ok bool) {
 func budgetInstalled(t *testing.T, ctx context.Context, want time.Duration) {
 	t.Helper()
 	dl, ok := ctx.Deadline()
-	deadlineWithin(t, want, dl, ok)
+	deadlineWithin(t, chclient.BackstopTimeout(want), dl, ok)
 	got, ok := chclient.QueryTimeoutFromContext(ctx)
 	if !ok {
 		t.Fatalf("no chclient query-timeout carrier on the context for budget %s", want)
@@ -203,5 +203,30 @@ func TestApplyQueryTimeout_UnitSuffixedNegativeIsUnparseable(t *testing.T) {
 	msg := rejectTimeout(t, "-1s")
 	if !strings.Contains(msg, "-1s") {
 		t.Fatalf("message %q does not name the offending value", msg)
+	}
+}
+
+// TestWithQueryBudget_BackstopFollowsServerCap pins that the context
+// deadline backing a budget expires a grace after the ClickHouse-side cap,
+// never with it: a backstop expiring with the cap races ClickHouse's own
+// TIMEOUT_EXCEEDED abort and sometimes cancels the query first.
+func TestWithQueryBudget_BackstopFollowsServerCap(t *testing.T) {
+	before := time.Now()
+	ctx, cancel := reqctx.WithQueryBudget(context.Background(), smallBudget)
+	defer cancel()
+	dl, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("no context deadline for a positive budget")
+	}
+	capped, ok := chclient.QueryTimeoutFromContext(ctx)
+	if !ok || capped != smallBudget {
+		t.Fatalf("server cap = %s (set %v), want %s", capped, ok, smallBudget)
+	}
+	if backstop := dl.Sub(before); backstop < chclient.BackstopTimeout(smallBudget) {
+		t.Fatalf("backstop expires %s after the request, want at least %s: it must follow the %s server cap by a grace",
+			backstop, chclient.BackstopTimeout(smallBudget), smallBudget)
+	}
+	if chclient.BackstopTimeout(smallBudget) <= smallBudget {
+		t.Fatalf("BackstopTimeout(%s) = %s, want later than the cap", smallBudget, chclient.BackstopTimeout(smallBudget))
 	}
 }

@@ -32,10 +32,12 @@ import (
 // "no cap from that source") — and, when positive, threads it onto the
 // returned context as BOTH:
 //
-//   - a context deadline (context.WithTimeout), so a query that hangs
-//     past the budget unblocks the handler and releases its admit slot +
-//     pooled connection even if the server-side cap somehow doesn't fire;
-//     and
+//   - a context deadline (context.WithTimeout) at
+//     chclient.BackstopTimeout(budget), so a query that hangs past the
+//     budget unblocks the handler and releases its admit slot + pooled
+//     connection even if the server-side cap somehow doesn't fire; it
+//     expires a grace after the cap, so it never races ClickHouse's own
+//     abort; and
 //   - chclient.WithQueryTimeout, so the data-plane query's ClickHouse
 //     max_execution_time is narrowed to the same budget and the server
 //     aborts the query with TIMEOUT_EXCEEDED (code 159) → *QueryTimeoutError.
@@ -86,5 +88,5 @@ func WithQueryBudget(ctx context.Context, budget time.Duration) (context.Context
 		return ctx, func() {}
 	}
 	ctx = chclient.WithQueryTimeout(ctx, budget)
-	return context.WithTimeout(ctx, budget)
+	return context.WithTimeout(ctx, chclient.BackstopTimeout(budget))
 }

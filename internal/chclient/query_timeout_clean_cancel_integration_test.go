@@ -27,9 +27,10 @@ const chTimeoutExceededCode = 159
 // client that had already walked away, with no protocol-level signal telling
 // it to stop.
 //
-// Root cause: reqctx.ApplyQueryTimeout stamps the SAME budget onto both
-// chclient.WithQueryTimeout (ClickHouse's own `max_execution_time`) and a Go
-// context.WithTimeout deadline (a backstop watchdog — see its doc comment).
+// Root cause: reqctx.ApplyQueryTimeout stamps the budget onto
+// chclient.WithQueryTimeout (ClickHouse's own `max_execution_time`) and
+// backs it with a Go context.WithTimeout deadline (a backstop watchdog — see
+// its doc comment).
 // clickhouse-go/v2's own queryOptions() (context.go) derives ITS OWN
 // `max_execution_time` from ctx.Deadline() — `time.Until(deadline) + 5s` —
 // and stamps it into the outgoing settings map UNCONDITIONALLY, clobbering
@@ -115,8 +116,9 @@ func TestQueryTimeout_ServerSideCleanAbort(t *testing.T) {
 	const sql = "SELECT count() FROM numbers(100000) WHERE sleepEachRow(0.001) = 0"
 
 	// Mirrors reqctx.ApplyQueryTimeout's actual production wiring exactly:
-	// the SAME budget on both the CH-side setting and the Go ctx deadline.
-	qctx, qcancel := context.WithTimeout(ctx, timeoutQueryBudget)
+	// the budget as the CH-side setting, and the Go ctx deadline as its
+	// backstop.
+	qctx, qcancel := context.WithTimeout(ctx, chclient.BackstopTimeout(timeoutQueryBudget))
 	defer qcancel()
 	qctx = chclient.WithQueryTimeout(qctx, timeoutQueryBudget)
 	qctx = chclient.WithQueryID(qctx, queryID)
@@ -144,11 +146,13 @@ func TestQueryTimeout_ServerSideCleanAbort(t *testing.T) {
 // the probe's own run time.
 const timeoutContainerBudget = 5 * time.Minute
 
-// timeoutQueryBudget is the query timeout this test configures on both the
-// ClickHouse-side max_execution_time setting and the Go ctx watchdog,
-// mirroring reqctx.ApplyQueryTimeout's real production wiring. Short enough
-// to keep the test fast, long enough that ClickHouse's own abort has to win
-// a genuine race rather than a trivially-fast one.
+// timeoutQueryBudget is the query timeout this test configures as the
+// ClickHouse-side max_execution_time setting, backed by a Go ctx watchdog at
+// chclient.BackstopTimeout of it, mirroring reqctx.ApplyQueryTimeout's real
+// production wiring. A watchdog expiring with the cap itself races
+// ClickHouse's own check and sometimes cancels the query first (code 394,
+// QUERY_WAS_CANCELLED). Short enough to keep the test fast, long enough that
+// ClickHouse's own abort is not a trivially-fast one.
 const timeoutQueryBudget = 2 * time.Second
 
 // timeoutQueryBlockRows caps the probe's block size so each block's
