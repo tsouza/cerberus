@@ -80,10 +80,11 @@ type woRow struct {
 	value  float64
 	count  float64
 	bucket uint64
-	// selected marks a float row computed from one selected sample — the
-	// sample itself, or a per-sample function of it: in instant mode it
-	// keeps that sample's timestamp, while aggregated and histogram rows
-	// carry the evaluation timestamp.
+	// selected marks a float row computed sample-for-sample from selected
+	// samples — the sample itself, a per-sample function of it, or a
+	// vector-vector operator over a matched pair: in instant mode it keeps
+	// the sample's timestamp, while aggregated and histogram rows carry the
+	// evaluation timestamp.
 	selected bool
 }
 
@@ -157,6 +158,14 @@ func TestMixedOrWrapperAsSetOpOperandParity_ChDB(t *testing.T) {
 			woHist("", map[string]string{"b": "d"}, 5, 5),
 			woFloat("", map[string]string{"b": "f"}, 7),
 			upF, upH, upU,
+		}},
+		// Vector-vector operators over the mixed `or`, as set-op operands.
+		// Prometheus refuses histogram + float, so only the float pair joins.
+		{"vector_arithmetic_and_float", `(` + woMixedOr + ` + on(b) ` + woPlainMetric + `) and on(b) ` + woPlainMetric, true, []woRow{
+			woSelected("", map[string]string{"b": "f"}, 8),
+		}},
+		{"vector_comparison_or_float", `(` + woMixedOr + ` == ` + woMixedOr + `) or ` + woPlainMetric, true, []woRow{
+			hH, hD, woSelected(woFloatMetric, map[string]string{"b": "f"}, 7), upF, upH, upU,
 		}},
 		{"count_or_histogram", `count(` + woMixedOr + `) or ` + woHistMetric, true, []woRow{
 			woFloat("", map[string]string{}, 3), hH, hD,
