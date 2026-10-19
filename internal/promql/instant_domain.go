@@ -116,7 +116,7 @@ func pinnedEnv(ts *int64, startOrEnd parser.ItemType, offset time.Duration, env 
 // fitResult is what fitting one expression yields.
 type fitResult struct {
 	// empty reports that the expression answers no sample at any instant
-	// of its environment.
+	// of its environment. Only a vector or matrix expression is ever empty.
 	empty bool
 	// err is the rejection the expression raises if it is lowered as it
 	// stands. An enclosing node either replaces the expression, which
@@ -327,20 +327,16 @@ func fitBinary(n *parser.BinaryExpr, env domainEnv) (parser.Expr, fitResult) {
 	if r.err != nil {
 		return n, r
 	}
-	lv := n.LHS.Type() == parser.ValueTypeVector
-	rv := n.RHS.Type() == parser.ValueTypeVector
+	// Set operators take two vectors. Any other operator answers no sample
+	// when either operand answers none; a scalar operand is never empty.
 	var empty bool
-	switch {
-	case lv && rv && n.Op == parser.LOR:
+	switch n.Op {
+	case parser.LOR:
 		empty = l.empty && r.empty
-	case lv && rv && n.Op == parser.LUNLESS:
+	case parser.LUNLESS:
 		empty = l.empty
-	case lv && rv:
+	default:
 		empty = l.empty || r.empty
-	case lv:
-		empty = l.empty
-	case rv:
-		empty = r.empty
 	}
 	if lhs == n.LHS && rhs == n.RHS {
 		return n, fitResult{empty: empty}

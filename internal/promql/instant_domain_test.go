@@ -133,6 +133,9 @@ func TestInstantDomain_Boundaries(t *testing.T) {
 		// 00:06:00 - 5m range - 1m step = 1900-01-01T00:00:00Z.
 		{"subquery_lowest_accepted", `count_over_time(vector(1)[5m:1m] @ -2208988440)`, true},
 		{"subquery_highest_rejected", `count_over_time(vector(1)[5m:1m] @ -2208988440.001)`, false},
+		// A subquery without a step uses the 1m default.
+		{"default_step_lowest_accepted", `count_over_time(vector(1)[5m:] @ -2208988440)`, true},
+		{"default_step_highest_rejected", `count_over_time(vector(1)[5m:] @ -2208988440.001)`, false},
 		// 00:05:00 - 5m lookback = 1900-01-01T00:00:00Z.
 		{"selector_lowest_accepted", `m @ -2208988500`, true},
 		{"selector_highest_rejected", `m @ -2208988500.001`, false},
@@ -202,6 +205,9 @@ func TestInstantDomain_InDomainQueryIsUntouched(t *testing.T) {
 		`rate(m[5m])`,
 		`count_over_time(m[5m:1m] @ 1767225600)`,
 		`absent(m @ 1767225600) or info(m, {job="a"})`,
+		`-sum by (job) (rate(m[5m]))`,
+		`topk(5, m)`,
+		`(m)`,
 	} {
 		expr := mustParseExperimental(t, q)
 		got, err := fitInstantDomain(expr, lowerCtx{start: instantDomainEvalEnd, end: instantDomainEvalEnd})
@@ -314,5 +320,106 @@ func TestInstantDomain_RangeStepMargin(t *testing.T) {
 				t.Fatalf("lower %q from %s: err = %v, want the instant-domain rejection", tc.query, tc.start, err)
 			}
 		})
+	}
+}
+
+// TestInstantDomain_StepInvariantIsUntouched pins the StepInvariantExpr
+// arm, a node the engine adds and the parser never produces.
+func TestInstantDomain_StepInvariantIsUntouched(t *testing.T) {
+	ctx := lowerCtx{start: instantDomainEvalEnd, end: instantDomainEvalEnd}
+	in := &parser.StepInvariantExpr{Expr: mustParseExperimental(t, `m`)}
+	got, err := fitInstantDomain(in, ctx)
+	if err != nil || got != in {
+		t.Fatalf("fitInstantDomain(in-domain step-invariant) = %v, %v; want the input unchanged", got, err)
+	}
+	out := &parser.StepInvariantExpr{Expr: mustParseExperimental(t, `m @ -62135596800`)}
+	got, err = fitInstantDomain(out, ctx)
+	if err != nil || got.String() != `vector(0) < -1` {
+		t.Fatalf("fitInstantDomain(year-one step-invariant) = %v, %v; want vector(0) < -1", got, err)
+	}
+	if out.Expr.String() != `m @ -62135596800.000` {
+		t.Fatalf("fitInstantDomain modified its input into %q", out.Expr)
+	}
+}
+
+// TestInstantDomain_EmptinessRules pins which compositions of an empty read
+// are themselves empty. An empty subquery inner lets the whole pinned
+// subquery be replaced; a non-empty one leaves it to the rejection.
+func TestInstantDomain_EmptinessRules(t *testing.T) {
+	const y1 = `m @ -62135596800`
+	cases := []struct {
+		query string
+		want  string // the rewritten query; empty means a rejection
+	}{
+		{`count_over_time((` + y1 + ` or ` + y1 + `)[5m:1m] @ -62135596800)`, `vector(0) < -1`},
+		{`count_over_time((` + y1 + ` or vector(1))[5m:1m] @ -62135596800)`, ``},
+		{`count_over_time((vector(1) or ` + y1 + `)[5m:1m] @ -62135596800)`, ``},
+		{`count_over_time((` + y1 + ` unless vector(1))[5m:1m] @ -62135596800)`, `vector(0) < -1`},
+		{`count_over_time((vector(1) unless ` + y1 + `)[5m:1m] @ -62135596800)`, ``},
+		{`count_over_time((vector(1) and ` + y1 + `)[5m:1m] @ -62135596800)`, `vector(0) < -1`},
+		{`count_over_time((` + y1 + ` * vector(1))[5m:1m] @ -62135596800)`, `vector(0) < -1`},
+		{`count_over_time((` + y1 + ` * 2)[5m:1m] @ -62135596800)`, `vector(0) < -1`},
+		{`count_over_time((2 * ` + y1 + `)[5m:1m] @ -62135596800)`, `vector(0) < -1`},
+		{`count_over_time((vector(1) * 2)[5m:1m] @ -62135596800)`, ``},
+		{`count_over_time((2 * vector(1))[5m:1m] @ -62135596800)`, ``},
+		// Only the first series argument decides a call's emptiness.
+		{`quantile_over_time(0.5, m[5m] @ -62135596800)`, `vector(0) < -1`},
+		{`histogram_quantile(0.9, rate(m[5m] @ -62135596800))`, `histogram_quantile(0.9, vector(0) < -1)`},
+		{`count_over_time(histogram_quantile(0.9, rate(m[5m]))[5m:1m] @ -62135596800)`, `vector(0) < -1`},
+		{`absent_over_time(m[5m] @ -62135596800)`, ``},
+		// info's first argument may be replaced; its second must stay a selector.
+		{`info(` + y1 + `, {job="a"})`, `info(vector(0) < -1, {job="a"})`},
+		{`info(m, {job="a"} @ -62135596800)`, ``},
+		// An aggregation's parameter is fitted like any argument.
+		{`topk(5, ` + y1 + `)`, `topk(5, vector(0) < -1)`},
+		{`topk(scalar(` + y1 + `), m)`, `topk(scalar(vector(0) < -1), m)`},
+		// A window reaching back into storage is not empty: the pin is past
+		// the ceiling but its lookback, or its subquery range, is not.
+		{`m @ 9223372096.854`, ``},
+		{`count_over_time(m[1h:1m] @ 9223373836.854)`, ``},
+		{`count_over_time(m[5m:1m] @ 9223373836.854)`, `vector(0) < -1`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			expr := mustParseExperimental(t, tc.query)
+			got, err := fitInstantDomain(expr, lowerCtx{start: instantDomainEvalEnd, end: instantDomainEvalEnd})
+			switch {
+			case tc.want == "" && err == nil:
+				t.Fatalf("fitInstantDomain(%q) = %q, want the instant-domain rejection", tc.query, got)
+			case tc.want == "" && !strings.Contains(err.Error(), "outside the range cerberus supports"):
+				t.Fatalf("fitInstantDomain(%q): err = %v, want the instant-domain rejection", tc.query, err)
+			case tc.want != "" && err != nil:
+				t.Fatalf("fitInstantDomain(%q): %v", tc.query, err)
+			case tc.want != "" && got.String() != tc.want:
+				t.Fatalf("fitInstantDomain(%q) = %q, want %q", tc.query, got.String(), tc.want)
+			}
+		})
+	}
+}
+
+// TestInstantDomain_FirstErrorWins pins that a call with two arguments
+// outside the domain reports the first one.
+func TestInstantDomain_FirstErrorWins(t *testing.T) {
+	q := `predict_linear(m[5m] @ -5000000000, scalar(m @ -6000000000))`
+	_, err := fitInstantDomain(mustParseExperimental(t, q), lowerCtx{start: instantDomainEvalEnd, end: instantDomainEvalEnd})
+	want := instantDomainError(time.UnixMilli(-5000000000000)).Error()
+	if err == nil || err.Error() != want {
+		t.Fatalf("fitInstantDomain(%q): err = %v, want %q", q, err, want)
+	}
+}
+
+// TestInstantDomain_StartEndPinsWithoutRange pins that `@ start()` and
+// `@ end()` with no request range are left to the lowering's own
+// "requires query range context" error rather than judged as instants.
+func TestInstantDomain_StartEndPinsWithoutRange(t *testing.T) {
+	for _, q := range []string{`m @ start()`, `m @ end()`, `count_over_time(vector(1)[5m:1m] @ start())`} {
+		expr := mustParseExperimental(t, q)
+		if _, err := fitInstantDomain(expr, lowerCtx{}); err != nil {
+			t.Fatalf("fitInstantDomain(%q) with no request range: %v", q, err)
+		}
+		_, err := Lower(context.Background(), expr, schema.DefaultOTelMetrics())
+		if err == nil || !strings.Contains(err.Error(), "requires query range context") {
+			t.Fatalf("Lower(%q): err = %v, want the query-range-context error", q, err)
+		}
 	}
 }
