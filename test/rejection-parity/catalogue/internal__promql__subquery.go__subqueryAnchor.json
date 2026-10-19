@@ -34,8 +34,8 @@
           "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
           "lowerSumOrAvgOverMixedOrSubqueryFoldFn",
           "subqueryGridCtx",
-          "widenNestedCallSubqueryInner",
-          "wrapSubqueryIdentity"
+          "subqueryIdentityWindow",
+          "widenNestedCallSubqueryInner"
         ],
         "cited": [
           "LowerAtRange",
@@ -96,8 +96,8 @@
           "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
           "lowerSumOrAvgOverMixedOrSubqueryFoldFn",
           "subqueryGridCtx",
-          "widenNestedCallSubqueryInner",
-          "wrapSubqueryIdentity"
+          "subqueryIdentityWindow",
+          "widenNestedCallSubqueryInner"
         ],
         "cited": [
           "LowerAtRange",
@@ -157,8 +157,8 @@
           "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
           "lowerSumOrAvgOverMixedOrSubqueryFoldFn",
           "subqueryGridCtx",
-          "widenNestedCallSubqueryInner",
-          "wrapSubqueryIdentity"
+          "subqueryIdentityWindow",
+          "widenNestedCallSubqueryInner"
         ],
         "cited": [
           "lowerExpHistogramFoldOverCallSubqueryInput",

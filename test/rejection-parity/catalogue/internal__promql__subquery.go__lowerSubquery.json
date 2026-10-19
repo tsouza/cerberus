@@ -29,7 +29,7 @@
       "evidence": {
         "guard": [
           "past returning if e.Range \u003c= 0",
-          "if step \u003c 0"
+          "if e.Step \u003c 0"
         ],
         "callers": [
           "lower",
@@ -50,7 +50,7 @@
       "evidence": {
         "guard": [
           "past returning if e.Range \u003c= 0",
-          "past returning if step \u003c 0",
+          "past returning if e.Step \u003c 0",
           "past returning if plan, matched, err := lowerHistogramNativeSubqueryInner(e, step, s, ctx); matched",
           "past exhaustive switch inner := e.Expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.ParenExpr; case *parser.AggregateExpr; case *parser.BinaryExpr; case *parser.UnaryExpr; case *parser.SubqueryExpr]"
         ],
