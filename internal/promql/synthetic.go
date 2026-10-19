@@ -286,7 +286,7 @@ func lowerTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	case ctx.step > 0:
 		anchor = chplan.NowNano()
 	case !ctx.end.IsZero():
-		anchor = anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
+		anchor = anchorBaseExpr(anchorAt(ctx.end.UTC()))
 	default:
 		anchor = anchorBaseExpr(evalAnchor{})
 	}

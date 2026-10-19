@@ -252,15 +252,15 @@ func lowerFloatFoldOverSubqueryInput(input chplan.Node, sub *parser.SubqueryExpr
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 	if ctx.rangeMode() && subqueryPinned(sub) {
-		rw.End = anchor.End
+		rw.End = anchor.End()
 		return wrapRangeWindowAtBroadcast(rw, ctx, s, nil, &chplan.ColumnRef{Name: s.ValueColumn})
 	}
 	if ctx.rangeMode() {
 		applyStepGridFanout(rw, ctx)
 		return rw
 	}
-	if !anchor.End.IsZero() {
-		rw.End = anchor.End
+	if anchor.anchored() {
+		rw.End = anchor.End()
 	}
 	return rw
 }

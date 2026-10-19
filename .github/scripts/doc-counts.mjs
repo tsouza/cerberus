@@ -362,7 +362,7 @@ export function choptRegistryCensus(src) {
 }
 
 const SHAPE_DIVERGENCE_CLAIM_PATTERNS = [
-  /\**(\d+)\**\s+open\s+argument-shape\s+divergences?/i,
+  /\**(\d+)\**\s+open\s+(?:argument-shape\s+)?divergences?/i,
 ];
 
 // test-layer doc claims: "N-layer test map", "N layers", "tested in N layers".

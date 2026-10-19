@@ -254,8 +254,8 @@ func lowerDateFnNoArg(name string, s schema.Metrics, ctx lowerCtx) (chplan.Node,
 // [syntheticScalarVector] rewrites to each step's `anchor_ts`.
 func evalUnixSeconds(ctx lowerCtx) chplan.Expr {
 	instant := chplan.NowNano()
-	if ctx.step <= 0 {
-		instant = anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
+	if ctx.step <= 0 && !ctx.end.IsZero() {
+		instant = anchorBaseExpr(anchorAt(ctx.end.UTC()))
 	}
 	return &chplan.FuncCall{Fn: chplan.FnIntDiv, Args: []chplan.Expr{
 		&chplan.FuncCall{Fn: chplan.FnToUnixNanos, Args: []chplan.Expr{instant}},
@@ -346,7 +346,7 @@ func evalInstantExpr(s schema.Metrics, ctx lowerCtx) chplan.Expr {
 		return &chplan.ColumnRef{Name: s.TimestampColumn}
 	}
 	if !ctx.end.IsZero() {
-		return anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
+		return anchorBaseExpr(anchorAt(ctx.end.UTC()))
 	}
 	return anchorBaseExpr(evalAnchor{})
 }

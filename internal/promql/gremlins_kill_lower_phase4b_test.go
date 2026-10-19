@@ -16,13 +16,13 @@ import (
 
 // TestBareSubqueryInstantWiden_RequiresBothAnchorConditions kills the
 // INVERT_LOGICAL mutant on lower.go's SubqueryExpr case (`aerr == nil &&
-// !a.End.IsZero()`, `&&` -> `||`): the bare top-level subquery instant-
+// a.anchored()`, `&&` -> `||`): the bare top-level subquery instant-
 // widening branch must widen the inner RangeWindow spine only when the
-// anchor resolved WITHOUT error AND carries a non-zero End. Under an
+// anchor resolved WITHOUT error AND is set. Under an
 // instant Lower() call with no `@`/offset pin, subqueryAnchor succeeds
-// (aerr == nil) but leaves End zero — the exact "one true, one false" case
+// (aerr == nil) but leaves the anchor unset — the exact "one true, one false" case
 // that distinguishes && from ||. The mutant fires anyway (aerr == nil is
-// true on its own) and widens the RangeWindow's Start using the zero End as
+// true on its own) and widens the RangeWindow's Start using the unset anchor's zero time as
 // the anchor, shifting Start away from the zero value the correct guard
 // leaves untouched.
 func TestBareSubqueryInstantWiden_RequiresBothAnchorConditions(t *testing.T) {
@@ -43,15 +43,15 @@ func TestBareSubqueryInstantWiden_RequiresBothAnchorConditions(t *testing.T) {
 		t.Fatal("no RangeWindow node in the bare-subquery plan")
 	}
 	if !found.Start.IsZero() {
-		t.Errorf("RangeWindow.Start = %v, want the zero value: an unresolved (zero-End) anchor must not widen the spine", found.Start)
+		t.Errorf("RangeWindow.Start = %v, want the zero value: an unset anchor must not widen the spine", found.Start)
 	}
 }
 
 // TestLowerMatrixSelector_AnchorFillRequiresBothConditions kills the
-// INVERT_LOGICAL mutant on lowerMatrixSelector's `anchor.End.IsZero() &&
+// INVERT_LOGICAL mutant on lowerMatrixSelector's `!anchor.anchored() &&
 // !ctx.end.IsZero()` (`&&` -> `||`): the ctx.end back-fill must apply only
-// when the selector's own anchor left End unresolved AND the surrounding
-// query supplies one. A `@ <literal>` modifier resolves anchor.End on its
+// when the selector's own anchor is unset AND the surrounding
+// query supplies one. A `@ <literal>` modifier sets the anchor on its
 // own (first condition false) while LowerAt also supplies a non-zero
 // ctx.end (second condition true) — the one-true-one-false case where &&
 // keeps the literal anchor and || would overwrite it with ctx.end.

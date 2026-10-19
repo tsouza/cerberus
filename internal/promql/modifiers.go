@@ -11,18 +11,43 @@ import (
 )
 
 // evalAnchor describes the time-anchor that a VectorSelector's `@` and
-// `offset` modifiers resolve to. End is the absolute anchor (zero means
-// "use eval time, lower as `now64(9)` in SQL"); Offset is the shift to
-// subtract from End.
+// `offset` modifiers resolve to. The absolute anchor is set only when
+// [evalAnchor.anchored] reports so; an unanchored evalAnchor means "use
+// eval time, lower as `now64(9)` in SQL". Offset is the shift to subtract
+// from the anchor.
+//
+// Whether an anchor is set is its own flag rather than a zero End: every
+// instant, the zero time.Time (0001-01-01T00:00:00Z, `@ -62135596800`)
+// included, is a valid `@` pin.
 //
 // `@ start()` / `@ end()` resolve to the query-range start / end times
 // when the API layer threads them through via [LowerAt]. Plain [Lower]
 // (no range context) rejects start/end modifiers because the anchor
 // times are not known at lowering time.
 type evalAnchor struct {
-	End    time.Time
+	end    time.Time
+	hasEnd bool
 	Offset time.Duration
 }
+
+// anchorAt returns an evalAnchor pinned at t with no offset.
+func anchorAt(t time.Time) evalAnchor {
+	var a evalAnchor
+	a.setEnd(t)
+	return a
+}
+
+// setEnd pins a at t.
+func (a *evalAnchor) setEnd(t time.Time) {
+	a.end, a.hasEnd = t.UTC(), true
+}
+
+// anchored reports whether a carries an absolute anchor.
+func (a evalAnchor) anchored() bool { return a.hasEnd }
+
+// End returns the absolute anchor. It is meaningful only when
+// [evalAnchor.anchored] reports true.
+func (a evalAnchor) End() time.Time { return a.end }
 
 // lowerCtx carries the query-time information needed by some modifier
 // lowerings (`@ start()` / `@ end()`). Zero-value start/end means "no
@@ -344,12 +369,12 @@ func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, er
 		if ctx.start.IsZero() {
 			return evalAnchor{}, fmt.Errorf("promql: `@ start()` modifier requires query range context (use LowerAt)")
 		}
-		a.End = ctx.start.UTC()
+		a.setEnd(ctx.start.UTC())
 	case parser.END:
 		if ctx.end.IsZero() {
 			return evalAnchor{}, fmt.Errorf("promql: `@ end()` modifier requires query range context (use LowerAt)")
 		}
-		a.End = ctx.end.UTC()
+		a.setEnd(ctx.end.UTC())
 	case 0:
 		// no start/end modifier; fall through to literal @ handling
 	default:
@@ -359,7 +384,7 @@ func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, er
 		// Upstream stores @ as Unix milliseconds. A literal @<ts>
 		// modifier takes precedence over start()/end() (they can't
 		// both be set — the parser enforces that).
-		a.End = time.UnixMilli(*vs.Timestamp).UTC()
+		a.setEnd(time.UnixMilli(*vs.Timestamp).UTC())
 	}
 	// No absolute @-pin: anchor the window to the query's eval instant
 	// (ctx.end) so an instant /api/v1/query at time=T evaluates the
@@ -374,15 +399,15 @@ func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, er
 	// left End zero, so emit rendered now64(9) and the window silently
 	// became (serverNow-range, serverNow], ignoring time=T.
 	//
-	// Guarded on a.End.IsZero(): an @ / @start() / @end() / @<ts> pin (set
+	// Guarded on !a.anchored(): an @ / @start() / @end() / @<ts> pin (set
 	// above) is preserved untouched. A genuinely context-free Lower() (no
-	// eval range) leaves ctx.end zero, so End stays zero and emit falls
+	// eval range) leaves ctx.end zero, so the anchor stays unset and emit falls
 	// back to now64(9) — the correct neutral anchor when there is no
 	// requested eval instant. In range mode the per-step / broadcast paths
 	// re-pin End to the grid anchor as before; writing ctx.end here first
 	// is idempotent with that.
-	if a.End.IsZero() && !ctx.end.IsZero() {
-		a.End = ctx.end.UTC()
+	if !a.anchored() && !ctx.end.IsZero() {
+		a.setEnd(ctx.end.UTC())
 	}
 	return a, nil
 }
@@ -526,13 +551,13 @@ func andInstantWindow(pred chplan.Expr, vs *parser.VectorSelector, col string, c
 }
 
 // anchorBaseExpr returns the SQL expression for an `evalAnchor`'s
-// reference time. Zero anchor renders as `now64(9)`; an absolute
+// reference time. An unset anchor renders as `now64(9)`; an absolute
 // anchor renders as the canonical [chplan.TimeLiteral]. The Offset field is NOT applied here — callers compose the
 // subtract themselves (timeBoundExpr applies an offset; the LWR
 // staleness predicate composes its own offset+lookback delta).
 func anchorBaseExpr(a evalAnchor) chplan.Expr {
-	if a.End.IsZero() {
+	if !a.anchored() {
 		return chplan.NowNano()
 	}
-	return chplan.TimeLiteral(a.End)
+	return chplan.TimeLiteral(a.End())
 }

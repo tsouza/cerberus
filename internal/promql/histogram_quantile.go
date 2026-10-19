@@ -1263,8 +1263,8 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	// to the surrounding query's end timestamp so the time window stays
 	// deterministic across calls (matches what timeBoundExpr does for the
 	// bare-selector path under hasModifier).
-	if anchor.End.IsZero() && !ctx.end.IsZero() {
-		anchor.End = ctx.end.UTC()
+	if !anchor.anchored() && !ctx.end.IsZero() {
+		anchor.setEnd(ctx.end.UTC())
 	}
 	// Upper bound: TimeUnix <= anchor (Prom's right-closed window).
 	rangeEnd := windowRightBoundExpr(anchor)
@@ -2222,8 +2222,8 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	if err != nil {
 		return nil, err
 	}
-	if anchor.End.IsZero() && !ctx.end.IsZero() {
-		anchor.End = ctx.end.UTC()
+	if !anchor.anchored() && !ctx.end.IsZero() {
+		anchor.setEnd(ctx.end.UTC())
 	}
 	rangeEnd := windowRightBoundExpr(anchor)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))

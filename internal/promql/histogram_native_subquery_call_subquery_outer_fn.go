@@ -88,8 +88,8 @@ func widenNestedCallSubqueryInner(inner chplan.Node, sub *parser.SubqueryExpr, c
 		return err
 	}
 	switch {
-	case ctx.rangeMode() && subqueryPinned(sub) && !anchor.End.IsZero():
-		widenSubquerySpine(inner, anchor.End.Add(-anchor.Offset-sub.Range), anchor.End)
+	case ctx.rangeMode() && subqueryPinned(sub):
+		widenSubquerySpine(inner, anchor.End().Add(-anchor.Offset-sub.Range), anchor.End())
 	case ctx.rangeMode():
 		// NOT gated on a resolvable anchor.End: [subqueryAnchor] fills End
 		// from `@` or the ambient eval instant, and an unpinned
@@ -97,8 +97,8 @@ func widenNestedCallSubqueryInner(inner chplan.Node, sub *parser.SubqueryExpr, c
 		// the widening every output step but the last depends on — every
 		// earlier step would then reduce an empty window.
 		widenSubquerySpine(inner, ctx.start.Add(-anchor.Offset-sub.Range), ctx.end)
-	case !anchor.End.IsZero():
-		widenSubquerySpine(inner, anchor.End.Add(-anchor.Offset-sub.Range), anchor.End)
+	case anchor.anchored():
+		widenSubquerySpine(inner, anchor.End().Add(-anchor.Offset-sub.Range), anchor.End())
 	}
 	// A bare [Lower] with no query time at all resolves no anchor and no
 	// range: nothing to widen against, and the continuations the caller

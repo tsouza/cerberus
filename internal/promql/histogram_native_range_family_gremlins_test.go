@@ -275,7 +275,7 @@ func TestLowerExpHistogramRangeFnOverSubquery_ZeroStepDefaults(t *testing.T) {
 
 // TestExpHistogramRangeFnWindowed_PinnedAtNotOverwrittenByQueryEnd kills
 // the INVERT_LOGICAL mutant (`&&` -> `||`) at
-// histogram_native_range_fn.go:`anchor.End.IsZero() && !ctx.end.IsZero()`,
+// histogram_native_range_fn.go:`!anchor.anchored() && !ctx.end.IsZero()`,
 // inside expHistogramRangeFnWindowed.
 //
 // The original AND only back-fills anchor.End from ctx.end when the
@@ -312,7 +312,7 @@ func TestExpHistogramRangeFnWindowed_PinnedAtNotOverwrittenByQueryEnd(t *testing
 		t.Fatalf("expected the pinned @ timestamp (2026-01-01) among the emitted parameters, got:\n%s\nSQL:\n%s", got, sql)
 	}
 	if strings.Contains(got, "2030-05-05") {
-		t.Fatalf("emitted parameters leaked the query end (2030-05-05) instead of the pinned @ timestamp (mutant `&&`->`||` at histogram_native_range_fn.go:`anchor.End.IsZero() && !ctx.end.IsZero()` overwrites the pin with ctx.end):\n%s", got)
+		t.Fatalf("emitted parameters leaked the query end (2030-05-05) instead of the pinned @ timestamp (mutant `&&`->`||` at histogram_native_range_fn.go:`!anchor.anchored() && !ctx.end.IsZero()` overwrites the pin with ctx.end):\n%s", got)
 	}
 }
 

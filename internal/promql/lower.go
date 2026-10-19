@@ -44,10 +44,16 @@ var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/promql")
 func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
-	plan, err := lowerRoot(expr, s, lowerCtx{
+	lctx := lowerCtx{
 		lowerers:       RangeLowerers{}.withDefaults(),
 		resourceBounds: DefaultResourceBounds().withDefaults(),
-	})
+	}
+	expr, err := fitInstantDomain(expr, lctx)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	plan, err := lowerRoot(expr, s, lctx)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -166,7 +172,7 @@ type LowerOpts struct {
 func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time, step time.Duration, opts LowerOpts) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
-	plan, err := lowerRoot(expr, s, lowerCtx{
+	lctx := lowerCtx{
 		start:                  start,
 		end:                    end,
 		step:                   step,
@@ -175,7 +181,13 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 		resourceBounds:         opts.ResourceBounds.withDefaults(),
 		tagGroups:              opts.TagGroups,
 		throwDuplicateSeriesIf: opts.ThrowDuplicateSeriesIf,
-	})
+	}
+	expr, err := fitInstantDomain(expr, lctx)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	plan, err := lowerRoot(expr, s, lctx)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -778,8 +790,8 @@ func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error
 		// lowerOuterRangeFnOverSubquery and never reaches a bare top-level
 		// subquery (a range query over a matrix-typed expr is rejected upstream).
 		if ctx.step == 0 {
-			if a, aerr := subqueryAnchor(e, ctx); aerr == nil && !a.End.IsZero() {
-				widenSubquerySpine(plan, a.End.Add(-e.Range), a.End)
+			if a, aerr := subqueryAnchor(e, ctx); aerr == nil && a.anchored() {
+				widenSubquerySpine(plan, a.End().Add(-e.Range), a.End())
 			}
 		}
 		// A bare subquery is a raw range vector — no reducer, so no
@@ -838,8 +850,8 @@ func lowerMatrixSelector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerC
 	if err != nil {
 		return nil, err
 	}
-	if anchor.End.IsZero() && !ctx.end.IsZero() {
-		anchor.End = ctx.end.UTC()
+	if !anchor.anchored() && !ctx.end.IsZero() {
+		anchor.setEnd(ctx.end.UTC())
 	}
 
 	// Strip the modifier — the window bound below carries the anchor;
@@ -2431,24 +2443,24 @@ func selectorAnchor(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, error)
 		if err != nil {
 			return evalAnchor{}, err
 		}
-		// `up offset 5m` (no `@`) leaves anchorFromSelector with
-		// `End == zero` because the selector itself doesn't pin an
-		// absolute time. Without threading ctx.end through, the SQL
+		// `up offset 5m` (no `@`) leaves anchorFromSelector with no
+		// anchor because the selector itself doesn't pin an absolute
+		// time. Without threading ctx.end through, the SQL
 		// renders `now64(9)` and the LWR window would skew off the
 		// real eval timestamp — bug-shaped for instant queries that
 		// resolve eval_ts in the API layer. So back-fill End from
 		// the surrounding query whenever an offset would otherwise
-		// land on a zero anchor.
-		if a.End.IsZero() && !ctx.end.IsZero() {
-			a.End = ctx.end.UTC()
+		// land on no anchor.
+		if !a.anchored() && !ctx.end.IsZero() {
+			a.setEnd(ctx.end.UTC())
 		}
 		return a, nil
 	}
 	// No modifier — anchor the LWR window to the surrounding query's
 	// end time when threaded through LowerAt. Otherwise leave the
-	// anchor zero so the SQL renders `now64(9)`.
+	// anchor unset so the SQL renders `now64(9)`.
 	if !ctx.end.IsZero() {
-		return evalAnchor{End: ctx.end.UTC()}, nil
+		return anchorAt(ctx.end.UTC()), nil
 	}
 	return evalAnchor{}, nil
 }
@@ -3253,7 +3265,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		Input:           inner,
 		Func:            c.Func.Name,
 		Range:           ms.Range,
-		End:             anchor.End,
+		End:             anchor.End(),
 		Offset:          anchor.Offset,
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,

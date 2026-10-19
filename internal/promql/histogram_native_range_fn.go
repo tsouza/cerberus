@@ -346,8 +346,8 @@ func lowerExpHistogramRangeFnOverSubqueryInput(input chplan.Node, sub *parser.Su
 	}
 	windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema, ctx)
 	tsExpr := chplan.NowNano()
-	if !anchor.End.IsZero() {
-		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})
+	if anchor.anchored() {
+		tsExpr = windowRightBoundExpr(anchorAt(anchor.End()))
 	}
 	return aggregatedHistogramProjection(windowed, tsExpr, histSchema), nil
 }
@@ -474,8 +474,8 @@ func expHistogramRangeFnWindowed(shape histogramAggShape, s schema.Metrics, ctx 
 	if err != nil {
 		return nil, err
 	}
-	if anchor.End.IsZero() && !ctx.end.IsZero() {
-		anchor.End = ctx.end.UTC()
+	if !anchor.anchored() && !ctx.end.IsZero() {
+		anchor.setEnd(ctx.end.UTC())
 	}
 	rangeEnd := windowRightBoundExpr(anchor)
 	rangeStart := windowLeftBoundExpr(anchor, shape.windowRange)

@@ -133,7 +133,7 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 			case ctx.step > 0:
 				anchor = &chplan.ColumnRef{Name: s.TimestampColumn}
 			case !ctx.end.IsZero():
-				anchor = anchorBaseExpr(evalAnchor{End: ctx.end.UTC()})
+				anchor = anchorBaseExpr(anchorAt(ctx.end.UTC()))
 			default:
 				anchor = anchorBaseExpr(evalAnchor{})
 			}

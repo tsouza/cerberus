@@ -105,6 +105,7 @@ edge_bool_ne.txtar
 edge_ceil_over_sum_by.txtar
 edge_clamp_neg_to_pos.txtar
 edge_count_over_time.txtar
+edge_count_over_time_subquery_at_year_one_range.txtar
 edge_double_exp_smoothing_at_timestamp_range_pinned.txtar
 edge_hq_native_negative_p0.txtar
 edge_hq_native_negative_p1.txtar
@@ -131,6 +132,7 @@ edge_quantile_over_time_at_timestamp_range_pinned.txtar
 edge_rate_at_timestamp_range_pinned.txtar
 edge_rate_negative_offset.txtar
 edge_round_step_half.txtar
+edge_selector_at_year_one_or_vector.txtar
 edge_sqrt_over_aggregate.txtar
 edge_subquery_nested.txtar
 empty_ignoring_join.txtar
