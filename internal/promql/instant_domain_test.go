@@ -272,14 +272,16 @@ func TestInstantDomain_EmptyReadEmitsNoOutOfDomainInstant(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: emit: %v", m.name, err)
 		}
-		all := sql
+		texts := []string{sql}
 		for _, a := range args {
 			if s, ok := a.(string); ok {
-				all += "\n" + s
+				texts = append(texts, s)
 			}
 		}
-		if strings.Contains(all, "0001-") || strings.Contains(all, "0000-") {
-			t.Fatalf("%s: SQL carries a year-one instant:\n%s", m.name, sql)
+		for _, text := range texts {
+			if strings.Contains(text, "0001-") || strings.Contains(text, "0000-") {
+				t.Fatalf("%s: SQL carries a year-one instant in %q:\n%s", m.name, text, sql)
+			}
 		}
 	}
 }
