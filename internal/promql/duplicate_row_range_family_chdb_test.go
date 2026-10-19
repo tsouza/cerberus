@@ -77,7 +77,7 @@ INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
 
 // dupRowPoint is one sample of the window, positioned by its offset from the
 // evaluation anchor in seconds (negative going back in time) — the same x-axis
-// chsql's windowPairsSLRFrag builds with `dateDiff('second', anchor, ts)`, so
+// chsql's windowPairsSLRFrag builds (the fractional seconds from the anchor), so
 // the regression reducers below are computed over the emitter's own axis
 // rather than a re-derivation of it.
 type dupRowPoint struct {

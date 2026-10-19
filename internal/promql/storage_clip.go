@@ -42,7 +42,7 @@ var sampleSetRangeFunctions = map[string]bool{
 	"mad_over_time":                true,
 	"max_over_time":                true,
 	"min_over_time":                true,
-	"predict_linear":               true,
+	fnPredictLinear:                true,
 	"present_over_time":            true,
 	fnQuantileOverTime:             true,
 	"resets":                       true,

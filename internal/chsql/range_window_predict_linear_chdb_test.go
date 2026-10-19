@@ -29,10 +29,10 @@
 // deliberately a bare integer literal — a computed or fractional horizon would
 // (correctly) stay on the fan-out and the native half would never engage.
 //
-// Bit-identical, not tolerant. Both paths do the SAME whole-second regression:
-// the fan-out's windowPairsSLRFrag x-axis is dateDiff('second', anchor, ts), and
-// the native emit feeds timeSeriesPredictLinearToGrid the matching whole-second
-// axis (toDateTime(ts)). On the raw DateTime64(9) column the native forecast only
+// Bit-identical, not tolerant. Both paths do the SAME regression on this
+// whole-second-aligned seed: the fan-out's windowPairsSLRFrag x-axis is the
+// fractional seconds from the anchor, whole numbers here, and the native emit
+// feeds timeSeriesPredictLinearToGrid a whole-second axis (toDateTime(ts)). On the raw DateTime64(9) column the native forecast only
 // diverged by float-order noise (its slope*offset product masks the deriv
 // axis-unit bug); on the matching whole-second axis the two independent
 // implementations agree to the last bit on this fixture, so the assertion is
@@ -146,8 +146,8 @@ func TestNativeTSGridPredictLinear_DualEmitParity(t *testing.T) {
 			t.Errorf("cell %+v present in fan-out but absent in native", cell)
 			continue
 		}
-		// predict_linear forecast: the native whole-second axis matches the
-		// fan-out's dateDiff('second') regression exactly, so native and fan-out
+		// predict_linear forecast: on whole-second samples the native
+		// whole-second axis matches the fan-out's regression exactly, so native and fan-out
 		// agree to the last bit — assert BIT-IDENTICAL.
 		if math.Float64bits(nv) != math.Float64bits(fv) {
 			t.Errorf("cell %+v: native=%.20g fanout=%.20g NOT bit-identical — "+

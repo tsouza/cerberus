@@ -17,9 +17,9 @@
 // compare the DECODED float64 (never a string render) at full precision.
 //
 // Bit-identical, not tolerant. The fan-out computes the slope through
-// windowPairsSLRFrag, whose x-axis is dateDiff('second', anchor, ts) — a
-// WHOLE-SECOND grid. The native emit feeds timeSeriesDerivToGrid the same
-// whole-second axis (toDateTime(ts)); on the raw DateTime64(9) column the native
+// windowPairsSLRFrag, whose x-axis is the fractional seconds from the anchor —
+// whole numbers on this whole-second-aligned seed. The native emit feeds
+// timeSeriesDerivToGrid a whole-second axis (toDateTime(ts)); on the raw DateTime64(9) column the native
 // slope would come out per-NANOSECOND (1e9x too small). Fed the matching
 // whole-second axis the two independent implementations agree to the last bit on
 // this fixture, so the assertion is BIT-IDENTICAL (no ULP tolerance) — the same
@@ -145,8 +145,8 @@ func TestNativeTSGridDeriv_DualEmitParity(t *testing.T) {
 			t.Errorf("cell %+v present in fan-out but absent in native", cell)
 			continue
 		}
-		// deriv slope: the native whole-second axis matches the fan-out's
-		// dateDiff('second') regression exactly, so native and fan-out agree to
+		// deriv slope: on whole-second samples the native whole-second axis
+		// matches the fan-out's regression exactly, so native and fan-out agree to
 		// the last bit — assert BIT-IDENTICAL. The axis-unit bug this test guards
 		// diverges by ~1e9x (billions of ULP), nowhere near the bit-identical bound.
 		if math.Float64bits(nv) != math.Float64bits(fv) {

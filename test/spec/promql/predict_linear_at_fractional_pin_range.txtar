@@ -1,0 +1,92 @@
+# `predict_linear(m[10m] @ <23:58:00.5>, 60)` over query_range. Every step
+# reads the same pinned window (23:48:00.5, 23:58:00.5], which holds the two
+# samples on the line value = seconds since 23:52:00, and forecasts 60s past
+# its own evaluation instant: 540 at 00:00:00, rising by 60 per step. A
+# regression fitted on whole seconds from the pin answers 0.5 less at every
+# step.
+
+-- query.promql --
+predict_linear(machine_load[10m] @ 1767225480.5, 60)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Two samples on the line value = seconds since 23:52:00, then one far off it.
+INSERT INTO otel_metrics_gauge VALUES
+    ('machine_load', map('job', 'api'), toDateTime64('2025-12-31 23:52:00', 9), 0.0),
+    ('machine_load', map('job', 'api'), toDateTime64('2025-12-31 23:56:16', 9), 256.0),
+    ('machine_load', map('job', 'api'), toDateTime64('2026-01-01 00:03:30', 9), 9000.0);
+-- expected_rows --
+[
+  [{"job": "api"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 540],
+  [{"job": "api"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 600],
+  [{"job": "api"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 660],
+  [{"job": "api"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 720],
+  [{"job": "api"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 780],
+  [{"job": "api"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 840]
+]
+-- args --
+[0] string = "nanosecond"
+[1] string = "2025-12-31 23:58:00.500000000Z"
+[2] int64 = 9
+[3] float64 = 1e+09
+[4] float64 = 60
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = "service.name"
+[9] string = "service_name"
+[10] string = ""
+[11] string = "service_name"
+[12] string = "machine_load"
+[13] string = "machine.load"
+[14] string = "machine/load"
+[15] int64 = 1
+[16] int64 = 0
+-- args_optimized --
+[0] string = "nanosecond"
+[1] string = "2025-12-31 23:58:00.500000000Z"
+[2] int64 = 9
+[3] float64 = 1e+09
+[4] float64 = 60
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = "service.name"
+[9] string = "service_name"
+[10] string = ""
+[11] string = "service_name"
+[12] string = "machine_load"
+[13] string = "machine.load"
+[14] string = "machine/load"
+[15] int64 = 1
+[16] int64 = 0
+-- chplan --
+Project [Attributes AS Attributes, anchor_ts AS anchor_ts, anchor_ts AS TimeUnix, (Value + (predict_slope * (FnToFloat64(FnDateDiff("nanosecond", FnParseDateTime64BestEffort("2025-12-31 23:58:00.500000000Z", 9), anchor_ts)) / 1e+09))) AS Value]
+  CrossJoin
+    StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=1m0s
+    RangeWindow func=predict_linear range=10m0s step=0s ts=TimeUnix value=Value predictSlope=predict_slope groupBy=[Attributes] scalars=[60] start=0001-01-01T00:00:00Z end=2025-12-31T23:58:00Z distinctSampleRows
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=((MetricName IN ("machine_load", "machine.load", "machine/load")) AND FnNot((FnBitAnd(Flags, 1) != 0)))
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;rw;sg;join;union
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `anchor_ts` AS `TimeUnix`, (`Value` + (`predict_slope` * (toFloat64(dateDiff(?, parseDateTime64BestEffort(?, ?), `anchor_ts`)) / toFloat64(?)))) AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`) AS L CROSS JOIN (SELECT `Attributes`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> toFloat64(dateDiff('nanosecond', parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9), tupleElement(p, 1))) / 1e9, window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> toFloat64(dateDiff('nanosecond', parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9), tupleElement(p, 1))) / 1e9, window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ?, nan) AS Value, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> toFloat64(dateDiff('nanosecond', parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9), tupleElement(p, 1))) / 1e9, window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) AS predict_slope FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9) - toIntervalNanosecond(600000000000) AND tupleElement(p, 1) <= parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9), series_array) AS window_pairs FROM (SELECT `Attributes`, arrayCompact(arraySort(groupArray((`TimeUnix`, `Value`)))) AS series_array FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?, ?)) WHERE not((bitAnd(`Flags`, ?) != ?)))) WHERE `TimeUnix` > parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9) - toIntervalNanosecond(600000000000) AND `TimeUnix` <= parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2) AS R)
+-- sql_optimized --
+SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `anchor_ts` AS `TimeUnix`, (`Value` + (`predict_slope` * (toFloat64(dateDiff(?, parseDateTime64BestEffort(?, ?), `anchor_ts`)) / toFloat64(?)))) AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`) AS L CROSS JOIN (SELECT `Attributes`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> toFloat64(dateDiff('nanosecond', parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9), tupleElement(p, 1))) / 1e9, window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> toFloat64(dateDiff('nanosecond', parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9), tupleElement(p, 1))) / 1e9, window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ?, nan) AS Value, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> toFloat64(dateDiff('nanosecond', parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9), tupleElement(p, 1))) / 1e9, window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) AS predict_slope FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9) - toIntervalNanosecond(600000000000) AND tupleElement(p, 1) <= parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9), series_array) AS window_pairs FROM (SELECT `Attributes`, arrayCompact(arraySort(groupArray((`TimeUnix`, `Value`)))) AS series_array FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` IN (?, ?, ?)) WHERE not((bitAnd(`Flags`, ?) != ?)))) WHERE `TimeUnix` > parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9) - toIntervalNanosecond(600000000000) AND `TimeUnix` <= parseDateTime64BestEffort('2025-12-31 23:58:00.500000000Z', 9) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2) AS R)

@@ -521,7 +521,7 @@ func (e *emitter) emitRangeWindowPredictLinear(r *chplan.RangeWindow) error {
 	}
 	// In matrix mode each row carries its own anchor_ts; the anchor
 	// Frag the factory receives below renders the per-row anchor so the
-	// per-sample x-offset (dateDiff('second', anchor, sample_ts)) is
+	// per-sample x-offset (the seconds from anchor to sample_ts) is
 	// computed against the anchor of THIS row, not r.End.
 	writer := func(anchor Frag) Frag {
 		// arrayMap to derive xs (seconds from anchor) and ys (values).
@@ -1047,19 +1047,21 @@ func projectAnchorAsTimestampColumn(q *QueryBuilder, r *chplan.RangeWindow) {
 // over a window of (timestamp, value) pairs:
 //
 //	arrayReduce('simpleLinearRegression',
-//	            arrayMap(p -> dateDiff('second', <anchor>, tupleElement(p, 1)), window_pairs),
+//	            arrayMap(p -> toFloat64(dateDiff('nanosecond', <anchor>, tupleElement(p, 1))) / 1e9, window_pairs),
 //	            arrayMap(p -> tupleElement(p, 2), window_pairs))
 //
-// The xs are seconds elapsed from `anchor` to each pair's timestamp
-// (tuple element 1); the ys are the pair values (tuple element 2).
-// `simpleLinearRegression` is a CH aggregate, so it's applied to the two
-// parallel arrays via arrayReduce. The result is a Tuple(slope,
-// intercept) — element 1 is the slope (k), element 2 the intercept (b).
-// Shared by predict_linear (intercept + slope*t) and deriv (slope).
+// The xs are the signed seconds from `anchor` to each pair's timestamp
+// (tuple element 1), fractional part included — Prometheus's
+// linearRegression x, `float64(sample.T-interceptTime) / 1e3`; the ys are
+// the pair values (tuple element 2). `simpleLinearRegression` is a CH
+// aggregate, so it's applied to the two parallel arrays via arrayReduce.
+// The result is a Tuple(slope, intercept) — element 1 is the slope (k),
+// element 2 the intercept (b) at `anchor`. Shared by predict_linear
+// (intercept + slope*t) and deriv (slope).
 func windowPairsSLRFrag(anchor Frag) Frag {
 	xs := Call(
 		"arrayMap",
-		Lambda1("p", Call("dateDiff", InlineLit("second"), anchor,
+		Lambda1("p", secondsBetweenFrag(anchor,
 			Call("tupleElement", BareIdent("p"), InlineLit(int64(1))))),
 		BareIdent("window_pairs"),
 	)
