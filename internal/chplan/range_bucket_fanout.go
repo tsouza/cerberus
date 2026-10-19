@@ -195,11 +195,10 @@ func (r *RangeBucketFanout) NumAnchors() int64 {
 //
 // Each anchor reduces the samples in `(anchor-Offset-Lookback,
 // anchor-Offset]`, so the union across every anchor in [start, end] needs
-// input covering [start-Offset-Lookback, end]. Offset enters with its
-// sign, mirroring RangeWindow.InputWindow and RangeLWR's identical
-// Offset+Lookback widening.
+// input covering [OffsetSpan] of [start, end], mirroring
+// RangeWindow.InputWindow and RangeLWR's identical Offset+Lookback widening.
 func (r *RangeBucketFanout) InputWindow(start, end time.Time) (time.Time, time.Time) {
-	return start.Add(-r.Offset - r.Lookback), end
+	return OffsetSpan(start, end, r.Offset, r.Lookback)
 }
 
 // numAnchorsFromGrid is the shared end-inclusive anchor-count formula every

@@ -1,9 +1,9 @@
 {
   "query": "subquery_irate_nested/native",
   "lowering": "native",
-  "routed": true,
-  "k": 3,
-  "reason": "routed",
+  "routed": false,
+  "k": 0,
+  "reason": "grid-mismatch",
   "n_anchors": 241,
   "fanout": 40,
   "cumulative_d": "20m0s",

@@ -581,17 +581,27 @@ func (r *RangeWindow) NumAnchors() int64 {
 // `(anchor-Offset-Range, anchor-Offset]` at each anchor (the package doc
 // above documents the scanned span as [End-Offset-Range, End-Offset]), so
 // the union across every anchor in [start, end] needs input covering
-// [start-Offset-Range, end]. Offset enters with its sign, mirroring the
-// emitter's own maybePushInnerScanTimeBounds (internal/chsql/range_window.go)
-// and RangeLWR's Offset+Lookback widening. An instant-shape window (Step <=
-// 0) resolves a single anchor itself and is never walked below by these
+// [OffsetSpan] of [start, end]. An instant-shape window (Step <= 0)
+// resolves a single anchor itself and is never walked below by these
 // passes; InputWindow returns (start, end) unchanged for it so a caller that
 // invokes it unconditionally is still safe.
 func (r *RangeWindow) InputWindow(start, end time.Time) (time.Time, time.Time) {
 	if r.Step <= 0 {
 		return start, end
 	}
-	return start.Add(-r.Offset - r.Range), end
+	return OffsetSpan(start, end, r.Offset, r.Range)
+}
+
+// OffsetSpan returns the instants a grid of anchors over [start, end] reads
+// when each anchor t reads the window (t-offset-reach, t-offset]. The span
+// covers that window both for an input that holds absolute instants,
+// [start-offset-reach, end-offset], and for an input that applies the same
+// offset again itself, [start-reach, end]: a PromQL subquery's RangeWindow
+// carries the subquery's offset, as the reducer over it does. For a
+// non-negative offset the span is [start-offset-reach, end]; a negative
+// offset, which moves every window forward, reaches -offset past end.
+func OffsetSpan(start, end time.Time, offset, reach time.Duration) (time.Time, time.Time) {
+	return start.Add(-reach - max(offset, 0)), end.Add(-min(offset, 0))
 }
 
 // rangeWindowScalarFieldsEqual compares every flat scalar/bool/string field

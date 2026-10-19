@@ -282,11 +282,46 @@ type lowerCtx struct {
 	// nothing. nil when the query was not fitted.
 	domain *domainFit
 
+	// request holds the query's own start and end, the instants `@ start()`
+	// and `@ end()` name wherever they sit, once a subquery grid has
+	// replaced start and end with its own steps ([lowerCtx.onGrid]). nil
+	// means start and end are still the request's.
+	request *[2]time.Time
+
 	// shiftMillis is the time shift of the region being lowered: its
 	// evaluation instants sit shiftMillis milliseconds after the instants
 	// Prometheus evaluates it at. Every place an evaluation instant
 	// becomes a value reads it through [lowerCtx.evalMillis].
 	shiftMillis int64
+}
+
+// requestStart is the instant `@ start()` names: the query's start, which
+// no subquery grid replaces (Prometheus's PreprocessExpr substitutes it
+// throughout the query).
+func (c lowerCtx) requestStart() time.Time {
+	if c.request != nil {
+		return c.request[0]
+	}
+	return c.start
+}
+
+// requestEnd is the instant `@ end()` names; see [lowerCtx.requestStart].
+func (c lowerCtx) requestEnd() time.Time {
+	if c.request != nil {
+		return c.request[1]
+	}
+	return c.end
+}
+
+// onGrid returns a copy of c whose start, end and step are a grid's
+// instead of the request's, keeping the request's start and end for
+// `@ start()` and `@ end()`.
+func (c lowerCtx) onGrid(start, end time.Time, step time.Duration) lowerCtx {
+	if c.request == nil {
+		c.request = &[2]time.Time{c.start, c.end}
+	}
+	c.start, c.end, c.step = start, end, step
+	return c
 }
 
 // withSampleTimestamp returns a copy of c that asks the range-mode selector
@@ -377,15 +412,15 @@ func anchorFromSelector(vs *parser.VectorSelector, ctx lowerCtx) (evalAnchor, er
 	a := evalAnchor{Offset: vs.OriginalOffset}
 	switch vs.StartOrEnd {
 	case parser.START:
-		if ctx.start.IsZero() {
+		if ctx.requestStart().IsZero() {
 			return evalAnchor{}, fmt.Errorf("promql: `@ start()` modifier requires query range context (use LowerAt)")
 		}
-		a.setEnd(ctx.start.UTC())
+		a.setEnd(ctx.requestStart().UTC())
 	case parser.END:
-		if ctx.end.IsZero() {
+		if ctx.requestEnd().IsZero() {
 			return evalAnchor{}, fmt.Errorf("promql: `@ end()` modifier requires query range context (use LowerAt)")
 		}
-		a.setEnd(ctx.end.UTC())
+		a.setEnd(ctx.requestEnd().UTC())
 	case 0:
 		// no start/end modifier; fall through to literal @ handling
 	default:

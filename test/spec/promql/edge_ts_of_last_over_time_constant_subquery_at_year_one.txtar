@@ -28,7 +28,7 @@ INSERT INTO otel_metrics_sum VALUES
 -- chplan --
 RangeWindow func=ts_of_last_over_time range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=1754-08-30T22:43:41Z distinctSampleRows
   Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
-    Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+    Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value] subqueryGrid
       Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, 1 AS Value]
         StepGrid start=1754-08-30T22:39:00.000000000Z end=1754-08-30T22:43:00.000000000Z step=1m0s
 -- settings --

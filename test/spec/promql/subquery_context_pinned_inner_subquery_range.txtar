@@ -1,0 +1,64 @@
+# A pin on a subquery nested in another fixes the inner subquery's grid
+# at its pin at every step of the outer grid: each step counts the five
+# steps of the pinned grid.
+
+-- query.promql --
+max_over_time(count_over_time(vector(1)[5m:1m] @ 1767200000)[10m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 22:57:30', 9), 8),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 22:59:00', 9), 7),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:57:00', 9), 1),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 2),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 3);
+-- expected_rows --
+[
+  [{}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 5],
+  [{}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 5],
+  [{}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 5],
+  [{}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 5],
+  [{}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 5],
+  [{}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 5]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] float64 = 1
+-- args_optimized --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] float64 = 1
+-- chplan --
+RangeWindow func=max_over_time range=10m0s step=1m0s outerRange=5m0s ts=anchor_ts value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z distinctSampleRows
+  Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+    Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value] subqueryGrid
+      Project [Attributes AS Attributes, anchor_ts AS anchor_ts, anchor_ts AS TimeUnix, Value AS Value]
+        CrossJoin
+          StepGrid start=2025-12-31T23:51:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=1m0s
+          RangeWindow func=count_over_time range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2025-12-31T16:53:20Z distinctSampleRows
+            Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+              Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value] subqueryGrid
+                Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, 1 AS Value]
+                  StepGrid start=2025-12-31T16:49:00.000000000Z end=2025-12-31T16:53:00.000000000Z step=1m0s
+-- settings --
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:rw;rw;sg;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+-- sql --
+SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, max(`Value`) AS `Value` FROM (SELECT `Attributes`, `_src_ts`, `Value`, arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `_src_ts`, parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9)) - 600000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `_src_ts`, parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9)) - 600000000000, toInt64(60000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `_src_ts`, parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `_src_ts`, parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT *, `anchor_ts` AS _src_ts FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2025-12-31 23:51:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 15))) AS `anchor_ts`) AS L CROSS JOIN (SELECT `Attributes`, toFloat64(uniqExact(`anchor_ts`, `Value`)) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2025-12-31 16:49:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`)))) WHERE `anchor_ts` > parseDateTime64BestEffort('2025-12-31 16:53:20.000000000Z', 9) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= parseDateTime64BestEffort('2025-12-31 16:53:20.000000000Z', 9) GROUP BY `Attributes`) AS R))))) WHERE `_src_ts` > parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) - toIntervalNanosecond(600000000000) AND `_src_ts` <= parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9)) GROUP BY `Attributes`, `anchor_ts`
+-- sql_optimized --
+SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, max(`Value`) AS `Value` FROM (SELECT `Attributes`, `_src_ts`, `Value`, arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `_src_ts`, parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9)) - 600000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `_src_ts`, parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9)) - 600000000000, toInt64(60000000000)) < 0) + 1), least(6, intDiv(dateDiff('nanosecond', `_src_ts`, parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `_src_ts`, parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT *, `anchor_ts` AS _src_ts FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2025-12-31 23:51:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 15))) AS `anchor_ts`) AS L CROSS JOIN (SELECT `Attributes`, toFloat64(uniqExact(`anchor_ts`, `Value`)) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2025-12-31 16:49:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`)))) WHERE `anchor_ts` > parseDateTime64BestEffort('2025-12-31 16:53:20.000000000Z', 9) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= parseDateTime64BestEffort('2025-12-31 16:53:20.000000000Z', 9) GROUP BY `Attributes`) AS R))))) WHERE `_src_ts` > parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) - toIntervalNanosecond(600000000000) AND `_src_ts` <= parseDateTime64BestEffort('2026-01-01 00:05:00.000000000Z', 9)) GROUP BY `Attributes`, `anchor_ts`

@@ -50,6 +50,9 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 	if plan, matched, err := lowerHistogramNativeSubqueryInner(e, step, s, ctx); matched {
 		return plan, err
 	}
+	if plan, matched, err := lowerSubqueryInnerInContext(e, step, s, ctx); matched {
+		return plan, err
+	}
 
 	switch inner := e.Expr.(type) {
 	case *parser.VectorSelector:
@@ -73,6 +76,115 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 		return lowerSubqueryOverSubquery(e, inner, step, s, ctx)
 	}
 	return nil, fmt.Errorf("promql: subquery over %T is unsupported", e.Expr)
+}
+
+// lowerSubqueryInnerInContext lowers the inner expression of sub at sub's
+// own grid ([subqueryGridCtx]) when that expression carries evaluation
+// context of its own: an `@` pin (a literal, `@ start()` or `@ end()`), an
+// offset, or a nested subquery anywhere below sub.
+//
+// Prometheus evaluates the inner expression of a subquery as an instant
+// query at every step of the subquery's grid, and each node below carries
+// its own modifiers into that evaluation (setOffsetForAtModifier and
+// subqueryTimes, mirrored in prom_at_offset.go): a pin fixes the node's
+// instant whatever the step, an offset moves it, and a nested subquery
+// lays its own step-aligned grid back from each step it is evaluated at.
+// The grid lowering hands the inner expression a range-mode context whose
+// steps are exactly sub's grid, so the ordinary range-mode lowering
+// applies every one of those rules, as it does for a range query.
+//
+// The per-shape lowerings below it ([lowerSubqueryOverVectorSelector],
+// [lowerSubqueryOverCall], [lowerSubqueryOverCallSubquery]) fold the inner
+// expression into one window anchored at sub's own anchor. That fold is
+// exact only for an inner expression with no context of its own: it
+// drops the inner modifiers and widens a nested subquery across the
+// outer range instead of anchoring it at each outer step.
+//
+// matched is false when the inner expression carries no context, when no
+// eval anchor exists ([subqueryGridUnavailable]), and when any node of the
+// inner lowering may carry histogram rows ([subtreeMayContainHistograms]),
+// whose compositions the histogram-native per-shape lowerings own.
+func lowerSubqueryInnerInContext(sub *parser.SubqueryExpr, step time.Duration, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	if !carriesEvalContext(sub.Expr) {
+		return nil, false, nil
+	}
+	inner, state, err := lowerSubqueryInnerOnGrid(sub, step, ctx, func(grid lowerCtx) (chplan.Node, error) {
+		return lower(sub.Expr, s, grid)
+	})
+	if err != nil {
+		return nil, true, err
+	}
+	if state == subqueryGridUnavailable || subtreeMayContainHistograms(inner) {
+		return nil, false, nil
+	}
+	return subqueryAnchorShape(inner, s), true, nil
+}
+
+// subtreeMayContainHistograms reports whether n may carry histogram rows
+// ([rowsMayContainHistograms]) or any node below it, including one reached
+// through an expression, carries histogram or mixed rows. A float-valued
+// call over a histogram subquery, such as count_over_time, answers floats
+// while its input does not. Below the root, only a schema that names a
+// histogram payload counts: a raw scan or a grid has no sample schema yet.
+func subtreeMayContainHistograms(n chplan.Node) bool {
+	if rowsMayContainHistograms(n) {
+		return true
+	}
+	found := false
+	chplan.WalkDeep(n, func(c chplan.Node) bool {
+		switch chplan.LiveSampleKind(c) {
+		case chplan.SampleKindHistogram, chplan.SampleKindMixed:
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// carriesEvalContext reports whether e holds a node that fixes or moves
+// its own evaluation instant: a selector or subquery with an `@` pin or an
+// offset, or any subquery, which lays its own grid back from the instant
+// it is evaluated at.
+func carriesEvalContext(e parser.Expr) bool {
+	found := false
+	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
+		switch n := node.(type) {
+		case *parser.VectorSelector:
+			found = found || pinned(n.Timestamp, n.StartOrEnd) || n.OriginalOffset != 0
+		case *parser.SubqueryExpr:
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
+// lowerSubqueryInnerOnGrid lowers the inner expression of sub with
+// lowerInner at sub's own grid ([subqueryGridCtx]). The returned state
+// tells the caller what it got: no node when the grid is unavailable, and
+// a node capped to answer no rows ([emptySubqueryGrid]) when the grid
+// holds no step.
+func lowerSubqueryInnerOnGrid(
+	sub *parser.SubqueryExpr,
+	step time.Duration,
+	ctx lowerCtx,
+	lowerInner func(grid lowerCtx) (chplan.Node, error),
+) (chplan.Node, subqueryGridState, error) {
+	grid, state, err := subqueryGridCtx(sub, step, ctx)
+	if err != nil || state == subqueryGridUnavailable {
+		return nil, state, err
+	}
+	inner, err := lowerInner(grid)
+	if err != nil {
+		return nil, state, err
+	}
+	if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily, mixedBespoke); err != nil {
+		return nil, state, err
+	}
+	if state == subqueryGridEmpty {
+		inner = emptySubqueryGrid(inner)
+	}
+	return inner, state, nil
 }
 
 // lowerHistogramNativeSubqueryInner tries [lowerHistogramNativeRoot]'s
@@ -261,21 +373,13 @@ func lowerSubqueryOverUnary(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	grid, state, err := subqueryGridCtx(sub, step, ctx)
+	inner, state, err := lowerSubqueryInnerOnGrid(sub, step, ctx, func(grid lowerCtx) (chplan.Node, error) {
+		return lowerUnary(u, s, grid)
+	})
 	if err != nil {
 		return nil, err
 	}
 	if state != subqueryGridUnavailable {
-		inner, err := lowerUnary(u, s, grid)
-		if err != nil {
-			return nil, err
-		}
-		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily, mixedBespoke); err != nil {
-			return nil, err
-		}
-		if state == subqueryGridEmpty {
-			inner = emptySubqueryGrid(inner)
-		}
 		return subqueryAnchorShape(inner, s), nil
 	}
 
@@ -286,7 +390,7 @@ func lowerSubqueryOverUnary(
 	// subquery grid.
 	rangeCtx := subqueryOffsetCtx(sub, ctx)
 	rangeCtx.inRangeVector = true
-	inner, err := lowerUnary(u, s, rangeCtx)
+	inner, err = lowerUnary(u, s, rangeCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -616,11 +720,8 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 		state = subqueryGridEmpty
 	}
 
-	out := ctx
+	out := ctx.onGrid(gridStart.UTC(), gridEnd.UTC(), step)
 	out.inRangeVector = false
-	out.start = gridStart.UTC()
-	out.end = gridEnd.UTC()
-	out.step = step
 	out.stepAligned = true
 	return out, state, nil
 }
@@ -717,8 +818,9 @@ func subqueryAnchorShape(inner chplan.Node, s schema.Metrics) chplan.Node {
 		})
 	}
 	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: inner,
+		Roles:        metricRoles(s),
+		Input:        inner,
+		SubqueryGrid: true,
 		Projections: append(
 			projections,
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -1029,7 +1131,9 @@ func lowerSubqueryOverInstantCall(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	grid, state, err := subqueryGridCtx(sub, step, ctx)
+	inner, state, err := lowerSubqueryInnerOnGrid(sub, step, ctx, func(grid lowerCtx) (chplan.Node, error) {
+		return lowerCall(call, s, grid)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1038,16 +1142,6 @@ func lowerSubqueryOverInstantCall(
 			"promql: subquery inner %s is evaluated per anchor and requires a query evaluation time (use LowerAt)",
 			call.Func.Name,
 		)
-	}
-	inner, err := lowerCall(call, s, grid)
-	if err != nil {
-		return nil, err
-	}
-	if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily, mixedBespoke); err != nil {
-		return nil, err
-	}
-	if state == subqueryGridEmpty {
-		inner = emptySubqueryGrid(inner)
 	}
 	return subqueryAnchorShape(inner, s), nil
 }
@@ -1100,21 +1194,13 @@ func lowerSubqueryOverBinary(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	grid, state, err := subqueryGridCtx(sub, step, ctx)
+	inner, state, err := lowerSubqueryInnerOnGrid(sub, step, ctx, func(grid lowerCtx) (chplan.Node, error) {
+		return lowerBinary(b, s, grid)
+	})
 	if err != nil {
 		return nil, err
 	}
 	if state != subqueryGridUnavailable {
-		inner, err := lowerBinary(b, s, grid)
-		if err != nil {
-			return nil, err
-		}
-		if err := requireMixedPlanPolicy(inner, mixedSubqueryFamily, mixedBespoke); err != nil {
-			return nil, err
-		}
-		if state == subqueryGridEmpty {
-			inner = emptySubqueryGrid(inner)
-		}
 		if rowsMayContainHistograms(inner) {
 			return inner, nil
 		}
@@ -1127,7 +1213,7 @@ func lowerSubqueryOverBinary(
 	// grid while the enclosing RangeWindow reads the shifted subquery grid.
 	rangeCtx := subqueryOffsetCtx(sub, ctx)
 	rangeCtx.inRangeVector = true
-	inner, err := lowerBinary(b, s, rangeCtx)
+	inner, err = lowerBinary(b, s, rangeCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -1153,13 +1239,14 @@ func subqueryOffsetCtx(sub *parser.SubqueryExpr, ctx lowerCtx) lowerCtx {
 	if sub.OriginalOffset == 0 {
 		return ctx
 	}
-	if !ctx.start.IsZero() {
-		ctx.start = ctx.start.Add(-sub.OriginalOffset)
+	start, end := ctx.start, ctx.end
+	if !start.IsZero() {
+		start = start.Add(-sub.OriginalOffset)
 	}
-	if !ctx.end.IsZero() {
-		ctx.end = ctx.end.Add(-sub.OriginalOffset)
+	if !end.IsZero() {
+		end = end.Add(-sub.OriginalOffset)
 	}
-	return ctx
+	return ctx.onGrid(start, end, ctx.step)
 }
 
 // lowerSubqueryOverVectorSelector — `metric[range:step]` lowering.
@@ -1354,7 +1441,7 @@ func lowerOuterRangeFnOverSubquery(
 		// rw.Step is still 0 here (this branch keeps the outer reducer
 		// instant-shaped), so InputWindow's Step<=0 guard can't be reused
 		// directly; the same Offset+Range arithmetic is inlined instead.
-		widenSubquerySpine(inner, anchor.End().Add(-rw.Offset-sub.Range), anchor.End())
+		widenSubquerySpineReadBy(inner, anchor.End(), anchor.End(), rw.Offset, sub.Range)
 		// A preserving outer fn over a name-dropping spine still projects
 		// the EMPTY LITERAL rather than nothing, so the API handler's own
 		// canonical-shape branch finds the MetricName output it is about
@@ -1411,7 +1498,7 @@ func lowerOuterRangeFnOverSubquery(
 		// Widen by Offset+Range, matching RangeWindow.InputWindow (#1464):
 		// the outer's own Offset (rw.Offset, from the subquery's `offset`
 		// modifier) shifts every anchor's window back by that much too.
-		widenSubquerySpine(inner, ctx.start.Add(-rw.Offset-sub.Range), ctx.end)
+		widenSubquerySpineReadBy(inner, ctx.start, ctx.end, rw.Offset, sub.Range)
 	default:
 		// Instant eval (no query_range grid): the outer reducer collapses to a
 		// single anchor at anchor.End (now concrete via subqueryAnchor's eval-ts
@@ -1426,7 +1513,7 @@ func lowerOuterRangeFnOverSubquery(
 			rw.End = anchor.End()
 			// Widen by Offset+Range, matching RangeWindow.InputWindow and the
 			// range-mode branch above (#1464).
-			widenSubquerySpine(inner, anchor.End().Add(-rw.Offset-sub.Range), anchor.End())
+			widenSubquerySpineReadBy(inner, anchor.End(), anchor.End(), rw.Offset, sub.Range)
 		}
 	}
 	if replaceValue {
@@ -1978,6 +2065,16 @@ func threadOuterRangeFnScalars(
 	return value, false, nil
 }
 
+// widenSubquerySpineReadBy widens the spine n to everything a reducer
+// anchored over [start, end] reads through windows of the given range
+// moved back by offset ([chplan.OffsetSpan]): the spine's own RangeWindow
+// carries the subquery's offset as the reducer does, so the span covers
+// the reducer's windows with the offset applied once and twice.
+func widenSubquerySpineReadBy(n chplan.Node, start, end time.Time, offset, rng time.Duration) {
+	inStart, inEnd := chplan.OffsetSpan(start, end, offset, rng)
+	widenSubquerySpine(n, inStart, inEnd)
+}
+
 // widenSubquerySpine threads the range-mode evaluation window down a
 // lowered subquery plan's spine: every matrix RangeWindow / RangeBucketFanout
 // on the spine is re-anchored to emit one row per anchor across [start, end],
@@ -2070,6 +2167,9 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 		widenSubquerySpine(v.Left, start, end)
 		widenSubquerySpine(v.Right, start, end)
 	case *chplan.Project:
+		if v.SubqueryGrid {
+			return
+		}
 		widenSubquerySpine(v.Input, start, end)
 	case *chplan.Aggregate:
 		widenSubquerySpine(v.Input, start, end)
@@ -2386,11 +2486,7 @@ func lowerSubqueryOverAbsent(
 		}
 	}
 
-	gridCtx := ctx
-	gridCtx.start = gridStart.UTC()
-	gridCtx.end = gridEnd.UTC()
-	gridCtx.step = step
-	inner, err := lowerAbsent(call, s, gridCtx)
+	inner, err := lowerAbsent(call, s, ctx.onGrid(gridStart.UTC(), gridEnd.UTC(), step))
 	if err != nil {
 		return nil, err
 	}
@@ -2462,19 +2558,19 @@ func lowerAbsentOverTimeOverSubquery(
 	// Offset+Range so every outer anchor's lookback finds inner anchors.
 	switch {
 	case ctx.rangeMode() && subqueryPinned(sub):
-		widenSubquerySpine(a.Input, anchor.End().Add(-a.Offset-sub.Range), anchor.End())
+		widenSubquerySpineReadBy(a.Input, anchor.End(), anchor.End(), a.Offset, sub.Range)
 		return wrapAbsentOverTimeAtBroadcast(a, ctx, s), nil
 	case ctx.rangeMode():
 		a.Start = ctx.start.UTC()
 		a.End = ctx.end.UTC()
 		a.Step = ctx.step
-		widenSubquerySpine(a.Input, ctx.start.Add(-a.Offset-sub.Range), ctx.end)
+		widenSubquerySpineReadBy(a.Input, ctx.start, ctx.end, a.Offset, sub.Range)
 	default:
 		if a.End.IsZero() && !ctx.end.IsZero() {
 			a.End = ctx.end.UTC()
 		}
 		if !a.End.IsZero() {
-			widenSubquerySpine(a.Input, a.End.Add(-a.Offset-sub.Range), a.End)
+			widenSubquerySpineReadBy(a.Input, a.End, a.End, a.Offset, sub.Range)
 		}
 	}
 	return a, nil
@@ -2499,15 +2595,15 @@ func subqueryAnchor(e *parser.SubqueryExpr, ctx lowerCtx) (evalAnchor, error) {
 	a := evalAnchor{Offset: e.OriginalOffset}
 	switch e.StartOrEnd {
 	case parser.START:
-		if ctx.start.IsZero() {
+		if ctx.requestStart().IsZero() {
 			return evalAnchor{}, fmt.Errorf("promql: subquery `@ start()` modifier requires query range context (use LowerAt)")
 		}
-		a.setEnd(ctx.start.UTC())
+		a.setEnd(ctx.requestStart().UTC())
 	case parser.END:
-		if ctx.end.IsZero() {
+		if ctx.requestEnd().IsZero() {
 			return evalAnchor{}, fmt.Errorf("promql: subquery `@ end()` modifier requires query range context (use LowerAt)")
 		}
-		a.setEnd(ctx.end.UTC())
+		a.setEnd(ctx.requestEnd().UTC())
 	case 0:
 		// no start/end modifier
 	default:
@@ -3399,8 +3495,7 @@ func lowerSubqueryOverCallSubquery(
 		return nil, err
 	}
 	if subqueryPinned(sub) {
-		wideCtx.step = 0
-		wideCtx.end = anchor.End()
+		wideCtx = ctx.onGrid(ctx.start, anchor.End(), 0)
 	}
 
 	wideInner, err := lowerSubquery(&widened, s, wideCtx)

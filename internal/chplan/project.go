@@ -34,6 +34,14 @@ type Project struct {
 	// Only meaningful when Projections is empty — an explicit SELECT
 	// list already states every column, so it has nothing to modify.
 	Replacements []Projection
+
+	// SubqueryGrid marks the relation of a PromQL subquery whose inner
+	// expression was evaluated at the subquery's own grid: its rows already
+	// sit on every step of that grid the enclosing evaluation reads, at the
+	// instants the subquery's `@` and offset name. A lowering pass that
+	// re-anchors a subquery's RangeWindow spine to an enclosing window
+	// leaves such a relation, and everything below it, as it is.
+	SubqueryGrid bool
 }
 
 func (*Project) planNode() {}
@@ -42,7 +50,8 @@ func (p *Project) Children() []Node { return []Node{p.Input} }
 
 func (p *Project) Equal(other Node) bool {
 	o, ok := other.(*Project)
-	if !ok || len(p.Projections) != len(o.Projections) || len(p.Replacements) != len(o.Replacements) {
+	if !ok || len(p.Projections) != len(o.Projections) || len(p.Replacements) != len(o.Replacements) ||
+		p.SubqueryGrid != o.SubqueryGrid {
 		return false
 	}
 	for i := range p.Projections {

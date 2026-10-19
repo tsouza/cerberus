@@ -83,7 +83,7 @@ INSERT INTO otel_metrics_histogram VALUES
 -- chplan --
 RangeWindow func=max_over_time range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z distinctSampleRows
   Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
-    Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+    Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value] subqueryGrid
       Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
         HistogramQuantile phi=0.9 groupBy=[anchor_ts AS anchor_ts, Attributes AS Attributes]
           Project [anchor_ts AS anchor_ts, Attributes AS Attributes, BucketCounts AS BucketCounts, ExplicitBounds AS ExplicitBounds]
