@@ -255,3 +255,65 @@ func mustLowerRange(t *testing.T, q string, start, end time.Time, step time.Dura
 	}
 	return plan
 }
+
+// TestFrameShift_TimestampReportsPrometheusInstants pins which date
+// function reads its instant back out of the frame. In a framed lowering,
+// `timestamp` of a selector reports the selected sample's instant and
+// `timestamp` of any other expression the evaluation instant, each moved
+// back by the frame shift in milliseconds; every other date function
+// reads the sample value and takes neither path.
+func TestFrameShift_TimestampReportsPrometheusInstants(t *testing.T) {
+	at := instantDomainNearFloor.Add(-6 * time.Minute)
+	for _, tc := range []struct {
+		q    string
+		want bool
+	}{
+		{`timestamp(m)`, true},
+		{`timestamp(sum(m))`, true},
+		{`minute(m)`, false},
+		{`minute(sum(m))`, false},
+	} {
+		plan, err := LowerAt(context.Background(), mustParseExperimental(t, tc.q), schema.DefaultOTelMetrics(), at, at)
+		if err != nil {
+			t.Fatalf("lower %q: %v", tc.q, err)
+		}
+		shift := armShift(plan)
+		if shift == 0 {
+			t.Fatalf("lower %q: no scan reads in a frame", tc.q)
+		}
+		if got := holdsFrameSeconds(plan, shift); got != tc.want {
+			t.Errorf("lower %q: reads seconds moved back by the frame = %v, want %v", tc.q, got, tc.want)
+		}
+	}
+}
+
+// holdsFrameSeconds reports whether plan computes seconds from an instant
+// moved back by shift milliseconds: toFloat64(toUnixMillis(x) - shift) /
+// 1000.
+func holdsFrameSeconds(plan chplan.Node, shift int64) bool {
+	found := false
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		chplan.InspectNodeExprs(n, func(e chplan.Expr) {
+			chplan.InspectExpr(e, func(x chplan.Expr) bool {
+				div, ok := x.(*chplan.Binary)
+				if !ok || div.Op != chplan.OpDiv {
+					return true
+				}
+				conv, ok := div.Left.(*chplan.FuncCall)
+				if !ok || conv.Fn != chplan.FnToFloat64 || len(conv.Args) != 1 {
+					return true
+				}
+				sub, ok := conv.Args[0].(*chplan.Binary)
+				if !ok || sub.Op != chplan.OpSub {
+					return true
+				}
+				ms, ok := sub.Left.(*chplan.FuncCall)
+				lit, isLit := sub.Right.(*chplan.LitInt)
+				found = found || (ok && ms.Fn == chplan.FnToUnixMillis && isLit && lit.V == shift)
+				return true
+			})
+		})
+		return true
+	})
+	return found
+}
