@@ -12,6 +12,7 @@
         "callers": [
           "checkInstantDomain",
           "checkRootGrid",
+          "fitSubquery",
           "fitWindow"
         ]
       },
