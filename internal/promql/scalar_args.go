@@ -137,22 +137,7 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 			default:
 				anchor = anchorBaseExpr(evalAnchor{})
 			}
-			if ctx.shifted() {
-				return ctx.evalSecondsValue(anchor), nil
-			}
-			return &chplan.FuncCall{
-				Fn: chplan.FnToFloat64,
-				Args: []chplan.Expr{
-					&chplan.Binary{
-						Op: chplan.OpDiv,
-						Left: &chplan.FuncCall{
-							Fn:   chplan.FnToUnixNanos,
-							Args: []chplan.Expr{anchor},
-						},
-						Right: &chplan.LitInt{V: chplan.NanoToSecondDivisor},
-					},
-				},
-			}, nil
+			return ctx.evalSecondsValue(anchor), nil
 		}
 		// `pi()` folds via TryFoldScalar above; scalar() / time() are
 		// handled; the parser's type checker admits no other

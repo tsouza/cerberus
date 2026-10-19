@@ -1,0 +1,116 @@
+-- query.promql --
+ts_of_last_over_time(before_epoch_exp_hist[10m] @ -315618900)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- A histogram-only window whose last sample lies before 1970: reference
+-- Prometheus reports max(tf, th) with the absent float timestamp tf
+-- defaulting to 0, so the answer is 0, not the sample's -315619080.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('before_epoch_exp_hist', map('job', 'h'), toDateTime64('1960-01-01 00:01:00', 9), 2, 4.0, 0, 0, 0, [2], 0, []),
+    ('before_epoch_exp_hist', map('job', 'h'), toDateTime64('1960-01-01 00:02:00', 9), 3, 9.0, 0, 0, 0, [3], 0, []);
+-- expected_rows --
+[
+  ["", {"job": "h"}, "2026-01-01T00:00:01Z", 0]
+]
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] int64 = 0
+[3] float64 = 1000
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = "service_name"
+[9] string = ""
+[10] string = "service_name"
+[11] string = "before_epoch_exp_hist"
+[12] string = "before.epoch.exp.hist"
+[13] string = "before.epoch.exp/hist"
+[14] string = "before.epoch.exp_hist"
+[15] string = "before.epoch/exp/hist"
+[16] string = "before.epoch/exp_hist"
+[17] string = "before.epoch_exp.hist"
+[18] string = "before.epoch_exp_hist"
+[19] string = "before/epoch/exp/hist"
+[20] string = "before/epoch/exp_hist"
+[21] string = "before/epoch_exp_hist"
+[22] string = "before_epoch.exp.hist"
+[23] string = "before_epoch.exp_hist"
+[24] string = "before_epoch_exp.hist"
+[25] string = "1960-01-01 00:05:00.000000000Z"
+[26] int64 = 9
+[27] string = "1960-01-01 00:05:00.000000000Z"
+[28] int64 = 9
+[29] int64 = 600000000000
+[30] int64 = 1
+[31] int64 = 0
+[32] int64 = 1
+[33] int64 = 0
+-- args_optimized --
+[0] string = ""
+[1] int64 = 9
+[2] int64 = 0
+[3] float64 = 1000
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = "service_name"
+[9] string = ""
+[10] string = "service_name"
+[11] string = "before_epoch_exp_hist"
+[12] string = "before.epoch.exp.hist"
+[13] string = "before.epoch.exp/hist"
+[14] string = "before.epoch.exp_hist"
+[15] string = "before.epoch/exp/hist"
+[16] string = "before.epoch/exp_hist"
+[17] string = "before.epoch_exp.hist"
+[18] string = "before.epoch_exp_hist"
+[19] string = "before/epoch/exp/hist"
+[20] string = "before/epoch/exp_hist"
+[21] string = "before/epoch_exp_hist"
+[22] string = "before_epoch.exp.hist"
+[23] string = "before_epoch.exp_hist"
+[24] string = "before_epoch_exp.hist"
+[25] string = "1960-01-01 00:05:00.000000000Z"
+[26] int64 = 9
+[27] string = "1960-01-01 00:05:00.000000000Z"
+[28] int64 = 9
+[29] int64 = 600000000000
+[30] int64 = 1
+[31] int64 = 0
+[32] int64 = 1
+[33] int64 = 0
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, FnNow64(9) AS TimeUnix, (FnToFloat64(FnGreatest(FnToUnixMillis(ts_of_exp_hist_sample_ts), 0)) / 1000) AS Value]
+  Aggregate groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnMax(TimeUnix) AS ts_of_exp_hist_sample_ts] having=FnNot((FnBitAnd(FnArgMax(Flags, TimeUnix), 1) != 0)) dropEmptyOnNoGroup
+    Filter predicate=((((MetricName IN ("before_epoch_exp_hist", "before.epoch.exp.hist", "before.epoch.exp/hist", "before.epoch.exp_hist", "before.epoch/exp/hist", "before.epoch/exp_hist", "before.epoch_exp.hist", "before.epoch_exp_hist", "before/epoch/exp/hist", "before/epoch/exp_hist", "before/epoch_exp_hist", "before_epoch.exp.hist", "before_epoch.exp_hist", "before_epoch_exp.hist")) AND (TimeUnix <= FnParseDateTime64BestEffort("1960-01-01 00:05:00.000000000Z", 9))) AND (TimeUnix > (FnParseDateTime64BestEffort("1960-01-01 00:05:00.000000000Z", 9) - FnToIntervalNanosecond(600000000000)))) AND FnNot((FnBitAnd(Flags, 1) != 0)))
+      Scan(otel_metrics_exponential_histogram)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=1
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, (toFloat64(greatest(toUnixTimestamp64Milli(`ts_of_exp_hist_sample_ts`), ?)) / toFloat64(?)) AS `Value` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, max(`TimeUnix`) AS `ts_of_exp_hist_sample_ts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))) AND not((bitAnd(`Flags`, ?) != ?))) GROUP BY `Attributes` HAVING not((bitAnd(argMax(`Flags`, `TimeUnix`), ?) != ?)))
+-- sql_optimized --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, (toFloat64(greatest(toUnixTimestamp64Milli(`ts_of_exp_hist_sample_ts`), ?)) / toFloat64(?)) AS `Value` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, max(`TimeUnix`) AS `ts_of_exp_hist_sample_ts` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))) AND not((bitAnd(`Flags`, ?) != ?))) GROUP BY `Attributes` HAVING not((bitAnd(argMax(`Flags`, `TimeUnix`), ?) != ?)))

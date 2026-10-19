@@ -285,6 +285,7 @@ func lowerSelectFnOverCallSubqueryInput(wideInner chplan.Node, grid histogramCal
 	histSchema := histogramProjectionSchema(s)
 	histSchema.AggregationTemporalityColumn = ""
 	anchorRef := &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
+	discriminator := mixedDiscriminator(wideInner)
 	// The name-preserving pair keys on full series identity; the six that
 	// drop `__name__` key on Attributes alone and carry the collision
 	// guard instead. See [seriesIdentityCallSubqueryKey] /
@@ -294,14 +295,14 @@ func lowerSelectFnOverCallSubqueryInput(wideInner chplan.Node, grid histogramCal
 			wideInner, grid, anchor, seriesIdentityCallSubqueryKey(s),
 			nativeExpHistValuedLatestAggsDirectional(windowFn, histSchema), stalenessMinSamples, s,
 		)
-		return capSelectFnOverSubquery(windowFn, fanout, anchorRef, histSchema, ctx), nil
+		return capSelectFnOverSubquery(windowFn, discriminator, fanout, anchorRef, histSchema, ctx), nil
 	}
 	guarded := func(aggs []chplan.AggFunc) chplan.Node {
 		return guardedCallSubqueryFanout(wideInner, grid, anchor, aggs, stalenessMinSamples, s, ctx)
 	}
 	switch windowFn {
 	case countOverTimeWindowFn, presentOverTimeWindowFn:
-		return capSelectFnOverSubquery(windowFn, guarded([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, histSchema)}), anchorRef, histSchema, ctx), nil
+		return capSelectFnOverSubquery(windowFn, discriminator, guarded([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, histSchema)}), anchorRef, histSchema, ctx), nil
 	case resetsWindowFn, changesWindowFn:
 		perSeries := expHistogramPairCountStage(
 			guarded(expHistogramPairCountAggs(windowFn, histSchema)),
@@ -310,7 +311,7 @@ func lowerSelectFnOverCallSubqueryInput(wideInner chplan.Node, grid histogramCal
 		)
 		return expHistogramPairCountProjection(perSeries, anchorRef, histSchema), nil
 	default: // tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn
-		return capSelectFnOverSubquery(windowFn, guarded(tsOfSampleTimestampAgg(windowFn, histSchema)), anchorRef, histSchema, ctx), nil
+		return capSelectFnOverSubquery(windowFn, discriminator, guarded(tsOfSampleTimestampAgg(windowFn, discriminator, histSchema)), anchorRef, histSchema, ctx), nil
 	}
 }
 

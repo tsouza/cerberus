@@ -281,20 +281,22 @@ func (c lowerCtx) withDomain(f *domainFit) lowerCtx {
 // framed reports whether the query is lowered in a shifted frame.
 func (c lowerCtx) framed() bool { return c.domain != nil && c.domain.frameShift != 0 }
 
-// sampleSecondsValue renders the value `timestamp(v)` reports for a
-// stored sample read through ts in a shifted frame: Prometheus's
-// `float64(t) / 1000` over the sample's own milliseconds, the frame's
-// shift taken back in Int64.
-func (c lowerCtx) sampleSecondsValue(ts chplan.Expr) chplan.Expr {
-	return &chplan.Binary{
-		Op: chplan.OpDiv,
-		Left: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.Binary{
-			Op:    chplan.OpSub,
-			Left:  &chplan.FuncCall{Fn: chplan.FnToUnixMillis, Args: []chplan.Expr{ts}},
-			Right: &chplan.LitInt{V: c.domain.frameShift},
-		}}},
-		Right: &chplan.LitFloat{V: millisPerSecond},
+// sampleMillis renders the Unix milliseconds of the stored sample read
+// through ts as Prometheus stores them: the sample's own milliseconds, with
+// a shifted frame's shift taken back in Int64.
+func (c lowerCtx) sampleMillis(ts chplan.Expr) chplan.Expr {
+	millis := &chplan.FuncCall{Fn: chplan.FnToUnixMillis, Args: []chplan.Expr{ts}}
+	if !c.framed() {
+		return millis
 	}
+	return &chplan.Binary{Op: chplan.OpSub, Left: millis, Right: &chplan.LitInt{V: c.domain.frameShift}}
+}
+
+// sampleSecondsValue renders the value `timestamp(v)` reports for the
+// stored sample read through ts: Prometheus's `float64(t) / 1000` over
+// [lowerCtx.sampleMillis].
+func (c lowerCtx) sampleSecondsValue(ts chplan.Expr) chplan.Expr {
+	return millisSecondsValue(c.sampleMillis(ts))
 }
 
 // unframeInstant renders the DateTime64(9) instant ts moved back by shift

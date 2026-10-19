@@ -62,7 +62,7 @@ func TestLowerScalarArg_TimePerStep(t *testing.T) {
 			// TimeUnix column (per-step, matches the Sample contract's
 			// TimeUnix == anchor_ts invariant in range mode) — NOT a
 			// single toDateTime64(...) literal shared by every row.
-			const perStepAnchor = "toUnixTimestamp64Nano(`TimeUnix`)"
+			const perStepAnchor = "toUnixTimestamp64Milli(`TimeUnix`)"
 			if !strings.Contains(sql, perStepAnchor) {
 				t.Fatalf("query=%q: emitted SQL does not reference the per-step anchor %q; got:\n%s",
 					q, perStepAnchor, sql)
@@ -94,12 +94,12 @@ func TestLowerScalarArg_TimeInstantUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit(%q): %v", q, err)
 	}
-	if strings.Contains(sql, "toUnixTimestamp64Nano(`TimeUnix`)") {
+	if strings.Contains(sql, "toUnixTimestamp64Milli(`TimeUnix`)") {
 		t.Fatalf("query=%q: instant-mode SQL unexpectedly references a per-row TimeUnix anchor; got:\n%s", q, sql)
 	}
 	// Lower (no explicit end) anchors to now64(9); the fixed-anchor shape
 	// is what matters here, not which literal it resolves to.
-	if !strings.Contains(sql, "toUnixTimestamp64Nano(now64(") {
+	if !strings.Contains(sql, "toUnixTimestamp64Milli(now64(") {
 		t.Fatalf("query=%q: instant-mode SQL should still resolve time() to the fixed now64(9) eval anchor; got:\n%s", q, sql)
 	}
 }
