@@ -8,7 +8,7 @@
       "rationale": "parser-enforced arity: predict_linear is pinned at two arguments, so every one of this site's callers — each gated on the identical arity check before reaching it — can never observe a call with a different count",
       "evidence": {
         "guard": [
-          "case \"predict_linear\" of switch outer.Func.Name",
+          "case fnPredictLinear of switch outer.Func.Name",
           "if len(outer.Args) != 2"
         ],
         "callers": [
