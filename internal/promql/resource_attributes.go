@@ -70,8 +70,16 @@ var dedicatedResourceKeys = []dedicatedResourceKey{
 // Keys whose dedicated column is unconfigured in s are not excluded (the
 // resource arm is then the only path that can surface them).
 func excludedResourceKeys(s schema.Metrics) map[string]struct{} {
-	out := make(map[string]struct{}, len(dedicatedResourceKeys)*2)
-	for _, d := range dedicatedResourceKeys {
+	return excludedDedicatedKeys(dedicatedResourceKeys, s)
+}
+
+// excludedDedicatedKeys is [excludedResourceKeys] over an explicit
+// registry: each key of keys whose dedicated column s configures, in both
+// spellings. A key whose column is unset is skipped, and the keys after it
+// are still considered.
+func excludedDedicatedKeys(keys []dedicatedResourceKey, s schema.Metrics) map[string]struct{} {
+	out := make(map[string]struct{}, len(keys)*2)
+	for _, d := range keys {
 		if d.column(s) == "" {
 			continue
 		}

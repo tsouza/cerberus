@@ -156,7 +156,7 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 // 1. CAPACITY HINTS — ARITHMETIC_BASE inside a `make(T, 0, <cap>)` argument.
 //
 //	schema_lookup.go:`make([]chplan.Expr, 0, len(pairs)*2)`
-//	resource_attributes.go:`make(map[string]struct{}, len(dedicatedResourceKeys)*2)`
+//	resource_attributes.go:`make(map[string]struct{}, len(keys)*2)`
 //
 // This class USED to carry six more citations, and the reason it gave for all
 // eight — "a slice's capacity is not observable behaviour: `append` grows past
@@ -173,7 +173,7 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 // The two that remain fail that rule on DIFFERENT halves of it, which is why
 // neither inherits the other's argument:
 //
-//   - `make(map[string]struct{}, len(dedicatedResourceKeys)*2)` sizes a MAP.
+//   - `make(map[string]struct{}, len(keys)*2)` sizes a MAP.
 //     Go publishes no accessor for a map's capacity — `len` counts the entries
 //     the loop inserted, `cap` is not defined for maps at all, and the runtime
 //     hint reaches no exported or unexported surface. No test in any package
@@ -216,18 +216,20 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 // 3. A LOOP OVER A REGISTRY THAT HOLDS ONE ENTRY.
 //
 //	schema_lookup.go:promqlTopLevelKeys:`if col == "" {`
-//	resource_attributes.go:excludedResourceKeys:`if d.column(s) == "" {`
 //
-// Each citation names the guard whose body is the mutated statement, because
+// The citation names the guard whose body is the mutated statement, because
 // that statement is a bare `continue` and no substring of it singles one out.
-// Both loops range over
+// The loop ranges over
 // resource_attributes.go:`var dedicatedResourceKeys = []dedicatedResourceKey{`,
 // which holds exactly one element (service.name). Over a one-element range
 // `continue` and `break` both leave the loop after the same single iteration,
-// so the rewrite cannot change what either function returns. This equivalence
+// so the rewrite cannot change what the function returns. This equivalence
 // is a property of the registry's current size, and it dissolves the moment a
-// second dedicated key is added — at which point both mutants become killable
-// and should be killed rather than re-adjudicated.
+// second dedicated key is added — at which point the mutant becomes killable
+// and should be killed rather than re-adjudicated. The same loop in
+// excludedDedicatedKeys takes its registry as an argument, and
+// TestExcludedDedicatedKeys_UnsetColumnSkipsOnlyItsKey drives it with a
+// two-key registry, so it is not in this class.
 //
 // 4. A REWRITE THE LANGUAGE MAKES A NO-OP.
 //
