@@ -35,7 +35,7 @@ var sampleSetRangeFunctions = map[string]bool{
 	"deriv":                        true,
 	"double_exponential_smoothing": true,
 	"first_over_time":              true,
-	"holt_winters":                 true,
+	holtWintersFunctionName:        true,
 	"idelta":                       true,
 	"irate":                        true,
 	"last_over_time":               true,

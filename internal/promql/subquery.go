@@ -984,7 +984,7 @@ func subqueryInnerRangeFnShape(fn string) (arity, matrixArg int) {
 	switch fn {
 	case "predict_linear":
 		return 2, 0
-	case "holt_winters", "double_exponential_smoothing":
+	case holtWintersFunctionName, "double_exponential_smoothing":
 		return 3, 0
 	case "quantile_over_time":
 		return 2, 1
@@ -1855,7 +1855,7 @@ func projectCarriesMetricName(p *chplan.Project, s schema.Metrics) bool {
 // spelling.
 func canonicalRangeWindowFunc(name string) string {
 	if name == "double_exponential_smoothing" {
-		return "holt_winters"
+		return holtWintersFunctionName
 	}
 	return name
 }
@@ -1884,7 +1884,7 @@ func histogramSubqueryFloatOnlyDropFunc(outerFn string) bool {
 		return true
 	}
 	switch canonicalRangeWindowFunc(outerFn) {
-	case "predict_linear", "holt_winters", "quantile_over_time":
+	case "predict_linear", holtWintersFunctionName, "quantile_over_time":
 		return true
 	default:
 		return false
@@ -1933,7 +1933,7 @@ func threadOuterRangeFnScalars(
 			}
 			rw.ScalarExprs = []chplan.Expr{computed}
 		}
-	case "holt_winters", "double_exponential_smoothing":
+	case holtWintersFunctionName, "double_exponential_smoothing":
 		if len(outer.Args) != 3 {
 			return nil, false, fmt.Errorf("promql: holt_winters expects 3 arguments, got %d", len(outer.Args))
 		}
