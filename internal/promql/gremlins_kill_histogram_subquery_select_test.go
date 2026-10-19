@@ -22,8 +22,7 @@
 //     time `if step < 0` runs — step is either the caller's own non-zero
 //     sub.Step or the positive default. `<` and `<=` decide identically
 //     over every value except exactly 0, so no reachable input can make
-//     the two operators disagree (the same reasoning
-//     gremlins_kill_subquery_test.go's header gives for subquery.go:`step < 0`).
+//     the two operators disagree.
 //   - The former compound guard was split into two explicit invariant checks:
 //     histogram_native_subquery_select.go:`if !matched` and
 //     histogram_native_subquery_select.go:`if kind := input.RowType().SampleKind(); kind != chplan.SampleKindHistogram`.

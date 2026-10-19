@@ -19,28 +19,45 @@ INSERT INTO otel_metrics_gauge VALUES
 ]
 -- args --
 [0] string = ""
-[1] string = "UTC"
-[2] string = "service_name"
-[3] string = "service.name"
-[4] string = "service_name"
-[5] string = "service.name"
-[6] string = "service_name"
-[7] string = ""
-[8] string = "service_name"
-[9] int64 = 1
-[10] int64 = 0
-[11] int64 = 9218868437227405314
-[12] string = "unix_seconds"
-[13] string = "unix.seconds"
-[14] string = "unix/seconds"
-[15] string = "2026-01-01 00:00:01.000000000Z"
-[16] int64 = 9
-[17] string = "2026-01-01 00:00:01.000000000Z"
-[18] int64 = 9
-[19] int64 = 300000000000
-[20] int64 = 9218868437227405314
+[1] int64 = 5
+[2] int64 = 4
+[3] int64 = 4
+[4] float64 = -9.223372036854776e+18
+[5] float64 = 9.223372036854776e+18
+[6] float64 = -9.223372036854776e+18
+[7] int64 = 9223372028741760000
+[8] int64 = 86400
+[9] int64 = 3
+[10] int64 = 146097
+[11] int64 = 4
+[12] int64 = 3
+[13] int64 = 1461
+[14] int64 = 4
+[15] int64 = 461
+[16] int64 = 153
+[17] int64 = 5
+[18] int64 = 1
+[19] string = "service_name"
+[20] string = "service.name"
+[21] string = "service_name"
+[22] string = "service.name"
+[23] string = "service_name"
+[24] string = ""
+[25] string = "service_name"
+[26] int64 = 1
+[27] int64 = 0
+[28] int64 = 9218868437227405314
+[29] string = "unix_seconds"
+[30] string = "unix.seconds"
+[31] string = "unix/seconds"
+[32] string = "2026-01-01 00:00:01.000000000Z"
+[33] int64 = 9
+[34] string = "2026-01-01 00:00:01.000000000Z"
+[35] int64 = 9
+[36] int64 = 300000000000
+[37] int64 = 9218868437227405314
 -- chplan --
-Project ["" AS MetricName, Attributes, TimeUnix, FnToFloat64(FnToDayOfMonth(FnToDateTime(FnToInt64(Value), "UTC"))) AS Value]
+Project ["" AS MetricName, Attributes, TimeUnix, FnToFloat64((FnIntDiv(FnModulo(((5 * FnIntDiv(FnModulo(((4 * FnIntDiv(FnModulo(((4 * FnIntDiv((FnReinterpretAsUInt64(FnToInt64(FnIf(((Value >= -9.223372036854776e+18) AND (Value < 9.223372036854776e+18)), Value, -9.223372036854776e+18))) + FnToUInt64(9223372028741760000)), 86400)) + 3), 146097), 4)) + 3), 1461), 4)) + 461), 153), 5) + 1)) AS Value]
   Filter predicate=(FnReinterpretAsUInt64(Value) != 9218868437227405314)
     Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
       Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
@@ -49,29 +66,46 @@ Project ["" AS MetricName, Attributes, TimeUnix, FnToFloat64(FnToDayOfMonth(FnTo
             Filter predicate=(MetricName IN ("unix_seconds", "unix.seconds", "unix/seconds"))
               Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --
-SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, toFloat64(toDayOfMonth(toDateTime(toInt64(`Value`), ?))) AS `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) WHERE (reinterpretAsUInt64(`Value`) != ?))
+SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, toFloat64((intDiv(modulo(((? * intDiv(modulo(((? * intDiv(modulo(((? * intDiv((reinterpretAsUInt64(toInt64(if(((`Value` >= toFloat64(?)) AND (`Value` < toFloat64(?))), `Value`, toFloat64(?)))) + toUInt64(?)), ?)) + ?), ?), ?)) + ?), ?), ?)) + ?), ?), ?) + ?)) AS `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) WHERE (reinterpretAsUInt64(`Value`) != ?))
 -- args_optimized --
 [0] string = ""
-[1] string = "UTC"
-[2] string = "service_name"
-[3] string = "service.name"
-[4] string = "service_name"
-[5] string = "service.name"
-[6] string = "service_name"
-[7] string = ""
-[8] string = "service_name"
-[9] int64 = 1
-[10] int64 = 0
-[11] int64 = 9218868437227405314
-[12] string = "unix_seconds"
-[13] string = "unix.seconds"
-[14] string = "unix/seconds"
-[15] string = "2026-01-01 00:00:01.000000000Z"
-[16] int64 = 9
-[17] string = "2026-01-01 00:00:01.000000000Z"
-[18] int64 = 9
-[19] int64 = 300000000000
-[20] int64 = 9218868437227405314
+[1] int64 = 5
+[2] int64 = 4
+[3] int64 = 4
+[4] float64 = -9.223372036854776e+18
+[5] float64 = 9.223372036854776e+18
+[6] float64 = -9.223372036854776e+18
+[7] int64 = 9223372028741760000
+[8] int64 = 86400
+[9] int64 = 3
+[10] int64 = 146097
+[11] int64 = 4
+[12] int64 = 3
+[13] int64 = 1461
+[14] int64 = 4
+[15] int64 = 461
+[16] int64 = 153
+[17] int64 = 5
+[18] int64 = 1
+[19] string = "service_name"
+[20] string = "service.name"
+[21] string = "service_name"
+[22] string = "service.name"
+[23] string = "service_name"
+[24] string = ""
+[25] string = "service_name"
+[26] int64 = 1
+[27] int64 = 0
+[28] int64 = 9218868437227405314
+[29] string = "unix_seconds"
+[30] string = "unix.seconds"
+[31] string = "unix/seconds"
+[32] string = "2026-01-01 00:00:01.000000000Z"
+[33] int64 = 9
+[34] string = "2026-01-01 00:00:01.000000000Z"
+[35] int64 = 9
+[36] int64 = 300000000000
+[37] int64 = 9218868437227405314
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
@@ -80,4 +114,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, toFloat64(toDayOfMonth(toDateTime(toInt64(`Value`), ?))) AS `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) WHERE (reinterpretAsUInt64(`Value`) != ?))
+SELECT ? AS `MetricName`, `Attributes`, `TimeUnix`, toFloat64((intDiv(modulo(((? * intDiv(modulo(((? * intDiv(modulo(((? * intDiv((reinterpretAsUInt64(toInt64(if(((`Value` >= toFloat64(?)) AND (`Value` < toFloat64(?))), `Value`, toFloat64(?)))) + toUInt64(?)), ?)) + ?), ?), ?)) + ?), ?), ?)) + ?), ?), ?) + ?)) AS `Value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, if((bitAnd(`Flags`, ?) != ?), reinterpretAsFloat64(?), `Value`) AS `Value` FROM (SELECT `Attributes`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix`, `Value` FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) WHERE (reinterpretAsUInt64(`Value`) != ?))

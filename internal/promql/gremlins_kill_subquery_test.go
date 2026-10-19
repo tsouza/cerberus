@@ -4,22 +4,6 @@
 // mutated branch, so the test fails when the mutant is applied and the
 // mutant is reported KILLED. See gremlins_kill_test.go's own header for
 // the mutant-citation convention.
-//
-// Two CONDITIONALS_BOUNDARY mutants reported for this file have no killing
-// test (subquery.go:`if step < 0` and subquery.go:`if ns%stepNS != 0 && ns < 0`):
-// both are mathematically equivalent mutants, not coverage gaps. At
-// subquery.go:`if step < 0`, `step` is reassigned to the positive
-// `defaultSubqueryStep` constant whenever it was zero (the
-// `if step == 0` arm just above it), so
-// `step` can never be exactly 0 by the time the boundary check runs —
-// `<` and `<=` decide identically over every reachable value. At
-// subquery.go:`if ns%stepNS != 0 && ns < 0`, the `<`/`<=`
-// boundary sits at ns==0, but ns==0 forces `ns%stepNS == 0` for any
-// nonzero stepNS, which makes the left `&&` operand false and
-// short-circuits the whole expression regardless of the right operand's
-// boundary — so no input can ever reach a state where the two operators
-// disagree. No test can kill either mutant without the underlying code
-// changing shape.
 package promql
 
 import (
@@ -504,5 +488,98 @@ func TestLowerSubqueryOverCallSubquery_WidensToSumOfBothRanges(t *testing.T) {
 		t.Fatalf("wideInner.OuterRange = %s, want %s (sub.Range + innerSub.Range) — mutant `+`->`-` "+
 			"at subquery.go:lowerSubqueryOverCallSubquery:`widened.Range = sub.Range + innerSub.Range` "+
 			"would yield %s", wideInner.OuterRange, want, time.Hour-5*time.Minute)
+	}
+}
+
+// TestLowerSubqueryDefaultsAnOmittedStep kills the CONDITIONALS_BOUNDARY
+// mutant on subquery.go:`if e.Step < 0`: an omitted step (`[5m:]`) parses
+// to zero, which the default replaces rather than the negative-step check
+// rejecting.
+func TestLowerSubqueryDefaultsAnOmittedStep(t *testing.T) {
+	t.Parallel()
+
+	sub := parseSubquery(t, `up[5m:]`)
+	if sub.Step != 0 {
+		t.Fatalf("positive control: `up[5m:]` parsed with step %s, want 0", sub.Step)
+	}
+	if _, err := lowerSubquery(sub, schema.DefaultOTelMetrics(), lowerCtx{
+		end:      gridTestQueryEnd,
+		lowerers: RangeLowerers{}.withDefaults(),
+	}); err != nil {
+		t.Fatalf("lowerSubquery(`up[5m:]`) = %v; an omitted step takes the default", err)
+	}
+}
+
+// TestSubqueryMathReorderTakesTwoArgumentRound kills the
+// CONDITIONALS_NEGATION mutant on subquery.go:`if len(call.Args) == 2`:
+// the two-argument round reaches lowerRoundOverInput, where the generic
+// instantFnCH tail would turn it away for its arity.
+func TestSubqueryMathReorderTakesTwoArgumentRound(t *testing.T) {
+	t.Parallel()
+
+	sub := parseSubquery(t, `round(up, 5)[5m:1m]`)
+	call, ok := sub.Expr.(*parser.Call)
+	if !ok {
+		t.Fatalf("subquery inner is %T, want *parser.Call", sub.Expr)
+	}
+	vs, ok := call.Args[0].(*parser.VectorSelector)
+	if !ok {
+		t.Fatalf("round argument is %T, want *parser.VectorSelector", call.Args[0])
+	}
+	_, matched, err := lowerSubqueryIdentityMathReorder(sub, call, vs, time.Minute, schema.DefaultOTelMetrics(), lowerCtx{
+		end:      gridTestQueryEnd,
+		lowerers: RangeLowerers{}.withDefaults(),
+	})
+	if err != nil {
+		t.Fatalf("lowerSubqueryIdentityMathReorder(round(up, 5)): %v", err)
+	}
+	if !matched {
+		t.Fatal("lowerSubqueryIdentityMathReorder did not take the two-argument round")
+	}
+}
+
+// TestProjectIsIdentity kills the CONDITIONALS_NEGATION and INVERT_LOGICAL
+// mutants on subquery.go:`len(p.Projections) == 0 || len(p.Replacements) != 0`
+// and the CONDITIONALS_NEGATION mutants on
+// subquery.go:`!ok || ref.Name == "" || chplan.ProjectionOutputName(projection) != ref.Name`:
+// only a non-empty, replacement-free projection of bare column references,
+// each under its own name, is the identity.
+func TestProjectIsIdentity(t *testing.T) {
+	t.Parallel()
+
+	col := func(name string) chplan.Expr { return &chplan.ColumnRef{Name: name} }
+	for _, tc := range []struct {
+		name string
+		p    *chplan.Project
+		want bool
+	}{
+		{"bare columns", &chplan.Project{Projections: []chplan.Projection{{Expr: col("a")}, {Expr: col("b"), Alias: "b"}}}, true},
+		{"no projections", &chplan.Project{}, false},
+		{"replacements", &chplan.Project{
+			Projections:  []chplan.Projection{{Expr: col("a")}},
+			Replacements: []chplan.Projection{{Expr: col("b"), Alias: "a"}},
+		}, false},
+		{"renamed column", &chplan.Project{Projections: []chplan.Projection{{Expr: col("a"), Alias: "b"}}}, false},
+		{"computed expression", &chplan.Project{Projections: []chplan.Projection{{Expr: &chplan.LitInt{V: 1}, Alias: "a"}}}, false},
+		{"unnamed column", &chplan.Project{Projections: []chplan.Projection{{Expr: col("")}}}, false},
+	} {
+		if got := projectIsIdentity(tc.p); got != tc.want {
+			t.Errorf("%s: projectIsIdentity = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestWidenSubquerySpineLeavesAClassicBucketFanout kills the
+// CONDITIONALS_BOUNDARY mutant on subquery.go:`if v.Step <= 0 || v.OuterRange <= 0`:
+// a RangeBucketFanout with no step of its own is not part of the
+// subquery's outer-range chain and keeps its grid.
+func TestWidenSubquerySpineLeavesAClassicBucketFanout(t *testing.T) {
+	t.Parallel()
+
+	const outerRange = 5 * time.Minute
+	fanout := &chplan.RangeBucketFanout{Input: &chplan.OneRow{}, OuterRange: outerRange}
+	widenSubquerySpine(fanout, gridTestQueryEnd.Add(-time.Hour), gridTestQueryEnd)
+	if !fanout.Start.IsZero() || !fanout.End.IsZero() || fanout.OuterRange != outerRange || fanout.StepAlign {
+		t.Fatalf("widenSubquerySpine re-anchored a step-less fanout: %+v", fanout)
 	}
 }

@@ -142,13 +142,9 @@ func SubstituteNow64At(query string, args []any, anchorLiteral string) (string, 
 			}
 		}
 
-		// Match `now()` — the zero-arg DateTime form emitted by PromQL
-		// zero-arg date functions. Substitute with the deterministic
-		// DateTime64 anchor literal; CH's `toYear`/`toMonth`/
-		// `toDayOfMonth`/`toDayOfWeek`/`toLastDayOfMonth`/`toHour`/
-		// `toMinute` accept DateTime64 the same as DateTime, so the
-		// type widening is invisible at the call site. No args slot
-		// to consume.
+		// Match `now()` — the zero-arg DateTime form. Substitute with the
+		// deterministic DateTime64 anchor literal. No args slot to
+		// consume.
 		if c == 'n' && strings.HasPrefix(query[i:], "now()") {
 			out.WriteString(anchorLiteral)
 			i += len("now()") - 1

@@ -14,7 +14,7 @@
         ],
         "callers": [
           "lowerOuterRangeFnOverSubquery",
-          "wrapSubqueryIdentity"
+          "subqueryIdentityWindow"
         ]
       }
     },
@@ -31,7 +31,7 @@
         ],
         "callers": [
           "lowerOuterRangeFnOverSubquery",
-          "wrapSubqueryIdentity"
+          "subqueryIdentityWindow"
         ]
       }
     },
@@ -49,7 +49,7 @@
         ],
         "callers": [
           "lowerOuterRangeFnOverSubquery",
-          "wrapSubqueryIdentity"
+          "subqueryIdentityWindow"
         ]
       }
     }

@@ -30,12 +30,12 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 	if e.Range <= 0 {
 		return nil, fmt.Errorf("promql: subquery range must be positive, got %s", e.Range)
 	}
+	if e.Step < 0 {
+		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", e.Step)
+	}
 	step := e.Step
 	if step == 0 {
 		step = defaultSubqueryStep
-	}
-	if step < 0 {
-		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", e.Step)
 	}
 
 	// A subquery's inner expression is re-evaluated at every one of its own
@@ -309,6 +309,22 @@ func wrapSubqueryIdentity(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
+	rw, err := subqueryIdentityWindow(sub, inner, step, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return rw, nil
+}
+
+// subqueryIdentityWindow is [wrapSubqueryIdentity] for a caller that goes
+// on to adjust the window itself.
+func subqueryIdentityWindow(
+	sub *parser.SubqueryExpr,
+	inner chplan.Node,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (*chplan.RangeWindow, error) {
 	anchor, err := subqueryAnchor(sub, ctx)
 	if err != nil {
 		return nil, err
@@ -339,12 +355,10 @@ func wrapSubqueryIdentity(
 // sort family rewrites neither column (see instantTransformFns's own
 // membership doc). Every other member goes through
 // [lowerSubqueryIdentityMathReorder] or [lowerSubqueryIdentityDateReorder]
-// instead: encoding a marker into their Value unreordered doesn't merely
-// risk a corrupted bit pattern, it makes ClickHouse reject the query
-// outright (`toYear(fromUnixTimestamp64Nano(...))` on a NaN operand
-// raises `CANNOT_CONVERT_TYPE: Unexpected inf or nan to integer
-// conversion`), so this deliberately excludes them rather than trade a
-// stale answer for a 502.
+// instead: encoding a marker into their Value unreordered hands the
+// transform a NaN it must never see — the date kernel reads it as Go's
+// `int64(NaN)` second count and answers a real-looking date for a sample
+// Prometheus drops — so this deliberately excludes them.
 func subqueryIdentityValuePreserving(fn string) bool {
 	switch fn {
 	case fnLabelReplace, fnLabelJoin, "info",
@@ -431,9 +445,8 @@ func lowerSubqueryIdentityMathReorder(
 // each anchor's own latest sample, and drops the anchor a marker wins —
 // and only then applies the date-component kernel
 // ([projectDateFnOverInner]) to the survivors, so a marker's encoded NaN
-// is never handed to `toYear`/`toDayOfWeek`/etc, which reject it outright
-// (see [subqueryIdentityValuePreserving]'s own doc for the exact CH
-// error).
+// is never handed to the kernel, which would answer a date for it (see
+// [subqueryIdentityValuePreserving]'s own doc).
 //
 // The window stamps TimeUnix with the evaluation anchor. Date-component
 // functions read Value, so this preserves their input. timestamp(selector)
@@ -664,7 +677,9 @@ func epochFloor(t time.Time, step time.Duration) time.Time {
 	stepNS := step.Nanoseconds()
 	ns := t.UTC().UnixNano()
 	floor := ns / stepNS
-	if ns%stepNS != 0 && ns < 0 {
+	// Go's `/` truncates toward zero, and its `%` takes the dividend's
+	// sign: a negative remainder means the quotient was rounded up.
+	if ns%stepNS < 0 {
 		floor--
 	}
 	return time.Unix(0, floor*stepNS).UTC()
@@ -731,8 +746,8 @@ const subqueryAnchorShapeMaxCols = 5
 // [lowerSubqueryIdentityMathReorder]'s own doc for the verified
 // per-function evidence and the reorder that sidesteps it. The
 // date-component family has the same unsoundness for a different reason
-// — `toYear`/`toDayOfWeek`/etc. reject a NaN operand outright rather than
-// silently mangling it — and the same reorder, [lowerSubqueryIdentityDateReorder].
+// — the date kernel turns a NaN operand into a date rather than dropping
+// it — and the same reorder, [lowerSubqueryIdentityDateReorder].
 //
 // The remaining instantTransformFns members that never rewrite Value
 // (label_replace / label_join / info rewrite Attributes only; the sort
@@ -765,12 +780,12 @@ func lowerSubqueryOverInstantTransform(
 	if err != nil {
 		return nil, err
 	}
-	windowed, err := wrapSubqueryIdentity(sub, inner, step, s, ctx)
+	windowed, err := subqueryIdentityWindow(sub, inner, step, s, ctx)
 	if err != nil {
 		return nil, err
 	}
-	if rw, ok := windowed.(*chplan.RangeWindow); ok && valuePreserving {
-		boundStaleMarkerLayoutsToIdentity(rw)
+	if valuePreserving {
+		boundStaleMarkerLayoutsToIdentity(windowed)
 	}
 	if valuePreserving || subqueryIdentityEncodesStaleMarker(call.Func.Name) {
 		return dropStaleLatestSamples(windowed, s), nil
@@ -2460,7 +2475,9 @@ func lowerAbsentOverTimeOverSubquery(
 // subquery evaluates its own window once, at that anchor, instead of
 // following the enclosing query's grid — so it overrides range mode
 // wherever the two disagree. `offset` alone does NOT pin: it shifts the
-// grid rather than replacing it.
+// grid rather than replacing it. A pinned subquery's [subqueryAnchor]
+// always carries a non-zero End: `@ start()` / `@ end()` fail without the
+// request instant they name, and `@ <ts>` names one itself.
 func subqueryPinned(sub *parser.SubqueryExpr) bool {
 	return sub.Timestamp != nil || sub.StartOrEnd != 0
 }

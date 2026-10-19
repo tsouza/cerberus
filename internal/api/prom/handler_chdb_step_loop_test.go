@@ -116,7 +116,7 @@ func TestQueryRange_StepLoop_NoDrivingVector_ChDB(t *testing.T) {
 		{
 			name:  "zero-arg-year",
 			query: "year()",
-			// `year()` per step → toYear(toDateTime(anchor_ts)).
+			// `year()` per step → the date kernel over anchor_ts's whole seconds.
 			// All 11 anchors are in 2026; emit "2026" at every step.
 			wantValue: func(_ int) string {
 				return "2026"
