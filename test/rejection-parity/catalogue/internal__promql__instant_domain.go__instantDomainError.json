@@ -6,7 +6,7 @@
       "message": "promql: the query needs instant %s, outside the range cerberus supports (%s to %s): ClickHouse cannot represent it exactly",
       "class": "divergence",
       "trigger_query": "max_over_time(max_over_time(demo_http_requests_total[5m:1m])[1h:1m] @ 9223373836.854)",
-      "tracking_issue": 3876,
+      "tracking_issue": 3824,
       "evidence": {
         "guard": null,
         "callers": [
