@@ -499,14 +499,11 @@ func fitWindow(env domainEnv, reach time.Duration, ownPin bool) fitResult {
 	if err == nil {
 		return fitResult{reads: !ownPin}
 	}
-	return fitResult{empty: outsideStorage(env.lo.Add(-reach-env.frame), env.hi.Add(-env.frame)), err: err}
+	return fitResult{empty: outsideStorage(env.lo.Add(-reach).Add(-env.frame), env.hi.Add(-env.frame)), err: err}
 }
 
 func (f *domainFit) fitSubquery(n *parser.SubqueryExpr, env domainEnv) (parser.Expr, fitResult) {
-	step := n.Step
-	if step <= 0 {
-		step = defaultSubqueryStep
-	}
+	step := subqueryStep(n)
 	at, offset := pinnedEnv(n.Timestamp, n.StartOrEnd, n.OriginalOffset, env)
 	ownPin := pinned(n.Timestamp, n.StartOrEnd)
 	// The inner expression is evaluated at the grid instants of the
@@ -532,7 +529,7 @@ func (f *domainFit) fitSubquery(n *parser.SubqueryExpr, env domainEnv) (parser.E
 		return out, fitResult{empty: res.empty, outside: res.outside, reads: res.reads}
 	}
 	margin := step + env.step
-	res.widen(at.lo.Add(-n.Range-margin), at.hi.Add(margin))
+	res.widen(at.lo.Add(-n.Range).Add(-margin), at.hi.Add(margin))
 	res.stepMillis = lcmMillis(res.stepMillis, step.Milliseconds())
 	if res.outside == nil {
 		res.outside = checkInstantDomain(at.lo, at.hi, n.Range, margin)
@@ -548,16 +545,13 @@ func (f *domainFit) fitSubquery(n *parser.SubqueryExpr, env domainEnv) (parser.E
 		// storage at instants the domain does not hold cannot be lowered.
 		return n, fitResult{empty: res.empty, err: res.outside}
 	case res.outside != nil:
-		shift, ok := shiftIntoDomain(res)
-		if !ok || !shiftableRegion(n.Expr) {
+		shift, ok := shiftIntoDomain(res, anyShift)
+		if !ok {
 			return n, fitResult{err: res.outside}
 		}
 		out = repinSubquery(out, at.hi.UnixMilli()+shift)
 		f.shiftRegion(out, shift, gridSpan(at, n.Range, step))
 	case at.wrapped:
-		if !shiftableRegion(n.Expr) {
-			return n, fitResult{err: instantDomainError(at.pin)}
-		}
 		out = repinSubquery(out, at.hi.UnixMilli())
 	}
 	return out, fitResult{empty: res.empty}
@@ -566,17 +560,16 @@ func (f *domainFit) fitSubquery(n *parser.SubqueryExpr, env domainEnv) (parser.E
 // shiftUnpinned settles the region of the unpinned subquery n, evaluated
 // at the instants of env and anchored at those of at, when those instants
 // lie in the domain while the grid below them leaves it. A region that reads no
-// storage, and whose subquery neither holds nor sits inside another, is
-// moved into the domain by an offset, a multiple of its step as for a
+// storage, and whose subquery sits inside no other, is moved into the domain by an offset, a multiple of its step as for a
 // pinned region; any other region stays unsettled and res reaches the
 // enclosing node.
 func (f *domainFit) shiftUnpinned(n *parser.SubqueryExpr, at, env domainEnv, res fitResult) (parser.Expr, fitResult) {
-	if res.outside == nil || res.reads || res.empty || env.inSubquery || !shiftableRegion(n.Expr) ||
+	if res.outside == nil || res.reads || res.empty || env.inSubquery ||
 		checkInstantDomain(env.lo, env.hi, 0, env.step) != nil {
 		return n, res
 	}
-	shift, ok := shiftIntoDomain(res)
-	if !ok || !offsetFits(shift) {
+	shift, ok := shiftIntoDomain(res, offsetFits)
+	if !ok {
 		return n, res
 	}
 	cp := *n
@@ -592,46 +585,6 @@ func offsetFits(shift int64) bool {
 	return shift >= -maxDurationMillis && shift <= maxDurationMillis
 }
 
-// shiftableRegion reports whether the region below a subquery, whose
-// inner expression is e, may be lowered at a grid other than the one its
-// pin or its enclosing evaluation names: a shifted grid, or the wrapped
-// instant Prometheus evaluates a pin at. A region holding a nested
-// subquery, or an `@ start()` or `@ end()` pin, may not: a request pin
-// names an instant the shift does not move, and neither shape has parity
-// evidence at a shifted grid, so such a region keeps its rejection
-// (#3888).
-func shiftableRegion(e parser.Expr) bool {
-	return !holdsSubquery(e) && !holdsRequestPin(e)
-}
-
-// holdsRequestPin reports whether e contains an `@ start()` or `@ end()`
-// pin.
-func holdsRequestPin(e parser.Expr) bool {
-	found := false
-	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
-		switch n := node.(type) {
-		case *parser.VectorSelector:
-			found = found || n.StartOrEnd != 0
-		case *parser.SubqueryExpr:
-			found = found || n.StartOrEnd != 0
-		}
-		return nil
-	})
-	return found
-}
-
-// holdsSubquery reports whether e contains a subquery.
-func holdsSubquery(e parser.Expr) bool {
-	found := false
-	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
-		if _, ok := node.(*parser.SubqueryExpr); ok {
-			found = true
-		}
-		return nil
-	})
-	return found
-}
-
 // repinSubquery returns a copy of n pinned at the instant ms with no
 // offset, so that the lowering evaluates it exactly there.
 func repinSubquery(n *parser.SubqueryExpr, ms int64) *parser.SubqueryExpr {
@@ -643,10 +596,10 @@ func repinSubquery(n *parser.SubqueryExpr, ms int64) *parser.SubqueryExpr {
 }
 
 // shiftIntoDomain returns a shift, in milliseconds, that moves the span of
-// region r into the instant domain and is a multiple of every step of the
-// region, so that every grid keeps its alignment. It reports false when no
-// such shift exists.
-func shiftIntoDomain(r fitResult) (int64, bool) {
+// region r into the instant domain, is a multiple of every step of the
+// region, so that every grid keeps its alignment, and that admits
+// accepts. It reports false when no such shift exists.
+func shiftIntoDomain(r fitResult, admits func(shift int64) bool) (int64, bool) {
 	unit := r.stepMillis
 	lo, hi := r.lo.UnixMilli(), r.hi.UnixMilli()
 	// The domain bounds in whole milliseconds, rounded inward.
@@ -660,16 +613,34 @@ func shiftIntoDomain(r fitResult) (int64, bool) {
 	}
 	// Move the span halfway towards the centre of the domain, which keeps
 	// it clear of both bounds, or all the way when halfway is not enough;
-	// either shift is rounded to a whole number of units.
+	// either shift is rounded to a whole number of units. Failing both,
+	// move it by the fewest units that bring it inside, the shortest move
+	// admits may accept.
 	want := (domLo + (domHi-domLo)/2) - (lo + (hi-lo)/2)
-	for _, w := range []int64{want / 2, want} {
-		shift := w / unit * unit
-		if lo+shift >= domLo && hi+shift <= domHi {
+	least := int64(0)
+	switch {
+	case lo < domLo:
+		least = ceilUnits(domLo-lo, unit)
+	case hi > domHi:
+		least = -ceilUnits(hi-domHi, unit)
+	}
+	for _, shift := range []int64{want / 2 / unit * unit, want / unit * unit, least} {
+		if lo+shift >= domLo && hi+shift <= domHi && admits(shift) {
 			return shift, true
 		}
 	}
 	return 0, false
 }
+
+// ceilUnits returns d, a positive span of milliseconds, rounded up to a
+// whole number of units.
+func ceilUnits(d, unit int64) int64 {
+	return (d + unit - 1) / unit * unit
+}
+
+// anyShift admits every shift: a pinned region is re-pinned at its shifted
+// instant, which any shift into the domain leaves an int64 millisecond.
+func anyShift(int64) bool { return true }
 
 // lcmMillis is the least common multiple of two step lengths in
 // milliseconds, either of which may be zero for "no step".
@@ -704,6 +675,13 @@ func (f *domainFit) shiftRegion(n *parser.SubqueryExpr, shift int64, grid [2]tim
 	f.markShift(n.Expr, shift)
 }
 
+// markShift records shift for node and its subtree. A pinned selector or
+// subquery, `@ start()` and `@ end()` included, names instants of its own,
+// which the region's shift does not move, so its subtree is recorded with
+// no shift; a node a nested region already recorded keeps that region's
+// shift. A subquery nested in the region lays its grid over the region's
+// shifted instants, so its grid moves by the region's shift, a multiple
+// of its step.
 func (f *domainFit) markShift(node parser.Node, shift int64) {
 	if _, done := f.shifts[node]; done {
 		return
@@ -717,6 +695,11 @@ func (f *domainFit) markShift(node parser.Node, shift int64) {
 		if vs, ok := n.VectorSelector.(*parser.VectorSelector); ok && pinned(vs.Timestamp, vs.StartOrEnd) {
 			shift = 0
 		}
+	case *parser.SubqueryExpr:
+		if pinned(n.Timestamp, n.StartOrEnd) {
+			shift = 0
+		}
+		f.gridShifts[unwrapParens(n.Expr)] = shift
 	}
 	f.shifts[node] = shift
 	for _, c := range parser.Children(node) {

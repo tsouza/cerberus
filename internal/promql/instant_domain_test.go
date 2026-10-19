@@ -211,39 +211,102 @@ func TestInstantDomain_ShiftsUnpinnedGridNearBounds(t *testing.T) {
 	}
 }
 
-// TestInstantDomain_KeepsUnrepresentableReads pins the queries cerberus
-// still rejects: a window or grid that reads storage and needs an instant
-// outside int64 nanoseconds, which no DateTime64(9) value holds. The error
-// names the instant and the range cerberus supports.
-func TestInstantDomain_KeepsUnrepresentableReads(t *testing.T) {
+// TestInstantDomain_ShiftsNestedAndRequestPinRegions pins the regions
+// holding a nested subquery or an `@ start()` / `@ end()` pin that leave
+// the domain: each is answered, moved into the domain, alone or with the
+// whole query, by a nonzero multiple of every grid step in it, or
+// evaluated unshifted at the wrapped instant Prometheus evaluates its pin
+// at.
+func TestInstantDomain_ShiftsNestedAndRequestPinRegions(t *testing.T) {
 	cases := []struct {
 		name  string
 		query string
 		end   time.Time
-		want  string
+		// unit is the step every shift is a multiple of; zero for a region
+		// evaluated at a wrapped instant, which no shift moves.
+		unit time.Duration
 	}{
-		// A grid inside another subquery is not shifted on its own.
-		{"nested_grid_near_floor", `max_over_time(max_over_time(timestamp(vector(1))[5m:1m])[3m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:11:00Z"},
-		// A region holding a nested subquery or a request pin is neither
-		// shifted nor evaluated at a wrapped instant.
-		{"nested_grid_past_ceiling", `max_over_time(ts_of_last_over_time(vector(1)[2m:1m])[5m:1m] @ 10000000000)`, instantDomainEvalEnd, "2286-11-20T17:46:40Z"},
-		{"parenthesised_nested_grid_past_ceiling", `max_over_time((ts_of_last_over_time(vector(1)[2m:1m]))[5m:1m] @ 10000000000)`, instantDomainEvalEnd, "2286-11-20T17:46:40Z"},
-		{"nested_grid_at_wrapped_pin", `max_over_time(max_over_time(timestamp(vector(1))[2m:7s])[5m:1m] @ -62135596800)`, instantDomainEvalEnd, "0001-01-01T00:00:00Z"},
-		{"request_pin_in_grid_past_ceiling", `count_over_time((m{job="api"} @ end())[5m:1m] @ 10000000000)`, instantDomainEvalEnd, "2286-11-20T17:46:40Z"},
-		{"request_pin_in_wrapped_grid", `count_over_time((vector(1) and on() (m @ end()))[5m:1m] @ -62135596800)`, instantDomainEvalEnd, "0001-01-01T00:00:00Z"},
-		{"request_pin_in_grid_near_floor", `count_over_time((vector(1) and on() (m @ end()))[5m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:09:00Z"},
+		{"nested_grid_near_floor", `max_over_time(max_over_time(timestamp(vector(1))[5m:1m])[3m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), time.Minute},
+		{"nested_grid_past_ceiling", `max_over_time(ts_of_last_over_time(vector(1)[2m:1m])[5m:1m] @ 10000000000)`, instantDomainEvalEnd, time.Minute},
+		{"parenthesised_nested_grid_past_ceiling", `max_over_time((ts_of_last_over_time(vector(1)[2m:1m]))[5m:1m] @ 10000000000)`, instantDomainEvalEnd, time.Minute},
+		{"nested_steps_past_ceiling", `max_over_time(max_over_time(timestamp(vector(1))[2m:7s])[5m:1m] @ 10000000000)`, instantDomainEvalEnd, 7 * time.Minute},
+		{"nested_grid_at_wrapped_pin", `max_over_time(max_over_time(timestamp(vector(1))[2m:7s])[5m:1m] @ -62135596800)`, instantDomainEvalEnd, 0},
+		{"request_pin_in_grid_past_ceiling", `count_over_time((m{job="api"} @ end())[5m:1m] @ 10000000000)`, instantDomainEvalEnd, time.Minute},
+		{"request_pin_in_wrapped_grid", `count_over_time((vector(1) and on() (m @ end()))[5m:1m] @ -62135596800)`, instantDomainEvalEnd, 0},
+		{"request_pin_in_grid_near_floor", `count_over_time((vector(1) and on() (m @ end()))[5m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := LowerAt(context.Background(), mustParseExperimental(t, tc.query), schema.DefaultOTelMetrics(), tc.end, tc.end)
-			want := instantDomainError(mustUTC(t, tc.want)).Error()
-			if err == nil || err.Error() != want {
-				t.Fatalf("lower %q: err = %v, want %q", tc.query, err, want)
+			if _, err := LowerAt(context.Background(), mustParseExperimental(t, tc.query), schema.DefaultOTelMetrics(), tc.end, tc.end); err != nil {
+				t.Fatalf("lower %q: %v", tc.query, err)
 			}
-			if !strings.Contains(want, "1677-09-21T00:12:43.145224192Z to 2262-04-11T23:47:16.854775807Z") {
-				t.Fatalf("error %q does not name the supported range", want)
+			_, f, err := fitAt(t, tc.query, tc.end)
+			if err != nil {
+				t.Fatalf("fitInstantDomain(%q): %v", tc.query, err)
+			}
+			shifts := []int64{f.frameShift}
+			for _, shift := range f.shifts {
+				shifts = append(shifts, shift)
+			}
+			shifted := false
+			for _, shift := range shifts {
+				if tc.unit != 0 && shift%tc.unit.Milliseconds() != 0 {
+					t.Fatalf("shifted by %d ms, not a multiple of %s", shift, tc.unit)
+				}
+				shifted = shifted || shift != 0
+			}
+			if shifted != (tc.unit != 0) {
+				t.Fatalf("some node shifted: %v, want %v", shifted, tc.unit != 0)
 			}
 		})
+	}
+}
+
+// TestInstantDomain_MarkShiftKeepsOwnPins pins the shifts a region records
+// below its subquery: a pinned selector, matrix selector or subquery, `@
+// end()` included, names instants of its own and is recorded unshifted
+// with its whole subtree, every other node takes the region's shift, and
+// the grid of each subquery takes the shift of the subquery itself.
+func TestInstantDomain_MarkShiftKeepsOwnPins(t *testing.T) {
+	expr := mustParseExperimental(t, `max_over_time((ts_of_last_over_time(vector(1)[2m:1m]) + max_over_time((vector(1) and on() n @ end())[2m:1m] @ 5) + count_over_time(o[1m] @ 7))[5m:1m] @ 10000000000)`)
+	sub := expr.(*parser.Call).Args[0].(*parser.SubqueryExpr)
+	const shift = 600000
+	f := &domainFit{}
+	f.shiftRegion(sub, shift, [2]time.Time{})
+	sum := unwrapParens(sub.Expr).(*parser.BinaryExpr)
+	left := sum.LHS.(*parser.BinaryExpr)
+	nested := left.LHS.(*parser.Call).Args[0].(*parser.SubqueryExpr)
+	pinnedSub := left.RHS.(*parser.Call).Args[0].(*parser.SubqueryExpr)
+	pinnedMatrix := sum.RHS.(*parser.Call).Args[0].(*parser.MatrixSelector)
+	for _, tc := range []struct {
+		name string
+		node parser.Node
+		want int64
+	}{
+		{"region", sub, shift},
+		{"nested subquery", nested, shift},
+		{"nested subquery's inner", nested.Expr, shift},
+		{"pinned subquery", pinnedSub, 0},
+		{"pinned subquery's inner", pinnedSub.Expr, 0},
+		{"pinned matrix", pinnedMatrix, 0},
+		{"pinned matrix's selector", pinnedMatrix.VectorSelector, 0},
+	} {
+		if got, ok := f.shifts[tc.node]; !ok || got != tc.want {
+			t.Errorf("%s: shift %d, %v; want %d", tc.name, got, ok, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		sub  *parser.SubqueryExpr
+		want int64
+	}{
+		{"region", sub, shift},
+		{"nested subquery", nested, shift},
+		{"pinned subquery", pinnedSub, 0},
+	} {
+		if got := f.gridShift(tc.sub); got != tc.want {
+			t.Errorf("%s: grid shift %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -652,7 +715,7 @@ func TestShiftIntoDomain(t *testing.T) {
 		over(instantDomainMin.Add(-time.Hour), instantDomainMin.Add(time.Hour)),
 		over(instantDomainMax.Add(-time.Hour), instantDomainMax.Add(time.Hour)),
 	} {
-		shift, ok := shiftIntoDomain(r)
+		shift, ok := shiftIntoDomain(r, anyShift)
 		if !ok || shift%minute != 0 {
 			t.Fatalf("shiftIntoDomain(%s..%s) = %d, %v; want a multiple of the step", r.lo, r.hi, shift, ok)
 		}
@@ -661,7 +724,7 @@ func TestShiftIntoDomain(t *testing.T) {
 			t.Fatalf("shiftIntoDomain(%s..%s) = %d leaves the domain", r.lo, r.hi, shift)
 		}
 	}
-	if _, ok := shiftIntoDomain(over(time.UnixMilli(-10_000_000_000_000), time.UnixMilli(10_000_000_000_000))); ok {
+	if _, ok := shiftIntoDomain(over(time.UnixMilli(-10_000_000_000_000), time.UnixMilli(10_000_000_000_000)), anyShift); ok {
 		t.Fatal("shiftIntoDomain shifted a region wider than the domain")
 	}
 }

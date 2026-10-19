@@ -28,6 +28,13 @@ func TestFrameShift_FitsInShiftedFrame(t *testing.T) {
 		{"window_near_floor_range", `count_over_time(m[10m])`, instantDomainNearFloor, instantDomainNearFloor.Add(time.Hour), time.Minute, time.Millisecond},
 		{"subquery_past_ceiling", `count_over_time(m[1h:1m] @ 9223373836.854)`, instantDomainEvalEnd, instantDomainEvalEnd, 0, time.Minute},
 		{"steps_past_ceiling", `count_over_time(m[1h:7m] @ 9223373836.854) + count_over_time(m[1h:11s] @ 9223373836.854)`, instantDomainEvalEnd, instantDomainEvalEnd, 0, 77 * time.Minute},
+		{"nested_subquery_near_floor", `max_over_time(max_over_time(m[2m:1m])[5m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), instantDomainNearFloor.Add(-6 * time.Minute), 0, time.Minute},
+		{"nested_steps_past_ceiling", `max_over_time(max_over_time(m[5m:7s])[1h:1m] @ 9223373836.854)`, instantDomainEvalEnd, instantDomainEvalEnd, 0, 7 * time.Minute},
+		{"request_pin_in_subquery_past_ceiling", `count_over_time((m and on() (n @ end()))[1h:1m] @ 9223373836.854)`, instantDomainEvalEnd, instantDomainEvalEnd, 0, time.Minute},
+		// The instants span nearly the whole domain: only the least shift
+		// that brings the earliest of them inside fits.
+		{"window_spanning_nearly_the_domain", `count_over_time(m[290y] offset 290y)`, instantDomainEvalEnd.Add(-2 * time.Minute), instantDomainEvalEnd, time.Minute, time.Millisecond},
+		{"nested_grids_spanning_nearly_the_domain", `max_over_time(max_over_time(m[291y:100d])[291y:100d])`, instantDomainEvalEnd, instantDomainEvalEnd, 0, 100 * 24 * time.Hour},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -57,27 +64,26 @@ func TestFrameShift_FitsInShiftedFrame(t *testing.T) {
 }
 
 // TestFrameShift_KeepsRejections pins the queries no shifted frame
-// answers: one holding a subquery region that diverges from Prometheus
-// whatever its instants, at one instant or over a range spanning the
-// domain. Each keeps the rejection of Prometheus's own frame.
+// answers: their instants, with the steps the lowering reaches past a
+// grid, span more than the domain, so no one shift moves all of them into
+// it. Each keeps the rejection of Prometheus's own frame.
 func TestFrameShift_KeepsRejections(t *testing.T) {
 	cases := []struct {
-		name       string
-		query      string
-		start, end time.Time
-		step       time.Duration
+		name  string
+		query string
 	}{
-		{"range_spanning_the_domain_with_nested_subquery", `max_over_time(max_over_time(m[2m:1m])[5m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), instantDomainNearCeiling, 24 * time.Hour},
-		{"nested_subquery_near_floor", `max_over_time(max_over_time(m[2m:1m])[5m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), instantDomainNearFloor.Add(-6 * time.Minute), 0},
+		{"nested_grids_spanning_the_domain", `count_over_time(count_over_time(vector(1)[292y:100d])[292y:100d])`},
+		{"nested_reads_spanning_the_domain", `max_over_time(max_over_time(m[292y:100d])[292y:100d])`},
+		{"offset_grid_spanning_the_domain", `max_over_time(m[292y:100d] offset 292y)`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := lowerCtx{start: tc.start, end: tc.end, step: tc.step}
+			ctx := lowerCtx{start: instantDomainEvalEnd, end: instantDomainEvalEnd}
 			_, _, want := fitDomain(mustParseExperimental(t, tc.query), ctx, 0)
 			if !isInstantDomainError(want) {
 				t.Fatalf("fit %q in Prometheus's frame: err = %v, want the instant-domain rejection", tc.query, want)
 			}
-			_, err := LowerAtRange(context.Background(), mustParseExperimental(t, tc.query), schema.DefaultOTelMetrics(), tc.start, tc.end, tc.step)
+			_, err := LowerAt(context.Background(), mustParseExperimental(t, tc.query), schema.DefaultOTelMetrics(), instantDomainEvalEnd, instantDomainEvalEnd)
 			if err == nil || err.Error() != want.Error() {
 				t.Fatalf("lower %q: err = %v, want %v", tc.query, err, want)
 			}
@@ -166,7 +172,7 @@ func TestFrameShift_LowersStorageInFrame(t *testing.T) {
 // the instant it names. A range within maxRangeSpan is not split.
 func TestFrameShift_SplitsRangeSpanningTheDomain(t *testing.T) {
 	start, end, step := instantDomainNearFloor.Add(-6*time.Minute), instantDomainNearCeiling, 24*time.Hour
-	for _, q := range []string{`m`, `m @ start() + m`} {
+	for _, q := range []string{`m`, `m @ start() + m`, `max_over_time(max_over_time(m[2m:1m])[5m:1m])`} {
 		plan, err := LowerAtRange(context.Background(), mustParseExperimental(t, q), schema.DefaultOTelMetrics(), start, end, step)
 		if err != nil {
 			t.Fatalf("lower %q: %v", q, err)

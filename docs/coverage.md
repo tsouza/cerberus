@@ -88,10 +88,10 @@ rejects `sort_by_label(v)` still counts as one supported symbol.
 Shape-level wrong-rejections are measured separately, by the rejection-parity
 catalogue: across all three heads it records **3** open divergences — queries
 the reference backend answers and cerberus rejects. Two are argument shapes;
-the third is a PromQL query that needs an instant outside
+the third is a PromQL query whose instants span more than
 1677-09-21T00:12:43.145224192Z to 2262-04-11T23:47:16.854775807Z, the int64
-nanoseconds ClickHouse's DateTime64(9) holds, at a subquery whose inner
-expression holds a nested subquery or an `@ start()` / `@ end()` pin.
+nanoseconds ClickHouse's DateTime64(9) holds, such as nested subqueries
+whose ranges reach back more than about 584 years in all.
 
 Every other such query is answered: a window is cut back to the range,
 which holds every stored sample, with `rate`, `increase` and `delta`

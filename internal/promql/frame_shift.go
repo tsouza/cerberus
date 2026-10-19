@@ -36,21 +36,31 @@ const framePinBound = int64(1) << 62
 // needs an instant outside the domain, it fits expr again in a frame
 // shifted towards the domain's centre, first by half the distance from
 // the rejected instant to the centre, which keeps a short query clear of
-// both bounds, then by all of it; each shift is rounded to a multiple of
-// every subquery step. It returns the first frame that fits, recorded as
+// both bounds, then by all of it, then by just enough to bring the
+// rejected instant inside, which fits a query spanning nearly the whole
+// domain; each shift is a multiple of every subquery step. It returns the first frame that fits, recorded as
 // [domainFit.frameShift], and the rejection in Prometheus's frame when
 // none does.
 func fitInFrame(expr parser.Expr, ctx lowerCtx) (parser.Expr, *domainFit, error) {
 	out, f, err := fitDomain(expr, ctx, 0)
 	var outside *outsideDomainError
-	if err == nil || ctx.end.IsZero() || !errors.As(err, &outside) || !framePinsFit(expr) || !frameableSubqueries(expr) {
+	if err == nil || ctx.end.IsZero() || !errors.As(err, &outside) || !framePinsFit(expr) {
 		return out, f, err
 	}
 	unit := frameUnit(expr)
+	at := outside.at.UnixMilli()
 	centre := instantDomainMin.UnixMilli() + (instantDomainMax.UnixMilli()-instantDomainMin.UnixMilli())/2
-	toCentre := centre - outside.at.UnixMilli()
-	for _, want := range []int64{toCentre / 2, toCentre} {
-		shift := want / unit * unit
+	toCentre := centre - at
+	// The least shift moves the rejected instant just inside the domain,
+	// clear of it by the margins the fit widens grids by and a unit.
+	cushion := unit + frameMargin(expr, ctx.step)
+	least := int64(0)
+	if at < centre {
+		least = ceilUnits(instantDomainMin.UnixMilli()-at+cushion, unit)
+	} else {
+		least = -ceilUnits(at-instantDomainMax.UnixMilli()+cushion, unit)
+	}
+	for _, shift := range []int64{toCentre / 2 / unit * unit, toCentre / unit * unit, least} {
 		if shift == 0 || !offsetFits(shift) {
 			continue
 		}
@@ -83,36 +93,41 @@ func framePinsFit(e parser.Expr) bool {
 	return fits
 }
 
-// frameableSubqueries reports whether every subquery of e may be lowered
-// in a shifted frame: one whose region [shiftableRegion] admits. A region
-// it does not admit diverges from Prometheus whatever its instants, so a
-// query holding one keeps its rejection.
-func frameableSubqueries(e parser.Expr) bool {
-	ok := true
-	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
-		if n, isSub := node.(*parser.SubqueryExpr); isSub && !shiftableRegion(n.Expr) {
-			ok = false
-		}
-		return nil
-	})
-	return ok
-}
-
 // frameUnit returns the least common multiple, in milliseconds, of the
 // step of every subquery in e, and one millisecond when e holds none.
 func frameUnit(e parser.Expr) int64 {
 	unit := int64(1)
 	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
 		if n, ok := node.(*parser.SubqueryExpr); ok {
-			step := n.Step
-			if step <= 0 {
-				step = defaultSubqueryStep
-			}
-			unit = lcmMillis(unit, step.Milliseconds())
+			unit = lcmMillis(unit, subqueryStep(n).Milliseconds())
 		}
 		return nil
 	})
 	return unit
+}
+
+// frameMargin returns, in milliseconds, the most the fit widens the
+// instants of e evaluated at steps of step: each subquery's grid by its
+// own step and the step of the evaluation enclosing it
+// ([domainFit.fitSubquery]), and a window by the request step.
+func frameMargin(e parser.Expr, step time.Duration) int64 {
+	margin := step.Milliseconds()
+	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
+		if n, ok := node.(*parser.SubqueryExpr); ok {
+			margin += 2 * subqueryStep(n).Milliseconds()
+		}
+		return nil
+	})
+	return margin
+}
+
+// subqueryStep returns the step of n's grid: its own, or the default
+// subquery step when it names none.
+func subqueryStep(n *parser.SubqueryExpr) time.Duration {
+	if n.Step <= 0 {
+		return defaultSubqueryStep
+	}
+	return n.Step
 }
 
 // shiftPins returns e with every `@` pin moved by shift milliseconds

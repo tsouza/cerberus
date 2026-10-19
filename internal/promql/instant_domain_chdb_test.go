@@ -27,14 +27,21 @@ import (
 
 const instantDomainMetric = "instant_domain_probe"
 
+// instantDomainDemoMetric is the metric the rejection-parity lane seeds,
+// which the nested-subquery trigger query reads.
+const instantDomainDemoMetric = "demo_http_requests_total"
+
 // instantDomainSeed holds a sample just before instantDomainEval, one in
 // 1811, before the earliest instant a parsed DateTime64 string names, and
 // two minutes apart near each edge of the stored range: 2262-04-11 23:40
-// and 23:45 (job "edge"), 1677-09-21 00:20 and 00:25 (job "floor"), and
+// and 23:45 (job "edge", for instantDomainMetric and for
+// instantDomainDemoMetric), 1677-09-21 00:20 and 00:25 (job "floor"), and
 // one at 1677-09-21 00:13 (job "first"), seventeen seconds after the
 // earliest stored instant.
 const instantDomainSeed = "" +
 	"CREATE TABLE otel_metrics_gauge (MetricName String, Attributes Map(String, String), TimeUnix DateTime64(9), Value Float64) " +
+	"ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);\n" +
+	"CREATE TABLE otel_metrics_sum (MetricName String, Attributes Map(String, String), TimeUnix DateTime64(9), Value Float64) " +
 	"ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);\n" +
 	"INSERT INTO otel_metrics_gauge VALUES\n" +
 	"    ('" + instantDomainMetric + "', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 2.0),\n" +
@@ -43,7 +50,10 @@ const instantDomainSeed = "" +
 	"    ('" + instantDomainMetric + "', map('job', 'edge'), fromUnixTimestamp64Nano(toInt64(9223371900000000000)), 6.0),\n" +
 	"    ('" + instantDomainMetric + "', map('job', 'floor'), fromUnixTimestamp64Nano(toInt64(-9223371600000000000)), 5.0),\n" +
 	"    ('" + instantDomainMetric + "', map('job', 'floor'), fromUnixTimestamp64Nano(toInt64(-9223371300000000000)), 7.0),\n" +
-	"    ('" + instantDomainMetric + "', map('job', 'first'), fromUnixTimestamp64Nano(toInt64(-9223372020000000000)), 9.0);\n"
+	"    ('" + instantDomainMetric + "', map('job', 'first'), fromUnixTimestamp64Nano(toInt64(-9223372020000000000)), 9.0);\n" +
+	"INSERT INTO otel_metrics_sum VALUES\n" +
+	"    ('" + instantDomainDemoMetric + "', map('job', 'edge'), fromUnixTimestamp64Nano(toInt64(9223371600000000000)), 4.0),\n" +
+	"    ('" + instantDomainDemoMetric + "', map('job', 'edge'), fromUnixTimestamp64Nano(toInt64(9223371900000000000)), 6.0);\n"
 
 var (
 	instantDomainEval = time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
@@ -386,6 +396,122 @@ func TestInstantDomainParity_ChDB(t *testing.T) {
 			}
 			if rangeMode && instantDomainInstantOnlyCases[tc.name] {
 				continue
+			}
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				runHandWrittenParity(t, instantDomainSeed, tc.query, tc.eval, tc.rows, rangeMode)
+			})
+		}
+	}
+}
+
+// TestInstantDomainParity_NestedRegions_ChDB pins, against the Prometheus
+// reference engine, subqueries whose region holds a nested subquery or an
+// `@ start()` / `@ end()` pin and whose instants leave the DateTime64(9)
+// range: past its ceiling, before its floor, and at a pin Prometheus
+// evaluates at a wrapped instant.
+func TestInstantDomainParity_NestedRegions_ChDB(t *testing.T) {
+	noLabels := map[string]string{}
+	edge := map[string]string{"job": "edge"}
+	api := map[string]string{"job": "api"}
+	floor := map[string]string{"job": "floor"}
+	five := []instantDomainRow{idRow(noLabels, idConst(5))}
+	// afterAPISample is an evaluation instant whose range-mode start, two
+	// minutes earlier, still follows the job "api" sample at 23:59.
+	afterAPISample := instantDomainEval.Add(90 * time.Second)
+	cases := []struct {
+		name  string
+		query string
+		eval  time.Time
+		rows  []instantDomainRow
+	}{
+		// The rejection-parity trigger: a nested grid reading the stored
+		// samples at 23:40 and 23:45 from a pin past the ceiling.
+		{
+			"trigger_nested_reads_past_ceiling", `max_over_time(max_over_time(` + instantDomainDemoMetric + `[5m:1m])[1h:1m] @ 9223373836.854)`, instantDomainEval,
+			[]instantDomainRow{idRow(edge, idConst(6))},
+		},
+		{
+			"nested_count_reads_past_ceiling", `sum_over_time(count_over_time(` + instantDomainMetric + `{job="edge"}[5m:1m])[1h:1m] @ 9223373836.854)`, instantDomainEval,
+			// From 23:40 to 23:49 the 23:40 or 23:45 sample is in the
+			// lookback. The outer points from 23:40 to 23:53 each count
+			// those of the ten inner points within their 5m window.
+			[]instantDomainRow{idRow(edge, idConst(1+2+3+4+5+5+5+5+5+5+4+3+2+1))},
+		},
+		{
+			"nested_reads_below_floor", `max_over_time(max_over_time(` + instantDomainMetric + `{job="floor"}[5m:1m])[30m:1m] @ -9223371000)`, instantDomainNearFloor,
+			[]instantDomainRow{idRow(floor, idConst(7))},
+		},
+		// The issue's repros: a constant nested grid past the ceiling, and
+		// one under a pin Prometheus evaluates in 1754.
+		{
+			"nested_ts_of_last_past_ceiling", `max_over_time(ts_of_last_over_time(vector(1)[2m:1m])[5m:1m] @ 10000000000)`, instantDomainEval,
+			[]instantDomainRow{idRow(noLabels, idConst(9999999960))},
+		},
+		{
+			"parenthesised_nested_ts_of_last_past_ceiling", `max_over_time((ts_of_last_over_time(vector(1)[2m:1m]))[5m:1m] @ 10000000000)`, instantDomainEval,
+			[]instantDomainRow{idRow(noLabels, idConst(9999999960))},
+		},
+		{
+			"nested_timestamp_at_wrapped_pin", `max_over_time(max_over_time(timestamp(vector(1))[2m:7s])[5m:1m] @ -62135596800)`, instantDomainEval,
+			[]instantDomainRow{idRow(noLabels, idConst(-6795364625))},
+		},
+		// A pin in 1675 evaluated from 1677: the last 7s multiple at or
+		// before the pin, a whole minute. From 2026 Prometheus evaluates
+		// it in 2259, at its wrapped instant.
+		{
+			"nested_timestamp_before_floor", `max_over_time(max_over_time(timestamp(vector(1))[2m:7s])[5m:1m] @ -9300000000)`, instantDomainNearFloor,
+			[]instantDomainRow{idRow(noLabels, idConst(-9300000003))},
+		},
+		{
+			"nested_timestamp_before_floor_wrapped", `max_over_time(max_over_time(timestamp(vector(1))[2m:7s])[5m:1m] @ -9300000000)`, instantDomainEval,
+			[]instantDomainRow{idRow(noLabels, idConst(9146744040))},
+		},
+		// A pinned subquery nested in a shifted region evaluates at its own
+		// pin.
+		{
+			"pinned_nested_in_region_past_ceiling", `max_over_time(max_over_time(timestamp(vector(1))[2m:1m] @ 1767225600)[5m:1m] @ 10000000000)`, instantDomainEval,
+			[]instantDomainRow{idRow(noLabels, idConst(1767225600))},
+		},
+		// An unpinned nested grid crossing the floor from a request near it.
+		{
+			"nested_grid_near_floor", `max_over_time(max_over_time(timestamp(vector(1))[5m:1m])[3m:1m])`, instantDomainNearFloor,
+			[]instantDomainRow{idRow(noLabels, idStepSeconds)},
+		},
+		// Request pins inside a region past the ceiling, below the floor
+		// and at a wrapped pin.
+		{
+			"end_pin_in_grid_past_ceiling", `count_over_time((` + instantDomainMetric + `{job="api"} @ end())[5m:1m] @ 10000000000)`, instantDomainEval,
+			[]instantDomainRow{idRow(api, idConst(5))},
+		},
+		{
+			"start_pin_in_grid_past_ceiling", `count_over_time((` + instantDomainMetric + `{job="api"} @ start())[5m:1m] @ 10000000000)`, afterAPISample,
+			[]instantDomainRow{idRow(api, idConst(5))},
+		},
+		{
+			"end_pin_in_grid_before_floor", `count_over_time((` + instantDomainMetric + `{job="api"} @ end())[5m:1m] @ -9300000000)`, instantDomainEval,
+			[]instantDomainRow{idRow(api, idConst(5))},
+		},
+		// A request pin in a grid that reads stored samples past the
+		// ceiling, which the whole query is shifted to answer.
+		{
+			"end_pin_in_framed_grid_past_ceiling", `count_over_time((` + instantDomainMetric + `{job="edge"} and on() (` + instantDomainMetric + `{job="api"} @ end()))[1h:1m] @ 9223373836.854)`, instantDomainEval,
+			[]instantDomainRow{idRow(edge, idConst(10))},
+		},
+		{
+			"start_pin_in_framed_grid_past_ceiling", `count_over_time((` + instantDomainMetric + `{job="edge"} and on() (` + instantDomainMetric + `{job="api"} @ start()))[1h:1m] @ 9223373836.854)`, afterAPISample,
+			[]instantDomainRow{idRow(edge, idConst(10))},
+		},
+		{"end_pin_in_wrapped_grid", `count_over_time((vector(1) and on() (` + instantDomainMetric + ` @ end()))[5m:1m] @ -62135596800)`, instantDomainEval, five},
+		{
+			"end_pin_subquery_in_grid_past_ceiling", `max_over_time(max_over_time(timestamp(vector(1))[2m:1m] @ end())[5m:1m] @ 10000000000)`, afterAPISample,
+			[]instantDomainRow{idRow(noLabels, idConst(1767225660))},
+		},
+	}
+	for _, rangeMode := range []bool{false, true} {
+		for _, tc := range cases {
+			mode := "instant"
+			if rangeMode {
+				mode = "range"
 			}
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
 				runHandWrittenParity(t, instantDomainSeed, tc.query, tc.eval, tc.rows, rangeMode)
