@@ -303,6 +303,18 @@ func lowerExpHistogramValuedOrForwardedOperand(expr parser.Expr, s schema.Metric
 // below (a mixed `or`'s own arms are never a drop-family binop), so the
 // ordering cannot shadow either sibling.
 //
+// A WRAPPER composed directly over a mixed `or` — `label_replace((a or
+// b), ...)`, `sum((a or b))`, `(a or b) * 2` and every other recognizer
+// [lowerMixedRelationFamily] dispatches (cerberus issue #3823) — routes
+// through that same dispatch the query root uses, rather than through the
+// generic [lower], which would reach the wrapper's inner `or` through a
+// non-root [lowerVectorSetOp] and reject the float/histogram pair. Each
+// recognizer authorizes its own wrapper over its direct mixed `or` through
+// its own policy row; this set op's consumption of the resulting plan is
+// authorized at the existing-plan site for `family`, exactly as for an
+// operand the generic path lowered. The bare mixed `or` is checked first,
+// above, so it keeps the operand-site admission `family` names.
+//
 // Every other operand — including a FLOAT-valued function that merely
 // reads a histogram selector as its own argument, like
 // histogram_quantile(), or an operand with no histogram involvement at
@@ -317,6 +329,15 @@ func lowerVectorSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx, f
 		return lowerWithBespokeMixedOperandPolicy(family, mixedOperandAdmission, func() (chplan.Node, error) {
 			return lowerMixedExpHistogramSetOp(b, s, ctx)
 		})
+	}
+	if plan, ok, err := lowerMixedRelationFamily(expr, s, ctx); ok {
+		if err != nil {
+			return nil, err
+		}
+		if err := requireMixedPlanPolicy(plan, family, mixedBespoke); err != nil {
+			return nil, err
+		}
+		return plan, nil
 	}
 	if dropped, ok, err := lowerExpHistogramDroppingShape(expr, s, ctx); ok {
 		return dropped, err
