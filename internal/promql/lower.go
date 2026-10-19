@@ -214,6 +214,9 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 // [wrapMetadataFullRange], which emits a closed `Timestamp >= start AND
 // Timestamp <= end` filter (a zero start/end omits that bound — whole-
 // table scan, matching reference defaults) with NO staleness collapse.
+// Every start and end is answered: a bound before 1900, where a time
+// literal would clamp, compares Unix nanoseconds instead
+// ([metadataWindowPredicate]).
 func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
@@ -2128,7 +2131,8 @@ func wrapInstantLatestPerSeries(scan chplan.Node, pred chplan.Expr, anchor evalA
 //
 //   - WINDOW: a closed `Timestamp >= start AND Timestamp <= end` filter
 //     (each bound omitted when zero — a no-bound side scans the whole
-//     table, matching reference Prometheus's min/max-retention default),
+//     table, matching reference Prometheus's min/max-retention default —
+//     and compared exactly otherwise, see [metadataWindowPredicate]),
 //     NOT the instant `(end - 5m, end]` LWR + staleness window. A series
 //     whose only sample sits early in [start,end] must still surface.
 //   - COLLAPSE: `any(TimeUnix)` / `any(Value)` per series — we only need
@@ -2176,10 +2180,13 @@ func wrapMetadataFullRange(scan chplan.Node, pred chplan.Expr, start, end time.T
 }
 
 // metadataWindowPredicate ANDs the closed `[start,end]` metadata window
-// onto pred. Each bound is omitted when zero — a no-bound side scans the
-// whole table, matching reference Prometheus's min/max-retention default.
-// Returns nil when there is nothing to filter on (no matchers, no window),
-// so callers emit no Filter at all.
+// onto pred. A zero bound means "no bound on that side", matching
+// reference Prometheus's min/max-retention default. Every other bound is
+// compared exactly through [chplan.AtLeastBound] / [chplan.AtMostBound]: a
+// bound no stored sample lies beyond is omitted, and a bound before the
+// earliest instant a time literal names exactly compares Unix
+// nanoseconds instead. Returns nil when there is nothing to filter on (no
+// matchers, no effective window), so callers emit no Filter at all.
 //
 // Shared by [wrapMetadataFullRange] and [wrapMetadataCatalog] so the two
 // metadata seams can never drift on window semantics.
@@ -2192,29 +2199,14 @@ func metadataWindowPredicate(pred chplan.Expr, start, end time.Time, s schema.Me
 		}
 		combined = &chplan.Binary{Op: chplan.OpAnd, Left: combined, Right: b}
 	}
-	if !start.IsZero() {
-		addBound(&chplan.Binary{
-			Op:    chplan.OpGe,
-			Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
-			Right: metadataBoundExpr(start),
-		})
+	ts := &chplan.ColumnRef{Name: s.TimestampColumn}
+	if b, ok := chplan.AtLeastBound(start); ok && !start.IsZero() {
+		addBound(b.Expr(ts))
 	}
-	if !end.IsZero() {
-		addBound(&chplan.Binary{
-			Op:    chplan.OpLe,
-			Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
-			Right: metadataBoundExpr(end),
-		})
+	if b, ok := chplan.AtMostBound(end); ok && !end.IsZero() {
+		addBound(b.Expr(ts))
 	}
 	return combined
-}
-
-// metadataBoundExpr renders a metadata window bound as the canonical
-// [chplan.TimeLiteral] — the same literal [anchorBaseExpr] emits for an
-// absolute eval anchor, so the metadata window bounds read identically to
-// the instant-query bounds in emitted SQL.
-func metadataBoundExpr(t time.Time) chplan.Expr {
-	return chplan.TimeLiteral(t)
 }
 
 // wrapRangeLatestPerSeries builds the per-step LWR for a vector

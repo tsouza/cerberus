@@ -2,10 +2,11 @@ package promql
 
 import (
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
+
+	"github.com/tsouza/cerberus/internal/chplan"
 )
 
 // The instant domain is the span of absolute instants the lowering writes
@@ -15,12 +16,12 @@ import (
 // than 1900-01-01 to that day, and int64 nanoseconds end at
 // 2262-04-11T23:47:16.854775807Z.
 var (
-	instantDomainMin = time.Date(1900, time.January, 1, 0, 0, 0, 0, time.UTC)
-	instantDomainMax = time.Unix(0, math.MaxInt64).UTC()
+	instantDomainMin = chplan.TimeLiteralMin
+	instantDomainMax = chplan.StorageMaxTime
 
 	// storageMin is the earliest instant a DateTime64(9) storage column
 	// holds. [instantDomainMax] is also the latest.
-	storageMin = time.Unix(0, math.MinInt64).UTC()
+	storageMin = chplan.StorageMinTime
 )
 
 // emptyVectorThreshold is the comparison threshold of

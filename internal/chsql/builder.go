@@ -483,6 +483,20 @@ func (b *Builder) DateTime64Lit(t time.Time) {
 	b.sb.WriteString(")")
 }
 
+// TimeBound returns a Frag rendering the closed time bound tb over the
+// DateTime64(9) expression x, with every constant inline:
+//
+//	<x> <op> parseDateTime64BestEffort('<T>Z', 9)
+//	toUnixTimestamp64Nano(<x>) <op> <N>
+//
+// It is the inline counterpart of [chplan.TimeBound.Expr].
+func TimeBound(x Frag, tb chplan.TimeBound) Frag {
+	if tb.Nanos {
+		return binOp(string(tb.Op), Call(string(chplan.FnToUnixNanos), x), InlineLit(tb.N))
+	}
+	return binOp(string(tb.Op), x, func(b *Builder) { b.DateTime64Lit(tb.T) })
+}
+
 // Lambda appends "(<p1>, <p2>, ...) -> " and runs body() to write the
 // lambda body. CH lambdas are bare (no `function` keyword); used by
 // mapFilter, arrayMap, arrayFilter, etc. Args bound inside body land

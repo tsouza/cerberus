@@ -2,6 +2,8 @@ package promql
 
 import (
 	"context"
+	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +38,82 @@ func TestLowerMetadataRange_AppliesTheWindow(t *testing.T) {
 		if !strings.Contains(sql, bound) {
 			t.Errorf("metadata lowering over [start, end] has no %q bound:\n%s", bound, sql)
 		}
+	}
+}
+
+// TestLowerMetadataRange_ExactBoundsBefore1900 pins the window bounds a
+// metadata lowering emits outside the span a time literal names exactly.
+// ClickHouse parses a literal earlier than 1900-01-01 as that day, so a
+// bound between 1677-09-21 and 1900 compares Unix nanoseconds instead, and
+// a bound no DateTime64(9) sample can lie beyond is omitted.
+func TestLowerMetadataRange_ExactBoundsBefore1900(t *testing.T) {
+	t.Parallel()
+	expr, err := parser.NewParser(parser.Options{}).ParseExpr(`up`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start1800 := time.Date(1800, time.January, 1, 0, 0, 0, 0, time.UTC)
+	end1850 := time.Date(1850, time.January, 1, 0, 0, 0, 0, time.UTC)
+	modern := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	const (
+		nanosGe   = "(toUnixTimestamp64Nano(`TimeUnix`) >= ?)"
+		nanosLe   = "(toUnixTimestamp64Nano(`TimeUnix`) <= ?)"
+		literalGe = "(`TimeUnix` >= parseDateTime64BestEffort("
+		literalLe = "(`TimeUnix` <= parseDateTime64BestEffort("
+	)
+	cases := []struct {
+		name       string
+		start, end time.Time
+		present    []string
+		absent     []string
+		args       []int64
+	}{
+		{
+			name: "both_bounds_before_1900", start: start1800, end: end1850,
+			present: []string{nanosGe, nanosLe}, absent: []string{literalGe, literalLe},
+			args: []int64{start1800.UnixNano(), end1850.UnixNano()},
+		},
+		{
+			name: "start_before_1900", start: start1800, end: modern,
+			present: []string{nanosGe, literalLe}, absent: []string{literalGe, nanosLe},
+			args: []int64{start1800.UnixNano()},
+		},
+		{
+			name: "start_at_1900", start: time.Date(1900, time.January, 1, 0, 0, 0, 0, time.UTC), end: modern,
+			present: []string{literalGe, literalLe}, absent: []string{nanosGe, nanosLe},
+		},
+		{
+			name: "bounds_beyond_storage", start: time.Unix(0, math.MinInt64), end: time.Unix(0, math.MaxInt64),
+			absent: []string{nanosGe, nanosLe, literalGe, literalLe},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			plan, err := LowerMetadataRange(context.Background(), expr, schema.DefaultOTelMetrics(), c.start, c.end)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sql, args, err := chsql.Emit(context.Background(), plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range c.present {
+				if !strings.Contains(sql, want) {
+					t.Errorf("SQL has no %q:\n%s", want, sql)
+				}
+			}
+			for _, unwanted := range c.absent {
+				if strings.Contains(sql, unwanted) {
+					t.Errorf("SQL has %q:\n%s", unwanted, sql)
+				}
+			}
+			for _, n := range c.args {
+				if !slices.Contains(args, any(n)) {
+					t.Errorf("args %v do not bind the nanosecond bound %d", args, n)
+				}
+			}
+		})
 	}
 }
 
