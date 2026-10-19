@@ -91,9 +91,10 @@ the reference backend answers and cerberus rejects. Two are argument shapes;
 the third is a PromQL query that reads stored samples over a window or
 subquery grid needing an instant outside 1677-09-21T00:12:43.145224192Z to
 2262-04-11T23:47:16.854775807Z, the int64 nanoseconds ClickHouse's
-DateTime64(9) holds, or that answers a range vector whose sample timestamps
-lie outside it. A query whose grid leaves that range without reading a
-sample there is answered. Each
+DateTime64(9) holds, that answers a range vector whose sample timestamps
+lie outside it, or whose grid outside it holds a nested subquery or an
+`@ start()` / `@ end()` pin. Any other query whose grid leaves that range
+without reading a sample there is answered. Each
 is one `class: "divergence"` row in
 [`test/rejection-parity/catalogue/`](../test/rejection-parity/catalogue),
 carries an open GitHub issue tracking its closure, and is re-verified against

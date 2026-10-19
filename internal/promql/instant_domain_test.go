@@ -2,6 +2,9 @@ package promql
 
 import (
 	"context"
+	"math"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -232,6 +235,14 @@ func TestInstantDomain_KeepsUnrepresentableReads(t *testing.T) {
 		{"rate_near_floor", `rate(m[5m])`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:09:00Z"},
 		// A grid inside another subquery is not shifted on its own.
 		{"nested_grid_near_floor", `max_over_time(max_over_time(timestamp(vector(1))[5m:1m])[3m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:11:00Z"},
+		// A region holding a nested subquery or a request pin is neither
+		// shifted nor evaluated at a wrapped instant.
+		{"nested_grid_past_ceiling", `max_over_time(ts_of_last_over_time(vector(1)[2m:1m])[5m:1m] @ 10000000000)`, instantDomainEvalEnd, "2286-11-20T17:46:40Z"},
+		{"parenthesised_nested_grid_past_ceiling", `max_over_time((ts_of_last_over_time(vector(1)[2m:1m]))[5m:1m] @ 10000000000)`, instantDomainEvalEnd, "2286-11-20T17:46:40Z"},
+		{"nested_grid_at_wrapped_pin", `max_over_time(max_over_time(timestamp(vector(1))[2m:7s])[5m:1m] @ -62135596800)`, instantDomainEvalEnd, "0001-01-01T00:00:00Z"},
+		{"request_pin_in_grid_past_ceiling", `count_over_time((m{job="api"} @ end())[5m:1m] @ 10000000000)`, instantDomainEvalEnd, "2286-11-20T17:46:40Z"},
+		{"request_pin_in_wrapped_grid", `count_over_time((vector(1) and on() (m @ end()))[5m:1m] @ -62135596800)`, instantDomainEvalEnd, "0001-01-01T00:00:00Z"},
+		{"request_pin_in_grid_near_floor", `count_over_time((vector(1) and on() (m @ end()))[5m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:09:00Z"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -488,6 +499,10 @@ func TestEvalAnchor_ZeroTimePinIsAnchored(t *testing.T) {
 // TestInstantDomain_EmitsNoOutOfDomainInstant pins that the SQL for every
 // answered shape carries no literal from a century DateTime64(9) cannot
 // hold, and no string literal before 1900, which ClickHouse would clamp.
+// nanosInstantPattern matches an instant the SQL names by its Unix
+// nanoseconds, capturing them.
+var nanosInstantPattern = regexp.MustCompile(`fromUnixTimestamp64Nano\(toInt64\((-?\d+)\)\)`)
+
 func TestInstantDomain_EmitsNoOutOfDomainInstant(t *testing.T) {
 	for _, q := range []string{
 		`count_over_time(m[5m:1m] @ -62135596800)`,
@@ -514,9 +529,16 @@ func TestInstantDomain_EmitsNoOutOfDomainInstant(t *testing.T) {
 				}
 			}
 			for _, text := range texts {
-				for _, bad := range []string{"'0001-", "'0000-", "'-", "'18", "'17", "'2286-", "'2263-"} {
+				for _, bad := range []string{"'0001-", "'0000-", "'-", "'18", "'17", "'16", "'2286-", "'2263-"} {
 					if strings.Contains(text, bad) {
 						t.Fatalf("%s %q: SQL carries an out-of-domain literal %s… in:\n%s", m.name, q, bad, text)
+					}
+				}
+				// An instant before 1900 is written as Unix nanoseconds; one
+				// clamped to the int64 bound would name the wrong instant.
+				for _, match := range nanosInstantPattern.FindAllStringSubmatch(text, -1) {
+					if match[1] == strconv.FormatInt(math.MinInt64, 10) || match[1] == strconv.FormatInt(math.MaxInt64, 10) {
+						t.Fatalf("%s %q: SQL carries an instant clamped to the int64 bound %s in:\n%s", m.name, q, match[0], text)
 					}
 				}
 			}

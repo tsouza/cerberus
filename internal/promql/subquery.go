@@ -1295,9 +1295,7 @@ func lowerOuterRangeFnOverSubquery(
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
-	if shift, ok := ctx.domain.shiftOf(sub); ok {
-		rw.TimeShiftMillis = shift
-	}
+	rw.TimeShiftMillis = ctx.domain.gridShift(sub)
 
 	// predict_linear / holt_winters / quantile_over_time carry extra
 	// scalar arguments beyond the subquery itself; thread them onto rw
@@ -3449,9 +3447,7 @@ func lowerSubqueryOverCallSubquery(
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
-	if shift, ok := ctx.domain.shiftOf(sub); ok {
-		rw.TimeShiftMillis = shift
-	}
+	rw.TimeShiftMillis = ctx.domain.gridShift(innerSub)
 	// Same extra-scalar binding as the matrix-selector sibling: the fn of
 	// a nested subquery (`quantile_over_time(0.5,
 	// rate(m[1m])[5m:30s])[1h:5m]`) carries its scalars in the same

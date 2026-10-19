@@ -115,6 +115,10 @@ func TestInstantDomainParity_ChDB(t *testing.T) {
 			[]instantDomainRow{idRow(noLabels, idConst(9999999960))},
 		},
 		{
+			"past_ceiling_parenthesised_timestamp", `max_over_time((timestamp(vector(1)))[5m:1m] @ 10000000000)`, instantDomainEval,
+			[]instantDomainRow{idRow(noLabels, idConst(9999999960))},
+		},
+		{
 			"past_ceiling_time", `max_over_time(vector(time())[5m:1m] @ 10000000000)`, instantDomainEval,
 			[]instantDomainRow{idRow(noLabels, idConst(9999999960))},
 		},
