@@ -10,7 +10,9 @@
       "evidence": {
         "guard": null,
         "callers": [
-          "checkInstantDomain"
+          "checkInstantDomain",
+          "checkRootGrid",
+          "fitWindow"
         ]
       },
       "since": "2026-10-18"

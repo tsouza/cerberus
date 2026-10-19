@@ -14,4 +14,48 @@ CREATE TABLE otel_metrics_sum (
 INSERT INTO otel_metrics_sum VALUES
     ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 40.0);
 -- expected_rows --
-[]
+[
+  ["", {"job": "a"}, "2026-01-01T00:00:01Z", 1]
+]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "a"
+[3] string = "2026-01-01 00:00:01.000000000Z"
+[4] int64 = 9
+[5] float64 = 1
+[6] string = ""
+[7] string = "Map(String,String)"
+[8] int64 = 9
+[9] float64 = 0
+[10] float64 = -1
+[11] int64 = 0
+-- args_optimized --
+[0] string = ""
+[1] string = "job"
+[2] string = "a"
+[3] string = "2026-01-01 00:00:01.000000000Z"
+[4] int64 = 9
+[5] float64 = 1
+[6] string = ""
+[7] string = "Map(String,String)"
+[8] int64 = 9
+[9] float64 = 0
+[10] float64 = -1
+[11] int64 = 0
+-- chplan --
+Project ["" AS MetricName, FnMap("job", "a") AS Attributes, FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9) AS TimeUnix, 1 AS Value]
+  Filter predicate=(_cerb_n = 0)
+    Aggregate groupBy=[] funcs=[FnCount() AS _cerb_n]
+      Filter predicate=(Value < -1)
+        Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, 0 AS Value]
+          OneRow
+-- settings --
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=0
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+-- sql --
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, parseDateTime64BestEffort(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT * FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT 1)) WHERE (`Value` < toFloat64(?)))) WHERE (`_cerb_n` = ?))
+-- sql_optimized --
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, parseDateTime64BestEffort(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT * FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT 1)) WHERE (`Value` < toFloat64(?)))) WHERE (`_cerb_n` = ?))
