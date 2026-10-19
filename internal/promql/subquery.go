@@ -1933,7 +1933,7 @@ func threadOuterRangeFnScalars(
 			}
 			rw.ScalarExprs = []chplan.Expr{computed}
 		}
-	case holtWintersFunctionName, "double_exponential_smoothing":
+	case "holt_winters", "double_exponential_smoothing":
 		if len(outer.Args) != 3 {
 			return nil, false, fmt.Errorf("promql: holt_winters expects 3 arguments, got %d", len(outer.Args))
 		}
