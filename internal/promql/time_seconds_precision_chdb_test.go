@@ -10,6 +10,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,18 +49,14 @@ const secondsPrecisionSampleOffset = 150 * time.Second
 // secondsPrecisionSeed stores one sample per evaluation instant, each in
 // its own series labelled with the instant's name.
 func secondsPrecisionSeed() string {
-	seed := "CREATE TABLE otel_metrics_gauge (MetricName String, Attributes Map(String, String), TimeUnix DateTime64(9), Value Float64) " +
-		"ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);\n" +
-		"INSERT INTO otel_metrics_gauge VALUES\n"
-	for i, ev := range secondsPrecisionInstants {
-		sep := ",\n"
-		if i == len(secondsPrecisionInstants)-1 {
-			sep = ";\n"
-		}
-		seed += "    ('" + secondsPrecisionMetric + "', map('at', '" + ev.name + "'), fromUnixTimestamp64Nano(toInt64(" +
-			strconv.FormatInt(ev.at.Add(-secondsPrecisionSampleOffset).UnixNano(), 10) + ")), 1.0)" + sep
+	rows := make([]string, 0, len(secondsPrecisionInstants))
+	for _, ev := range secondsPrecisionInstants {
+		rows = append(rows, "    ('"+secondsPrecisionMetric+"', map('at', '"+ev.name+"'), fromUnixTimestamp64Nano(toInt64("+
+			strconv.FormatInt(ev.at.Add(-secondsPrecisionSampleOffset).UnixNano(), 10)+")), 1.0)")
 	}
-	return seed
+	return "CREATE TABLE otel_metrics_gauge (MetricName String, Attributes Map(String, String), TimeUnix DateTime64(9), Value Float64) " +
+		"ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);\n" +
+		"INSERT INTO otel_metrics_gauge VALUES\n" + strings.Join(rows, ",\n") + ";\n"
 }
 
 // secondsPrecisionSeries is secondsPrecisionSeed as the reference engine
