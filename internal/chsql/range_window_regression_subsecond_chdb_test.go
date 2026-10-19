@@ -26,12 +26,12 @@
 //     second 0, which is OUTSIDE the left-open window (0,300], so the sample is
 //     DROPPED. Floored membership + floored x.
 //   - fan-out (portable, prod default): raw-ts membership KEEPS the +0.5s
-//     sample, but the SLR x-axis is dateDiff('second', anchor, ts) — also
-//     floored. Raw membership + floored x.
+//     sample, and the SLR x-axis is the fractional seconds from the anchor.
+//     Raw membership + fractional x.
 //   - true Prometheus: raw-ts membership + FRACTIONAL-second x. This is what the
 //     native path computes if fed the raw DateTime64(9) axis and scaled to
 //     per-second (proven empirically: raw-ns deriv * 1e9 == the closed-form
-//     least-squares slope). NEITHER shipping path equals it on sub-second data.
+//     least-squares slope). The fan-out equals it; the native path does not.
 //
 // The pinned invariants (version-robust — relationships, not brittle float
 // constants):
@@ -39,11 +39,10 @@
 //   - native != fan-out by more than float-order noise: the membership
 //     divergence is REAL, not a rounding artefact. This is the limitation, made
 //     a hard fact.
-//   - fan-out is STRICTLY CLOSER to true Prometheus than native is: fan-out only
-//     floors the x-axis, while native ALSO drops a whole sample, so the fan-out
-//     (the prod default) is the more-correct path here. This is the reassurance
-//     that the default-off native path is the one carrying the gap, not the
-//     shipping default.
+//   - fan-out equals true Prometheus within float-order noise, and native does
+//     not: native floors the x-axis AND drops a whole sample. This is the
+//     reassurance that the default-off native path is the one carrying the gap,
+//     not the shipping default.
 //
 // Substrate: exercised on CI. The native aggregates are present on the pinned
 // chdb-core v26.5.0 (CH 26.5.1.1) `chdb` lane; the feature-detect guard keeps
@@ -135,7 +134,7 @@ func TestNativeTSGridDeriv_SubSecondMembershipPin(t *testing.T) {
 
 	t.Logf("sub-second deriv three-way split at %s:", cell.anchor)
 	t.Logf("  native (whole-second axis, floored membership) = %.20g", nv)
-	t.Logf("  fan-out (raw membership, floored x)            = %.20g", fv)
+	t.Logf("  fan-out (raw membership, fractional x)         = %.20g", fv)
 	t.Logf("  true Prometheus (raw membership, fractional x) = %.20g", truth)
 
 	// Invariant 1: the membership divergence is REAL, not float-order noise.
@@ -146,14 +145,13 @@ func TestNativeTSGridDeriv_SubSecondMembershipPin(t *testing.T) {
 			nv, fv, subSecondFloatCloseEps)
 	}
 
-	// Invariant 2: the prod-default fan-out is STRICTLY closer to true Prometheus
-	// than the default-off native path — native carries the gap, not the default.
-	distNative := math.Abs(nv - truth)
-	distFanout := math.Abs(fv - truth)
-	if !(distFanout < distNative) {
-		t.Fatalf("fan-out is NOT closer to true Prometheus than native: "+
-			"|fanout-truth|=%.3g |native-truth|=%.3g — the pinned relationship (fan-out is "+
-			"the more-correct path on sub-second data) no longer holds", distFanout, distNative)
+	// Invariant 2: the prod-default fan-out IS true Prometheus — raw membership
+	// and a fractional-second x-axis — so the default-off native path carries the
+	// whole gap. A fan-out x-axis floored to whole seconds misses it by ~2.5e-4.
+	if distFanout := math.Abs(fv - truth); distFanout > subSecondFloatCloseEps {
+		t.Fatalf("fan-out (%.20g) differs from true Prometheus (%.20g) by %.3g, beyond "+
+			"float noise (%g) — the fan-out regression no longer fits on the fractional-second "+
+			"x-axis Prometheus uses", fv, truth, distFanout, subSecondFloatCloseEps)
 	}
 }
 

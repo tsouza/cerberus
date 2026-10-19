@@ -19,8 +19,9 @@ a different outlook per function, and that is what fixes the label:
   Prometheus's deriv) and is numerically sound at production ns magnitude —
   the least-squares slope is a centered difference, not an absolute-magnitude
   sum, so it does not overrun float64's exact range. It is kept on the
-  whole-second axis only to stay bit-identical to the (floored) fan-out;
-  moving it to raw-ns would improve correctness at the cost of that guard.
+  whole-second axis only to stay bit-identical to the fan-out on
+  whole-second-aligned samples; moving it to raw-ns would improve correctness
+  at the cost of that guard.
 - `predict_linear`: raw-ns is genuinely broken — its result is an *absolute*
   forecast (`intercept + slope*(anchor + offset)`) evaluated at ~10¹⁸ ns,
   where catastrophic cancellation destroys all precision, and no scale trick

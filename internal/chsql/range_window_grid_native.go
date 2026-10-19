@@ -324,11 +324,12 @@ var nativeTSGridFn = map[string]nativeTSGridAgg{
 //     second, so the slope is per-second — byte-identical to the fan-out.
 //   - predict_linear -> the same whole-second axis makes it byte-match the
 //     fan-out too. The fan-out computes BOTH regression functions through
-//     windowPairsSLRFrag, whose x-axis is dateDiff('second', anchor, ts) — a
-//     whole-second grid. Matching that exact quantisation (rather than the raw
-//     sub-second column) is what makes native == fan-out == Prometheus for
-//     whole-second-aligned samples; on the raw axis predict_linear only diverged
-//     by float-order noise, but the whole-second axis makes it exact.
+//     windowPairsSLRFrag, whose x-axis is the fractional seconds from the
+//     anchor to each sample. For whole-second-aligned samples and anchors
+//     those are whole numbers, so the whole-second axis here feeds the
+//     aggregate the same x values and native == fan-out == Prometheus; on the
+//     raw axis predict_linear only diverged by float-order noise, but the
+//     whole-second axis makes it exact.
 //   - rate is window-normalised (its result is an increase divided by the
 //     window seconds param, not a raw per-tick slope) and changes/resets are
 //     integer counts, so all three are timestamp-tick-invariant and keep the
@@ -359,9 +360,9 @@ var nativeTSGridFn = map[string]nativeTSGridAgg{
 //     sum, so it does NOT overrun float64's exact range (empirically raw-ns * 1e9
 //     equals the closed-form slope to full precision; see the sub-second pin).
 //     The whole-second axis is kept only because it stays BIT-IDENTICAL to the
-//     fan-out, whose own x-axis is the floored dateDiff('second', anchor, ts) —
-//     the raw-ns form diverges from that fan-out by ~2 ULP (the 1e9 multiply
-//     rounds). Switching deriv to raw-ns would thus improve correctness but
+//     fan-out on whole-second-aligned samples, where the fan-out's x values are
+//     whole numbers — the raw-ns form diverges from that fan-out by ~2 ULP (the
+//     1e9 multiply rounds). Switching deriv to raw-ns would thus improve correctness but
 //     require relaxing the bit-identical guard, and would not promote the family
 //     on its own (see predict_linear).
 //   - predict_linear: raw-ns is genuinely BROKEN, not merely a guard mismatch.

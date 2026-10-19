@@ -17,8 +17,8 @@ import (
 // nativeGridTsAxisFrag decides what that axis is per function, and the choice
 // is NOT cosmetic. The regression pair (deriv, predict_linear) is handed a
 // whole-second `toDateTime(<ts>)` axis so the emitted values stay BIT-IDENTICAL
-// to the fan-out lowering, whose own x-axis is the floored
-// `dateDiff('second', anchor, ts)`; the rest of the family reads the raw
+// to the fan-out lowering on whole-second-aligned samples, where the fan-out's
+// fractional-seconds x-axis holds whole numbers; the rest of the family reads the raw
 // DateTime64 column. See nativeGridTsAxisFrag's own doc for the numerical
 // argument behind each half.
 //

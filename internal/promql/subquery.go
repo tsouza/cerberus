@@ -1309,6 +1309,14 @@ func lowerOuterRangeFnOverSubquery(
 	if err != nil {
 		return nil, err
 	}
+	if rw.Func == "predict_linear" {
+		// Prometheus forecasts from the evaluation instant, which the
+		// subquery's offset puts past the right edge of the window the
+		// regression is fitted at (see [instantPredictLinearShift]). A
+		// pinned subquery never reaches here: [lowerCallOverSubquery]
+		// answers it empty, as Prometheus does.
+		advancePredictLinearHorizon(rw, offsetSecondsExpr(rw.Offset))
+	}
 
 	// Resolve the per-series `__name__` ONCE, before the arms split: all
 	// three need the same answer, and the spine widening it performs must

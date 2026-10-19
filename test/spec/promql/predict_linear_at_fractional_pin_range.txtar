@@ -1,0 +1,36 @@
+# `predict_linear(m[10m] @ <23:58:00.5>, 60)` over query_range. Every step
+# reads the same pinned window (23:48:00.5, 23:58:00.5], which holds the two
+# samples on the line value = seconds since 23:52:00, and forecasts 60s past
+# its own evaluation instant: 540 at 00:00:00, rising by 60 per step. A
+# regression fitted on whole seconds from the pin answers 0.5 less at every
+# step.
+
+-- query.promql --
+predict_linear(machine_load[10m] @ 1767225480.5, 60)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Two samples on the line value = seconds since 23:52:00, then one far off it.
+INSERT INTO otel_metrics_gauge VALUES
+    ('machine_load', map('job', 'api'), toDateTime64('2025-12-31 23:52:00', 9), 0.0),
+    ('machine_load', map('job', 'api'), toDateTime64('2025-12-31 23:56:16', 9), 256.0),
+    ('machine_load', map('job', 'api'), toDateTime64('2026-01-01 00:03:30', 9), 9000.0);
+-- expected_rows --
+[
+  [{"job": "api"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 540],
+  [{"job": "api"}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 600],
+  [{"job": "api"}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 660],
+  [{"job": "api"}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 720],
+  [{"job": "api"}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 780],
+  [{"job": "api"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 840]
+]

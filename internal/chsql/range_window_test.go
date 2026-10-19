@@ -92,7 +92,7 @@ func TestRangeWindowGapFunctionsEmit(t *testing.T) {
 				// Uses `window_pairs` directly (the pairs-path emitter)
 				// so the per-sample timestamps are available for the
 				// dateDiff x-axis projection.
-				"dateDiff('second'",
+				"dateDiff('nanosecond'",
 				"length(`window_pairs`) >= 2",
 			},
 		},

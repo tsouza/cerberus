@@ -1,0 +1,28 @@
+# `predict_linear(m[10m] offset 2m, 60)` as an instant query at 00:00:01.
+# The offset moves the window to (23:48:01, 23:58:01], which holds the two
+# samples on the line value = seconds since 23:52:00, but reference
+# Prometheus still forecasts from the evaluation instant: the line at
+# 00:00:01 + 60s = 541. Forecasting from the window's right edge answers 421.
+
+-- query.promql --
+predict_linear(machine_load[10m] offset 2m, 60)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Two samples on the line value = seconds since 23:52:00, then one far off it.
+INSERT INTO otel_metrics_gauge VALUES
+    ('machine_load', map('job', 'api'), toDateTime64('2025-12-31 23:52:00', 9), 0.0),
+    ('machine_load', map('job', 'api'), toDateTime64('2025-12-31 23:56:16', 9), 256.0),
+    ('machine_load', map('job', 'api'), toDateTime64('2026-01-01 00:03:30', 9), 9000.0);
+-- expected_rows --
+[
+  [{"job": "api"}, 541]
+]

@@ -25,12 +25,12 @@ the portable SQL path. The capabilities:
   `simpleLinearRegression`/`arrayReduce` fan-out. `predict_linear` threads its
   whole-second horizon `t` as the aggregate's 5th parametric arg; a computed or
   fractional `t` stays on the fan-out. Both regression aggregates are fed a
-  whole-second timestamp axis (`toDateTime(ts)`) that matches the fan-out's
-  `dateDiff('second', anchor, ts)` regression x-axis — without it
+  whole-second timestamp axis (`toDateTime(ts)`) — without it
   `timeSeriesDerivToGrid` computes a per-nanosecond slope (1e9× too small) off
-  the raw `DateTime64(9)` column. The whole-second axis is chosen so that native
-  stays **bit-identical to the fan-out**, whose own x-axis is that floored
-  `dateDiff('second', …)`. With the matching axis native == fan-out is
+  the raw `DateTime64(9)` column. The fan-out's regression x-axis is the
+  fractional seconds from the anchor to each sample, which are whole numbers
+  for whole-second-aligned samples, so there the whole-second axis keeps native
+  **bit-identical to the fan-out**. With the matching axis native == fan-out is
   **bit-identical for whole-second-aligned samples**, proven directly on the chDB
   CI substrate by the dual-emit parity tests (`range_window_deriv_chdb_test.go` /
   `range_window_predict_linear_chdb_test.go`): the substrate is ClickHouse 26.5,
