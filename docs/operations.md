@@ -3919,9 +3919,9 @@ time bound and evaluation anchor is emitted as
 `parseDateTime64BestEffort('YYYY-MM-DD HH:MM:SS.NNNNNNNNNZ', 9)`, whose
 `Z` designator pins the literal to UTC, and the remaining time
 predicates bind epoch values (`fromUnixTimestamp64Nano(...)` and
-friends). A metadata window bound before 1900-01-01, which that literal
-cannot name, compares `toUnixTimestamp64Nano(TimeUnix)` with Int64
-nanoseconds. Day-boundary functions (`toStartOfDay` over the DELTA-prefix
+friends). A metadata or exemplar window bound before 1900-01-01, which
+that literal cannot name, compares `toUnixTimestamp64Nano(TimeUnix)` with
+Int64 nanoseconds. Day-boundary functions (`toStartOfDay` over the DELTA-prefix
 buckets and their materialized view) evaluate in the ClickHouse server's
 timezone, on the query side and the ingest side alike. PromQL's date
 functions (`hour()`, `day_of_week()`, …) evaluate in UTC.

@@ -3,6 +3,8 @@ package chsql_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -29,8 +31,7 @@ func TestEmitQueryExemplars_GoldenSQL(t *testing.T) {
 	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
 
 	// One predicate variant reused across the four-table fan-out.
-	// Args from the predicate bind first; the time bounds (2 args each
-	// — formatted string + precision 9) follow in source order.
+	// Only the predicate binds args; the time bounds render inline.
 	mkPredicate := func() chsql.Frag {
 		return chsql.Eq(chsql.Col(s.MetricNameColumn), chsql.Lit("http_request_duration_seconds"))
 	}
@@ -52,8 +53,8 @@ func TestEmitQueryExemplars_GoldenSQL(t *testing.T) {
 		"`Exemplars`.`FilteredAttributes` AS `attrs_arr`, " +
 		"arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i` " +
 		"FROM `%TABLE%` " +
-		"WHERE (`MetricName` = ?) AND `TimeUnix` >= parseDateTime64BestEffort(?, ?) " +
-		"AND `TimeUnix` <= parseDateTime64BestEffort(?, ?) " +
+		"WHERE (`MetricName` = ?) AND `TimeUnix` >= parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) " +
+		"AND `TimeUnix` <= parseDateTime64BestEffort('2026-01-01 01:00:00.000000000Z', 9) " +
 		"AND length(`Exemplars`.`TimeUnix`) > 0)"
 
 	cases := []struct {
@@ -87,14 +88,10 @@ func TestEmitQueryExemplars_GoldenSQL(t *testing.T) {
 				t.Errorf("SQL mismatch\nwant: %s\n got: %s", wantSQL, sql)
 			}
 
-			// Arg order: predicate metric-name literal, then start
-			// (formatted string + precision 9), then end (same).
+			// The only arg is the predicate's metric-name literal: the
+			// time bounds render inline.
 			wantArgs := []any{
 				"http_request_duration_seconds",
-				"2026-01-01 00:00:00.000000000Z",
-				int64(9),
-				"2026-01-01 01:00:00.000000000Z",
-				int64(9),
 			}
 			if len(args) != len(wantArgs) {
 				t.Fatalf("Args length = %d; want %d (args=%v)", len(args), len(wantArgs), args)
@@ -241,23 +238,19 @@ func TestEmitQueryExemplars_PredicateWoven(t *testing.T) {
 	// last) and the parenthesisation of the predicate as a single
 	// WHERE conjunct.
 	wantSub := "WHERE (`MetricName` = ? AND `Attributes`[?] = ?) " +
-		"AND `TimeUnix` >= parseDateTime64BestEffort(?, ?) " +
-		"AND `TimeUnix` <= parseDateTime64BestEffort(?, ?) " +
+		"AND `TimeUnix` >= parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) " +
+		"AND `TimeUnix` <= parseDateTime64BestEffort('2026-01-01 01:00:00.000000000Z', 9) " +
 		"AND length(`Exemplars`.`TimeUnix`) > 0"
 	if !strings.Contains(sql, wantSub) {
 		t.Errorf("SQL missing expected WHERE shape\nwant substring: %s\n           got: %s", wantSub, sql)
 	}
 
-	// Arg order: MetricName literal, Attributes key, Attributes value,
-	// start (string + 9), end (string + 9).
+	// Arg order: MetricName literal, Attributes key, Attributes value.
+	// The time bounds render inline.
 	wantArgs := []any{
 		"http_request_duration_seconds",
 		"job",
 		"api",
-		"2026-01-01 00:00:00.000000000Z",
-		int64(9),
-		"2026-01-01 01:00:00.000000000Z",
-		int64(9),
 	}
 	if len(args) != len(wantArgs) {
 		t.Fatalf("Args length = %d; want %d (args=%v)", len(args), len(wantArgs), args)
@@ -297,19 +290,14 @@ func TestEmitQueryExemplars_NilPredicate(t *testing.T) {
 		t.Fatalf("EmitQueryExemplars: %v", err)
 	}
 
-	wantSub := "WHERE `TimeUnix` >= parseDateTime64BestEffort(?, ?) " +
-		"AND `TimeUnix` <= parseDateTime64BestEffort(?, ?) " +
+	wantSub := "WHERE `TimeUnix` >= parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) " +
+		"AND `TimeUnix` <= parseDateTime64BestEffort('2026-01-01 01:00:00.000000000Z', 9) " +
 		"AND length(`Exemplars`.`TimeUnix`) > 0"
 	if !strings.Contains(sql, wantSub) {
 		t.Errorf("SQL missing expected WHERE shape\nwant substring: %s\n           got: %s", wantSub, sql)
 	}
-	// No predicate args; just the two time bounds.
-	wantArgs := []any{
-		"2026-01-01 00:00:00.000000000Z",
-		int64(9),
-		"2026-01-01 01:00:00.000000000Z",
-		int64(9),
-	}
+	// No predicate and inline time bounds: nothing binds.
+	wantArgs := []any{}
 	if len(args) != len(wantArgs) {
 		t.Fatalf("Args length = %d; want %d (args=%v)", len(args), len(wantArgs), args)
 	}
@@ -407,18 +395,12 @@ func TestEmitQueryExemplarsUnion_JoinsArms(t *testing.T) {
 		t.Errorf("arms rendered out of order:\n%s", sql)
 	}
 
-	// Args bind in arm order: each arm contributes its predicate literal
-	// followed by its two time bounds (formatted string + precision 9).
+	// Args bind in arm order: each arm contributes its predicate literal;
+	// the time bounds render inline.
 	wantArgs := []any{
 		"http_request_duration_seconds",
-		"2026-01-01 00:00:00.000000000Z", int64(9),
-		"2026-01-01 01:00:00.000000000Z", int64(9),
 		"http_request_duration_seconds_count",
-		"2026-01-01 00:00:00.000000000Z", int64(9),
-		"2026-01-01 01:00:00.000000000Z", int64(9),
 		"http_request_duration_seconds_count",
-		"2026-01-01 00:00:00.000000000Z", int64(9),
-		"2026-01-01 01:00:00.000000000Z", int64(9),
 	}
 	if len(args) != len(wantArgs) {
 		t.Fatalf("Args length = %d; want %d (args=%v)", len(args), len(wantArgs), args)
@@ -507,8 +489,9 @@ func TestEmitQueryExemplarsUnion_SeriesName(t *testing.T) {
 		}
 	}
 
-	// Per arm: [series name], predicate literal, start (2 args), end (2 args).
-	const argsPerUnnamedArm = 5
+	// Per arm: [series name], predicate literal. The time bounds render
+	// inline.
+	const argsPerUnnamedArm = 1
 	want := []any{"http_request_duration_seconds_bucket", "http_request_duration_seconds"}
 	if len(args) != 2*(argsPerUnnamedArm+1)+argsPerUnnamedArm {
 		t.Fatalf("got %d args, want %d: %v", len(args), 2*(argsPerUnnamedArm+1)+argsPerUnnamedArm, args)
@@ -523,5 +506,53 @@ func TestEmitQueryExemplarsUnion_SeriesName(t *testing.T) {
 	}
 	if got := args[2*(argsPerUnnamedArm+1)]; got != "http_request_duration_seconds" {
 		t.Errorf("third arm's first arg = %v, want its predicate literal (no series name)", got)
+	}
+}
+
+// TestEmitQueryExemplars_ExactBoundsBefore1900 pins the time bounds the
+// exemplar window emits outside the span a time literal names exactly.
+// ClickHouse parses a literal earlier than 1900-01-01 as that day, so a
+// bound between 1677-09-21 and 1900 compares Unix nanoseconds, and a bound
+// no DateTime64(9) sample can lie beyond is omitted.
+func TestEmitQueryExemplars_ExactBoundsBefore1900(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	start1800 := time.Date(1800, time.January, 1, 0, 0, 0, 0, time.UTC)
+	end1850 := time.Date(1850, time.January, 1, 0, 0, 0, 0, time.UTC)
+	modern := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name       string
+		start, end time.Time
+		where      string
+	}{
+		{
+			name: "both_before_1900", start: start1800, end: end1850,
+			where: fmt.Sprintf("WHERE toUnixTimestamp64Nano(`TimeUnix`) >= %d AND toUnixTimestamp64Nano(`TimeUnix`) <= %d AND length(",
+				start1800.UnixNano(), end1850.UnixNano()),
+		},
+		{
+			name: "start_before_1900", start: start1800, end: modern,
+			where: fmt.Sprintf("WHERE toUnixTimestamp64Nano(`TimeUnix`) >= %d AND `TimeUnix` <= parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) AND length(",
+				start1800.UnixNano()),
+		},
+		{
+			name: "bounds_at_storage_edges", start: time.Unix(0, math.MinInt64), end: time.Unix(0, math.MaxInt64),
+			where: "WHERE length(",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			sql, args, _, err := chsql.EmitQueryExemplars(context.Background(), s.SumTable, nil, c.start, c.end, s)
+			if err != nil {
+				t.Fatalf("EmitQueryExemplars: %v", err)
+			}
+			if !strings.Contains(sql, c.where) {
+				t.Errorf("SQL has no %q:\n%s", c.where, sql)
+			}
+			if len(args) != 0 {
+				t.Errorf("args = %v, want none: every bound renders inline", args)
+			}
+		})
 	}
 }

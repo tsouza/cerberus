@@ -56,8 +56,8 @@ import (
 //	        arrayJoin(arrayEnumerate(`Exemplars`.`TimeUnix`)) AS `i`
 //	    FROM `<exemplarsTable>`
 //	    WHERE <predicate>
-//	      AND `TimeUnix` >= parseDateTime64BestEffort(?, ?)
-//	      AND `TimeUnix` <= parseDateTime64BestEffort(?, ?)
+//	      AND `TimeUnix` >= <start bound>
+//	      AND `TimeUnix` <= <end bound>
 //	      AND length(`Exemplars`.`TimeUnix`) > 0
 //	)
 //
@@ -65,10 +65,12 @@ import (
 // attrs_arr, i) bare — without backticks — matching the convention
 // the existing exemplars / range-window emitters use for
 // emitter-pinned synthetic alias references via BareIdent. The time
-// bounds bind as parameterised parseDateTime64BestEffort(?, ?) calls — the
-// first `?` is the UTC timestamp string with its `Z` designator, the second is the
-// precision constant 9 — mirroring the bind shape PromQL lowering
-// produces in internal/promql/modifiers.go::anchorBaseExpr.
+// bounds render inline through [TimeBound], in the exact form
+// [chplan.AtLeastBound] / [chplan.AtMostBound] give them — the same forms
+// the Prometheus metadata endpoints use: usually
+// parseDateTime64BestEffort('<UTC>Z', 9), a toUnixTimestamp64Nano
+// comparison for a bound before 1900, and nothing for a bound no stored
+// sample lies beyond.
 //
 // The inner subquery applies the matcher predicate, time-bounds the
 // scan, and drops rows whose Exemplars Nested column is empty before
@@ -268,11 +270,11 @@ func queryExemplarsSelect(
 		err := fmt.Errorf("%w: schema.Metrics.TimestampColumn is empty", ErrUnsupported)
 		return nil, err
 	}
-	// A zero bound is rejected rather than formatted: dateTime64Frag would
-	// render Go's zero time as the literal `0001-01-01 00:00:00.000000000`,
-	// a silently-unbounded lower edge (or an empty-by-construction upper
-	// edge) that reads as a real window in the emitted SQL. The HTTP
-	// handler already rejects a missing/unparseable start or end
+	// A zero bound is rejected rather than bounded: Go's zero time is
+	// 0001-01-01, so as a lower edge it would silently drop the bound and
+	// as an upper edge it would empty the window, either way reading as a
+	// real request. The HTTP handler already rejects a missing or
+	// unparseable start or end
 	// (internal/api/prom/exemplars.go::handleQueryExemplars); this guard
 	// closes the same hole for any other caller of the emitter.
 	if start.IsZero() || end.IsZero() {
@@ -304,9 +306,15 @@ func queryExemplarsSelect(
 		From(physicalTableFrag(exemplarsTable))
 
 	// Predicate composition: (matcher_predicate) AND
-	// (TimeUnix >= parseDateTime64BestEffort(start, 9)) AND
-	// (TimeUnix <= parseDateTime64BestEffort(end, 9)) AND
+	// (TimeUnix >= start) AND (TimeUnix <= end) AND
 	// (length(Exemplars.TimeUnix) > 0).
+	//
+	// Each time bound takes the exact form [chplan.AtLeastBound] /
+	// [chplan.AtMostBound] gives it, rendered by [TimeBound]: a bound no
+	// stored sample lies beyond is omitted, a bound before 1900 (where a
+	// time literal clamps) compares toUnixTimestamp64Nano(TimeUnix) with
+	// Int64 nanoseconds, and any other bound is an inline
+	// parseDateTime64BestEffort literal.
 	//
 	// The matcher predicate is rendered first so it lands in argument
 	// position 0; the time bounds and the non-empty-exemplars guard
@@ -319,12 +327,14 @@ func queryExemplarsSelect(
 	if predicate != nil {
 		where = append(where, Paren(predicate))
 	}
-	where = append(
-		where,
-		Gte(Col(s.TimestampColumn), dateTime64Frag(start)),
-		Lte(Col(s.TimestampColumn), dateTime64Frag(end)),
-		Gt(Call("length", tsField), InlineLit(int64(0))),
-	)
+	ts := Col(s.TimestampColumn)
+	if b, ok := chplan.AtLeastBound(start); ok {
+		where = append(where, TimeBound(ts, b))
+	}
+	if b, ok := chplan.AtMostBound(end); ok {
+		where = append(where, TimeBound(ts, b))
+	}
+	where = append(where, Gt(Call("length", tsField), InlineLit(int64(0))))
 	inner.Where(where...)
 
 	// Outer SELECT — picks each parallel-array element by the
@@ -353,24 +363,4 @@ func queryExemplarsSelect(
 		From(inner.Frag())
 
 	return outer, nil
-}
-
-// dateTime64Frag returns a Frag emitting `parseDateTime64BestEffort(?, ?)`
-// with the time formatted by [chplan.FormatTimeLiteral] and the precision
-// constant 9 bound as a second positional argument. Matches the bind
-// pattern the promql lowering produces for time-bound predicates
-// ([chplan.TimeLiteral], via internal/promql/modifiers.go::anchorBaseExpr),
-// so the args section in fixtures across the codebase stays uniform: a
-// string "2026-01-01 00:00:00.000000000Z" followed by an int64 9.
-//
-// It formats whatever it is handed, including Go's zero time — the
-// bound is validated by its one caller, queryExemplarsSelect, which
-// rejects a zero start or end with ErrUnsupported before reaching here,
-// so this never renders `0001-01-01 00:00:00.000000000`.
-func dateTime64Frag(t time.Time) Frag {
-	return Call(
-		string(chplan.FnParseDateTime64BestEffort),
-		Lit(chplan.FormatTimeLiteral(t)),
-		Lit(int64(nanoScale)),
-	)
 }
