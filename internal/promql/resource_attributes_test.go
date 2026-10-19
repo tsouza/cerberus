@@ -150,6 +150,29 @@ func TestDedicatedResourceLabelExcluded(t *testing.T) {
 	}
 }
 
+// TestExcludedDedicatedKeys_UnsetColumnSkipsOnlyItsKey pins that a
+// dedicated key whose column the schema leaves unset is skipped without
+// ending the walk: a registry key after it whose column is configured is
+// still excluded, in both spellings.
+func TestExcludedDedicatedKeys_UnsetColumnSkipsOnlyItsKey(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	keys := []dedicatedResourceKey{
+		{otelKey: "host.name", column: func(schema.Metrics) string { return "" }},
+		{otelKey: "service.name", column: func(s schema.Metrics) string { return s.ServiceNameColumn }},
+	}
+	got := excludedDedicatedKeys(keys, s)
+	want := map[string]struct{}{"service.name": {}, "service_name": {}}
+	if len(got) != len(want) {
+		t.Fatalf("excludedDedicatedKeys = %v, want %v", got, want)
+	}
+	for key := range want {
+		if _, ok := got[key]; !ok {
+			t.Errorf("excludedDedicatedKeys = %v, missing %q", got, key)
+		}
+	}
+}
+
 // TestMergeResourceAttributesExpr_NoColumnIsBareAttributes pins the
 // custom-schema opt-out: clearing ResourceAttributesColumn collapses the
 // merge to the bare Attributes ColumnRef so legacy emit is byte-stable.
