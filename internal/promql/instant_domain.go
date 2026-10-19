@@ -28,21 +28,23 @@ const maxDurationMillis = int64(math.MaxInt64 / time.Millisecond)
 const emptyVectorThreshold = -1
 
 // instantDomainError rejects a query that needs the instant t, which lies
-// outside the instant domain.
+// outside the instant domain. The message is built here, as a fmt.Errorf
+// call, so the rejection-parity catalogue finds the site.
 func instantDomainError(t time.Time) error {
-	return &outsideDomainError{at: t.UTC()}
+	t = t.UTC()
+	return &outsideDomainError{at: t, err: fmt.Errorf("promql: the query needs instant %s, outside the range cerberus supports (%s to %s): ClickHouse cannot represent it exactly",
+		t.Format(time.RFC3339Nano), instantDomainMin.Format(time.RFC3339Nano), instantDomainMax.Format(time.RFC3339Nano))}
 }
 
 // outsideDomainError is the rejection [instantDomainError] returns.
 type outsideDomainError struct {
 	// at is the instant outside the domain the query needs.
 	at time.Time
+	// err carries the message.
+	err error
 }
 
-func (e *outsideDomainError) Error() string {
-	return fmt.Sprintf("promql: the query needs instant %s, outside the range cerberus supports (%s to %s): ClickHouse cannot represent it exactly",
-		e.at.Format(time.RFC3339Nano), instantDomainMin.Format(time.RFC3339Nano), instantDomainMax.Format(time.RFC3339Nano))
-}
+func (e *outsideDomainError) Error() string { return e.err.Error() }
 
 // domainEnv is the span of instants one expression is evaluated at.
 type domainEnv struct {
