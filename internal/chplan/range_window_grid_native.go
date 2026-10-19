@@ -165,9 +165,8 @@ func (r *RangeWindowGridNative) Children() []Node { return []Node{r.Input} }
 
 // InputWindow returns the bounds the INPUT relation must cover for this node
 // to answer every anchor in [start, end]. Each anchor reduces the samples in
-// `(anchor - Offset - Range, anchor - Offset]`, so the oldest anchor reaches
-// back Offset+Range past start; Offset enters with its sign, so a forward
-// (negative) offset widens by less.
+// `(anchor - Offset - Range, anchor - Offset]`, so the input covers
+// [OffsetSpan] of [start, end].
 //
 // It is the SINGLE owner of that arithmetic for this node kind — the twin of
 // [RangeWindow.InputWindow] — read by every pass that has to predict, widen or
@@ -181,7 +180,7 @@ func (r *RangeWindowGridNative) InputWindow(start, end time.Time) (time.Time, ti
 	if r.Step <= 0 {
 		return start, end
 	}
-	return start.Add(-r.Offset - r.Range), end
+	return OffsetSpan(start, end, r.Offset, r.Range)
 }
 
 func (r *RangeWindowGridNative) Equal(other Node) bool {

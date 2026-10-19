@@ -1,0 +1,26 @@
+# An offset on the outer subquery moves every step the nested subquery is
+# evaluated at back by an hour.
+
+-- query.promql --
+max_over_time(max_over_time(timestamp(vector(1))[5m:1m])[3m:1m] offset 1h)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 22:57:30', 9), 8),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 22:59:00', 9), 7),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:57:00', 9), 1),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 2),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 3);
+-- expected_rows --
+[]

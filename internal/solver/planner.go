@@ -559,7 +559,8 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		// Project over the subquery's OWN RangeWindow grid, so this walk
 		// really does reach a carrier whose predicted bounds it decides.
 		p.recordGridCarrier(v, depth, sig)
-		p.walkNode(v.Input, predStart.Add(-v.Offset-v.Range), predEnd, v.Step, depth+1, sig)
+		inStart, inEnd := chplan.OffsetSpan(predStart, predEnd, v.Offset, v.Range)
+		p.walkNode(v.Input, inStart, inEnd, v.Step, depth+1, sig)
 		return
 
 	case *chplan.Aggregate:
@@ -1305,7 +1306,8 @@ func (p *Planner) walkRangeBucketFanout(v *chplan.RangeBucketFanout, predStart, 
 	// nesting boundary, so anything a further-nested carrier inside
 	// v.Input predicts a grid against must see itself as nested, not as
 	// depth 0.
-	p.walkNode(v.Input, predStart.Add(-v.Offset-v.Lookback), predEnd, v.Step, depth+1, sig)
+	inStart, inEnd := v.InputWindow(predStart, predEnd)
+	p.walkNode(v.Input, inStart, inEnd, v.Step, depth+1, sig)
 }
 
 // walkRangeBucketGridNative sweeps the ClickHouse-native sibling of
@@ -1330,7 +1332,8 @@ func (p *Planner) walkRangeBucketGridNative(v *chplan.RangeBucketGridNative, pre
 	// depth+1 mirrors every other GridCarrier arm: this node's own grid is a
 	// nesting boundary, so anything further nested inside v.Input sees itself
 	// as nested rather than as depth 0.
-	p.walkNode(v.Input, predStart.Add(-v.Offset-v.Range), predEnd, v.Step, depth+1, sig)
+	inStart, inEnd := chplan.OffsetSpan(predStart, predEnd, v.Offset, v.Range)
+	p.walkNode(v.Input, inStart, inEnd, v.Step, depth+1, sig)
 }
 
 // checkRangeBucketFanoutGrid is checkRangeLWRGrid for RangeBucketFanout —
@@ -1618,7 +1621,8 @@ func scalarInteriorAnchorCompatible(n chplan.Node, predStart, predEnd time.Time,
 		if v.Step <= 0 || v.Step != predStep || !rangeLWRGridMatches(v, predStart, predEnd) {
 			return false
 		}
-		return scalarInteriorAnchorCompatible(v.Input, predStart.Add(-v.Offset-v.Lookback), predEnd, predStep)
+		inStart, inEnd := chplan.OffsetSpan(predStart, predEnd, v.Offset, v.Lookback)
+		return scalarInteriorAnchorCompatible(v.Input, inStart, inEnd, predStep)
 	case *chplan.RangeWindowGridNative:
 		// The native timeSeries*ToGrid family, held to the SAME equality as the
 		// fan-out RangeWindow above — in its two-bound form, since the node has

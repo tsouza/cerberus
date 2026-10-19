@@ -1011,13 +1011,21 @@ const rangeWindowSchemaTimestampColumn = chplan.DefaultSampleTimestampColumn
 // regardless of which reducer produced it — mirrors
 // emitFusedMatrixSubquery's equivalent branch. See #2172.
 func projectAnchorAsTimestampColumn(q *QueryBuilder, r *chplan.RangeWindow) {
-	switch {
-	case r.TimestampColumn == "":
-		return
-	case r.TimestampColumn != RangeWindowAnchorAlias:
-		q.Select(As(gridAnchorFrag(r), r.TimestampColumn))
+	if alias := anchorTimestampAlias(r); alias != "" {
+		q.Select(As(gridAnchorFrag(r), alias))
+	}
+}
+
+// anchorTimestampAlias is the name [projectAnchorAsTimestampColumn]
+// projects the anchor under, or "" when it projects none.
+func anchorTimestampAlias(r *chplan.RangeWindow) string {
+	switch r.TimestampColumn {
+	case "":
+		return ""
+	case RangeWindowAnchorAlias:
+		return rangeWindowSchemaTimestampColumn
 	default:
-		q.Select(As(gridAnchorFrag(r), rangeWindowSchemaTimestampColumn))
+		return r.TimestampColumn
 	}
 }
 
@@ -1117,6 +1125,14 @@ func bindSampleTsAlias(innerSub Frag, tsCol string) (Frag, string) {
 // holding a repeated value at two different timestamps — a flat or plateauing
 // series, the ordinary case — counted short (cerberus issue #2935).
 //
+// The alias is the one [projectAnchorAsTimestampColumn] actually projects,
+// not r.TimestampColumn: a window stacked over a subquery names its
+// timestamp column `anchor_ts` and projects the anchor as the schema
+// timestamp column, which is also the column its input carries each
+// sample's timestamp in. Comparing against r.TimestampColumn there let
+// `uniqExact(TimeUnix, Value)` read the anchor, so count_over_time over a
+// subquery's steps counted distinct values instead of distinct steps.
+//
 // fanoutTsSource covers the adjacent NESTED-matrix case, where the INPUT
 // already exposes its timestamps under the fanout's own `anchor_ts` output
 // name. That predicate cannot cover this one: here the collision is created
@@ -1130,7 +1146,7 @@ func bindSampleTsAlias(innerSub Frag, tsCol string) (Frag, string) {
 func regroupSampleTsSource(
 	innerSub Frag, tsCol string, r *chplan.RangeWindow, agg overTimeDirectAgg,
 ) (Frag, string) {
-	if !agg.ReadsTimestamp || r.TimestampColumn == "" || tsCol != r.TimestampColumn {
+	if alias := anchorTimestampAlias(r); !agg.ReadsTimestamp || alias == "" || tsCol != alias {
 		return innerSub, tsCol
 	}
 	return bindSampleTsAlias(innerSub, tsCol)
@@ -3500,7 +3516,9 @@ func (e *emitter) emitRangeWindowOverTimeDirectInstant(r *chplan.RangeWindow, ag
 // sampleAnchorFanoutFrag) is kept; the per-(series, anchor) regroup
 // applies the direct aggregate INSTEAD of rebuilding the window array via
 // groupArray + arraySort + window_vals. Anchors whose window is empty
-// produce no group (matching the array path's empty-window drop).
+// produce no group (matching the array path's empty-window drop). A
+// StepAlign window anchors on the epoch-aligned grid ([stepAlignGrid]), as
+// the windowed-array matrix emitters do.
 //
 // SQL skeleton (with N = OuterRange/Step + 1):
 //
@@ -3517,6 +3535,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg
 	rangeNS := r.Range.Nanoseconds()
 	stepNS := r.Step.Nanoseconds()
 	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
 		return err

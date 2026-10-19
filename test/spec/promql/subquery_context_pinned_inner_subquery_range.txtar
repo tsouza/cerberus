@@ -1,0 +1,27 @@
+# A pin on a subquery nested in another fixes the inner subquery's grid
+# at its pin at every step of the outer grid: each step counts the five
+# steps of the pinned grid.
+
+-- query.promql --
+max_over_time(count_over_time(vector(1)[5m:1m] @ 1767200000)[10m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 22:57:30', 9), 8),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 22:59:00', 9), 7),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:57:00', 9), 1),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 2),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 3);
+-- expected_rows --
+[]

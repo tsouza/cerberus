@@ -91,7 +91,6 @@ func idRow(labels map[string]string, at func(time.Time) float64) instantDomainRo
 // TestInstantDomainParity_ChDB pins cerberus issue #3824's shapes against
 // the Prometheus reference engine, with the answers written out by hand.
 func TestInstantDomainParity_ChDB(t *testing.T) {
-	const fixturePermissions = 0o600
 	noLabels := map[string]string{}
 	edge := map[string]string{"job": "edge"}
 	floor := map[string]string{"job": "floor"}
@@ -258,47 +257,57 @@ func TestInstantDomainParity_ChDB(t *testing.T) {
 				continue
 			}
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
-				start, step, endpoint := tc.eval, time.Duration(0), "/api/v1/query"
-				if rangeMode {
-					start, step, endpoint = tc.eval.Add(-instantDomainRangeSteps*time.Minute), time.Minute, "/api/v1/query_range"
-				}
-				expr, err := parser.NewParser(parser.Options{EnableExperimentalFunctions: true}).ParseExpr(tc.query)
-				if err != nil {
-					t.Fatal(err)
-				}
-				plan, err := promql.LowerAtRange(context.Background(), expr, schema.DefaultOTelMetrics(), start, tc.eval, step)
-				if err != nil {
-					t.Fatalf("LowerAtRange(%q): %v", tc.query, err)
-				}
-				plan = spec.AssertScanTimeBoundAccepts(t, plan)
-				sql, args, err := chsql.Emit(context.Background(), plan)
-				if err != nil {
-					t.Fatal(err)
-				}
-				sql, cells := instantDomainCells(t, sql, args, tc.rows, start, tc.eval, rangeMode)
-				expected, err := json.Marshal(cells)
-				if err != nil {
-					t.Fatal(err)
-				}
-				archive := &txtar.Archive{Files: []txtar.File{
-					{Name: "query.promql", Data: []byte(tc.query + "\n")},
-					{Name: "parity", Data: []byte("oracle: prometheus\nendpoint: " + endpoint + "\nscope: full\n")},
-					{Name: "seed", Data: []byte(instantDomainSeed)},
-					{Name: "expected_rows", Data: expected},
-				}}
-				path := filepath.Join(t.TempDir(), "instant_domain.txtar")
-				if err := os.WriteFile(path, txtar.Format(archive), fixturePermissions); err != nil {
-					t.Fatal(err)
-				}
-				fixture, err := spec.Load(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				actual := spec.RunRoundTripSQL(t, fixture, sql, args)
-				spec.RunParity(t, fixture, spec.ParityEval{Start: start, End: tc.eval, Step: step}, actual)
+				runHandWrittenParity(t, instantDomainSeed, tc.query, tc.eval, tc.rows, rangeMode)
 			})
 		}
 	}
+}
+
+// runHandWrittenParity lowers query at eval, as an instant query or as a
+// range query over the instantDomainRangeSteps one-minute steps before
+// eval, runs it in chDB over seed, and checks the answer against both the
+// hand-written rows and the Prometheus reference engine.
+func runHandWrittenParity(t *testing.T, seed, query string, eval time.Time, rows []instantDomainRow, rangeMode bool) {
+	t.Helper()
+	const fixturePermissions = 0o600
+	start, step, endpoint := eval, time.Duration(0), "/api/v1/query"
+	if rangeMode {
+		start, step, endpoint = eval.Add(-instantDomainRangeSteps*time.Minute), time.Minute, "/api/v1/query_range"
+	}
+	expr, err := parser.NewParser(parser.Options{EnableExperimentalFunctions: true}).ParseExpr(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := promql.LowerAtRange(context.Background(), expr, schema.DefaultOTelMetrics(), start, eval, step)
+	if err != nil {
+		t.Fatalf("LowerAtRange(%q): %v", query, err)
+	}
+	plan = spec.AssertScanTimeBoundAccepts(t, plan)
+	sql, args, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql, cells := instantDomainCells(t, seed, sql, args, rows, start, eval, rangeMode)
+	expected, err := json.Marshal(cells)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := &txtar.Archive{Files: []txtar.File{
+		{Name: "query.promql", Data: []byte(query + "\n")},
+		{Name: "parity", Data: []byte("oracle: prometheus\nendpoint: " + endpoint + "\nscope: full\n")},
+		{Name: "seed", Data: []byte(seed)},
+		{Name: "expected_rows", Data: expected},
+	}}
+	path := filepath.Join(t.TempDir(), "hand_written_parity.txtar")
+	if err := os.WriteFile(path, txtar.Format(archive), fixturePermissions); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := spec.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := spec.RunRoundTripSQL(t, fixture, sql, args)
+	spec.RunParity(t, fixture, spec.ParityEval{Start: start, End: eval, Step: step}, actual)
 }
 
 // instantDomainCells lays the hand-written answer rows out as the
@@ -311,10 +320,10 @@ func TestInstantDomainParity_ChDB(t *testing.T) {
 // offset and by the shift that moves a grid into ClickHouse's range. No
 // client sees it, so the returned SQL, which the round trip runs, leaves
 // it out whenever TimeUnix is there to report the instant.
-func instantDomainCells(t *testing.T, sql string, args []any, want []instantDomainRow, start, end time.Time, rangeMode bool) (string, [][]any) {
+func instantDomainCells(t *testing.T, seed, sql string, args []any, want []instantDomainRow, start, end time.Time, rangeMode bool) (string, [][]any) {
 	t.Helper()
 	db := spec.OpenChDB(t)
-	spec.ApplySeed(t, db, instantDomainSeed)
+	spec.ApplySeed(t, db, seed)
 	q, a := spec.SubstituteNow64(sql, args)
 	rows, err := db.Query(q, a...)
 	if err != nil {

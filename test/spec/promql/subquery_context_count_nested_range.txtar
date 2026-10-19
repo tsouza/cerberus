@@ -1,0 +1,26 @@
+# count_over_time over a nested subquery counts every step of the inner
+# grid: a 2m window of a 45s grid holds three steps.
+
+-- query.promql --
+max_over_time(count_over_time(vector(1)[2m:45s])[5m:1m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 22:57:30', 9), 8),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 22:59:00', 9), 7),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:57:00', 9), 1),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 2),
+    ('m', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 3);
+-- expected_rows --
+[]

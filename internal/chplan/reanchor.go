@@ -356,7 +356,8 @@ func reanchorRangeBucketGridNative(v *RangeBucketGridNative, start, end time.Tim
 	// spine by that much so every anchor in this shard's sub-grid finds the
 	// samples it needs, including the ones older than the shard's own first
 	// anchor.
-	input, err := reanchor(v.Input, c.Start.Add(-v.Offset-v.Range), c.End)
+	inStart, inEnd := OffsetSpan(c.Start, c.End, v.Offset, v.Range)
+	input, err := reanchor(v.Input, inStart, inEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -433,10 +434,10 @@ func reanchorRangeLWR(v *RangeLWR, start, end time.Time) (Node, error) {
 		c.End = end
 	}
 	// The membership window looks back Offset+Lookback from each anchor;
-	// widen the input spine by that much so every anchor finds its samples.
-	// Offset enters with its sign (a negative offset shifts the window
-	// forward), mirroring the solver-owned sign-aware scan floor.
-	input, err := reanchor(v.Input, c.Start.Add(-v.Offset-v.Lookback), c.End)
+	// widen the input spine to that window's [OffsetSpan] so every anchor
+	// finds its samples.
+	inStart, inEnd := OffsetSpan(c.Start, c.End, v.Offset, v.Lookback)
+	input, err := reanchor(v.Input, inStart, inEnd)
 	if err != nil {
 		return nil, err
 	}

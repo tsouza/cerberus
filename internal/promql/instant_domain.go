@@ -535,10 +535,10 @@ func offsetFits(shift int64) bool {
 // inner expression is e, may be lowered at a grid other than the one its
 // pin or its enclosing evaluation names: a shifted grid, or the wrapped
 // instant Prometheus evaluates a pin at. A region holding a nested
-// subquery, or an `@ start()` or `@ end()` pin, may not: the lowering
-// diverges from Prometheus on both whatever the instants (nested
-// subqueries #3875, #3876, #3877, #3879; request pins #3880), so such a
-// region keeps its rejection.
+// subquery, or an `@ start()` or `@ end()` pin, may not: a request pin
+// names an instant the shift does not move, and neither shape has parity
+// evidence at a shifted grid, so such a region keeps its rejection
+// (#3888).
 func shiftableRegion(e parser.Expr) bool {
 	return !holdsSubquery(e) && !holdsRequestPin(e)
 }

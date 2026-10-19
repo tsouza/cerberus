@@ -1,0 +1,23 @@
+# `@ end()` below a pinned subquery names the request's end, not the
+# subquery's pin: every step of the pinned grid reads the sample before
+# the request's end.
+
+-- query.promql --
+count_over_time((m @ end())[5m:1m] @ 1767000000)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- One sample a minute and twenty seconds before the request's end
+-- (1970-01-01 00:08:20), the instant `@ end()` names.
+INSERT INTO otel_metrics_gauge VALUES
+    ('m', map('job', 'api'), toDateTime64('1970-01-01 00:07:00', 9), 2);
+-- expected_rows --
+[]
