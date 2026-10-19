@@ -398,14 +398,9 @@ func dateFnExpr(name string, unixSeconds, tsRef chplan.Expr) chplan.Expr {
 		return goCivil(unixSeconds).minute()
 	case timestampFunctionName:
 		// `timestamp(v)` returns tsRef as float seconds — NOT a
-		// function of Value. Convert the DateTime64(9) expression to
-		// nanoseconds (Int64) and divide by 1e9 to get fractional
-		// seconds.
-		return &chplan.Binary{
-			Op:    chplan.OpDiv,
-			Left:  &chplan.FuncCall{Fn: chplan.FnToUnixNanos, Args: []chplan.Expr{tsRef}},
-			Right: &chplan.LitFloat{V: float64(chplan.NanoToSecondDivisor)},
-		}
+		// function of Value — computed as Prometheus computes it, over
+		// tsRef's Unix milliseconds ([unixSecondsValue]).
+		return unixSecondsValue(tsRef)
 	}
 	return nil
 }

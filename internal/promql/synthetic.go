@@ -258,16 +258,15 @@ func rewriteAnchorRefs(expr chplan.Expr) chplan.Expr {
 }
 
 // lowerTime implements PromQL `time()`. The function returns the
-// query-evaluation timestamp as a scalar float (Unix seconds, with
-// nanosecond precision retained on the fraction).
+// query-evaluation timestamp as a scalar float: Prometheus's
+// `float64(ts) / 1000` over the instant's Unix milliseconds.
 //
 // Lowered as a single row whose Value column reflects the eval anchor
 // resolved by [LowerAt]: when ctx.end is non-zero we emit a literal
-// `toFloat64(toUnixTimestamp64Nano(<eval_ts>) / 1000000000)`; when it
-// is zero (plain [Lower] without range threading) we fall back to
-// `toUnixTimestamp64Nano(now64(9)) / 1000000000`. CH renders both as
-// Float64; toFloat64 around the integer division would lose nanosecond
-// precision so we wrap toFloat64 around the whole division.
+// `toFloat64(toUnixTimestamp64Milli(<eval_ts>)) / 1000`; when it is zero
+// (plain [Lower] without range threading) we fall back to
+// `toFloat64(toUnixTimestamp64Milli(now64(9))) / 1000` (see
+// [lowerCtx.evalSecondsValue]).
 //
 // The synthesised row's TimeUnix column itself stays at `now64(9)` /
 // the literal eval timestamp — Prom canonicalises this and downstream
@@ -290,26 +289,7 @@ func lowerTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	default:
 		anchor = anchorBaseExpr(evalAnchor{})
 	}
-	if ctx.shifted() {
-		return syntheticScalarVector(ctx.evalSecondsValue(anchor), nil, s, ctx), nil
-	}
-	// toFloat64(toUnixTimestamp64Nano(anchor) / 1000000000) — the
-	// outer toFloat64 widens the integer division to Float64 so the
-	// sub-second fraction (when present) survives the cast.
-	valueExpr := &chplan.FuncCall{
-		Fn: chplan.FnToFloat64,
-		Args: []chplan.Expr{
-			&chplan.Binary{
-				Op: chplan.OpDiv,
-				Left: &chplan.FuncCall{
-					Fn:   chplan.FnToUnixNanos,
-					Args: []chplan.Expr{anchor},
-				},
-				Right: &chplan.LitInt{V: chplan.NanoToSecondDivisor},
-			},
-		},
-	}
-	return syntheticScalarVector(valueExpr, nil, s, ctx), nil
+	return syntheticScalarVector(ctx.evalSecondsValue(anchor), nil, s, ctx), nil
 }
 
 // lowerVector implements PromQL `vector(scalar)`. The function

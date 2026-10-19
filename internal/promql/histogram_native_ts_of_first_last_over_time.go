@@ -284,18 +284,18 @@ func tsOfSelectProjection(fn string, discriminator *chplan.ColumnRef, inner chpl
 //     `if(<kinds> = 2, <ms>, greatest(<ms>, 0))` — the zero default takes
 //     part only where the window lacks one of the two kinds.
 //
-// Each is then reported as [millisToEpochSecondsExpr]'s
-// `toFloat64(<ms>) / 1000`.
+// Each is then reported as [millisSecondsValue]'s `toFloat64(<ms>) / 1000`,
+// Prometheus's `float64(t) / 1000`.
 func tsOfValueExpr(fn string, discriminator *chplan.ColumnRef) chplan.Expr {
 	millis := chplan.Expr(&chplan.FuncCall{Fn: chplan.FnToUnixMillis, Args: []chplan.Expr{&chplan.ColumnRef{Name: tsOfSampleTimestampAlias}}})
 	if fn != tsOfLastOverTimeExpHistFn {
-		return millisToEpochSecondsExpr(millis)
+		return millisSecondsValue(millis)
 	}
 	floored := &chplan.FuncCall{Fn: chplan.FnGreatest, Args: []chplan.Expr{millis, &chplan.LitInt{V: 0}}}
 	if discriminator == nil {
-		return millisToEpochSecondsExpr(floored)
+		return millisSecondsValue(floored)
 	}
-	return millisToEpochSecondsExpr(&chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
+	return millisSecondsValue(&chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 		&chplan.Binary{
 			Op:    chplan.OpEq,
 			Left:  &chplan.ColumnRef{Name: tsOfWindowKindsAlias},
@@ -304,22 +304,4 @@ func tsOfValueExpr(fn string, discriminator *chplan.ColumnRef) chplan.Expr {
 		millis,
 		floored,
 	}})
-}
-
-// millisToEpochSecondsExpr renders `toFloat64(<millis>) / 1000`,
-// Prometheus's `float64(t) / 1000` over the Int64 Unix milliseconds
-// millis — chplan-Expr-level mirror of chsql's
-// [chsql.millisToEpochSecondsFrag], the classic plain-float path's own
-// identical conversion. Truncating a DateTime64(9) to milliseconds before
-// the conversion, rather than dividing a nanosecond count by 1e9, is the
-// correct match for Prometheus's own millisecond-resolution Point.T: a
-// plain nanosecond division would leak sub-millisecond precision from the
-// exp-histogram table's DateTime64(9) column that Prometheus's own
-// int64-millisecond Sample.T never carries.
-func millisToEpochSecondsExpr(millis chplan.Expr) chplan.Expr {
-	return &chplan.Binary{
-		Op:    chplan.OpDiv,
-		Left:  &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{millis}},
-		Right: &chplan.LitFloat{V: float64(millisPerSecond)},
-	}
 }
