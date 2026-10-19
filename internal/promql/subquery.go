@@ -30,12 +30,12 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 	if e.Range <= 0 {
 		return nil, fmt.Errorf("promql: subquery range must be positive, got %s", e.Range)
 	}
+	if e.Step < 0 {
+		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", e.Step)
+	}
 	step := e.Step
 	if step == 0 {
 		step = defaultSubqueryStep
-	}
-	if step < 0 {
-		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", e.Step)
 	}
 
 	// A subquery's inner expression is re-evaluated at every one of its own
@@ -309,6 +309,22 @@ func wrapSubqueryIdentity(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
+	rw, err := subqueryIdentityWindow(sub, inner, step, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return rw, nil
+}
+
+// subqueryIdentityWindow is [wrapSubqueryIdentity] for a caller that goes
+// on to adjust the window itself.
+func subqueryIdentityWindow(
+	sub *parser.SubqueryExpr,
+	inner chplan.Node,
+	step time.Duration,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (*chplan.RangeWindow, error) {
 	anchor, err := subqueryAnchor(sub, ctx)
 	if err != nil {
 		return nil, err
@@ -553,7 +569,7 @@ func subqueryGridCtx(sub *parser.SubqueryExpr, step time.Duration, ctx lowerCtx)
 	}
 	var windowEnd, windowStart time.Time
 	switch {
-	case subqueryPinned(sub) && !anchor.End.IsZero():
+	case subqueryPinned(sub):
 		windowEnd = anchor.End
 		windowStart = anchor.End.Add(-sub.Range)
 	case ctx.rangeMode():
@@ -661,7 +677,9 @@ func epochFloor(t time.Time, step time.Duration) time.Time {
 	stepNS := step.Nanoseconds()
 	ns := t.UTC().UnixNano()
 	floor := ns / stepNS
-	if ns%stepNS != 0 && ns < 0 {
+	// Go's `/` truncates toward zero, and its `%` takes the dividend's
+	// sign: a negative remainder means the quotient was rounded up.
+	if ns%stepNS < 0 {
 		floor--
 	}
 	return time.Unix(0, floor*stepNS).UTC()
@@ -762,12 +780,12 @@ func lowerSubqueryOverInstantTransform(
 	if err != nil {
 		return nil, err
 	}
-	windowed, err := wrapSubqueryIdentity(sub, inner, step, s, ctx)
+	windowed, err := subqueryIdentityWindow(sub, inner, step, s, ctx)
 	if err != nil {
 		return nil, err
 	}
-	if rw, ok := windowed.(*chplan.RangeWindow); ok && valuePreserving {
-		boundStaleMarkerLayoutsToIdentity(rw)
+	if valuePreserving {
+		boundStaleMarkerLayoutsToIdentity(windowed)
 	}
 	if valuePreserving || subqueryIdentityEncodesStaleMarker(call.Func.Name) {
 		return dropStaleLatestSamples(windowed, s), nil
@@ -2286,7 +2304,7 @@ func lowerSubqueryOverAbsent(
 	// above, so the unpinned range check is exactly ctx.rangeMode().)
 	var gridStart, gridEnd time.Time
 	switch {
-	case subqueryPinned(sub) && !anchor.End.IsZero():
+	case subqueryPinned(sub):
 		gridEnd = anchor.End
 		gridStart = anchor.End.Add(-sub.Range)
 	case ctx.rangeMode():
@@ -2457,7 +2475,9 @@ func lowerAbsentOverTimeOverSubquery(
 // subquery evaluates its own window once, at that anchor, instead of
 // following the enclosing query's grid — so it overrides range mode
 // wherever the two disagree. `offset` alone does NOT pin: it shifts the
-// grid rather than replacing it.
+// grid rather than replacing it. A pinned subquery's [subqueryAnchor]
+// always carries a non-zero End: `@ start()` / `@ end()` fail without the
+// request instant they name, and `@ <ts>` names one itself.
 func subqueryPinned(sub *parser.SubqueryExpr) bool {
 	return sub.Timestamp != nil || sub.StartOrEnd != 0
 }
@@ -3368,7 +3388,7 @@ func lowerSubqueryOverCallSubquery(
 	if err != nil {
 		return nil, err
 	}
-	if subqueryPinned(sub) && !anchor.End.IsZero() {
+	if subqueryPinned(sub) {
 		wideCtx.step = 0
 		wideCtx.end = anchor.End
 	}
