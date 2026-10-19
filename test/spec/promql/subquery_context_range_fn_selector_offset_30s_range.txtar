@@ -54,7 +54,7 @@ INSERT INTO otel_metrics_gauge VALUES
 -- chplan --
 RangeWindow func=max_over_time range=2m0s step=1m0s outerRange=5m0s ts=anchor_ts value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z distinctSampleRows
   Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
-    Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+    Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value] subqueryGrid
       RangeWindow func=sum_over_time range=10m0s step=1m0s outerRange=6m0s offset=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2025-12-31T23:59:00Z end=2026-01-01T00:05:00Z distinctSampleRows
         Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
           Filter predicate=((MetricName = "m") AND FnNot((FnBitAnd(Flags, 1) != 0)))

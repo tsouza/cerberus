@@ -33,7 +33,7 @@ INSERT INTO otel_metrics_gauge VALUES
 -- chplan --
 RangeWindow func=max_over_time range=1h0m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z distinctSampleRows
   Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
-    Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+    Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value] subqueryGrid
       RangeWindow func=max_over_time range=5m0s step=5m0s outerRange=55m0s ts=anchor_ts value=Value groupBy=[Attributes] start=2025-12-31T23:05:00Z end=2026-01-01T00:00:00Z distinctSampleRows
         Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
           RangeWindow func=rate range=1m0s step=30s outerRange=1h0m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2025-12-31T23:00:00Z end=2026-01-01T00:00:00Z stepAlign

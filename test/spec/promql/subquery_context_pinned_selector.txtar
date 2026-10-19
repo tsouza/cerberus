@@ -63,7 +63,7 @@ INSERT INTO otel_metrics_gauge VALUES
 -- chplan --
 RangeWindow func=max_over_time range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:01Z distinctSampleRows
   Project [MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
-    Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+    Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value] subqueryGrid
       Filter predicate=(FnReinterpretAsUInt64(Value) != 9218868437227405314)
         Project [MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, lwr_value AS Value]
           CrossJoin
