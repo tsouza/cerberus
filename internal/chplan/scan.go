@@ -35,6 +35,11 @@ type Scan struct {
 	Columns     []string
 	// Roles is supplied by the lowering that owns the configured table schema.
 	Roles []Column
+	// TimeShiftMillis moves every row's timestamp, the column carrying
+	// RoleTimestamp, this many milliseconds later. A row whose moved
+	// timestamp would leave the instants a DateTime64(9) holds is not
+	// read. Zero reads the timestamps as stored.
+	TimeShiftMillis int64
 }
 
 func (*Scan) planNode() {}
@@ -43,7 +48,7 @@ func (*Scan) Children() []Node { return nil }
 
 func (s *Scan) Equal(other Node) bool {
 	o, ok := other.(*Scan)
-	if !ok || s.Database != o.Database || s.Table != o.Table {
+	if !ok || s.Database != o.Database || s.Table != o.Table || s.TimeShiftMillis != o.TimeShiftMillis {
 		return false
 	}
 	if len(s.Columns) != len(o.Columns) {

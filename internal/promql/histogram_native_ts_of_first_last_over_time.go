@@ -139,7 +139,7 @@ func lowerTsOfFirstLastOverExpHistogram(fn string, ms *parser.MatrixSelector, vs
 			[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 			tsOfSampleTimestampAgg(fn, s), s, ctx,
 		)
-		return tsOfRangeProjection(fanout, s), nil
+		return tsOfRangeProjection(fanout, s, ctx), nil
 	case gridBroadcast:
 		// Same split as [lowerTimestampOverExpHistogramBareSelector]'s own
 		// gridBroadcast arm: the pinned window is resolved ONCE via the
@@ -151,13 +151,13 @@ func lowerTsOfFirstLastOverExpHistogram(fn string, ms *parser.MatrixSelector, vs
 			return nil, err
 		}
 		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
-		return tsOfRangeProjection(&chplan.CrossJoin{Left: grid, Right: selected}, s), nil
+		return tsOfRangeProjection(&chplan.CrossJoin{Left: grid, Right: selected}, s, ctx), nil
 	default:
 		selected, err := tsOfSampleTimestampSelected(fn, ms, vs, s, ctx)
 		if err != nil {
 			return nil, err
 		}
-		return tsOfInstantProjection(selected, s), nil
+		return tsOfInstantProjection(selected, s, ctx), nil
 	}
 }
 
@@ -193,8 +193,8 @@ func tsOfSampleTimestampSelected(fn string, ms *parser.MatrixSelector, vs *parse
 // timestamp column of its own), and the Value is the picked sample's own
 // timestamp, converted to ms-precision epoch seconds via
 // [tsOfEpochSecondsExpr].
-func tsOfInstantProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
-	return tsOfSelectProjection(inner, chplan.NowNano(), s)
+func tsOfInstantProjection(inner chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	return tsOfSelectProjection(inner, chplan.NowNano(), s, ctx)
 }
 
 // tsOfRangeProjection projects a RANGE-mode plan — either
@@ -204,8 +204,8 @@ func tsOfInstantProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
 // along the matrix by its anchor, matching every other range-mode
 // exp-histogram consumer); the Value stays the picked sample's own
 // timestamp via [tsOfSampleTimestampAlias].
-func tsOfRangeProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
-	return tsOfSelectProjection(inner, &chplan.ColumnRef{Name: stepGridAnchorColumn}, s)
+func tsOfRangeProjection(inner chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	return tsOfSelectProjection(inner, &chplan.ColumnRef{Name: stepGridAnchorColumn}, s, ctx)
 }
 
 // tsOfSelectProjection is the shared cap [tsOfInstantProjection] /
@@ -215,8 +215,12 @@ func tsOfRangeProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
 // with its own tsExpr (the subquery-anchor-conditional expression
 // [lowerSelectFnOverExpHistogramSubquery] derives) instead of either of
 // this pair's two hardcoded choices.
-func tsOfSelectProjection(inner chplan.Node, tsExpr chplan.Expr, s schema.Metrics) chplan.Node {
+func tsOfSelectProjection(inner chplan.Node, tsExpr chplan.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	rawTs := &chplan.ColumnRef{Name: tsOfSampleTimestampAlias}
+	value := tsOfEpochSecondsExpr(rawTs)
+	if ctx.framed() {
+		value = ctx.sampleSecondsValue(rawTs)
+	}
 	return &chplan.Project{
 		Roles: metricRoles(s),
 		Input: inner,
@@ -224,7 +228,7 @@ func tsOfSelectProjection(inner chplan.Node, tsExpr chplan.Expr, s schema.Metric
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: tsExpr, Alias: s.TimestampColumn},
-			{Expr: tsOfEpochSecondsExpr(rawTs), Alias: s.ValueColumn},
+			{Expr: value, Alias: s.ValueColumn},
 		},
 	}
 }

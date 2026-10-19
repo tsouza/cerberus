@@ -1,12 +1,9 @@
 package promql
 
 import (
-	"time"
-
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // millisPerSecond converts the Unix milliseconds Prometheus evaluates in
@@ -61,27 +58,4 @@ func (c lowerCtx) evalWholeSeconds(instant chplan.Expr) chplan.Expr {
 		c.evalMillis(instant),
 		&chplan.LitInt{V: millisPerSecond},
 	}}
-}
-
-// unshiftRootGrid returns plan, the lowering of the query root, with the
-// timestamps of a shifted subquery root moved back by the shift. Such a
-// root answers its grid instants themselves, and [domainFit.checkRootGrid]
-// admits it only when they lie in the domain.
-func unshiftRootGrid(plan chplan.Node, root parser.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
-	shift, ok := ctx.domain.shiftOf(rootSubquery(root))
-	if !ok || shift == 0 {
-		return plan
-	}
-	return &chplan.Project{
-		Roles: metricRoles(s),
-		Input: plan,
-		Replacements: []chplan.Projection{{
-			Expr: &chplan.Binary{
-				Op:    chplan.OpSub,
-				Left:  &chplan.ColumnRef{Name: s.TimestampColumn},
-				Right: &chplan.FuncCall{Fn: chplan.FnToIntervalNanosecond, Args: []chplan.Expr{&chplan.LitInt{V: shift * int64(time.Millisecond)}}},
-			},
-			Alias: s.TimestampColumn,
-		}},
-	}
 }

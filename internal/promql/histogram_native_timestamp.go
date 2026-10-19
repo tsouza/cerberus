@@ -134,7 +134,7 @@ func lowerTimestampOverExpHistogramBareSelector(vs *parser.VectorSelector, s sch
 			[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
 			histogramSampleTimestampAgg(s), s, ctx,
 		)
-		return timestampRangeProjection(fanout, s), nil
+		return timestampRangeProjection(fanout, s, ctx), nil
 	case gridBroadcast:
 		// Same split as [lowerExpHistogramBare]'s own gridBroadcast arm:
 		// the pinned window is resolved ONCE via the instant-mode
@@ -146,13 +146,13 @@ func lowerTimestampOverExpHistogramBareSelector(vs *parser.VectorSelector, s sch
 			return nil, err
 		}
 		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
-		return timestampRangeProjection(&chplan.CrossJoin{Left: grid, Right: latest}, s), nil
+		return timestampRangeProjection(&chplan.CrossJoin{Left: grid, Right: latest}, s, ctx), nil
 	default:
 		latest, err := expHistogramSampleTimestampLatest(vs, s, ctx)
 		if err != nil {
 			return nil, err
 		}
-		return timestampInstantProjection(latest, s), nil
+		return timestampInstantProjection(latest, s, ctx), nil
 	}
 }
 
@@ -186,7 +186,7 @@ func expHistogramSampleTimestampLatest(vs *parser.VectorSelector, s schema.Metri
 // float instant seam, where `timestamp(<selector>)` reads the very column
 // the LWR aggregate already reports as TimeUnix (see [timestampResultExpr]'s
 // doc: "the instant seam already emits `max(TimeUnix) AS lwr_ts`").
-func timestampInstantProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
+func timestampInstantProjection(inner chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	ts := &chplan.ColumnRef{Name: expHistogramSampleTimestampAlias}
 	return &chplan.Project{
 		Roles: metricRoles(s),
@@ -195,9 +195,27 @@ func timestampInstantProjection(inner chplan.Node, s schema.Metrics) chplan.Node
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: ts, Alias: s.TimestampColumn},
-			{Expr: asFloat64(dateFnExpr(timestampFunctionName, nil, ts)), Alias: s.ValueColumn},
+			{Expr: sampleTimestampValue(ts, ctx), Alias: s.ValueColumn},
 		},
 	}
+}
+
+// sampleTimestampValue renders the value `timestamp(v)` reports for the
+// stored sample read through ts.
+func sampleTimestampValue(ts chplan.Expr, ctx lowerCtx) chplan.Expr {
+	if ctx.framed() {
+		return ctx.sampleSecondsValue(ts)
+	}
+	return asFloat64(dateFnExpr(timestampFunctionName, nil, ts))
+}
+
+// evalTimestampValue renders the value `timestamp(v)` reports for a
+// non-selector v evaluated at instant.
+func evalTimestampValue(instant chplan.Expr, ctx lowerCtx) chplan.Expr {
+	if ctx.shifted() {
+		return ctx.evalSecondsValue(instant)
+	}
+	return asFloat64(dateFnExpr(timestampFunctionName, nil, instant))
 }
 
 // timestampRangeProjection projects a RANGE-mode plan — either
@@ -208,7 +226,7 @@ func timestampInstantProjection(inner chplan.Node, s schema.Metrics) chplan.Node
 // matrix by its anchor, exactly like [lowerHistogramValueFnRange] and
 // [nativeHistogramProjection]'s own range branches), while the latter stays
 // the selected sample's raw time, via [expHistogramSampleTimestampAlias].
-func timestampRangeProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
+func timestampRangeProjection(inner chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	anchor := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	rawTs := &chplan.ColumnRef{Name: expHistogramSampleTimestampAlias}
 	return &chplan.Project{
@@ -218,7 +236,7 @@ func timestampRangeProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: anchor, Alias: s.TimestampColumn},
-			{Expr: asFloat64(dateFnExpr(timestampFunctionName, nil, rawTs)), Alias: s.ValueColumn},
+			{Expr: sampleTimestampValue(rawTs, ctx), Alias: s.ValueColumn},
 		},
 	}
 }
@@ -252,7 +270,7 @@ func projectExpHistogramEvalInstant(hist chplan.Node, s schema.Metrics, ctx lowe
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
 			{Expr: ts, Alias: s.TimestampColumn},
-			{Expr: asFloat64(dateFnExpr(timestampFunctionName, nil, ts)), Alias: s.ValueColumn},
+			{Expr: evalTimestampValue(ts, ctx), Alias: s.ValueColumn},
 		},
 	}
 }
@@ -280,7 +298,7 @@ func lowerTimestampOverMixedPlan(inner chplan.Node, arg parser.Expr, s schema.Me
 			{Expr: refs.MetricName, Alias: s.MetricNameColumn},
 			{Expr: refs.Attributes, Alias: s.AttributesColumn},
 			{Expr: ts, Alias: s.TimestampColumn},
-			{Expr: asFloat64(dateFnExpr(timestampFunctionName, nil, ts)), Alias: s.ValueColumn},
+			{Expr: evalTimestampValue(ts, ctx), Alias: s.ValueColumn},
 		},
 	}
 	return guardedValueProjection(named, arg, s, ctx, mixedTimestampFamily, func(refs sampleRoleRefs) chplan.Expr {

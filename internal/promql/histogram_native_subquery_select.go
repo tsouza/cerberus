@@ -235,6 +235,7 @@ func lowerSelectFnOverExpHistogramSubqueryInput(input chplan.Node, sub *parser.S
 			&chplan.CrossJoin{Left: grid, Right: windowed},
 			&chplan.ColumnRef{Name: stepGridAnchorColumn},
 			histSchema,
+			ctx,
 		), nil
 	}
 	if ctx.rangeMode() {
@@ -245,7 +246,7 @@ func lowerSelectFnOverExpHistogramSubqueryInput(input chplan.Node, sub *parser.S
 	if anchor.anchored() {
 		tsExpr = windowRightBoundExpr(anchorAt(anchor.End()))
 	}
-	return capSelectFnOverSubquery(windowFn, windowed, tsExpr, histSchema), nil
+	return capSelectFnOverSubquery(windowFn, windowed, tsExpr, histSchema, ctx), nil
 }
 
 // selectFnOverSubqueryWindowed builds the instant-mode (and pinned-broadcast,
@@ -406,9 +407,9 @@ func lowerSelectFnOverSubqueryRange(windowFn string, input chplan.Node, windowRa
 	}
 	switch windowFn {
 	case lastOverTimeWindowFn, firstOverTimeWindowFn:
-		return capSelectFnOverSubquery(windowFn, fanout(nativeExpHistValuedLatestAggsDirectional(windowFn, s)), anchorRef, s)
+		return capSelectFnOverSubquery(windowFn, fanout(nativeExpHistValuedLatestAggsDirectional(windowFn, s)), anchorRef, s, ctx)
 	case countOverTimeWindowFn, presentOverTimeWindowFn:
-		return capSelectFnOverSubquery(windowFn, fanout([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, s)}), anchorRef, s)
+		return capSelectFnOverSubquery(windowFn, fanout([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, s)}), anchorRef, s, ctx)
 	case resetsWindowFn, changesWindowFn:
 		perSeries := expHistogramPairCountStage(
 			fanout(expHistogramPairCountAggs(windowFn, s)),
@@ -416,7 +417,7 @@ func lowerSelectFnOverSubqueryRange(windowFn string, input chplan.Node, windowRa
 		)
 		return expHistogramPairCountProjection(perSeries, anchorRef, s)
 	default: // tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn
-		return capSelectFnOverSubquery(windowFn, fanout(tsOfSampleTimestampAgg(windowFn, s)), anchorRef, s)
+		return capSelectFnOverSubquery(windowFn, fanout(tsOfSampleTimestampAgg(windowFn, s)), anchorRef, s, ctx)
 	}
 }
 
@@ -429,7 +430,7 @@ func lowerSelectFnOverSubqueryRange(windowFn string, input chplan.Node, windowRa
 // [expHistogramPairCountProjection]'s float quartet (name dropped) for
 // resets / changes, and [tsOfSelectProjection]'s float quartet (name
 // dropped) for the two ts_of_* siblings.
-func capSelectFnOverSubquery(windowFn string, input chplan.Node, tsExpr chplan.Expr, s schema.Metrics) chplan.Node {
+func capSelectFnOverSubquery(windowFn string, input chplan.Node, tsExpr chplan.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	if !selectFnDropsSeriesName(windowFn) {
 		return nativeHistogramProjection(input, bareExpHistogramNameExpr(s), tsExpr, s)
 	}
@@ -439,6 +440,6 @@ func capSelectFnOverSubquery(windowFn string, input chplan.Node, tsExpr chplan.E
 	case resetsWindowFn, changesWindowFn:
 		return expHistogramPairCountProjection(input, tsExpr, s)
 	default: // tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn
-		return tsOfSelectProjection(input, tsExpr, s)
+		return tsOfSelectProjection(input, tsExpr, s, ctx)
 	}
 }

@@ -53,7 +53,7 @@ func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node
 		span.RecordError(err)
 		return nil, err
 	}
-	lctx.domain = domain
+	lctx = lctx.withDomain(domain)
 	plan, err := lowerRoot(expr, s, lctx)
 	if err != nil {
 		span.RecordError(err)
@@ -188,7 +188,7 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 		span.RecordError(err)
 		return nil, err
 	}
-	lctx.domain = domain
+	lctx = lctx.withDomain(domain)
 	plan, err := lowerRoot(expr, s, lctx)
 	if err != nil {
 		span.RecordError(err)
@@ -258,7 +258,10 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if err := ctx.domain.checkBeyondRead(); err != nil {
 		return nil, err
 	}
-	return unshiftRootGrid(plan, expr, s, ctx), nil
+	if err := frameStorage(ctx.domain, append([]chplan.Node{plan}, ctx.guardPlans()...)...); err != nil {
+		return nil, ctx.domain.unframedErr
+	}
+	return unshiftRoot(plan, expr, s, ctx), nil
 }
 
 // lowerHistogramNativeRoot is [lowerRoot]'s histogram-native dispatch
@@ -3275,10 +3278,11 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 	rw.StartBeyond, rw.EndBeyond = ctx.domain.windowBeyond(ms)
-	if rw.StartBeyond == 0 && rw.EndBeyond == 0 {
+	if rw.StartBeyond == 0 && rw.EndBeyond == 0 && !ctx.framed() {
 		// The DELTA-prefix aggregate and the downsample tier answer from
 		// bucket rows aligned to the window's own edges, which a cut
-		// window does not carry; the raw samples answer it alone.
+		// window does not carry, and carry no sample timestamp a shifted
+		// frame could move; the raw samples answer it alone.
 		attachDeltaPrefixAggregateArm(rw, c.Func.Name, vs, s, temporalityCol, rangeCtx)
 		attachDownsampleTierArm(rw, c.Func.Name, vs, s, rangeCtx)
 	}

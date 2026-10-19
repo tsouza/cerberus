@@ -186,7 +186,7 @@ func (f *domainFit) cutWindowArg(n *parser.Call, env domainEnv) (*parser.Call, b
 	if len(n.Args) <= pos {
 		return nil, false
 	}
-	if !sampleSetRangeFunctions[name] && !extrapolatedRangeFunctions[name] {
+	if !sampleSetRangeFunctions[name] && !extrapolatedRangeFunctions[name] || !f.cutsStorage() {
 		return nil, false
 	}
 	ms, cut, ok := cutMatrix(n.Args[pos], env)

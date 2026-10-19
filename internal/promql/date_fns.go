@@ -157,8 +157,12 @@ func projectDateFnOverInner(c *parser.Call, inner chplan.Node, s schema.Metrics,
 	}
 	return guardedValueProjection(inner, c.Args[0], s, ctx, family, func(refs sampleRoleRefs) chplan.Expr {
 		inputSchema := refs.sourceMetrics(s)
-		if _, isSelector := unwrapVectorSelector(c.Args[0]); c.Func.Name == timestampFunctionName && !isSelector && ctx.shifted() {
+		_, isSelector := unwrapVectorSelector(c.Args[0])
+		if c.Func.Name == timestampFunctionName && !isSelector && ctx.shifted() {
 			return ctx.evalSecondsValue(evalInstantExpr(inputSchema, ctx))
+		}
+		if c.Func.Name == timestampFunctionName && isSelector && ctx.framed() {
+			return ctx.sampleSecondsValue(timestampResultExpr(c.Args[0], inputSchema, ctx))
 		}
 		return asFloat64(dateFnExpr(c.Func.Name, valueAsUnixSeconds(inputSchema), timestampResultExpr(c.Args[0], inputSchema, ctx)))
 	}, carriedSampleTimestampColumns(c.Func.Name, c.Args[0], ctx)...)

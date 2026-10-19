@@ -1043,7 +1043,7 @@ func (r SettingsRules) sortingKeyPrefixFor(table string) []string {
 // fields, at every depth including inside an embedded ScalarSubquery, so it
 // is exhaustive over every expression anywhere in the plan.
 func eligibleForResultCache(f planShapeFacts, now time.Time, ingestLag time.Duration) bool {
-	if f.rangeCarriers == 0 || f.zeroDataEnd || f.zeroRangeGrid {
+	if f.rangeCarriers == 0 || f.zeroDataEnd || f.zeroRangeGrid || f.timeShifted {
 		return false
 	}
 	if !f.latestDataEnd.Before(now.Add(-ingestLag)) {

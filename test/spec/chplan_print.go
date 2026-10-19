@@ -141,10 +141,14 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 			// scan covers.
 			tbl = "merge(" + strings.Join(v.UnionTables, "|") + ")"
 		}
+		shift := ""
+		if v.TimeShiftMillis != 0 {
+			shift = fmt.Sprintf(" timeShiftMillis=%d", v.TimeShiftMillis)
+		}
 		if len(v.Columns) == 0 {
-			fmt.Fprintf(b, "%sScan(%s)\n", indent, tbl)
+			fmt.Fprintf(b, "%sScan(%s)%s\n", indent, tbl, shift)
 		} else {
-			fmt.Fprintf(b, "%sScan(%s, columns=[%s])\n", indent, tbl, strings.Join(v.Columns, ", "))
+			fmt.Fprintf(b, "%sScan(%s, columns=[%s])%s\n", indent, tbl, strings.Join(v.Columns, ", "), shift)
 		}
 	case *chplan.OneRow:
 		fmt.Fprintf(b, "%sOneRow\n", indent)

@@ -2,7 +2,9 @@ package chsql
 
 import (
 	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -143,7 +145,11 @@ func scanQuery(s *chplan.Scan) (*QueryBuilder, error) {
 	if err := validateScanShape(s); err != nil {
 		return nil, err
 	}
-	sb := NewQuery().From(scanTableFrag(s))
+	from, err := scanSourceFrag(s)
+	if err != nil {
+		return nil, err
+	}
+	sb := NewQuery().From(from)
 	// An empty Columns slice appends nothing to the SELECT list, which
 	// the QueryBuilder renders as the bare `SELECT *` — matching the
 	// pre-builder emitter's behaviour for a column-less Scan. No
@@ -348,6 +354,43 @@ func scanTableFrag(s *chplan.Scan) Frag {
 	return physicalTableFrag(s.Table)
 }
 
+// scanSourceFrag renders what a Scan reads FROM: its table, or, for a
+// time-shifted scan ([chplan.Scan.TimeShiftMillis]), a subquery over it
+// that moves the timestamp column by the shift in Int64 nanoseconds,
+//
+//	(SELECT * REPLACE (fromUnixTimestamp64Nano(toUnixTimestamp64Nano(ts) + N) AS ts)
+//	 FROM <table> WHERE toUnixTimestamp64Nano(ts) <= <max - N>)
+//
+// with `>= <min - N>` for a negative N. The bound keeps exactly the rows
+// whose moved timestamp a DateTime64(9) holds; the Int64 sum never
+// overflows for them, and ClickHouse, which may compute the moved column
+// before it filters, wraps rather than raises for the others.
+func scanSourceFrag(s *chplan.Scan) (Frag, error) {
+	table := scanTableFrag(s)
+	if s.TimeShiftMillis == 0 {
+		return table, nil
+	}
+	ts, err := (chplan.Schema{Columns: s.Roles}).UniqueNamedRole(chplan.RoleTimestamp)
+	if err != nil {
+		return nil, fmt.Errorf("chsql: time-shifted scan of %q: %w", s.Table, err)
+	}
+	if s.TimeShiftMillis > maxScanTimeShiftMillis || s.TimeShiftMillis < -maxScanTimeShiftMillis {
+		return nil, fmt.Errorf("%w: scan time shift of %d ms", ErrUnsupported, s.TimeShiftMillis)
+	}
+	shiftNanos := s.TimeShiftMillis * int64(time.Millisecond)
+	raw := Call("toUnixTimestamp64Nano", Col(ts.Name))
+	keep := Lte(raw, InlineLit(int64(math.MaxInt64)-shiftNanos))
+	if shiftNanos < 0 {
+		keep = Gte(raw, InlineLit(int64(math.MinInt64)-shiftNanos))
+	}
+	moved := As(Call("fromUnixTimestamp64Nano", Add(raw, InlineLit(shiftNanos))), ts.Name)
+	return Subquery(NewQuery().From(table).Select(StarReplace([]Frag{moved})).Where(keep)), nil
+}
+
+// maxScanTimeShiftMillis is the largest scan time shift, in milliseconds,
+// whose nanoseconds fit Int64.
+const maxScanTimeShiftMillis = math.MaxInt64 / int64(time.Millisecond)
+
 // mergeTableFrag renders the CH `merge(currentDatabase(), '<regex>')`
 // table-function call that backs Scan.UnionTables. The database argument
 // uses `currentDatabase()` when the Scan's Database is empty so the
@@ -483,13 +526,18 @@ func filterScanQuery(f *chplan.Filter, scan *chplan.Scan) (*QueryBuilder, error)
 	conjuncts = orderedConjuncts(conjuncts, shape)
 
 	var prewhereExprs, whereExprs []chplan.Expr
-	if projectionTouchesWide(scan.Columns, shape) {
+	// A time-shifted scan reads a subquery, which takes no PREWHERE.
+	if scan.TimeShiftMillis == 0 && projectionTouchesWide(scan.Columns, shape) {
 		prewhereExprs, whereExprs = partitionPrewhere(conjuncts, shape)
 	} else {
 		whereExprs = conjuncts
 	}
 
-	sb := NewQuery().From(scanTableFrag(scan))
+	from, err := scanSourceFrag(scan)
+	if err != nil {
+		return nil, err
+	}
+	sb := NewQuery().From(from)
 	// Empty Columns → bare `SELECT *` (Select is a no-op on an empty
 	// slice); no length guard needed.
 	cols := make([]Frag, 0, len(scan.Columns))

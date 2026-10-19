@@ -60,6 +60,10 @@ type planShapeFacts struct {
 	// hasNowExpr: a literal now()/now64() FuncCall anywhere in any Expr tree
 	// (the result-cache rule's second, independent leg).
 	hasNowExpr bool
+	// timeShifted: a Scan anywhere reads its rows at shifted instants
+	// (chplan.Scan.TimeShiftMillis), so no literal in the plan names the
+	// window it reads.
+	timeShifted bool
 
 	// lazyLimits counts Limit(OrderBy(...)) nodes with a positive Count;
 	// lazyLimit is the Count of the last one seen. EligibleForLazyMaterialization
@@ -182,6 +186,9 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 			f.spineAggregates++
 		}
 	case *chplan.Scan:
+		if v.TimeShiftMillis != 0 {
+			f.timeShifted = true
+		}
 		if spine {
 			f.spineHasScan = true
 			if len(v.UnionTables) > 0 || v.Table == "" {

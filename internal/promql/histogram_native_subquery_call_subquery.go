@@ -294,14 +294,14 @@ func lowerSelectFnOverCallSubqueryInput(wideInner chplan.Node, grid histogramCal
 			wideInner, grid, anchor, seriesIdentityCallSubqueryKey(s),
 			nativeExpHistValuedLatestAggsDirectional(windowFn, histSchema), stalenessMinSamples, s,
 		)
-		return capSelectFnOverSubquery(windowFn, fanout, anchorRef, histSchema), nil
+		return capSelectFnOverSubquery(windowFn, fanout, anchorRef, histSchema, ctx), nil
 	}
 	guarded := func(aggs []chplan.AggFunc) chplan.Node {
 		return guardedCallSubqueryFanout(wideInner, grid, anchor, aggs, stalenessMinSamples, s, ctx)
 	}
 	switch windowFn {
 	case countOverTimeWindowFn, presentOverTimeWindowFn:
-		return capSelectFnOverSubquery(windowFn, guarded([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, histSchema)}), anchorRef, histSchema), nil
+		return capSelectFnOverSubquery(windowFn, guarded([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, histSchema)}), anchorRef, histSchema, ctx), nil
 	case resetsWindowFn, changesWindowFn:
 		perSeries := expHistogramPairCountStage(
 			guarded(expHistogramPairCountAggs(windowFn, histSchema)),
@@ -310,7 +310,7 @@ func lowerSelectFnOverCallSubqueryInput(wideInner chplan.Node, grid histogramCal
 		)
 		return expHistogramPairCountProjection(perSeries, anchorRef, histSchema), nil
 	default: // tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn
-		return capSelectFnOverSubquery(windowFn, guarded(tsOfSampleTimestampAgg(windowFn, histSchema)), anchorRef, histSchema), nil
+		return capSelectFnOverSubquery(windowFn, guarded(tsOfSampleTimestampAgg(windowFn, histSchema)), anchorRef, histSchema, ctx), nil
 	}
 }
 

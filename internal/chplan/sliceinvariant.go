@@ -26,6 +26,11 @@ func IsSliceInvariant(n Node) bool {
 	if n == nil {
 		return false
 	}
+	// A time-shifted scan reads its rows at instants other than the
+	// request grid's, which a slice of that grid does not re-anchor.
+	if s, isScan := n.(*Scan); isScan && s.TimeShiftMillis != 0 {
+		return false
+	}
 	_, ok := sliceInvariantKinds[reflect.TypeOf(n)]
 	return ok
 }
