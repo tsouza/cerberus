@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramOperands#dd687f11",
       "message": "promql: 'or' between a float-valued and a histogram-valued operand has a %s float schema",
       "class": "internal",
-      "rationale": "mixedExpHistogramSetOp admits this BinaryExpr only when exactly one side is histogram-valued or histogram-forwarding; lowerMixedExpHistogramOperands chooses that side with the identical predicate and names the opposite side floatExpr. The ordinary lowering of that parser-typed vector must therefore publish SampleKindFloat; histogram or mixed was excluded by the recognizer, and opaque or invalid would violate the lowering schema contract.",
+      "rationale": "mixedExpHistogramSetOp admits this BinaryExpr only when exactly one side is histogram-valued or histogram-forwarding; lowerMixedExpHistogramOperands chooses that side with the identical predicate and names the opposite side floatExpr. The lowering of that parser-typed vector must therefore publish SampleKindFloat: histogram or live mixed was excluded by the recognizer, a physically mixed relation whose rows are proven float is projected onto its float schema by lowerMixedFloatArm (provenFloatRowsSchema), and opaque or invalid would violate the lowering schema contract.",
       "evidence": {
         "guard": [
           "past returning if err != nil",

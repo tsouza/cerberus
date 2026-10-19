@@ -33,9 +33,9 @@ import (
 //     ([widenHistogramVectorToMixedShape]);
 //   - a float relation — including a physically mixed one whose rows are
 //     already PROVEN float ([mixedFloatRowsProven]) — is narrowed to its
-//     canonical quartet where it still carries the payload columns, then
-//     widened with placeholder payload and a discriminator of 0 by
-//     [widenPlainVectorToMixedShape];
+//     canonical quartet where it still carries the payload columns
+//     ([provenFloatRowsSchema]), then widened with placeholder payload and
+//     a discriminator of 0 by [widenPlainVectorToMixedShape];
 //   - anything else (an opaque relation) is refused by that widening.
 //
 // Each per-row discriminator is then a fact about THAT row, so the folds
@@ -51,14 +51,6 @@ func mixedJoinOperand(node chplan.Node, s schema.Metrics) (chplan.Node, error) {
 			func(sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{} }), nil
 	case chplan.SampleKindHistogram:
 		return widenHistogramVectorToMixedShape(node, s), nil
-	}
-	if node.RowType().Has(chplan.RoleDiscriminator) {
-		// Physically mixed, proven float: drop the payload columns the
-		// widening below would otherwise refuse as a non-float schema.
-		node = projectSampleRoles(node, s,
-			sampleProjectionPolicy{name: preserveSampleName, payload: floatSamplePayload},
-			derivedSampleProjectionLayout(node),
-			func(sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{} })
 	}
 	return widenPlainVectorToMixedShape(node, s)
 }

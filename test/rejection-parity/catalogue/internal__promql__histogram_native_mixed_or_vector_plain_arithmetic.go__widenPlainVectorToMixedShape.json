@@ -25,7 +25,7 @@
       "site": "internal/promql/histogram_native_mixed_or_vector_plain_arithmetic.go:widenPlainVectorToMixedShape#d9727481",
       "message": "promql: mixed join plain operand has %s sample schema",
       "class": "internal",
-      "rationale": "lowerPlainOperandForMixedJoin is called only after vectorPlainArithmeticOverMixedExpHistogramSetOp or comparisonVectorPlainOverMixedExpHistogramSetOp has selected one mixed side and excluded histogram-valued and mixed shapes from plainExpr, and mixedJoinOperand takes the live mixed and histogram-valued kinds in its own arms and drops a float-proven relation's payload columns before reaching here. Both hand this function a parser-typed instant vector whose ordinary lowering publishes SampleKindFloat; another kind is an internal recognizer/lowerer disagreement.",
+      "rationale": "lowerPlainOperandForMixedJoin is called only after vectorPlainArithmeticOverMixedExpHistogramSetOp or comparisonVectorPlainOverMixedExpHistogramSetOp has selected one mixed side and excluded histogram-valued and mixed shapes from plainExpr, and mixedJoinOperand takes the live mixed and histogram-valued kinds in its own arms. Both hand this function a parser-typed instant vector whose rows are float, and provenFloatRowsSchema first drops the payload columns a float-proven mixed relation still carries, so the operand publishes SampleKindFloat; another kind is an internal recognizer/lowerer disagreement.",
       "evidence": {
         "guard": [
           "if kind != chplan.SampleKindFloat"
