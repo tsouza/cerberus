@@ -7,9 +7,16 @@ package promql_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
+
+// mixedNestedSeed is beforeEpochSeed with its column names unquoted: the
+// parity oracle finds a histogram column only under its bare name, and
+// reads one it cannot find as zero (cerberus issue #3895), which would
+// hand the reference engine empty histograms.
+var mixedNestedSeed = strings.ReplaceAll(beforeEpochSeed, "`", "")
 
 // mixedNestedMinute is the beforeEpochOrigin-relative instant of the
 // given whole minute.
@@ -18,7 +25,7 @@ func mixedNestedMinute(minute int) time.Time {
 }
 
 // mixedNestedFirstPoint is the earliest grid instant of the `or` subquery
-// [10m:1m] evaluated at step that holds a sample. Over beforeEpochSeed the
+// [10m:1m] evaluated at step that holds a sample. Over mixedNestedSeed the
 // `or` answers a float at minutes -4 to 0 and a histogram at minutes 1 to
 // 6, so the window (step-10m, step] starts at minute -4 or nine minutes
 // before step, whichever is later.
@@ -93,10 +100,10 @@ func TestMixedOrNestedSubquerySelectParity_ChDB(t *testing.T) {
 			query := fmt.Sprintf(`max_over_time(%s(%s)[1m:1m])`, tc.fn, mixed)
 			rows := []instantDomainRow{idRow(noLabels, tc.value)}
 			t.Run(w.name+"/"+tc.fn+"/instant", func(t *testing.T) {
-				runHandWrittenParity(t, beforeEpochSeed, query, w.eval, rows, false)
+				runHandWrittenParity(t, mixedNestedSeed, query, w.eval, rows, false)
 			})
 			t.Run(w.name+"/"+tc.fn+"/range", func(t *testing.T) {
-				runHandWrittenParity(t, beforeEpochSeed, query, w.eval, rows, true)
+				runHandWrittenParity(t, mixedNestedSeed, query, w.eval, rows, true)
 			})
 		}
 	}
