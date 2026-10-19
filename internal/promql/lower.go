@@ -3298,11 +3298,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
 	rw.StartBeyond, rw.EndBeyond = ctx.domain.windowBeyond(ms)
-	if rw.StartBeyond == 0 && rw.EndBeyond == 0 && !ctx.framed() {
-		// The DELTA-prefix aggregate and the downsample tier answer from
-		// bucket rows aligned to the window's own edges, which a cut
-		// window does not carry, and carry no sample timestamp a shifted
-		// frame could move; the raw samples answer it alone.
+	if ctx.bucketRowsAnswer(rw) {
 		attachDeltaPrefixAggregateArm(rw, c.Func.Name, vs, s, temporalityCol, rangeCtx)
 		attachDownsampleTierArm(rw, c.Func.Name, vs, s, rangeCtx)
 	}

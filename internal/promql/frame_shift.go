@@ -474,3 +474,12 @@ func lowerRangeInParts(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 	}
 	return &chplan.UnionAll{Inputs: arms}, true, nil
 }
+
+// bucketRowsAnswer reports whether the DELTA-prefix aggregate and the
+// downsample tier may answer rw. They answer from bucket rows aligned to
+// the window's own edges, which a cut window does not carry, and carry no
+// sample timestamp a shifted frame could move; the raw samples answer
+// such a window alone.
+func (c lowerCtx) bucketRowsAnswer(rw *chplan.RangeWindow) bool {
+	return rw.StartBeyond == 0 && rw.EndBeyond == 0 && !c.framed()
+}
