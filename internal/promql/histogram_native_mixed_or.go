@@ -287,12 +287,20 @@ func lowerMixedExpHistogramOperands(
 // `count((a or b))`, `abs((a or b))`, `topk(2, (a or b))` — is a
 // float-valued operand that only [lowerMixedRelationFamily]'s recognizers
 // lower, so they run first, exactly as at the query root; every other
-// float operand lowers through the generic [lower].
+// float operand lowers through the generic [lower]. A float-narrowed mixed
+// relation — `sort(...)`, `... > 1` or an empty `clamp(...)` over a nested
+// mixed `or` — keeps the mixed payload columns beside its float-row proof,
+// so the arm takes the float schema those rows carry
+// ([provenFloatRowsSchema]).
 func lowerMixedFloatArm(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if plan, ok, err := lowerMixedRelationFamily(expr, s, ctx); ok {
-		return plan, err
+	plan, ok, err := lowerMixedRelationFamily(expr, s, ctx)
+	if !ok {
+		plan, err = lower(expr, s, ctx)
 	}
-	return lower(expr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return provenFloatRowsSchema(plan, s), nil
 }
 
 // mixedExpHistogramMatch translates b's `on`/`ignoring` vector-matching

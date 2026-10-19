@@ -1,6 +1,9 @@
 package promql
 
-import "github.com/tsouza/cerberus/internal/chplan"
+import (
+	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
+)
 
 // mixedDiscriminatorColumn names the shared mixed-row wire discriminator.
 const mixedDiscriminatorColumn = chplan.MixedDiscriminatorColumn
@@ -15,6 +18,23 @@ func mixedRowsFloatOnly(inner chplan.Node) chplan.Node {
 		return inner
 	}
 	return mixedDiscriminatorFilter(inner, mixedDiscriminatorFloat)
+}
+
+// provenFloatRowsSchema gives a physically mixed relation whose rows are
+// proven float ([mixedFloatRowsProven]) the float schema its rows actually
+// carry: the canonical sample columns, without the histogram payload or the
+// discriminator. Every other relation passes through unchanged. A consumer
+// that needs a float operand — not merely float rows — applies it, so a
+// float-narrowed mixed relation (a comparison, sort, or empty clamp over a
+// mixed `or`) is that operand wherever an ordinary float vector is.
+func provenFloatRowsSchema(inner chplan.Node, s schema.Metrics) chplan.Node {
+	if !inner.RowType().Has(chplan.RoleDiscriminator) || !mixedFloatRowsProven(inner) {
+		return inner
+	}
+	return projectSampleRoles(inner, s,
+		sampleProjectionPolicy{name: preserveSampleName, payload: floatSamplePayload},
+		derivedSampleProjectionLayout(inner),
+		func(sampleRoleRefs) sampleRoleRewrite { return sampleRoleRewrite{} })
 }
 
 // mixedRowsNeedPreparation separates the physical mixed payload from the live

@@ -71,6 +71,7 @@ import (
 // defines "many" relative to the operator's own LHS/RHS, not to which side
 // happens to be mixed).
 func widenPlainVectorToMixedShape(node chplan.Node, s schema.Metrics) (chplan.Node, error) {
+	node = provenFloatRowsSchema(node, s)
 	row := node.RowType()
 	kind := row.SampleKind()
 	if kind != chplan.SampleKindFloat {
