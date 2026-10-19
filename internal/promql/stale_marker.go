@@ -343,8 +343,8 @@ func staleMarkerLayoutBoundFilter(p *chplan.Project) (*chplan.Filter, bool) {
 func staleLayoutWindowBound(col string, lo, hi time.Time) chplan.Expr {
 	return &chplan.Binary{
 		Op:    chplan.OpAnd,
-		Left:  &chplan.Binary{Op: chplan.OpGe, Left: &chplan.ColumnRef{Name: col}, Right: metadataBoundExpr(lo)},
-		Right: &chplan.Binary{Op: chplan.OpLe, Left: &chplan.ColumnRef{Name: col}, Right: metadataBoundExpr(hi)},
+		Left:  &chplan.Binary{Op: chplan.OpGe, Left: &chplan.ColumnRef{Name: col}, Right: chplan.TimeLiteral(lo)},
+		Right: &chplan.Binary{Op: chplan.OpLe, Left: &chplan.ColumnRef{Name: col}, Right: chplan.TimeLiteral(hi)},
 	}
 }
 

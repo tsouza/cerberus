@@ -11,8 +11,8 @@ package prom_test
 //
 // The honest knob that makes this visible without chDB: the metadata
 // emitters bound the scan with a `parseDateTime64BestEffort('…Z', 9)` TimeUnix literal
-// (dateTime64Frag for the no-`match[]` arms, metadataBoundExpr for the
-// matched path) ONLY when a window is present. metadataWindowPred returns
+// (metadataWindowPred for the no-`match[]` arms, promql.metadataWindowPredicate
+// for the matched path) ONLY when a window is present. metadataWindowPred returns
 // nil for the zero/zero case, so every windowless arm emits a WHERE-less
 // (or, for /api/v1/metadata, GROUP-BY-only) full-table scan. This test
 // asserts the inverse — that EVERY windowless arm carries the

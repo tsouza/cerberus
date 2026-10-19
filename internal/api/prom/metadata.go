@@ -628,7 +628,6 @@ func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool, start
 	nameCol := h.Schema.MetricNameColumn
 	descCol := h.Schema.MetricDescriptionColumn
 	unitCol := h.Schema.MetricUnitColumn
-	tsCol := h.Schema.TimestampColumn
 
 	anyCall := func(col string) chsql.Frag {
 		return chsql.Call("any", chsql.Col(col))
@@ -640,8 +639,8 @@ func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool, start
 		GroupBy(chsql.Col(nameCol))
 
 	if nowAnchored {
-		if !start.IsZero() {
-			sb.Having(chsql.Gte(chsql.Call("max", chsql.Col(tsCol)), dateTime64Frag(start)))
+		if since := h.metadataSincePred(start); since != nil {
+			sb.Having(since)
 		}
 	} else if pred := h.metadataWindowPred(start, end); pred != nil {
 		sb.Where(pred)
@@ -1628,7 +1627,6 @@ func (h *Handler) resourceLabelValueArmActive(promLabel string) bool {
 func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowAnchored bool) (sql string, physicalScans int) {
 	attrsCol := h.Schema.AttributesColumn
 	metricCol := h.Schema.MetricNameColumn
-	tsCol := h.Schema.TimestampColumn
 	pred := h.metadataWindowPred(start, end)
 	nameFrag := arrayJoinMapKeysFrag(attrsCol)
 	if nowAnchored {
@@ -1641,8 +1639,8 @@ func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowA
 			From(chsql.PhysicalTable(t))
 		if nowAnchored {
 			arm = arm.GroupBy(chsql.Col(metricCol), chsql.Col(attrsCol))
-			if !start.IsZero() {
-				arm = arm.Having(chsql.Gte(chsql.Call("max", chsql.Col(tsCol)), dateTime64Frag(start)))
+			if since := h.metadataSincePred(start); since != nil {
+				arm = arm.Having(since)
 			}
 		} else if pred != nil {
 			arm = arm.Where(pred)
@@ -1684,33 +1682,28 @@ func (h *Handler) unionResourceLabelNamesSQL(tables []string, start, end time.Ti
 	return sql, physicalScans
 }
 
-// dateTime64Frag renders the `parseDateTime64BestEffort('<ts>Z', 9)` literal used to
-// bound the metadata-discovery window. It mirrors the matched-path bound
-// emitted by promql.metadataBoundExpr so the unmatched (no-`match[]`)
-// discovery arms carry byte-identical time semantics.
-func dateTime64Frag(t time.Time) chsql.Frag {
-	return chsql.Frag(func(b *chsql.Builder) { b.DateTime64Lit(t) })
-}
-
 // metadataWindowPred builds the closed `[start,end]` TimeUnix bound the
 // no-`match[]` discovery arms push so a request that carries a window
 // (Grafana's metric/label picker forwards the dashboard range) prunes by
 // the `toDate(TimeUnix)` partition instead of streaming the whole table —
 // turning the leading-key DISTINCT from an O(rows) full-column scan into
-// an O(window) partition-bounded scan. Each bound is omitted when zero, so
-// a no-bound side scans the whole table, matching reference Prometheus's
-// min/max-retention default and the matched-path semantics in
-// promql.wrapMetadataFullRange. Returns nil when both bounds are zero
-// (no WHERE emitted — byte-identical to the prior unbounded form, which is
-// the inherent exact answer when the caller supplies no window).
+// an O(window) partition-bounded scan. A zero bound means "no bound on
+// that side", so a no-bound side scans the whole table, matching
+// reference Prometheus's min/max-retention default. Each bound takes the
+// exact form [chplan.AtLeastBound] / [chplan.AtMostBound] gives it, the
+// same forms the matched path (promql.wrapMetadataFullRange) uses: a bound
+// no stored sample lies beyond is omitted, and a bound before 1900
+// compares Unix nanoseconds rather than a clamped time literal. Returns
+// nil when no bound remains (no WHERE emitted, the inherent exact answer
+// when the caller supplies no window).
 func (h *Handler) metadataWindowPred(start, end time.Time) chsql.Frag {
-	tsCol := h.Schema.TimestampColumn
+	ts := chsql.Col(h.Schema.TimestampColumn)
 	var bounds []chsql.Frag
-	if !start.IsZero() {
-		bounds = append(bounds, chsql.Gte(chsql.Col(tsCol), dateTime64Frag(start)))
+	if b, ok := chplan.AtLeastBound(start); ok && !start.IsZero() {
+		bounds = append(bounds, chsql.TimeBound(ts, b))
 	}
-	if !end.IsZero() {
-		bounds = append(bounds, chsql.Lte(chsql.Col(tsCol), dateTime64Frag(end)))
+	if b, ok := chplan.AtMostBound(end); ok && !end.IsZero() {
+		bounds = append(bounds, chsql.TimeBound(ts, b))
 	}
 	switch len(bounds) {
 	case 0:
@@ -1720,6 +1713,19 @@ func (h *Handler) metadataWindowPred(start, end time.Time) chsql.Frag {
 	default:
 		return chsql.And(bounds...)
 	}
+}
+
+// metadataSincePred builds the `max(TimeUnix) >= start` HAVING bound the
+// now-anchored discovery arms carry: a series or name has a sample in
+// [start, now] exactly when its latest sample is at or after start. It
+// takes the exact form [chplan.AtLeastBound] gives it, and it is nil when
+// start is zero or no stored sample can lie before it.
+func (h *Handler) metadataSincePred(start time.Time) chsql.Frag {
+	b, ok := chplan.AtLeastBound(start)
+	if !ok || start.IsZero() {
+		return nil
+	}
+	return chsql.TimeBound(chsql.Call("max", chsql.Col(h.Schema.TimestampColumn)), b)
 }
 
 // metricNamesSQL returns the distinct MetricName values across the
@@ -1754,14 +1760,13 @@ func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAncho
 	metricCol := h.Schema.MetricNameColumn
 	parts := make([]chsql.Frag, 0, len(tables))
 	if nowAnchored {
-		tsCol := h.Schema.TimestampColumn
 		for _, t := range tables {
 			arm := chsql.NewQuery().
 				Select(chsql.As(chsql.Col(metricCol), "value")).
 				From(chsql.PhysicalTable(t)).
 				GroupBy(chsql.Col(metricCol))
-			if !start.IsZero() {
-				arm = arm.Having(chsql.Gte(chsql.Call("max", chsql.Col(tsCol)), dateTime64Frag(start)))
+			if since := h.metadataSincePred(start); since != nil {
+				arm = arm.Having(since)
 			}
 			parts = append(parts, arm.Frag())
 		}
@@ -1804,7 +1809,6 @@ func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAncho
 func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end time.Time, nowAnchored bool) (string, []any, int) {
 	attrsCol := h.Schema.AttributesColumn
 	metricCol := h.Schema.MetricNameColumn
-	tsCol := h.Schema.TimestampColumn
 	candidates := labelValueCandidates(name)
 	resCol := h.Schema.ResourceAttributesColumn
 	resourceArm := h.resourceLabelValueArmActive(name)
@@ -1825,8 +1829,8 @@ func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end t
 			From(chsql.PhysicalTable(t)).
 			GroupBy(chsql.Col(metricCol), chsql.Col(attrsCol)).
 			Having(attrmap.NotEmpty(attrsCol, k))
-		if !start.IsZero() {
-			arm.Having(chsql.Gte(chsql.Call("max", chsql.Col(tsCol)), dateTime64Frag(start)))
+		if since := h.metadataSincePred(start); since != nil {
+			arm.Having(since)
 		}
 		return arm.Frag()
 	}
