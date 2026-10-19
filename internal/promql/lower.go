@@ -48,11 +48,12 @@ func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node
 		lowerers:       RangeLowerers{}.withDefaults(),
 		resourceBounds: DefaultResourceBounds().withDefaults(),
 	}
-	expr, err := fitInstantDomain(expr, lctx)
+	expr, domain, err := fitInstantDomain(expr, lctx)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
 	}
+	lctx.domain = domain
 	plan, err := lowerRoot(expr, s, lctx)
 	if err != nil {
 		span.RecordError(err)
@@ -182,11 +183,12 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 		tagGroups:              opts.TagGroups,
 		throwDuplicateSeriesIf: opts.ThrowDuplicateSeriesIf,
 	}
-	expr, err := fitInstantDomain(expr, lctx)
+	expr, domain, err := fitInstantDomain(expr, lctx)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
 	}
+	lctx.domain = domain
 	plan, err := lowerRoot(expr, s, lctx)
 	if err != nil {
 		span.RecordError(err)
@@ -214,8 +216,8 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 // [wrapMetadataFullRange], which emits a closed `Timestamp >= start AND
 // Timestamp <= end` filter (a zero start/end omits that bound — whole-
 // table scan, matching reference defaults) with NO staleness collapse.
-// Every start and end is answered: a bound before 1900, where a time
-// literal would clamp, compares Unix nanoseconds instead
+// Every start and end is answered: a bound before 1900, where a parsed time
+// string would clamp, compares Unix nanoseconds instead
 // ([metadataWindowPredicate]).
 func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
@@ -246,10 +248,14 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // expression, consumes no Value column, and already has its own
 // full-range bare-selector path.
 func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if plan, ok, err := lowerHistogramNativeRoot(expr, s, ctx); ok {
-		return plan, err
+	plan, ok, err := lowerHistogramNativeRoot(expr, s, ctx)
+	if !ok {
+		plan, err = lower(expr, s, ctx)
 	}
-	return lower(expr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return unshiftRootGrid(plan, expr, s, ctx), nil
 }
 
 // lowerHistogramNativeRoot is [lowerRoot]'s histogram-native dispatch
@@ -767,6 +773,7 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 }
 
 func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	ctx = ctx.atNode(expr)
 	switch e := expr.(type) {
 	case *parser.VectorSelector:
 		return lowerVectorSelector(e, s, ctx)
@@ -2905,6 +2912,7 @@ const (
 // if recognised. Unrecognised functions surface a clear "unsupported"
 // error to the caller.
 func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	ctx = ctx.atNode(c)
 	// `quantile_over_time(phi, v[range])` takes a scalar first; the
 	// range-vector lives at c.Args[1]. Route it before the generic
 	// "is c.Args[0] a MatrixSelector?" check below — including the
@@ -3172,7 +3180,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	switch c.Func.Name {
 	case "predict_linear":
 		return lowerPredictLinear(c, s, ctx)
-	case "holt_winters", "double_exponential_smoothing":
+	case holtWintersFunctionName, "double_exponential_smoothing":
 		// `double_exponential_smoothing` (and its legacy `holt_winters`
 		// alias) applies Holt-Winters double-exponential smoothing over
 		// the lookback window. The chsql emitter renders the sequential
@@ -5360,6 +5368,7 @@ func tryNativeGridVectorAgg(
 // aggregations drop `__name__`, so the projected MetricName is the empty
 // string; the projected Attributes is built from the group-key columns.
 func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	ctx = ctx.atNode(a)
 	// min/max/stddev/stdvar/quantile/topk/bottomk over a histogram-VALUED
 	// argument (or over an already-dropped nested shape), NESTED under a
 	// further wrapper (cerberus issue #2562) —

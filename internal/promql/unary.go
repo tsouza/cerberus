@@ -57,6 +57,7 @@ import (
 // the mixed-or's own lowering unchanged, matching the pure-histogram
 // ADD case just above.
 func lowerUnary(u *parser.UnaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	ctx = ctx.atNode(u)
 	if b, ok := mixedExpHistogramSetOp(u.Expr, s, ctx); ok {
 		switch u.Op {
 		case parser.ADD:

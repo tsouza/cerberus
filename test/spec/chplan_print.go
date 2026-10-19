@@ -295,6 +295,9 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		if v.PredictLinearSlopeColumn != "" {
 			fmt.Fprintf(b, " predictSlope=%s", v.PredictLinearSlopeColumn)
 		}
+		if v.TimeShiftMillis != 0 {
+			fmt.Fprintf(b, " timeShiftMillis=%d", v.TimeShiftMillis)
+		}
 		if len(v.GroupBy) > 0 {
 			gb := make([]string, len(v.GroupBy))
 			for i, e := range v.GroupBy {

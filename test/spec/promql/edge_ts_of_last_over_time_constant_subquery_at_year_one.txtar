@@ -1,0 +1,45 @@
+-- query.promql --
+ts_of_last_over_time(vector(1)[5m:1m] @ -62135596800)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 40.0);
+-- expected_rows --
+[
+  [{}, 0]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] float64 = 1
+-- args_optimized --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] float64 = 1
+-- chplan --
+RangeWindow func=ts_of_last_over_time range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] start=0001-01-01T00:00:00Z end=1754-08-30T22:43:41Z distinctSampleRows
+  Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+    Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+      Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, 1 AS Value]
+        StepGrid start=1754-08-30T22:39:00.000000000Z end=1754-08-30T22:43:00.000000000Z step=1m0s
+-- settings --
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:rw;rw;sg
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+query_cache_nondeterministic_function_handling=ignore
+query_cache_ttl=300
+use_query_cache=1
+-- sql --
+SELECT `Attributes`, toFloat64(greatest(toUnixTimestamp64Milli(tupleElement(window_pairs[length(window_pairs)], 1)), 0)) / 1000 AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > fromUnixTimestamp64Nano(toInt64(-6795364578871000000)) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= fromUnixTimestamp64Nano(toInt64(-6795364578871000000)), series_array) AS window_pairs FROM (SELECT `Attributes`, arrayCompact(arraySort(groupArray((`anchor_ts`, `Value`)))) AS series_array FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> fromUnixTimestamp64Nano(toInt64(-6795364860000000000)) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`)))) WHERE `anchor_ts` > fromUnixTimestamp64Nano(toInt64(-6795364578871000000)) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= fromUnixTimestamp64Nano(toInt64(-6795364578871000000)) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 1
+-- sql_optimized --
+SELECT `Attributes`, toFloat64(greatest(toUnixTimestamp64Milli(tupleElement(window_pairs[length(window_pairs)], 1)), 0)) / 1000 AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > fromUnixTimestamp64Nano(toInt64(-6795364578871000000)) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= fromUnixTimestamp64Nano(toInt64(-6795364578871000000)), series_array) AS window_pairs FROM (SELECT `Attributes`, arrayCompact(arraySort(groupArray((`anchor_ts`, `Value`)))) AS series_array FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> fromUnixTimestamp64Nano(toInt64(-6795364860000000000)) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`)))) WHERE `anchor_ts` > fromUnixTimestamp64Nano(toInt64(-6795364578871000000)) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= fromUnixTimestamp64Nano(toInt64(-6795364578871000000)) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 1

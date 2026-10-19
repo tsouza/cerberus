@@ -33,6 +33,7 @@ import (
 //     renders them as IN / NOT IN against a DISTINCT signature
 //     subquery, or as a left + anti-right UNION ALL for `or`.
 func lowerBinary(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	ctx = ctx.atNode(b)
 	// Scalar-only fold first: when BOTH sides resolve to a constant we
 	// materialise a 1-row synthetic vector with the folded value.
 	// TryFoldScalar walks NumberLiteral / ParenExpr / UnaryExpr /

@@ -27,6 +27,7 @@ const defaultSubqueryStep = time.Minute
 // `[End-OuterRange, End]` evaluates the inner selector by picking the
 // last sample whose timestamp falls within `[anchor-Step, anchor]`.
 func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	ctx = ctx.atNode(e)
 	if e.Range <= 0 {
 		return nil, fmt.Errorf("promql: subquery range must be positive, got %s", e.Range)
 	}
@@ -983,7 +984,7 @@ func subqueryInnerRangeFnShape(fn string) (arity, matrixArg int) {
 	switch fn {
 	case "predict_linear":
 		return 2, 0
-	case "holt_winters", "double_exponential_smoothing":
+	case holtWintersFunctionName, "double_exponential_smoothing":
 		return 3, 0
 	case "quantile_over_time":
 		return 2, 1
@@ -1294,6 +1295,7 @@ func lowerOuterRangeFnOverSubquery(
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
+	rw.TimeShiftMillis = ctx.domain.gridShift(sub)
 
 	// predict_linear / holt_winters / quantile_over_time carry extra
 	// scalar arguments beyond the subquery itself; thread them onto rw
@@ -1853,7 +1855,7 @@ func projectCarriesMetricName(p *chplan.Project, s schema.Metrics) bool {
 // spelling.
 func canonicalRangeWindowFunc(name string) string {
 	if name == "double_exponential_smoothing" {
-		return "holt_winters"
+		return holtWintersFunctionName
 	}
 	return name
 }
@@ -1882,7 +1884,7 @@ func histogramSubqueryFloatOnlyDropFunc(outerFn string) bool {
 		return true
 	}
 	switch canonicalRangeWindowFunc(outerFn) {
-	case "predict_linear", "holt_winters", "quantile_over_time":
+	case "predict_linear", holtWintersFunctionName, "quantile_over_time":
 		return true
 	default:
 		return false
@@ -3445,6 +3447,7 @@ func lowerSubqueryOverCallSubquery(
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
+	rw.TimeShiftMillis = ctx.domain.gridShift(innerSub)
 	// Same extra-scalar binding as the matrix-selector sibling: the fn of
 	// a nested subquery (`quantile_over_time(0.5,
 	// rate(m[1m])[5m:30s])[1h:5m]`) carries its scalars in the same

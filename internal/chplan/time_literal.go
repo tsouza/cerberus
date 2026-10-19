@@ -26,10 +26,23 @@ func FormatTimeLiteral(t time.Time) string {
 // implicit timezone exactly as they do over the columns and the
 // materialized views keyed by them.
 //
+// ClickHouse parses a string earlier than [TimeLiteralMin] as that
+// instant, so an instant before it is written as its Unix nanoseconds
+// instead: `fromUnixTimestamp64Nano(toInt64(<n>))`, the same DateTime64(9)
+// type, exact down to [StorageMinTime]. An instant outside the int64
+// nanoseconds is written as the nearer of [StorageMinTime] and
+// [StorageMaxTime]; a caller that needs it exactly rejects it first.
+//
 // Every absolute time bound and evaluation anchor in a plan is built
 // here; chsql.Builder.DateTime64Lit renders the same literal for the
 // emitter-side bounds.
 func TimeLiteral(t time.Time) Expr {
+	if t.Before(TimeLiteralMin) {
+		return &FuncCall{
+			Fn:   FnFromUnixNanos,
+			Args: []Expr{&FuncCall{Fn: FnToInt64, Args: []Expr{&LitInt{V: TimeLiteralNanos(t)}}}},
+		}
+	}
 	return &FuncCall{
 		Fn: FnParseDateTime64BestEffort,
 		Args: []Expr{
@@ -37,4 +50,17 @@ func TimeLiteral(t time.Time) Expr {
 			&LitInt{V: NanoScale},
 		},
 	}
+}
+
+// TimeLiteralNanos returns the Unix nanoseconds of t, held to the int64
+// nanoseconds: an instant before [StorageMinTime] or after
+// [StorageMaxTime] yields that bound's own nanoseconds.
+func TimeLiteralNanos(t time.Time) int64 {
+	switch {
+	case t.Before(StorageMinTime):
+		return StorageMinTime.UnixNano()
+	case t.After(StorageMaxTime):
+		return StorageMaxTime.UnixNano()
+	}
+	return t.UnixNano()
 }

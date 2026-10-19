@@ -1,0 +1,55 @@
+-- query.promql --
+max_over_time(vector(time())[5m:1m] @ 10000000000)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 40.0);
+-- expected_rows --
+[
+  [{}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 9999999960],
+  [{}, "2026-01-01T00:01:00Z", "2026-01-01T00:01:00Z", 9999999960],
+  [{}, "2026-01-01T00:02:00Z", "2026-01-01T00:02:00Z", 9999999960],
+  [{}, "2026-01-01T00:03:00Z", "2026-01-01T00:03:00Z", 9999999960],
+  [{}, "2026-01-01T00:04:00Z", "2026-01-01T00:04:00Z", 9999999960],
+  [{}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 9999999960]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = -4999999920000
+[3] float64 = 1000
+-- args_optimized --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = -4999999920000
+[3] float64 = 1000
+-- chplan --
+Project [Attributes AS Attributes, anchor_ts AS anchor_ts, anchor_ts AS TimeUnix, Value AS Value]
+  CrossJoin
+    StepGrid start=2026-01-01T00:00:00.000000000Z end=2026-01-01T00:05:00.000000000Z step=1m0s
+    RangeWindow func=max_over_time range=5m0s step=0s ts=anchor_ts value=Value timeShiftMillis=-4999999920000 groupBy=[Attributes] start=0001-01-01T00:00:00Z end=2128-06-11T08:54:40Z distinctSampleRows
+      Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+        Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+          Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, (FnToFloat64((FnToUnixMillis(anchor_ts) - -4999999920000)) / 1000) AS Value]
+            StepGrid start=2128-06-11T08:50:00.000000000Z end=2128-06-11T08:54:00.000000000Z step=1m0s
+-- settings --
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;rw;sg;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+-- sql --
+SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`) AS L CROSS JOIN (SELECT `Attributes`, max(`Value`) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, (toFloat64((toUnixTimestamp64Milli(`anchor_ts`) - ?)) / toFloat64(?)) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2128-06-11 08:50:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`)))) WHERE `anchor_ts` > parseDateTime64BestEffort('2128-06-11 08:54:40.000000000Z', 9) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= parseDateTime64BestEffort('2128-06-11 08:54:40.000000000Z', 9) GROUP BY `Attributes`) AS R)
+-- sql_optimized --
+SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 6))) AS `anchor_ts`) AS L CROSS JOIN (SELECT `Attributes`, max(`Value`) AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, (toFloat64((toUnixTimestamp64Milli(`anchor_ts`) - ?)) / toFloat64(?)) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2128-06-11 08:50:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`)))) WHERE `anchor_ts` > parseDateTime64BestEffort('2128-06-11 08:54:40.000000000Z', 9) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= parseDateTime64BestEffort('2128-06-11 08:54:40.000000000Z', 9) GROUP BY `Attributes`) AS R)
