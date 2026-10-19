@@ -222,9 +222,10 @@ func TestInstantDomain_KeepsUnrepresentableReads(t *testing.T) {
 		end   time.Time
 		want  string
 	}{
-		// Pins past the ceiling whose window reaches stored instants.
-		{"matrix_past_ceiling", `count_over_time(m[10m] @ 9223372300)`, instantDomainEvalEnd, "2262-04-11T23:51:40Z"},
-		{"selector_past_ceiling", `m @ 9223372096.854`, instantDomainEvalEnd, "2262-04-11T23:48:16.854Z"},
+		// Pins past the ceiling whose window reaches stored instants, read
+		// by a function that also reads the window's edges or the pin.
+		{"increase_past_ceiling", `increase(m[10m] @ 9223372300)`, instantDomainEvalEnd, "2262-04-11T23:51:40Z"},
+		{"predict_linear_past_ceiling", `predict_linear(m[5m] @ 9223372096.854, 60)`, instantDomainEvalEnd, "2262-04-11T23:48:16.854Z"},
 		{"rate_past_ceiling", `rate(m[5m] @ 9223372100)`, instantDomainEvalEnd, "2262-04-11T23:48:20Z"},
 		{"subquery_read_past_ceiling", `count_over_time(m[1h:1m] @ 9223373836.854)`, instantDomainEvalEnd, "2262-04-12T00:17:16.854Z"},
 		// A constant arm cannot be shifted away from the read beside it.
@@ -233,6 +234,7 @@ func TestInstantDomain_KeepsUnrepresentableReads(t *testing.T) {
 		{"root_matrix_past_ceiling", `vector(1)[5m:1m] @ 10000000000`, instantDomainEvalEnd, "2286-11-20T17:46:00Z"},
 		// Requests near the floor whose window reaches below it.
 		{"rate_near_floor", `rate(m[5m])`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:09:00Z"},
+		{"selector_near_floor", `m`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:09:00Z"},
 		// A grid inside another subquery is not shifted on its own.
 		{"nested_grid_near_floor", `max_over_time(max_over_time(timestamp(vector(1))[5m:1m])[3m:1m])`, instantDomainNearFloor.Add(-6 * time.Minute), "1677-09-21T00:11:00Z"},
 		// A region holding a nested subquery or a request pin is neither
@@ -258,9 +260,54 @@ func TestInstantDomain_KeepsUnrepresentableReads(t *testing.T) {
 	}
 }
 
+// TestInstantDomain_CutsWindowsAtStorageEdges pins the rewrite of a window
+// reaching past the stored range: a function fixed by the samples the
+// window holds reads the window cut back to the last stored millisecond
+// or to the first one, and an instant selector whose lookback ends past
+// the ceiling keeps the newest stored sample when it lies inside the
+// lookback.
+func TestInstantDomain_CutsWindowsAtStorageEdges(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		end   time.Time
+		want  string
+	}{
+		{"window_past_ceiling", `count_over_time(m[10m] @ 9223372300)`, instantDomainEvalEnd, `count_over_time(m[5m36s854ms] @ 9223372036.854)`},
+		{"window_past_ceiling_by_offset", `sum_over_time(m[10m] @ 9223372400 offset 100s)`, instantDomainEvalEnd, `sum_over_time(m[5m36s854ms] @ 9223372036.854)`},
+		{"window_below_floor", `max_over_time(m[20m] @ -9223371200)`, instantDomainNearFloor, `max_over_time(m[13m56s854ms] @ -9223371200.000)`},
+		{"window_below_floor_at_request", `max_over_time(m[10m])`, instantDomainNearFloor, `max_over_time(m[7m16s854ms] @ -9223371600.000)`},
+		{"selector_past_ceiling", `m @ 9223372096.854`, instantDomainEvalEnd, `m @ 9223372036.854 and timestamp(m @ 9223372036.854) > 9223371796.8545`},
+		{"rate_is_not_cut", `rate(m[10m] @ 9223371900)`, instantDomainEvalEnd, `rate(m[10m] @ 9223371900.000)`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := lowerCtx{start: tc.end, end: tc.end}
+			got, _, err := fitInstantDomain(mustParseExperimental(t, tc.query), ctx)
+			if err != nil {
+				t.Fatalf("fitInstantDomain(%q): %v", tc.query, err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("fitInstantDomain(%q) = %q, want %q", tc.query, got.String(), tc.want)
+			}
+		})
+	}
+	// The printed range drops nanoseconds: a window cut at the floor
+	// starts one nanosecond before the first stored millisecond, so that a
+	// sample there stays inside it.
+	got, _, err := fitInstantDomain(mustParseExperimental(t, `max_over_time(m[20m] @ -9223371200)`), lowerCtx{start: instantDomainNearFloor, end: instantDomainNearFloor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantRange = 13*time.Minute + 56854*time.Millisecond + time.Nanosecond
+	if r := got.(*parser.Call).Args[0].(*parser.MatrixSelector).Range; r != wantRange {
+		t.Fatalf("window cut at the floor has range %v, want %v", r, wantRange)
+	}
+}
+
 // TestInstantDomain_Boundaries pins the exact edges at the ceiling, where
-// a pin is not wrapped. A selector reads back by its lookback, a subquery
-// grid reaches a step past its end; a grid that reads nothing is shifted
+// a pin is not wrapped. A rate window reads its edges, a subquery grid
+// reaches a step past its end; a grid that reads nothing is shifted
 // instead. The last accepted pin and the first rejected one sit one
 // millisecond apart.
 func TestInstantDomain_Boundaries(t *testing.T) {
@@ -270,8 +317,8 @@ func TestInstantDomain_Boundaries(t *testing.T) {
 		query  string
 		accept bool
 	}{
-		{"selector_highest_accepted", `m @ 9223372036.854`, true},
-		{"selector_lowest_rejected", `m @ 9223372036.855`, false},
+		{"window_highest_accepted", `rate(m[5m] @ 9223372036.854)`, true},
+		{"window_lowest_rejected", `rate(m[5m] @ 9223372036.855)`, false},
 		// 23:46:16.854 + 1m step = 23:47:16.854.
 		{"subquery_highest_accepted", `count_over_time(m[5m:1m] @ 9223371976.854)`, true},
 		{"subquery_lowest_rejected", `count_over_time(m[5m:1m] @ 9223371976.855)`, false},
@@ -306,6 +353,9 @@ func TestInstantDomain_RangeStepMargin(t *testing.T) {
 		// start - 5m lookback - 1m query step = the floor.
 		{"selector_lowest_accepted", `m`, "1677-09-21T00:18:43.145224192Z", true},
 		{"selector_highest_rejected", `m`, "1677-09-21T00:18:43.145224191Z", false},
+		// An unpinned window is evaluated at every step, so it is not cut
+		// back to the floor.
+		{"window_highest_rejected", `count_over_time(m[10m])`, "1677-09-21T00:23:43.145224191Z", false},
 		// start - 5m range - 5m lookback of the grid's selector - 1m
 		// subquery step.
 		{"subquery_lowest_accepted", `count_over_time(m[5m:1m])`, "1677-09-21T00:23:43.145224192Z", true},
@@ -458,7 +508,7 @@ func TestInstantDomain_NoContextChecksOnlyAbsolutePins(t *testing.T) {
 	if _, err := Lower(context.Background(), mustParseExperimental(t, `count_over_time(vector(1)[5m:1m] @ -62135596800)`), schema.DefaultOTelMetrics()); err != nil {
 		t.Fatalf("Lower(year-one constant): %v", err)
 	}
-	_, err := Lower(context.Background(), mustParseExperimental(t, `count_over_time(m[10m] @ 9223372300)`), schema.DefaultOTelMetrics())
+	_, err := Lower(context.Background(), mustParseExperimental(t, `rate(m[10m] @ 9223372300)`), schema.DefaultOTelMetrics())
 	if !isInstantDomainError(err) {
 		t.Fatalf("Lower(read past the ceiling): err = %v, want the instant-domain rejection", err)
 	}

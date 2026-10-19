@@ -27,14 +27,20 @@ import (
 
 const instantDomainMetric = "instant_domain_probe"
 
-// instantDomainSeed holds a sample just before instantDomainEval, and one
-// in 1811, before the earliest instant a parsed DateTime64 string names.
+// instantDomainSeed holds a sample just before instantDomainEval, one in
+// 1811, before the earliest instant a parsed DateTime64 string names, and
+// two minutes apart near each edge of the stored range: 2262-04-11 23:40
+// and 23:45 (job "edge"), 1677-09-21 00:20 and 00:25 (job "floor").
 const instantDomainSeed = "" +
 	"CREATE TABLE otel_metrics_gauge (MetricName String, Attributes Map(String, String), TimeUnix DateTime64(9), Value Float64) " +
 	"ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);\n" +
 	"INSERT INTO otel_metrics_gauge VALUES\n" +
 	"    ('" + instantDomainMetric + "', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 2.0),\n" +
-	"    ('" + instantDomainMetric + "', map('job', 'old'), fromUnixTimestamp64Nano(toInt64(-5000000060000000000)), 3.0);\n"
+	"    ('" + instantDomainMetric + "', map('job', 'old'), fromUnixTimestamp64Nano(toInt64(-5000000060000000000)), 3.0),\n" +
+	"    ('" + instantDomainMetric + "', map('job', 'edge'), fromUnixTimestamp64Nano(toInt64(9223371600000000000)), 4.0),\n" +
+	"    ('" + instantDomainMetric + "', map('job', 'edge'), fromUnixTimestamp64Nano(toInt64(9223371900000000000)), 6.0),\n" +
+	"    ('" + instantDomainMetric + "', map('job', 'floor'), fromUnixTimestamp64Nano(toInt64(-9223371600000000000)), 5.0),\n" +
+	"    ('" + instantDomainMetric + "', map('job', 'floor'), fromUnixTimestamp64Nano(toInt64(-9223371300000000000)), 7.0);\n"
 
 var (
 	instantDomainEval = time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
@@ -50,11 +56,14 @@ var (
 // evaluation instant a range case starts.
 const instantDomainRangeSteps = 2
 
-// instantDomainRangeVectorCases names the cases whose query is a range
-// vector, which only an instant query may ask.
-var instantDomainRangeVectorCases = map[string]bool{
-	"root_matrix_near_ceiling":     true,
-	"root_matrix_read_at_year_one": true,
+// instantDomainInstantOnlyCases names the cases asked only as an instant
+// query: a range vector, which a range query may not ask, and an unpinned
+// window crossing the floor, which a range query evaluates at many
+// instants and so is rejected there (TestInstantDomain_RangeStepMargin).
+var instantDomainInstantOnlyCases = map[string]bool{
+	"root_matrix_near_ceiling":      true,
+	"root_matrix_read_at_year_one":  true,
+	"window_below_floor_at_request": true,
 }
 
 // instantDomainRow is one series of a case's answer. at maps a step
@@ -84,6 +93,8 @@ func idRow(labels map[string]string, at func(time.Time) float64) instantDomainRo
 func TestInstantDomainParity_ChDB(t *testing.T) {
 	const fixturePermissions = 0o600
 	noLabels := map[string]string{}
+	edge := map[string]string{"job": "edge"}
+	floor := map[string]string{"job": "floor"}
 	five := []instantDomainRow{idRow(noLabels, idConst(5))}
 	cases := []struct {
 		name  string
@@ -172,6 +183,58 @@ func TestInstantDomainParity_ChDB(t *testing.T) {
 			{labels: noLabels, at: idConst(1), sampleAt: time.UnixMilli(9223372020000).UTC()},
 		}},
 		{name: "root_matrix_read_at_year_one", query: instantDomainMetric + `[5m] @ -62135596800`, eval: instantDomainEval},
+		// Windows reaching past the stored range read the samples inside
+		// it, for every function fixed by the samples a window holds.
+		{
+			"window_past_ceiling", `count_over_time(` + instantDomainMetric + `{job="edge"}[10m] @ 9223372300)`, instantDomainEval,
+			[]instantDomainRow{idRow(edge, idConst(1))},
+		},
+		{
+			"window_past_ceiling_by_offset", `count_over_time(` + instantDomainMetric + `{job="edge"}[10m] @ 9223372400 offset 100s)`, instantDomainEval,
+			[]instantDomainRow{idRow(edge, idConst(1))},
+		},
+		{
+			"sum_window_past_ceiling", `sum_over_time(` + instantDomainMetric + `{job="edge"}[10m] @ 9223372100)`, instantDomainEval,
+			[]instantDomainRow{idRow(edge, idConst(10))},
+		},
+		{
+			"ts_of_first_window_past_ceiling", `ts_of_first_over_time(` + instantDomainMetric + `{job="edge"}[20m] @ 9223372300)`, instantDomainEval,
+			[]instantDomainRow{idRow(edge, idConst(9223371600))},
+		},
+		{
+			"deriv_window_past_ceiling", `deriv(` + instantDomainMetric + `{job="edge"}[20m] @ 9223372300)`, instantDomainEval,
+			[]instantDomainRow{idRow(edge, idConst(2.0/300))},
+		},
+		{"absent_over_time_window_past_ceiling", `absent_over_time(` + instantDomainMetric + `{job="edge"}[10m] @ 9223372300)`, instantDomainEval, nil},
+		{
+			"window_below_floor_reads", `count_over_time(` + instantDomainMetric + `{job="floor"}[20m] @ -9223371200)`, instantDomainNearFloor,
+			[]instantDomainRow{idRow(floor, idConst(2))},
+		},
+		{"selector_past_ceiling", instantDomainMetric + `{job="edge"} @ 9223372096.854`, instantDomainEval, []instantDomainRow{{
+			name: instantDomainMetric, labels: edge, at: idConst(6), sampleAt: time.Unix(9223371900, 0).UTC(),
+		}}},
+		{"absent_selector_past_ceiling", `absent(` + instantDomainMetric + `{job="edge"} @ 9223372096.854)`, instantDomainEval, nil},
+		{
+			"absent_selector_past_ceiling_stale", `absent(` + instantDomainMetric + `{job="edge"} @ 9223372300)`, instantDomainEval,
+			// An instant query reports the cut window's end, which the API
+			// replaces with the evaluation instant, as for any `@` pin.
+			[]instantDomainRow{{labels: edge, at: idConst(1), sampleAt: time.UnixMilli(9223372036854).UTC()}},
+		},
+		// The lookback is left-open: a sample at its first millisecond is
+		// outside it, one a millisecond later is inside.
+		{"selector_past_ceiling_lookback_start", instantDomainMetric + `{job="edge"} @ 9223372200`, instantDomainEval, nil},
+		{"selector_past_ceiling_lookback_start_inside", instantDomainMetric + `{job="edge"} @ 9223372199.999`, instantDomainEval, []instantDomainRow{{
+			name: instantDomainMetric, labels: edge, at: idConst(6), sampleAt: time.Unix(9223371900, 0).UTC(),
+		}}},
+		{"selector_past_ceiling_stale", instantDomainMetric + `{job="edge"} @ 9223372300`, instantDomainEval, nil},
+		{
+			"sum_selector_past_ceiling", `sum(` + instantDomainMetric + ` @ 9223372096.854)`, instantDomainEval,
+			[]instantDomainRow{idRow(noLabels, idConst(6))},
+		},
+		{
+			"window_below_floor_at_request", `count_over_time(` + instantDomainMetric + `{job="floor"}[10m])`, instantDomainNearFloor,
+			[]instantDomainRow{idRow(floor, idConst(1))},
+		},
 		// Requests near the bounds, where the unpinned grid leaves the
 		// range.
 		{"near_floor_constant", `count_over_time(vector(1)[5m:1m])`, instantDomainNearFloor, five},
@@ -191,7 +254,7 @@ func TestInstantDomainParity_ChDB(t *testing.T) {
 			if rangeMode {
 				mode = "range"
 			}
-			if rangeMode && instantDomainRangeVectorCases[tc.name] {
+			if rangeMode && instantDomainInstantOnlyCases[tc.name] {
 				continue
 			}
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
@@ -285,7 +348,7 @@ func instantDomainCells(t *testing.T, sql string, args []any, want []instantDoma
 				case "Value":
 					cell = append(cell, r.at(at))
 				default:
-					cell = append(cell, ts.Format(time.RFC3339))
+					cell = append(cell, ts.Format(time.RFC3339Nano))
 				}
 			}
 			cells = append(cells, cell)

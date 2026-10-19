@@ -77,6 +77,10 @@ type domainFit struct {
 	// gridShifts maps the inner expression of each shifted subquery,
 	// parentheses removed, to the shift of its grid ([domainFit.gridShift]).
 	gridShifts map[parser.Expr]int64
+	// keepSelectors is set while the fit walks an argument whose selector
+	// a function reads by its matchers (absent, info's second argument),
+	// which must stay a selector ([cutSelector]).
+	keepSelectors bool
 }
 
 // shiftOf returns the time shift recorded for node, and whether one is.
@@ -363,6 +367,9 @@ func (f *domainFit) fitReplacing(e parser.Expr, env domainEnv) (parser.Expr, fit
 func (f *domainFit) fitExpr(e parser.Expr, env domainEnv) (parser.Expr, fitResult) {
 	switch n := e.(type) {
 	case *parser.VectorSelector:
+		if cut, ok := cutSelector(n, env); ok && !f.keepSelectors {
+			return f.fitExpr(cut, env)
+		}
 		at, _ := pinnedEnv(n.Timestamp, n.StartOrEnd, n.OriginalOffset, env)
 		return n, fitWindow(at, instantLookback, pinned(n.Timestamp, n.StartOrEnd))
 	case *parser.MatrixSelector:
@@ -422,7 +429,12 @@ func fitWindow(env domainEnv, reach time.Duration, ownPin bool) fitResult {
 		// one, which no sample of the first can fall in.
 		return fitResult{empty: true, err: instantDomainError(env.pin)}
 	}
-	err := checkInstantDomain(env.lo, env.hi, reach, env.step)
+	margin := env.step
+	if ownPin {
+		// A pinned window is read once, at its pin, whatever the step.
+		margin = 0
+	}
+	err := checkInstantDomain(env.lo, env.hi, reach, margin)
 	if err == nil {
 		return fitResult{reads: !ownPin}
 	}
@@ -651,6 +663,14 @@ func (f *domainFit) markShift(node parser.Node, shift int64) {
 	}
 }
 
+// firstArg returns n's first argument, nil when it has none.
+func firstArg(n *parser.Call) parser.Expr {
+	if len(n.Args) == 0 {
+		return nil
+	}
+	return n.Args[0]
+}
+
 // emptyPreservingCall reports whether fn answers no sample whenever its
 // first vector or matrix argument answers none. absent and
 // absent_over_time answer exactly when that argument is empty.
@@ -700,6 +720,13 @@ func absentSelector(n *parser.Call) (*parser.VectorSelector, parser.Expr, bool) 
 }
 
 func (f *domainFit) fitCall(n *parser.Call, env domainEnv) (parser.Expr, fitResult) {
+	if vs, ok := unwrapParens(firstArg(n)).(*parser.VectorSelector); ok && n.Func.Name == "absent" {
+		// absent(v) answers exactly when v's lookback holds no sample, as
+		// absent_over_time(v[lookback]) does, whose window can be cut.
+		if cut, ok := cutMatrix(&parser.MatrixSelector{VectorSelector: vs, Range: instantLookback}, env); ok {
+			return f.fitCall(&parser.Call{Func: parser.Functions["absent_over_time"], Args: parser.Expressions{cut}, PosRange: n.PosRange}, env)
+		}
+	}
 	if vs, arg, ok := absentSelector(n); ok {
 		if _, r := f.fitExpr(arg, env); r.err != nil && r.empty {
 			// The selector reads nothing, so the call answers from its
@@ -722,10 +749,17 @@ func (f *domainFit) fitCall(n *parser.Call, env domainEnv) (parser.Expr, fitResu
 			out parser.Expr
 			r   fitResult
 		)
+		in := a
+		if cut, ok := cutMatrix(a, env); ok && sampleSetRangeFunctions[n.Func.Name] {
+			in = cut
+		}
 		if selectorArgPosition(n, i) {
-			out, r = f.fitExpr(a, env)
+			keep := f.keepSelectors
+			f.keepSelectors = true
+			out, r = f.fitExpr(in, env)
+			f.keepSelectors = keep
 		} else {
-			out, r = f.fitReplacing(a, env)
+			out, r = f.fitReplacing(in, env)
 		}
 		res.merge(r)
 		if t := a.Type(); !seenSeries && (t == parser.ValueTypeVector || t == parser.ValueTypeMatrix) {
