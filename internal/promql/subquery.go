@@ -27,6 +27,7 @@ const defaultSubqueryStep = time.Minute
 // `[End-OuterRange, End]` evaluates the inner selector by picking the
 // last sample whose timestamp falls within `[anchor-Step, anchor]`.
 func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	ctx = ctx.atNode(e)
 	if e.Range <= 0 {
 		return nil, fmt.Errorf("promql: subquery range must be positive, got %s", e.Range)
 	}
@@ -1293,6 +1294,9 @@ func lowerOuterRangeFnOverSubquery(
 		TimestampColumn: "anchor_ts",
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}
+	if shift, ok := ctx.domain.shiftOf(sub); ok {
+		rw.TimeShiftMillis = shift
 	}
 
 	// predict_linear / holt_winters / quantile_over_time carry extra
@@ -3444,6 +3448,9 @@ func lowerSubqueryOverCallSubquery(
 		TimestampColumn: "anchor_ts",
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}
+	if shift, ok := ctx.domain.shiftOf(sub); ok {
+		rw.TimeShiftMillis = shift
 	}
 	// Same extra-scalar binding as the matrix-selector sibling: the fn of
 	// a nested subquery (`quantile_over_time(0.5,

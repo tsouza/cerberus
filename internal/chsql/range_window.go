@@ -3176,21 +3176,28 @@ func (e *emitter) emitRangeWindowTsOfOverTime(r *chplan.RangeWindow) error {
 	case "ts_of_first_over_time":
 		// window_pairs is arraySort-ordered by (ts, value), so element 1
 		// is the earliest sample; tuple element 1 is its timestamp.
-		tsExpr = tupleTsFrag(Subscript(BareIdent("window_pairs"), InlineLit(int64(1))))
+		tsExpr = tupleTsFrag(Subscript(BareIdent("window_pairs"), InlineLit(int64(1))), r.TimeShiftMillis)
 	case "ts_of_last_over_time":
-		tsExpr = tupleTsFrag(
-			Subscript(BareIdent("window_pairs"), Call("length", BareIdent("window_pairs"))),
-		)
+		// Prometheus reports max(tf, th), the later of the last float's
+		// and the last histogram's timestamps, with th = 0 for a window
+		// holding no histogram. A float-only window whose last sample lies
+		// before the Unix epoch therefore reports 0, not its timestamp.
+		last := Subscript(BareIdent("window_pairs"), Call("length", BareIdent("window_pairs")))
+		tsExpr = millisToEpochSecondsFrag(Call(
+			"greatest",
+			tsMillisFrag(Call("tupleElement", last, InlineLit(int64(1))), r.TimeShiftMillis),
+			InlineLit(int64(0)),
+		))
 	case "ts_of_max_over_time":
 		// Timestamp of the max-valued sample; on a value tie the LATEST
 		// sample wins (Prom's forward `cur >= maxVal`). See tsOfExtremeFrag
 		// for why a composite (value, tsNanos) key is needed (plain CH
 		// argMax keeps the FIRST tie, diverging from Prom).
-		tsExpr = tsOfExtremeFrag(true)
+		tsExpr = tsOfExtremeFrag(true, r.TimeShiftMillis)
 	case "ts_of_min_over_time":
 		// Timestamp of the min-valued sample; latest wins on a value tie
 		// (Prom's `cur <= minVal`).
-		tsExpr = tsOfExtremeFrag(false)
+		tsExpr = tsOfExtremeFrag(false, r.TimeShiftMillis)
 	default:
 		return fmt.Errorf("%w: ts-of-over-time function %q", ErrUnsupported, r.Func)
 	}
@@ -3201,10 +3208,10 @@ func (e *emitter) emitRangeWindowTsOfOverTime(r *chplan.RangeWindow) error {
 // window-pair tuple's timestamp element (tuple element 1, a
 // DateTime64(9)): `toFloat64(toUnixTimestamp64Milli(tupleElement(p, 1))) / 1000`.
 // Matches Prometheus's `float64(sample.T) / 1000` (T is the ms
-// timestamp). Shared by ts_of_first / ts_of_last.
-func tupleTsFrag(pair Frag) Frag {
+// timestamp). Used by ts_of_first.
+func tupleTsFrag(pair Frag, shiftMillis int64) Frag {
 	ts := Call("tupleElement", pair, InlineLit(int64(1)))
-	return tsEpochSecondsFrag(ts)
+	return tsEpochSecondsFrag(ts, shiftMillis)
 }
 
 // tsEpochSecondsFrag renders `toFloat64(toUnixTimestamp64Milli(<ts>)) / 1000`
@@ -3213,10 +3220,32 @@ func tupleTsFrag(pair Frag) Frag {
 // milliseconds first so the result equals Prometheus's millisecond
 // `sample.T / 1000` exactly (no DateTime64 nanosecond tail leaking a
 // sub-millisecond fraction Prom never sees).
-func tsEpochSecondsFrag(ts Frag) Frag {
+//
+// Over a shifted grid ([chplan.RangeWindow.TimeShiftMillis]) the shift is
+// subtracted from the Int64 milliseconds before the conversion, so the
+// value is Prometheus's own instant even where that instant has no
+// DateTime64(9) form: `toFloat64(toUnixTimestamp64Milli(<ts>) - <shift>) / 1000`.
+func tsEpochSecondsFrag(ts Frag, shiftMillis int64) Frag {
+	return millisToEpochSecondsFrag(tsMillisFrag(ts, shiftMillis))
+}
+
+// tsMillisFrag renders the Unix milliseconds Prometheus reports for the
+// DateTime64(9) timestamp ts: `toUnixTimestamp64Milli(<ts>)`, minus the
+// grid's shift when it carries one.
+func tsMillisFrag(ts Frag, shiftMillis int64) Frag {
+	millis := Call("toUnixTimestamp64Milli", ts)
+	if shiftMillis != 0 {
+		millis = Sub(millis, InlineLit(shiftMillis))
+	}
+	return millis
+}
+
+// millisToEpochSecondsFrag renders Prometheus's `float64(t) / 1000` over
+// the Int64 milliseconds millis.
+func millisToEpochSecondsFrag(millis Frag) Frag {
 	const millisPerSecond = 1000
 	return Div(
-		Call("toFloat64", Call("toUnixTimestamp64Milli", ts)),
+		Call("toFloat64", millis),
 		InlineLit(int64(millisPerSecond)),
 	)
 }
@@ -3243,7 +3272,7 @@ func tsEpochSecondsFrag(ts Frag) Frag {
 // uses keyVal = -value (maximise -value = minimise value), keeping the
 // SAME `(…, +tsNanos)` tie component so the latest equal-min wins —
 // exactly Prom's `cur <= minVal` forward scan.
-func tsOfExtremeFrag(wantMax bool) Frag {
+func tsOfExtremeFrag(wantMax bool, shiftMillis int64) Frag {
 	val := func() Frag { return Call("tupleElement", BareIdent("p"), InlineLit(int64(2))) }
 	keyVal := val()
 	if !wantMax {
@@ -3261,7 +3290,7 @@ func tsOfExtremeFrag(wantMax bool) Frag {
 		BareIdent("window_pairs"),
 	)
 	extremeTs := Call("arrayReduce", InlineLit("argMax"), tsArr, keyArr)
-	return tsEpochSecondsFrag(extremeTs)
+	return tsEpochSecondsFrag(extremeTs, shiftMillis)
 }
 
 // overTimeDirectAggFrag returns the direct CH group-aggregate Frag for an

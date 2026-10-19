@@ -88,9 +88,12 @@ rejects `sort_by_label(v)` still counts as one supported symbol.
 Shape-level wrong-rejections are measured separately, by the rejection-parity
 catalogue: across all three heads it records **3** open divergences — queries
 the reference backend answers and cerberus rejects. Two are argument shapes;
-the third is a PromQL query whose `@` pin, offset or subquery grid needs an
-instant outside 1900-01-01T00:00:00Z to 2262-04-11T23:47:16.854775807Z, the
-range ClickHouse's DateTime64(9) represents exactly. Each
+the third is a PromQL query that reads stored samples over a window or
+subquery grid needing an instant outside 1677-09-21T00:12:43.145224192Z to
+2262-04-11T23:47:16.854775807Z, the int64 nanoseconds ClickHouse's
+DateTime64(9) holds, or that answers a range vector whose sample timestamps
+lie outside it. A query whose grid leaves that range without reading a
+sample there is answered. Each
 is one `class: "divergence"` row in
 [`test/rejection-parity/catalogue/`](../test/rejection-parity/catalogue),
 carries an open GitHub issue tracking its closure, and is re-verified against

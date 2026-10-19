@@ -311,8 +311,8 @@ func queryExemplarsSelect(
 	//
 	// Each time bound takes the exact form [chplan.AtLeastBound] /
 	// [chplan.AtMostBound] gives it, rendered by [TimeBound]: a bound no
-	// stored sample lies beyond is omitted, a bound before 1900 (where a
-	// time literal clamps) compares toUnixTimestamp64Nano(TimeUnix) with
+	// stored sample lies beyond is omitted, a bound before 1900 (where a parsed
+	// time string clamps) compares toUnixTimestamp64Nano(TimeUnix) with
 	// Int64 nanoseconds, and any other bound is an inline
 	// parseDateTime64BestEffort literal.
 	//

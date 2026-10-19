@@ -67,7 +67,9 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		attrs chplan.Expr
 		err   error
 	)
-	if vs, ok := arg.(*parser.VectorSelector); ok {
+	if vs, ok := arg.(*parser.VectorSelector); ok && ctx.domain.readsNothing(vs) {
+		return lowerAbsenceOfNoRead(vs, s, ctx)
+	} else if ok {
 		// `absent(v)` IS `absent_over_time(v[<instantLookback>])`: an
 		// instant vector is the newest sample per series within the
 		// staleness lookback, and reference's funcAbsent only asks
@@ -116,7 +118,30 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		}
 		attrs = emptyAttrsMap()
 	}
+	return absentOfEmptiness(inner, attrs, s, ctx), nil
+}
 
+// lowerAbsenceOfNoRead lowers `absent(v)` and `absent_over_time(v[r])` for
+// a selector v that reads no sample: one whose `@` pin Prometheus
+// evaluates at a wrapped instant (see [fitInstantDomain]), so that its
+// storage read and its evaluation window never meet. Prometheus answers
+// with the absence series at every step, labelled from v's matchers; the
+// plan counts the rows of an expression ClickHouse evaluates to the empty
+// vector, so the verdict is still computed in SQL.
+func lowerAbsenceOfNoRead(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	innerCtx := ctx
+	innerCtx.step = 0
+	inner, err := lowerVectorSetOpOperand(emptyInstantVector(), s, innerCtx, mixedAbsentFamily)
+	if err != nil {
+		return nil, err
+	}
+	return absentOfEmptiness(inner, absentAttrsMap(vs.LabelMatchers), s, ctx), nil
+}
+
+// absentOfEmptiness builds the absence series of the instant-vector plan
+// inner: one sample of value 1 labelled attrs at every step at which
+// inner has no row.
+func absentOfEmptiness(inner chplan.Node, attrs chplan.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	const cntAlias = "_cerb_n"
 	agg := &chplan.Aggregate{
 		Roles:   metricRoles(s),
@@ -189,7 +214,7 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 			{Expr: timeExpr, Alias: s.TimestampColumn},
 			{Expr: &chplan.LitFloat{V: 1.0}, Alias: s.ValueColumn},
 		},
-	}, nil
+	}
 }
 
 // lowerAbsentOverTime implements PromQL `absent_over_time(v[range])`.
@@ -233,6 +258,9 @@ func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 		return nil, fmt.Errorf("promql: matrix selector's inner must be a VectorSelector, got %T", ms.VectorSelector)
 	}
 
+	if ctx.domain.readsNothing(vs) {
+		return lowerAbsenceOfNoRead(vs, s, ctx)
+	}
 	return lowerAbsenceOverWindow(vs, ms.Range, s, ctx)
 }
 

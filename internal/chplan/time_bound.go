@@ -12,9 +12,10 @@ var (
 	StorageMaxTime = time.Unix(0, math.MaxInt64).UTC()
 )
 
-// TimeLiteralMin is the earliest instant a [TimeLiteral] names exactly.
-// ClickHouse parses an earlier literal as this instant: it clamps rather
-// than rejects. A [TimeLiteral] is exact from here up to [StorageMaxTime].
+// TimeLiteralMin is the earliest instant a parsed time string names
+// exactly. ClickHouse parses an earlier string as this instant: it clamps
+// rather than rejects. [TimeLiteral] writes an earlier instant as Unix
+// nanoseconds instead.
 var TimeLiteralMin = time.Date(1900, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 // TimeBound is the exact SQL form of a closed bound `x >= t` or `x <= t`
@@ -32,7 +33,7 @@ type TimeBound struct {
 //
 //   - after [StorageMaxTime]: `toUnixTimestamp64Nano(x) > 9223372036854775807`,
 //     which no value satisfies;
-//   - before [TimeLiteralMin], where a [TimeLiteral] would be clamped:
+//   - before [TimeLiteralMin], where a parsed time string would be clamped:
 //     `toUnixTimestamp64Nano(x) >= <t in Unix nanoseconds>`;
 //   - otherwise `x >= <TimeLiteral(t)>`.
 func AtLeastBound(t time.Time) (TimeBound, bool) {

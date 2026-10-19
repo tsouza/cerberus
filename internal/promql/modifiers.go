@@ -276,6 +276,17 @@ type lowerCtx struct {
 	// value (false) reproduces the pre-#3038 throwIf shape byte-for-byte, so
 	// every caller that does not opt in keeps the established SQL.
 	throwDuplicateSeriesIf bool
+
+	// domain is what [fitInstantDomain] decided for the query: the time
+	// shift of each node in a shifted region and the selectors that read
+	// nothing. nil when the query was not fitted.
+	domain *domainFit
+
+	// shiftMillis is the time shift of the region being lowered: its
+	// evaluation instants sit shiftMillis milliseconds after the instants
+	// Prometheus evaluates it at. Every place an evaluation instant
+	// becomes a value reads it through [lowerCtx.evalMillis].
+	shiftMillis int64
 }
 
 // withSampleTimestamp returns a copy of c that asks the range-mode selector

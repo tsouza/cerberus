@@ -137,6 +137,9 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 			default:
 				anchor = anchorBaseExpr(evalAnchor{})
 			}
+			if ctx.shifted() {
+				return ctx.evalSecondsValue(anchor), nil
+			}
 			return &chplan.FuncCall{
 				Fn: chplan.FnToFloat64,
 				Args: []chplan.Expr{

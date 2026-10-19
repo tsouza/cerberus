@@ -474,7 +474,22 @@ func (b *Builder) SubtractNanos(lhs func(b *Builder), ns int64) {
 // ([chplan.FormatTimeLiteral]), so the literal names the same instant
 // whatever the ClickHouse server's timezone; the 9-digit fractional
 // second covers nanosecond precision exactly.
+//
+// An instant before [chplan.TimeLiteralMin], which ClickHouse would parse
+// as that day, is written as its Unix nanoseconds, exactly as
+// [chplan.TimeLiteral] writes it:
+//
+//	fromUnixTimestamp64Nano(toInt64(<n>))
 func (b *Builder) DateTime64Lit(t time.Time) {
+	if t.Before(chplan.TimeLiteralMin) {
+		b.sb.WriteString(string(chplan.FnFromUnixNanos))
+		b.sb.WriteString("(")
+		b.sb.WriteString(string(chplan.FnToInt64))
+		b.sb.WriteString("(")
+		b.sb.WriteString(strconv.FormatInt(chplan.TimeLiteralNanos(t), 10))
+		b.sb.WriteString("))")
+		return
+	}
 	b.sb.WriteString(string(chplan.FnParseDateTime64BestEffort))
 	b.sb.WriteString("('")
 	b.sb.WriteString(chplan.FormatTimeLiteral(t))

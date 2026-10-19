@@ -2,6 +2,7 @@ package promql
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
@@ -10,19 +11,17 @@ import (
 )
 
 // The instant domain is the span of absolute instants the lowering writes
-// into ClickHouse SQL exactly. An instant reaches SQL as a DateTime64(9)
-// value, either a [chplan.TimeLiteral] that ClickHouse parses or int64
-// nanoseconds computed in Go. ClickHouse clamps a parsed DateTime64 earlier
-// than 1900-01-01 to that day, and int64 nanoseconds end at
-// 2262-04-11T23:47:16.854775807Z.
+// into ClickHouse SQL exactly: the instants a DateTime64(9) value holds,
+// int64 nanoseconds since the Unix epoch. It is also the span a storage
+// column holds.
 var (
-	instantDomainMin = chplan.TimeLiteralMin
+	instantDomainMin = chplan.StorageMinTime
 	instantDomainMax = chplan.StorageMaxTime
-
-	// storageMin is the earliest instant a DateTime64(9) storage column
-	// holds. [instantDomainMax] is also the latest.
-	storageMin = chplan.StorageMinTime
 )
+
+// maxDurationMillis is the longest offset, in milliseconds, a
+// time.Duration holds.
+const maxDurationMillis = int64(math.MaxInt64 / time.Millisecond)
 
 // emptyVectorThreshold is the comparison threshold of
 // [emptyInstantVector]: `vector(0) < -1` keeps no sample.
@@ -48,18 +47,75 @@ type domainEnv struct {
 	step time.Duration
 	// start and end are the request bounds `@ start()` and `@ end()` name.
 	start, end time.Time
+	// ev is Prometheus's evaluator state at this node, meaningful when
+	// hasEv is set: the request instants are known.
+	ev    promEval
+	hasEv bool
+	// wrapped reports that the nearest `@` pin above evaluates at a wrapped
+	// instant (see prom_at_offset.go), so every storage read below it is
+	// empty. pin is that pin's own instant.
+	wrapped bool
+	pin     time.Time
+	// inSubquery reports that the expression is evaluated on the grid of
+	// an enclosing subquery.
+	inSubquery bool
+}
+
+// domainFit is what fitting a query decides for the lowering beyond the
+// rewritten expression.
+type domainFit struct {
+	// shifts maps every node of a shifted region to the region's shift in
+	// milliseconds, and every node below a pin inside such a region to that
+	// pin's own shift, zero when it has none ([domainFit.shiftRegion]).
+	shifts map[parser.Node]int64
+	// emptyReads holds the selectors that read no sample but stay in the
+	// query because absent or absent_over_time reads their matchers.
+	emptyReads map[*parser.VectorSelector]bool
+	// grids maps each shifted subquery to the instants its grid spans
+	// before the shift, the timestamps it answers as the query's root.
+	grids map[*parser.SubqueryExpr][2]time.Time
+}
+
+// shiftOf returns the time shift recorded for node, and whether one is.
+func (f *domainFit) shiftOf(node parser.Node) (int64, bool) {
+	if f == nil {
+		return 0, false
+	}
+	shift, ok := f.shifts[node]
+	return shift, ok
+}
+
+// readsNothing reports whether vs is a selector the fit found to read no
+// sample.
+func (f *domainFit) readsNothing(vs *parser.VectorSelector) bool {
+	return f != nil && f.emptyReads[vs]
 }
 
 // fitInstantDomain prepares expr for lowering at ctx so that no instant
 // outside the instant domain reaches SQL.
 //
+// Every `@` pin is resolved to the instant Prometheus evaluates it at,
+// including the wrapped instant its overflowing arithmetic produces (see
+// prom_at_offset.go), and a pinned subquery whose instant wrapped is
+// re-pinned there.
+//
 // A selector whose sample window lies wholly outside what a storage column
-// can hold reads no sample. An expression that is empty for that reason is
-// replaced by [emptyInstantVector], which ClickHouse answers empty at
-// in-domain instants. Every other expression that needs an instant outside
-// the domain is rejected with [instantDomainError]. expr itself is never
-// modified: a rewritten node is a copy.
-func fitInstantDomain(expr parser.Expr, ctx lowerCtx) (parser.Expr, error) {
+// can hold, or that sits below a wrapped pin, reads no sample. An
+// expression that is empty for that reason is replaced by
+// [emptyInstantVector], which ClickHouse answers empty at in-domain
+// instants; absent and absent_over_time of such a selector answer from
+// its matchers alone.
+//
+// A pinned subquery that reads no storage but whose evaluation instants
+// leave the domain is moved into the domain whole: its pin is shifted by
+// a multiple of every step inside it, which keeps every grid aligned as
+// Prometheus aligns it, and the lowering subtracts the shift wherever an
+// evaluation instant becomes a value ([lowerCtx.evalMillis]).
+//
+// Every other expression that needs an instant outside the domain is
+// rejected with [instantDomainError]. expr itself is never modified: a
+// rewritten node is a copy.
+func fitInstantDomain(expr parser.Expr, ctx lowerCtx) (parser.Expr, *domainFit, error) {
 	env := domainEnv{start: ctx.start, end: ctx.end, step: ctx.step}
 	if !ctx.end.IsZero() {
 		env.known = true
@@ -68,10 +124,78 @@ func fitInstantDomain(expr parser.Expr, ctx lowerCtx) (parser.Expr, error) {
 			env.lo = ctx.start
 		}
 		if err := checkInstantDomain(env.lo, env.hi, 0, 0); err != nil {
-			return nil, err
+			return nil, nil, err
+		}
+		start := promTimeMilliseconds(env.lo)
+		env.ev = promEval{start: start, offEval: start, req: &[2]int64{start, promTimeMilliseconds(ctx.end)}}
+		env.hasEv = true
+	}
+	f := &domainFit{}
+	out, res := f.fitReplacing(expr, env)
+	if res.rejected() && res.empty && out.Type() == parser.ValueTypeMatrix {
+		out, res = emptyRangeVector(), fitResult{empty: true}
+	}
+	if res.err == nil {
+		res.err = res.outside
+	}
+	if res.err == nil {
+		res.err = f.checkRootGrid(out)
+	}
+	if res.err != nil {
+		return nil, nil, res.err
+	}
+	return out, f, nil
+}
+
+// gridSpan returns the first and last instants of the grid a subquery of
+// the given range and step lays over the anchors of at: the multiples of
+// step after the earliest anchor minus range, up to the latest anchor.
+func gridSpan(at domainEnv, rng, step time.Duration) [2]time.Time {
+	if step <= 0 {
+		step = defaultSubqueryStep
+	}
+	unit := step.Milliseconds()
+	first := promSubqueryStart(at.lo.UnixMilli(), 0, rng.Milliseconds(), unit)
+	last := at.hi.UnixMilli()
+	last -= ((last % unit) + unit) % unit
+	return [2]time.Time{time.UnixMilli(first).UTC(), time.UnixMilli(last).UTC()}
+}
+
+// rootSubquery returns the subquery e is, below any parentheses, or nil.
+func rootSubquery(e parser.Expr) *parser.SubqueryExpr {
+	for {
+		switch n := e.(type) {
+		case *parser.ParenExpr:
+			e = n.Expr
+		case *parser.StepInvariantExpr:
+			e = n.Expr
+		case *parser.SubqueryExpr:
+			return n
+		default:
+			return nil
 		}
 	}
-	return fitArg(expr, env)
+}
+
+// checkRootGrid rejects a query whose root is a shifted subquery whose
+// grid instants, which it answers as sample timestamps, lie outside the
+// domain, or whose shift a nanosecond Interval cannot carry back
+// ([unshiftRootGrid]).
+func (f *domainFit) checkRootGrid(root parser.Expr) error {
+	sub := rootSubquery(root)
+	grid, ok := f.grids[sub]
+	if !ok {
+		return nil
+	}
+	if shift := f.shifts[sub]; shift > maxDurationMillis || shift < -maxDurationMillis {
+		return instantDomainError(grid[1])
+	}
+	return checkInstantDomain(grid[0], grid[1], 0, 0)
+}
+
+// promTimeMilliseconds is Prometheus's timeMilliseconds.
+func promTimeMilliseconds(t time.Time) int64 {
+	return t.UnixNano() / int64(time.Millisecond/time.Nanosecond)
 }
 
 // checkInstantDomain checks the instants a node evaluated over [lo, hi]
@@ -92,12 +216,27 @@ func checkInstantDomain(lo, hi time.Time, reach, margin time.Duration) error {
 // outsideStorage reports whether the left-open sample window (lo, hi]
 // holds no instant a storage column can carry.
 func outsideStorage(lo, hi time.Time) bool {
-	return hi.Before(storageMin) || !lo.Before(instantDomainMax)
+	return hi.Before(instantDomainMin) || !lo.Before(instantDomainMax)
 }
 
 // pinnedEnv returns the evaluation instants of a node carrying the given
-// `@` and `offset` modifiers inside env.
-func pinnedEnv(ts *int64, startOrEnd parser.ItemType, offset time.Duration, env domainEnv) domainEnv {
+// `@` and `offset` modifiers inside env, and the offset Prometheus
+// evaluates the node with.
+//
+// A pin whose instant does not wrap keeps the instant the lowering itself
+// derives, the pin minus the offset, so a query that wraps nothing is
+// judged exactly as it is lowered.
+func pinnedEnv(ts *int64, startOrEnd parser.ItemType, offset time.Duration, env domainEnv) (domainEnv, time.Duration) {
+	if env.hasEv {
+		if pin, ok := promPinMillis(ts, startOrEnd, env.ev.req); ok {
+			if instant, wrapped := promPinnedInstant(env.ev, pin, offset); wrapped {
+				at := time.UnixMilli(instant).UTC()
+				env.known, env.lo, env.hi = true, at, at
+				env.wrapped, env.pin = true, time.UnixMilli(pin).UTC().Add(-offset)
+				return env, promAtOffset(env.ev, pin, offset)
+			}
+		}
+	}
 	switch {
 	case ts != nil:
 		pin := time.UnixMilli(*ts).UTC()
@@ -111,7 +250,26 @@ func pinnedEnv(ts *int64, startOrEnd parser.ItemType, offset time.Duration, env 
 	}
 	env.lo = env.lo.Add(-offset)
 	env.hi = env.hi.Add(-offset)
-	return env
+	if pinned(ts, startOrEnd) {
+		env.wrapped = false
+		return env, promPinOffset(ts, startOrEnd, offset, env)
+	}
+	return env, offset
+}
+
+// promPinOffset is the offset Prometheus evaluates a pinned node with when
+// its instant does not wrap.
+func promPinOffset(ts *int64, startOrEnd parser.ItemType, offset time.Duration, env domainEnv) time.Duration {
+	if !env.hasEv {
+		return offset
+	}
+	pin, _ := promPinMillis(ts, startOrEnd, env.ev.req)
+	return promAtOffset(env.ev, pin, offset)
+}
+
+// pinned reports whether a node carries an `@` pin.
+func pinned(ts *int64, startOrEnd parser.ItemType) bool {
+	return ts != nil || startOrEnd != 0
 }
 
 // fitResult is what fitting one expression yields.
@@ -123,63 +281,110 @@ type fitResult struct {
 	// stands. An enclosing node either replaces the expression, which
 	// clears err, or returns err as its own.
 	err error
+	// outside is the rejection of an evaluation instant outside the domain
+	// that no storage read depends on. A pinned subquery that reads no
+	// storage resolves it by shifting ([domainFit.fitSubquery]); anywhere
+	// else it is a rejection like err.
+	outside error
+	// reads reports that the expression reads storage at the evaluation
+	// instants of its region: a read that is not empty and is not pinned
+	// on its own.
+	reads bool
+	// lo and hi bound the instants the region's lowering writes, when
+	// spanned is set.
+	lo, hi  time.Time
+	spanned bool
+	// stepMillis is the least common multiple of the step, in
+	// milliseconds, of every grid in the region; zero when there is none.
+	stepMillis int64
 }
 
-// fitArg fits e in a position that accepts any expression of e's type and
-// returns the expression to lower there.
-func fitArg(e parser.Expr, env domainEnv) (parser.Expr, error) {
-	out, res := fitReplacing(e, env)
-	return out, res.err
+// merge folds o into r: the first rejection wins, and the region facts
+// accumulate.
+func (r *fitResult) merge(o fitResult) {
+	if r.err == nil {
+		r.err = o.err
+	}
+	if r.outside == nil {
+		r.outside = o.outside
+	}
+	r.reads = r.reads || o.reads
+	if o.spanned {
+		r.widen(o.lo, o.hi)
+	}
+	r.stepMillis = lcmMillis(r.stepMillis, o.stepMillis)
+}
+
+// widen widens r's span to cover [lo, hi].
+func (r *fitResult) widen(lo, hi time.Time) {
+	if !r.spanned {
+		r.lo, r.hi, r.spanned = lo, hi, true
+		return
+	}
+	if lo.Before(r.lo) {
+		r.lo = lo
+	}
+	if hi.After(r.hi) {
+		r.hi = hi
+	}
+}
+
+// rejected reports whether lowering the expression as it stands raises a
+// rejection.
+func (r fitResult) rejected() bool {
+	return r.err != nil || r.outside != nil
 }
 
 // fitReplacing fits e and replaces it with [emptyInstantVector] when e is
 // an empty instant vector that would otherwise be rejected.
-func fitReplacing(e parser.Expr, env domainEnv) (parser.Expr, fitResult) {
-	out, res := fitExpr(e, env)
-	if res.err != nil && res.empty && e.Type() == parser.ValueTypeVector {
+func (f *domainFit) fitReplacing(e parser.Expr, env domainEnv) (parser.Expr, fitResult) {
+	out, res := f.fitExpr(e, env)
+	if res.rejected() && res.empty && e.Type() == parser.ValueTypeVector {
 		return emptyInstantVector(), fitResult{empty: true}
 	}
 	return out, res
 }
 
 // fitExpr fits e without replacing e itself.
-func fitExpr(e parser.Expr, env domainEnv) (parser.Expr, fitResult) {
+func (f *domainFit) fitExpr(e parser.Expr, env domainEnv) (parser.Expr, fitResult) {
 	switch n := e.(type) {
 	case *parser.VectorSelector:
-		return n, fitWindow(pinnedEnv(n.Timestamp, n.StartOrEnd, n.OriginalOffset, env), instantLookback)
+		at, _ := pinnedEnv(n.Timestamp, n.StartOrEnd, n.OriginalOffset, env)
+		return n, fitWindow(at, instantLookback, pinned(n.Timestamp, n.StartOrEnd))
 	case *parser.MatrixSelector:
 		vs, ok := n.VectorSelector.(*parser.VectorSelector)
 		if !ok {
 			return n, fitResult{}
 		}
-		return n, fitWindow(pinnedEnv(vs.Timestamp, vs.StartOrEnd, vs.OriginalOffset, env), n.Range)
+		at, _ := pinnedEnv(vs.Timestamp, vs.StartOrEnd, vs.OriginalOffset, env)
+		return n, fitWindow(at, n.Range, pinned(vs.Timestamp, vs.StartOrEnd))
 	case *parser.SubqueryExpr:
-		return fitSubquery(n, env)
+		return f.fitSubquery(n, env)
 	case *parser.Call:
-		return fitCall(n, env)
+		return f.fitCall(n, env)
 	case *parser.AggregateExpr:
-		return fitAggregate(n, env)
+		return f.fitAggregate(n, env)
 	case *parser.BinaryExpr:
-		return fitBinary(n, env)
+		return f.fitBinary(n, env)
 	case *parser.ParenExpr:
-		inner, res := fitReplacing(n.Expr, env)
-		if res.err != nil || inner == n.Expr {
+		inner, res := f.fitReplacing(n.Expr, env)
+		if res.rejected() || inner == n.Expr {
 			return n, res
 		}
 		cp := *n
 		cp.Expr = inner
 		return &cp, res
 	case *parser.UnaryExpr:
-		inner, res := fitReplacing(n.Expr, env)
-		if res.err != nil || inner == n.Expr {
+		inner, res := f.fitReplacing(n.Expr, env)
+		if res.rejected() || inner == n.Expr {
 			return n, res
 		}
 		cp := *n
 		cp.Expr = inner
 		return &cp, res
 	case *parser.StepInvariantExpr:
-		inner, res := fitReplacing(n.Expr, env)
-		if res.err != nil || inner == n.Expr {
+		inner, res := f.fitReplacing(n.Expr, env)
+		if res.rejected() || inner == n.Expr {
 			return n, res
 		}
 		cp := *n
@@ -191,43 +396,210 @@ func fitExpr(e parser.Expr, env domainEnv) (parser.Expr, fitResult) {
 }
 
 // fitWindow judges a selector evaluated over env whose sample window
-// reaches back by reach from each evaluation instant.
-func fitWindow(env domainEnv, reach time.Duration) fitResult {
+// reaches back by reach from each evaluation instant. ownPin reports that
+// the selector carries its own `@` pin, so its read belongs to no
+// enclosing region.
+func fitWindow(env domainEnv, reach time.Duration, ownPin bool) fitResult {
 	if !env.known {
 		return fitResult{}
 	}
+	if env.wrapped {
+		// Prometheus reads the pinned window and evaluates the wrapped
+		// one, which no sample of the first can fall in.
+		return fitResult{empty: true, err: instantDomainError(env.pin)}
+	}
 	err := checkInstantDomain(env.lo, env.hi, reach, env.step)
 	if err == nil {
-		return fitResult{}
+		return fitResult{reads: !ownPin}
 	}
 	return fitResult{empty: outsideStorage(env.lo.Add(-reach), env.hi), err: err}
 }
 
-func fitSubquery(n *parser.SubqueryExpr, env domainEnv) (parser.Expr, fitResult) {
+func (f *domainFit) fitSubquery(n *parser.SubqueryExpr, env domainEnv) (parser.Expr, fitResult) {
 	step := n.Step
 	if step <= 0 {
 		step = defaultSubqueryStep
 	}
-	at := pinnedEnv(n.Timestamp, n.StartOrEnd, n.OriginalOffset, env)
+	at, offset := pinnedEnv(n.Timestamp, n.StartOrEnd, n.OriginalOffset, env)
+	ownPin := pinned(n.Timestamp, n.StartOrEnd)
 	// The inner expression is evaluated at the grid instants of the
 	// left-open window (at.lo - Range, at.hi].
 	innerEnv := at
 	innerEnv.lo = at.lo.Add(-n.Range)
 	innerEnv.step = step
-	inner, res := fitReplacing(n.Expr, innerEnv)
-	if res.err != nil {
-		return n, res
+	innerEnv.inSubquery = true
+	if env.hasEv {
+		innerEnv.ev = promSubqueryEval(env.ev, n, offset, step)
 	}
-	out := parser.Expr(n)
+	inner, res := f.fitReplacing(n.Expr, innerEnv)
+	if res.err != nil {
+		return n, fitResult{empty: res.empty, err: res.err}
+	}
+	out := n
 	if inner != n.Expr {
 		cp := *n
 		cp.Expr = inner
 		out = &cp
 	}
 	if !at.known {
-		return out, fitResult{empty: res.empty}
+		return out, fitResult{empty: res.empty, outside: res.outside, reads: res.reads}
 	}
-	return out, fitResult{empty: res.empty, err: checkInstantDomain(at.lo, at.hi, n.Range, step+env.step)}
+	margin := step + env.step
+	res.widen(at.lo.Add(-n.Range-margin), at.hi.Add(margin))
+	res.stepMillis = lcmMillis(res.stepMillis, step.Milliseconds())
+	if res.outside == nil {
+		res.outside = checkInstantDomain(at.lo, at.hi, n.Range, margin)
+	}
+	if !ownPin {
+		return f.shiftUnpinned(out, at, env, res)
+	}
+	// A pin starts a region of its own: what lies below it is settled
+	// here and none of it reaches the enclosing region.
+	switch {
+	case res.outside != nil && (res.empty || res.reads):
+		// An empty inner is replaced by the enclosing call. One that reads
+		// storage at instants the domain does not hold cannot be lowered.
+		return n, fitResult{empty: res.empty, err: res.outside}
+	case res.outside != nil:
+		shift, ok := shiftIntoDomain(res)
+		if !ok {
+			return n, fitResult{err: res.outside}
+		}
+		out = repinSubquery(out, at.hi.UnixMilli()+shift)
+		f.shiftRegion(out, shift, gridSpan(at, n.Range, step))
+	case at.wrapped:
+		out = repinSubquery(out, at.hi.UnixMilli())
+	}
+	return out, fitResult{empty: res.empty}
+}
+
+// shiftUnpinned settles the region of the unpinned subquery n, evaluated
+// at the instants of env and anchored at those of at, when n is its root: when those instants lie in
+// the domain while the grid below them leaves it. A region that reads no
+// storage, and whose subquery neither holds nor sits inside another, is
+// moved into the domain by an offset, a multiple of its step as for a
+// pinned region; any other region stays unsettled and res reaches the
+// enclosing node.
+func (f *domainFit) shiftUnpinned(n *parser.SubqueryExpr, at, env domainEnv, res fitResult) (parser.Expr, fitResult) {
+	if res.outside == nil || res.reads || res.empty || env.inSubquery || holdsSubquery(n.Expr) ||
+		checkInstantDomain(env.lo, env.hi, 0, env.step) != nil {
+		return n, res
+	}
+	shift, ok := shiftIntoDomain(res)
+	if !ok || shift > maxDurationMillis || shift < -maxDurationMillis {
+		return n, res
+	}
+	cp := *n
+	cp.OriginalOffset -= time.Duration(shift) * time.Millisecond
+	cp.Offset = cp.OriginalOffset
+	f.shiftRegion(&cp, shift, gridSpan(at, n.Range, n.Step))
+	return &cp, fitResult{}
+}
+
+// holdsSubquery reports whether e contains a subquery.
+func holdsSubquery(e parser.Expr) bool {
+	found := false
+	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
+		if _, ok := node.(*parser.SubqueryExpr); ok {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
+// repinSubquery returns a copy of n pinned at the instant ms with no
+// offset, so that the lowering evaluates it exactly there.
+func repinSubquery(n *parser.SubqueryExpr, ms int64) *parser.SubqueryExpr {
+	cp := *n
+	cp.Timestamp = &ms
+	cp.StartOrEnd = 0
+	cp.OriginalOffset, cp.Offset = 0, 0
+	return &cp
+}
+
+// shiftIntoDomain returns a shift, in milliseconds, that moves the span of
+// region r into the instant domain and is a multiple of every step of the
+// region, so that every grid keeps its alignment. It reports false when no
+// such shift exists.
+func shiftIntoDomain(r fitResult) (int64, bool) {
+	unit := r.stepMillis
+	lo, hi := r.lo.UnixMilli(), r.hi.UnixMilli()
+	// The domain bounds in whole milliseconds, rounded inward.
+	domLo := instantDomainMin.UnixMilli()
+	if time.UnixMilli(domLo).Before(instantDomainMin) {
+		domLo++
+	}
+	domHi := instantDomainMax.UnixMilli()
+	if unit <= 0 || hi-lo > domHi-domLo-unit {
+		return 0, false
+	}
+	// Move the span halfway towards the centre of the domain, which keeps
+	// it clear of both bounds, or all the way when halfway is not enough;
+	// either shift is rounded to a whole number of units.
+	want := (domLo + (domHi-domLo)/2) - (lo + (hi-lo)/2)
+	for _, w := range []int64{want / 2, want} {
+		shift := w / unit * unit
+		if lo+shift >= domLo && hi+shift <= domHi {
+			return shift, true
+		}
+	}
+	return 0, false
+}
+
+// lcmMillis is the least common multiple of two step lengths in
+// milliseconds, either of which may be zero for "no step".
+func lcmMillis(a, b int64) int64 {
+	switch {
+	case a <= 0:
+		return b
+	case b <= 0:
+		return a
+	}
+	x, y := a, b
+	for y != 0 {
+		x, y = y, x%y
+	}
+	return a / x * b
+}
+
+// shiftRegion records that the region of the subquery n, which the fit
+// has moved by shift milliseconds, is lowered with that shift, and the
+// first and last instants of its grid before the shift. A pin inside the region names
+// its own instants, so its subtree keeps the shift recorded for it, zero
+// when none was.
+func (f *domainFit) shiftRegion(n *parser.SubqueryExpr, shift int64, grid [2]time.Time) {
+	if f.shifts == nil {
+		f.shifts = map[parser.Node]int64{}
+		f.grids = map[*parser.SubqueryExpr][2]time.Time{}
+	}
+	f.grids[n] = grid
+	f.shifts[n] = shift
+	f.markShift(n.Expr, shift)
+}
+
+func (f *domainFit) markShift(node parser.Node, shift int64) {
+	if _, done := f.shifts[node]; done {
+		return
+	}
+	switch n := node.(type) {
+	case *parser.SubqueryExpr:
+		if pinned(n.Timestamp, n.StartOrEnd) {
+			shift = 0
+		}
+	case *parser.VectorSelector:
+		if pinned(n.Timestamp, n.StartOrEnd) {
+			shift = 0
+		}
+	case *parser.MatrixSelector:
+		if vs, ok := n.VectorSelector.(*parser.VectorSelector); ok && pinned(vs.Timestamp, vs.StartOrEnd) {
+			shift = 0
+		}
+	}
+	f.shifts[node] = shift
+	for _, c := range parser.Children(node) {
+		f.markShift(c, shift)
+	}
 }
 
 // emptyPreservingCall reports whether fn answers no sample whenever its
@@ -255,29 +627,61 @@ func selectorArgPosition(n *parser.Call, i int) bool {
 	return false
 }
 
-func fitCall(n *parser.Call, env domainEnv) (parser.Expr, fitResult) {
+// absentSelector returns the selector absent or absent_over_time reads
+// its labels from, when the argument is one, together with the argument
+// itself without its parentheses.
+func absentSelector(n *parser.Call) (*parser.VectorSelector, parser.Expr, bool) {
+	if len(n.Args) != 1 {
+		return nil, nil, false
+	}
+	arg := unwrapParens(n.Args[0])
+	switch n.Func.Name {
+	case "absent":
+		vs, ok := arg.(*parser.VectorSelector)
+		return vs, arg, ok
+	case "absent_over_time":
+		ms, ok := arg.(*parser.MatrixSelector)
+		if !ok {
+			return nil, nil, false
+		}
+		vs, ok := ms.VectorSelector.(*parser.VectorSelector)
+		return vs, arg, ok
+	}
+	return nil, nil, false
+}
+
+func (f *domainFit) fitCall(n *parser.Call, env domainEnv) (parser.Expr, fitResult) {
+	if vs, arg, ok := absentSelector(n); ok {
+		if _, r := f.fitExpr(arg, env); r.err != nil && r.empty {
+			// The selector reads nothing, so the call answers from its
+			// matchers alone (lowerAbsent, lowerAbsentOverTime).
+			if f.emptyReads == nil {
+				f.emptyReads = map[*parser.VectorSelector]bool{}
+			}
+			f.emptyReads[vs] = true
+			return n, fitResult{}
+		}
+	}
 	var (
 		args       parser.Expressions
-		firstErr   error
+		res        fitResult
 		empty      bool
 		seenSeries bool
 	)
 	for i, a := range n.Args {
 		var (
 			out parser.Expr
-			res fitResult
+			r   fitResult
 		)
 		if selectorArgPosition(n, i) {
-			out, res = fitExpr(a, env)
+			out, r = f.fitExpr(a, env)
 		} else {
-			out, res = fitReplacing(a, env)
+			out, r = f.fitReplacing(a, env)
 		}
-		if res.err != nil && firstErr == nil {
-			firstErr = res.err
-		}
+		res.merge(r)
 		if t := a.Type(); !seenSeries && (t == parser.ValueTypeVector || t == parser.ValueTypeMatrix) {
 			seenSeries = true
-			empty = res.empty
+			empty = r.empty
 		}
 		if out != a && args == nil {
 			args = make(parser.Expressions, len(n.Args))
@@ -287,31 +691,31 @@ func fitCall(n *parser.Call, env domainEnv) (parser.Expr, fitResult) {
 			args[i] = out
 		}
 	}
-	empty = empty && emptyPreservingCall(n.Func)
+	res.empty = empty && emptyPreservingCall(n.Func)
 	switch {
-	case firstErr != nil && empty:
+	case res.rejected() && res.empty:
 		return emptyInstantVector(), fitResult{empty: true}
-	case firstErr != nil:
-		return n, fitResult{err: firstErr}
-	case args == nil:
-		return n, fitResult{empty: empty}
+	case res.rejected() || args == nil:
+		return n, res
 	}
 	cp := *n
 	cp.Args = args
-	return &cp, fitResult{empty: empty}
+	return &cp, res
 }
 
-func fitAggregate(n *parser.AggregateExpr, env domainEnv) (parser.Expr, fitResult) {
+func (f *domainFit) fitAggregate(n *parser.AggregateExpr, env domainEnv) (parser.Expr, fitResult) {
+	var res fitResult
 	param := n.Param
 	if param != nil {
-		var res fitResult
-		param, res = fitReplacing(n.Param, env)
-		if res.err != nil {
+		param, res = f.fitReplacing(n.Param, env)
+		if res.rejected() {
 			return n, res
 		}
 	}
-	inner, res := fitReplacing(n.Expr, env)
-	if res.err != nil || (inner == n.Expr && param == n.Param) {
+	inner, r := f.fitReplacing(n.Expr, env)
+	res.merge(r)
+	res.empty = r.empty
+	if res.rejected() || (inner == n.Expr && param == n.Param) {
 		return n, res
 	}
 	cp := *n
@@ -319,32 +723,43 @@ func fitAggregate(n *parser.AggregateExpr, env domainEnv) (parser.Expr, fitResul
 	return &cp, res
 }
 
-func fitBinary(n *parser.BinaryExpr, env domainEnv) (parser.Expr, fitResult) {
-	lhs, l := fitReplacing(n.LHS, env)
-	if l.err != nil {
+func (f *domainFit) fitBinary(n *parser.BinaryExpr, env domainEnv) (parser.Expr, fitResult) {
+	lhs, l := f.fitReplacing(n.LHS, env)
+	if l.rejected() {
 		return n, l
 	}
-	rhs, r := fitReplacing(n.RHS, env)
-	if r.err != nil {
+	rhs, r := f.fitReplacing(n.RHS, env)
+	if r.rejected() {
 		return n, r
 	}
+	res := l
+	res.merge(r)
 	// Set operators take two vectors. Any other operator answers no sample
 	// when either operand answers none; a scalar operand is never empty.
-	var empty bool
 	switch n.Op {
 	case parser.LOR:
-		empty = l.empty && r.empty
+		res.empty = l.empty && r.empty
 	case parser.LUNLESS:
-		empty = l.empty
+		res.empty = l.empty
 	default:
-		empty = l.empty || r.empty
+		res.empty = l.empty || r.empty
 	}
 	if lhs == n.LHS && rhs == n.RHS {
-		return n, fitResult{empty: empty}
+		return n, res
 	}
 	cp := *n
 	cp.LHS, cp.RHS = lhs, rhs
-	return &cp, fitResult{empty: empty}
+	return &cp, res
+}
+
+// emptyRangeVector builds `(vector(0) < -1)[1m:1m]`, a range vector that
+// holds no sample at any evaluation instant.
+func emptyRangeVector() parser.Expr {
+	return &parser.SubqueryExpr{
+		Expr:  &parser.ParenExpr{Expr: emptyInstantVector()},
+		Range: defaultSubqueryStep,
+		Step:  defaultSubqueryStep,
+	}
 }
 
 // emptyInstantVector builds `vector(0) < -1`, an instant vector that keeps

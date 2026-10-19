@@ -1,0 +1,19 @@
+-- query.promql --
+count_over_time((http_requests_total or vector(1))[5m:1m] @ -62135596800)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+60s
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 40.0);
+-- expected_rows --
+[]

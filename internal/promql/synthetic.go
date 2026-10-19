@@ -290,6 +290,9 @@ func lowerTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	default:
 		anchor = anchorBaseExpr(evalAnchor{})
 	}
+	if ctx.shifted() {
+		return syntheticScalarVector(ctx.evalSecondsValue(anchor), nil, s, ctx), nil
+	}
 	// toFloat64(toUnixTimestamp64Nano(anchor) / 1000000000) — the
 	// outer toFloat64 widens the integer division to Float64 so the
 	// sub-second fraction (when present) survives the cast.

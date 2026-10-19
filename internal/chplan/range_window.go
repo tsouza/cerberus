@@ -138,6 +138,15 @@ type RangeWindow struct {
 	// though an absolute @ modifier keeps the input window fixed.
 	PredictLinearSlopeColumn string
 
+	// TimeShiftMillis is how far, in milliseconds, the instants of the
+	// grid this window reads sit after the instants Prometheus evaluated
+	// that grid at. The PromQL lowering moves a constant subquery whose
+	// instants ClickHouse cannot represent by a multiple of its steps,
+	// which leaves every window and grid alignment intact. A function that
+	// returns a sample's timestamp as its value (ts_of_*_over_time)
+	// subtracts it. Zero for every window over an unshifted grid.
+	TimeShiftMillis int64
+
 	// IgnoreInputTemporality suppresses the optional RoleTemporality carried
 	// by Input. Native strategy clones set this after filtering out DELTA rows;
 	// it carries no physical column name and cannot select an input by spelling.
@@ -590,7 +599,7 @@ func rangeWindowScalarFieldsEqual(r, o *RangeWindow) bool {
 		return false
 	}
 	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn ||
-		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn {
+		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn || r.TimeShiftMillis != o.TimeShiftMillis {
 		return false
 	}
 	if r.InstantScanBounded != o.InstantScanBounded || r.LagAdjacency != o.LagAdjacency ||

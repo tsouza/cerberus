@@ -1,6 +1,7 @@
 package chsql
 
 import (
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -1692,5 +1693,29 @@ func TestQueryBuilder_LimitWithTies_Misuse(t *testing.T) {
 			}()
 			tc.build().Build()
 		})
+	}
+}
+
+// TestBuilder_DateTime64Lit_Before1900 — an instant before 1900-01-01, which
+// ClickHouse parses a string as that day, is written as its Unix
+// nanoseconds, down to the int64 floor; an earlier instant names the floor.
+func TestBuilder_DateTime64Lit_Before1900(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		at   time.Time
+		want string
+	}{
+		{time.Date(1899, 12, 31, 23, 59, 59, 999999999, time.UTC), "fromUnixTimestamp64Nano(toInt64(-2208988800000000001))"},
+		{time.Unix(0, math.MinInt64).UTC(), "fromUnixTimestamp64Nano(toInt64(-9223372036854775808))"},
+		{time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC), "fromUnixTimestamp64Nano(toInt64(-9223372036854775808))"},
+		{time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC), "parseDateTime64BestEffort('1900-01-01 00:00:00.000000000Z', 9)"},
+	}
+	for _, tc := range cases {
+		b := NewBuilder()
+		b.DateTime64Lit(tc.at)
+		if got := b.String(); got != tc.want {
+			t.Errorf("DateTime64Lit(%s) = %q; want %q", tc.at, got, tc.want)
+		}
 	}
 }
