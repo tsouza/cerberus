@@ -378,7 +378,7 @@ func TestInstantDomain_Boundaries(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := lowerCtx{start: instant.start, end: instantDomainEvalEnd}
-			_, _, err := fitDomain(mustParseExperimental(t, tc.query), ctx, 0)
+			_, _, err := fitDomain(mustParseExperimental(t, tc.query), ctx, 0, false)
 			if tc.accept && err != nil {
 				t.Fatalf("fit %q in Prometheus's frame: unexpected error %v", tc.query, err)
 			}
@@ -419,7 +419,7 @@ func TestInstantDomain_RangeStepMargin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			start := mustUTC(t, tc.start)
 			ctx := lowerCtx{start: start, end: start.Add(time.Hour), step: time.Minute}
-			_, _, err := fitDomain(mustParseExperimental(t, tc.query), ctx, 0)
+			_, _, err := fitDomain(mustParseExperimental(t, tc.query), ctx, 0, false)
 			if tc.accept && err != nil {
 				t.Fatalf("fit %q from %s in Prometheus's frame: unexpected error %v", tc.query, tc.start, err)
 			}
@@ -528,6 +528,12 @@ func TestInstantDomain_InfoPinIsRejected(t *testing.T) {
 	_, _, err := fitAt(t, `info(m, {job="a"} @ -62135596800)`, instantDomainEvalEnd)
 	if !isInstantDomainError(err) {
 		t.Fatalf("err = %v, want the instant-domain rejection", err)
+	}
+	// Prometheus's arithmetic wraps for a pin this far back; the rejection
+	// names the instant the pin and offset name, a day before the year 1.
+	_, _, err = fitAt(t, `info(m, {job="a"} @ -62135596800 offset 1d)`, instantDomainEvalEnd)
+	if !isInstantDomainError(err) || !strings.Contains(err.Error(), "needs instant 0000-12-31T00:00:00Z") {
+		t.Fatalf("err = %v, want the instant-domain rejection at 0000-12-31", err)
 	}
 }
 
@@ -679,7 +685,7 @@ func TestInstantDomain_StepInvariantIsUntouched(t *testing.T) {
 // frame.
 func TestInstantDomain_FirstErrorWins(t *testing.T) {
 	q := `predict_linear(m[1h:1m] @ 9223373836.854, scalar(count_over_time(m[1h:1m] @ 9223374836.854)))`
-	_, _, err := fitDomain(mustParseExperimental(t, q), lowerCtx{start: instantDomainEvalEnd, end: instantDomainEvalEnd}, 0)
+	_, _, err := fitDomain(mustParseExperimental(t, q), lowerCtx{start: instantDomainEvalEnd, end: instantDomainEvalEnd}, 0, false)
 	want := instantDomainError(time.UnixMilli(9223373836854)).Error()
 	if err == nil || err.Error() != want {
 		t.Fatalf("fitInstantDomain(%q): err = %v, want %q", q, err, want)
@@ -726,5 +732,93 @@ func TestShiftIntoDomain(t *testing.T) {
 	}
 	if _, ok := shiftIntoDomain(over(time.UnixMilli(-10_000_000_000_000), time.UnixMilli(10_000_000_000_000)), anyShift); ok {
 		t.Fatal("shiftIntoDomain shifted a region wider than the domain")
+	}
+	stepless := fitResult{lo: instantDomainMin.Add(-time.Hour), hi: instantDomainMin.Add(time.Hour), spanned: true}
+	if _, ok := shiftIntoDomain(stepless, anyShift); ok {
+		t.Fatal("shiftIntoDomain shifted a region with no step to keep aligned")
+	}
+}
+
+// TestFitWindow_JudgesEmptinessInPrometheusFrame pins that a window the
+// fit cannot place is empty exactly when, moved back from the frame it is
+// fitted in to Prometheus's, it lies wholly outside storage.
+func TestFitWindow_JudgesEmptinessInPrometheusFrame(t *testing.T) {
+	const century = 100 * 365 * 24 * time.Hour
+	centuryMillis := century.Milliseconds()
+	cases := []struct {
+		name  string
+		env   domainEnv
+		reach time.Duration
+		empty bool
+	}{
+		{
+			// Fitted a century ahead, the window from 1600 to 1700 reads
+			// 1500 to 1600 in Prometheus's frame, all before storage.
+			name:  "before storage, fitted ahead",
+			env:   domainEnv{known: true, lo: time.Date(1700, 1, 1, 0, 0, 0, 0, time.UTC), hi: time.Date(1700, 1, 1, 0, 0, 0, 0, time.UTC), frameMillis: centuryMillis},
+			reach: century,
+			empty: true,
+		},
+		{
+			// Fitted a century behind, with a step reaching past the
+			// ceiling, the window ending in 2200 reads 2300 in Prometheus's
+			// frame, all after storage.
+			name:  "after storage, fitted behind",
+			env:   domainEnv{known: true, lo: time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC), hi: time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC), step: century, frameMillis: -centuryMillis},
+			reach: time.Hour,
+			empty: true,
+		},
+		{
+			// A window reaching back across the ceiling holds stored
+			// instants.
+			name:  "across the ceiling",
+			env:   domainEnv{known: true, lo: time.Date(2262, 4, 12, 0, 0, 0, 0, time.UTC), hi: time.Date(2262, 4, 12, 0, 0, 0, 0, time.UTC)},
+			reach: 48 * time.Hour,
+			empty: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := fitWindow(tc.env, tc.reach, false)
+			if res.err == nil {
+				t.Fatal("the window fits; the case needs one the fit cannot place")
+			}
+			if res.empty != tc.empty {
+				t.Fatalf("empty = %v, want %v", res.empty, tc.empty)
+			}
+		})
+	}
+}
+
+// TestGridSpan pins the first and last instants of a subquery grid: the
+// first step multiple after the earliest anchor minus the range, and the
+// last at or before the latest anchor, a missing step being the default.
+func TestGridSpan(t *testing.T) {
+	at := domainEnv{known: true, lo: time.Date(2020, 1, 1, 0, 0, 30, 0, time.UTC), hi: time.Date(2020, 1, 1, 0, 10, 30, 0, time.UTC)}
+	got := gridSpan(at, 5*time.Minute, time.Minute)
+	want := [2]time.Time{time.Date(2019, 12, 31, 23, 56, 0, 0, time.UTC), time.Date(2020, 1, 1, 0, 10, 0, 0, time.UTC)}
+	if got != want {
+		t.Fatalf("gridSpan = %v, want %v", got, want)
+	}
+	if got, want := gridSpan(at, 5*time.Minute, 0), gridSpan(at, 5*time.Minute, defaultSubqueryStep); got != want {
+		t.Fatalf("gridSpan with no step = %v, want the default step's %v", got, want)
+	}
+}
+
+// TestFitInstantDomain_RecordsFramedRootGrid pins that a root subquery
+// fitted in a shifted frame records its grid, which lies partly below the
+// floor, so that the root reports its instants in Int64 milliseconds.
+func TestFitInstantDomain_RecordsFramedRootGrid(t *testing.T) {
+	for _, q := range []string{`m[5m:1m]`, `m[5m:]`} {
+		out, f, err := fitAt(t, q, time.Date(1677, 9, 21, 0, 14, 0, 0, time.UTC))
+		if err != nil {
+			t.Fatalf("fit %q: %v", q, err)
+		}
+		if f.frameShift == 0 {
+			t.Fatalf("fit %q: no shifted frame", q)
+		}
+		if f.rootGridInDomain(out) {
+			t.Fatalf("fit %q: the root grid from 00:10 is judged inside the domain", q)
+		}
 	}
 }

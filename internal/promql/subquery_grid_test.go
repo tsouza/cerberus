@@ -67,6 +67,14 @@ func TestEpochFloorSnapsToAbsoluteEpochMultiples(t *testing.T) {
 			want: time.Unix(0, 0).UTC(),
 		},
 		{
+			// The 73000-day multiple below an instant in 1678 lies in 1570,
+			// before the Int64 nanoseconds.
+			name: "multiple before the int64 nanoseconds",
+			in:   time.Date(1678, time.March, 1, 0, 0, 0, 1, time.UTC),
+			step: 73000 * 24 * time.Hour,
+			want: time.Unix(0, 0).UTC().AddDate(0, 0, -2*73000),
+		},
+		{
 			// Go's integer division truncates toward zero, so a pre-1970
 			// instant needs the explicit decrement: -1.5s must floor to
 			// -2s, not to -1s. `@ -100` is legal PromQL, so this is a

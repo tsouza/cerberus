@@ -1,11 +1,14 @@
 package promql
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
+	"github.com/prometheus/prometheus/promql/parser/posrange"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -68,9 +71,9 @@ type domainEnv struct {
 	// empty. pin is that pin's own instant.
 	wrapped bool
 	pin     time.Time
-	// frame is how far the instants of env lie after the instants
-	// Prometheus evaluates at ([fitInFrame]).
-	frame time.Duration
+	// frameMillis is how far, in milliseconds, the instants of env lie
+	// after the instants Prometheus evaluates at ([fitInFrame]).
+	frameMillis int64
 	// inSubquery reports that the expression is evaluated on the grid of
 	// an enclosing subquery.
 	inSubquery bool
@@ -107,6 +110,47 @@ type domainFit struct {
 	// frame, which a lowering in the shifted frame that cannot answer the
 	// query returns.
 	unframedErr error
+	// isolating is set while the fit isolates every outermost subquery.
+	isolating bool
+	// isolated maps the inner expression, parentheses removed, of each
+	// isolated subquery to the state of the evaluator Prometheus runs that
+	// inner expression with. An isolated subquery is a region that reads
+	// no storage of its own: its inner expression is fitted and lowered on
+	// its own, as a range query over the subquery's grid
+	// ([lowerIsolatedSubquery]).
+	isolated map[parser.Expr]promEval
+	// sealed holds the plans of isolated subqueries, which are lowered in
+	// frames of their own and which [frameStorage] therefore leaves as
+	// they are.
+	sealed map[chplan.Node]bool
+	// readBounds maps each selector, by its position in the query text,
+	// whose storage read Prometheus bounds with wrapped sums to a window
+	// that holds only some of the samples its evaluation needs, to that
+	// read in Unix milliseconds ([promSelectorHint]). Every scan the
+	// selector lowers to reads only those rows ([domainFit.boundReads]).
+	readBounds map[posrange.PositionRange]chplan.MillisSpan
+	// boundScans holds the scans [domainFit.boundReads] has settled, and
+	// selectorScans the scans it settled for each selector, by position.
+	boundScans    map[*chplan.Scan]bool
+	selectorScans map[posrange.PositionRange][]*chplan.Scan
+}
+
+// isolation returns the evaluator state of the inner expression of sub
+// when sub is isolated.
+func (f *domainFit) isolation(sub *parser.SubqueryExpr) (promEval, bool) {
+	if f == nil {
+		return promEval{}, false
+	}
+	ev, ok := f.isolated[unwrapParens(sub.Expr)]
+	return ev, ok
+}
+
+// seal records plan as lowered in a frame of its own.
+func (f *domainFit) seal(plan chplan.Node) {
+	if f.sealed == nil {
+		f.sealed = map[chplan.Node]bool{}
+	}
+	f.sealed[plan] = true
 }
 
 // shiftOf returns the time shift node is lowered with, the shift of its
@@ -162,17 +206,42 @@ func (f *domainFit) readsNothing(vs *parser.VectorSelector) bool {
 // Prometheus aligns it, and the lowering subtracts the shift wherever an
 // evaluation instant becomes a value ([lowerCtx.evalMillis]).
 //
+// A query whose instants no single shift brings into the domain, because
+// its subqueries reach further back than the domain is long, is fitted
+// again with each outermost subquery isolated ([domainFit.isolated]).
+//
 // Every other expression that needs an instant outside the domain is
 // rejected with [instantDomainError]. expr itself is never modified: a
 // rewritten node is a copy.
 func fitInstantDomain(expr parser.Expr, ctx lowerCtx) (parser.Expr, *domainFit, error) {
-	return fitInFrame(expr, ctx)
+	out, f, err := fitInFrame(expr, ctx, false)
+	// Every rejection of the fit names an instant outside the domain
+	// ([outsideDomainError]), which only isolating a subquery can answer.
+	if err == nil || !holdsSubquery(expr) {
+		return out, f, err
+	}
+	if isolated, fi, ierr := fitInFrame(expr, ctx, true); ierr == nil {
+		return isolated, fi, nil
+	}
+	return nil, nil, err
+}
+
+// holdsSubquery reports whether e holds a subquery.
+func holdsSubquery(e parser.Expr) bool {
+	found := false
+	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
+		_, ok := node.(*parser.SubqueryExpr)
+		found = found || ok
+		return nil
+	})
+	return found
 }
 
 // fitDomain fits expr at ctx, whose instants lie frameShift milliseconds
-// after Prometheus's own ([fitInFrame]).
-func fitDomain(expr parser.Expr, ctx lowerCtx, frameShift int64) (parser.Expr, *domainFit, error) {
-	env := domainEnv{start: ctx.start, end: ctx.end, step: ctx.step, frame: time.Duration(frameShift) * time.Millisecond}
+// after Prometheus's own ([fitInFrame]). isolating isolates every
+// outermost subquery ([domainFit.isolated]).
+func fitDomain(expr parser.Expr, ctx lowerCtx, frameShift int64, isolating bool) (parser.Expr, *domainFit, error) {
+	env := domainEnv{start: ctx.start, end: ctx.end, step: ctx.step, frameMillis: frameShift}
 	if !ctx.end.IsZero() {
 		env.known = true
 		env.lo, env.hi = ctx.end, ctx.end
@@ -184,9 +253,12 @@ func fitDomain(expr parser.Expr, ctx lowerCtx, frameShift int64) (parser.Expr, *
 		}
 		start := promTimeMilliseconds(env.lo)
 		env.ev = promEval{start: start, offEval: start, req: &[2]int64{start, promTimeMilliseconds(ctx.end)}}
+		if ctx.isolatedEval != nil {
+			env.ev = ctx.isolatedEval.moved(frameShift)
+		}
 		env.hasEv = true
 	}
-	f := &domainFit{frameShift: frameShift}
+	f := &domainFit{frameShift: frameShift, isolating: isolating}
 	out, res := f.fitReplacing(expr, env)
 	if res.rejected() && res.empty && out.Type() == parser.ValueTypeMatrix {
 		out, res = emptyRangeVector(), fitResult{empty: true}
@@ -246,8 +318,7 @@ func (f *domainFit) rootGridInDomain(root parser.Expr) bool {
 	if sub == nil || !ok {
 		return true
 	}
-	frame := time.Duration(f.frameShift) * time.Millisecond
-	return checkInstantDomain(grid[0].Add(-frame), grid[1].Add(-frame), 0, 0) == nil
+	return checkInstantDomain(moveMillis(grid[0], -f.frameShift), moveMillis(grid[1], -f.frameShift), 0, 0) == nil
 }
 
 // recordRootGrid records the grid of root, the fitted query, when root is
@@ -274,19 +345,25 @@ func (f *domainFit) recordRootGrid(root parser.Expr, env domainEnv) {
 
 // promTimeMilliseconds is Prometheus's timeMilliseconds.
 func promTimeMilliseconds(t time.Time) int64 {
-	return t.UnixNano() / int64(time.Millisecond/time.Nanosecond)
+	return t.UnixNano() / int64(time.Millisecond)
 }
 
 // checkInstantDomain checks the instants a node evaluated over [lo, hi]
 // needs: a window reaching back by reach from each evaluation instant,
 // widened by margin on both sides.
 func checkInstantDomain(lo, hi time.Time, reach, margin time.Duration) error {
+	return checkInstantDomainAround(lo, hi, reach, margin, margin)
+}
+
+// checkInstantDomainAround is [checkInstantDomain] with a margin of before
+// below the window and of after above it.
+func checkInstantDomainAround(lo, hi time.Time, reach, before, after time.Duration) error {
 	switch {
 	case lo.Before(instantDomainMin):
 		return instantDomainError(lo)
-	case lo.Add(-reach).Add(-margin).Before(instantDomainMin):
+	case lo.Add(-reach).Add(-before).Before(instantDomainMin):
 		return instantDomainError(lo.Add(-reach))
-	case hi.Add(margin).After(instantDomainMax):
+	case hi.Add(after).After(instantDomainMax):
 		return instantDomainError(hi)
 	}
 	return nil
@@ -431,6 +508,7 @@ func (f *domainFit) fitExpr(e parser.Expr, env domainEnv) (parser.Expr, fitResul
 		if cut, ok := cutSelector(n, env); ok && !f.keepSelectors && f.cutsStorage() {
 			return f.fitExpr(cut, env)
 		}
+		f.boundRead(n, 0, env)
 		at, _ := pinnedEnv(n.Timestamp, n.StartOrEnd, n.OriginalOffset, env)
 		return n, fitWindow(at, instantLookback, pinned(n.Timestamp, n.StartOrEnd))
 	case *parser.MatrixSelector:
@@ -438,6 +516,7 @@ func (f *domainFit) fitExpr(e parser.Expr, env domainEnv) (parser.Expr, fitResul
 		if !ok {
 			return n, fitResult{}
 		}
+		f.boundRead(vs, n.Range, env)
 		at, _ := pinnedEnv(vs.Timestamp, vs.StartOrEnd, vs.OriginalOffset, env)
 		return n, fitWindow(at, n.Range, pinned(vs.Timestamp, vs.StartOrEnd))
 	case *parser.SubqueryExpr:
@@ -477,6 +556,108 @@ func (f *domainFit) fitExpr(e parser.Expr, env domainEnv) (parser.Expr, fitResul
 	}
 }
 
+// boundRead records, for selector vs read with window rng (zero for an
+// instant selector), the storage read Prometheus bounds it with when its
+// subqueries' offsets or ranges add up past what a time.Duration holds:
+// in wrapped arithmetic, that read holds only some, or none, of the
+// samples the evaluation needs ([promReadSums.wraps]), and every scan the
+// selector lowers to reads only its rows ([domainFit.readBounds]).
+func (f *domainFit) boundRead(vs *parser.VectorSelector, rng time.Duration, env domainEnv) {
+	// An environment with no evaluator holds sums that never wrap.
+	if pinned(vs.Timestamp, vs.StartOrEnd) || !env.ev.sums.wraps() {
+		return
+	}
+	if f.readBounds == nil {
+		f.readBounds = map[posrange.PositionRange]chplan.MillisSpan{}
+	}
+	// The read is Prometheus's, in its own frame, the frame of the stored
+	// timestamps the scans bound.
+	hint := promSelectorHint(env.ev, vs, rng)
+	f.readBounds[vs.PosRange] = chplan.MillisSpan{From: hint[0] - env.frameMillis, To: hint[1] - env.frameMillis}
+}
+
+// boundReads bounds every scan of plan, the lowering of expr, that the
+// lowering of no part of expr has settled, to the storage read of the
+// selectors of expr whose scans plan does not already hold
+// ([domainFit.readBounds]): a path that lowers a selector without
+// lowering it as an expression of its own, or that drops such a lowering
+// and lowers the selector again, leaves its scans to the smallest
+// enclosing expression. Those selectors then all read the same rows, or
+// the scans cannot tell them apart and the query is rejected.
+func (f *domainFit) boundReads(expr parser.Expr, plan chplan.Node) error {
+	if f == nil || len(f.readBounds) == 0 || plan == nil {
+		return nil
+	}
+	if f.boundScans == nil {
+		f.boundScans = map[*chplan.Scan]bool{}
+		f.selectorScans = map[posrange.PositionRange][]*chplan.Scan{}
+	}
+	var open []*chplan.Scan
+	held := map[*chplan.Scan]bool{}
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		if f.sealed[n] {
+			return false
+		}
+		if scan, ok := n.(*chplan.Scan); ok && !held[scan] {
+			held[scan] = true
+			if !f.boundScans[scan] {
+				open = append(open, scan)
+			}
+		}
+		return true
+	})
+	var unsettled []posrange.PositionRange
+	var bounds, all []*chplan.MillisSpan
+	parser.Inspect(expr, func(node parser.Node, _ []parser.Node) error {
+		vs, ok := node.(*parser.VectorSelector)
+		if !ok {
+			return nil
+		}
+		var b *chplan.MillisSpan
+		if w, ok := f.readBounds[vs.PosRange]; ok {
+			b = &w
+		}
+		all = append(all, b)
+		if !slices.ContainsFunc(f.selectorScans[vs.PosRange], func(s *chplan.Scan) bool { return held[s] }) {
+			unsettled = append(unsettled, vs.PosRange)
+			bounds = append(bounds, b)
+		}
+		return nil
+	})
+	if len(open) == 0 {
+		return nil
+	}
+	if len(bounds) == 0 {
+		bounds = all
+	}
+	for _, b := range bounds[1:] {
+		if !sameBound(bounds[0], b) {
+			return errPromReadsMixed
+		}
+	}
+	for _, scan := range open {
+		f.boundScans[scan] = true
+		if _, err := (chplan.Schema{Columns: scan.Roles}).UniqueNamedRole(chplan.RoleTimestamp); err == nil && bounds[0] != nil {
+			w := *bounds[0]
+			scan.ReadMillis = &w
+		}
+	}
+	for _, pos := range unsettled {
+		f.selectorScans[pos] = append(f.selectorScans[pos], open...)
+	}
+	return nil
+}
+
+// sameBound reports whether a and b bound a read alike.
+func sameBound(a, b *chplan.MillisSpan) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
+}
+
+// errPromReadsMixed rejects an expression whose lowering reads, in scans
+// no part of it settles, for selectors whose storage reads Prometheus
+// bounds differently ([domainFit.boundReads]).
+var errPromReadsMixed = errors.New("promql: selectors whose subqueries' offsets and ranges add up to more than about 292 years read different spans of storage in one scan")
+
 // fitWindow judges a selector evaluated over env whose sample window
 // reaches back by reach from each evaluation instant. ownPin reports that
 // the selector carries its own `@` pin, so its read belongs to no
@@ -499,7 +680,7 @@ func fitWindow(env domainEnv, reach time.Duration, ownPin bool) fitResult {
 	if err == nil {
 		return fitResult{reads: !ownPin}
 	}
-	return fitResult{empty: outsideStorage(env.lo.Add(-reach).Add(-env.frame), env.hi.Add(-env.frame)), err: err}
+	return fitResult{empty: outsideStorage(moveMillis(env.lo.Add(-reach), -env.frameMillis), moveMillis(env.hi, -env.frameMillis)), err: err}
 }
 
 func (f *domainFit) fitSubquery(n *parser.SubqueryExpr, env domainEnv) (parser.Expr, fitResult) {
@@ -516,6 +697,10 @@ func (f *domainFit) fitSubquery(n *parser.SubqueryExpr, env domainEnv) (parser.E
 		innerEnv.ev = promSubqueryEval(env.ev, n, offset, step)
 	}
 	inner, res := f.fitReplacing(n.Expr, innerEnv)
+	isolated := f.isolating && !env.inSubquery && at.known && env.hasEv
+	if isolated {
+		inner, res = f.isolate(n, inner, innerEnv), fitResult{}
+	}
 	if res.err != nil {
 		return n, fitResult{empty: res.empty, err: res.err}
 	}
@@ -528,11 +713,18 @@ func (f *domainFit) fitSubquery(n *parser.SubqueryExpr, env domainEnv) (parser.E
 	if !at.known {
 		return out, fitResult{empty: res.empty, outside: res.outside, reads: res.reads}
 	}
-	margin := step + env.step
-	res.widen(at.lo.Add(-n.Range).Add(-margin), at.hi.Add(margin))
+	// The lowering reaches a step of the grid and one of the enclosing
+	// evaluation past the window on either side. An isolated subquery's
+	// grid is enumerated outside the SQL, run by run, so past its end it
+	// reaches only the enclosing evaluation's step.
+	margin, after := step+env.step, step+env.step
+	if isolated {
+		after = env.step
+	}
+	res.widen(at.lo.Add(-n.Range).Add(-margin), at.hi.Add(after))
 	res.stepMillis = lcmMillis(res.stepMillis, step.Milliseconds())
 	if res.outside == nil {
-		res.outside = checkInstantDomain(at.lo, at.hi, n.Range, margin)
+		res.outside = checkInstantDomainAround(at.lo, at.hi, n.Range, margin, after)
 	}
 	if !ownPin {
 		return f.shiftUnpinned(out, at, env, res)
@@ -555,6 +747,25 @@ func (f *domainFit) fitSubquery(n *parser.SubqueryExpr, env domainEnv) (parser.E
 		out = repinSubquery(out, at.hi.UnixMilli())
 	}
 	return out, fitResult{empty: res.empty}
+}
+
+// isolate records the outermost subquery n, evaluated over innerEnv, as
+// isolated, and returns the inner expression its isolated lowering
+// evaluates: n's own, or fitted, the fitted one under a wrapped pin, below
+// which Prometheus reads no sample and the fit has replaced every read
+// with an empty vector.
+func (f *domainFit) isolate(n *parser.SubqueryExpr, fitted parser.Expr, innerEnv domainEnv) parser.Expr {
+	inner := n.Expr
+	if innerEnv.wrapped {
+		inner = fitted
+	}
+	if f.isolated == nil {
+		f.isolated = map[parser.Expr]promEval{}
+	}
+	// The state is kept in Prometheus's own frame, in which the isolated
+	// lowering starts.
+	f.isolated[unwrapParens(inner)] = innerEnv.ev.moved(-f.frameShift)
+	return inner
 }
 
 // shiftUnpinned settles the region of the unpinned subquery n, evaluated
@@ -611,11 +822,12 @@ func shiftIntoDomain(r fitResult, admits func(shift int64) bool) (int64, bool) {
 	if unit <= 0 || hi-lo > domHi-domLo-unit {
 		return 0, false
 	}
-	// Move the span halfway towards the centre of the domain, which keeps
-	// it clear of both bounds, or all the way when halfway is not enough;
-	// either shift is rounded to a whole number of units. Failing both,
-	// move it by the fewest units that bring it inside, the shortest move
-	// admits may accept.
+	// Move the span halfway towards the centre of the domain, rounded to a
+	// whole number of units, which keeps it clear of both bounds. Failing
+	// that, move it by the fewest units that bring it inside: that shift
+	// fits whenever any does, and admits accepts it whenever it accepts a
+	// longer one. A span starting at domLo or ending at domHi needs no
+	// move, so the bounds themselves fall to either case alike.
 	want := (domLo + (domHi-domLo)/2) - (lo + (hi-lo)/2)
 	least := int64(0)
 	switch {
@@ -624,7 +836,7 @@ func shiftIntoDomain(r fitResult, admits func(shift int64) bool) (int64, bool) {
 	case hi > domHi:
 		least = -ceilUnits(hi-domHi, unit)
 	}
-	for _, shift := range []int64{want / 2 / unit * unit, want / unit * unit, least} {
+	for _, shift := range []int64{want / 2 / unit * unit, least} {
 		if lo+shift >= domLo && hi+shift <= domHi && admits(shift) {
 			return shift, true
 		}
@@ -775,7 +987,8 @@ func (f *domainFit) fitCall(n *parser.Call, env domainEnv) (parser.Expr, fitResu
 		return f.fitCall(cut, env)
 	}
 	if vs, arg, ok := absentSelector(n); ok {
-		if _, r := f.fitExpr(arg, env); r.err != nil && r.empty {
+		// A selector is empty only where its read is rejected.
+		if _, r := f.fitExpr(arg, env); r.empty {
 			// The selector reads nothing, so the call answers from its
 			// matchers alone (lowerAbsent, lowerAbsentOverTime).
 			if f.emptyReads == nil {

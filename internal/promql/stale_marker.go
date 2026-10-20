@@ -300,7 +300,7 @@ func staleMarkerBucketLayout(input chplan.Node, rows []chplan.Projection, bound 
 		},
 	}
 	marker := staleMarkerRowExpr(s)
-	projections := make([]chplan.Projection, 0, len(rows)+2)
+	var projections []chplan.Projection
 	for _, p := range rows {
 		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: p.Alias}, Alias: p.Alias})
 	}

@@ -46,11 +46,12 @@
       "site": "internal/promql/subquery.go:lowerSubquery#a374d4b2",
       "message": "promql: subquery over %T is unsupported",
       "class": "internal",
-      "rationale": "SubqueryExpr.Expr must type-check as an instant vector, and every instant-vector AST shape is dispatched (selector, call, paren, aggregate, binary, unary, plus the parser-impossible nested SubqueryExpr handled defensively); scalar- and string-typed inners are parse-time type errors. The lowerHistogramNativeSubqueryInner call added ahead of the switch by cerberus issue #2543 does not narrow that exhaustiveness claim: when it returns matched=false control falls through to the identical switch this rationale already covers, over the identical e.Expr value. The lowerSubqueryInnerInContext call added after it is the same: when it returns matched=false control falls through to the identical switch over the identical e.Expr value.",
+      "rationale": "SubqueryExpr.Expr must type-check as an instant vector, and every instant-vector AST shape is dispatched (selector, call, paren, aggregate, binary, unary, plus the parser-impossible nested SubqueryExpr handled defensively); scalar- and string-typed inners are parse-time type errors. The lowerHistogramNativeSubqueryInner call added ahead of the switch by cerberus issue #2543 does not narrow that exhaustiveness claim: when it returns matched=false control falls through to the identical switch this rationale already covers, over the identical e.Expr value. The lowerSubqueryInnerInContext call added after it is the same: when it returns matched=false control falls through to the identical switch over the identical e.Expr value. The ctx.domain.isolation(e) return added before them is the same: it lowers an isolated subquery through lowerIsolatedSubquery and returns, and when the subquery is not isolated control reaches the identical calls and switch over the identical e.Expr value.",
       "evidence": {
         "guard": [
           "past returning if e.Range \u003c= 0",
           "past returning if e.Step \u003c 0",
+          "past returning if ev, ok := ctx.domain.isolation(e); ok",
           "past returning if plan, matched, err := lowerHistogramNativeSubqueryInner(e, step, s, ctx); matched",
           "past returning if plan, matched, err := lowerSubqueryInnerInContext(e, step, s, ctx); matched",
           "past exhaustive switch inner := e.Expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.ParenExpr; case *parser.AggregateExpr; case *parser.BinaryExpr; case *parser.UnaryExpr; case *parser.SubqueryExpr]"
@@ -65,6 +66,7 @@
         ],
         "cited": [
           "lowerHistogramNativeSubqueryInner",
+          "lowerIsolatedSubquery",
           "lowerSubqueryInnerInContext"
         ]
       }

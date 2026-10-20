@@ -40,6 +40,17 @@ type Scan struct {
 	// timestamp would leave the instants a DateTime64(9) holds is not
 	// read. Zero reads the timestamps as stored.
 	TimeShiftMillis int64
+	// ReadMillis, when set, restricts the scan to the rows whose stored
+	// timestamp, in Unix milliseconds, lies in the span. The bound reads
+	// the timestamp as stored, before TimeShiftMillis moves it. Nil reads
+	// every row.
+	ReadMillis *MillisSpan
+}
+
+// MillisSpan is the instants from From to To, both included, in Unix
+// milliseconds.
+type MillisSpan struct {
+	From, To int64
 }
 
 func (*Scan) planNode() {}
@@ -49,6 +60,9 @@ func (*Scan) Children() []Node { return nil }
 func (s *Scan) Equal(other Node) bool {
 	o, ok := other.(*Scan)
 	if !ok || s.Database != o.Database || s.Table != o.Table || s.TimeShiftMillis != o.TimeShiftMillis {
+		return false
+	}
+	if (s.ReadMillis == nil) != (o.ReadMillis == nil) || (s.ReadMillis != nil && *s.ReadMillis != *o.ReadMillis) {
 		return false
 	}
 	if len(s.Columns) != len(o.Columns) {

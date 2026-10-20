@@ -4,18 +4,16 @@
       "head": "promql",
       "site": "internal/promql/instant_domain.go:instantDomainError#31995eff",
       "message": "promql: the query needs instant %s, outside the range cerberus supports (%s to %s): ClickHouse cannot represent it exactly",
-      "class": "divergence",
-      "trigger_query": "max_over_time(max_over_time(demo_http_requests_total[292y:100d])[292y:100d])",
-      "tracking_issue": 3824,
+      "class": "rejection",
+      "trigger_query": "info(demo_http_requests_total, {job=\"a\"} @ -62135596800)",
       "evidence": {
         "guard": null,
         "callers": [
           "checkBeyondRead",
-          "checkInstantDomain",
+          "checkInstantDomainAround",
           "fitWindow"
         ]
-      },
-      "since": "2026-10-18"
+      }
     }
   ]
 }

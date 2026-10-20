@@ -38,6 +38,9 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 	if step == 0 {
 		step = defaultSubqueryStep
 	}
+	if ev, ok := ctx.domain.isolation(e); ok {
+		return lowerIsolatedSubquery(e, ev, step, s, ctx)
+	}
 
 	// A subquery's inner expression is re-evaluated at every one of its own
 	// grid anchors — the identical thing a query's own root is evaluated
@@ -775,16 +778,15 @@ func emptySubqueryGrid(inner chplan.Node) chplan.Node {
 
 // epochFloor snaps t down to the nearest absolute-epoch multiple of
 // step (phase 0) — the SQL-side twin of chsql's epochAlignedEndFrag.
+// The multiple may lie before the Int64 nanoseconds, up to a step below
+// an instant near their start, so it is found with time.Time's own
+// arithmetic, which spans every year: the multiples of step from the
+// Unix epoch are those from Go's zero time moved by the epoch's
+// remainder.
 func epochFloor(t time.Time, step time.Duration) time.Time {
-	stepNS := step.Nanoseconds()
-	ns := t.UTC().UnixNano()
-	floor := ns / stepNS
-	// Go's `/` truncates toward zero, and its `%` takes the dividend's
-	// sign: a negative remainder means the quotient was rounded up.
-	if ns%stepNS < 0 {
-		floor--
-	}
-	return time.Unix(0, floor*stepNS).UTC()
+	epoch := time.Unix(0, 0).UTC()
+	phase := epoch.Sub(epoch.Truncate(step))
+	return t.UTC().Add(-phase).Truncate(step).Add(phase)
 }
 
 // subqueryAnchorShape re-exposes a grid-evaluated subquery inner under

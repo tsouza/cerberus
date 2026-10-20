@@ -86,23 +86,9 @@ single canonical probe, so a function that lowers `sort_by_label(v, "l")` and
 rejects `sort_by_label(v)` still counts as one supported symbol.
 
 Shape-level wrong-rejections are measured separately, by the rejection-parity
-catalogue: across all three heads it records **3** open divergences — queries
-the reference backend answers and cerberus rejects. Two are argument shapes;
-the third is a PromQL query whose instants span more than
-1677-09-21T00:12:43.145224192Z to 2262-04-11T23:47:16.854775807Z, the int64
-nanoseconds ClickHouse's DateTime64(9) holds, such as nested subqueries
-whose ranges reach back more than about 584 years in all.
-
-Every other such query is answered: a window is cut back to the range,
-which holds every stored sample, with `rate`, `increase` and `delta`
-extrapolating to the uncut window's edges, and a grid that reads no sample
-there is moved into it. A query that still needs an instant outside the
-range is evaluated in a frame shifted in time by a multiple of every
-subquery step, with stored samples read shifted into it and result
-timestamps shifted back; a result timestamp outside the range is reported
-in milliseconds. A range query spanning more than a frame holds is answered
-as consecutive runs of its steps. Each
-is one `class: "divergence"` row in
+catalogue: across all three heads it records **2** open divergences — queries
+the reference backend answers and cerberus rejects. Both are argument shapes.
+Each is one `class: "divergence"` row in
 [`test/rejection-parity/catalogue/`](../test/rejection-parity/catalogue),
 carries an open GitHub issue tracking its closure, and is re-verified against
 both backends on every compat run in both directions — cerberus must still
@@ -110,6 +96,21 @@ reject it and the reference must still accept it — under a count ceiling and a
 age cap ([`test/rejection-parity/doc.go`](../test/rejection-parity/doc.go)).
 That count is re-derived from the catalogue by the same `doc-counts` gate that
 validates the table above.
+
+A PromQL query whose instants leave 1677-09-21T00:12:43.145224192Z to
+2262-04-11T23:47:16.854775807Z, the int64 nanoseconds ClickHouse's
+DateTime64(9) holds, is answered. A window is cut back to the range, which
+holds every stored sample, with `rate`, `increase` and `delta` extrapolating
+to the uncut window's edges, and a grid that reads no sample there is moved
+into it. A query that still needs an instant outside the range is evaluated
+in a frame shifted in time by a multiple of every subquery step, with stored
+samples read shifted into it and result timestamps shifted back; a result
+timestamp outside the range is reported in milliseconds. A range query
+spanning more than a frame holds is answered as consecutive runs of its
+steps. A query whose subqueries reach further back than the range is long
+evaluates the inner expression of each outermost subquery over its grid in
+runs of their own, each reading only the storage Prometheus's own wrapped
+read bounds.
 
 Read the two measurements together, never one for the other: every grammar
 symbol lowers, and a counted, individually-tracked set of argument shapes and

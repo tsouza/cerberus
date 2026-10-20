@@ -38,11 +38,103 @@ type promEval struct {
 	// req holds the request start and end in milliseconds, the instants
 	// `@ start()` and `@ end()` name.
 	req *[2]int64
+	// sums holds the subquery offsets and ranges Prometheus adds up on the
+	// way to this node to bound its storage reads ([promReadSums]).
+	sums promReadSums
+}
+
+// promReadSums is subqueryTimes as getTimeRangesForSelector uses it: the
+// offsets and the ranges of the subqueries above a selector, reset at the
+// last one carrying a pin. Prometheus adds them as time.Duration values,
+// which wrap past about 292 years; off and rng hold those wrapped sums,
+// offExact and rngExact the sums without wrapping.
+type promReadSums struct {
+	off, rng           time.Duration
+	offExact, rngExact *big.Int
+	// pinned reports that a subquery on the path carries a pin, so the
+	// read starts and ends at that pin, pinMillis, rather than spanning
+	// the request.
+	pinned    bool
+	pinMillis int64
+}
+
+// add returns s with subquery n appended to the path, the request
+// spanning req.
+func (s promReadSums) add(n *parser.SubqueryExpr, req *[2]int64) promReadSums {
+	if n.Timestamp != nil || n.StartOrEnd != 0 {
+		out := promReadSums{
+			off: n.OriginalOffset, rng: n.Range,
+			offExact: big.NewInt(int64(n.OriginalOffset)), rngExact: big.NewInt(int64(n.Range)),
+			pinned: true,
+		}
+		switch {
+		case n.Timestamp != nil:
+			out.pinMillis = *n.Timestamp
+		case req != nil && n.StartOrEnd == parser.START:
+			out.pinMillis = req[0]
+		case req != nil:
+			out.pinMillis = req[1]
+		}
+		return out
+	}
+	out := promReadSums{off: s.off + n.OriginalOffset, rng: s.rng + n.Range, pinned: s.pinned, pinMillis: s.pinMillis}
+	out.offExact = new(big.Int).Add(bigOrZero(s.offExact), big.NewInt(int64(n.OriginalOffset)))
+	out.rngExact = new(big.Int).Add(bigOrZero(s.rngExact), big.NewInt(int64(n.Range)))
+	return out
+}
+
+func bigOrZero(b *big.Int) *big.Int {
+	if b == nil {
+		return new(big.Int)
+	}
+	return b
+}
+
+// wraps reports whether s's sums wrapped, so that the read Prometheus
+// bounds a selector below them with misses some or all of the samples
+// its evaluation needs: a wrapped sum lies a multiple of 2^64 ns, the
+// length of the domain, from the exact one. Unwrapped, the read holds
+// every one of them.
+func (s promReadSums) wraps() bool {
+	return s.offExact != nil && (!s.offExact.IsInt64() || s.offExact.Int64() != int64(s.off) ||
+		!s.rngExact.IsInt64() || s.rngExact.Int64() != int64(s.rng))
+}
+
+// promSelectorHint returns the storage read, in milliseconds, Prometheus
+// bounds the unpinned selector vs with when ev evaluates it
+// (getTimeRangesForSelector): [start, end], each bound inclusive, read
+// with rng, zero for an instant selector. The subquery sums wrap as
+// Prometheus's do.
+func promSelectorHint(ev promEval, vs *parser.VectorSelector, rng time.Duration) [2]int64 {
+	start, end := ev.req[0], ev.req[1]
+	if ev.sums.pinned {
+		start, end = ev.sums.pinMillis, ev.sums.pinMillis
+	}
+	off := promDurationMilliseconds(ev.sums.off)
+	start = start - off - promDurationMilliseconds(ev.sums.rng)
+	end -= off
+	lookback := promDurationMilliseconds(instantLookback)
+	switch {
+	case rng == 0:
+		start -= lookback - 1
+		if vs.Smoothed {
+			end += lookback
+		}
+	case vs.Anchored:
+		start -= promDurationMilliseconds(instantLookback+rng) - 1
+	case vs.Smoothed:
+		start -= promDurationMilliseconds(instantLookback+rng) - 1
+		end += lookback
+	default:
+		start -= promDurationMilliseconds(rng) - 1
+	}
+	own := promDurationMilliseconds(vs.OriginalOffset)
+	return [2]int64{start - own, end - own}
 }
 
 // promDurationMilliseconds is Prometheus's durationMilliseconds.
 func promDurationMilliseconds(d time.Duration) int64 {
-	return int64(d / (time.Millisecond / time.Nanosecond))
+	return int64(d / time.Millisecond)
 }
 
 // promSubqueryTimes is the offset part of Prometheus's subqueryTimes: the
@@ -136,10 +228,34 @@ func promSubqueryStart(start, offsetMillis, rangeMillis, interval int64) int64 {
 // when the inner evaluator starts at a different instant.
 func promSubqueryEval(ev promEval, n *parser.SubqueryExpr, offset, interval time.Duration) promEval {
 	start := promSubqueryStart(ev.start, promDurationMilliseconds(offset), promDurationMilliseconds(n.Range), promDurationMilliseconds(interval))
+	sums := ev.sums.add(n, ev.req)
 	if start != ev.start {
-		return promEval{start: start, offEval: start, req: ev.req}
+		return promEval{start: start, offEval: start, req: ev.req, sums: sums}
 	}
 	path := make([]*parser.SubqueryExpr, len(ev.offPath), len(ev.offPath)+1)
 	copy(path, ev.offPath)
-	return promEval{start: ev.start, offEval: ev.offEval, offPath: append(path, n), req: ev.req}
+	return promEval{start: ev.start, offEval: ev.offEval, offPath: append(path, n), req: ev.req, sums: sums}
+}
+
+// moved returns ev with every instant it holds moved by shift
+// milliseconds, the pins of the subqueries on its path included: the
+// evaluator state of a frame shifted by shift ([fitInFrame]).
+func (ev promEval) moved(shift int64) promEval {
+	ev.start += shift
+	ev.offEval += shift
+	if ev.req != nil {
+		req := [2]int64{ev.req[0] + shift, ev.req[1] + shift}
+		ev.req = &req
+	}
+	if ev.sums.pinned {
+		ev.sums.pinMillis += shift
+	}
+	if len(ev.offPath) > 0 {
+		path := make([]*parser.SubqueryExpr, len(ev.offPath))
+		for i, n := range ev.offPath {
+			path[i] = shiftPins(n, shift).(*parser.SubqueryExpr)
+		}
+		ev.offPath = path
+	}
+	return ev
 }

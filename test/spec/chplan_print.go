@@ -145,6 +145,9 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		if v.TimeShiftMillis != 0 {
 			shift = fmt.Sprintf(" timeShiftMillis=%d", v.TimeShiftMillis)
 		}
+		if v.ReadMillis != nil {
+			shift += fmt.Sprintf(" readMillis=[%d, %d]", v.ReadMillis.From, v.ReadMillis.To)
+		}
 		if len(v.Columns) == 0 {
 			fmt.Fprintf(b, "%sScan(%s)%s\n", indent, tbl, shift)
 		} else {
