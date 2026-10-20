@@ -138,3 +138,76 @@ func TestNumAnchors_BeyondDuration(t *testing.T) {
 		t.Errorf("RangeLWR.NumAnchors = %d, want %d", got, wantSteps+1)
 	}
 }
+
+// TestStepsBetween_FastPathAgreesWithBig pins that the int64 path answers
+// what the arbitrary-precision path answers, on both sides of the longest
+// distance a time.Duration holds and for negative distances.
+func TestStepsBetween_FastPathAgreesWithBig(t *testing.T) {
+	t.Parallel()
+	origin := time.Date(1900, 1, 1, 0, 0, 0, 123, time.UTC)
+	longest := time.Duration(math.MaxInt64)
+	steps := []time.Duration{1, time.Second, 7 * time.Minute, wideStep, longest}
+	distances := []time.Duration{
+		0, 1, -1, time.Second - 1, -time.Second + 1, 90 * 24 * time.Hour, -90 * 24 * time.Hour,
+		longest - 1, longest, -longest, math.MinInt64,
+	}
+	for _, step := range steps {
+		for _, d := range distances {
+			end := origin.Add(d)
+			gotSteps, gotRem := StepsBetween(origin, end, step)
+			wantSteps, wantRem := stepsBetweenBig(origin, end, step)
+			if gotSteps != wantSteps || gotRem != wantRem {
+				t.Errorf("StepsBetween(+%v, step %v) = (%d, %v), big path (%d, %v)",
+					d, step, gotSteps, gotRem, wantSteps, wantRem)
+			}
+		}
+		// One nanosecond past the longest Duration, and the 328-year span,
+		// take the big path; the answer is still the exact one.
+		for _, end := range []time.Time{origin.Add(longest).Add(1), origin.Add(-longest).Add(-2), wideEnd} {
+			start := origin
+			if end.Equal(wideEnd) {
+				start = wideStart
+			}
+			gotSteps, gotRem := StepsBetween(start, end, step)
+			wantSteps, wantRem := stepsBetweenBig(start, end, step)
+			if gotSteps != wantSteps || gotRem != wantRem {
+				t.Errorf("StepsBetween(%v, %v, step %v) = (%d, %v), big path (%d, %v)",
+					start, end, step, gotSteps, gotRem, wantSteps, wantRem)
+			}
+		}
+	}
+}
+
+// TestGridInstant_FastPathAgreesWithBig pins that the int64 path answers
+// what the arbitrary-precision path answers, for k up to and one past the
+// largest multiple of step a time.Duration holds, forwards and backwards.
+func TestGridInstant_FastPathAgreesWithBig(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 500, time.UTC)
+	for _, step := range []time.Duration{time.Nanosecond, time.Second, wideStep, -time.Minute, -wideStep} {
+		maxK := int64(time.Duration(math.MaxInt64) / max(step, -step))
+		for _, k := range []int64{0, 1, -1, 1000, -1000, maxK - 1, maxK, -maxK, maxK + 1, -maxK - 1} {
+			got := GridInstant(start, step, k)
+			want := gridInstantBig(start, step, k)
+			if !got.Equal(want) || got.Location() != want.Location() {
+				t.Errorf("GridInstant(step %v, k %d) = %v, big path %v", step, k, got, want)
+			}
+		}
+	}
+	if got := GridInstant(start, 0, 5); !got.Equal(start) {
+		t.Errorf("GridInstant(step 0) = %v, want start %v", got, start)
+	}
+}
+
+// TestSpanHelpers_InDurationDoNotAllocate pins that a span or offset a
+// time.Duration holds is computed without the big.Int path's allocations.
+func TestSpanHelpers_InDurationDoNotAllocate(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(90 * 24 * time.Hour)
+	if n := testing.AllocsPerRun(100, func() { StepsBetween(start, end, time.Minute) }); n != 0 {
+		t.Errorf("StepsBetween within a Duration allocated %v times per call, want 0", n)
+	}
+	if n := testing.AllocsPerRun(100, func() { GridInstant(end, -time.Minute, 1000) }); n != 0 {
+		t.Errorf("GridInstant within a Duration allocated %v times per call, want 0", n)
+	}
+}
