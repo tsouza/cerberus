@@ -19,7 +19,8 @@
 //   images <shard> <image>...
 //     Prints the images the shard boots, out of <image>..., every image the
 //     package pins (the recipe passes them from just/common.just): a
-//     cancellation shard's own build, or every image for `all` and `rest`.
+//     cancellation shard's own build; for `rest`, the images the package's
+//     sources name outside the cancellation table; every image for `all`.
 //
 //   go test <args>...
 //     Runs that go test command with the selection of the shard named by
@@ -71,14 +72,51 @@ const CANCELLATION_PREFIX = `${KIND_CANCELLATION}-`;
 // cancellation test's source, in table order. Each row opens with the image
 // literal: `{"clickhouse/clickhouse-server:<tag>", ...}`.
 export function cancellationImages(source) {
-  const start = source.indexOf(`var ${CANCELLATION_TABLE} = []struct {`);
-  if (start < 0) throw new Error(`${CANCELLATION_SOURCE}: no \`var ${CANCELLATION_TABLE}\` table`);
-  const end = source.indexOf('\n}\n', start);
-  if (end < 0) throw new Error(`${CANCELLATION_SOURCE}: \`${CANCELLATION_TABLE}\` table is not closed`);
+  const [start, end] = cancellationTableSpan(source);
   const body = source.slice(source.indexOf('}{', start), end);
   const images = [...body.matchAll(/^\s*\{"([^"]+)"/gm)].map((m) => m[1]);
   if (images.length === 0) throw new Error(`${CANCELLATION_SOURCE}: \`${CANCELLATION_TABLE}\` lists no builds`);
   return images;
+}
+
+// cancellationTableSpan — the [start, end) offsets of the `cancellationBuilds`
+// table in the cancellation test's source.
+function cancellationTableSpan(source) {
+  const start = source.indexOf(`var ${CANCELLATION_TABLE} = []struct {`);
+  if (start < 0) throw new Error(`${CANCELLATION_SOURCE}: no \`var ${CANCELLATION_TABLE}\` table`);
+  const end = source.indexOf('\n}\n', start);
+  if (end < 0) throw new Error(`${CANCELLATION_SOURCE}: \`${CANCELLATION_TABLE}\` table is not closed`);
+  return [start, end];
+}
+
+const imageLiteral = /"(clickhouse\/clickhouse-server:[^"]+)"/g;
+
+// namedImages — the ClickHouse image literals a source names in code, in
+// order of first appearance. Comment lines are not code and name nothing.
+export function namedImages(source) {
+  const images = new Set();
+  for (const line of source.split('\n')) {
+    if (line.trimStart().startsWith('//')) continue;
+    for (const m of line.matchAll(imageLiteral)) images.add(m[1]);
+  }
+  return [...images];
+}
+
+// restImages — the images the `rest` shard boots: every image the package's
+// sources name outside the cancellation table, whose builds the cancellation
+// shards own. `cancellationSource` is the one of `sources` holding the table.
+export function restImages(sources, cancellationSource) {
+  const images = new Set();
+  for (const source of sources) {
+    let code = source;
+    if (source === cancellationSource) {
+      const [start, end] = cancellationTableSpan(source);
+      code = source.slice(0, start) + source.slice(end);
+    }
+    for (const image of namedImages(code)) images.add(image);
+  }
+  if (images.size === 0) throw new Error(`${PACKAGE_DIR}: no image outside \`${CANCELLATION_TABLE}\`; rest would boot none`);
+  return [...images];
 }
 
 // topLevelTests — every `func TestX(t *testing.T)` across the package's
@@ -125,8 +163,9 @@ export function plan(images) {
 }
 
 // selection — what one shard runs: its `-run` and `-skip` patterns, the tests
-// that must report a pass, and, for a cancellation shard, its one image.
-export function selection(shard, { cancellation, tests }) {
+// that must report a pass, and the images it boots (none named for `all`,
+// which boots every pinned image).
+export function selection(shard, { cancellation, tests, rest }) {
   if (!tests.includes(CANCELLATION_TEST)) {
     throw new Error(`${PACKAGE_DIR} has no ${CANCELLATION_TEST}; the shard table is stale`);
   }
@@ -137,6 +176,7 @@ export function selection(shard, { cancellation, tests }) {
       run: '',
       skip: cancellation.map((image) => exactNamePattern(buildTest(image))).join('|'),
       expect: tests,
+      images: rest,
     };
   }
   const image = cancellation.find((candidate) => cancellationShardId(candidate) === shard);
@@ -144,16 +184,19 @@ export function selection(shard, { cancellation, tests }) {
     const known = [SHARD_ALL, SHARD_REST, ...cancellation.map(cancellationShardId)];
     throw new Error(`unknown shard ${JSON.stringify(shard)}; known: ${known.join(', ')}`);
   }
-  return { run: exactNamePattern(buildTest(image)), skip: '', expect: [buildTest(image)], image };
+  return { run: exactNamePattern(buildTest(image)), skip: '', expect: [buildTest(image)], images: [image] };
 }
 
-// shardImages — the images a selection boots, out of every pinned image.
+// shardImages — the images a selection boots, out of every pinned image, in
+// pinned order.
 export function shardImages(sel, pinned) {
-  if (sel.image === undefined) return pinned;
-  if (!pinned.includes(sel.image)) {
-    throw new Error(`${sel.image} is not among the pinned images; add it to just/common.just`);
+  if (sel.images === undefined) return pinned;
+  for (const image of sel.images) {
+    if (!pinned.includes(image)) {
+      throw new Error(`${image} is not among the pinned images; add it to just/common.just`);
+    }
   }
-  return [sel.image];
+  return pinned.filter((image) => sel.images.includes(image));
 }
 
 // selectionArgs — the go test flags that apply a selection. go test reads its
@@ -199,17 +242,19 @@ export function builtUnderIntegration(source) {
   return constraint === null || constraint[1].trim() === 'integration';
 }
 
-// readPackage — the cancellation builds and the top-level tests of the
-// package as `-tags=integration` compiles it.
+// readPackage — the cancellation builds, the top-level tests and the images
+// of the `rest` shard, of the package as `-tags=integration` compiles it.
 export function readPackage(root) {
   const dir = join(root, PACKAGE_DIR);
   const sources = readdirSync(dir)
     .filter((file) => file.endsWith('_test.go'))
     .map((file) => readFileSync(join(dir, file), 'utf8'))
     .filter(builtUnderIntegration);
+  const cancellationSource = readFileSync(join(root, CANCELLATION_SOURCE), 'utf8');
   return {
-    cancellation: cancellationImages(readFileSync(join(root, CANCELLATION_SOURCE), 'utf8')),
+    cancellation: cancellationImages(cancellationSource),
     tests: topLevelTests(sources),
+    rest: restImages(sources, cancellationSource),
   };
 }
 

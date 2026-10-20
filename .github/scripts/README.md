@@ -1144,7 +1144,9 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   jobs, and `just/test.just`'s `ch-server-safety-integration SHARD` recipe.
   `plan` emits one shard per build of test/chserver's `cancellationBuilds`
   table plus a `rest` shard, and `dump` prints the same rows for the workflow
-  meta-tests' check-name index; `images` prints the images a shard boots;
+  meta-tests' check-name index; `images` prints the images a shard boots (a
+  cancellation shard's own build; for `rest`, the images the package's sources
+  name outside the cancellation table; every pinned image for `all`);
   `go test ...` runs the recipe's go test command with the selection of the
   shard named by `CH_SERVER_SAFETY_SHARD` (`-json` / `-run` / `-skip`) appended
   and fails when any test the shard owns did not pass, so an empty selection
