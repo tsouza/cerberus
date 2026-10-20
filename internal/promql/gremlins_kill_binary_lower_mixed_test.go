@@ -412,7 +412,7 @@ func TestLowerClampOverMixedExpHistogramSetOp_MixedBoundsTakeRuntimePath(t *test
 	t.Parallel()
 
 	newValue := clampFamilyNewValue(t, `clamp(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), 5, scalar(sum(up)))`)
-	fc, ok := newValue.(*chplan.FuncCall)
+	fc, ok := boundScalarsBody(newValue).(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnIf {
 		t.Fatalf("mixed literal/computed clamp newValue = %#v, want FuncCall{Fn: FnIf} (runtime-bounds path; mutant `&&`→`||` at "+
 			"instant_fns.go:`if okMin && okMax` would take the literal degenerate-fold path instead)", newValue)
@@ -618,4 +618,23 @@ func TestLowerVectorSetOp_MixedOr_RightOperandMayBeMixed(t *testing.T) {
 	if !setOp.Mixed || setOp.Histogram {
 		t.Errorf("lower(%q): Mixed = %v, Histogram = %v; want a Mixed set op", query, setOp.Mixed, setOp.Histogram)
 	}
+}
+
+// boundScalarsBody returns the lambda body of a [bindScalars] wrapper
+// (arrayElement(arrayMap(lambda, ...), 1)), or e itself when e is not
+// one, so a shape assertion reads the expression the bound values feed.
+func boundScalarsBody(e chplan.Expr) chplan.Expr {
+	elem, ok := e.(*chplan.FuncCall)
+	if !ok || elem.Fn != chplan.FnArrayElement || len(elem.Args) == 0 {
+		return e
+	}
+	mapped, ok := elem.Args[0].(*chplan.FuncCall)
+	if !ok || mapped.Fn != chplan.FnArrayMap || len(mapped.Args) == 0 {
+		return e
+	}
+	lambda, ok := mapped.Args[0].(*chplan.Lambda)
+	if !ok {
+		return e
+	}
+	return lambda.Body
 }
