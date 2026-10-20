@@ -144,7 +144,7 @@
     },
     {
       "id": "PROMQL-REFERENCE-VERSION-PIN-CORRESPONDENCE",
-      "statement": "The upstream Prometheus version cerberus's PromQL parser fork is based on (go.mod's github.com/prometheus/prometheus require line, substituted via the zero-patch tsouza/prometheus:cerberus-parser fork) and the real Prometheus server image the compat lane runs (compatibility/prometheus/docker-compose.yml's prom/prometheus: tag) agree at MAJOR.MINOR grain, the grain at which PromQL grammar and evaluation semantics actually change.",
+      "statement": "Cerberus's PromQL parser, the spec lane's in-process reference engine and the real Prometheus server every reference lane runs are one Prometheus release: go.mod's github.com/prometheus/prometheus require names the release's Go-library version v0.(300+MINOR).PATCH, the replace onto the zero-patch tsouza/prometheus fork names a tag whose version core is that same version (v0.315.0-cerberus-parser for v3.15.0), compatibility/prometheus/docker-compose.yml runs prom/prometheus:vMAJOR.MINOR.PATCH of exactly that release, every other compose file that runs the reference Prometheus (the migration tier-1 and tier-2 stacks, the histogram bench) names that image byte-for-byte, the PromQL surface gate reads its image from the compatibility compose file, and test/oracle's go.mod requires and replaces the parser exactly as the root module does.",
       "scope": "head",
       "applicable_heads": ["HEAD-PROMQL"],
       "applicable_capabilities": [],
@@ -152,8 +152,8 @@
       "required_evidence_classes": ["static-analysis"],
       "required_independence_groups": ["fork-version-skew-scan"],
       "blind_spots": [
-        "test/regression/fork_version_skew_test.go checks MAJOR.MINOR only, by design (patch releases don't move the grammar) — a semantics-affecting patch release on either side, if one ever shipped, would not be caught.",
-        "The test reads go.mod's require line, not the replace line's own pseudo-version tag; a replace directive pointing at a fork commit that silently diverges from the require line's declared upstream base is a scenario this scan does not model (docs/upstream-forks.md's zero-patch policy is what keeps that scenario from arising in practice, not this test)."
+        "test/regression/fork_version_skew_test.go trusts the fork tag's name: it checks that the replace names a tag whose version core equals the require, not that the tagged commit is the release commit. The fork's own cerberus-branch-check workflow and docs/upstream-forks.md's zero-patch release-commit policy keep the tag on that commit.",
+        "Prose restatements of the release are not scanned: comments in go.mod, test/spec/parityoracle/promql/oracle.go, test/surface-parity/promql_reference.go and the docs, and the reference label recorded in test/surface-parity/promql-reference-verdicts.json, can name a stale release while every executable pin agrees. The literal image tags in the self-tests of .github/scripts/compose-pull-images.mjs and .github/scripts/lib/compose-image.mjs are fixtures, not pins, and are not compared either. The GHCR mirror inventory in .github/scripts/lib/mirror.mjs is pinned against the tree by test/regression/mirror_inventory_test.go, not by this contract's evidence."
       ],
       "related_contracts": [],
       "inherits_from": null,
