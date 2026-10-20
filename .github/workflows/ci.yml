@@ -522,6 +522,11 @@ jobs:
       - name: link-check-external self-test
         run: node --test .github/scripts/link-check-external.test.mjs
 
+      # The reader the PromQL surface gate takes its reference Prometheus
+      # image from, the compatibility lane's compose file.
+      - name: compose-image self-test
+        run: node --test .github/scripts/lib/compose-image.test.mjs
+
       # Every .github/scripts/**/*.test.mjs must be invoked by some workflow.
       # Adding a suite and forgetting to wire it is silent — and was, three
       # times over, including for a gate added in this same release cycle.

@@ -8,6 +8,20 @@ import (
 	"testing"
 )
 
+// tempoForkReplace matches the go.mod directive that routes grafana/tempo
+// through the accessor fork. Whitespace is flexible; the module path and
+// the tag family are not.
+var tempoForkReplace = regexp.MustCompile(
+	`(?m)^replace\s+github\.com/grafana/tempo\s+=>\s+github\.com/tsouza/tempo\s+v\d+\.\d+\.\d+-cerberus-accessors\s*$`,
+)
+
+// prometheusForkReplace matches the go.mod directive that routes
+// prometheus/prometheus through the parser fork and captures the fork
+// tag's version core, which names the release the tag is cut on.
+var prometheusForkReplace = regexp.MustCompile(
+	`(?m)^replace\s+github\.com/prometheus/prometheus\s+=>\s+github\.com/tsouza/prometheus\s+(v\d+\.\d+\.\d+)-cerberus-parser\s*$`,
+)
+
 // TestForkVersionSkew (#832) pins the correspondence between the upstream version
 // each tsouza/* parser fork is based on (recorded as the `require` line in
 // go.mod that the fork's `replace` substitutes for) and the reference
@@ -32,6 +46,12 @@ import (
 // divergence that only surfaces as a confusing compat diff (or, worse, a
 // false-green compat run).
 //
+// Every restatement of the reference Prometheus image outside the
+// compatibility lane — the migration tiers' stacks and the histogram bench —
+// must name the compatibility image byte-for-byte, and test/oracle's own
+// go.mod must replace the parser with the same fork tag the root module
+// does, so the one pin covers every place a PromQL reference runs.
+//
 // Granularity: loki is checked at MAJOR.MINOR — the grain at which the
 // query-language grammar and evaluation semantics that parity rests on
 // change; the reference image may lag the Go library by a bug-fix patch
@@ -45,20 +65,6 @@ import (
 // fork's upstream base, OR bump the go.mod fork require to match the image —
 // whichever direction is correct for the change you're making. Do not relax
 // the assertion to make the skew disappear.
-// tempoForkReplace matches the go.mod directive that routes grafana/tempo
-// through the accessor fork. Whitespace is flexible; the module path and
-// the tag family are not.
-var tempoForkReplace = regexp.MustCompile(
-	`(?m)^replace\s+github\.com/grafana/tempo\s+=>\s+github\.com/tsouza/tempo\s+v\d+\.\d+\.\d+-cerberus-accessors\s*$`,
-)
-
-// prometheusForkReplace matches the go.mod directive that routes
-// prometheus/prometheus through the parser fork and captures the fork
-// tag's version core, which names the release the tag is cut on.
-var prometheusForkReplace = regexp.MustCompile(
-	`(?m)^replace\s+github\.com/prometheus/prometheus\s+=>\s+github\.com/tsouza/prometheus\s+(v\d+\.\d+\.\d+)-cerberus-parser\s*$`,
-)
-
 func TestForkVersionSkew(t *testing.T) {
 	t.Parallel()
 
@@ -205,6 +211,52 @@ func TestForkVersionSkew(t *testing.T) {
 		}
 	})
 
+	t.Run("prometheus-restatements", func(t *testing.T) {
+		t.Parallel()
+		compat := composeImageTag(t, "../../compatibility/prometheus/docker-compose.yml", prometheusImageLine)[0]
+		for _, path := range prometheusImageRestatements {
+			buf, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			lines := prometheusImageLine.FindAllStringSubmatch(string(buf), -1)
+			if len(lines) == 0 {
+				t.Fatalf("%s runs no prom/prometheus image; drop it from prometheusImageRestatements "+
+					"or fix the gate's regex.", path)
+			}
+			for _, m := range lines {
+				if m[1] != compat {
+					t.Fatalf("%s runs %s, but the compatibility lane's reference is %s. The "+
+						"compatibility compose file is the sole pin site for the reference "+
+						"Prometheus; restate its tag byte-for-byte.", path, m[1], compat)
+				}
+			}
+		}
+	})
+
+	t.Run("oracle-module", func(t *testing.T) {
+		t.Parallel()
+		// test/oracle is a module of its own, so it carries its own require
+		// and replace for the parser; both must be the root module's.
+		oracleMod, err := os.ReadFile("../../test/oracle/go.mod")
+		if err != nil {
+			t.Fatalf("read test/oracle/go.mod: %v", err)
+		}
+		const mod = "github.com/prometheus/prometheus"
+		if root, oracle := requireVersion(t, goMod, mod), requireVersion(t, oracleMod, mod); root != oracle {
+			t.Fatalf("test/oracle/go.mod requires %s %s, the root go.mod %s. Align the two.", mod, oracle, root)
+		}
+		root, oracle := prometheusForkReplace.FindSubmatch(goMod), prometheusForkReplace.FindSubmatch(oracleMod)
+		if root == nil || oracle == nil {
+			t.Fatalf("a prometheus fork replace matching %s is missing (root: %v, test/oracle: %v)",
+				prometheusForkReplace, root != nil, oracle != nil)
+		}
+		if string(root[1]) != string(oracle[1]) {
+			t.Fatalf("test/oracle/go.mod replaces %s with the fork tag %s-cerberus-parser, the root "+
+				"go.mod with %s-cerberus-parser. Align the two.", mod, oracle[1], root[1])
+		}
+	})
+
 	t.Run("migration-tier1", func(t *testing.T) {
 		t.Parallel()
 		// The migration lane's Tier-1 stack runs the same three reference
@@ -253,6 +305,18 @@ func TestForkVersionSkew(t *testing.T) {
 		}
 	})
 }
+
+// prometheusImageRestatements are the compose files outside the
+// compatibility lane, besides the migration tier-1 stack its own subtest
+// covers, that run the reference Prometheus image.
+var prometheusImageRestatements = []string{
+	"../../test/e2e/migration/tiers/tier2-ruler/docker-compose.ruler.yml",
+	"../../bench/histogram/docker-compose.yml",
+}
+
+// prometheusImageLine matches every reference Prometheus image line of a
+// compose file.
+var prometheusImageLine = regexp.MustCompile(`(?m)^\s*image:\s*(prom/prometheus:\S+)`)
 
 // requireVersion extracts the version pinned for modPath in a go.mod
 // `require` block. It matches the module path as a whole word so

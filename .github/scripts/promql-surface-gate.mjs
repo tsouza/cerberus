@@ -68,7 +68,8 @@
 //      so the gate asserts the invariant rather than re-deriving it.
 //
 // Env contract:
-//   PROM_IMAGE     reference image (default prom/prometheus:v3.15.0)
+//   (the reference image is the prom/prometheus image
+//   compatibility/prometheus/docker-compose.yml pins)
 //   REF_PORT       host port for the flag-enabled reference (default 39090)
 //   INVENTORY      path to the inventory shard directory
 //                  (default test/surface-parity/inventory — one shard file
@@ -90,7 +91,7 @@
 // Exit codes: 0 = all checks pass (or regenerate completed), 1 = any gate
 // failure / infra error.
 //
-// Imports only node: builtins + lib/gh.mjs (no npm deps, no setup-node).
+// Imports only node: builtins + lib/*.mjs (no npm deps, no setup-node).
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -99,8 +100,9 @@ import process from 'node:process';
 import { error, notice, log, capture } from './lib/gh.mjs';
 import { loadShardedEntries, loadShardedMap, writeShardedMap } from './lib/sharded-json.mjs';
 import { pullImageWithRetry } from './lib/registry.mjs';
+import { readComposeImage } from './lib/compose-image.mjs';
 
-const PROM_IMAGE = process.env.PROM_IMAGE || 'prom/prometheus:v3.15.0';
+const PROM_IMAGE = readComposeImage('compatibility/prometheus/docker-compose.yml', 'prom/prometheus');
 const REF_PORT = process.env.REF_PORT || '39090';
 const INVENTORY = process.env.INVENTORY || 'test/surface-parity/inventory';
 const ARTIFACT = process.env.ARTIFACT || 'test/surface-parity/promql-reference-verdicts.json';

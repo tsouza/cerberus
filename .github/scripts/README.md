@@ -3170,8 +3170,11 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   symbol the reference ACCEPTS that cerberus REJECTS but isn't a recorded
   wrong-reject (a silent coverage gap), on artifact drift, or on a
   showcase declared-rejection panel the reference accepts.
-  - Env: `PROM_IMAGE` (default `prom/prometheus:v3.15.0`), `REF_PORT`
-    (default `39090`), `INVENTORY` (the shard directory), `ARTIFACT` (the
+  - Reference image: the `prom/prometheus` image
+    `compatibility/prometheus/docker-compose.yml` pins, read through
+    `lib/compose-image.mjs`, so the gate and the compatibility lane run one
+    reference release.
+  - Env: `REF_PORT` (default `39090`), `INVENTORY` (the shard directory), `ARTIFACT` (the
     small reference/oracle/generated_by manifest), `ARTIFACT_DIR` (the
     per-symbol verdict shard directory), `SHOWCASE` (defaults under
     `test/surface-parity/` + the compose showcase dashboard), `REGENERATE`
@@ -3180,7 +3183,7 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` all checks pass / regenerate done, `1` on any gap / drift /
     misfile / infra error. Self-managing: starts + `docker rm -f`s its own
     reference container.
-  - Acquires `PROM_IMAGE` through `pullImageWithRetry` from `lib/registry.mjs`
+  - Acquires the reference image through `pullImageWithRetry` from `lib/registry.mjs`
     before `docker run`, so a transport fault is retried and a Docker Hub rate
     limit is diagnosed as such instead of surfacing as an opaque
     container-start failure (#1562).
