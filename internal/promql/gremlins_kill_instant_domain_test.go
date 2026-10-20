@@ -1,6 +1,7 @@
 package promql
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -420,5 +421,73 @@ func TestUnshiftRoot_RowTypes(t *testing.T) {
 	}
 	if v, ok := unframedNanos(p.Projections[1]); !ok || v != 60_000*int64(time.Millisecond) {
 		t.Fatalf("the named timestamp is %#v, want it moved back a minute", p.Projections[1].Expr)
+	}
+}
+
+// TestUnshiftRoot_TimestampForms pins the form a framed root reports its
+// timestamp in: a DateTime64(9) moved in nanoseconds when the shift has
+// that form and the root's instants lie in the domain; Int64 milliseconds
+// for a query root whose shift does not, or whose subquery grid leaves
+// the domain; and a DateTime64(9) moved in milliseconds for an isolated
+// run, which reports instants of its enclosing region.
+func TestUnshiftRoot_TimestampForms(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
+	ts := &chplan.ColumnRef{Name: s.TimestampColumn}
+	const minute = int64(60_000)
+	wide := maxDurationMillis + minute
+	century := (100 * 365 * 24 * time.Hour).Milliseconds()
+	sub := mustParseExperimental(t, `m[5m:1m]`)
+	far := time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		root parser.Expr
+		ctx  lowerCtx
+		want chplan.Expr
+	}{
+		{"query root, nanosecond shift", mustParseExperimental(t, `m`), lowerCtx{domain: &domainFit{frameShift: minute}}, unframeInstant(ts, minute)},
+		{"query root, wide shift", mustParseExperimental(t, `m`), lowerCtx{domain: &domainFit{frameShift: wide}}, unframeMillis(ts, wide)},
+		{
+			// Fitted a century behind, the grid in 2200 lies past 2262 in
+			// Prometheus's frame.
+			"query root, grid outside", sub,
+			lowerCtx{domain: &domainFit{frameShift: -century, grids: map[*parser.SubqueryExpr][2]time.Time{sub.(*parser.SubqueryExpr): {far, far}}}},
+			unframeMillis(ts, -century),
+		},
+		{
+			"run, grid outside", sub,
+			lowerCtx{rootFrame: minute, domain: &domainFit{frameShift: -century, grids: map[*parser.SubqueryExpr][2]time.Time{sub.(*parser.SubqueryExpr): {far, far}}}},
+			unframeInstant(ts, -century-minute),
+		},
+		{"run, wide shift", mustParseExperimental(t, `m`), lowerCtx{rootFrame: -minute, domain: &domainFit{frameShift: wide - minute}}, unframeWholeMillis(ts, wide)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := &chplan.Scan{
+				Table:   "t",
+				Columns: []string{"Attributes", s.TimestampColumn, "Value"},
+				Roles:   []chplan.Column{{Name: s.TimestampColumn, Role: chplan.RoleTimestamp}},
+			}
+			p, ok := unshiftRoot(plan, tc.root, s, tc.ctx).(*chplan.Project)
+			if !ok || len(p.Projections) != 3 {
+				t.Fatalf("root is %#v, want its columns projected", p)
+			}
+			if got := p.Projections[1].Expr; !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("timestamp = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPromSubqueryTimes pins that the offsets of the subqueries on a path
+// add up, from the last one carrying a pin.
+func TestPromSubqueryTimes(t *testing.T) {
+	pin := int64(5000)
+	path := []*parser.SubqueryExpr{{OriginalOffset: time.Hour}, {OriginalOffset: time.Minute}, {OriginalOffset: time.Second}}
+	if off, ts := promSubqueryTimes(path, nil); off != time.Hour+time.Minute+time.Second || ts != nil {
+		t.Fatalf("promSubqueryTimes = %s, %v; want 1h1m1s and no pin", off, ts)
+	}
+	path[1].Timestamp = &pin
+	if off, ts := promSubqueryTimes(path, nil); off != time.Minute+time.Second || ts == nil || *ts != pin {
+		t.Fatalf("promSubqueryTimes = %s, %v; want 1m1s from the pin at 5000", off, ts)
 	}
 }
