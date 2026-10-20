@@ -163,6 +163,11 @@ func TestParseTimeProm(t *testing.T) {
 		{"empty-defaults", "", def, false},
 		{"unix-seconds", "1700000000", time.Unix(1_700_000_000, 0).UTC(), false},
 		{"unix-fractional", "1700000000.5", time.Unix(1_700_000_000, 500_000_000).UTC(), false},
+		// Prometheus, Loki and Tempo round the fraction of float seconds to
+		// a whole millisecond, carrying into the next second.
+		{"unix-fractional-rounds-to-millis", "1.0006", time.UnixMilli(1_001).UTC(), false},
+		{"unix-fractional-rounds-into-next-second", "1700000000.9996", time.UnixMilli(1_700_000_001_000).UTC(), false},
+		{"unix-fractional-negative-rounds-to-millis", "-1.0006", time.UnixMilli(-1_001).UTC(), false},
 		{"rfc3339", "2024-01-02T03:04:05Z", time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC), false},
 		// Grafana's Prom datasource sends ms over `resources/` proxy.
 		// Routing >= 1e12 to the ms branch protects every Prom handler
@@ -220,6 +225,11 @@ func TestParseTimeUnixScaled(t *testing.T) {
 		{"empty-defaults", "", def, false},
 		{"unix-seconds", "1700000000", time.Unix(1_700_000_000, 0).UTC(), false},
 		{"unix-fractional", "1700000000.5", time.Unix(1_700_000_000, 500_000_000).UTC(), false},
+		// Prometheus, Loki and Tempo round the fraction of float seconds to
+		// a whole millisecond, carrying into the next second.
+		{"unix-fractional-rounds-to-millis", "1.0006", time.UnixMilli(1_001).UTC(), false},
+		{"unix-fractional-rounds-into-next-second", "1700000000.9996", time.UnixMilli(1_700_000_001_000).UTC(), false},
+		{"unix-fractional-negative-rounds-to-millis", "-1.0006", time.UnixMilli(-1_001).UTC(), false},
 		{"rfc3339", "2024-01-02T03:04:05Z", time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC), false},
 		// #194: Grafana 11.x emits ms over the Loki `resources/` proxy
 		// (just like Prom). A 13-digit ms value used to land in the ns

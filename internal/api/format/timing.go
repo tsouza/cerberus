@@ -73,7 +73,12 @@ func timeFromUnixSeconds(sec int64) time.Time {
 	return time.Unix(sec, 0).UTC()
 }
 
-// timeFromUnixFloatSeconds converts fractional Unix seconds. NaN fails
+// millisPerSecond is the number of milliseconds in a second.
+const millisPerSecond = 1000
+
+// timeFromUnixFloatSeconds converts fractional Unix seconds, rounding the
+// fraction to a whole millisecond as Prometheus's `parseTime`
+// (web/api/v1/api.go), Loki's and Tempo's `parseTimestamp` do. NaN fails
 // every ordered comparison, so it is matched explicitly rather than
 // being allowed to fall through to an implementation-defined
 // float64 → int64 conversion.
@@ -84,9 +89,9 @@ func timeFromUnixFloatSeconds(f float64) time.Time {
 	case f > maxStorableUnixSeconds:
 		return maxStorableTime
 	}
-	sec := int64(f)
-	nsec := int64((f - float64(sec)) * float64(time.Second))
-	return clampStorable(time.Unix(sec, nsec).UTC())
+	sec, frac := math.Modf(f)
+	frac = math.Round(frac*millisPerSecond) / millisPerSecond
+	return clampStorable(time.Unix(int64(sec), int64(frac*float64(time.Second))).UTC())
 }
 
 // ParseDuration parses a Prom / Loki style step / range duration: a
