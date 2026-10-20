@@ -56,16 +56,14 @@ const (
 // See [infoSecondArgHistogramMatchers].
 //
 // A fixture that never created the table is not an error: most of the
-// corpus seeds only the tables its own query needs.
+// corpus seeds only the tables its own query needs. A failing query over a
+// table the fixture did create is (see [querySeededTable]).
 func readSeededNativeHistograms(
 	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, byKey map[string]*oracle.Series,
 	nameRestorer *metricNameRestorer, exactNames map[string]bool, infoSecondArg []*labels.Matcher,
 	deltaSeries map[string]bool,
 ) error {
 	seedCols := testsql.SeedTableColumns(rt.Seed)[nativeHistogramTable]
-	if len(seedCols) == 0 {
-		return nil
-	}
 
 	//nolint:gosec // every fragment is chosen from this file's own
 	// constants, keyed off the seed's declared columns; no fixture text
@@ -75,9 +73,9 @@ func readSeededNativeHistograms(
 		"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols) + ", " +
 		strings.Join(nativeHistogramProjections(seedCols), ", ") + ", " + flagsProjection(seedCols) +
 		" FROM " + nativeHistogramTable + " ORDER BY MetricName, TimeUnix"
-	rows, err := db.Query(q)
-	if err != nil {
-		return nil
+	rows, ok, err := querySeededTable(db, nativeHistogramTable, q)
+	if err != nil || !ok {
+		return err
 	}
 	defer func() { _ = rows.Close() }()
 

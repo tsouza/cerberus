@@ -831,9 +831,11 @@ func readSeededSeries(
 			"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols[table]) + ", Value, " +
 			flagsProjection(seedCols[table]) + " " +
 			"FROM " + table + " ORDER BY MetricName, TimeUnix"
-		rows, err := db.Query(q)
+		rows, ok, err := querySeededTable(db, table, q)
 		if err != nil {
-			// A fixture that never created this table is not an error.
+			return seededSeries{}, err
+		}
+		if !ok {
 			continue
 		}
 		if err := scanSeriesRows(rows, byKey, &nameRestorer, allow, deltaSeries); err != nil {
@@ -1373,15 +1375,13 @@ const (
 // bucket above the last boundary — which is Prometheus's `le="+Inf"`.
 //
 // A fixture that never created the table is not an error: most of the
-// corpus seeds only the tables its own query needs.
+// corpus seeds only the tables its own query needs. A failing query over a
+// table the fixture did create is (see [querySeededTable]).
 func readSeededClassicHistograms(
 	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, byKey map[string]*oracle.Series,
 	nameRestorer *metricNameRestorer, deltaSeries map[string]bool,
 ) error {
 	seedCols := testsql.SeedTableColumns(rt.Seed)[classicHistogramTable]
-	if len(seedCols) == 0 {
-		return nil
-	}
 
 	//nolint:gosec // every fragment is chosen from this file's own
 	// constants, keyed off the seed's declared columns.
@@ -1390,9 +1390,9 @@ func readSeededClassicHistograms(
 		"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols) + ", Count, Sum, " +
 		"toJSONString(BucketCounts), toJSONString(ExplicitBounds), " + flagsProjection(seedCols) + " " +
 		"FROM " + classicHistogramTable + " ORDER BY MetricName, TimeUnix"
-	rows, err := db.Query(q)
-	if err != nil {
-		return nil
+	rows, ok, err := querySeededTable(db, classicHistogramTable, q)
+	if err != nil || !ok {
+		return err
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -1661,6 +1661,28 @@ func markDeltaSeries(deltaSeries map[string]bool, key string, temporality int64)
 	if temporality == deltaAggregationTemporality {
 		deltaSeries[key] = true
 	}
+}
+
+// querySeededTable runs a seed reader's reference query q against table.
+// It reports false, with no rows and no error, when the fixture's database
+// holds no such table: most fixtures seed only the tables their own query
+// needs. When the table exists, a failing query is an error naming q,
+// never an empty reference.
+func querySeededTable(db *sql.DB, table, q string) (*sql.Rows, bool, error) {
+	var tables uint64
+	if err := db.QueryRow(
+		"SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = ?", table,
+	).Scan(&tables); err != nil {
+		return nil, false, fmt.Errorf("look up seeded table %s: %w", table, err)
+	}
+	if tables == 0 {
+		return nil, false, nil
+	}
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil, false, fmt.Errorf("reference query over seeded table %s failed: %w\n--- query ---\n%s", table, err, q)
+	}
+	return rows, true, nil
 }
 
 func hasColumn(cols []string, want string) bool {
