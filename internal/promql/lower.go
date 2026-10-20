@@ -48,6 +48,11 @@ func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node
 		lowerers:       RangeLowerers{}.withDefaults(),
 		resourceBounds: DefaultResourceBounds().withDefaults(),
 	}
+	expr, err := preprocessQuery(expr, lctx.start, lctx.end, lctx.step)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
 	expr, domain, err := fitInstantDomain(expr, lctx)
 	if err != nil {
 		span.RecordError(err)
@@ -182,6 +187,11 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 		resourceBounds:         opts.ResourceBounds.withDefaults(),
 		tagGroups:              opts.TagGroups,
 		throwDuplicateSeriesIf: opts.ThrowDuplicateSeriesIf,
+	}
+	expr, err := preprocessQuery(expr, start, end, step)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
 	}
 	plan, split, err := lowerRangeInParts(expr, s, lctx)
 	if !split {
@@ -846,6 +856,10 @@ func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (plan chplan.Node, 
 		return lowerMatrixSelector(e, s, ctx)
 	case *parser.UnaryExpr:
 		return lowerUnary(e, s, ctx)
+	case *parser.NumberLiteral:
+		// A scalar root, or `range()` / `step()` folded by
+		// [preprocessQuery]: one sample per evaluation instant.
+		return syntheticScalarVector(&chplan.LitFloat{V: e.Val}, nil, s, ctx), nil
 	default:
 		return nil, fmt.Errorf("promql: unsupported expression %T", expr)
 	}
@@ -3003,21 +3017,6 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerSortByLabel(c, s, ctx)
 	case "scalar":
 		return lowerScalarTopLevel(c, s, ctx)
-	case "range", "step":
-		// Query-context functions: their value is constant for a given
-		// query execution (it depends only on the eval range, not on
-		// series data). The reference engine constant-folds these into
-		// NumberLiterals before evaluation; cerberus folds them at
-		// lowering into a synthetic scalar vector, mirroring `time()` /
-		// `vector(N)`. See [lowerQueryContextFold].
-		//
-		// Only `range()` and `step()` are folded as top-level scalar
-		// calls. `start()` / `end()` are NOT callable functions in this
-		// position — upstream's parser only admits them inside an `@`
-		// modifier (`up @ start()`), which lowers through the at-modifier
-		// path, not here. Lowering bare `start()` / `end()` as scalar
-		// calls would accept a shape stock reference Prometheus rejects.
-		return lowerQueryContextFold(c, s, ctx)
 	case "start", "end":
 		// `start()` / `end()` are query-context time anchors, not
 		// standalone callable functions. Upstream's parser admits them
