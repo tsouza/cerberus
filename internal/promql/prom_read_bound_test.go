@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -78,9 +79,6 @@ func TestPromSelectorHint(t *testing.T) {
 		{"instant", &parser.VectorSelector{}, 0, 0, [2]int64{start - wrapped - (lookback - 1), end}},
 		{"window", &parser.VectorSelector{}, 20 * promReadYear, 0, [2]int64{start - wrapped - (20*365*dayMillis - 1), end}},
 		{"own_offset", &parser.VectorSelector{OriginalOffset: 24 * time.Hour}, 0, 0, [2]int64{start - wrapped - (lookback - 1) - dayMillis, end - dayMillis}},
-		{"smoothed_instant", &parser.VectorSelector{Smoothed: true}, 0, 0, [2]int64{start - wrapped - (lookback - 1), end + lookback}},
-		{"anchored_window", &parser.VectorSelector{Anchored: true}, time.Hour, 0, [2]int64{start - wrapped - (lookback + 3600000 - 1), end}},
-		{"smoothed_window", &parser.VectorSelector{Smoothed: true}, time.Hour, 0, [2]int64{start - wrapped - (lookback + 3600000 - 1), end + lookback}},
 		{"start_pin", &parser.VectorSelector{}, 0, parser.START, [2]int64{start - wrapped - (lookback - 1), start}},
 		{"end_pin", &parser.VectorSelector{}, 0, parser.END, [2]int64{end - wrapped - (lookback - 1), end}},
 	}
@@ -91,6 +89,17 @@ func TestPromSelectorHint(t *testing.T) {
 				t.Fatalf("promSelectorHint = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestPromSelectorHint_ExtendedRangeSelectorsDoNotParse pins why
+// promSelectorHint has no arm for the `anchored` and `smoothed` modifiers:
+// the parser cerberus parses with refuses them.
+func TestPromSelectorHint_ExtendedRangeSelectorsDoNotParse(t *testing.T) {
+	for _, q := range []string{`rate(m[5m] anchored)`, `rate(m[5m] smoothed)`, `m smoothed`} {
+		if _, err := promparse.New().ParseExpr(q); err == nil {
+			t.Fatalf("%q parses; promSelectorHint does not widen the read for its modifier", q)
+		}
 	}
 }
 

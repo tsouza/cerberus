@@ -2144,17 +2144,19 @@ func epochAlignedEndFrag(end Frag, stepNS int64) Frag {
 }
 
 // anchorGridFloorIdxFrag renders the floor-division grid index
-// `floorDiv(<dist> + <addNS>, <stepNS>) + 1` with CH's
+// `floorDiv(<dist> + <add>, <step>) + 1`, every
+// operand in the grid's units ([anchorGrid]: nanoseconds, or milliseconds
+// for a wide grid), with CH's
 // truncate-toward-zero intDiv corrected into a true floor for negative
 // numerators:
 //
-//	intDiv(<dist>[ ± addNS], toInt64(<stepNS>)) - (modulo(<dist>[ ± addNS], toInt64(<stepNS>)) < 0) + 1
+//	intDiv(<dist>[ ± add], toInt64(<step>)) - (modulo(<dist>[ ± add], toInt64(<step>)) < 0) + 1
 //
 // CH's modulo carries the dividend's sign (modulo(-1, 3) = -1), so
 // `modulo(x, step) < 0` is 1 exactly when x is negative AND not an
 // exact multiple of step — the only case where truncation lands one
-// above the floor. addNS = 0 omits the additive term; a negative addNS
-// renders as `- |addNS|` (the windowed lower bound's `dist - range`).
+// above the floor. add = 0 omits the additive term; a negative add
+// renders as `- |add|` (the windowed lower bound's `dist - range`).
 //
 // The toInt64 wrap on the divisor is load-bearing: a bare step literal
 // above the Int32 range parses as UInt64, and CH's modulo(Int64,
@@ -2167,43 +2169,43 @@ func epochAlignedEndFrag(end Frag, stepNS int64) Frag {
 // Shared by sampleAnchorFanoutFrag (backward grid, anchors walk back
 // from End) and absentOverTimeCoveredAnchorFrag (forward grid, anchors
 // walk forward from Start) — the two differ only in how `dist` is
-// oriented and which addNS shifts encode their open/closed window
+// oriented and which add shifts encode their open/closed window
 // edges.
-func anchorGridFloorIdxFrag(dist Frag, addNS, stepNS int64) Frag {
-	// Numerator: `dist`, `dist + addNS`, or `dist - |addNS|`. binOp adds
+func anchorGridFloorIdxFrag(dist Frag, add, step int64) Frag {
+	// Numerator: `dist`, `dist + add`, or `dist - |add|`. binOp adds
 	// the surrounding single spaces, byte-identical to the old hand-rolled
-	// " + " / " - " glue; addNS == 0 leaves the bare dist.
+	// " + " / " - " glue; add == 0 leaves the bare dist.
 	num := dist
 	switch {
-	case addNS > 0:
-		num = Add(dist, InlineLit(addNS))
-	case addNS < 0:
-		num = Sub(dist, InlineLit(-addNS))
+	case add > 0:
+		num = Add(dist, InlineLit(add))
+	case add < 0:
+		num = Sub(dist, InlineLit(-add))
 	}
-	step := Call("toInt64", InlineLit(stepNS))
+	divisor := Call("toInt64", InlineLit(step))
 	// intDiv(num, toInt64(step)) - (modulo(num, toInt64(step)) < 0) + 1
 	return Add(
 		Sub(
-			Call("intDiv", num, step),
-			Paren(Lt(Call("modulo", num, step), InlineLit(int64(0)))),
+			Call("intDiv", num, divisor),
+			Paren(Lt(Call("modulo", num, divisor), InlineLit(int64(0)))),
 		),
 		InlineLit(int64(1)),
 	)
 }
 
 // anchorGridCeilIdxFrag renders the CEILING grid index
-// `ceil((<dist> + <addNS>) / <stepNS>)`, the sibling anchorGridFloorIdxFrag's
+// `ceil((<dist> + <add>) / <step>)`, the sibling anchorGridFloorIdxFrag's
 // floor index answers.
 //
 // The two differ only by which side of the grid the open window edge sits on:
 // a floor index answers "the last anchor at or before x", a ceiling index "the
-// first anchor at or after x". For integers with stepNS > 0,
+// first anchor at or after x". For integers with step > 0,
 // `ceil(x/s) == floor((x-1)/s) + 1`, and anchorGridFloorIdxFrag(dist, a, s)
 // already renders exactly `floorDiv(dist + a, s) + 1` — so shifting its addend
-// down by one nanosecond turns its floor division into the ceiling, reusing the
+// down by one grid unit turns its floor division into the ceiling, reusing the
 // signed-divisor / negative-floor correction verbatim rather than cloning it.
-func anchorGridCeilIdxFrag(dist Frag, addNS, stepNS int64) Frag {
-	return anchorGridFloorIdxFrag(dist, addNS-1, stepNS)
+func anchorGridCeilIdxFrag(dist Frag, add, step int64) Frag {
+	return anchorGridFloorIdxFrag(dist, add-1, step)
 }
 
 // maybePushInnerScanTimeBounds pushes the (Start - range, End] time
@@ -3195,7 +3197,10 @@ func medianOverArrayFrag(arr Frag) (Frag, error) {
 //   - ts_of_first_over_time(v[r]) → epoch-seconds timestamp of the
 //     time-EARLIEST sample in the window.
 //   - ts_of_last_over_time(v[r])  → epoch-seconds timestamp of the
-//     time-LATEST sample in the window.
+//     time-LATEST sample in the window, or 0 for a float-only window whose
+//     latest sample lies before the Unix epoch (Prometheus reports the
+//     later of the last float's and the last histogram's timestamps, 0
+//     when the window holds no histogram).
 //   - ts_of_max_over_time(v[r])   → epoch-seconds timestamp of the
 //     MAXIMUM-valued sample (argmax; ties resolve to the LAST equal-max
 //     sample in time order — Prom's `cur >= maxVal` forward scan).

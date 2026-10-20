@@ -35,16 +35,12 @@ func lowerIsolatedSubquery(sub *parser.SubqueryExpr, ev promEval, step time.Dura
 	if ev.req != nil {
 		inner = resolveRequestPins(inner, ev.req[0], ev.req[1])
 	}
-	first := grid.start.UnixMilli() - ctx.shiftMillis
-	last := grid.end.UnixMilli() - ctx.shiftMillis
-	stepMillis := step.Milliseconds()
-	// A step longer than a run evaluates one instant per run.
-	runSteps := max(maxRangeSpan.Milliseconds()/stepMillis, 1)
+	first := time.UnixMilli(grid.start.UnixMilli() - ctx.shiftMillis).UTC()
+	last := time.UnixMilli(grid.end.UnixMilli() - ctx.shiftMillis).UTC()
 	var arms []chplan.Node
-	for from := first; from <= last; from += runSteps * stepMillis {
-		to := min(from+(runSteps-1)*stepMillis, last)
+	err = forEachRun(first, last, step.Truncate(time.Millisecond), func(from, to time.Time) error {
 		run := grid
-		run.start, run.end = time.UnixMilli(from).UTC(), time.UnixMilli(to).UTC()
+		run.start, run.end = from, to
 		run.request, run.domain, run.shiftMillis, run.guards = nil, nil, 0, nil
 		run.isolatedEval, run.rootFrame, run.run = &ev, ctx.shiftMillis, true
 		// A run records its guards on a sink of its own, whose plans are
@@ -55,7 +51,7 @@ func lowerIsolatedSubquery(sub *parser.SubqueryExpr, ev promEval, step time.Dura
 		}
 		plan, err := lowerFitted(inner, s, run)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		arm := subqueryAnchorShape(plan, s)
 		ctx.domain.seal(arm)
@@ -64,7 +60,14 @@ func lowerIsolatedSubquery(sub *parser.SubqueryExpr, ev promEval, step time.Dura
 			*ctx.guards = append(*ctx.guards, g)
 		}
 		arms = append(arms, arm)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	// Every arm is [subqueryAnchorShape] of the same inner expression,
+	// which names its columns in one fixed order, so the positional
+	// UNION ALL lines the runs' columns up.
 	out := arms[0]
 	// A union of one run answers that run's rows: a lone run is used as
 	// it is only to keep the plan small.

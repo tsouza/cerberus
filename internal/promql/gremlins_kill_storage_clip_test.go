@@ -60,9 +60,8 @@ func TestBoundStaleMarkerLayoutsToIdentity(t *testing.T) {
 	}
 	end := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	rw := &chplan.RangeWindow{Input: layout, TimestampColumn: "TimeUnix", OuterRange: 10 * time.Minute, Range: 5 * time.Minute, Step: time.Minute, End: end}
-	boundStaleMarkerLayoutsToIdentity(rw)
-	anchor := evalAnchor{}
-	anchor.setEnd(end)
+	anchor := anchorAt(end)
+	boundStaleMarkerLayoutsToIdentity(rw, anchor)
 	if want := staleLayoutAnchoredBound("TimeUnix", anchor, 16*time.Minute); !reflect.DeepEqual(filter.Predicate, want) {
 		t.Fatalf("layout bound = %#v, want the 16 minutes before the end", filter.Predicate)
 	}

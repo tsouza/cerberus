@@ -158,9 +158,10 @@ type ExemplarArm struct {
 // boundary makes some ClickHouse drivers refuse to cast a Map back
 // (see [Render]).
 //
-// Each arm's args bind in emit order — arm 0's SeriesName (when set),
-// arm 0's predicate literal, arm 0's two time bounds, then arm 1's, and
-// so on.
+// Each arm's args bind in emit order — arm 0's SeriesName (when set, in
+// the outer projection), then arm 0's matcher-predicate literals, then
+// arm 1's, and so on. The time bounds are inline literals and bind
+// nothing.
 //
 // Returns ErrUnsupported for an empty arm list: a caller with no candidate
 // table must answer with an empty result rather than ask for SQL, and the
@@ -316,8 +317,9 @@ func queryExemplarsSelect(
 	// Int64 nanoseconds, and any other bound is an inline
 	// parseDateTime64BestEffort literal.
 	//
-	// The matcher predicate is rendered first so it lands in argument
-	// position 0; the time bounds and the non-empty-exemplars guard
+	// The matcher predicate is rendered first, so its literals bind right
+	// after the outer projection's SeriesName literal (when the arm sets
+	// one); the inline time bounds and the non-empty-exemplars guard
 	// follow in source order. The non-empty guard short-circuits the
 	// arrayJoin for source rows whose Exemplars array is empty — without
 	// it, CH would still emit zero rows for those source rows (arrayJoin

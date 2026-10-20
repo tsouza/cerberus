@@ -273,8 +273,11 @@ func fitDomain(expr parser.Expr, ctx lowerCtx, frameShift int64, isolating bool)
 		if err := checkInstantDomain(env.lo, env.hi, 0, 0); err != nil {
 			return nil, nil, err
 		}
+		// The evaluator's own start truncates to milliseconds
+		// (timeMilliseconds); the request bounds `@ start()`, `@ end()`
+		// and the storage read name floor to them (timestamp.FromTime).
 		start := promTimeMilliseconds(env.lo)
-		env.ev = promEval{start: start, offEval: start, req: &[2]int64{start, promTimeMilliseconds(ctx.end)}}
+		env.ev = promEval{start: start, offEval: start, req: &[2]int64{env.lo.UnixMilli(), ctx.end.UnixMilli()}}
 		if ctx.isolatedEval != nil {
 			env.ev = ctx.isolatedEval.moved(frameShift)
 		}

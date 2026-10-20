@@ -32,7 +32,10 @@ func TestLowerStartTimestamp_PlansTheArgumentFilteredEmpty(t *testing.T) {
 		}
 		// The outermost clause is the filter, its predicate bound as the
 		// last parameter.
-		if !strings.HasSuffix(sql, " WHERE ?") || len(args) == 0 || args[len(args)-1] != false {
+		if len(args) == 0 {
+			t.Fatalf("step=%s: start_timestamp SQL binds no parameter:\n%s", step, sql)
+		}
+		if !strings.HasSuffix(sql, " WHERE ?") || args[len(args)-1] != false {
 			t.Fatalf("step=%s: start_timestamp SQL does not end in a constant-false filter (last arg %v):\n%s", step, args[len(args)-1], sql)
 		}
 		if !containsArg(args, "cpu") {

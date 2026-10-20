@@ -418,16 +418,13 @@ func staleLayoutPendingBound() chplan.Expr {
 }
 
 // boundStaleMarkerLayoutsToIdentity bounds every stale-marker bucket layout
-// beneath a subquery's Identity window to the window's input:
-// `(End - Offset - OuterRange - Range - Step, End - Offset]`, the step
-// covering the epoch-aligned inner grid. [widenSubquerySpine] re-bounds it
-// once the grid is widened onto the query range.
-func boundStaleMarkerLayoutsToIdentity(rw *chplan.RangeWindow) {
-	// A RangeWindow leaves End zero when it has no absolute anchor.
-	anchor := evalAnchor{Offset: rw.Offset}
-	if !rw.End.IsZero() {
-		anchor.setEnd(rw.End)
-	}
+// beneath a subquery's Identity window rw, anchored by anchor, to the
+// window's input: `(End - Offset - OuterRange - Range - Step, End -
+// Offset]`, the step covering the epoch-aligned inner grid. An anchor
+// without an absolute instant bounds from now64(9).
+// [widenSubquerySpine] re-bounds it once the grid is widened onto the
+// query range.
+func boundStaleMarkerLayoutsToIdentity(rw *chplan.RangeWindow, anchor evalAnchor) {
 	rebindStaleMarkerLayouts(rw.Input, staleLayoutAnchoredBound(rw.TimestampColumn, anchor, rw.OuterRange+rw.Range+rw.Step))
 }
 

@@ -113,21 +113,13 @@ func promSelectorHint(ev promEval, vs *parser.VectorSelector, rng time.Duration)
 	off := promDurationMilliseconds(ev.sums.off)
 	start = start - off - promDurationMilliseconds(ev.sums.rng)
 	end -= off
-	lookback := promDurationMilliseconds(instantLookback)
-	switch {
-	case rng == 0:
-		start -= lookback - 1
-		if vs.Smoothed {
-			end += lookback
-		}
-	case vs.Anchored:
-		start -= promDurationMilliseconds(instantLookback+rng) - 1
-	case vs.Smoothed:
-		start -= promDurationMilliseconds(instantLookback+rng) - 1
-		end += lookback
-	default:
-		start -= promDurationMilliseconds(rng) - 1
+	// An instant selector reads its lookback, a range selector its range.
+	// The `anchored` and `smoothed` modifiers, which widen both, never
+	// parse: promparse.New leaves EnableExtendedRangeSelectors off.
+	if rng == 0 {
+		rng = instantLookback
 	}
+	start -= promDurationMilliseconds(rng) - 1
 	own := promDurationMilliseconds(vs.OriginalOffset)
 	return [2]int64{start - own, end - own}
 }

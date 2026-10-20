@@ -401,6 +401,25 @@ func (c lowerCtx) oneInstant() (lowerCtx, bool) {
 // between any two instants of the span, widened by its windows, fit.
 const maxRangeSpan = time.Duration(math.MaxInt64 / 2)
 
+// forEachRun calls run with the first and last instant of each consecutive
+// run of the instants first, first+step, ... up to last, each run spanning
+// at most [maxRangeSpan], and stops at the first error. A step longer than
+// a run evaluates one instant per run. step is positive.
+func forEachRun(first, last time.Time, step time.Duration, run func(from, to time.Time) error) error {
+	runSteps := time.Duration(max(maxRangeSpan.Milliseconds()/step.Milliseconds(), 1))
+	for from := first; !from.After(last); {
+		to := from.Add((runSteps - 1) * step)
+		if to.After(last) {
+			to = last
+		}
+		if err := run(from, to); err != nil {
+			return err
+		}
+		from = to.Add(step)
+	}
+	return nil
+}
+
 // errSplitOpenRows is why a range query split into runs of its steps is
 // not answered: its result names no closed list of columns the runs'
 // union could align.
@@ -422,22 +441,20 @@ func lowerRangeInParts(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 		return nil, false, nil
 	}
 	expr = resolveRequestPins(expr, ctx.start.UnixMilli(), ctx.end.UnixMilli())
-	// A step longer than a run evaluates one instant per run.
-	runSteps := time.Duration(max(maxRangeSpan.Milliseconds()/stepMillis, 1))
 	var arms []chplan.Node
-	for from := ctx.start; !from.After(ctx.end); {
+	err := forEachRun(ctx.start, ctx.end, ctx.step, func(from, to time.Time) error {
 		part := ctx
 		part.run = true
-		part.start, part.end = from, from.Add((runSteps-1)*ctx.step)
-		if part.end.After(ctx.end) {
-			part.end = ctx.end
-		}
+		part.start, part.end = from, to
 		plan, err := lowerFitted(expr, s, part)
 		if err != nil {
-			return nil, true, err
+			return err
 		}
 		arms = append(arms, plan)
-		from = part.end.Add(ctx.step)
+		return nil
+	})
+	if err != nil {
+		return nil, true, err
 	}
 	// UNION ALL matches columns by position, so every run lists the first
 	// run's columns in its order.

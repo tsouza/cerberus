@@ -417,7 +417,7 @@ func wrapSubqueryIdentity(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	rw, err := subqueryIdentityWindow(sub, inner, step, s, ctx)
+	rw, _, err := subqueryIdentityWindow(sub, inner, step, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -425,21 +425,21 @@ func wrapSubqueryIdentity(
 }
 
 // subqueryIdentityWindow is [wrapSubqueryIdentity] for a caller that goes
-// on to adjust the window itself.
+// on to adjust the window itself. It also returns the subquery's anchor.
 func subqueryIdentityWindow(
 	sub *parser.SubqueryExpr,
 	inner chplan.Node,
 	step time.Duration,
 	s schema.Metrics,
 	ctx lowerCtx,
-) (*chplan.RangeWindow, error) {
+) (*chplan.RangeWindow, evalAnchor, error) {
 	anchor, err := subqueryAnchor(sub, ctx)
 	if err != nil {
-		return nil, err
+		return nil, evalAnchor{}, err
 	}
 	inner, err = declareSubqueryTimestampRole(inner, s.TimestampColumn)
 	if err != nil {
-		return nil, err
+		return nil, evalAnchor{}, err
 	}
 	return &chplan.RangeWindow{
 		Input:           inner,
@@ -453,7 +453,7 @@ func subqueryIdentityWindow(
 		TimestampColumn: s.TimestampColumn,
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
-	}, nil
+	}, anchor, nil
 }
 
 // subqueryIdentityValuePreserving reports whether an instantTransformFns
@@ -895,12 +895,12 @@ func lowerSubqueryOverInstantTransform(
 	if err != nil {
 		return nil, err
 	}
-	windowed, err := subqueryIdentityWindow(sub, inner, step, s, ctx)
+	windowed, anchor, err := subqueryIdentityWindow(sub, inner, step, s, ctx)
 	if err != nil {
 		return nil, err
 	}
 	if valuePreserving {
-		boundStaleMarkerLayoutsToIdentity(windowed)
+		boundStaleMarkerLayoutsToIdentity(windowed, anchor)
 	}
 	if valuePreserving || subqueryIdentityEncodesStaleMarker(call.Func.Name) {
 		return dropStaleLatestSamples(windowed, s), nil
@@ -1303,7 +1303,7 @@ func lowerSubqueryOverVectorSelector(
 		ValueColumn:     s.ValueColumn,
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 	}
-	boundStaleMarkerLayoutsToIdentity(rw)
+	boundStaleMarkerLayoutsToIdentity(rw, anchor)
 	return dropStaleLatestSamples(rw, s), nil
 }
 
