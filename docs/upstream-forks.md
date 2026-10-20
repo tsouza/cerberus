@@ -9,43 +9,31 @@ Cerberus parses each of its three query languages, then renders ClickHouse SQL. 
 
 The shipped `cmd/cerberus` binary additionally links the **Apache-2.0** `github.com/grafana/tempo/pkg/tempopb` protobuf wire types (Tempo's HTTP API surface), and rides the wider Grafana ecosystem (`dskit`, the forked `memberlist`) on upstream tags.
 
-> **Licence note.** The upstream Grafana **LogQL** (`grafana/loki/v3/pkg/logql`) and **TraceQL** (`grafana/tempo/pkg/traceql`) parsers are **AGPLv3**. Cerberus ships under Apache-2.0 and **does not link either** — that is the whole reason the LogQL/TraceQL parsers were rewritten in-house. The AGPL parsers survive only as **test-only oracles** (the `agpl_oracle`-tagged tests and the `compatibility/{loki,tempo}` differential harnesses). What keeps them out of the binary is **reachability, not module membership**: the root `go.mod` requires `grafana/loki/v3` and `compatibility/` carries no `go.mod` of its own, so the harnesses are root-module packages — they are simply never imported from `./cmd/cerberus`, and neither is anything behind the `agpl_oracle` build tag. The `test/oracle` nested module is a second, stronger boundary, used where a hard module break is wanted rather than as the mechanism the licence rests on. The `agpl-clean` CI gate (`.github/scripts/agpl-clean.mjs`) is what enforces the rule: it runs `go list -deps ./cmd/cerberus` and fails the build if any AGPL package is reachable from the binary. See [`compatibility.md`](compatibility.md) and the `NOTICE` file.
+> **Licence rule.** The upstream Grafana **LogQL** (`grafana/loki/v3/pkg/logql`) and **TraceQL** (`grafana/tempo/pkg/traceql`) parsers are **AGPLv3**, and the Apache-2.0 binary links neither. They appear only in **test-only oracles**: the `agpl_oracle`-tagged tests and the `compatibility/{loki,tempo}` differential harnesses. What keeps them out of the binary is **reachability, not module membership**. The root `go.mod` requires `grafana/loki/v3`, and `compatibility/` has no `go.mod` of its own, so the harnesses are root-module packages that `./cmd/cerberus` never imports; neither does it import anything behind the `agpl_oracle` build tag. The `test/oracle` nested module is a second, stronger boundary where a hard module break is wanted. The `agpl-clean` CI gate (`.github/scripts/agpl-clean.mjs`) runs `go list -deps ./cmd/cerberus` and fails the build if any AGPL package is reachable from the binary. See [`compatibility.md`](compatibility.md) and the `NOTICE` file.
 
 ## Forks
 
-Three upstream deps route through `github.com/tsouza/*` forks. The forks exist primarily as a *Dependabot watch boundary*: cerberus's `go.mod` `replace` directives point at semver tags on the forks, not pseudo-versions on upstream. A dedicated cron repo, [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor), decides daily whether anything cerberus cares about landed upstream and only then mints a new fork tag. Dependabot in cerberus sees a clean stream of patch bumps it can grouped-PR on.
+Three upstream deps route through `github.com/tsouza/*` forks. Each is wired by a `go.mod` `replace` directive pinning a **semver tag** on the fork's long-lived `cerberus-*` branch, which is also the fork's default branch.
 
-- **[`tsouza/prometheus`](https://github.com/tsouza/prometheus)** — branch `cerberus-parser`, **zero source patches** (its one commit adds the fork's own `cerberus-branch-check` workflow). The branch sits on an upstream **release** commit, never on upstream `main`: today the `v3.15.0` release, commit `5241a27fe3c6983549fccc32f6e65917408c63cd`, the revision the `prom/prometheus:v3.15.0` reference image reports. Its tag is named after that release's Go-library version, `v0.(300+MINOR).PATCH-cerberus-parser` — `v0.315.0-cerberus-parser` for `v3.15.0`. Cerberus consumes a narrow subtree (`promql/parser`, `model/labels`, `model/histogram`, a couple of adjacent files) for its parser, and the spec lane's in-process oracle (`test/spec/parityoracle/promql`) runs the same module's `promql.Engine`, so the parser, the oracle and the compat reference server are one Prometheus release.
-- **[`tsouza/tempo`](https://github.com/tsouza/tempo)** — branch `cerberus-accessors`, **accessor-only patches**, consumed by test-only code. Most are `pkg/traceql` accessors that retired an `unsafe.Pointer` shim. The newest is `vparquet4.NewSpan`, and it is what makes a TraceQL reference oracle possible at all: `DescendantOf` / `ChildOf` / `SiblingOf` are declared on the `traceql.Span` *interface* but implemented in `tempodb/encoding/vparquet4` on an unexported concrete type, which each of them type-asserts its arguments back to. A caller supplying its own `traceql.Span` cannot reach those methods, so it would have to reimplement `>>` / `>` / `~` — turning the oracle into a mirror of the code under test. The three methods read nothing but the nested-set integers (no parquet page, no row number), so a span built from plain data drives them exactly as a decoded one does; upstream's own `TestDescendantOf` already builds spans as bare struct literals on that basis. `NewSpan` is an exported spelling of that literal.
-- **[`tsouza/opentelemetry-collector-contrib`](https://github.com/tsouza/opentelemetry-collector-contrib)** — branch `cerberus-ddl`, **one patch (sqltemplates hoist)**. Surfaces the OTel-CH exporter's DDL templates (`sqltemplates`) as a Go API: `internal/schema/ddl/` renders `CREATE TABLE` from upstream's own templates — no hand-maintained DDL. Matches stock exporter DDL except the five metrics tables carry a **MetricName-first sort key**; the one deliberate divergence (see below).
+| Fork                                                                                                  | Branch               | Patches                                                            | Kept current by                  | Tag                                             |
+| ----------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------ | -------------------------------- | ----------------------------------------------- |
+| [`tsouza/prometheus`](https://github.com/tsouza/prometheus)                                           | `cerberus-parser`    | none (one commit adds the fork's `cerberus-branch-check` workflow) | forks-monitor, `track: release`  | `v0.(300+MINOR).PATCH-cerberus-parser`          |
+| [`tsouza/opentelemetry-collector-contrib`](https://github.com/tsouza/opentelemetry-collector-contrib) | `cerberus-ddl`       | the `sqltemplates` hoist and the MetricName-first metrics sort key | forks-monitor, `track: main`     | `v0.0.N-cerberus-ddl`, plus per-submodule tags  |
+| [`tsouza/tempo`](https://github.com/tsouza/tempo)                                                     | `cerberus-accessors` | exported accessors for test-only oracles                           | by hand                          | `v0.0.N-cerberus-accessors`                     |
 
-Each fork is wired via a `go.mod` `replace` directive pinning a **semver tag** at the head of the long-lived `cerberus-*` branch. The forks' default branch IS the `cerberus-*` branch (so Dependabot resolves tags against it). The collector-contrib fork also carries per-submodule tags (`exporter/clickhouseexporter/v…`, `internal/coreinternal/v…`, `pkg/core/xidutils/v…`, `pkg/translator/jaeger/v…`) at the same SHA, because Go's module proxy resolves submodule versions independently in a monorepo.
+- **`tsouza/prometheus`** sits on an upstream **release** commit, never on upstream `main`: the `v3.15.0` release, commit `5241a27fe3c6983549fccc32f6e65917408c63cd`, the revision the `prom/prometheus:v3.15.0` reference image reports. Its tag is that release's Go-library version, `v0.315.0-cerberus-parser` for `v3.15.0`. Cerberus's parser, the spec lane's in-process oracle (`test/spec/parityoracle/promql`, which runs the same module's `promql.Engine`) and the compat reference server are one Prometheus release.
+- **`tsouza/opentelemetry-collector-contrib`** exposes the OTel-CH exporter's DDL templates (`sqltemplates`) as a Go API. `internal/schema/ddl/` renders `CREATE TABLE` from upstream's own templates; there is no hand-maintained DDL. The rendered DDL matches the stock exporter's except that the five metrics tables (`metrics_{gauge,sum,histogram,exp_histogram,summary}_table.sql`) lead their sort key with `MetricName`:
 
-The `grafana/loki/v3` library is consumed on a **plain upstream require** (no fork), for the AGPL test-only oracles described above. `grafana/tempo` is required at an upstream pseudo-version and `prometheus/prometheus` at the release's library version (`v0.315.0`); each is then `replace`d by its fork tag, so the `require` line records the upstream base the fork is rebased onto — which is what the version-skew gate below reads — while the fork tag is what actually compiles.
+  ```text
+  ORDER BY (MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix))
+  ```
 
-Routing tempo through a fork does not move it into the binary. The replace applies to the whole module, but reachability is what the `agpl-clean` gate measures: `cmd/cerberus` still imports only the Apache-2.0 `pkg/tempopb` tree, and `pkg/traceql` / `tempodb/**` remain reachable exclusively from `agpl_oracle`-tagged test code.
+  The traces and logs tables are stock. This is the one point where cerberus's auto-created schema differs from a stock OTel-CH deployment; [`operations.md`](operations.md#schema-divergence-metricname-first-metrics-sort-key) has the operator-facing view. The fork also carries per-submodule tags (`exporter/clickhouseexporter/v…`, `internal/coreinternal/v…`, `pkg/core/xidutils/v…`, `pkg/translator/jaeger/v…`) at the same SHA, one for each submodule `go.mod` replaces.
+- **`tsouza/tempo`** carries accessor-only patches, consumed by test-only code: `pkg/traceql` accessors, and `vparquet4.NewSpan`, a data-only constructor for the concrete span type that `DescendantOf` / `ChildOf` / `SiblingOf` operate on, which `test/spec/parityoracle/traceql` uses to run upstream's structural operators over spans read from chDB.
 
-## Why fork prometheus even though it is unpatched?
+`grafana/loki/v3` is a **plain upstream require** (no fork), consumed by the AGPL test-only oracles. `grafana/tempo` is required at an upstream pseudo-version and `prometheus/prometheus` at the release's library version (`v0.315.0`); each is `replace`d by its fork tag. The `require` line records the upstream base the fork sits on, which is what the version-skew gate below reads, and the fork tag is what compiles.
 
-A fork that we never patch is still valuable as a **Dependabot watch boundary**. The motivation:
-
-- Cerberus consumes a **tiny slice** of the prometheus library (the PromQL parser tree + a couple of `model` packages).
-- Upstream releases happen ~weekly. Without a fork, Dependabot would open a PR per release regardless of whether the change touched anything cerberus actually imports.
-- A fork lets *us* decide "is this commit relevant?" before it ever becomes a tag. That decision is automated by `cerberus-forks-monitor`.
-
-The cost is one extra layer (the fork, the monitor) and an additional invariant ("don't merge anything to upstream branches on the fork — only force-push the rebased `cerberus-*` branch"). The forks-monitor `README` covers operational details.
-
-## Why the otelc fork exists
-
-The `tsouza/opentelemetry-collector-contrib` fork hoists the `sqltemplates` package out of `internal/` so cerberus's `internal/schema/ddl/` package can consume it directly. Without the hoist, cerberus would have to fork the templates wholesale, losing the upstream tracking that's the whole point.
-
-The fork carries one deliberate content change on top of the hoist: the five metrics-table templates (`metrics_{gauge,sum,histogram,exp_histogram,summary}_table.sql`) lead their `ORDER BY` with `MetricName` —
-
-```text
-ORDER BY (MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix))
-```
-
-— where stock OTel-CH leads with `ServiceName`. ClickHouse's `ORDER BY` (the table sort key) governs only data-skipping and on-disk layout, never query results, so this divergence is **correctness-neutral**: cerberus answers identically whether the metrics tables carry the stock key or the MetricName-first key. The only difference is performance — the metric-name-first key lets the common metric query (no `service.name` matcher) binary-search the primary key instead of falling to a generic-exclusion granule scan, measured at ~17× fewer granules read (see [`benchmarks.md`](benchmarks.md#metricname-first-order-by)). The traces and logs tables are rendered stock, unchanged. This is the single point at which cerberus's auto-created schema differs from a stock OTel-CH deployment; the operator-facing framing lives in [`operations.md`](operations.md#schema-divergence-metricname-first-metrics-sort-key).
+Routing tempo through a fork does not move it into the binary: `cmd/cerberus` imports only the Apache-2.0 `pkg/tempopb` tree, and `pkg/traceql` / `tempodb/**` are reachable only from `agpl_oracle`-tagged test code.
 
 ## In-house LogQL / TraceQL parsers
 
@@ -54,62 +42,35 @@ LogQL and TraceQL are parsed by clean-room Apache reimplementations of the publi
 - **LogQL** — `internal/logql/lsyntax` (selector + pipeline + metric-query parser), `internal/logql/logpattern` (the `pattern` / `unpack` line parser), and `internal/drain` (the Drain pattern miner behind `/detected_fields`).
 - **TraceQL** — `internal/traceql/ast` (spanset filters, pipelines, structural operators, metrics first/second stages).
 
-Both expose the AST surface cerberus's lowering needs as exported types and accessors, so no `unsafe.Pointer` / `reflect.FieldByName` reach into parser internals is required. Those two shapes remain banned across every `internal/**` package via a `forbidigo` rule in `.golangci.yml`.
+Both expose the AST surface cerberus's lowering needs as exported types and accessors, so no `unsafe.Pointer` / `reflect.FieldByName` reach into parser internals is required. Those two shapes are banned across every `internal/**` package by a `forbidigo` rule in `.golangci.yml`.
 
 Fidelity is held by two independent layers, neither of which links the AGPL parser into the binary:
 
 - **Differential `agpl_oracle` tests** (build-tagged; never compiled into `cmd/cerberus`) parse the same corpus with the upstream AGPL parser and assert structural / behavioural agreement — e.g. `internal/logql/lsyntax/oracle_agpl_test.go`, `internal/logql/jsonpath_agpl_test.go`, `internal/logql/logpattern/pattern_agpl_test.go`.
 - **The `compatibility/{loki,tempo}` harnesses** diff cerberus end-to-end against a reference Loki / Tempo backend.
 
-## How a new upstream change reaches cerberus
+## The forks-monitor
 
-```text
-┌──────────────────────┐                             ┌──────────────────────────┐
-│ upstream repo        │ ────────────────────────▶   │ tsouza/<fork>            │
-│ (prometheus,         │   ─ relevant paths only ─   │   cerberus-<branch>      │
-│  otel-collector-c)   │   ─ as a new tag ─          │     ├── v0.0.1 (baseline)│
-│                      │                             │     ├── v0.0.2           │
-│                      │                             │     └── …                │
-└──────────────────────┘                             └────────────┬─────────────┘
-                                                                  │
-                                  cerberus-forks-monitor (cron) ──┘
-                                                                  │
-                                       Dependabot watches tags    │
-                                                                  ▼
-                                                     ┌──────────────────────────┐
-                                                     │ tsouza/cerberus go.mod   │
-                                                     │   replace directives use │
-                                                     │   tsouza/<fork>@vX.Y.Z   │
-                                                     └──────────────────────────┘
-```
+[`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor) runs daily at 10:17 UTC (`daily.yml`, configured by `monitor.yml`). For each fork it watches, it clones the fork and the upstream and picks a base by the entry's `track`:
 
-Concretely, the daily cycle is:
+- **`track: release`** (prometheus) — the newest stable upstream release tag (`vX.Y.Z`). If the fork's last tag already carries that release, the fork is skipped; otherwise the base is that release.
+- **`track: main`** (collector-contrib) — `upstream/main`, but only when `git log <last-tag>..upstream/main -- <relevant_paths>` is non-empty; otherwise the fork is skipped.
 
-1. `cerberus-forks-monitor` cron triggers at 10:17 UTC. The job lives at [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor); the configuration is `monitor.yml`.
-2. For each fork, the monitor clones the fork + the upstream and runs `git log <last-tag>..upstream/main -- <relevant_paths>`.
-3. If empty: skip silently.
-4. If non-empty: rebase `cerberus-<branch>` onto `upstream/main`, run the configured subtree tests (`go test ./promql/parser/...`, etc.), push, and mint a new patch-bumped tag (plus per-submodule tags for collector-contrib).
-5. On rebase conflict or red tests: open an issue in the monitor repo for human resolution. The fork is NOT force-pushed in that case.
-6. Dependabot in cerberus picks up the new tag on its next daily run (`.github/dependabot.yml`, group `upstream-parsers`) and opens a single grouped PR.
-7. The patch-only queueing workflow (`.github/workflows/auto-merge-deps.yml`) adds the `queue` label to the Dependabot PR for a trusted patch-only bump, which places it in the Mergify merge queue (`.github/mergify.yml`). The queue still gates the actual merge: it brings the PR up to date with `main`, waits for every required status check to pass on that head, then squash-merges.
+With a base chosen, the monitor rebases `cerberus-<branch>` onto it, runs the configured subtree tests, force-pushes the branch and mints the new tag: the release's library version on `track: release`, the next patch on `track: main` (plus the per-submodule tags for collector-contrib). On a rebase conflict or red tests it opens, or comments on, one issue per fork and failure kind in the monitor repo, and leaves the fork untouched.
+
+A newly minted fork tag reaches cerberus only through a pull request that bumps the `replace` directives by hand; Dependabot does not rewrite `replace` targets (#3934).
+
+## Dependabot and the queue
+
+`.github/dependabot.yml` runs daily for the Go root module. Group `upstream-parsers` covers the upstream `require` lines of the collector-contrib, loki, tempo, `dskit` and `memberlist` modules. Group `prometheus-release` holds `github.com/prometheus/prometheus` on its own.
+
+`.github/workflows/auto-merge-deps.yml` adds the `queue` label to a Dependabot pull request that is a patch-only bump of an allow-listed module, or a patch or minor bump of a GitHub Action. The label places it in the Mergify merge queue (`.github/mergify.yml`), which merges it only once every check the main ruleset requires passes, as [`agent-workflow.md`](agent-workflow.md) describes.
+
+`github.com/prometheus/prometheus` is not on the allow-list. A Dependabot bump of its `require` moves the require alone, which fails the version-skew gate below. Turn that pull request into a release move by pushing the companion changes listed under [Moving Prometheus to a new release](#moving-prometheus-to-a-new-release), then queue it.
 
 ## Version-skew gate (parser version ↔ compat reference container)
 
-`test/regression/fork_version_skew_test.go` (`TestForkVersionSkew`, runs in the
-required `check` lane — no build tag, no network) pins the correspondence
-between the upstream version each head's parser tracks and the reference
-backend container the matching compatibility harness diffs cerberus against.
-
-The compat lanes are the parity oracle for all three heads; the sharded-pushdown
-solver trusts "route A" precisely because it matches the reference engine those
-lanes run. If the parser cerberus uses drifts to a different upstream version
-than the reference container, the lane silently compares cerberus-with-grammar-vX
-against reference-engine-vY, and any parity it certifies is unsound for whatever
-grammar/semantics moved between vX and vY. The gate turns that drift into a
-`check`-lane failure instead.
-
-What it asserts, per head — both sides are statically derivable from committed
-files, so the check needs no network call:
+`test/regression/fork_version_skew_test.go` (`TestForkVersionSkew`, in the required `check` lane — no build tag, no network) pins the upstream version each head's parser tracks to the reference backend container the matching compatibility harness diffs cerberus against. Both sides are read from committed files.
 
 | Head       | go.mod `require`                            | Compat reference container                       | Compared at         |
 | ---------- | ------------------------------------------- | ------------------------------------------------ | ------------------- |
@@ -117,39 +78,22 @@ files, so the check needs no network call:
 | loki       | `grafana/loki/v3 vMAJOR.MINOR.PATCH`        | `grafana/loki:MAJOR.MINOR.PATCH` (`3.7.0`)       | MAJOR.MINOR         |
 | tempo      | pseudo-version `…-<commit12>`               | `grafana/tempo:main-<commit7>`                   | commit prefix       |
 
-For loki and tempo the pinned version is the one the `agpl_oracle` differential
-tests + the compat harness parse against (the binary itself links neither
-parser). For tempo the gate additionally cross-checks two more committed facts
-against that same go.mod pseudo-version commit: the
-`compatibility/tempo/upstream/VERSION` `upstream_commit` field, so the vendored
-snapshot can't drift; and the `replace` directive, which must point at
-`github.com/tsouza/tempo` on a `-cerberus-accessors` tag. That last assertion is
-what keeps the `require` line meaningful when a `replace` supersedes it —
-without it, tempo could be silently repointed at an arbitrary module while the
-skew table above went on comparing a version nothing compiles against.
+The Prometheus library reports `v0.(300+MINOR).PATCH` for release `v3.MINOR.PATCH`; the gate lowers the library version into release coordinates before comparing.
 
-For prometheus the gate additionally checks the `replace`: it must point at
-`github.com/tsouza/prometheus` on a `-cerberus-parser` tag whose version core
-equals the `require` — the tag cut on that release's commit. A fork tag cut
-anywhere else carries another name and fails the gate.
+Further assertions:
 
-The Prometheus library reports `v0.(300+MINOR).PATCH` for release
-`v3.MINOR.PATCH` since the v3.0.0 release; the gate lowers the library version
-into release coordinates before comparing. Prometheus is checked at the exact
-release, because the fork tag, the `require` and the image all name one
-release commit. Loki is checked at MAJOR.MINOR — the grain at which the
-query-language grammar and evaluation semantics change — because its reference
-image may lag the Go library by a bug-fix patch (go.mod `v3.7.1` against image
-`3.7.0`). Tempo is commit-pinned on every side, so it is checked at the exact
-commit prefix.
+- **prometheus** — the `replace` points at `github.com/tsouza/prometheus` on a `-cerberus-parser` tag whose version core equals the `require`. Every other compose file that runs the reference Prometheus (the migration tier-1 and tier-2 stacks, the histogram bench) names the compatibility image byte-for-byte, and `test/oracle/go.mod` requires and replaces the parser exactly as the root module does.
+- **tempo** — `compatibility/tempo/upstream/VERSION`'s `upstream_commit` matches the go.mod pseudo-version commit, and the `replace` points at `github.com/tsouza/tempo` on a `-cerberus-accessors` tag.
 
-If the gate fails, **bump whichever side is wrong** (the reference image to
-match the require, or the `require` to match the image) — do not relax the
-assertion to make the skew disappear. Moving prometheus to a new release is
-one PR: rebase `cerberus-parser` onto the release tag, cut
-`v0.(300+MINOR).PATCH-cerberus-parser` on it, and bump the `require`, the
-`replace` (root `go.mod` and `test/oracle/go.mod`) and every
-`prom/prometheus` image pin together.
+If the gate fails, **bump whichever side is wrong** (the reference image to match the require, or the `require` to match the image). Do not relax the assertion.
+
+### Moving Prometheus to a new release
+
+One pull request:
+
+1. Make sure `tsouza/prometheus` carries the release. The monitor mints `v0.(300+MINOR).PATCH-cerberus-parser` on the release commit on its first run after the release is published; otherwise [rebase the fork by hand](#manually-rebase-a-fork).
+2. Bump the `require` and the `replace` in the root `go.mod` and in `test/oracle/go.mod`.
+3. Bump every `prom/prometheus` image pin: `compatibility/prometheus/docker-compose.yml`, the restatements the gate lists, and the GHCR mirror inventory in `.github/scripts/lib/mirror.mjs` (pinned by `test/regression/mirror_inventory_test.go`).
 
 ## Manual operations
 
@@ -159,71 +103,61 @@ one PR: rebase `cerberus-parser` onto the release tag, cut
 gh -R tsouza/cerberus-forks-monitor workflow run daily.yml
 ```
 
-### Manually rebase a fork (e.g. after a conflict the bot couldn't handle)
+### Manually rebase a fork
+
+Use this after a conflict the monitor could not resolve, or to move `tsouza/tempo`, which the monitor does not watch.
 
 ```bash
 git clone git@github.com:tsouza/<fork>.git
 cd <fork>
 git remote add upstream https://github.com/<upstream>.git
-git fetch upstream main
+git fetch upstream main --tags
 git checkout cerberus-<branch>
+# prometheus (track: release): rebase onto the release tag
+git rebase vX.Y.Z
+# collector-contrib (track: main) and tempo: rebase onto upstream main
 git rebase upstream/main
-# resolve conflicts; if patches are pure additions, conflicts are rare
+# resolve conflicts, then test the subtree
 go test ./<subtree>/...
 git push --force-with-lease origin cerberus-<branch>
-# mint a new tag (bump patch from the last cerberus-* tag)
+# prometheus: tag with the release's library version
+git tag v0.<300+MINOR>.<PATCH>-cerberus-parser
+# collector-contrib and tempo: bump the patch of the last cerberus-* tag
 LAST=$(git describe --tags --abbrev=0 --match 'v*-cerberus-*')
 NEXT=$(awk -F. '{patch=$3; gsub(/-.*/,"",patch); printf "%s.%s.%d-cerberus-...", $1, $2, patch+1}' <<<"$LAST")
 git tag "$NEXT"
-git push origin "$NEXT"
+git push origin --tags
 ```
+
+Collector-contrib also needs the per-submodule tags at the same SHA. Then bump the `replace` directives in cerberus in a pull request.
 
 ### Add a new upstream
 
-If a new head introduces an upstream parser/schema dep that warrants a watch boundary:
-
 1. Fork the repo to `tsouza/<name>`.
-2. Locally create a `cerberus-<flavor>` branch off the upstream commit you want as baseline. Push it. Set as default via `gh repo edit tsouza/<name> --default-branch cerberus-<flavor>`.
+2. Create a `cerberus-<flavor>` branch off the upstream commit you want as baseline. Push it. Make it the default branch: `gh repo edit tsouza/<name> --default-branch cerberus-<flavor>`.
 3. Tag the branch head as `v0.0.1-cerberus-<flavor>` (or `v<MAJOR>.0.0-cerberus-<flavor>` if upstream uses a `/vMAJOR` module path).
 4. Add `.github/workflows/cerberus-branch-check.yml` to the fork running `go test` on the relevant subtree.
-5. Add an entry to `monitor.yml` in `tsouza/cerberus-forks-monitor`.
-6. Extend the `upstream-parsers` group + the queueing allowlist in cerberus's `.github/dependabot.yml` and `.github/workflows/auto-merge-deps.yml`.
+5. Add an entry to `monitor.yml` in `tsouza/cerberus-forks-monitor`, with its `track`, `relevant_paths` and `test_subtrees`.
+6. Extend the `upstream-parsers` group in cerberus's `.github/dependabot.yml`, and the allow-list in `.github/workflows/auto-merge-deps.yml` when a patch bump of the `require` can merge on its own.
 7. Add a `replace` directive in cerberus's `go.mod`.
 
 ## Transitive replaces and ignored trees
 
-Two kinds of `go.mod` directive sit outside the `tsouza/*` fork boundary and
-are not watched by the forks-monitor:
+Two kinds of `go.mod` directive sit outside the `tsouza/*` fork boundary and are not watched by the forks-monitor:
 
-- **`replace github.com/hashicorp/memberlist => github.com/grafana/memberlist`.**
-  Loki, Tempo and `dskit` each swap `hashicorp/memberlist` for Grafana's fork
-  through their own `replace` directives, but a `replace` never propagates to
-  a consumer module. Without this entry the root module resolves the upstream
-  `hashicorp/memberlist`, which lacks the `NodeState` / `NodeSelection` /
-  `PushPullNodes` symbols `dskit/kv/memberlist` references, and the build
-  fails on undefined identifiers. The pinned pseudo-version is whatever the
-  Grafana modules in `go.mod` themselves require; bump it alongside them.
-  Dependabot groups `hashicorp/memberlist*` with the `upstream-parsers` group
-  for the same reason.
-- **`ignore ./compatibility/tempo/upstream` and `ignore ./compatibility/loki/upstream`.**
-  Those directories hold vendored snapshots of upstream Go source (Tempo's
-  `pkg/httpclient`, Loki's `pkg/logql/bench`) that the compatibility harnesses
-  read as corpus and reference code. `compatibility/` has no `go.mod` of its
-  own, so without the directives those files would be root-module packages
-  that every `./...` pattern — `go build`, `go vet`, `go test`, `go list` —
-  tries to compile against the root module's dependency graph. The `ignore`
-  directive keeps them out of every `./...` walk while leaving them on disk;
-  the `agpl-clean` gate (`go list -deps ./cmd/cerberus`) is unaffected because
-  nothing under `compatibility/` is reachable from the binary either way.
+- **`replace github.com/hashicorp/memberlist => github.com/grafana/memberlist`.** Loki, Tempo and `dskit` each swap `hashicorp/memberlist` for Grafana's fork through their own `replace` directives. A `replace` never propagates to a consumer module, so the root module repeats it. The pinned pseudo-version is whatever the Grafana modules in `go.mod` themselves require; bump it alongside them. Dependabot groups `hashicorp/memberlist*` with the `upstream-parsers` group.
+- **`ignore ./compatibility/tempo/upstream` and `ignore ./compatibility/loki/upstream`.** Those directories hold vendored snapshots of upstream Go source (Tempo's `pkg/httpclient`, Loki's `pkg/logql/bench`) that the compatibility harnesses read as corpus and reference code. The `ignore` directive keeps them out of every `./...` walk while leaving them on disk.
 
 ## References
 
 - [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor) — the daily cron repo. `README.md` there has the operational detail.
-- `.github/dependabot.yml` — daily-grouped config. Group `upstream-parsers` covers the prometheus, loki, tempo, and collector-contrib modules, plus `dskit`/`memberlist` (grouped alongside them because the three parser modules share state through those two packages).
+- `.github/dependabot.yml` — the daily `upstream-parsers` and `prometheus-release` groups.
 - `.github/workflows/auto-merge-deps.yml` — queues trusted patch-only bumps into the merge queue.
-- `.github/scripts/agpl-clean.mjs` — the provably-clean-build licence gate (fails if any AGPL package reaches `cmd/cerberus`).
-- `.golangci.yml` — `forbidigo` rule blocking `unsafe.Pointer` / `reflect.Value.FieldByName` from being reintroduced anywhere under `internal/**`.
+- `.github/scripts/agpl-clean.mjs` — the licence gate (fails if any AGPL package reaches `cmd/cerberus`).
+- `.golangci.yml` — `forbidigo` rule blocking `unsafe.Pointer` / `reflect.Value.FieldByName` anywhere under `internal/**`.
 - `internal/logql/lsyntax`, `internal/logql/logpattern`, `internal/drain`, `internal/traceql/ast` — the in-house Apache parsers.
 - `internal/schema/ddl/` — consumes the `sqltemplates` API exposed by the collector-contrib fork.
 - `NOTICE` — third-party attribution + the in-house-parser clean-room statement.
 - `go.mod` — the `replace` / `ignore` directives above; `CLAUDE.md` links here for them.
+
+The reasoning behind these choices is in [`upstream-forks.background.md`](upstream-forks.background.md).

@@ -350,13 +350,12 @@ require (
 replace github.com/hashicorp/memberlist => github.com/grafana/memberlist v0.3.1-0.20260410131411-8c2f3bdae9db
 
 // The remaining upstream parser dependency (Prometheus) and the OTel
-// collector-contrib DDL templates route through tsouza/* forks. The forks
-// exist primarily as a Dependabot watch boundary: tsouza/cerberus-forks-
-// monitor rebases each fork onto upstream/main daily, and only mints a new
-// patch tag when commits touch the narrow subtree cerberus consumes.
-// Dependabot then opens a single PR per upstream change that actually
-// matters, instead of one PR per upstream release. See docs/upstream-
-// forks.md for the full flow.
+// collector-contrib DDL templates route through tsouza/* forks, each
+// pinned by a fork tag. tsouza/cerberus-forks-monitor keeps them current
+// daily: the prometheus fork follows upstream releases, and the
+// collector-contrib fork rebases onto upstream main when the subtree
+// cerberus consumes changed. A new fork tag reaches the replace lines
+// below through a hand-made bump. See docs/upstream-forks.md.
 //
 // Neither LogQL nor TraceQL is PARSED through a fork: cerberus parses both
 // with its own clean-room Apache reimplementations (internal/logql/lsyntax,

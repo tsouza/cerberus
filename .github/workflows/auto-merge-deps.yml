@@ -23,10 +23,11 @@ name: auto-merge-deps
 # default; the explicit `permissions` block elevates exactly the scope
 # labelling a pull request needs.
 #
-# The queue still gates the actual merge: it brings the PR up to date
-# with main, waits for every check the main ruleset requires to pass on
-# that head, and only then squash-merges. Labelling never bypasses a
-# required check. See docs/upstream-forks.md for the full rationale.
+# The queue still gates the actual merge: it checks the PR together with
+# main and the rest of its batch, and squash-merges only once every check
+# the main ruleset requires passes there (docs/agent-workflow.md describes
+# the queue). Labelling never bypasses a required check. See
+# docs/upstream-forks.md for which modules are allow-listed and why.
 
 on: pull_request
 
@@ -45,17 +46,17 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Patch-only auto-merge covers the modules that flow through
-      # tsouza/* forks. The forks-monitor cron only mints tags when
-      # commits touch the narrow cerberus subtree, so any tag-bump PR
-      # opened by Dependabot here is by construction "an upstream change
-      # that affects us". CI is still the merge gate via branch
-      # protection.
+      # Patch-only queueing covers the parser and schema modules whose
+      # upstream `require` bump can merge on its own. The required checks
+      # are still the merge gate. github.com/prometheus/prometheus is
+      # deliberately absent: its require, its tsouza/prometheus fork tag and
+      # the reference image must name one release (TestForkVersionSkew), so
+      # a Dependabot bump of the require alone cannot pass and needs the
+      # companion changes docs/upstream-forks.md lists before it is queued.
       - name: Queue trusted patch-only bumps
         if: |
           (steps.meta.outputs.update-type == 'version-update:semver-patch' &&
-            (contains(steps.meta.outputs.dependency-names, 'github.com/prometheus/prometheus') ||
-             contains(steps.meta.outputs.dependency-names, 'github.com/grafana/loki/v3') ||
+            (contains(steps.meta.outputs.dependency-names, 'github.com/grafana/loki/v3') ||
              contains(steps.meta.outputs.dependency-names, 'github.com/grafana/tempo') ||
              contains(steps.meta.outputs.dependency-names, 'github.com/grafana/dskit') ||
              contains(steps.meta.outputs.dependency-names, 'github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter') ||

@@ -20,23 +20,32 @@ updates:
     labels:
       - dependencies
       - go
-    # Grouping minor + patch bumps reduces PR noise. The four parsers
-    # share state via dskit/memberlist; bumping them individually
-    # produces partial-tree builds that fail the dashboard job. Group
-    # them so a single PR triggers a full CI matrix.
+    # Grouping minor + patch bumps reduces PR noise. The parser and
+    # schema modules share state via dskit/memberlist; bumping them
+    # individually produces partial-tree builds that fail the dashboard
+    # job. Group them so a single PR triggers a full CI matrix.
     #
-    # All four parser modules are routed through tsouza/* forks via
-    # `replace` directives in go.mod. Dependabot tracks new tags on the
-    # fork repos and updates both the `require` version and the
-    # `replace` target. The forks-monitor cron at
-    # tsouza/cerberus-forks-monitor only mints a new tag when commits
-    # touch the narrow subtree cerberus consumes, so the Dependabot
-    # stream stays focused. See docs/upstream-forks.md.
+    # These are upstream `require` bumps. Prometheus, tempo and
+    # collector-contrib are `replace`d by tsouza/* fork tags, and Dependabot
+    # does not rewrite `replace` targets, so a new fork tag reaches go.mod
+    # only through a hand-made bump (#3934).
+    #
+    # prometheus/prometheus has a group of its own: its require, its fork
+    # tag and the reference image must name one release
+    # (TestForkVersionSkew), so its bump is never mergeable alone and must
+    # not hold the other parser modules' bumps hostage. See
+    # docs/upstream-forks.md.
     groups:
-      upstream-parsers:
+      prometheus-release:
         applies-to: version-updates
         patterns:
           - "github.com/prometheus/prometheus*"
+        update-types:
+          - patch
+          - minor
+      upstream-parsers:
+        applies-to: version-updates
+        patterns:
           - "github.com/grafana/loki/*"
           - "github.com/grafana/tempo*"
           - "github.com/grafana/dskit*"
