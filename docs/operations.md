@@ -3489,7 +3489,8 @@ selection between them:
   soft-assert / escape-hatch / feature-discipline / should-skip scans),
   `forbid-deferral`, `forbid-sql-raw` and `forbid-chplan-fn-literal` (both
   steps of `forbid-skip`), `quickstart`, `probe`,
-  `chart-validate`, `coverage`, `property`, and `strict-scan`. It is small and fast by
+  `chart-validate`, `coverage`, `property`, `strict-scan`, and
+  `ch-server-safety`. It is small and fast by
   construction: build/correctness basics and the discipline scans, with the
   substrate smoke lanes and every other cost-dominating lane deferred to the
   release gate below.
@@ -3871,10 +3872,10 @@ The maintenance branches are **not** unprotected. The repository ruleset
   `roundtrip (logql)`, `roundtrip (traceql)`, `chart-validate`, `coverage`,
   `mutation`, `profile`, and
   `property (PromQL + LogQL + TraceQL, rapid N=500)`. This is not a subset of
-  `main`'s sixteen: it drops the PR-hygiene and merge-gate-only contexts
+  `main`'s seventeen: it drops the PR-hygiene and merge-gate-only contexts
   (`pr-body`, `forbid-deferral`, `CodeQL`,
   `agpl-clean`, `config-docs`, `link-check`, `schema-ddl`, `strict-scan`,
-  `quickstart`) and adds the three `roundtrip` legs, `profile`, and
+  `ch-server-safety`, `quickstart`) and adds the three `roundtrip` legs, `profile`, and
   `mutation`, none of which `main` requires as a status check. On both main and
   maintenance-line pull requests `mutation` is diff-scoped; `release.yml`'s preflight
   de-gates it from the publish that follows such a merge because the candidate
