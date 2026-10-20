@@ -264,7 +264,7 @@ func TestStepGrid_Equal_Negative_Fields(t *testing.T) {
 
 // TestReanchorRange_LWRWidenArithmetic kills the membership-window widen
 // math of reanchor.go:`OffsetSpan(c.Start, c.End, v.Offset, v.Lookback)`,
-// computed at range_window.go:`start.Add(-reach - max(offset, 0))`. The
+// computed at range_window.go:`start.Add(-reach).Add(-max(offset, 0))`. The
 // outer RangeLWR's Input is itself an (unpinned) RangeLWR, so the
 // widened start is RECORDED as the inner node's Start and can be
 // asserted exactly. Offset and Lookback are distinct non-zero durations
