@@ -124,6 +124,12 @@ func TestPreprocessParity_ChDB(t *testing.T) {
 		// the 10ms window holds.
 		{"fractional_millisecond_step", `count_over_time(vector(1)[10ms:0.0015])`, none, 10, 10, true},
 		{"fractional_millisecond_step_over_series", `count_over_time(qc_probe[10ms:0.0015])`, job, 10, 10, true},
+		// The subquery's range and offset are truncated to whole
+		// milliseconds as well: a 1.5ms range is a 1ms window, which holds
+		// one point of a 1ms grid, and a 1.5ms offset ends the grid 1ms
+		// before the evaluation instant.
+		{"fractional_millisecond_range", `count_over_time(vector(1)[0.0015:0.001])`, none, 1, 1, true},
+		{"fractional_millisecond_offset", `max_over_time(timestamp(vector(1))[10ms:1ms] offset 0.0015)`, none, endSeconds - 1.0/millisPerSecond, 0, true},
 	}
 	for _, rangeMode := range []bool{false, true} {
 		for _, tc := range cases {

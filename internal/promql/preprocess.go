@@ -16,9 +16,10 @@ import (
 //     grid, a frame shift or a run of a split range never changes what
 //     they name. Without a request range ([Lower]) `start()` and `end()`
 //     name no instant and are left for the lowering to reject.
-//   - A subquery's step is truncated to whole milliseconds, the interval
-//     Prometheus evaluates the inner expression at
-//     (durationMilliseconds(e.Step)).
+//   - A subquery's range, offset and step are truncated to whole
+//     milliseconds, as Prometheus's subqueryTimeRange reads them
+//     (durationMilliseconds): the step is the interval the inner
+//     expression is evaluated at, the range and offset place the grid.
 //
 // A subquery whose step truncates to zero milliseconds is rejected:
 // Prometheus aligns the inner evaluation's start by dividing by that
@@ -37,9 +38,12 @@ func preprocessQuery(expr parser.Expr, start, end time.Time, step time.Duration)
 			if err == nil {
 				err = checkSubqueryStep(n.Step)
 			}
-			if whole := n.Step.Truncate(time.Millisecond); whole != n.Step {
-				cp := *n
-				cp.Step = whole
+			cp := *n
+			cp.Range = n.Range.Truncate(time.Millisecond)
+			cp.OriginalOffset = n.OriginalOffset.Truncate(time.Millisecond)
+			cp.Offset = n.Offset.Truncate(time.Millisecond)
+			cp.Step = n.Step.Truncate(time.Millisecond)
+			if cp != *n {
 				return &cp
 			}
 		}
