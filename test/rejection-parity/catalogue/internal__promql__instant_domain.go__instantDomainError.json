@@ -4,14 +4,17 @@
       "head": "promql",
       "site": "internal/promql/instant_domain.go:instantDomainError#31995eff",
       "message": "promql: the query needs instant %s, outside the range cerberus supports (%s to %s): ClickHouse cannot represent it exactly",
-      "class": "rejection",
-      "trigger_query": "info(demo_http_requests_total, {job=\"a\"} @ -62135596800)",
+      "class": "internal",
+      "rationale": "unreachable through the HTTP query endpoints: a request carries its own range, and every instant outside DateTime64(9) is answered in SQL (an empty read, a cut window, an isolated subquery, or a split range); only the bare Lower entry, which has no request instant, and a frame fit the range split retries can still reject",
       "evidence": {
         "guard": null,
         "callers": [
           "checkBeyondRead",
           "checkInstantDomainAround",
           "fitWindow"
+        ],
+        "cited": [
+          "Lower"
         ]
       }
     }

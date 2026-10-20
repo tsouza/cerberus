@@ -3,6 +3,7 @@ package promql
 import (
 	"context"
 	"math"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -521,19 +522,40 @@ func TestInstantDomain_AbsentReadsMatchers(t *testing.T) {
 	}
 }
 
-// TestInstantDomain_InfoPinIsRejected pins that an `@` pin on info's
-// second argument, which must stay a selector, is still rejected when it
-// leaves the domain. The reference rejects every pin there.
-func TestInstantDomain_InfoPinIsRejected(t *testing.T) {
-	_, _, err := fitAt(t, `info(m, {job="a"} @ -62135596800)`, instantDomainEvalEnd)
-	if !isInstantDomainError(err) {
-		t.Fatalf("err = %v, want the instant-domain rejection", err)
-	}
-	// Prometheus's arithmetic wraps for a pin this far back; the rejection
-	// names the instant the pin and offset name, a day before the year 1.
-	_, _, err = fitAt(t, `info(m, {job="a"} @ -62135596800 offset 1d)`, instantDomainEvalEnd)
-	if !isInstantDomainError(err) || !strings.Contains(err.Error(), "needs instant 0000-12-31T00:00:00Z") {
-		t.Fatalf("err = %v, want the instant-domain rejection at 0000-12-31", err)
+// TestInstantDomain_InfoLabelSelectorPinIsIgnored pins that an `@` pin or
+// offset on info's second argument, a label selector that is never read,
+// needs no instant: the query is accepted wherever the pin points and
+// lowers to the plan of the same query without it, as the reference
+// answers it.
+func TestInstantDomain_InfoLabelSelectorPinIsIgnored(t *testing.T) {
+	for _, q := range []string{
+		`info(m, {job="a"} @ -62135596800)`,
+		`info(m, {job="a"} @ -62135596800 offset 1d)`,
+		`info(m, {job="a"} @ 1e15)`,
+	} {
+		for _, m := range instantDomainModes {
+			t.Run(q+"/"+m.name, func(t *testing.T) {
+				expr := mustParseExperimental(t, q)
+				got, _, err := fitInstantDomain(expr, lowerCtx{start: m.start, end: instantDomainEvalEnd, step: m.step})
+				if err != nil {
+					t.Fatalf("fitInstantDomain(%q): %v", q, err)
+				}
+				if got != expr {
+					t.Fatalf("fitInstantDomain(%q) rewrote the query into %q", q, got)
+				}
+				pinned, err := LowerAtRange(context.Background(), expr, schema.DefaultOTelMetrics(), m.start, instantDomainEvalEnd, m.step)
+				if err != nil {
+					t.Fatalf("lower %q: %v", q, err)
+				}
+				plain, err := LowerAtRange(context.Background(), mustParseExperimental(t, `info(m, {job="a"})`), schema.DefaultOTelMetrics(), m.start, instantDomainEvalEnd, m.step)
+				if err != nil {
+					t.Fatalf("lower the unpinned query: %v", err)
+				}
+				if !reflect.DeepEqual(pinned, plain) {
+					t.Fatalf("lower %q differs from the unpinned query's plan", q)
+				}
+			})
+		}
 	}
 }
 

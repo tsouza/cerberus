@@ -99,8 +99,8 @@ type domainFit struct {
 	// cut for a function that extrapolates to the window's edges.
 	beyond []*beyondCut
 	// keepSelectors is set while the fit walks an argument whose selector
-	// a function reads by its matchers (absent, info's second argument),
-	// which must stay a selector ([cutSelector]).
+	// a function reads by its matchers (absent), which must stay a
+	// selector ([cutSelector]).
 	keepSelectors bool
 	// frameShift is the shift, in milliseconds, of the frame the whole
 	// query is fitted and lowered in, zero when it is Prometheus's own
@@ -938,18 +938,19 @@ func emptyPreservingCall(fn *parser.Function) bool {
 	return fn.ReturnType == parser.ValueTypeVector
 }
 
-// selectorArgPosition reports whether argument i of n must stay the
+// selectorArgPosition reports whether an argument of n must stay the
 // selector it is, so it cannot be replaced by another expression: absent
-// reads its result labels from the selector's matchers, and info's second
-// argument is a selector by syntax.
-func selectorArgPosition(n *parser.Call, i int) bool {
-	switch n.Func.Name {
-	case "absent":
-		return true
-	case "info":
-		return i == 1
-	}
-	return false
+// reads its result labels from the selector's matchers.
+func selectorArgPosition(n *parser.Call) bool {
+	return n.Func.Name == "absent"
+}
+
+// labelSelectorArg reports whether argument i of n is a label selector
+// that is never read: info's second argument contributes only its
+// matchers (lowerInfoMetric), and the reference ignores its `@` and
+// offset, so it needs no instant.
+func labelSelectorArg(n *parser.Call, i int) bool {
+	return n.Func.Name == "info" && i == 1
 }
 
 // absentSelector returns the selector absent or absent_over_time reads
@@ -1009,7 +1010,10 @@ func (f *domainFit) fitCall(n *parser.Call, env domainEnv) (parser.Expr, fitResu
 			out parser.Expr
 			r   fitResult
 		)
-		if selectorArgPosition(n, i) {
+		if labelSelectorArg(n, i) {
+			continue
+		}
+		if selectorArgPosition(n) {
 			keep := f.keepSelectors
 			f.keepSelectors = true
 			out, r = f.fitExpr(a, env)
