@@ -1792,14 +1792,16 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     self-test).
 - **`link-check-external.mjs`** — `link-check-external.yml`, after the
   online lychee run. Reads lychee's JSON verdict and re-probes each error
-  that carries an HTTP status once; a response with a vendor bot-challenge
-  header (`x-vercel-mitigated: challenge`, `cf-mitigated: challenge`) is
-  reported as bot-challenged instead of dead. Renders the tracking-issue
+  that carries an HTTP status once. A 2xx answer means the link is alive and
+  is only counted; a response with a vendor bot-challenge header
+  (`x-vercel-mitigated: challenge`, `cf-mitigated: challenge`) is reported as
+  bot-challenged instead of dead. Renders the tracking-issue
   markdown and looks up the open tracking issue (by exact title and label) so
   the issue step updates it rather than opening a duplicate.
   `link-check-external.test.mjs` is the `node --test` guard (ci.yml).
   - Env: `LYCHEE_JSON`, `REPORT_PATH` (required); `GITHUB_TOKEN`,
-    `GITHUB_REPOSITORY`, `ISSUE_TITLE`, `ISSUE_LABEL` (issue lookup).
+    `GITHUB_REPOSITORY`, `ISSUE_TITLE`, `ISSUE_LABEL` (issue lookup);
+    `GITHUB_API_URL` (optional API base).
   - Outputs: `dead_count`, `issue_number` (empty when none is open).
   - Exit: `0` once the report is written; `1` on missing/unreadable input or
     a failed issue lookup.

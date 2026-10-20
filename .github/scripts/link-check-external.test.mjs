@@ -7,7 +7,10 @@ import {
   classify,
   findTrackingIssue,
   isBotChallenge,
-  probeChallenged,
+  PROBE_ALIVE,
+  PROBE_CHALLENGED,
+  PROBE_DEAD,
+  probeLink,
   renderReport,
 } from './link-check-external.mjs';
 
@@ -51,32 +54,49 @@ test('a plain rate limit or an unrelated mitigation value is not a bot challenge
   assert.equal(isBotChallenge(new Headers({})), false);
 });
 
-test('probeChallenged reads the re-probe response headers', async () => {
-  const challenged = await probeChallenged('https://example.test/', {
+test('probeLink reads the re-probe response status and headers', async () => {
+  const challenged = await probeLink('https://example.test/', {
     fetchImpl: async () => new Response('checkpoint', { status: 429, headers: vercelChallenge }),
   });
-  assert.equal(challenged, true);
+  assert.equal(challenged, PROBE_CHALLENGED);
 
-  const gone = await probeChallenged('https://example.test/', {
+  const gone = await probeLink('https://example.test/', {
     fetchImpl: async () => new Response('', { status: 404 }),
   });
-  assert.equal(gone, false);
+  assert.equal(gone, PROBE_DEAD);
+
+  const plainRateLimit = await probeLink('https://example.test/', {
+    fetchImpl: async () => new Response('', { status: 429, headers: { 'retry-after': '30' } }),
+  });
+  assert.equal(plainRateLimit, PROBE_DEAD);
+});
+
+test('a 2xx re-probe is alive, even with a challenge header on it', async () => {
+  const ok = await probeLink('https://example.test/', {
+    fetchImpl: async () => new Response('page', { status: 200 }),
+  });
+  assert.equal(ok, PROBE_ALIVE);
+
+  const okWithHeader = await probeLink('https://example.test/', {
+    fetchImpl: async () => new Response('page', { status: 200, headers: vercelChallenge }),
+  });
+  assert.equal(okWithHeader, PROBE_ALIVE);
 });
 
 test('a transport failure on re-probe keeps the link dead', async () => {
-  const challenged = await probeChallenged('https://example.test/', {
+  const verdict = await probeLink('https://example.test/', {
     fetchImpl: async () => {
       throw new TypeError('fetch failed');
     },
   });
-  assert.equal(challenged, false);
+  assert.equal(verdict, PROBE_DEAD);
 });
 
-test('classify moves only challenged HTTP errors out of the dead set', async () => {
+test('classify moves challenged and alive HTTP errors out of the dead set', async () => {
   const probed = [];
   const probe = async (url) => {
     probed.push(url);
-    return url === rateLimited.url;
+    return url === rateLimited.url ? PROBE_CHALLENGED : PROBE_DEAD;
   };
   const { dead, challenged } = await classify(
     lycheeReport({ 'README.md': [rateLimited], 'docs/compatibility.md': [notFound], 'docs/operations.md': [protocolError] }),
@@ -92,11 +112,32 @@ test('classify moves only challenged HTTP errors out of the dead set', async () 
 });
 
 test('a 429 without a challenge header stays dead', async () => {
-  const { dead, challenged } = await classify(lycheeReport({ 'README.md': [rateLimited] }), {
-    probe: async () => false,
+  const { dead, challenged, alive } = await classify(lycheeReport({ 'README.md': [rateLimited] }), {
+    probe: async () => PROBE_DEAD,
   });
   assert.equal(dead.length, 1);
   assert.equal(challenged.length, 0);
+  assert.equal(alive.length, 0);
+});
+
+test('an HTTP error whose re-probe answers 2xx is alive, not dead', async () => {
+  const { dead, challenged, alive } = await classify(
+    lycheeReport({ 'README.md': [rateLimited], 'docs/compatibility.md': [notFound] }),
+    { probe: async (url) => (url === notFound.url ? PROBE_ALIVE : PROBE_DEAD) },
+  );
+  assert.deepEqual(
+    alive.map((r) => r.url),
+    [notFound.url],
+  );
+  assert.deepEqual(
+    dead.map((r) => r.url),
+    [rateLimited.url],
+  );
+  assert.equal(challenged.length, 0);
+  const md = renderReport(lycheeReport({}), { dead, challenged, alive });
+  assert.match(md, /\| Dead +\| 1 \|/);
+  assert.match(md, /\| Alive on re-probe \| 1 \|/);
+  assert.doesNotMatch(md, /github\.com\/grafana\/loki/);
 });
 
 test('the report lists dead and challenged links in separate sections', () => {
@@ -135,6 +176,22 @@ test('findTrackingIssue returns the oldest open issue with the exact title, skip
   const number = await findTrackingIssue({ repo: 'o/r', token: 't', title, label: 'link-rot', fetchImpl });
   assert.equal(number, 3766);
   assert.match(seen[0], /\/repos\/o\/r\/issues\?state=open&labels=link-rot&per_page=100&page=1$/);
+});
+
+test('findTrackingIssue honours a non-default API base', async () => {
+  const seen = [];
+  await findTrackingIssue({
+    repo: 'o/r',
+    token: 't',
+    title: 'Weekly external link check found dead links',
+    label: 'link-rot',
+    apiBase: 'https://ghe.example.test/api/v3',
+    fetchImpl: async (url) => {
+      seen.push(url);
+      return Response.json([]);
+    },
+  });
+  assert.match(seen[0], /^https:\/\/ghe\.example\.test\/api\/v3\/repos\/o\/r\/issues\?/);
 });
 
 test('findTrackingIssue returns null when no open issue matches', async () => {

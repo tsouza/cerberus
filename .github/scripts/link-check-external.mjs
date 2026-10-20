@@ -12,8 +12,10 @@
 //   - `x-vercel-mitigated: challenge` — Vercel's Security Checkpoint.
 //   - `cf-mitigated: challenge`       — Cloudflare's challenge platform.
 //
-// A challenged link is reported in its own section and is not counted as
-// dead; every other error is dead and opens or updates the tracking issue.
+// A re-probe answered with a 2xx status means the page is there: the link is
+// alive and lychee's error was transient. A challenged link is reported in its
+// own section and is not counted as dead; an alive link is only counted.
+// Every other error is dead and opens or updates the tracking issue.
 //
 // ENV CONTRACT
 //   LYCHEE_JSON        — path to `lychee --format json` output. Required.
@@ -21,6 +23,8 @@
 //   GITHUB_TOKEN       — token for the tracking-issue lookup. Optional; without
 //                        it (or GITHUB_REPOSITORY) no lookup is made.
 //   GITHUB_REPOSITORY  — `owner/repo` that holds the tracking issue.
+//   GITHUB_API_URL     — REST API base. Optional; defaults to
+//                        https://api.github.com.
 //   ISSUE_TITLE        — title of the tracking issue. Required with the token.
 //   ISSUE_LABEL        — label the tracking issue carries. Required with the token.
 //
@@ -57,36 +61,45 @@ export function isBotChallenge(headers) {
   );
 }
 
-// probeChallenged — re-request `url` once and report whether the host answered
-// with a bot challenge. A transport failure is not a challenge.
-export async function probeChallenged(url, { fetchImpl = globalThis.fetch } = {}) {
+// The verdicts probeLink returns.
+export const PROBE_ALIVE = 'alive';
+export const PROBE_CHALLENGED = 'challenged';
+export const PROBE_DEAD = 'dead';
+
+// probeLink — re-request `url` once and classify the answer: PROBE_ALIVE for
+// a 2xx response, PROBE_CHALLENGED for a bot challenge, PROBE_DEAD otherwise.
+// A transport failure is dead.
+export async function probeLink(url, { fetchImpl = globalThis.fetch } = {}) {
   try {
     const res = await fetchImpl(url, {
       redirect: 'follow',
       headers: { 'User-Agent': probeUserAgent, Accept: 'text/html,*/*' },
       signal: AbortSignal.timeout(probeTimeoutMs),
     });
-    return isBotChallenge(res.headers);
+    if (res.ok) return PROBE_ALIVE;
+    return isBotChallenge(res.headers) ? PROBE_CHALLENGED : PROBE_DEAD;
   } catch {
-    return false;
+    return PROBE_DEAD;
   }
 }
 
-// classify — split lychee's error_map into dead and challenged entries.
-// Only errors that carry an HTTP status are probed: a DNS or connection
-// failure never reached a server that could have challenged it.
-export async function classify(report, { probe = probeChallenged } = {}) {
+// classify — split lychee's error_map into dead, challenged and alive
+// entries. Only errors that carry an HTTP status are probed: a DNS or
+// connection failure never reached a server that could have answered.
+export async function classify(report, { probe = probeLink } = {}) {
   const dead = [];
   const challenged = [];
+  const alive = [];
   for (const [input, entries] of Object.entries(report.error_map ?? {})) {
     for (const entry of entries) {
       const row = { input, ...entry };
-      const hasStatus = typeof entry.status?.code === 'number';
-      if (hasStatus && (await probe(entry.url))) challenged.push(row);
+      const verdict = typeof entry.status?.code === 'number' ? await probe(entry.url) : PROBE_DEAD;
+      if (verdict === PROBE_ALIVE) alive.push(row);
+      else if (verdict === PROBE_CHALLENGED) challenged.push(row);
       else dead.push(row);
     }
   }
-  return { dead, challenged };
+  return { dead, challenged, alive };
 }
 
 function formatEntry({ url, status, span }) {
@@ -105,7 +118,7 @@ function byInput(rows) {
 }
 
 // renderReport — the markdown body of the tracking issue.
-export function renderReport(report, { dead, challenged }) {
+export function renderReport(report, { dead, challenged, alive = [] }) {
   const lines = [
     '# Summary',
     '',
@@ -119,6 +132,7 @@ export function renderReport(report, { dead, challenged }) {
     `| Excluded          | ${report.excludes ?? 0} |`,
     `| Dead              | ${dead.length} |`,
     `| Bot-challenged    | ${challenged.length} |`,
+    `| Alive on re-probe | ${alive.length} |`,
     '',
   ];
   if (dead.length > 0) {
@@ -143,8 +157,15 @@ export function renderReport(report, { dead, challenged }) {
 
 // findTrackingIssue — the open issue with `title` and `label`, so a rerun
 // updates it instead of opening another one with the same title.
-export async function findTrackingIssue({ repo, token, title, label, fetchImpl = globalThis.fetch }) {
-  const url = `${DEFAULT_API_BASE}/repos/${repo}/issues?state=open&labels=${encodeURIComponent(label)}`;
+export async function findTrackingIssue({
+  repo,
+  token,
+  title,
+  label,
+  apiBase = DEFAULT_API_BASE,
+  fetchImpl = globalThis.fetch,
+}) {
+  const url = `${apiBase}/repos/${repo}/issues?state=open&labels=${encodeURIComponent(label)}`;
   const issues = await ghPaginate({ url, token, what: 'list link-rot issues', fetchImpl });
   const match = issues
     .filter((issue) => !issue.pull_request && issue.title === title)
@@ -153,7 +174,8 @@ export async function findTrackingIssue({ repo, token, title, label, fetchImpl =
 }
 
 async function main() {
-  const { LYCHEE_JSON, REPORT_PATH, GITHUB_TOKEN, GITHUB_REPOSITORY, ISSUE_TITLE, ISSUE_LABEL } = process.env;
+  const { LYCHEE_JSON, REPORT_PATH, GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL, ISSUE_TITLE, ISSUE_LABEL } =
+    process.env;
   if (!LYCHEE_JSON || !REPORT_PATH) {
     error('link-check-external: LYCHEE_JSON and REPORT_PATH are required');
     return 1;
@@ -171,7 +193,10 @@ async function main() {
   for (const row of verdict.challenged) {
     notice(`bot challenge, not verifiable: ${row.url} (${row.input}:${row.span?.line ?? '?'})`);
   }
-  log(`link-check-external: ${verdict.dead.length} dead, ${verdict.challenged.length} bot-challenged`);
+  log(
+    `link-check-external: ${verdict.dead.length} dead, ${verdict.challenged.length} bot-challenged, ` +
+      `${verdict.alive.length} alive on re-probe`,
+  );
   setOutput('dead_count', String(verdict.dead.length));
 
   let issueNumber = null;
@@ -185,6 +210,7 @@ async function main() {
       token: GITHUB_TOKEN,
       title: ISSUE_TITLE,
       label: ISSUE_LABEL,
+      apiBase: GITHUB_API_URL || DEFAULT_API_BASE,
     });
   }
   setOutput('issue_number', issueNumber === null ? '' : String(issueNumber));
