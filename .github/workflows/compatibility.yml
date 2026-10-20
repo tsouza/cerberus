@@ -789,6 +789,12 @@ jobs:
       # Docker images. Pinned to a commit SHA (action only ships @main).
       - uses: ./.github/actions/free-disk-space
 
+      # The run script does `go run` of the seeder and `go build` of the
+      # diff driver, so it needs a Go toolchain and the module graph on
+      # disk. setup-go warms GOMODCACHE through the retried fetch, so a
+      # dropped proxy stream cannot fail the seeder's first module read.
+      - uses: ./.github/actions/setup-go
+
       - uses: ./.github/actions/registry-login
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
