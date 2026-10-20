@@ -15,9 +15,9 @@ const longOffsetMetric = "long_offset_gauge"
 // longOffsetSeed holds two samples a few minutes before two instants of a
 // 100d subquery grid: 1970-01-01, the epoch, and 100 days after it.
 const longOffsetSeed = "" +
-	"CREATE OR REPLACE TABLE otel_metrics_gauge (MetricName String, Attributes Map(String, String), " +
-	"ResourceAttributes Map(String, String) DEFAULT map(), ServiceName LowCardinality(String) DEFAULT '', " +
-	"TimeUnix DateTime64(9), Value Float64) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);\n" +
+	"CREATE OR REPLACE TABLE otel_metrics_gauge (`MetricName` String, `Attributes` Map(String, String), " +
+	"`ResourceAttributes` Map(String, String) DEFAULT map(), `ServiceName` LowCardinality(String) DEFAULT '', " +
+	"`TimeUnix` DateTime64(9), `Value` Float64) ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`);\n" +
 	"INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES\n" +
 	"    ('" + longOffsetMetric + "', map('job', 'a'), toDateTime64('1969-12-31 23:58:00', 9), 7.0),\n" +
 	"    ('" + longOffsetMetric + "', map('job', 'a'), toDateTime64('1970-04-10 23:59:00', 9), 3.0);\n"
