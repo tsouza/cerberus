@@ -15,7 +15,25 @@ const saturatedDuration = time.Duration(math.MaxInt64)
 // remainder, exactly for any two instants: a time.Duration holds only about
 // 292 years, which a grid or a window can span. A negative distance yields a
 // negative count with a remainder in [0, step). step must be positive.
+//
+// A distance a time.Duration holds is divided in int64 arithmetic; only a
+// longer one goes through [stepsBetweenBig].
 func StepsBetween(start, end time.Time, step time.Duration) (int64, time.Duration) {
+	d := end.Sub(start)
+	if !start.Add(d).Equal(end) {
+		return stepsBetweenBig(start, end, step)
+	}
+	steps, rem := int64(d/step), d%step
+	if rem < 0 {
+		steps--
+		rem += step
+	}
+	return steps, rem
+}
+
+// stepsBetweenBig is [StepsBetween] in arbitrary precision, for a distance
+// longer than a time.Duration holds.
+func stepsBetweenBig(start, end time.Time, step time.Duration) (int64, time.Duration) {
 	nanos := new(big.Int).Mul(big.NewInt(end.Unix()-start.Unix()), big.NewInt(int64(time.Second)))
 	nanos.Add(nanos, big.NewInt(int64(end.Nanosecond()-start.Nanosecond())))
 	steps, rem := new(big.Int).DivMod(nanos, big.NewInt(int64(step)), new(big.Int))
@@ -47,8 +65,24 @@ func SpanSteps(outerRange time.Duration, start, end time.Time, step time.Duratio
 
 // GridInstant returns start + k·step, exactly for any k: the k-th instant of
 // a grid laid from start, which may lie further from start than a
-// time.Duration holds.
+// time.Duration holds. step may be negative, laying the grid backwards.
+//
+// An offset k·step a time.Duration holds is added in int64 arithmetic; only
+// a longer one goes through [gridInstantBig]. Either way the result carries
+// no monotonic clock reading.
 func GridInstant(start time.Time, step time.Duration, k int64) time.Time {
+	if step == 0 {
+		return start.Round(0)
+	}
+	if maxK := int64(saturatedDuration / max(step, -step)); k >= -maxK && k <= maxK {
+		return start.Round(0).Add(time.Duration(k) * step)
+	}
+	return gridInstantBig(start, step, k)
+}
+
+// gridInstantBig is [GridInstant] in arbitrary precision, for an offset
+// longer than a time.Duration holds.
+func gridInstantBig(start time.Time, step time.Duration, k int64) time.Time {
 	nanos := new(big.Int).Mul(big.NewInt(k), big.NewInt(int64(step)))
 	secs, rem := new(big.Int).DivMod(nanos, big.NewInt(int64(time.Second)), new(big.Int))
 	return time.Unix(start.Unix()+secs.Int64(), int64(start.Nanosecond())+rem.Int64()).In(start.Location())
