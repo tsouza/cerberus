@@ -19,6 +19,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
@@ -167,9 +168,7 @@ const (
 // Calibration targets: how much of a calibrated shape's work the call aims to
 // leave after the latest point a probe cancels it (see calibrateShape), in
 // each meter. Each is the least remainder an assertion judges, with
-// calibrationHeadroom over it for run-to-run variance. The headroom is also
-// the window the request-deadline probe places its deadline in
-// (cancelExpectation.requestDeadline).
+// calibrationHeadroom over it for run-to-run variance.
 const (
 	calibrationHeadroom  = 1.5
 	calibrationTarget    = time.Duration(calibrationHeadroom * float64(minRemaining))
@@ -359,41 +358,40 @@ func assertErrorType(t *testing.T, rec *httptest.ResponseRecorder, want string) 
 }
 
 // probeRequestDeadline drives the production handler's request deadline. The
-// deadline is fixed when the request starts, so where its cancellation lands
-// depends on how long the query takes to reach the call; landRequestDeadline
-// re-arms it until one lands inside the call, and only that dispatch is
-// judged. Every dispatch, judged or not, must be answered 503
-// errorType=timeout within budget and free its admission slot.
+// deadline is fixed when the request starts, and how long the query then
+// takes to reach the call varies with the load on the runner, so each
+// dispatch holds the server at the query's observed entry into the call until
+// just before the deadline expires on it (observeToDeadline).
+// landRequestDeadline re-arms a deadline that passed before the entry, and
+// only the dispatch that lands is judged. Every dispatch, judged or not, must
+// be answered 503 errorType=timeout within budget and free its admission slot.
 func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, want cancelExpectation) {
+	docker, err := testcontainers.NewDockerClientWithOpts(ctx)
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer docker.Close()
 	var (
-		p      promProbe
-		qid    string
-		cutoff time.Time
+		p promProbe
+		d *promDispatch
 	)
-	dispatch := func(deadline time.Duration) []callProgress {
+	dispatch := func(deadline time.Duration) deadlineObservation {
+		s.awaitMergesIdle(ctx, t)
 		p = newPromProbe(t, s, rules, deadline)
-		qid = cancelQueryID(shape, "deadline")
-		start := time.Now()
-		cutoff = start.Add(deadline)
+		d = &promDispatch{ctx: ctx, t: t, s: s, docker: docker, qid: cancelQueryID(shape, "deadline"), start: time.Now()}
 		done := make(chan *httptest.ResponseRecorder, 1)
-		go func() { done <- p.serve(chclient.WithQueryID(ctx, qid), shape) }()
-		// Every reading that completed before the deadline shows the query as
-		// it was at the cancellation or earlier.
-		var (
-			seen []callProgress
-			rec  *httptest.ResponseRecorder
-		)
-		for rec == nil {
-			select {
-			case rec = <-done:
-			case <-time.After(pollInterval):
-				if pr, running := s.callProgress(ctx, t, qid); running && time.Now().Before(cutoff) {
-					seen = append(seen, pr)
-				}
-			}
+		d.done = done
+		go func() { done <- p.serve(chclient.WithQueryID(ctx, d.qid), shape) }()
+		obs := observeToDeadline(shape.inCall, deadline, d)
+		if d.rec == nil {
+			d.rec = <-done
 		}
-		answered := time.Since(start)
-		assertErrorType(t, rec, "timeout")
+		answered := time.Since(d.start)
+		if d.rec.Code == http.StatusOK && !shape.inCall(obs.seen) {
+			t.Fatalf("query %s answered within its %s deadline before any reading saw it inside its %s call: the "+
+				"readings stalled, so nothing held it", d.qid, deadline, shape.function)
+		}
+		assertErrorType(t, d.rec, "timeout")
 		// The answer waits for cerberus's KILL QUERY ... SYNC, which confirms
 		// promptly where the call is interruptible and gives up after
 		// chclient.KillDataShardQueryTimeout where it is not.
@@ -405,13 +403,13 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 			t.Errorf("the client was answered after %s; want within %s", answered, budget)
 		}
 		p.assertAdmissionFree(t)
-		return seen
+		return obs
 	}
 	// A dispatch that cannot be judged still runs on where its call cannot be
 	// interrupted; the next one must not share the server with it.
 	discard := func() {
-		if !s.goneWithin(ctx, t, []string{qid}, naturalRunBudget) {
-			t.Fatalf("server work for unjudged dispatch %s still running after %s", qid, naturalRunBudget)
+		if !s.goneWithin(ctx, t, []string{d.qid}, naturalRunBudget) {
+			t.Fatalf("server work for unjudged dispatch %s still running after %s", d.qid, naturalRunBudget)
 		}
 		p.assertPoolReleased(t)
 	}
@@ -419,14 +417,79 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 	if err != nil {
 		t.Fatalf("%s request deadline: %v", shape.function, err)
 	}
-	t.Logf("request deadline %s (calibrated %s) landed query %s inside its %s call", deadline, want.requestDeadline(), qid,
-		shape.function)
-	// The server's own max_execution_time is the cancellation here.
-	s.assertServerWorkEnds(ctx, t, []string{qid}, want, cutoff, map[string][]callProgress{qid: seen})
+	t.Logf("request deadline %s (first %s) landed query %s inside its %s call, held there for %s", deadline,
+		want.requestDeadline(), d.qid, shape.function, d.resumedAt.Sub(d.heldFrom))
+	// The server's own max_execution_time is the cancellation here. It
+	// expires within resumeLead of the server resuming, and the work in
+	// between counts as performed after the cancellation.
+	s.assertServerWorkEnds(ctx, t, []string{d.qid}, want, d.resumedAt, d.resumedAt.Sub(d.heldFrom),
+		map[string][]callProgress{d.qid: seen})
 	p.assertPoolReleased(t)
 }
 
+// promDispatch is one request-deadline dispatch through a promProbe, as
+// observeToDeadline drives it. Its hold pauses the server's container: the
+// cgroup freezer stops every server thread, so the query makes no progress
+// while the wall clock runs on.
+type promDispatch struct {
+	ctx    context.Context
+	t      *testing.T
+	s      *server
+	docker *testcontainers.DockerClient
+	qid    string
+	start  time.Time
+	done   <-chan *httptest.ResponseRecorder
+	// rec is the answer, once it has arrived.
+	rec *httptest.ResponseRecorder
+	// heldFrom is when the pause had taken effect, and resumedAt when the
+	// unpause was requested: the server was certainly paused between them,
+	// so the span undercounts the hold rather than credit the query with
+	// time it did not run.
+	heldFrom, resumedAt time.Time
+}
+
+func (d *promDispatch) sinceSent() time.Duration { return time.Since(d.start) }
+
+func (d *promDispatch) await() bool {
+	select {
+	case d.rec = <-d.done:
+		return false
+	case <-time.After(pollInterval):
+		return true
+	}
+}
+
+func (d *promDispatch) read() (callProgress, bool) { return d.s.callProgress(d.ctx, d.t, d.qid) }
+
+func (d *promDispatch) hold(until time.Duration) time.Duration {
+	// The unpause runs on every path out, a failed or late-failing pause
+	// included, and outlives the probe's own context, so the container is
+	// never left frozen.
+	unpaused := false
+	unpause := func() error {
+		_, err := d.docker.ContainerUnpause(context.WithoutCancel(d.ctx), d.s.containerID, client.ContainerUnpauseOptions{})
+		unpaused = err == nil
+		return err
+	}
+	defer func() {
+		if !unpaused {
+			_ = unpause()
+		}
+	}()
+	if _, err := d.docker.ContainerPause(d.ctx, d.s.containerID, client.ContainerPauseOptions{}); err != nil {
+		d.t.Fatalf("pause %s: %v", d.s.image, err)
+	}
+	d.heldFrom = time.Now()
+	time.Sleep(until - d.sinceSent())
+	d.resumedAt = time.Now()
+	if err := unpause(); err != nil {
+		d.t.Fatalf("unpause %s: %v", d.s.image, err)
+	}
+	return d.sinceSent()
+}
+
 func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, want cancelExpectation) {
+	s.awaitMergesIdle(ctx, t)
 	p := newPromProbe(t, s, rules, 0)
 	qid := cancelQueryID(shape, "disconnect")
 	reqCtx, disconnect := context.WithCancel(chclient.WithQueryID(ctx, qid))
@@ -448,7 +511,7 @@ func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules e
 		t.Fatalf("the handler did not return within %s of the client disconnecting", budget)
 	}
 	p.assertAdmissionFree(t)
-	s.assertServerWorkEnds(ctx, t, []string{qid}, want, cancelAt, map[string][]callProgress{qid: seen})
+	s.assertServerWorkEnds(ctx, t, []string{qid}, want, cancelAt, 0, map[string][]callProgress{qid: seen})
 	p.assertPoolReleased(t)
 }
 
@@ -473,7 +536,7 @@ func probeRoutedSiblings(ctx context.Context, t *testing.T, s *server, shape can
 	cancelAt := d.cancelAndClose(t)
 
 	// The gate capacity is released now.
-	s.assertServerWorkEnds(ctx, t, d.ids, want, cancelAt, seen)
+	s.assertServerWorkEnds(ctx, t, d.ids, want, cancelAt, 0, seen)
 
 	fctx, cancel := context.WithTimeout(ctx, settleBudget)
 	defer cancel()
@@ -501,6 +564,7 @@ type siblingDispatch struct {
 // query; scenario names their query ids.
 func (s *server) dispatchSiblings(ctx context.Context, t *testing.T, shape cancelShape, scenario string) siblingDispatch {
 	t.Helper()
+	s.awaitMergesIdle(ctx, t)
 	d := siblingDispatch{
 		client: s.client(t, adminUser, adminPassword, chclient.Config{
 			Database:       shardedDB,
@@ -631,7 +695,9 @@ func (s *server) callProgress(ctx context.Context, t *testing.T, qid string) (p 
 
 // assertServerWorkEnds runs the moment cerberus has released the capacity a
 // cancelled dispatch held — its admission slot or its fan-out gate weight.
-// seen holds each statement's readings up to the cancellation at cancelAt.
+// seen holds each statement's readings up to the cancellation at cancelAt,
+// and held is how much of the time up to cancelAt the server spent paused,
+// which no statement ran in.
 //
 // On a build that interrupts the call, KILL QUERY ... SYNC confirmed the work
 // dead before the release, so no statement for ids — initiator or remote
@@ -644,7 +710,7 @@ func (s *server) callProgress(ctx context.Context, t *testing.T, qid string) (p 
 // could not reach it on the substrate, and then requires the work performed
 // after it to be separated from what was left (see separated).
 func (s *server) assertServerWorkEnds(ctx context.Context, t *testing.T, ids []string, want cancelExpectation, cancelAt time.Time,
-	seen map[string][]callProgress,
+	held time.Duration, seen map[string][]callProgress,
 ) {
 	t.Helper()
 	if want.bounded {
@@ -657,7 +723,7 @@ func (s *server) assertServerWorkEnds(ctx context.Context, t *testing.T, ids []s
 	}
 	switch want.meter {
 	case wallClock:
-		s.assertWallClockSeparation(ctx, t, ids, want, cancelAt)
+		s.assertWallClockSeparation(ctx, t, ids, want, cancelAt, held)
 	case loopExecutions:
 		for _, id := range ids {
 			s.assertLoopSeparation(ctx, t, id, want, seen[id])
@@ -666,14 +732,18 @@ func (s *server) assertServerWorkEnds(ctx context.Context, t *testing.T, ids []s
 }
 
 // assertWallClockSeparation judges ids under wallClock: remaining is how much
-// of the natural run was left at cancelAt, and the delay is how long after it
+// of the natural run was left at cancelAt, counting only the time up to it
+// that the server was not held paused, and the delay is how long after it
 // query_log shows the last statement ending.
-func (s *server) assertWallClockSeparation(ctx context.Context, t *testing.T, ids []string, want cancelExpectation, cancelAt time.Time) {
+func (s *server) assertWallClockSeparation(ctx context.Context, t *testing.T, ids []string, want cancelExpectation, cancelAt time.Time,
+	held time.Duration,
+) {
 	t.Helper()
 	started, ended := s.workSpan(ctx, t, ids)
-	remaining := want.natural - cancelAt.Sub(started)
+	remaining := want.natural - (cancelAt.Sub(started) - held)
 	delay := ended.Sub(cancelAt)
-	t.Logf("server work for %v: natural %s, %s left at the cancellation, ended %s after it", ids, want.natural, remaining, delay)
+	t.Logf("server work for %v: natural %s, %s left at the cancellation (held paused %s), ended %s after it", ids,
+		want.natural, remaining, held, delay)
 	if remaining < minRemaining {
 		t.Fatalf("only %s of the shape's %s natural run was left at the cancellation; the probe needs at least %s "+
 			"to separate an interrupted call from an uninterrupted one — raise the shape's maxSize for this substrate",
@@ -732,6 +802,35 @@ func (s *server) finalExecutions(ctx context.Context, t *testing.T, id string) u
 	return n
 }
 
+// awaitMergesIdle waits until the server runs no background merge, before a
+// probe dispatches a statement whose progress it times. Every probe's verdict
+// flushes the system logs (flushLogs), and once a log table has gathered
+// enough parts the server merges them: on cancelProbeNanoCPUs's half CPU such
+// a merge, started just before the next dispatch, slows that statement's
+// work ahead of its call, and an inCall predicate that compares how long
+// that work stood still with how long the read took (regexCallRunning) then
+// reports the call entered while the statement is still ahead of it. A
+// dispatch on an idle server meets the same server every probe calibrated
+// against. The merges are the server's own small system-table merges; one
+// that outlasts naturalRunBudget fails the probe.
+func (s *server) awaitMergesIdle(ctx context.Context, t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(naturalRunBudget)
+	for {
+		var merges uint64
+		if err := s.admin.Conn().QueryRow(ctx, "SELECT count() FROM system.merges").Scan(&merges); err != nil {
+			t.Fatalf("read system.merges: %v", err)
+		}
+		if merges == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d background merge(s) still running after %s", merges, naturalRunBudget)
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
 // goneWithin polls until no statement for ids runs, or budget passes.
 func (s *server) goneWithin(ctx context.Context, t *testing.T, ids []string, budget time.Duration) bool {
 	t.Helper()
@@ -776,6 +875,7 @@ func (s *server) workSpan(ctx context.Context, t *testing.T, ids []string) (star
 // once every row has been read.
 func (s *server) runShape(ctx context.Context, t *testing.T, shape cancelShape, qid string) <-chan error {
 	t.Helper()
+	s.awaitMergesIdle(ctx, t)
 	dr := dryRunShape(ctx, t, shape)
 	done := make(chan error, 1)
 	go func() {

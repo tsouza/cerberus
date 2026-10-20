@@ -93,29 +93,31 @@ type cancelExpectation struct {
 	naturalProfile
 }
 
-// requestDeadline is the request timeout the deadline probe sends first.
-// Unlike the other probes it cannot wait for inCall: the deadline is fixed
-// before the query starts. It sits midway through the natural run's
-// judgeable window — from the entry into the call to the latest instant that
-// still leaves the least work the probe judges, minRemaining of server time
-// under wallClock, 1/minLoopLeftFraction of the loop under loopExecutions,
-// whose executions advance at an even rate from the entry to the end of the
-// run — so the deadline clears the entry, and the probe's remainder clears
-// that floor, by the same margin: deadlineStep.
+// requestDeadline is the request timeout the deadline probe sends first: the
+// natural run's whole duration. The deadline is fixed before the query starts,
+// and how long the query then takes to reach the call varies from dispatch to
+// dispatch with the load on the runner, by more than the call's judgeable
+// window. observeToDeadline therefore holds the query where it is first seen
+// inside the call until just before the deadline expires on the server, so no
+// deadline after the entry is too late, and the deadline only has to outlast
+// the entry: a query
+// whose work ahead of the call runs at the natural run's pace enters the call
+// long before the natural run ended.
 func (w cancelExpectation) requestDeadline() time.Duration {
-	return w.entered + w.deadlineStep()
+	return w.natural
 }
 
-// deadlineStep is half the natural run's judgeable window (see
-// requestDeadline): how far past a query's entry into the call a deadline is
-// placed, and how far landRequestDeadline moves a deadline that passed before
-// the entry.
-func (w cancelExpectation) deadlineStep() time.Duration {
+// judgeableCall is how much of the natural run's call lies ahead of the least
+// work the probe judges — minRemaining of server time under wallClock,
+// 1/minLoopLeftFraction of the loop under loopExecutions — measured in server
+// time from the entry into the call. A calibration that leaves none cannot be
+// judged wherever a deadline lands.
+func (w cancelExpectation) judgeableCall() time.Duration {
 	call := w.natural - w.entered
 	if w.meter == loopExecutions {
-		return (call - call/minLoopLeftFraction) / 2
+		return call - call/minLoopLeftFraction
 	}
-	return (call - minRemaining) / 2
+	return call - minRemaining
 }
 
 // loopLeft is how many of the natural run's loop executions a query whose
@@ -247,48 +249,119 @@ func callEntry(inCall func([]callProgress) bool, seen []callProgress) (entry tim
 	return 0, false
 }
 
+// deadlineDispatch is one request-deadline dispatch in flight, as
+// observeToDeadline drives it.
+type deadlineDispatch interface {
+	// sinceSent is the wall-clock time since the request was sent.
+	sinceSent() time.Duration
+	// await waits up to pollInterval for the request's answer and reports
+	// whether the request is still unanswered.
+	await() bool
+	// read reads the query's system.processes row; running is false while
+	// the query is not executing.
+	read() (p callProgress, running bool)
+	// hold suspends the server until sinceSent reaches until: no query on it
+	// makes progress meanwhile, while the wall clock runs on. It returns the
+	// sinceSent by which the server was certainly running again.
+	hold(until time.Duration) (resumed time.Duration)
+}
+
+// resumeLead is how long before the request deadline can expire on the
+// server observeToDeadline ends its hold. The deadline must expire on a
+// server that runs normally: one thawed with its max_execution_time already
+// past wakes every thread at once, and the timeout can reach the client
+// before the worker has stopped and left system.processes. The lead covers an
+// unpause taking effect on a loaded runner, and the call's work in it is
+// counted as performed after the cancellation, against the build.
+const resumeLead = 4 * pollInterval
+
+// deadlineObservation is what observeToDeadline saw of one dispatch.
+type deadlineObservation struct {
+	// seen holds the readings that completed before the deadline.
+	seen []callProgress
+	// resumedLate reports a hold that ended no earlier than the deadline
+	// could have expired on the server, so the dispatch cannot be judged.
+	resumedLate bool
+}
+
+// observeToDeadline reads a dispatched query every pollInterval until its
+// deadline passes or its request is answered. At the first reading that shows
+// the query inside the call it holds the server until resumeLead before the
+// deadline can expire on the server, and reads no more: the cancellation the
+// deadline makes then lands resumeLead past where that reading left the
+// query, however long the query took to get there. The server measures the
+// deadline (max_execution_time) from the query's start on the server, which
+// the reading's own elapsed time places: no later than the reading was asked
+// for, less that elapsed time. A query that has not entered the call by the
+// deadline is cancelled ahead of it, which landing reports.
+func observeToDeadline(inCall func([]callProgress) bool, deadline time.Duration, d deadlineDispatch) deadlineObservation {
+	var obs deadlineObservation
+	for d.await() {
+		asked := d.sinceSent()
+		p, running := d.read()
+		if d.sinceSent() >= deadline {
+			break
+		}
+		if !running {
+			continue
+		}
+		if obs.seen = append(obs.seen, p); inCall(obs.seen) {
+			// The earliest the deadline can expire on the server.
+			expires := asked - p.elapsed + deadline
+			if until := expires - resumeLead; until > d.sinceSent() {
+				obs.resumedLate = d.hold(until) >= expires
+			}
+			break
+		}
+	}
+	return obs
+}
+
 // requestDeadlineAttempts bounds how many request-deadline dispatches
 // landRequestDeadline makes to land one cancellation in the call's judgeable
-// window: the calibrated deadline, then re-armed ones.
+// window.
 const requestDeadlineAttempts = 5
 
 // landRequestDeadline finds a request deadline whose cancellation lands in
 // the judgeable window of the call, and returns it with the readings its
-// dispatch took before it passed. How long a query takes to reach the call
-// varies from run to run with the load on the runner, so one deadline fixed
-// from the natural run's entry can pass before the call or too late in it.
-// dispatch sends the request with a deadline and returns the readings taken
-// before the deadline passed; discard waits out a dispatch whose readings
-// cannot be judged. The first deadline is requestDeadline. A deadline that
-// passed before the call proves the entry came later, so the next one moves
-// a deadlineStep past it; one that passed after the floor shows the entry,
-// so the next one is a deadlineStep past that entry. Landing depends only on
-// the readings before each cancellation (see landing), so the verdict on the
-// returned dispatch is the same one a single well-placed deadline would
-// face. It returns an error when no dispatch lands within
-// requestDeadlineAttempts, or the calibration left the call no window.
+// dispatch took before it passed. dispatch sends the request with a deadline
+// and returns what observeToDeadline saw; discard waits out a dispatch that
+// cannot be judged. Because the dispatch holds the query at its observed
+// entry, a deadline misses only by passing before the entry, never by passing
+// too late in the call: the first deadline is requestDeadline, and a deadline
+// that passed before the call proves the entry came later, so the next one is
+// a further natural run later. A dispatch first seen inside the call already
+// past the floor was read too late to hold in time, and one whose hold ended
+// too late was cancelled on a thawing server; neither says anything of its
+// deadline, so the next dispatch keeps it. Landing depends only on the
+// readings before each cancellation (see landing), so the verdict on the
+// returned dispatch is the same one a single well-placed deadline would face.
+// It returns an error when no dispatch lands within requestDeadlineAttempts,
+// or the calibration left the call no window.
 func (w cancelExpectation) landRequestDeadline(inCall func([]callProgress) bool,
-	dispatch func(deadline time.Duration) []callProgress, discard func(),
+	dispatch func(deadline time.Duration) deadlineObservation, discard func(),
 ) (time.Duration, []callProgress, error) {
-	step := w.deadlineStep()
-	if step <= 0 {
+	if w.judgeableCall() <= 0 {
 		return 0, nil, fmt.Errorf("the natural run (%s, entering the call after %s) leaves the call no window to place "+
 			"a request deadline in", w.natural, w.entered)
 	}
 	deadline := w.requestDeadline()
 	var missed []string
 	for range requestDeadlineAttempts {
-		seen := dispatch(deadline)
-		switch w.landing(inCall, seen) {
-		case landedInWindow:
-			return deadline, seen, nil
-		case landedBeforeCall:
+		obs := dispatch(deadline)
+		switch landing := w.landing(inCall, obs.seen); {
+		case obs.resumedLate:
+			missed = append(missed, fmt.Sprintf("%s: the hold ended too late to let the deadline expire on a running "+
+				"server", deadline))
+		case landing == landedInWindow:
+			return deadline, obs.seen, nil
+		case landing == landedBeforeCall:
 			missed = append(missed, fmt.Sprintf("%s passed before the call", deadline))
-			deadline += step
-		case landedPastFloor:
-			entry, _ := callEntry(inCall, seen)
-			missed = append(missed, fmt.Sprintf("%s passed too late in the call, entered after %s", deadline, entry))
-			deadline = entry + step
+			deadline += w.natural
+		case landing == landedPastFloor:
+			entry, _ := callEntry(inCall, obs.seen)
+			missed = append(missed, fmt.Sprintf("%s: the query was first seen inside the call after %s, already past the "+
+				"floor", deadline, entry))
 		}
 		discard()
 	}
