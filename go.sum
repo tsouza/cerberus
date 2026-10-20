@@ -741,6 +741,8 @@ github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.3-cerbe
 github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.3-cerberus-ddl/go.mod h1:+Yf+tizadox5awbW+jm9nnhS9pkZSsbKKthNNJnZrm0=
 github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.3-cerberus-ddl h1:/FMSvpvnjlNdCLRwMzWmuBtxPBoY6KIgqktDOzrR0j4=
 github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.3-cerberus-ddl/go.mod h1:UetIxoLmE+X0io7ookhE9J/6KoJSdmFzLFmcUiW/XzM=
+github.com/tsouza/prometheus v0.315.0-cerberus-parser h1:QJRtXnFPhl2meI0bMaJZi3P/ovLmjM1yl5Ui0I6AxGk=
+github.com/tsouza/prometheus v0.315.0-cerberus-parser/go.mod h1:B+80h4JO0zXpoFCiWStHtpsAWrEOwY24B9/CLgzUIuc=
 github.com/tsouza/tempo v0.0.5-cerberus-accessors h1:d+9KHXJxgE0u1kBSLikEnip1WIRN5L8KUrSVQX94Yto=
 github.com/tsouza/tempo v0.0.5-cerberus-accessors/go.mod h1:tV3Pl9la00Ti1stc4RMsIa41zkx1i3mtxKKy13vXwt4=
 github.com/ttacon/chalk v0.0.0-20160626202418-22c06c80ed31/go.mod h1:onvgF043R+lC5RZ8IT9rBXDaEDnpnw/Cl+HFiw+v/7Q=
