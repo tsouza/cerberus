@@ -1,10 +1,8 @@
-# expected_rows is intentionally empty. Reference Prometheus's PreprocessExpr
-# wraps an `@`-pinned subquery argument in a StepInvariantExpr unless the
-# call around it is step invariant, and predict_linear is in
-# AtModifierUnsafeFunctions, so it never is. The evaluator then finds no range
-# vector among predict_linear's arguments and funcPredictLinear answers an
-# empty vector, at every evaluation instant, although the subquery itself
-# holds five points on a line.
+# Reference Prometheus wraps only an `@`-pinned subquery's inner expression in
+# a StepInvariantExpr, never the subquery itself, so predict_linear still finds
+# the subquery among its arguments. It fits the five points of the pinned
+# window and forecasts from the evaluation instant, at every evaluation
+# instant.
 
 -- query.promql --
 predict_linear(vector(time())[5m:1m] @ 1767225600, 60)

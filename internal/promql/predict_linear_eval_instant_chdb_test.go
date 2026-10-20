@@ -3,8 +3,9 @@
 // chDB proof, against the Prometheus reference engine, that predict_linear
 // forecasts from the evaluation instant whatever `@` and `offset` do to its
 // window, that the regression x-axis keeps a sample's or a pin's fractional
-// second, and that predict_linear over an `@`-pinned subquery answers empty,
-// in instant and range mode.
+// second, and that predict_linear over an `@`-pinned subquery fits the pinned
+// window and forecasts from each evaluation instant, in instant and range
+// mode.
 package promql_test
 
 import (
@@ -78,7 +79,34 @@ func predictEvalTimeForecast(at time.Time) (float64, bool) {
 	return float64(at.Unix() + predictEvalHorizon), true
 }
 
-func predictEvalNone(time.Time) (float64, bool) { return 0, false }
+// predictEvalPoint is one sample a regression is fitted over.
+type predictEvalPoint struct {
+	at    time.Time
+	value float64
+}
+
+// predictEvalRegression answers the least-squares line through points read
+// predictEvalHorizon seconds past the evaluation instant, at every
+// evaluation instant.
+func predictEvalRegression(points ...predictEvalPoint) predictEvalAnswer {
+	return func(at time.Time) (float64, bool) {
+		var meanX, meanY float64
+		for _, p := range points {
+			meanX += p.at.Sub(at).Seconds()
+			meanY += p.value
+		}
+		n := float64(len(points))
+		meanX, meanY = meanX/n, meanY/n
+		var covXY, varX float64
+		for _, p := range points {
+			dx := p.at.Sub(at).Seconds() - meanX
+			covXY += dx * (p.value - meanY)
+			varX += dx * dx
+		}
+		slope := covXY / varX
+		return meanY + slope*(predictEvalHorizon-meanX), true
+	}
+}
 
 // TestPredictLinearEvaluationInstantParity_ChDB pins cerberus issues #3878
 // and #3884 against the Prometheus reference engine, with the answers
@@ -94,6 +122,14 @@ func TestPredictLinearEvaluationInstantParity_ChDB(t *testing.T) {
 	)
 	first := predictEvalInstant.Add(-predictEvalRangeSteps * time.Minute)
 	second := first.Add(time.Minute)
+	// line[10m:1m] @ fractionalPin steps at 00:36..00:45; the first sample
+	// of `line` is at 00:40, so the steps 00:40..00:44 read 0 and 00:45 reads
+	// the 00:44:16 sample, 256.
+	minute := func(m int) time.Time { return predictEvalLineOrigin.Add(time.Duration(m) * time.Minute) }
+	pinnedSelectorSubquery := predictEvalRegression(
+		predictEvalPoint{minute(0), 0}, predictEvalPoint{minute(1), 0}, predictEvalPoint{minute(2), 0},
+		predictEvalPoint{minute(3), 0}, predictEvalPoint{minute(4), 0}, predictEvalPoint{minute(5), 256},
+	)
 	cases := []struct {
 		name   string
 		query  string
@@ -116,10 +152,11 @@ func TestPredictLinearEvaluationInstantParity_ChDB(t *testing.T) {
 		{"subsecond_samples_fractional_pin", `predict_linear(subsecond[10m] @ ` + fractionalPin + `, 60)`, predictEvalForecast(first), false},
 		{"subsecond_deriv", `deriv(subsecond[10m])`, predictEvalSlope(second), false},
 		{"subsecond_deriv_fractional_pin", `deriv(subsecond[10m] @ ` + fractionalPin + `)`, predictEvalSlope(first), false},
-		// #3878: predict_linear over an `@`-pinned subquery is empty.
-		{"pinned_constant_subquery", `predict_linear(vector(time())[5m:1m] @ ` + subqueryPin + `, 60)`, predictEvalNone, false},
-		{"pinned_selector_subquery", `predict_linear(line[10m:1m] @ ` + fractionalPin + `, 60)`, predictEvalNone, false},
-		{"end_pinned_subquery", `predict_linear((vector(time())[5m:1m] @ end()), 60)`, predictEvalNone, false},
+		// The pin fixes the subquery's window; the forecast starts at the
+		// evaluation instant.
+		{"pinned_constant_subquery", `predict_linear(vector(time())[5m:1m] @ ` + subqueryPin + `, 60)`, predictEvalTimeForecast, true},
+		{"pinned_selector_subquery", `predict_linear(line[10m:1m] @ ` + fractionalPin + `, 60)`, pinnedSelectorSubquery, false},
+		{"end_pinned_subquery", `predict_linear((vector(time())[5m:1m] @ end()), 60)`, predictEvalTimeForecast, true},
 	}
 	for _, rangeMode := range []bool{false, true} {
 		for _, tc := range cases {

@@ -326,23 +326,31 @@ func TestLower_PredictLinear_PinWithoutEvaluationInstantReadsNow(t *testing.T) {
 	}
 }
 
-// TestLower_PredictLinear_PinnedSubqueryIsEmpty pins cerberus issue #3878:
-// Prometheus wraps an `@`-pinned subquery argument of predict_linear in a
-// StepInvariantExpr, finds no range vector among the call's arguments and
-// answers no sample, so the lowering reads no regression at all.
-func TestLower_PredictLinear_PinnedSubqueryIsEmpty(t *testing.T) {
+// TestLower_PredictLinear_PinnedSubqueryForecastsFromEvaluation pins cerberus
+// issue #3878: Prometheus wraps only an `@`-pinned subquery's inner
+// expression in a StepInvariantExpr, never the subquery itself, so
+// predict_linear still fits the pinned window and forecasts from the
+// evaluation instant. An instant lowering folds the distance from the pin to
+// the evaluation instant into the horizon; a range lowering fits once and
+// broadcasts the slope so every step forecasts from its own instant.
+func TestLower_PredictLinear_PinnedSubqueryForecastsFromEvaluation(t *testing.T) {
 	t.Parallel()
 
 	eval := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
-	for _, query := range []string{
-		`predict_linear(vector(time())[5m:1m] @ 1767225600, 60)`,
-		`predict_linear((m[10m:1m] @ 1767225600), 60)`,
-		`predict_linear(vector(time())[5m:1m] @ end(), 60)`,
+	for _, tc := range []struct {
+		query string
+		// horizon is the instant lowering's horizon in seconds: 60 plus the
+		// distance from the pin to eval.
+		horizon float64
+	}{
+		{`predict_linear(vector(time())[5m:1m] @ 1767225600, 60)`, 61},
+		{`predict_linear((m[10m:1m] @ 1767225600), 60)`, 61},
+		{`predict_linear(vector(time())[5m:1m] @ end(), 60)`, 60},
 	} {
 		for _, step := range []time.Duration{0, time.Minute} {
-			expr, err := parser.NewParser(parser.Options{}).ParseExpr(query)
+			expr, err := parser.NewParser(parser.Options{}).ParseExpr(tc.query)
 			if err != nil {
-				t.Fatalf("ParseExpr(%q): %v", query, err)
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
 			}
 			start := eval
 			if step > 0 {
@@ -350,10 +358,21 @@ func TestLower_PredictLinear_PinnedSubqueryIsEmpty(t *testing.T) {
 			}
 			plan, err := promql.LowerAtRange(context.Background(), expr, schema.DefaultOTelMetrics(), start, eval, step)
 			if err != nil {
-				t.Fatalf("LowerAtRange(%q, step %v): %v", query, step, err)
+				t.Fatalf("LowerAtRange(%q, step %v): %v", tc.query, step, err)
 			}
-			if windows := predictLinearWindows(plan); len(windows) != 0 {
-				t.Fatalf("%q (step %v) lowers %d predict_linear windows; Prometheus answers empty", query, step, len(windows))
+			windows := predictLinearWindows(plan)
+			if len(windows) != 1 {
+				t.Fatalf("%q (step %v) lowers %d predict_linear windows, want 1", tc.query, step, len(windows))
+			}
+			w := windows[0]
+			if step > 0 {
+				if w.PredictLinearSlopeColumn == "" {
+					t.Fatalf("%q (step %v): the pinned window projects no slope to forecast each step from", tc.query, step)
+				}
+				continue
+			}
+			if len(w.Scalars) != 1 || w.Scalars[0] != tc.horizon {
+				t.Fatalf("%q (instant): horizon %v (exprs %#v), want %v", tc.query, w.Scalars, w.ScalarExprs, tc.horizon)
 			}
 		}
 	}

@@ -102,19 +102,7 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 		// The sample window stays pinned, but Prometheus forecasts from each
 		// request-grid evaluation instant. Fit once, broadcast the prediction
 		// and slope, then advance the value by slope * (eval - pin).
-		gridAnchor := &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
-		const slopeColumn = "predict_slope"
-		rw.PredictLinearSlopeColumn = slopeColumn
-		value := &chplan.Binary{
-			Op:   chplan.OpAdd,
-			Left: &chplan.ColumnRef{Name: s.ValueColumn},
-			Right: &chplan.Binary{
-				Op:    chplan.OpMul,
-				Left:  &chplan.ColumnRef{Name: slopeColumn},
-				Right: secondsBetweenTsExpr(windowRightBoundExpr(anchor), gridAnchor),
-			},
-		}
-		return wrapRangeWindowAtBroadcast(rw, ctx, s, nil, value), nil
+		return wrapRangeWindowAtBroadcast(rw, ctx, s, nil, predictLinearBroadcastValue(rw, anchor, s)), nil
 	case gridSingleAnchor:
 		advancePredictLinearHorizon(rw, instantPredictLinearShift(anchor, ctx))
 	}
@@ -126,6 +114,27 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	// strategy always returns a valid lowering (never nil). Mirrors the
 	// rate/changes/resets dispatch in lowerRangeVectorCall.
 	return ctx.lowerers.PredictLinear.LowerPredictLinear(rw, s), nil
+}
+
+// predictLinearSlopeColumn is the column a broadcast predict_linear window
+// projects its fitted slope under.
+const predictLinearSlopeColumn = "predict_slope"
+
+// predictLinearBroadcastValue asks the pinned predict_linear window rw,
+// anchored by anchor, to project its slope, and returns the forecast at each
+// request-grid evaluation instant: the forecast fitted at the window's right
+// edge advanced by slope * (eval - edge).
+func predictLinearBroadcastValue(rw *chplan.RangeWindow, anchor evalAnchor, s schema.Metrics) chplan.Expr {
+	rw.PredictLinearSlopeColumn = predictLinearSlopeColumn
+	return &chplan.Binary{
+		Op:   chplan.OpAdd,
+		Left: &chplan.ColumnRef{Name: s.ValueColumn},
+		Right: &chplan.Binary{
+			Op:    chplan.OpMul,
+			Left:  &chplan.ColumnRef{Name: predictLinearSlopeColumn},
+			Right: secondsBetweenTsExpr(windowRightBoundExpr(anchor), &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}),
+		},
+	}
 }
 
 // instantPredictLinearShift returns the seconds from the right edge of an

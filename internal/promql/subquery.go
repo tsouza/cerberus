@@ -1425,12 +1425,16 @@ func lowerOuterRangeFnOverSubquery(
 	if err != nil {
 		return nil, err
 	}
-	if rw.Func == fnPredictLinear {
+	rangeMode := ctx.rangeMode()
+	pinned := subqueryPinned(sub)
+	if rw.Func == fnPredictLinear && !pinned {
 		// Prometheus forecasts from the evaluation instant, which the
 		// subquery's offset puts past the right edge of the window the
 		// regression is fitted at (see [instantPredictLinearShift]). A
-		// pinned subquery never reaches here: [lowerCallOverSubquery]
-		// answers it empty, as Prometheus does.
+		// pinned subquery shifts its horizon in the pinned arms below:
+		// Prometheus wraps only the subquery's inner expression in a
+		// StepInvariantExpr, never the subquery itself, so the pinned
+		// window is still fitted and forecast from each evaluation instant.
 		advancePredictLinearHorizon(rw, offsetSecondsExpr(rw.Offset))
 	}
 
@@ -1444,9 +1448,6 @@ func lowerOuterRangeFnOverSubquery(
 	if nameExpr != nil {
 		appendNameGroupKey(rw, s)
 	}
-
-	rangeMode := ctx.rangeMode()
-	pinned := subqueryPinned(sub)
 
 	switch {
 	case rangeMode && pinned:
@@ -1484,6 +1485,12 @@ func lowerOuterRangeFnOverSubquery(
 		broadcastName := nameExpr
 		if broadcastName == nil && rangeFnPreservesName(outer.Func.Name) {
 			broadcastName = &chplan.LitString{V: ""}
+		}
+		if rw.Func == fnPredictLinear {
+			// Fit the pinned window once and broadcast it, then forecast
+			// from each request-grid evaluation instant, as the
+			// pinned-matrix arm of [lowerPredictLinear] does.
+			value = predictLinearBroadcastValue(rw, anchor, s)
 		}
 		return wrapRangeWindowAtBroadcast(rw, ctx, s, broadcastName, value), nil
 	case rangeMode:
@@ -1540,6 +1547,9 @@ func lowerOuterRangeFnOverSubquery(
 		// ts keeps the outer reducer and the widened inner grid on one base.
 		if anchor.anchored() {
 			rw.End = anchor.End()
+			if rw.Func == fnPredictLinear && pinned {
+				advancePredictLinearHorizon(rw, instantPredictLinearShift(anchor, ctx))
+			}
 			// Widen by Offset+Range, matching RangeWindow.InputWindow and the
 			// range-mode branch above (#1464).
 			widenSubquerySpineReadBy(inner, anchor.End(), anchor.End(), rw.Offset, sub.Range)
