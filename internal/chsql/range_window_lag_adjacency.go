@@ -295,7 +295,7 @@ func (e *emitter) emitLagAdjacencyChangesResets(r *chplan.RangeWindow, kernel fu
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
 	stepNS := r.Step.Nanoseconds()
-	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	numAnchors := outerAnchorCount(r)
 	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
@@ -397,7 +397,7 @@ func (e *emitter) emitLagAdjacencyPairs(r *chplan.RangeWindow, isIrate bool) err
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
 	stepNS := r.Step.Nanoseconds()
-	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	numAnchors := outerAnchorCount(r)
 	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {

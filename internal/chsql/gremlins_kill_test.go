@@ -2098,8 +2098,8 @@ func TestEmitWindowedArrayPairsAnchored_MinWindowZero(t *testing.T) {
 // range_window.go:emitWindowedArrayPairsAnchoredWithExtra:`r.Step <= 0`
 // boundary. The OuterRange>0 path
 // requires Step>0 to drive the anchor fanout; the guard rejects Step=0
-// loudly so the downstream `OuterRange.Nanoseconds() / stepNS` doesn't
-// divide by zero. The boundary mutant `< 0` lets Step=0 slip through
+// loudly so the downstream anchor count (chplan.SpanSteps's
+// `outerRange / step`) doesn't divide by zero. The boundary mutant `< 0` lets Step=0 slip through
 // and would either panic or emit garbage SQL. Calling the unexported
 // helper directly is the most reliable way to hit the guard — Emit()
 // callers thread chplan.RangeWindow through dispatch before reaching
@@ -2134,7 +2134,8 @@ func TestEmitWindowedArrayPairsAnchored_OuterRangeStepGuard(t *testing.T) {
 
 // TestEmitWindowedArrayPairsMatrix_AnchorArithmetic kills two
 // ARITHMETIC_BASE mutants at
-// range_window.go:emitWindowedArrayPairsMatrix:`r.OuterRange.Nanoseconds()/stepNS + 1`.
+// the anchor count emitWindowedArrayPairsMatrix takes from outerAnchorCount
+// (chplan.SpanSteps:`outerRange / step`, anchor_grid.go:`steps + 1`).
 // The `/` becomes `*` /
 // `%` / `-` / `+`; the `+` becomes `-` / `*` / `%` / `/`. The matrix
 // emitter rendered by emitWindowedArrayPairsMatrix is reached from
@@ -2824,11 +2825,12 @@ func TestEmitRangeWindowCompare_SpanBoundaryAndArithmetic(t *testing.T) {
 // TestEmitRangeWindowCompare_OuterRangePath covers + kills the
 // NOT_COVERED mutants on the OuterRange anchor branch:
 //   - CONDITIONALS_BOUNDARY / CONDITIONALS_NEGATION on
-//     metrics_compare.go:`case r.OuterRange > 0`.
+//     exemplars.go:rangeWindowGridAnchorCount:`case rw.OuterRange > 0`,
+//     which emitRangeWindowCompare counts its anchors with.
 //   - ARITHMETIC_BASE on
-//     metrics_compare.go:`numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1`.
+//     anchor_grid.go:outerAnchorCount:`steps + 1`.
 //   - INVERT_LOGICAL on the `&&` of
-//     metrics_compare.go:`case !r.Start.IsZero() && !r.End.IsZero()`, the
+//     anchor_grid.go:gridAnchorCount:`start.IsZero() || end.IsZero()`, the
 //     Start/End fallback case — covered by exercising both branches:
 //     OuterRange>0 takes the
 //     first case, so the second-case guard never fires here, but the
@@ -2919,7 +2921,7 @@ func exemplarArgsContain(args []any, want string) bool {
 // TestEmitMetricsExemplars_OuterRangeNumAnchors covers + kills the
 // CONDITIONALS_BOUNDARY/NEGATION at exemplars.go:`case rw.OuterRange > 0`
 // and the ARITHMETIC_BASE at
-// exemplars.go:`rw.OuterRange.Nanoseconds()/stepNS + 1`.
+// anchor_grid.go:outerAnchorCount:`steps + 1`.
 // The existing NumAnchorsBoundary test only exercises the
 // Start/End span branch; this one drives the OuterRange branch.
 //
@@ -4010,15 +4012,16 @@ func TestPrefixAnchorIndexFrag_NegatesRangeNS(t *testing.T) {
 	const rangeNS = int64(300_000_000_000) // 5m
 	const numAnchors = int64(11)
 
-	got := render(prefixAnchorIndexFrag(end, ts, stepNS, rangeNS, numAnchors))
+	g := newAnchorGrid(stepNS, rangeNS, numAnchors)
+	got := render(prefixAnchorIndexFrag(g, end, ts, rangeNS, numAnchors))
 
 	// A mutant that removes (or otherwise flips) the negation on rangeNS
 	// collapses to the POSITIVE-offset floor index instead.
-	dist := distBehindAnchorFrag(ts, end)
+	dist := g.dist(ts, end)
 	positiveOffset := render(Call(
 		"least", InlineLit(numAnchors-1),
 		Call("greatest", InlineLit(int64(0)),
-			Sub(anchorGridFloorIdxFrag(dist, rangeNS, stepNS), InlineLit(int64(1)))),
+			Sub(g.floorIdx(dist, g.units(rangeNS)), InlineLit(int64(1)))),
 	))
 	if got == positiveOffset {
 		t.Errorf("prefixAnchorIndexFrag matches the POSITIVE-rangeNS form "+

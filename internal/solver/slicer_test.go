@@ -556,3 +556,47 @@ func TestSlice_NestedOnSpineWidensWithOffset(t *testing.T) {
 		}
 	}
 }
+
+// TestSlice_WideGrid slices a grid about 328 years wide, further than a
+// time.Duration spans: the slices still tile every anchor, oldest first.
+func TestSlice_WideGrid(t *testing.T) {
+	t.Parallel()
+	p := &Planner{Cfg: autoCfg()}
+	const step = 100 * 24 * time.Hour
+	const nAnchors = 1198
+	end := time.Date(2025, 11, 8, 0, 0, 0, 0, time.UTC)
+	start := chplan.GridInstant(end, -step, nAnchors-1)
+	meta := RequestMeta{Lang: "promql", Start: start, End: end, Step: step}
+	slices, err := p.slice(sliceWindow(start, end, step, time.Hour, 0), meta, 4)
+	if err != nil {
+		t.Fatalf("slice: %v", err)
+	}
+	if !slices[0].Start.Equal(start) || !slices[len(slices)-1].End.Equal(end) {
+		t.Fatalf("slices span [%s, %s], want [%s, %s]", slices[0].Start, slices[len(slices)-1].End, start, end)
+	}
+	var total int64
+	for i, s := range slices {
+		total += chplan.GridAnchors(s.Start, s.End, step)
+		if i > 0 && !s.Start.Equal(slices[i-1].End.Add(step)) {
+			t.Errorf("slice %d starts at %s, want one step after %s", i, s.Start, slices[i-1].End)
+		}
+	}
+	if total != nAnchors {
+		t.Errorf("slices hold %d anchors, want %d", total, nAnchors)
+	}
+}
+
+// TestPlan_WideGridCountsEveryAnchor pins the anchor count the planner
+// records for a grid wider than a time.Duration spans.
+func TestPlan_WideGridCountsEveryAnchor(t *testing.T) {
+	t.Parallel()
+	const step = 100 * 24 * time.Hour
+	const nAnchors = 1198
+	end := time.Date(2025, 11, 8, 0, 0, 0, 0, time.UTC)
+	start := chplan.GridInstant(end, -step, nAnchors-1)
+	meta := RequestMeta{Lang: "promql", Start: start, End: end, Step: step}
+	d, _ := (&Planner{Cfg: autoCfg()}).Plan(sliceWindow(start, end, step, time.Hour, 0), meta)
+	if d.NAnchors != nAnchors {
+		t.Errorf("NAnchors = %d, want %d", d.NAnchors, nAnchors)
+	}
+}

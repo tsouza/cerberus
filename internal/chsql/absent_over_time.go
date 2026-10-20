@@ -103,14 +103,15 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 		// anti-filtered against the sample-side covered-anchor set. See
 		// the function comment for the O(anchors + samples) rationale.
 		stepNS := a.Step.Nanoseconds()
-		numAnchors := max(a.End.Sub(a.Start).Nanoseconds()/stepNS+1, 1)
+		numAnchors := max(chplan.GridAnchors(a.Start, a.End, a.Step), 1)
+		g := newAnchorGrid(stepNS, rangeNS, numAnchors)
 		// The arrayJoin fanout walks the step grid starting from
 		// `a.Start` (offset-adjusted by prefilterStartFrag); see
 		// absentOverTimeAnchorRangeFrag.
 		gridSrc := NewQuery().Select(InlineLit(int64(1)))
 		fanout := NewQuery().
 			From(gridSrc.Frag()).
-			Select(As(absentOverTimeAnchorRangeFrag(prefilterStartFrag, stepNS, numAnchors), RangeWindowAnchorAlias))
+			Select(As(absentOverTimeAnchorRangeFrag(g, prefilterStartFrag, numAnchors), RangeWindowAnchorAlias))
 
 		// Covered set: each scanned sample fans to the anchors whose
 		// `(anchor - range, anchor]` window contains it.
@@ -118,7 +119,7 @@ func (e *emitter) emitAbsentOverTime(a *chplan.AbsentOverTime) error {
 			From(inner).
 			Select(As(
 				absentOverTimeCoveredAnchorFrag(
-					prefilterStartFrag, Col(inputTimestamp), stepNS, rangeNS, numAnchors,
+					g, prefilterStartFrag, Col(inputTimestamp), rangeNS, numAnchors,
 				),
 				RangeWindowAnchorAlias,
 			)).
@@ -215,13 +216,13 @@ func absentOverTimeBookendFrag(t time.Time, offsetNS int64) Frag {
 	return Paren(Sub(base, Call("toIntervalNanosecond", InlineLit(offsetNS))))
 }
 
-// absentOverTimeForwardAnchorFrag renders the forward-grid arrayMap body
-// `<start> + toIntervalNanosecond(i * <stepNS>)` — the i-th anchor
-// walking FORWARD from the query start (Prom range-query convention).
-// The additive sibling of anchorBaseAtIdxFrag (which walks backward from
-// End). `i` is the enclosing Lambda1 param.
-func absentOverTimeForwardAnchorFrag(start Frag, stepNS int64) Frag {
-	return Add(start, Call("toIntervalNanosecond", Mul(BareIdent("i"), InlineLit(stepNS))))
+// absentOverTimeForwardAnchorFrag renders the forward-grid arrayMap body:
+// the i-th anchor walking FORWARD from the query start (Prom range-query
+// convention), in g's arithmetic ([anchorGrid.ahead]). The forward
+// sibling of anchorBaseAtIdxFrag (which walks backward from End). `i` is
+// the enclosing Lambda1 param.
+func absentOverTimeForwardAnchorFrag(g anchorGrid, start Frag) Frag {
+	return g.ahead(start, BareIdent("i"))
 }
 
 // absentOverTimeAnchorRangeFrag returns a Frag rendering
@@ -230,12 +231,12 @@ func absentOverTimeForwardAnchorFrag(start Frag, stepNS int64) Frag {
 // emission. The anchor base is `<start>` (NOT `<end>`), matching the
 // Prom range-query convention where anchors walk forward from the
 // query's `start` to its `end`.
-func absentOverTimeAnchorRangeFrag(start Frag, stepNS, numAnchors int64) Frag {
+func absentOverTimeAnchorRangeFrag(g anchorGrid, start Frag, numAnchors int64) Frag {
 	return Call(
 		"arrayJoin",
 		Call(
 			"arrayMap",
-			Lambda1("i", absentOverTimeForwardAnchorFrag(start, stepNS)),
+			Lambda1("i", absentOverTimeForwardAnchorFrag(g, start)),
 			Call("range", InlineLit(int64(0)), InlineLit(numAnchors)),
 		),
 	)
@@ -249,7 +250,8 @@ func absentOverTimeAnchorRangeFrag(start Frag, stepNS, numAnchors int64) Frag {
 //	          range(greatest(0, <floorDiv(dist - 1, stepNS) + 1>),
 //	                least(<N>, <floorDiv(dist + rangeNS - 1, stepNS) + 1>))))
 //
-// with `dist = dateDiff('nanosecond', <start>, <ts>)`. A sample at ts
+// with `dist = dateDiff('nanosecond', <start>, <ts>)` (both in g's units,
+// [anchorGrid.dist]). A sample at ts
 // covers exactly the grid anchors a_i = start + i*step whose lookback
 // window `(a_i - range, a_i]` contains it:
 //
@@ -260,20 +262,20 @@ func absentOverTimeAnchorRangeFrag(start Frag, stepNS, numAnchors int64) Frag {
 // range/step + 1 anchors per sample. The greatest/least clamps and the
 // truncate-toward-zero intDiv correction follow the same contract as
 // sampleAnchorFanoutFrag; see anchorGridFloorIdxFrag.
-func absentOverTimeCoveredAnchorFrag(start, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
+func absentOverTimeCoveredAnchorFrag(g anchorGrid, start, ts Frag, rangeNS, numAnchors int64) Frag {
 	// Forward orientation: dist is the sample's distance AHEAD of the
 	// earliest anchor (start → ts), the mirror of the backward fan-out's
 	// dateDiff(ts, end).
-	dist := distBehindAnchorFrag(start, ts)
+	dist := g.dist(start, ts)
 	return Call(
 		"arrayJoin",
 		Call(
 			"arrayMap",
-			Lambda1("i", absentOverTimeForwardAnchorFrag(start, stepNS)),
+			Lambda1("i", absentOverTimeForwardAnchorFrag(g, start)),
 			Call(
 				"range",
-				Call("greatest", InlineLit(int64(0)), anchorGridFloorIdxFrag(dist, -1, stepNS)),
-				Call("least", InlineLit(numAnchors), anchorGridFloorIdxFrag(dist, rangeNS-1, stepNS)),
+				Call("greatest", InlineLit(int64(0)), g.floorIdx(dist, -1)),
+				Call("least", InlineLit(numAnchors), g.floorIdx(dist, g.units(rangeNS)-1)),
 			),
 		),
 	)

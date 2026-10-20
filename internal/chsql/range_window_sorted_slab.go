@@ -176,7 +176,7 @@ func (e *emitter) emitRangeWindowSortedSlabOverTime(r *chplan.RangeWindow) error
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
 	stepNS := r.Step.Nanoseconds()
-	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	numAnchors := outerAnchorCount(r)
 	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
@@ -215,7 +215,7 @@ func (e *emitter) emitRangeWindowSortedSlabOverTime(r *chplan.RangeWindow) error
 	// references to `vals` don't re-run the arrayFilter per reference.
 	anchors := Call(
 		"arrayMap",
-		Lambda1("i", anchorBaseAtIdxFrag(end, stepNS)),
+		Lambda1("i", anchorBaseAtIdxFrag(newAnchorGrid(stepNS, rangeNS, numAnchors), end)),
 		Call("range", InlineLit(numAnchors)),
 	)
 	perAnchor := Call(

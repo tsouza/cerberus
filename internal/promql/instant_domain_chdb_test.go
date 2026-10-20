@@ -526,10 +526,23 @@ func TestInstantDomainParity_NestedRegions_ChDB(t *testing.T) {
 // hand-written rows and the Prometheus reference engine.
 func runHandWrittenParity(t *testing.T, seed, query string, eval time.Time, rows []instantDomainRow, rangeMode bool) {
 	t.Helper()
-	const fixturePermissions = 0o600
-	start, step, endpoint := eval, time.Duration(0), "/api/v1/query"
+	start, step := eval, time.Duration(0)
 	if rangeMode {
-		start, step, endpoint = eval.Add(-instantDomainRangeSteps*time.Minute), time.Minute, "/api/v1/query_range"
+		start, step = eval.Add(-instantDomainRangeSteps*time.Minute), time.Minute
+	}
+	runGridParity(t, seed, query, start, eval, step, rows)
+}
+
+// runGridParity lowers query as an instant query at end when step is zero,
+// or as a range query over [start, end] by step, runs it in chDB over seed,
+// and checks the answer against both the hand-written rows and the
+// Prometheus reference engine.
+func runGridParity(t *testing.T, seed, query string, start, eval time.Time, step time.Duration, rows []instantDomainRow) {
+	t.Helper()
+	const fixturePermissions = 0o600
+	rangeMode, endpoint := step > 0, "/api/v1/query"
+	if rangeMode {
+		endpoint = "/api/v1/query_range"
 	}
 	expr, err := parser.NewParser(parser.Options{EnableExperimentalFunctions: true}).ParseExpr(query)
 	if err != nil {
@@ -544,7 +557,7 @@ func runHandWrittenParity(t *testing.T, seed, query string, eval time.Time, rows
 	if err != nil {
 		t.Fatal(err)
 	}
-	sql, cells := instantDomainCells(t, seed, sql, args, rows, start, eval, rangeMode)
+	sql, cells := instantDomainCells(t, seed, sql, args, rows, start, eval, step)
 	expected, err := json.Marshal(cells)
 	if err != nil {
 		t.Fatal(err)
@@ -568,7 +581,8 @@ func runHandWrittenParity(t *testing.T, seed, query string, eval time.Time, rows
 }
 
 // instantDomainCells lays the hand-written answer rows out as the
-// expected_rows of the emitted SQL, whose result columns depend on the
+// expected_rows of the emitted SQL, at each instant step apart from start
+// to end, or at end alone when step is zero. The emitted SQL's result columns depend on the
 // plan's shape: each column takes the series name, its labels, the
 // reported instant or the value, by the column's name.
 //
@@ -577,7 +591,7 @@ func runHandWrittenParity(t *testing.T, seed, query string, eval time.Time, rows
 // offset and by the shift that moves a grid into ClickHouse's range. No
 // client sees it, so the returned SQL, which the round trip runs, leaves
 // it out whenever TimeUnix is there to report the instant.
-func instantDomainCells(t *testing.T, seed, sql string, args []any, want []instantDomainRow, start, end time.Time, rangeMode bool) (string, [][]any) {
+func instantDomainCells(t *testing.T, seed, sql string, args []any, want []instantDomainRow, start, end time.Time, step time.Duration) (string, [][]any) {
 	t.Helper()
 	db := spec.OpenChDB(t)
 	spec.ApplySeed(t, db, seed)
@@ -605,11 +619,18 @@ func instantDomainCells(t *testing.T, seed, sql string, args []any, want []insta
 		cols = slices.DeleteFunc(cols, func(c string) bool { return c == "anchor_ts" })
 		sql = "SELECT `" + strings.Join(cols, "`, `") + "` FROM (" + sql + ")"
 	}
+	instants := []time.Time{end}
+	if step > 0 {
+		instants = instants[:0]
+		for at := start; !at.After(end); at = at.Add(step) {
+			instants = append(instants, at)
+		}
+	}
 	cells := [][]any{}
-	for at := start; !at.After(end); at = at.Add(time.Minute) {
+	for _, at := range instants {
 		for _, r := range want {
 			ts := at
-			if !rangeMode && !r.sampleAt.IsZero() {
+			if step == 0 && !r.sampleAt.IsZero() {
 				ts = r.sampleAt
 			}
 			cell := make([]any, 0, len(cols))

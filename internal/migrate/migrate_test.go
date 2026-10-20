@@ -115,6 +115,22 @@ func TestLintSubqueryFanout(t *testing.T) {
 		t.Fatalf("expected a subquery fan-out risk with 11 anchors, got %v", risks)
 	}
 
+	// A grid wider than a time.Duration spans: 1197 steps of 100 days.
+	const step = 100 * 24 * time.Hour
+	end := time.Date(2025, 11, 8, 0, 0, 0, 0, time.UTC)
+	start := chplan.GridInstant(end, -step, 1197)
+	wide := &chplan.RangeWindow{
+		Input:      &chplan.Scan{Table: "otel_metrics_gauge"},
+		Func:       "rate",
+		OuterRange: end.Sub(start),
+		Start:      start,
+		End:        end,
+		Step:       step,
+	}
+	if risks := Lint(wide); len(risks) != 1 || !strings.Contains(risks[0], "1198 anchors") {
+		t.Fatalf("expected a subquery fan-out risk with 1198 anchors, got %v", risks)
+	}
+
 	plain := &chplan.RangeWindow{Input: &chplan.Scan{Table: "t"}, Func: "rate"}
 	if risks := Lint(plain); len(risks) != 0 {
 		t.Errorf("plain range window should carry no offline risk, got %v", risks)

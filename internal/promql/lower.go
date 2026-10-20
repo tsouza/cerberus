@@ -4513,7 +4513,7 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 		// shape: a query_range request with Start == End (a single-point
 		// grid) computes OuterRange = End.Sub(Start) = 0 while Step still
 		// carries a real value, and downsampleTierEligible's own numAnchors
-		// formula (`End.Sub(Start)/stepNS + 1`) still resolves to exactly one
+		// formula (`chplan.GridAnchors(Start, End, Step)`) still resolves to exactly one
 		// anchor and still emits anchor_ts. Without this clause the wrap fell
 		// to the synthesized-`now()` branch below for that shape, stamping
 		// the WRONG timestamp on an otherwise-correct row rather than

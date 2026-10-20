@@ -418,8 +418,9 @@ func TestFusedInstantInnerGate(t *testing.T) {
 	}
 }
 
-// TestFusedInstantAnchorCount kills
-// range_window_fused.go:`inner.OuterRange.Nanoseconds()/stepNS + 1`. With
+// TestFusedInstantAnchorCount kills the arithmetic of the inner anchor count
+// range_window_fused.go takes from outerAnchorCount(inner)
+// (chplan.SpanSteps:`outerRange / step`, anchor_grid.go:`steps + 1`). With
 // OuterRange=10m and Step=1m the fused anchor grid is `range(11)`. The `/`→`*`
 // flip overflows to a wildly different count and the `+`→`-` flip yields
 // `range(9)`, so pinning the exact `range(11)` literal kills both arithmetic
@@ -433,7 +434,7 @@ func TestFusedInstantAnchorCount(t *testing.T) {
 	// OuterRange 10m / Step 1m + 1 = 11 anchors.
 	if !strings.Contains(sql, "range(11)") {
 		t.Errorf("fused anchor grid must be range(11) (OuterRange/Step + 1) — "+
-			"`inner.OuterRange.Nanoseconds()/stepNS + 1` arithmetic flipped\nSQL: %s", sql)
+			"outerAnchorCount(inner) arithmetic flipped\nSQL: %s", sql)
 	}
 	if strings.Contains(sql, "range(9)") {
 		t.Errorf("found range(9) — `+ 1` mutated to `- 1`\nSQL: %s", sql)
@@ -517,8 +518,8 @@ func TestFusedSamplesQueryTemporalityGate(t *testing.T) {
 }
 
 // TestFusedMatrixOuterAnchorCount kills the ARITHMETIC_BASE mutants at
-// range_window_fused.go:`r.OuterRange.Nanoseconds()/outerStepNS + 1`,
-// emitFusedMatrixSubquery's OUTER anchor grid — distinct from the INNER
+// range_window_fused.go:`outerAnchorCount(r)`, emitFusedMatrixSubquery's
+// OUTER anchor grid — distinct from the INNER
 // grid TestFusedInstantAnchorCount already pins. Choosing an
 // outer OuterRange/Step pair (6m / 2m) that differs from fusibleInner's
 // (10m / 1m) makes the outer count's literal unambiguous: a `/`→`*` flip
@@ -535,9 +536,9 @@ func TestFusedMatrixOuterAnchorCount(t *testing.T) {
 	}
 	// OuterRange 6m / Step 2m + 1 = 4 outer anchors.
 	if !strings.Contains(sql, "range(4)") {
-		t.Errorf("outer anchor grid must be range(4) (OuterRange/Step + 1) — range_window_fused.go:`numAnchors := inner.OuterRange.Nanoseconds()/stepNS + 1` arithmetic flipped\nSQL: %s", sql)
+		t.Errorf("outer anchor grid must be range(4) (OuterRange/Step + 1) — range_window_fused.go:`numOuterAnchors := outerAnchorCount(r)` arithmetic flipped\nSQL: %s", sql)
 	}
 	if strings.Contains(sql, "range(2)") {
-		t.Errorf("found range(2) — `+ 1` mutated to `- 1` in range_window_fused.go:`numAnchors := inner.OuterRange.Nanoseconds()/stepNS + 1`\nSQL: %s", sql)
+		t.Errorf("found range(2) — `+ 1` mutated to `- 1` in anchor_grid.go:outerAnchorCount\nSQL: %s", sql)
 	}
 }

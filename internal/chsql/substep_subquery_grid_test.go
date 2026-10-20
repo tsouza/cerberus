@@ -76,7 +76,7 @@ func TestStepAlignedAnchorCountFor_SubStepWindow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			const inclusive = 7 // deliberately not any correct answer below
-			got := stepAlignedAnchorCountFor(tc.end, 0, tc.outerRange, step.Nanoseconds(), inclusive)
+			got := stepAlignedAnchorCountFor(tc.end, 0, int64(tc.outerRange/step), tc.outerRange%step, step.Nanoseconds(), inclusive)
 			if got != tc.want {
 				t.Fatalf("stepAlignedAnchorCountFor(end=%s, range=%s, step=%s) = %d, want %d",
 					tc.end, tc.outerRange, step, got, tc.want)

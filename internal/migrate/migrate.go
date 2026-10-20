@@ -238,7 +238,8 @@ func Lint(plan chplan.Node) []string {
 			if v.OuterRange > 0 && v.Step > 0 {
 				// anchors = OuterRange/Step + 1 (end-inclusive grid). This is a
 				// structural fan-out factor from the plan, not a data estimate.
-				anchors := int64(v.OuterRange/v.Step) + 1
+				steps, _ := v.OuterSteps()
+				anchors := steps + 1
 				add(fmt.Sprintf("subquery fan-out: inner expression evaluated at %d anchors per series", anchors))
 			}
 		case *chplan.StructuralJoin:

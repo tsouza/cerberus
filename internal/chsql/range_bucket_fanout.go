@@ -302,8 +302,9 @@ func rangeBucketFanoutGrid(r *chplan.RangeBucketFanout, stepNS int64) (numAnchor
 		// back by Offset — the same shift/unshift split the (Start, End)
 		// branch keeps below, just applied AFTER alignment instead of
 		// before.
-		numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1
-		shiftBase, numAnchors = stepAlignGridFor(r.StepAlign, shiftBase, r.End, r.Offset, r.OuterRange, stepNS, numAnchors)
+		steps, rem := r.OuterSteps()
+		numAnchors = steps + 1
+		shiftBase, numAnchors = stepAlignGridFor(r.StepAlign, shiftBase, r.End, r.Offset, steps, rem, stepNS, numAnchors)
 		gridBase = shiftBase
 		if r.Offset != 0 {
 			gridBase = offsetUnshiftAnchorFrag(shiftBase, r.Offset.Nanoseconds())
@@ -313,13 +314,9 @@ func rangeBucketFanoutGrid(r *chplan.RangeBucketFanout, stepNS int64) (numAnchor
 		// grid bounds are absent (the now64(9) fixture shape) a single
 		// anchor is the only deterministic choice; the bounded fanout still
 		// applies.
-		numAnchors = 1
-		if !r.Start.IsZero() && !r.End.IsZero() {
-			span := r.End.Sub(r.Start).Nanoseconds()
-			if span < 0 {
-				return 0, nil, nil, fmt.Errorf("%w: RangeBucketFanout.Start > End", ErrUnsupported)
-			}
-			numAnchors = span/stepNS + 1
+		numAnchors, err = gridAnchorCount(r.Start, r.End, r.Step, "RangeBucketFanout")
+		if err != nil {
+			return 0, nil, nil, err
 		}
 		gridEnd := startAnchoredGridEnd(r.Start, r.End, stepNS, numAnchors)
 		shiftBase = offsetShiftedBaseFrag(timeOrNowFrag(gridEnd), r.Offset)

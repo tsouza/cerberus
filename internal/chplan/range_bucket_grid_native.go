@@ -92,7 +92,7 @@ func (r *RangeBucketGridNative) Children() []Node { return []Node{r.Input} }
 // Same rationale as [RangeBucketFanout.NumAnchors] for why this axis needs
 // its own charge in [requireSubquerySampleBudget].
 func (r *RangeBucketGridNative) NumAnchors() int64 {
-	return numAnchorsFromGrid(r.Start, r.End, r.Step)
+	return GridAnchors(r.Start, r.End, r.Step)
 }
 
 func (r *RangeBucketGridNative) Equal(other Node) bool {

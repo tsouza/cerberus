@@ -1106,7 +1106,9 @@ func (p *Planner) recordGridCarrier(gc chplan.GridCarrier, depth int, sig *signa
 	if depth == 0 && geom.outerRange > 0 && step > 0 {
 		sig.hasWindow = true
 		sig.outerRange = geom.outerRange
-		sig.outerN = int(geom.outerRange/step) + 1
+		gridStart, gridEnd, _ := gc.EvalGrid()
+		steps, _ := chplan.SpanSteps(geom.outerRange, gridStart, gridEnd, step)
+		sig.outerN = int(steps) + 1
 	}
 }
 

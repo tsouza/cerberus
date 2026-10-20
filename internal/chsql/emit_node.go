@@ -227,12 +227,13 @@ func (e *emitter) emitStepGrid(g *chplan.StepGrid) error {
 	// up to and including End. Matches Prom's range-query step grid
 	// (the upstream evaluator emits (end-start)/step + 1 samples per
 	// series in the canonical case).
-	numAnchors := max(g.End.Sub(g.Start).Nanoseconds()/stepNS+1, 1)
+	numAnchors := max(chplan.GridAnchors(g.Start, g.End, g.Step), 1)
 	start := g.Start
-	// Forward step grid: anchorBase_i = <start> + toIntervalNanosecond(i * step),
-	// fanned out via arrayJoin(arrayMap(i -> …, range(0, N))).
+	// Forward step grid: anchorBase_i = <start> + i * step, in the grid's
+	// arithmetic ([anchorGrid.ahead]), fanned out via
+	// arrayJoin(arrayMap(i -> …, range(0, N))).
 	startFrag := func(b *Builder) { b.DateTime64Lit(start) }
-	gridBody := Add(startFrag, Call("toIntervalNanosecond", Mul(BareIdent("i"), InlineLit(stepNS))))
+	gridBody := newAnchorGrid(stepNS, 0, numAnchors).ahead(startFrag, BareIdent("i"))
 	sb := NewQuery().Select(As(
 		Call(
 			"arrayJoin",

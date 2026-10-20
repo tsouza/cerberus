@@ -200,13 +200,9 @@ func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (Frag, error) {
 	// End-inclusive anchor count across the [Start, End] grid. When the
 	// grid bounds are absent (the now64(9) fixture shape) a single anchor
 	// is the only deterministic choice; the bounded fanout still applies.
-	var numAnchors int64 = 1
-	if !r.Start.IsZero() && !r.End.IsZero() {
-		span := r.End.Sub(r.Start).Nanoseconds()
-		if span < 0 {
-			return nil, fmt.Errorf("%w: RangeLWR.Start > End", ErrUnsupported)
-		}
-		numAnchors = span/stepNS + 1
+	numAnchors, err := gridAnchorCount(r.Start, r.End, r.Step, "RangeLWR")
+	if err != nil {
+		return nil, err
 	}
 
 	// Membership base (offset-shifted newest anchor) and value base
@@ -376,16 +372,17 @@ func (e *emitter) rangeLWRCollapseFrag(r *chplan.RangeLWR) (Frag, error) {
 // and the window width is the staleness lookback rather than a PromQL
 // range-vector `[range]`.
 func lwrAnchorFanoutFrag(gridBase, shiftBase, ts Frag, stepNS, lookbackNS, numAnchors int64) Frag {
-	dist := distBehindAnchorFrag(ts, shiftBase)
+	g := newAnchorGrid(stepNS, lookbackNS, numAnchors)
+	dist := g.dist(ts, shiftBase)
 	return Call(
 		"arrayJoin",
 		Call(
 			"arrayMap",
-			Lambda1("i", anchorBaseAtIdxFrag(gridBase, stepNS)),
+			Lambda1("i", anchorBaseAtIdxFrag(g, gridBase)),
 			Call(
 				"range",
-				Call("greatest", InlineLit(int64(0)), anchorGridFloorIdxFrag(dist, -lookbackNS, stepNS)),
-				Call("least", InlineLit(numAnchors), anchorGridFloorIdxFrag(dist, 0, stepNS)),
+				Call("greatest", InlineLit(int64(0)), g.floorIdx(dist, -g.units(lookbackNS))),
+				Call("least", InlineLit(numAnchors), g.floorIdx(dist, 0)),
 			),
 		),
 	)
@@ -419,7 +416,7 @@ func startAnchoredGridEnd(start, end time.Time, stepNS, numAnchors int64) time.T
 	if start.IsZero() || end.IsZero() {
 		return end
 	}
-	return start.Add(time.Duration((numAnchors - 1) * stepNS))
+	return chplan.GridInstant(start, time.Duration(stepNS), numAnchors-1)
 }
 
 // offsetShiftedBaseFrag renders an anchor base shifted back by a PromQL

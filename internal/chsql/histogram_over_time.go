@@ -203,7 +203,7 @@ func (e *emitter) emitRangeWindowHistogram(r *chplan.RangeWindow, m *chplan.Metr
 	}
 	rangeNS := rangeDur.Nanoseconds()
 
-	numAnchors, err := rangeWindowGridAnchorCount(r, stepNS)
+	numAnchors, err := rangeWindowGridAnchorCount(r)
 	if err != nil {
 		return err
 	}

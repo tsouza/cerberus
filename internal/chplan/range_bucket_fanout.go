@@ -181,9 +181,16 @@ func (r *RangeBucketFanout) NumAnchors() int64 {
 		if r.Step <= 0 {
 			return 0
 		}
-		return r.OuterRange.Nanoseconds()/r.Step.Nanoseconds() + 1
+		steps, _ := r.OuterSteps()
+		return steps + 1
 	}
-	return numAnchorsFromGrid(r.Start, r.End, r.Step)
+	return GridAnchors(r.Start, r.End, r.Step)
+}
+
+// OuterSteps returns how many whole steps fit in r's outer span and the
+// remainder, as [RangeWindow.OuterSteps] does. Step must be positive.
+func (r *RangeBucketFanout) OuterSteps() (int64, time.Duration) {
+	return SpanSteps(r.OuterRange, r.Start, r.End, r.Step)
 }
 
 // InputWindow returns the [start, end) bound this fan-out's OWN Input
@@ -199,22 +206,6 @@ func (r *RangeBucketFanout) NumAnchors() int64 {
 // RangeWindow.InputWindow and RangeLWR's identical Offset+Lookback widening.
 func (r *RangeBucketFanout) InputWindow(start, end time.Time) (time.Time, time.Time) {
 	return OffsetSpan(start, end, r.Offset, r.Lookback)
-}
-
-// numAnchorsFromGrid is the shared end-inclusive anchor-count formula every
-// (Start, End, Step) grid node's own NumAnchors delegates to:
-// (End-Start)/Step + 1, or 0 when either bound is unset or Step <= 0 (no
-// materialised grid to charge). [RangeBucketFanout.NumAnchors],
-// [RangeBucketGridNative.NumAnchors], and [RangeLWR.NumAnchors] all shared
-// this identical body verbatim before this extraction — see
-// RangeBucketFanout.NumAnchors' own doc for why this axis needs its own
-// charge in [requireSubquerySampleBudget] rather than relying on an
-// ancestor [RangeWindow].
-func numAnchorsFromGrid(start, end time.Time, step time.Duration) int64 {
-	if start.IsZero() || end.IsZero() || step <= 0 {
-		return 0
-	}
-	return end.Sub(start).Nanoseconds()/step.Nanoseconds() + 1
 }
 
 func (r *RangeBucketFanout) Equal(other Node) bool {

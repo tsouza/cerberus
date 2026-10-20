@@ -45,7 +45,7 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 		return nil, fmt.Errorf("solver: slice requires End > Start, got [%v,%v]", start, end)
 	}
 
-	n := int(outerRange/step) + 1 // total anchor count
+	n := int(chplan.GridAnchors(start, end, step)) // total anchor count
 	if n < 2 {
 		return nil, fmt.Errorf("solver: slice requires N >= 2 anchors, got %d", n)
 	}
@@ -108,8 +108,8 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 	slices := make([]Slice, 0, len(spans))
 	for si := len(spans) - 1; si >= 0; si-- {
 		sp := spans[si]
-		endJ := end.Add(-time.Duration(sp.startIdx) * step)
-		startJ := end.Add(-time.Duration(sp.startIdx+sp.count-1) * step)
+		endJ := chplan.GridInstant(end, -step, int64(sp.startIdx))
+		startJ := chplan.GridInstant(end, -step, int64(sp.startIdx+sp.count-1))
 
 		shardPlan, err := chplan.ReanchorRange(base, startJ, endJ)
 		if err != nil {

@@ -203,6 +203,9 @@ type fusedSubqueryGrid struct {
 	rangeNS      int64
 	rangeSeconds float64
 	numAnchors   int64
+	// grid is the inner grid's anchor arithmetic, wide enough for the
+	// inner window and for the outer window coveredValuesFrag slices by.
+	grid anchorGrid
 }
 
 // newFusedSubqueryGrid resolves the shared grid quantities. The GroupBy frags
@@ -224,8 +227,9 @@ func (e *emitter) newFusedSubqueryGrid(
 	}
 	endInner := endExprFrag(inner)
 	stepNS := inner.Step.Nanoseconds()
-	numAnchors := inner.OuterRange.Nanoseconds()/stepNS + 1
+	numAnchors := outerAnchorCount(inner)
 	endInner, numAnchors = stepAlignGrid(inner, endInner, stepNS, numAnchors)
+	reachNS := max(inner.Range.Nanoseconds(), r.Range.Nanoseconds())
 	return &fusedSubqueryGrid{
 		inner:        inner,
 		kind:         kind,
@@ -237,6 +241,7 @@ func (e *emitter) newFusedSubqueryGrid(
 		rangeNS:      inner.Range.Nanoseconds(),
 		rangeSeconds: inner.Range.Seconds(),
 		numAnchors:   numAnchors,
+		grid:         newAnchorGrid(stepNS, reachNS, numAnchors),
 	}, nil
 }
 
@@ -269,7 +274,7 @@ func (g *fusedSubqueryGrid) samplesQuery() *QueryBuilder {
 func (g *fusedSubqueryGrid) anchorsFrag() Frag {
 	return Call(
 		"arrayMap",
-		Lambda1("i", anchorBaseAtIdxFrag(g.endInner, g.stepNS)),
+		Lambda1("i", anchorBaseAtIdxFrag(g.grid, g.endInner)),
 		Call("range", InlineLit(g.numAnchors)),
 	)
 }
@@ -434,7 +439,8 @@ func (e *emitter) emitFusedMatrixSubquery(
 	// epoch alignment is the INNER subquery sample grid's rule (PromQL's
 	// evalSubquery), while the outer reducer reports on the user's
 	// start + k*step grid, exactly as emitRangeWindowOverTimeDirectMatrix does.
-	numOuterAnchors := r.OuterRange.Nanoseconds()/outerStepNS + 1
+	numOuterAnchors := outerAnchorCount(r)
+	outerGrid := newAnchorGrid(outerStepNS, outerRangeNS, numOuterAnchors)
 
 	// Layer 1 — per-series sorted (ts, value) samples array.
 	samplesQ := g.samplesQuery()
@@ -463,7 +469,7 @@ func (e *emitter) emitFusedMatrixSubquery(
 	// values.
 	outerAnchors := Call(
 		"arrayMap",
-		Lambda1("i", anchorBaseAtIdxFrag(endOuter, outerStepNS)),
+		Lambda1("i", anchorBaseAtIdxFrag(outerGrid, endOuter)),
 		Call("range", InlineLit(numOuterAnchors)),
 	)
 	perOuter := Call(
@@ -509,7 +515,8 @@ func (e *emitter) emitFusedMatrixSubquery(
 // step-aligned inner base, i ascending ⇒ a_i descending), so the covered set is
 // a CONTIGUOUS index run and an arraySlice answers it in O(covered) rather than
 // rescanning all numAnchors entries per outer anchor. With
-// `d = dateDiff('nanosecond', o, B) = B - o`:
+// `d = dateDiff('nanosecond', o, B) = B - o` (in the grid's units,
+// [anchorGrid.dist]):
 //
 //	a_i <= o                ⇔  i·step >= d        ⇔  i >= ceil(d / step)
 //	a_i >  o - outerRange   ⇔  i·step <  d + R    ⇔  i <  ceil((d + R) / step)
@@ -521,9 +528,9 @@ func (e *emitter) emitFusedMatrixSubquery(
 // same monotone greatest/least pair, so an outer anchor whose window falls off
 // the grid degenerates to a zero-length slice rather than a negative one.
 func (g *fusedSubqueryGrid) coveredValuesFrag(o Frag, outerRangeNS int64) Frag {
-	dist := distBehindAnchorFrag(o, g.endInner)
-	lo := Call("greatest", InlineLit(int64(0)), anchorGridCeilIdxFrag(dist, 0, g.stepNS))
-	hi := Call("least", InlineLit(g.numAnchors), anchorGridCeilIdxFrag(dist, outerRangeNS, g.stepNS))
+	dist := g.grid.dist(o, g.endInner)
+	lo := Call("greatest", InlineLit(int64(0)), g.grid.ceilIdx(dist, 0))
+	hi := Call("least", InlineLit(g.numAnchors), g.grid.ceilIdx(dist, g.grid.units(outerRangeNS)))
 	covered := Call(
 		"arraySlice",
 		BareIdent(fusedAnchorGridAlias),

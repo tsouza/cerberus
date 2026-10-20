@@ -535,7 +535,7 @@ func (e *emitter) emitFixedAccumulatorExtrapolatedMatrix(r *chplan.RangeWindow, 
 	rangeNS := r.Range.Nanoseconds()
 	stepNS := r.Step.Nanoseconds()
 	rangeSeconds := r.Range.Seconds()
-	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	numAnchors := outerAnchorCount(r)
 	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	anchor := verbatim(RangeWindowAnchorAlias)
 	rangeStart := rangeStartFrag(anchor, rangeNS)

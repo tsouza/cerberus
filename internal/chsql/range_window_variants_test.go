@@ -333,8 +333,9 @@ func TestVariantValsFrag_TupleSlotArithmetic(t *testing.T) {
 }
 
 // TestEmitFusedVariantsMatrix_AnchorCountArithmetic kills the
-// ARITHMETIC_BASE mutants at range_window_variants.go:`r.OuterRange.Nanoseconds()/stepNS + 1`
-// (`r.OuterRange.Nanoseconds()/stepNS + 1`). fusedTestWindow's OuterRange
+// ARITHMETIC_BASE mutants in the anchor count range_window_variants.go takes
+// from outerAnchorCount (chplan.SpanSteps:`outerRange / step`,
+// anchor_grid.go:`steps + 1`). fusedTestWindow's OuterRange
 // (1m) / Step (30s) + 1 = 3 anchors, surfacing as the sample-fanout's
 // `least(3, ...)` upper clamp. A `/`→`*` flip overflows to a huge count;
 // a `+`→`-` flip yields `least(1, ...)`.

@@ -223,7 +223,7 @@ func (e *emitter) emitRangeWindowDownsampleTier(r *chplan.RangeWindow) error {
 	// plain request grid, computed from Start/End directly rather than
 	// trusted from r.OuterRange (which downsampleTierEligible deliberately
 	// leaves unchecked — see that function's own doc).
-	numAnchors := r.End.Sub(r.Start).Nanoseconds()/stepNS + 1
+	numAnchors := chplan.GridAnchors(r.Start, r.End, r.Step)
 
 	// fan — one row per (tier row, covering grid anchor).
 	fan := NewQuery().From(tierSub)

@@ -847,7 +847,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	rangeNS := r.Range.Nanoseconds()
 	stepNS := r.Step.Nanoseconds()
 	// End-inclusive anchor count. Truncating division matches Prom.
-	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	numAnchors := outerAnchorCount(r)
 	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
@@ -954,7 +954,7 @@ func rangeWindowGridEnd(r *chplan.RangeWindow) time.Time {
 	if r.StepAlign || r.Step <= 0 || r.Start.IsZero() || r.End.IsZero() {
 		return r.End
 	}
-	numAnchors, err := rangeWindowGridAnchorCount(r, r.Step.Nanoseconds())
+	numAnchors, err := rangeWindowGridAnchorCount(r)
 	if err != nil {
 		// Start > End: every emitter rejects the node with the same error
 		// before rendering anything; the base is irrelevant.
@@ -1294,7 +1294,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	// Anchor count: end-inclusive grid across [End-Span, End] spaced by
 	// Step. When OuterRange > 0 use it (PromQL subquery semantics);
 	// otherwise derive from [Start, End].
-	numAnchors, err := rangeWindowGridAnchorCount(r, stepNS)
+	numAnchors, err := rangeWindowGridAnchorCount(r)
 	if err != nil {
 		return err
 	}
@@ -1630,7 +1630,7 @@ func (e *emitter) emitRangeWindowMetricsQuantileBuckets(r *chplan.RangeWindow, m
 	}
 	rangeNS := rangeDur.Nanoseconds()
 
-	numAnchors, err := rangeWindowGridAnchorCount(r, stepNS)
+	numAnchors, err := rangeWindowGridAnchorCount(r)
 	if err != nil {
 		return err
 	}
@@ -1826,28 +1826,27 @@ func anchorFanoutFrag(end Frag, stepNS, numAnchors int64) Frag {
 		"arrayJoin",
 		Call(
 			"arrayMap",
-			Lambda1("i", anchorBaseAtIdxFrag(end, stepNS)),
+			Lambda1("i", anchorBaseAtIdxFrag(newAnchorGrid(stepNS, 0, numAnchors), end)),
 			Call("range", InlineLit(int64(0)), InlineLit(numAnchors)),
 		),
 	)
 }
 
-// anchorAtIdxFrag renders `<end> - toIntervalNanosecond(<idx> * <stepNS>)`
-// — the idx-th grid anchor walking back from the eval-grid base, for an
-// arbitrary idx Frag. anchorBaseAtIdxFrag is the common case (idx is the
-// enclosing Lambda1 param); deltaPrefixAggregateRawAnchorArrayFrag calls
-// this directly with a scalar prefixAnchorIndexFrag result, outside any
-// arrayMap lambda.
-func anchorAtIdxFrag(end Frag, stepNS int64, idx Frag) Frag {
-	return Sub(end, Call("toIntervalNanosecond", Mul(idx, InlineLit(stepNS))))
+// anchorAtIdxFrag renders the idx-th grid anchor walking back from the
+// eval-grid base end, `<end> - toIntervalNanosecond(<idx> * <step>)` in
+// g's arithmetic ([anchorGrid.back]), for an arbitrary idx Frag.
+// anchorBaseAtIdxFrag is the common case (idx is the enclosing Lambda1
+// param); deltaPrefixAggregateRawAnchorArrayFrag calls this directly with
+// a computed index.
+func anchorAtIdxFrag(g anchorGrid, end, idx Frag) Frag {
+	return g.back(end, idx)
 }
 
 // anchorBaseAtIdxFrag renders the arrayMap body shared by every anchor
-// fan-out: `<end> - toIntervalNanosecond(i * <stepNS>)` — the i-th grid
-// anchor walking back from the eval-grid base. `i` is the enclosing
-// Lambda1 param (BareIdent("i")).
-func anchorBaseAtIdxFrag(end Frag, stepNS int64) Frag {
-	return anchorAtIdxFrag(end, stepNS, BareIdent("i"))
+// fan-out: the i-th grid anchor walking back from the eval-grid base. `i`
+// is the enclosing Lambda1 param (BareIdent("i")).
+func anchorBaseAtIdxFrag(g anchorGrid, end Frag) Frag {
+	return anchorAtIdxFrag(g, end, BareIdent("i"))
 }
 
 // sampleAnchorFanoutFrag returns a Frag rendering the SAMPLE-SIDE
@@ -1891,14 +1890,15 @@ func sampleAnchorFanoutFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Fra
 }
 
 func sampleAnchorFanoutArrayFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
-	dist := distBehindAnchorFrag(ts, end)
+	g := newAnchorGrid(stepNS, rangeNS, numAnchors)
+	dist := g.dist(ts, end)
 	return Call(
 		"arrayMap",
-		Lambda1("i", anchorBaseAtIdxFrag(end, stepNS)),
+		Lambda1("i", anchorBaseAtIdxFrag(g, end)),
 		Call(
 			"range",
-			Call("greatest", InlineLit(int64(0)), anchorGridFloorIdxFrag(dist, -rangeNS, stepNS)),
-			Call("least", InlineLit(numAnchors), anchorGridFloorIdxFrag(dist, 0, stepNS)),
+			Call("greatest", InlineLit(int64(0)), g.floorIdx(dist, -g.units(rangeNS))),
+			Call("least", InlineLit(numAnchors), g.floorIdx(dist, 0)),
 		),
 	)
 }
@@ -1917,15 +1917,15 @@ func sampleAnchorFanoutArrayFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64
 // prefixArrayFrag condition on `ts <= rangeStart(end, rangeNS)` — the clamp
 // alone would otherwise assign a too-recent ts to the newest anchor's
 // bucket regardless of whether it actually precedes that anchor's window.
-func prefixAnchorIndexFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
-	dist := distBehindAnchorFrag(ts, end)
+func prefixAnchorIndexFrag(g anchorGrid, end, ts Frag, rangeNS, numAnchors int64) Frag {
+	dist := g.dist(ts, end)
 	return Call(
 		"least",
 		InlineLit(numAnchors-1),
 		Call(
 			"greatest",
 			InlineLit(int64(0)),
-			Sub(anchorGridFloorIdxFrag(dist, -rangeNS, stepNS), InlineLit(int64(1))),
+			Sub(g.floorIdx(dist, -g.units(rangeNS)), InlineLit(int64(1))),
 		),
 	)
 }
@@ -1936,10 +1936,10 @@ func prefixAnchorIndexFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Frag
 // deltaPrefixAggregateRawAnchorArrayFrag, and
 // deltaPrefixAggregateBucketAnchorArrayFrag — each supplies its own
 // prefixIndex (via prefixAnchorIndexFrag) and eligibility condition.
-func prefixArrayFrag(end Frag, stepNS int64, prefixIndex, condition Frag) Frag {
+func prefixArrayFrag(g anchorGrid, end, prefixIndex, condition Frag) Frag {
 	return Call(
 		"arrayMap",
-		Lambda1("i", anchorBaseAtIdxFrag(end, stepNS)),
+		Lambda1("i", anchorBaseAtIdxFrag(g, end)),
 		Call(
 			"range",
 			prefixIndex,
@@ -1957,12 +1957,13 @@ func deltaPrefixAnchorArrayFrag(
 	end, ts, temporality Frag,
 	stepNS, rangeNS, numAnchors int64,
 ) Frag {
-	prefixIndex := prefixAnchorIndexFrag(end, ts, stepNS, rangeNS, numAnchors)
+	g := newAnchorGrid(stepNS, rangeNS, numAnchors)
+	prefixIndex := prefixAnchorIndexFrag(g, end, ts, rangeNS, numAnchors)
 	prefixCondition := And(
 		Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)),
 		Lte(ts, rangeStartFrag(end, rangeNS)),
 	)
-	return prefixArrayFrag(end, stepNS, prefixIndex, prefixCondition)
+	return prefixArrayFrag(g, end, prefixIndex, prefixCondition)
 }
 
 // deltaPrefixAggregateRawAnchorArrayFrag is deltaPrefixAnchorArrayFrag's
@@ -1995,15 +1996,16 @@ func deltaPrefixAnchorArrayFrag(
 // #2429 fanout row budget and regroup cardinality for no correctness
 // benefit on any mixed-temporality table.
 func deltaPrefixAggregateRawAnchorArrayFrag(end, ts, temporality Frag, stepNS, rangeNS, numAnchors int64) Frag {
-	prefixIndex := prefixAnchorIndexFrag(end, ts, stepNS, rangeNS, numAnchors)
-	assignedAnchor := anchorAtIdxFrag(end, stepNS, prefixIndex)
+	g := newAnchorGrid(stepNS, rangeNS, numAnchors)
+	prefixIndex := prefixAnchorIndexFrag(g, end, ts, rangeNS, numAnchors)
+	assignedAnchor := anchorAtIdxFrag(g, end, prefixIndex)
 	sameDay := Eq(Call("toStartOfDay", ts), Call("toStartOfDay", rangeStartFrag(assignedAnchor, rangeNS)))
 	condition := And(
 		Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)),
 		sameDay,
 		Lte(ts, rangeStartFrag(end, rangeNS)),
 	)
-	return prefixArrayFrag(end, stepNS, prefixIndex, condition)
+	return prefixArrayFrag(g, end, prefixIndex, condition)
 }
 
 // deltaPrefixAggregateBucketAnchorArrayFrag emits at most one anchor per
@@ -2019,9 +2021,10 @@ func deltaPrefixAggregateRawAnchorArrayFrag(end, ts, temporality Frag, stepNS, r
 // no additional day-match gate is needed.
 func deltaPrefixAggregateBucketAnchorArrayFrag(end, bucketStart Frag, stepNS, rangeNS, numAnchors int64) Frag {
 	ts := Add(bucketStart, Call("toIntervalDay", InlineLit(int64(1))))
-	prefixIndex := prefixAnchorIndexFrag(end, ts, stepNS, rangeNS, numAnchors)
+	g := newAnchorGrid(stepNS, rangeNS, numAnchors)
+	prefixIndex := prefixAnchorIndexFrag(g, end, ts, rangeNS, numAnchors)
 	condition := Lte(ts, rangeStartFrag(end, rangeNS))
-	return prefixArrayFrag(end, stepNS, prefixIndex, condition)
+	return prefixArrayFrag(g, end, prefixIndex, condition)
 }
 
 // stepAlignGrid centralises the StepAlign branch shared by the three
@@ -2035,7 +2038,8 @@ func deltaPrefixAggregateBucketAnchorArrayFrag(end, bucketStart Frag, stepNS, ra
 // When StepAlign is false the inputs pass through unchanged (byte-stable
 // goldens for the outer query_range grid and the Tempo metrics path).
 func stepAlignGrid(r *chplan.RangeWindow, end Frag, stepNS, numAnchors int64) (Frag, int64) {
-	return stepAlignGridFor(r.StepAlign, end, r.End, r.Offset, r.OuterRange, stepNS, numAnchors)
+	steps, rem := r.OuterSteps()
+	return stepAlignGridFor(r.StepAlign, end, r.End, r.Offset, steps, rem, stepNS, numAnchors)
 }
 
 // stepAlignGridFor is [stepAlignGrid] generalized to raw values rather than
@@ -2044,12 +2048,13 @@ func stepAlignGrid(r *chplan.RangeWindow, end Frag, stepNS, numAnchors int64) (F
 // instead of re-deriving it — chplan.RangeBucketFanout carries the same
 // (End, Offset, OuterRange, StepAlign) quartet RangeWindow does, just on a
 // different Go type this package cannot switch stepAlignGrid's own
-// parameter on without duplicating its body.
-func stepAlignGridFor(stepAlign bool, end Frag, endTime time.Time, offset, outerRange time.Duration, stepNS, numAnchors int64) (Frag, int64) {
+// parameter on without duplicating its body. steps and rem are the whole
+// steps in the outer range and the remainder (OuterSteps on either type).
+func stepAlignGridFor(stepAlign bool, end Frag, endTime time.Time, offset time.Duration, steps int64, rem time.Duration, stepNS, numAnchors int64) (Frag, int64) {
 	if !stepAlign {
 		return end, numAnchors
 	}
-	return epochAlignedEndFrag(end, stepNS), stepAlignedAnchorCountFor(endTime, offset, outerRange, stepNS, numAnchors)
+	return epochAlignedEndFrag(end, stepNS), stepAlignedAnchorCountFor(endTime, offset, steps, rem, stepNS, numAnchors)
 }
 
 // stepAlignedAnchorCountFor returns how many phase-0 anchors an
@@ -2064,7 +2069,10 @@ func stepAlignGridFor(stepAlign bool, end Frag, endTime time.Time, offset, outer
 // where `E = End − Offset` and `δ = E mod step`, and PromQL's subquery
 // window is left-OPEN: anchor `E' − i·step` belongs to the window iff
 // `E' − i·step > E − OuterRange`, i.e. `i·step < OuterRange − δ`. So the
-// grid holds exactly `ceil((OuterRange − δ)/step)` anchors — one fewer
+// grid holds exactly `ceil((OuterRange − δ)/step)` anchors. With
+// `OuterRange = steps·step + rem` and both rem and δ in [0, step), that is
+// `steps + [rem > δ]`, which needs no span wider than a step: OuterRange
+// itself may exceed what a time.Duration holds. That count is one fewer
 // than the inclusive formula whenever `δ` swallows the remainder, and
 // notably one fewer on every exactly-aligned grid (δ = 0, OuterRange a
 // multiple of step), which is the common `m[1m:10s]` shape. Emitting the
@@ -2075,14 +2083,13 @@ func stepAlignGridFor(stepAlign bool, end Frag, endTime time.Time, offset, outer
 // A zero End means the grid base is `now64(9)`, resolved at execution
 // time, so δ is unknowable at emit time: fall back to the caller's
 // inclusive count, which is a superset and preserves those goldens.
-func stepAlignedAnchorCountFor(end time.Time, offset, outerRange time.Duration, stepNS, inclusive int64) int64 {
-	if end.IsZero() || outerRange <= 0 || stepNS <= 0 {
+func stepAlignedAnchorCountFor(end time.Time, offset time.Duration, steps int64, rem time.Duration, stepNS, inclusive int64) int64 {
+	if end.IsZero() || steps < 0 || (steps == 0 && rem == 0) || stepNS <= 0 {
 		return inclusive
 	}
 	base := end.Add(-offset).UnixNano()
 	delta := ((base % stepNS) + stepNS) % stepNS
-	span := outerRange.Nanoseconds() - delta
-	if span <= 0 {
+	if steps == 0 && rem.Nanoseconds() <= delta {
 		// Sub-step window: the grid holds NO anchor, and the result is
 		// the empty matrix.
 		//
@@ -2101,7 +2108,10 @@ func stepAlignedAnchorCountFor(end time.Time, offset, outerRange time.Duration, 
 		// so the arrayJoin produces no rows.
 		return 0
 	}
-	return (span + stepNS - 1) / stepNS
+	if rem.Nanoseconds() > delta {
+		return steps + 1
+	}
+	return steps
 }
 
 // epochAlignedEndFrag snaps the anchor-grid base `end` down to the nearest
@@ -2131,13 +2141,6 @@ func epochAlignedEndFrag(end Frag, stepNS int64) Frag {
 			step,
 		),
 	)
-}
-
-// distBehindAnchorFrag renders `dateDiff('nanosecond', <ts>, <base>)` —
-// the row's distance (ns) behind the newest anchor base, the shared
-// `dist` term every bounded fan-out feeds into anchorGridFloorIdxFrag.
-func distBehindAnchorFrag(ts, base Frag) Frag {
-	return Call("dateDiff", InlineLit("nanosecond"), ts, base)
 }
 
 // anchorGridFloorIdxFrag renders the floor-division grid index
@@ -3558,7 +3561,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
 	stepNS := r.Step.Nanoseconds()
-	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	numAnchors := outerAnchorCount(r)
 	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {
@@ -4872,7 +4875,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 // instantWindowScanBoundsFrags' single-anchor window but the same
 // earliestAnchor derivation applyMatrixFanoutScanBound already uses.
 func matrixWindowScanBoundsFrags(tsCol string, end Frag, stepNS, rangeNS, numAnchors int64) (Frag, Frag) {
-	earliestAnchor := Sub(end, Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)))
+	earliestAnchor := newAnchorGrid(stepNS, rangeNS, numAnchors).earliest(end, numAnchors)
 	lo := Gt(Col(tsCol), rangeStartFrag(earliestAnchor, rangeNS))
 	hi := Lte(Col(tsCol), end)
 	return lo, hi
@@ -4901,10 +4904,7 @@ func (e *emitter) applyMatrixFanoutScanBound(
 		maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
 		return
 	}
-	earliestAnchor := Sub(
-		end,
-		Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)),
-	)
+	earliestAnchor := newAnchorGrid(stepNS, rangeNS, numAnchors).earliest(end, numAnchors)
 	deltaBranch := Eq(Col(rangeWindowTemporalityColumn(r)), InlineLit(schema.AggregationTemporalityDelta))
 	if lower := deltaPrefixLowerBoundFrag(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS), e.deltaPrefixLookbackNS); lower != nil {
 		deltaBranch = And(deltaBranch, lower)
@@ -4949,7 +4949,7 @@ func (e *emitter) applyMatrixFanoutScanBoundAggregate(
 	end Frag,
 	stepNS, rangeNS, numAnchors int64,
 ) error {
-	earliestAnchor := Sub(end, Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)))
+	earliestAnchor := newAnchorGrid(stepNS, rangeNS, numAnchors).earliest(end, numAnchors)
 	earliestDay := deltaPrefixBucketStartFrag(rangeStartFrag(earliestAnchor, rangeNS))
 	fanout.Where(
 		Lte(Col(srcTs), end),
@@ -5002,7 +5002,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	stepNS := r.Step.Nanoseconds()
 	rangeSeconds := r.Range.Seconds()
 	// End-inclusive anchor count. Truncating division matches Prom.
-	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	numAnchors := outerAnchorCount(r)
 	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	anchor := verbatim(RangeWindowAnchorAlias)
 	rangeStart := rangeStartFrag(anchor, rangeNS)
@@ -5652,7 +5652,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 	stepNS := r.Step.Nanoseconds()
 	// End-inclusive anchor count. e.g. [5m:2m] = 5m/2m + 1 = 3 anchors
 	// at end, end-2m, end-4m. Truncating division matches Prom semantics.
-	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	numAnchors := outerAnchorCount(r)
 	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
 	if err != nil {

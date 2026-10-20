@@ -118,18 +118,12 @@ func EmitMetricsExemplars(
 // fan-out, the metrics, quantile-bucket and histogram fan-outs, and
 // [rangeWindowGridEnd] (the Start-anchored grid base every windowed emitter
 // walks from) share it so the base and the walk count cannot disagree.
-func rangeWindowGridAnchorCount(rw *chplan.RangeWindow, stepNS int64) (int64, error) {
+func rangeWindowGridAnchorCount(rw *chplan.RangeWindow) (int64, error) {
 	switch {
 	case rw.OuterRange > 0:
-		return rw.OuterRange.Nanoseconds()/stepNS + 1, nil
-	case !rw.Start.IsZero() && !rw.End.IsZero():
-		span := rw.End.Sub(rw.Start).Nanoseconds()
-		if span < 0 {
-			return 0, fmt.Errorf("%w: RangeWindow.Start > End", ErrUnsupported)
-		}
-		return span/stepNS + 1, nil
+		return outerAnchorCount(rw), nil
 	default:
-		return 1, nil
+		return gridAnchorCount(rw.Start, rw.End, rw.Step, "RangeWindow")
 	}
 }
 
@@ -148,7 +142,7 @@ func (e *emitter) emitMetricsExemplars(
 	}
 	rangeNS := rangeDur.Nanoseconds()
 
-	numAnchors, err := rangeWindowGridAnchorCount(rw, stepNS)
+	numAnchors, err := rangeWindowGridAnchorCount(rw)
 	if err != nil {
 		return err
 	}
