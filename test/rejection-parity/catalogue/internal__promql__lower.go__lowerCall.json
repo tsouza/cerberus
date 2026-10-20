@@ -49,6 +49,18 @@
           "lower",
           "lowerSubqueryOverInstantCall",
           "lowerSubqueryOverInstantTransform"
+        ],
+        "cited": [
+          "Lower",
+          "LowerAt",
+          "LowerAtRange",
+          "LowerAtRangeOpts",
+          "LowerMetadataRange",
+          "lowerCall",
+          "lowerMetadataCatalog",
+          "lowerSubqueryOverInstantCall",
+          "lowerSubqueryOverInstantTransform",
+          "preprocessQuery"
         ]
       }
     }
