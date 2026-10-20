@@ -45,3 +45,23 @@ CREATE TABLE otel_logs (
 		t.Fatalf("expanded projection = %q, want %q", head, want)
 	}
 }
+
+// TestSeedTableColumns_QuotedNamesUnquoted pins that a backtick-quoted
+// CREATE TABLE yields the same table key and column names as an unquoted
+// one: callers look columns up by their bare names.
+func TestSeedTableColumns_QuotedNamesUnquoted(t *testing.T) {
+	t.Parallel()
+	const table = "otel_metrics_exponential_histogram"
+	want := []string{"MetricName", "Count", "Attributes"}
+	for name, seed := range map[string]string{
+		"quoted": "CREATE OR REPLACE TABLE `Otel_Metrics_Exponential_Histogram` " +
+			"(`MetricName` String, `Count` UInt64, `Attributes` Map(String, String)) ENGINE = Memory;",
+		"bare": "CREATE OR REPLACE TABLE Otel_Metrics_Exponential_Histogram " +
+			"(MetricName String, Count UInt64, Attributes Map(String, String)) ENGINE = Memory;",
+	} {
+		got := SeedTableColumns(seed)
+		if len(got) != 1 || !slices.Equal(got[table], want) {
+			t.Errorf("%s: SeedTableColumns() = %q, want map[%s:%q]", name, got, table, want)
+		}
+	}
+}
