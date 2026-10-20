@@ -168,105 +168,29 @@ type pin struct {
 // mapPins returns e with the `@` pin of every selector and subquery
 // replaced by what fn maps it to; fn returns a pin unchanged to keep it.
 // A node whose subtree keeps every pin is returned as it is, and e itself
-// is never modified.
+// is never modified ([mapExpr]).
 func mapPins(e parser.Expr, fn func(pin) pin) parser.Expr {
-	switch n := e.(type) {
-	case *parser.VectorSelector:
-		p := fn(pin{ts: n.Timestamp, startOrEnd: n.StartOrEnd})
-		if p.ts == n.Timestamp && p.startOrEnd == n.StartOrEnd {
-			return n
+	return mapExpr(e, func(node parser.Expr) parser.Expr {
+		switch n := node.(type) {
+		case *parser.VectorSelector:
+			p := fn(pin{ts: n.Timestamp, startOrEnd: n.StartOrEnd})
+			if p.ts == n.Timestamp && p.startOrEnd == n.StartOrEnd {
+				return n
+			}
+			cp := *n
+			cp.Timestamp, cp.StartOrEnd = p.ts, p.startOrEnd
+			return &cp
+		case *parser.SubqueryExpr:
+			p := fn(pin{ts: n.Timestamp, startOrEnd: n.StartOrEnd})
+			if p.ts == n.Timestamp && p.startOrEnd == n.StartOrEnd {
+				return n
+			}
+			cp := *n
+			cp.Timestamp, cp.StartOrEnd = p.ts, p.startOrEnd
+			return &cp
 		}
-		cp := *n
-		cp.Timestamp, cp.StartOrEnd = p.ts, p.startOrEnd
-		return &cp
-	case *parser.MatrixSelector:
-		vs := mapPins(n.VectorSelector, fn)
-		if vs == n.VectorSelector {
-			return n
-		}
-		cp := *n
-		cp.VectorSelector = vs
-		return &cp
-	case *parser.SubqueryExpr:
-		inner := mapPins(n.Expr, fn)
-		p := fn(pin{ts: n.Timestamp, startOrEnd: n.StartOrEnd})
-		if inner == n.Expr && p.ts == n.Timestamp && p.startOrEnd == n.StartOrEnd {
-			return n
-		}
-		cp := *n
-		cp.Expr, cp.Timestamp, cp.StartOrEnd = inner, p.ts, p.startOrEnd
-		return &cp
-	case *parser.Call:
-		args := mapPinsAll(n.Args, fn)
-		if args == nil {
-			return n
-		}
-		cp := *n
-		cp.Args = args
-		return &cp
-	case *parser.AggregateExpr:
-		inner, param := mapPins(n.Expr, fn), n.Param
-		if n.Param != nil {
-			param = mapPins(n.Param, fn)
-		}
-		if inner == n.Expr && param == n.Param {
-			return n
-		}
-		cp := *n
-		cp.Expr, cp.Param = inner, param
-		return &cp
-	case *parser.BinaryExpr:
-		lhs, rhs := mapPins(n.LHS, fn), mapPins(n.RHS, fn)
-		if lhs == n.LHS && rhs == n.RHS {
-			return n
-		}
-		cp := *n
-		cp.LHS, cp.RHS = lhs, rhs
-		return &cp
-	case *parser.ParenExpr:
-		inner := mapPins(n.Expr, fn)
-		if inner == n.Expr {
-			return n
-		}
-		cp := *n
-		cp.Expr = inner
-		return &cp
-	case *parser.UnaryExpr:
-		inner := mapPins(n.Expr, fn)
-		if inner == n.Expr {
-			return n
-		}
-		cp := *n
-		cp.Expr = inner
-		return &cp
-	case *parser.StepInvariantExpr:
-		inner := mapPins(n.Expr, fn)
-		if inner == n.Expr {
-			return n
-		}
-		cp := *n
-		cp.Expr = inner
-		return &cp
-	default:
-		return e
-	}
-}
-
-// mapPinsAll returns args with [mapPins] applied to each, or nil when no
-// argument changes.
-func mapPinsAll(args parser.Expressions, fn func(pin) pin) parser.Expressions {
-	var out parser.Expressions
-	for i, a := range args {
-		moved := mapPins(a, fn)
-		if moved == a {
-			continue
-		}
-		if out == nil {
-			out = append(parser.Expressions(nil), args...)
-		}
-		out[i] = moved
-	}
-	return out
+		return node
+	})
 }
 
 // inFrame returns c with its request range moved by shift milliseconds,

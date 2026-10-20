@@ -1,0 +1,20 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/preprocess.go:checkSubquerySteps#62dd023f",
+      "message": "promql: subquery step %s is under a millisecond, the resolution Prometheus evaluates a subquery at, so its interval is zero",
+      "class": "rejection",
+      "trigger_query": "max_over_time(demo_http_requests_total[1m:0.0005])",
+      "evidence": {
+        "guard": [
+          "inside func literal",
+          "if n, ok := node.(*parser.SubqueryExpr); ok \u0026\u0026 err == nil \u0026\u0026 n.Step \u003e 0 \u0026\u0026 n.Step \u003c time.Millisecond"
+        ],
+        "callers": [
+          "preprocessQuery"
+        ]
+      }
+    }
+  ]
+}
