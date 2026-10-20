@@ -41,8 +41,8 @@ const framePinBound = int64(1) << 62
 // domain; each shift is a multiple of every subquery step. It returns the first frame that fits, recorded as
 // [domainFit.frameShift], and the rejection in Prometheus's frame when
 // none does.
-func fitInFrame(expr parser.Expr, ctx lowerCtx) (parser.Expr, *domainFit, error) {
-	out, f, err := fitDomain(expr, ctx, 0)
+func fitInFrame(expr parser.Expr, ctx lowerCtx, isolating bool) (parser.Expr, *domainFit, error) {
+	out, f, err := fitDomain(expr, ctx, 0, isolating)
 	var outside *outsideDomainError
 	if err == nil || ctx.end.IsZero() || !errors.As(err, &outside) || !framePinsFit(expr) {
 		return out, f, err
@@ -61,10 +61,10 @@ func fitInFrame(expr parser.Expr, ctx lowerCtx) (parser.Expr, *domainFit, error)
 		least = -ceilUnits(at-instantDomainMax.UnixMilli()+cushion, unit)
 	}
 	for _, shift := range []int64{toCentre / 2 / unit * unit, toCentre / unit * unit, least} {
-		if shift == 0 || !offsetFits(shift) {
+		if shift == 0 {
 			continue
 		}
-		framed, ff, ferr := fitDomain(shiftPins(expr, shift), ctx.inFrame(shift), shift)
+		framed, ff, ferr := fitDomain(shiftPins(expr, shift), ctx.inFrame(shift), shift, isolating)
 		if ferr == nil {
 			ff.unframedErr = err
 			return framed, ff, nil
@@ -271,14 +271,20 @@ func mapPinsAll(args parser.Expressions, fn func(pin) pin) parser.Expressions {
 // inFrame returns c with its request range moved by shift milliseconds,
 // the frame [fitInFrame] fits a query in.
 func (c lowerCtx) inFrame(shift int64) lowerCtx {
-	by := time.Duration(shift) * time.Millisecond
 	if !c.start.IsZero() {
-		c.start = c.start.Add(by)
+		c.start = moveMillis(c.start, shift)
 	}
 	if !c.end.IsZero() {
-		c.end = c.end.Add(by)
+		c.end = moveMillis(c.end, shift)
 	}
 	return c
+}
+
+// moveMillis returns t moved by shift milliseconds, exactly for a shift
+// further than a time.Duration holds: a frame may move a query by up to the
+// length of the domain, about 584 years.
+func moveMillis(t time.Time, shift int64) time.Time {
+	return chplan.GridInstant(t, time.Millisecond, shift)
 }
 
 // withDomain returns c lowering the fitted query f describes: in its
@@ -324,6 +330,22 @@ func unframeInstant(ts chplan.Expr, shift int64) chplan.Expr {
 	}}}
 }
 
+// unframeWholeMillis renders the DateTime64(9) instant ts, which carries
+// whole milliseconds, moved back by shift milliseconds into the domain,
+// for a shift whose nanoseconds Int64 does not hold: it moves the
+// instant's Unix milliseconds and converts them back to nanoseconds.
+func unframeWholeMillis(ts chplan.Expr, shift int64) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnFromUnixNanos, Args: []chplan.Expr{&chplan.Binary{
+		Op: chplan.OpMul,
+		Left: &chplan.Binary{
+			Op:    chplan.OpSub,
+			Left:  &chplan.FuncCall{Fn: chplan.FnToUnixMillis, Args: []chplan.Expr{ts}},
+			Right: &chplan.LitInt{V: shift},
+		},
+		Right: &chplan.LitInt{V: int64(time.Millisecond)},
+	}}}
+}
+
 // unframeMillis renders the Int64 Unix milliseconds of the instant ts
 // moved back by shift milliseconds.
 func unframeMillis(ts chplan.Expr, shift int64) chplan.Expr {
@@ -352,7 +374,7 @@ func frameStorage(f *domainFit, plans ...chplan.Node) error {
 	var err error
 	for _, plan := range plans {
 		chplan.WalkDeep(plan, func(n chplan.Node) bool {
-			if seen[n] {
+			if seen[n] || f.sealed[n] {
 				return false
 			}
 			seen[n] = true
@@ -390,6 +412,7 @@ func unshiftRoot(plan chplan.Node, root parser.Expr, s schema.Metrics, ctx lower
 			shift, _ = ctx.domain.shiftOf(sub)
 		}
 	}
+	shift -= ctx.rootFrame
 	if shift == 0 {
 		return plan
 	}
@@ -404,7 +427,10 @@ func unshiftRoot(plan chplan.Node, root parser.Expr, s schema.Metrics, ctx lower
 		ts = chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp, HistogramField: named.HistogramField}
 	}
 	moved := chplan.Projection{Expr: unframeInstant(&chplan.ColumnRef{Name: ts.Name}, shift), Alias: ts.Name}
-	if !ctx.domain.rootGridInDomain(root) || !offsetFits(shift) {
+	switch {
+	case ctx.rootFrame != 0 && !offsetFits(shift):
+		moved.Expr = unframeWholeMillis(&chplan.ColumnRef{Name: ts.Name}, shift)
+	case ctx.rootFrame == 0 && (!ctx.domain.rootGridInDomain(root) || !offsetFits(shift)):
 		moved.Expr = unframeMillis(&chplan.ColumnRef{Name: ts.Name}, shift)
 	}
 	if rows.Open {
@@ -461,10 +487,12 @@ func lowerRangeInParts(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 		return nil, false, nil
 	}
 	expr = resolveRequestPins(expr, ctx.start.UnixMilli(), ctx.end.UnixMilli())
-	runSteps := time.Duration(maxRangeSpan.Milliseconds() / stepMillis)
+	// A step longer than a run evaluates one instant per run.
+	runSteps := time.Duration(max(maxRangeSpan.Milliseconds()/stepMillis, 1))
 	var arms []chplan.Node
 	for from := ctx.start; !from.After(ctx.end); {
 		part := ctx
+		part.run = true
 		part.start, part.end = from, from.Add((runSteps-1)*ctx.step)
 		if part.end.After(ctx.end) {
 			part.end = ctx.end
@@ -499,4 +527,39 @@ func lowerRangeInParts(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 // such a window alone.
 func (c lowerCtx) bucketRowsAnswer(rw *chplan.RangeWindow) bool {
 	return rw.StartBeyond == 0 && rw.EndBeyond == 0 && !c.framed()
+}
+
+// stampRunInstant returns plan, the lowering of a run of one instant,
+// with that instant as its timestamp and grid anchor. A range of one
+// instant lowers to the shape of an instant query, which reports no
+// timestamp, while the other runs of the range, and the subquery a run
+// answers, list their rows' instants ([subqueryAnchorShape]). The instant
+// is the run's, in the frame it is lowered in, which [unshiftRoot] then
+// moves back as it moves every root's timestamps. Any other plan is
+// returned as it is.
+func stampRunInstant(plan chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	if !ctx.run || !ctx.start.Equal(ctx.end) {
+		return plan
+	}
+	rows := plan.RowType()
+	if rows.Open {
+		return plan
+	}
+	if _, ok := rows.ByName(s.TimestampColumn); ok {
+		return plan
+	}
+	instant := chplan.TimeLiteral(ctx.end)
+	columns := make([]chplan.Column, 0, len(rows.Columns)+2)
+	projections := make([]chplan.Projection, 0, len(rows.Columns)+2)
+	for _, c := range rows.Columns {
+		columns = append(columns, c)
+		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: c.Name}, Alias: c.Name})
+	}
+	if _, ok := rows.ByName(chplan.RangeWindowAnchorColumn); !ok {
+		columns = append(columns, chplan.Column{Name: chplan.RangeWindowAnchorColumn, Role: chplan.RoleAnchor})
+		projections = append(projections, chplan.Projection{Expr: instant, Alias: chplan.RangeWindowAnchorColumn})
+	}
+	columns = append(columns, chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp})
+	projections = append(projections, chplan.Projection{Expr: instant, Alias: s.TimestampColumn})
+	return &chplan.Project{Roles: columns, Input: plan, Projections: projections}
 }

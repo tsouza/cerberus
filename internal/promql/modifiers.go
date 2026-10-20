@@ -293,6 +293,24 @@ type lowerCtx struct {
 	// Prometheus evaluates it at. Every place an evaluation instant
 	// becomes a value reads it through [lowerCtx.evalMillis].
 	shiftMillis int64
+
+	// isolatedEval is the state of the evaluator Prometheus runs the
+	// lowered expression with, when the expression is the inner expression
+	// of an isolated subquery ([lowerIsolatedSubquery]) rather than a
+	// query: the fit judges its `@` pins by it.
+	isolatedEval *promEval
+
+	// rootFrame is the shift, in milliseconds, of the frame the lowered
+	// expression reports its timestamps in: zero for a query, which
+	// reports Prometheus's own, and the shift of the enclosing region for
+	// the inner expression of an isolated subquery ([unshiftRoot]).
+	rootFrame int64
+
+	// run reports that the lowering is one run of a range split into runs
+	// ([lowerRangeInParts], [lowerIsolatedSubquery]), whose rows the runs'
+	// union lists by name: a run of one instant names its instant
+	// ([stampRunInstant]).
+	run bool
 }
 
 // requestStart is the instant `@ start()` names: the query's start, which

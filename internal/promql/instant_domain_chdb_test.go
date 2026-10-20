@@ -9,6 +9,7 @@ package promql_test
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -37,7 +38,9 @@ const instantDomainDemoMetric = "demo_http_requests_total"
 // and 23:45 (job "edge", for instantDomainMetric and for
 // instantDomainDemoMetric), 1677-09-21 00:20 and 00:25 (job "floor"), and
 // one at 1677-09-21 00:13 (job "first"), seventeen seconds after the
-// earliest stored instant.
+// earliest stored instant. instantDomainDemoMetric also holds a sample
+// (job "floor") at 1677-11-12 23:59, a minute before the 100-day multiple
+// -9218880000.
 const instantDomainSeed = "" +
 	"CREATE TABLE otel_metrics_gauge (MetricName String, Attributes Map(String, String), TimeUnix DateTime64(9), Value Float64) " +
 	"ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);\n" +
@@ -53,7 +56,8 @@ const instantDomainSeed = "" +
 	"    ('" + instantDomainMetric + "', map('job', 'first'), fromUnixTimestamp64Nano(toInt64(-9223372020000000000)), 9.0);\n" +
 	"INSERT INTO otel_metrics_sum VALUES\n" +
 	"    ('" + instantDomainDemoMetric + "', map('job', 'edge'), fromUnixTimestamp64Nano(toInt64(9223371600000000000)), 4.0),\n" +
-	"    ('" + instantDomainDemoMetric + "', map('job', 'edge'), fromUnixTimestamp64Nano(toInt64(9223371900000000000)), 6.0);\n"
+	"    ('" + instantDomainDemoMetric + "', map('job', 'edge'), fromUnixTimestamp64Nano(toInt64(9223371900000000000)), 6.0),\n" +
+	"    ('" + instantDomainDemoMetric + "', map('job', 'floor'), fromUnixTimestamp64Nano(toInt64(-9218880060000000000)), 8.0);\n"
 
 var (
 	instantDomainEval = time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
@@ -659,23 +663,50 @@ func instantDomainCells(t *testing.T, seed, sql string, args []any, want []insta
 }
 
 // TestInstantDomainParity_RangeSpanningTheDomain_ChDB pins, against the
-// Prometheus reference engine, a range query whose steps span the whole
-// stored range: its first step's lookback reaches below the earliest
-// stored instant and its last step sits a minute before the latest one,
-// so no one shift of its instants fits, and each half of its steps is
-// answered in a frame of its own.
+// Prometheus reference engine, range queries whose steps span more than
+// one lowering covers, answered in runs of their steps. Steps spanning the
+// whole stored range, from a first step whose lookback reaches below the
+// earliest stored instant to a last a minute before the latest one, are
+// answered half in a frame of their own each. Steps spanning twice what a
+// run covers, less a step and under a second, end in a run of one instant.
 func TestInstantDomainParity_RangeSpanningTheDomain_ChDB(t *testing.T) {
+	t.Run("spanning_the_stored_range", func(t *testing.T) {
+		start := instantDomainFirstSample.Add(2 * time.Minute)
+		end := instantDomainNearCeiling
+		// Ten thousand steps of about 21 days, under Prometheus's limit of
+		// 11000 points a series, land the last one exactly at end.
+		const steps = 10000
+		step := time.Duration((end.UnixMilli()-start.UnixMilli())/steps) * time.Millisecond
+		if start.UnixMilli()+steps*step.Milliseconds() != end.UnixMilli() {
+			t.Fatalf("%d steps of %s from %s miss %s", steps, step, start, end)
+		}
+		assertRangeParity(t, instantDomainMetric+`{job=~"first|edge"}`, start, end, step, [][]any{
+			{instantDomainMetric, map[string]string{"job": "first"}, start.Format(time.RFC3339Nano), 9.0},
+			{instantDomainMetric, map[string]string{"job": "edge"}, end.Format(time.RFC3339Nano), 6.0},
+		})
+	})
+	t.Run("last_run_of_one_instant", func(t *testing.T) {
+		// 10000 steps of 922337203ms: a run holds 5000 of them, so the
+		// 10001st instant, a minute after the 2025 sample, is a run alone.
+		const steps, stepMillis = 10000, 922337203
+		end := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		start := end.Add(-steps * stepMillis * time.Millisecond)
+		// A run spans at most half of what a time.Duration holds.
+		const runMillis = math.MaxInt64 / 2 / int64(time.Millisecond)
+		if runSteps := runMillis / stepMillis; steps%runSteps != 0 {
+			t.Fatalf("a run holds %d steps, which leaves the last instant in a longer run", runSteps)
+		}
+		assertRangeParity(t, `count_over_time(`+instantDomainMetric+`{job="api"}[5m])`, start, end, stepMillis*time.Millisecond, [][]any{
+			{map[string]string{"job": "api"}, end.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano), 1.0},
+		})
+	})
+}
+
+// assertRangeParity pins the range query query over [start, end] at step
+// to the rows cells, in ClickHouse and in the Prometheus reference engine.
+func assertRangeParity(t *testing.T, query string, start, end time.Time, step time.Duration, cells [][]any) {
+	t.Helper()
 	const fixturePermissions = 0o600
-	query := instantDomainMetric + `{job=~"first|edge"}`
-	start := instantDomainFirstSample.Add(2 * time.Minute)
-	end := instantDomainNearCeiling
-	// Ten thousand steps of about 21 days, under Prometheus's limit of
-	// 11000 points a series, land the last one exactly at end.
-	const steps = 10000
-	step := time.Duration((end.UnixMilli()-start.UnixMilli())/steps) * time.Millisecond
-	if start.UnixMilli()+steps*step.Milliseconds() != end.UnixMilli() {
-		t.Fatalf("%d steps of %s from %s miss %s", steps, step, start, end)
-	}
 	expr, err := parser.NewParser(parser.Options{}).ParseExpr(query)
 	if err != nil {
 		t.Fatal(err)
@@ -688,10 +719,6 @@ func TestInstantDomainParity_RangeSpanningTheDomain_ChDB(t *testing.T) {
 	sql, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
 		t.Fatal(err)
-	}
-	cells := [][]any{
-		{instantDomainMetric, map[string]string{"job": "first"}, start.Format(time.RFC3339Nano), 9.0},
-		{instantDomainMetric, map[string]string{"job": "edge"}, end.Format(time.RFC3339Nano), 6.0},
 	}
 	expected, err := json.Marshal(cells)
 	if err != nil {
@@ -713,4 +740,98 @@ func TestInstantDomainParity_RangeSpanningTheDomain_ChDB(t *testing.T) {
 	}
 	actual := spec.RunRoundTripSQL(t, fixture, sql, args)
 	spec.RunParity(t, fixture, spec.ParityEval{Start: start, End: end, Step: step}, actual)
+}
+
+// TestInstantDomainParity_IsolatedSubqueries_ChDB pins, against the
+// Prometheus reference engine, queries whose instants span more than the
+// DateTime64(9) range, so that no one shift brings them into it: nested
+// subqueries reaching back about 584 years and a subquery read 292 years
+// back. Each outermost subquery is evaluated over its grid on its own.
+func TestInstantDomainParity_IsolatedSubqueries_ChDB(t *testing.T) {
+	noLabels := map[string]string{}
+	floor := map[string]string{"job": "floor"}
+	// A 292y window spans 1065.8 steps of 100 days, so it holds 1066
+	// multiples of 100 days: an outer window ending between two
+	// multiples, and an inner window ending on one, its own end and the
+	// 1065 before it.
+	const (
+		outerPoints = 1066
+		innerPoints = 1066
+		// The 200y windows hold exactly 730 steps of 100 days.
+		points200y = 730
+		// The first outer point after 2026-01-01 minus 292y, in 1734, is
+		// the 100-day multiple -7439040000; the first inner point after it
+		// minus 292y lies 1065 steps earlier, in 1442. The last outer point
+		// is 1762560000, in 2025.
+		firstInnerInstant = -16640640000
+		lastOuterInstant  = 1762560000
+	)
+	// wrappedReadEval evaluates the wrapped reads late enough after the
+	// 2025 sample for their windows to reach it.
+	wrappedReadEval := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name  string
+		query string
+		eval  time.Time
+		rows  []instantDomainRow
+	}{
+		{"nested_count_spanning_the_range", `count_over_time(count_over_time(vector(1)[292y:100d])[292y:100d])`, instantDomainEval, []instantDomainRow{idRow(noLabels, idConst(outerPoints))}},
+		{"nested_sum_spanning_the_range", `sum_over_time(count_over_time(vector(1)[292y:100d])[292y:100d])`, instantDomainEval, []instantDomainRow{idRow(noLabels, idConst(outerPoints*innerPoints))}},
+		{"nested_first_instant_in_1442", `min_over_time(min_over_time(timestamp(vector(1))[292y:100d])[292y:100d])`, instantDomainEval, []instantDomainRow{idRow(noLabels, idConst(firstInnerInstant))}},
+		{"nested_last_instant", `max_over_time(max_over_time(timestamp(vector(1))[292y:100d])[292y:100d])`, instantDomainEval, []instantDomainRow{idRow(noLabels, idConst(lastOuterInstant))}},
+		// The two 292y ranges add up past what a time.Duration holds, and
+		// the wrapped sum starts Prometheus's storage read for the selector
+		// about 347 days after the evaluation instant: it reads nothing.
+		{"nested_reads_spanning_the_range", `max_over_time(max_over_time(` + instantDomainDemoMetric + `[292y:100d])[292y:100d])`, instantDomainEval, nil},
+		// The outer points from 1734 to 2026 count the samples of the 292
+		// years before them: both job "floor" samples up to 1969, the 1811
+		// one throughout, the job "first" one up to 1969, and the 2025 one
+		// at no outer point, the last lying in November 2025.
+		{
+			"nested_window_reads_spanning_the_range", `max_over_time(count_over_time(` + instantDomainMetric + `[292y])[292y:100d])`, instantDomainEval,
+			[]instantDomainRow{idRow(map[string]string{"job": "old"}, idConst(1)), idRow(floor, idConst(2)), idRow(map[string]string{"job": "first"}, idConst(1))},
+		},
+		// The grid 292 years back runs from 1442 to 1734 and reads the demo
+		// sample a minute before its point in 1677.
+		{"subquery_read_292y_back", `max_over_time(` + instantDomainDemoMetric + `[292y:100d] offset 292y)`, instantDomainEval, []instantDomainRow{idRow(floor, idConst(8))}},
+		{
+			"three_nested_subqueries", `sum_over_time(sum_over_time(count_over_time(vector(1)[200y:100d])[200y:100d])[200y:100d])`, instantDomainEval,
+			[]instantDomainRow{idRow(noLabels, idConst(points200y*points200y*points200y))},
+		},
+		// Three 200y ranges add up to 600 years, which Prometheus wraps to
+		// about 15: its storage read for the selector starts 15 years and
+		// the selector's 20 before 2030, and holds the 2025 sample alone.
+		{
+			"wrapped_read_holds_part", `max_over_time(max_over_time(max_over_time(count_over_time(` + instantDomainMetric + `[20y])[200y:100d])[200y:100d])[200y:100d])`, wrappedReadEval,
+			[]instantDomainRow{idRow(map[string]string{"job": "api"}, idConst(1))},
+		},
+		// Each selector reads the span its own offset moves Prometheus's
+		// read to: 240 years later, the read holds the 2262 samples alone.
+		{
+			"wrapped_reads_per_selector", `max_over_time(max_over_time(max_over_time((count_over_time(` + instantDomainMetric + `[20y]) or count_over_time(` + instantDomainMetric + `[20y] offset -240y))[200y:100d])[200y:100d])[200y:100d])`, wrappedReadEval,
+			[]instantDomainRow{idRow(map[string]string{"job": "api"}, idConst(1)), idRow(map[string]string{"job": "edge"}, idConst(2))},
+		},
+		// Steps longer than a run: the 200-year multiples after 1734 are
+		// 1770 and 1970, and each looks back to the multiples after 1478
+		// and after 1678, 1570 and 1770, and 1770 and 1970.
+		{"steps_longer_than_a_run", `count_over_time(count_over_time(vector(1)[292y:200y])[292y:200y])`, instantDomainEval, []instantDomainRow{idRow(noLabels, idConst(2))}},
+		{"first_instant_of_steps_longer_than_a_run", `min_over_time(min_over_time(timestamp(vector(1))[292y:200y])[292y:200y])`, instantDomainEval, []instantDomainRow{idRow(noLabels, idConst(-12614400000))}},
+		// A pin near the floor, its last outer point the 100-day multiple
+		// -9227520000 and its first -18429120000, in 1385.
+		{
+			"pinned_nested_near_floor", `sum_over_time(count_over_time(vector(1)[292y:100d])[292y:100d] @ -9223371000)`, instantDomainNearFloor,
+			[]instantDomainRow{idRow(noLabels, idConst(outerPoints*innerPoints))},
+		},
+	}
+	for _, rangeMode := range []bool{false, true} {
+		for _, tc := range cases {
+			mode := "instant"
+			if rangeMode {
+				mode = "range"
+			}
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				runHandWrittenParity(t, instantDomainSeed, tc.query, tc.eval, tc.rows, rangeMode)
+			})
+		}
+	}
 }

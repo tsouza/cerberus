@@ -2,6 +2,7 @@ package promql
 
 import (
 	"fmt"
+	"math/bits"
 	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
@@ -37,6 +38,9 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 	step := e.Step
 	if step == 0 {
 		step = defaultSubqueryStep
+	}
+	if ev, ok := ctx.domain.isolation(e); ok {
+		return lowerIsolatedSubquery(e, ev, step, s, ctx)
 	}
 
 	// A subquery's inner expression is re-evaluated at every one of its own
@@ -775,16 +779,22 @@ func emptySubqueryGrid(inner chplan.Node) chplan.Node {
 
 // epochFloor snaps t down to the nearest absolute-epoch multiple of
 // step (phase 0) — the SQL-side twin of chsql's epochAlignedEndFrag.
+// The multiple may lie before the Int64 nanoseconds, up to a step below
+// an instant near their start, so t is moved back by its remainder, taken
+// over the 128-bit nanoseconds of its Unix seconds, rather than rebuilt
+// from a multiple of steps.
 func epochFloor(t time.Time, step time.Duration) time.Time {
+	t = t.UTC()
 	stepNS := step.Nanoseconds()
-	ns := t.UTC().UnixNano()
-	floor := ns / stepNS
-	// Go's `/` truncates toward zero, and its `%` takes the dividend's
-	// sign: a negative remainder means the quotient was rounded up.
-	if ns%stepNS < 0 {
-		floor--
+	// Go's `%` takes the dividend's sign: a negative remainder is moved
+	// up by one step, to the remainder above the multiple below.
+	secs := t.Unix() % stepNS
+	if secs < 0 {
+		secs += stepNS
 	}
-	return time.Unix(0, floor*stepNS).UTC()
+	hi, lo := bits.Mul64(uint64(secs), uint64(time.Second))
+	rem := (bits.Rem64(hi, lo, uint64(stepNS)) + uint64(t.Nanosecond())) % uint64(stepNS)
+	return t.Add(-time.Duration(rem))
 }
 
 // subqueryAnchorShape re-exposes a grid-evaluated subquery inner under

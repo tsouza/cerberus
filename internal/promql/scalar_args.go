@@ -173,7 +173,16 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 // (#2498) all reuse — reproduces funcScalar's NaN answer for free: the
 // wrapping reduction counts zero rows and falls into its own NaN branch,
 // no separate NaN-literal special case needed here.
-func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (node chplan.Node, err error) {
+	// The operand is lowered as an expression of its own, whatever path
+	// lowers it ([domainFit.boundReads]).
+	defer func() {
+		if err == nil {
+			if err = ctx.domain.boundReads(v, node); err != nil {
+				node = nil
+			}
+		}
+	}()
 	// Histogram-only and already-empty drop-family operands count as zero floats.
 	if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(v, s, ctx); ok {
 		return node, err
@@ -185,11 +194,11 @@ func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 			return shadowResolveFloatArmChecked(b, s, ctx)
 		})
 	}
-	node, err := lower(v, s, ctx)
+	lowered, err := lower(v, s, ctx)
 	if err != nil {
 		return nil, err
 	}
-	return scalarFloatRows(node)
+	return scalarFloatRows(lowered)
 }
 
 // scalarFloatRows narrows a complete nested operand only after its own shadow

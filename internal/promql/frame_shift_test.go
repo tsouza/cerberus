@@ -16,6 +16,7 @@ import (
 // subquery step, which moves every instant the query needs into the
 // domain.
 func TestFrameShift_FitsInShiftedFrame(t *testing.T) {
+	frameShiftFarBelowFloor := time.Date(1100, 1, 1, 0, 0, 0, 0, time.UTC)
 	cases := []struct {
 		name  string
 		query string
@@ -34,14 +35,16 @@ func TestFrameShift_FitsInShiftedFrame(t *testing.T) {
 		// The instants span nearly the whole domain: only the least shift
 		// that brings the earliest of them inside fits.
 		{"window_spanning_nearly_the_domain", `count_over_time(m[290y] offset 290y)`, instantDomainEvalEnd.Add(-2 * time.Minute), instantDomainEvalEnd, time.Minute, time.Millisecond},
-		{"nested_grids_spanning_nearly_the_domain", `max_over_time(max_over_time(m[291y:100d])[291y:100d])`, instantDomainEvalEnd, instantDomainEvalEnd, 0, 100 * 24 * time.Hour},
+		// A request in 1100: the shift that brings it inside moves it by
+		// more than a time.Duration holds.
+		{"request_beyond_a_duration_below_floor", `count_over_time(vector(1)[300d:100d])`, frameShiftFarBelowFloor, frameShiftFarBelowFloor, 0, 100 * 24 * time.Hour},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := lowerCtx{start: tc.start, end: tc.end, step: tc.step}
 			expr := mustParseExperimental(t, tc.query)
 			before := expr.String()
-			if _, _, err := fitDomain(expr, ctx, 0); !isInstantDomainError(err) {
+			if _, _, err := fitDomain(expr, ctx, 0, false); !isInstantDomainError(err) {
 				t.Fatalf("fit %q in Prometheus's frame: err = %v, want the instant-domain rejection", tc.query, err)
 			}
 			_, f, err := fitInstantDomain(expr, ctx)
@@ -55,37 +58,32 @@ func TestFrameShift_FitsInShiftedFrame(t *testing.T) {
 				t.Fatalf("frame shift %d ms is not a nonzero multiple of %s", f.frameShift, tc.unit)
 			}
 			lctx := ctx.withDomain(f)
-			by := time.Duration(f.frameShift) * time.Millisecond
-			if !lctx.start.Equal(tc.start.Add(by)) || !lctx.end.Equal(tc.end.Add(by)) || lctx.shiftMillis != f.frameShift {
+			if !lctx.start.Equal(moveMillis(tc.start, f.frameShift)) || !lctx.end.Equal(moveMillis(tc.end, f.frameShift)) || lctx.shiftMillis != f.frameShift {
 				t.Fatalf("lowering context %s..%s shift %d, want the request moved by %d ms", lctx.start, lctx.end, lctx.shiftMillis, f.frameShift)
 			}
 		})
 	}
 }
 
-// TestFrameShift_KeepsRejections pins the queries no shifted frame
-// answers: their instants, with the steps the lowering reaches past a
-// grid, span more than the domain, so no one shift moves all of them into
-// it. Each keeps the rejection of Prometheus's own frame.
-func TestFrameShift_KeepsRejections(t *testing.T) {
-	cases := []struct {
-		name  string
-		query string
-	}{
-		{"nested_grids_spanning_the_domain", `count_over_time(count_over_time(vector(1)[292y:100d])[292y:100d])`},
-		{"nested_reads_spanning_the_domain", `max_over_time(max_over_time(m[292y:100d])[292y:100d])`},
-		{"offset_grid_spanning_the_domain", `max_over_time(m[292y:100d] offset 292y)`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+// TestFrameShift_SpanningTheDomain pins the queries no one shifted frame
+// answers, their instants with the steps the lowering reaches past a grid
+// spanning more than the domain. Prometheus's own frame rejects each; the
+// lowering answers each by evaluating every outermost subquery over its
+// grid on its own. TestInstantDomainParity_IsolatedSubqueries_ChDB pins
+// the answers.
+func TestFrameShift_SpanningTheDomain(t *testing.T) {
+	for _, query := range []string{
+		`count_over_time(count_over_time(vector(1)[292y:100d])[292y:100d])`,
+		`max_over_time(max_over_time(m[292y:100d])[292y:100d])`,
+		`max_over_time(m[292y:100d] offset 292y)`,
+	} {
+		t.Run(query, func(t *testing.T) {
 			ctx := lowerCtx{start: instantDomainEvalEnd, end: instantDomainEvalEnd}
-			_, _, want := fitDomain(mustParseExperimental(t, tc.query), ctx, 0)
-			if !isInstantDomainError(want) {
-				t.Fatalf("fit %q in Prometheus's frame: err = %v, want the instant-domain rejection", tc.query, want)
+			if _, _, err := fitDomain(mustParseExperimental(t, query), ctx, 0, false); !isInstantDomainError(err) {
+				t.Fatalf("fit %q in Prometheus's frame: err = %v, want the instant-domain rejection", query, err)
 			}
-			_, err := LowerAt(context.Background(), mustParseExperimental(t, tc.query), schema.DefaultOTelMetrics(), instantDomainEvalEnd, instantDomainEvalEnd)
-			if err == nil || err.Error() != want.Error() {
-				t.Fatalf("lower %q: err = %v, want %v", tc.query, err, want)
+			if _, err := LowerAt(context.Background(), mustParseExperimental(t, query), schema.DefaultOTelMetrics(), instantDomainEvalEnd, instantDomainEvalEnd); err != nil {
+				t.Fatalf("lower %q: %v", query, err)
 			}
 		})
 	}
@@ -237,6 +235,29 @@ func TestFrameShift_RunsCoverEveryStep(t *testing.T) {
 	}
 	if last := want.Add(-step); last.After(end) || end.Sub(last) >= step {
 		t.Fatalf("runs end at %s, want the request's last step before %s", last, end)
+	}
+}
+
+// TestFrameShift_RunsOfOneInstant pins a split range whose runs hold one
+// instant: a step longer than a run makes every instant a run, and a run
+// of one instant reports its instant as every other run does.
+func TestFrameShift_RunsOfOneInstant(t *testing.T) {
+	const year = 365 * 24 * time.Hour
+	start, end := instantDomainNearFloor, instantDomainNearCeiling
+	for _, step := range []time.Duration{200 * year, 100 * year} {
+		plan := mustLowerRange(t, `count_over_time(m[5m])`, start, end, step)
+		union, ok := plan.(*chplan.UnionAll)
+		if !ok {
+			t.Fatalf("step %s: root %T, want a union of runs", step, plan)
+		}
+		if want := int((end.UnixMilli()-start.UnixMilli())/step.Milliseconds()) + 1; len(union.Inputs) != want {
+			t.Fatalf("step %s: %d runs, want one per instant, %d", step, len(union.Inputs), want)
+		}
+		for i, arm := range union.Inputs {
+			if _, ok := arm.RowType().ByName(schema.DefaultOTelMetrics().TimestampColumn); !ok {
+				t.Fatalf("step %s: run %d reports no timestamp", step, i)
+			}
+		}
 	}
 }
 

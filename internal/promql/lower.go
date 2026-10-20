@@ -267,6 +267,7 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if err := ctx.domain.checkBeyondRead(); err != nil {
 		return nil, err
 	}
+	plan = stampRunInstant(plan, s, ctx)
 	if err := frameStorage(ctx.domain, append([]chplan.Node{plan}, ctx.guardPlans()...)...); err != nil {
 		return nil, ctx.domain.unframedErr
 	}
@@ -787,7 +788,16 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	return nil, false, nil
 }
 
-func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+// lower lowers expr, every scan of whose selectors reads only the rows
+// Prometheus's storage read hands them ([domainFit.boundReads]).
+func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (plan chplan.Node, err error) {
+	defer func() {
+		if err == nil {
+			if err = ctx.domain.boundReads(expr, plan); err != nil {
+				plan = nil
+			}
+		}
+	}()
 	ctx = ctx.atNode(expr)
 	switch e := expr.(type) {
 	case *parser.VectorSelector:

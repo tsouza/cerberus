@@ -366,17 +366,30 @@ func scanTableFrag(s *chplan.Scan) Frag {
 // whose moved timestamp a DateTime64(9) holds; the Int64 sum never
 // overflows for them, and ClickHouse, which may compute the moved column
 // before it filters, wraps rather than raises for the others.
+//
+// A scan bounded to stored timestamps ([chplan.Scan.ReadMillis]) reads
+//
+//	(SELECT * FROM <table> WHERE toUnixTimestamp64Milli(ts) >= <lo> AND toUnixTimestamp64Milli(ts) <= <hi>)
+//
+// in place of its table, before any shift moves the timestamp.
 func scanSourceFrag(s *chplan.Scan) (Frag, error) {
 	table := scanTableFrag(s)
-	if s.TimeShiftMillis == 0 {
+	if !scanReadsSubquery(s) {
 		return table, nil
 	}
 	ts, err := (chplan.Schema{Columns: s.Roles}).UniqueNamedRole(chplan.RoleTimestamp)
 	if err != nil {
-		return nil, fmt.Errorf("chsql: time-shifted scan of %q: %w", s.Table, err)
+		return nil, fmt.Errorf("chsql: time-shifted or time-bounded scan of %q: %w", s.Table, err)
+	}
+	if s.ReadMillis != nil {
+		stored := Call("toUnixTimestamp64Milli", Col(ts.Name))
+		table = Subquery(NewQuery().From(table).Where(And(Gte(stored, InlineLit(s.ReadMillis.From)), Lte(stored, InlineLit(s.ReadMillis.To)))))
+	}
+	if s.TimeShiftMillis == 0 {
+		return table, nil
 	}
 	if s.TimeShiftMillis > maxScanTimeShiftMillis || s.TimeShiftMillis < -maxScanTimeShiftMillis {
-		return nil, fmt.Errorf("%w: scan time shift of %d ms", ErrUnsupported, s.TimeShiftMillis)
+		return scanSourceMillisFrag(table, ts.Name, s.TimeShiftMillis), nil
 	}
 	shiftNanos := s.TimeShiftMillis * int64(time.Millisecond)
 	raw := Call("toUnixTimestamp64Nano", Col(ts.Name))
@@ -390,6 +403,33 @@ func scanSourceFrag(s *chplan.Scan) (Frag, error) {
 	// moved timestamp.
 	kept := Subquery(NewQuery().From(table).Where(keep))
 	return Subquery(NewQuery().From(kept).Select(StarReplace([]Frag{moved}))), nil
+}
+
+// scanReadsSubquery reports whether s reads a subquery over its table
+// rather than the table itself ([scanSourceFrag]).
+func scanReadsSubquery(s *chplan.Scan) bool {
+	return s.TimeShiftMillis != 0 || s.ReadMillis != nil
+}
+
+// scanSourceMillisFrag is [scanSourceFrag] for a shift of shiftMillis
+// whose nanoseconds Int64 does not hold. It moves the timestamp's Unix
+// milliseconds,
+//
+//	(SELECT * REPLACE (fromUnixTimestamp64Nano((toUnixTimestamp64Milli(ts) + N) * 1000000) AS ts)
+//	 FROM (SELECT * FROM <table> WHERE toUnixTimestamp64Milli(ts) <= <max - N>))
+//
+// so a sample's sub-millisecond fraction drops out, as it does from every
+// timestamp Prometheus reads; `>= <min - N>` for a negative N. The bound
+// keeps exactly the rows whose moved milliseconds a DateTime64(9) holds.
+func scanSourceMillisFrag(table Frag, ts string, shiftMillis int64) Frag {
+	raw := Call("toUnixTimestamp64Milli", Col(ts))
+	keep := Lte(raw, InlineLit(maxScanTimeShiftMillis-shiftMillis))
+	if shiftMillis < 0 {
+		keep = Gte(raw, InlineLit(-maxScanTimeShiftMillis-shiftMillis))
+	}
+	moved := As(Call("fromUnixTimestamp64Nano", Mul(Paren(Add(raw, InlineLit(shiftMillis))), InlineLit(int64(time.Millisecond)))), ts)
+	kept := Subquery(NewQuery().From(table).Where(keep))
+	return Subquery(NewQuery().From(kept).Select(StarReplace([]Frag{moved})))
 }
 
 // maxScanTimeShiftMillis is the largest scan time shift, in milliseconds,
@@ -531,8 +571,9 @@ func filterScanQuery(f *chplan.Filter, scan *chplan.Scan) (*QueryBuilder, error)
 	conjuncts = orderedConjuncts(conjuncts, shape)
 
 	var prewhereExprs, whereExprs []chplan.Expr
-	// A time-shifted scan reads a subquery, which takes no PREWHERE.
-	if scan.TimeShiftMillis == 0 && projectionTouchesWide(scan.Columns, shape) {
+	// A time-shifted or time-bounded scan reads a subquery, which takes
+	// no PREWHERE.
+	if !scanReadsSubquery(scan) && projectionTouchesWide(scan.Columns, shape) {
 		prewhereExprs, whereExprs = partitionPrewhere(conjuncts, shape)
 	} else {
 		whereExprs = conjuncts
