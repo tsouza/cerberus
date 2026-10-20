@@ -1467,7 +1467,7 @@
         "type": "prometheus",
         "uid": "cerberus-prometheus"
       },
-      "description": "The clamp family with scalar-literal bounds.",
+      "description": "The clamp family with scalar-literal bounds, plus the scalar max_of / min_of pair.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1569,9 +1569,31 @@
           "legendFormat": "__auto",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max_of(scalar(up{job=\"api\"}), 0.25)",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "min_of(scalar(up{job=\"api\"}), 0.75)",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "E"
         }
       ],
-      "title": "clamp / clamp_min / clamp_max",
+      "title": "clamp / clamp_min / clamp_max / max_of / min_of",
       "type": "timeseries"
     },
     {
@@ -7785,6 +7807,100 @@
       "cerberus": {
         "expect": "nonempty",
         "why": "$job's current value (api) is a deterministic label this dashboard's up{job=\"api\"} panels already assert nonempty against \u2014 filtering by the variable must return the same live series."
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cerberus-prometheus"
+      },
+      "description": "start_timestamp() reads each sample's start timestamp, which the reference serves only with start timestamps enabled. Declared empty: with them off, as the reference runs, it returns no samples.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 229
+      },
+      "id": 122,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cerberus-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "start_timestamp(up)",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "start_timestamp(up) \u2014 defined empty",
+      "type": "timeseries",
+      "cerberus": {
+        "expect": "empty",
+        "why": "With start timestamps disabled, as the reference server runs, start_timestamp() returns no samples for any input; cerberus answers the same, so the sweep pins the empty direction."
       }
     }
   ],

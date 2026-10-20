@@ -296,8 +296,7 @@
       "id": "fn:first_over_time",
       "class": "function",
       "token": "first_over_time",
-      "pin": "first_over_time(up[5m])",
-      "experimental": true
+      "pin": "first_over_time(up[5m])"
     },
     {
       "id": "fn:floor",
@@ -429,10 +428,24 @@
       "experimental": true
     },
     {
+      "id": "fn:max_of",
+      "class": "function",
+      "token": "max_of",
+      "pin": "max_of(0.5, 0.5)",
+      "experimental": true
+    },
+    {
       "id": "fn:max_over_time",
       "class": "function",
       "token": "max_over_time",
       "pin": "max_over_time(up[5m])"
+    },
+    {
+      "id": "fn:min_of",
+      "class": "function",
+      "token": "min_of",
+      "pin": "min_of(0.5, 0.5)",
+      "experimental": true
     },
     {
       "id": "fn:min_over_time",
@@ -568,6 +581,13 @@
       "class": "function",
       "token": "start",
       "pin": "up @ start()",
+      "experimental": true
+    },
+    {
+      "id": "fn:start_timestamp",
+      "class": "function",
+      "token": "start_timestamp",
+      "pin": "start_timestamp(up)",
       "experimental": true
     },
     {
