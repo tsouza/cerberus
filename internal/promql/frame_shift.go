@@ -52,7 +52,8 @@ func fitInFrame(expr parser.Expr, ctx lowerCtx, isolating bool) (parser.Expr, *d
 	centre := instantDomainMin.UnixMilli() + (instantDomainMax.UnixMilli()-instantDomainMin.UnixMilli())/2
 	toCentre := centre - at
 	// The least shift moves the rejected instant just inside the domain,
-	// clear of it by the margins the fit widens grids by and a unit.
+	// clear of it by the margins the fit widens grids by and a unit. A
+	// rejected instant lies outside the domain, never at its centre.
 	cushion := unit + frameMargin(expr, ctx.step)
 	least := int64(0)
 	if at < centre {
@@ -292,7 +293,7 @@ func moveMillis(t time.Time, shift int64) time.Time {
 // every instant the lowering writes.
 func (c lowerCtx) withDomain(f *domainFit) lowerCtx {
 	c.domain = f
-	if f != nil && f.frameShift != 0 {
+	if f.frameShift != 0 {
 		c = c.inFrame(f.frameShift)
 		c.shiftMillis = f.frameShift
 	}
@@ -549,8 +550,10 @@ func stampRunInstant(plan chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.No
 		return plan
 	}
 	instant := chplan.TimeLiteral(ctx.end)
-	columns := make([]chplan.Column, 0, len(rows.Columns)+2)
-	projections := make([]chplan.Projection, 0, len(rows.Columns)+2)
+	var (
+		columns     []chplan.Column
+		projections []chplan.Projection
+	)
 	for _, c := range rows.Columns {
 		columns = append(columns, c)
 		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: c.Name}, Alias: c.Name})

@@ -128,7 +128,8 @@ func cutSelector(vs *parser.VectorSelector, env domainEnv) (parser.Expr, bool) {
 	at, _ := pinnedEnv(vs.Timestamp, vs.StartOrEnd, vs.OriginalOffset, env)
 	cut, ok := storageWindow(at, instantLookback)
 	start := at.hi.Add(-instantLookback)
-	if !ok || cut.endBeyond == 0 || start.Before(instantDomainMin) {
+	// A cut lookback that ends in the stored range starts before it.
+	if !ok || start.Before(instantDomainMin) {
 		return nil, false
 	}
 	end := cut.endMillis
@@ -183,9 +184,7 @@ func (f *domainFit) cutWindowArg(n *parser.Call, env domainEnv) (*parser.Call, b
 	if name == fnQuantileOverTime {
 		pos = 1
 	}
-	if len(n.Args) <= pos {
-		return nil, false
-	}
+	// Each function of the two sets takes its matrix at pos.
 	if !sampleSetRangeFunctions[name] && !extrapolatedRangeFunctions[name] || !f.cutsStorage() {
 		return nil, false
 	}

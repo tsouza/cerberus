@@ -134,7 +134,7 @@ func promSelectorHint(ev promEval, vs *parser.VectorSelector, rng time.Duration)
 
 // promDurationMilliseconds is Prometheus's durationMilliseconds.
 func promDurationMilliseconds(d time.Duration) int64 {
-	return int64(d / (time.Millisecond / time.Nanosecond))
+	return int64(d / time.Millisecond)
 }
 
 // promSubqueryTimes is the offset part of Prometheus's subqueryTimes: the

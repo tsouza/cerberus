@@ -215,13 +215,9 @@ func (f *domainFit) readsNothing(vs *parser.VectorSelector) bool {
 // rewritten node is a copy.
 func fitInstantDomain(expr parser.Expr, ctx lowerCtx) (parser.Expr, *domainFit, error) {
 	out, f, err := fitInFrame(expr, ctx, false)
-	if err == nil {
-		return out, f, nil
-	}
-	// errors.As moves its target to the heap: declared past the return
-	// above, it costs an answered query no allocation.
-	var outside *outsideDomainError
-	if !errors.As(err, &outside) || !holdsSubquery(expr) {
+	// Every rejection of the fit names an instant outside the domain
+	// ([outsideDomainError]), which only isolating a subquery can answer.
+	if err == nil || !holdsSubquery(expr) {
 		return out, f, err
 	}
 	if isolated, fi, ierr := fitInFrame(expr, ctx, true); ierr == nil {
@@ -349,7 +345,7 @@ func (f *domainFit) recordRootGrid(root parser.Expr, env domainEnv) {
 
 // promTimeMilliseconds is Prometheus's timeMilliseconds.
 func promTimeMilliseconds(t time.Time) int64 {
-	return t.UnixNano() / int64(time.Millisecond/time.Nanosecond)
+	return t.UnixNano() / int64(time.Millisecond)
 }
 
 // checkInstantDomain checks the instants a node evaluated over [lo, hi]
@@ -567,7 +563,8 @@ func (f *domainFit) fitExpr(e parser.Expr, env domainEnv) (parser.Expr, fitResul
 // samples the evaluation needs ([promReadSums.wraps]), and every scan the
 // selector lowers to reads only its rows ([domainFit.readBounds]).
 func (f *domainFit) boundRead(vs *parser.VectorSelector, rng time.Duration, env domainEnv) {
-	if !env.hasEv || env.ev.req == nil || pinned(vs.Timestamp, vs.StartOrEnd) || !env.ev.sums.wraps() {
+	// An environment with no evaluator holds sums that never wrap.
+	if pinned(vs.Timestamp, vs.StartOrEnd) || !env.ev.sums.wraps() {
 		return
 	}
 	if f.readBounds == nil {
@@ -825,11 +822,12 @@ func shiftIntoDomain(r fitResult, admits func(shift int64) bool) (int64, bool) {
 	if unit <= 0 || hi-lo > domHi-domLo-unit {
 		return 0, false
 	}
-	// Move the span halfway towards the centre of the domain, which keeps
-	// it clear of both bounds, or all the way when halfway is not enough;
-	// either shift is rounded to a whole number of units. Failing both,
-	// move it by the fewest units that bring it inside, the shortest move
-	// admits may accept.
+	// Move the span halfway towards the centre of the domain, rounded to a
+	// whole number of units, which keeps it clear of both bounds. Failing
+	// that, move it by the fewest units that bring it inside: that shift
+	// fits whenever any does, and admits accepts it whenever it accepts a
+	// longer one. A span starting at domLo or ending at domHi needs no
+	// move, so the bounds themselves fall to either case alike.
 	want := (domLo + (domHi-domLo)/2) - (lo + (hi-lo)/2)
 	least := int64(0)
 	switch {
@@ -838,7 +836,7 @@ func shiftIntoDomain(r fitResult, admits func(shift int64) bool) (int64, bool) {
 	case hi > domHi:
 		least = -ceilUnits(hi-domHi, unit)
 	}
-	for _, shift := range []int64{want / 2 / unit * unit, want / unit * unit, least} {
+	for _, shift := range []int64{want / 2 / unit * unit, least} {
 		if lo+shift >= domLo && hi+shift <= domHi && admits(shift) {
 			return shift, true
 		}
@@ -989,7 +987,8 @@ func (f *domainFit) fitCall(n *parser.Call, env domainEnv) (parser.Expr, fitResu
 		return f.fitCall(cut, env)
 	}
 	if vs, arg, ok := absentSelector(n); ok {
-		if _, r := f.fitExpr(arg, env); r.err != nil && r.empty {
+		// A selector is empty only where its read is rejected.
+		if _, r := f.fitExpr(arg, env); r.empty {
 			// The selector reads nothing, so the call answers from its
 			// matchers alone (lowerAbsent, lowerAbsentOverTime).
 			if f.emptyReads == nil {

@@ -45,8 +45,10 @@ func lowerIsolatedSubquery(sub *parser.SubqueryExpr, ev promEval, step time.Dura
 		to := min(from+(runSteps-1)*stepMillis, last)
 		run := grid
 		run.start, run.end = time.UnixMilli(from).UTC(), time.UnixMilli(to).UTC()
-		run.request, run.domain, run.shiftMillis = nil, nil, 0
+		run.request, run.domain, run.shiftMillis, run.guards = nil, nil, 0, nil
 		run.isolatedEval, run.rootFrame, run.run = &ev, ctx.shiftMillis, true
+		// A run records its guards on a sink of its own, whose plans are
+		// sealed before they join the request's.
 		var guards []ScalarGuard
 		if ctx.guards != nil {
 			run.guards = &guards
@@ -64,6 +66,8 @@ func lowerIsolatedSubquery(sub *parser.SubqueryExpr, ev promEval, step time.Dura
 		arms = append(arms, arm)
 	}
 	out := arms[0]
+	// A union of one run answers that run's rows: a lone run is used as
+	// it is only to keep the plan small.
 	if len(arms) > 1 {
 		out = &chplan.UnionAll{Inputs: arms}
 	}
