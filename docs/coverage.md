@@ -58,10 +58,10 @@ figure here can only ever be what the ledger tallies.
 
 | Head      | Symbols probed | Supported (incl. experimental) | Intentionally rejected (parity) | Wrong-rejected symbols |
 | --------- | -------------- | ------------------------------ | ------------------------------- | ---------------------- |
-| PromQL    | 124            | 123                            | 0                               | 1                      |
+| PromQL    | 124            | 124                            | 0                               | 0                      |
 | LogQL     | 62             | 62                             | 0                               | 0                      |
 | TraceQL   | 45             | 45                             | 0                               | 0                      |
-| **Total** | **231**        | **230**                        | **0**                           | **1**                  |
+| **Total** | **231**        | **231**                        | **0**                           | **0**                  |
 
 <!-- END AUTOGEN: coverage-glance -->
 
@@ -135,6 +135,10 @@ whole milliseconds.
 
 The `@ start()` / `@ end()` modifiers are a separate construct, also
 **Supported**, and listed under Modifiers.
+
+`start_timestamp(v)` is **Supported (experimental)** and answers an empty
+vector, for instant and range queries, as Prometheus does without its
+`use-start-timestamps` feature flag.
 
 ## Per-symbol tables
 
@@ -250,7 +254,7 @@ The `Probe` column is the exact query the ledger evaluates for that symbol.
 | `sort_desc`                    | `sort_desc(up)`                                                                  | Supported                |
 | `sqrt`                         | `sqrt(up)`                                                                       | Supported                |
 | `start`                        | `start()`                                                                        | Supported (experimental) |
-| `start_timestamp`              | `start_timestamp(up)`                                                            | Not yet supported        |
+| `start_timestamp`              | `start_timestamp(up)`                                                            | Supported (experimental) |
 | `stddev_over_time`             | `stddev_over_time(up[5m])`                                                       | Supported                |
 | `stdvar_over_time`             | `stdvar_over_time(up[5m])`                                                       | Supported                |
 | `step`                         | `step()`                                                                         | Supported (experimental) |

@@ -17,11 +17,17 @@ import (
 // the HTTP handler's parser does; min_of and max_of are experimental.
 func parseExperimental(t *testing.T, q string) parser.Expr {
 	t.Helper()
-	expr, err := parser.NewParser(parser.Options{EnableExperimentalFunctions: true}).ParseExpr(q)
+	expr, err := promParserForTest().ParseExpr(q)
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", q, err)
 	}
 	return expr
+}
+
+// promParserForTest returns a parser with the experimental functions
+// enabled, as the HTTP handler's parser has.
+func promParserForTest() parser.Parser {
+	return parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 }
 
 // TestTryFoldScalar_MinOfMaxOf pins the literal fold against math.Min and
@@ -86,14 +92,14 @@ func TestLowerMinOfMaxOf_ComputedArgumentsEmitTheGoSpecialCases(t *testing.T) {
 		pick  string
 		step  time.Duration
 		// scalarReads is how often the SQL evaluates scalar(bound): once
-		// per occurrence in the query, except that clamp's computed-bound
-		// path reads its bound twice (isNaN(bound) and least(v, bound)).
+		// per occurrence in the query, clamp's computed bound included.
 		scalarReads int
 	}{
 		{"min_of(scalar(bound), 45)", "least(", 0, 1},
 		{"max_of(scalar(bound), 45)", "greatest(", 0, 1},
 		{"max_of(scalar(bound), 45)", "greatest(", time.Minute, 1},
-		{"clamp_max(cpu, max_of(scalar(bound), 45))", "greatest(", 0, 2},
+		{"clamp_max(cpu, max_of(scalar(bound), 45))", "greatest(", 0, 1},
+		{"clamp_min(cpu, min_of(scalar(bound), 45))", "least(", 0, 1},
 		{"cpu * min_of(time(), scalar(bound))", "least(", 0, 1},
 		{"vector(min_of(scalar(bound), 1))", "least(", time.Minute, 1},
 	} {
@@ -110,7 +116,7 @@ func TestLowerMinOfMaxOf_ComputedArgumentsEmitTheGoSpecialCases(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit(%q): %v", tc.query, err)
 		}
-		wants := []string{tc.pick, "isNaN(", "arrayMap(", "_cerb_mma"}
+		wants := []string{tc.pick, "isNaN(", "arrayMap(", "_cerb_sb0"}
 		if tc.pick == "least(" {
 			wants = append(wants, "* toFloat64(?)")
 		}
@@ -143,6 +149,37 @@ func TestLowerMinOfMaxOf_LiteralArgumentsFold(t *testing.T) {
 	for _, absent := range []string{"least(", "greatest(", "isNaN("} {
 		if strings.Contains(sql, absent) {
 			t.Fatalf("literal min_of(2, 3) was not folded; SQL contains %q:\n%s", absent, sql)
+		}
+	}
+}
+
+// TestLowerClampComputedBoundsReadEachBoundOnce pins how often a computed
+// clamp bound's scalar subquery appears in the SQL. clamp_min / clamp_max
+// read their bound once. The 3-argument clamp reads each bound once in its
+// value expression and once more in the row filter that drops every sample
+// when max < min, which is a separate plan node.
+func TestLowerClampComputedBoundsReadEachBoundOnce(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 1, 1, 0, 5, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		query string
+		reads int
+	}{
+		{"clamp_max(cpu, scalar(bound))", 1},
+		{"clamp_min(cpu, scalar(bound))", 1},
+		{"clamp(cpu, scalar(lo), scalar(hi))", 4},
+		{"clamp(cpu, scalar(lo), 5)", 2},
+	} {
+		plan, err := LowerAt(context.Background(), parseExperimental(t, tc.query), schema.DefaultOTelMetrics(), at, at)
+		if err != nil {
+			t.Fatalf("LowerAt(%q): %v", tc.query, err)
+		}
+		sql, _, err := chsql.Emit(context.Background(), plan)
+		if err != nil {
+			t.Fatalf("Emit(%q): %v", tc.query, err)
+		}
+		if n := strings.Count(sql, "`_cerb_scnt` = ?"); n != tc.reads {
+			t.Fatalf("SQL for %q evaluates its scalar bounds %d times, want %d:\n%s", tc.query, n, tc.reads, sql)
 		}
 	}
 }

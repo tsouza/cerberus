@@ -36,8 +36,9 @@ import (
 // This test does not re-measure that divergence — TestEqualValuesRejectsRealDivergence-style
 // re-derivation belongs to the property/compat lanes, which need a live
 // engine or chDB. It pins the narrower, mechanically checkable half: that
-// the ONE feature flag distinguishing the two engine configurations is
-// set the SAME way on both sides. Flip either side without the other and
+// each answer-changing engine feature flag — delayed name removal, and
+// use-start-timestamps, which promqltest also defaults ON — is set the
+// SAME way on both sides. Flip either side without the other and
 // this goes red instead of the two surfaces silently disagreeing again.
 func TestPromQLOracleEngineParity(t *testing.T) {
 	t.Parallel()
@@ -47,33 +48,47 @@ func TestPromQLOracleEngineParity(t *testing.T) {
 		t.Fatalf("read compatibility/prometheus/docker-compose.yml: %v", err)
 	}
 
-	serverEnablesDelayedNameRemoval := delayedNameRemovalFeatureRE.Match(compose)
-	oracleEnablesDelayedNameRemoval := parityoraclepromql.EnableDelayedNameRemoval
-
-	if serverEnablesDelayedNameRemoval != oracleEnablesDelayedNameRemoval {
-		t.Fatalf(
-			"PromQL reference-engine skew (cerberus issue #3271): "+
-				"compatibility/prometheus/docker-compose.yml enables "+
-				"promql-delayed-name-removal=%v on the real Prometheus server, "+
-				"but test/spec/parityoracle/promql.EnableDelayedNameRemoval=%v. "+
-				"The spec lane's oracle and the compat lane's real server must run "+
-				"this flag identically — it changes ANSWERS (a name-dropping fold "+
-				"over a colliding histogram/float `or`), not merely acceptance — or "+
-				"'matches the reference' has two different meanings for the same "+
-				"query. Align test/spec/parityoracle/promql/oracle.go's "+
-				"EnableDelayedNameRemoval constant with the compose file's "+
-				"--enable-feature list (see docs/compatibility.md § \"Two PromQL "+
-				"reference engines, one configuration\"), then regenerate the "+
-				"promql golden shard.",
-			serverEnablesDelayedNameRemoval, oracleEnablesDelayedNameRemoval,
-		)
+	for _, flag := range []struct {
+		feature string
+		oracle  bool
+		name    string
+		effect  string
+	}{
+		{
+			feature: "promql-delayed-name-removal",
+			oracle:  parityoraclepromql.EnableDelayedNameRemoval,
+			name:    "EnableDelayedNameRemoval",
+			effect:  "a name-dropping fold over a colliding histogram/float `or`",
+		},
+		{
+			feature: "use-start-timestamps",
+			oracle:  parityoraclepromql.UseStartTimestamps,
+			name:    "UseStartTimestamps",
+			effect:  "start_timestamp(v), empty on the server without the flag",
+		},
+	} {
+		server := enableFeatureRE(flag.feature).Match(compose)
+		if server != flag.oracle {
+			t.Fatalf(
+				"PromQL reference-engine skew (cerberus issue #3271): "+
+					"compatibility/prometheus/docker-compose.yml enables "+
+					"%s=%v on the real Prometheus server, but "+
+					"test/spec/parityoracle/promql.%s=%v. The spec lane's oracle and "+
+					"the compat lane's real server must run this flag identically — it "+
+					"changes ANSWERS (%s), not merely acceptance — or 'matches the "+
+					"reference' has two different meanings for the same query. Align "+
+					"the oracle constant with the compose file's --enable-feature list "+
+					"(see docs/compatibility.md § \"Two PromQL reference engines, one "+
+					"configuration\"), then regenerate the promql golden shard.",
+				flag.feature, server, flag.name, flag.oracle, flag.effect,
+			)
+		}
 	}
 }
 
-// delayedNameRemovalFeatureRE matches the reference Prometheus server's
-// --enable-feature flag carrying promql-delayed-name-removal, tolerating
-// it appearing alongside other comma-separated feature names in either
-// position.
-var delayedNameRemovalFeatureRE = regexp.MustCompile(
-	`--enable-feature=\S*\bpromql-delayed-name-removal\b\S*`,
-)
+// enableFeatureRE matches the reference Prometheus server's
+// --enable-feature flag carrying feature, tolerating it appearing
+// alongside other comma-separated feature names in either position.
+func enableFeatureRE(feature string) *regexp.Regexp {
+	return regexp.MustCompile(`--enable-feature=\S*\b` + regexp.QuoteMeta(feature) + `\b\S*`)
+}

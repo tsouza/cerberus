@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/start_timestamp.go:lowerStartTimestamp#749adc13",
+      "message": "promql: %s expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "Internal invariant: if len(c.Args) != 1; callers: lowerCall. The parser types start_timestamp as exactly one instant-vector argument and rejects any other count, and lowerCall reaches lowerStartTimestamp only with a parsed start_timestamp call.",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "cited": [
+          "lowerCall",
+          "lowerStartTimestamp"
+        ]
+      }
+    }
+  ]
+}

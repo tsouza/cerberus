@@ -55,32 +55,35 @@ func lowerScalarMinMax(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.E
 	if err != nil {
 		return nil, err
 	}
-	return bindScalarPair(a, b, func(a, b chplan.Expr) chplan.Expr {
-		return scalarMinMaxExpr(c.Func.Name == fnMaxOf, a, b)
+	return bindScalars([]chplan.Expr{a, b}, func(bound []chplan.Expr) chplan.Expr {
+		return scalarMinMaxExpr(c.Func.Name == fnMaxOf, bound[0], bound[1])
 	}), nil
 }
 
-// Lambda parameter names [bindScalarPair] binds the two arguments to. The
-// `_cerb_` prefix keeps them clear of any column a plan carries.
-const (
-	scalarPairLeftParam  = "_cerb_mma"
-	scalarPairRightParam = "_cerb_mmb"
-)
+// scalarBindParamPrefix prefixes the lambda parameter [bindScalars] binds
+// each argument to. The `_cerb_` prefix keeps them clear of any column a
+// plan carries.
+const scalarBindParamPrefix = "_cerb_sb"
 
-// bindScalarPair returns body over a and b with each argument evaluated
-// once: `arrayMap((l, r) -> body(l, r), [a], [b])[1]`. body reads each
-// argument several times, and a computed scalar argument is a scalar
-// subquery (or a per-step lookup over one), which inlining would repeat
-// in the SQL once per read.
-func bindScalarPair(a, b chplan.Expr, body func(a, b chplan.Expr) chplan.Expr) chplan.Expr {
-	mapped := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{scalarPairLeftParam, scalarPairRightParam},
-			Body:   body(&chplan.BareIdent{Name: scalarPairLeftParam}, &chplan.BareIdent{Name: scalarPairRightParam}),
-		},
-		&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{a}},
-		&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{b}},
-	}}
+// bindScalars returns body over args with each argument evaluated once:
+// `arrayMap((p0, p1, …) -> body(p0, p1, …), [a0], [a1], …)[1]`. body may
+// read each argument several times, and a computed scalar argument is a
+// scalar subquery (or a per-step lookup over one), which inlining would
+// repeat in the SQL once per read. Columns the body names (a sample's
+// Value) are read from the enclosing row, which an arrayMap lambda sees.
+func bindScalars(args []chplan.Expr, body func(bound []chplan.Expr) chplan.Expr) chplan.Expr {
+	params := make([]string, len(args))
+	bound := make([]chplan.Expr, len(args))
+	mapArgs := make([]chplan.Expr, 0, len(args)+1)
+	for i := range args {
+		params[i] = fmt.Sprintf("%s%d", scalarBindParamPrefix, i)
+		bound[i] = &chplan.BareIdent{Name: params[i]}
+	}
+	mapArgs = append(mapArgs, &chplan.Lambda{Params: params, Body: body(bound)})
+	for _, a := range args {
+		mapArgs = append(mapArgs, &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{a}})
+	}
+	mapped := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: mapArgs}
 	return &chplan.FuncCall{Fn: chplan.FnArrayElement, Args: []chplan.Expr{mapped, &chplan.LitInt{V: 1}}}
 }
 

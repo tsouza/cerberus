@@ -116,6 +116,16 @@ const maxSamples = 1_000_000
 // difference is not the same class of problem as an answer difference.
 const EnableDelayedNameRemoval = false
 
+// UseStartTimestamps is the engine's `use-start-timestamps` option, held to
+// the same rule as [EnableDelayedNameRemoval]: the compat lane's server
+// does not enable that feature, so this oracle does not either. It changes
+// answers — with it on, `start_timestamp(v)` answers each sample's start
+// timestamp, and rate(), irate(), increase() and resets() may read start
+// timestamps — while the server answers `start_timestamp(v)` with an empty
+// vector. test/regression/promql_oracle_engine_parity_test.go pins this
+// constant against the compose file's `--enable-feature=` line.
+const UseStartTimestamps = false
+
 // Series is one input time series: an identifying label set plus its
 // samples, exactly as they were read back out of ClickHouse.
 type Series struct {
@@ -275,9 +285,9 @@ func Evaluate(tb testing.TB, series []Series, q Query) ([]Result, error) {
 	}
 
 	// Built explicitly, rather than via promqltest.NewTestEngine, so that
-	// EnableDelayedNameRemoval can be set to this package's own constant
-	// instead of that helper's hardcoded true. Every other field mirrors
-	// NewTestEngine's own defaults exactly.
+	// EnableDelayedNameRemoval and UseStartTimestamps can be set to this
+	// package's own constants instead of that helper's hardcoded true.
+	// Every other field mirrors NewTestEngine's own defaults exactly.
 	engine := promqltest.NewTestEngineWithOpts(tb, promql.EngineOpts{
 		MaxSamples: maxSamples,
 		Timeout:    100 * time.Second,
@@ -288,7 +298,7 @@ func Evaluate(tb testing.TB, series []Series, q Query) ([]Result, error) {
 		EnableNegativeOffset:     true,
 		LookbackDelta:            lookbackDelta,
 		EnableDelayedNameRemoval: EnableDelayedNameRemoval,
-		UseStartTimestamps:       true,
+		UseStartTimestamps:       UseStartTimestamps,
 		// This is the one other site test/regression's
 		// TestPromQLParserOptionsHaveASingleSource (#2971) names as exempt
 		// from routing through internal/promql/promparse.New, and for the

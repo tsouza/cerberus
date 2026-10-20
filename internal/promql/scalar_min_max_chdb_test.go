@@ -81,7 +81,6 @@ var minMaxAnchors = []string{
 // finite value, NaN against the dominating infinity, and the sign of
 // zero (observed through 1/x).
 func TestScalarMinOfMaxOf_ReferenceParity_ChDB(t *testing.T) {
-	const fixturePermissions = 0o600
 	nan, inf, negInf := "NaN", "+Inf", "-Inf"
 	empty := map[string]string{}
 	api := map[string]string{"job": "api"}
@@ -113,47 +112,76 @@ func TestScalarMinOfMaxOf_ReferenceParity_ChDB(t *testing.T) {
 		{"cpu * min_of(2, 3)", 0, [][]any{{"", api, "2026-01-01T00:00:00Z", 200}}},
 	} {
 		t.Run(fmt.Sprintf("%s/step=%s", tc.query, tc.step), func(t *testing.T) {
-			endpoint, start, end, seed := "/api/v1/query", minMaxInstant, minMaxInstant, minMaxInstantSeed
-			files := []txtar.File{{Name: "query.promql", Data: []byte(tc.query + "\n")}}
-			if tc.step > 0 {
-				endpoint, start, end, seed = "/api/v1/query_range", minMaxRangeStart, minMaxRangeEnd, minMaxSeed
-			}
-			files = append(files, txtar.File{Name: "parity", Data: []byte("oracle: prometheus\nendpoint: " + endpoint + "\nscope: full\n")})
-			if tc.step > 0 {
-				files = append(files, txtar.File{Name: "range_step", Data: []byte(tc.step.String() + "\n")})
-			}
-			expected, err := json.Marshal(tc.rows)
-			if err != nil {
-				t.Fatal(err)
-			}
-			files = append(
-				files,
-				txtar.File{Name: "seed", Data: []byte(seed)},
-				txtar.File{Name: "expected_rows", Data: expected},
-			)
-			path := filepath.Join(t.TempDir(), "min_max.txtar")
-			if err := os.WriteFile(path, txtar.Format(&txtar.Archive{Files: files}), fixturePermissions); err != nil {
-				t.Fatal(err)
-			}
-			fixture, err := spec.Load(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			expr, err := parser.NewParser(parser.Options{EnableExperimentalFunctions: true}).ParseExpr(tc.query)
-			if err != nil {
-				t.Fatal(err)
-			}
-			plan, err := promql.LowerAtRange(context.Background(), expr, schema.DefaultOTelMetrics(), start, end, tc.step)
-			if err != nil {
-				t.Fatal(err)
-			}
-			optimized := spec.AssertScanTimeBoundAccepts(t, plan)
-			sql, params, err := chsql.Emit(context.Background(), optimized)
-			if err != nil {
-				t.Fatal(err)
-			}
-			result := spec.RunRoundTripSQL(t, fixture, sql, params)
-			spec.RunParity(t, fixture, spec.ParityEval{Start: start, End: end, Step: tc.step}, result)
+			runMinMaxParityCase(t, tc.query, tc.step, tc.rows)
 		})
+	}
+}
+
+// runMinMaxParityCase lowers query as an instant query (step 0) at
+// minMaxInstant over minMaxInstantSeed, or as a range query over
+// [minMaxRangeStart, minMaxRangeEnd] over minMaxSeed, runs it in chDB and
+// grades the answer against rows and against the Prometheus oracle.
+func runMinMaxParityCase(t *testing.T, query string, step time.Duration, rows [][]any) {
+	t.Helper()
+	const fixturePermissions = 0o600
+	tc := struct {
+		query string
+		step  time.Duration
+		rows  [][]any
+	}{query, step, rows}
+	endpoint, start, end, seed := "/api/v1/query", minMaxInstant, minMaxInstant, minMaxInstantSeed
+	files := []txtar.File{{Name: "query.promql", Data: []byte(tc.query + "\n")}}
+	if tc.step > 0 {
+		endpoint, start, end, seed = "/api/v1/query_range", minMaxRangeStart, minMaxRangeEnd, minMaxSeed
+	}
+	files = append(files, txtar.File{Name: "parity", Data: []byte("oracle: prometheus\nendpoint: " + endpoint + "\nscope: full\n")})
+	if tc.step > 0 {
+		files = append(files, txtar.File{Name: "range_step", Data: []byte(tc.step.String() + "\n")})
+	}
+	expected, err := json.Marshal(tc.rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append(
+		files,
+		txtar.File{Name: "seed", Data: []byte(seed)},
+		txtar.File{Name: "expected_rows", Data: expected},
+	)
+	path := filepath.Join(t.TempDir(), "min_max.txtar")
+	if err := os.WriteFile(path, txtar.Format(&txtar.Archive{Files: files}), fixturePermissions); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := spec.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expr, err := parser.NewParser(parser.Options{EnableExperimentalFunctions: true}).ParseExpr(tc.query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := promql.LowerAtRange(context.Background(), expr, schema.DefaultOTelMetrics(), start, end, tc.step)
+	if err != nil {
+		t.Fatal(err)
+	}
+	optimized := spec.AssertScanTimeBoundAccepts(t, plan)
+	sql, params, err := chsql.Emit(context.Background(), optimized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := spec.RunRoundTripSQL(t, fixture, sql, params)
+	spec.RunParity(t, fixture, spec.ParityEval{Start: start, End: end, Step: tc.step}, result)
+}
+
+// TestStartTimestamp_ReferenceParity_ChDB pins start_timestamp to the
+// flag-off reference the compat lane runs: an empty answer for every
+// instant-vector argument, instant and range, produced by ClickHouse
+// over the planned argument and graded against the Prometheus oracle.
+func TestStartTimestamp_ReferenceParity_ChDB(t *testing.T) {
+	for _, query := range []string{"start_timestamp(cpu)", "start_timestamp(vector(1))", "start_timestamp(cpu * 2)"} {
+		for _, step := range []time.Duration{0, time.Minute} {
+			t.Run(fmt.Sprintf("%s/step=%s", query, step), func(t *testing.T) {
+				runMinMaxParityCase(t, query, step, [][]any{})
+			})
+		}
 	}
 }

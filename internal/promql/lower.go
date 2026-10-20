@@ -3017,6 +3017,8 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerSortByLabel(c, s, ctx)
 	case "scalar", fnMinOf, fnMaxOf:
 		return lowerScalarTopLevel(c, s, ctx)
+	case fnStartTimestamp:
+		return lowerStartTimestamp(c, s, ctx)
 	case "start", "end":
 		// preprocessQuery folds `start()` and `end()` to the request's
 		// start and end in every lowering entry that carries a request

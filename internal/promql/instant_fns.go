@@ -272,12 +272,14 @@ func lowerClampOverInput(c *parser.Call, s schema.Metrics, ctx lowerCtx, load ma
 			return nil, err
 		}
 		return finishMathValue(inner, c.Args[0], s, ctx, finish, func(refs sampleRoleRefs) chplan.Expr {
-			return nanIfExpr(isNaNExpr(boundE), &chplan.FuncCall{
-				Fn: fnName,
-				Args: []chplan.Expr{
-					refs.Value,
-					boundE,
-				},
+			return bindScalars([]chplan.Expr{boundE}, func(bound []chplan.Expr) chplan.Expr {
+				return nanIfExpr(isNaNExpr(bound[0]), &chplan.FuncCall{
+					Fn: fnName,
+					Args: []chplan.Expr{
+						refs.Value,
+						bound[0],
+					},
+				})
 			})
 		})
 
@@ -352,19 +354,22 @@ func lowerClampOverInput(c *parser.Call, s schema.Metrics, ctx lowerCtx, load ma
 			},
 		}
 		return finishMathValue(filtered, c.Args[0], s, ctx, finish, func(refs sampleRoleRefs) chplan.Expr {
-			return nanIfExpr(
-				&chplan.Binary{Op: chplan.OpOr, Left: isNaNExpr(minE), Right: isNaNExpr(maxE)},
-				&chplan.FuncCall{
-					Fn: chplan.FnGreatest,
-					Args: []chplan.Expr{
-						minE,
-						&chplan.FuncCall{
-							Fn:   chplan.FnLeast,
-							Args: []chplan.Expr{maxE, refs.Value},
+			return bindScalars([]chplan.Expr{minE, maxE}, func(bound []chplan.Expr) chplan.Expr {
+				lo, hi := bound[0], bound[1]
+				return nanIfExpr(
+					&chplan.Binary{Op: chplan.OpOr, Left: isNaNExpr(lo), Right: isNaNExpr(hi)},
+					&chplan.FuncCall{
+						Fn: chplan.FnGreatest,
+						Args: []chplan.Expr{
+							lo,
+							&chplan.FuncCall{
+								Fn:   chplan.FnLeast,
+								Args: []chplan.Expr{hi, refs.Value},
+							},
 						},
 					},
-				},
-			)
+				)
+			})
 		})
 	}
 	return nil, fmt.Errorf("promql: unknown clamp function %s", c.Func.Name)
