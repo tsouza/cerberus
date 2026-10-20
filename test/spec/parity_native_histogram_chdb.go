@@ -36,7 +36,7 @@ const nativeHistogramTable = "otel_metrics_exponential_histogram"
 // The OTel-CH exponential-histogram columns. A fixture's seed declares
 // only the ones its own query needs, so every one of them is read through
 // a projection that tolerates its absence — see
-// [nativeHistogramProjection].
+// [nativeHistogramProjections].
 const (
 	colCount                = "Count"
 	colSum                  = "Sum"
@@ -56,16 +56,14 @@ const (
 // See [infoSecondArgHistogramMatchers].
 //
 // A fixture that never created the table is not an error: most of the
-// corpus seeds only the tables its own query needs.
+// corpus seeds only the tables its own query needs. A failing query over a
+// table the fixture did create is (see [querySeededTable]).
 func readSeededNativeHistograms(
 	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, byKey map[string]*oracle.Series,
 	nameRestorer *metricNameRestorer, exactNames map[string]bool, infoSecondArg []*labels.Matcher,
 	deltaSeries map[string]bool,
 ) error {
 	seedCols := testsql.SeedTableColumns(rt.Seed)[nativeHistogramTable]
-	if len(seedCols) == 0 {
-		return nil
-	}
 
 	//nolint:gosec // every fragment is chosen from this file's own
 	// constants, keyed off the seed's declared columns; no fixture text
@@ -75,9 +73,9 @@ func readSeededNativeHistograms(
 		"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols) + ", " +
 		strings.Join(nativeHistogramProjections(seedCols), ", ") + ", " + flagsProjection(seedCols) +
 		" FROM " + nativeHistogramTable + " ORDER BY MetricName, TimeUnix"
-	rows, err := db.Query(q)
-	if err != nil {
-		return nil
+	rows, ok, err := querySeededTable(db, nativeHistogramTable, q)
+	if err != nil || !ok {
+		return err
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -260,9 +258,9 @@ func nativeHistogramProjections(seedCols []string) []string {
 		intColumnProjection(seedCols, colScale),
 		floatColumnProjection(seedCols, colZeroCount),
 		intColumnProjection(seedCols, colPositiveOffset),
-		bucketCountsProjection(seedCols, colPositiveBucketCounts),
+		arrayColumnProjection(seedCols, colPositiveBucketCounts),
 		intColumnProjection(seedCols, colNegativeOffset),
-		bucketCountsProjection(seedCols, colNegativeBucketCounts),
+		arrayColumnProjection(seedCols, colNegativeBucketCounts),
 	}
 }
 
@@ -280,7 +278,9 @@ func intColumnProjection(seedCols []string, col string) string {
 	return "toInt64(" + col + ")"
 }
 
-func bucketCountsProjection(seedCols []string, col string) string {
+// arrayColumnProjection reads an Array column as JSON, or an empty array
+// when the seed does not declare the column.
+func arrayColumnProjection(seedCols []string, col string) string {
 	if !hasColumn(seedCols, col) {
 		return "'[]'"
 	}
