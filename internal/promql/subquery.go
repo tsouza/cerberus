@@ -2,7 +2,6 @@ package promql
 
 import (
 	"fmt"
-	"math/bits"
 	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
@@ -780,21 +779,14 @@ func emptySubqueryGrid(inner chplan.Node) chplan.Node {
 // epochFloor snaps t down to the nearest absolute-epoch multiple of
 // step (phase 0) — the SQL-side twin of chsql's epochAlignedEndFrag.
 // The multiple may lie before the Int64 nanoseconds, up to a step below
-// an instant near their start, so t is moved back by its remainder, taken
-// over the 128-bit nanoseconds of its Unix seconds, rather than rebuilt
-// from a multiple of steps.
+// an instant near their start, so it is found with time.Time's own
+// arithmetic, which spans every year: the multiples of step from the
+// Unix epoch are those from Go's zero time moved by the epoch's
+// remainder.
 func epochFloor(t time.Time, step time.Duration) time.Time {
-	t = t.UTC()
-	stepNS := step.Nanoseconds()
-	// Go's `%` takes the dividend's sign: a negative remainder is moved
-	// up by one step, to the remainder above the multiple below.
-	secs := t.Unix() % stepNS
-	if secs < 0 {
-		secs += stepNS
-	}
-	hi, lo := bits.Mul64(uint64(secs), uint64(time.Second))
-	rem := (bits.Rem64(hi, lo, uint64(stepNS)) + uint64(t.Nanosecond())) % uint64(stepNS)
-	return t.Add(-time.Duration(rem))
+	epoch := time.Unix(0, 0).UTC()
+	phase := epoch.Sub(epoch.Truncate(step))
+	return t.UTC().Add(-phase).Truncate(step).Add(phase)
 }
 
 // subqueryAnchorShape re-exposes a grid-evaluated subquery inner under
