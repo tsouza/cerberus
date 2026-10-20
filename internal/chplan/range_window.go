@@ -609,7 +609,7 @@ func (r *RangeWindow) InputWindow(start, end time.Time) (time.Time, time.Time) {
 // non-negative offset the span is [start-offset-reach, end]; a negative
 // offset, which moves every window forward, reaches -offset past end.
 func OffsetSpan(start, end time.Time, offset, reach time.Duration) (time.Time, time.Time) {
-	return start.Add(-reach - max(offset, 0)), end.Add(-min(offset, 0))
+	return start.Add(-reach).Add(-max(offset, 0)), end.Add(-min(offset, 0))
 }
 
 // rangeWindowScalarFieldsEqual compares every flat scalar/bool/string field

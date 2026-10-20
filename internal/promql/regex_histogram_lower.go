@@ -284,9 +284,6 @@ func lowerRegexHistogramSelector(v *parser.VectorSelector, s schema.Metrics, ctx
 	if err != nil {
 		return nil, err
 	}
-	if ctx.catalog == nil {
-		selectorInput = augmentSelectorAttributes(selectorInput, ctx.withAttributesPreMerged(), s)
-	}
 	if ctx.inRangeVector {
 		if hasModifier(v) {
 			return &chplan.Filter{Input: selectorInput, Predicate: timeBoundExpr(s.TimestampColumn, anchor)}, nil

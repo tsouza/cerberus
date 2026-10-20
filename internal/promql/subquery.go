@@ -810,6 +810,16 @@ func epochFloor(t time.Time, step time.Duration) time.Time {
 // `__name__` at all, since the enclosing reducer reads its name off
 // THIS relation.
 func subqueryAnchorShape(inner chplan.Node, s schema.Metrics) chplan.Node {
+	return subqueryMatrixShape(inner, s, true)
+}
+
+// subqueryMatrixShape is [subqueryAnchorShape]'s projection with the
+// grid marker left to the caller. onOwnGrid is true for a relation
+// already evaluated at the subquery's own grid, which a re-anchoring pass
+// ([widenSubquerySpine]) must leave as it is, and false for one whose
+// windowing spine below this projection is still re-anchored to the
+// enclosing window, as an OuterRange-mode [chplan.RangeBucketFanout] is.
+func subqueryMatrixShape(inner chplan.Node, s schema.Metrics, onOwnGrid bool) chplan.Node {
 	projections := make([]chplan.Projection, 0, subqueryAnchorShapeMaxCols)
 	if nodeCarriesMetricName(inner, s) {
 		projections = append(projections, chplan.Projection{
@@ -820,7 +830,7 @@ func subqueryAnchorShape(inner chplan.Node, s schema.Metrics) chplan.Node {
 	return &chplan.Project{
 		Roles:        metricRoles(s),
 		Input:        inner,
-		SubqueryGrid: true,
+		SubqueryGrid: onOwnGrid,
 		Projections: append(
 			projections,
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -1293,6 +1303,23 @@ func lowerSubqueryOverVectorSelector(
 	}
 	boundStaleMarkerLayoutsToIdentity(rw)
 	return dropStaleLatestSamples(rw, s), nil
+}
+
+// callSubqueryMatrix shapes the answer of
+// [lowerHistogramOrMixedCallSubqueryInput] as the relation lowerSubquery
+// returns. A float-valued answer (count_over_time, present_over_time,
+// resets, changes, ts_of_first/last_over_time) leaves that continuation as
+// a plain sample quartet whose TimeUnix is the outer-subquery anchor, with
+// no anchor_ts column. Every other float relation lowerSubquery returns
+// publishes the matrix contract an enclosing reducer folds over, anchor_ts
+// included, so this one is shaped the same way. Its OuterRange-mode fanout
+// is not on its own grid yet: an enclosing range query re-anchors it
+// through this projection. A histogram or mixed answer passes through.
+func callSubqueryMatrix(node chplan.Node, err error, s schema.Metrics) (chplan.Node, error) {
+	if err != nil || rowsMayContainHistograms(node) {
+		return node, err
+	}
+	return subqueryMatrixShape(node, s, false), nil
 }
 
 // lowerOuterRangeFnOverSubquery — `max_over_time(rate(m[5m])[1h:5m])`,
@@ -2098,6 +2125,7 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 		if v.Step <= 0 {
 			return
 		}
+		start = representableSubquerySpan(start, end, v.Offset)
 		v.Start = start.UTC()
 		v.End = end.UTC()
 		v.OuterRange = end.Sub(start)
@@ -2178,6 +2206,25 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 	case *chplan.Filter:
 		widenSubquerySpine(v.Input, start, end)
 	}
+}
+
+// representableSubquerySpan returns the first instant of the grid a
+// re-anchored subquery RangeWindow lays over [start, end].
+//
+// [chplan.OffsetSpan] hands a spine the instants its reader reads, start
+// being the earliest one, widened by the reader's offset so the span holds
+// both for an input of absolute instants and for one that applies the
+// offset again itself. A RangeWindow is the second kind: its anchor_ts is
+// its grid moved back by its own offset, so a grid starting offset after
+// start already reaches back to start. The wider span is kept wherever it
+// fits, and a span longer than a time.Duration, which OuterRange cannot
+// hold (a 150y range under a 150y offset needs 300y), starts the grid
+// offset later instead.
+func representableSubquerySpan(start, end time.Time, offset time.Duration) time.Time {
+	if start.Add(end.Sub(start)).Equal(end) {
+		return start
+	}
+	return start.Add(max(offset, 0))
 }
 
 // instantTransformFns is the set of sample-preserving instant-vector
@@ -3526,7 +3573,7 @@ func lowerSubqueryOverCallSubquery(
 			return nil, err
 		}
 		if node, matched, err := lowerHistogramOrMixedCallSubqueryInput(wideInner, kind, call.Func.Name, sub, innerSub, step, s, ctx); matched {
-			return node, err
+			return callSubqueryMatrix(node, err, s)
 		}
 		if !histogramSubqueryFloatOnlyDropFunc(call.Func.Name) {
 			return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", call.Func.Name)
