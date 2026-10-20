@@ -24,16 +24,17 @@ import (
 //
 // expr itself is never modified: a rewritten node is a copy ([mapExpr]).
 func preprocessQuery(expr parser.Expr, start, end time.Time, step time.Duration) (parser.Expr, error) {
-	if err := checkSubquerySteps(expr); err != nil {
-		return nil, err
-	}
-	return mapExpr(expr, func(node parser.Expr) parser.Expr {
+	var err error
+	out := mapExpr(expr, func(node parser.Expr) parser.Expr {
 		switch n := node.(type) {
 		case *parser.Call:
 			if v, ok := queryContextValue(n.Func.Name, start, end, step); ok {
 				return &parser.NumberLiteral{Val: v, PosRange: n.PosRange}
 			}
 		case *parser.SubqueryExpr:
+			if err == nil {
+				err = checkSubqueryStep(n.Step)
+			}
 			if whole := n.Step.Truncate(time.Millisecond); whole != n.Step {
 				cp := *n
 				cp.Step = whole
@@ -41,7 +42,11 @@ func preprocessQuery(expr parser.Expr, start, end time.Time, step time.Duration)
 			}
 		}
 		return node
-	}), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // queryContextValue returns the value Prometheus folds the query-context
@@ -62,19 +67,15 @@ func queryContextValue(name string, start, end time.Time, step time.Duration) (f
 	return 0, false
 }
 
-// checkSubquerySteps rejects a query holding a subquery whose step is
-// positive but under a millisecond, which truncates to an evaluation
-// interval of zero milliseconds. A step of zero is a subquery that names
-// none, which evaluates at the default step.
-func checkSubquerySteps(expr parser.Expr) error {
-	var err error
-	parser.Inspect(expr, func(node parser.Node, _ []parser.Node) error {
-		if n, ok := node.(*parser.SubqueryExpr); ok && err == nil && n.Step > 0 && n.Step < time.Millisecond {
-			err = fmt.Errorf("promql: subquery step %s is under a millisecond, the resolution Prometheus evaluates a subquery at, so its interval is zero", n.Step)
-		}
-		return nil
-	})
-	return err
+// checkSubqueryStep rejects a subquery step that is positive but under a
+// millisecond, which truncates to an evaluation interval of zero
+// milliseconds. A step of zero is a subquery that names none, which
+// evaluates at the default step.
+func checkSubqueryStep(step time.Duration) error {
+	if step > 0 && step < time.Millisecond {
+		return fmt.Errorf("promql: subquery step %s is under a millisecond, the resolution Prometheus evaluates a subquery at, so its interval is zero", step)
+	}
+	return nil
 }
 
 // mapExpr returns e with fn applied to every node, children first: fn
