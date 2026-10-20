@@ -3018,14 +3018,13 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	case "scalar":
 		return lowerScalarTopLevel(c, s, ctx)
 	case "start", "end":
-		// `start()` / `end()` are query-context time anchors, not
-		// standalone callable functions. Upstream's parser admits them
-		// only inside an `@` modifier (`up @ start()`, `up @ end()` —
-		// both supported, lowered via the at-modifier path); the bare
-		// top-level call is invalid PromQL that stock reference
-		// Prometheus rejects. Cerberus rejects it identically — a
-		// permanent parity decision, not a coverage gap.
-		return nil, fmt.Errorf("promql: function %s() is only valid inside an @ modifier (e.g. up @ %s()), not as a standalone call", c.Func.Name, c.Func.Name)
+		// preprocessQuery folds `start()` and `end()` to the request's
+		// start and end in every lowering entry that carries a request
+		// range, as the reference engine's foldQueryContextFunctions does.
+		// Only [Lower], which carries none, leaves a call for this arm: with
+		// no request there is no instant for it to name, the same reason
+		// `@ start()` / `@ end()` reject there.
+		return nil, fmt.Errorf("promql: function %s() requires query range context (use LowerAt)", c.Func.Name)
 	case "pi":
 		// Bare top-level `pi()` (or any scalar-foldable call the parser
 		// admits as a top-level expression). The /api/v1/query handler

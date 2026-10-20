@@ -65,8 +65,9 @@ func TestPreprocess_SubMillisecondSubqueryStep(t *testing.T) {
 	}
 }
 
-// TestPreprocess_QueryContextFoldsToRequest pins that `step()` and
-// `range()` name the request's step and span wherever they sit: inside a
+// TestPreprocess_QueryContextFoldsToRequest pins that `start()`, `end()`,
+// `step()` and `range()` name the request's start, end, step and span
+// wherever they sit: inside a
 // subquery, whose grid has a step and span of its own, in an isolated
 // subquery's runs, and in each run of a range query split into runs.
 // Every float the emitted SQL binds is the request's value.
@@ -102,6 +103,16 @@ func TestPreprocess_QueryContextFoldsToRequest(t *testing.T) {
 		{"split_range_range", `vector(range())`, splitStart, splitEnd, splitStep, splitEnd.Sub(splitStart).Seconds(), 0},
 		{"split_range_root_range", `range()`, splitStart, splitEnd, splitStep, splitEnd.Sub(splitStart).Seconds(), 0},
 		{"split_range_root_step", `step()`, splitStart, splitEnd, splitStep, splitStep.Seconds(), 0},
+		{"root_start", `start()`, start, end, fiveMinutes, float64(start.Unix()), 0},
+		{"root_end", `end()`, start, end, fiveMinutes, float64(end.Unix()), 0},
+		{"root_start_instant", `start()`, end, end, 0, float64(end.Unix()), 0},
+		{"subquery_start", `max_over_time(vector(start())[10m:1m])`, start, end, fiveMinutes, float64(start.Unix()), 0},
+		{"subquery_end_instant", `max_over_time(vector(end())[10m:1m])`, end, end, 0, float64(end.Unix()), 0},
+		{"nested_subquery_end", `max_over_time(max_over_time(vector(end())[10m:1m])[20m:2m])`, start, end, fiveMinutes, float64(end.Unix()), 0},
+		{"isolated_subquery_start", `max_over_time(vector(start())[5m:1m] @ 1e17)`, start, end, fiveMinutes, float64(start.Unix()), 0},
+		{"scalar_argument_start", `clamp_max(vector(1e12), start())`, start, end, fiveMinutes, float64(start.Unix()), 1e12},
+		{"split_range_start", `vector(start())`, splitStart, splitEnd, splitStep, float64(splitStart.Unix()), 0},
+		{"split_range_root_end", `end()`, splitStart, splitEnd, splitStep, float64(splitEnd.Unix()), 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

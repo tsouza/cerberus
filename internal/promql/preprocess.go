@@ -10,10 +10,12 @@ import (
 // preprocessQuery returns expr as Prometheus's engine evaluates it for a
 // request over [start, end] at step, before the lowering sees it:
 //
-//   - `range()` and `step()` are folded to the request's span and step,
-//     in seconds, wherever they sit, as foldQueryContextFunctions folds
-//     them once per query. A subquery grid or a run of a split range
-//     never changes what they name.
+//   - `start()`, `end()`, `range()` and `step()` are folded to the
+//     request's start, end, span and step, in seconds, wherever they sit,
+//     as foldQueryContextFunctions folds them once per query. A subquery
+//     grid, a frame shift or a run of a split range never changes what
+//     they name. Without a request range ([Lower]) `start()` and `end()`
+//     name no instant and are left for the lowering to reject.
 //   - A subquery's step is truncated to whole milliseconds, the interval
 //     Prometheus evaluates the inner expression at
 //     (durationMilliseconds(e.Step)).
@@ -51,11 +53,18 @@ func preprocessQuery(expr parser.Expr, start, end time.Time, step time.Duration)
 
 // queryContextValue returns the value Prometheus folds the query-context
 // function name to for a request over [start, end] at step, and whether
-// name is one preprocessQuery folds. `range()` is the span in seconds;
-// `step()` is the step in seconds, or 0 for an instant query, whose start
-// and end coincide.
+// name is one preprocessQuery folds. `start()` and `end()` are the
+// request's start and end in Unix seconds, truncated to whole
+// milliseconds as the engine reads them (timestamp.FromTime); an instant
+// query's start and end are both its evaluation time. `range()` is the
+// span in seconds; `step()` is the step in seconds, or 0 for an instant
+// query, whose start and end coincide.
 func queryContextValue(name string, start, end time.Time, step time.Duration) (float64, bool) {
 	switch name {
+	case "start":
+		return unixSeconds(start)
+	case "end":
+		return unixSeconds(end)
 	case "range":
 		return end.Sub(start).Seconds(), true
 	case "step":
@@ -65,6 +74,15 @@ func queryContextValue(name string, start, end time.Time, step time.Duration) (f
 		return step.Seconds(), true
 	}
 	return 0, false
+}
+
+// unixSeconds returns t in Unix seconds at millisecond resolution, and
+// false for the zero time, which names no request instant.
+func unixSeconds(t time.Time) (float64, bool) {
+	if t.IsZero() {
+		return 0, false
+	}
+	return float64(t.UnixMilli()) / millisPerSecond, true
 }
 
 // checkSubqueryStep rejects a subquery step that is positive but under a

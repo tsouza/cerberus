@@ -1,7 +1,8 @@
 //go:build chdb
 
-// chDB proof, against the Prometheus reference engine, that `step()` and
-// `range()` answer the request's step and span wherever they sit, and
+// chDB proof, against the Prometheus reference engine, that `start()`,
+// `end()`, `step()` and `range()` answer the request's start, end, step
+// and span wherever they sit, and
 // that a subquery evaluates its inner expression at its step truncated
 // to whole milliseconds.
 package promql_test
@@ -78,6 +79,9 @@ var preprocessEnd = time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)
 const (
 	preprocessStep       = 5 * time.Minute
 	preprocessRangeSteps = 4
+	// millisPerSecond converts the Unix milliseconds the Prometheus engine
+	// reads a request's bounds at to the seconds start() and end() answer.
+	millisPerSecond = 1000
 )
 
 // TestPreprocessParity_ChDB pins the query-context fold and the subquery
@@ -86,6 +90,7 @@ const (
 func TestPreprocessParity_ChDB(t *testing.T) {
 	start := preprocessEnd.Add(-preprocessRangeSteps * preprocessStep)
 	span := preprocessEnd.Sub(start).Seconds()
+	startSeconds, endSeconds := float64(start.Unix()), float64(preprocessEnd.Unix())
 	job := map[string]string{"job": "a"}
 	none := map[string]string{}
 	cases := []struct {
@@ -106,6 +111,14 @@ func TestPreprocessParity_ChDB(t *testing.T) {
 		{"nested_subquery_range", `max_over_time(max_over_time(vector(range())[10m:1m])[20m:2m])`, none, 0, span, false},
 		{"scalar_argument_step", `clamp_max(vector(1000), step())`, none, 0, preprocessStep.Seconds(), false},
 		{"root_range", `range()`, none, 0, span, false},
+		// An instant query's start and end are both its evaluation time.
+		{"root_start", `start()`, none, endSeconds, startSeconds, false},
+		{"root_end", `end()`, none, endSeconds, endSeconds, false},
+		{"end_minus_start", `end() - start()`, none, 0, span, false},
+		{"scalar_argument_start", `clamp_max(vector(1e12), start())`, none, endSeconds, startSeconds, false},
+		{"subquery_end", `max_over_time(vector(end())[10m:1m])`, none, endSeconds, endSeconds, false},
+		{"subquery_start_over_series", `max_over_time((qc_probe * 0 + start())[10m:1m])`, job, endSeconds, startSeconds, false},
+		{"nested_subquery_start", `max_over_time(max_over_time(vector(start())[10m:1m])[20m:2m])`, none, endSeconds, startSeconds, false},
 		// Prometheus evaluates a subquery at its step truncated to whole
 		// milliseconds: 1.5ms evaluates at every millisecond, ten of which
 		// the 10ms window holds.
@@ -153,6 +166,8 @@ func TestPreprocessParity_ChDB(t *testing.T) {
 			{`range()`, splitEnd.Sub(splitStart).Seconds()},
 			{`vector(range())`, splitEnd.Sub(splitStart).Seconds()},
 			{`step()`, splitStep.Seconds()},
+			{`start()`, float64(splitStart.Unix())},
+			{`vector(end())`, float64(splitEnd.Unix())},
 		} {
 			t.Run(tc.query, func(t *testing.T) {
 				cells := make([][]any, 0, splitSteps+1)
@@ -162,6 +177,32 @@ func TestPreprocessParity_ChDB(t *testing.T) {
 				assertPreprocessParity(t, tc.query, splitStart, splitEnd, splitStep, cells)
 			})
 		}
+	})
+}
+
+// TestPreprocessParity_SubMillisecondBounds_ChDB pins that `start()` and
+// `end()` name the request's bounds truncated to whole milliseconds, as
+// the Prometheus engine reads them, in instant and range mode.
+func TestPreprocessParity_SubMillisecondBounds_ChDB(t *testing.T) {
+	const pastTheMillisecond = 1500 * time.Microsecond
+	none := map[string]string{}
+	at := preprocessEnd.Add(pastTheMillisecond)
+	atSeconds := float64(preprocessEnd.Add(time.Millisecond).UnixMilli()) / millisPerSecond
+	t.Run("instant", func(t *testing.T) {
+		for _, q := range []string{`start()`, `end()`} {
+			t.Run(q, func(t *testing.T) {
+				assertPreprocessParity(t, q, at, at, 0, [][]any{{none, atSeconds}})
+			})
+		}
+	})
+	t.Run("range", func(t *testing.T) {
+		start := at.Add(-preprocessRangeSteps * preprocessStep)
+		startSeconds := float64(preprocessEnd.Add(time.Millisecond-preprocessRangeSteps*preprocessStep).UnixMilli()) / millisPerSecond
+		var cells [][]any
+		for step := start; !step.After(at); step = step.Add(preprocessStep) {
+			cells = append(cells, []any{none, step.Format(time.RFC3339Nano), startSeconds})
+		}
+		assertPreprocessParity(t, `start()`, start, at, preprocessStep, cells)
 	})
 }
 

@@ -32,11 +32,11 @@ conformance **ledger** in [`test/surface-parity/`](../test/surface-parity/)
 ([Layer 6d](test-strategy.md#layer-6d--function-surface-parity-ledger) of the
 test map). The ledger classifies each symbol four ways — `parity-accept`,
 `parity-reject`, `wrong-reject`, `wrong-accept` — which is the right vocabulary
-for the test ratchet but the wrong one for a reader: `range()` / `step()` read
-as "wrong-accept" in the ledger — the probe drives them as bare top-level
-calls, a shape the reference rejects for query-context reasons — yet they are
-genuinely **Supported (experimental)** for a user. The table above performs
-that translation.
+for the test ratchet but the wrong one for a reader: `start()` / `end()` /
+`range()` / `step()` read as "wrong-accept" in the ledger (see
+[the note on the query-context functions](#a-note-on-the-promql-query-context-functions))
+yet they are genuinely **Supported (experimental)** for a user. The table above
+performs that translation.
 
 The ledger is **symbol-level**: it records whether cerberus accepts a symbol at
 all, not which argument *shapes* of that symbol it accepts. A function listed
@@ -68,10 +68,11 @@ figure here can only ever be what the ledger tallies.
 
 <!-- END AUTOGEN: coverage-glance -->
 
-> **This is an accept/reject ledger, not a correctness score.** "226/228
-> supported" means cerberus *lowers to SQL that the reference also accepts*
-> for 226 of 228 grammar symbols. It does **not** mean those 226 symbols
-> return numerically correct rows — that is what the
+> **This is an accept/reject ledger, not a correctness score.** "228/228
+> supported" means cerberus *lowers to SQL* all 228 grammar symbols, each one
+> the reference also accepts or a
+> [query-context function](#a-note-on-the-promql-query-context-functions). It
+> does **not** mean those 228 symbols return numerically correct rows — that is what the
 > [differential harnesses](compatibility.md) measure (an accepted symbol
 > can still emit wrong rows). Cite this number as **surface / rejection
 > parity**, never as numerical correctness coverage.
@@ -117,20 +118,30 @@ Read the two measurements together, never one for the other: every grammar
 symbol lowers, and a counted, individually-tracked set of argument shapes and
 instants does not.
 
-The two PromQL parity rejections are the bare `start()` / `end()`
-query-context calls, which the reference parser itself only admits inside an `@` modifier (`up @ start()`,
-`up @ end()` — both **Supported**, listed under Modifiers) and rejects as
-standalone expressions exactly as cerberus does.
+### A note on the PromQL query-context functions
 
-### A note on PromQL `range()` / `step()`
+`start()`, `end()`, `range()` and `step()` are experimental upstream and
+**Supported** in cerberus. Cerberus folds each to a constant once per query,
+wherever it sits (at the root, as a scalar argument, inside a subquery), exactly
+as `foldQueryContextFunctions` does in the Prometheus engine library its parser
+and test oracle come from:
 
-These two query-context functions are experimental upstream and **Supported**
-in cerberus: it constant-folds them per query exactly as the reference engine
-does (`range()` → eval-range seconds, `step()` → the query_range step). They
-appear as a `cerberus extension` in the raw ledger only because the
-surface-parity probe drives them as bare top-level calls, a form the HTTP
-reference rejects outside a query context — an artifact of the probe shape,
-not a correctness divergence. In real PromQL usage they match upstream.
+| Function  | Instant query at `t` | Range query over `[start, end]` |
+| --------- | -------------------- | ------------------------------- |
+| `start()` | `t`                  | `start`                         |
+| `end()`   | `t`                  | `end`                           |
+| `range()` | `0`                  | `end - start`                   |
+| `step()`  | `0`                  | the query_range step            |
+
+Every value is in seconds. `start()` and `end()` are Unix times truncated to
+whole milliseconds.
+
+The surface-parity reference is the released `prom/prometheus:v3.11.3` server,
+whose grammar predates these four functions: it rejects a bare `start()` /
+`end()` as a parse error and parses `range()` / `step()` as duration
+expressions it cannot evaluate at the top level. That is why the raw ledger
+records all four as `wrong-accept`. The `@ start()` / `@ end()` modifiers are a
+separate construct, **Supported** by both, and listed under Modifiers.
 
 ## Per-symbol tables
 

@@ -24,11 +24,11 @@ func queryContextParser() parser.Parser {
 // fold for the top-level query-context functions. The reference engine
 // (engine.foldQueryContextFunctions) folds:
 //
+//   - start() → the evaluation time in Unix seconds, truncated to
+//     whole milliseconds
+//   - end()   → the same instant (start == end)
 //   - range() → (end - start) seconds → 0 for an instant query
 //   - step()  → 0 for an instant query (start == end)
-//
-// `start()` / `end()` are not top-level callable functions — upstream
-// admits them only inside an `@` modifier — so they are not folded here.
 //
 // Cerberus folds these at lowering into a single synthetic scalar row
 // (Project over OneRow), so the emitted SQL must render over the
@@ -39,13 +39,18 @@ func TestQueryContextFold_Instant(t *testing.T) {
 
 	s := schema.DefaultOTelMetrics()
 	p := queryContextParser()
-	instant := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
+	// The instant carries 1.5ms past the second: start() and end() name it
+	// truncated to the millisecond, as timestamp.FromTime reads it.
+	instant := time.Date(2026, 1, 1, 0, 0, 1, 1500*int(time.Microsecond), time.UTC)
+	const instantSeconds = 1767225601.001
 
 	cases := []struct {
 		name  string
 		query string
 		want  float64
 	}{
+		{"start", "start()", instantSeconds},
+		{"end", "end()", instantSeconds},
 		{"range", "range()", 0},
 		{"step", "step()", 0},
 	}
@@ -84,6 +89,8 @@ func TestQueryContextFold_Instant(t *testing.T) {
 // The reference values over the window [2026-01-01 00:00:00,
 // 00:05:00] with a 30s step are:
 //
+//   - start() → 1767225600, the window's start in Unix seconds
+//   - end()   → 1767225900, its end
 //   - range() → 300
 //   - step()  → 30
 //
@@ -104,6 +111,8 @@ func TestQueryContextFold_Range(t *testing.T) {
 		query string
 		want  float64
 	}{
+		{"start", "start()", 1767225600},
+		{"end", "end()", 1767225900},
 		{"range", "range()", 300},
 		{"step", "step()", 30},
 	}
@@ -147,4 +156,24 @@ func assertHasFloatArg(t *testing.T, query string, args []any, want float64) {
 		}
 	}
 	t.Fatalf("%s: expected folded value %v in bound args %v", query, want, args)
+}
+
+// TestQueryContextFold_StartEndNeedRequestRange pins that [promql.Lower],
+// which carries no request range, rejects `start()` and `end()` as it
+// rejects `@ start()` and `@ end()`: there is no instant for them to name.
+func TestQueryContextFold_StartEndNeedRequestRange(t *testing.T) {
+	t.Parallel()
+	for _, q := range []string{"start()", "end()"} {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			expr, err := queryContextParser().ParseExpr(q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = promql.Lower(context.Background(), expr, schema.DefaultOTelMetrics())
+			if err == nil || !strings.Contains(err.Error(), "requires query range context") {
+				t.Fatalf("Lower(%q) = %v, want the query range context rejection", q, err)
+			}
+		})
+	}
 }

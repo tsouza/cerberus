@@ -85,13 +85,13 @@ function status(entry) {
     case 'parity-accept':
       return isExperimental ? 'Supported (experimental)' : 'Supported';
     case 'parity-reject':
-      // Both cerberus and the reference reject. For the experimental
-      // query-context fns (start/end) this is a real intentional gate.
+      // Both cerberus and the reference reject.
       return 'Rejected (parity with reference)';
     case 'wrong-accept':
-      // Cerberus accepts, the probe's reference rejects. For range()/step()
-      // this is a faithful experimental implementation the bare-call probe
-      // cannot see.
+      // Cerberus accepts, the probe's reference rejects. For the
+      // query-context fns (start/end/range/step) this is a faithful
+      // implementation of the vendored engine's fold, which the released
+      // reference server's grammar predates.
       return isExperimental ? 'Supported (experimental)' : 'Supported (cerberus extension)';
     case 'wrong-reject':
       return 'Not yet supported';
