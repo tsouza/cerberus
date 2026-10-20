@@ -103,12 +103,11 @@ func TestDownsampleTierValueExprFrag_PerFunc(t *testing.T) {
 // numbers the emitter computes itself and the conditional timestamp
 // projection.
 //
-// Kills both ARITHMETIC_BASE mutants of
-// range_window_downsample_tier.go:`numAnchors := r.End.Sub(r.Start).Nanoseconds()/stepNS + 1`.
-// The plan spans ten one-minute steps, so the end-inclusive anchor count is
-// 11 and reaches the SQL as sampleAnchorFanoutFrag's `least(11, …)` upper
-// bound; `+ 1` becoming `- 1` renders `least(9, …)` and `/` becoming `*`
-// renders a number in the 10^22 range that wraps.
+// Kills the ARITHMETIC_BASE mutants of internal/chplan/grid_span.go:GridAnchors:`steps + 1`, which
+// range_window_downsample_tier.go:`numAnchors := chplan.GridAnchors(r.Start, r.End, r.Step)`
+// counts with. The plan spans ten one-minute steps, so the end-inclusive
+// anchor count is 11 and reaches the SQL as sampleAnchorFanoutFrag's
+// `least(11, …)` upper bound; `+ 1` becoming `- 1` renders `least(9, …)`.
 //
 // Kills the CONDITIONALS_NEGATION mutant of
 // range_window_downsample_tier.go:`if r.TimestampColumn != RangeWindowAnchorAlias`:

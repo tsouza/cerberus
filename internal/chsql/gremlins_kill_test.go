@@ -417,9 +417,10 @@ func TestEmitMetricsExemplars_RangeDurationFallback(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_NumAnchorsBoundary kills both
-// CONDITIONAL_BOUNDARY at exemplars.go:`span < 0` and the ARITHMETIC
-// mutators at exemplars.go:`span/stepNS + 1`. End == Start hits the
-// boundary: span == 0 → numAnchors = 0/step + 1 = 1.
+// boundary of anchor_grid.go:gridAnchorCount:`start.After(end)`, which the exemplar
+// fan-out counts its anchors with, and the ARITHMETIC mutators at
+// internal/chplan/grid_span.go:GridAnchors:`steps + 1`. End == Start hits the boundary: zero steps
+// → numAnchors = 0 + 1 = 1.
 func TestEmitMetricsExemplars_NumAnchorsBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -775,7 +776,7 @@ func TestEmitMetricsAggregate_LogicalAndOnMetricArg(t *testing.T) {
 }
 
 // TestEmitMetricsAggregate_BadStartEndPin kills the boundary mutants on
-// exemplars.go:rangeWindowGridAnchorCount:`span < 0` through
+// anchor_grid.go:gridAnchorCount:`start.After(end)` through
 // emitRangeWindowMetrics, which takes its anchor count from that helper.
 // End < Start must error; End == Start must succeed (boundary case).
 func TestEmitMetricsAggregate_BadStartEndPin(t *testing.T) {
@@ -1011,7 +1012,7 @@ func TestEmitMetricsHistogramOverTime_RangeFallback(t *testing.T) {
 }
 
 // TestEmitMetricsHistogramOverTime_NumAnchorsBoundary kills the
-// exemplars.go:rangeWindowGridAnchorCount:`span < 0` boundary through the
+// anchor_grid.go:gridAnchorCount:`start.After(end)` boundary through the
 // histogram fan-out, which takes its anchor count from that helper.
 func TestEmitMetricsHistogramOverTime_NumAnchorsBoundary(t *testing.T) {
 	t.Parallel()
@@ -1055,7 +1056,7 @@ func TestEmitMetricsHistogramOverTime_NumAnchorsBoundary(t *testing.T) {
 }
 
 // TestEmitMetricsHistogramOverTime_BadStartEndErrors kills the matrix
-// negation at exemplars.go:rangeWindowGridAnchorCount:`span < 0` by hitting
+// negation at anchor_grid.go:gridAnchorCount:`start.After(end)` by hitting
 // the error path through the histogram fan-out.
 func TestEmitMetricsHistogramOverTime_BadStartEndErrors(t *testing.T) {
 	t.Parallel()
@@ -1725,11 +1726,12 @@ func TestEmitAggregate_DropEmptyGuard(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_ArithmeticBoundary118 kills the two
-// ARITHMETIC_BASE mutants at exemplars.go:`span/stepNS + 1`. The
-// formula divides the half-window span by stepNS, then adds 1 for the
-// end-inclusive anchor count. Mutants:
+// ARITHMETIC_BASE mutants at internal/chplan/grid_span.go:GridAnchors:`steps + 1`, which the
+// exemplar fan-out counts its anchors with. The formula counts the whole
+// steps in the span, then adds 1 for the end-inclusive anchor count.
+// Mutants:
 //   - `+` → `-`: yields one fewer anchor (e.g. 5 instead of 6).
-//   - `/` → `*`: yields a wildly wrong count.
+//   - `+` → `*`: yields the step count alone.
 //
 // Pinning a non-trivial span / step combo where every arithmetic op
 // has a unique result kills both at once.
@@ -2259,7 +2261,7 @@ func TestEmitWindowedArrayPairsMatrix_MinWindowNegation(t *testing.T) {
 }
 
 // TestEmitRangeWindowMetricsQuantileBuckets_SpanBoundary kills the
-// CONDITIONALS_BOUNDARY at exemplars.go:rangeWindowGridAnchorCount:`span < 0`
+// CONDITIONALS_BOUNDARY at anchor_grid.go:gridAnchorCount:`start.After(end)`
 // through emitRangeWindowMetricsQuantileBuckets, which calls it. The
 // mutant flips `<` to `<=`, which rejects Start == End (span == 0) — a
 // legitimate single-anchor grid the original accepts. We assert that
@@ -2320,9 +2322,9 @@ func TestEmitRangeWindowMetricsQuantileBuckets_SpanBoundary(t *testing.T) {
 
 // TestEmitRangeWindowMetricsQuantileBuckets_SpanAnchorArithmetic kills
 // the two ARITHMETIC_BASE mutants at
-// exemplars.go:rangeWindowGridAnchorCount:`span/stepNS + 1`, through
-// emitRangeWindowMetricsQuantileBuckets, which calls it.
-// The `/` mutates to `*` / `%` / `-` / `+`; the
+// internal/chplan/grid_span.go:GridAnchors:`steps + 1`, through rangeWindowGridAnchorCount,
+// which emitRangeWindowMetricsQuantileBuckets calls.
+// The
 // `+` mutates to `-` / `*` / `%` / `/`. Setup: Start=t0, End=t0+4m,
 // Step=1m → span = 240s (in ns), span/stepNS = 4, numAnchors = 5.
 // Pinning the `range(0, 5)` literal in the emitted SQL distinguishes
@@ -2760,10 +2762,10 @@ func TestEmitRangeWindowCompare_RangeFallback(t *testing.T) {
 
 // TestEmitRangeWindowCompare_SpanBoundaryAndArithmetic kills three
 // mutants on the Start/End anchor-count path:
-//   - CONDITIONALS_BOUNDARY on metrics_compare.go:`if span < 0` —
+//   - the boundary of anchor_grid.go:gridAnchorCount:`start.After(end)` —
 //     Start==End is a valid single-anchor window, not an error.
 //   - ARITHMETIC_BASE on both halves of
-//     metrics_compare.go:`numAnchors = span/stepNS + 1` — the
+//     internal/chplan/grid_span.go:GridAnchors:`steps + 1` — the
 //     `least(<numAnchors>, …)` literal in the sample-side fanout pins the
 //     exact anchor count, so `/`→`*`/`%`/`±` and `+`→`-`/`*` all diverge.
 //
@@ -3625,13 +3627,13 @@ func TestEmitRangeLWR_EachColumnEmptyErrors(t *testing.T) {
 
 // TestEmitRangeLWR_AnchorCountBounds kills two mutants in the anchor-
 // count computation:
-//   - INVERT_LOGICAL on range_lwr.go:`!r.Start.IsZero() && !r.End.IsZero()`:
+//   - INVERT_LOGICAL on anchor_grid.go:gridAnchorCount:`start.IsZero() || end.IsZero()`:
 //     with a pinned [Start,End] grid the anchor count is computed from
 //     the span
-//     (least(11, …)); the `&&` → `||` flip would still take the computed
+//     (least(11, …)); the `||` → `&&` flip would take the computed
 //     branch when only one bound is set, but more importantly the
 //     pinned-grid case below proves the computed branch runs (least(11)).
-//   - CONDITIONALS_BOUNDARY on range_lwr.go:`if span < 0` (→ `span <= 0`): a
+//   - the boundary of anchor_grid.go:gridAnchorCount:`start.After(end)`: a
 //     ZERO-span grid (Start == End) is legal — one anchor — and must NOT
 //     error; the `<=` mutant would reject it.
 func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
@@ -3674,11 +3676,11 @@ func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
 		t.Errorf("zero-span grid must yield exactly one anchor (least(1, …)); got:\n%s", zsSQL)
 	}
 
-	// INVERT_LOGICAL on range_lwr.go:`!r.Start.IsZero() && !r.End.IsZero()`: only
-	// when BOTH bounds are pinned is the span computed. With Start set
-	// but End zero the guard is false → single anchor, no span math, must
-	// emit cleanly. The `&&` → `||` mutant would enter the span branch on
-	// the zero End, computing a negative span and erroring.
+	// INVERT_LOGICAL on anchor_grid.go:gridAnchorCount:`start.IsZero() || end.IsZero()`:
+	// only when BOTH bounds are pinned is the span counted. With Start set
+	// but End zero the guard is true → single anchor, no span math, must
+	// emit cleanly. The `||` → `&&` mutant would count the span on the zero
+	// End, a grid of no anchors.
 	oneBound := &chplan.RangeLWR{
 		Input:         rangeLWRInternalTestInput("otel_metrics_gauge"),
 		Start:         start,
@@ -3700,7 +3702,7 @@ func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
 // --- range_lwr.go lookback sign in the floor-index numerator ---
 
 // TestEmitRangeLWR_LookbackSign kills the INVERT_NEGATIVES /
-// ARITHMETIC_BASE on range_lwr.go:`-lookbackNS`, the floor-index
+// ARITHMETIC_BASE on range_lwr.go:`-g.units(lookbackNS)`, the floor-index
 // numerator's addend. The window floor walks BACK by the lookback, so
 // the emitted numerator is
 // `dist - <lookbackNS>`; flipping the sign to `+ <lookbackNS>` (or
@@ -3992,8 +3994,8 @@ func TestAnchorGridCeilIdxFrag_ShiftsAddNSDownByOne(t *testing.T) {
 
 // TestPrefixAnchorIndexFrag_NegatesRangeNS kills both the INVERT_NEGATIVES
 // and ARITHMETIC_BASE mutants at
-// range_window.go:prefixAnchorIndexFrag:`-rangeNS` (the unary expression
-// passed as anchorGridFloorIdxFrag's addNS argument). A
+// range_window.go:prefixAnchorIndexFrag:`-g.units(rangeNS)` (the unary
+// expression passed as anchorGrid.floorIdx's add argument). A
 // mutant that drops or otherwise flips that sign feeds anchorGridFloorIdxFrag
 // a POSITIVE offset instead — its own `addNS > 0` branch then renders an
 // ADDITION (`dist + rangeNS`) instead of the correct SUBTRACTION

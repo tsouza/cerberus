@@ -178,7 +178,8 @@ func intervalNanosecondsAfter(t *testing.T, sqlText, marker string, n int) []int
 }
 
 // TestMatrixWindowScanBoundsFrags_EarliestAnchorArithmetic kills
-// range_window.go:matrixWindowScanBoundsFrags:`(numAnchors-1)*stepNS` under
+// anchor_grid.go:earliest:`(numAnchors - 1) * g.step`, through
+// matrixWindowScanBoundsFrags, under
 // ARITHMETIC_BASE and INVERT_NEGATIVES on the `-` in `numAnchors-1`, and
 // ARITHMETIC_BASE on the `*`. matrixWindowScanBoundsFrags computes
 // earliestAnchor = end - (numAnchors-1)*stepNS, consumed as the guard
@@ -214,7 +215,8 @@ func TestMatrixWindowScanBoundsFrags_EarliestAnchorArithmetic(t *testing.T) {
 }
 
 // TestApplyMatrixFanoutScanBoundAggregate_EarliestDayArithmetic kills
-// range_window.go:applyMatrixFanoutScanBoundAggregate:`(numAnchors-1)*stepNS`
+// anchor_grid.go:earliest:`(numAnchors - 1) * g.step`, through
+// applyMatrixFanoutScanBoundAggregate,
 // under ARITHMETIC_BASE and INVERT_NEGATIVES on the `-` in `numAnchors-1`, and
 // ARITHMETIC_BASE on the `*` —
 // applyMatrixFanoutScanBoundAggregate's OWN local earliestAnchor
