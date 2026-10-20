@@ -37,6 +37,9 @@ func FormatTimeLiteral(t time.Time) string {
 // here; chsql.Builder.DateTime64Lit renders the same literal for the
 // emitter-side bounds.
 func TimeLiteral(t time.Time) Expr {
+	if t.After(StorageMaxTime) {
+		t = StorageMaxTime
+	}
 	if t.Before(TimeLiteralMin) {
 		return &FuncCall{
 			Fn:   FnFromUnixNanos,

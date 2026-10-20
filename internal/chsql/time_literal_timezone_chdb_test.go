@@ -75,3 +75,40 @@ func TestTimeLiterals_DenoteTheSameInstantInEveryServerTimezone(t *testing.T) {
 		}
 	}
 }
+
+// TestTimeLiterals_ClampPastTheStorageCeiling pins that both time-literal
+// constructors write an instant after the int64 nanosecond ceiling, which
+// ClickHouse refuses to parse into a DateTime64(9) (DECIMAL_OVERFLOW), as
+// the ceiling itself.
+func TestTimeLiterals_ClampPastTheStorageCeiling(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	builds := map[string]func(time.Time) (string, []any){
+		"chplan.TimeLiteral": func(ts time.Time) (string, []any) {
+			b := chsql.NewBuilder()
+			if err := b.Expr(chplan.TimeLiteral(ts)); err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			sql, args, _ := b.Build()
+			return sql, args
+		},
+		"Builder.DateTime64Lit": func(ts time.Time) (string, []any) {
+			b := chsql.NewBuilder()
+			b.DateTime64Lit(ts)
+			sql, args, _ := b.Build()
+			return sql, args
+		},
+	}
+	want := strconv.FormatInt(chplan.StorageMaxTime.UnixNano(), 10)
+	for name, build := range builds {
+		for _, ts := range []time.Time{chplan.StorageMaxTime.Add(time.Nanosecond), time.Date(2300, 1, 1, 0, 0, 0, 0, time.UTC)} {
+			lit, args := build(ts)
+			var got string
+			if err := db.QueryRow("SELECT toString(toUnixTimestamp64Nano("+lit+"))", args...).Scan(&got); err != nil {
+				t.Fatalf("%s(%s): %v\nliteral: %s", name, ts, err, lit)
+			}
+			if got != want {
+				t.Errorf("%s(%s) = %s evaluates to %s ns, want the ceiling %s ns", name, ts, lit, got, want)
+			}
+		}
+	}
+}

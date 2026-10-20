@@ -480,7 +480,14 @@ func (b *Builder) SubtractNanos(lhs func(b *Builder), ns int64) {
 // [chplan.TimeLiteral] writes it:
 //
 //	fromUnixTimestamp64Nano(toInt64(<n>))
+//
+// An instant after [chplan.StorageMaxTime], which ClickHouse refuses to
+// parse into a DateTime64(9), is written as that ceiling, exactly as
+// [chplan.TimeLiteral] writes it.
 func (b *Builder) DateTime64Lit(t time.Time) {
+	if t.After(chplan.StorageMaxTime) {
+		t = chplan.StorageMaxTime
+	}
 	if t.Before(chplan.TimeLiteralMin) {
 		b.sb.WriteString(string(chplan.FnFromUnixNanos))
 		b.sb.WriteString("(")

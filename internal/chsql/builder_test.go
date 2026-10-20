@@ -1719,3 +1719,23 @@ func TestBuilder_DateTime64Lit_Before1900(t *testing.T) {
 		}
 	}
 }
+
+// TestBuilder_DateTime64Lit_PastStorageMax — an instant after the int64
+// nanosecond ceiling, which ClickHouse cannot parse into a DateTime64(9),
+// names the ceiling.
+func TestBuilder_DateTime64Lit_PastStorageMax(t *testing.T) {
+	t.Parallel()
+
+	const ceiling = "parseDateTime64BestEffort('2262-04-11 23:47:16.854775807Z', 9)"
+	for _, at := range []time.Time{
+		time.Unix(0, math.MaxInt64).UTC(),
+		time.Unix(0, math.MaxInt64).UTC().Add(time.Nanosecond),
+		time.Date(2300, 1, 1, 0, 0, 0, 0, time.UTC),
+	} {
+		b := NewBuilder()
+		b.DateTime64Lit(at)
+		if got := b.String(); got != ceiling {
+			t.Errorf("DateTime64Lit(%s) = %q; want %q", at, got, ceiling)
+		}
+	}
+}

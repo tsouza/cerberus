@@ -28,6 +28,8 @@ func TestTimeLiteral(t *testing.T) {
 		{"storage_min", StorageMinTime, nanos(math.MinInt64)},
 		{"before_storage_min", time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC), nanos(math.MinInt64)},
 		{"storage_max", StorageMaxTime, parsed("2262-04-11 23:47:16.854775807Z")},
+		{"after_storage_max", StorageMaxTime.Add(time.Nanosecond), parsed("2262-04-11 23:47:16.854775807Z")},
+		{"far_after_storage_max", time.Date(2300, 1, 1, 0, 0, 0, 0, time.UTC), parsed("2262-04-11 23:47:16.854775807Z")},
 	}
 	for _, tc := range cases {
 		if got := TimeLiteral(tc.at); !got.Equal(tc.want) {
