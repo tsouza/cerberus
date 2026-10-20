@@ -40,9 +40,11 @@ const serverBootBudget = 5 * time.Minute
 
 // server is one booted ClickHouse build.
 type server struct {
-	image   string
-	addr    string
-	version chopt.Version
+	image string
+	addr  string
+	// containerID is the server's container, which a probe can pause.
+	containerID string
+	version     chopt.Version
 	// admin is the observer/administrative connection. Probes never dispatch
 	// the query under test through it, so its pool and settings stay
 	// independent of the client being measured.
@@ -81,7 +83,7 @@ func startServer(ctx context.Context, t *testing.T, image string, extra ...testc
 	if err != nil {
 		t.Fatalf("%s port: %v", image, err)
 	}
-	s := &server{image: image, addr: host + ":" + port.Port()}
+	s := &server{image: image, addr: host + ":" + port.Port(), containerID: ctr.GetContainerID()}
 	s.admin = s.client(t, adminUser, adminPassword, chclient.Config{})
 	s.version, err = s.admin.ProbeVersion(ctx)
 	if err != nil {
