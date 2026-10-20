@@ -25,7 +25,7 @@ same query.
 | **Supported (experimental)**         | A symbol the upstream parser gates behind an experimental-functions flag. Cerberus enables that flag in its production parser (PromQL: `--enable-feature=promql-experimental-functions`), so these work out of the box. Treat them as you would on upstream — they are experimental *upstream*, not flaky in cerberus. |
 | **Supported (cerberus extension)**   | Cerberus accepts a query the reference's default configuration rejects, and answers it correctly. Rare; called out explicitly.                                                                                                                                                                                         |
 | **Rejected (parity with reference)** | Cerberus rejects it *and so does the reference* under the same configuration — a deliberate, parity-preserving gate, not a gap.                                                                                                                                                                                        |
-| **Not yet supported**                | Cerberus rejects a symbol the reference accepts — a real coverage gap. No symbol carries this status; specific argument *shapes* of supported symbols do, and are counted separately in [Coverage at a glance](#coverage-at-a-glance).                                                                                 |
+| **Not yet supported**                | Cerberus rejects a symbol the reference accepts — a real coverage gap. Specific argument *shapes* of supported symbols carry it too, and are counted separately in [Coverage at a glance](#coverage-at-a-glance).                                                                                                      |
 
 This is the human-facing translation of cerberus's machine-readable
 conformance **ledger** in [`test/surface-parity/`](../test/surface-parity/)
@@ -58,10 +58,10 @@ figure here can only ever be what the ledger tallies.
 
 | Head      | Symbols probed | Supported (incl. experimental) | Intentionally rejected (parity) | Wrong-rejected symbols |
 | --------- | -------------- | ------------------------------ | ------------------------------- | ---------------------- |
-| PromQL    | 121            | 121                            | 0                               | 0                      |
+| PromQL    | 124            | 123                            | 0                               | 1                      |
 | LogQL     | 62             | 62                             | 0                               | 0                      |
 | TraceQL   | 45             | 45                             | 0                               | 0                      |
-| **Total** | **228**        | **228**                        | **0**                           | **0**                  |
+| **Total** | **231**        | **230**                        | **0**                           | **1**                  |
 
 <!-- END AUTOGEN: coverage-glance -->
 
@@ -150,7 +150,7 @@ The `Probe` column is the exact query the ledger evaluates for that symbol.
 
 <!-- BEGIN AUTOGEN: coverage-tables (.github/scripts/gen-coverage.mjs) -->
 
-### PromQL (121 symbols)
+### PromQL (124 symbols)
 
 #### Aggregations
 
@@ -203,7 +203,7 @@ The `Probe` column is the exact query the ledger evaluates for that symbol.
 | `double_exponential_smoothing` | `double_exponential_smoothing(http_server_request_duration_count[5m], 0.5, 0.5)` | Supported (experimental) |
 | `end`                          | `end()`                                                                          | Supported (experimental) |
 | `exp`                          | `exp(up)`                                                                        | Supported                |
-| `first_over_time`              | `first_over_time(up[5m])`                                                        | Supported (experimental) |
+| `first_over_time`              | `first_over_time(up[5m])`                                                        | Supported                |
 | `floor`                        | `floor(up)`                                                                      | Supported                |
 | `histogram_avg`                | `histogram_avg(showcase_latency_exp_hist)`                                       | Supported                |
 | `histogram_count`              | `histogram_count(showcase_latency_exp_hist)`                                     | Supported                |
@@ -225,7 +225,9 @@ The `Probe` column is the exact query the ledger evaluates for that symbol.
 | `log10`                        | `log10(up)`                                                                      | Supported                |
 | `log2`                         | `log2(up)`                                                                       | Supported                |
 | `mad_over_time`                | `mad_over_time(up[5m])`                                                          | Supported (experimental) |
+| `max_of`                       | `max_of(0.5, 0.5)`                                                               | Supported (experimental) |
 | `max_over_time`                | `max_over_time(up[5m])`                                                          | Supported                |
+| `min_of`                       | `min_of(0.5, 0.5)`                                                               | Supported (experimental) |
 | `min_over_time`                | `min_over_time(up[5m])`                                                          | Supported                |
 | `minute`                       | `minute(up)`                                                                     | Supported                |
 | `month`                        | `month(up)`                                                                      | Supported                |
@@ -248,6 +250,7 @@ The `Probe` column is the exact query the ledger evaluates for that symbol.
 | `sort_desc`                    | `sort_desc(up)`                                                                  | Supported                |
 | `sqrt`                         | `sqrt(up)`                                                                       | Supported                |
 | `start`                        | `start()`                                                                        | Supported (experimental) |
+| `start_timestamp`              | `start_timestamp(up)`                                                            | Not yet supported        |
 | `stddev_over_time`             | `stddev_over_time(up[5m])`                                                       | Supported                |
 | `stdvar_over_time`             | `stdvar_over_time(up[5m])`                                                       | Supported                |
 | `step`                         | `step()`                                                                         | Supported (experimental) |

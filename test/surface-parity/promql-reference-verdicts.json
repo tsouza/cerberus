@@ -1,5 +1,5 @@
 {
-  "reference": "prom/prometheus:v3.11.3 --enable-feature=promql-experimental-functions",
+  "reference": "prom/prometheus:v3.15.0 --enable-feature=promql-experimental-functions",
   "oracle": "HTTP GET /api/v1/query verdict (2xx=accept, 4xx=reject); data-independent parse+type validation, no seeding required",
   "generated_by": ".github/scripts/promql-surface-gate.mjs (regenerate mode), pinned + verified by test/surface-parity"
 }

@@ -5,12 +5,12 @@
       "site": "internal/promql/scalar_args.go:lowerScalarArg#29d3d126",
       "message": "promql: %s() is not a supported scalar argument",
       "class": "internal",
-      "rationale": "Internal invariant: past returning if v, ok := TryFoldScalar(e); ok; case *parser.Call of switch v := e.(type); past exhaustive switch v.Func.Name over [case \"scalar\"; case \"time\"]; callers: buildAggFunc, buildSubqueryAggFunc, buildTopKComputed, histogramFractionBound, holtWintersFactors, limitRatioPredicate, lowerClampOverInput, lowerHistogramQuantile, lowerHistogramQuantiles, lowerPredictLinear, lowerQuantileOverTime, lowerQuantileParamArg, lowerRoundToNearestBound, lowerScalarArg, lowerScalarTopLevel, lowerSubqueryOverTopK, lowerVector, scalarGuardPlan, scalarOperandExpr, threadOuterRangeFnScalars, tryLowerHistogramQuantileNativeBucketRates, wrapQuantilePhiGuard, wrapSubqueryQuantilePhiGuard",
+      "rationale": "Internal invariant: past returning if v, ok := TryFoldScalar(e); ok; case *parser.Call of switch v := e.(type); past exhaustive switch v.Func.Name over [case \"scalar\"; case \"time\"; case fnMinOf, fnMaxOf]; callers: buildAggFunc, buildSubqueryAggFunc, buildTopKComputed, histogramFractionBound, holtWintersFactors, limitRatioPredicate, lowerClampOverInput, lowerHistogramQuantile, lowerHistogramQuantiles, lowerPredictLinear, lowerQuantileOverTime, lowerQuantileParamArg, lowerRoundToNearestBound, lowerScalarArg, lowerScalarMinMax, lowerScalarTopLevel, lowerSubqueryOverTopK, lowerVector, scalarGuardPlan, scalarOperandExpr, threadOuterRangeFnScalars, tryLowerHistogramQuantileNativeBucketRates, wrapQuantilePhiGuard, wrapSubqueryQuantilePhiGuard",
       "evidence": {
         "guard": [
           "past returning if v, ok := TryFoldScalar(e); ok",
           "case *parser.Call of switch v := e.(type)",
-          "past exhaustive switch v.Func.Name over [case \"scalar\"; case \"time\"]"
+          "past exhaustive switch v.Func.Name over [case \"scalar\"; case \"time\"; case fnMinOf, fnMaxOf]"
         ],
         "callers": [
           "buildAggFunc",
@@ -27,6 +27,7 @@
           "lowerQuantileParamArg",
           "lowerRoundToNearestBound",
           "lowerScalarArg",
+          "lowerScalarMinMax",
           "lowerScalarTopLevel",
           "lowerSubqueryOverTopK",
           "lowerVector",
@@ -53,6 +54,7 @@
           "lowerQuantileParamArg",
           "lowerRoundToNearestBound",
           "lowerScalarArg",
+          "lowerScalarMinMax",
           "lowerScalarTopLevel",
           "lowerSubqueryOverTopK",
           "lowerVector",
@@ -70,7 +72,7 @@
       "site": "internal/promql/scalar_args.go:lowerScalarArg#7acf48a0",
       "message": "promql: unsupported scalar argument %T",
       "class": "internal",
-      "rationale": "Internal invariant: past returning if v, ok := TryFoldScalar(e); ok; past exhaustive switch v := e.(type) over [case *parser.ParenExpr; case *parser.UnaryExpr; case *parser.BinaryExpr; case *parser.Call]; callers: buildAggFunc, buildSubqueryAggFunc, buildTopKComputed, histogramFractionBound, holtWintersFactors, limitRatioPredicate, lowerClampOverInput, lowerHistogramQuantile, lowerHistogramQuantiles, lowerPredictLinear, lowerQuantileOverTime, lowerQuantileParamArg, lowerRoundToNearestBound, lowerScalarArg, lowerScalarTopLevel, lowerSubqueryOverTopK, lowerVector, scalarGuardPlan, scalarOperandExpr, threadOuterRangeFnScalars, tryLowerHistogramQuantileNativeBucketRates, wrapQuantilePhiGuard, wrapSubqueryQuantilePhiGuard",
+      "rationale": "Internal invariant: past returning if v, ok := TryFoldScalar(e); ok; past exhaustive switch v := e.(type) over [case *parser.ParenExpr; case *parser.UnaryExpr; case *parser.BinaryExpr; case *parser.Call]; callers: buildAggFunc, buildSubqueryAggFunc, buildTopKComputed, histogramFractionBound, holtWintersFactors, limitRatioPredicate, lowerClampOverInput, lowerHistogramQuantile, lowerHistogramQuantiles, lowerPredictLinear, lowerQuantileOverTime, lowerQuantileParamArg, lowerRoundToNearestBound, lowerScalarArg, lowerScalarMinMax, lowerScalarTopLevel, lowerSubqueryOverTopK, lowerVector, scalarGuardPlan, scalarOperandExpr, threadOuterRangeFnScalars, tryLowerHistogramQuantileNativeBucketRates, wrapQuantilePhiGuard, wrapSubqueryQuantilePhiGuard",
       "evidence": {
         "guard": [
           "past returning if v, ok := TryFoldScalar(e); ok",
@@ -91,6 +93,7 @@
           "lowerQuantileParamArg",
           "lowerRoundToNearestBound",
           "lowerScalarArg",
+          "lowerScalarMinMax",
           "lowerScalarTopLevel",
           "lowerSubqueryOverTopK",
           "lowerVector",
@@ -117,6 +120,7 @@
           "lowerQuantileParamArg",
           "lowerRoundToNearestBound",
           "lowerScalarArg",
+          "lowerScalarMinMax",
           "lowerScalarTopLevel",
           "lowerSubqueryOverTopK",
           "lowerVector",
@@ -134,7 +138,7 @@
       "site": "internal/promql/scalar_args.go:lowerScalarArg#a14c0271",
       "message": "promql: scalar() expects 1 argument, got %d",
       "class": "internal",
-      "rationale": "Internal invariant: past returning if v, ok := TryFoldScalar(e); ok; case *parser.Call of switch v := e.(type); case \"scalar\" of switch v.Func.Name; if len(v.Args) != 1; callers: buildAggFunc, buildSubqueryAggFunc, buildTopKComputed, histogramFractionBound, holtWintersFactors, limitRatioPredicate, lowerClampOverInput, lowerHistogramQuantile, lowerHistogramQuantiles, lowerPredictLinear, lowerQuantileOverTime, lowerQuantileParamArg, lowerRoundToNearestBound, lowerScalarArg, lowerScalarTopLevel, lowerSubqueryOverTopK, lowerVector, scalarGuardPlan, scalarOperandExpr, threadOuterRangeFnScalars, tryLowerHistogramQuantileNativeBucketRates, wrapQuantilePhiGuard, wrapSubqueryQuantilePhiGuard",
+      "rationale": "Internal invariant: past returning if v, ok := TryFoldScalar(e); ok; case *parser.Call of switch v := e.(type); case \"scalar\" of switch v.Func.Name; if len(v.Args) != 1; callers: buildAggFunc, buildSubqueryAggFunc, buildTopKComputed, histogramFractionBound, holtWintersFactors, limitRatioPredicate, lowerClampOverInput, lowerHistogramQuantile, lowerHistogramQuantiles, lowerPredictLinear, lowerQuantileOverTime, lowerQuantileParamArg, lowerRoundToNearestBound, lowerScalarArg, lowerScalarMinMax, lowerScalarTopLevel, lowerSubqueryOverTopK, lowerVector, scalarGuardPlan, scalarOperandExpr, threadOuterRangeFnScalars, tryLowerHistogramQuantileNativeBucketRates, wrapQuantilePhiGuard, wrapSubqueryQuantilePhiGuard",
       "evidence": {
         "guard": [
           "past returning if v, ok := TryFoldScalar(e); ok",
@@ -157,6 +161,7 @@
           "lowerQuantileParamArg",
           "lowerRoundToNearestBound",
           "lowerScalarArg",
+          "lowerScalarMinMax",
           "lowerScalarTopLevel",
           "lowerSubqueryOverTopK",
           "lowerVector",
@@ -183,6 +188,7 @@
           "lowerQuantileParamArg",
           "lowerRoundToNearestBound",
           "lowerScalarArg",
+          "lowerScalarMinMax",
           "lowerScalarTopLevel",
           "lowerSubqueryOverTopK",
           "lowerVector",

@@ -43,6 +43,17 @@ func TryFoldScalar(e parser.Expr) (float64, bool) {
 		if v.Func != nil && v.Func.Name == "pi" && len(v.Args) == 0 {
 			return math.Pi, true
 		}
+		// `min_of(a, b)` / `max_of(a, b)` over two foldable scalars fold
+		// with the reference's own math.Min / math.Max, as `1+1` folds.
+		if v.Func != nil && len(v.Args) == 2 {
+			if pick, ok := scalarMinMaxFold[v.Func.Name]; ok {
+				lhs, lok := TryFoldScalar(v.Args[0])
+				rhs, rok := TryFoldScalar(v.Args[1])
+				if lok && rok {
+					return pick(lhs, rhs), true
+				}
+			}
+		}
 		return 0, false
 	case *parser.ParenExpr:
 		return TryFoldScalar(v.Expr)

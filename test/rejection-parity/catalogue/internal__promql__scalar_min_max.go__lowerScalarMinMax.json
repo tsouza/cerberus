@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_min_max.go:lowerScalarMinMax#43bd8afa",
+      "message": "promql: %s expects %d arguments, got %d",
+      "class": "internal",
+      "rationale": "Internal invariant: if len(c.Args) != scalarMinMaxArity; callers: lowerScalarArg. The parser types min_of and max_of as exactly two Scalar arguments and rejects any other count, and lowerScalarArg is the only caller, reached with a parsed min_of or max_of call.",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != scalarMinMaxArity"
+        ],
+        "callers": [
+          "lowerScalarArg"
+        ],
+        "cited": [
+          "lowerScalarArg"
+        ]
+      }
+    }
+  ]
+}

@@ -6,8 +6,8 @@
       "kind": "function",
       "probe": "end()",
       "cerberus": "accept",
-      "reference": "reject",
-      "class": "wrong-accept"
+      "reference": "accept",
+      "class": "parity-accept"
     }
   ]
 }

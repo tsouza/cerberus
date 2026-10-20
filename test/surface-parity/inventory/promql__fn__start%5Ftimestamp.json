@@ -1,0 +1,14 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:start_timestamp",
+      "kind": "function",
+      "probe": "start_timestamp(up)",
+      "cerberus": "reject",
+      "reference": "accept",
+      "class": "wrong-reject",
+      "cerberus_error": "promql: function start_timestamp is not a recognized lowering target"
+    }
+  ]
+}

@@ -36,8 +36,9 @@ const (
 //
 // The scalar-typed expression space is closed by the parser's type
 // checker: literals and literal arithmetic (folded by TryFoldScalar),
-// ParenExpr / UnaryExpr / BinaryExpr over scalar operands, and exactly
-// three scalar-returning calls — `scalar(<vector>)`, `time()`, `pi()`.
+// ParenExpr / UnaryExpr / BinaryExpr over scalar operands, and the
+// scalar-returning calls `scalar(<vector>)`, `time()`, `pi()`,
+// `min_of(a, b)` and `max_of(a, b)`.
 // Vector-typed subtrees can appear only inside `scalar()`.
 //
 // Shapes:
@@ -138,12 +139,14 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 				anchor = anchorBaseExpr(evalAnchor{})
 			}
 			return ctx.evalSecondsValue(anchor), nil
+		case fnMinOf, fnMaxOf:
+			return lowerScalarMinMax(v, s, ctx)
 		}
-		// `pi()` folds via TryFoldScalar above; scalar() / time() are
-		// handled; the parser's type checker admits no other
-		// scalar-returning call, so this branch is unreachable from a
-		// parseable query (kept as an invariant guard for future
-		// upstream scalar functions).
+		// `pi()` folds via TryFoldScalar above; scalar(), time(),
+		// min_of() and max_of() are handled; the parser's type checker
+		// admits no other scalar-returning call, so this branch is
+		// unreachable from a parseable query (kept as an invariant guard
+		// for future upstream scalar functions).
 		return nil, fmt.Errorf("promql: %s() is not a supported scalar argument", v.Func.Name)
 	}
 	return nil, fmt.Errorf("promql: unsupported scalar argument %T", e)
