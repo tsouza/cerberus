@@ -626,6 +626,8 @@ func TestInstantDomain_EmitsNoOutOfDomainInstant(t *testing.T) {
 		`max_over_time(timestamp(vector(1))[5m:1m] @ 1e17)`,
 		`absent(m{job="a"} @ 1e17)`,
 		`m @ -5000000000`,
+		`count_over_time(count_over_time(vector(1)[292y:100d])[200y:290y])`,
+		`count_over_time(count_over_time(vector(1)[292y:100d])[1y:290y])`,
 	} {
 		for _, m := range instantDomainModes {
 			plan, err := LowerAtRange(context.Background(), mustParseExperimental(t, q),
@@ -819,6 +821,33 @@ func TestFitInstantDomain_RecordsFramedRootGrid(t *testing.T) {
 		}
 		if f.rootGridInDomain(out) {
 			t.Fatalf("fit %q: the root grid from 00:10 is judged inside the domain", q)
+		}
+	}
+}
+
+// TestFitInstantDomain_IsolatesSubqueryStepLongerThanItsRange pins a
+// subquery whose step is longer than its range, with an inner grid
+// reaching back to the floor: the fit isolates it, judging it over its
+// window alone rather than a step of its grid past it, and its one grid
+// instant, or none, is lowered as a run of one instant.
+func TestFitInstantDomain_IsolatesSubqueryStepLongerThanItsRange(t *testing.T) {
+	at := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
+	for _, q := range []string{
+		`count_over_time(count_over_time(vector(1)[292y:100d])[200y:290y])`,
+		`count_over_time(count_over_time(vector(1)[292y:100d])[1y:290y])`,
+	} {
+		_, f, err := fitAt(t, q, at)
+		if err != nil {
+			t.Fatalf("fit %q: %v", q, err)
+		}
+		if len(f.isolated) != 1 {
+			t.Fatalf("fit %q: %d isolated subqueries, want 1", q, len(f.isolated))
+		}
+		if f.frameShift != 0 {
+			t.Fatalf("fit %q: shifted by %dms, want Prometheus's frame", q, f.frameShift)
+		}
+		if _, err := LowerAt(context.Background(), mustParseExperimental(t, q), schema.DefaultOTelMetrics(), at, at); err != nil {
+			t.Fatalf("lower %q: %v", q, err)
 		}
 	}
 }

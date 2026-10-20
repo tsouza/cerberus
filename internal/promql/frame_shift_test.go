@@ -261,6 +261,72 @@ func TestFrameShift_RunsOfOneInstant(t *testing.T) {
 	}
 }
 
+// TestFrameShift_RunsOfOneLongStep pins a split range whose step is too
+// long for any frame to hold its margins: two steps of about 292 years
+// span the stored range from a first step whose window and step reach
+// below the floor, and each run of one instant is lowered at
+// [oneInstantStep].
+func TestFrameShift_RunsOfOneLongStep(t *testing.T) {
+	start, end := time.Date(1677, 9, 21, 0, 15, 0, 0, time.UTC), instantDomainNearCeiling
+	step := time.Duration((end.UnixMilli()-start.UnixMilli())/2) * time.Millisecond
+	ctx := lowerCtx{start: start.Add(step), end: start.Add(step), step: step}
+	if _, _, err := fitInstantDomain(mustParseExperimental(t, `count_over_time(m[5m])`), ctx); !isInstantDomainError(err) {
+		t.Fatalf("fit at the middle instant with its own step: err = %v, want the instant-domain rejection", err)
+	}
+	plan := mustLowerRange(t, `count_over_time(m[5m])`, start, end, step)
+	union, ok := plan.(*chplan.UnionAll)
+	if !ok || len(union.Inputs) != 3 {
+		t.Fatalf("root %#v, want a union of three runs", plan)
+	}
+	var windows []*chplan.RangeWindow
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		if rw, ok := n.(*chplan.RangeWindow); ok {
+			windows = append(windows, rw)
+		}
+		return true
+	})
+	if len(windows) == 0 {
+		t.Fatal("no range window")
+	}
+	for _, rw := range windows {
+		if rw.Step > oneInstantStep {
+			t.Fatalf("a run's window steps by %s, want at most %s", rw.Step, oneInstantStep)
+		}
+	}
+}
+
+// TestLowerCtx_OneInstant pins which evaluation [lowerCtx.oneInstant]
+// lowers at [oneInstantStep]: a range of one instant whose step is longer.
+func TestLowerCtx_OneInstant(t *testing.T) {
+	at := instantDomainEvalEnd
+	const century = 100 * 365 * 24 * time.Hour
+	for _, tc := range []struct {
+		name string
+		ctx  lowerCtx
+		want bool
+	}{
+		{"one instant, long step", lowerCtx{start: at, end: at, step: century}, true},
+		{"one instant, step just longer", lowerCtx{start: at, end: at, step: oneInstantStep + time.Millisecond}, true},
+		{"one instant, step of one second", lowerCtx{start: at, end: at, step: oneInstantStep}, false},
+		{"two instants", lowerCtx{start: at.Add(-century), end: at, step: century}, false},
+		{"instant query", lowerCtx{end: at}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := tc.ctx.oneInstant()
+			if ok != tc.want {
+				t.Fatalf("oneInstant reports %v, want %v", ok, tc.want)
+			}
+			want := tc.ctx
+			if tc.want {
+				want.step = oneInstantStep
+			}
+			if got.step != want.step || !got.start.Equal(want.start) || !got.end.Equal(want.end) {
+				t.Fatalf("oneInstant = %s..%s by %s, want %s..%s by %s", got.start, got.end, got.step, want.start, want.end, want.step)
+			}
+		})
+	}
+}
+
 // armShift returns the frame shift a run's scans read with.
 func armShift(arm chplan.Node) int64 {
 	shift := int64(0)

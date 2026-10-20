@@ -715,11 +715,11 @@ func (f *domainFit) fitSubquery(n *parser.SubqueryExpr, env domainEnv) (parser.E
 	}
 	// The lowering reaches a step of the grid and one of the enclosing
 	// evaluation past the window on either side. An isolated subquery's
-	// grid is enumerated outside the SQL, run by run, so past its end it
+	// grid is enumerated outside the SQL, run by run, so on either side it
 	// reaches only the enclosing evaluation's step.
 	margin, after := step+env.step, step+env.step
 	if isolated {
-		after = env.step
+		margin, after = env.step, env.step
 	}
 	res.widen(at.lo.Add(-n.Range).Add(-margin), at.hi.Add(after))
 	res.stepMillis = lcmMillis(res.stepMillis, step.Milliseconds())

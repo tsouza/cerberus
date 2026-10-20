@@ -195,12 +195,20 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 	return plan, nil
 }
 
-// lowerFitted fits expr at ctx ([fitInstantDomain]) and lowers it.
+// lowerFitted fits expr at ctx ([fitInstantDomain]) and lowers it. A range
+// of one instant that the fit rejects is fitted and lowered again at
+// [oneInstantStep] ([lowerCtx.oneInstant]).
 func lowerFitted(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	expr, domain, err := fitInstantDomain(expr, ctx)
+	fitted, domain, err := fitInstantDomain(expr, ctx)
+	if one, ok := ctx.oneInstant(); err != nil && ok {
+		if f, d, oerr := fitInstantDomain(expr, one); oerr == nil {
+			fitted, domain, err, ctx = f, d, nil, one
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
+	expr = fitted
 	plan, err := lowerRoot(expr, s, ctx.withDomain(domain))
 	if err != nil {
 		return nil, err

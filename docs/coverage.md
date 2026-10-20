@@ -107,7 +107,8 @@ in a frame shifted in time by a multiple of every subquery step, with stored
 samples read shifted into it and result timestamps shifted back; a result
 timestamp outside the range is reported in milliseconds. A range query
 spanning more than a frame holds is answered as consecutive runs of its
-steps. A query whose subqueries reach further back than the range is long
+steps, and a range of one instant at its one instant, whatever its step. A
+query whose subqueries reach further back than the range is long
 evaluates the inner expression of each outermost subquery over its grid in
 runs of their own, each reading only the storage Prometheus's own wrapped
 read bounds.

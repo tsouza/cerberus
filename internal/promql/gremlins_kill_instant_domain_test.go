@@ -193,6 +193,33 @@ func TestUnframeInstant(t *testing.T) {
 	}
 }
 
+// TestUnframeInstant_WideShiftInParts pins that a shift whose nanoseconds
+// Int64 does not hold is taken back in parts, the longest a time.Duration
+// holds first, in the shift's direction.
+func TestUnframeInstant_WideShiftInParts(t *testing.T) {
+	const rest = 5
+	for _, sign := range []int64{1, -1} {
+		got := unframeInstant(&chplan.ColumnRef{Name: "TimeUnix"}, sign*(2*maxDurationMillis+rest))
+		var parts []int64
+		for {
+			call, ok := got.(*chplan.FuncCall)
+			if !ok || call.Fn != chplan.FnFromUnixNanos {
+				break
+			}
+			sub := call.Args[0].(*chplan.Binary)
+			parts = append(parts, sub.Right.(*chplan.LitInt).V)
+			got = sub.Left.(*chplan.FuncCall).Args[0]
+		}
+		want := []int64{sign * rest * int64(time.Millisecond), sign * maxDurationMillis * int64(time.Millisecond), sign * maxDurationMillis * int64(time.Millisecond)}
+		if !reflect.DeepEqual(parts, want) {
+			t.Fatalf("shift %d: parts outermost first %v, want %v", sign*(2*maxDurationMillis+rest), parts, want)
+		}
+		if ref, ok := got.(*chplan.ColumnRef); !ok || ref.Name != "TimeUnix" {
+			t.Fatalf("innermost instant %#v, want the column", got)
+		}
+	}
+}
+
 // TestBucketRowsAnswer pins that bucket rows answer only a window cut at
 // neither edge and lowered in Prometheus's own frame.
 func TestBucketRowsAnswer(t *testing.T) {
@@ -425,11 +452,11 @@ func TestUnshiftRoot_RowTypes(t *testing.T) {
 }
 
 // TestUnshiftRoot_TimestampForms pins the form a framed root reports its
-// timestamp in: a DateTime64(9) moved in nanoseconds when the shift has
-// that form and the root's instants lie in the domain; Int64 milliseconds
-// for a query root whose shift does not, or whose subquery grid leaves
-// the domain; and a DateTime64(9) moved in milliseconds for an isolated
-// run, which reports instants of its enclosing region.
+// timestamp in: a DateTime64(9) moved in nanoseconds, in parts when the
+// shift's nanoseconds Int64 does not hold, for every root whose instants
+// lie in the domain, an isolated run reporting instants of its enclosing
+// region among them; and Int64 milliseconds for a query root whose
+// subquery grid leaves the domain.
 func TestUnshiftRoot_TimestampForms(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	ts := &chplan.ColumnRef{Name: s.TimestampColumn}
@@ -445,7 +472,7 @@ func TestUnshiftRoot_TimestampForms(t *testing.T) {
 		want chplan.Expr
 	}{
 		{"query root, nanosecond shift", mustParseExperimental(t, `m`), lowerCtx{domain: &domainFit{frameShift: minute}}, unframeInstant(ts, minute)},
-		{"query root, wide shift", mustParseExperimental(t, `m`), lowerCtx{domain: &domainFit{frameShift: wide}}, unframeMillis(ts, wide)},
+		{"query root, wide shift", mustParseExperimental(t, `m`), lowerCtx{domain: &domainFit{frameShift: wide}}, unframeInstant(ts, wide)},
 		{
 			// Fitted a century behind, the grid in 2200 lies past 2262 in
 			// Prometheus's frame.
@@ -458,7 +485,7 @@ func TestUnshiftRoot_TimestampForms(t *testing.T) {
 			lowerCtx{rootFrame: minute, domain: &domainFit{frameShift: -century, grids: map[*parser.SubqueryExpr][2]time.Time{sub.(*parser.SubqueryExpr): {far, far}}}},
 			unframeInstant(ts, -century-minute),
 		},
-		{"run, wide shift", mustParseExperimental(t, `m`), lowerCtx{rootFrame: -minute, domain: &domainFit{frameShift: wide - minute}}, unframeWholeMillis(ts, wide)},
+		{"run, wide shift", mustParseExperimental(t, `m`), lowerCtx{rootFrame: -minute, domain: &domainFit{frameShift: wide - minute}}, unframeInstant(ts, wide)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

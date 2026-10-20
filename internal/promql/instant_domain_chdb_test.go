@@ -9,6 +9,7 @@ package promql_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -588,41 +589,11 @@ func runGridParity(t *testing.T, seed, query string, start, eval time.Time, step
 // expected_rows of the emitted SQL, at each instant step apart from start
 // to end, or at end alone when step is zero. The emitted SQL's result columns depend on the
 // plan's shape: each column takes the series name, its labels, the
-// reported instant or the value, by the column's name.
-//
-// A range plan over a subquery also returns anchor_ts, the instant its
-// grid is evaluated at, which differs from the reported TimeUnix by any
-// offset and by the shift that moves a grid into ClickHouse's range. No
-// client sees it, so the returned SQL, which the round trip runs, leaves
-// it out whenever TimeUnix is there to report the instant.
+// reported instant or the value, by the column's name, as
+// [reportedColumns] lists them.
 func instantDomainCells(t *testing.T, seed, sql string, args []any, want []instantDomainRow, start, end time.Time, step time.Duration) (string, [][]any) {
 	t.Helper()
-	db := spec.OpenChDB(t)
-	spec.ApplySeed(t, db, seed)
-	q, a := spec.SubstituteNow64(sql, args)
-	rows, err := db.Query(q, a...)
-	if err != nil {
-		t.Fatalf("query emitted SQL: %v", err)
-	}
-	cols, err := rows.Columns()
-	if cerr := rows.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		t.Fatalf("result columns: %v", err)
-	}
-	// A root reports an instant no DateTime64(9) holds as Int64 Unix
-	// milliseconds.
-	millis := false
-	if slices.Contains(cols, "TimeUnix") {
-		var typ string
-		err := db.QueryRow("SELECT toTypeName(`TimeUnix`) FROM ("+q+") LIMIT 1", a...).Scan(&typ)
-		millis = err == nil && typ == "Int64"
-	}
-	if slices.Contains(cols, "anchor_ts") && slices.Contains(cols, "TimeUnix") {
-		cols = slices.DeleteFunc(cols, func(c string) bool { return c == "anchor_ts" })
-		sql = "SELECT `" + strings.Join(cols, "`, `") + "` FROM (" + sql + ")"
-	}
+	sql, cols, millis := reportedColumns(t, seed, sql, args)
 	instants := []time.Time{end}
 	if step > 0 {
 		instants = instants[:0]
@@ -662,6 +633,45 @@ func instantDomainCells(t *testing.T, seed, sql string, args []any, want []insta
 	return sql, cells
 }
 
+// reportedColumns runs sql over seed in chDB and returns the SQL a round
+// trip runs, the columns it returns, and whether it reports TimeUnix as
+// Int64 Unix milliseconds, which a root does for an instant no
+// DateTime64(9) holds.
+//
+// A range plan over a subquery, or a run of a split range, also returns
+// anchor_ts, the instant its grid is evaluated at, which differs from the
+// reported TimeUnix by any offset and by the shift that moves a grid into
+// ClickHouse's range. No client sees it, so the returned SQL leaves it out
+// whenever TimeUnix is there to report the instant.
+func reportedColumns(t *testing.T, seed, sql string, args []any) (string, []string, bool) {
+	t.Helper()
+	db := spec.OpenChDB(t)
+	spec.ApplySeed(t, db, seed)
+	q, a := spec.SubstituteNow64(sql, args)
+	rows, err := db.Query(q, a...)
+	if err != nil {
+		t.Fatalf("query emitted SQL: %v", err)
+	}
+	cols, err := rows.Columns()
+	if cerr := rows.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		t.Fatalf("result columns: %v", err)
+	}
+	millis := false
+	if slices.Contains(cols, "TimeUnix") {
+		var typ string
+		err := db.QueryRow("SELECT toTypeName(`TimeUnix`) FROM ("+q+") LIMIT 1", a...).Scan(&typ)
+		millis = err == nil && typ == "Int64"
+	}
+	if slices.Contains(cols, "anchor_ts") && slices.Contains(cols, "TimeUnix") {
+		cols = slices.DeleteFunc(cols, func(c string) bool { return c == "anchor_ts" })
+		sql = "SELECT `" + strings.Join(cols, "`, `") + "` FROM (" + sql + ")"
+	}
+	return sql, cols, millis
+}
+
 // TestInstantDomainParity_RangeSpanningTheDomain_ChDB pins, against the
 // Prometheus reference engine, range queries whose steps span more than
 // one lowering covers, answered in runs of their steps. Steps spanning the
@@ -685,6 +695,24 @@ func TestInstantDomainParity_RangeSpanningTheDomain_ChDB(t *testing.T) {
 			{instantDomainMetric, map[string]string{"job": "edge"}, end.Format(time.RFC3339Nano), 6.0},
 		})
 	})
+	// Steps longer than a run, two and three of them spanning the stored
+	// range: the first step's window holds the job "first" sample, the
+	// last one's the 2262 sample a minute before it, and no other step's
+	// window holds any.
+	for _, steps := range []int64{2, 3} {
+		t.Run(fmt.Sprintf("%d_steps_spanning_the_stored_range", steps), func(t *testing.T) {
+			start := instantDomainFirstSample.Add(2 * time.Minute)
+			end := instantDomainNearCeiling
+			step := time.Duration((end.UnixMilli()-start.UnixMilli())/steps) * time.Millisecond
+			if start.UnixMilli()+steps*step.Milliseconds() != end.UnixMilli() {
+				t.Fatalf("%d steps of %s from %s miss %s", steps, step, start, end)
+			}
+			assertRangeParity(t, `count_over_time(`+instantDomainMetric+`[5m])`, start, end, step, [][]any{
+				{map[string]string{"job": "first"}, start.Format(time.RFC3339Nano), 1.0},
+				{map[string]string{"job": "edge"}, end.Format(time.RFC3339Nano), 1.0},
+			})
+		})
+	}
 	t.Run("last_run_of_one_instant", func(t *testing.T) {
 		// 10000 steps of 922337203ms: a run holds 5000 of them, so the
 		// 10001st instant, a minute after the 2025 sample, is a run alone.
@@ -697,7 +725,7 @@ func TestInstantDomainParity_RangeSpanningTheDomain_ChDB(t *testing.T) {
 			t.Fatalf("a run holds %d steps, which leaves the last instant in a longer run", runSteps)
 		}
 		assertRangeParity(t, `count_over_time(`+instantDomainMetric+`{job="api"}[5m])`, start, end, stepMillis*time.Millisecond, [][]any{
-			{map[string]string{"job": "api"}, end.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano), 1.0},
+			{map[string]string{"job": "api"}, end.Format(time.RFC3339Nano), 1.0},
 		})
 	})
 }
@@ -720,6 +748,7 @@ func assertRangeParity(t *testing.T, query string, start, end time.Time, step ti
 	if err != nil {
 		t.Fatal(err)
 	}
+	sql, _, _ = reportedColumns(t, instantDomainSeed, sql, args)
 	expected, err := json.Marshal(cells)
 	if err != nil {
 		t.Fatal(err)
@@ -818,6 +847,11 @@ func TestInstantDomainParity_IsolatedSubqueries_ChDB(t *testing.T) {
 		{"first_instant_of_steps_longer_than_a_run", `min_over_time(min_over_time(timestamp(vector(1))[292y:200y])[292y:200y])`, instantDomainEval, []instantDomainRow{idRow(noLabels, idConst(-12614400000))}},
 		// A pin near the floor, its last outer point the 100-day multiple
 		// -9227520000 and its first -18429120000, in 1385.
+		// Steps longer than the range: the one 290-year multiple in
+		// (1826, 2026] is 1970, whose inner grid reaches back to 1678, so
+		// the outer window holds one point; in (2025, 2026] there is none.
+		{"subquery_step_longer_than_its_range", `count_over_time(count_over_time(vector(1)[292y:100d])[200y:290y])`, instantDomainEval, []instantDomainRow{idRow(noLabels, idConst(1))}},
+		{"subquery_grid_empty_under_its_step", `count_over_time(count_over_time(vector(1)[292y:100d])[1y:290y])`, instantDomainEval, nil},
 		{
 			"pinned_nested_near_floor", `sum_over_time(count_over_time(vector(1)[292y:100d])[292y:100d] @ -9223371000)`, instantDomainNearFloor,
 			[]instantDomainRow{idRow(noLabels, idConst(outerPoints*innerPoints))},

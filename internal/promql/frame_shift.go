@@ -322,29 +322,21 @@ func (c lowerCtx) sampleSecondsValue(ts chplan.Expr) chplan.Expr {
 }
 
 // unframeInstant renders the DateTime64(9) instant ts moved back by shift
-// milliseconds, in Int64 nanoseconds.
+// milliseconds, in Int64 nanoseconds. A shift whose nanoseconds Int64 does
+// not hold, which a frame spanning most of the domain needs, is taken back
+// in parts that each do: ts and the instant it moves to lie in the domain,
+// and so does every instant a part lands on between them.
 func unframeInstant(ts chplan.Expr, shift int64) chplan.Expr {
-	return &chplan.FuncCall{Fn: chplan.FnFromUnixNanos, Args: []chplan.Expr{&chplan.Binary{
+	part := min(max(shift, -maxDurationMillis), maxDurationMillis)
+	moved := &chplan.FuncCall{Fn: chplan.FnFromUnixNanos, Args: []chplan.Expr{&chplan.Binary{
 		Op:    chplan.OpSub,
 		Left:  &chplan.FuncCall{Fn: chplan.FnToUnixNanos, Args: []chplan.Expr{ts}},
-		Right: &chplan.LitInt{V: shift * int64(time.Millisecond)},
+		Right: &chplan.LitInt{V: part * int64(time.Millisecond)},
 	}}}
-}
-
-// unframeWholeMillis renders the DateTime64(9) instant ts, which carries
-// whole milliseconds, moved back by shift milliseconds into the domain,
-// for a shift whose nanoseconds Int64 does not hold: it moves the
-// instant's Unix milliseconds and converts them back to nanoseconds.
-func unframeWholeMillis(ts chplan.Expr, shift int64) chplan.Expr {
-	return &chplan.FuncCall{Fn: chplan.FnFromUnixNanos, Args: []chplan.Expr{&chplan.Binary{
-		Op: chplan.OpMul,
-		Left: &chplan.Binary{
-			Op:    chplan.OpSub,
-			Left:  &chplan.FuncCall{Fn: chplan.FnToUnixMillis, Args: []chplan.Expr{ts}},
-			Right: &chplan.LitInt{V: shift},
-		},
-		Right: &chplan.LitInt{V: int64(time.Millisecond)},
-	}}}
+	if part == shift {
+		return moved
+	}
+	return unframeInstant(moved, shift-part)
 }
 
 // unframeMillis renders the Int64 Unix milliseconds of the instant ts
@@ -403,8 +395,9 @@ func frameStorage(f *domainFit, plans ...chplan.Node) error {
 // DateTime64(9). A subquery root answers its grid instants themselves;
 // when they leave the domain ([domainFit.rootGridInDomain]) it reports
 // them as Int64 Unix milliseconds, the precision of a PromQL timestamp,
-// which hold every instant Prometheus evaluates at; so it does when its
-// shift has no Int64 nanosecond form.
+// which hold every instant Prometheus evaluates at. Every other root
+// reports a DateTime64(9) whatever its shift ([unframeInstant]), so every
+// run of a split range reports its timestamps in one type.
 func unshiftRoot(plan chplan.Node, root parser.Expr, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	shift := int64(0)
 	if ctx.domain != nil {
@@ -428,10 +421,7 @@ func unshiftRoot(plan chplan.Node, root parser.Expr, s schema.Metrics, ctx lower
 		ts = chplan.Column{Name: s.TimestampColumn, Role: chplan.RoleTimestamp, HistogramField: named.HistogramField}
 	}
 	moved := chplan.Projection{Expr: unframeInstant(&chplan.ColumnRef{Name: ts.Name}, shift), Alias: ts.Name}
-	switch {
-	case ctx.rootFrame != 0 && !offsetFits(shift):
-		moved.Expr = unframeWholeMillis(&chplan.ColumnRef{Name: ts.Name}, shift)
-	case ctx.rootFrame == 0 && (!ctx.domain.rootGridInDomain(root) || !offsetFits(shift)):
+	if ctx.rootFrame == 0 && !ctx.domain.rootGridInDomain(root) {
 		moved.Expr = unframeMillis(&chplan.ColumnRef{Name: ts.Name}, shift)
 	}
 	if rows.Open {
@@ -460,6 +450,26 @@ func (c lowerCtx) guardPlans() []chplan.Node {
 		plans = append(plans, g.Plan)
 	}
 	return plans
+}
+
+// oneInstantStep is the step a range of one instant is lowered at when
+// its own step is too long to fit ([lowerCtx.oneInstant]): one second, a
+// whole number of seconds as the grid-native shapes need, and a margin
+// every frame holds.
+const oneInstantStep = time.Second
+
+// oneInstant returns c with its step replaced by [oneInstantStep] when c is
+// a range of one instant with a longer step, and reports whether it is.
+// Prometheus evaluates such a range at its one instant alone, whatever the
+// step, while the lowering reaches a step past every window it reads and
+// the fit widens them by the step to match ([domainEnv.step]): a step of
+// centuries can leave no frame those margins fit in.
+func (c lowerCtx) oneInstant() (lowerCtx, bool) {
+	if !c.rangeMode() || !c.start.Equal(c.end) || c.step <= oneInstantStep {
+		return c, false
+	}
+	c.step = oneInstantStep
+	return c, true
 }
 
 // maxRangeSpan is the longest span of request steps one lowering covers:
