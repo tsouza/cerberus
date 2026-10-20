@@ -68,7 +68,7 @@
 //      so the gate asserts the invariant rather than re-deriving it.
 //
 // Env contract:
-//   PROM_IMAGE     reference image (default prom/prometheus:v3.11.3)
+//   PROM_IMAGE     reference image (default prom/prometheus:v3.15.0)
 //   REF_PORT       host port for the flag-enabled reference (default 39090)
 //   INVENTORY      path to the inventory shard directory
 //                  (default test/surface-parity/inventory — one shard file
@@ -100,7 +100,7 @@ import { error, notice, log, capture } from './lib/gh.mjs';
 import { loadShardedEntries, loadShardedMap, writeShardedMap } from './lib/sharded-json.mjs';
 import { pullImageWithRetry } from './lib/registry.mjs';
 
-const PROM_IMAGE = process.env.PROM_IMAGE || 'prom/prometheus:v3.11.3';
+const PROM_IMAGE = process.env.PROM_IMAGE || 'prom/prometheus:v3.15.0';
 const REF_PORT = process.env.REF_PORT || '39090';
 const INVENTORY = process.env.INVENTORY || 'test/surface-parity/inventory';
 const ARTIFACT = process.env.ARTIFACT || 'test/surface-parity/promql-reference-verdicts.json';

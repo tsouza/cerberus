@@ -51,10 +51,11 @@ const MIN_COLUMN_WIDTH = 3;
 // its prod parser config; internal/api/prom/handler.go). Kept in sync with the
 // upstream parser.Functions table.
 const PROMQL_EXPERIMENTAL = new Set([
-  'double_exponential_smoothing', 'first_over_time', 'histogram_quantiles',
-  'info', 'mad_over_time', 'sort_by_label', 'sort_by_label_desc',
-  'ts_of_first_over_time', 'ts_of_last_over_time', 'ts_of_max_over_time',
-  'ts_of_min_over_time', 'range', 'step', 'start', 'end',
+  'double_exponential_smoothing', 'histogram_quantiles', 'info',
+  'mad_over_time', 'max_of', 'min_of', 'sort_by_label', 'sort_by_label_desc',
+  'start_timestamp', 'ts_of_first_over_time', 'ts_of_last_over_time',
+  'ts_of_max_over_time', 'ts_of_min_over_time', 'range', 'step', 'start',
+  'end',
 ]);
 
 // Per head: the symbol kinds, in table order, and each kind's heading.
@@ -88,10 +89,7 @@ function status(entry) {
       // Both cerberus and the reference reject.
       return 'Rejected (parity with reference)';
     case 'wrong-accept':
-      // Cerberus accepts, the probe's reference rejects. For the
-      // query-context fns (start/end/range/step) this is a faithful
-      // implementation of the vendored engine's fold, which the released
-      // reference server's grammar predates.
+      // Cerberus accepts, the probe's reference rejects.
       return isExperimental ? 'Supported (experimental)' : 'Supported (cerberus extension)';
     case 'wrong-reject':
       return 'Not yet supported';

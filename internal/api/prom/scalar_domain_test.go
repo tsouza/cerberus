@@ -24,7 +24,7 @@ import (
 // value.
 //
 // Reference wording, verified in the pinned engine
-// (github.com/tsouza/prometheus@v0.0.1-cerberus-parser):
+// (github.com/tsouza/prometheus@v0.315.0-cerberus-parser):
 //
 //   - promql/engine.go rangeEvalAgg → `ev.errorf("Parameter value is NaN")`
 //   - promql/functions.go funcDoubleExponentialSmoothing →

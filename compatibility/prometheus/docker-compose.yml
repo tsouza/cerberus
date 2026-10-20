@@ -63,16 +63,14 @@ services:
       - "28123:8123"
 
   prometheus:
-    # v3.11.3 (latest stable) over v3.0.1: v3.0.1 ships an upstream bug
-    # where `round(...)` doesn't drop `__name__` from its output series,
-    # diverging from PromQL semantics. Fixed in upstream PR #15250
-    # (https://github.com/prometheus/prometheus/pull/15250) which landed
-    # post-v3.0.1. cerberus already implements the spec-correct behaviour
-    # (`internal/promql/instant_fns.go::projectValueOverInner` emits
-    # `'' AS MetricName` for derived samples per PR #359 / #376), so
-    # pinning to a fixed-upstream tag closes the compat-lane diff
-    # without touching cerberus's own semantics.
-    image: prom/prometheus:v3.11.3
+    # The release the go.mod `replace` of github.com/prometheus/prometheus
+    # is cut from: the tsouza/prometheus fork tag v0.315.0-cerberus-parser
+    # sits on this image's release commit, so cerberus's parser, the spec
+    # lane's in-process engine and this server are one Prometheus
+    # (TestForkVersionSkew pins the three together). The release must be
+    # later than v3.0.1, whose `round(...)` keeps `__name__` on its output
+    # series (fixed by https://github.com/prometheus/prometheus/pull/15250).
+    image: prom/prometheus:v3.15.0
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus

@@ -289,7 +289,7 @@ func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema
 // `len(s.Histograms) > 0` preference — a hard TYPE preference, not operand
 // order: reversing the arms answers the histogram either way). The
 // Prometheus server defaults that feature OFF, and
-// compatibility/prometheus runs v3.11.3 with only
+// compatibility/prometheus runs v3.15.0 with only
 // `promql-experimental-functions`. On THAT engine — measured, both instant
 // and range, for hist/hist, hist/float, float/hist and float/float alike —
 // the answer is `vector cannot contain metrics with the same labelset`.

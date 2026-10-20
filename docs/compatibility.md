@@ -388,7 +388,7 @@ one:
   builds its own `promql.Engine` in-process. Most PromQL fixtures live in
   the spec lane, and a change is graded here first.
 - **The compat lane** (`compatibility/prometheus/`, described above)
-  diffs against a real, separately started `prom/prometheus:v3.11.3`
+  diffs against a real, separately started `prom/prometheus:v3.15.0`
   server — the higher-confidence surface, and, per invariant 7
   (`CLAUDE.md`), the one whose behaviour is authoritative for all three
   heads.

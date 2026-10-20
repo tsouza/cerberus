@@ -260,7 +260,7 @@ func ProjectAlertLabels(events []AlertEvent, keys []string) ([]AlertEvent, error
 // measurement: two rulers firing 2s apart still straddle a bucket boundary
 // roughly as often as not, because Prometheus offsets a group's evaluation by
 // hash(group, file) % interval and Grafana ticks epoch-aligned — a phase
-// difference the substrate cannot remove (prom v3.11.3 has no
+// difference the substrate cannot remove (prom v3.15.0 has no
 // `align_evaluation_time_on_interval`). So DiffAlertStreams owns the verdict
 // that matters and cannot be blamed on scheduling — did each ruler fire the
 // same alerts at all — and this owns the magnitude, which quantization throws

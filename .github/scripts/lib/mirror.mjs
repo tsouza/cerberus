@@ -131,7 +131,7 @@ export const mirroredImages = [
   // Reference backends the three heads are diffed against, plus the reference
   // Prometheus the PromQL surface gate probes and the reference Mimir the
   // histogram bench measures against.
-  'prom/prometheus:v3.11.3',
+  'prom/prometheus:v3.15.0',
   // The migration lane's Tier-2 INCUMBENT dispatcher: the Alertmanager the
   // incumbent ruler notifies through, standing opposite Grafana's own
   // notifier so MIG-18's stream diff has two legs that share no code.

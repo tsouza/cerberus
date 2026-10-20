@@ -137,9 +137,9 @@ mechanism and its bearing on cerberus's own plan shape.
 The real server won, and the spec oracle was aligned down to it.
 `promql-delayed-name-removal` is Prometheus's own opt-in,
 EXPERIMENTAL feature — introduced under a feature flag in 3.6.0
-(upstream #14477) and still opt-in through the v3.11.3 tag the compat
+(upstream #14477) and still opt-in through the v3.15.0 tag the compat
 lane pins, including two rounds of its OWN bugfixes in that span
-(upstream #17161, #17678 — both released well before 3.11.3, neither
+(upstream #17161, #17678 — both released well before 3.15.0, neither
 covering this shape). Nothing in that history signals it is close to
 becoming Prometheus's default, so aligning the spec oracle DOWN to the
 real server's off default is aligning to the stable, shipping behaviour,

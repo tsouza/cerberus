@@ -107,7 +107,7 @@ func TestEmitHistogramQuantileNative_ExhaustedWalkMatchesReferenceFallback(t *te
 		phi  float64
 		// want is reference Prometheus's own answer for this histogram,
 		// obtained from promql.HistogramQuantile in the pinned fork
-		// (github.com/tsouza/prometheus@v0.0.1-cerberus-parser).
+		// (github.com/tsouza/prometheus@v0.315.0-cerberus-parser).
 		want float64
 		// wantNaN marks the one shape reference still answers NaN for: a
 		// NaN Sum.

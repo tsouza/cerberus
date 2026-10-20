@@ -32,11 +32,8 @@ conformance **ledger** in [`test/surface-parity/`](../test/surface-parity/)
 ([Layer 6d](test-strategy.md#layer-6d--function-surface-parity-ledger) of the
 test map). The ledger classifies each symbol four ways — `parity-accept`,
 `parity-reject`, `wrong-reject`, `wrong-accept` — which is the right vocabulary
-for the test ratchet but the wrong one for a reader: `start()` / `end()` /
-`range()` / `step()` read as "wrong-accept" in the ledger (see
-[the note on the query-context functions](#a-note-on-the-promql-query-context-functions))
-yet they are genuinely **Supported (experimental)** for a user. The table above
-performs that translation.
+for the test ratchet but the wrong one for a reader. The table above performs
+that translation.
 
 The ledger is **symbol-level**: it records whether cerberus accepts a symbol at
 all, not which argument *shapes* of that symbol it accepts. A function listed
@@ -123,8 +120,8 @@ instants does not.
 `start()`, `end()`, `range()` and `step()` are experimental upstream and
 **Supported** in cerberus. Cerberus folds each to a constant once per query,
 wherever it sits (at the root, as a scalar argument, inside a subquery), exactly
-as `foldQueryContextFunctions` does in the Prometheus engine library its parser
-and test oracle come from:
+as `foldQueryContextFunctions` does in Prometheus v3.15.0, the release its
+parser, its test oracle and the surface-parity reference server all run:
 
 | Function  | Instant query at `t` | Range query over `[start, end]` |
 | --------- | -------------------- | ------------------------------- |
@@ -136,12 +133,8 @@ and test oracle come from:
 Every value is in seconds. `start()` and `end()` are Unix times truncated to
 whole milliseconds.
 
-The surface-parity reference is the released `prom/prometheus:v3.11.3` server,
-whose grammar predates these four functions: it rejects a bare `start()` /
-`end()` as a parse error and parses `range()` / `step()` as duration
-expressions it cannot evaluate at the top level. That is why the raw ledger
-records all four as `wrong-accept`. The `@ start()` / `@ end()` modifiers are a
-separate construct, **Supported** by both, and listed under Modifiers.
+The `@ start()` / `@ end()` modifiers are a separate construct, also
+**Supported**, and listed under Modifiers.
 
 ## Per-symbol tables
 

@@ -19,7 +19,7 @@ global:
   #
   # The two grids are the same LENGTH but not the same PHASE, and cannot be
   # made so: Prometheus offsets a group's evaluation by hash(group, file) %
-  # interval, and v3.11.3 has no `align_evaluation_time_on_interval` knob to
+  # interval, and v3.15.0 has no `align_evaluation_time_on_interval` knob to
   # turn that off (confirmed empirically — promtool rejects the field). That
   # residual sub-interval phase difference is exactly the skew section 5 of
   # docs/migration-testing.md calls "not a cerberus artifact", and it is why

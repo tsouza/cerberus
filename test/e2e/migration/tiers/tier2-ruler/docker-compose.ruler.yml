@@ -244,7 +244,7 @@ services:
     # test/regression/fork_version_skew_test.go — an incumbent on a different
     # engine version would make every diff argue about which version was
     # right rather than about cerberus.
-    image: prom/prometheus:v3.11.3
+    image: prom/prometheus:v3.15.0
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -270,7 +270,7 @@ services:
       retries: 30
 
   relay-prom:
-    image: prom/prometheus:v3.11.3
+    image: prom/prometheus:v3.15.0
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--web.enable-remote-write-receiver"

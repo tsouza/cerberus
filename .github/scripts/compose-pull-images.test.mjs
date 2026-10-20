@@ -44,10 +44,10 @@ test('plain image services are pullable', () => {
     pullableImages({
       services: {
         clickhouse: { image: 'clickhouse/clickhouse-server:26.5' },
-        prometheus: { image: 'prom/prometheus:v3.11.3' },
+        prometheus: { image: 'prom/prometheus:v3.15.0' },
       },
     }),
-    ['clickhouse/clickhouse-server:26.5', 'prom/prometheus:v3.11.3'],
+    ['clickhouse/clickhouse-server:26.5', 'prom/prometheus:v3.15.0'],
   );
 });
 

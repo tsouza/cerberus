@@ -3170,7 +3170,7 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   symbol the reference ACCEPTS that cerberus REJECTS but isn't a recorded
   wrong-reject (a silent coverage gap), on artifact drift, or on a
   showcase declared-rejection panel the reference accepts.
-  - Env: `PROM_IMAGE` (default `prom/prometheus:v3.11.3`), `REF_PORT`
+  - Env: `PROM_IMAGE` (default `prom/prometheus:v3.15.0`), `REF_PORT`
     (default `39090`), `INVENTORY` (the shard directory), `ARTIFACT` (the
     small reference/oracle/generated_by manifest), `ARTIFACT_DIR` (the
     per-symbol verdict shard directory), `SHOWCASE` (defaults under

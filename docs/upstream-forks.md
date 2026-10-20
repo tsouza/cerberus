@@ -15,13 +15,13 @@ The shipped `cmd/cerberus` binary additionally links the **Apache-2.0** `github.
 
 Three upstream deps route through `github.com/tsouza/*` forks. The forks exist primarily as a *Dependabot watch boundary*: cerberus's `go.mod` `replace` directives point at semver tags on the forks, not pseudo-versions on upstream. A dedicated cron repo, [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor), decides daily whether anything cerberus cares about landed upstream and only then mints a new fork tag. Dependabot in cerberus sees a clean stream of patch bumps it can grouped-PR on.
 
-- **[`tsouza/prometheus`](https://github.com/tsouza/prometheus)** — branch `cerberus-parser`, **zero patches**. Pure Dependabot watch boundary. Cerberus consumes a narrow subtree (`promql/parser`, `model/labels`, `model/histogram`, a couple of adjacent files); the fork lets us mint tags only when those paths change.
+- **[`tsouza/prometheus`](https://github.com/tsouza/prometheus)** — branch `cerberus-parser`, **zero source patches** (its one commit adds the fork's own `cerberus-branch-check` workflow). The branch sits on an upstream **release** commit, never on upstream `main`: today the `v3.15.0` release, commit `5241a27fe3c6983549fccc32f6e65917408c63cd`, the revision the `prom/prometheus:v3.15.0` reference image reports. Its tag is named after that release's Go-library version, `v0.(300+MINOR).PATCH-cerberus-parser` — `v0.315.0-cerberus-parser` for `v3.15.0`. Cerberus consumes a narrow subtree (`promql/parser`, `model/labels`, `model/histogram`, a couple of adjacent files) for its parser, and the spec lane's in-process oracle (`test/spec/parityoracle/promql`) runs the same module's `promql.Engine`, so the parser, the oracle and the compat reference server are one Prometheus release.
 - **[`tsouza/tempo`](https://github.com/tsouza/tempo)** — branch `cerberus-accessors`, **accessor-only patches**, consumed by test-only code. Most are `pkg/traceql` accessors that retired an `unsafe.Pointer` shim. The newest is `vparquet4.NewSpan`, and it is what makes a TraceQL reference oracle possible at all: `DescendantOf` / `ChildOf` / `SiblingOf` are declared on the `traceql.Span` *interface* but implemented in `tempodb/encoding/vparquet4` on an unexported concrete type, which each of them type-asserts its arguments back to. A caller supplying its own `traceql.Span` cannot reach those methods, so it would have to reimplement `>>` / `>` / `~` — turning the oracle into a mirror of the code under test. The three methods read nothing but the nested-set integers (no parquet page, no row number), so a span built from plain data drives them exactly as a decoded one does; upstream's own `TestDescendantOf` already builds spans as bare struct literals on that basis. `NewSpan` is an exported spelling of that literal.
 - **[`tsouza/opentelemetry-collector-contrib`](https://github.com/tsouza/opentelemetry-collector-contrib)** — branch `cerberus-ddl`, **one patch (sqltemplates hoist)**. Surfaces the OTel-CH exporter's DDL templates (`sqltemplates`) as a Go API: `internal/schema/ddl/` renders `CREATE TABLE` from upstream's own templates — no hand-maintained DDL. Matches stock exporter DDL except the five metrics tables carry a **MetricName-first sort key**; the one deliberate divergence (see below).
 
 Each fork is wired via a `go.mod` `replace` directive pinning a **semver tag** at the head of the long-lived `cerberus-*` branch. The forks' default branch IS the `cerberus-*` branch (so Dependabot resolves tags against it). The collector-contrib fork also carries per-submodule tags (`exporter/clickhouseexporter/v…`, `internal/coreinternal/v…`, `pkg/core/xidutils/v…`, `pkg/translator/jaeger/v…`) at the same SHA, because Go's module proxy resolves submodule versions independently in a monorepo.
 
-The `grafana/loki/v3` library is consumed on a **plain upstream require** (no fork), for the AGPL test-only oracles described above. `grafana/tempo` is required at an upstream pseudo-version and then `replace`d by the fork tag, so the `require` line records the upstream base the fork is rebased onto — which is what the version-skew gate below reads — while the fork tag is what actually compiles.
+The `grafana/loki/v3` library is consumed on a **plain upstream require** (no fork), for the AGPL test-only oracles described above. `grafana/tempo` is required at an upstream pseudo-version and `prometheus/prometheus` at the release's library version (`v0.315.0`); each is then `replace`d by its fork tag, so the `require` line records the upstream base the fork is rebased onto — which is what the version-skew gate below reads — while the fork tag is what actually compiles.
 
 Routing tempo through a fork does not move it into the binary. The replace applies to the whole module, but reachability is what the `agpl-clean` gate measures: `cmd/cerberus` still imports only the Apache-2.0 `pkg/tempopb` tree, and `pkg/traceql` / `tempodb/**` remain reachable exclusively from `agpl_oracle`-tagged test code.
 
@@ -113,7 +113,7 @@ files, so the check needs no network call:
 
 | Head       | go.mod `require`                            | Compat reference container                       | Compared at         |
 | ---------- | ------------------------------------------- | ------------------------------------------------ | ------------------- |
-| prometheus | `v0.(300+MINOR).PATCH` — e.g. `v0.311.3`    | `prom/prometheus:vMAJOR.MINOR.PATCH` (`v3.11.3`) | release MAJOR.MINOR |
+| prometheus | `v0.(300+MINOR).PATCH` — e.g. `v0.315.0`    | `prom/prometheus:vMAJOR.MINOR.PATCH` (`v3.15.0`) | exact release       |
 | loki       | `grafana/loki/v3 vMAJOR.MINOR.PATCH`        | `grafana/loki:MAJOR.MINOR.PATCH` (`3.7.0`)       | MAJOR.MINOR         |
 | tempo      | pseudo-version `…-<commit12>`               | `grafana/tempo:main-<commit7>`                   | commit prefix       |
 
@@ -126,25 +126,30 @@ snapshot can't drift; and the `replace` directive, which must point at
 `github.com/tsouza/tempo` on a `-cerberus-accessors` tag. That last assertion is
 what keeps the `require` line meaningful when a `replace` supersedes it —
 without it, tempo could be silently repointed at an arbitrary module while the
-skew table above went on comparing a version nothing compiles against. Keeping
-the fork branch rebased onto that commit is the forks-monitor's job, the same
-contract the prometheus fork runs under.
+skew table above went on comparing a version nothing compiles against.
+
+For prometheus the gate additionally checks the `replace`: it must point at
+`github.com/tsouza/prometheus` on a `-cerberus-parser` tag whose version core
+equals the `require` — the tag cut on that release's commit. A fork tag cut
+anywhere else carries another name and fails the gate.
 
 The Prometheus library reports `v0.(300+MINOR).PATCH` for release
 `v3.MINOR.PATCH` since the v3.0.0 release; the gate lowers the library version
-into release coordinates before comparing. The two semver heads are checked at
-MAJOR.MINOR — that is the grain at which the query-language grammar and
-evaluation semantics that parity rests on actually change; patch releases are
-bug fixes that don't move the language, and the reference image routinely lags
-the Go library by a patch (for example go.mod `v3.7.1` against image `3.7.0` — same
-`3.7` grammar, gate green). Tempo is commit-pinned on every side, so it is
-checked at the exact commit prefix.
+into release coordinates before comparing. Prometheus is checked at the exact
+release, because the fork tag, the `require` and the image all name one
+release commit. Loki is checked at MAJOR.MINOR — the grain at which the
+query-language grammar and evaluation semantics change — because its reference
+image may lag the Go library by a bug-fix patch (go.mod `v3.7.1` against image
+`3.7.0`). Tempo is commit-pinned on every side, so it is checked at the exact
+commit prefix.
 
 If the gate fails, **bump whichever side is wrong** (the reference image to
 match the require, or the `require` to match the image) — do not relax the
-assertion to make the skew disappear. When the forks-monitor cron bumps the
-prometheus fork onto a new upstream minor, this gate is what forces the matching
-compat-image bump to land in the same PR.
+assertion to make the skew disappear. Moving prometheus to a new release is
+one PR: rebase `cerberus-parser` onto the release tag, cut
+`v0.(300+MINOR).PATCH-cerberus-parser` on it, and bump the `require`, the
+`replace` (root `go.mod` and `test/oracle/go.mod`) and every
+`prom/prometheus` image pin together.
 
 ## Manual operations
 

@@ -32,14 +32,14 @@ import (
 // divergence that only surfaces as a confusing compat diff (or, worse, a
 // false-green compat run).
 //
-// Granularity: the two semver heads (prometheus, loki) are checked at
-// MAJOR.MINOR — that's the grain at which the query-language grammar and
-// evaluation semantics that parity rests on actually change; upstream cuts
-// patch releases for bug fixes that don't move the language, and the
-// reference image routinely lags the Go library by a patch (loki: go.mod
-// pins v3.7.1, the reference image is grafana/loki:3.7.0 — same 3.7 grammar).
-// Tempo is pinned by commit on both sides, so it is checked at the exact
-// commit prefix, which is both available and meaningful.
+// Granularity: loki is checked at MAJOR.MINOR — the grain at which the
+// query-language grammar and evaluation semantics that parity rests on
+// change; the reference image may lag the Go library by a bug-fix patch
+// (go.mod v3.7.1 against grafana/loki:3.7.0 — same 3.7 grammar).
+// Prometheus is checked at the exact release: its `replace` is a fork tag
+// cut on one release commit, so the require, the fork tag and the reference
+// image must all name that release. Tempo is pinned by commit on every
+// side, so it is checked at the exact commit prefix.
 //
 // If this test fails, EITHER bump the compat reference image to match the
 // fork's upstream base, OR bump the go.mod fork require to match the image —
@@ -50,6 +50,13 @@ import (
 // the tag family are not.
 var tempoForkReplace = regexp.MustCompile(
 	`(?m)^replace\s+github\.com/grafana/tempo\s+=>\s+github\.com/tsouza/tempo\s+v\d+\.\d+\.\d+-cerberus-accessors\s*$`,
+)
+
+// prometheusForkReplace matches the go.mod directive that routes
+// prometheus/prometheus through the parser fork and captures the fork
+// tag's version core, which names the release the tag is cut on.
+var prometheusForkReplace = regexp.MustCompile(
+	`(?m)^replace\s+github\.com/prometheus/prometheus\s+=>\s+github\.com/tsouza/prometheus\s+(v\d+\.\d+\.\d+)-cerberus-parser\s*$`,
 )
 
 func TestForkVersionSkew(t *testing.T) {
@@ -64,27 +71,53 @@ func TestForkVersionSkew(t *testing.T) {
 		t.Parallel()
 		// go.mod pins the Prometheus library version. Since the v3.0.0
 		// release, the Go module reports v0.(300+MINOR).PATCH for release
-		// v3.MINOR.PATCH (e.g. v0.311.3 <-> v3.11.3). Lower the library
-		// version into release coordinates, then compare MAJOR.MINOR
-		// against the reference container.
+		// v3.MINOR.PATCH (e.g. v0.315.0 <-> v3.15.0). Lower the library
+		// version into release coordinates and require the reference
+		// container to run exactly that release.
 		lib := requireVersion(t, goMod, "github.com/prometheus/prometheus")
-		relMajor, relMinor := prometheusLibToRelease(t, lib)
+		relMajor, relMinor, relPatch := prometheusLibToRelease(t, lib)
 
 		img := composeImageTag(
 			t,
 			"../../compatibility/prometheus/docker-compose.yml",
-			regexp.MustCompile(`image:\s*prom/prometheus:v(\d+)\.(\d+)\.\d+`),
+			regexp.MustCompile(`image:\s*prom/prometheus:v(\d+)\.(\d+)\.(\d+)`),
 		)
-		imgMajor, imgMinor := img[0], img[1]
+		imgMajor, imgMinor, imgPatch := img[0], img[1], img[2]
 
-		if relMajor != imgMajor || relMinor != imgMinor {
-			t.Fatalf("prometheus version skew: go.mod fork base resolves to release v%s.%s.x "+
+		if relMajor != imgMajor || relMinor != imgMinor || relPatch != imgPatch {
+			t.Fatalf("prometheus version skew: go.mod require resolves to release v%s.%s.%s "+
 				"(library %s), but compatibility/prometheus reference image is "+
-				"prom/prometheus:v%s.%s.x. The compat lane would diff cerberus's "+
-				"v%s.%s parser against a v%s.%s reference engine — parity claims "+
+				"prom/prometheus:v%s.%s.%s. The compat lane would diff cerberus's "+
+				"parser against a different reference engine — parity claims "+
 				"are unsound. Align the two (see docs/upstream-forks.md § version-skew gate).",
-				relMajor, relMinor, lib, imgMajor, imgMinor,
-				relMajor, relMinor, imgMajor, imgMinor)
+				relMajor, relMinor, relPatch, lib, imgMajor, imgMinor, imgPatch)
+		}
+
+		// The `require` line is superseded by the `replace` onto the
+		// tsouza/prometheus fork, so on its own it does not say what
+		// compiles. The fork tag is cut on the release commit and named
+		// after the library version of that release
+		// (v0.315.0-cerberus-parser sits on v3.15.0), so the replace
+		// must name exactly the version the require records. A tag cut
+		// anywhere else — upstream main, say, whose VERSION file still
+		// reads the last release — carries a different name and fails
+		// here: the parser and the spec lane's in-process engine would
+		// otherwise run a grammar the reference server does not.
+		m := prometheusForkReplace.FindSubmatch(goMod)
+		if m == nil {
+			t.Fatalf("prometheus fork replace missing or repointed: go.mod must carry a "+
+				"`replace github.com/prometheus/prometheus => github.com/tsouza/prometheus "+
+				"v0.<300+MINOR>.<PATCH>-cerberus-parser` directive matching %s, a fork tag "+
+				"cut on the release the reference image runs "+
+				"(see docs/upstream-forks.md § version-skew gate).",
+				prometheusForkReplace)
+		}
+		if forkBase := string(m[1]); forkBase != lib {
+			t.Fatalf("prometheus fork skew: go.mod replaces github.com/prometheus/prometheus "+
+				"with the fork tag %s-cerberus-parser, but the require (and the reference image "+
+				"prom/prometheus:v%s.%s.%s) is %s. The fork tag must be cut on that release "+
+				"(see docs/upstream-forks.md § version-skew gate).",
+				forkBase, imgMajor, imgMinor, imgPatch, lib)
 		}
 	})
 
@@ -237,11 +270,11 @@ func requireVersion(t *testing.T, goMod []byte, modPath string) string {
 
 // prometheusLibToRelease lowers a Prometheus Go-library version
 // (v0.(300+MINOR).PATCH) into release coordinates (MAJOR=3, MINOR, PATCH),
-// returning MAJOR and MINOR as strings. Since the v3.0.0 release the library
-// has reported v0.300.0+; this mapping is stable and documented upstream.
-func prometheusLibToRelease(t *testing.T, lib string) (major, minor string) {
+// returned as strings. Since the v3.0.0 release the library has reported
+// v0.300.0+; this mapping is stable and documented upstream.
+func prometheusLibToRelease(t *testing.T, lib string) (major, minor, patch string) {
 	t.Helper()
-	re := regexp.MustCompile(`^v0\.(\d+)\.\d+$`)
+	re := regexp.MustCompile(`^v0\.(\d+)\.(\d+)$`)
 	m := re.FindStringSubmatch(lib)
 	if m == nil {
 		t.Fatalf("prometheus require %q is not a v0.<N>.<P> library version; "+
@@ -252,12 +285,16 @@ func prometheusLibToRelease(t *testing.T, lib string) (major, minor string) {
 	if _, err := fmt.Sscanf(m[1], "%d", &n); err != nil {
 		t.Fatalf("parse prometheus library minor from %q: %v", lib, err)
 	}
-	if n < 300 {
-		t.Fatalf("prometheus require %q has library-minor %d < 300; the v0.300+ "+
-			"<-> v3.x mapping does not apply. Update the gate.", lib, n)
+	if n < prometheusV3LibraryMinorBase {
+		t.Fatalf("prometheus require %q has library-minor %d < %d; the v0.300+ "+
+			"<-> v3.x mapping does not apply. Update the gate.", lib, n, prometheusV3LibraryMinorBase)
 	}
-	return "3", fmt.Sprintf("%d", n-300)
+	return "3", fmt.Sprintf("%d", n-prometheusV3LibraryMinorBase), m[2]
 }
+
+// prometheusV3LibraryMinorBase is the offset the Prometheus Go library adds
+// to a v3 release's MINOR: release v3.MINOR.PATCH is library v0.(300+MINOR).PATCH.
+const prometheusV3LibraryMinorBase = 300
 
 // semverMajorMinor splits vMAJOR.MINOR.PATCH (or MAJOR.MINOR.PATCH) into its
 // MAJOR and MINOR components.

@@ -77,7 +77,7 @@ const maxSamples = 1_000_000
 // Cerberus grades PromQL against two independent reference surfaces: this
 // oracle, which builds its own promql.Engine in-process, and the
 // compat lane (compatibility/prometheus/), which runs a real, separately
-// started `prom/prometheus:v3.11.3` server. "Matches the reference" has
+// started `prom/prometheus:v3.15.0` server. "Matches the reference" has
 // exactly one meaning only if both surfaces run the engine the same way.
 //
 // compatibility/prometheus/docker-compose.yml enables only
@@ -97,9 +97,9 @@ const maxSamples = 1_000_000
 // source of truth for all three heads. That default is also not a moving
 // target here: promql-delayed-name-removal has been an opt-in,
 // EXPERIMENTAL feature flag since its introduction (upstream #14477, 3.6.0)
-// straight through the v3.11.3 tag the compat lane pins — including two
+// straight through the v3.15.0 tag the compat lane pins — including two
 // rounds of its OWN bugfixes in that span (upstream #17161, #17678, both
-// already released well before 3.11.3, neither one covering this shape) —
+// already released well before 3.15.0, neither one covering this shape) —
 // with no changelog signal that it is close to becoming Prometheus's
 // default. Aligning this oracle DOWN to the real server's OFF default is
 // therefore aligning to the stable, documented, currently-shipping

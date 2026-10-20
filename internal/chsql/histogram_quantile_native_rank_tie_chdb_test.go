@@ -74,7 +74,7 @@ func TestEmitHistogramQuantileNative_RankTieMatchesReferenceWalk(t *testing.T) {
 		phi float64
 		// want is reference Prometheus's own answer for this histogram,
 		// obtained from promql.HistogramQuantile in the pinned fork
-		// (github.com/tsouza/prometheus@v0.0.1-cerberus-parser).
+		// (github.com/tsouza/prometheus@v0.315.0-cerberus-parser).
 		want float64
 		// exact marks the rank tie, where the walk direction decides the
 		// answer outright and no interpolation noise can enter: the stop
