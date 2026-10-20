@@ -376,6 +376,7 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 		d *promDispatch
 	)
 	dispatch := func(deadline time.Duration) deadlineObservation {
+		s.awaitMergesIdle(ctx, t)
 		p = newPromProbe(t, s, rules, deadline)
 		d = &promDispatch{ctx: ctx, t: t, s: s, docker: docker, qid: cancelQueryID(shape, "deadline"), start: time.Now()}
 		done := make(chan *httptest.ResponseRecorder, 1)
@@ -488,6 +489,7 @@ func (d *promDispatch) hold(until time.Duration) time.Duration {
 }
 
 func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, want cancelExpectation) {
+	s.awaitMergesIdle(ctx, t)
 	p := newPromProbe(t, s, rules, 0)
 	qid := cancelQueryID(shape, "disconnect")
 	reqCtx, disconnect := context.WithCancel(chclient.WithQueryID(ctx, qid))
@@ -562,6 +564,7 @@ type siblingDispatch struct {
 // query; scenario names their query ids.
 func (s *server) dispatchSiblings(ctx context.Context, t *testing.T, shape cancelShape, scenario string) siblingDispatch {
 	t.Helper()
+	s.awaitMergesIdle(ctx, t)
 	d := siblingDispatch{
 		client: s.client(t, adminUser, adminPassword, chclient.Config{
 			Database:       shardedDB,
@@ -799,6 +802,35 @@ func (s *server) finalExecutions(ctx context.Context, t *testing.T, id string) u
 	return n
 }
 
+// awaitMergesIdle waits until the server runs no background merge, before a
+// probe dispatches a statement whose progress it times. Every probe's verdict
+// flushes the system logs (flushLogs), and once a log table has gathered
+// enough parts the server merges them: on cancelProbeNanoCPUs's half CPU such
+// a merge, started just before the next dispatch, slows that statement's
+// work ahead of its call, and an inCall predicate that compares how long
+// that work stood still with how long the read took (regexCallRunning) then
+// reports the call entered while the statement is still ahead of it. A
+// dispatch on an idle server meets the same server every probe calibrated
+// against. The merges are the server's own small system-table merges; one
+// that outlasts naturalRunBudget fails the probe.
+func (s *server) awaitMergesIdle(ctx context.Context, t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(naturalRunBudget)
+	for {
+		var merges uint64
+		if err := s.admin.Conn().QueryRow(ctx, "SELECT count() FROM system.merges").Scan(&merges); err != nil {
+			t.Fatalf("read system.merges: %v", err)
+		}
+		if merges == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d background merge(s) still running after %s", merges, naturalRunBudget)
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
 // goneWithin polls until no statement for ids runs, or budget passes.
 func (s *server) goneWithin(ctx context.Context, t *testing.T, ids []string, budget time.Duration) bool {
 	t.Helper()
@@ -843,6 +875,7 @@ func (s *server) workSpan(ctx context.Context, t *testing.T, ids []string) (star
 // once every row has been read.
 func (s *server) runShape(ctx context.Context, t *testing.T, shape cancelShape, qid string) <-chan error {
 	t.Helper()
+	s.awaitMergesIdle(ctx, t)
 	dr := dryRunShape(ctx, t, shape)
 	done := make(chan error, 1)
 	go func() {
