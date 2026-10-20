@@ -139,19 +139,16 @@ that lives OUTSIDE the AGPL `upstream/` boundary:
   loki-config.yaml). The CI gate at `.github/workflows/ci.yml`
   rejects any non-empty `should_skip:` block.
 - `upstream-skip-baseline.txt` — pinned set of corpus entries the
-  upstream YAML marks `skip: true`, one
-  `<suite>/<file>.yaml#<description>` key per line. The driver's sanity
-  rail (task #269) loads the full corpus on every run and asserts the
-  upstream-skipped set matches this file; drift in either direction
-  (a new upstream skip, or a previously-skipped query re-enabled
-  upstream) is a hard error, surfacing the regression before it can
-  silently feed back into the compliance score. This is not a
-  failure-tolerance list — it never suppresses a cerberus diff; it
-  pins what the *upstream corpus itself* declines to run, so a silent
-  upstream flip can't move the scored boundary unnoticed. Regenerate
-  via `loki-compliance-tester -regen-baseline -skip-baseline=...`
-  after auditing the corpus diff a change to the snapshot's recorded
-  local patches introduces. See
+  vendored YAML marks `skip: true`, one
+  `<suite>/<file>.yaml#<description>` key per line. The driver loads
+  the full corpus on every run and asserts the skipped set matches this
+  file exactly; drift in either direction is a hard error. This is not
+  a failure-tolerance list — it never suppresses a cerberus diff; it
+  pins what the vendored corpus itself declines to run, so no change to
+  the snapshot's recorded local patch can move the scored boundary
+  unnoticed. Regenerate it with
+  `loki-compliance-tester -regen-baseline -skip-baseline=...`, only
+  together with such a change and after auditing the skip-set diff. See
   [Upstream-skip baseline](#upstream-skip-baseline) for the procedure.
 - `dataset_metadata.json` — pinned dataset metadata that maps
   `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template vars to
@@ -302,25 +299,22 @@ The vendored corpus contains ~15 queries upstream marks `skip: true`
 (quantile/stddev unwrap aggregations, structured-metadata numeric label
 filters, a JSON parser regression). The cerberus driver calls
 `registry.GetQueries(includeSkip=false, ...)` so these never reach the
-wire, but that filtering is invisible to the compat score — if upstream
-ever flips one of these to `skip: false` (e.g. the v2 engine grows
-quantile support), the query would silently slip into the corpus and
-either pass or fail without the operator noticing the boundary moved.
+wire, and that filtering is invisible to the compat score.
 
-`upstream-skip-baseline.txt` is the trip-wire. The driver loads the
+`upstream-skip-baseline.txt` pins that boundary. The driver loads the
 full corpus (`includeSkipped=true`), partitions it into runnable +
 upstream-skipped, and diffs the upstream-skipped set against the file.
 Drift either way fails the run:
 
 - Added keys (the corpus marks `skip: true` but the baseline does not)
-  mean a change to the vendored corpus introduced new boundaries
-  cerberus needs to triage.
+  would drop queries from the scored set.
 - Removed keys (the baseline expects `skip: true` but the corpus no
-  longer carries it) mean upstream re-enabled a previously-skipped
-  query; the operator must decide whether cerberus is ready to diff
-  against it.
+  longer carries it) would add queries to the scored set that nobody
+  triaged.
 
-Regenerate after a deliberate change to the vendored corpus (or any deliberate baseline update):
+The snapshot is frozen (see "Snapshot maintenance"), so the skipped set
+can move only with a change to the recorded local patch. Regenerate
+together with such a change:
 
 ```sh
 go run ./compatibility/loki/cmd/loki-compliance-tester \
@@ -330,9 +324,8 @@ go run ./compatibility/loki/cmd/loki-compliance-tester \
 ```
 
 The regen path is corpus-only — it does not contact any Loki
-endpoint. Review the resulting diff before committing: an unexpected
-addition usually means a real upstream regression cerberus should
-chase, not a baseline to silently rubber-stamp.
+endpoint. Review the resulting diff before committing: every added or
+removed key is a change to what the harness scores.
 
 ## Running the harness
 

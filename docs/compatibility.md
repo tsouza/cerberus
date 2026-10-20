@@ -432,20 +432,18 @@ runnable is seeded, executed against both backends, and scored, with
 zero cerberus-side exclusions on top.
 
 `compatibility/loki/upstream-skip-baseline.txt` is the trip-wire that
-keeps that boundary honest. The driver loads the full corpus
+keeps that boundary fixed. The driver loads the full corpus
 (including skipped entries), partitions it into runnable +
 upstream-skipped, and asserts the upstream-skipped set exactly matches
 the file — one `<suite>/<file>.yaml#<description>` key per line. Drift
-in either direction fails the harness:
+in either direction fails the harness: an added key would shrink the
+scored denominator, and a removed key would add a query to the scored
+set without anyone triaging cerberus's parity for it.
 
-- a new upstream `skip: true` would otherwise silently shrink the
-  scored denominator;
-- an upstream `skip: true` → `skip: false` flip (e.g. the v2 engine
-  gaining quantile support) would otherwise silently add a query to
-  the scored set without anyone triaging cerberus's parity for it.
-
-After a deliberate change to the vendored corpus, inspect the skip-set diff, then regenerate
-the baseline with:
+The vendored snapshot is frozen, so the skipped set moves only with a
+change to the local patch `upstream/loki-bench/VERSION` records under
+`local_patches:`, the one edit the snapshot admits. With such a change,
+inspect the skip-set diff, then regenerate the baseline with:
 
 ```sh
 loki-compliance-tester \
