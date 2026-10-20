@@ -944,7 +944,9 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 //     clickhouse.WithSettings wrap — a second wrap REPLACES rather than
 //     unions the settings map (clickhouse-go context.go:
 //     `c.settings = maps.Clone(q.settings)`), which would silently drop
-//     the memory cap. Merging here keeps every knob on the one map.
+//     the memory cap. Merging here keeps every knob on the one map. The
+//     distributed-read pins above are copied over it last, so a per-request
+//     setting of the same name never changes one.
 //
 // Kept as its own method (rather than inlined into queryContext) so
 // tests can assert the settings content directly — the driver stores
@@ -960,10 +962,9 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	// #3118 — see
 	// distributed_query_settings.go for the full citation of each
 	// setting's documented behavior and why its stamped value is correct
-	// for a correctness-focused gateway), so this map is never empty and
-	// the old "nothing configured, return nil" short-circuit no longer
-	// applies.
-	s := clickhouse.Settings{
+	// for a correctness-focused gateway), so the returned map is never
+	// empty.
+	pins := clickhouse.Settings{
 		settingSkipUnavailableShards:                        0,
 		settingFallbackToStaleReplicasForDistributedQueries: 0,
 		settingLoadBalancing:                                loadBalancingFirstOrRandom,
@@ -971,6 +972,7 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 		settingUseHedgedRequests:                            0,
 		settingDistributedProductMode:                       distributedProductModeGlobal,
 	}
+	s := clickhouse.Settings{}
 	if c.maxMemory > 0 {
 		s["max_memory_usage"] = ApportionMemoryBytes(c.maxMemory, c.dataShardCount)
 	}
@@ -1004,6 +1006,9 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 		// which is the identical string but a different Go declaration.
 		s[settingMaxBlockSize] = blockSize
 	}
+	// The distributed-read pins are applied last: they are fixed, so no
+	// per-request setting of the same name may change them.
+	maps.Copy(s, pins)
 	return s
 }
 

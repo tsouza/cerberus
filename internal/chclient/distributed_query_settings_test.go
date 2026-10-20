@@ -109,3 +109,25 @@ func TestQuerySettings_DistributedProductModePin(t *testing.T) {
 		}
 	}
 }
+
+// TestQuerySettings_PerQuerySettingCannotOverrideDistributedReadPins pins
+// that the distributed-read pins are fixed: a per-request setting stamped
+// with WithQuerySetting under a pin's own name does not change what the
+// query is sent with.
+func TestQuerySettings_PerQuerySettingCannotOverrideDistributedReadPins(t *testing.T) {
+	t.Parallel()
+
+	// A bare client stamps the pins and nothing else.
+	c := &Client{}
+	pins := c.querySettings(context.Background())
+	if len(pins) == 0 {
+		t.Fatal("a bare client stamps no distributed-read pin")
+	}
+	const override = "per-query override"
+	for name, want := range pins {
+		got := c.querySettings(WithQuerySetting(context.Background(), name, override))[name]
+		if got != want {
+			t.Errorf("WithQuerySetting(%s, %q) sends %s=%v; the pin is %v", name, override, name, got, want)
+		}
+	}
+}

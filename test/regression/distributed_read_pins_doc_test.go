@@ -120,9 +120,9 @@ func splitMarkdownSection(t *testing.T, path, heading string) (section, outside 
 	return section, outside
 }
 
-// unconditionalQuerySettingsFromSource reads the `s := clickhouse.Settings{…}`
-// literal Client.querySettings opens with — the settings it stamps on every
-// query before any conditional addition — and renders each entry as a sorted
+// unconditionalQuerySettingsFromSource reads the `pins := clickhouse.Settings{…}`
+// literal of Client.querySettings — the settings it stamps on every query,
+// over any per-request setting of the same name — and renders each entry as a sorted
 // "name=value" string, resolving constant names against the package's own
 // string constants.
 func unconditionalQuerySettingsFromSource(t *testing.T, pkgDir string) []string {
@@ -202,7 +202,7 @@ func unconditionalQuerySettingsFromSource(t *testing.T, pkgDir string) []string 
 		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
 			continue
 		}
-		if id, ok := assign.Lhs[0].(*ast.Ident); !ok || id.Name != "s" {
+		if id, ok := assign.Lhs[0].(*ast.Ident); !ok || id.Name != "pins" {
 			continue
 		}
 		lit, ok := assign.Rhs[0].(*ast.CompositeLit)
