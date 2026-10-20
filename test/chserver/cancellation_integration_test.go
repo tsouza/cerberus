@@ -361,10 +361,10 @@ func assertErrorType(t *testing.T, rec *httptest.ResponseRecorder, want string) 
 // deadline is fixed when the request starts, and how long the query then
 // takes to reach the call varies with the load on the runner, so each
 // dispatch holds the server at the query's observed entry into the call until
-// the deadline has passed (observeToDeadline); landRequestDeadline re-arms a
-// deadline that passed before the entry, and only the dispatch that lands is
-// judged. Every dispatch, judged or not, must be answered 503
-// errorType=timeout within budget and free its admission slot.
+// just before the deadline expires on it (observeToDeadline).
+// landRequestDeadline re-arms a deadline that passed before the entry, and
+// only the dispatch that lands is judged. Every dispatch, judged or not, must
+// be answered 503 errorType=timeout within budget and free its admission slot.
 func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, want cancelExpectation) {
 	docker, err := testcontainers.NewDockerClientWithOpts(ctx)
 	if err != nil {
@@ -375,22 +375,26 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 		p promProbe
 		d *promDispatch
 	)
-	dispatch := func(deadline time.Duration) []callProgress {
+	dispatch := func(deadline time.Duration) deadlineObservation {
 		p = newPromProbe(t, s, rules, deadline)
 		d = &promDispatch{ctx: ctx, t: t, s: s, docker: docker, qid: cancelQueryID(shape, "deadline"), start: time.Now()}
 		done := make(chan *httptest.ResponseRecorder, 1)
 		d.done = done
 		go func() { done <- p.serve(chclient.WithQueryID(ctx, d.qid), shape) }()
-		seen := observeToDeadline(shape.inCall, deadline, d)
+		obs := observeToDeadline(shape.inCall, deadline, d)
 		if d.rec == nil {
 			d.rec = <-done
 		}
 		answered := time.Since(d.start)
+		if d.rec.Code == http.StatusOK && !shape.inCall(obs.seen) {
+			t.Fatalf("query %s answered within its %s deadline before any reading saw it inside its %s call: the "+
+				"readings stalled, so nothing held it", d.qid, deadline, shape.function)
+		}
 		assertErrorType(t, d.rec, "timeout")
 		// The answer waits for cerberus's KILL QUERY ... SYNC, which confirms
 		// promptly where the call is interruptible and gives up after
 		// chclient.KillDataShardQueryTimeout where it is not.
-		budget := deadline + deadlineSettle + handlerSlack
+		budget := deadline + handlerSlack
 		if !want.bounded {
 			budget += chclient.KillDataShardQueryTimeout
 		}
@@ -398,7 +402,7 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 			t.Errorf("the client was answered after %s; want within %s", answered, budget)
 		}
 		p.assertAdmissionFree(t)
-		return seen
+		return obs
 	}
 	// A dispatch that cannot be judged still runs on where its call cannot be
 	// interrupted; the next one must not share the server with it.
@@ -414,8 +418,9 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 	}
 	t.Logf("request deadline %s (first %s) landed query %s inside its %s call, held there for %s", deadline,
 		want.requestDeadline(), d.qid, shape.function, d.resumedAt.Sub(d.heldFrom))
-	// The server's own max_execution_time is the cancellation here, and it
-	// takes effect as the server resumes.
+	// The server's own max_execution_time is the cancellation here. It
+	// expires within resumeLead of the server resuming, and the work in
+	// between counts as performed after the cancellation.
 	s.assertServerWorkEnds(ctx, t, []string{d.qid}, want, d.resumedAt, d.resumedAt.Sub(d.heldFrom),
 		map[string][]callProgress{d.qid: seen})
 	p.assertPoolReleased(t)
@@ -424,8 +429,7 @@ func probeRequestDeadline(ctx context.Context, t *testing.T, s *server, rules en
 // promDispatch is one request-deadline dispatch through a promProbe, as
 // observeToDeadline drives it. Its hold pauses the server's container: the
 // cgroup freezer stops every server thread, so the query makes no progress
-// while the request's deadline, and the server's own max_execution_time,
-// run on.
+// while the wall clock runs on.
 type promDispatch struct {
 	ctx    context.Context
 	t      *testing.T
@@ -436,8 +440,10 @@ type promDispatch struct {
 	done   <-chan *httptest.ResponseRecorder
 	// rec is the answer, once it has arrived.
 	rec *httptest.ResponseRecorder
-	// heldFrom and resumedAt bound the span the server was paused for:
-	// from the moment the pause had taken effect to the moment it was lifted.
+	// heldFrom is when the pause had taken effect, and resumedAt when the
+	// unpause was requested: the server was certainly paused between them,
+	// so the span undercounts the hold rather than credit the query with
+	// time it did not run.
 	heldFrom, resumedAt time.Time
 }
 
@@ -454,17 +460,31 @@ func (d *promDispatch) await() bool {
 
 func (d *promDispatch) read() (callProgress, bool) { return d.s.callProgress(d.ctx, d.t, d.qid) }
 
-func (d *promDispatch) hold(span time.Duration) {
-	until := time.Now().Add(span)
+func (d *promDispatch) hold(until time.Duration) time.Duration {
+	// The unpause runs on every path out, a failed or late-failing pause
+	// included, and outlives the probe's own context, so the container is
+	// never left frozen.
+	unpaused := false
+	unpause := func() error {
+		_, err := d.docker.ContainerUnpause(context.WithoutCancel(d.ctx), d.s.containerID, client.ContainerUnpauseOptions{})
+		unpaused = err == nil
+		return err
+	}
+	defer func() {
+		if !unpaused {
+			_ = unpause()
+		}
+	}()
 	if _, err := d.docker.ContainerPause(d.ctx, d.s.containerID, client.ContainerPauseOptions{}); err != nil {
 		d.t.Fatalf("pause %s: %v", d.s.image, err)
 	}
 	d.heldFrom = time.Now()
-	time.Sleep(time.Until(until))
+	time.Sleep(until - d.sinceSent())
 	d.resumedAt = time.Now()
-	if _, err := d.docker.ContainerUnpause(d.ctx, d.s.containerID, client.ContainerUnpauseOptions{}); err != nil {
+	if err := unpause(); err != nil {
 		d.t.Fatalf("unpause %s: %v", d.s.image, err)
 	}
+	return d.sinceSent()
 }
 
 func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules engine.SettingsRules, shape cancelShape, want cancelExpectation) {
