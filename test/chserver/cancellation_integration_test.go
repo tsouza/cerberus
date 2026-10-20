@@ -156,7 +156,14 @@ const (
 	// re-seeding grows the same table round over round, so a later round's
 	// entry can take noticeably longer than an earlier one at a smaller
 	// size; 60s covers that observed growth with headroom to spare.
-	runningBudget    = 60 * time.Second
+	runningBudget = 60 * time.Second
+	// mergesIdleBudget bounds awaitMergesIdle: how long the server's own
+	// background merges get to drain before a probe dispatches. They are
+	// small system-log merges, so this is a ceiling for a wedged server,
+	// not a wait any healthy run approaches; it matches the ceiling a
+	// statement gets to finish on its own (naturalRunBudget) because both
+	// run on the same half CPU.
+	mergesIdleBudget = 120 * time.Second
 	closeBudget      = 30 * time.Second
 	shardedDB        = "sharded"
 	shardCluster     = "chserver"
@@ -805,17 +812,17 @@ func (s *server) finalExecutions(ctx context.Context, t *testing.T, id string) u
 // awaitMergesIdle waits until the server runs no background merge, before a
 // probe dispatches a statement whose progress it times. Every probe's verdict
 // flushes the system logs (flushLogs), and once a log table has gathered
-// enough parts the server merges them: on cancelProbeNanoCPUs's half CPU such
-// a merge, started just before the next dispatch, slows that statement's
-// work ahead of its call, and an inCall predicate that compares how long
-// that work stood still with how long the read took (regexCallRunning) then
-// reports the call entered while the statement is still ahead of it. A
-// dispatch on an idle server meets the same server every probe calibrated
-// against. The merges are the server's own small system-table merges; one
-// that outlasts naturalRunBudget fails the probe.
+// enough parts the server merges them. On cancelProbeNanoCPUs's half CPU, a
+// merge started just before the next dispatch slows that statement's work
+// ahead of its call. An inCall predicate that judges entry by how long the
+// statement's progress stood still against how long the read took
+// (regexCallRunning) then reports the call entered while the statement has
+// not reached it yet. A dispatch on an idle server meets the same server
+// every probe calibrated against. A merge still running after
+// mergesIdleBudget fails the probe.
 func (s *server) awaitMergesIdle(ctx context.Context, t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(naturalRunBudget)
+	deadline := time.Now().Add(mergesIdleBudget)
 	for {
 		var merges uint64
 		if err := s.admin.Conn().QueryRow(ctx, "SELECT count() FROM system.merges").Scan(&merges); err != nil {
@@ -825,7 +832,7 @@ func (s *server) awaitMergesIdle(ctx context.Context, t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%d background merge(s) still running after %s", merges, naturalRunBudget)
+			t.Fatalf("%d background merge(s) still running after %s", merges, mergesIdleBudget)
 		}
 		time.Sleep(pollInterval)
 	}
