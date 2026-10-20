@@ -409,6 +409,48 @@ func TestInstantDomainParity_ChDB(t *testing.T) {
 	}
 }
 
+// instantDomainStaleSeed holds a series whose newest sample, a minute
+// before the latest stored instant's minute, is a stale marker: a sample at
+// 2262-04-11 23:45:00, then a NoRecordedValue row at 23:46:00.
+const instantDomainStaleSeed = "" +
+	"CREATE TABLE otel_metrics_gauge (MetricName String, Attributes Map(String, String), TimeUnix DateTime64(9), Value Float64, Flags UInt32) " +
+	"ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);\n" +
+	"INSERT INTO otel_metrics_gauge VALUES\n" +
+	"    ('" + instantDomainMetric + "', map('job', 'a'), fromUnixTimestamp64Nano(toInt64(9223371900000000000)), 1.0, 0),\n" +
+	"    ('" + instantDomainMetric + "', map('job', 'a'), fromUnixTimestamp64Nano(toInt64(9223371960000000000)), 0.0, 1);\n"
+
+// TestInstantDomainParity_AbsentStaleMarkerAtCeiling_ChDB pins, against the
+// Prometheus reference engine, absent over a selector whose newest sample
+// is a stale marker, pinned past the latest stored instant, where the
+// lookback is cut back to the stored range, and pinned just inside it. The
+// stale marker hides the series in both, so absent answers 1.
+func TestInstantDomainParity_AbsentStaleMarkerAtCeiling_ChDB(t *testing.T) {
+	probed := spec.FixtureMetrics()
+	// An instant query reports the absence's anchor, the pin or the cut
+	// window's end, which the API replaces with the evaluation instant.
+	for _, tc := range []struct {
+		name, pin string
+		reported  time.Time
+	}{
+		{"past_ceiling", "9223372037", time.UnixMilli(9223372036854).UTC()},
+		{"inside_ceiling", "9223372036", time.Unix(9223372036, 0).UTC()},
+	} {
+		for _, rangeMode := range []bool{false, true} {
+			mode := "instant"
+			start, step := instantDomainEval, time.Duration(0)
+			if rangeMode {
+				mode = "range"
+				start, step = instantDomainEval.Add(-instantDomainRangeSteps*time.Minute), time.Minute
+			}
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				query := `absent(` + instantDomainMetric + ` @ ` + tc.pin + `)`
+				runGridParityOver(t, probed, instantDomainStaleSeed, query, start, instantDomainEval, step,
+					[]instantDomainRow{{labels: map[string]string{}, at: idConst(1), sampleAt: tc.reported}})
+			})
+		}
+	}
+}
+
 // TestInstantDomainParity_NestedRegions_ChDB pins, against the Prometheus
 // reference engine, subqueries whose region holds a nested subquery or an
 // `@ start()` / `@ end()` pin and whose instants leave the DateTime64(9)
@@ -544,6 +586,12 @@ func runHandWrittenParity(t *testing.T, seed, query string, eval time.Time, rows
 // Prometheus reference engine.
 func runGridParity(t *testing.T, seed, query string, start, eval time.Time, step time.Duration, rows []instantDomainRow) {
 	t.Helper()
+	runGridParityOver(t, schema.DefaultOTelMetrics(), seed, query, start, eval, step, rows)
+}
+
+// runGridParityOver is [runGridParity] lowering over the metrics schema s.
+func runGridParityOver(t *testing.T, s schema.Metrics, seed, query string, start, eval time.Time, step time.Duration, rows []instantDomainRow) {
+	t.Helper()
 	const fixturePermissions = 0o600
 	rangeMode, endpoint := step > 0, "/api/v1/query"
 	if rangeMode {
@@ -553,7 +601,7 @@ func runGridParity(t *testing.T, seed, query string, start, eval time.Time, step
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := promql.LowerAtRange(context.Background(), expr, schema.DefaultOTelMetrics(), start, eval, step)
+	plan, err := promql.LowerAtRange(context.Background(), expr, s, start, eval, step)
 	if err != nil {
 		t.Fatalf("LowerAtRange(%q): %v", query, err)
 	}

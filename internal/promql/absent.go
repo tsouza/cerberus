@@ -81,10 +81,11 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		// stopped reporting hours ago still read as present, every step
 		// of a range query got that same stale verdict, and `@`/`offset`
 		// were ignored outright.
-		if latest, ok, err := lowerAbsenceOfLatestSample(vs, s, ctx); ok || err != nil {
+		window := ctx.domain.absenceWindow(vs)
+		if latest, ok, err := lowerAbsenceOfLatestSample(vs, window, s, ctx); ok || err != nil {
 			return latest, err
 		}
-		return lowerAbsenceOverWindow(vs, instantLookback, s, ctx)
+		return lowerAbsenceOverWindow(vs, window, s, ctx)
 	} else {
 		// General instant-vector expression — `absent(sum(up))`,
 		// `absent(up + up)`, `absent(rate(m[5m]))`, … . Reference
@@ -355,7 +356,11 @@ func lowerAbsenceOverWindow(
 // so a one-step window with no offset of its own selects exactly the rows
 // of each anchor. An `@`-pinned selection is evaluated once, in instant
 // form, and its verdict broadcast.
-func lowerAbsenceOfLatestSample(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+//
+// window is the span before the anchor a single-anchor selection's row must
+// lie in: the instant lookback, or the shorter lookback the instant-domain
+// fit cut it back to the stored range ([domainFit.absenceWindow]).
+func lowerAbsenceOfLatestSample(vs *parser.VectorSelector, window time.Duration, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
 	if s.StaleMarkerFlagsColumn() == "" {
 		return nil, false, nil
 	}
@@ -385,7 +390,7 @@ func lowerAbsenceOfLatestSample(vs *parser.VectorSelector, s schema.Metrics, ctx
 	a := &chplan.AbsentOverTime{
 		Input:            inner,
 		SynthLabels:      synthLabelsFromMatchers(vs.LabelMatchers),
-		Range:            instantLookback,
+		Range:            window,
 		End:              absenceEnd(anchor, ctx),
 		Offset:           anchor.Offset,
 		TimestampColumn:  s.TimestampColumn,

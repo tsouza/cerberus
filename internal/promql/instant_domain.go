@@ -89,6 +89,10 @@ type domainFit struct {
 	// emptyReads holds the selectors that read no sample but stay in the
 	// query because absent or absent_over_time reads their matchers.
 	emptyReads map[*parser.VectorSelector]bool
+	// absenceWindows maps the selector of each absent whose lookback the
+	// fit cut back to the stored range, pinned at the cut's end, to the
+	// cut lookback ([domainFit.absenceWindow]).
+	absenceWindows map[*parser.VectorSelector]time.Duration
 	// grids maps each shifted subquery to the instants its grid spans
 	// before the shift, the timestamps it answers as the query's root.
 	grids map[*parser.SubqueryExpr][2]time.Time
@@ -177,6 +181,24 @@ func (f *domainFit) gridShift(sub *parser.SubqueryExpr) int64 {
 		return 0
 	}
 	return f.gridShifts[unwrapParens(sub.Expr)]
+}
+
+// cutsAbsence reports whether vs is the selector of an absent whose
+// lookback the fit cut.
+func (f *domainFit) cutsAbsence(vs *parser.VectorSelector) bool {
+	_, ok := f.absenceWindows[vs]
+	return ok
+}
+
+// absenceWindow returns the window absent(vs) asks for a sample in: the
+// cut lookback when the fit cut it, the instant lookback otherwise.
+func (f *domainFit) absenceWindow(vs *parser.VectorSelector) time.Duration {
+	if f != nil {
+		if w, ok := f.absenceWindows[vs]; ok {
+			return w
+		}
+	}
+	return instantLookback
 }
 
 // readsNothing reports whether vs is a selector the fit found to read no
@@ -977,11 +999,21 @@ func absentSelector(n *parser.Call) (*parser.VectorSelector, parser.Expr, bool) 
 }
 
 func (f *domainFit) fitCall(n *parser.Call, env domainEnv) (parser.Expr, fitResult) {
-	if vs, ok := unwrapParens(firstArg(n)).(*parser.VectorSelector); ok && n.Func.Name == "absent" && f.cutsStorage() {
-		// absent(v) answers exactly when v's lookback holds no sample, as
-		// absent_over_time(v[lookback]) does, whose window can be cut.
+	if vs, ok := unwrapParens(firstArg(n)).(*parser.VectorSelector); ok && n.Func.Name == "absent" && f.cutsStorage() && !f.cutsAbsence(vs) {
+		// absent(v) answers when v's instant selection, the newest sample
+		// of its lookback unless that is a stale marker, is empty. No
+		// stored sample lies outside the cut lookback, so the newest
+		// sample of the cut lookback is v's: absent(v) is absent of v
+		// pinned at the cut's end, with its absence window cut to the cut
+		// lookback ([domainFit.absenceWindow]). absent_over_time over the
+		// cut window is not: it reads a stale marker as a sample.
 		if cut, _, ok := cutMatrix(&parser.MatrixSelector{VectorSelector: vs, Range: instantLookback}, env); ok {
-			return f.fitCall(&parser.Call{Func: parser.Functions["absent_over_time"], Args: parser.Expressions{cut}, PosRange: n.PosRange}, env)
+			pinnedVs, _ := cut.VectorSelector.(*parser.VectorSelector)
+			if f.absenceWindows == nil {
+				f.absenceWindows = map[*parser.VectorSelector]time.Duration{}
+			}
+			f.absenceWindows[pinnedVs] = cut.Range
+			return f.fitCall(&parser.Call{Func: n.Func, Args: parser.Expressions{pinnedVs}, PosRange: n.PosRange}, env)
 		}
 	}
 	if cut, ok := f.cutWindowArg(n, env); ok {
