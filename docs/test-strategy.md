@@ -307,64 +307,59 @@ head's providers cannot satisfy another head's floor.
 
 ### Merge-queue posture
 
-A merge queue validates a pull request against the trunk it would actually
-create: GitHub builds a projected commit — the PR replayed on top of `main` plus
-every entry ahead of it — and dispatches the `merge_group` event against it.
-Branch protection then waits for the same required contexts on that projected
-commit, which makes two properties load-bearing.
+Pull requests merge through the Mergify merge queue (`.github/mergify.yml`;
+[`agent-workflow.md`](agent-workflow.md) has the procedure). A pull request
+labelled `queue` enters it once its own required checks pass. Mergify checks up
+to five queued pull requests together by opening a draft pull request of its
+own, on a `mergify/merge-queue/<id>` branch, holding `main` plus the batch.
+Once every check the main ruleset requires passes on that draft, Mergify
+squash-merges each pull request in the batch. One batch is checked at a time.
+A failed batch gets one split-and-recheck round, and the pull requests still
+failing after it leave the queue. `test/regression/mergify_config_test.go` pins
+that configuration.
 
-**Every required context posts on the projected trunk.** Each workflow owning a
-branch-protection context declares `merge_group:` alongside `pull_request:`, and
-the check-run names are byte-identical across the two events. That discipline
-holds even though every required context is a single fixed job name rather
-than a matrix leg — the merge gate is deliberately small and fast (#2230) —
-because a required context still has to be a matrix-safe name the moment
-anything promotes one back onto it: `roundtrip (logql)` and
-`roundtrip (traceql)`, release-gate matrix legs, are the standing example of
-why a matrix-derived name needs the same `merge_group:` posting discipline as
-a fixed one the day it is required again. (`roundtrip (promql)` is a fixed
-aggregator name rolling up the `roundtrip-promql-shard` matrix, the same shape
-as `perf-guards`, so it does not serve as this example; #2629.) A required
-context with no run on the projected commit
-never resolves, so the queue stalls with the PR neither merged nor rejected:
-the failure mode is silence, not a red X.
+**The queue's checks are ordinary `pull_request` runs.** The draft is a pull
+request, so every workflow runs on it under the `pull_request` event, and the
+required check names it posts are the ones every pull request posts. Three
+consequences follow:
 
-**No merge-group run is ever cancelled.** GitHub reads a cancelled check-run as a
-failed one and dequeues the entry, so every `cancel-in-progress:` reachable from
-a `merge_group` run is `false` there. The recognised forms are literal `false`,
-the pull-request-only expression, and the exact main-push/schedule expression;
-all hold, and
-`test/regression/merge_queue_test.go` rejects any third form that is not
-provably false on the queue.
+- The lanes that short-circuit on a pull request (`coverage`, `property`)
+  short-circuit on the draft too. The diff-scoped mutation selector and
+  `quickstart` select against the draft's base and head, which span the union
+  of the batch's diffs. The heavier sweeps run on the push to `main` that each
+  squash-merge makes.
+- Workflows whose `cancel-in-progress` is true on a pull request key their
+  concurrency group by the run's own ref or pull request number, so only a
+  newer run on the same draft cancels a draft's run.
+- A gate that judges a pull request's description or commit messages
+  (`pr-body`, `forbid-deferral`, the pull-request-title commitlint) recognises a merge-queue draft
+  through `.github/scripts/lib/merge-queue-draft.mjs` and judges the batch's
+  own pull requests rather than the text Mergify wrote. The ruleset also
+  requires each pull request's own checks before it merges, so those gates
+  judge every pull request on the pull request itself as well.
 
-**A queued entry is held to the pull-request posture, not the push posture.** The
-queue answers the contexts branch protection asks a *PR* for, so the lanes that
-short-circuit on an ordinary PR (`coverage`, `property`) short-circuit in the
-queue too. The diff-scoped mutation selector reads the merge group's own
-`base_sha..head_sha`, and `quickstart` selects against the same base and the
-projected `${{ github.sha }}` it actually checks out and boots. Those ranges are
-the union of the batched pull requests' diffs. Running *more* in the queue than
-on the pull request would let a queue
-dequeue a PR that was green, which is the livelock a queue exists to remove; the
-heavier sweep is not lost either way, because `main` advances to the merge
-group's own head SHA and the push trigger runs it there.
+**Workflows also post on `merge_group`.** Every workflow owning a required
+context declares `merge_group:` alongside `pull_request:`, with byte-identical
+check names, and no `cancel-in-progress` reachable from a `merge_group` run is
+true: the recognised forms are literal `false`, the pull-request-only
+expression, and the exact main-push/schedule expression.
+`test/regression/merge_queue_test.go` pins both
+(`TestEveryRequiredContextPostsOnTheMergeGroup`,
+`TestMergeGroupRunsAreNeverCancelledByConcurrency`). The main ruleset carries
+no GitHub merge-queue rule, so GitHub never dispatches `merge_group` to this
+repository; the triggers and the pins hold the workflows ready for GitHub's own
+merge queue.
 
-The three release lanes (`compose-smoke`, `dashboard`, `profile`) have no
-`merge_group` half by design. They gate the *publish*, and the publish preflight
-inspects the commit `main` advances to — which is the merge group's head SHA
-after a fast-forward — so their check-runs come from the push that lands the
-batch, on the identical SHA a queue run would have used.
+The three release lanes (`compose-smoke`, `dashboard`, `profile`) gate the
+*publish*, not the merge. The publish preflight inspects the commit `main`
+holds, and their check-runs come from the push that lands it.
 
 `CodeQL` runs through `.github/workflows/codeql.yml` (GitHub Advanced Setup)
-rather than server-side default setup, so — unlike default setup, which has no
-setting that adds `merge_group` — it declares `merge_group` alongside `push`,
-`pull_request` and a weekly `schedule`, and posts a check-run on the queue's
-projected trunk like every other required context.
-`test/regression/merge_queue_test.go` pins the constraint from both sides:
-`queueExternalContexts` holds only contexts with no workflow owner in this
-repo, so `CodeQL` is asserted to be ABSENT from it, and
-`TestEveryRequiredContextPostsOnTheMergeGroup` asserts the workflow itself
-declares `merge_group`.
+rather than server-side default setup, and declares `merge_group` alongside
+`push`, `pull_request` and a weekly `schedule`.
+`test/regression/merge_queue_test.go` asserts that `CodeQL` is absent from
+`queueExternalContexts`, which holds only contexts with no workflow owner in
+this repository, and that the workflow itself declares `merge_group`.
 
 `strict-scan` is a branch-protection gate, so every real-ClickHouse differential
 it hosts — strict-scan coercion (Layer 6e), the connection-teardown pool census

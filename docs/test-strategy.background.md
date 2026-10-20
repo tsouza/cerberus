@@ -189,6 +189,34 @@ per group. The same flip suppresses the schedule branch, so a nightly queues
 behind a slow predecessor rather than replacing it — immaterial for every
 enrolled lane, which are daily crons against runs well under a day.
 
+## Why workflows keep the `merge_group` posture
+
+A GitHub merge queue builds a projected commit (the pull request replayed on
+top of `main` plus every entry ahead of it), dispatches `merge_group` against
+it, and waits for the same required contexts there. Two failure modes follow,
+and neither is visible in a workflow file read on its own:
+
+- A required context whose workflow lacks the `merge_group` trigger produces no
+  check-run on the projected commit, so the entry never resolves and the queue
+  stalls with the pull request neither merged nor rejected. The failure mode is
+  silence, not a red X.
+- GitHub reads a cancelled check-run as a failed one and dequeues the entry, so
+  a `cancel-in-progress` that is true under `merge_group` turns the queue's own
+  batching into a source of spurious dequeues.
+
+The pins in `test/regression/merge_queue_test.go` are cheap to satisfy and
+expensive to rediscover, so they stay in force while merges go through
+Mergify: a move back to GitHub's merge queue then needs only the ruleset rule.
+The matrix-name half of the first property is why the pins also cover a
+matrix-derived name such as `roundtrip (logql)`: a required context has to be
+a name that posts under both events the moment anything promotes it onto the
+required set.
+
+A queued entry is held to the pull-request posture rather than the push
+posture because running more in the queue than on the pull request would let
+the queue dequeue a pull request that was green, which is the livelock a queue
+exists to remove. The heavier sweep is not lost: the push to `main` runs it.
+
 ## `-merge` only protects a LOCAL git merge — verified 2026-08-04
 
 `-merge` is a built-in git merge driver, honoured by any git CLIENT that
