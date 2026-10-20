@@ -5,6 +5,8 @@ package spec
 import (
 	"strings"
 	"testing"
+
+	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
 )
 
 // TestReadSeededSeries_FailingReferenceQueryIsAnError pins that a seed
@@ -67,5 +69,47 @@ func TestReadSeededSeries_UnseededTableIsSkipped(t *testing.T) {
 	}
 	if len(got.series) != 1 {
 		t.Fatalf("readSeededSeries returned %d series, want the 1 gauge series", len(got.series))
+	}
+}
+
+// TestReadSeededClassicHistograms_UndeclaredBucketColumns pins that a
+// classic-histogram table declaring Count and Sum but neither bucket
+// column, the shape a fixture reading only _count and _sum seeds, is read
+// as a histogram with no finite buckets rather than failing.
+func TestReadSeededClassicHistograms_UndeclaredBucketColumns(t *testing.T) {
+	chdbEngineMu.Lock()
+	defer chdbEngineMu.Unlock()
+
+	const seed = "CREATE TABLE otel_metrics_histogram (MetricName String, Attributes Map(String, String), " +
+		"TimeUnix DateTime64(9), Count UInt64, Sum Float64) ENGINE = Memory;\n" +
+		"INSERT INTO otel_metrics_histogram VALUES " +
+		"('lat', map('job', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 4, 10.0);"
+	db := OpenChDB(t)
+	ApplySeed(t, db, seed)
+
+	byKey := map[string]*oracle.Series{}
+	nameRestorer := newMetricNameRestorer()
+	if err := readSeededClassicHistograms(
+		db, &RoundTripSections{Seed: seed}, nil, byKey, &nameRestorer, map[string]bool{},
+	); err != nil {
+		t.Fatalf("readSeededClassicHistograms: %v", err)
+	}
+	want := map[string]float64{
+		`__name__=lat_bucket,job=a,le=+Inf`: 4,
+		`__name__=lat_count,job=a`:          4,
+		`__name__=lat_sum,job=a`:            10,
+	}
+	if len(byKey) != len(want) {
+		t.Fatalf("readSeededClassicHistograms built %d series, want %d: %v", len(byKey), len(want), byKey)
+	}
+	for key, wantValue := range want {
+		s, ok := byKey[key]
+		if !ok {
+			t.Errorf("series %s was not reconstructed", key)
+			continue
+		}
+		if len(s.Points) != 1 || !oracle.EqualValues(s.Points[0].Value, wantValue) {
+			t.Errorf("series %s = %v, want one point of %v", key, s.Points, wantValue)
+		}
 	}
 }

@@ -36,7 +36,7 @@ const nativeHistogramTable = "otel_metrics_exponential_histogram"
 // The OTel-CH exponential-histogram columns. A fixture's seed declares
 // only the ones its own query needs, so every one of them is read through
 // a projection that tolerates its absence — see
-// [nativeHistogramProjection].
+// [nativeHistogramProjections].
 const (
 	colCount                = "Count"
 	colSum                  = "Sum"
@@ -258,9 +258,9 @@ func nativeHistogramProjections(seedCols []string) []string {
 		intColumnProjection(seedCols, colScale),
 		floatColumnProjection(seedCols, colZeroCount),
 		intColumnProjection(seedCols, colPositiveOffset),
-		bucketCountsProjection(seedCols, colPositiveBucketCounts),
+		arrayColumnProjection(seedCols, colPositiveBucketCounts),
 		intColumnProjection(seedCols, colNegativeOffset),
-		bucketCountsProjection(seedCols, colNegativeBucketCounts),
+		arrayColumnProjection(seedCols, colNegativeBucketCounts),
 	}
 }
 
@@ -278,7 +278,9 @@ func intColumnProjection(seedCols []string, col string) string {
 	return "toInt64(" + col + ")"
 }
 
-func bucketCountsProjection(seedCols []string, col string) string {
+// arrayColumnProjection reads an Array column as JSON, or an empty array
+// when the seed does not declare the column.
+func arrayColumnProjection(seedCols []string, col string) string {
 	if !hasColumn(seedCols, col) {
 		return "'[]'"
 	}

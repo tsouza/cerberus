@@ -1343,6 +1343,14 @@ func labelKey(lbls map[string]string) string {
 // rows are not samples: one row is a whole histogram.
 const classicHistogramTable = "otel_metrics_histogram"
 
+// The classic-histogram bucket columns. A fixture that reads only a
+// histogram's _count and _sum declares neither, and its rows then carry no
+// finite buckets — see [arrayColumnProjection].
+const (
+	colBucketCounts   = "BucketCounts"
+	colExplicitBounds = "ExplicitBounds"
+)
+
 // The Prometheus series a classic histogram is exposed as, and the label
 // carrying a bucket's upper bound.
 const (
@@ -1388,7 +1396,8 @@ func readSeededClassicHistograms(
 	q := "SELECT MetricName, toJSONString(Attributes), " +
 		resourceAttributesProjection(seedCols) + ", " + serviceNameProjection(seedCols) + ", " +
 		"toUnixTimestamp64Milli(TimeUnix), " + temporalityProjection(seedCols) + ", Count, Sum, " +
-		"toJSONString(BucketCounts), toJSONString(ExplicitBounds), " + flagsProjection(seedCols) + " " +
+		arrayColumnProjection(seedCols, colBucketCounts) + ", " +
+		arrayColumnProjection(seedCols, colExplicitBounds) + ", " + flagsProjection(seedCols) + " " +
 		"FROM " + classicHistogramTable + " ORDER BY MetricName, TimeUnix"
 	rows, ok, err := querySeededTable(db, classicHistogramTable, q)
 	if err != nil || !ok {
