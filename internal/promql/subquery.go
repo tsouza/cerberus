@@ -2125,9 +2125,10 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 		if v.Step <= 0 {
 			return
 		}
-		start = representableSubquerySpan(start, end, v.Offset)
 		v.Start = start.UTC()
 		v.End = end.UTC()
+		// A span longer than a time.Duration saturates here;
+		// chplan.SpanSteps then counts the grid from Start and End.
 		v.OuterRange = end.Sub(start)
 		// PromQL evaluates a subquery's inner samples on an
 		// absolute-epoch grid (phase 0), independent of the outer
@@ -2206,25 +2207,6 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 	case *chplan.Filter:
 		widenSubquerySpine(v.Input, start, end)
 	}
-}
-
-// representableSubquerySpan returns the first instant of the grid a
-// re-anchored subquery RangeWindow lays over [start, end].
-//
-// [chplan.OffsetSpan] hands a spine the instants its reader reads, start
-// being the earliest one, widened by the reader's offset so the span holds
-// both for an input of absolute instants and for one that applies the
-// offset again itself. A RangeWindow is the second kind: its anchor_ts is
-// its grid moved back by its own offset, so a grid starting offset after
-// start already reaches back to start. The wider span is kept wherever it
-// fits, and a span longer than a time.Duration, which OuterRange cannot
-// hold (a 150y range under a 150y offset needs 300y), starts the grid
-// offset later instead.
-func representableSubquerySpan(start, end time.Time, offset time.Duration) time.Time {
-	if start.Add(end.Sub(start)).Equal(end) {
-		return start
-	}
-	return start.Add(max(offset, 0))
 }
 
 // instantTransformFns is the set of sample-preserving instant-vector
