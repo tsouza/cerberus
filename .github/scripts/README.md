@@ -56,6 +56,81 @@ each member's base to be the draft's and its head to be in the draft's head).
 descriptions through it. Tested by `lib/merge-queue-draft.test.mjs`, with the
 draft fixture in `lib/merge-queue-draft.fixture.mjs`.
 
+`lib/pull-request.mjs` exports `fetchPullRequest({ apiUrl, repository,
+number, token, fetchImpl })`, which reads the live pull request and returns
+its `{ title, body }`, throwing when the request fails or either field is
+missing. Every pull-request metadata gate judges the live object rather than
+the event payload through it: `pr-body-check`, `commitlint-pr-title` and
+`dependabot-pr-title`. Tested by `pr-hygiene-metadata.test.mjs` (run in
+`pr-hygiene.yml`).
+
+`lib/compat-baseline.mjs` is the one loader and writer of the sharded
+compatibility parity baseline (`compatibility/parity-baseline/`): a
+`manifest.json` plus a fixed roster of 64 SHA-256 buckets, each case ID owned
+by one bucket (`bucketForCaseId`). `loadParityBaseline` reconstructs
+`{ heads: { <head>: { passed, total, cases } } }` with one globally sorted
+roster per head; `syncParityBaselineHead` rewrites one head's buckets from a
+run's case IDs; `materializeParityBaseline` writes a whole baseline. Used by
+`compat-ratchet`, `compat-baseline-sync`, `doc-counts` and
+`generated-baseline-structural-guard`. Tested by
+`lib/compat-baseline.test.mjs` (run in `ci.yml`).
+
+`lib/compose-image.mjs` reads a pinned image reference out of a
+docker-compose file: `composeImage(text, repository)` returns the first
+`image: <repository>:<tag>` reference or null, and `readComposeImage(path,
+repository)` applies it to a file and throws when the file pins none.
+`promql-surface-gate` names its reference Prometheus image through it.
+Tested by `lib/compose-image.test.mjs` (run in `ci.yml`).
+
+`lib/sharded-json.mjs` stores a flat JSON ledger as a directory of one small
+JSON file per entry, so two pull requests editing different entries never
+write the same path. Keys split into segments, each percent-escaped
+(`encodeSegment` / `decodeSegment`) and joined with `__` (`shardFileName` /
+`segmentsFromShardFileName`), which keeps the file-name mapping injective.
+`loadShardedMap` / `loadShardedEntries` merge a directory back into the
+object a single file would have parsed to; `writeShardedMap` regenerates
+one. Used by `coverage-summary`, `coverage-package-floor`, `gen-coverage`,
+`doc-counts`, `promql-surface-gate` and
+`generated-baseline-structural-guard`. Tested by
+`lib/sharded-json.test.mjs` (run in `coverage.yml`).
+
+`lib/run-heavy.mjs` exports `createRunHeavyDecider({ scriptName, ... })`, the
+shared `RUN_HEAVY` decision scaffold behind `chdb-run-heavy`,
+`coverage-run-heavy`, `property-run-heavy` and `perf-profile-run-heavy`.
+Each wrapper supplies its script name and the phrases naming its lanes, and
+gets back `decide` (the event-and-scope branching, on
+`lib/scope-gate.mjs`'s `runsFullLane`), a fail-safe push source-PR
+resolution (`lib/resolve-source-pr.mjs`), and the CLI entry that emits the
+decision as a step output. Tested by `lib/run-heavy.test.mjs` (run in
+`chdb.yml`).
+
+`lib/mutation-cache.mjs` is the pure half of the content-keyed verdict cache
+of one `mutation` leg: the key input classes (`KEY_INPUT_CLASSES` —
+toolchain, runner, gremlins, phase row without `diff_ref`, runner env, scope
+diff, runner scripts, Go module), `legCacheKey` over them, the entry shape
+(`buildEntry` / `validateEntry`, schema `CACHE_SCHEMA`), the timing-stability
+rule that decides whether a verdict is cacheable (`timingStability`), and
+`validateProvenance` for the per-leg `run` / `cache` provenance records. Its
+only importer is `mutation-cache.mjs`, which collects the inputs from a
+checkout and drives the workflow steps; `mutation-cache.test.mjs` pins both.
+
+`lib/mutant-cache-env.mjs` names the environment variables the per-mutant
+gremlins verdict cache leaves out of its key (`MUTANT_CACHE_ENV_IGNORE`,
+passed as `--cache-env-ignore`: the runner's `GITHUB_*` / `RUNNER_*` /
+`ACTIONS_*` identifiers, `INVOCATION_ID`, `JOURNAL_STREAM`,
+`SYSTEMD_EXEC_PID`, `DIFF_REF` and the memory guard's hold and ledger), plus
+`GREMLINS_UNKEYED_ENV`, `envIgnored` and `keyedEnvDigests`, which lists every
+keyed variable with a short digest of its value. Used by `mutation-run.mjs`;
+`mutation-run.test.mjs` fails when any Go source under `internal/` names an
+ignored variable.
+
+`lib/semantic-guide.mjs` builds `docs/semantic-guide.md` and
+`docs/semantic-guide.json`: `buildGuide(report, registry)` projects the
+`lib/semantic-report.mjs` report into a compact contract index, worked
+examples and a selected architectural-rule block, and `renderMarkdown` /
+`renderJSON` render it. All three are pure functions of their inputs. Its
+importer is `semantic-guide.mjs`; `semantic-guide.test.mjs` pins it.
+
 `lib/k8s.mjs` (started as `lib/bwc-k8s.mjs`, promoted and renamed once a
 third consumer outside the bwc lane showed up — cerberus issue #3096) holds
 the k8s + in-cluster-ClickHouse lookups the e2e Node scripts share: a namespaced
@@ -1169,6 +1244,14 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   `forbid-sql-raw.test.mjs` pins the pattern, the inventory and a real
   `git ls-files` run over a flat `internal/chsql/` (#2321).
   - Exit: `0` clean, `1` on any raw-write violation.
+- **`forbid-verbatim-concat.mjs`** — `ci.yml`, the `forbid-skip` job step
+  "Reject verbatim() calls built via string concatenation". Scans
+  `internal/chsql/**/*.go` (non-test, excluding `builder.go`) for a
+  `verbatim(...)` call whose argument has a top-level `+` outside a string
+  literal. `KNOWN_GOOD` lists the approved synthetic-token concatenations,
+  keyed by file and argument text.
+  - Exit: `0` clean, `1` on a violation.
+  - Tests: `forbid-verbatim-concat.test.mjs` (run in `ci.yml`).
 - **`forbid-chplan-fn-literal.mjs`** — `ci.yml`, the `forbid-skip` job step
   "Reject raw chplan Fn literal construction", and the matching pre-push
   lefthook. Scans tracked and untracked Go sources and rejects direct
@@ -1285,6 +1368,15 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     real CLI over a throwaway git repository and pairs every rejection with the
     nearest-miss acceptance, so neither widening the gate into uselessness nor
     narrowing it into noise passes.
+- **`verify-chart-version-not-stale.mjs`** — `ci.yml`, the `forbid-skip`
+  job step "Verify main's chart version is not behind a published tag".
+  Fails when `deploy/helm/cerberus/Chart.yaml`'s `appVersion` is behind the
+  highest `v*` tag or its `version` is behind the highest `chart-v*` tag; a
+  chart ahead of the latest tag passes.
+  - Env: `CHART_DIR` (default `deploy/helm/cerberus`).
+  - Args: `--self-test` runs the in-process assertion suite, which the same
+    step runs first.
+  - Exit: `0` when not behind, `1` when behind or on a git / parse failure.
 - **`forbid-contradicted-mutants.mjs`** — `ci.yml`, the `forbid-skip` job step
   "Reject a mutant adjudicated both killed and equivalent". A mutant gets ONE
   verdict. `docs/test-strategy.md` § "Surviving-mutant policy" offers a
@@ -1503,6 +1595,24 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` when every marker is tracked by an open issue (or none were
     found); `1` on an untracked deferral or a malformed input. ENFORCING and a
     required status check on `main`.
+- **`perf-sentinel-obligation.mjs`** — `forbid-deferral.yml`, the
+  `forbid-deferral` job. A change whose code lines (added or removed,
+  comments stripped) name something in the engine's memory-bounding surface
+  must also touch `test/perf/smoke/sentinels.go` or
+  `test/perf/nightly/sentinels.go`, or cite `PERF-SENTINEL-WAIVER: #<issue>`
+  naming an open issue in the description or a commit message of the range.
+  The surface is derived from the trigger files under `internal/engine/`
+  through each `setting<Name>` const's `perf-sentinel:` classification
+  (`memory-bounding` or `neutral`); an unclassified setting, an empty
+  surface, or a bare string literal passed to `WithQuerySetting` fails.
+  Citation resolution reuses `forbid-deferral.mjs`'s exports.
+  - Env: the same as `forbid-deferral.mjs` (`GITHUB_REPOSITORY`,
+    `GITHUB_TOKEN`, `GITHUB_EVENT_NAME`, `PR_BODY`, `GITHUB_EVENT_PATH`,
+    `BASE_SHA`, `HEAD_SHA`, `GITHUB_API_URL`).
+  - Exit: `0` when nothing in the surface changed or the change carries
+    sentinel coverage or a valid waiver; `1` otherwise or on malformed input.
+  - Tests: `perf-sentinel-obligation.test.mjs` (run in
+    `forbid-deferral.yml`).
 - **`rejection-parity-divergence-liveness.mjs`** — `forbid-deferral.yml`, the
   same `forbid-deferral` job, as an additional step. The liveness half of the
   `test/rejection-parity/catalogue/` `class: "divergence"` contract (see
@@ -1926,6 +2036,15 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     flag first).
   - Exit: `0` when every scanned issue was classified and its missing labels
     applied, `1` on any vacuity guard, unclassifiable issue, or API error.
+- **`merge-queue-requeue.mjs`** — `merge-queue-requeue.yml`, the `requeue`
+  job, on every push (`pull_request_target` `synchronize`) to a pull request
+  labelled `queue`. Reads the live labels and, when `queue` is present,
+  removes and re-adds it so Mergify queues the new head again; a pull request
+  without the label is left alone.
+  - Env: `GITHUB_REPOSITORY`, `GITHUB_TOKEN` (needs `pull-requests: write`),
+    `PR_NUMBER` (all required); `GITHUB_API_URL` (optional).
+  - Exit: non-zero when an API call fails or a required input is unset.
+  - Tests: `merge-queue-requeue.test.mjs` (run in `merge-queue-requeue.yml`).
 - **`coverage-aggregate.mjs`** — `coverage.yml`, the `coverage` aggregator job.
   `coverage` used to be one job running `just coverage` (the default-tag AND
   chdb-tagged lanes, serially) on a single runner, and it repeatedly hit or
@@ -2203,6 +2322,19 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Env: none (the phase table is pure data; the harness closure reads the
     workflow and script sources at import time, relative to this module's own
     location rather than to `process.cwd()`).
+- **`mutation-cache.mjs`** — `mutation.yml`, the `mutate` legs and the
+  `mutation` aggregator. Drives the content-keyed verdict cache of one leg
+  (`lib/mutation-cache.mjs` holds the key, entry and provenance rules), by
+  mode: `key` (write the leg's `key`), `check` (validate a restored entry,
+  set `hit`), `store` (record provenance, keep a timing-stable verdict, set
+  `cacheable`), `mutant-pick` / `mutant-verify` / `mutant-seal` (the
+  per-mutant cache: pick a verified entry of this pull request's scope,
+  believe the restored directory only when it matches, record the producing
+  run), and `aggregate` (every phase has a valid provenance record). Only
+  `MUTATION_CACHE=read-write` enables the cache.
+  - Env: per mode, listed in the script header.
+  - Exit: `0` on success (a cache miss included), `1` on any failure.
+  - Tests: `mutation-cache.test.mjs` (run in `ci.yml`).
 - **`mutation-matrix.mjs`** — `mutation.yml`, the `select` job. Decides WHICH
   phases run and emits them as the `mutate` `strategy.matrix`. On push /
   schedule / dispatch and on a `release/*` PR it selects every phase; on an
@@ -2602,6 +2734,18 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     check-run on its own head commit — or a green self-test; `1` on any
     absent / still-running / non-`success` `dashboard` result on a source
     PR's own head commit, or a missing required env var.
+- **`maintenance-changelog-sync.mjs`** — `release.yml`, the
+  `maintenance-changelog-sync` job, after a successful publish from a
+  `release/X.Y.x` branch. Extracts the published tag's `CHANGELOG.md` section
+  from the release checkout, switches to `origin/main` on
+  `chore/changelog-<version>`, inserts the section after `[Unreleased]`
+  (a no-op when an identical section exists; an error when a conflicting one
+  does), pushes with `--force-with-lease`, and opens a pull request to `main`
+  when none is open. Never pushes to `main`.
+  - Env: `RELEASE_TAG` (`vX.Y.Z`), `RELEASE_BRANCH` (`release/X.Y.x`),
+    `GITHUB_REPOSITORY`, `GH_TOKEN`.
+  - Exit: non-zero on invalid inputs or any failed git / `gh` step.
+  - Tests: `maintenance-changelog-sync.test.mjs` (run in `ci.yml`).
 - **`brew-smoke.mjs`** — `release.yml`, the `brew-smoke` job (post-`publish`),
   and `brew-verify.yml`, which re-runs the identical assertions on demand or
   weekly against an ALREADY-published version (the release-run job cannot be
@@ -2689,6 +2833,16 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     (default `goreleaser`).
   - Exit: `0` when the config validates with no deprecation notices; `1` on any
     notice, or when `goreleaser check` itself fails or cannot run.
+- **`grafana-plugin-build.mjs`** — `deploy/grafana/Dockerfile`, built by
+  `grafana-image.yml`'s `publish` job (the script is in that workflow's
+  `paths` filter). Downloads the Metrics Drilldown source archive at a pinned
+  commit, verifies its SHA-256, applies `metrics-drilldown.patch`, builds the
+  plugin with `pnpm` / `rspack`, and checks the built `plugin.json` names the
+  pinned plugin ID and version. The archive and patch stay in the build
+  directory.
+  - Env: `GRAFANA_PLUGIN_BUILD_DIR` (default `/build`).
+  - Exit: `0` on a built plugin, `1` on any download, checksum, patch, build
+    or identity failure.
 - **`chart-kubeconform.mjs`** — `chart-ci.yml`, the `Render + kubeconform`
   step. Renders the chart for the default values and every `ci/*-values.yaml`
   fixture, schema-validates each manifest set with `kubeconform -strict`, and
@@ -2716,6 +2870,18 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` when all fixtures validate and every image is confirmed present
     (or exempt); `1` on any kubeconform failure, a missing image, or an image
     the probe could not verify.
+- **`chart-notes-assert.mjs`** — `e2e.yml`, the `bwc-minio` job. Asserts
+  the rendered `templates/NOTES.txt` of the chart, which `helm template`
+  never renders, through `helm install --dry-run` / `helm upgrade --dry-run`
+  against the job's k3d cluster: the hot-volume capacity warning (present,
+  naming the replica multiplier, or absent, across four `hotVolume`
+  scenarios) and the hot-cold-default upgrade-hazard warning (only on an
+  upgrade of a release resolving to the hot-cold default). The upgrade
+  scenarios install and remove one throwaway release with the bundled tier
+  disabled.
+  - Env: `CHART_DIR` (default `deploy/helm/cerberus`), `NAMESPACE` (default
+    `default`). Needs `helm` and a reachable Kubernetes API.
+  - Exit: `0` when every assertion passes, `1` on any failure.
 - **`chart-render-assert.mjs`** — `chart-ci.yml`, the `Render assertions`
   step. Behavioural render checks kubeconform's schema validation cannot make:
   split mode renders one PodDisruptionBudget per enabled head (each with its
@@ -2726,6 +2892,13 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   nothing.
   - Env: `CHART_DIR` (default `deploy/helm/cerberus`).
   - Exit: `0` when every assertion holds; `1` on the first failure.
+- **`render-helm-docs.mjs`** — `chart-ci.yml`, the `chart-validate` job's
+  `helm-docs drift check` step. Regenerates the chart README by calling
+  `renderHelmDocs()` from `lib/helm-docs.mjs`, the same implementation
+  `prepare-release.mjs` uses, which acquires the helm-docs image through
+  `lib/registry.mjs`. The render target is fixed in the library.
+  - Exit: `0` on a regenerated README, `1` when the image cannot be acquired
+    or helm-docs fails.
 - **`compat-step-summary.mjs`** — `compatibility.yml`, every lane's
   `Summarise report and append score to step summary` / `Append score to step
   summary` step. Logs the upstream tester's raw report tally (the three
@@ -2759,6 +2932,28 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     the exit code, unless `FAIL_ON_DIFF`); non-zero on an infrastructure
     failure, an unusable report, or (under `FAIL_ON_DIFF`) any drift.
   - Tests: `run-prometheus-compatibility.test.mjs` (run in `ci.yml`).
+- **`run-loki-compatibility.mjs`** — `compatibility.yml`, the `loki` job,
+  and `just compat-logql` / `compat-logql-smoke` / `compat-logql-keep`. Brings
+  up reference Loki, cerberus and ClickHouse with `docker compose up --wait`,
+  runs the Go seeder (which asserts `/labels` is non-empty), builds and runs
+  the `cmd/loki-compliance-tester` diff driver against both, and writes its
+  report, score and case roster. The stack is torn down on every exit path
+  through `lib/compat-compose-lifecycle.mjs`.
+  - Env: `COMPOSE_KEEP`, `DRIVER_SKIP`, `DRIVER_REPORT`, `DRIVER_SCORE`,
+    `DRIVER_CASES` and the others in the script header.
+  - Exit: `0` when smoke and driver completed (parity drift lives in the
+    report); non-zero on a harness failure or a driver hard error.
+- **`run-tempo-compatibility.mjs`** — `compatibility.yml`, the `tempo` job,
+  and `just compat-traceql` / `compat-traceql-keep`. Brings up reference
+  Tempo, cerberus and ClickHouse, seeds the same deterministic trace fixture
+  into both, then runs the TraceQL corpus through both over HTTP (`diff`) and
+  over the `StreamingQuerier` gRPC service (`diff-grpc`), writing
+  `diff*.md`, `compat-score*.json` and `compat-cases*.json` to `REPORT_DIR`.
+  The stack is torn down through `lib/compat-compose-lifecycle.mjs`.
+  - Env: `REPORT_DIR` (default `compatibility/tempo/reports/`),
+    `COMPOSE_KEEP`.
+  - Exit: `0` when seed and diff completed (parity drift lives in the score
+    files); non-zero when the stack, seeder or differ fails.
 - **`compat-ratchet.mjs`** — `compatibility.yml`, the three
   `Parity-regression ratchet` steps. The GATE that makes the required
   `compatibility/{prometheus,loki,tempo}` checks fail on a parity
@@ -2822,6 +3017,16 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     publishes against a real bare-repo remote in a temp dir and asserts on
     every scenario that the checkout came out on its original branch with
     its files and scratch-worktree count unchanged.
+- **`semantic-guide.mjs`** — `just semantic-guide` (write) and `just
+  semantic-guide-check` (`--check`, which `ci.yml`'s `forbid-skip` job runs).
+  Builds the report through `semantic-report.mjs`'s `loadReport()`, projects
+  it with `lib/semantic-guide.mjs`, and writes `docs/semantic-guide.md` /
+  `docs/semantic-guide.json`, or with `--check` compares them in memory and
+  fails on drift.
+  - Env: the `SEMANTIC_*` paths `semantic-report.mjs` reads, plus
+    `GITHUB_STEP_SUMMARY`.
+  - Exit: `0` on a write or a clean check, `1` on drift or a build failure.
+  - Tests: `semantic-guide.test.mjs` (run in `ci.yml`).
 - **`semantic-repin.mjs`** — `just semantic-mutant-repin <id>` and
   `just semantic-replay-repin`, the one sanctioned way the semantic
   family's region fingerprints change (`lib/semantic-fingerprint.mjs`; see
@@ -2838,6 +3043,15 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     fingerprint fields are not exactly where the schema puts them.
   - Tests: `semantic-mutation.test.mjs`'s region-scheme cases (run in
     `ci.yml`) exercise `repinMutantRecord()` directly.
+- **`semantic-replay.mjs`** — `just semantic-replay <id>`, run by hand.
+  Replays one `test/semantic/counterexamples/<id>.json` record's contract
+  entries against their target tests through `lib/semantic-replay.mjs` and
+  prints each mechanism's status and fingerprint state.
+  - Args: the counterexample id.
+  - Exit: `0` every mechanism passed; `1` a mechanism failed, errored or was
+    stale; `2` unknown id; `3` nothing failed but a substrate (chDB, Docker)
+    was unavailable.
+  - Tests: `semantic-replay.test.mjs` (run in `ci.yml`).
 - **`resolve-bench-refs.mjs`** — `perf-benchmark.yml`, the
   `resolve baseline + ref SHAs` step.
   - Env: `INPUT_BASELINE_REF` (optional); writes `ref_sha`,
@@ -2914,6 +3128,20 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     (default `cerberus-clickhouse`), `PROBE_TABLE` (default `otel_logs`),
     `DDL_SYNC_SECONDS` (default `90`), `ROW_SYNC_SECONDS` (default `60`).
   - Exit: `0` all assertions passed, `1` on any failure.
+- **`e2e-bwc-shutdown-verify.mjs`** — `e2e.yml`, the `bwc-replicated` job,
+  through `just e2e-bwc-shutdown-verify` after `just e2e-bwc-replicated-up`.
+  Proves the bundled ClickHouse graceful-shutdown contract on the live
+  StatefulSet: the pods' grace period exceeds the server's
+  `shutdown_wait_unfinished` with `shutdown_wait_unfinished_queries` on; a
+  bounded in-flight query survives deletion of its pod, which exits before
+  its grace period ends; the replacement turns Ready with writable replicated
+  tables; and a `kubectl rollout restart` completes with every pod Ready and
+  writable.
+  - Env: `NAMESPACE`, `STATEFULSET`, `HEADLESS_SERVICE`, `CH_USER` /
+    `CH_PASSWORD`, `BOUNDED_QUERY_SECONDS`, `RECOVERY_SECONDS`,
+    `ROLLOUT_SECONDS` (defaults in the script header).
+  - Exit: `0` when every assertion passes, `1` on any failure.
+  - Tests: `e2e-bwc-shutdown-verify.test.mjs` (run in `ci.yml`).
 - **`e2e-bwc-verify-mode-toggle.mjs`** — `e2e.yml`, the `bwc-minio` job's
   `mode-toggle` scenario (cerberus issue #3082), invoked via
   `just e2e-bwc-verify-mode-toggle` after `just e2e-bwc-toggle-mode` has
@@ -3220,6 +3448,16 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` only when the selected mode's complete evidence is valid, `1` on
     missing, malformed, stale, unhealthy, timed-out, or non-success evidence.
 
+- **`compose-grafana-smoke.mjs`** — `just compose-grafana-smoke`. Runs the
+  compose-stack Grafana Playwright spec against an already-running `docker
+  compose up --wait` stack: installs the suite's npm deps (`npm ci` when a
+  lockfile is present, failing hard on error; `npm install` only when it is
+  absent), installs the browser, and runs the spec.
+  - Env: `PLAYWRIGHT_DIR` (default `test/e2e/playwright`), `PLAYWRIGHT_SPEC`
+    (default `compose_grafana_smoke.spec.ts`), `GRAFANA_BASE_URL`,
+    `GRAFANA_URL`, `CERBERUS_URL` (forwarded to the spec).
+  - Exit: `0` when the spec passes, non-zero on any install or spec failure.
+  - Tests: `compose-grafana-smoke.test.mjs` (run in `ci.yml`).
 - **`compose-smoke-scope.mjs`** — `e2e.yml`, the `compose-smoke-scope` job.
   Event gate for exhaustive Compose/Playwright release qualification. Ordinary
   pull requests and merge groups omit because the required `quickstart` context
@@ -3290,6 +3528,17 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
     `MODE`.
 
+- **`merge-crawl-slices.mjs`** — `e2e.yml`, the `compose-crawl-merge` and
+  `dashboard-crawl-merge` jobs. Merges the per-shard crawl slice artifacts
+  and applies the surface-inventory ratchet once: slice metadata must match
+  the invocation, the shard indexes must form a unique cover, no surface may
+  be claimed by two shards, and the merged set must equal the pinned
+  `grafana-surface-inventory.<stack>.json` (a new surface or an unvisited
+  pinned one is a violation).
+  - Env: `CRAWL_SLICE_DIR`, `CRAWL_STACK` (both required), `SWEEP_DEPTH`
+    (`lean` / `full`; defaults to the slices' own depth).
+  - Exit: `0` on a clean merge, `1` on any violation or malformed input.
+  - Tests: `merge-crawl-slices.test.mjs` (run in `ci.yml`).
 - **`notify-nightly-failure.mjs`** — `e2e.yml`, the `nightly-health-notify`
   job (`schedule` trigger only). Reaching a real terminal `failure` instead of
   `cancelled` (the job above) is not the same as anyone SEEING that failure —
@@ -3370,6 +3619,14 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     wasn't clean at the start, a mutation's target text was not found, or
     any mutation was not caught (the real bit-rot signal).
 
+- **`perf-nightly-step-summary.mjs`** — `perf-nightly.yml`, the
+  `perf-nightly` job, under `if: always()` after the test step. Renders the
+  per-sentinel verdict JSON the Go test wrote into a Markdown table in the
+  step summary, taking pass/fail from the JSON's own `Pass` field; a missing
+  results file prints a notice.
+  - Env: `PERF_NIGHTLY_RESULTS_JSON` (path to the results JSON).
+  - Exit: always `0` (housekeeping; never gates).
+  - Tests: `perf-nightly-step-summary.test.mjs` (run in `ci.yml`).
 - **`notify-perf-nightly-selfcheck-failure.mjs`** — `perf-nightly-
   selfcheck.yml`, the `perf-nightly-selfcheck-health-notify` job (`schedule`
   trigger only). Third consumer of `lib/nightly-health-notify.mjs` (after
@@ -3963,6 +4220,14 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Exit: `0` once the probe answers; `1` on the deadline or a missing input.
   - Tests: `wait-container-ready.test.mjs` (run in `ci.yml`, with a stub
     `docker` on PATH).
+- **`assert-gate-suites-wired.mjs`** — `ci.yml`, the `lint` job. Enumerates
+  every `.github/scripts/**/*.test.mjs` on disk and every literal `node --test
+  <path>` invocation across `.github/workflows/`, and fails on any suite no
+  workflow runs.
+  - Env: `REPO_ROOT` (default cwd), `SCRIPTS_DIR` (default
+    `.github/scripts`), `WORKFLOW_DIR` (default `.github/workflows`).
+  - Exit: `0` when every suite is invoked, `1` otherwise.
+  - Tests: `assert-gate-suites-wired.test.mjs` (run in `ci.yml`).
 - **`assert-image-jobs-authenticate.mjs`** — the required `check` lane. Fails
   when a job that acquires an image has not logged in to the registry it
   acquires from. An anonymous pull is not an error: it succeeds until the shared
@@ -4274,6 +4539,18 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     ref cannot be resolved to a pull request, or if the API calls themselves
     failed.
 
+- **`capture-release-perf-baseline.mjs`** — `just
+  capture-release-perf-baseline <version> [ref]`, which `just release-prep`
+  calls for the version being cut. Copies `test/perf/cardinality-baseline/`
+  byte-for-byte into `test/perf/release-baseline/<version>/cardinality/`,
+  from the working tree or, with `--ref`, from a git ref via `git archive`,
+  and writes a `meta.json` recording the source ref, commit and capture date.
+  `TestReleasePerfRegression` compares later releases against that frozen
+  tree. Refuses to overwrite an existing version.
+  - Args: `--version <x.y.z>`, optional `--ref <git-ref>`.
+  - Exit: `0` on a written snapshot, `1` on a missing `--version`, an
+    existing version, or a capture holding no `.json` shard.
+  - Tests: `capture-release-perf-baseline.test.mjs` (run in `ci.yml`).
 - **`cardinality-baseline-update.mjs`** — three callers. Unmoded (default), it
   is the script a contributor runs by hand, through `just update-cardinality-
   baseline`: it regenerates `test/perf/cardinality-baseline/` by fanning the
