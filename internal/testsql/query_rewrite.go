@@ -803,7 +803,9 @@ func bareTableColumns(innerTail string, tableCols map[string][]string) ([]string
 
 // SeedTableColumns parses a fixture's `-- seed --` script and returns a
 // map from lower-cased table name to its declared column names, in
-// CREATE TABLE order. It is the authoritative catalog
+// CREATE TABLE order. A backtick-quoted table or column name is returned
+// without its backticks, so a quoted and an unquoted declaration of the
+// same table yield the same map. It is the authoritative catalog
 // [expandQualifiedStar] falls back to (via [bareTableColumns]) when the
 // star's inner relation is a bare table scan rather than a subquery
 // with a borrowable projection list — the DDL is the only place those
@@ -827,7 +829,7 @@ func SeedTableColumns(seed string) map[string][]string {
 		if !ok {
 			continue
 		}
-		name := strings.ToLower(strings.TrimSpace(firstToken(rest)))
+		name := strings.ToLower(unquoteIdent(firstToken(rest)))
 		open := strings.IndexByte(trimmed, '(')
 		if open < 0 {
 			continue
@@ -844,7 +846,7 @@ func SeedTableColumns(seed string) map[string][]string {
 			if cn == "" || isGeneratedColumnDef(d) {
 				continue
 			}
-			names = append(names, cn)
+			names = append(names, unquoteIdent(cn))
 		}
 		if len(names) > 0 {
 			cols[name] = names
