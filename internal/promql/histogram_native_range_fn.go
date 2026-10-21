@@ -174,7 +174,7 @@ func rangeFnOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (
 	if !ok {
 		return histogramAggShape{}, false
 	}
-	shape := histogramAggShape{selector: vs, windowRange: ms.Range, windowFn: call.Func.Name}
+	shape := histogramAggShape{selector: vs, windowRange: ms.Range, matrix: ms, windowFn: call.Func.Name}
 	if !s.IsExpHistogramMetric(metricNameFromMatchers(shape.selector.LabelMatchers)) {
 		return histogramAggShape{}, false
 	}
@@ -467,6 +467,7 @@ func lowerExpHistogramRangeFn(shape histogramAggShape, s schema.Metrics, ctx low
 // Filter selects rows against, or the two drift apart.
 func expHistogramRangeFnWindowed(shape histogramAggShape, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	vs := shape.selector
+	shape = shape.withWindowBeyond(ctx)
 	scan := &chplan.Scan{Roles: metricScanRoles(s, s.ExpHistogramTable), Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
 
@@ -768,10 +769,6 @@ func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd 
 	if shape.windowFn == sumOverTimeWindowFn || shape.windowFn == avgOverTimeWindowFn {
 		return expHistogramValuedOverTimeFold(shape.windowFn), histogramWindowInputs{}
 	}
-	var perSecond chplan.Expr
-	if shape.windowFn == rateWindowFn {
-		perSecond = &chplan.LitFloat{V: shape.windowRange.Seconds()}
-	}
 	var factorOrder chplan.Expr
 	if shape.windowFn == deltaWindowFn {
 		factorOrder = &chplan.ColumnRef{Name: hqWindowAllTsListAlias}
@@ -779,11 +776,13 @@ func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd 
 	in := histogramWindowInputs{
 		rangeStart:  rangeStart,
 		rangeEnd:    rangeEnd,
+		startBeyond: shape.startBeyond,
+		endBeyond:   shape.endBeyond,
 		factorOrder: factorOrder,
 		countValues: expHistogramWindowCountValuesExpr(),
 		temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
 		resets:      expHistogramResetMaskFor(shape.windowFn),
-		perSecond:   perSecond,
+		perSecond:   shape.ratePerSecond(),
 	}
 	return histogramWindowFold(shape.windowFn, in), in
 }

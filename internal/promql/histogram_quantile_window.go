@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"time"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -178,8 +180,16 @@ type histogramWindowTimeFold func(values, order chplan.Expr) chplan.Expr
 // a nil resets leaves each component deciding its own reset, a nil
 // perSecond leaves the window's increase undivided).
 type histogramWindowInputs struct {
-	// rangeStart / rangeEnd are the requested window's own edges.
+	// rangeStart / rangeEnd are the edges of the window the fold reads.
 	rangeStart, rangeEnd chplan.Expr
+
+	// startBeyond / endBeyond are how far the edges of the window
+	// Prometheus reads lie beyond rangeStart / rangeEnd: non-zero only for
+	// a window the instant-domain fit cut back to the stored range, whose
+	// own edges no DateTime64(9) represents. The extrapolation adds them
+	// to the distances from the window's first and last samples to its
+	// edges.
+	startBeyond, endBeyond time.Duration
 
 	// factorOrder optionally carries the full window's timestamp array when
 	// the histogram fields themselves have been narrowed to endpoint samples.
@@ -657,8 +667,8 @@ func histogramExtrapolationFactorExpr(order, countValues chplan.Expr, in histogr
 							halfAvgGap, raw,
 						}}
 					}
-					return hqLet(paramClampedStart, clamp(secondsBetweenTsExpr(in.rangeStart, firstTs)), func(thresholdClampedStart chplan.Expr) chplan.Expr {
-						durationToEnd := clamp(secondsBetweenTsExpr(lastTs, in.rangeEnd))
+					return hqLet(paramClampedStart, clamp(secondsBetweenTsBeyondExpr(in.rangeStart, firstTs, in.startBeyond)), func(thresholdClampedStart chplan.Expr) chplan.Expr {
+						durationToEnd := clamp(secondsBetweenTsBeyondExpr(lastTs, in.rangeEnd, in.endBeyond))
 						if !isCounter {
 							return histogramExtrapolationFactorFromDurations(sampledInterval, thresholdClampedStart, durationToEnd)
 						}
@@ -731,13 +741,25 @@ func histogramExtrapolationFactorFromDurations(sampledInterval, durationToStart,
 // a chplan-IR twin because this fold builds plan expressions rather than
 // chsql Frags directly.
 func secondsBetweenTsExpr(from, to chplan.Expr) chplan.Expr {
+	return secondsBetweenTsBeyondExpr(from, to, 0)
+}
+
+// secondsBetweenTsBeyondExpr is [secondsBetweenTsExpr] widened by beyond,
+// the part of the distance that lies outside the instants a DateTime64(9)
+// holds: `toFloat64(dateDiff('nanosecond', from, to) + <beyond ns>) / 1e9`.
+// The sum is Int64 nanoseconds, so the Float64 conversion rounds once, as
+// for an unwidened distance; a zero beyond renders [secondsBetweenTsExpr].
+// It is the chplan-IR twin of chsql's `secondsBetweenBeyondFrag`.
+func secondsBetweenTsBeyondExpr(from, to chplan.Expr, beyond time.Duration) chplan.Expr {
+	var nanos chplan.Expr = &chplan.FuncCall{Fn: chplan.FnDateDiff, Args: []chplan.Expr{
+		&chplan.LitString{V: "nanosecond"}, from, to,
+	}}
+	if beyond != 0 {
+		nanos = &chplan.Binary{Op: chplan.OpAdd, Left: nanos, Right: &chplan.LitInt{V: beyond.Nanoseconds()}}
+	}
 	return &chplan.Binary{
-		Op: chplan.OpDiv,
-		Left: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{
-			&chplan.FuncCall{Fn: chplan.FnDateDiff, Args: []chplan.Expr{
-				&chplan.LitString{V: "nanosecond"}, from, to,
-			}},
-		}},
+		Op:    chplan.OpDiv,
+		Left:  &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{nanos}},
 		Right: &chplan.LitFloat{V: 1e9},
 	}
 }
@@ -1018,10 +1040,6 @@ func windowSampleCountAgg(s schema.Metrics) chplan.AggFunc {
 // the `rate` / `increase` fold can apply Prometheus's boundary-
 // extrapolation correction (see histogramWindowFold).
 func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) chplan.Node {
-	var perSecond chplan.Expr
-	if shape.windowFn == "rate" {
-		perSecond = &chplan.LitFloat{V: shape.windowRange.Seconds()}
-	}
 	group := &chplan.Aggregate{
 		Roles:              metricRoles(s),
 		Input:              input,
@@ -1043,8 +1061,10 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeS
 		histogramWindowFold(shape.windowFn, histogramWindowInputs{
 			rangeStart:  rangeStart,
 			rangeEnd:    rangeEnd,
+			startBeyond: shape.startBeyond,
+			endBeyond:   shape.endBeyond,
 			temporality: classicBucketWindowTemporalityExpr(s, shape.windowFn),
-			perSecond:   perSecond,
+			perSecond:   shape.ratePerSecond(),
 		}),
 		[]chplan.Projection{{
 			Expr:  &chplan.ColumnRef{Name: s.AttributesColumn},

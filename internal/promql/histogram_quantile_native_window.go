@@ -545,17 +545,15 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 	// undivided (and so exactly-representable) factor kept a tie reference
 	// itself breaks, landing this stage on the wrong bucket — caught by
 	// TestPromQL_Property_NativeHistogram.
-	var perSecond chplan.Expr
-	if shape.windowFn == rateWindowFn {
-		perSecond = &chplan.LitFloat{V: shape.windowRange.Seconds()}
-	}
 	winIn := histogramWindowInputs{
 		rangeStart:  rangeStart,
 		rangeEnd:    rangeEnd,
+		startBeyond: shape.startBeyond,
+		endBeyond:   shape.endBeyond,
 		countValues: expHistogramWindowCountValuesExpr(),
 		temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
 		resets:      resets,
-		perSecond:   perSecond,
+		perSecond:   shape.ratePerSecond(),
 	}
 	winIn = winIn.withLowerers(ctx.lowerers)
 	fold := histogramWindowFold(shape.windowFn, winIn)

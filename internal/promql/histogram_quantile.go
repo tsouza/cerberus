@@ -791,6 +791,16 @@ type histogramAggShape struct {
 	// histogram_quantile_window_range_test.go:`func TestMatchHistogramAggIdiomAlwaysYieldsPositiveWindowRange(`
 	// pins that positivity at both sources.
 	windowRange time.Duration
+	// matrix is the matched range-vector selector, nil for a shape with no
+	// `[range]` of its own. The instant-domain fit records how far the
+	// edges of a window it cut back to the stored range lie beyond the cut
+	// under this selector ([domainFit.windowBeyond]).
+	matrix *parser.MatrixSelector
+	// startBeyond and endBeyond are how far the start and the end of the
+	// window Prometheus reads lie beyond the window the shape reads, set
+	// by [histogramAggShape.withWindowBeyond] on the lowerings that
+	// extrapolate to them and zero everywhere else.
+	startBeyond, endBeyond time.Duration
 	// windowFn is the matched range-vector function name. It decides
 	// both how a series' in-window samples reduce to one value per `le`
 	// (histogramWindowFold) and how many samples that reduction needs
@@ -824,6 +834,25 @@ func histogramWindowMinSamples(fn string) int {
 		return rateMinSamples
 	}
 	return stalenessMinSamples
+}
+
+// withWindowBeyond returns shape carrying how far the edges of the window
+// Prometheus reads lie beyond the window the shape reads, which differ
+// only for a window the instant-domain fit cut back to the stored range.
+// A lowering that extrapolates a single instant's window to its edges
+// calls it, and so records that it reads them ([domainFit.checkBeyondRead]).
+func (shape histogramAggShape) withWindowBeyond(ctx lowerCtx) histogramAggShape {
+	shape.startBeyond, shape.endBeyond = ctx.domain.windowBeyond(shape.matrix)
+	return shape
+}
+
+// ratePerSecond is `rate`'s divisor, the length in seconds of the window
+// Prometheus reads, or nil for every other function.
+func (shape histogramAggShape) ratePerSecond() chplan.Expr {
+	if shape.windowFn != rateWindowFn {
+		return nil
+	}
+	return &chplan.LitFloat{V: (shape.windowRange + shape.startBeyond + shape.endBeyond).Seconds()}
 }
 
 // minSamples is the matched function's per-series "no sample emitted"
@@ -1212,6 +1241,7 @@ func matchHistogramAggIdiom(e parser.Expr, s schema.Metrics) (histogramAggShape,
 	return histogramAggShape{
 		selector:    vs,
 		windowRange: ms.Range,
+		matrix:      ms,
 		windowFn:    call.Func.Name,
 		agg:         agg,
 	}, true
@@ -1247,6 +1277,7 @@ func matchHistogramAggIdiom(e parser.Expr, s schema.Metrics) (histogramAggShape,
 // downstream `mapFilter` simply removes a non-existent key).
 func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	vs := shape.selector
+	shape = shape.withWindowBeyond(ctx)
 
 	// Build the Scan + Filter. The metric-name matcher and any
 	// user-supplied label matchers go straight through buildPredicate;
@@ -2211,6 +2242,7 @@ const (
 // starting absolute index per series). Mirrors classic-agg's behaviour.
 func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	vs := shape.selector
+	shape = shape.withWindowBeyond(ctx)
 
 	// Build the Scan + Filter. Same shape as the classic-agg path: the
 	// metric-name + label matchers go through buildPredicate; the
