@@ -84,9 +84,10 @@ single canonical probe, so a function that lowers `sort_by_label(v, "l")` and
 rejects `sort_by_label(v)` still counts as one supported symbol.
 
 Shape-level wrong-rejections are measured separately, by the rejection-parity
-catalogue: across all three heads it records **2** open divergences — queries
-the reference backend answers and cerberus rejects. Both are argument shapes.
-Each is one `class: "divergence"` row in
+catalogue: across all three heads it records **3** open divergences — queries
+the reference backend answers and cerberus rejects. Two are argument shapes;
+the third is a histogram `rate`, `increase` or `delta` whose window straddles
+the storage ceiling, described below. Each is one `class: "divergence"` row in
 [`test/rejection-parity/catalogue/`](../test/rejection-parity/catalogue),
 carries an open GitHub issue tracking its closure, and is re-verified against
 both backends on every compat run in both directions — cerberus must still
@@ -100,7 +101,8 @@ A PromQL query whose instants leave 1677-09-21T00:12:43.145224192Z to
 DateTime64(9) holds, is answered. A window is cut back to the range, which
 holds every stored sample, with `rate`, `increase` and `delta` extrapolating
 to the uncut window's edges, and a grid that reads no sample there is moved
-into it. A query that still needs an instant outside the range is evaluated
+into it. Over a native or classic histogram, a `rate`, `increase` or `delta`
+whose window is cut is rejected instead (#3933). A query that still needs an instant outside the range is evaluated
 in a frame shifted in time by a multiple of every subquery step, with stored
 samples read shifted into it and result timestamps shifted back; a result
 timestamp outside the range is reported in milliseconds. A range query

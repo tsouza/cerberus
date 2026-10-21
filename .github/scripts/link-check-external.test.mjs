@@ -137,7 +137,7 @@ test('an HTTP error whose re-probe answers 2xx is alive, not dead', async () => 
   const md = renderReport(lycheeReport({}), { dead, challenged, alive });
   assert.match(md, /\| Dead +\| 1 \|/);
   assert.match(md, /\| Alive on re-probe \| 1 \|/);
-  assert.doesNotMatch(md, /github\.com\/grafana\/loki/);
+  assert.equal(md.includes(notFound.url), false, 'an alive link is not listed');
 });
 
 test('the report lists dead and challenged links in separate sections', () => {
