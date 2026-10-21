@@ -81,7 +81,13 @@ func (m *metricsFakeQuerier) QueryStrings(_ context.Context, _ string, _ ...any)
 func newMetricsTestServer(t *testing.T, q tempo.Querier) (tempopb.StreamingQuerierClient, func()) {
 	t.Helper()
 	handler := tempo.New(q, schema.DefaultOTelTraces(), "test-grpc", nil)
-	service := tempogrpc.NewService(handler, nil, nil)
+	return newServiceTestServer(t, tempogrpc.NewService(handler, nil, nil))
+}
+
+// newServiceTestServer serves service on bufconn and returns the dialled
+// client + a cleanup func.
+func newServiceTestServer(t *testing.T, service *tempogrpc.Service) (tempopb.StreamingQuerierClient, func()) {
+	t.Helper()
 	srv := tempogrpc.NewServer(service)
 	lis := bufconn.Listen(1 << 20)
 	go func() {

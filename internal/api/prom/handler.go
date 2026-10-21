@@ -251,10 +251,6 @@ func (h *Handler) SetLowerers(table promql.RangeLowerers) {
 	h.liveLowerers.Store(&table)
 }
 
-// lowerers returns the dispatch table in force right now: the replacement
-// installed by [Handler.SetLowerers] when there is one, else the wired
-// [Handler.Lowerers]. The single query-path read goes through here so a live
-// swap needs no lock and no second read site can go on consulting a stale table.
 // metricsStrategies returns the metrics SchemaStrategies a request renders
 // under: the snapshot Mount took when the request entered the handler, or
 // what Strategies holds now for a ctx that carries none.
@@ -262,6 +258,10 @@ func (h *Handler) metricsStrategies(ctx context.Context) chsql.SchemaStrategies 
 	return h.Strategies.RequestStrategies(ctx, chsql.SignalMetrics)
 }
 
+// lowerers returns the dispatch table in force right now: the replacement
+// installed by [Handler.SetLowerers] when there is one, else the wired
+// [Handler.Lowerers]. The single query-path read goes through here so a live
+// swap needs no lock and no second read site can go on consulting a stale table.
 func (h *Handler) lowerers() promql.RangeLowerers {
 	if live := h.liveLowerers.Load(); live != nil {
 		return *live

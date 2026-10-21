@@ -296,12 +296,86 @@ func dtRunPromQLCases(t *testing.T, srv *httptest.Server) {
 		}
 	})
 
-	t.Run("series", func(t *testing.T) {
-		data := dtGet(t, srv, "/api/v1/series", url.Values{
-			"match[]": {"temp_celsius"},
-			"start":   {strconv.FormatInt(dtSeedStart.Unix(), 10)},
-			"end":     {strconv.FormatInt(dtLastSample.Unix(), 10)},
+	// timestamp() and ts_of_max_over_time over a range read each step's
+	// sample second through the same timestamp functions the instant cases
+	// do, on the range Lang.
+	for _, tc := range []struct{ name, query string }{
+		{"range timestamp", "timestamp(temp_celsius)"},
+		{"range ts_of_max_over_time", "ts_of_max_over_time(temp_celsius[1m])"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := dtSeedStart.Add(time.Minute)
+			data := dtGet(t, srv, "/api/v1/query_range", url.Values{
+				"query": {tc.query},
+				"start": {strconv.FormatInt(start.Unix(), 10)},
+				"end":   {strconv.FormatInt(dtLastSample.Unix(), 10)},
+				"step":  {"60"},
+			})
+			var qd struct {
+				Result []prom.MatrixSample `json:"result"`
+			}
+			if err := json.Unmarshal(data, &qd); err != nil {
+				t.Fatalf("decode: %v\ndata=%s", err, data)
+			}
+			if len(qd.Result) != 1 {
+				t.Fatalf("got %d series, want 1: %s", len(qd.Result), data)
+			}
+			// Each minute step lands on a sample, so each answers its own
+			// step's second.
+			var want, got []string
+			for at := start; !at.After(dtLastSample); at = at.Add(time.Minute) {
+				want = append(want, strconv.FormatInt(at.Unix(), 10))
+			}
+			for _, v := range qd.Result[0].Values {
+				got = append(got, fmt.Sprint(v[1]))
+			}
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				t.Errorf("%s values = %v, want %v", tc.query, got, want)
+			}
 		})
+	}
+
+	// The metadata and exemplar endpoints read the request bounds against
+	// the timestamp column. A bound before 1900 is compared in Unix
+	// nanoseconds rather than as a time literal, which is what the
+	// precision's bound rendering must carry over a DateTime column; an end
+	// past the latest instant storage holds drops that bound, and an absent
+	// end bounds the latest sample instead of every sample.
+	end := strconv.FormatInt(dtLastSample.Unix(), 10)
+	for _, bounds := range []struct{ name, start, end string }{
+		{"seed window", strconv.FormatInt(dtSeedStart.Unix(), 10), end},
+		{"start before 1900", dtPre1900Start, end},
+		{"start before 1900, end past storage", dtPre1900Start, dtPastStorageEnd},
+		{"start before 1900, no end", dtPre1900Start, ""},
+	} {
+		dtRunMetadataCases(t, srv, bounds.name, bounds.start, bounds.end)
+	}
+}
+
+// dtPre1900Start is a request start (Unix seconds) in 1890, before the
+// earliest instant a time literal is compared as; dtPastStorageEnd is a
+// request end (Unix seconds) in 2264, past the latest instant Unix
+// nanoseconds in an Int64 reach.
+const (
+	dtPre1900Start   = "-2500000000"
+	dtPastStorageEnd = "9300000000"
+)
+
+// dtRunMetadataCases runs /series, /label/<name>/values (with and without a
+// match[] selector) and /query_exemplars over [start, end] — end omitted
+// when empty — and grades each against the seed.
+func dtRunMetadataCases(t *testing.T, srv *httptest.Server, name, start, end string) {
+	t.Helper()
+	window := func(v url.Values) url.Values {
+		v.Set("start", start)
+		if end != "" {
+			v.Set("end", end)
+		}
+		return v
+	}
+
+	t.Run(name+"/series", func(t *testing.T) {
+		data := dtGet(t, srv, "/api/v1/series", window(url.Values{"match[]": {"temp_celsius"}}))
 		var series []map[string]string
 		if err := json.Unmarshal(data, &series); err != nil {
 			t.Fatalf("decode: %v\ndata=%s", err, data)
@@ -311,26 +385,28 @@ func dtRunPromQLCases(t *testing.T, srv *httptest.Server) {
 		}
 	})
 
-	t.Run("label values", func(t *testing.T) {
-		data := dtGet(t, srv, "/api/v1/label/room/values", url.Values{
-			"start": {strconv.FormatInt(dtSeedStart.Unix(), 10)},
-			"end":   {strconv.FormatInt(dtLastSample.Unix(), 10)},
+	for _, lv := range []struct{ name, match string }{{"label values", ""}, {"matched label values", "temp_celsius"}} {
+		t.Run(name+"/"+lv.name, func(t *testing.T) {
+			params := url.Values{}
+			if lv.match != "" {
+				params.Set("match[]", lv.match)
+			}
+			data := dtGet(t, srv, "/api/v1/label/room/values", window(params))
+			var values []string
+			if err := json.Unmarshal(data, &values); err != nil {
+				t.Fatalf("decode: %v\ndata=%s", err, data)
+			}
+			if len(values) != 1 || values[0] != "a" {
+				t.Errorf("room values = %v, want [a]", values)
+			}
 		})
-		var values []string
-		if err := json.Unmarshal(data, &values); err != nil {
-			t.Fatalf("decode: %v\ndata=%s", err, data)
-		}
-		if len(values) != 1 || values[0] != "a" {
-			t.Errorf("room values = %v, want [a]", values)
-		}
-	})
+	}
 
-	t.Run("exemplars", func(t *testing.T) {
-		data := dtGet(t, srv, "/api/v1/query_exemplars", url.Values{
-			"query": {"reqs_total"},
-			"start": {strconv.FormatInt(dtSeedStart.Unix(), 10)},
-			"end":   {strconv.FormatInt(dtLastSample.Unix(), 10)},
-		})
+	if end == "" {
+		return // /query_exemplars requires an end.
+	}
+	t.Run(name+"/exemplars", func(t *testing.T) {
+		data := dtGet(t, srv, "/api/v1/query_exemplars", window(url.Values{"query": {"reqs_total"}}))
 		var series []struct {
 			Exemplars []struct {
 				Labels    map[string]string `json:"labels"`
