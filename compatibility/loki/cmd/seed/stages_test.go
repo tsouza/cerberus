@@ -362,12 +362,12 @@ func fakeCerberus(t *testing.T) *httptest.Server {
 // label string.
 func serviceNameLabel(labels string) string {
 	const key = `service_name="`
-	i := strings.Index(labels, key)
-	if i < 0 {
+	_, rest, ok := strings.Cut(labels, key)
+	if !ok {
 		return ""
 	}
-	rest := labels[i+len(key):]
-	return rest[:strings.IndexByte(rest, '"')]
+	value, _, _ := strings.Cut(rest, `"`)
+	return value
 }
 
 func discardLogger() *slog.Logger {
