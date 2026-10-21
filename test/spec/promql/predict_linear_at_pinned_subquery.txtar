@@ -20,29 +20,31 @@ CREATE TABLE otel_metrics_gauge (
 INSERT INTO otel_metrics_gauge VALUES
     ('machine_load', map('job', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 1.0);
 -- expected_rows --
-[]
+[
+  [{}, 1767225661]
+]
 -- args --
-[0] string = ""
-[1] string = "Map(String,String)"
-[2] int64 = 9
-[3] float64 = 0
-[4] float64 = -1
+[0] float64 = 61
+[1] string = ""
+[2] string = "Map(String,String)"
+[3] float64 = 1000
 -- args_optimized --
-[0] string = ""
-[1] string = "Map(String,String)"
-[2] int64 = 9
-[3] float64 = 0
-[4] float64 = -1
+[0] float64 = 61
+[1] string = ""
+[2] string = "Map(String,String)"
+[3] float64 = 1000
 -- chplan --
-Filter predicate=(Value < -1)
-  Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, 0 AS Value]
-    OneRow
+RangeWindow func=predict_linear range=5m0s step=0s ts=anchor_ts value=Value groupBy=[Attributes] scalars=[61] start=0001-01-01T00:00:00Z end=2026-01-01T00:00:00Z distinctSampleRows
+  Project [Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+    Project [Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value] subqueryGrid
+      Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, (FnToFloat64(FnToUnixMillis(anchor_ts)) / 1000) AS Value]
+        StepGrid start=2025-12-31T23:56:00.000000000Z end=2026-01-01T00:00:00.000000000Z step=1m0s
 -- settings --
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
-log_comment=cerb:filter
+log_comment=cerb:rw;rw;sg
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 -- sql --
-SELECT * FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT 1)) WHERE (`Value` < toFloat64(?))
+SELECT `Attributes`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> toFloat64(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), tupleElement(p, 1))) / 1e9, window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> toFloat64(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), tupleElement(p, 1))) / 1e9, window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ?, nan) AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), series_array) AS window_pairs FROM (SELECT `Attributes`, arrayCompact(arraySort(groupArray((`anchor_ts`, `Value`)))) AS series_array FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, (toFloat64(toUnixTimestamp64Milli(`anchor_ts`)) / toFloat64(?)) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2025-12-31 23:56:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`)))) WHERE `anchor_ts` > parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2
 -- sql_optimized --
-SELECT * FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT 1)) WHERE (`Value` < toFloat64(?))
+SELECT `Attributes`, if(length(window_pairs) > 1, tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> toFloat64(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), tupleElement(p, 1))) / 1e9, window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 2) + tupleElement(arrayReduce('simpleLinearRegression', arrayMap(p -> toFloat64(dateDiff('nanosecond', parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), tupleElement(p, 1))) / 1e9, window_pairs), arrayMap(p -> tupleElement(p, 2), window_pairs)), 1) * ?, nan) AS Value FROM (SELECT `Attributes`, arrayFilter(p -> tupleElement(p, 1) > parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9), series_array) AS window_pairs FROM (SELECT `Attributes`, arrayCompact(arraySort(groupArray((`anchor_ts`, `Value`)))) AS series_array FROM (SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `anchor_ts` AS `TimeUnix`, (toFloat64(toUnixTimestamp64Milli(`anchor_ts`)) / toFloat64(?)) AS `Value` FROM (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2025-12-31 23:56:00.000000000Z', 9) + toIntervalNanosecond(i * 60000000000), range(0, 5))) AS `anchor_ts`)))) WHERE `anchor_ts` > parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) - toIntervalNanosecond(300000000000) AND `anchor_ts` <= parseDateTime64BestEffort('2026-01-01 00:00:00.000000000Z', 9) GROUP BY `Attributes`)) WHERE length(`window_pairs`) >= 2
