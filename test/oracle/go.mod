@@ -80,7 +80,7 @@ require (
 	github.com/hashicorp/memberlist v0.6.0 // indirect
 	github.com/hashicorp/serf v0.10.4 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
-	github.com/jaegertracing/jaeger-idl v0.6.0 // indirect
+	github.com/jaegertracing/jaeger-idl v0.9.0 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.20.1 // indirect
@@ -197,8 +197,8 @@ replace github.com/prometheus/prometheus => github.com/tsouza/prometheus v0.315.
 // otel collector-contrib submodule forks (transitively reachable via the
 // loki/tempo graph); mirror root go.mod.
 replace (
-	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.0.3-cerberus-ddl
-	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal => github.com/tsouza/opentelemetry-collector-contrib/internal/coreinternal v0.0.3-cerberus-ddl
-	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils => github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.3-cerberus-ddl
-	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.3-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.0.5-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal => github.com/tsouza/opentelemetry-collector-contrib/internal/coreinternal v0.0.5-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils => github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.5-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.5-cerberus-ddl
 )
