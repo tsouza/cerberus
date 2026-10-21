@@ -685,7 +685,7 @@ func (g *gatedRows) Close() error {
 	err := g.Rows.Close()
 	ended := err
 	if ended == nil {
-		ended = g.Rows.Err()
+		ended = g.Err()
 	}
 	// The driver handed back rows, so the server accepted the statement.
 	g.release(true, ended)
