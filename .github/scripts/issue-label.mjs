@@ -16,8 +16,9 @@
 //      title's own `<head>:` prefix (`promql:`, `chsql:`, `loki:` …) is a
 //      first-class second source. See PATH_PREFIX_TO_AREA / TITLE_PREFIX_TO_AREA.
 //
-//   2. TYPE — the Conventional-Commit prefix when the title carries one
-//      (`perf:`, `ci:`, `docs:`, `test:` …), delegated to
+//   2. TYPE — an issue-kind title prefix first: `epic:` yields `epic`
+//      (TITLE_PREFIX_TO_TYPE). Then the Conventional-Commit prefix when the
+//      title carries one (`perf:`, `ci:`, `docs:`, `test:` …), delegated to
 //      `labelsForTitle()`. Otherwise a scored scan of curated phrase
 //      signals over the title first, then the body: wrong-answer /
 //      divergence / silent empty -> bug, missing coverage / hollow test /
@@ -275,18 +276,26 @@ export function rankPathAreas(body) {
     .sort((a, b) => b.weight - a.weight || b.paths - a.paths || a.area.localeCompare(b.area));
 }
 
-// areaForTitlePrefix maps a title's leading `<prefix>:` token to an area,
-// or '' when the title has no prefix or the prefix names no area (`perf:`
-// is a TYPE, not an area). A compound prefix resolves on its first
-// area-bearing token, so `chsql/tempo:` -> area/chsql.
-export function areaForTitlePrefix(title) {
+// lookupTitlePrefix maps a title's leading `<prefix>:` token through
+// `table`, or returns '' when the title has no prefix or no token of it is
+// in the table. A compound prefix resolves on its first token the table
+// knows.
+function lookupTitlePrefix(title, table) {
   const m = String(title ?? '').match(TITLE_PREFIX);
   if (!m) return '';
   for (const token of m[1].split(/[/\s-]+/)) {
-    const area = TITLE_PREFIX_TO_AREA[token.toLowerCase()];
-    if (area) return area;
+    const label = table[token.toLowerCase()];
+    if (label) return label;
   }
   return '';
+}
+
+// areaForTitlePrefix maps a title's leading `<prefix>:` token to an area,
+// or '' when the title has no prefix or the prefix names no area (`perf:`
+// and `epic:` are TYPES, not areas). A compound prefix resolves on its first
+// area-bearing token, so `chsql/tempo:` -> area/chsql.
+export function areaForTitlePrefix(title) {
+  return lookupTitlePrefix(title, TITLE_PREFIX_TO_AREA);
 }
 
 // areaForTitle resolves the title's own claim about the area: the explicit
@@ -325,6 +334,22 @@ export function inferAreas(title, body) {
 // ---------------------------------------------------------------------------
 // Type mapping
 // ---------------------------------------------------------------------------
+
+// The title's leading `<prefix>:` token -> TYPE label, for prefixes that
+// name a kind of issue rather than a Conventional-Commit type. `epic:` opens
+// a parent issue tracking a multi-PR delivery: its body states a scope and
+// an acceptance bar, not a defect, so it carries no CC type and the phrase
+// signals below have nothing honest to match. The area still comes from the
+// rest of the title and the body's cited paths, as for any other issue.
+export const TITLE_PREFIX_TO_TYPE = Object.freeze({
+  epic: 'epic',
+});
+
+// typeForTitlePrefix maps a title's leading `<prefix>:` token to a TYPE
+// label through TITLE_PREFIX_TO_TYPE, or '' when it names none.
+export function typeForTitlePrefix(title) {
+  return lookupTitlePrefix(title, TITLE_PREFIX_TO_TYPE);
+}
 
 // Curated phrase signals per TYPE label. Phrases, not bare words: cerberus
 // issue bodies are long and technical, so a loose word list ("error",
@@ -474,15 +499,19 @@ function bestType(scores) {
 // nothing matched.
 //
 // Precedence, strongest evidence first:
-//   1. a Conventional-Commit title prefix (`perf:`, `ci:`, `docs:`, `test:`)
+//   1. an issue-kind title prefix (`epic:`) — TITLE_PREFIX_TO_TYPE;
+//   2. a Conventional-Commit title prefix (`perf:`, `ci:`, `docs:`, `test:`)
 //      — authoritative, and delegated to `pr-type-label.mjs` so the type
 //      table has exactly one definition in the repo;
-//   2. the TITLE's signal scores — the author's own one-line statement of
+//   3. the TITLE's signal scores — the author's own one-line statement of
 //      the defect class;
-//   3. the BODY's signal scores — consulted only when the title is silent,
+//   4. the BODY's signal scores — consulted only when the title is silent,
 //      because a long technical body inevitably brushes several signals in
 //      passing and would otherwise drown out a precise title.
 export function inferType(title, body) {
+  const fromKind = typeForTitlePrefix(title);
+  if (fromKind) return fromKind;
+
   const fromCC = labelsForTitle(title);
   if (fromCC.length > 0) return fromCC[0];
 
@@ -517,6 +546,7 @@ export const APPLICABLE_TYPE_LABELS = Object.freeze([
   'revert',
   'dependencies',
   'release',
+  'epic',
 ]);
 
 // labelsForIssue computes the FULL decision for one issue:
@@ -573,6 +603,7 @@ export function assertTablesUsable() {
   const problems = [];
   if (Object.keys(PATH_PREFIX_TO_AREA).length === 0) problems.push('PATH_PREFIX_TO_AREA is empty');
   if (Object.keys(TITLE_PREFIX_TO_AREA).length === 0) problems.push('TITLE_PREFIX_TO_AREA is empty');
+  if (Object.keys(TITLE_PREFIX_TO_TYPE).length === 0) problems.push('TITLE_PREFIX_TO_TYPE is empty');
   for (const [type, patterns] of Object.entries(TYPE_SIGNALS)) {
     if (patterns.length === 0) problems.push(`TYPE_SIGNALS.${type} is empty`);
   }
@@ -760,7 +791,7 @@ async function main() {
   if (unclassified.length > 0) {
     failures.push(
       `${unclassified.length} issue(s) matched no area and no type rule — widen the mapping ` +
-        `(PATH_PREFIX_TO_AREA / TITLE_PREFIX_TO_AREA / TYPE_SIGNALS):\n  - ${unclassified.join('\n  - ')}`,
+        `(PATH_PREFIX_TO_AREA / TITLE_PREFIX_TO_AREA / TITLE_PREFIX_TO_TYPE / TYPE_SIGNALS):\n  - ${unclassified.join('\n  - ')}`,
     );
   }
 

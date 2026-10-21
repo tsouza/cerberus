@@ -204,7 +204,26 @@ const (
 	stageLive   = "live"
 )
 
-func run(logger *slog.Logger) error {
+// seedConfig is the parsed command line of one seeder invocation.
+type seedConfig struct {
+	stage    string
+	addr     string
+	database string
+	username string
+	password string
+	lokiURL  string
+	cerbURL  string
+	livePath string
+	timeout  time.Duration
+}
+
+// parseConfig parses the seeder's command line. Every flag but -stage
+// and -timeout falls back to an environment variable, and the flag wins
+// over it. -stage is mandatory and must name one of the two stages;
+// -live-patterns-metadata is mandatory for the live stage, the only one
+// that writes the fixture handshake. Usage and parse errors are written
+// to output.
+func parseConfig(args []string, output io.Writer) (seedConfig, error) {
 	// `-timeout` worst-case budget, per stage:
 	//   corpus: waitCHReady (30s) + waitLokiReady (60s) + insertCHLogs /
 	//           pushLoki + flushLoki + waitLokiFlushDrained (90s)
@@ -212,38 +231,49 @@ func run(logger *slog.Logger) error {
 	//           writes + waitLabelsNonEmpty × 2 (60s) + the /patterns
 	//           probes (2 × livePatternsProbeTimeout)
 	// 4 minutes leaves headroom for slow CI runners in either stage.
-	var (
-		stage    = flag.String("stage", "", "seed stage: "+stageCorpus+" (before the reference Loki restart) or "+stageLive+" (after it)")
-		addr     = flag.String("addr", envOr("CERBERUS_CH_ADDR", "localhost:28000"), "ClickHouse host:port")
-		database = flag.String("database", envOr("CERBERUS_CH_DATABASE", "otel"), "ClickHouse database")
-		username = flag.String("user", envOr("CERBERUS_CH_USERNAME", "cerberus"), "ClickHouse username")
-		password = flag.String("password", envOr("CERBERUS_CH_PASSWORD", "cerberus"), "ClickHouse password")
-		lokiURL  = flag.String("loki-url", envOr("LOKI_URL", "http://localhost:23100"), "Reference Loki base URL")
-		cerbURL  = flag.String("cerberus-url", envOr("CERBERUS_URL", "http://localhost:29092"), "cerberus LogQL base URL")
-		livePath = flag.String("live-patterns-metadata", envOr("LIVE_PATTERNS_METADATA", ""), "Path for the now-anchored /patterns fixture handshake (required by -stage="+stageLive+")")
-		timeout  = flag.Duration("timeout", 4*time.Minute, "overall dial + push + verify timeout")
-	)
-	flag.Parse()
-	switch *stage {
+	var cfg seedConfig
+	fs := flag.NewFlagSet("seed", flag.ContinueOnError)
+	fs.SetOutput(output)
+	fs.StringVar(&cfg.stage, "stage", "", "seed stage: "+stageCorpus+" (before the reference Loki restart) or "+stageLive+" (after it)")
+	fs.StringVar(&cfg.addr, "addr", envOr("CERBERUS_CH_ADDR", "localhost:28000"), "ClickHouse host:port")
+	fs.StringVar(&cfg.database, "database", envOr("CERBERUS_CH_DATABASE", "otel"), "ClickHouse database")
+	fs.StringVar(&cfg.username, "user", envOr("CERBERUS_CH_USERNAME", "cerberus"), "ClickHouse username")
+	fs.StringVar(&cfg.password, "password", envOr("CERBERUS_CH_PASSWORD", "cerberus"), "ClickHouse password")
+	fs.StringVar(&cfg.lokiURL, "loki-url", envOr("LOKI_URL", "http://localhost:23100"), "Reference Loki base URL")
+	fs.StringVar(&cfg.cerbURL, "cerberus-url", envOr("CERBERUS_URL", "http://localhost:29092"), "cerberus LogQL base URL")
+	fs.StringVar(&cfg.livePath, "live-patterns-metadata", envOr("LIVE_PATTERNS_METADATA", ""), "Path for the now-anchored /patterns fixture handshake (required by -stage="+stageLive+")")
+	fs.DurationVar(&cfg.timeout, "timeout", 4*time.Minute, "overall dial + push + verify timeout")
+	if err := fs.Parse(args); err != nil {
+		return seedConfig{}, err
+	}
+	switch cfg.stage {
 	case stageCorpus:
 	case stageLive:
-		if *livePath == "" {
-			return errors.New("-live-patterns-metadata is required by -stage=" + stageLive)
+		if cfg.livePath == "" {
+			return seedConfig{}, errors.New("-live-patterns-metadata is required by -stage=" + stageLive)
 		}
 	default:
-		return fmt.Errorf("-stage must be %q or %q, got %q", stageCorpus, stageLive, *stage)
+		return seedConfig{}, fmt.Errorf("-stage must be %q or %q, got %q", stageCorpus, stageLive, cfg.stage)
+	}
+	return cfg, nil
+}
+
+func run(logger *slog.Logger) error {
+	cfg, err := parseConfig(os.Args[1:], os.Stderr)
+	if err != nil {
+		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancel()
 
-	logger.Info("dialing clickhouse", "addr", *addr, "database", *database)
+	logger.Info("dialing clickhouse", "addr", cfg.addr, "database", cfg.database)
 	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{*addr},
+		Addr: []string{cfg.addr},
 		Auth: clickhouse.Auth{
-			Database: *database,
-			Username: *username,
-			Password: *password,
+			Database: cfg.database,
+			Username: cfg.username,
+			Password: cfg.password,
 		},
 		DialTimeout: 5 * time.Second,
 	})
@@ -255,11 +285,19 @@ func run(logger *slog.Logger) error {
 	if err := waitCHReady(ctx, conn, logger); err != nil {
 		return err
 	}
+	return runStage(ctx, cfg, conn, logger)
+}
 
-	if *stage == stageCorpus {
-		return seedCorpus(ctx, conn, *database, *lokiURL, logger)
+// runStage dispatches a parsed configuration to its stage.
+func runStage(ctx context.Context, cfg seedConfig, conn driver.Conn, logger *slog.Logger) error {
+	switch cfg.stage {
+	case stageCorpus:
+		return seedCorpus(ctx, conn, cfg.database, cfg.lokiURL, logger)
+	case stageLive:
+		return seedLive(ctx, conn, cfg.lokiURL, cfg.cerbURL, cfg.livePath, logger)
+	default:
+		return fmt.Errorf("unknown stage %q", cfg.stage)
 	}
-	return seedLive(ctx, conn, *lokiURL, *cerbURL, *livePath, logger)
 }
 
 // seedCorpus is stage 1: the deterministic corpus, written to both
@@ -1076,16 +1114,12 @@ func waitLokiFlushDrained(ctx context.Context, baseURL string, expectedStreams i
 			lastErr = nil
 			lastSnapshot = snap
 
-			flushedDelta := snap.chunksFlushed - baseline.chunksFlushed
-
-			if snap.flushQueueLength == 0 &&
-				snap.memoryChunks == 0 &&
-				flushedDelta >= float64(expectedStreams) {
+			if snap.drained(baseline, expectedStreams) {
 				logger.Info(
 					"loki ingester drained",
 					"flush_queue_length", snap.flushQueueLength,
 					"memory_chunks", snap.memoryChunks,
-					"chunks_flushed_delta", flushedDelta,
+					"chunks_flushed_delta", snap.chunksFlushed-baseline.chunksFlushed,
 					"chunks_flushed_needed", expectedStreams,
 					"elapsed", time.Since(begin).Round(time.Millisecond),
 				)
@@ -1136,6 +1170,14 @@ type lokiDrainSnapshot struct {
 	flushQueueLength float64
 	memoryChunks     float64
 	chunksFlushed    float64
+}
+
+// drained is the drain-gate decision over one poll: the three criteria
+// waitLokiFlushDrained documents, all holding in this one reading.
+func (s lokiDrainSnapshot) drained(baseline lokiMetricsSnapshot, expectedStreams int) bool {
+	return s.flushQueueLength == 0 &&
+		s.memoryChunks == 0 &&
+		s.chunksFlushed-baseline.chunksFlushed >= float64(expectedStreams)
 }
 
 // fetchLokiDrainSnapshot pulls `/metrics` and resolves the three

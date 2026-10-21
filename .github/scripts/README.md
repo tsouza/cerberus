@@ -2008,11 +2008,13 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
      with a head-keyword fallback (`HEAD_KEYWORD_TO_AREA`) for titles that
      carry no prefix. At most `MAX_AREA_LABELS` (2), and every SECONDARY area
      must clear `AREA_SECONDARY_MIN_PATHS` (2) distinct citations.
-  2. **type** — a Conventional-Commit title prefix is authoritative and is
-     resolved by importing `labelsForTitle()` from `pr-type-label.mjs` (the
-     type table has exactly ONE definition in this repo). Otherwise a scored
-     scan of `TYPE_SIGNALS` — curated phrases, not bare words — over the TITLE
-     first and the body only as a fallback: wrong answer / divergence / silent
+  2. **type** — an issue-kind title prefix comes first: `epic:` yields
+     `epic` (`TITLE_PREFIX_TO_TYPE`), while the area still comes from the rest
+     of the title and the body's cited paths. Next, a Conventional-Commit title
+     prefix is authoritative and is resolved by importing `labelsForTitle()`
+     from `pr-type-label.mjs` (the type table has exactly ONE definition in
+     this repo). Otherwise a scored scan of `TYPE_SIGNALS` — curated phrases,
+     not bare words — over the TITLE first and the body only as a fallback: wrong answer / divergence / silent
      empty -> `bug`, missing coverage / hollow test / mutation survivor ->
      `test`, unbounded resource / scan cost / fan-out -> `performance`,
      duplication / half-finished mechanical change -> `refactor`, stale or

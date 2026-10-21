@@ -13,7 +13,8 @@
 //      landing dark;
 //   2. every TYPE arm is reachable — bug / test / performance / refactor /
 //      documentation each classified from a real title, plus the
-//      Conventional-Commit delegation to `pr-type-label.mjs`;
+//      Conventional-Commit delegation to `pr-type-label.mjs` and the
+//      issue-kind prefix (`epic:`) that outranks it;
 //   3. the decision layer is additive, capped, and idempotent;
 //   4. the CLI exits 0 on a real fixture AND exits non-zero on each vacuity
 //      shape it exists to catch (zero issues, unfetched body, an issue no
@@ -36,6 +37,7 @@ import {
   PATH_PREFIX_TO_AREA,
   PRODUCTION_PATH_WEIGHT,
   TITLE_PREFIX_TO_AREA,
+  TITLE_PREFIX_TO_TYPE,
   TYPE_SIGNALS,
   TYPE_TIEBREAK_ORDER,
   areaForPath,
@@ -49,6 +51,7 @@ import {
   labelsForIssue,
   rankPathAreas,
   scoreSignals,
+  typeForTitlePrefix,
 } from './issue-label.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -159,6 +162,7 @@ test('areaForTitlePrefix reads the leading <prefix>: token, including compounds'
 test('areaForTitlePrefix yields nothing for a TYPE-only prefix or no prefix', () => {
   assert.equal(areaForTitlePrefix('perf: cardinality ratchet has no /series row'), '');
   assert.equal(areaForTitlePrefix('docs: tidy'), '');
+  assert.equal(areaForTitlePrefix('epic: ch-server-safety cancellation probes depend on runner timing'), '');
   assert.equal(areaForTitlePrefix('Route B is never exercised'), '');
 });
 
@@ -252,6 +256,65 @@ test('inferType delegates a Conventional-Commit prefix to pr-type-label', () => 
   assert.equal(inferType('docs: tidy the engine page', ''), 'documentation');
   assert.equal(inferType('test: add a traceql fixture', ''), 'test');
   assert.equal(inferType('feat: add holt-winters', ''), 'enhancement');
+});
+
+// The two epics below are the real titles that reached the labeler with no
+// area-bearing path in their bodies and failed the run as unclassified.
+const EPIC_SCHEMA_TITLE = 'epic: serve the OTel-CH metrics schema with DateTime timestamps (exporter v0.157+)';
+const EPIC_SCHEMA_BODY =
+  '## Scope\n\nThe collector-contrib ClickHouse exporter changed its metrics schema in v0.157.0: ' +
+  '`TimeUnix`, `StartTimeUnix` and `Exemplars.TimeUnix` are `DateTime` (second precision) instead of ' +
+  '`DateTime64(9)`. Cerberus has to serve both schemas.\n\n## Acceptance\n\n- Root `go.mod` and ' +
+  '`test/oracle/go.mod` replace collector-contrib with the fork tag that renders both.\n' +
+  '- The compatibility harness stays on `DateTime64(9)`.\n';
+const EPIC_PROBES_TITLE = 'epic: ch-server-safety cancellation probes depend on runner timing';
+const EPIC_PROBES_BODY =
+  '## Scope\n\nThe `ch-server-safety` cancellation probes (`test/chserver/cancellation_integration_test.go`) ' +
+  'judge whether ClickHouse stops a CPU-bound call that cerberus cancels.\n\n## Acceptance\n\n' +
+  '- `ch-server-safety` passes on at least 10 consecutive dispatches of the change\'s head.\n';
+
+test('typeForTitlePrefix maps an issue-kind prefix to its label, case-insensitively', () => {
+  assert.equal(typeForTitlePrefix(EPIC_SCHEMA_TITLE), 'epic');
+  assert.equal(typeForTitlePrefix('Epic: Upstream- and substrate-blocked divergences'), 'epic');
+  // Only the leading prefix counts: `epic` later in the title is prose.
+  assert.equal(typeForTitlePrefix('promql: the epic: subquery case'), '');
+  assert.equal(typeForTitlePrefix('the epic tracking subqueries'), '');
+  assert.equal(typeForTitlePrefix('perf: cardinality ratchet has no /series row'), '');
+});
+
+test('inferType gives an epic: title the epic label, ahead of title and body signals', () => {
+  assert.equal(inferType(EPIC_SCHEMA_TITLE, EPIC_SCHEMA_BODY), 'epic');
+  assert.equal(inferType(EPIC_PROBES_TITLE, EPIC_PROBES_BODY), 'epic');
+  // A title that would otherwise score as a bug is still an epic.
+  assert.equal(inferType('epic: promql instants that silently return the wrong answer', ''), 'epic');
+});
+
+test('every TITLE_PREFIX_TO_TYPE label is an applicable type label', () => {
+  for (const [prefix, label] of Object.entries(TITLE_PREFIX_TO_TYPE)) {
+    assert.ok(APPLICABLE_TYPE_LABELS.includes(label), `${prefix}: -> ${label} is not applicable`);
+    assert.equal(inferType(`${prefix}: anything`, ''), label);
+  }
+});
+
+test('labelsForIssue labels an epic, taking its area from the title and body as usual', () => {
+  // No area-bearing path anywhere: the epic label alone classifies it.
+  const probes = labelsForIssue({ title: EPIC_PROBES_TITLE, body: EPIC_PROBES_BODY, labels: [] });
+  assert.equal(probes.unclassified, false);
+  assert.deepEqual(probes.areas, []);
+  assert.deepEqual(probes.missing, ['epic']);
+
+  // A head named after the prefix and a cited production path still yield areas.
+  const withArea = labelsForIssue({
+    title: 'epic: promql mixed exp-histogram relations under wrappers',
+    body: 'Lowering lives in internal/promql/lower.go:120 and internal/promql/histogram.go:40.',
+    labels: [],
+  });
+  assert.deepEqual(withArea.missing, ['area/promql', 'epic']);
+
+  // Already carrying its labels: a no-op, not a failure.
+  const done = labelsForIssue({ title: EPIC_SCHEMA_TITLE, body: EPIC_SCHEMA_BODY, labels: ['area/schema', 'epic'] });
+  assert.equal(done.unclassified, false);
+  assert.deepEqual(done.missing, []);
 });
 
 test('inferType classifies a wrong answer / divergence / silent empty as bug', () => {
@@ -398,6 +461,7 @@ test('assertTablesUsable passes on the live tables', () => {
   assert.deepEqual(assertTablesUsable(), []);
   assert.ok(Object.keys(PATH_PREFIX_TO_AREA).length > 0);
   assert.ok(Object.keys(TITLE_PREFIX_TO_AREA).length > 0);
+  assert.ok(Object.keys(TITLE_PREFIX_TO_TYPE).length > 0);
 });
 
 test('assertBodyFetched separates "never fetched" from "author wrote nothing"', () => {
@@ -469,6 +533,18 @@ test('CLI FAILS, naming the issue, when a rule classifies nothing', () => {
   assert.equal(res.status, 1);
   assert.match(res.stdout, /#99 — Thoughts on naming/);
   assert.match(res.stdout, /widen the mapping/);
+});
+
+test('CLI classifies the epics that once failed the run as unclassified', () => {
+  const file = fixtureFile('epics.json', [
+    { number: 3941, title: EPIC_SCHEMA_TITLE, body: EPIC_SCHEMA_BODY, labels: [] },
+    { number: 3925, title: EPIC_PROBES_TITLE, body: EPIC_PROBES_BODY, labels: [] },
+  ]);
+  const res = runCLI({ ...DRY, ISSUE_LABEL_FIXTURE: file });
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /#3941 DRY-RUN would add \[epic\]/);
+  assert.match(res.stdout, /#3925 DRY-RUN would add \[epic\]/);
+  assert.match(res.stdout, /0 unclassified/);
 });
 
 test('CLI rejects an unknown mode and a fixture outside dry-run', () => {
