@@ -72,10 +72,8 @@ services:
     # non-root user, so the mount is world-writable (sticky, like /tmp).
     volumes:
       - ./loki-config.yaml:/etc/loki/loki-config.yaml:ro
-      - type: tmpfs
-        target: /tmp/loki-ephemeral
-        tmpfs:
-          mode: 01777
+    tmpfs:
+      - /tmp/loki-ephemeral:mode=1777
     ports:
       - "23100:3100"
     # No Docker-level healthcheck: the grafana/loki image ships distroless

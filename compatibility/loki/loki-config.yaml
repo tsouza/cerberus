@@ -80,17 +80,18 @@ limits_config:
 # minutes after it starts. Setting 0 disables the check (upstream-
 # documented semantics).
 #
-# The WAL directory sits on the tmpfs docker-compose.yml mounts at
-# /tmp/loki-ephemeral, with the TSDB shipper's directories below.
+# The WAL directory sits under /tmp/loki-ephemeral, with the TSDB
+# shipper's directories below; the compatibility stack mounts a tmpfs
+# there (docker-compose.yml).
 ingester:
   wal:
     dir: /tmp/loki-ephemeral/wal
     disk_full_threshold: 0
 
 # The TSDB shipper's active (head-built, pending upload) and cache
-# (downloaded) index directories, on the same tmpfs: a restart of the
-# reference discards both, leaving the object store (chunks_directory)
-# as the only index source. See stageCorpus in cmd/seed/main.go for why
+# (downloaded) index directories. On the compatibility stack's tmpfs a
+# restart of the reference discards both, leaving the object store
+# (chunks_directory) as the only index source. See stageCorpus in cmd/seed/main.go for why
 # the reference's /index/stats is exact only in that state.
 storage_config:
   tsdb_shipper:

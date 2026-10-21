@@ -37,7 +37,7 @@ import (
 //     absence is a HARD ERROR, checked on every poll.
 //
 //   - PROGRESS signals, asserted `>= n` (chunks flushed since the baseline,
-//     index uploads, completed blocks, blocklist length). These are counter
+//     completed blocks, blocklist length). These are counter
 //     and gauge VECTORS whose children do not exist until the event they count
 //     first happens, so absence at the baseline is the honest reading of "zero
 //     so far", not a rename. Coercing them to zero cannot make a gate pass —
@@ -55,7 +55,6 @@ const (
 	lokiFlushQueueLengthMetric = "loki_ingester_flush_queue_length"
 	lokiMemoryChunksMetric     = "loki_ingester_memory_chunks"
 	lokiChunksFlushedMetric    = "loki_ingester_chunks_flushed_total"
-	lokiShipperUploadsMetric   = `loki_tsdb_shipper_tables_upload_operation_total{status="success"`
 	tempoBlocksCompletedMetric = "tempo_live_store_blocks_completed_total"
 	tempoBlocklistLengthMetric = "tempodb_blocklist_length"
 )
@@ -72,7 +71,6 @@ var QuiescenceMetrics = []string{
 // let the gate through.
 var ProgressMetrics = []string{
 	lokiChunksFlushedMetric,
-	lokiShipperUploadsMetric,
 	tempoBlocksCompletedMetric,
 	tempoBlocklistLengthMetric,
 }
@@ -87,9 +85,6 @@ const (
 	// Loki's exposition is a few hundred KiB; a body larger than this means
 	// something other than a reference backend is answering.
 	metricsBodyLimit = 8 << 20
-	// lokiShipperUploadsNeeded is the number of successful TSDB index uploads
-	// that must land after the flush before a query can see the pushed data.
-	lokiShipperUploadsNeeded = 1
 	// tempoBlocksNeeded / tempoBlocklistNeeded are the live-store block and
 	// blocklist minimums Tempo's search path needs.
 	tempoBlocksNeeded    = 1
@@ -124,42 +119,44 @@ func FlushLoki(ctx context.Context, baseURL string) error {
 	return nil
 }
 
-// LokiCounters is the pair of counters the Loki settle gate anchors on. It is
-// read once BEFORE the push so the gate waits for deltas: an absolute
-// threshold would already be satisfied by a previous run's data.
+// LokiCounters is the counter the Loki settle gate anchors on. It is read
+// once BEFORE the push so the gate waits for a delta: an absolute threshold
+// would already be satisfied by a previous run's data.
 type LokiCounters struct {
-	ChunksFlushed  float64
-	ShipperUploads float64
+	ChunksFlushed float64
 }
 
-// ReadLokiCounters snapshots the two anchor counters. Both are progress
-// signals, so a freshly booted Loki that has never flushed a chunk reports
-// them absent and the baseline is genuinely zero.
+// ReadLokiCounters snapshots the anchor counter. It is a progress signal, so a
+// freshly booted Loki that has never flushed a chunk reports it absent and the
+// baseline is genuinely zero.
 func ReadLokiCounters(ctx context.Context, baseURL string) (LokiCounters, error) {
 	metrics, err := fetchMetrics(ctx, baseURL)
 	if err != nil {
 		return LokiCounters{}, err
 	}
 	flushed, _ := progressMetric(metrics, lokiChunksFlushedMetric)
-	uploads, _ := progressMetric(metrics, lokiShipperUploadsMetric)
-	return LokiCounters{ChunksFlushed: flushed, ShipperUploads: uploads}, nil
+	return LokiCounters{ChunksFlushed: flushed}, nil
 }
 
-// WaitLokiSettled blocks until four conditions hold IN A SINGLE poll:
+// WaitLokiSettled blocks until three conditions hold IN A SINGLE poll:
 //
 //   - the ingester's flush queue is empty,
 //   - no chunks remain in memory,
 //   - chunks flushed has advanced by at least streams since the baseline —
 //     positive evidence that THIS push went through the flush path, not that a
-//     stale reading happened to satisfy the queue checks,
-//   - at least one successful TSDB shipper upload has landed since the
-//     baseline, because /query_range consults the published index.
+//     stale reading happened to satisfy the queue checks.
+//
+// A flushed chunk is queryable as soon as it is recorded in the ingester's
+// TSDB head, which the querier reads alongside the uploaded index files, so
+// no shipper-upload signal is needed — and none would be evidence: the
+// shipper's upload-operation counter ticks on every upload loop whether or
+// not a new index file exists.
 //
 // Requiring them in one poll is what rules out a latch: a gate that remembers
 // "queue was empty once" can pass while the current push is still in flight.
 func WaitLokiSettled(ctx context.Context, baseURL string, streams int, baseline LokiCounters, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	unseen := newProgressTracker(lokiChunksFlushedMetric, lokiShipperUploadsMetric)
+	unseen := newProgressTracker(lokiChunksFlushedMetric)
 	var last error
 	for {
 		metrics, err := fetchMetrics(ctx, baseURL)
@@ -171,20 +168,15 @@ func WaitLokiSettled(ctx context.Context, baseURL string, streams int, baseline 
 			}
 			if err == nil {
 				flushed, flushedSeen := progressMetric(metrics, lokiChunksFlushedMetric)
-				uploads, uploadsSeen := progressMetric(metrics, lokiShipperUploadsMetric)
 				unseen.observe(lokiChunksFlushedMetric, flushedSeen)
-				unseen.observe(lokiShipperUploadsMetric, uploadsSeen)
 
 				flushedDelta := flushed - baseline.ChunksFlushed
-				uploadsDelta := uploads - baseline.ShipperUploads
-				if queue == 0 && memory == 0 &&
-					flushedDelta >= float64(streams) &&
-					uploadsDelta >= lokiShipperUploadsNeeded {
+				if queue == 0 && memory == 0 && flushedDelta >= float64(streams) {
 					return nil
 				}
 				err = fmt.Errorf(
-					"flush_queue_length=%v memory_chunks=%v chunks_flushed_delta=%v (need %d) shipper_uploads_delta=%v (need %d)%s",
-					queue, memory, flushedDelta, streams, uploadsDelta, lokiShipperUploadsNeeded, unseen.suffix(),
+					"flush_queue_length=%v memory_chunks=%v chunks_flushed_delta=%v (need %d)%s",
+					queue, memory, flushedDelta, streams, unseen.suffix(),
 				)
 			}
 		}
@@ -473,37 +465,12 @@ func sumMetric(metrics map[string]float64, selector string) (float64, bool) {
 	return total, matched
 }
 
-// matchesMetricKey encodes the two selector shapes the gates use.
-//
-//   - A bare metric name (`loki_ingester_flush_queue_length`) matches the
-//     exact key for an unlabelled scalar, or `<name>{…}` for a labelled
-//     family. The `{` is required rather than a plain prefix, so `foo_total`
-//     cannot match `foo_total_bucket`.
-//   - A name plus a partial label selector
-//     (`loki_tsdb_shipper_tables_upload_operation_total{status="success"`,
-//     deliberately unterminated) matches any key with that metric name whose
-//     rendered label set CONTAINS the selector. A prefix test on the label
-//     portion would not work: the exposition format sorts labels
-//     alphabetically, so `component` lands before `status` and the selector
-//     sits mid-string.
-func matchesMetricKey(key, selector string) bool {
-	if key == selector {
-		return true
-	}
-	brace := strings.IndexRune(selector, '{')
-	if brace < 0 {
-		return strings.HasPrefix(key, selector+"{")
-	}
-	name := selector[:brace]
-	labels := selector[brace+1:]
-	if !strings.HasPrefix(key, name+"{") {
-		return false
-	}
-	end := strings.IndexRune(key, '}')
-	if end < 0 {
-		return false
-	}
-	return strings.Contains(key[len(name)+1:end], labels)
+// matchesMetricKey reports whether key is a sample of the metric family name:
+// the exact key for an unlabelled scalar, or `<name>{…}` for a labelled family.
+// The `{` is required rather than a plain prefix, so `foo_total` cannot match
+// `foo_total_bucket`.
+func matchesMetricKey(key, name string) bool {
+	return key == name || strings.HasPrefix(key, name+"{")
 }
 
 // quiescenceMetric reads a signal the gate asserts `== 0`. Absence is a hard
