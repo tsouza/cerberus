@@ -221,12 +221,12 @@ func (h *Handler) runStructuralTwoPhase(ctx context.Context, sj *chplan.Structur
 // uses. The spans table is threaded onto the emit context so the resource-
 // bound gate verifies the closure's scans stay windowed.
 //
-// AttrStrategies is threaded here too (cerberus issue #3062) precisely
-// because this bypasses engine.emitForHead — the ONE chokepoint that
-// duck-types h.lang against attrStrategier and calls
-// chsql.WithAttrStrategies automatically. Every other emit path in this
-// package reaches emitForHead through h.Engine.QueryPlan and picks the
-// strategy up for free; this hand-rolled direct-emit path is the
+// The traces SchemaStrategies are threaded here too (cerberus issue #3062)
+// precisely because this bypasses the engine's entry points — the ones
+// that duck-type h.lang against schemaStrategier and call
+// chsql.WithSchemaStrategies automatically. Every other emit path in this
+// package reaches them through h.Engine.QueryPlan and picks the
+// strategies up for free; this hand-rolled direct-emit path is the
 // exception the #2777 PR body's own risk note anticipated ("structural-
 // join/nested-set emitters that may not route through the emitSelect
 // chokepoint"), and a real chDB differential
@@ -240,7 +240,7 @@ func (h *Handler) runStructuralTwoPhase(ctx context.Context, sj *chplan.Structur
 func (h *Handler) runStructuralPhaseA(ctx context.Context, sj *chplan.StructuralJoin, limit int) ([]string, error) {
 	phaseA := buildStructuralPhaseAPlan(sj, h.Schema, limit)
 	ctx = chsql.WithSpansTable(ctx, h.Schema.SpansTable)
-	ctx = chsql.WithAttrStrategies(ctx, h.AttrStrategies)
+	ctx = chsql.WithSchemaStrategies(ctx, h.tracesStrategies())
 	sql, args, physicalScans, err := chsql.EmitCounted(ctx, phaseA)
 	if err != nil {
 		// Mirror the engine's `emit:` wrapping so ClassifyErr maps this

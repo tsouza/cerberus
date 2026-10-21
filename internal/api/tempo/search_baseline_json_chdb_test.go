@@ -16,8 +16,8 @@
 // of the jsonFullMapFns identifiers (FnMapMerge included), not merely
 // LogQL's own call sites — so unlike item 1
 // (metrics_compare_json_chdb_test.go, which needed a real fix:
-// metricsLang was missing EmitAttrStrategies entirely), /api/search routes
-// through traceqlLang, which already implements EmitAttrStrategies
+// metricsLang was missing its strategies hook entirely), /api/search routes
+// through traceqlLang, which already implements EmitSchemaStrategies
 // (cerberus issue #3062) — so this file is the empirical proof that item 0
 // needs NO further code change, only this test, once #3071's generic
 // chsql-layer substitution is in place.
@@ -87,7 +87,7 @@ func newSearchBaselineServer(t *testing.T, c *chclienttest.Client, table, ddl, s
 	s := schema.DefaultOTelTraces()
 	s.SpansTable = table
 	h := tempo.New(c, s, "v-test", nil)
-	h.SetAttrStrategies(attrStrategies)
+	h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{Traces: chsql.SchemaStrategies{Attrs: attrStrategies}})
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)

@@ -12,7 +12,7 @@ package tempo
 //
 // Every build*SQL function in search_tags.go / search_tag_values.go now
 // takes the resolved chsql.AttrStrategies explicitly and threads it onto
-// every chsql.QueryBuilder it constructs via .WithAttrStrategies. That
+// every chsql.QueryBuilder it constructs via .WithSchemaStrategies. That
 // alone makes chsql.Builder.MapAt / Builder.MapContains (the ad-hoc
 // equivalents of chplan.MapAccess / FnMapContainsKey — see MapAt's own
 // doc in internal/chsql/builder.go) render correctly against a
@@ -29,7 +29,7 @@ package tempo
 // flat Map(String, String) attribute column
 // (SpanAttributes/ResourceAttributes/ScopeAttributes), never for a Nested
 // column's per-element Array(Map(...)) subfield — there is no JSON
-// encoding decision to make for those at all. Threading .WithAttrStrategies
+// encoding decision to make for those at all. Threading .WithSchemaStrategies
 // onto their QueryBuilders below is still done, for the same reason
 // internal/api/loki threads it onto every builder regardless of whether a
 // given call site touches an attribute-map column: a byte-identical

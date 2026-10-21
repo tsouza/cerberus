@@ -14,11 +14,11 @@
 // `DateTime` type can hold, so each expected answer below is computed by
 // hand from the seed rather than read back from cerberus.
 //
-// The handler runs with MetricsTimestamp = chsql.MetricsTimestampDateTime,
-// the strategy preflight resolves for this schema. The known-positive
-// control runs the zero strategy over the same tables and must fail:
-// toUnixTimestamp64Nano rejects a `DateTime` argument with
-// ILLEGAL_TYPE_OF_ARGUMENT, the runtime gap the strategy closes.
+// The handler renders for schema.MetricsTimestampSeconds, the precision
+// preflight resolves for this schema. The known-positive control renders
+// for the zero precision over the same tables and must fail:
+// toUnixTimestamp64Milli rejects a `DateTime` argument with
+// ILLEGAL_TYPE_OF_ARGUMENT, the runtime gap the precision closes.
 
 package prom_test
 
@@ -97,24 +97,24 @@ func dtSeed() string {
 }
 
 // newChDBUpstreamDateTimeServer seeds the upstream v0.157.0 metric tables
-// and serves a prom handler over them with the given metrics timestamp
-// strategy.
-func newChDBUpstreamDateTimeServer(t *testing.T, strategy chsql.MetricsTimestampStrategy) *httptest.Server {
+// and serves a prom handler over them that renders for the given metrics
+// timestamp precision.
+func newChDBUpstreamDateTimeServer(t *testing.T, precision schema.MetricsTimestampPrecision) *httptest.Server {
 	t.Helper()
-	return newChDBMetricsTimestampServer(t, chsqltest.UpstreamDateTimeMetricsDDL, strategy)
+	return newChDBMetricsTimestampServer(t, chsqltest.UpstreamDateTimeMetricsDDL, precision)
 }
 
 // newChDBMetricsTimestampServer creates the metric tables renderDDL returns
 // for the chDB session's current database, seeds them with dtSeed, and
-// serves a prom handler over them with the given metrics timestamp
-// strategy. The tables are dropped first — the templates say CREATE TABLE
+// serves a prom handler over them that renders for the given metrics
+// timestamp precision. The tables are dropped first — the templates say CREATE TABLE
 // IF NOT EXISTS, which would keep an earlier test's table of the other
 // timestamp type — and again on cleanup, so no later test in the shared
 // chDB session reads a table its seed did not create.
 func newChDBMetricsTimestampServer(
 	t *testing.T,
 	renderDDL func(database string) ([]string, error),
-	strategy chsql.MetricsTimestampStrategy,
+	precision schema.MetricsTimestampPrecision,
 ) *httptest.Server {
 	t.Helper()
 	c := chclienttest.NewChDB(t)
@@ -139,7 +139,9 @@ func newChDBMetricsTimestampServer(
 	c.Seed(t, dtSeed())
 
 	h := prom.New(c, m, nil)
-	h.MetricsTimestamp = chsql.NewMetricsTimestampCell(strategy)
+	h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{
+		Metrics: chsql.SchemaStrategies{MetricsTimestamp: precision},
+	})
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)
@@ -220,7 +222,7 @@ func dtSingleValue(t *testing.T, srv *httptest.Server, query string, ts time.Tim
 // upstream DateTime-typed metric tables and grades each answer against the
 // value the whole-second seed implies.
 func TestUpstreamDateTimeSchema_PromQL_ChDB(t *testing.T) {
-	dtRunPromQLCases(t, newChDBUpstreamDateTimeServer(t, chsql.MetricsTimestampDateTime))
+	dtRunPromQLCases(t, newChDBUpstreamDateTimeServer(t, schema.MetricsTimestampSeconds))
 }
 
 // dtRunPromQLCases runs representative PromQL over a server seeded with
@@ -355,13 +357,13 @@ func dtRunPromQLCases(t *testing.T, srv *httptest.Server) {
 	})
 }
 
-// TestUpstreamDateTimeSchema_ZeroStrategyFails_ChDB is the known-positive
-// control: the DateTime64 strategy over the same DateTime tables renders
-// toUnixTimestamp64Milli on a DateTime column, which ClickHouse rejects.
-// Without it the test above could pass on SQL that never reaches a
+// TestUpstreamDateTimeSchema_NanosPrecisionFails_ChDB is the known-positive
+// control: rendering for nanosecond precision over the same DateTime tables
+// calls toUnixTimestamp64Milli on a DateTime column, which ClickHouse
+// rejects. Without it the test above could pass on SQL that never reaches a
 // timestamp function at all.
-func TestUpstreamDateTimeSchema_ZeroStrategyFails_ChDB(t *testing.T) {
-	dtAssertTimestampQueryRejected(t, newChDBUpstreamDateTimeServer(t, chsql.MetricsTimestampDateTime64))
+func TestUpstreamDateTimeSchema_NanosPrecisionFails_ChDB(t *testing.T) {
+	dtAssertTimestampQueryRejected(t, newChDBUpstreamDateTimeServer(t, schema.MetricsTimestampNanos))
 }
 
 // dtAssertTimestampQueryRejected asserts that timestamp() over srv fails
@@ -378,7 +380,7 @@ func dtAssertTimestampQueryRejected(t *testing.T, srv *httptest.Server) {
 	}
 	body := readBody(t, resp)
 	if resp.StatusCode == http.StatusOK {
-		t.Fatalf("the DateTime64 strategy must fail on DateTime columns, got 200: %s", body)
+		t.Fatalf("nanosecond rendering must fail on DateTime columns, got 200: %s", body)
 	}
 	// ClickHouse's ILLEGAL_TYPE_OF_ARGUMENT is exception code 43.
 	if !strings.Contains(body, "Code: 43.") || !strings.Contains(body, "toUnixTimestamp64") {

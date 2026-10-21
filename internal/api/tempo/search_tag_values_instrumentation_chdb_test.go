@@ -29,6 +29,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclienttest"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -81,7 +82,7 @@ func TestBuildAttributeValuesSQL_ChDB_InstrumentationScope_IsolatedFromSpanResou
 	s.ScopeAttributesColumn = "ScopeAttributes"
 
 	sqlStr, args, _ := tempo.BuildAttributeValuesSQLForTest(
-		s, "otel.scope.name", tempo.AttrMapScopeInstrumentationForTest, nil, start, end, nil,
+		s, "otel.scope.name", tempo.AttrMapScopeInstrumentationForTest, nil, start, end, chsql.SchemaStrategies{},
 	)
 
 	got, err := c.QueryStrings(context.Background(), sqlStr, args...)

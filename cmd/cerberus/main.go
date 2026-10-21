@@ -133,6 +133,10 @@ func newAdmitLimiters(cfg config.Config, logger *slog.Logger) admitLimiters {
 type apiHeads struct {
 	grpcServer *grpc.Server
 	consumers  chOptConsumers
+	// loki and tempo are the Loki and Tempo heads built, nil when disabled
+	// (consumers.prom is the Prom one).
+	loki  *loki.Handler
+	tempo *tempo.Handler
 }
 
 // resolveBoundOverrides resolves the six resource-bound safety-ceiling
@@ -215,9 +219,14 @@ func mountAPIHeads(
 	// so the capability re-probe swaps a re-resolved set into exactly the heads
 	// this process serves.
 	var engines []*engine.Engine
-	// promHandler stays nil when the prom head is disabled; it is the only head
-	// carrying a native-lowering dispatch table for the re-probe to swap.
-	var promHandler *prom.Handler
+	// Each head's handler stays nil when that head is disabled. promHandler is
+	// the only head carrying a native-lowering dispatch table for the re-probe
+	// to swap.
+	var (
+		promHandler  *prom.Handler
+		lokiHandler  *loki.Handler
+		tempoHandler *tempo.Handler
+	)
 
 	if cfg.HeadEnabled(config.HeadProm) {
 		// Per-head Client VIEW (#94): own breaker over the shared pool. Built
@@ -241,18 +250,16 @@ func mountAPIHeads(
 			return apiHeads{}, fmt.Errorf("configure query actuals: %w", err)
 		}
 		promHandler = newPromHandler(promClient, cfg, optSet, evalSolver, limiters.prom, logger, resourceBounds, promResourceBounds, actualsTracker)
-		// MetricsTimestamp holds the preflight probe's verdict on the
-		// metrics timestamp columns' physical type (`DateTime64(9)` or
-		// `DateTime`), updated by reprobeSchema when the tables appear
-		// after boot (see runRequirementsCheck).
-		promHandler.MetricsTimestamp = probes.MetricsTimestamp
+		// Strategies: the deployed tables' resolved SchemaStrategies, the
+		// one cell every head shares (see preflightProbes.Strategies).
+		promHandler.Strategies = probes.Strategies
 		promHandler.Mount(traceMux)
 		engines = append(engines, promHandler.Engine)
 	}
 
 	if cfg.HeadEnabled(config.HeadLoki) {
 		lokiClient := client.ForHead(chclient.HeadLoki)
-		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, limiters, logger, resourceBounds, probes.Logs)
+		lokiHandler = newLokiHandler(lokiClient, cfg, optSet, limiters, logger, resourceBounds, probes.Strategies)
 		lokiHandler.Mount(traceMux)
 		engines = append(engines, lokiHandler.Engine)
 	}
@@ -260,7 +267,7 @@ func mountAPIHeads(
 	var grpcServer *grpc.Server
 	if cfg.HeadEnabled(config.HeadTempo) {
 		tempoClient := client.ForHead(chclient.HeadTempo)
-		tempoHandler := tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
+		tempoHandler = tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
 		tempoHandler.Limiter = limiters.tempo
 		tempoHandler.StructuralTwoPhase = cfg.TempoStructuralTwoPhase
 		tempoHandler.ExternalTraceIDPush = buildExternalTraceIDPush(optSet, cfg.ClickHouse.Protocol)
@@ -277,14 +284,8 @@ func mountAPIHeads(
 		// on a deployment where the DDL side actually created it. Mirrors
 		// newLokiHandler's own LabelCatalogEnabled wiring.
 		tempoHandler.TagCatalogEnabled = cfg.SchemaTempoTagCatalogMV
-		// AttrStrategies (cerberus issue #2777 / #3062) is the preflight
-		// boot probe's resolved verdict on the traces attribute-map
-		// columns' physical shape — see runRequirementsCheck's doc for
-		// the known cold-start-race limitation shared with the logs
-		// wiring above. nil (the overwhelmingly common case: no
-		// JSON-typed column detected, or the requirements check
-		// disabled) renders byte-identical to before this field existed.
-		tempoHandler.SetAttrStrategies(probes.Traces)
+		// Strategies: the same shared cell as the prom and loki heads.
+		tempoHandler.Strategies = probes.Strategies
 		tempoHandler.Engine.Settings = settingsRules(cfg, optSet)
 		// The per-query sample budget the ENGINE-level bounds read. The cursor
 		// enforces the same ceiling on rows it drains from ClickHouse, but the
@@ -320,6 +321,8 @@ func mountAPIHeads(
 	return apiHeads{
 		grpcServer: grpcServer,
 		consumers:  chOptConsumers{client: client, engines: engines, prom: promHandler},
+		loki:       lokiHandler,
+		tempo:      tempoHandler,
 	}, nil
 }
 
@@ -1102,7 +1105,7 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 // silently at the callsite, and transposing THESE two mounts /tail on the
 // request budget and every ordinary route on the tail budget — a subtler
 // #1482. Selecting the fields by name here makes that untypeable.
-func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, limiters admitLimiters, logger *slog.Logger, resourceBounds engine.ResourceBoundOverrides, logsAttrStrategies chsql.AttrStrategies) *loki.Handler {
+func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, limiters admitLimiters, logger *slog.Logger, resourceBounds engine.ResourceBoundOverrides, strategies *chsql.SchemaStrategiesCell) *loki.Handler {
 	h := loki.New(client, cfg.Logs, logger.With("api", "loki"))
 	h.Limiter = limiters.loki
 	h.TailLimiter = limiters.lokiTail
@@ -1118,14 +1121,10 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	// request.
 	h.TextIndexLineFilter = optSet.Has(chopt.FeatureTextIndexLineFilter)
 	h.Lang.TextIndexLineFilter = h.TextIndexLineFilter
-	// AttrStrategies (cerberus issue #2777) is the preflight boot probe's
-	// resolved verdict on the logs attribute-map columns' physical shape —
-	// see runRequirementsCheck's doc for the known cold-start-race
-	// limitation. nil (the overwhelmingly common case: no JSON-typed
-	// column detected, or the requirements check disabled) renders
-	// byte-identical to before this field existed.
-	h.AttrStrategies = logsAttrStrategies
-	h.Lang.AttrStrategies = h.AttrStrategies
+	// Strategies: the deployed tables' resolved SchemaStrategies, shared
+	// with the other heads (see preflightProbes.Strategies). Each request
+	// loads it, so the long-lived h.Lang carries none of its own.
+	h.Strategies = strategies
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	h.TailWriteTimeout = cfg.LokiTailWriteTimeout
 	h.PatternsMinVolume = cfg.LokiPatternsMinVolume
@@ -2185,52 +2184,39 @@ func preflightRequirementsFromConfig(cfg config.Config) preflight.Requirements {
 	}
 }
 
-// preflightProbes carries runRequirementsCheck's boot-probe findings — the
-// per-signal AttrStrategies and the probe Result — back to the caller. Named — rather than two
-// positional chsql.AttrStrategies return values — for the identical
-// anti-transposition reason admitLimiters exists (see its own doc): two
-// same-typed values transpose silently at a callsite, and swapping these
-// would silently apply the traces schema's strategy to the logs head (and
-// vice versa) with no compiler diagnostic.
+// preflightProbes carries runRequirementsCheck's findings back to the caller.
 type preflightProbes struct {
-	Logs   chsql.AttrStrategies
-	Traces chsql.AttrStrategies
-	// Result is the probe the strategies were read from, kept so the caller
-	// can resolve the metrics schema against it (see
-	// preflight.Result.ResolveStaleMarkerFlags). The zero value — the
-	// check disabled, or the transient not-ready path — resolves every
-	// schema to itself.
+	// Result is the boot probe, kept so the caller can resolve the metrics
+	// schema against it (see preflight.Result.ResolveStaleMarkerFlags). The
+	// zero value — the check disabled, or the transient not-ready path —
+	// resolves every schema to itself.
 	Result preflight.Result
-	// MetricsTimestamp holds the metrics timestamp strategy the prom head
-	// renders with: Result.MetricsTimestamp on a passed check, or — on the
-	// transient not-ready path — the strategy reprobeSchema resolves once
-	// the tables appear, stored before /readyz flips. nil when the check
-	// is disabled, which loads the zero strategy.
-	MetricsTimestamp *chsql.MetricsTimestampCell
+	// Strategies holds the chsql.SchemaStrategies every head renders under,
+	// the one cell all of them share: the boot probe's Result.Strategies on
+	// a passed check; on the transient not-ready path, configuredStrategies
+	// until reprobeSchema stores the strategies it resolves; and
+	// configuredStrategies for good when the check is disabled. nil (a
+	// caller that never ran the check) loads the zero value.
+	Strategies *chsql.SchemaStrategiesCell
 }
 
-// runRequirementsCheck also returns the resolved per-signal AttrStrategies
-// (cerberus issue #2777, extended to traces by #3062) so the caller can
-// wire them onto the Loki / Tempo heads' Handlers — see newLokiHandler and
-// mountAPIHeads' tempoHandler.SetAttrStrategies call. Known limitation
-// (documented rather than silently accepted): on the TRANSIENT not-ready
-// path (a table doesn't exist yet at boot), both fields are necessarily
-// the zero value — the shape can't be introspected before the table
-// exists — and they stay zero for the rest of THIS process's life even
-// after the background re-probe (reprobeSchema) flips /readyz once the
-// schema appears; a JSON-typed schema created during that race window is
-// picked up correctly only on the NEXT boot. This mirrors
-// decideRequirementsOutcome's own boot-resolved-once posture for every
-// other preflight finding — nothing here re-derives shape facts after the
-// readiness re-probe passes, and doing so would require making the
-// Handler's resolved strategy mutable under concurrent requests, which
-// cerberus issue #2777 explicitly avoids (chopt-style pure, boot-resolved
-// strategy, zero per-query branching).
-//
-// The metrics timestamp strategy is the exception, carried in
-// preflightProbes.MetricsTimestamp: reprobeSchema stores the strategy it
-// resolves before it reports ready, so a metrics schema provisioned during
-// the race window renders correctly in the same process.
+// configuredStrategies are the SchemaStrategies the configuration implies
+// for tables cerberus has not introspected: the metrics timestamp precision
+// it provisions the metrics tables with (schema.metricsTimestampPrecision),
+// and Map attribute columns.
+func configuredStrategies(cfg config.Config) chsql.ResolvedSchemaStrategies {
+	return chsql.ResolvedSchemaStrategies{
+		Metrics: chsql.SchemaStrategies{MetricsTimestamp: cfg.SchemaProvisioning.MetricsTimestampPrecision},
+	}
+}
+
+// runRequirementsCheck runs the boot requirements check and decides the
+// boot outcome from it (decideRequirementsOutcome). It also returns the
+// SchemaStrategies cell the heads render under (preflightProbes.Strategies).
+// On the transient not-ready path the tables cannot be introspected yet, so
+// the cell starts at configuredStrategies and reprobeSchema stores the
+// strategies the deployed tables resolve to before it reports ready — the
+// same strategies a boot that found the tables would have resolved.
 func runRequirementsCheck(
 	ctx context.Context,
 	logger *slog.Logger,
@@ -2238,8 +2224,9 @@ func runRequirementsCheck(
 	cfg config.Config,
 ) (health.SchemaPresentFunc, preflightProbes, error) {
 	if !cfg.RequirementsCheck {
-		logger.Info("requirements check disabled (CERBERUS_REQUIREMENTS_CHECK=false)")
-		return nil, preflightProbes{}, nil
+		logger.Info("requirements check disabled (CERBERUS_REQUIREMENTS_CHECK=false)",
+			"metrics_timestamp", cfg.SchemaProvisioning.MetricsTimestampPrecision.String())
+		return nil, preflightProbes{Strategies: chsql.NewSchemaStrategiesCell(configuredStrategies(cfg))}, nil
 	}
 	req := preflightRequirementsFromConfig(cfg)
 	res := preflight.RunIfEnabled(ctx, cfg.RequirementsCheck, client, req)
@@ -2260,22 +2247,20 @@ func runRequirementsCheck(
 		// decideRequirementsOutcome named clears. No restart.
 		logger.Warn(outcome.logMsg, "reason", outcome.notReadyReason)
 		present := newSchemaPresentSignal(outcome.notReadyReason)
-		metricsTimestamp := chsql.NewMetricsTimestampCell(chsql.MetricsTimestampDateTime64)
-		go reprobeSchema(ctx, logger, client, req, present, metricsTimestamp, schemaRetryInterval)
-		return present.Func(), preflightProbes{MetricsTimestamp: metricsTimestamp}, nil
+		strategies := chsql.NewSchemaStrategiesCell(configuredStrategies(cfg))
+		go reprobeSchema(ctx, logger, client, req, present, strategies, schemaRetryInterval)
+		return present.Func(), preflightProbes{Strategies: strategies}, nil
 	}
 
 	logger.Info(
 		"requirements check passed",
 		"database", cfg.ClickHouse.Database,
 		"native_rate", cfg.ExperimentalTSGridRange,
-		"metrics_timestamp", res.MetricsTimestamp.String(),
+		"metrics_timestamp", res.Strategies.Metrics.MetricsTimestamp.String(),
 	)
 	return nil, preflightProbes{
-		Logs:             res.LogsAttrStrategies,
-		Traces:           res.TracesAttrStrategies,
-		Result:           res,
-		MetricsTimestamp: chsql.NewMetricsTimestampCell(res.MetricsTimestamp),
+		Result:     res,
+		Strategies: chsql.NewSchemaStrategiesCell(res.Strategies),
 	}, nil
 }
 
@@ -2482,15 +2467,16 @@ func (s *schemaPresentSignal) setReason(reason string) {
 // than crashing an already-serving process — the boot-time fail-fast contract
 // covers the cold-start case, and a running replica must not exit on a
 // transient introspection blip. A still-unreachable server keeps the
-// unreachable reason fresh and waits. Once the schema is present it flips
-// readiness and returns.
+// unreachable reason fresh and waits. Once the schema is present it stores
+// the SchemaStrategies the tables resolve to in strategies, flips readiness
+// and returns.
 func reprobeSchema(
 	ctx context.Context,
 	logger *slog.Logger,
-	client *chclient.Client,
+	q preflight.Querier,
 	req preflight.Requirements,
 	signal *schemaPresentSignal,
-	metricsTimestamp *chsql.MetricsTimestampCell,
+	strategies *chsql.SchemaStrategiesCell,
 	interval time.Duration,
 ) {
 	ticker := time.NewTicker(interval)
@@ -2506,7 +2492,7 @@ func reprobeSchema(
 			return
 		case <-ticker.C:
 		}
-		res := preflight.Run(ctx, client, req)
+		res := preflight.Run(ctx, q, req)
 		for _, w := range res.Warnings {
 			if !warned[w] {
 				warned[w] = true
@@ -2533,9 +2519,9 @@ func reprobeSchema(
 		}
 		// Stored before markPresent: a request /readyz admits renders
 		// against the tables that made the process ready.
-		metricsTimestamp.Store(res.MetricsTimestamp)
+		strategies.Store(res.Strategies)
 		logger.Info("schema now provisioned; reporting ready",
-			"database", req.Database, "metrics_timestamp", res.MetricsTimestamp.String())
+			"database", req.Database, "metrics_timestamp", res.Strategies.Metrics.MetricsTimestamp.String())
 		signal.markPresent()
 		return
 	}

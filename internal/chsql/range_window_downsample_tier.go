@@ -133,7 +133,7 @@ func downsampleTierValueExprFrag(fn string) Frag {
 // emitter fans raw sample timestamps through — treating each row's BucketEnd
 // as the "sample timestamp". That is sound because every raw sample the
 // write side ever folds into a bucket lands inside that bucket's OWN
-// `(BucketStart, BucketEnd]` half-open interval (downsampleTierBucketEndExpr
+// `(BucketStart, BucketEnd]` half-open interval (DownsampleTierBucketEnd
 // — internal/schema/ddl), so a bucket whose BucketEnd satisfies an anchor's
 // window test is, by construction, entirely covered by that anchor's
 // window: no bucket ever straddles an anchor boundary. At most
@@ -291,7 +291,7 @@ func (e *emitter) emitRangeWindowDownsampleTier(r *chplan.RangeWindow) error {
 // emitRangeWindowDownsampleTier's own doc) is exact BY CONSTRUCTION
 // whenever every retained sample's own timestamp genuinely falls inside its
 // OWN row's `(BucketStart, BucketEnd]` interval — which is what the write
-// side (renderDownsampleTierView's downsampleTierBucketEndExpr, and
+// side (renderDownsampleTierView's DownsampleTierBucketEnd, and
 // internal/downsampletier's backfillBucketEndExpr, which MUST render the
 // identical expression) guarantees for every row either of them writes.
 // This filter is the READ side's own defense against that guarantee being

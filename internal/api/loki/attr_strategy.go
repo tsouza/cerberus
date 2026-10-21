@@ -7,11 +7,11 @@ import "github.com/tsouza/cerberus/internal/chsql"
 // /index/stats, /index/volume and /patterns all build their SQL directly
 // against chsql.NewQuery() rather than through a
 // chplan tree lowered by logql.Lang.Parse, so they never reach
-// engine.emitForHead / chsql.Emit's ctx-based AttrStrategies threading —
-// wiring Handler.AttrStrategies alone (cerberus issue #2777 / #3064) had
-// no effect on any of them. Each build*SQL function in this package now
-// takes the resolved chsql.AttrStrategies explicitly and threads it onto
-// every chsql.QueryBuilder it constructs via .WithAttrStrategies — that
+// the engine's ctx-based chsql.SchemaStrategies threading — wiring the
+// strategies onto the Lang alone (cerberus issue #2777 / #3064) had no
+// effect on any of them. Each build*SQL function in this package takes the
+// request's chsql.SchemaStrategies explicitly and threads them onto every
+// chsql.QueryBuilder it constructs via .WithSchemaStrategies — that
 // alone makes every per-key JSON rendering chsql already has
 // (exprMapAccess, exprMapContainsKey) reach the selector-matcher WHERE
 // clause every one of these builders shares (applySelectorAndWindow);

@@ -73,30 +73,20 @@ type Lang struct {
 	LogLineLimit    int64
 	LogLineBackward bool
 
-	// AttrStrategies resolves how the logs attribute-map columns
-	// (Schema.AttributesColumn / ResourceAttributesColumn /
-	// ScopeAttributesColumn) are physically stored, per
-	// internal/preflight's boot probe (cerberus issue #2777,
-	// Result.LogsAttrStrategies) — nil (the zero value) means every
-	// column is a genuine ClickHouse Map, rendering byte-identical to
-	// before this field existed. internal/api/loki's Handler resolves
-	// this once at construction (from the preflight Result cmd/cerberus
-	// already runs) and copies it onto every per-request *Lang it builds,
-	// exactly like Schema. EmitAttrStrategies (below) is the duck-typed
-	// hook engine.emitForHead reads to thread it onto the emit-time
-	// context — the same pattern spansTabler / rangeSeriesOrderer already
-	// use for Tempo / Prometheus-specific emit behaviour.
-	AttrStrategies chplan.AttrStrategies
+	// Strategies are the chplan.SchemaStrategies the logs table's deployed
+	// columns resolve to (its attribute-map storage), as the boot
+	// requirements check resolved them. internal/api/loki's Handler loads
+	// them once per request and copies them onto every per-request *Lang it
+	// builds, exactly like Schema. The zero value renders every attribute
+	// column as a Map.
+	Strategies chplan.SchemaStrategies
 }
 
-// EmitAttrStrategies returns the AttrStrategies this Lang's queries should
-// render attribute-map accesses against — see the AttrStrategies field's
-// doc. engine.emitForHead duck-types on this to thread it onto the emit
-// context via chsql.WithAttrStrategies. Returns chplan.AttrStrategies
-// (a chsql.AttrStrategies alias) rather than importing chsql directly:
-// logql is architecturally forbidden from depending on chsql
-// (.go-arch-lint.yml) — see chplan.AttrStrategy's own doc.
-func (l *Lang) EmitAttrStrategies() chplan.AttrStrategies { return l.AttrStrategies }
+// EmitSchemaStrategies returns the SchemaStrategies this Lang's plans render
+// under; internal/engine threads them onto the request's emit context.
+// Returns the chplan type rather than importing chsql: logql may not depend
+// on chsql (.go-arch-lint.yml).
+func (l *Lang) EmitSchemaStrategies() chplan.SchemaStrategies { return l.Strategies }
 
 // errorTypes mirrors the Loki errorType vocabulary the handler emits.
 // Duplicated here (not re-imported from internal/api/loki) so the LogQL

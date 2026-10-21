@@ -347,7 +347,7 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	explode := NewQuery().From(grids.Frag())
 	explode.Select(keyCols...)
 	explode.Select(Col(bucketGridLeAlias))
-	explode.Select(As(Call("toDateTime64", Col(bucketGridAnchorRawAlias), InlineLit(int64(nanoScale))), r.AnchorAlias))
+	explode.Select(As(ToDateTime64Nanos(Col(bucketGridAnchorRawAlias)), r.AnchorAlias))
 	explode.Select(As(Mul(
 		Call("ifNull", Col(bucketGridRateValAlias), InlineLit(0.0)),
 		InlineLit(r.Range.Seconds()),

@@ -529,7 +529,7 @@ func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules e
 func dryRunShape(ctx context.Context, t *testing.T, shape cancelShape) engine.DryRun {
 	t.Helper()
 	eng := &engine.Engine{Optimizer: optimizer.Default()}
-	dr, err := eng.DryRunSQL(ctx, prom.NewExplainLang(schema.DefaultOTelMetrics(), cancelEvalTime, promql.ResourceBounds{}), shape.query)
+	dr, err := eng.DryRunSQL(ctx, prom.NewExplainLang(schema.DefaultOTelMetrics(), schema.MetricsTimestampNanos, cancelEvalTime, promql.ResourceBounds{}), shape.query)
 	if err != nil {
 		t.Fatalf("emit %s: %v", shape.query, err)
 	}

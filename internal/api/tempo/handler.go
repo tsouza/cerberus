@@ -187,35 +187,19 @@ type Handler struct {
 	// internal/api/loki.Handler.LabelCatalogEnabled.
 	TagCatalogEnabled bool
 
-	// AttrStrategies resolves how the traces attribute-map columns are
-	// physically stored — internal/preflight's boot probe's resolved
-	// verdict (cerberus issue #2777 / #3062), wired from cmd/cerberus's
-	// preflight.Result.TracesAttrStrategies via SetAttrStrategies. nil
-	// (the default — no JSON-typed column detected, or the requirements
-	// check disabled) renders byte-identical to before this field
-	// existed. Kept here (in addition to lang.AttrStrategies, which is
-	// what the engine's attrStrategier duck-type actually reads at emit
-	// time) purely so a caller can read back what was configured,
-	// mirroring internal/api/loki.Handler.AttrStrategies — always set
-	// through SetAttrStrategies, never assigned directly, since tempo's
-	// lang is a single long-lived unexported instance (no per-request
-	// Lang construction the way LogQL's langForRequest /
-	// langForRangeRequest build one per request), so there is exactly
-	// one inner copy to keep in sync rather than N per-request ones.
-	AttrStrategies chsql.AttrStrategies
+	// Strategies holds the chsql.SchemaStrategies the boot requirements
+	// check resolved for every signal's tables, wired in cmd/cerberus and
+	// updated by the schema re-probe when the tables appear after boot.
+	// Every TraceQL statement renders under the traces ones
+	// (tracesStrategies): the engine's through the Lang the handler hands
+	// it, the statements the handler builds itself directly. A nil cell
+	// loads the zero value, which renders every traces attribute column as a
+	// Map.
+	Strategies *chsql.SchemaStrategiesCell
 }
 
-// SetAttrStrategies wires AttrStrategies onto both the Handler (for
-// read-back) and the unexported traceqlLang instance the Engine actually
-// calls at query time — see the AttrStrategies field's doc for why a
-// setter method is needed here rather than the two-line direct field
-// assignment cmd/cerberus uses for LogQL's exported h.Lang: h.lang is
-// unexported (this package's own single long-lived TraceQL adapter), so
-// a caller in cmd/cerberus cannot reach into it directly.
-func (h *Handler) SetAttrStrategies(s chsql.AttrStrategies) {
-	h.AttrStrategies = s
-	h.lang.AttrStrategies = s
-}
+// tracesStrategies loads the traces SchemaStrategies Strategies holds.
+func (h *Handler) tracesStrategies() chsql.SchemaStrategies { return h.Strategies.Load().Traces }
 
 // New constructs a Handler with the seed optimizer wired in.
 func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *Handler {
@@ -229,16 +213,17 @@ func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *
 	// keeps the raw client: its matrix path is already guarded at emit by
 	// chsql.Emit, and wrapping would hide the client's optional CursorQuerier /
 	// memoryCapQuerier surfaces and disable streaming.
-	return &Handler{
+	h := &Handler{
 		Client:             &guardedQuerier{inner: client, spansTable: s.SpansTable},
 		Schema:             s,
 		Optimizer:          opt,
 		Logger:             logger,
 		Version:            version,
 		Engine:             &engine.Engine{Optimizer: opt, Client: client},
-		lang:               &traceqlLang{schema: s},
 		StructuralTwoPhase: true,
 	}
+	h.lang = &traceqlLang{schema: s, strategies: h.tracesStrategies}
+	return h
 }
 
 // Lang exposes the TraceQL engine.Lang adapter wired into the Handler.

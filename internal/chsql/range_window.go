@@ -2416,7 +2416,7 @@ func nativeGridTimeBoundFrag(t time.Time, offsetNS int64) Frag {
 // coercion INTO timeSeries*ToGrid's own params, not to a plain
 // `toDateTime64(...)` cast on an already-materialised value.
 func nativeAnchorTimestampFrag() Frag {
-	return Call("toDateTime64", Col(RangeWindowAnchorAlias), InlineLit(int64(nanoScale)))
+	return ToDateTime64Nanos(Col(RangeWindowAnchorAlias))
 }
 
 // groupArrayPairFrag returns a Frag rendering
@@ -5739,7 +5739,7 @@ func (e *emitter) collectGroupByFrags(group []chplan.Expr) ([]Frag, error) {
 	out := make([]Frag, 0, len(group))
 	for _, g := range group {
 		// Render to a separate buffer so we can reuse the string. Threaded
-		// with e.attrStrategies (not a bare &Builder{}) so a JSON-typed
+		// with e.strategies (not a bare &Builder{}) so a JSON-typed
 		// MapAccess/FieldAccess would render correctly here too: every
 		// current lowering path pre-computes JSON-strategy-dependent
 		// expressions into a preceding chplan.Project before they reach
@@ -5747,9 +5747,7 @@ func (e *emitter) collectGroupByFrags(group []chplan.Expr) ([]Frag, error) {
 		// today, but a future lowering that feeds a raw attribute access
 		// straight into GroupBy must not silently mis-render against a
 		// JSON-typed column.
-		sub := NewBuilderWithAttrStrategies(e.attrStrategies)
-		sub.env = e
-		sub.metricsTimestamp = e.metricsTimestamp
+		sub := &Builder{strategies: e.strategies, env: e}
 		if err := sub.Expr(g); err != nil {
 			return nil, err
 		}

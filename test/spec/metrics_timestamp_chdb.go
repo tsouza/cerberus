@@ -26,13 +26,13 @@ import (
 //   - the DateTime64 world keeps each timestamp column's seeded type, with
 //     every value truncated to its whole second;
 //   - the DateTime world types those columns `DateTime` (Array(DateTime) for
-//     a Nested exemplar timestamp), the OTel-CH exporter's metrics schema
-//     from v0.157.
+//     a Nested exemplar timestamp), the column type the OTel-CH exporter's
+//     metrics templates use from v0.157.
 //
 // Both worlds take their values through the same DateTime conversion, so a
 // value the DateTime type cannot hold lands identically in both. dateTime64
 // runs in the DateTime64 world and dateTime — the same plan emitted under
-// chsql.MetricsTimestampDateTime — in the DateTime world. Any difference in
+// schema.MetricsTimestampSeconds — in the DateTime world. Any difference in
 // the decoded rows fails the fixture, as does a statement ClickHouse
 // rejects in one world but not the other, or rejects with a different
 // error code. Truncation can make a fixture's data invalid for the query —

@@ -3078,12 +3078,12 @@ precise boot-time finding:
         it too benefited from the generic `chsql` fix — but the
         `/api/metrics/query_range` and `/api/metrics/query` pipeline's own
         `Engine.Lang` adapter (`metricsLang`, `internal/api/tempo/
-        metrics_query_range.go`) never implemented the `EmitAttrStrategies`
+        metrics_query_range.go`) never implemented the strategies
         hook `traceqlLang` (the `/api/search` path) already had — every
         metrics-pipeline plan silently rendered with `AttrStrategyMap`
         regardless of the resolved column strategy, a real gap found and
-        fixed by wiring the missing hook (`metricsLang.attrStrategies` +
-        `EmitAttrStrategies()`) onto its three `metricsLang{...}`
+        fixed by wiring the missing hook (`metricsLang.strategies` +
+        `EmitSchemaStrategies()`) onto its three `metricsLang{...}`
         construction sites.
       - **`/api/search/tags` / `/api/v2/search/tags` /
         `/api/search/tag/{name}/values`** — these discovery endpoints
@@ -3142,26 +3142,31 @@ precise boot-time finding:
       identity, out of scope per the issue itself.
 - **Metrics timestamp column type.** The metric tables' timestamp columns —
   `TimeUnix`, `StartTimeUnix` and the Nested `Exemplars.TimeUnix` — are read
-  from `system.columns` and select how PromQL renders against them. Both
-  OTel-CH exporter metrics schemas are served:
-  - `DateTime64(9)` (nanosecond precision): timestamp functions read the
-    columns directly.
-  - `DateTime` (second precision, the exporter's metrics schema from
-    v0.157): timestamp functions read the columns through
-    `toDateTime64(<column>, 9)`. Answers are exactly those the same
-    whole-second samples give in a `DateTime64(9)` table.
+  from `system.columns` and select how PromQL renders against them:
+  - `DateTime64(9)`, with or without a time zone (nanosecond precision):
+    timestamp functions read the columns directly.
+  - `DateTime64(p)` with `p` below 9, or `DateTime`, each with or without a
+    time zone (coarser precision; `DateTime` is the column type the
+    exporter's metrics templates use from v0.157): timestamp functions read
+    the columns through `toDateTime64(<column>, 9)`. Answers are exactly
+    those the same samples give in a `DateTime64(9)` table.
 
-  Any other type (another `DateTime64` precision, a `DateTime` /
-  `DateTime64` with an explicit time zone, an integer), or metric tables
-  whose timestamp columns do not all resolve to the same one of the two,
-  **fails startup fast** with a message naming every offending
-  `table.column type`. A metric table absent at boot contributes nothing;
-  when the boot probe takes the not-yet-provisioned path below, the
-  background re-probe resolves the type once the tables appear, before
-  `/readyz` flips ready. The resolved type is logged as `metrics_timestamp`
-  on the `requirements check passed` line (or on `schema now provisioned`).
-  With `CERBERUS_REQUIREMENTS_CHECK=false` nothing is probed and the columns
-  are rendered as `DateTime64(9)`.
+  A time zone on a column changes nothing a query returns. A type that is
+  not a `DateTime` / `DateTime64` **fails startup fast** with a message
+  naming the `table`, column and type. Metric tables whose timestamp columns
+  mix the two precisions — some `DateTime64(9)`, others coarser — also
+  **fail startup fast**: the message lists the columns of each precision and
+  names `CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION`, which types only the
+  tables cerberus creates and so must match the precision of the tables that
+  already exist. A metric table absent at boot contributes nothing; when the
+  boot probe takes the not-yet-provisioned path below, the background
+  re-probe resolves the type — together with the logs and traces
+  attribute-map strategies — once the tables appear, before `/readyz` flips
+  ready. The resolved precision is logged as `metrics_timestamp` on the
+  `requirements check passed` line (or on `schema now provisioned`). With
+  `CERBERUS_REQUIREMENTS_CHECK=false` nothing is probed, and the columns are
+  rendered for `CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION`: `nanos` as
+  `DateTime64(9)`, `seconds` through `toDateTime64(<column>, 9)`.
 - **Absent (not-yet-provisioned) schema.** When the configured tables are
   **entirely absent** (`system.columns` reports zero rows for them), cerberus
   does **not** crash-loop — it **boots and waits**. This is the cerberus +
@@ -3246,23 +3251,27 @@ metric table the deployment named itself, or an introspection *error* (as
 opposed to a clean zero-row absence of a table nobody named, or the
 `UNKNOWN_DATABASE` not-yet-created-database case).
 
-### Schema divergence: MetricName-first metrics sort key
+### Schema divergence: metrics sort key and timestamp type
 
 Cerberus auto-creates the OTel-CH schema from upstream's own DDL
 templates (the `sqltemplates` API exposed by the
-[`cerberus-ddl` fork](upstream-forks.md)), so the tables cerberus writes
-match a stock OTel ClickHouse Exporter deployment — with **two
-deliberate exceptions**, both on the five metrics tables
+[`cerberus-ddl` fork](upstream-forks.md)). The traces and logs tables match
+a stock OTel ClickHouse Exporter deployment. The five metrics tables
 (`otel_metrics_gauge`, `otel_metrics_sum`, `otel_metrics_histogram`,
-`otel_metrics_exponential_histogram`, `otel_metrics_summary`):
+`otel_metrics_exponential_histogram`, `otel_metrics_summary`) differ from
+stock in two respects:
 
 - They carry a **MetricName-first sort key**, where stock OTel-CH leads
   its `ORDER BY` with `ServiceName`.
 - Their timestamp columns (`TimeUnix`, `StartTimeUnix`,
   `Exemplars.TimeUnix`) take the type
   `CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION` selects. The default,
-  `nanos`, creates `DateTime64(9)`; `seconds` creates `DateTime`, the type
-  the stock exporter creates from v0.157.
+  `nanos`, creates `DateTime64(9)`, the column type stock exporters create
+  before v0.157; `seconds` creates `DateTime`, the column type stock
+  exporters create from v0.157. The setting changes the column type only,
+  and with it the sort key's timestamp term below; every other part of the
+  table is the same at either precision, and is not the rest of the v0.157
+  schema.
 
 The sort key for each precision:
 
@@ -3273,44 +3282,43 @@ ORDER BY (MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix))
 ORDER BY (MetricName, Attributes, ServiceName, toUnixTimestamp(TimeUnix))
 ```
 
-`seconds` is **lossy**: ClickHouse truncates every sample, start and
-exemplar timestamp to its second on insert. Two samples of one series
-within the same second become duplicates, and sub-second offsets are
-gone from every answer. Choose it to match a schema a v0.157+ collector
-also writes to, not for storage savings. Queries serve either type,
-whichever created the tables (see
-[Startup requirements preflight](#startup-requirements-preflight)). The
-traces and logs tables are unchanged from stock.
+The sort key is **correctness-neutral**: a ClickHouse `ORDER BY` governs
+only data-skipping and on-disk row layout, never which rows a query
+returns, so cerberus answers identically over a ServiceName-first or a
+MetricName-first key. What the MetricName-first key changes is metric-query
+speed: the common metric query carries a `MetricName` matcher but no
+`service.name` matcher, which prunes the primary key range of a
+MetricName-first key and reads ~17× more granules on a ServiceName-first
+key (see [`benchmarks.md`](benchmarks.md#metricname-first-order-by)).
 
-This divergence is **correctness-neutral**. A ClickHouse `ORDER BY`
-(the table sort key) governs only data-skipping and on-disk row layout —
-it never changes which rows a query returns. Cerberus therefore answers
-**identically** whether the metrics tables carry the stock
-ServiceName-first key or the MetricName-first key.
-
-What it buys is metric-query speed. The common metric query carries a
-`MetricName` matcher but no `service.name` matcher; against a
-MetricName-first key ClickHouse range-prunes the primary key, against a
-ServiceName-first key it falls back to a generic-exclusion granule scan
-(~17× more granules read — see
-[`benchmarks.md`](benchmarks.md#metricname-first-order-by)).
+The timestamp type is **not** correctness-neutral. `seconds` is **lossy**:
+ClickHouse truncates every sample, start and exemplar timestamp to its
+second on insert. Two samples of one series within the same second become
+duplicates, and sub-second offsets are gone from every answer. Queries
+serve either type, whichever created the tables (see
+[Startup requirements preflight](#startup-requirements-preflight)), and
+answer exactly over the samples the columns hold.
 
 The practical contract for adopters:
 
 - **Cerberus runs against an existing stock OTel-CH deployment without
   a schema change.** Pointed at tables that were created by the stock
-  exporter (ServiceName-first metrics key), cerberus returns the same
-  results as it does on the optimized key — the sort key changes only
-  performance, not semantics — it simply forgoes the ~17× metric-query
-  granule-prune speedup until the metrics tables carry the
-  MetricName-first key.
+  exporter (ServiceName-first metrics key, either timestamp type),
+  cerberus returns the results those samples give on the optimized key;
+  it forgoes the ~17× metric-query granule-prune speedup until the
+  metrics tables carry the MetricName-first key.
 - **`CERBERUS_AUTO_CREATE_SCHEMA=true`** is what writes the
   MetricName-first key: any metrics table cerberus auto-creates (the
-  table does not already exist) gets the optimized sort key. The DDL
-  is `CREATE TABLE IF NOT EXISTS`, so cerberus never rewrites the sort
-  key of a table that already exists — adopting the optimized key on an
-  existing stock table is an operator-driven migration (create the new
-  table, backfill), not something cerberus does silently.
+  table does not already exist) gets the optimized sort key and the
+  configured timestamp type. The DDL is `CREATE TABLE IF NOT EXISTS`, so
+  cerberus never rewrites the sort key or the timestamp type of a table
+  that already exists — adopting either on an existing stock table is an
+  operator-driven migration (create the new table, backfill), not
+  something cerberus does silently.
+- **Match `CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION` to the metric
+  tables that already exist** when cerberus creates some of them and a
+  collector created others: metric tables that mix the two precisions fail
+  startup.
 
 ### Metric name → table resolution
 

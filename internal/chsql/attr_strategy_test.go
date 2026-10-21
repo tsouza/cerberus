@@ -12,8 +12,10 @@ import (
 // SQL and bound args.
 func renderExpr(t *testing.T, strategies chsql.AttrStrategies, x chplan.Expr) (string, []any) {
 	t.Helper()
-	b := chsql.NewBuilderWithAttrStrategies(strategies)
-	if err := b.Expr(x); err != nil {
+	b := chsql.NewBuilder()
+	var err error
+	chsql.UnderSchemaStrategies(chsql.SchemaStrategies{Attrs: strategies}, func(b *chsql.Builder) { err = b.Expr(x) })(b)
+	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	sql, args, err := b.Build()
@@ -37,10 +39,10 @@ func renderExpr(t *testing.T, strategies chsql.AttrStrategies, x chplan.Expr) (s
 //   - chsql.NewBuilder() (no strategies field even settable before this
 //     change existed) — the zero-value / "never heard of AttrStrategies"
 //     caller every one of chsql's ~50+ existing NewQuery() sites is,
-//   - NewBuilderWithAttrStrategies(nil),
-//   - NewBuilderWithAttrStrategies with an explicit AttrStrategyMap entry
+//   - UnderSchemaStrategies(nil),
+//   - UnderSchemaStrategies with an explicit AttrStrategyMap entry
 //     for the column, and
-//   - NewBuilderWithAttrStrategies with a non-nil map that has NO entry at
+//   - UnderSchemaStrategies with a non-nil map that has NO entry at
 //     all for the column (the real production shape: a per-signal
 //     strategies map that only ever carries entries for columns preflight
 //     actually detected as JSON — every other column resolves via the
@@ -70,7 +72,7 @@ func TestAttrStrategy_MapPathByteIdentical(t *testing.T) {
 		strategies chsql.AttrStrategies
 	}{
 		{"legacy NewBuilder (no strategies field settable)", nil},
-		{"NewBuilderWithAttrStrategies(nil)", nil},
+		{"UnderSchemaStrategies(nil)", nil},
 		{"explicit AttrStrategyMap for the column", chsql.AttrStrategies{"ResourceAttributes": chsql.AttrStrategyMap}},
 		{"non-nil map with no entry for the column", chsql.AttrStrategies{"SomeOtherColumn": chsql.AttrStrategyJSON}},
 	}
@@ -98,7 +100,7 @@ func TestAttrStrategy_MapPathByteIdentical(t *testing.T) {
 		})
 	}
 
-	// chsql.NewBuilder() itself (not NewBuilderWithAttrStrategies) is the
+	// chsql.NewBuilder() itself (not UnderSchemaStrategies) is the
 	// literal call every pre-existing production site makes — confirm it
 	// independently, not just via the nil-strategies variant above.
 	t.Run("MapAccess/chsql.NewBuilder()", func(t *testing.T) {

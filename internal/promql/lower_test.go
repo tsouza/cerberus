@@ -13,6 +13,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/test/spec"
 )
 
@@ -233,16 +234,19 @@ func TestLower(t *testing.T) {
 		// The same optimized plan, emitted for a metrics schema whose
 		// timestamp columns are `DateTime`, must answer exactly what the
 		// DateTime64 emission answers over the same whole-second samples.
-		// The differential runs where the two emissions differ — every
-		// statement that reads a metrics timestamp through a
-		// DateTime64-only function — and costs two extra seeded databases
-		// per fixture, which the whole corpus cannot afford inside this
-		// lane's timeout.
-		dtSQL, dtArgs, err := chsql.Emit(chsql.WithMetricsTimestamp(context.Background(), chsql.MetricsTimestampDateTime), optimized)
+		// The differential runs for every statement that reads a metrics
+		// timestamp in a way the column's type can change — through a
+		// DateTime64-only function, which makes the two emissions differ,
+		// or through a native timeSeries* aggregate, which computes in the
+		// column's scale whether or not the emissions differ — and costs
+		// two extra seeded databases per fixture, which the whole corpus
+		// cannot afford inside this lane's timeout.
+		dtSQL, dtArgs, err := chsql.Emit(chsql.WithSchemaStrategies(context.Background(),
+			chsql.SchemaStrategies{MetricsTimestamp: schema.MetricsTimestampSeconds}), optimized)
 		if err != nil {
 			t.Fatalf("Emit(optimized plan, DateTime timestamps): %v", err)
 		}
-		if dtSQL != optSQL {
+		if dtSQL != optSQL || strings.Contains(optSQL, nativeTimeSeriesFnPrefix) {
 			spec.RunMetricsTimestampDifferential(t, c,
 				spec.Statement{SQL: optSQL, Args: optArgs},
 				spec.Statement{SQL: dtSQL, Args: dtArgs})
@@ -287,6 +291,10 @@ func TestLower(t *testing.T) {
 // previously-tested "topk without" rejection no longer exists: as of
 // the topk/bottomk without(...) lowering, `topk(K, v) without (l)`
 // lowers into chplan.TopK with a MapWithoutKeys partition expression.
+
+// nativeTimeSeriesFnPrefix is the name prefix of ClickHouse's native
+// timeSeries* aggregates.
+const nativeTimeSeriesFnPrefix = "timeSeries"
 
 // hasSection reports whether the fixture carries the named section at
 // all — the marker-section idiom the fixture switches on.

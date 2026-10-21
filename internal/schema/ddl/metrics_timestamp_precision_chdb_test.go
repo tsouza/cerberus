@@ -44,14 +44,28 @@ func TestRenderAll_MetricsTimestampPrecision_ChDB(t *testing.T) {
 		// storedTimeUnix is what a sample written at 12:00:00.250 reads
 		// back as: the precision's lossy truncation is part of its contract.
 		storedTimeUnix string
+		// tierContents is every downsample-tier row, rendered by
+		// downsampleTierContents: one per source table, in the first bucket
+		// ending at or after the stored sample, holding that sample.
+		tierContents string
 	}{
-		{schema.MetricsTimestampNanos, "DateTime64(9)", "2026-01-01 12:00:00.250000000"},
-		{schema.MetricsTimestampSeconds, "DateTime", "2026-01-01 12:00:00"},
+		{
+			schema.MetricsTimestampNanos, "DateTime64(9)", "2026-01-01 12:00:00.250000000",
+			"reqs_total 2026-01-01 12:05:00.000000000 [('2026-01-01 12:00:00.250000000',3)]; " +
+				"temp 2026-01-01 12:05:00.000000000 [('2026-01-01 12:00:00.250000000',21)]",
+		},
+		{
+			// The truncated sample sits exactly on a bucket boundary, so it
+			// lands in the bucket ENDING there.
+			schema.MetricsTimestampSeconds, "DateTime", "2026-01-01 12:00:00",
+			"reqs_total 2026-01-01 12:00:00.000000000 [('2026-01-01 12:00:00.000000000',3)]; " +
+				"temp 2026-01-01 12:00:00.000000000 [('2026-01-01 12:00:00.000000000',21)]",
+		},
 	}
 	for _, c := range cases {
-		t.Run(string(c.precision), func(t *testing.T) {
+		t.Run(c.precision.String(), func(t *testing.T) {
 			cfg := Config{
-				Database:                  "precision_" + string(c.precision),
+				Database:                  "precision_" + c.precision.String(),
 				MetricsTimestampPrecision: c.precision,
 				DeltaPrefixEnabled:        true,
 				DownsampleTierEnabled:     true,
@@ -105,9 +119,8 @@ func TestRenderAll_MetricsTimestampPrecision_ChDB(t *testing.T) {
 				cfg.DeltaPrefixSumColumn, cfg.Database, cfg.Tables.MetricsDeltaPrefix)); got != "3" {
 				t.Errorf("DELTA-prefix partial sum = %q, want 3", got)
 			}
-			if got := queryString(t, db, fmt.Sprintf("SELECT toString(count()) FROM %s.%s",
-				cfg.Database, schema.DownsampleTierTable)); got != "2" {
-				t.Errorf("downsample tier rows = %q, want 2 (one per source table)", got)
+			if got := downsampleTierContents(t, db, cfg.Database); got != c.tierContents {
+				t.Errorf("downsample tier contents:\n got %s\nwant %s", got, c.tierContents)
 			}
 
 			// The one-time backfills read the same source tables outside the
@@ -123,9 +136,8 @@ func TestRenderAll_MetricsTimestampPrecision_ChDB(t *testing.T) {
 					t.Fatalf("downsample-tier rebuild:\n%s\nerr: %v", stmt.SQL, err)
 				}
 			}
-			if got := queryString(t, db, fmt.Sprintf("SELECT toString(count()) FROM %s.%s",
-				cfg.Database, schema.DownsampleTierTable)); got != "2" {
-				t.Errorf("rebuilt downsample tier rows = %q, want 2", got)
+			if got := downsampleTierContents(t, db, cfg.Database); got != c.tierContents {
+				t.Errorf("rebuilt downsample tier contents:\n got %s\nwant %s", got, c.tierContents)
 			}
 			mustExec(t, db, fmt.Sprintf("TRUNCATE TABLE %s.%s", cfg.Database, cfg.Tables.MetricsDeltaPrefix))
 			backfill, args := deltaprefix.BackfillSQL(deltaprefix.FromSchema(cfg.Database, m), backfillBefore)
@@ -172,4 +184,16 @@ func columnTypeOf(t *testing.T, db *sql.DB, database, table, column string) (str
 		t.Fatalf("scan: %v", err)
 	}
 	return strings.TrimSpace(typ), true
+}
+
+// downsampleTierContents renders every row of database's downsample tier as
+// `MetricName BucketEnd LastTwoSamples` (the state finalized), one per line in
+// MetricName order.
+func downsampleTierContents(t *testing.T, db *sql.DB, database string) string {
+	t.Helper()
+	return queryString(t, db, fmt.Sprintf(
+		"SELECT arrayStringConcat(groupArray(line), '; ') FROM (SELECT concat(MetricName, ' ', toString(%s), ' ', "+
+			"toString(finalizeAggregation(%s))) AS line FROM %s.%s ORDER BY MetricName)",
+		schema.DownsampleTierBucketColumn, schema.DownsampleTierSamplesColumn, database, schema.DownsampleTierTable,
+	))
 }

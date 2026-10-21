@@ -87,9 +87,9 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 	// is present — a regression that dropped the IN filter would fail closed
 	// rather than full-scan otel_traces.
 	//
-	// AttrStrategies is threaded here too (cerberus issue #3062): this is
-	// a second hand-rolled direct-chsql.Emit path that bypasses
-	// engine.emitForHead's automatic threading (see
+	// The traces SchemaStrategies are threaded here too (cerberus issue
+	// #3062): this is a second hand-rolled direct-chsql.Emit path that
+	// bypasses the engine's automatic threading (see
 	// buildRootLookupPlan's aggSvc, a bare chplan.MapAccess against
 	// ResourceAttributesColumn) — without this line a JSON-typed
 	// ResourceAttributes column would fail this query with
@@ -99,7 +99,7 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 	// than 502ing the whole search — but degrading a working feature by
 	// omission is still wrong to leave unfixed.
 	ctx = chsql.WithSpansTable(ctx, h.Schema.SpansTable)
-	ctx = chsql.WithAttrStrategies(ctx, h.AttrStrategies)
+	ctx = chsql.WithSchemaStrategies(ctx, h.tracesStrategies())
 	sql, args, physicalScans, err := chsql.EmitCounted(ctx, plan)
 	if err != nil {
 		return nil, fmt.Errorf("root lookup: emit: %w", err)

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chclient"
-	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -41,60 +40,85 @@ func setColumnType(cols []chclient.NameTypePair, column, typ string) []chclient.
 	return append(cols, chclient.NameTypePair{Name: column, Type: typ})
 }
 
-func TestMetricsTimestampStrategyFor(t *testing.T) {
+func TestMetricsTimestampPrecisionOf(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		typ  string
-		want chsql.MetricsTimestampStrategy
+		want schema.MetricsTimestampPrecision
 		ok   bool
 	}{
-		{"DateTime64(9)", chsql.MetricsTimestampDateTime64, true},
-		{"Array(DateTime64(9))", chsql.MetricsTimestampDateTime64, true},
-		{"DateTime", chsql.MetricsTimestampDateTime, true},
-		{"Array(DateTime)", chsql.MetricsTimestampDateTime, true},
-		{" DateTime ", chsql.MetricsTimestampDateTime, true},
-		{"DateTime64(3)", chsql.MetricsTimestampDateTime64, false},
-		{"DateTime64(9, 'UTC')", chsql.MetricsTimestampDateTime64, false},
-		{"DateTime('UTC')", chsql.MetricsTimestampDateTime64, false},
-		{"UInt64", chsql.MetricsTimestampDateTime64, false},
-		{"Array(String)", chsql.MetricsTimestampDateTime64, false},
-		{"", chsql.MetricsTimestampDateTime64, false},
+		{"DateTime64(9)", schema.MetricsTimestampNanos, true},
+		{"Array(DateTime64(9))", schema.MetricsTimestampNanos, true},
+		{"DateTime64(9, 'UTC')", schema.MetricsTimestampNanos, true},
+		{"Array(DateTime64(9, 'America/Sao_Paulo'))", schema.MetricsTimestampNanos, true},
+		{"DateTime", schema.MetricsTimestampSeconds, true},
+		{"Array(DateTime)", schema.MetricsTimestampSeconds, true},
+		{" DateTime ", schema.MetricsTimestampSeconds, true},
+		{"DateTime('UTC')", schema.MetricsTimestampSeconds, true},
+		{"DateTime64(3)", schema.MetricsTimestampSeconds, true},
+		{"Array(DateTime64(6, 'UTC'))", schema.MetricsTimestampSeconds, true},
+		{"UInt64", schema.MetricsTimestampNanos, false},
+		{"Array(String)", schema.MetricsTimestampNanos, false},
+		{"", schema.MetricsTimestampNanos, false},
 	}
 	for _, c := range cases {
-		got, ok := metricsTimestampStrategyFor(c.typ)
+		got, ok := metricsTimestampPrecisionOf(c.typ)
 		if got != c.want || ok != c.ok {
-			t.Errorf("metricsTimestampStrategyFor(%q) = (%v, %t), want (%v, %t)", c.typ, got, ok, c.want, c.ok)
+			t.Errorf("metricsTimestampPrecisionOf(%q) = (%v, %t), want (%v, %t)", c.typ, got, ok, c.want, c.ok)
 		}
 	}
 }
 
-// TestRunMetricsTimestampDateTime64 pins the schema every deployment before
-// the exporter's v0.157 has: every timestamp column DateTime64(9) resolves
-// to the zero strategy and passes.
-func TestRunMetricsTimestampDateTime64(t *testing.T) {
+// runMetricsTimestamp runs the boot probe over cols and returns its result.
+func runMetricsTimestamp(cols map[string][]chclient.NameTypePair) Result {
+	return Run(context.Background(), &stubQuerier{Version: "25.8.2.1", Columns: cols}, defaultReq())
+}
+
+// TestRunMetricsTimestampPrecisions pins the deployed timestamp types that
+// pass, and the precision each resolves to: DateTime64(9) is the nanosecond
+// default; DateTime (the column type the exporter's own metrics templates
+// use from v0.157) and every DateTime64 scale below 9 read through a
+// conversion to DateTime64(9); and a timezone on any of them changes
+// nothing.
+func TestRunMetricsTimestampPrecisions(t *testing.T) {
 	t.Parallel()
-	q := &stubQuerier{Version: "25.8.2.1", Columns: withMetricsTimestampTypes("DateTime64(9)")}
-	res := Run(context.Background(), q, defaultReq())
-	if res.Fatal != nil {
-		t.Fatalf("DateTime64(9) timestamps must pass: %v", res.Fatal)
-	}
-	if res.MetricsTimestamp != chsql.MetricsTimestampDateTime64 {
-		t.Errorf("MetricsTimestamp = %v, want DateTime64", res.MetricsTimestamp)
+	for _, c := range []struct {
+		typ  string
+		want schema.MetricsTimestampPrecision
+	}{
+		{"DateTime64(9)", schema.MetricsTimestampNanos},
+		{"DateTime64(9, 'UTC')", schema.MetricsTimestampNanos},
+		{"DateTime", schema.MetricsTimestampSeconds},
+		{"DateTime('UTC')", schema.MetricsTimestampSeconds},
+		{"DateTime('America/Sao_Paulo')", schema.MetricsTimestampSeconds},
+		{"DateTime64(3)", schema.MetricsTimestampSeconds},
+	} {
+		res := runMetricsTimestamp(withMetricsTimestampTypes(c.typ))
+		if res.Fatal != nil {
+			t.Errorf("%s timestamps must pass: %v", c.typ, res.Fatal)
+			continue
+		}
+		if got := res.Strategies.Metrics.MetricsTimestamp; got != c.want {
+			t.Errorf("%s: MetricsTimestamp = %v, want %v", c.typ, got, c.want)
+		}
 	}
 }
 
-// TestRunMetricsTimestampDateTime pins the exporter's v0.157 metrics schema:
-// every timestamp column DateTime (the exemplar one Array(DateTime))
-// resolves to MetricsTimestampDateTime and passes.
-func TestRunMetricsTimestampDateTime(t *testing.T) {
+// TestRunMetricsTimestampSamePrecisionTypesMix pins that columns of
+// different types that read at the same precision pass together: a
+// DateTime TimeUnix beside a DateTime64(3) one both read through the
+// conversion to DateTime64(9).
+func TestRunMetricsTimestampSamePrecisionTypesMix(t *testing.T) {
 	t.Parallel()
-	q := &stubQuerier{Version: "25.8.2.1", Columns: withMetricsTimestampTypes("DateTime")}
-	res := Run(context.Background(), q, defaultReq())
+	m := schema.DefaultOTelMetrics()
+	cols := withMetricsTimestampTypes("DateTime")
+	cols[m.SumTable] = withMetricsTimestampTypes("DateTime64(3, 'UTC')")[m.SumTable]
+	res := runMetricsTimestamp(cols)
 	if res.Fatal != nil {
-		t.Fatalf("DateTime timestamps must pass: %v", res.Fatal)
+		t.Fatalf("same-precision types must pass together: %v", res.Fatal)
 	}
-	if res.MetricsTimestamp != chsql.MetricsTimestampDateTime {
-		t.Errorf("MetricsTimestamp = %v, want DateTime", res.MetricsTimestamp)
+	if got := res.Strategies.Metrics.MetricsTimestamp; got != schema.MetricsTimestampSeconds {
+		t.Errorf("MetricsTimestamp = %v, want seconds", got)
 	}
 }
 
@@ -108,59 +132,62 @@ func TestRunMetricsTimestampOnlyRequiredColumn(t *testing.T) {
 	for _, table := range metricTables(m) {
 		cols[table] = setColumnType(cols[table], m.TimestampColumn, "DateTime")
 	}
-	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
-	res := Run(context.Background(), q, defaultReq())
+	res := runMetricsTimestamp(cols)
 	if res.Fatal != nil {
 		t.Fatalf("DateTime TimeUnix alone must pass: %v", res.Fatal)
 	}
-	if res.MetricsTimestamp != chsql.MetricsTimestampDateTime {
-		t.Errorf("MetricsTimestamp = %v, want DateTime", res.MetricsTimestamp)
+	if got := res.Strategies.Metrics.MetricsTimestamp; got != schema.MetricsTimestampSeconds {
+		t.Errorf("MetricsTimestamp = %v, want seconds", got)
 	}
 }
 
 // TestRunMetricsTimestampUnsupportedTypeFails pins that a timestamp column
-// of a type cerberus renders no SQL for fails boot with a message naming
-// the table, the column, the two supported types and the type found —
-// instead of booting ready and failing every query.
+// of a type that is not a ClickHouse timestamp fails boot with a message
+// naming the table, the column and the type found — instead of booting
+// ready and failing every query.
 func TestRunMetricsTimestampUnsupportedTypeFails(t *testing.T) {
 	t.Parallel()
-	for _, typ := range []string{"DateTime64(3)", "DateTime64(9, 'UTC')", "UInt64"} {
+	for _, typ := range []string{"UInt64", "Int64", "DateTime64(10)"} {
 		m := schema.DefaultOTelMetrics()
 		cols := withMetricsTimestampTypes("DateTime64(9)")
 		cols[m.SumTable] = setColumnType(cols[m.SumTable], m.TimestampColumn, typ)
-		q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
-		res := Run(context.Background(), q, defaultReq())
+		res := runMetricsTimestamp(cols)
 		if res.Fatal == nil {
 			t.Fatalf("timestamp type %s must fail boot", typ)
 		}
-		want := "table otel_metrics_sum column TimeUnix: expected DateTime64(9) or DateTime, found " + typ
+		want := "table otel_metrics_sum column TimeUnix: expected DateTime or DateTime64, found " + typ
 		if !strings.Contains(res.Fatal.Error(), want) {
 			t.Errorf("message missing %q: %v", want, res.Fatal)
 		}
-		if res.MetricsTimestamp != chsql.MetricsTimestampDateTime64 {
-			t.Errorf("a failed probe must leave the zero strategy, got %v", res.MetricsTimestamp)
+		if got := res.Strategies.Metrics.MetricsTimestamp; got != schema.MetricsTimestampNanos {
+			t.Errorf("a failed probe must leave the zero precision, got %v", got)
 		}
 	}
 }
 
-// TestRunMetricsTimestampTablesDisagreeFails pins that metric tables whose
-// timestamp columns resolve to different strategies fail boot: one
-// statement reads several metric tables at once (a merge() over gauge and
-// sum), so no single rendering serves both.
-func TestRunMetricsTimestampTablesDisagreeFails(t *testing.T) {
+// TestRunMetricsTimestampMixedPrecisionsFails pins that metric tables whose
+// timestamp columns hold different precisions fail boot — one statement
+// reads several metric tables at once (a merge() over gauge and sum), so no
+// single rendering serves both — and that the message names every column on
+// each side and the setting that types the tables cerberus creates: the
+// state a nanosecond deployment reaches when the setting is switched to
+// seconds and cerberus creates a missing table.
+func TestRunMetricsTimestampMixedPrecisionsFails(t *testing.T) {
 	t.Parallel()
 	m := schema.DefaultOTelMetrics()
 	cols := withMetricsTimestampTypes("DateTime64(9)")
 	cols[m.SumTable] = withMetricsTimestampTypes("DateTime")[m.SumTable]
-	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
-	res := Run(context.Background(), q, defaultReq())
+	res := runMetricsTimestamp(cols)
 	if res.Fatal == nil {
-		t.Fatal("disagreeing timestamp types across tables must fail boot")
+		t.Fatal("mixed timestamp precisions across tables must fail boot")
 	}
 	for _, want := range []string{
-		"metrics timestamp columns disagree",
+		"metrics timestamp columns mix precisions",
 		"otel_metrics_gauge.TimeUnix DateTime64(9)",
+		"otel_metrics_histogram.TimeUnix DateTime64(9)",
 		"otel_metrics_sum.TimeUnix DateTime",
+		"CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION",
+		"schema.metricsTimestampPrecision",
 	} {
 		if !strings.Contains(res.Fatal.Error(), want) {
 			t.Errorf("message missing %q: %v", want, res.Fatal)
@@ -168,18 +195,17 @@ func TestRunMetricsTimestampTablesDisagreeFails(t *testing.T) {
 	}
 }
 
-// TestRunMetricsTimestampColumnsDisagreeWithinTableFails pins the same
-// verdict when the columns of ONE table disagree: an exemplar timestamp
-// left DateTime64(9) beside a DateTime TimeUnix.
-func TestRunMetricsTimestampColumnsDisagreeWithinTableFails(t *testing.T) {
+// TestRunMetricsTimestampColumnsMixWithinTableFails pins the same verdict
+// when the columns of ONE table mix precisions: an exemplar timestamp left
+// DateTime64(9) beside a DateTime TimeUnix.
+func TestRunMetricsTimestampColumnsMixWithinTableFails(t *testing.T) {
 	t.Parallel()
 	m := schema.DefaultOTelMetrics()
 	cols := withMetricsTimestampTypes("DateTime")
 	cols[m.HistogramTable] = setColumnType(cols[m.HistogramTable], m.ExemplarsColumn+".TimeUnix", "Array(DateTime64(9))")
-	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
-	res := Run(context.Background(), q, defaultReq())
+	res := runMetricsTimestamp(cols)
 	if res.Fatal == nil {
-		t.Fatal("disagreeing timestamp types within a table must fail boot")
+		t.Fatal("mixed timestamp precisions within a table must fail boot")
 	}
 	if want := "otel_metrics_histogram.Exemplars.TimeUnix Array(DateTime64(9))"; !strings.Contains(res.Fatal.Error(), want) {
 		t.Errorf("message missing %q: %v", want, res.Fatal)
@@ -188,19 +214,18 @@ func TestRunMetricsTimestampColumnsDisagreeWithinTableFails(t *testing.T) {
 
 // TestRunMetricsTimestampAbsentTablesResolveFromPresent pins that an
 // absent metric table — the transient schema race — contributes nothing:
-// the strategy resolves from the tables that exist.
+// the precision resolves from the tables that exist.
 func TestRunMetricsTimestampAbsentTablesResolveFromPresent(t *testing.T) {
 	t.Parallel()
 	m := schema.DefaultOTelMetrics()
 	cols := withMetricsTimestampTypes("DateTime")
 	delete(cols, m.GaugeTable)
-	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
-	res := Run(context.Background(), q, defaultReq())
+	res := runMetricsTimestamp(cols)
 	if res.Fatal != nil {
 		t.Fatalf("an absent table must not be fatal: %v", res.Fatal)
 	}
-	if res.MetricsTimestamp != chsql.MetricsTimestampDateTime {
-		t.Errorf("MetricsTimestamp = %v, want DateTime", res.MetricsTimestamp)
+	if got := res.Strategies.Metrics.MetricsTimestamp; got != schema.MetricsTimestampSeconds {
+		t.Errorf("MetricsTimestamp = %v, want seconds", got)
 	}
 }
 
@@ -219,7 +244,7 @@ func TestRunMetricsTimestampNotProbedWithoutMetricsSignal(t *testing.T) {
 	if res.Fatal != nil {
 		t.Fatalf("a logs-only process must not probe metrics timestamps: %v", res.Fatal)
 	}
-	if res.MetricsTimestamp != chsql.MetricsTimestampDateTime64 {
-		t.Errorf("MetricsTimestamp = %v, want the zero value", res.MetricsTimestamp)
+	if got := res.Strategies.Metrics.MetricsTimestamp; got != schema.MetricsTimestampNanos {
+		t.Errorf("MetricsTimestamp = %v, want the zero value", got)
 	}
 }

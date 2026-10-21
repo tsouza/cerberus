@@ -60,7 +60,7 @@ func TestScalarSubqueryInheritsAttrStrategies(t *testing.T) {
 		}},
 	}
 
-	ctx := WithAttrStrategies(context.Background(), jsonAttrStrategies())
+	ctx := WithSchemaStrategies(context.Background(), SchemaStrategies{Attrs: jsonAttrStrategies()})
 	sql, _, err := Emit(ctx, plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -83,7 +83,7 @@ func TestInSubqueryInheritsAttrStrategies(t *testing.T) {
 		},
 	}
 
-	ctx := WithAttrStrategies(context.Background(), jsonAttrStrategies())
+	ctx := WithSchemaStrategies(context.Background(), SchemaStrategies{Attrs: jsonAttrStrategies()})
 	sql, _, err := Emit(ctx, plan)
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -144,7 +144,7 @@ func TestSubEmitterSharesTheCTECounter(t *testing.T) {
 func TestSubEmitterCarriesEveryContextSeededBound(t *testing.T) {
 	t.Parallel()
 
-	ctx := WithAttrStrategies(context.Background(), jsonAttrStrategies())
+	ctx := WithSchemaStrategies(context.Background(), SchemaStrategies{Attrs: jsonAttrStrategies()})
 	ctx = WithSpansTable(ctx, "custom_spans")
 	e := newEmitter(ctx)
 	sub := e.sub()
@@ -172,8 +172,8 @@ func TestSubEmitterCarriesEveryContextSeededBound(t *testing.T) {
 	if sub.deltaPrefixLookbackNS == 0 {
 		t.Error("deltaPrefixLookbackNS is 0, the explicit \"no lower bound\" value — the default was not seeded")
 	}
-	if len(sub.attrStrategies) != len(e.attrStrategies) {
-		t.Errorf("sub-emitter attrStrategies = %v, outer emitter has %v", sub.attrStrategies, e.attrStrategies)
+	if len(sub.strategies.Attrs) != len(e.strategies.Attrs) {
+		t.Errorf("sub-emitter strategies = %v, outer emitter has %v", sub.strategies, e.strategies)
 	}
 }
 
@@ -206,7 +206,7 @@ func TestEmitMetricsExemplarsInheritsAttrStrategies(t *testing.T) {
 		TimestampColumn: "Timestamp",
 	}
 
-	ctx := WithAttrStrategies(context.Background(), jsonAttrStrategies())
+	ctx := WithSchemaStrategies(context.Background(), SchemaStrategies{Attrs: jsonAttrStrategies()})
 	sql, _, _, err := EmitMetricsExemplars(ctx, rw, m, "TraceId", "SpanId", 0, "")
 	if err != nil {
 		t.Fatalf("EmitMetricsExemplars: %v", err)
@@ -282,7 +282,7 @@ func TestEmitCompareRootLegInheritsAttrStrategies(t *testing.T) {
 		TimestampColumn: "Timestamp",
 	}
 
-	ctx := WithAttrStrategies(context.Background(), jsonAttrStrategies())
+	ctx := WithSchemaStrategies(context.Background(), SchemaStrategies{Attrs: jsonAttrStrategies()})
 	sql, _, _, err := EmitCompareRootLeg(ctx, rw)
 	if err != nil {
 		t.Fatalf("EmitCompareRootLeg: %v", err)

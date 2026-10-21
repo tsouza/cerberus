@@ -50,7 +50,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sqlStr, args, physicalScans, err := buildLabelValuesSQL(h.Schema, h.AttrStrategies, name, matchers, start, end)
+	sqlStr, args, physicalScans, err := buildLabelValuesSQL(h.Schema, h.Strategies.Load().Logs, name, matchers, start, end)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -111,7 +111,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 // through that map key. The matcher lowering in
 // `internal/logql/lower.go::matcherToExpr` mirrors the same fallback so
 // the two endpoints agree on what counts as a row carrying the label.
-func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name string, matchers []*labels.Matcher, start, end time.Time) (string, []any, int, error) {
+func buildLabelValuesSQL(s schema.Logs, strategies chsql.SchemaStrategies, name string, matchers []*labels.Matcher, start, end time.Time) (string, []any, int, error) {
 	keys := labelValueLookupKeys(name)
 	topCol := labelValueTopLevelColumn(s, name)
 	if topCol == "" && len(keys) == 1 {
@@ -119,7 +119,7 @@ func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name st
 		sb := chsql.NewQuery().
 			Select(chsql.As(attrmap.DistinctAt(s.ResourceAttributesColumn, keys[0]), "v")).
 			From(chsql.PhysicalTable(s.LogsTable)).
-			WithAttrStrategies(strategies)
+			WithSchemaStrategies(strategies)
 		if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 			return "", nil, 0, err
 		}
@@ -143,7 +143,7 @@ func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name st
 		arm := chsql.NewQuery().
 			Select(chsql.As(chsql.Col(topCol), "v")).
 			From(chsql.PhysicalTable(s.LogsTable)).
-			WithAttrStrategies(strategies)
+			WithSchemaStrategies(strategies)
 		if err := applySelectorAndWindow(arm, s, matchers, start, end); err != nil {
 			return "", nil, 0, err
 		}
@@ -153,7 +153,7 @@ func buildLabelValuesSQL(s schema.Logs, strategies chsql.AttrStrategies, name st
 	mapArm := chsql.NewQuery().
 		Select(chsql.As(attrmap.CollapsedValues(s.ResourceAttributesColumn, keys), "v")).
 		From(chsql.PhysicalTable(s.LogsTable)).
-		WithAttrStrategies(strategies)
+		WithSchemaStrategies(strategies)
 	if err := applySelectorAndWindow(mapArm, s, matchers, start, end); err != nil {
 		return "", nil, 0, err
 	}

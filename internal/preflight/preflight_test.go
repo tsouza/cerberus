@@ -526,7 +526,7 @@ func TestRunWrongAttributeTypeFails(t *testing.T) {
 // per-key lookups AND its full-map operations (cerberus issue #3063) —
 // says what IS supported (not "nothing works yet") and still names the one
 // remaining signal-agnostic gap (escape-dots-in-keys / mixed-history
-// schemas). Result.LogsAttrStrategies must resolve the column to
+// schemas). Result.Strategies.Logs.Attrs must resolve the column to
 // AttrStrategyJSON so internal/engine can thread it into a LogQL request's
 // ctx.
 func TestRunLogsJSONAttrMapPassesWithWarning(t *testing.T) {
@@ -555,11 +555,11 @@ func TestRunLogsJSONAttrMapPassesWithWarning(t *testing.T) {
 	if strings.Contains(w, "not implemented") {
 		t.Errorf("logs warning must not claim query lowering is unimplemented — it is, for per-key lookups: %s", w)
 	}
-	if got := res.LogsAttrStrategies.Lookup(l.AttributesColumn); got != chsql.AttrStrategyJSON {
-		t.Errorf("LogsAttrStrategies.Lookup(%q) = %v, want AttrStrategyJSON", l.AttributesColumn, got)
+	if got := res.Strategies.Logs.Attrs.Lookup(l.AttributesColumn); got != chsql.AttrStrategyJSON {
+		t.Errorf("Strategies.Logs.Attrs.Lookup(%q) = %v, want AttrStrategyJSON", l.AttributesColumn, got)
 	}
-	if res.TracesAttrStrategies != nil {
-		t.Errorf("TracesAttrStrategies = %v, want nil (no traces column was made JSON in this test)", res.TracesAttrStrategies)
+	if res.Strategies.Traces.Attrs != nil {
+		t.Errorf("Strategies.Traces.Attrs = %v, want nil (no traces column was made JSON in this test)", res.Strategies.Traces.Attrs)
 	}
 }
 
@@ -571,7 +571,7 @@ func TestRunLogsJSONAttrMapPassesWithWarning(t *testing.T) {
 // response, the /api/search/tags discovery endpoints), so the warning
 // narrows to the one remaining signal-agnostic gap — the
 // json_type_escape_dots_in_keys / mixed-history hazard, shared verbatim
-// with logs — and Result.TracesAttrStrategies resolves to AttrStrategyJSON
+// with logs — and Result.Strategies.Traces.Attrs resolves to AttrStrategyJSON
 // for the detected column instead of staying nil.
 func TestRunTracesJSONAttrMapPassesWithWarning(t *testing.T) {
 	t.Parallel()
@@ -599,11 +599,11 @@ func TestRunTracesJSONAttrMapPassesWithWarning(t *testing.T) {
 	if strings.Contains(w, "not implemented") {
 		t.Errorf("traces warning must not claim query lowering is unimplemented — it is, for per-key lookups: %s", w)
 	}
-	if got := res.TracesAttrStrategies.Lookup(tr.ResourceAttributesColumn); got != chsql.AttrStrategyJSON {
-		t.Errorf("TracesAttrStrategies.Lookup(%q) = %v, want AttrStrategyJSON", tr.ResourceAttributesColumn, got)
+	if got := res.Strategies.Traces.Attrs.Lookup(tr.ResourceAttributesColumn); got != chsql.AttrStrategyJSON {
+		t.Errorf("Strategies.Traces.Attrs.Lookup(%q) = %v, want AttrStrategyJSON", tr.ResourceAttributesColumn, got)
 	}
-	if res.LogsAttrStrategies != nil {
-		t.Errorf("LogsAttrStrategies = %v, want nil (no logs column was made JSON in this test)", res.LogsAttrStrategies)
+	if res.Strategies.Logs.Attrs != nil {
+		t.Errorf("Strategies.Logs.Attrs = %v, want nil (no logs column was made JSON in this test)", res.Strategies.Logs.Attrs)
 	}
 }
 

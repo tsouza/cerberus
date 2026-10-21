@@ -152,9 +152,9 @@ type Config struct {
 	TracesSettings []schema.KV
 
 	// MetricsTimestampPrecision is the type the metrics tables' timestamp
-	// columns are created with: schema.MetricsTimestampNanos (the default
-	// when empty) renders DateTime64(9), schema.MetricsTimestampSeconds
-	// renders DateTime. See metricsCreateTables.
+	// columns are created with: schema.MetricsTimestampNanos (the zero
+	// value) renders DateTime64(9), schema.MetricsTimestampSeconds renders
+	// DateTime. See metricsCreateTables.
 	MetricsTimestampPrecision schema.MetricsTimestampPrecision
 
 	// DeltaPrefixEnabled gates provisioning the DELTA-temporality
@@ -287,7 +287,7 @@ type Config struct {
 
 	// DownsampleTierFlagsColumn names the Flags column the downsample tier's
 	// materialized views read to skip OTel NoRecordedValue (stale-marker)
-	// rows — see downsampleTierRecordedValuePredicate. Empty renders views
+	// rows — see chsql.DownsampleTierRecordedValue. Empty renders views
 	// that fold every row. It is set from the same condition the PromQL read
 	// path recognises stale markers under (schema.Metrics.
 	// StaleMarkerFlagsColumn): every metric table carries the column, or is
@@ -631,9 +631,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.DeltaPrefixBucketColumn == "" {
 		c.DeltaPrefixBucketColumn = defaultDeltaPrefixBucketColumn
-	}
-	if c.MetricsTimestampPrecision == "" {
-		c.MetricsTimestampPrecision = schema.MetricsTimestampNanos
 	}
 	if c.DeltaPrefixSumColumn == "" {
 		c.DeltaPrefixSumColumn = defaultDeltaPrefixSumColumn
@@ -1407,10 +1404,7 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 // schema.MetricsTimestampSeconds. Both share the (MetricName, Attributes,
 // ServiceName) sorting-key prefix; every other line is the same template.
 func metricsCreateTables(precision schema.MetricsTimestampPrecision) sqltemplates.MetricsCreateTableSet {
-	if precision == schema.MetricsTimestampSeconds {
-		return sqltemplates.MetricsCreateTables(sqltemplates.MetricsTimestampSeconds)
-	}
-	return sqltemplates.MetricsCreateTables(sqltemplates.MetricsTimestampNanos)
+	return sqltemplates.MetricsCreateTables(precision.SQLTemplatePrecision())
 }
 
 // renderMetricsTable formats one of the five metrics table templates. The
@@ -1866,53 +1860,6 @@ func renderDeltaPrefixView(cfg Config) string {
 
 // --- Downsampled long-range tier (cerberus issue #2751) ---
 
-// downsampleTierBucketEndExpr renders the tier's bucket-boundary expression
-// over col (metricTimeColumn on the write side; see downsampletier's own
-// backfillBucketEndExpr, which MUST render the identical expression so a
-// backfilled row and a live-MV row for the same raw sample land in the same
-// bucket — see that package's doc comment for why the two copies cannot
-// share a Go func: internal/schema/ddl and internal/downsampletier are both
-// leaf packages neither may import the other's exported surface for one
-// shared helper alone).
-//
-// It computes the CEILING bucket boundary — `bucket * ceil(t / bucket)` —
-// NOT ClickHouse's native toStartOfInterval FLOOR convention
-// (deltaprefix's own dayBucket). This is deliberate: PromQL's range-vector
-// window is HALF-OPEN LEFT, CLOSED RIGHT — `(anchor-range, anchor]` — so a
-// raw sample landing exactly ON a bucket boundary must join the bucket
-// ENDING at that instant, not the one STARTING there. A plain
-// toStartOfInterval(t, bucket) bucket is closed-left/open-right, which is
-// off-by-one at BOTH edges against that PromQL window; the ceiling
-// convention here reproduces PromQL's half-open-left/closed-right window
-// exactly (verified empirically against a real ClickHouse boundary-exact
-// sample — see internal/chsql's downsample-tier chDB test): every raw
-// sample is guaranteed to land in exactly the ONE bucket row whose
-// `(BucketStart, BucketEnd]` interval contains its timestamp, never split
-// or duplicated across two rows. That unambiguous per-sample assignment is
-// what makes the read side's bucket-to-anchor mapping exact — a query whose
-// range equals the bucket (internal/chsql's emitRangeWindowDownsampleTier,
-// cerberus issue #2751) looks up a SINGLE bucket row per grid anchor with
-// no merge or re-filter at all; a query spanning N buckets (the same
-// function, extended by issue #2857) merges exactly the N bucket rows whose
-// BucketEnd falls in the anchor's own window, with no gap or overlap
-// between them, and re-filters the merged result as a defensive check
-// against malformed data rather than a correctness requirement of this
-// boundary expression.
-//
-// Computed as `toStartOfInterval(t - toIntervalNanosecond(1), bucket) +
-// bucket`: subtracting one nanosecond (TimeUnix's own DateTime64(9)
-// precision) before flooring turns ClickHouse's floor into the ceiling
-// PromQL's window needs, EXCEPT for a sample exactly ON a bucket's OWN
-// start (which correctly stays in that same, now-ending-here bucket rather
-// than jumping to the one before it) — see the chDB test's boundary-exact
-// case for the worked arithmetic.
-func downsampleTierBucketEndExpr(col string, bucket time.Duration) chsql.Frag {
-	bucketSeconds := int64(bucket / time.Second)
-	epsilon := chsql.Sub(chsql.Col(col), chsql.Call("toIntervalNanosecond", chsql.InlineLit(int64(1))))
-	floor := chsql.Call("toStartOfInterval", epsilon, chsql.Call("toIntervalSecond", chsql.InlineLit(bucketSeconds)))
-	return chsql.Add(floor, chsql.Call("toIntervalSecond", chsql.InlineLit(bucketSeconds)))
-}
-
 // renderDownsampleTierTable renders the CREATE TABLE for the downsampled
 // long-range tier (cerberus issue #2751): one row per (series, bucket),
 // carrying an AggregateFunction(timeSeriesLastTwoSamples, ...) state folding
@@ -2011,47 +1958,19 @@ func DownsampleTierReprovisionSQL(cfg Config) ([]string, error) {
 	return stmts, nil
 }
 
-// downsampleTierRecordedValuePredicate keeps a raw metric row only when it
-// carries a recorded sample: `bitAnd(Flags, NoRecordedValue) = 0`. A row
-// with the NoRecordedValue bit is a Prometheus stale marker whose Value is
-// the exporter's empty placeholder 0; folded into the tier's
-// timeSeriesLastTwoSamples state it would read as a real 0 — a counter reset
-// for irate(), a spurious last_over_time() value. Both tier MVs apply it when
-// Config.DownsampleTierFlagsColumn names the column, and
-// internal/downsampletier's backfill/rebuild/verify SELECTs apply the same
-// predicate under the same condition, rendered to the same text (each
-// package's tests pin that text).
-func downsampleTierRecordedValuePredicate(flagsColumn string) chsql.Frag {
-	return chsql.Eq(
-		chsql.Call("bitAnd", chsql.Col(flagsColumn), chsql.InlineLit(int64(schema.NoRecordedValueFlag))),
-		chsql.InlineLit(int64(0)),
-	)
-}
-
 // withDownsampleTierRecordedValueFilter applies the stale-marker exclusion
 // to a tier view body when cfg names the Flags column to read.
 func withDownsampleTierRecordedValueFilter(body *chsql.QueryBuilder, cfg Config) *chsql.QueryBuilder {
 	if cfg.DownsampleTierFlagsColumn == "" {
 		return body
 	}
-	return body.Where(downsampleTierRecordedValuePredicate(cfg.DownsampleTierFlagsColumn))
-}
-
-// downsampleTierSampleTime is the sample timestamp the downsample-tier views
-// fold into the tier's timeSeriesLastTwoSamples state, whose type is fixed at
-// DateTime64(9) (renderDownsampleTierTable). An AggregateFunction state does
-// not convert between argument types, and the source table's TimeUnix is
-// DateTime64(9) or DateTime depending on who created it, so the view reads it
-// through toDateTime64(TimeUnix, 9): the identity on DateTime64(9), an exact
-// widening of DateTime.
-func downsampleTierSampleTime() chsql.Frag {
-	return chsql.ToDateTime64Nanos(chsql.Col(metricTimeColumn))
+	return body.Where(chsql.DownsampleTierRecordedValue(cfg.DownsampleTierFlagsColumn))
 }
 
 // renderDownsampleTierView renders the CREATE MATERIALIZED VIEW feeding
 // renderDownsampleTierTable from the Sum table (cerberus issue #2751): every
-// recorded raw sample (downsampleTierRecordedValuePredicate), bucketed to its
-// downsampleTierBucketEndExpr boundary, folded through
+// recorded raw sample (chsql.DownsampleTierRecordedValue), bucketed to its
+// chsql.DownsampleTierBucketEnd boundary, folded through
 // timeSeriesLastTwoSamplesState. Scoped to the Sum table alone —
 // counters, feeding irate()/idelta()/last_over_time() — with
 // renderDownsampleTierGaugeView below as its Gauge-sourced sibling (cerberus
@@ -2073,7 +1992,7 @@ func downsampleTierSampleTime() chsql.Frag {
 // `cerberus schema downsample-tier-backfill` one-time pass (see
 // internal/downsampletier and docs/operations.md).
 func renderDownsampleTierView(cfg Config) string {
-	bucketEnd := downsampleTierBucketEndExpr(metricTimeColumn, schema.DownsampleTierBucket)
+	bucketEnd := chsql.DownsampleTierBucketEnd(metricTimeColumn)
 	body := chsql.NewQuery().
 		Select(
 			chsql.Col(metricNameColumn),
@@ -2081,7 +2000,7 @@ func renderDownsampleTierView(cfg Config) string {
 			chsql.Col(metricResourceAttributesColumn),
 			chsql.Col(metricServiceNameColumn),
 			chsql.As(bucketEnd, schema.DownsampleTierBucketColumn),
-			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", downsampleTierSampleTime(), chsql.Col(metricValueColumn)), schema.DownsampleTierSamplesColumn),
+			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", chsql.DownsampleTierSampleTime(metricTimeColumn), chsql.Col(metricValueColumn)), schema.DownsampleTierSamplesColumn),
 			chsql.As(chsql.Call("any", chsql.Col(aggregationTemporalityColumn)), schema.DownsampleTierTemporalityColumn),
 		).
 		From(chsql.Qual(cfg.Database, cfg.Tables.MetricsSum)).
@@ -2136,7 +2055,7 @@ func renderDownsampleTierView(cfg Config) string {
 // nondeterministically between a real reading and the sentinel for what is
 // actually the same underlying row.
 func renderDownsampleTierGaugeView(cfg Config) string {
-	bucketEnd := downsampleTierBucketEndExpr(metricTimeColumn, schema.DownsampleTierBucket)
+	bucketEnd := chsql.DownsampleTierBucketEnd(metricTimeColumn)
 	body := chsql.NewQuery().
 		Select(
 			chsql.Col(metricNameColumn),
@@ -2144,7 +2063,7 @@ func renderDownsampleTierGaugeView(cfg Config) string {
 			chsql.Col(metricResourceAttributesColumn),
 			chsql.Col(metricServiceNameColumn),
 			chsql.As(bucketEnd, schema.DownsampleTierBucketColumn),
-			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", downsampleTierSampleTime(), chsql.Col(metricValueColumn)), schema.DownsampleTierSamplesColumn),
+			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", chsql.DownsampleTierSampleTime(metricTimeColumn), chsql.Col(metricValueColumn)), schema.DownsampleTierSamplesColumn),
 			chsql.As(chsql.InlineLit(schema.DownsampleTierGaugeTemporalitySentinel), schema.DownsampleTierTemporalityColumn),
 		).
 		From(chsql.Qual(cfg.Database, cfg.Tables.MetricsGauge)).

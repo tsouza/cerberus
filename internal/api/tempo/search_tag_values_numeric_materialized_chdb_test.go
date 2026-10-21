@@ -326,7 +326,7 @@ func TestBuildAutoScopeUnionAttributeValuesSQL_NumericArmUnionsWithMapFallbackAr
 	// this key: the resource side must fall back to the map subscript,
 	// which is the map-fallback arm this test targets.
 
-	sqlStr, args, _ := tempo.BuildAttributeValuesSQLForTest(s, "http.status_code", tempo.AttrMapScopeAnyForTest, nil, start, end, nil)
+	sqlStr, args, _ := tempo.BuildAttributeValuesSQLForTest(s, "http.status_code", tempo.AttrMapScopeAnyForTest, nil, start, end, chsql.SchemaStrategies{})
 	got, err := c.QueryStrings(ctx, sqlStr, args...)
 	if err != nil {
 		t.Fatalf("UNION ALL of numeric materialized arm + map-fallback arm failed (likely a ClickHouse NO_COMMON_TYPE / arm-type mismatch): %v\nSQL: %s", err, sqlStr)

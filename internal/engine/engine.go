@@ -106,57 +106,30 @@ func (ChsqlEmitter) Emit(ctx context.Context, plan chplan.Node) (string, []any, 
 // chsql.Emit's RequireSpansScansBounded chokepoint runs over the whole plan.
 type spansTabler interface{ SpansTable() string }
 
-// attrStrategier is implemented by a Lang whose plans should render
-// attribute-map accesses against a resolved chsql.AttrStrategies (cerberus
-// issue #2777, extended to TraceQL by #3062) rather than assuming every
-// attribute column is a ClickHouse Map. *logql.Lang and the TraceQL head's
-// unexported traceqlLang (internal/api/tempo/lang.go) both implement it —
-// the LogsAttrStrategies / TracesAttrStrategies preflight resolves are
-// threaded onto them by internal/api/loki's / internal/api/tempo's
-// Handlers at construction. PromQL doesn't implement this interface (its
-// route-B sharded-pushdown fan-out is the one path that ever needs
-// AttrStrategies threaded independently of this duck-type — see
-// routeBExecCtx's callers — and metrics attribute columns are Map-only by
-// #2777's own scoping, so PromQL's plans render exactly as before this
-// issue's work: chsql.Emit's ctx never carries a non-nil AttrStrategies
-// for them, which chsql.AttrStrategies.Lookup already treats as "every
-// column is Map").
-type attrStrategier interface{ EmitAttrStrategies() chsql.AttrStrategies }
-
-// attrStrategiesForLang duck-types lang against attrStrategier and returns
-// its resolved AttrStrategies, or nil for a Lang that doesn't implement it
-// (PromQL today). Shared by emitForHead (route A) and every route-B
-// dispatch path (routeBExecCtx's callers) so both routes resolve the
-// identical value for the same Lang — route B's plan is a re-anchored
-// copy of route A's, and the physical column shape a chsql.MapAccess /
-// chplan.FieldAccess renders against does not change depending on which
-// route dispatches it.
-func attrStrategiesForLang(lang Lang) chsql.AttrStrategies {
-	if as, ok := lang.(attrStrategier); ok {
-		return as.EmitAttrStrategies()
-	}
-	return nil
+// schemaStrategier is implemented by a Lang whose plans render under the
+// chsql.SchemaStrategies the boot requirements check resolved for the
+// tables its signal reads: the Prom head's lang (the metrics timestamp
+// precision), *logql.Lang and the TraceQL head's langs (the attribute-map
+// storage). Each head loads its signal's strategies once per request, so a
+// Lang reports the value that request renders under.
+type schemaStrategier interface {
+	EmitSchemaStrategies() chsql.SchemaStrategies
 }
 
-// metricsTimestamper is implemented by a Lang whose plans read the OTel-CH
-// metrics tables (the Prom head's lang, internal/api/prom/lang.go): it
-// reports the chsql.MetricsTimestampStrategy the preflight boot probe
-// resolved for those tables' timestamp columns.
-type metricsTimestamper interface {
-	EmitMetricsTimestamp() chsql.MetricsTimestampStrategy
-}
-
-// withMetricsTimestamp threads lang's MetricsTimestampStrategy onto ctx for
-// a Lang that implements metricsTimestamper, and returns ctx unchanged for
-// one that does not (LogQL, TraceQL), which then renders with the
-// strategy's zero value. It runs at the top of every entry point that
-// lowers a plan to SQL — QueryPlan, QueryPlanCursor and DryRunSQL — rather
-// than inside emitForHead alone, because the request ctx is also what every
-// route-B dispatch derives its own emit context from (routeBExecCtx), and a
-// solver-routed shard emits through ChsqlEmitter, which never sees a Lang.
-func withMetricsTimestamp(ctx context.Context, lang Lang) context.Context {
-	if mt, ok := lang.(metricsTimestamper); ok {
-		return chsql.WithMetricsTimestamp(ctx, mt.EmitMetricsTimestamp())
+// withSchemaStrategies threads lang's SchemaStrategies onto ctx for a Lang
+// that implements schemaStrategier, and returns ctx unchanged for one that
+// does not, which then renders under the zero value. It runs at the top of
+// every entry point that lowers a plan to SQL — QueryPlan, QueryPlanCursor
+// and DryRunSQL — rather than at each emit, because the request ctx is what
+// every emit derives from: route A's (emitForHead), the guards', and every
+// route-B dispatch's (routeBExecCtx), whose solver-routed shards emit
+// through ChsqlEmitter, which never sees a Lang. Stamping the request ctx
+// is what makes a shard render under exactly the strategies route A would
+// have for the same (re-anchored) plan. QueryPlanCursor's drain-retry
+// closures stamp again: their ctx is the drain's, not the request's.
+func withSchemaStrategies(ctx context.Context, lang Lang) context.Context {
+	if s, ok := lang.(schemaStrategier); ok {
+		return chsql.WithSchemaStrategies(ctx, s.EmitSchemaStrategies())
 	}
 	return ctx
 }
@@ -217,7 +190,6 @@ func emitForHead(
 	if st, ok := lang.(spansTabler); ok {
 		ctx = chsql.WithSpansTable(ctx, st.SpansTable())
 	}
-	ctx = chsql.WithAttrStrategies(ctx, attrStrategiesForLang(lang))
 	if ro, ok := lang.(rangeSeriesOrderer); ok {
 		plan = ro.RangeSeriesOrder(plan)
 	}
@@ -1699,7 +1671,7 @@ func (e *Engine) DryRunSQL(ctx context.Context, lang Lang, query string) (DryRun
 	if lang == nil {
 		return DryRun{}, fmt.Errorf("engine: nil Lang")
 	}
-	ctx = withMetricsTimestamp(ctx, lang)
+	ctx = withSchemaStrategies(ctx, lang)
 	plan, meta, err := lang.Parse(ctx, query)
 	if err != nil {
 		return DryRun{}, fmt.Errorf("engine: parse: %w", err)
@@ -1746,7 +1718,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	if plan == nil {
 		return Result{}, fmt.Errorf("engine: nil plan")
 	}
-	ctx = withMetricsTimestamp(ctx, lang)
+	ctx = withSchemaStrategies(ctx, lang)
 
 	// Inflight bookkeeping. Deferred decrement balances the counter
 	// across panics, early returns, and context cancellations. Sibling
@@ -2061,18 +2033,12 @@ func routeBExecCtx(
 	bounds ResourceBoundOverrides, shardMemoryDivisor int64,
 	rangeBucketGridNativeMaxRows, rangeBucketGridNativeMaxDensityUnits int64,
 	actualsTracker *actuals.Tracker,
-	attrStrategies chsql.AttrStrategies,
 ) context.Context {
+	// The request's chsql.SchemaStrategies are already on ctx: every caller
+	// derives it from the ctx an entry point stamped (withSchemaStrategies),
+	// so a shard — emitted through ChsqlEmitter, which never sees a Lang —
+	// renders under exactly what route A would for the same plan.
 	ctx = chclient.WithResponseShape(chclient.WithProgressFor(ctx, langName), responseShape)
-	// cerberus issue #2777: route B's shards emit through
-	// engine.ChsqlEmitter, which never sees a Lang (see ChsqlEmitter's
-	// doc) — so, exactly like DeltaPrefixLookback below, the resolved
-	// AttrStrategies has to ride the ctx every route-B dispatch builds
-	// here rather than being read from a Lang at emit time. Every one of
-	// this function's 4 callers resolves it via attrStrategiesForLang(lang)
-	// BEFORE calling in, so a shard's rendering matches what route A would
-	// have rendered for the identical (re-anchored) plan.
-	ctx = chsql.WithAttrStrategies(ctx, attrStrategies)
 	// Issue #2789: tag this route-B dispatch for actuals capture — see
 	// applyActualsCapture's own doc. Threaded here (rather than assumed
 	// already on ctx) because route B is the SAME funnel every
@@ -2233,7 +2199,6 @@ func (e *Engine) executeRouted(
 			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
 			e.resourceBoundOverrides(), e.shardMemoryDivisor(decision),
 			e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
-			attrStrategiesForLang(lang),
 		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
@@ -2417,7 +2382,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	if plan == nil {
 		return CursorResult{}, fmt.Errorf("engine: nil plan")
 	}
-	ctx = withMetricsTimestamp(ctx, lang)
+	ctx = withSchemaStrategies(ctx, lang)
 
 	// Inflight bookkeeping — symmetrical with QueryPlan so the gauge
 	// covers both the eager and streaming pipelines. Cursor consumers
@@ -2469,8 +2434,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	// back to the ordinary route-A dispatch below exactly as if this had
 	// never run (Major-2's symmetric fallback).
 	budget := chclient.SampleBudgetFromContext(ctx)
-	attrStrategies := attrStrategiesForLang(lang)
-	if cur, info, usedDecision, key, ok := e.tryRouteMemoHit(ctx, lang.Name(), meta.ResponseShape, plan, decision, budget, attrStrategies); ok {
+	if cur, info, usedDecision, key, ok := e.tryRouteMemoHit(ctx, lang.Name(), meta.ResponseShape, plan, decision, budget); ok {
 		result := e.buildRoutedCursorResult(meta, plan, lang.Name(), usedDecision, cur, info, "memo-hit")
 		// See routeMemoHitObserveDrainOutcome's own doc: issue #3035's
 		// sampling-bias fix, unlike Retry below (which only ever fires on a
@@ -2479,6 +2443,9 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		// route-B call site.
 		result.ObserveDrainOutcome = routeMemoHitObserveDrainOutcome(e.RouteMemo, key, cur)
 		result.Retry = func(retryCtx context.Context, drainErr error) (CursorResult, bool) {
+			// retryCtx is the drain's, not the one this request entered
+			// with, so the request's strategies are stamped on it again.
+			retryCtx = withSchemaStrategies(retryCtx, lang)
 			// The verdict already existed before this dispatch (that is
 			// what made it a memo-hit); a clean drain needed no
 			// re-confirmation, but this closure only ever runs when the
@@ -2512,7 +2479,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		// failure (including "retry does not apply here") the original
 		// route-A error is what surfaces, unchanged.
 		if cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(
-			ctx, lang.Name(), meta.ResponseShape, plan, decision, budget, err, time.Since(dispatchStart), attrStrategies,
+			ctx, lang.Name(), meta.ResponseShape, plan, decision, budget, err, time.Since(dispatchStart),
 		); retried {
 			retryResult := e.buildRoutedCursorResult(meta, plan, lang.Name(), usedDecision, cur, info, "retry")
 			retryResult.ObserveDrainOutcome = observeFn
@@ -2537,11 +2504,14 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	// declines).
 	if e.routeMemoActive() && decision != nil {
 		result.Retry = func(retryCtx context.Context, drainErr error) (CursorResult, bool) {
+			// retryCtx is the drain's, not the one this request entered
+			// with, so the request's strategies are stamped on it again.
+			retryCtx = withSchemaStrategies(retryCtx, lang)
 			// dispatchStart is captured, so elapsed spans the open AND the
 			// drain — the full wall time this route-A attempt cost before the
 			// caller saw drainErr, which is what the cancellation floor reads.
 			cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(
-				retryCtx, lang.Name(), meta.ResponseShape, plan, decision, budget, drainErr, time.Since(dispatchStart), attrStrategies,
+				retryCtx, lang.Name(), meta.ResponseShape, plan, decision, budget, drainErr, time.Since(dispatchStart),
 			)
 			if !retried {
 				return CursorResult{}, false
@@ -2775,7 +2745,6 @@ func (e *Engine) executeRoutedCursor(
 			e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
 			e.resourceBoundOverrides(), e.shardMemoryDivisor(decision),
 			e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
-			attrStrategiesForLang(lang),
 		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	execT.Done(ctx)

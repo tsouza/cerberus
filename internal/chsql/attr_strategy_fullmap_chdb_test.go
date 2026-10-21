@@ -79,7 +79,7 @@ func renderFullMapProject(t *testing.T, table string, strategies chsql.AttrStrat
 	}
 	ctx := context.Background()
 	if strategies != nil {
-		ctx = chsql.WithAttrStrategies(ctx, strategies)
+		ctx = chsql.WithSchemaStrategies(ctx, chsql.SchemaStrategies{Attrs: strategies})
 	}
 	sqlStr, args, err := chsql.Emit(ctx, proj)
 	if err != nil {
@@ -270,7 +270,7 @@ func TestJSONFullMapReconstruction_BareProjection(t *testing.T) {
 		}
 		ctx := context.Background()
 		if table == "fullmap_json" {
-			ctx = chsql.WithAttrStrategies(ctx, fullMapStrategies)
+			ctx = chsql.WithSchemaStrategies(ctx, chsql.SchemaStrategies{Attrs: fullMapStrategies})
 		}
 		inner, args, err := chsql.Emit(ctx, proj)
 		if err != nil {

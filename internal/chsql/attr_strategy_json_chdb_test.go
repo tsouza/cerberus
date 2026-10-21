@@ -13,7 +13,7 @@
 //     the first place — a substrate where Map and JSON already agreed
 //     would make the wrap dead code), and
 //  2. chsql's ACTUAL emitted SQL (via the public chsql.NewQuery /
-//     QueryBuilder.WithAttrStrategies surface, not a hand-written
+//     QueryBuilder.WithSchemaStrategies surface, not a hand-written
 //     comparison string) reproduces the Map contract exactly: the same
 //     missing-key value, and the same present-vs-absent distinction via
 //     FnMapContainsKey/mapContains vs has(JSONAllPaths(...)).
@@ -69,7 +69,7 @@ INSERT INTO attrs_json VALUES
 
 // renderAttrSelect renders "SELECT <expr> FROM <table> ORDER BY id" via
 // the public chsql surface, with strategies applied via
-// WithAttrStrategies (nil for the Map-typed table, which never calls it —
+// WithSchemaStrategies (nil for the Map-typed table, which never calls it —
 // mirroring how a production caller that never resolved a JSON strategy
 // never calls it either).
 func renderAttrSelect(t *testing.T, table string, strategies chsql.AttrStrategies, expr chplan.Expr) (string, []any) {
@@ -82,7 +82,7 @@ func renderAttrSelect(t *testing.T, table string, strategies chsql.AttrStrategie
 		From(chsql.Col(table)).
 		OrderBy(chsql.Col("id"), false)
 	if strategies != nil {
-		qb = qb.WithAttrStrategies(strategies)
+		qb = qb.WithSchemaStrategies(chsql.SchemaStrategies{Attrs: strategies})
 	}
 	sql, args := qb.Build()
 	if renderErr != nil {

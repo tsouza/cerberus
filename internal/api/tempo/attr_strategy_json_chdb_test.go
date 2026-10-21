@@ -17,7 +17,7 @@
 //     attribute predicate through the SAME attrStrategies the plain scan
 //     path uses, or does the closure/union machinery's own QueryBuilder
 //     composition (rightArm/leftArm built via NewQuery(), never calling
-//     WithAttrStrategies themselves) silently fall back to the Map
+//     WithSchemaStrategies themselves) silently fall back to the Map
 //     shape? Answered empirically below: the strategy survives, because
 //     QueryBuilder.Frag() shares the enclosing Builder rather than
 //     spinning up its own (see builder.go's subquerySQL/Frag), so
@@ -26,10 +26,10 @@
 //
 // Both variants run through tempo.Handler's full /api/search pipeline
 // (parse -> lower -> wrap -> optimize -> emit -> ClickHouse -> response
-// shaping), with Handler.SetAttrStrategies wired exactly as
+// shaping), with Handler.Strategies wired exactly as
 // cmd/cerberus's mountAPIHeads wires it from a real preflight run — this
 // file only replaces preflight's boot probe with a direct
-// SetAttrStrategies call so the DDL's column type can be asserted
+// Strategies wiring so the DDL's column type can be asserted
 // against directly rather than re-deriving it from system.columns.
 //
 // ResourceAttributes stays Map(String,String) in EVERY table this file
@@ -143,9 +143,9 @@ const jsonAttrSearchWindowQS = "start=1777593600&end=1777680000&limit=20&spss=20
 
 // newAttrStrategyChDBServer builds a tempo.Handler over a table named
 // table (created by ddl, populated by seed) with attrStrategies wired via
-// SetAttrStrategies exactly as cmd/cerberus wires preflight's resolved
-// Result.TracesAttrStrategies — see tempo.Handler.SetAttrStrategies's doc
-// for why a setter is needed rather than a plain field assignment. The
+// Handler.Strategies exactly as cmd/cerberus wires preflight's resolved
+// Result.Strategies.Traces — through the shared chsql.SchemaStrategiesCell
+// every head reads at request time. The
 // schema's SpansTable is overridden to table so Map and JSON variants can
 // coexist in the shared chDB session under distinct table names (see this
 // file's own package doc).
@@ -156,7 +156,7 @@ func newAttrStrategyChDBServer(t *testing.T, c *chclienttest.Client, table, ddl,
 	s := schema.DefaultOTelTraces()
 	s.SpansTable = table
 	h := tempo.New(c, s, "v-test", nil)
-	h.SetAttrStrategies(attrStrategies)
+	h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{Traces: chsql.SchemaStrategies{Attrs: attrStrategies}})
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)
@@ -276,7 +276,7 @@ func jsonAttrStructuralSeedJSON(table string) string {
 // (Map-typed, in both variants — see the package doc) RESOURCE attribute
 // and the RIGHT (descendant) operand on a JSON-typed SPAN attribute —
 // settling empirically whether structural_join.go's rightArm/leftArm
-// QueryBuilders (built via NewQuery(), never calling WithAttrStrategies
+// QueryBuilders (built via NewQuery(), never calling WithSchemaStrategies
 // themselves — see this file's own package doc) inherit the strategy the
 // outer emitSelect chokepoint stamped, or silently fall back to the Map
 // shape and either fail with ILLEGAL_TYPE_OF_ARGUMENT or (worse) silently

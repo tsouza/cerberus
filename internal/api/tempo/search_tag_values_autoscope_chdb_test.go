@@ -35,6 +35,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclienttest"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -192,10 +193,10 @@ func TestBuildAutoScopeUnionAttributeValuesSQL_ChDB_MatchesUnroutedMapOnlyResult
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			unroutedSQL, unroutedArgs, _ := tempo.BuildAttributeValuesSQLForTest(
-				unroutedSchema, tc.key, tempo.AttrMapScopeAnyForTest, nil, start, end, nil,
+				unroutedSchema, tc.key, tempo.AttrMapScopeAnyForTest, nil, start, end, chsql.SchemaStrategies{},
 			)
 			routedSQL, routedArgs, _ := tempo.BuildAttributeValuesSQLForTest(
-				routedSchema, tc.key, tempo.AttrMapScopeAnyForTest, nil, start, end, nil,
+				routedSchema, tc.key, tempo.AttrMapScopeAnyForTest, nil, start, end, chsql.SchemaStrategies{},
 			)
 
 			unroutedGot, err := c.QueryStrings(ctx, unroutedSQL, unroutedArgs...)

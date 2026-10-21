@@ -178,10 +178,10 @@ func (e *emitter) compareBaseQuery(m *chplan.MetricsCompare, bound *compareScanB
 //
 // It returns a Subqueryable rather than a Frag because the leg has exactly one
 // composition point and two renderings. Subquery(leg) parenthesises it for the
-// join's right side, which is what compareBaseQuery above does; leg's own
-// subquerySQL() yields the SAME text as a standalone statement together with
-// precisely the args that text binds, which is what EmitCompareRootLeg hands
-// back. One constructor feeding both means a caller that needs the leg alone —
+// join's right side, which is what compareBaseQuery above does; rendering it
+// under the emitter's strategies yields the SAME text as a standalone
+// statement together with precisely the args that text binds, which is what
+// EmitCompareRootLeg hands back. One constructor feeding both means a caller that needs the leg alone —
 // to run it, or to EXPLAIN its part pruning without the matrix query around it
 // — asks the emitter for it instead of recovering it from the emitted
 // statement by scanning for a marker and counting parens and `?`s.
@@ -863,7 +863,7 @@ func EmitCompareRootLeg(ctx context.Context, r *chplan.RangeWindow) (string, []a
 	if err != nil {
 		return fail(err)
 	}
-	sql, args, err := leg.subquerySQL()
+	sql, args, err := leg.renderIn(e.strategies)
 	if err != nil {
 		return fail(err)
 	}

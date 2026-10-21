@@ -43,7 +43,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sqlStr, args, err := buildLabelsSQL(h.Schema, h.AttrStrategies, matchers, start, end)
+	sqlStr, args, err := buildLabelsSQL(h.Schema, h.Strategies.Load().Logs, matchers, start, end)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -81,11 +81,11 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 //
 // All identifiers + time-range bounds flow through QueryBuilder slots —
 // no fmt.Sprintf-on-SQL.
-func buildLabelsSQL(s schema.Logs, strategies chsql.AttrStrategies, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
+func buildLabelsSQL(s schema.Logs, strategies chsql.SchemaStrategies, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(chsql.As(chsql.DistinctAttrKeys(strategies, s.ResourceAttributesColumn), "k")).
+		Select(chsql.As(chsql.DistinctAttrKeys(strategies.Attrs, s.ResourceAttributesColumn), "k")).
 		From(chsql.Col(s.LogsTable)).
-		WithAttrStrategies(strategies)
+		WithSchemaStrategies(strategies)
 
 	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 		return "", nil, err

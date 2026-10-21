@@ -18,9 +18,7 @@ import (
 // internal/chclient (.go-arch-lint.yml: this leaf package, like
 // internal/deltaprefix and internal/routerrules, must not depend on
 // chclient; the CLI supplies the resolved config + the narrow Conn at boot)
-// so the setting's exact string KEY is duplicated here rather than shared,
-// the same "leaf packages can't share one helper" constraint
-// bucketEndExpr's own doc explains for internal/schema/ddl.
+// so the setting's exact string KEY is duplicated here rather than shared.
 // TestSettingMatchesChclient pins the two against each other. See
 // chclient.SettingExperimentalTSGridAggregate's own doc for the full
 // history of why this exact spelling (not the deprecated
@@ -148,9 +146,7 @@ func FromSchema(database string, m schema.Metrics) Columns {
 // shared tier table, paired with the Temporality expression its own
 // backfillSelectSQL projects for it — the SAME (table, temporality-expr)
 // pairing internal/schema/ddl's renderDownsampleTierView /
-// renderDownsampleTierGaugeView use on the live-MV side, reproduced here for
-// the SAME "leaf packages can't share one helper" reason bucketEndExpr's own
-// doc gives.
+// renderDownsampleTierGaugeView use on the live-MV side.
 type downsampleTierSource struct {
 	table       string
 	temporality chsql.Frag
@@ -190,40 +186,16 @@ func SourceTables(c Columns) []string {
 	return names
 }
 
-// bucketEndExpr renders the SAME ceiling bucket-boundary expression
-// internal/schema/ddl's downsampleTierBucketEndExpr renders for the live
-// MV — see that function's doc for the full PromQL-half-open-window
-// reasoning. The two copies MUST stay byte-identical (a backfilled row and
-// a live-MV row for the same raw sample must land in the same bucket); they
-// cannot share a Go func because internal/schema/ddl and this package are
-// both leaf packages neither imports the other's exported surface for one
-// shared helper alone — TestBucketEndExprMatchesDDL pins the two against
-// each other.
-func bucketEndExpr(col string) chsql.Frag {
-	epsilon := chsql.Sub(chsql.Col(col), chsql.Call("toIntervalNanosecond", chsql.InlineLit(int64(1))))
-	floor := chsql.Call("toStartOfInterval", epsilon, chsql.Call("toIntervalSecond", chsql.InlineLit(bucketSeconds())))
-	return chsql.Add(floor, chsql.Call("toIntervalSecond", chsql.InlineLit(bucketSeconds())))
-}
-
-func bucketSeconds() int64 { return int64(schema.DownsampleTierBucket / time.Second) }
-
-// recordedValueConds renders the SAME stale-marker exclusion
-// internal/schema/ddl's downsampleTierRecordedValuePredicate applies on the
-// live MVs — `bitAnd(Flags, NoRecordedValue) = 0` — as the conditions to
-// conjoin, or none when c names no Flags column. A NoRecordedValue row is a
-// Prometheus stale marker whose Value is the exporter's placeholder 0, so a
-// backfilled or rebuilt tier must skip it exactly as the live MV does, and
-// Verify must not count a bucket holding only markers as one the tier lacks.
-// Like bucketEndExpr it is a copy rather than a shared helper; both
-// packages' tests pin the rendered text.
+// recordedValueConds renders the stale-marker exclusion the live MVs apply
+// (chsql.DownsampleTierRecordedValue) as the conditions to conjoin, or none
+// when c names no Flags column, so a backfilled or rebuilt tier skips a
+// marker exactly as the live MV does, and Verify does not count a bucket
+// holding only markers as one the tier lacks.
 func recordedValueConds(c Columns) []chsql.Frag {
 	if c.FlagsColumn == "" {
 		return nil
 	}
-	return []chsql.Frag{chsql.Eq(
-		chsql.Call("bitAnd", chsql.Col(c.FlagsColumn), chsql.InlineLit(int64(schema.NoRecordedValueFlag))),
-		chsql.InlineLit(int64(0)),
-	)}
+	return []chsql.Frag{chsql.DownsampleTierRecordedValue(c.FlagsColumn)}
 }
 
 // backfillSelectSQL renders the SELECT half shared by BackfillSQL (bounded
@@ -234,7 +206,7 @@ func recordedValueConds(c Columns) []chsql.Frag {
 // source, the fixed sentinel literal for the Gauge source — see
 // downsampleTierSources).
 func backfillSelectSQL(c Columns, src downsampleTierSource, before *time.Time) *chsql.QueryBuilder {
-	bucket := bucketEndExpr(c.TimestampColumn)
+	bucket := chsql.DownsampleTierBucketEnd(c.TimestampColumn)
 	q := chsql.NewQuery().
 		Select(
 			chsql.Col(c.MetricNameColumn),
@@ -242,10 +214,7 @@ func backfillSelectSQL(c Columns, src downsampleTierSource, before *time.Time) *
 			chsql.Col(c.ResourceAttributesColumn),
 			chsql.Col(c.ServiceNameColumn),
 			chsql.As(bucket, schema.DownsampleTierBucketColumn),
-			// The tier's state is typed DateTime64(9); the source column is
-			// DateTime64(9) or DateTime depending on who created the table,
-			// and toDateTime64(…, 9) reads either as the former.
-			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", chsql.ToDateTime64Nanos(chsql.Col(c.TimestampColumn)), chsql.Col(c.ValueColumn)), schema.DownsampleTierSamplesColumn),
+			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", chsql.DownsampleTierSampleTime(c.TimestampColumn), chsql.Col(c.ValueColumn)), schema.DownsampleTierSamplesColumn),
 			chsql.As(src.temporality, schema.DownsampleTierTemporalityColumn),
 		).
 		From(chsql.Qual(c.Database, src.table))
@@ -346,7 +315,7 @@ func retentionBoundary(now time.Time, retention time.Duration) (boundary time.Ti
 // downsampleTierSources(c) entry's table (cerberus issue #2858: previously
 // always c.SumTable).
 func outsideRetentionDaysSQL(c Columns, source string, before, boundary time.Time) (string, []any) {
-	bucket := bucketEndExpr(c.TimestampColumn)
+	bucket := chsql.DownsampleTierBucketEnd(c.TimestampColumn)
 	q := chsql.NewQuery().
 		Select(bucket).
 		From(chsql.Qual(c.Database, source)).
@@ -487,7 +456,7 @@ func Rebuild(ctx context.Context, conn Conn, c Columns, retention time.Duration,
 // to parity-check in the first place. source is a downsampleTierSources(c)
 // entry's table (cerberus issue #2858: previously always c.SumTable).
 func baseBucketsSQL(c Columns, source string, before, boundary time.Time, retentionActive bool) (string, []any) {
-	bucket := bucketEndExpr(c.TimestampColumn)
+	bucket := chsql.DownsampleTierBucketEnd(c.TimestampColumn)
 	conds := append(recordedValueConds(c), chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(before)))
 	if retentionActive {
 		conds = append(conds, chsql.Gte(bucket, chsql.Lit(boundary)))

@@ -33,23 +33,15 @@ type Builder struct {
 	sb   strings.Builder
 	args []any
 
-	// attrStrategies resolves how an attribute-map column that appears as
-	// a bare chplan.ColumnRef renders a per-key access (exprMapAccess,
-	// the FnMapContainsKey render hook) — see AttrStrategies's doc
-	// (attr_strategy.go). nil (the zero value, set by every existing
-	// NewBuilder() call) means AttrStrategyMap for every column, so this
-	// field is purely additive: nothing that predates cerberus issue
-	// #2777 sets it, and every one of those call sites keeps emitting
-	// byte-identical SQL.
-	attrStrategies AttrStrategies
-
-	// metricsTimestamp is the MetricsTimestampStrategy the
-	// `toUnixTimestamp64*` renderings (unixTimestamp64) read. It is a
-	// property of the whole statement, so every Builder a render spawns
-	// for a nested statement inherits it (Subquery, Spliced,
-	// QueryBuilder.Frag, subqueryMembership). The zero value renders the
-	// functions directly.
-	metricsTimestamp MetricsTimestampStrategy
+	// strategies is the SchemaStrategies the statement renders under: its
+	// Attrs decide how an attribute-map column that appears as a bare
+	// chplan.ColumnRef renders a per-key access (exprMapAccess, the
+	// FnMapContainsKey render hook), its MetricsTimestamp how a metrics
+	// timestamp read renders (metrics_timestamp.go). It is a property of the
+	// whole statement, so every Builder a render spawns for a nested
+	// statement inherits it (Subquery, Spliced, QueryBuilder.Frag,
+	// subqueryMembership). The zero value renders for the default schema.
+	strategies SchemaStrategies
 
 	// env is the emitter this Builder is rendering inside, or nil for a
 	// free-standing Builder (an ad-hoc query, a test). It exists for ONE
@@ -63,7 +55,7 @@ type Builder struct {
 	// structural closure re-emitted `_struct_closure_1` inside a statement
 	// that already used it — ClickHouse error 49 (cerberus issue #3186).
 	//
-	// It rides the same path attrStrategies already does: stamped onto a
+	// It rides the same path strategies already does: stamped onto a
 	// QueryBuilder by emitSelect and handed to each Builder that renders
 	// it. nil is the ordinary free-standing case and keeps the previous
 	// behaviour exactly.
@@ -226,13 +218,6 @@ type physicalScanCounter interface {
 // NewBuilder returns an empty Builder. Equivalent to &Builder{}.
 func NewBuilder() *Builder { return &Builder{} }
 
-// NewBuilderWithAttrStrategies returns an empty Builder that renders
-// attribute-map accesses against s (see AttrStrategies). QueryBuilder's
-// internal render path (subquerySQL) is the only caller — external code
-// opts in via QueryBuilder.WithAttrStrategies, not this constructor
-// directly.
-func NewBuilderWithAttrStrategies(s AttrStrategies) *Builder { return &Builder{attrStrategies: s} }
-
 // String returns the accumulated SQL.
 func (b *Builder) String() string { return b.sb.String() }
 
@@ -359,7 +344,7 @@ func writeInlineNonFinite(b *Builder, v float64) bool {
 // a metrics attribute column (chplan.AttrStrategy's own doc), so this
 // branch is a no-op there.
 func (b *Builder) MapAt(col, key string) {
-	if b.attrStrategies.Lookup(col) == AttrStrategyJSON {
+	if b.strategies.Attrs.Lookup(col) == AttrStrategyJSON {
 		b.sb.WriteString("coalesce(")
 		b.Ident(col)
 		b.sb.WriteByte('.')
@@ -393,7 +378,7 @@ func (b *Builder) MapAt(col, key string) {
 // the Map branch, since has() takes a runtime argument rather than a
 // compile-time dynamic-subcolumn path token.
 func (b *Builder) MapContains(col, key string) {
-	if b.attrStrategies.Lookup(col) == AttrStrategyJSON {
+	if b.strategies.Attrs.Lookup(col) == AttrStrategyJSON {
 		b.sb.WriteString("has(JSONAllPaths(")
 		b.Ident(col)
 		b.sb.WriteString("), ")
@@ -1183,9 +1168,6 @@ func (b *Builder) exprFunc(f *chplan.FuncCall) error {
 	if f.Fn == chplan.FnMapContainsKey {
 		return b.exprMapContainsKey(f.Args)
 	}
-	if isUnixTimestamp64Fn(f.Fn) {
-		return b.exprUnixTimestamp64(f)
-	}
 	if jsonFullMapFns[f.Fn] {
 		f = b.substituteJSONFullMapArgs(f)
 	}
@@ -1196,6 +1178,9 @@ func (b *Builder) exprFunc(f *chplan.FuncCall) error {
 	name, render, err := resolveFn(f.Fn)
 	if err != nil {
 		return err
+	}
+	if isUnixTimestamp64Fn(f.Fn) {
+		return b.exprUnixTimestamp64(f)
 	}
 	if render != nil {
 		return render(b, f.Args)
@@ -1279,7 +1264,7 @@ func (b *Builder) exprWindow(w *chplan.WindowExpr) error {
 // `<Map>[<Key>]`.
 //
 // cerberus issue #2777: when m.Map is a bare *chplan.ColumnRef whose
-// AttrStrategy (b.attrStrategies) is AttrStrategyJSON, AND m.Key is a
+// AttrStrategy (b.strategies.Attrs) is AttrStrategyJSON, AND m.Key is a
 // compile-time literal (*chplan.LitString) — ClickHouse's JSON
 // dynamic-subcolumn path syntax is a syntax-level path expression, not a
 // function argument, so a non-literal key cannot use it and falls back to
@@ -1366,14 +1351,14 @@ func (b *Builder) jsonAttrCoalesce(col *chplan.ColumnRef, path string) error {
 }
 
 // jsonAttrColumn reports whether e is a bare *chplan.ColumnRef whose
-// AttrStrategy (per b.attrStrategies) is AttrStrategyJSON — the shared
+// AttrStrategy (per b.strategies.Attrs) is AttrStrategyJSON — the shared
 // precondition exprMapAccess and exprMapContainsKey both branch on.
 func jsonAttrColumn(b *Builder, e chplan.Expr) (*chplan.ColumnRef, bool) {
 	col, ok := e.(*chplan.ColumnRef)
 	if !ok {
 		return nil, false
 	}
-	if b.attrStrategies.Lookup(col.Name) != AttrStrategyJSON {
+	if b.strategies.Attrs.Lookup(col.Name) != AttrStrategyJSON {
 		return nil, false
 	}
 	return col, true
@@ -2894,7 +2879,7 @@ func IfNonZero(num, denom Frag) Frag {
 // (sql, args) pair from the legacy emitter so its output can flow
 // through Subquery without raw-string composition.
 //
-// subquerySQL is deliberately unexported (rather than named Build) so
+// renderIn is deliberately unexported (rather than named Build) so
 // *QueryBuilder's public, two-value Build() — consumed across
 // internal/api/{prom,loki,tempo}, internal/optcorpus,
 // internal/routerrules and internal/preflight — keeps its existing
@@ -2902,7 +2887,9 @@ func IfNonZero(num, denom Frag) Frag {
 // Subqueryable, so the unexported method is satisfiable without
 // reaching outside this package.
 type Subqueryable interface {
-	subquerySQL() (string, []any, error)
+	// renderIn renders the statement embedded in one that renders under
+	// enclosing (see SchemaStrategies).
+	renderIn(enclosing SchemaStrategies) (string, []any, error)
 	physicalScanCounter
 }
 
@@ -2918,7 +2905,7 @@ type Subqueryable interface {
 // port can collapse that emitter into the QueryBuilder surface.
 func Subquery(s Subqueryable) Frag {
 	return func(b *Builder) {
-		sql, args, err := inheritMetricsTimestamp(b, s)
+		sql, args, err := s.renderIn(b.strategies)
 		if err != nil && b.err == nil {
 			b.err = err
 		}
@@ -2941,7 +2928,7 @@ func Subquery(s Subqueryable) Frag {
 // user input.
 func Spliced(s Subqueryable) Frag {
 	return func(b *Builder) {
-		sql, args, err := inheritMetricsTimestamp(b, s)
+		sql, args, err := s.renderIn(b.strategies)
 		if err != nil && b.err == nil {
 			b.err = err
 		}
@@ -2972,10 +2959,10 @@ type PreRenderedSQL struct {
 	PhysicalScans int
 }
 
-// subquerySQL satisfies Subqueryable. p.SQL is always already-rendered
-// text (from the legacy string emitter), so it never carries a render
-// error.
-func (p PreRenderedSQL) subquerySQL() (string, []any, error) { return p.SQL, p.Args, nil }
+// renderIn satisfies Subqueryable. p.SQL is always already-rendered text
+// (from the legacy string emitter): the strategies it rendered under are
+// already in it, and it never carries a render error.
+func (p PreRenderedSQL) renderIn(SchemaStrategies) (string, []any, error) { return p.SQL, p.Args, nil }
 
 func (p PreRenderedSQL) physicalScans() int { return p.PhysicalScans }
 
@@ -3358,7 +3345,7 @@ func NotInSubquery(left, sub Frag) Frag { return subqueryMembership(left, sub, t
 func subqueryMembership(left, sub Frag, negate bool) Frag {
 	return func(b *Builder) {
 		left(b)
-		scratch := &Builder{attrStrategies: b.attrStrategies, metricsTimestamp: b.metricsTimestamp}
+		scratch := &Builder{strategies: b.strategies}
 		sub(scratch)
 		if scratch.err != nil && b.err == nil {
 			b.err = scratch.err
@@ -3498,22 +3485,12 @@ type QueryBuilder struct {
 	limitTies  bool
 	limitBy    []Frag
 
-	// attrStrategies is threaded into the Builder subquerySQL renders
-	// against (see AttrStrategies). Set via WithAttrStrategies; the zero
-	// value (nil) renders every attribute-map column as Map, exactly as
-	// before cerberus issue #2777. chsql.emitSelect is the one production
-	// setter — it copies the emitter's resolved strategies onto every
-	// QueryBuilder it renders, so a plan assembled across many nested
-	// QueryBuilders (one per chplan node) sees the same resolved
-	// strategies throughout without each node's lowering/emit code having
-	// to know about it.
-	attrStrategies AttrStrategies
-
-	// metricsTimestamp is threaded into the Builder subquerySQL renders
-	// against (see Builder.metricsTimestamp). emitSelect stamps the
-	// emitter's strategy on; a QueryBuilder rendered inside another
-	// statement inherits the enclosing Builder's (inheritMetricsTimestamp).
-	metricsTimestamp MetricsTimestampStrategy
+	// strategies is the SchemaStrategies this statement renders under, set
+	// by WithSchemaStrategies; chsql.emitSelect stamps the emitter's on
+	// every QueryBuilder it renders. nil renders under the strategies of
+	// the statement this one is embedded in, or under the zero value when
+	// it is rendered on its own (strategiesIn).
+	strategies *SchemaStrategies
 
 	// env is the emitter this statement is being rendered inside, threaded
 	// onto every Builder that renders it so an embedded ScalarSubquery /
@@ -3523,21 +3500,22 @@ type QueryBuilder struct {
 	env *emitter
 }
 
-// WithAttrStrategies sets the AttrStrategies this QueryBuilder's Build /
-// subquerySQL / Frag renders attribute-map accesses against. Build and
-// subquerySQL construct a fresh Builder via
-// NewBuilderWithAttrStrategies(s.attrStrategies); Frag writes directly into
-// the CALLER's own *Builder instead, so it temporarily swaps that outer
-// Builder's attrStrategies to s.attrStrategies for the duration of the
-// write (restoring the previous value afterward) whenever s.attrStrategies
-// is non-nil — a nil s.attrStrategies leaves the outer Builder's own
-// strategies in effect unchanged, so every pre-#3063 QueryBuilder that
-// never called WithAttrStrategies keeps rendering exactly as before. See
-// AttrStrategies's doc for why this is scoped per signal rather than a
-// single global map.
-func (s *QueryBuilder) WithAttrStrategies(strategies AttrStrategies) *QueryBuilder {
-	s.attrStrategies = strategies
+// WithSchemaStrategies sets the SchemaStrategies this statement renders
+// under, wherever it is rendered — on its own or embedded in another
+// statement.
+func (s *QueryBuilder) WithSchemaStrategies(strategies SchemaStrategies) *QueryBuilder {
+	s.strategies = &strategies
 	return s
+}
+
+// strategiesIn is the SchemaStrategies this statement renders under when
+// embedded in a statement rendering under enclosing: its own when set,
+// enclosing's otherwise.
+func (s *QueryBuilder) strategiesIn(enclosing SchemaStrategies) SchemaStrategies {
+	if s.strategies != nil {
+		return *s.strategies
+	}
+	return enclosing
 }
 
 type orderKey struct {
@@ -3802,41 +3780,28 @@ func (s *QueryBuilder) LimitBy(exprs ...Frag) *QueryBuilder {
 // without flattening to a string: args bound inside the nested
 // SELECT stay tied to their position in the outer args slice.
 //
-// cerberus issue #3063 point 2: writeInto renders directly into the
-// PARENT Frag's Builder (that is the whole point — positional args stay
-// one shared slice), which means it inherits the parent's
-// b.attrStrategies by default. A caller that resolved and set its OWN
-// AttrStrategies on s via WithAttrStrategies (label_values.go's
-// UNION-ALL arms, each built as an independent QueryBuilder before being
-// spliced together via Frag) would otherwise have that assignment
-// silently discarded — the ad-hoc-query-builder equivalent of the
-// "bypasses chplan entirely" class of bug this issue names, except here
-// the bypass is inside chsql's own Frag composition primitive rather
-// than in a caller. s.attrStrategies is nil (the zero value) for every
-// pre-#3063 QueryBuilder that never called WithAttrStrategies, so this
-// swap is a genuine no-op for every one of chsql's ~50+ other Frag()
-// call sites: they keep inheriting the parent's strategies exactly as
-// before.
+// writeInto renders directly into the PARENT Frag's Builder (that is the
+// whole point — positional args stay one shared slice), so the statement
+// renders under strategiesIn(the parent's strategies) for the duration of
+// the write, and the parent's are restored afterwards: a QueryBuilder a
+// head built with its own strategies (label_values.go's UNION-ALL arms,
+// each an independent QueryBuilder spliced together via Frag) keeps them,
+// and one that carries none inherits the parent's.
 func (s *QueryBuilder) Frag() Frag {
 	return func(b *Builder) {
 		b.sb.WriteByte('(')
-		// env rides the same swap as attrStrategies: a QueryBuilder that
+		// env rides the same swap as strategies: a QueryBuilder that
 		// carries its own emitter (emitSelect stamped one on it) renders
 		// its embedded subqueries inside THAT emission, and the parent's
 		// is restored afterwards. A QueryBuilder with neither keeps
-		// inheriting the parent Builder's, exactly as before.
-		prevStrategies, prevEnv, prevTS := b.attrStrategies, b.env, b.metricsTimestamp
-		if s.attrStrategies != nil {
-			b.attrStrategies = s.attrStrategies
-		}
+		// inheriting the parent Builder's.
+		prevStrategies, prevEnv := b.strategies, b.env
+		b.strategies = s.strategiesIn(b.strategies)
 		if s.env != nil {
 			b.env = s.env
 		}
-		if s.metricsTimestamp != MetricsTimestampDateTime64 {
-			b.metricsTimestamp = s.metricsTimestamp
-		}
 		s.writeInto(b)
-		b.attrStrategies, b.env, b.metricsTimestamp = prevStrategies, prevEnv, prevTS
+		b.strategies, b.env = prevStrategies, prevEnv
 		b.sb.WriteByte(')')
 	}
 }
@@ -3867,9 +3832,15 @@ func (s *QueryBuilder) BuildCounted() (sql string, args []any, physicalScans int
 // work around. Unexported: Build stays the public two-value surface
 // every non-chsql caller already depends on.
 func (s *QueryBuilder) subquerySQL() (string, []any, error) {
-	b := NewBuilderWithAttrStrategies(s.attrStrategies)
-	b.env = s.env
-	b.metricsTimestamp = s.metricsTimestamp
+	return s.renderIn(SchemaStrategies{})
+}
+
+// renderIn satisfies Subqueryable: it renders the statement into a fresh
+// Builder under strategiesIn(enclosing). It reads s and writes only
+// s.lastPhysicalScans, so one QueryBuilder embedded in statements rendering
+// under different strategies renders each under its own.
+func (s *QueryBuilder) renderIn(enclosing SchemaStrategies) (string, []any, error) {
+	b := &Builder{strategies: s.strategiesIn(enclosing), env: s.env}
 	s.writeInto(b)
 	s.lastPhysicalScans = b.physicalScans
 	return b.Build()

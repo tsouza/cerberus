@@ -139,17 +139,16 @@ type Handler struct {
 	// unaffected.
 	ThrowDuplicateSeriesIf bool
 
-	// MetricsTimestamp holds the chsql.MetricsTimestampStrategy the
-	// preflight probe resolved for the metrics tables' timestamp columns
-	// (preflight.Result.MetricsTimestamp), wired at boot in cmd/cerberus and
-	// updated by the schema re-probe when the tables appear after boot.
-	// Every statement this head emits renders under the strategy it holds
-	// when the request reads it: the engine's PromQL requests through
-	// lang.EmitMetricsTimestamp, the metadata and exemplar statements the
-	// handler builds itself directly. A nil cell loads the zero strategy,
-	// which renders for `DateTime64(9)` columns, so a Handler that never
-	// wires this (every test that builds one directly) is unaffected.
-	MetricsTimestamp *chsql.MetricsTimestampCell
+	// Strategies holds the chsql.SchemaStrategies the boot requirements
+	// check resolved for every signal's tables (for metrics, the precision
+	// of the timestamp columns), wired in cmd/cerberus and updated by the
+	// schema re-probe when the tables appear after boot. Every statement
+	// this head emits renders under the metrics ones a request loads
+	// (metricsStrategies): the engine's PromQL requests through the lang's
+	// EmitSchemaStrategies, the metadata and exemplar statements the
+	// handler builds itself directly. A nil cell loads the zero value,
+	// which renders for DateTime64(9) timestamp columns.
+	Strategies *chsql.SchemaStrategiesCell
 
 	// QueryTimeout is the configured default per-query wall-clock cap
 	// (CERBERUS_QUERY_TIMEOUT). It is the ceiling the standard Prometheus
@@ -255,6 +254,9 @@ func (h *Handler) SetLowerers(table promql.RangeLowerers) {
 // installed by [Handler.SetLowerers] when there is one, else the wired
 // [Handler.Lowerers]. The single query-path read goes through here so a live
 // swap needs no lock and no second read site can go on consulting a stale table.
+// metricsStrategies loads the metrics SchemaStrategies Strategies holds.
+func (h *Handler) metricsStrategies() chsql.SchemaStrategies { return h.Strategies.Load().Metrics }
+
 func (h *Handler) lowerers() promql.RangeLowerers {
 	if live := h.liveLowerers.Load(); live != nil {
 		return *live
@@ -964,7 +966,7 @@ func (h *Handler) executeRangeStreaming(
 		ResourceBounds:         h.ResourceBounds,
 		TagGroups:              h.TagGroups,
 		ThrowDuplicateSeriesIf: h.ThrowDuplicateSeriesIf,
-		MetricsTimestamp:       h.MetricsTimestamp.Load(),
+		Strategies:             h.metricsStrategies(),
 	}
 	// Time the entire QueryCursor entry so the cursor-open round-trip
 	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-
@@ -1016,7 +1018,7 @@ func (h *Handler) executeInstant(ctx context.Context, query string, start, end t
 		ResourceBounds:         h.ResourceBounds,
 		TagGroups:              h.TagGroups,
 		ThrowDuplicateSeriesIf: h.ThrowDuplicateSeriesIf,
-		MetricsTimestamp:       h.MetricsTimestamp.Load(),
+		Strategies:             h.metricsStrategies(),
 	}
 	res, err := h.Engine.Query(h.withSampleDrainBudget(ctx), l, query)
 	if err != nil {

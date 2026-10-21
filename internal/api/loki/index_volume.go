@@ -79,7 +79,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	matchers = append(matchers, targetLabelPresenceMatchers(targetLabels, matchers)...)
 	keyLabels := volumeKeyLabels(targetLabels, matchers, aggregateBy)
 
-	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.AttrStrategies, matchers, start, end, limit, keyLabels, aggregateBy)
+	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.Strategies.Load().Logs, matchers, start, end, limit, keyLabels, aggregateBy)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -343,7 +343,7 @@ const (
 // fmt.Sprintf-on-SQL (CLAUDE.md "no raw SQL strings" rule).
 func buildIndexVolumeSQL(
 	s schema.Logs,
-	strategies chsql.AttrStrategies,
+	strategies chsql.SchemaStrategies,
 	matchers []*labels.Matcher,
 	start, end time.Time,
 	limit int,
@@ -377,7 +377,7 @@ func buildIndexVolumeSQL(
 // set's byte volume, uncut. Both `aggregateBy` shapes read the same one.
 func storedVolumeQuery(
 	s schema.Logs,
-	strategies chsql.AttrStrategies,
+	strategies chsql.SchemaStrategies,
 	matchers []*labels.Matcher,
 	start, end time.Time,
 	keyLabels []string,
@@ -388,7 +388,7 @@ func storedVolumeQuery(
 	}
 	sb := chsql.NewQuery().
 		From(chsql.Col(s.LogsTable)).
-		WithAttrStrategies(strategies).
+		WithSchemaStrategies(strategies).
 		Select(
 			chsql.As(canonicalLabelsFrag(groupFrag), volumeStoredLabelsAlias),
 			chsql.As(bytesAggFrag(s.BodyColumn), volumeStoredBytesAlias),
@@ -439,11 +439,11 @@ func storedVolumeQuery(
 // chsql.BareIdent (the typed constructor for CH-safe bare identifiers).
 func volumeGroupFrag(
 	s schema.Logs,
-	strategies chsql.AttrStrategies,
+	strategies chsql.SchemaStrategies,
 	keyLabels []string,
 ) (chsql.Frag, error) {
 	if len(keyLabels) == 0 {
-		return attrMapFrag(strategies, s.ResourceAttributesColumn), nil
+		return attrMapFrag(strategies.Attrs, s.ResourceAttributesColumn), nil
 	}
 	keys := append([]string(nil), keyLabels...)
 	sort.Strings(keys)

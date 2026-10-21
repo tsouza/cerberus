@@ -4,24 +4,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// The two deployed types an OTel-CH metrics timestamp column takes, as
-// system.columns reports them: the exporter's schema before v0.157 types
-// TimeUnix / StartTimeUnix / Exemplars.TimeUnix `DateTime64(9)`, and from
-// v0.157 `DateTime`. The Nested exemplar column reports the Array of
-// either.
-const (
-	metricsTimestampTypeDateTime64 = "DateTime64(9)"
-	metricsTimestampTypeDateTime   = "DateTime"
-)
-
-// exemplarTimestampField is the timestamp field of the OTel-CH metrics
-// `Exemplars` Nested column, which system.columns reports flattened as
-// `Exemplars.TimeUnix`.
-const exemplarTimestampField = "TimeUnix"
+// metricsTimestampPrecisionKnob names the setting that types the timestamp
+// columns of the metrics tables cerberus creates, which a mixed-precision
+// finding points the operator at.
+const metricsTimestampPrecisionKnob = "CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION (schema.metricsTimestampPrecision)"
 
 // arrayTypePrefix / arrayTypeSuffix wrap a Nested sub-column's element type
 // in system.columns.
@@ -43,74 +32,65 @@ func (c deployedColumn) String() string {
 }
 
 // metricsTimestampColumns names the timestamp columns of a metrics table
-// whose deployed type picks the MetricsTimestampStrategy: the sample
-// timestamp, the start timestamp and the exemplar timestamp.
+// whose deployed type decides the schema.MetricsTimestampPrecision: the
+// sample timestamp, the start timestamp and the exemplar timestamp.
 func metricsTimestampColumns(m schema.Metrics) []string {
 	cols := nonEmpty(m.TimestampColumn, m.StartTimeColumn)
 	if m.ExemplarsColumn != "" {
-		cols = append(cols, m.ExemplarsColumn+"."+exemplarTimestampField)
+		cols = append(cols, m.ExemplarsColumn+"."+schema.ExemplarTimestampField)
 	}
 	return cols
 }
 
-// metricsTimestampStrategyFor classifies one deployed timestamp column type,
-// reporting false for a type cerberus renders no SQL for. An Array is the
-// Nested exemplar column and classifies by its element type.
-//
-// Detection only: which SQL each strategy renders is chsql's decision
-// (chsql.MetricsTimestampStrategy).
-func metricsTimestampStrategyFor(deployedType string) (chsql.MetricsTimestampStrategy, bool) {
+// metricsTimestampPrecisionOf classifies one deployed timestamp column type
+// (schema.MetricsTimestampPrecisionOfType), reporting false for a type that
+// is not a ClickHouse timestamp. An Array is the Nested exemplar column and
+// classifies by its element type.
+func metricsTimestampPrecisionOf(deployedType string) (schema.MetricsTimestampPrecision, bool) {
 	typ := strings.TrimSpace(deployedType)
 	if strings.HasPrefix(typ, arrayTypePrefix) && strings.HasSuffix(typ, arrayTypeSuffix) {
-		typ = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(typ, arrayTypePrefix), arrayTypeSuffix))
+		typ = strings.TrimSuffix(strings.TrimPrefix(typ, arrayTypePrefix), arrayTypeSuffix)
 	}
-	switch typ {
-	case metricsTimestampTypeDateTime64:
-		return chsql.MetricsTimestampDateTime64, true
-	case metricsTimestampTypeDateTime:
-		return chsql.MetricsTimestampDateTime, true
-	default:
-		return chsql.MetricsTimestampDateTime64, false
-	}
+	return schema.MetricsTimestampPrecisionOfType(typ)
 }
 
 // resolveMetricsTimestamp resolves the deployed metrics timestamp columns to
-// the one MetricsTimestampStrategy every PromQL statement renders against,
-// or to the FATAL problems that make that impossible: a column of a type
-// metricsTimestampStrategyFor does not classify, or columns that classify
-// differently. One statement can read every metrics table — a merge() over
-// gauge and sum, a union across the histogram tables — so a single strategy
-// has to hold for all of them. No columns (no metric table introspected)
-// resolves to the zero value.
-func resolveMetricsTimestamp(cols []deployedColumn) (chsql.MetricsTimestampStrategy, []string) {
+// the one schema.MetricsTimestampPrecision every PromQL statement renders
+// for, or to the FATAL problems that make that impossible: a column whose
+// type is not a timestamp, or columns of different precisions. One statement
+// can read every metrics table — a merge() over gauge and sum, a union across
+// the histogram tables — so a single precision has to hold for all of them.
+// No columns (no metric table introspected) resolves to the zero value.
+func resolveMetricsTimestamp(cols []deployedColumn) (schema.MetricsTimestampPrecision, []string) {
 	var (
 		problems []string
-		first    *deployedColumn
-		resolved chsql.MetricsTimestampStrategy
+		byPrec   = map[schema.MetricsTimestampPrecision][]string{}
 	)
-	for i, c := range cols {
-		s, ok := metricsTimestampStrategyFor(c.typ)
+	for _, c := range cols {
+		p, ok := metricsTimestampPrecisionOf(c.typ)
 		if !ok {
 			problems = append(problems, fmt.Sprintf(
-				"table %s column %s: expected %s or %s, found %s",
-				c.table, c.column, metricsTimestampTypeDateTime64, metricsTimestampTypeDateTime, c.typ,
+				"table %s column %s: expected DateTime or DateTime64, found %s",
+				c.table, c.column, c.typ,
 			))
 			continue
 		}
-		if first == nil {
-			first, resolved = &cols[i], s
-			continue
-		}
-		if s != resolved {
-			problems = append(problems, fmt.Sprintf(
-				"metrics timestamp columns disagree: %s, but %s — every metrics table must type its "+
-					"timestamp columns %s, or every one %s",
-				first, c, metricsTimestampTypeDateTime64, metricsTimestampTypeDateTime,
-			))
-		}
+		byPrec[p] = append(byPrec[p], c.String())
+	}
+	nanos, seconds := byPrec[schema.MetricsTimestampNanos], byPrec[schema.MetricsTimestampSeconds]
+	if len(nanos) > 0 && len(seconds) > 0 {
+		problems = append(problems, fmt.Sprintf(
+			"metrics timestamp columns mix precisions — nanosecond: %s; coarser: %s — every metrics "+
+				"table must store its timestamps at one precision. %s types only the tables cerberus "+
+				"creates, so it must match the precision of the tables that already exist",
+			strings.Join(nanos, ", "), strings.Join(seconds, ", "), metricsTimestampPrecisionKnob,
+		))
 	}
 	if len(problems) > 0 {
-		return chsql.MetricsTimestampDateTime64, problems
+		return schema.MetricsTimestampNanos, problems
 	}
-	return resolved, nil
+	if len(seconds) > 0 {
+		return schema.MetricsTimestampSeconds, nil
+	}
+	return schema.MetricsTimestampNanos, nil
 }

@@ -6,7 +6,8 @@
 #
 # Concretely, the domain layers (lowest to highest) are:
 #
-#     chplan          — shared plan IR (no dependencies)
+#     chplan          — shared plan IR (no layer dependencies; common
+#                       components such as schema only)
 #     ql              — promql / logql / traceql parsers + lowering
 #     optimizer       — rule-based plan rewrites
 #     chsql           — plan → ClickHouse SQL emitter

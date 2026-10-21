@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -609,5 +610,33 @@ func TestParseBool(t *testing.T) {
 				t.Errorf("parseBool(%q) = %v; want %v", tc.raw, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestFromEnv_SchemaMetricsTimestampPrecision pins that the configured
+// metrics timestamp precision reaches SchemaProvisioning: unset is the
+// nanosecond default, each spelling selects its precision, and anything
+// else fails fast naming the variable.
+func TestFromEnv_SchemaMetricsTimestampPrecision(t *testing.T) {
+	for _, c := range []struct {
+		value string
+		want  schema.MetricsTimestampPrecision
+	}{
+		{"", schema.MetricsTimestampNanos},
+		{"nanos", schema.MetricsTimestampNanos},
+		{"seconds", schema.MetricsTimestampSeconds},
+	} {
+		t.Setenv(envSchemaMetricsTimestampPrec, c.value)
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("%s=%q: FromEnv: %v", envSchemaMetricsTimestampPrec, c.value, err)
+		}
+		if got := cfg.SchemaProvisioning.MetricsTimestampPrecision; got != c.want {
+			t.Errorf("%s=%q: MetricsTimestampPrecision = %v, want %v", envSchemaMetricsTimestampPrec, c.value, got, c.want)
+		}
+	}
+	t.Setenv(envSchemaMetricsTimestampPrec, "millis")
+	if _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), envSchemaMetricsTimestampPrec) {
+		t.Errorf("an unknown precision must fail naming %s, got %v", envSchemaMetricsTimestampPrec, err)
 	}
 }

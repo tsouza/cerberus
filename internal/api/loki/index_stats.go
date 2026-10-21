@@ -55,7 +55,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sqlStr, args, err := buildIndexStatsSQL(h.Schema, h.AttrStrategies, matchers, start, end)
+	sqlStr, args, err := buildIndexStatsSQL(h.Schema, h.Strategies.Load().Logs, matchers, start, end)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -95,15 +95,15 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 // All identifiers and time-range bounds flow through Builder helpers so
 // no SQL string concatenation happens at this level (the CLAUDE.md
 // "no raw SQL" rule for new code).
-func buildIndexStatsSQL(s schema.Logs, strategies chsql.AttrStrategies, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
+func buildIndexStatsSQL(s schema.Logs, strategies chsql.SchemaStrategies, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
 		Select(
-			streamsAggFrag(attrMapFrag(strategies, s.ResourceAttributesColumn)),
+			streamsAggFrag(attrMapFrag(strategies.Attrs, s.ResourceAttributesColumn)),
 			countStar(),
 			bytesAggFrag(s.BodyColumn),
 		).
 		From(chsql.Col(s.LogsTable)).
-		WithAttrStrategies(strategies)
+		WithSchemaStrategies(strategies)
 
 	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 		return "", nil, err

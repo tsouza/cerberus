@@ -139,7 +139,7 @@ depends on. `v0.0.4-cerberus-ddl` carried upstream's metrics schema rewrite
 emitted `toUnixTimestamp64Nano(TimeUnix)` rejects, and the mechanical rebase
 turned the fork's MetricName-first sort-key patch into a different key. It
 built cleanly, and the chDB suites passed because they seed their own
-`DateTime64(9)` tables. `TestTimestampColumnsAreNanosDateTime64_InUpstreamDDL`
+`DateTime64(9)` tables. `TestTimestampColumnTypes_InPinnedExporterDDL`
 exists so that kind of bump fails on its own pull request. That decision
 was made in `v0.0.5-cerberus-ddl`: the fork renders the metrics tables at
 either precision, keeps the MetricName-first key for both, and cerberus

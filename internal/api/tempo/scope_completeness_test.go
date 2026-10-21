@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -115,7 +116,7 @@ func TestBuildAttributeValuesSQL_HandlesEveryScope(t *testing.T) {
 	for _, scope := range allAttrMapScopes {
 		t.Run(scope.String(), func(t *testing.T) {
 			t.Parallel()
-			sqlStr, _, _ := buildAttributeValuesSQL(s, "some.key", scope, nil, time.Time{}, time.Time{}, nil)
+			sqlStr, _, _ := buildAttributeValuesSQL(s, "some.key", scope, nil, time.Time{}, time.Time{}, chsql.SchemaStrategies{})
 			if sqlStr == "" {
 				t.Errorf("buildAttributeValuesSQL(%v) produced empty SQL", scope)
 			}
@@ -129,7 +130,7 @@ func TestBuildAttributeValuesSQL_HandlesEveryScope(t *testing.T) {
 				t.Fatal("expected buildAttributeValuesSQL to panic for an unrecognised attrMapScope")
 			}
 		}()
-		buildAttributeValuesSQL(s, "some.key", attrMapScope(99), nil, time.Time{}, time.Time{}, nil)
+		buildAttributeValuesSQL(s, "some.key", attrMapScope(99), nil, time.Time{}, time.Time{}, chsql.SchemaStrategies{})
 	})
 }
 

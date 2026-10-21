@@ -3,6 +3,7 @@ package prom
 import (
 	"time"
 
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/promql/promparse"
@@ -13,7 +14,13 @@ import (
 // migration preview's read-only "what SQL would cerberus run for this PromQL"
 // path. It reuses the exact unexported lang adapter the HTTP handler drives, so
 // ProjectSamples and Parse (parser options, dotted-name rewrite, lowering) are
-// byte-identical to production.
+// the production ones.
+//
+// precision is the metrics timestamp precision the SQL renders for. The server
+// renders for the precision its boot requirements check detects on the
+// deployed tables, which this offline path cannot read, so a caller passes the
+// configured one (schema.metricsTimestampPrecision): the emitted SQL is the
+// server's exactly when that matches the deployed column type.
 //
 // evalTime is pinned to both Start and End with Step left at 0, so the query
 // lowers as an instant evaluation at a single anchor. Lowerers is left at its
@@ -23,13 +30,14 @@ import (
 // on the server) — the exponential-histogram window budget is derived from
 // the configured memory cap at the lowering seam, so a preview that left
 // them at the zero value bound every deployment's SQL to the 1 GiB default.
-func NewExplainLang(s schema.Metrics, evalTime time.Time, bounds promql.ResourceBounds) engine.Lang {
+func NewExplainLang(s schema.Metrics, precision schema.MetricsTimestampPrecision, evalTime time.Time, bounds promql.ResourceBounds) engine.Lang {
 	return &lang{
 		Parser:         promparse.New(),
 		Schema:         s,
 		Start:          evalTime,
 		End:            evalTime, // Step stays 0 => instant evaluation
 		ResourceBounds: bounds,
+		Strategies:     chsql.SchemaStrategies{MetricsTimestamp: precision},
 	}
 }
 
@@ -39,19 +47,20 @@ func NewExplainLang(s schema.Metrics, evalTime time.Time, bounds promql.Resource
 // evaluation NewExplainLang models for rules. It reuses the same lang adapter, so
 // Parse and ProjectSamples stay identical to production for the shared pipeline
 // stages. Callers pin a fixed, representative window so the emitted SQL — and any
-// goldens over it — stay deterministic.
+// goldens over it — stay deterministic. precision is as for NewExplainLang.
 //
 // HONESTY — a range preview is NOT guaranteed byte-identical to what a live
-// deployment runs. Lowerers is left at its zero value (the all-fan-out default),
+// deployment runs, even at the deployed precision. Lowerers is left at its zero value (the all-fan-out default),
 // but the production query_range path AUTO-ENABLES the native timeSeries*ToGrid
 // lowerers on ClickHouse >= 25.9 (the default "auto" mode). This tool is offline
 // and cannot know the target's CH version, so for the range-window operators
 // (rate / changes / resets / *_over_time and staleness panels) the previewed SQL
 // uses fan-out lowering and MAY DIFFER from a deployment with native
 // timeSeries*ToGrid enabled. Unlike the instant/rule preview — where the handler
-// likewise threads no native lowerers, so NewExplainLang stays faithful — the
+// likewise threads no native lowerers, so NewExplainLang stays faithful at the
+// deployed precision — the
 // range preview trades that fidelity for offline determinism.
-func NewExplainLangRange(s schema.Metrics, start, end time.Time, step time.Duration, bounds promql.ResourceBounds) engine.Lang {
+func NewExplainLangRange(s schema.Metrics, precision schema.MetricsTimestampPrecision, start, end time.Time, step time.Duration, bounds promql.ResourceBounds) engine.Lang {
 	return &lang{
 		Parser:         promparse.New(),
 		Schema:         s,
@@ -59,5 +68,6 @@ func NewExplainLangRange(s schema.Metrics, start, end time.Time, step time.Durat
 		End:            end,
 		Step:           step,
 		ResourceBounds: bounds,
+		Strategies:     chsql.SchemaStrategies{MetricsTimestamp: precision},
 	}
 }

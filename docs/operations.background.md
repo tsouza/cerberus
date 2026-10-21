@@ -866,41 +866,56 @@ then failed every metrics query with `ILLEGAL_TYPE_OF_ARGUMENT`.
   validates their shape. A configuration knob would be a second statement of
   that fact that can disagree with it, and a disagreement fails exactly the
   way the undetected schema did. The JSON attribute-map detection of the logs
-  and traces heads follows the same rule.
-- **One rendering for both types.** Under `DateTime` the timestamp functions
-  read `toDateTime64(<x>, 9)`. That conversion is an exact widening of a
-  `DateTime` and the identity on a `DateTime64(9)`, so the emitter never needs
-  to know whether a given argument is a column or an already-DateTime64
-  expression (an anchor, a literal, a `fromUnixTimestamp64Nano` result). Every
-  statement keeps its result types and values. A corpus-wide differential —
-  each TXTAR fixture's seed copied into a `DateTime64(9)` world and a
-  `DateTime` world holding the same whole-second samples, each statement
-  emitted under both strategies — agreed on every fixture (where truncating
-  to the second made two samples collide, both worlds raised the same
-  error). `TestLower` keeps running it on every fixture whose two emissions
-  differ; the fixtures whose emissions are identical are left out because
-  two extra seeded databases per fixture do not fit the chDB lane's
-  timeout.
+  and traces heads follows the same rule. With the requirements check off
+  there is nothing to detect from, and the provisioning precision is the
+  best remaining statement of the type: it is what cerberus creates the
+  tables with.
+- **One rendering for every coarser type.** Under the coarser precision the
+  timestamp functions read `toDateTime64(<x>, 9)`. That conversion is an
+  exact widening of a `DateTime` or of a `DateTime64` at any scale below 9,
+  and the identity on a `DateTime64(9)`, so the emitter never needs to know
+  whether a given argument is a column or an already-DateTime64 expression
+  (an anchor, a literal, a `fromUnixTimestamp64Nano` result), nor which
+  coarser scale the column has. Every statement keeps its result types and
+  values. A time zone on the column type changes how ClickHouse displays and
+  parses a value, never the instant it holds, which is all a metrics query
+  reads, so a zoned type classifies with its unzoned form. A corpus-wide
+  differential — each TXTAR fixture's seed copied into a `DateTime64(9)`
+  world and a `DateTime` world holding the same whole-second samples, each
+  statement emitted under both precisions — agreed on every fixture (where
+  truncating to the second made two samples collide, both worlds raised the
+  same error). `TestLower` keeps running it on every fixture whose two
+  emissions differ, and on every fixture whose statement calls a native
+  `timeSeries*` aggregate even when the two emissions are identical; the
+  remaining fixtures are left out because two extra seeded databases per
+  fixture do not fit the chDB lane's timeout.
 - **The native `timeSeries*` aggregates are widened too.** They accept a
   `DateTime` timestamp but compute in its scale, which moved a
   `timeSeriesRateToGrid` answer by one unit in the last place against the
   `DateTime64(9)` emission over the same samples. Widening their timestamp
   argument makes the two emissions agree exactly.
-- **Other types fail boot.** A different `DateTime64` precision, or a type
-  with an explicit time zone, is not a schema any exporter version creates,
-  and the emitters' nanosecond arithmetic and literal rendering assume
-  `DateTime64(9)`'s scale. Rejecting it at boot names the column; serving it
-  would risk silently wrong answers. Tables that disagree fail for the same
-  reason in a different form: one statement reads several metric tables
-  (a `merge()` over gauge and sum, a union across the histogram tables), so no
-  single rendering serves both.
-- **Resolved again when the tables appear.** The attribute-map strategies
-  stay at the boot probe's answer for the life of the process. The metrics
-  timestamp type does not: the schema re-probe stores the type it resolves
-  before reporting ready. A collector that creates the `DateTime` tables after
-  cerberus boots is the ordinary startup order, and keeping the boot answer
-  there would reproduce the failure this detection exists to remove until the
-  next restart. The cost is one atomic load per request.
+- **Mixed precisions fail boot.** One statement reads several metric tables
+  (a `merge()` over gauge and sum, a union across the histogram tables), so
+  no single rendering serves tables that disagree. The likeliest way to get
+  there is a deployment where cerberus created some metric tables at its
+  default precision and a v0.157+ collector created the others, so the
+  message names the provisioning setting alongside the columns of each
+  precision. Types that are not timestamps at all fail for the plainer
+  reason that no rendering reads them.
+- **Resolved again when the tables appear.** Every schema strategy — the
+  metrics timestamp precision and the logs and traces attribute-map
+  strategies alike — lives in one cell the heads read per request, and the
+  schema re-probe stores everything it resolves there before reporting
+  ready. A collector that creates the tables after cerberus boots is the
+  ordinary startup order, and keeping the boot answer there would reproduce
+  the failure detection exists to remove until the next restart. The
+  attribute-map strategies were once resolved at boot only, on the grounds
+  that a mutable strategy meant per-query branching under concurrent
+  requests; a JSON-typed schema created during the startup race then
+  rendered as `Map` for the life of the process. The cost of resolving them
+  again is an atomic load per request, and each statement still renders
+  under one set of strategies, read from the cell before it is emitted and
+  threaded through the emit as a value.
 
 ## Why provisioning defaults to nanosecond metrics timestamps
 

@@ -36,6 +36,19 @@ package schema
 //	otel_logs
 //	    ORDER BY (toStartOfFiveMinutes(Timestamp), ServiceName, Timestamp)
 //	    -> bare prefix: () the first key element is function-wrapped
+//
+// These are the keys of the tables cerberus provisions. A metrics table a
+// stock exporter created carries a different key — before v0.157
+// (ServiceName, MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix)),
+// from v0.157 (ServiceName, MetricName, toStartOfHour(TimeUnix),
+// cityHash64(Attributes), TimeUnix) — and CREATE TABLE IF NOT EXISTS keeps
+// it. Nothing reads the deployed key, so Metrics.SortingKeyPrefix answers
+// the provisioned prefix over such a table too: the eligibility check can
+// stamp optimize_aggregation_in_order on a GROUP BY that is no prefix of the
+// deployed key, where ClickHouse finds no matching key and aggregates as it
+// would without the setting, and withholds it from one that is. Either
+// changes only how ClickHouse aggregates, never the rows a query returns.
+// Reading the deployed key is cerberus issue #3948.
 
 // SortingKeyPrefix returns the leading run of bare-column sorting-key
 // columns for the metrics tables, in ORDER BY order. Every metrics table

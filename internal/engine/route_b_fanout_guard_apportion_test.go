@@ -152,7 +152,7 @@ func TestRouteB_FanoutGuardVerdictMatchesShardMemoryShare(t *testing.T) {
 		}
 		shardCtx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, decision,
 			fanoutGuardTestPlan(), 0, SettingsRules{}, 0, false,
-			e.resourceBoundOverrides(), e.shardMemoryDivisor(decision), 0, 0, nil, nil)
+			e.resourceBoundOverrides(), e.shardMemoryDivisor(decision), 0, 0, nil)
 		shardCeiling := emittedFanoutCeiling(t, shardCtx)
 
 		for _, rows := range rowsSweep {
@@ -195,7 +195,7 @@ func TestRouteB_FanoutGuardRescueWindow(t *testing.T) {
 	decision := &solver.Decision{K: k}
 	shardCtx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, decision,
 		fanoutGuardTestPlan(), 0, SettingsRules{}, 0, false,
-		e.resourceBoundOverrides(), e.shardMemoryDivisor(decision), 0, 0, nil, nil)
+		e.resourceBoundOverrides(), e.shardMemoryDivisor(decision), 0, 0, nil)
 	shardCeiling := emittedFanoutCeiling(t, shardCtx)
 	if want := wholeQueryCeiling / parallel; shardCeiling != want {
 		t.Fatalf("shard ceiling = %d, want R/min(K, Parallel) = %d/%d = %d", shardCeiling, wholeQueryCeiling, parallel, want)
@@ -240,7 +240,7 @@ func TestRouteB_FanoutCeilingsUseTheGateHalf(t *testing.T) {
 	decision := &solver.Decision{K: k}
 	shardCtx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, decision,
 		fanoutGuardTestPlan(), 0, SettingsRules{}, 0, false,
-		e.resourceBoundOverrides(), e.shardMemoryDivisor(decision), 0, 0, nil, nil)
+		e.resourceBoundOverrides(), e.shardMemoryDivisor(decision), 0, 0, nil)
 	if got, want := emittedFanoutCeiling(t, shardCtx), wholeQueryCeiling/(gateCap/2); got != want {
 		t.Errorf("shard ceiling = %d, want R/(gate/2) = %d", got, want)
 	}

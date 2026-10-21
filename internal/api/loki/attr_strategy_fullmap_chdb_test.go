@@ -5,7 +5,7 @@
 // /detected_labels, /detected_fields, /label/<name>/values) never route
 // through chplan/engine.emitForHead, so they need their own JSON-aware
 // rendering (attr_strategy.go's attrMapFrag / chsql.DistinctAttrKeys,
-// chsql's Builder.MapAt fix) gated on the SAME Handler.AttrStrategies the
+// chsql's Builder.MapAt fix) gated on the SAME Handler.Strategies the
 // normal query path resolves. Each test here runs the SAME HTTP request
 // against a Map-typed otel_logs table and a logically equivalent
 // JSON-typed one, and asserts the decoded responses agree — genuine chDB
@@ -75,7 +75,7 @@ INSERT INTO %[5]s (Timestamp, Body, LogAttributes, ResourceAttributes) VALUES
 
 // newDiscoveryChDBServer boots a real chDB-backed Handler against ddl
 // (formatted with the four seed-row timestamps plus a distinct table
-// name), with AttrStrategies wired exactly as cmd/cerberus's boot path
+// name), with Strategies wired exactly as cmd/cerberus's boot path
 // wires it for a JSON-typed schema — nil for a Map-typed table
 // (attr_strategy.go's attrMapFrag / chsql.DistinctAttrKeys's own no-op
 // default, identical to every call site that predates cerberus issue
@@ -105,11 +105,10 @@ func newDiscoveryChDBServer(t *testing.T, ddlTemplate, tableName string, jsonStr
 	s.LogsTable = tableName
 	h := loki.New(c, s, nil)
 	if jsonStrategy {
-		h.AttrStrategies = chsql.AttrStrategies{
+		h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{Logs: chsql.SchemaStrategies{Attrs: chsql.AttrStrategies{
 			s.ResourceAttributesColumn: chsql.AttrStrategyJSON,
 			s.AttributesColumn:         chsql.AttrStrategyJSON,
-		}
-		h.Lang.AttrStrategies = h.AttrStrategies
+		}}})
 	}
 	mux := http.NewServeMux()
 	h.Mount(mux)
@@ -379,11 +378,10 @@ func newDetectedFieldsServer(t *testing.T, ddlTemplate, tableName string, jsonSt
 	s.LogsTable = tableName
 	h := loki.New(c, s, nil)
 	if jsonStrategy {
-		h.AttrStrategies = chsql.AttrStrategies{
+		h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{Logs: chsql.SchemaStrategies{Attrs: chsql.AttrStrategies{
 			s.ResourceAttributesColumn: chsql.AttrStrategyJSON,
 			s.AttributesColumn:         chsql.AttrStrategyJSON,
-		}
-		h.Lang.AttrStrategies = h.AttrStrategies
+		}}})
 	}
 	mux := http.NewServeMux()
 	h.Mount(mux)

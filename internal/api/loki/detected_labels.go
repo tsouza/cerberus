@@ -85,7 +85,7 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sqlStr, args, err := buildDetectedLabelsSQL(h.Schema, h.AttrStrategies, matchers, start, end)
+	sqlStr, args, err := buildDetectedLabelsSQL(h.Schema, h.Strategies.Load().Logs, matchers, start, end)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return
@@ -126,11 +126,11 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 // All identifiers + time bounds flow through QueryBuilder slots; the
 // selector predicate and the request window are placed by
 // applySelectorAndWindow, which composes typed Frags throughout.
-func buildDetectedLabelsSQL(s schema.Logs, strategies chsql.AttrStrategies, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
+func buildDetectedLabelsSQL(s schema.Logs, strategies chsql.SchemaStrategies, matchers []*labels.Matcher, start, end time.Time) (string, []any, error) {
 	sb := chsql.NewQuery().
-		Select(chsql.As(canonicalLabelsFrag(attrMapFrag(strategies, s.ResourceAttributesColumn)), "labels")).
+		Select(chsql.As(canonicalLabelsFrag(attrMapFrag(strategies.Attrs, s.ResourceAttributesColumn)), "labels")).
 		From(chsql.Col(s.LogsTable)).
-		WithAttrStrategies(strategies)
+		WithSchemaStrategies(strategies)
 
 	if err := applySelectorAndWindow(sb, s, matchers, start, end); err != nil {
 		return "", nil, err

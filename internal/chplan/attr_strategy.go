@@ -14,8 +14,8 @@ package chplan
 // probe has spoken, rather than re-deriving it per query.
 //
 // Declared here rather than in internal/chsql because internal/logql's
-// Lang.EmitAttrStrategies() must return this type to satisfy the shared
-// Lang contract engine.attrStrategier reads, and logql is architecturally
+// Lang.EmitSchemaStrategies() returns it inside SchemaStrategies, the shared
+// Lang contract engine.schemaStrategier reads, and logql is architecturally
 // forbidden from depending on chsql (.go-arch-lint.yml) — chplan is the
 // one package both logql and chsql already depend on. chsql re-exports
 // AttrStrategy / AttrStrategies / AttrStrategyMap / AttrStrategyJSON as
@@ -73,11 +73,11 @@ const (
 // from every signal's boot-probe findings would misapply one signal's
 // strategy to another's identically-named column. AttrStrategies sidesteps
 // this by being scoped PER SIGNAL at the call site instead: preflight
-// resolves one map per signal (Result.LogsAttrStrategies /
-// TracesAttrStrategies), and internal/engine injects only the map for the
-// signal actually being queried (chsql.WithAttrStrategies(ctx, ...) called
-// with LogsAttrStrategies for a LogQL request, TracesAttrStrategies for a
-// TraceQL request, nil for PromQL, which never resolves either) — so a
+// resolves one map per signal (Result.Strategies.Logs.Attrs /
+// Result.Strategies.Traces.Attrs), and each head renders under only its own
+// signal's SchemaStrategies (chsql.WithSchemaStrategies: the logs map for a
+// LogQL request, the traces map for a TraceQL request, none for PromQL,
+// which never resolves either) — so a
 // chsql.Builder rendering one query only ever sees that one signal's
 // resolved strategies, never a merged cross-signal map.
 type AttrStrategies map[string]AttrStrategy

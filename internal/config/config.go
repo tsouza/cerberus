@@ -794,9 +794,10 @@ type SchemaProvisioning struct {
 	// columns (TimeUnix, StartTimeUnix, Exemplars.TimeUnix):
 	// schema.MetricsTimestampNanos (`nanos`, the default) creates
 	// DateTime64(9), schema.MetricsTimestampSeconds (`seconds`) creates
-	// DateTime, which truncates every sample timestamp to its second. It
-	// shapes only the tables cerberus creates; the read path serves whichever
-	// type the deployed tables carry, as the boot requirements check detects.
+	// DateTime, which truncates every sample timestamp to its second. The
+	// read path renders for the precision the boot requirements check
+	// detects on the deployed tables, and for this one when the check is
+	// disabled (cmd/cerberus's configuredStrategies).
 	MetricsTimestampPrecision schema.MetricsTimestampPrecision
 
 	// TraceMaterializedAttrsEnabled (CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED)
@@ -1690,7 +1691,7 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envSchemaTierAfterLogs, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaTierAfterTraces, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaDeltaPrefixEnabled, defaultSchemaDeltaPrefixEnabled)
-	v.SetDefault(envSchemaMetricsTimestampPrec, string(schema.MetricsTimestampNanos))
+	v.SetDefault(envSchemaMetricsTimestampPrec, schema.MetricsTimestampNanos.String())
 	v.SetDefault(envSchemaTraceMaterializedAttrsEnabled, defaultSchemaTraceMaterializedAttrsEnabled)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)

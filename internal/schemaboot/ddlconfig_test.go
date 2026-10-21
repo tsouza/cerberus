@@ -115,6 +115,22 @@ func TestDDLConfig_DeltaPrefixThreaded(t *testing.T) {
 	}
 }
 
+// TestDDLConfig_MetricsTimestampPrecisionThreaded pins that the configured
+// metrics timestamp precision reaches the DDL config, for every precision.
+func TestDDLConfig_MetricsTimestampPrecisionThreaded(t *testing.T) {
+	for _, precision := range []schema.MetricsTimestampPrecision{schema.MetricsTimestampNanos, schema.MetricsTimestampSeconds} {
+		got, err := schemaboot.DDLConfig(config.Config{
+			SchemaProvisioning: config.SchemaProvisioning{MetricsTimestampPrecision: precision},
+		})
+		if err != nil {
+			t.Fatalf("DDLConfig: %v", err)
+		}
+		if got.MetricsTimestampPrecision != precision {
+			t.Errorf("configured %v: DDL MetricsTimestampPrecision = %v", precision, got.MetricsTimestampPrecision)
+		}
+	}
+}
+
 // TestDDLConfig_ReplicatedThreaded pins the Replicated database engine knobs
 // flow through to the ddl Config, alongside the cluster the CREATE DATABASE
 // fans out over so every replica attaches the database.

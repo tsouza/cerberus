@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -78,7 +79,7 @@ func TestBuildAttributeValuesSQL_AutoScopeMaterializedColumnRouting(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sqlStr, _, _ := tempo.BuildAttributeValuesSQLForTest(s, tc.key, tempo.AttrMapScopeAnyForTest, nil, start, end, nil)
+			sqlStr, _, _ := tempo.BuildAttributeValuesSQLForTest(s, tc.key, tempo.AttrMapScopeAnyForTest, nil, start, end, chsql.SchemaStrategies{})
 
 			for _, marker := range tc.wantMaterializedMarkers {
 				if !strings.Contains(sqlStr, marker) {
@@ -124,8 +125,8 @@ func TestBuildAttributeValuesSQL_AutoScopeMaterializedUnchangedForConfiguredOthe
 	start := time.Unix(1000, 0).UTC()
 	end := time.Unix(2000, 0).UTC()
 
-	gotWith, _, _ := tempo.BuildAttributeValuesSQLForTest(withRegistry, "rpc.method", tempo.AttrMapScopeAnyForTest, nil, start, end, nil)
-	gotWithout, _, _ := tempo.BuildAttributeValuesSQLForTest(without, "rpc.method", tempo.AttrMapScopeAnyForTest, nil, start, end, nil)
+	gotWith, _, _ := tempo.BuildAttributeValuesSQLForTest(withRegistry, "rpc.method", tempo.AttrMapScopeAnyForTest, nil, start, end, chsql.SchemaStrategies{})
+	gotWithout, _, _ := tempo.BuildAttributeValuesSQLForTest(without, "rpc.method", tempo.AttrMapScopeAnyForTest, nil, start, end, chsql.SchemaStrategies{})
 	if gotWith != gotWithout {
 		t.Errorf("unconfigured key's auto-scope SQL differs based on registry presence:\nwith registry:    %s\nwithout registry: %s", gotWith, gotWithout)
 	}

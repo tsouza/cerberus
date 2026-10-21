@@ -99,19 +99,17 @@ func isBareIdentifier(s string) bool {
 	return true
 }
 
-// metricsPrecisions is every metrics timestamp precision schema provisioning
-// can render, paired with the fork's own selector for it.
-var metricsPrecisions = map[MetricsTimestampPrecision]sqltemplates.MetricsTimestampPrecision{
-	MetricsTimestampNanos:   sqltemplates.MetricsTimestampNanos,
-	MetricsTimestampSeconds: sqltemplates.MetricsTimestampSeconds,
-}
+// allMetricsTimestampPrecisions is every metrics timestamp precision schema
+// provisioning can render.
+var allMetricsTimestampPrecisions = []MetricsTimestampPrecision{MetricsTimestampNanos, MetricsTimestampSeconds}
 
-// metricsTemplates is every metrics table's DDL for one timestamp precision.
+// metricsTemplates is every metrics table's DDL for one timestamp precision,
+// selected through the same SQLTemplatePrecision mapping provisioning uses.
 // sortingkey.go states that all five share one ORDER BY and returns a single
 // prefix for them; nothing checked that, so the claim is asserted here rather
 // than assumed.
-func metricsTemplates(p sqltemplates.MetricsTimestampPrecision) map[string]string {
-	set := sqltemplates.MetricsCreateTables(p)
+func metricsTemplates(p MetricsTimestampPrecision) map[string]string {
+	set := sqltemplates.MetricsCreateTables(p.SQLTemplatePrecision())
 	return map[string]string{
 		"gauge":         set.Gauge,
 		"sum":           set.Sum,
@@ -122,10 +120,10 @@ func metricsTemplates(p sqltemplates.MetricsTimestampPrecision) map[string]strin
 }
 
 func TestEveryMetricsTableSharesOneOrderBy(t *testing.T) {
-	for precision, p := range metricsPrecisions {
+	for _, precision := range allMetricsTimestampPrecisions {
 		var first []string
 		var firstName string
-		for name, ddl := range metricsTemplates(p) {
+		for name, ddl := range metricsTemplates(precision) {
 			got := orderByTuple(t, ddl)
 			if first == nil {
 				first, firstName = got, name
@@ -147,8 +145,8 @@ func TestEveryMetricsTableSharesOneOrderBy(t *testing.T) {
 // for whichever of them a deployment was provisioned with, so both have to
 // agree with it.
 func TestMetricsSortingKeyPrefix_MatchesUpstreamDDL(t *testing.T) {
-	for precision, p := range metricsPrecisions {
-		want := bareColumnPrefix(orderByTuple(t, metricsTemplates(p)["gauge"]))
+	for _, precision := range allMetricsTimestampPrecisions {
+		want := bareColumnPrefix(orderByTuple(t, metricsTemplates(precision)["gauge"]))
 		if len(want) == 0 {
 			t.Fatalf("%s: derived an empty metrics prefix from the DDL — the deriver is broken", precision)
 		}

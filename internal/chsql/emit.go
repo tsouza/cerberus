@@ -393,27 +393,15 @@ type emitter struct {
 	// success path, and an emitter built outside Emit leaves it nil.
 	rootPlan chplan.Node
 
-	// attrStrategies resolves how an attribute-map column that appears as
-	// a bare chplan.ColumnRef renders a per-key access (cerberus issue
-	// #2777) — see AttrStrategies's doc (attr_strategy.go). Seeded once
-	// per Emit call from attrStrategiesFromCtx(ctx) (internal/engine
-	// threads it via chsql.WithAttrStrategies — see emitForHead /
-	// routeBExecCtx). Every per-node QueryBuilder this emitter assembles
-	// via emitSelect copies it on before rendering (QueryBuilder.
-	// WithAttrStrategies), so a plan composed of many nested Scan/Filter/
-	// Aggregate node emits — each of which builds its OWN fresh
-	// chsql.Builder via QueryBuilder.subquerySQL — all see the SAME
-	// resolved strategies. nil (an emitter built outside Emit, or a
-	// request whose ctx never carried one) renders every attribute-map
-	// column as Map, byte-identical to before this field existed.
-	attrStrategies AttrStrategies
-
-	// metricsTimestamp is the MetricsTimestampStrategy every statement
-	// this emitter renders carries (Builder.metricsTimestamp). Seeded once
-	// per Emit call from metricsTimestampFromCtx(ctx) — internal/engine
-	// threads it via chsql.WithMetricsTimestamp — and stamped onto every
-	// per-node QueryBuilder by emitSelect, exactly as attrStrategies is.
-	metricsTimestamp MetricsTimestampStrategy
+	// strategies is the SchemaStrategies every statement this emitter
+	// renders carries. Seeded once per Emit call from the context
+	// (WithSchemaStrategies, which internal/engine sets per request) and
+	// stamped by emitSelect onto every per-node QueryBuilder before it
+	// renders, so a plan composed of many nested Scan/Filter/Aggregate node
+	// emits — each building its own Builder — renders under one value
+	// throughout. The zero value (an emitter built outside Emit, or a ctx
+	// that never carried one) renders for the default schema.
+	strategies SchemaStrategies
 
 	// cteSeq is a monotonic counter handed out to every emitter that
 	// registers a named CTE, so each one gets a unique name: the
@@ -480,8 +468,7 @@ func newEmitter(ctx context.Context) *emitter {
 		rangeBucketGridNativeMaxDensityUnits: rangeBucketGridNativeMaxDensityUnitsFromCtx(ctx),
 
 		emittedSQLMaxBytes: maxEmittedSQLBytesFromCtx(ctx),
-		attrStrategies:     attrStrategiesFromCtx(ctx),
-		metricsTimestamp:   metricsTimestampFromCtx(ctx),
+		strategies:         schemaStrategiesFromCtx(ctx),
 		cteSeq:             new(int),
 	}
 }
@@ -523,8 +510,7 @@ func (e *emitter) sub() *emitter {
 		rangeBucketGridNativeMaxDensityUnits: e.rangeBucketGridNativeMaxDensityUnits,
 
 		emittedSQLMaxBytes: e.emittedSQLMaxBytes,
-		attrStrategies:     e.attrStrategies,
-		metricsTimestamp:   e.metricsTimestamp,
+		strategies:         e.strategies,
 		cteSeq:             e.cteSeq,
 		shared:             e.shared,
 	}

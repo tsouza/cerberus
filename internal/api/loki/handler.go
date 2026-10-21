@@ -149,16 +149,15 @@ type Handler struct {
 	// byte-identical to today.
 	TextIndexLineFilter bool
 
-	// AttrStrategies resolves how the logs attribute-map columns are
-	// physically stored (cerberus issue #2777), wired from
-	// preflight.Result.LogsAttrStrategies in cmd/cerberus — mirroring
-	// TextIndexLineFilter above: langForRequest / langForRangeRequest copy
-	// it onto every per-request *logql.Lang, and New's own long-lived
-	// h.Lang picks it up the same way. nil (the default — every bare
-	// Handler{} test fixture, and any deployment whose logs attribute-map
-	// columns are all Map(String,String)) keeps the LogQL emitter
-	// byte-identical to before this field existed.
-	AttrStrategies chsql.AttrStrategies
+	// Strategies holds the chsql.SchemaStrategies the boot requirements
+	// check resolved for every signal's tables, wired in cmd/cerberus and
+	// updated by the schema re-probe when the tables appear after boot.
+	// Each request loads the logs ones once: langForRequest /
+	// langForRangeRequest copy them onto the per-request *logql.Lang, and
+	// the metadata builders thread them onto every QueryBuilder they build
+	// (attr_strategy.go). A nil cell loads the zero value, which renders
+	// every logs attribute column as a Map.
+	Strategies *chsql.SchemaStrategiesCell
 
 	// LabelCatalogEnabled reports whether internal/schema/ddl provisioned
 	// the loki_label_catalog refreshable materialized view (cerberus issue
@@ -563,7 +562,7 @@ func (h *Handler) langForRequest(start, end time.Time, limit int, dir logDirecti
 		TextIndexLineFilter: h.TextIndexLineFilter,
 		LogLineLimit:        int64(limit),
 		LogLineBackward:     dir == directionBackward,
-		AttrStrategies:      h.AttrStrategies,
+		Strategies:          h.Strategies.Load().Logs,
 	}
 }
 
@@ -630,7 +629,7 @@ func (h *Handler) langForRangeRequest(start, end time.Time, step time.Duration, 
 		TextIndexLineFilter: h.TextIndexLineFilter,
 		LogLineLimit:        int64(limit),
 		LogLineBackward:     dir == directionBackward,
-		AttrStrategies:      h.AttrStrategies,
+		Strategies:          h.Strategies.Load().Logs,
 	}
 }
 

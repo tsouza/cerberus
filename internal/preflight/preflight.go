@@ -20,8 +20,8 @@
 //     map there boots with a WARNING rather than a FATAL and, for BOTH
 //     signals, also RESOLVES a chsql.AttrStrategies the query emitters
 //     actually render against for per-key lookups and comparisons
-//     (Result.LogsAttrStrategies / TracesAttrStrategies — internal/engine
-//     threads the right one onto the emit context per request; see
+//     (Result.Strategies — internal/engine threads the queried signal's
+//     onto the emit context per request; see
 //     tableReq.jsonAttrMapCompat). Logs shipped this in cerberus issue
 //     #2777's original PR; traces shipped it in the #3062 follow-up.
 //     Metrics attribute maps carry series identity and stay Map-only per
@@ -169,8 +169,7 @@ const attrMapType = "Map(String,String)"
 // upstream OTel exporter's `json:true` schema variant types the attribute
 // columns this way instead of Map(String,String). Recognising the shape
 // here is detection only: it lets a tableReq.jsonAttrMapCompat table boot
-// instead of FATALing and feeds the column into Result.LogsAttrStrategies /
-// TracesAttrStrategies; the SQL rendering decision itself is chsql's
+// instead of FATALing and feeds the column into Result.Strategies; the SQL rendering decision itself is chsql's
 // (AttrStrategyJSON), never this function's.
 func isJSONAttrType(deployedType string) bool {
 	s := strings.TrimSpace(deployedType)
@@ -324,23 +323,24 @@ type Result struct {
 	DatabaseAbsent    bool
 	DatabaseAbsentErr error
 
-	// LogsAttrStrategies resolves, per logs attribute-map column name, the
-	// chsql.AttrStrategy the boot probe detected (cerberus issue #2777):
-	// AttrStrategyJSON for a column system.columns reports as ClickHouse's
-	// JSON type, absent (chsql's nil-safe default) for every column
-	// reporting the expected Map(String,String). nil when the logs table
-	// carries no JSON-typed attribute columns at all — the common case,
-	// and the only case before this issue's work existed.
+	// Strategies are the chsql.SchemaStrategies, per signal, that the
+	// deployed column types resolve to:
 	//
-	// cmd/cerberus is the only intended consumer: it threads this into
-	// internal/engine's construction so a LogQL request's ctx carries it
-	// via chsql.WithAttrStrategies, scoped to LogQL only (see
-	// chsql.AttrStrategies's doc for why a bare-column-name map must never
-	// be shared across signals). A nil value here is indistinguishable
-	// from "preflight never ran" and from "every logs attribute column is
-	// Map" — both resolve to the same all-Map behaviour, which is correct
-	// for both.
-	LogsAttrStrategies AttrStrategies
+	//   - Logs.Attrs / Traces.Attrs map each attribute-map column
+	//     system.columns reports as ClickHouse's JSON type to
+	//     chsql.AttrStrategyJSON (cerberus issue #2777, traces #3062); every
+	//     column reporting the expected Map(String,String) is absent, which
+	//     reads as AttrStrategyMap. A bare-column-name map is never shared
+	//     across signals (chsql.AttrStrategies's doc).
+	//   - Metrics.MetricsTimestamp is the precision of the metrics timestamp
+	//     columns (resolveMetricsTimestamp). A column of a non-timestamp
+	//     type, or columns of different precisions, are Fatal instead.
+	//
+	// The zero value — no table introspected — renders the default schema.
+	// cmd/cerberus is the only intended consumer: it stores them in the
+	// chsql.SchemaStrategiesCell every head loads per request, both from the
+	// boot check and from each schema re-probe.
+	Strategies chsql.ResolvedSchemaStrategies
 
 	// StaleMarkerFlagsMissing names the metric tables that exist but lack
 	// the configured schema.Metrics.FlagsColumn; each also carries a
@@ -352,39 +352,6 @@ type Result struct {
 	// absent table, a table without the column, or a schema declaring none
 	// leaves it false.
 	StaleMarkerFlagsPresent bool
-
-	// TracesAttrStrategies is LogsAttrStrategies's traces counterpart —
-	// resolved by the SAME boot-probe detection (tableReq.jsonAttrMapCompat
-	// covers both logs and traces) and, since cerberus issue #3062, wired
-	// into internal/engine's TraceQL request context exactly like
-	// LogsAttrStrategies: cmd/cerberus threads it onto
-	// tempo.Handler.SetAttrStrategies, which the engine's attrStrategier
-	// duck-type picks up via chsql.WithAttrStrategies. #3062 verified
-	// TraceQL's own risk empirically — chsql.exprFieldAccess needed its
-	// own JSON branch (FieldAccess, not MapAccess, is what
-	// internal/traceql's lowering builds for every attribute read),
-	// comparison typing (toFloat64OrNull over the JSON path) was pinned
-	// against real ClickHouse via chDB, and the structural-join /
-	// nested-set emitters were confirmed to inherit the strategy through
-	// the shared emitter state rather than bypassing it — see
-	// internal/api/tempo/attr_strategy_json_chdb_test.go. It is always
-	// populated (or nil) exactly as LogsAttrStrategies is, from the same
-	// checkSchema pass.
-	TracesAttrStrategies AttrStrategies
-
-	// MetricsTimestamp is the chsql.MetricsTimestampStrategy the deployed
-	// metrics timestamp columns resolve to (resolveMetricsTimestamp):
-	// MetricsTimestampDateTime when every one of them is `DateTime`, the
-	// zero value MetricsTimestampDateTime64 when every one is
-	// `DateTime64(9)` or no metric table was introspected. A column of any
-	// other type, or columns that disagree, are Fatal instead.
-	//
-	// cmd/cerberus is the only intended consumer: it threads this onto the
-	// Prom head, whose engine puts it on every PromQL request's emit
-	// context via chsql.WithMetricsTimestamp. Like LogsAttrStrategies it
-	// is resolved once at boot; a Result from the transient not-ready path
-	// carries the zero value.
-	MetricsTimestamp chsql.MetricsTimestampStrategy
 }
 
 // AttrStrategies is preflight's own alias for chsql.AttrStrategies —
@@ -519,11 +486,13 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 	problems := append(append(versionProblems, sf.problems...), timestampProblems...)
 
 	res := Result{
-		Warnings:             warnings,
-		AbsentTables:         sf.absent,
-		LogsAttrStrategies:   attrStrategiesFor(sf.jsonColsByTable[req.Logs.LogsTable]),
-		TracesAttrStrategies: attrStrategiesFor(sf.jsonColsByTable[req.Traces.SpansTable]),
-		MetricsTimestamp:     metricsTimestamp,
+		Warnings:     warnings,
+		AbsentTables: sf.absent,
+		Strategies: chsql.ResolvedSchemaStrategies{
+			Metrics: chsql.SchemaStrategies{MetricsTimestamp: metricsTimestamp},
+			Logs:    chsql.SchemaStrategies{Attrs: attrStrategiesFor(sf.jsonColsByTable[req.Logs.LogsTable])},
+			Traces:  chsql.SchemaStrategies{Attrs: attrStrategiesFor(sf.jsonColsByTable[req.Traces.SpansTable])},
+		},
 
 		StaleMarkerFlagsMissing: sf.flagsMissing,
 		StaleMarkerFlagsPresent: flagsPresent,
@@ -850,7 +819,7 @@ type tableReq struct {
 	// schema variant). Only logs and traces set this: their attribute maps
 	// are per-row lookups, so a JSON-typed column there boots with a
 	// WARNING rather than a FATAL, and is surfaced through
-	// Result.LogsAttrStrategies / TracesAttrStrategies for internal/engine
+	// Result.Strategies for internal/engine
 	// to actually render queries against (the chsql.Builder
 	// attribute-access-strategy threading: chsql's exprMapAccess /
 	// exprFieldAccess / FnMapContainsKey render hooks all have a JSON
@@ -1087,7 +1056,7 @@ func nonEmpty(vals ...string) []string {
 // jsonAttrMapCompat table whose attribute map is JSON-typed), and
 // jsonColsByTable, the JSON-typed attribute columns found per jsonAttrMapCompat
 // table name (logs and traces) — Run resolves
-// this into Result.LogsAttrStrategies / TracesAttrStrategies. An
+// this into Result.Strategies. An
 // entirely-absent table is transient (the schema race), so it lands in the
 // second value and is NOT a wrong-shape problem; a table that exists but has
 // the wrong columns is.
@@ -1246,8 +1215,7 @@ func checkTableColumns(t tableReq, rows []chclient.NameTypePair) (problems, warn
 			// Boot-probe compat (cerberus issue #2777): a JSON-typed
 			// attribute map on logs/traces boots instead of FATALing, and
 			// the column is surfaced through jsonColsByTable so the query
-			// emitters render against it (Result.LogsAttrStrategies /
-			// TracesAttrStrategies). Every jsonAttrMapCompat table has a
+			// emitters render against it (Result.Strategies). Every jsonAttrMapCompat table has a
 			// real, tested chsql JSON rendering path for per-key attribute
 			// lookups (logs since cerberus issue #2777's original PR, traces
 			// since #3062), so the warning names the KNOWN remaining gaps

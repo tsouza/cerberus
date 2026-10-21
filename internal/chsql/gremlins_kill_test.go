@@ -4179,7 +4179,7 @@ func TestPlainGroupColumnNames_NonColumnRefNoPanic(t *testing.T) {
 }
 
 // TestCollectGroupByFrags_ThreadsAttrStrategies proves collectGroupByFrags's
-// per-expr Builder actually inherits e.attrStrategies, not just that the
+// per-expr Builder actually inherits e.strategies, not just that the
 // field is present on the struct literal. No current lowering path feeds a
 // non-bare-ColumnRef GroupBy entry (every JSON-strategy-dependent expression
 // is pre-computed into a preceding chplan.Project first), so this
@@ -4197,7 +4197,7 @@ func TestCollectGroupByFrags_ThreadsAttrStrategies(t *testing.T) {
 		Key: &chplan.LitString{V: "service.name"},
 	}
 
-	e := &emitter{attrStrategies: strategies}
+	e := &emitter{strategies: SchemaStrategies{Attrs: strategies}}
 	frags, err := e.collectGroupByFrags([]chplan.Expr{access})
 	if err != nil {
 		t.Fatalf("collectGroupByFrags: %v", err)
@@ -4212,7 +4212,7 @@ func TestCollectGroupByFrags_ThreadsAttrStrategies(t *testing.T) {
 		t.Fatalf("build: %v", err)
 	}
 
-	want := &Builder{attrStrategies: strategies}
+	want := &Builder{strategies: SchemaStrategies{Attrs: strategies}}
 	if err := want.exprMapAccess(access); err != nil {
 		t.Fatalf("exprMapAccess: %v", err)
 	}
@@ -4222,7 +4222,7 @@ func TestCollectGroupByFrags_ThreadsAttrStrategies(t *testing.T) {
 	}
 
 	if got != wantSQL {
-		t.Errorf("collectGroupByFrags did not inherit attrStrategies:\ngot:  %s\nwant: %s (exprMapAccess's own JSON-coalesce render)", got, wantSQL)
+		t.Errorf("collectGroupByFrags did not inherit strategies:\ngot:  %s\nwant: %s (exprMapAccess's own JSON-coalesce render)", got, wantSQL)
 	}
 	if !strings.Contains(got, "coalesce(") {
 		t.Errorf("expected the JSON coalesce render shape, got a bare Map subscript: %s", got)

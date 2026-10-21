@@ -85,7 +85,7 @@ type downsampleTierGaugeSample struct {
 // downsampleTierGaugeSeed mirrors downsampleTierSeed's shape for a Gauge
 // metric: a normal two-sample pair, a single-sample host, a bucket gap, and
 // a boundary-exact sample proving the Gauge MV shares the SAME
-// downsampleTierBucketEndExpr ceiling-bucket convention the Sum MV uses.
+// DownsampleTierBucketEnd ceiling-bucket convention the Sum MV uses.
 var downsampleTierGaugeSeed = []downsampleTierGaugeSample{
 	// "normal": two samples in [00:00,00:05], last_over_time must report
 	// the LATER one (150).

@@ -93,15 +93,16 @@ type lang struct {
 	// shape.
 	ThrowDuplicateSeriesIf bool
 
-	// MetricsTimestamp is Handler.MetricsTimestamp, reported to the engine
-	// through EmitMetricsTimestamp. The zero value renders for
-	// `DateTime64(9)` timestamp columns.
-	MetricsTimestamp chsql.MetricsTimestampStrategy
+	// Strategies are the metrics chsql.SchemaStrategies this request's plans
+	// render under (Handler.metricsStrategies), reported to the engine
+	// through EmitSchemaStrategies. The zero value renders for DateTime64(9)
+	// timestamp columns.
+	Strategies chsql.SchemaStrategies
 }
 
-// EmitMetricsTimestamp reports the MetricsTimestampStrategy this lang's
-// plans render under; the engine threads it onto the emit context.
-func (l *lang) EmitMetricsTimestamp() chsql.MetricsTimestampStrategy { return l.MetricsTimestamp }
+// EmitSchemaStrategies reports the SchemaStrategies this lang's plans
+// render under; the engine threads them onto the emit context.
+func (l *lang) EmitSchemaStrategies() chsql.SchemaStrategies { return l.Strategies }
 
 // Compile-time check that *lang satisfies engine.Lang.
 var _ engine.Lang = (*lang)(nil)

@@ -10,7 +10,7 @@
 // Five properties this file proves empirically, each the load-bearing
 // claim a comment elsewhere in this feature makes:
 //
-//  1. Boundary-exact bucketing (internal/schema/ddl's downsampleTierBucketEndExpr):
+//  1. Boundary-exact bucketing (chsql.DownsampleTierBucketEnd):
 //     a raw sample landing EXACTLY on a bucket boundary joins the bucket
 //     ENDING there, matching PromQL's half-open-left/closed-right window —
 //     see host "boundary" below.
@@ -149,7 +149,7 @@ var downsampleTierSeed = []downsampleTierHostSample{
 	// own boundary (00:00:00) must NOT be pulled into the (00:00,00:05]
 	// bucket this test queries (which ends at 00:05:00) — a sample AT
 	// 00:00:00 belongs to the bucket ENDING at 00:00:00 instead
-	// (internal/schema/ddl's bucketEndExpr). With no other sample in this
+	// (DownsampleTierBucketEnd). With no other sample in this
 	// bucket, this host must be entirely ABSENT from every function's
 	// answer at the 00:05:00 anchor.
 	{"boundary_excluded", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), 1, 2},

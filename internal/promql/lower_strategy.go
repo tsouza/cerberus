@@ -1743,7 +1743,7 @@ func (n NativeLastOverTimeLowerer) LowerLastOverTime(rw *chplan.RangeWindow, s s
 //     rows via timeSeriesLastTwoSamplesMerge and re-filters the merged
 //     result to the exact `(anchor-range, anchor]` window — see
 //     internal/chsql's emitRangeWindowDownsampleTier, mirroring the
-//     reasoning internal/schema/ddl's downsampleTierBucketEndExpr doc
+//     reasoning chsql.DownsampleTierBucketEnd's doc
 //     comment lays out for the single-bucket case. A range narrower than
 //     one bucket, or not an integer multiple of it, cannot be answered from
 //     whole bucket-granularity rows at all.
@@ -1753,7 +1753,7 @@ func (n NativeLastOverTimeLowerer) LowerLastOverTime(rw *chplan.RangeWindow, s s
 //     check alone rejects every step-too-fine shape; a 15s-step query
 //     never touches the 5-minute tier).
 //   - rw.Start must land exactly on a bucket boundary (absolute Unix-epoch
-//     alignment, matching internal/schema/ddl's downsampleTierBucketEndExpr
+//     alignment, matching chsql.DownsampleTierBucketEnd
 //     — ClickHouse's toStartOfInterval with no origin argument is itself
 //     epoch-aligned). Combined with the Step-multiple check above, EVERY
 //     anchor Start+k*Step is then also bucket-aligned, so this one check

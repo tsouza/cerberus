@@ -1205,6 +1205,10 @@ func newDryRunExplainer(cfg config.Config) (dryRunExplainer, error) {
 	// memory cap, so a preview without them bound every deployment's SQL to
 	// the 1 GiB default while claiming byte-identical SQL.
 	_, promBounds, err := resolveBoundOverrides(cfg)
+	// The metrics timestamp precision the server would detect on the deployed
+	// tables is unknown offline; the configured one is what cerberus
+	// provisions them with.
+	precision := cfg.SchemaProvisioning.MetricsTimestampPrecision
 	if err != nil {
 		return dryRunExplainer{}, err
 	}
@@ -1212,8 +1216,8 @@ func newDryRunExplainer(cfg config.Config) (dryRunExplainer, error) {
 	rangeStart := evalTime.Add(-explainRangeWindow)
 	return dryRunExplainer{
 		eng:          newExplainEngine(cfg),
-		promInstant:  prom.NewExplainLang(metrics, evalTime, promBounds),
-		promRange:    prom.NewExplainLangRange(metrics, rangeStart, evalTime, explainRangeStep, promBounds),
+		promInstant:  prom.NewExplainLang(metrics, precision, evalTime, promBounds),
+		promRange:    prom.NewExplainLangRange(metrics, precision, rangeStart, evalTime, explainRangeStep, promBounds),
 		logqlInstant: &logql.Lang{Schema: logs, Start: evalTime, End: evalTime},
 		logqlRange:   &logql.Lang{Schema: logs, Start: rangeStart, End: evalTime, Step: explainRangeStep},
 		traceqlLang:  tempo.NewExplainLang(traces, explainRangeStep),
@@ -1223,8 +1227,9 @@ func newDryRunExplainer(cfg config.Config) (dryRunExplainer, error) {
 }
 
 // dryRunExplainer adapts engine.DryRunSQL to migrate.Explainer. The SQL it
-// reports is byte-identical to what the server would send to ClickHouse for the
-// same query. It picks the lang matching the query's source language (PromQL /
+// reports is what the server would send to ClickHouse for the same query when
+// the deployed metrics tables carry the configured timestamp precision, except
+// for the range-preview lowering difference NewExplainLangRange documents. It picks the lang matching the query's source language (PromQL /
 // LogQL / TraceQL) AND, for the metrics heads, its evaluation mode: a panel
 // previews as a range query, a rule as an instant query.
 type dryRunExplainer struct {

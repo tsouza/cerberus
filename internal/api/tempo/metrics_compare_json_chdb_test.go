@@ -93,7 +93,7 @@ func compareServer(t *testing.T, c *chclienttest.Client, table, spanAttrType, pr
 	s := schema.DefaultOTelTraces()
 	s.SpansTable = table
 	h := tempo.New(c, s, "v-test", nil)
-	h.SetAttrStrategies(strategies)
+	h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{Traces: chsql.SchemaStrategies{Attrs: strategies}})
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)

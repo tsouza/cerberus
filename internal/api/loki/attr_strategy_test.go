@@ -37,8 +37,7 @@ func TestQuery_JSONAttrStrategyRendersDynamicSubcolumnPath(t *testing.T) {
 	// h.Lang (the handler's own field is not read directly by /query — see
 	// Handler's own doc — but wiring it too matches production and would
 	// catch a future refactor that starts reading it).
-	h.AttrStrategies = chsql.AttrStrategies{s.ResourceAttributesColumn: chsql.AttrStrategyJSON}
-	h.Lang.AttrStrategies = h.AttrStrategies
+	h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{Logs: chsql.SchemaStrategies{Attrs: chsql.AttrStrategies{s.ResourceAttributesColumn: chsql.AttrStrategyJSON}}})
 
 	mux := http.NewServeMux()
 	h.Mount(mux)
@@ -72,7 +71,7 @@ func TestQuery_JSONAttrStrategyRendersDynamicSubcolumnPath(t *testing.T) {
 // /index/stats, /index/volume and /patterns each construct their SQL
 // directly against chsql.NewQuery() and so never reach chsql.Emit's
 // ctx-based AttrStrategies plumbing, yet none of them called
-// .WithAttrStrategies. Every one of them shares applySelectorAndWindow,
+// .WithSchemaStrategies. Every one of them shares applySelectorAndWindow,
 // whose stream-selector matchers are per-key attribute-map accesses — so
 // against a JSON-typed attributes column all three emitted a
 // Map bracket-subscript that the column cannot answer.
@@ -99,8 +98,7 @@ func TestMetadataBuilders_JSONAttrStrategyReachesEveryBuilder(t *testing.T) {
 			s := schema.DefaultOTelLogs()
 			q := &stubQuerier{}
 			h := loki.New(q, s, nil)
-			h.AttrStrategies = chsql.AttrStrategies{s.ResourceAttributesColumn: chsql.AttrStrategyJSON}
-			h.Lang.AttrStrategies = h.AttrStrategies
+			h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{Logs: chsql.SchemaStrategies{Attrs: chsql.AttrStrategies{s.ResourceAttributesColumn: chsql.AttrStrategyJSON}}})
 
 			mux := http.NewServeMux()
 			h.Mount(mux)
