@@ -256,7 +256,9 @@ then builds the ingester's TSDB head into an index file, uploads it, and
 brings the reference back up with an empty WAL, head and local index
 directory (a tmpfs); the live stage pushes the `/patterns` fixture and
 checks both targets. The reference therefore serves the corpus index from
-its object store alone, where each chunk is in exactly one index. That is
+its object store alone, where each chunk is in exactly one index (the
+compactor, which rewrites object-store index files, first runs one
+`compaction_interval` after the restart, after the diff has finished). That is
 the state in which `/index/stats` is exact: upstream sums per-chunk
 statistics over every index copy it holds and deduplicates only streams,
 so an `entries` count read while the corpus also sat in a TSDB head would

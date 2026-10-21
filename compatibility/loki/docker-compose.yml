@@ -24,7 +24,7 @@
 #   docker compose up --wait
 #   go run ./compatibility/loki/cmd/seed/ -stage=corpus
 #   docker compose restart loki
-#   go run ./compatibility/loki/cmd/seed/ -stage=live -live-patterns-metadata=reports/live-patterns-metadata.json
+#   go run ./compatibility/loki/cmd/seed/ -stage=live -live-patterns-metadata=compatibility/loki/reports/live-patterns-metadata.json
 #   docker compose down -v
 
 # Empty suffix in a primary checkout (and in CI); a per-worktree one otherwise,

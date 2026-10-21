@@ -142,7 +142,7 @@ loki_ingester_chunks_flushed_total{reason="forced"} %g
 		// Loki upstream rename / regression: the `flush_queue_length`
 		// gauge is missing entirely. The gate must surface this as a
 		// structured error rather than treat the missing value as
-		// zero (which would silently flip to "settled").
+		// zero (which would silently flip to "drained").
 		handler := serveMetrics(func() string {
 			return `# HELP loki_ingester_memory_chunks unused
 # TYPE loki_ingester_memory_chunks gauge

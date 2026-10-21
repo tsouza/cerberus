@@ -112,13 +112,14 @@ const (
 // `LabelValues` discard `from`/`through` (pkg/storage/stores/shipper/
 // indexshipper/tsdb/single_file_index.go), so a selector-less /labels,
 // /label/{name}/values or /detected_labels answers with every stream in
-// every index file that overlaps the window — and the live fixture is
-// ingested into the same reference Loki. A selector-less case's
-// reference answer would therefore depend on how upstream's index files
-// group the two pushes rather than on the data; a corpus-bounded
-// selector makes it a function of the data on both backends. The window is the full corpus span for the same
-// reason: within an index, upstream does not narrow discovery to the
-// window at all.
+// every index file that overlaps the window. The live fixture is
+// ingested into the same reference Loki; the seeder keeps the two in
+// separate indexes (the corpus is indexed in the object store before the
+// fixture is pushed), but a selector-less answer would hinge on that
+// index layout, whereas a corpus-bounded selector makes the answer a
+// function of the data on both backends whatever the layout. The window
+// is the full corpus span for the same reason: within an index, upstream
+// does not narrow discovery to the window at all.
 const metadataCorpusSelector = `{cluster=~"cluster-.+"}`
 
 // metadataPerServiceSelector also matches every corpus stream, through

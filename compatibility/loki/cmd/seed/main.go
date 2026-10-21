@@ -194,7 +194,11 @@ func main() {
 // is therefore counted once until the next rotation and two or three
 // times after it, so `entries` depended on whether the diff driver ran
 // before or after the boundary. Served from the object store alone, each
-// chunk is in exactly one index and the count is the data's.
+// chunk is in exactly one index and the count is the data's. The one
+// process that rewrites object-store index files, the compactor (it
+// uploads a compacted file before deleting its sources), first runs one
+// `compaction_interval` (10m) after the restart, by which time the diff
+// driver has long finished.
 const (
 	stageCorpus = "corpus"
 	stageLive   = "live"
