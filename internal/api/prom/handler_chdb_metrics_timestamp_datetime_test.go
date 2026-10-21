@@ -226,43 +226,49 @@ func TestUpstreamDateTimeSchema_PromQL_ChDB(t *testing.T) {
 }
 
 // dtRunPromQLCases runs representative PromQL over a server seeded with
-// dtSeed and grades each answer against the value the whole-second seed
-// implies. The seed holds only whole seconds, so the answers are the same
-// whichever timestamp type the tables carry.
-func dtRunPromQLCases(t *testing.T, srv *httptest.Server) {
+// dtSeed, grades each answer against the value the whole-second seed
+// implies, and returns the instant answers by case name. An answer the
+// seed makes a whole number — a sample index or second — is compared
+// exactly; a computed rate or quantile within dtFloatTolerance of its
+// hand-computed value, and exactly across timestamp types by the caller
+// that holds a reference (TestProvisionedSchema_TimestampTypes_PromQL_ChDB).
+func dtRunPromQLCases(t *testing.T, srv *httptest.Server) map[string]float64 {
 	t.Helper()
 	lastIndex := float64(dtSampleCount - 1)
 	ratePerSecond := dtCounterStep / dtSampleInterval.Seconds()
 
 	cases := []struct {
-		name  string
-		query string
-		at    time.Time
-		want  float64
+		name     string
+		query    string
+		at       time.Time
+		want     float64
+		computed bool
 	}{
 		// The latest gauge sample is the last index.
-		{"instant selector", "temp_celsius", dtLastSample, lastIndex},
+		{"instant selector", "temp_celsius", dtLastSample, lastIndex, false},
 		// timestamp() answers the sample's own second, read back through
 		// toUnixTimestamp64Milli on the widened DateTime column.
-		{"timestamp", "timestamp(temp_celsius)", dtLastSample.Add(7 * time.Second), float64(dtLastSample.Unix())},
+		{"timestamp", "timestamp(temp_celsius)", dtLastSample.Add(7 * time.Second), float64(dtLastSample.Unix()), false},
 		// ts_of_max_over_time: the maximum is the newest sample in the window.
-		{"ts_of_max_over_time", "ts_of_max_over_time(temp_celsius[1m])", dtLastSample, float64(dtLastSample.Unix())},
+		{"ts_of_max_over_time", "ts_of_max_over_time(temp_celsius[1m])", dtLastSample, float64(dtLastSample.Unix()), false},
 		// A linear counter's rate is its slope, independent of extrapolation.
-		{"rate", "rate(reqs_total[1m])", dtLastSample, ratePerSecond},
+		{"rate", "rate(reqs_total[1m])", dtLastSample, ratePerSecond, true},
 		// offset 1m shifts the window to (t-2m, t-1m]; its newest sample is
 		// four samples before the last.
-		{"offset", "max_over_time(temp_celsius[1m] offset 1m)", dtLastSample, lastIndex - 4},
+		{"offset", "max_over_time(temp_celsius[1m] offset 1m)", dtLastSample, lastIndex - 4, false},
 		// The subquery's 30s steps in (t-2m, t] land on t-90s … t; the
 		// oldest of them is six samples before the last.
-		{"subquery", "min_over_time(temp_celsius[2m:30s])", dtLastSample, lastIndex - 6},
+		{"subquery", "min_over_time(temp_celsius[2m:30s])", dtLastSample, lastIndex - 6, false},
 		// Cumulative bucket rates are r, 3r, 4r for le 0.1, 0.5, +Inf, so
 		// the median (rank 2r) interpolates halfway into (0.1, 0.5].
-		{"histogram_quantile", "histogram_quantile(0.5, rate(lat_seconds_bucket[2m]))", dtLastSample, 0.3},
+		{"histogram_quantile", "histogram_quantile(0.5, rate(lat_seconds_bucket[2m]))", dtLastSample, 0.3, true},
 	}
+	answers := make(map[string]float64, len(cases))
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := dtSingleValue(t, srv, tc.query, tc.at)
-			if math.Abs(got-tc.want) > dtFloatTolerance {
+			answers[tc.name] = got
+			if tc.computed && math.Abs(got-tc.want) > dtFloatTolerance || !tc.computed && got != tc.want {
 				t.Errorf("%s = %v, want %v", tc.query, got, tc.want)
 			}
 		})
@@ -350,6 +356,7 @@ func dtRunPromQLCases(t *testing.T, srv *httptest.Server) {
 	} {
 		dtRunMetadataCases(t, srv, bounds.name, bounds.start, bounds.end)
 	}
+	return answers
 }
 
 // dtPre1900Start is a request start (Unix seconds) in 1890, before the

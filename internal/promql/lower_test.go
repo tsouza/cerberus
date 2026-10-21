@@ -232,15 +232,17 @@ func TestLower(t *testing.T) {
 		roundTripResult := spec.RunRoundTripSQL(t, c, optSQL, optArgs)
 
 		// The same optimized plan, emitted for a metrics schema whose
-		// timestamp columns are `DateTime`, must answer exactly what the
-		// DateTime64 emission answers over the same whole-second samples.
-		// The differential runs for every statement that reads a metrics
-		// timestamp in a way the column's type can change — through a
-		// DateTime64-only function, which makes the two emissions differ,
-		// or through a native timeSeries* aggregate, which computes in the
-		// column's scale whether or not the emissions differ — and costs
-		// two extra seeded databases per fixture, which the whole corpus
-		// cannot afford inside this lane's timeout.
+		// timestamp columns are coarser than nanoseconds, must answer
+		// exactly what the DateTime64(9) emission answers over the same
+		// whole-second samples, with the columns typed `DateTime` and
+		// typed `DateTime64(3)`. The differential runs for every statement
+		// that reads a metrics timestamp in a way the column's type can
+		// change — through a DateTime64-only function, which makes the two
+		// emissions differ, or through a native timeSeries* aggregate,
+		// which computes in the column's scale whether or not the
+		// emissions differ — and costs three extra seeded databases per
+		// fixture, which the whole corpus cannot afford inside this lane's
+		// timeout.
 		dtSQL, dtArgs, err := chsql.Emit(chsql.WithSchemaStrategies(context.Background(),
 			chsql.SchemaStrategies{MetricsTimestamp: schema.MetricsTimestampSeconds}), optimized)
 		if err != nil {

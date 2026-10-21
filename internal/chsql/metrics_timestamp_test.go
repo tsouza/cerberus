@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -193,13 +194,20 @@ func TestSchemaStrategiesCell(t *testing.T) {
 // ToUnixNanos / ToUnixMillis (or a chplan call exprUnixTimestamp64
 // renders), never through a hand-written Call, which would render the bare
 // function over a DateTime column and fail every query on that schema; and
-// every `toDateTime64(<x>, 9)` through ToDateTime64Nanos. fnresolution.go
-// names the timestamp functions in the resolution table, and
-// metrics_timestamp.go names toDateTime64 once.
+// every `toDateTime64(<x>, 9)` through ToDateTime64Nanos. A function name
+// reaches a Call either as a string literal or through the chplan.Fn
+// constant whose value it is, so both spellings are owned: fnresolution.go
+// names the timestamp functions in the resolution table and
+// metrics_timestamp.go renders them from their chplan.Fn, and
+// metrics_timestamp.go alone names toDateTime64.
 func TestTimestampFunctions_NoDirectCalls(t *testing.T) {
-	spellings := map[string]string{
-		`"toUnixTimestamp64`: "fnresolution.go",
-		`"toDateTime64"`:     "metrics_timestamp.go",
+	const resolution, rendering = "fnresolution.go", "metrics_timestamp.go"
+	spellings := map[string][]string{
+		`"toUnixTimestamp64`:    {resolution},
+		`chplan.FnToUnixNanos`:  {resolution, rendering},
+		`chplan.FnToUnixMillis`: {resolution, rendering},
+		`"toDateTime64"`:        {rendering},
+		`toDateTime64Fn`:        {rendering},
 	}
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -215,10 +223,10 @@ func TestTimestampFunctions_NoDirectCalls(t *testing.T) {
 		}
 		for i, line := range strings.Split(string(src), "\n") {
 			code, _, _ := strings.Cut(line, "//")
-			for spelling, owner := range spellings {
-				if f != owner && strings.Contains(code, spelling) {
-					t.Errorf("%s:%d spells %s directly; render it through the helper %s defines: %s",
-						f, i+1, spelling, owner, strings.TrimSpace(line))
+			for spelling, owners := range spellings {
+				if !slices.Contains(owners, f) && strings.Contains(code, spelling) {
+					t.Errorf("%s:%d spells %s directly; render it through the helpers %v define: %s",
+						f, i+1, spelling, owners, strings.TrimSpace(line))
 				}
 			}
 		}

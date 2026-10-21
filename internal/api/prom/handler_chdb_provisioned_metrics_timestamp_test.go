@@ -6,9 +6,10 @@
 // emitted SQL meets — the fork's templates, the MetricName-first sorting
 // key, the curated projections and indexes — is the one
 // CERBERUS_AUTO_CREATE_SCHEMA creates. Each table set is served at the
-// precision the boot requirements check classifies its timestamp type as
-// (schema.MetricsTimestampPrecisionOfType), and answers the same PromQL as
-// the upstream DateTime schema (dtRunPromQLCases).
+// precision this file states for its timestamp type — independently of the
+// boot requirements check's classifier, which it asserts agrees — and
+// answers the same PromQL as the upstream DateTime schema
+// (dtRunPromQLCases).
 
 package prom_test
 
@@ -33,16 +34,12 @@ func provisionedMetricsDDL(precision schema.MetricsTimestampPrecision) func(data
 }
 
 // retypedMetricsDDL returns a renderDDL that renders the metrics DDL
-// provisioned at the precision typ classifies as, with every timestamp
-// column declared typ instead — TimeUnix, StartTimeUnix and the Nested
-// Exemplars.TimeUnix alike — failing when the rendered DDL declares no
-// timestamp column to retype.
-func retypedMetricsDDL(typ string) func(database string) ([]string, error) {
+// provisioned at precision, with every timestamp column declared typ
+// instead — TimeUnix, StartTimeUnix and the Nested Exemplars.TimeUnix
+// alike — failing when the rendered DDL declares no timestamp column to
+// retype.
+func retypedMetricsDDL(typ string, precision schema.MetricsTimestampPrecision) func(database string) ([]string, error) {
 	return func(database string) ([]string, error) {
-		precision, ok := schema.MetricsTimestampPrecisionOfType(typ)
-		if !ok {
-			return nil, fmt.Errorf("%s does not classify as a metrics timestamp precision", typ)
-		}
 		stmts, err := provisionedMetricsDDL(precision)(database)
 		if err != nil {
 			return nil, err
@@ -74,24 +71,39 @@ func TestProvisionedSchema_PromQL_ChDB(t *testing.T) {
 // TestProvisionedSchema_TimestampTypes_PromQL_ChDB runs the PromQL cases
 // over provisioned tables whose timestamp columns carry each further type
 // the boot requirements check accepts — a DateTime64 scale below 9, and a
-// timezone on DateTime64(9) and on DateTime — served at the precision it
-// classifies the type as. Every one answers exactly as the provisioned
-// types do: a timezone changes how a column displays, never the instant
-// it holds, and a coarser scale reads through an exact widening.
+// timezone on DateTime64(9) and on DateTime — served at the precision that
+// type needs. Each answers exactly what the nanosecond-provisioned tables
+// answer: a timezone changes how a column displays, never the instant it
+// holds, and a coarser scale reads through an exact widening.
 func TestProvisionedSchema_TimestampTypes_PromQL_ChDB(t *testing.T) {
-	for _, typ := range []string{
-		"DateTime64(3)",
-		"DateTime64(9, 'UTC')",
-		"DateTime('UTC')",
-		"DateTime('America/Sao_Paulo')",
-		"DateTime64(9, 'America/Sao_Paulo')",
+	var reference map[string]float64
+	t.Run("reference "+schema.MetricsTimestampNanos.String(), func(t *testing.T) {
+		reference = dtRunPromQLCases(t, newChDBMetricsTimestampServer(t,
+			provisionedMetricsDDL(schema.MetricsTimestampNanos), schema.MetricsTimestampNanos))
+	})
+	for _, tc := range []struct {
+		typ       string
+		precision schema.MetricsTimestampPrecision
+	}{
+		{"DateTime64(3)", schema.MetricsTimestampSeconds},
+		{"DateTime64(9, 'UTC')", schema.MetricsTimestampNanos},
+		{"DateTime('UTC')", schema.MetricsTimestampSeconds},
+		{"DateTime('America/Sao_Paulo')", schema.MetricsTimestampSeconds},
+		{"DateTime64(9, 'America/Sao_Paulo')", schema.MetricsTimestampNanos},
 	} {
-		t.Run(typ, func(t *testing.T) {
-			precision, ok := schema.MetricsTimestampPrecisionOfType(typ)
-			if !ok {
-				t.Fatalf("%s does not classify as a metrics timestamp precision", typ)
+		t.Run(tc.typ, func(t *testing.T) {
+			if got, ok := schema.MetricsTimestampPrecisionOfType(tc.typ); !ok || got != tc.precision {
+				t.Errorf("%s classifies as %v (ok %v), want %v", tc.typ, got, ok, tc.precision)
 			}
-			dtRunPromQLCases(t, newChDBMetricsTimestampServer(t, retypedMetricsDDL(typ), precision))
+			answers := dtRunPromQLCases(t, newChDBMetricsTimestampServer(t, retypedMetricsDDL(tc.typ, tc.precision), tc.precision))
+			if len(answers) != len(reference) {
+				t.Fatalf("answers %v, reference %v", answers, reference)
+			}
+			for name, want := range reference {
+				if got := answers[name]; got != want {
+					t.Errorf("%s = %v over %s, %v over DateTime64(9)", name, got, tc.typ, want)
+				}
+			}
 		})
 	}
 }

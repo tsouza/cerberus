@@ -16,29 +16,31 @@ import (
 )
 
 // RunMetricsTimestampDifferential executes one fixture's statement over the
-// two OTel-CH metrics timestamp schemas and requires the same rows from
-// both.
+// OTel-CH metrics timestamp schemas and requires the same rows from each.
 //
-// The fixture's seed is applied once, then copied into two databases that
-// hold the SAME whole-second samples and differ only in the physical type
-// of the metric tables' timestamp columns:
+// The fixture's seed is applied once, then copied into databases that hold
+// the SAME whole-second samples and differ only in the physical type of the
+// metric tables' timestamp columns:
 //
 //   - the DateTime64 world keeps each timestamp column's seeded type, with
 //     every value truncated to its whole second;
 //   - the DateTime world types those columns `DateTime` (Array(DateTime) for
 //     a Nested exemplar timestamp), the column type the OTel-CH exporter's
-//     metrics templates use from v0.157.
+//     metrics templates use from v0.157;
+//   - the DateTime64(3) world types them `DateTime64(3)`, a scale between
+//     the two that schema.MetricsTimestampSeconds also covers, and which a
+//     native timeSeries* aggregate computes in.
 //
-// Both worlds take their values through the same DateTime conversion, so a
-// value the DateTime type cannot hold lands identically in both. dateTime64
+// Every world takes its values through the same DateTime conversion, so a
+// value the DateTime type cannot hold lands identically in each. dateTime64
 // runs in the DateTime64 world and dateTime — the same plan emitted under
-// schema.MetricsTimestampSeconds — in the DateTime world. Any difference in
-// the decoded rows fails the fixture, as does a statement ClickHouse
-// rejects in one world but not the other, or rejects with a different
-// error code. Truncation can make a fixture's data invalid for the query —
-// two samples a fraction of a second apart become a duplicate sample the
-// statement's own throwIf rejects — and then both worlds raise the same
-// error, which is agreement.
+// schema.MetricsTimestampSeconds — in the other two. Any difference in the
+// decoded rows fails the fixture, as does a statement ClickHouse rejects in
+// one world but not another, or rejects with a different error code.
+// Truncation can make a fixture's data invalid for the query — two samples a
+// fraction of a second apart become a duplicate sample the statement's own
+// throwIf rejects — and then every world raises the same error, which is
+// agreement.
 //
 // A fixture that does not opt into round-trip execution is a no-op, as it
 // is for RunRoundTripSQL.
@@ -60,12 +62,14 @@ func RunMetricsTimestampDifferential(t *testing.T, c *Case, dateTime64, dateTime
 	src := currentChDBDatabase(t, db)
 
 	worlds := []struct {
+		name    string
 		suffix  string
 		convert func(col, typ string) string
 		stmt    Statement
 	}{
-		{suffix: "_dt64", convert: truncatedToSecondsAs, stmt: dateTime64},
-		{suffix: "_dt", convert: asDateTime, stmt: dateTime},
+		{name: "DateTime64", suffix: "_dt64", convert: truncatedToSecondsAs, stmt: dateTime64},
+		{name: "DateTime", suffix: "_dt", convert: asDateTime, stmt: dateTime},
+		{name: "DateTime64(3)", suffix: "_dt64ms", convert: asDateTime64Millis, stmt: dateTime},
 	}
 	results := make([][][]any, len(worlds))
 	errs := make([]error, len(worlds))
@@ -76,17 +80,19 @@ func RunMetricsTimestampDifferential(t *testing.T, c *Case, dateTime64, dateTime
 		mustExecChDB(t, db, "USE "+src)
 		mustExecChDB(t, db, "DROP DATABASE IF EXISTS "+dst)
 	}
-	if errs[0] != nil || errs[1] != nil {
-		code0, code1 := clickHouseErrorCode(errs[0]), clickHouseErrorCode(errs[1])
-		if errs[0] == nil || errs[1] == nil || code0 == "" || code0 != code1 {
-			t.Fatalf("metrics timestamp schemas disagree (fixture %s)\nDateTime64 error = %v\n  DateTime error = %v",
-				c.Name, errs[0], errs[1])
+	for i := 1; i < len(worlds); i++ {
+		if errs[0] != nil || errs[i] != nil {
+			code0, codeI := clickHouseErrorCode(errs[0]), clickHouseErrorCode(errs[i])
+			if errs[0] == nil || errs[i] == nil || code0 == "" || code0 != codeI {
+				t.Fatalf("metrics timestamp schemas disagree (fixture %s)\n%s error = %v\n%s error = %v",
+					c.Name, worlds[0].name, errs[0], worlds[i].name, errs[i])
+			}
+			continue
 		}
-		return
-	}
-	if !reflect.DeepEqual(results[0], results[1]) {
-		t.Fatalf("metrics timestamp schemas disagree (fixture %s)\nDateTime64 = %s\n  DateTime = %s",
-			c.Name, mustJSON(results[0]), mustJSON(results[1]))
+		if !reflect.DeepEqual(results[0], results[i]) {
+			t.Fatalf("metrics timestamp schemas disagree (fixture %s)\n%s = %s\n%s = %s",
+				c.Name, worlds[0].name, mustJSON(results[0]), worlds[i].name, mustJSON(results[i]))
+		}
 	}
 }
 
@@ -191,6 +197,16 @@ func asDateTime(col, typ string) string {
 		return "arrayMap(x -> CAST(x AS DateTime), " + col + ")"
 	}
 	return "CAST(" + col + " AS DateTime)"
+}
+
+// asDateTime64Millis renders col converted through DateTime to
+// DateTime64(3), so it holds exactly the values asDateTime yields at a
+// millisecond scale.
+func asDateTime64Millis(col, typ string) string {
+	if isArrayType(typ) {
+		return "arrayMap(x -> CAST(x AS DateTime64(3)), " + asDateTime(col, typ) + ")"
+	}
+	return "CAST(" + asDateTime(col, typ) + " AS DateTime64(3))"
 }
 
 // truncatedToSecondsAs renders col converted through DateTime and back to
