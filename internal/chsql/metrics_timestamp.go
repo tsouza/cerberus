@@ -24,7 +24,7 @@ import (
 //
 // The zero value is MetricsTimestampDateTime64, which renders the functions
 // directly, exactly as the emitter always has.
-type MetricsTimestampStrategy uint8
+type MetricsTimestampStrategy uint32
 
 const (
 	// MetricsTimestampDateTime64 is a metrics schema whose timestamp
