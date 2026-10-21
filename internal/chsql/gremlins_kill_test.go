@@ -3959,7 +3959,7 @@ func TestPredictLinear_SlopeColumnDispatch(t *testing.T) {
 // --- range_window.go anchorGridCeilIdxFrag arithmetic ---
 
 // TestAnchorGridCeilIdxFrag_ShiftsAddNSDownByOne kills the ARITHMETIC_BASE
-// mutant at range_window.go:`addNS-1` (→ `addNS+1`) inside
+// mutant at range_window.go:`add-1` (→ `add+1`) inside
 // anchorGridCeilIdxFrag. The ceiling index is documented to equal the
 // floor index with its addend shifted down by exactly one nanosecond;
 // this pins that relationship directly against anchorGridFloorIdxFrag
@@ -3983,10 +3983,10 @@ func TestAnchorGridCeilIdxFrag_ShiftsAddNSDownByOne(t *testing.T) {
 		t.Errorf("anchorGridCeilIdxFrag(dist, %d, step) must equal anchorGridFloorIdxFrag(dist, %d-1, step)\ngot:  %s\nwant: %s",
 			addNS, addNS, got, want)
 	}
-	// Negative control: the `addNS+1` mutant would instead match this.
+	// Negative control: the `add+1` mutant would instead match this.
 	wrong := render(anchorGridFloorIdxFrag(dist, addNS+1, stepNS))
 	if got == wrong {
-		t.Errorf("anchorGridCeilIdxFrag(dist, %d, step) unexpectedly matches the +1 shift (range_window.go:`return anchorGridFloorIdxFrag(dist, addNS-1, stepNS)` flipped?): %s", addNS, got)
+		t.Errorf("anchorGridCeilIdxFrag(dist, %d, step) unexpectedly matches the +1 shift (range_window.go:`return anchorGridFloorIdxFrag(dist, add-1, step)` flipped?): %s", addNS, got)
 	}
 }
 
