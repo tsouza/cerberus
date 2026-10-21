@@ -241,6 +241,11 @@ func mountAPIHeads(
 			return apiHeads{}, fmt.Errorf("configure query actuals: %w", err)
 		}
 		promHandler = newPromHandler(promClient, cfg, optSet, evalSolver, limiters.prom, logger, resourceBounds, promResourceBounds, actualsTracker)
+		// MetricsTimestamp holds the preflight probe's verdict on the
+		// metrics timestamp columns' physical type (`DateTime64(9)` or
+		// `DateTime`), updated by reprobeSchema when the tables appear
+		// after boot (see runRequirementsCheck).
+		promHandler.MetricsTimestamp = probes.MetricsTimestamp
 		promHandler.Mount(traceMux)
 		engines = append(engines, promHandler.Engine)
 	}
@@ -2196,6 +2201,12 @@ type preflightProbes struct {
 	// check disabled, or the transient not-ready path — resolves every
 	// schema to itself.
 	Result preflight.Result
+	// MetricsTimestamp holds the metrics timestamp strategy the prom head
+	// renders with: Result.MetricsTimestamp on a passed check, or — on the
+	// transient not-ready path — the strategy reprobeSchema resolves once
+	// the tables appear, stored before /readyz flips. nil when the check
+	// is disabled, which loads the zero strategy.
+	MetricsTimestamp *chsql.MetricsTimestampCell
 }
 
 // runRequirementsCheck also returns the resolved per-signal AttrStrategies
@@ -2215,6 +2226,11 @@ type preflightProbes struct {
 // Handler's resolved strategy mutable under concurrent requests, which
 // cerberus issue #2777 explicitly avoids (chopt-style pure, boot-resolved
 // strategy, zero per-query branching).
+//
+// The metrics timestamp strategy is the exception, carried in
+// preflightProbes.MetricsTimestamp: reprobeSchema stores the strategy it
+// resolves before it reports ready, so a metrics schema provisioned during
+// the race window renders correctly in the same process.
 func runRequirementsCheck(
 	ctx context.Context,
 	logger *slog.Logger,
@@ -2244,16 +2260,23 @@ func runRequirementsCheck(
 		// decideRequirementsOutcome named clears. No restart.
 		logger.Warn(outcome.logMsg, "reason", outcome.notReadyReason)
 		present := newSchemaPresentSignal(outcome.notReadyReason)
-		go reprobeSchema(ctx, logger, client, req, present, schemaRetryInterval)
-		return present.Func(), preflightProbes{}, nil
+		metricsTimestamp := chsql.NewMetricsTimestampCell(chsql.MetricsTimestampDateTime64)
+		go reprobeSchema(ctx, logger, client, req, present, metricsTimestamp, schemaRetryInterval)
+		return present.Func(), preflightProbes{MetricsTimestamp: metricsTimestamp}, nil
 	}
 
 	logger.Info(
 		"requirements check passed",
 		"database", cfg.ClickHouse.Database,
 		"native_rate", cfg.ExperimentalTSGridRange,
+		"metrics_timestamp", res.MetricsTimestamp.String(),
 	)
-	return nil, preflightProbes{Logs: res.LogsAttrStrategies, Traces: res.TracesAttrStrategies, Result: res}, nil
+	return nil, preflightProbes{
+		Logs:             res.LogsAttrStrategies,
+		Traces:           res.TracesAttrStrategies,
+		Result:           res,
+		MetricsTimestamp: chsql.NewMetricsTimestampCell(res.MetricsTimestamp),
+	}, nil
 }
 
 // requirementsOutcome is the boot decision decideRequirementsOutcome derives
@@ -2467,6 +2490,7 @@ func reprobeSchema(
 	client *chclient.Client,
 	req preflight.Requirements,
 	signal *schemaPresentSignal,
+	metricsTimestamp *chsql.MetricsTimestampCell,
 	interval time.Duration,
 ) {
 	ticker := time.NewTicker(interval)
@@ -2507,7 +2531,11 @@ func reprobeSchema(
 			signal.setReason(res.AbsentReason())
 			continue
 		}
-		logger.Info("schema now provisioned; reporting ready", "database", req.Database)
+		// Stored before markPresent: a request /readyz admits renders
+		// against the tables that made the process ready.
+		metricsTimestamp.Store(res.MetricsTimestamp)
+		logger.Info("schema now provisioned; reporting ready",
+			"database", req.Database, "metrics_timestamp", res.MetricsTimestamp.String())
 		signal.markPresent()
 		return
 	}

@@ -101,6 +101,7 @@ func (e *emitter) subqueryFrag(n chplan.Node) (Frag, error) {
 // pattern.
 func (e *emitter) emitSelect(sb *QueryBuilder) error {
 	sb.attrStrategies = e.attrStrategies
+	sb.metricsTimestamp = e.metricsTimestamp
 	sb.env = e
 	sql, args, err := sb.subquerySQL()
 	if err != nil {
@@ -382,7 +383,7 @@ func scanSourceFrag(s *chplan.Scan) (Frag, error) {
 		return nil, fmt.Errorf("chsql: time-shifted or time-bounded scan of %q: %w", s.Table, err)
 	}
 	if s.ReadMillis != nil {
-		stored := Call("toUnixTimestamp64Milli", Col(ts.Name))
+		stored := ToUnixMillis(Col(ts.Name))
 		table = Subquery(NewQuery().From(table).Where(And(Gte(stored, InlineLit(s.ReadMillis.From)), Lte(stored, InlineLit(s.ReadMillis.To)))))
 	}
 	if s.TimeShiftMillis == 0 {
@@ -392,7 +393,7 @@ func scanSourceFrag(s *chplan.Scan) (Frag, error) {
 		return scanSourceMillisFrag(table, ts.Name, s.TimeShiftMillis), nil
 	}
 	shiftNanos := s.TimeShiftMillis * int64(time.Millisecond)
-	raw := Call("toUnixTimestamp64Nano", Col(ts.Name))
+	raw := ToUnixNanos(Col(ts.Name))
 	keep := Lte(raw, InlineLit(int64(math.MaxInt64)-shiftNanos))
 	if shiftNanos < 0 {
 		keep = Gte(raw, InlineLit(int64(math.MinInt64)-shiftNanos))
@@ -422,7 +423,7 @@ func scanReadsSubquery(s *chplan.Scan) bool {
 // timestamp Prometheus reads; `>= <min - N>` for a negative N. The bound
 // keeps exactly the rows whose moved milliseconds a DateTime64(9) holds.
 func scanSourceMillisFrag(table Frag, ts string, shiftMillis int64) Frag {
-	raw := Call("toUnixTimestamp64Milli", Col(ts))
+	raw := ToUnixMillis(Col(ts))
 	keep := Lte(raw, InlineLit(maxScanTimeShiftMillis-shiftMillis))
 	if shiftMillis < 0 {
 		keep = Gte(raw, InlineLit(-maxScanTimeShiftMillis-shiftMillis))

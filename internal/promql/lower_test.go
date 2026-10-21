@@ -229,6 +229,24 @@ func TestLower(t *testing.T) {
 			"settings":       spec.FormatQuerySettings(optimized),
 		})
 		roundTripResult := spec.RunRoundTripSQL(t, c, optSQL, optArgs)
+
+		// The same optimized plan, emitted for a metrics schema whose
+		// timestamp columns are `DateTime`, must answer exactly what the
+		// DateTime64 emission answers over the same whole-second samples.
+		// The differential runs where the two emissions differ — every
+		// statement that reads a metrics timestamp through a
+		// DateTime64-only function — and costs two extra seeded databases
+		// per fixture, which the whole corpus cannot afford inside this
+		// lane's timeout.
+		dtSQL, dtArgs, err := chsql.Emit(chsql.WithMetricsTimestamp(context.Background(), chsql.MetricsTimestampDateTime), optimized)
+		if err != nil {
+			t.Fatalf("Emit(optimized plan, DateTime timestamps): %v", err)
+		}
+		if dtSQL != optSQL {
+			spec.RunMetricsTimestampDifferential(t, c,
+				spec.Statement{SQL: optSQL, Args: optArgs},
+				spec.Statement{SQL: dtSQL, Args: dtArgs})
+		}
 		spec.AssertRowTypeMatchesDriver(t, optimized, roundTripResult)
 		spec.AssertPlanScanRoles(t, plan)
 		spec.AssertPlanScanRoles(t, optimized)

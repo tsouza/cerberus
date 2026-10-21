@@ -67,7 +67,7 @@ func downsampleTierTsFrag(idx int64) Frag  { return TupleIndex(downsampleTierEle
 // downsample-tier chDB test (the result read back at a near-epoch-nanosecond
 // scale instead of an interval in seconds — twice, once per missing Paren).
 func downsampleTierIntervalSecondsFrag() Frag {
-	nanosAt := func(idx int64) Frag { return Call("toUnixTimestamp64Nano", downsampleTierTsFrag(idx)) }
+	nanosAt := func(idx int64) Frag { return ToUnixNanos(downsampleTierTsFrag(idx)) }
 	return Paren(Div(Paren(Sub(nanosAt(-1), nanosAt(-2))), InlineLit(float64(1e9))))
 }
 

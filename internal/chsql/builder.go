@@ -43,6 +43,14 @@ type Builder struct {
 	// byte-identical SQL.
 	attrStrategies AttrStrategies
 
+	// metricsTimestamp is the MetricsTimestampStrategy the
+	// `toUnixTimestamp64*` renderings (unixTimestamp64) read. It is a
+	// property of the whole statement, so every Builder a render spawns
+	// for a nested statement inherits it (Subquery, Spliced,
+	// QueryBuilder.Frag, subqueryMembership). The zero value renders the
+	// functions directly.
+	metricsTimestamp MetricsTimestampStrategy
+
 	// env is the emitter this Builder is rendering inside, or nil for a
 	// free-standing Builder (an ad-hoc query, a test). It exists for ONE
 	// purpose: chplan.ScalarSubquery and chplan.InSubquery embed a whole
@@ -514,7 +522,7 @@ func (b *Builder) DateTime64Lit(t time.Time) {
 // It is the inline counterpart of [chplan.TimeBound.Expr].
 func TimeBound(x Frag, tb chplan.TimeBound) Frag {
 	if tb.Nanos {
-		return binOp(string(tb.Op), Call(string(chplan.FnToUnixNanos), x), InlineLit(tb.N))
+		return binOp(string(tb.Op), ToUnixNanos(x), InlineLit(tb.N))
 	}
 	return binOp(string(tb.Op), x, func(b *Builder) { b.DateTime64Lit(tb.T) })
 }
@@ -1174,6 +1182,9 @@ func (b *Builder) emitGoModulo(left, right chplan.Expr) error {
 func (b *Builder) exprFunc(f *chplan.FuncCall) error {
 	if f.Fn == chplan.FnMapContainsKey {
 		return b.exprMapContainsKey(f.Args)
+	}
+	if isUnixTimestamp64Fn(f.Fn) {
+		return b.exprUnixTimestamp64(f)
 	}
 	if jsonFullMapFns[f.Fn] {
 		f = b.substituteJSONFullMapArgs(f)
@@ -2907,7 +2918,7 @@ type Subqueryable interface {
 // port can collapse that emitter into the QueryBuilder surface.
 func Subquery(s Subqueryable) Frag {
 	return func(b *Builder) {
-		sql, args, err := s.subquerySQL()
+		sql, args, err := inheritMetricsTimestamp(b, s)
 		if err != nil && b.err == nil {
 			b.err = err
 		}
@@ -2930,7 +2941,7 @@ func Subquery(s Subqueryable) Frag {
 // user input.
 func Spliced(s Subqueryable) Frag {
 	return func(b *Builder) {
-		sql, args, err := s.subquerySQL()
+		sql, args, err := inheritMetricsTimestamp(b, s)
 		if err != nil && b.err == nil {
 			b.err = err
 		}
@@ -3347,7 +3358,7 @@ func NotInSubquery(left, sub Frag) Frag { return subqueryMembership(left, sub, t
 func subqueryMembership(left, sub Frag, negate bool) Frag {
 	return func(b *Builder) {
 		left(b)
-		scratch := &Builder{attrStrategies: b.attrStrategies}
+		scratch := &Builder{attrStrategies: b.attrStrategies, metricsTimestamp: b.metricsTimestamp}
 		sub(scratch)
 		if scratch.err != nil && b.err == nil {
 			b.err = scratch.err
@@ -3497,6 +3508,12 @@ type QueryBuilder struct {
 	// strategies throughout without each node's lowering/emit code having
 	// to know about it.
 	attrStrategies AttrStrategies
+
+	// metricsTimestamp is threaded into the Builder subquerySQL renders
+	// against (see Builder.metricsTimestamp). emitSelect stamps the
+	// emitter's strategy on; a QueryBuilder rendered inside another
+	// statement inherits the enclosing Builder's (inheritMetricsTimestamp).
+	metricsTimestamp MetricsTimestampStrategy
 
 	// env is the emitter this statement is being rendered inside, threaded
 	// onto every Builder that renders it so an embedded ScalarSubquery /
@@ -3808,15 +3825,18 @@ func (s *QueryBuilder) Frag() Frag {
 		// its embedded subqueries inside THAT emission, and the parent's
 		// is restored afterwards. A QueryBuilder with neither keeps
 		// inheriting the parent Builder's, exactly as before.
-		prevStrategies, prevEnv := b.attrStrategies, b.env
+		prevStrategies, prevEnv, prevTS := b.attrStrategies, b.env, b.metricsTimestamp
 		if s.attrStrategies != nil {
 			b.attrStrategies = s.attrStrategies
 		}
 		if s.env != nil {
 			b.env = s.env
 		}
+		if s.metricsTimestamp != MetricsTimestampDateTime64 {
+			b.metricsTimestamp = s.metricsTimestamp
+		}
 		s.writeInto(b)
-		b.attrStrategies, b.env = prevStrategies, prevEnv
+		b.attrStrategies, b.env, b.metricsTimestamp = prevStrategies, prevEnv, prevTS
 		b.sb.WriteByte(')')
 	}
 }
@@ -3849,6 +3869,7 @@ func (s *QueryBuilder) BuildCounted() (sql string, args []any, physicalScans int
 func (s *QueryBuilder) subquerySQL() (string, []any, error) {
 	b := NewBuilderWithAttrStrategies(s.attrStrategies)
 	b.env = s.env
+	b.metricsTimestamp = s.metricsTimestamp
 	s.writeInto(b)
 	s.lastPhysicalScans = b.physicalScans
 	return b.Build()

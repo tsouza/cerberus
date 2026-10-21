@@ -1244,7 +1244,7 @@ func (h *Handler) catalogMatcherSQL(
 		return "", nil, 0, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	plan = h.Optimizer.Run(ctx, plan)
-	sql, args, physicalScans, err = chsql.EmitCounted(ctx, plan)
+	sql, args, physicalScans, err = chsql.EmitCounted(chsql.WithMetricsTimestamp(ctx, h.MetricsTimestamp.Load()), plan)
 	if err != nil {
 		return "", nil, 0, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
@@ -1550,7 +1550,7 @@ func (h *Handler) seriesMatcherSQL(ctx context.Context, matcher string, start, e
 		return "", nil, 0, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
 	plan = h.Optimizer.Run(ctx, plan)
-	sql, args, physicalScans, err = chsql.EmitCounted(ctx, plan)
+	sql, args, physicalScans, err = chsql.EmitCounted(chsql.WithMetricsTimestamp(ctx, h.MetricsTimestamp.Load()), plan)
 	if err != nil {
 		return "", nil, 0, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
@@ -1709,9 +1709,9 @@ func (h *Handler) metadataWindowPred(start, end time.Time) chsql.Frag {
 	case 0:
 		return nil
 	case 1:
-		return bounds[0]
+		return chsql.UnderMetricsTimestamp(h.MetricsTimestamp.Load(), bounds[0])
 	default:
-		return chsql.And(bounds...)
+		return chsql.UnderMetricsTimestamp(h.MetricsTimestamp.Load(), chsql.And(bounds...))
 	}
 }
 
@@ -1725,7 +1725,7 @@ func (h *Handler) metadataSincePred(start time.Time) chsql.Frag {
 	if !ok || start.IsZero() {
 		return nil
 	}
-	return chsql.TimeBound(chsql.Call("max", chsql.Col(h.Schema.TimestampColumn)), b)
+	return chsql.UnderMetricsTimestamp(h.MetricsTimestamp.Load(), chsql.TimeBound(chsql.Call("max", chsql.Col(h.Schema.TimestampColumn)), b))
 }
 
 // metricNamesSQL returns the distinct MetricName values across the

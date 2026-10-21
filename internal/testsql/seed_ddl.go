@@ -5,11 +5,11 @@ import (
 	"strings"
 )
 
-// metricsTablePrefix is the storage prefix every OTel-CH metric table
+// MetricsTablePrefix is the storage prefix every OTel-CH metric table
 // (gauge / sum / histogram / exp-histogram / summary) shares; the
 // resource-attribute backfill scopes itself to these so a fixture's own
 // helper tables stay untouched.
-const metricsTablePrefix = "otel_metrics_"
+const MetricsTablePrefix = "otel_metrics_"
 
 const (
 	classicHistogramTable = "otel_metrics_histogram"
@@ -356,7 +356,7 @@ func parseMetricsCreate(stmt string) (table string, colNames []string, rewritten
 		return "", nil, "", false
 	}
 	name := strings.ToLower(strings.TrimSpace(firstToken(rest)))
-	if !strings.HasPrefix(name, metricsTablePrefix) {
+	if !strings.HasPrefix(name, MetricsTablePrefix) {
 		return "", nil, "", false
 	}
 	open := strings.IndexByte(trimmed, '(')
@@ -574,8 +574,11 @@ func PromoteCreateTable(stmt string) string {
 	trimmed := stripLeadingNoise(stmt)
 	prefix := stmt[:len(stmt)-len(trimmed)]
 	upper := strings.ToUpper(trimmed)
-	const needle = "CREATE TABLE "
-	if !strings.HasPrefix(upper, needle) {
+	const (
+		needle      = "CREATE TABLE "
+		ifNotExists = "IF NOT EXISTS "
+	)
+	if !strings.HasPrefix(upper, needle) || strings.HasPrefix(upper[len(needle):], ifNotExists) {
 		return stmt
 	}
 	rest := trimmed[len(needle):]

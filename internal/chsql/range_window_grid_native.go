@@ -380,7 +380,7 @@ func nativeGridTsAxisFrag(fn, tsColumn string) Frag {
 	if fn == "deriv" || fn == "predict_linear" {
 		return Call("toDateTime", Col(tsColumn))
 	}
-	return Col(tsColumn)
+	return timestampDateTime64(Col(tsColumn))
 }
 
 // emitRangeWindowGridNative renders a chplan.RangeWindowGridNative — the

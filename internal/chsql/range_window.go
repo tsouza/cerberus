@@ -2137,7 +2137,7 @@ func epochAlignedEndFrag(end Frag, stepNS int64) Frag {
 	return Call(
 		"fromUnixTimestamp64Nano",
 		Mul(
-			Call("intDiv", Call("toUnixTimestamp64Nano", end), step),
+			Call("intDiv", ToUnixNanos(end), step),
 			step,
 		),
 	)
@@ -2445,7 +2445,7 @@ func groupArrayPairFrag(tsCol, valCol string) Frag {
 // dedupWindowPairsByTsFrag / dedupWindowPairsLayer step — see
 // seriesArrayPairFrag.
 func nativeGroupArrayPairFrag(tsCol, valCol string) Frag {
-	return Call("timeSeriesGroupArray", Col(tsCol), Col(valCol))
+	return Call("timeSeriesGroupArray", timestampDateTime64(Col(tsCol)), Col(valCol))
 }
 
 // seriesArrayPairFrag picks groupArrayPairFrag or nativeGroupArrayPairFrag
@@ -2551,7 +2551,7 @@ func groupArrayPairIfFrag(tsCol, valCol string, cond Frag) Frag {
 // Frag must skip the subsequent dedup step for THIS array — see
 // seriesArrayPairIfFrag and deltaPrefixSumFrag's alreadyDeduped parameter.
 func nativeGroupArrayPairIfFrag(tsCol, valCol string, cond Frag) Frag {
-	return Call("timeSeriesGroupArrayIf", Col(tsCol), Col(valCol), cond)
+	return Call("timeSeriesGroupArrayIf", timestampDateTime64(Col(tsCol)), Col(valCol), cond)
 }
 
 // seriesArrayPairIfFrag picks groupArrayPairIfFrag or
@@ -3281,7 +3281,7 @@ func tsEpochSecondsFrag(ts Frag, shiftMillis int64) Frag {
 // DateTime64(9) timestamp ts: `toUnixTimestamp64Milli(<ts>)`, minus the
 // grid's shift when it carries one.
 func tsMillisFrag(ts Frag, shiftMillis int64) Frag {
-	millis := Call("toUnixTimestamp64Milli", ts)
+	millis := ToUnixMillis(ts)
 	if shiftMillis != 0 {
 		millis = Sub(millis, InlineLit(shiftMillis))
 	}
@@ -3326,7 +3326,7 @@ func tsOfExtremeFrag(wantMax bool, shiftMillis int64) Frag {
 	if !wantMax {
 		keyVal = Neg(val())
 	}
-	tsNanos := Call("toUnixTimestamp64Nano", Call("tupleElement", BareIdent("p"), InlineLit(int64(1))))
+	tsNanos := ToUnixNanos(Call("tupleElement", BareIdent("p"), InlineLit(int64(1))))
 	tsArr := Call(
 		"arrayMap",
 		Lambda1("p", Call("tupleElement", BareIdent("p"), InlineLit(int64(1)))),
@@ -5749,6 +5749,7 @@ func (e *emitter) collectGroupByFrags(group []chplan.Expr) ([]Frag, error) {
 		// JSON-typed column.
 		sub := NewBuilderWithAttrStrategies(e.attrStrategies)
 		sub.env = e
+		sub.metricsTimestamp = e.metricsTimestamp
 		if err := sub.Expr(g); err != nil {
 			return nil, err
 		}

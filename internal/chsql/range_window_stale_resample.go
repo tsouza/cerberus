@@ -93,7 +93,7 @@ func (e *emitter) emitRangeWindowStaleResample(r *chplan.RangeWindowStaleResampl
 	gridAgg := Parametric(
 		nativeResampleFn,
 		[]Frag{startFrag, endFrag, InlineLit(stepSeconds), InlineLit(stalenessSeconds)},
-		Col(columns.Timestamp),
+		timestampDateTime64(Col(columns.Timestamp)),
 		Col(columns.Value),
 	)
 	// timeSeriesRange(start, end, step_s) — the parallel anchor-timestamp axis,

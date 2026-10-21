@@ -139,6 +139,18 @@ type Handler struct {
 	// unaffected.
 	ThrowDuplicateSeriesIf bool
 
+	// MetricsTimestamp holds the chsql.MetricsTimestampStrategy the
+	// preflight probe resolved for the metrics tables' timestamp columns
+	// (preflight.Result.MetricsTimestamp), wired at boot in cmd/cerberus and
+	// updated by the schema re-probe when the tables appear after boot.
+	// Every statement this head emits renders under the strategy it holds
+	// when the request reads it: the engine's PromQL requests through
+	// lang.EmitMetricsTimestamp, the metadata and exemplar statements the
+	// handler builds itself directly. A nil cell loads the zero strategy,
+	// which renders for `DateTime64(9)` columns, so a Handler that never
+	// wires this (every test that builds one directly) is unaffected.
+	MetricsTimestamp *chsql.MetricsTimestampCell
+
 	// QueryTimeout is the configured default per-query wall-clock cap
 	// (CERBERUS_QUERY_TIMEOUT). It is the ceiling the standard Prometheus
 	// `?timeout=<duration>` query param min's against per request
@@ -952,6 +964,7 @@ func (h *Handler) executeRangeStreaming(
 		ResourceBounds:         h.ResourceBounds,
 		TagGroups:              h.TagGroups,
 		ThrowDuplicateSeriesIf: h.ThrowDuplicateSeriesIf,
+		MetricsTimestamp:       h.MetricsTimestamp.Load(),
 	}
 	// Time the entire QueryCursor entry so the cursor-open round-trip
 	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-
@@ -1003,6 +1016,7 @@ func (h *Handler) executeInstant(ctx context.Context, query string, start, end t
 		ResourceBounds:         h.ResourceBounds,
 		TagGroups:              h.TagGroups,
 		ThrowDuplicateSeriesIf: h.ThrowDuplicateSeriesIf,
+		MetricsTimestamp:       h.MetricsTimestamp.Load(),
 	}
 	res, err := h.Engine.Query(h.withSampleDrainBudget(ctx), l, query)
 	if err != nil {

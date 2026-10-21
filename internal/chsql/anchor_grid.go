@@ -62,7 +62,7 @@ func (g anchorGrid) units(ns int64) int64 { return ns / g.unit }
 
 // instantUnits renders the instant ts in the grid's units since the epoch.
 func (g anchorGrid) instantUnits(ts Frag) Frag {
-	return Call("toUnixTimestamp64Milli", ts)
+	return ToUnixMillis(ts)
 }
 
 // fromUnits renders the DateTime64(9) instant units grid units after the

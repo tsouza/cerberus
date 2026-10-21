@@ -336,9 +336,9 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	grids.Select(keyCols...)
 	grids.Select(Col(bucketGridLeAlias))
 	grids.Select(As(Parametric(bucketGridRateFn, gridParams,
-		Col(inputColumns.timestamp), Col(bucketGridCumAlias)), bucketGridRateArrayAlias))
+		timestampDateTime64(Col(inputColumns.timestamp)), Col(bucketGridCumAlias)), bucketGridRateArrayAlias))
 	grids.Select(As(Parametric(bucketGridSeenFn, gridParams,
-		Col(inputColumns.timestamp), Col(bucketGridCumAlias)), bucketGridSeenArrayAlias))
+		timestampDateTime64(Col(inputColumns.timestamp)), Col(bucketGridCumAlias)), bucketGridSeenArrayAlias))
 	grids.Select(As(anchorAxis, bucketGridTSArrayAlias))
 	grids.GroupBy(append(append([]Frag{}, keyCols...), Col(bucketGridLeAlias))...)
 

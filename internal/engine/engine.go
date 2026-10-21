@@ -138,6 +138,29 @@ func attrStrategiesForLang(lang Lang) chsql.AttrStrategies {
 	return nil
 }
 
+// metricsTimestamper is implemented by a Lang whose plans read the OTel-CH
+// metrics tables (the Prom head's lang, internal/api/prom/lang.go): it
+// reports the chsql.MetricsTimestampStrategy the preflight boot probe
+// resolved for those tables' timestamp columns.
+type metricsTimestamper interface {
+	EmitMetricsTimestamp() chsql.MetricsTimestampStrategy
+}
+
+// withMetricsTimestamp threads lang's MetricsTimestampStrategy onto ctx for
+// a Lang that implements metricsTimestamper, and returns ctx unchanged for
+// one that does not (LogQL, TraceQL), which then renders with the
+// strategy's zero value. It runs at the top of every entry point that
+// lowers a plan to SQL — QueryPlan, QueryPlanCursor and DryRunSQL — rather
+// than inside emitForHead alone, because the request ctx is also what every
+// route-B dispatch derives its own emit context from (routeBExecCtx), and a
+// solver-routed shard emits through ChsqlEmitter, which never sees a Lang.
+func withMetricsTimestamp(ctx context.Context, lang Lang) context.Context {
+	if mt, ok := lang.(metricsTimestamper); ok {
+		return chsql.WithMetricsTimestamp(ctx, mt.EmitMetricsTimestamp())
+	}
+	return ctx
+}
+
 // rangeSeriesOrderer is implemented by a Lang whose route-A SQL wants its
 // rows sorted before a streaming, per-series pivot downstream reads them
 // (the Prom head's matrixFromCursor — see prom.lang.RangeSeriesOrder's doc
@@ -1676,6 +1699,7 @@ func (e *Engine) DryRunSQL(ctx context.Context, lang Lang, query string) (DryRun
 	if lang == nil {
 		return DryRun{}, fmt.Errorf("engine: nil Lang")
 	}
+	ctx = withMetricsTimestamp(ctx, lang)
 	plan, meta, err := lang.Parse(ctx, query)
 	if err != nil {
 		return DryRun{}, fmt.Errorf("engine: parse: %w", err)
@@ -1722,6 +1746,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	if plan == nil {
 		return Result{}, fmt.Errorf("engine: nil plan")
 	}
+	ctx = withMetricsTimestamp(ctx, lang)
 
 	// Inflight bookkeeping. Deferred decrement balances the counter
 	// across panics, early returns, and context cancellations. Sibling
@@ -2392,6 +2417,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	if plan == nil {
 		return CursorResult{}, fmt.Errorf("engine: nil plan")
 	}
+	ctx = withMetricsTimestamp(ctx, lang)
 
 	// Inflight bookkeeping — symmetrical with QueryPlan so the gauge
 	// covers both the eager and streaming pipelines. Cursor consumers

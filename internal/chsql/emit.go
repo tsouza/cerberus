@@ -408,6 +408,13 @@ type emitter struct {
 	// column as Map, byte-identical to before this field existed.
 	attrStrategies AttrStrategies
 
+	// metricsTimestamp is the MetricsTimestampStrategy every statement
+	// this emitter renders carries (Builder.metricsTimestamp). Seeded once
+	// per Emit call from metricsTimestampFromCtx(ctx) — internal/engine
+	// threads it via chsql.WithMetricsTimestamp — and stamped onto every
+	// per-node QueryBuilder by emitSelect, exactly as attrStrategies is.
+	metricsTimestamp MetricsTimestampStrategy
+
 	// cteSeq is a monotonic counter handed out to every emitter that
 	// registers a named CTE, so each one gets a unique name: the
 	// recursive structural-join closure (`_struct_closure_<n>`) and the
@@ -474,6 +481,7 @@ func newEmitter(ctx context.Context) *emitter {
 
 		emittedSQLMaxBytes: maxEmittedSQLBytesFromCtx(ctx),
 		attrStrategies:     attrStrategiesFromCtx(ctx),
+		metricsTimestamp:   metricsTimestampFromCtx(ctx),
 		cteSeq:             new(int),
 	}
 }
@@ -516,6 +524,7 @@ func (e *emitter) sub() *emitter {
 
 		emittedSQLMaxBytes: e.emittedSQLMaxBytes,
 		attrStrategies:     e.attrStrategies,
+		metricsTimestamp:   e.metricsTimestamp,
 		cteSeq:             e.cteSeq,
 		shared:             e.shared,
 	}

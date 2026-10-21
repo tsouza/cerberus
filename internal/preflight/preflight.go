@@ -371,6 +371,20 @@ type Result struct {
 	// populated (or nil) exactly as LogsAttrStrategies is, from the same
 	// checkSchema pass.
 	TracesAttrStrategies AttrStrategies
+
+	// MetricsTimestamp is the chsql.MetricsTimestampStrategy the deployed
+	// metrics timestamp columns resolve to (resolveMetricsTimestamp):
+	// MetricsTimestampDateTime when every one of them is `DateTime`, the
+	// zero value MetricsTimestampDateTime64 when every one is
+	// `DateTime64(9)` or no metric table was introspected. A column of any
+	// other type, or columns that disagree, are Fatal instead.
+	//
+	// cmd/cerberus is the only intended consumer: it threads this onto the
+	// Prom head, whose engine puts it on every PromQL request's emit
+	// context via chsql.WithMetricsTimestamp. Like LogsAttrStrategies it
+	// is resolved once at boot; a Result from the transient not-ready path
+	// carries the zero value.
+	MetricsTimestamp chsql.MetricsTimestampStrategy
 }
 
 // AttrStrategies is preflight's own alias for chsql.AttrStrategies —
@@ -484,13 +498,14 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 		return Result{DatabaseAbsent: true, DatabaseAbsentErr: dbAbsent}
 	}
 
-	schemaProblems, absent, schemaWarnings, jsonColsByTable, flagsMissing, unreachable := checkSchema(ctx, q, req)
+	sf, unreachable := checkSchema(ctx, q, req)
 	flagsPresent := req.Metrics.FlagsColumn != "" && req.effectiveSignals().Metrics &&
-		len(flagsMissing) == 0 && !anyMetricTableAbsent(req.Metrics, absent)
+		len(sf.flagsMissing) == 0 && !anyMetricTableAbsent(req.Metrics, sf.absent)
 	if unreachable != nil {
 		return Result{Unreachable: true, UnreachableErr: unreachable}
 	}
-	warnings = append(warnings, schemaWarnings...)
+	warnings = append(warnings, sf.warnings...)
+	metricsTimestamp, timestampProblems := resolveMetricsTimestamp(sf.metricsTimestamps)
 
 	// Gate 3 (storage tiering) reads system.storage_policies. It only runs when
 	// the operator configured a storage policy or a tiering rule, so the default
@@ -501,15 +516,16 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 	}
 	warnings = append(warnings, policyWarnings...)
 
-	problems := append(versionProblems, schemaProblems...)
+	problems := append(append(versionProblems, sf.problems...), timestampProblems...)
 
 	res := Result{
 		Warnings:             warnings,
-		AbsentTables:         absent,
-		LogsAttrStrategies:   attrStrategiesFor(jsonColsByTable[req.Logs.LogsTable]),
-		TracesAttrStrategies: attrStrategiesFor(jsonColsByTable[req.Traces.SpansTable]),
+		AbsentTables:         sf.absent,
+		LogsAttrStrategies:   attrStrategiesFor(sf.jsonColsByTable[req.Logs.LogsTable]),
+		TracesAttrStrategies: attrStrategiesFor(sf.jsonColsByTable[req.Traces.SpansTable]),
+		MetricsTimestamp:     metricsTimestamp,
 
-		StaleMarkerFlagsMissing: flagsMissing,
+		StaleMarkerFlagsMissing: sf.flagsMissing,
 		StaleMarkerFlagsPresent: flagsPresent,
 	}
 	if len(problems) == 0 {
@@ -874,6 +890,12 @@ type tableReq struct {
 	// expects schema.NumericMaterializedAttributeColumnType
 	// (Nullable(Int32)) instead.
 	materializedColumns []materializedColumnCheck
+	// metricsTimestampColumns names the metrics timestamp columns whose
+	// deployed type this table is probed for (TimeUnix, StartTimeUnix and
+	// the Nested Exemplars.TimeUnix) — see resolveMetricsTimestamp. Empty
+	// for every non-metrics table. A listed column the table lacks is not
+	// reported here; the required-column check owns that.
+	metricsTimestampColumns []string
 	// staleMarkerFlags names the metrics Flags column (schema.Metrics.
 	// FlagsColumn) this table is probed for, or "" for none. It is not a
 	// required column: a metric table without it boots, and
@@ -938,8 +960,9 @@ func requiredTables(req Requirements) []tableReq {
 					m.MetricNameColumn, m.TimestampColumn, m.ValueColumn,
 					m.ServiceNameColumn, m.AttributesColumn, m.ResourceAttributesColumn,
 				),
-				staleMarkerFlags: m.FlagsColumn,
-				attrMap:          nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
+				staleMarkerFlags:        m.FlagsColumn,
+				attrMap:                 nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
+				metricsTimestampColumns: metricsTimestampColumns(m),
 			})
 		}
 		// Histogram + exp-histogram carry the decomposed observation columns
@@ -952,8 +975,9 @@ func requiredTables(req Requirements) []tableReq {
 					m.MetricNameColumn, m.TimestampColumn, m.CountColumn, m.SumColumn,
 					m.AttributesColumn, m.ResourceAttributesColumn,
 				),
-				staleMarkerFlags: m.FlagsColumn,
-				attrMap:          nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
+				staleMarkerFlags:        m.FlagsColumn,
+				attrMap:                 nonEmpty(m.AttributesColumn, m.ResourceAttributesColumn, m.ScopeAttributesColumn),
+				metricsTimestampColumns: metricsTimestampColumns(m),
 			})
 		}
 	}
@@ -1067,35 +1091,61 @@ func nonEmpty(vals ...string) []string {
 // entirely-absent table is transient (the schema race), so it lands in the
 // second value and is NOT a wrong-shape problem; a table that exists but has
 // the wrong columns is.
-func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, absent, warnings []string, jsonColsByTable map[string][]string, flagsMissing []string, unreachable error) {
+func checkSchema(ctx context.Context, q Querier, req Requirements) (f schemaFindings, unreachable error) {
 	seen := map[string]bool{}
-	jsonColsByTable = map[string][]string{}
+	f.jsonColsByTable = map[string][]string{}
 	for _, t := range requiredTables(req) {
 		if t.name == "" || seen[t.name] {
 			continue
 		}
 		seen[t.name] = true
-		probs, warns, jsonCols, isAbsent, noFlags, unreach := checkTable(ctx, q, req.Database, t)
+		tf, unreach := checkTable(ctx, q, req.Database, t)
 		if unreach != nil {
 			// A transport failure mid-introspection means the server dropped
 			// (or never came up): abandon the shape gate and report unreachable
 			// so the caller waits rather than recording a half-introspected
 			// schema as wrong-shape.
-			return nil, nil, nil, nil, nil, unreach
+			return schemaFindings{}, unreach
 		}
-		problems = append(problems, probs...)
-		if noFlags {
-			flagsMissing = append(flagsMissing, t.name)
+		f.problems = append(f.problems, tf.problems...)
+		if tf.flagsMissing {
+			f.flagsMissing = append(f.flagsMissing, t.name)
 		}
-		warnings = append(warnings, warns...)
-		if isAbsent {
-			absent = append(absent, t.name)
+		f.warnings = append(f.warnings, tf.warnings...)
+		if tf.absent {
+			f.absent = append(f.absent, t.name)
 		}
-		if len(jsonCols) > 0 {
-			jsonColsByTable[t.name] = append(jsonColsByTable[t.name], jsonCols...)
+		if len(tf.jsonCols) > 0 {
+			f.jsonColsByTable[t.name] = append(f.jsonColsByTable[t.name], tf.jsonCols...)
 		}
+		f.metricsTimestamps = append(f.metricsTimestamps, tf.metricsTimestamps...)
 	}
-	return problems, absent, warnings, jsonColsByTable, flagsMissing, nil
+	return f, nil
+}
+
+// schemaFindings is what checkSchema's gate-2 pass found across every
+// configured table: the FATAL wrong-shape problems, the ABSENT tables, the
+// boot-probe warnings, the JSON-typed attribute columns per
+// jsonAttrMapCompat table, the metric tables lacking their Flags column, and
+// the deployed type of every metrics timestamp column found.
+type schemaFindings struct {
+	problems          []string
+	absent            []string
+	warnings          []string
+	jsonColsByTable   map[string][]string
+	flagsMissing      []string
+	metricsTimestamps []deployedColumn
+}
+
+// tableFindings is checkTable's verdict on one table — see schemaFindings
+// for each field; absent and flagsMissing are this table's own flags.
+type tableFindings struct {
+	problems          []string
+	warnings          []string
+	jsonCols          []string
+	absent            bool
+	flagsMissing      bool
+	metricsTimestamps []deployedColumn
 }
 
 // tableColumnsSQL lists one table's (name, type) columns from
@@ -1132,22 +1182,34 @@ func tableColumnsSQL(database, table string) (string, []any) {
 //
 // flagsMissing reports a table that exists without its t.staleMarkerFlags
 // column, and comes with a warning naming the consequence.
-func checkTable(ctx context.Context, q Querier, database string, t tableReq) (problems, warnings, jsonCols []string, absent, flagsMissing bool, unreachable error) {
+func checkTable(ctx context.Context, q Querier, database string, t tableReq) (f tableFindings, unreachable error) {
 	sql, args := tableColumnsSQL(database, t.name)
 	rows, err := q.QueryNameTypePairs(ctx, sql, args...)
 	if err != nil {
 		if isUnreachable(err) {
-			return nil, nil, nil, false, false, err
+			return tableFindings{}, err
 		}
-		return []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}, nil, nil, false, false, nil
+		return tableFindings{problems: []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}}, nil
 	}
 	if len(rows) == 0 {
 		// Entirely absent: the schema has not been provisioned yet. This is
 		// the transient startup race, not a misconfiguration — surface it as
 		// absent so the caller waits (NOT READY) rather than exiting.
-		return nil, nil, nil, true, false, nil
+		return tableFindings{absent: true}, nil
 	}
+	problems, warnings, jsonCols, flagsMissing := checkTableColumns(t, rows)
+	f = tableFindings{problems: problems, warnings: warnings, jsonCols: jsonCols, flagsMissing: flagsMissing}
+	for _, col := range t.metricsTimestampColumns {
+		if i := slices.IndexFunc(rows, func(r chclient.NameTypePair) bool { return r.Name == col }); i >= 0 {
+			f.metricsTimestamps = append(f.metricsTimestamps, deployedColumn{table: t.name, column: col, typ: rows[i].Type})
+		}
+	}
+	return f, nil
+}
 
+// checkTableColumns validates one introspected table's (name, type) rows
+// against t — see checkTable.
+func checkTableColumns(t tableReq, rows []chclient.NameTypePair) (problems, warnings, jsonCols []string, flagsMissing bool) {
 	types := make(map[string]string, len(rows))
 	for _, r := range rows {
 		types[r.Name] = r.Type
@@ -1226,7 +1288,7 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 			))
 		}
 	}
-	return problems, warnings, jsonCols, false, flagsMissing, nil
+	return problems, warnings, jsonCols, flagsMissing
 }
 
 // normalizeType canonicalises a ClickHouse type string for comparison:

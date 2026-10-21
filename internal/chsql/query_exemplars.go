@@ -109,7 +109,7 @@ func EmitQueryExemplars(
 	_, span := tracer.Start(ctx, cerbtrace.SpanEmit)
 	defer span.End()
 
-	sql, args, physicalScans, err = emitQueryExemplarsArm(ExemplarArm{Table: exemplarsTable, Predicate: predicate}, start, end, s)
+	sql, args, physicalScans, err = emitQueryExemplarsArm(ExemplarArm{Table: exemplarsTable, Predicate: predicate}, start, end, s, metricsTimestampFromCtx(ctx))
 	if err != nil {
 		span.RecordError(err)
 		return "", nil, 0, err
@@ -183,7 +183,7 @@ func EmitQueryExemplarsUnion(
 		return "", nil, 0, err
 	}
 	if len(arms) == 1 {
-		sql, args, physicalScans, err = emitQueryExemplarsArm(arms[0], start, end, s)
+		sql, args, physicalScans, err = emitQueryExemplarsArm(arms[0], start, end, s, metricsTimestampFromCtx(ctx))
 		if err != nil {
 			span.RecordError(err)
 			return "", nil, 0, err
@@ -194,7 +194,7 @@ func EmitQueryExemplarsUnion(
 
 	parts := make([]Frag, 0, len(arms))
 	for _, arm := range arms {
-		q, err := queryExemplarsSelect(arm, start, end, s)
+		q, err := queryExemplarsSelect(arm, start, end, s, metricsTimestampFromCtx(ctx))
 		if err != nil {
 			span.RecordError(err)
 			return "", nil, 0, err
@@ -203,6 +203,7 @@ func EmitQueryExemplarsUnion(
 	}
 
 	b := NewBuilder()
+	b.metricsTimestamp = metricsTimestampFromCtx(ctx)
 	UnionAll(parts...)(b)
 	sql, args, err = b.Build()
 	if err != nil {
@@ -215,8 +216,8 @@ func EmitQueryExemplarsUnion(
 
 // emitQueryExemplarsArm renders one arm as a standalone statement — the
 // unparenthesised SELECT both single-table entry points return.
-func emitQueryExemplarsArm(arm ExemplarArm, start, end time.Time, s schema.Metrics) (string, []any, int, error) {
-	q, err := queryExemplarsSelect(arm, start, end, s)
+func emitQueryExemplarsArm(arm ExemplarArm, start, end time.Time, s schema.Metrics, ts MetricsTimestampStrategy) (string, []any, int, error) {
+	q, err := queryExemplarsSelect(arm, start, end, s, ts)
 	if err != nil {
 		return "", nil, 0, err
 	}
@@ -230,10 +231,13 @@ func emitQueryExemplarsArm(arm ExemplarArm, start, end time.Time, s schema.Metri
 // queryExemplarsSelect builds the outer SELECT for one arm, validating
 // the arm's table and the schema columns the projection needs. See
 // [EmitQueryExemplars] for the emitted shape and the rejection cases.
+// metricsTimestamp is the statement's MetricsTimestampStrategy, which the
+// inner SELECT's time bounds render under.
 func queryExemplarsSelect(
 	arm ExemplarArm,
 	start, end time.Time,
 	s schema.Metrics,
+	metricsTimestamp MetricsTimestampStrategy,
 ) (*QueryBuilder, error) {
 	exemplarsTable, predicate := arm.Table, arm.Predicate
 
@@ -364,5 +368,6 @@ func queryExemplarsSelect(
 		).
 		From(inner.Frag())
 
+	outer.metricsTimestamp = metricsTimestamp
 	return outer, nil
 }

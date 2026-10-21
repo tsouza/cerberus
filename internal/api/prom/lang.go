@@ -10,6 +10,7 @@ import (
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -91,7 +92,16 @@ type lang struct {
 	// value keeps the pre-#3038 throwIf(uniqExact(MetricName) > 1, ...)
 	// shape.
 	ThrowDuplicateSeriesIf bool
+
+	// MetricsTimestamp is Handler.MetricsTimestamp, reported to the engine
+	// through EmitMetricsTimestamp. The zero value renders for
+	// `DateTime64(9)` timestamp columns.
+	MetricsTimestamp chsql.MetricsTimestampStrategy
 }
+
+// EmitMetricsTimestamp reports the MetricsTimestampStrategy this lang's
+// plans render under; the engine threads it onto the emit context.
+func (l *lang) EmitMetricsTimestamp() chsql.MetricsTimestampStrategy { return l.MetricsTimestamp }
 
 // Compile-time check that *lang satisfies engine.Lang.
 var _ engine.Lang = (*lang)(nil)

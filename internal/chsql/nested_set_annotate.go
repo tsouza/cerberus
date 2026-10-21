@@ -228,7 +228,7 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 		}
 		return Call(
 			"concat",
-			padded(Call("toUnixTimestamp64Nano", optQualColFrag(qual, n.TimestampColumn))),
+			padded(ToUnixNanos(optQualColFrag(qual, n.TimestampColumn))),
 			padded(Call("sipHash64", optQualColFrag(qual, n.SpanIDColumn))),
 		)
 	}

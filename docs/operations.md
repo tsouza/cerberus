@@ -3140,6 +3140,28 @@ precise boot-time finding:
     - Metrics attribute-map columns are **not** covered by this exception
       and stay `Map(String, String)`-only — they carry the metric's series
       identity, out of scope per the issue itself.
+- **Metrics timestamp column type.** The metric tables' timestamp columns —
+  `TimeUnix`, `StartTimeUnix` and the Nested `Exemplars.TimeUnix` — are read
+  from `system.columns` and select how PromQL renders against them. Both
+  OTel-CH exporter metrics schemas are served:
+  - `DateTime64(9)` (nanosecond precision): timestamp functions read the
+    columns directly.
+  - `DateTime` (second precision, the exporter's metrics schema from
+    v0.157): timestamp functions read the columns through
+    `toDateTime64(<column>, 9)`. Answers are exactly those the same
+    whole-second samples give in a `DateTime64(9)` table.
+
+  Any other type (another `DateTime64` precision, a `DateTime` /
+  `DateTime64` with an explicit time zone, an integer), or metric tables
+  whose timestamp columns do not all resolve to the same one of the two,
+  **fails startup fast** with a message naming every offending
+  `table.column type`. A metric table absent at boot contributes nothing;
+  when the boot probe takes the not-yet-provisioned path below, the
+  background re-probe resolves the type once the tables appear, before
+  `/readyz` flips ready. The resolved type is logged as `metrics_timestamp`
+  on the `requirements check passed` line (or on `schema now provisioned`).
+  With `CERBERUS_REQUIREMENTS_CHECK=false` nothing is probed and the columns
+  are rendered as `DateTime64(9)`.
 - **Absent (not-yet-provisioned) schema.** When the configured tables are
   **entirely absent** (`system.columns` reports zero rows for them), cerberus
   does **not** crash-loop — it **boots and waits**. This is the cerberus +

@@ -435,17 +435,7 @@ func runRoundTripSQL(
 	db := OpenChDB(t)
 	ApplySeed(t, db, rt.Seed)
 
-	// substituteNow64 must run BEFORE rewriteMapProjections so the
-	// `now64(?)`-consumed args are dropped before the Map rewrite
-	// inspects the SQL. The two passes are independent textually but
-	// the args side is global, and ordering them this way keeps the
-	// argIdx accounting in substituteNow64 simple.
-	query, queryArgs := substituteNow64(sql, args)
-	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(rt.Seed))
-	query = testsql.RewriteMapProjections(query)
-	query = testsql.NestMapOrderBy(query)
-	query = testsql.NestMapWhere(query)
-	colCount := testsql.ProjectionCount(query)
+	query, queryArgs, colCount := prepareSeededQuery(sql, args, rt.Seed)
 
 	rows, err := db.Query(query, queryArgs...)
 	if err != nil {
@@ -479,30 +469,7 @@ func runRoundTripSQL(
 		colCount = len(cols)
 	}
 
-	got := make([][]any, 0, len(rt.ExpectedRows))
-	for rows.Next() {
-		// Scan into *interface{} so we receive the chdb-go driver's
-		// native Go value (string, int64, float64, time.Time, []byte)
-		// per chdb/driver/parquet.go's switch table. This sidesteps
-		// rows.ColumnTypes() (which panics on Map columns per the
-		// chDB driver probe).
-		cells := make([]any, colCount)
-		ptrs := make([]any, colCount)
-		for i := range cells {
-			ptrs[i] = &cells[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		row := make([]any, colCount)
-		for i, v := range cells {
-			row[i] = DecodeCell(v, rt.RawStrings)
-		}
-		got = append(got, row)
-	}
-	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
-		t.Fatalf("rows.Err: %v", err)
-	}
+	got := scanDecodedRows(t, rows, colCount, rt.RawStrings)
 
 	// Coerce expected rows in-place: JSON numbers always decode as
 	// float64; the runner normalizes the actual scan output through
@@ -536,6 +503,56 @@ func runRoundTripSQL(
 			c.Name, mustJSON(gotNorm), mustJSON(want))
 	}
 	return result
+}
+
+// prepareSeededQuery runs sql/args through the chDB prep pipeline every
+// seeded execution shares — the now64 anchor substitution, the star
+// expansion against seed's tables, and the Map-projection rewrites — and
+// returns the query, its args and its projection width (0 for a wildcard
+// outer projection, which the caller resolves from rows.Columns).
+//
+// substituteNow64 must run BEFORE rewriteMapProjections so the
+// `now64(?)`-consumed args are dropped before the Map rewrite inspects the
+// SQL. The two passes are independent textually but the args side is
+// global, and ordering them this way keeps the argIdx accounting in
+// substituteNow64 simple.
+func prepareSeededQuery(sql string, args []any, seed string) (string, []any, int) {
+	query, queryArgs := substituteNow64(sql, args)
+	query = testsql.ExpandStarProjection(query, testsql.SeedTableColumns(seed))
+	query = testsql.RewriteMapProjections(query)
+	query = testsql.NestMapOrderBy(query)
+	query = testsql.NestMapWhere(query)
+	return query, queryArgs, testsql.ProjectionCount(query)
+}
+
+// scanDecodedRows drains rows into colCount-wide decoded cells.
+//
+// It scans into *interface{} so it receives the chdb-go driver's native Go
+// value (string, int64, float64, time.Time, []byte) per
+// chdb/driver/parquet.go's switch table. This sidesteps rows.ColumnTypes()
+// (which panics on Map columns per the chDB driver probe).
+func scanDecodedRows(t *testing.T, rows *sql.Rows, colCount int, rawStrings bool) [][]any {
+	t.Helper()
+	var got [][]any
+	for rows.Next() {
+		cells := make([]any, colCount)
+		ptrs := make([]any, colCount)
+		for i := range cells {
+			ptrs[i] = &cells[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		row := make([]any, colCount)
+		for i, v := range cells {
+			row[i] = DecodeCell(v, rawStrings)
+		}
+		got = append(got, row)
+	}
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	return got
 }
 
 // formatExpectedRows renders a row set in the canonical TXTAR
