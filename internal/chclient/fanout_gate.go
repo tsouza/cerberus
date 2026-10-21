@@ -73,9 +73,7 @@ import (
 // premature-cancellation releases, not a diffuse accounting error.
 //
 // The fix: acquireDataShardFanout's release closure now checks ctx.Err() at
-// the instant it runs (not the error the underlying call returned — a typed
-// *clickhouse.Exception means CH already finished the statement on its own
-// and needs no help). A non-nil ctx.Err() means THIS dispatch's own ctx was
+// the instant it runs. A non-nil ctx.Err() means THIS dispatch's own ctx was
 // cancelled or hit its deadline — the reason the call returned, not a normal
 // server-side finish — so before releasing the weight, killDataShardQuery
 // issues `KILL QUERY WHERE query_id = ? SYNC` for this dispatch's own
@@ -94,9 +92,14 @@ import (
 // QUERY failure can never leak gate capacity, only (rarely) fail to close
 // this specific race.
 //
-// The normal, non-cancelled finish path is untouched: ctx.Err() is nil, the
-// check is a cheap single field read, and no extra round-trip is ever made
-// for the overwhelming majority of dispatches that simply finish.
+// The same confirmation runs when the dispatch ended with any error while
+// ctx was still live — the server's own max_execution_time, a memory cap, a
+// client-side decode abort: the error reaching the client does not mean the
+// statement has left the server (dispatchRelease).
+//
+// The clean finish path is untouched: ctx.Err() and the dispatch error are
+// both nil, the check is two cheap reads, and no extra round-trip is ever
+// made for the overwhelming majority of dispatches that simply finish.
 //
 // Residual gap, round 3 findings (cerberus issue #3128, real e2e dispatch
 // runs 34043234494 through 34048062673, AFTER this fix landed): `datashard
@@ -507,9 +510,10 @@ func dataShardFanoutMultiplierFromContext(ctx context.Context) int {
 // The returned release closure closes over ctx (the SAME context the
 // caller's dispatch runs under, already stamped with the per-dispatch
 // query_id by queryContext — see the callers' own doc for why that
-// ordering matters) so it can distinguish, at the instant it actually
-// runs, a normal server-side finish from a cancellation-driven unwind: see
-// this file's own "CANCELLATION FIX" doc above.
+// ordering matters) and takes the error the dispatch ended with, so it can
+// distinguish, at the instant it actually runs, a clean server-side finish
+// from a cancellation, a server abort, or any other unwind: see
+// dispatchRelease and this file's own "CANCELLATION FIX" doc above.
 //
 // A nil c.dataShardFanoutGate (DataShardCount <= 1, see
 // NewDataShardFanoutGate) charges no weight, but the release still kills a
@@ -522,7 +526,7 @@ func dataShardFanoutMultiplierFromContext(ctx context.Context) int {
 // check KILL QUERY and max_execution_time mid-call (test/chserver's
 // cancellation probes observe exactly this). KILL QUERY is what those
 // in-function checks honour, so every cancelled dispatch issues it.
-func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(dispatched bool), err error) {
+func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(dispatched bool, err error), err error) {
 	if c.dataShardFanoutGate == nil {
 		return c.dispatchRelease(ctx, 0), nil
 	}
@@ -544,9 +548,9 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(dispa
 }
 
 // dispatchRelease is the idempotent release acquireDataShardFanout hands
-// out: it kills the dispatch's statement when ctx was cancelled after the
-// statement reached ClickHouse, then returns weight (zero when no gate is
-// configured) to the data-shard fan-out gate.
+// out: it confirms the dispatch's statement has left ClickHouse unless the
+// dispatch ended in a clean finish, then returns weight (zero when no
+// gate is configured) to the data-shard fan-out gate.
 //
 // dispatched reports whether the server answered the statement at all — the
 // driver handed back rows, or the columnar dial saw a server packet. A dispatch
@@ -554,19 +558,39 @@ func (c *Client) acquireDataShardFanout(ctx context.Context) (release func(dispa
 // server, so there is nothing to kill; issuing KILL QUERY there would hold the
 // capacity for up to KillDataShardQueryTimeout while the KILL itself queued
 // for the same saturated pool, on every build.
-func (c *Client) dispatchRelease(ctx context.Context, weight int64) func(dispatched bool) {
+//
+// err is the error the dispatch ended with, nil for a clean finish — the
+// driver read the server's end of stream, the one signal that the statement
+// has finished on the server. A dispatched statement is confirmed gone with
+// KILL QUERY ... SYNC before the weight releases whenever the dispatch ended
+// any other way:
+//
+//   - ctx.Err() != nil: THIS dispatch's own ctx — the one it was admitted
+//     under — was cancelled or hit its deadline, so the driver unwound
+//     locally and the statement may still be running.
+//   - err is a ClickHouse server exception: the server aborted the statement
+//     itself — max_execution_time, a memory cap, any other mid-query error.
+//     ClickHouse sends the exception packet before it tears the query down,
+//     so the statement stays in system.processes, its pipeline still holding
+//     its blocks, after the client has the error. On the request-deadline
+//     path this is the ordinary outcome, not a race: the request ctx's
+//     backstop sits a grace past max_execution_time (BackstopTimeout), so the
+//     server's abort arrives while ctx is still live.
+//   - err is a client-side abort or a transport error: the columnar dial
+//     declining a block (a shape mismatch, a drain budget) or a broken
+//     socket. The driver sends a cancel packet and closes its connection,
+//     which ClickHouse notices only between pipeline blocks, never inside a
+//     function call, so the statement can run on with no one reading it.
+//
+// KILL QUERY ... SYNC on a statement that has already left the process list
+// answers at once, so the confirmation costs one round-trip on these unwind
+// paths only, and killDataShardQuery bounds it by KillDataShardQueryTimeout
+// when ClickHouse cannot be reached.
+func (c *Client) dispatchRelease(ctx context.Context, weight int64) func(dispatched bool, err error) {
 	var once sync.Once
-	return func(dispatched bool) {
+	return func(dispatched bool, err error) {
 		once.Do(func() {
-			// ctx.Err() != nil means THIS dispatch's own ctx — the one it
-			// was admitted under — was cancelled or hit its deadline: that
-			// is why the caller's underlying c.conn.Query / pool.Do call
-			// returned, not a normal server-side finish (which leaves
-			// ctx.Err() nil even when the call itself errored with a typed
-			// *clickhouse.Exception). Only the cancellation-unwind path pays
-			// for the extra KILL QUERY round-trip; a normal finish falls
-			// straight through to Release below, unconditionally.
-			if dispatched && ctx.Err() != nil {
+			if dispatched && (ctx.Err() != nil || err != nil) {
 				if queryID := queryIDFromContext(ctx); queryID != "" {
 					c.killDataShardQuery(queryID)
 				}
@@ -579,7 +603,7 @@ func (c *Client) dispatchRelease(ctx context.Context, weight int64) func(dispatc
 }
 
 // KillDataShardQueryTimeout bounds how long killDataShardQuery waits for
-// KILL QUERY ... SYNC to confirm a cancelled dispatch's ClickHouse-side
+// KILL QUERY ... SYNC to confirm an unwound dispatch's ClickHouse-side
 // statement has genuinely stopped (or was already gone) before giving up.
 // acquireDataShardFanout's release always frees the gate weight afterward
 // regardless of the outcome — this bound only caps how long that release
@@ -627,7 +651,7 @@ func (c *Client) killDataShardQuery(queryID string) {
 	defer cancel()
 	if err := c.conn.Exec(ctx, killDataShardQuerySQL, queryID); err != nil {
 		breakerLogger().Warn(
-			"chclient: KILL QUERY on a cancelled dispatch did not confirm the statement stopped",
+			"chclient: KILL QUERY on an unwound dispatch did not confirm the statement stopped",
 			"query_id", queryID, "error", err,
 		)
 	}
@@ -645,18 +669,25 @@ func (c *Client) killDataShardQuery(queryID string) {
 // overrides — Close — to the wrapped value.
 type gatedRows struct {
 	driver.Rows
-	release func(dispatched bool)
+	release func(dispatched bool, err error)
 }
 
 // Close releases the wrapped rows AND the fan-out weight, in that order,
 // and always runs the release (even when rows.Close itself errors) since
-// the ClickHouse-side statement is done either way. release is already
-// idempotent (acquireDataShardFanout's sync.Once), so a caller that closes
-// more than once — permitted by some driver.Rows implementations — cannot
-// double-release.
+// the driver is done with the statement either way. The release is told how
+// the stream ended — Close's own error, else the error the driver recorded
+// while it was read (Err) — so a statement the server aborted mid-stream is
+// confirmed gone before its weight frees (dispatchRelease). release is
+// already idempotent (acquireDataShardFanout's sync.Once), so a caller that
+// closes more than once — permitted by some driver.Rows implementations —
+// cannot double-release.
 func (g *gatedRows) Close() error {
 	err := g.Rows.Close()
+	ended := err
+	if ended == nil {
+		ended = g.Err()
+	}
 	// The driver handed back rows, so the server accepted the statement.
-	g.release(true)
+	g.release(true, ended)
 	return err
 }

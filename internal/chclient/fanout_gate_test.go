@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	chproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
@@ -418,7 +420,7 @@ func TestAcquireDataShardFanout_CancelledDispatch_IssuesKillQueryBeforeRelease(t
 
 	releaseDone := make(chan struct{})
 	go func() {
-		release(true)
+		release(true, nil)
 		close(releaseDone)
 	}()
 
@@ -447,12 +449,11 @@ func TestAcquireDataShardFanout_CancelledDispatch_IssuesKillQueryBeforeRelease(t
 }
 
 // TestAcquireDataShardFanout_NormalFinish_NoKillQuery is the required
-// negative counterpart: a dispatch whose ctx was NEVER cancelled — an
-// ordinary server-side finish, success or a genuine ClickHouse-side error
-// alike — must NOT pay for a KILL QUERY round-trip. Without this test, an
-// implementation that always issues KILL QUERY on every release (defeating
-// the "rare unwind path only" design) would still pass the positive test
-// above.
+// negative counterpart: a dispatch whose ctx was NEVER cancelled and that
+// ended in a clean finish must NOT pay for a KILL QUERY round-trip. Without
+// this test, an implementation that always issues KILL QUERY on every release
+// (defeating the "rare unwind path only" design) would still pass the
+// positive tests.
 func TestAcquireDataShardFanout_NormalFinish_NoKillQuery(t *testing.T) {
 	t.Parallel()
 	const dataShardCount = 4
@@ -471,7 +472,7 @@ func TestAcquireDataShardFanout_NormalFinish_NoKillQuery(t *testing.T) {
 	}
 
 	// ctx stays live (never cancelled) — a normal finish.
-	release(true)
+	release(true, nil)
 
 	if execs := conn.execCalls(); len(execs) != 0 {
 		t.Fatalf("Exec calls = %d, want 0 (a normal finish must never issue KILL QUERY): %v", len(execs), execs)
@@ -505,7 +506,7 @@ func TestAcquireDataShardFanout_CancelledDispatch_UntracedCtx_StillKills(t *test
 		t.Fatalf("acquireDataShardFanout: %v", err)
 	}
 	cancel()
-	release(true)
+	release(true, nil)
 
 	execs := conn.execCalls()
 	if len(execs) != 1 {
@@ -541,7 +542,7 @@ func TestAcquireDataShardFanout_CancelledDispatch_NoQueryID_SkipsKillQuery(t *te
 		t.Fatalf("acquireDataShardFanout: %v", err)
 	}
 	cancel()
-	release(true)
+	release(true, nil)
 
 	if execs := conn.execCalls(); len(execs) != 0 {
 		t.Fatalf("Exec calls = %d, want 0 (no query_id to target)", len(execs))
@@ -576,7 +577,7 @@ func TestAcquireDataShardFanout_DefaultMultiplier_ChargesDataShardCountExactly(t
 	if c.dataShardFanoutGate.TryAcquire(1) {
 		t.Fatal("gate admitted an extra unit of weight — default multiplier charged less than dataShardCount")
 	}
-	release(true)
+	release(true, nil)
 	if !c.dataShardFanoutGate.TryAcquire(dataShardCount) {
 		t.Fatal("gate did not release the full dataShardCount weight — default multiplier charged more than dataShardCount")
 	}
@@ -612,7 +613,7 @@ func TestAcquireDataShardFanout_WithMultiplier_ScalesChargedWeight(t *testing.T)
 	if c.dataShardFanoutGate.TryAcquire(1) {
 		t.Fatal("gate admitted an extra unit of weight — multiplier was not applied")
 	}
-	release(true)
+	release(true, nil)
 	// ...and releasing must free the FULL 2*dataShardCount, not merely
 	// dataShardCount (which would prove the multiplier was charged on acquire
 	// but silently dropped on release, leaking capacity).
@@ -647,7 +648,7 @@ func TestAcquireDataShardFanout_NonPositiveMultiplier_FallsBackToDefault(t *test
 			if c.dataShardFanoutGate.TryAcquire(1) {
 				t.Fatalf("multiplier=%d: gate admitted an extra unit — charged less than the dataShardCount floor", multiplier)
 			}
-			release(true)
+			release(true, nil)
 			if !c.dataShardFanoutGate.TryAcquire(dataShardCount) {
 				t.Fatalf("multiplier=%d: gate did not release the full dataShardCount weight", multiplier)
 			}
@@ -677,9 +678,9 @@ func TestAcquireDataShardFanout_ReleaseIsIdempotent_KillsOnlyOnce(t *testing.T) 
 		t.Fatalf("acquireDataShardFanout: %v", err)
 	}
 	cancel()
-	release(true)
-	release(true)
-	release(true)
+	release(true, nil)
+	release(true, nil)
+	release(true, nil)
 
 	if execs := conn.execCalls(); len(execs) != 1 {
 		t.Fatalf("Exec calls = %d, want exactly 1 across 3 release() calls", len(execs))
@@ -706,7 +707,7 @@ func TestAcquireDataShardFanout_SingleShard_CancelledDispatch_StillKills(t *test
 		if err != nil {
 			t.Fatalf("acquireDataShardFanout: %v", err)
 		}
-		normal(true)
+		normal(true, nil)
 		if execs := conn.execCalls(); len(execs) != 0 {
 			t.Fatalf("DataShardCount=%d: a normal finish issued %d Exec call(s): %v", shards, len(execs), execs)
 		}
@@ -718,8 +719,8 @@ func TestAcquireDataShardFanout_SingleShard_CancelledDispatch_StillKills(t *test
 			t.Fatalf("acquireDataShardFanout: %v", err)
 		}
 		cancel()
-		release(true)
-		release(true) // idempotent: one KILL only
+		release(true, nil)
+		release(true, nil) // idempotent: one KILL only
 		execs := conn.execCalls()
 		if len(execs) != 1 || execs[0].sql != killDataShardQuerySQL || len(execs[0].args) != 1 || execs[0].args[0] != queryID {
 			t.Fatalf("DataShardCount=%d: Exec calls = %v; want exactly one %q for %q", shards, execs, killDataShardQuerySQL, queryID)
@@ -789,4 +790,140 @@ func TestQueryOpen_CancelledAfterDispatch_KillsQuery(t *testing.T) {
 	if len(execs) != 1 || execs[0].sql != killDataShardQuerySQL || execs[0].args[0] != queryID {
 		t.Fatalf("Exec calls = %v; want exactly one %q for %q", execs, killDataShardQuerySQL, queryID)
 	}
+}
+
+// gateProbeConn records each Exec together with whether the fan-out gate was
+// still holding the dispatch's weight when the Exec ran, so a test can tell a
+// KILL QUERY that confirms the statement gone BEFORE the release from one
+// that runs after the capacity was already handed back.
+type gateProbeConn struct {
+	execRecordingConn
+	gate     func() bool
+	heldMu   sync.Mutex
+	heldAtEx []bool
+}
+
+func (c *gateProbeConn) Exec(ctx context.Context, sql string, args ...any) error {
+	c.heldMu.Lock()
+	c.heldAtEx = append(c.heldAtEx, c.gate())
+	c.heldMu.Unlock()
+	return c.execRecordingConn.Exec(ctx, sql, args...)
+}
+
+// TestAcquireDataShardFanout_EndedWithErrorOnLiveCtx_KillsBeforeRelease pins
+// the request-deadline path: ClickHouse's own max_execution_time aborts the
+// statement and the exception reaches the client while the dispatch's ctx is
+// still live — its backstop sits a grace past the server's cap — and
+// ClickHouse is still tearing the statement down when the packet arrives. The
+// same holds for every other way a dispatch can end short of the server's end
+// of stream. The release must confirm the statement gone with KILL QUERY ...
+// SYNC while the weight is still held, and only then free it.
+func TestAcquireDataShardFanout_EndedWithErrorOnLiveCtx_KillsBeforeRelease(t *testing.T) {
+	t.Parallel()
+	cases := map[string]error{
+		"row dial server timeout": &QueryTimeoutError{Timeout: 3 * time.Second, Cause: chTimeoutException()},
+		"columnar server timeout": columnarDialException(chproto.ErrTimeoutExceeded),
+		"server memory cap":       chMemLimitException(),
+		"client-side abort":       errMatrixMismatch,
+		"transport error":         io.ErrUnexpectedEOF,
+	}
+	for name, ended := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			const dataShardCount = 4
+			conn := &gateProbeConn{}
+			m, _ := newTestConnMetrics(t)
+			c := assembleClientFromConn(Config{DataShardCount: dataShardCount, MaxOpenConns: dataShardCount}, conn, m)
+			t.Cleanup(func() { _ = c.Close() })
+			conn.gate = func() bool {
+				if c.dataShardFanoutGate.TryAcquire(1) {
+					c.dataShardFanoutGate.Release(1)
+					return false
+				}
+				return true
+			}
+
+			const queryID = "server-aborted-qid"
+			ctx := withQueryID(t.Context(), queryID)
+			release, err := c.acquireDataShardFanout(ctx)
+			if err != nil {
+				t.Fatalf("acquireDataShardFanout: %v", err)
+			}
+			release(true, ended)
+
+			if ctx.Err() != nil {
+				t.Fatal("the dispatch ctx must still be live for this case")
+			}
+			execs := conn.execCalls()
+			if len(execs) != 1 || execs[0].sql != killDataShardQuerySQL || len(execs[0].args) != 1 || execs[0].args[0] != queryID {
+				t.Fatalf("Exec calls = %v; want exactly one %q for %q", execs, killDataShardQuerySQL, queryID)
+			}
+			if !conn.heldAtEx[0] {
+				t.Error("KILL QUERY ran after the gate weight was released; it must confirm the statement gone first")
+			}
+			if !c.dataShardFanoutGate.TryAcquire(dataShardCount) {
+				t.Fatal("gate weight was not fully released after the confirming KILL")
+			}
+		})
+	}
+}
+
+// TestQueryOpen_ServerAbortMidStream_KillsBeforeClose drives the row dial the
+// request-deadline probe takes: the driver handed back rows, then the server's
+// TIMEOUT_EXCEEDED surfaced through rows.Err() while the dispatch's ctx was
+// live. Closing the rows must issue KILL QUERY for the statement.
+func TestQueryOpen_ServerAbortMidStream_KillsBeforeClose(t *testing.T) {
+	t.Parallel()
+	const queryID = "server-timeout-mid-stream"
+	conn := &serverAbortConn{rows: &errRows{err: chTimeoutException()}}
+	m, _ := newTestConnMetrics(t)
+	c := assembleClientFromConn(Config{}, conn, m)
+	t.Cleanup(func() { _ = c.Close() })
+
+	rows, err := c.queryOpen(withQueryID(t.Context(), queryID), "SELECT 1")
+	if err != nil {
+		t.Fatalf("queryOpen: %v", err)
+	}
+	for rows.Next() {
+	}
+	if rows.Err() == nil {
+		t.Fatal("rows.Err() = nil; the fake must surface the server's timeout")
+	}
+	_ = rows.Close()
+	execs := conn.execCalls()
+	if len(execs) != 1 || execs[0].sql != killDataShardQuerySQL || execs[0].args[0] != queryID {
+		t.Fatalf("Exec calls = %v; want exactly one %q for %q", execs, killDataShardQuerySQL, queryID)
+	}
+}
+
+// TestQueryOpen_ServerRejectsBeforeRows_NoKillQuery pins the undispatched
+// half for errors: a server rejection that arrives before the driver hands
+// back rows ends the statement before any pipeline ran, so the release frees
+// the weight without a KILL QUERY.
+func TestQueryOpen_ServerRejectsBeforeRows_NoKillQuery(t *testing.T) {
+	t.Parallel()
+	conn := &execRecordingConn{chaosConn: chaosConn{queryErr: chTimeoutException()}}
+	m, _ := newTestConnMetrics(t)
+	c := assembleClientFromConn(Config{DataShardCount: 2, MaxOpenConns: 2}, conn, m)
+	t.Cleanup(func() { _ = c.Close() })
+
+	if _, err := c.queryOpen(withQueryID(t.Context(), "rejected-before-rows"), "SELECT 1"); err == nil {
+		t.Fatal("queryOpen succeeded on a rejected statement")
+	}
+	if execs := conn.execCalls(); len(execs) != 0 {
+		t.Fatalf("Exec calls = %v; want none for a statement rejected before rows", execs)
+	}
+	if !c.dataShardFanoutGate.TryAcquire(c.dataShardFanoutCap) {
+		t.Fatal("the gate weight was not released")
+	}
+}
+
+// serverAbortConn hands back rows whose stream ends in a server exception.
+type serverAbortConn struct {
+	execRecordingConn
+	rows driver.Rows
+}
+
+func (c *serverAbortConn) Query(context.Context, string, ...any) (driver.Rows, error) {
+	return c.rows, nil
 }
