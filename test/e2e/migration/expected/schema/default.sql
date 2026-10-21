@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS "default"."otel_metrics_gauge"  (
     ScopeDroppedAttrCount UInt32 CODEC(ZSTD(1)),
     ScopeSchemaUrl String CODEC(ZSTD(1)),
     ServiceName LowCardinality(String) CODEC(ZSTD(1)),
-    MetricName String CODEC(ZSTD(1)),
+    MetricName LowCardinality(String) CODEC(ZSTD(1)),
     MetricDescription String CODEC(ZSTD(1)),
     MetricUnit String CODEC(ZSTD(1)),
     Attributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS "default"."otel_metrics_gauge"  (
     INDEX idx_scope_attr_key mapKeys(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_scope_attr_value mapValues(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_attr_key mapKeys(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_time_minmax TimeUnix TYPE minmax GRANULARITY 1
     ) ENGINE = MergeTree()
     
     PARTITION BY toDate(TimeUnix)
@@ -46,7 +47,7 @@ CREATE TABLE IF NOT EXISTS "default"."otel_metrics_sum"  (
     ScopeDroppedAttrCount UInt32 CODEC(ZSTD(1)),
     ScopeSchemaUrl String CODEC(ZSTD(1)),
     ServiceName LowCardinality(String) CODEC(ZSTD(1)),
-    MetricName String CODEC(ZSTD(1)),
+    MetricName LowCardinality(String) CODEC(ZSTD(1)),
     MetricDescription String CODEC(ZSTD(1)),
     MetricUnit String CODEC(ZSTD(1)),
     Attributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
@@ -68,7 +69,8 @@ CREATE TABLE IF NOT EXISTS "default"."otel_metrics_sum"  (
     INDEX idx_scope_attr_key mapKeys(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_scope_attr_value mapValues(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_attr_key mapKeys(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_time_minmax TimeUnix TYPE minmax GRANULARITY 1
     ) ENGINE = MergeTree()
     
     PARTITION BY toDate(TimeUnix)
@@ -85,7 +87,7 @@ CREATE TABLE IF NOT EXISTS "default"."otel_metrics_histogram"  (
     ScopeDroppedAttrCount UInt32 CODEC(ZSTD(1)),
     ScopeSchemaUrl String CODEC(ZSTD(1)),
     ServiceName LowCardinality(String) CODEC(ZSTD(1)),
-    MetricName String CODEC(ZSTD(1)),
+    MetricName LowCardinality(String) CODEC(ZSTD(1)),
     MetricDescription String CODEC(ZSTD(1)),
     MetricUnit String CODEC(ZSTD(1)),
     Attributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
@@ -111,7 +113,8 @@ CREATE TABLE IF NOT EXISTS "default"."otel_metrics_histogram"  (
     INDEX idx_scope_attr_key mapKeys(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_scope_attr_value mapValues(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_attr_key mapKeys(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_time_minmax TimeUnix TYPE minmax GRANULARITY 1
     ) ENGINE = MergeTree()
     
     PARTITION BY toDate(TimeUnix)
@@ -128,7 +131,7 @@ CREATE TABLE IF NOT EXISTS "default"."otel_metrics_exponential_histogram"  (
     ScopeDroppedAttrCount UInt32 CODEC(ZSTD(1)),
     ScopeSchemaUrl String CODEC(ZSTD(1)),
     ServiceName LowCardinality(String) CODEC(ZSTD(1)),
-    MetricName String CODEC(ZSTD(1)),
+    MetricName LowCardinality(String) CODEC(ZSTD(1)),
     MetricDescription String CODEC(ZSTD(1)),
     MetricUnit String CODEC(ZSTD(1)),
     Attributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
@@ -158,7 +161,8 @@ CREATE TABLE IF NOT EXISTS "default"."otel_metrics_exponential_histogram"  (
     INDEX idx_scope_attr_key mapKeys(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_scope_attr_value mapValues(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_attr_key mapKeys(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_time_minmax TimeUnix TYPE minmax GRANULARITY 1
     ) ENGINE = MergeTree()
     
     PARTITION BY toDate(TimeUnix)
@@ -175,7 +179,7 @@ CREATE TABLE IF NOT EXISTS "default"."otel_metrics_summary"  (
     ScopeDroppedAttrCount UInt32 CODEC(ZSTD(1)),
     ScopeSchemaUrl String CODEC(ZSTD(1)),
     ServiceName LowCardinality(String) CODEC(ZSTD(1)),
-    MetricName String CODEC(ZSTD(1)),
+    MetricName LowCardinality(String) CODEC(ZSTD(1)),
     MetricDescription String CODEC(ZSTD(1)),
     MetricUnit String CODEC(ZSTD(1)),
     Attributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
@@ -193,12 +197,14 @@ CREATE TABLE IF NOT EXISTS "default"."otel_metrics_summary"  (
     INDEX idx_scope_attr_key mapKeys(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_scope_attr_value mapValues(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_attr_key mapKeys(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_time_minmax TimeUnix TYPE minmax GRANULARITY 1
     ) ENGINE = MergeTree()
     
     PARTITION BY toDate(TimeUnix)
     ORDER BY (MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix))
-    SETTINGS index_granularity=8192, ttl_only_drop_parts = 1;
+    SETTINGS index_granularity=8192, ttl_only_drop_parts = 1
+;
 
 ALTER TABLE default.otel_metrics_gauge ADD PROJECTION IF NOT EXISTS proj_series (SELECT `MetricName`, `Attributes`, max(`TimeUnix`) GROUP BY `MetricName`, `Attributes`);
 
@@ -217,22 +223,22 @@ ALTER TABLE default.otel_metrics_sum ADD INDEX IF NOT EXISTS idx_agg_temporality
 ALTER TABLE default.otel_metrics_histogram ADD INDEX IF NOT EXISTS idx_agg_temporality `AggregationTemporality` TYPE minmax GRANULARITY 1;
 
 CREATE TABLE IF NOT EXISTS `default`.`otel_logs`  (
-    `Timestamp` DateTime64(9) CODEC(Delta(8), ZSTD(1)),
-    `TraceId` String CODEC(ZSTD(1)),
-    `SpanId` String CODEC(ZSTD(1)),
-    `TraceFlags` UInt8,
-    `SeverityText` LowCardinality(String) CODEC(ZSTD(1)),
-    `SeverityNumber` UInt8,
-    `ServiceName` LowCardinality(String) CODEC(ZSTD(1)),
-    `Body` String CODEC(ZSTD(1)),
-    `ResourceSchemaUrl` LowCardinality(String) CODEC(ZSTD(1)),
-    `ResourceAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
-    `ScopeSchemaUrl` LowCardinality(String) CODEC(ZSTD(1)),
-    `ScopeName` String CODEC(ZSTD(1)),
-    `ScopeVersion` LowCardinality(String) CODEC(ZSTD(1)),
-    `ScopeAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
-    `LogAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
-    `EventName` String CODEC(ZSTD(1)),
+    `Timestamp` DateTime64(9) COMMENT 'Event timestamp with nanosecond precision' CODEC(Delta(8), ZSTD(1)),
+    `TraceId` String COMMENT 'W3C trace identifier' CODEC(ZSTD(1)),
+    `SpanId` String COMMENT 'W3C span identifier' CODEC(ZSTD(1)),
+    `TraceFlags` UInt8 COMMENT 'W3C trace flags',
+    `SeverityText` LowCardinality(String) COMMENT 'Log severity as text' CODEC(ZSTD(1)),
+    `SeverityNumber` UInt8 COMMENT 'Log severity as number (1-24)',
+    `ServiceName` LowCardinality(String) COMMENT 'Service that emitted the log' CODEC(ZSTD(1)),
+    `Body` String COMMENT 'Log message body' CODEC(ZSTD(1)),
+    `ResourceSchemaUrl` LowCardinality(String) COMMENT 'Schema URL for the resource' CODEC(ZSTD(1)),
+    `ResourceAttributes` Map(LowCardinality(String), String) COMMENT 'Resource attributes as key-value pairs' CODEC(ZSTD(1)),
+    `ScopeSchemaUrl` LowCardinality(String) COMMENT 'Schema URL for the instrumentation scope' CODEC(ZSTD(1)),
+    `ScopeName` String COMMENT 'Instrumentation scope name' CODEC(ZSTD(1)),
+    `ScopeVersion` LowCardinality(String) COMMENT 'Instrumentation scope version' CODEC(ZSTD(1)),
+    `ScopeAttributes` Map(LowCardinality(String), String) COMMENT 'Instrumentation scope attributes' CODEC(ZSTD(1)),
+    `LogAttributes` Map(LowCardinality(String), String) COMMENT 'Log record attributes' CODEC(ZSTD(1)),
+    `EventName` String COMMENT 'Event name for log records representing events' CODEC(ZSTD(1)),
     `__otel_materialized_k8s.cluster.name` LowCardinality(String) MATERIALIZED ResourceAttributes['k8s.cluster.name'] CODEC(ZSTD(1)),
     `__otel_materialized_k8s.container.name` LowCardinality(String) MATERIALIZED ResourceAttributes['k8s.container.name'] CODEC(ZSTD(1)),
     `__otel_materialized_k8s.deployment.name` LowCardinality(String) MATERIALIZED ResourceAttributes['k8s.deployment.name'] CODEC(ZSTD(1)),
