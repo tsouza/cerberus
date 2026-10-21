@@ -3403,9 +3403,13 @@ carries as much weight as the steps themselves:
    release: code against comments against docs, DRY, KISS, soundness. This is
    the final gate — findings are fixed and merged onto `main` here, before any
    line is backported and before any tag exists. Run `just
-   release-perf-regression` here and review every frozen-baseline difference;
-   expected recorded changes still make that explicit audit command fail, so
-   they cannot be mistaken for a green no-delta result. Also glance at `perf-nightly`'s
+   release-perf-regression` here, once per shard of the corpus partition, and
+   review every frozen-baseline difference: set `PERF_SHARD_COUNT` to the size of
+   the `perf-guards-shard` matrix in `.github/workflows/chdb.yml` and
+   `PERF_SHARD_INDEX` to each value from 1 to that count. A single unsharded run
+   profiles the whole corpus and does not fit the recipe's timeout. Expected
+   recorded changes still make that explicit audit command fail, so they cannot
+   be mistaken for a green no-delta result. Also glance at `perf-nightly`'s
    own trend across the cycle's runs, not just its latest pass/fail: the gate
    catches a single run regressing past its committed ceiling, but a slow,
    multi-cycle creep that stays under headroom on every individual night is
