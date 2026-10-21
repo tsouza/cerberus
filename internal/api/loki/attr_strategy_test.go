@@ -32,11 +32,9 @@ func TestQuery_JSONAttrStrategyRendersDynamicSubcolumnPath(t *testing.T) {
 	s := schema.DefaultOTelLogs()
 	q := &stubQuerier{}
 	h := loki.New(q, s, nil)
-	// Mirrors cmd/cerberus's newLokiHandler: both the Handler's own field
-	// (for a future per-request langForRequest copy) AND the long-lived
-	// h.Lang (the handler's own field is not read directly by /query — see
-	// Handler's own doc — but wiring it too matches production and would
-	// catch a future refactor that starts reading it).
+	// Mirrors cmd/cerberus's newLokiHandler: the Handler's Strategies cell,
+	// which each request snapshots on entry and every statement it emits
+	// renders under (the Lang langForRequest builds per /query included).
 	h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{Logs: chsql.SchemaStrategies{Attrs: chsql.AttrStrategies{s.ResourceAttributesColumn: chsql.AttrStrategyJSON}}})
 
 	mux := http.NewServeMux()

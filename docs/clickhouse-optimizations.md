@@ -226,7 +226,8 @@ Notes:
 
 - **`aggregation_in_order`** stamps `optimize_aggregation_in_order=1` when
   its eligibility check passes: single Aggregate, all GROUP BY keys bare columns, single
-  physical table, GROUP BY an ordered prefix of the schema sorting key.
+  physical table, GROUP BY an ordered prefix of the table's deployed sorting key
+  (see [Schema divergence](operations.md#schema-divergence-metrics-sort-key-and-timestamp-type)).
   Its enablement flows from the resolved set.
 - **`condition_cache`** activates only on server `>= 25.3`, outside the builds
   listed under [Known-defective server builds](#known-defective-server-builds),

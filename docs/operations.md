@@ -3040,15 +3040,14 @@ precise boot-time finding:
         reconstructed map — present and non-empty, never silently dropped
         — rather than fully flattening; this bound has not been observed
         to bind on any real OTel semantic-convention key.
-      - **Metadata/discovery endpoints** — `/labels`, `/series`,
-        `/label/<name>/values`, `/detected_labels` and `/detected_fields`
-        build their SQL directly against `chsql.NewQuery()` rather than
-        through `chplan`, so they do not inherit `AttrStrategies` from a
-        plan; each resolves the Handler's `AttrStrategies` itself
-        (`internal/api/loki/attr_strategy.go`) and renders `JSONAllPaths`
-        for key discovery / the same bounded reconstruction for whole-map
-        reads. `/patterns` needed no change — it never reads an
-        attribute-map column.
+      - **Metadata/discovery endpoints and `/tail`** — `/labels`, `/series`,
+        `/label/<name>/values`, `/detected_labels`, `/detected_fields` and
+        the `/tail` poll build their SQL directly against
+        `chsql.NewQuery()` rather than through `chplan`; each renders under
+        the request's logs `SchemaStrategies`
+        (`internal/api/loki/attr_strategy.go`), with `JSONAllPaths` for key
+        discovery and the same bounded reconstruction for whole-map reads.
+        `/patterns` never reads an attribute-map column.
       - **`json_type_escape_dots_in_keys` / mixed-history hazard** — see
         the dedicated callout below this list, shared verbatim with
         traces.
@@ -3060,42 +3059,31 @@ precise boot-time finding:
       ([#3065](https://github.com/tsouza/cerberus/issues/3065)):
       - **`/api/search`'s baseline response** — `canonicalSampleProjections`
         / `sampleProjectionsWithSelected` (`internal/api/tempo/handler.go`)
-        unconditionally merge `ResourceAttributes` with synthetic
-        trace/span/parent-span-id keys on **every** response via
-        `mapConcat`/`chplan.FnMapMerge` — a full-map read a JSON-typed
-        `ResourceAttributes` column could not satisfy before this fixed it,
-        which broke the baseline endpoint on every query regardless of
-        filter shape (the highest-priority gap the issue named). No
-        `internal/api/tempo` code change was needed here: the same
-        bounded-depth reconstruction the Logs full-map fix above added to
-        `chsql`'s generic `FnMapMerge`/`FnMapKeys`/`FnMapValues` handling
-        already covers any chplan tree built from those Fn identifiers,
-        TraceQL's included.
-      - **`compare()`'s generic attribute fan-out** — the spanset-metrics
+        merge `ResourceAttributes` with synthetic trace/span/parent-span-id
+        keys on every response via `mapConcat`/`chplan.FnMapMerge`. Over a
+        JSON-typed `ResourceAttributes` column that merge renders through the
+        bounded-depth reconstruction `chsql` applies to every
+        `FnMapMerge`/`FnMapKeys`/`FnMapValues` read, TraceQL's included.
+      - **`compare()` and the metrics pipeline** — the spanset-metrics
         operator's well-known/generic attribute enumeration
         (`compareAttrPairsExpr`, `internal/traceql/metrics_compare.go`)
-        builds its fan-out from the same `FnMapKeys`/`FnMapValues` shape, so
-        it too benefited from the generic `chsql` fix — but the
-        `/api/metrics/query_range` and `/api/metrics/query` pipeline's own
-        `Engine.Lang` adapter (`metricsLang`, `internal/api/tempo/
-        metrics_query_range.go`) never implemented the strategies
-        hook `traceqlLang` (the `/api/search` path) already had — every
-        metrics-pipeline plan silently rendered with `AttrStrategyMap`
-        regardless of the resolved column strategy, a real gap found and
-        fixed by wiring the missing hook (`metricsLang.strategies` +
-        `EmitSchemaStrategies()`) onto its three `metricsLang{...}`
-        construction sites.
+        builds its fan-out from the same `FnMapKeys`/`FnMapValues` shape.
+        The `/api/metrics/query_range` and `/api/metrics/query` pipeline's
+        `Engine.Lang` adapter (`metricsLang`,
+        `internal/api/tempo/metrics_query_range.go`) reports the request's
+        traces strategies (`EmitSchemaStrategies`) as `traceqlLang` does, and
+        the exemplars statement each metrics response attaches renders under
+        the same strategies.
       - **`/api/search/tags` / `/api/v2/search/tags` /
         `/api/search/tag/{name}/values`** — these discovery endpoints
         build their SQL directly against `chsql.NewQuery()` rather than
-        through `chplan`, so they do not inherit `AttrStrategies` from a
-        plan — the same shape as Logs' metadata endpoints. Each
-        resolves the Handler's `AttrStrategies` itself
-        (`internal/api/tempo/attr_strategy.go`) and threads it onto every
+        through `chplan` — the same shape as Logs' metadata endpoints. Each
+        renders under the request's traces `SchemaStrategies`
+        (`internal/api/tempo/attr_strategy.go`), threaded onto every
         `chsql.QueryBuilder` it builds, reaching `chsql.Builder.MapAt` /
-        the new `Builder.MapContains` (the ad-hoc-query-builder
-        equivalents of `chplan.MapAccess` / `FnMapContainsKey`) for
-        per-key value/existence lookups, and `distinctAttrKeysFrag`'s
+        `Builder.MapContains` (the ad-hoc-query-builder equivalents of
+        `chplan.MapAccess` / `FnMapContainsKey`) for per-key
+        value/existence lookups, and `chsql.DistinctAttrKeys`'s
         `JSONAllPaths`-based rendering for key discovery.
       - **`json_type_escape_dots_in_keys` / mixed-history hazard** — see
         the dedicated callout below this list, shared verbatim with logs.
@@ -3151,7 +3139,10 @@ precise boot-time finding:
     the columns through `toDateTime64(<column>, 9)`. Answers are exactly
     those the same samples give in a `DateTime64(9)` table.
 
-  A time zone on a column changes nothing a query returns. A type that is
+  A time zone on a column changes nothing a query returns. The time zone
+  the sum table's `TimeUnix` names is resolved as well: the DELTA-prefix
+  view buckets that column by its calendar day in that zone, and the
+  DELTA-prefix read splits its days in the same one. A type that is
   not a `DateTime` / `DateTime64` **fails startup fast** with a message
   naming the `table`, column and type. Metric tables whose timestamp columns
   mix the two precisions — some `DateTime64(9)`, others coarser — also
@@ -3161,8 +3152,11 @@ precise boot-time finding:
   already exist. A metric table absent at boot contributes nothing; when the
   boot probe takes the not-yet-provisioned path below, the background
   re-probe resolves the type — together with the logs and traces
-  attribute-map strategies — once the tables appear, before `/readyz` flips
-  ready. The resolved precision is logged as `metrics_timestamp` on the
+  attribute-map strategies and every table's sort key — once the tables
+  appear, before `/readyz` flips ready. Each request renders every statement
+  it emits under the strategies in force when it entered the head (an HTTP
+  route or a Tempo gRPC call); strategies a re-probe resolves reach the next
+  request. The resolved precision is logged as `metrics_timestamp` on the
   `requirements check passed` line (or on `schema now provisioned`). With
   `CERBERUS_REQUIREMENTS_CHECK=false` nothing is probed, and the columns are
   rendered for `CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION`: `nanos` as
@@ -3290,6 +3284,19 @@ speed: the common metric query carries a `MetricName` matcher but no
 `service.name` matcher, which prunes the primary key range of a
 MetricName-first key and reads ~17× more granules on a ServiceName-first
 key (see [`benchmarks.md`](benchmarks.md#metricname-first-order-by)).
+
+The `aggregation_in_order` optimization stamps
+`optimize_aggregation_in_order=1` on a statement whose `GROUP BY` is a prefix
+of the leading bare columns of the scanned table's sort key. The
+[startup requirements preflight](#startup-requirements-preflight) reads each
+table's **deployed** key from `system.tables` (and again on each re-probe of
+a not-ready boot), so a stock ServiceName-first table gets the setting for a
+`ServiceName`-led `GROUP BY` and never for a `MetricName`-led one. A table
+whose key cannot be read — the role lacks `SELECT` on `system.tables` —
+gets the setting for no `GROUP BY`, and startup logs a warning naming it. A
+`Distributed` table, which carries no key of its own, and every table when
+the check does not run (`CERBERUS_REQUIREMENTS_CHECK=false`, `cerberus
+migrate`'s preview) use the key cerberus provisions.
 
 The timestamp type is **not** correctness-neutral. `seconds` is **lossy**:
 ClickHouse truncates every sample, start and exemplar timestamp to its

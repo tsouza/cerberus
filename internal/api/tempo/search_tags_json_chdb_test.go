@@ -1,16 +1,14 @@
 //go:build chdb
 
-// chDB-backed proof of cerberus issue #3065 item 2: /api/search/tags,
-// /api/v2/search/tags and /api/search/tag/{name}/values
-// (search_tags.go / search_tag_values.go) build their SQL directly
-// against chsql.NewQuery() rather than through a chplan tree, so they
-// never reached engine.emitForHead / chsql.Emit's ctx-based
-// AttrStrategies threading at all — Handler.AttrStrategies (cerberus
-// issue #3062) had no effect on them. chsql.DistinctAttrKeys (the
-// whole-map key-discovery shape this head shares with internal/api/loki)
-// plus threading chsql.AttrStrategies explicitly onto every
-// chsql.QueryBuilder these two files build (mirroring
-// internal/api/loki/attr_strategy.go's identical fix for cerberus issue
+// chDB-backed coverage of /api/search/tags, /api/v2/search/tags and
+// /api/search/tag/{name}/values (search_tags.go / search_tag_values.go)
+// over JSON-typed attribute columns. These endpoints build their SQL
+// directly against chsql.NewQuery() rather than through a chplan tree, so
+// they do not reach chsql.Emit's ctx-based SchemaStrategies threading.
+// chsql.DistinctAttrKeys (the whole-map key-discovery shape this head
+// shares with internal/api/loki) plus threading the request's
+// chsql.SchemaStrategies explicitly onto every chsql.QueryBuilder these two
+// files build (mirroring internal/api/loki/attr_strategy.go's cerberus issue
 // #3063 point 2) is this file's target.
 //
 // Both a Resource-scope and a Span-scope JSON-typed column are exercised

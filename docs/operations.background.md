@@ -917,6 +917,74 @@ then failed every metrics query with `ILLEGAL_TYPE_OF_ARGUMENT`.
   under one set of strategies, read from the cell before it is emitted and
   threaded through the emit as a value.
 
+## Why every statement of a request renders under one strategies snapshot
+
+The schema re-probe stores newly resolved strategies while requests are in
+flight. A request that read the cell once per statement could render its
+matrix statement for a `Map` column and its exemplars statement for a `JSON`
+one, or page one `/series` batch under each, and return a response no single
+schema state produces. Each head therefore takes one snapshot when a request
+enters it — the HTTP routes at `Mount`, the Tempo gRPC calls in their
+query context — and every builder reads the snapshot. A request that reads
+the cell with no snapshot in its context falls back to a fresh load, which
+keeps a statement built outside a request (a test, a CLI preview) rendering
+under the current strategies rather than none.
+
+The JSON attribute-map fixes for the Tempo search, metrics and discovery
+endpoints, and for the Loki metadata endpoints, each closed a path that
+rendered with `AttrStrategyMap` regardless of the resolved strategy:
+`/api/search`'s baseline `mapConcat` (fixed in `chsql`'s generic full-map
+handling, with no Tempo change), the metrics pipeline's `metricsLang`,
+which never reported the strategies `traceqlLang` already did, and the
+`chsql.NewQuery()` builders of the discovery endpoints, which never reached
+`chsql.Emit`'s threading at all. The `/tail` poll and the Tempo metrics
+exemplars statement were the last builders of that kind to render without
+the request's strategies.
+
+## Why the in-order aggregation check reads the deployed sort key
+
+Cerberus's DDL is `CREATE TABLE IF NOT EXISTS`, so a table a stock exporter
+created keeps its own key: `(ServiceName, MetricName, Attributes, …)` before
+v0.157, `(ServiceName, MetricName, toStartOfHour(TimeUnix),
+cityHash64(Attributes), TimeUnix)` from v0.157. Matching a `GROUP BY` against
+the provisioned key stamped `optimize_aggregation_in_order` where ClickHouse
+then found no matching key, and withheld it where the deployed key would
+have served it. Results never changed — the setting changes only how
+ClickHouse aggregates — so the cost was a missed optimization on stock
+deployments.
+
+- **Read from `system.tables` in the boot probe.** The probe already reads
+  `system.columns` for the same tables, and the re-probe already re-resolves
+  every schema strategy, so the key joins the strategies rather than adding
+  a second probe with its own cadence.
+- **An unreadable key fails closed.** A role without `SELECT` on
+  `system.tables` gets an empty prefix — no stamp — rather than the
+  provisioned key, which is exactly the guess that was wrong on stock
+  tables. The warning names the table so the operator can grant the read.
+- **A `Distributed` table keeps the provisioned key.** It has no key of its
+  own; the shards' local tables are the ones cerberus provisioned, and the
+  setting forwards to each shard's local `GROUP BY`.
+
+## Why the DELTA-prefix read splits days in the column's time zone
+
+The DELTA-prefix view writes `toStartOfDay(TimeUnix)`, which ClickHouse
+evaluates in the time zone the column type names, or the server's when it
+names none. The read side computed its first partial day and its same-day
+test with `toStartOfDay` of a range-start literal, which carries no column
+zone and so evaluated in the server's. On a column zoned away from the
+server, the two disagreed on where a day starts: a range starting between
+the zone's midnight and the server's read the whole bucket of the day the
+range started in and the raw rows of that day again, counting the rows
+before the range start twice. A measured instance, a São Paulo column on a
+UTC server, returned 0.0614583 where the raw-table answer was 0.0572917.
+
+The boot probe resolves the sum table's `TimeUnix` zone with the timestamp
+type (`SumTimestampTimezone`) and the read renders `toStartOfDay(x, '<zone>')`
+on both sides of the comparison. Forcing `'UTC'` instead would have matched
+neither existing view on a non-UTC server nor a zoned column's view, and
+would have rewritten every non-zoned statement; rendering the column's own
+zone leaves the statement over an unzoned column byte-identical.
+
 ## Why provisioning defaults to nanosecond metrics timestamps
 
 `CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION` exists because the exporter
