@@ -324,10 +324,12 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	}
 
 	runErr := pool.Do(ctx, q)
-	// pool.Do is synchronous — the ClickHouse-side statement is fully done
-	// (answered, errored, or mismatched-shape) the instant it returns, so the
-	// fan-out weight releases here unconditionally, before any branch below.
-	release(answered.Load())
+	// pool.Do is synchronous, so the fan-out weight releases here, before any
+	// branch below. Only a clean return means the statement finished on the
+	// server; any error — the server's own abort, a declined block, a broken
+	// socket — leaves it to the release to confirm the statement gone first
+	// (dispatchRelease).
+	release(answered.Load(), runErr)
 	// Record the open-call outcome against the breaker exactly once — the same
 	// contract the row path keeps: a shape-mismatch (matrixMismatchErr) or a
 	// budget rejection is NOT a CH failure, a transport/server error is.

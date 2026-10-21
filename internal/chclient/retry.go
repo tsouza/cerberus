@@ -169,7 +169,7 @@ func (c *Client) queryOpen(ctx context.Context, sql string, args ...any) (driver
 		// statement: a cancellation here landed while it still waited for a
 		// pool slot, a dial, or the send, so there is no server-side work to
 		// kill.
-		release(false)
+		release(false, err)
 		return nil, err
 	}
 	return &gatedRows{Rows: rows, release: release}, nil

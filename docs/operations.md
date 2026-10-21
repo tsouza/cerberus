@@ -149,12 +149,13 @@ budget cerberus could choose would have saved it. See
 [`observability.md`](observability.md) for how the three outcomes decompose
 overall connection churn.
 
-A dispatch whose context was cancelled after its statement reached ClickHouse
-— the request deadline passing, the client disconnecting, a routed sibling
-being cancelled, or a teardown budget expiring — also issues
-`KILL QUERY WHERE query_id = ? SYNC` for its own `query_id` before its
-connection and admission are released, and waits up to 5 seconds for
-ClickHouse to confirm the statement stopped. A dispatch cancelled while it was
+A dispatch that reached ClickHouse and ended short of the server's end of
+stream — its context cancelled by the request deadline, a client disconnect, a
+routed sibling's cancellation or a teardown budget; ClickHouse's own
+`max_execution_time` or another server error aborting the statement; or a
+transport error — also issues `KILL QUERY WHERE query_id = ? SYNC` for its own
+`query_id` before its connection and admission are released, and waits up to
+5 seconds for ClickHouse to confirm the statement stopped. A dispatch cancelled while it was
 still waiting for a pooled connection or a dial never reached the server and
 issues no kill. How promptly the server honours the kill depends on its build:
 see

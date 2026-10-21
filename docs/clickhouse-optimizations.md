@@ -963,10 +963,12 @@ answers a timed-out or cancelled request, but the server may keep evaluating
 the in-flight call; cerberus logs one `WARN` per remaining gap at boot and
 whenever a re-probe finds a different server version.
 
-A dispatch cancelled after its statement reached the server — the request
-deadline passing, the client disconnecting, or a routed sibling being
-cancelled — issues `KILL QUERY ... SYNC` for its own `query_id` before its
-connection and admission are released. The wait is bounded at 5 seconds: it
+A dispatch that reached the server and ended short of the server's end of
+stream — the request deadline passing, ClickHouse's own `max_execution_time`
+or another server error aborting the statement, the client disconnecting, a
+routed sibling being cancelled, a transport error — issues
+`KILL QUERY ... SYNC` for its own `query_id` before its connection and
+admission are released. The wait is bounded at 5 seconds: it
 ends early once ClickHouse confirms the statement stopped, and runs its full
 length when the server cannot interrupt the in-flight call or when the kill
 itself waits for a pooled connection. A dispatch cancelled while still waiting
