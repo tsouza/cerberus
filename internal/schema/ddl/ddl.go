@@ -1399,16 +1399,13 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 	}
 }
 
-// renderMetricsTable formats one of the five metrics table templates. The
-// upstream template shape is `(database, table, cluster, engine, ttl)` —
-// see metrics_*_table.sql in the fork and internal/metrics/metrics_model.go
-// in upstream for the canonical Sprintf call.
-// metricsCreateTables returns the exporter's metrics CREATE TABLE templates
-// for precision, rendered by the collector-contrib fork's sqltemplates
+// metricsCreateTables returns the metrics CREATE TABLE templates for
+// precision, rendered by the collector-contrib fork's sqltemplates
 // (MetricsCreateTables): their timestamp columns typed DateTime64(9) and
 // sorted by toUnixTimestamp64Nano(TimeUnix) for schema.MetricsTimestampNanos,
 // typed DateTime and sorted by toUnixTimestamp(TimeUnix) for
-// schema.MetricsTimestampSeconds. Every other line is the exporter's own.
+// schema.MetricsTimestampSeconds. Both share the (MetricName, Attributes,
+// ServiceName) sorting-key prefix; every other line is the same template.
 func metricsCreateTables(precision schema.MetricsTimestampPrecision) sqltemplates.MetricsCreateTableSet {
 	if precision == schema.MetricsTimestampSeconds {
 		return sqltemplates.MetricsCreateTables(sqltemplates.MetricsTimestampSeconds)
@@ -1416,6 +1413,10 @@ func metricsCreateTables(precision schema.MetricsTimestampPrecision) sqltemplate
 	return sqltemplates.MetricsCreateTables(sqltemplates.MetricsTimestampNanos)
 }
 
+// renderMetricsTable formats one of the five metrics table templates. The
+// upstream template shape is `(database, table, cluster, engine, ttl)` —
+// see metrics_*_table.sql in the fork and internal/metrics/metrics_model.go
+// in upstream for the canonical Sprintf call.
 func renderMetricsTable(tmpl string, cfg Config, table, ttl string) string {
 	return cfg.appendSettings(
 		fmt.Sprintf(tmpl, cfg.Database, table, cfg.clusterClause(), cfg.Engine, ttl),

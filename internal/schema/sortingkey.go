@@ -42,7 +42,8 @@ package schema
 // (gauge / sum / histogram / exp_histogram / summary) shares the same
 // ORDER BY, so the prefix is identical for all of them, at either timestamp
 // precision. The fourth key element — toUnixTimestamp64Nano(TimeUnix) or
-// toUnixTimestamp(TimeUnix) — is function-wrapped and so is excluded. Returns a fresh slice each call (callers may retain it).
+// toUnixTimestamp(TimeUnix) — is function-wrapped and so is excluded.
+// Returns a fresh slice each call (callers may retain it).
 func (m Metrics) SortingKeyPrefix() []string {
 	return []string{m.MetricNameColumn, m.AttributesColumn, m.ServiceNameColumn}
 }

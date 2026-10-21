@@ -97,13 +97,25 @@ func dtSeed() string {
 }
 
 // newChDBUpstreamDateTimeServer seeds the upstream v0.157.0 metric tables
-// in the chDB session's current database and serves a prom handler over
-// them with the given metrics timestamp strategy. The tables are dropped
-// first — the templates say CREATE TABLE IF NOT EXISTS, which would keep an
-// earlier test's DateTime64 table — and again on cleanup, so no later test
-// in the shared chDB session reads a DateTime-typed table its seed did not
-// create.
+// and serves a prom handler over them with the given metrics timestamp
+// strategy.
 func newChDBUpstreamDateTimeServer(t *testing.T, strategy chsql.MetricsTimestampStrategy) *httptest.Server {
+	t.Helper()
+	return newChDBMetricsTimestampServer(t, chsqltest.UpstreamDateTimeMetricsDDL, strategy)
+}
+
+// newChDBMetricsTimestampServer creates the metric tables renderDDL returns
+// for the chDB session's current database, seeds them with dtSeed, and
+// serves a prom handler over them with the given metrics timestamp
+// strategy. The tables are dropped first — the templates say CREATE TABLE
+// IF NOT EXISTS, which would keep an earlier test's table of the other
+// timestamp type — and again on cleanup, so no later test in the shared
+// chDB session reads a table its seed did not create.
+func newChDBMetricsTimestampServer(
+	t *testing.T,
+	renderDDL func(database string) ([]string, error),
+	strategy chsql.MetricsTimestampStrategy,
+) *httptest.Server {
 	t.Helper()
 	c := chclienttest.NewChDB(t)
 	dbs, err := c.QueryStrings(t.Context(), "SELECT currentDatabase()")
@@ -112,13 +124,12 @@ func newChDBUpstreamDateTimeServer(t *testing.T, strategy chsql.MetricsTimestamp
 	}
 	m := schema.DefaultOTelMetrics()
 	var drop strings.Builder
-	for _, table := range []string{m.GaugeTable, m.SumTable, m.HistogramTable, m.ExpHistogramTable} {
+	for _, table := range []string{m.GaugeTable, m.SumTable, m.HistogramTable, m.ExpHistogramTable, m.SummaryTable} {
 		fmt.Fprintf(&drop, "DROP TABLE IF EXISTS %s;\n", table)
 	}
 	c.Seed(t, drop.String())
 	t.Cleanup(func() { c.Seed(t, drop.String()) })
-
-	ddl, err := chsqltest.UpstreamDateTimeMetricsDDL(dbs[0])
+	ddl, err := renderDDL(dbs[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +220,15 @@ func dtSingleValue(t *testing.T, srv *httptest.Server, query string, ts time.Tim
 // upstream DateTime-typed metric tables and grades each answer against the
 // value the whole-second seed implies.
 func TestUpstreamDateTimeSchema_PromQL_ChDB(t *testing.T) {
-	srv := newChDBUpstreamDateTimeServer(t, chsql.MetricsTimestampDateTime)
+	dtRunPromQLCases(t, newChDBUpstreamDateTimeServer(t, chsql.MetricsTimestampDateTime))
+}
+
+// dtRunPromQLCases runs representative PromQL over a server seeded with
+// dtSeed and grades each answer against the value the whole-second seed
+// implies. The seed holds only whole seconds, so the answers are the same
+// whichever timestamp type the tables carry.
+func dtRunPromQLCases(t *testing.T, srv *httptest.Server) {
+	t.Helper()
 	lastIndex := float64(dtSampleCount - 1)
 	ratePerSecond := dtCounterStep / dtSampleInterval.Seconds()
 
@@ -342,7 +361,14 @@ func TestUpstreamDateTimeSchema_PromQL_ChDB(t *testing.T) {
 // Without it the test above could pass on SQL that never reaches a
 // timestamp function at all.
 func TestUpstreamDateTimeSchema_ZeroStrategyFails_ChDB(t *testing.T) {
-	srv := newChDBUpstreamDateTimeServer(t, chsql.MetricsTimestampDateTime64)
+	dtAssertTimestampQueryRejected(t, newChDBUpstreamDateTimeServer(t, chsql.MetricsTimestampDateTime64))
+}
+
+// dtAssertTimestampQueryRejected asserts that timestamp() over srv fails
+// with ClickHouse's rejection of a toUnixTimestamp64 call on a non-DateTime64
+// argument.
+func dtAssertTimestampQueryRejected(t *testing.T, srv *httptest.Server) {
+	t.Helper()
 	resp, err := http.Get(srv.URL + "/api/v1/query?" + url.Values{
 		"query": {"timestamp(temp_celsius)"},
 		"time":  {strconv.FormatInt(dtLastSample.Unix(), 10)},
