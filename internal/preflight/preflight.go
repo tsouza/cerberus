@@ -493,7 +493,8 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 		AbsentTables: sf.absent,
 		Strategies: chsql.ResolvedSchemaStrategies{
 			Metrics: chsql.SchemaStrategies{
-				MetricsTimestamp: metricsTimestamp,
+				MetricsTimestamp:     metricsTimestamp,
+				SumTimestampTimezone: sumTimestampTimezone(req.Metrics, sf.metricsTimestamps),
 				SortingKeyPrefixes: sf.sortingKeysOf(
 					req.Metrics.GaugeTable, req.Metrics.SumTable, req.Metrics.HistogramTable, req.Metrics.ExpHistogramTable,
 				),

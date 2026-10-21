@@ -131,7 +131,16 @@ func deltaPrefixAggregateSeedDDL(t *testing.T, db *sql.DB) {
 // session is process-global, see chsqltest.OpenIsolatedChDB's doc).
 func runDeltaPrefixQuery(t *testing.T, db *sql.DB, r *chplan.RangeWindow, lookback time.Duration, readEnabled bool, settings ...string) map[string]float64 {
 	t.Helper()
-	ctx := WithDeltaPrefixLookback(context.Background(), lookback)
+	return runDeltaPrefixQueryIn(context.Background(), t, db, r, lookback, readEnabled, settings...)
+}
+
+// runDeltaPrefixQueryIn is runDeltaPrefixQuery emitting under base, which
+// carries the statement's SchemaStrategies.
+func runDeltaPrefixQueryIn(
+	base context.Context, t *testing.T, db *sql.DB, r *chplan.RangeWindow, lookback time.Duration, readEnabled bool, settings ...string,
+) map[string]float64 {
+	t.Helper()
+	ctx := WithDeltaPrefixLookback(base, lookback)
 	ctx = WithDeltaPrefixReadEnabled(ctx, readEnabled)
 	sqlText, args, err := Emit(ctx, r)
 	if err != nil {

@@ -88,3 +88,21 @@ func TestMetricsTimestampPrecisionColumnTypeClassifiesBack(t *testing.T) {
 		}
 	}
 }
+
+func TestTimestampTimezoneOfType(t *testing.T) {
+	t.Parallel()
+	for typ, want := range map[string]string{
+		"DateTime":                              "",
+		"DateTime('UTC')":                       "UTC",
+		"DateTime64(9)":                         "",
+		"DateTime64(3, 'America/Sao_Paulo')":    "America/Sao_Paulo",
+		" DateTime64(9,'Asia/Kolkata') ":        "Asia/Kolkata",
+		"DateTime64(9, '')":                     "",
+		"String":                                "",
+		"Array(DateTime64(9, 'Europe/Berlin'))": "",
+	} {
+		if got := TimestampTimezoneOfType(typ); got != want {
+			t.Errorf("TimestampTimezoneOfType(%q) = %q, want %q", typ, got, want)
+		}
+	}
+}

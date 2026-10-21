@@ -1972,7 +1972,8 @@ func deltaPrefixAnchorArrayFrag(
 // prefix-owning anchor via the SAME first-anchor-at-or-after index
 // (prefixAnchorIndexFrag), but ADDITIONALLY requires the assigned anchor's
 // OWN day (toStartOfDay(rangeStart(anchor))) to equal the sample's own day
-// (toStartOfDay(ts)).
+// (toStartOfDay(ts)), both reckoned in the sum table's timestamp timezone
+// (sumDayStart) as the aggregate table's buckets are.
 //
 // A sample whose first eligible anchor falls on a LATER day is dropped
 // entirely (empty array) rather than assigned there: that later day's
@@ -1999,7 +2000,7 @@ func deltaPrefixAggregateRawAnchorArrayFrag(end, ts, temporality Frag, stepNS, r
 	g := newAnchorGrid(stepNS, rangeNS, numAnchors)
 	prefixIndex := prefixAnchorIndexFrag(g, end, ts, rangeNS, numAnchors)
 	assignedAnchor := anchorAtIdxFrag(g, end, prefixIndex)
-	sameDay := Eq(Call("toStartOfDay", ts), Call("toStartOfDay", rangeStartFrag(assignedAnchor, rangeNS)))
+	sameDay := Eq(sumDayStart(ts), sumDayStart(rangeStartFrag(assignedAnchor, rangeNS)))
 	condition := And(
 		Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)),
 		sameDay,
@@ -4191,13 +4192,14 @@ func (e *emitter) instantDeltaPrefixSource(
 	return joined.Frag(), nil
 }
 
-// deltaPrefixBucketStartFrag renders `toStartOfDay(<rangeStart>)` — the
-// bucket boundary DeltaPrefixAggregateInput's rows are keyed by
+// deltaPrefixBucketStartFrag renders `toStartOfDay(<rangeStart>)` in the sum
+// table's timestamp timezone (sumDayStart) — the bucket boundary
+// DeltaPrefixAggregateInput's rows are keyed by
 // (schema.Metrics.DeltaPrefixBucketColumn / DDL comment: `toStartOfDay
 // (TimeUnix)`) and deltaPrefixAggregateSource's own split point between
 // its two terms.
 func deltaPrefixBucketStartFrag(rangeStart Frag) Frag {
-	return Call("toStartOfDay", rangeStart)
+	return sumDayStart(rangeStart)
 }
 
 // deltaPrefixAggregateSource is instantDeltaPrefixSource's sibling for the

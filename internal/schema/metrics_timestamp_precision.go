@@ -132,6 +132,28 @@ func MetricsTimestampPrecisionOfType(typ string) (MetricsTimestampPrecision, boo
 	return MetricsTimestampNanos, false
 }
 
+// TimestampTimezoneOfType returns the timezone a DateTime or DateTime64
+// column type names, unquoted, or "" for a type that names none — a column
+// whose calendar functions (toStartOfDay and friends) use the server's
+// timezone.
+func TimestampTimezoneOfType(typ string) string {
+	name, args, ok := splitTypeArgs(strings.TrimSpace(typ))
+	if !ok {
+		return ""
+	}
+	var tz string
+	switch {
+	case name == dateTimeTypeName && len(args) == 1:
+		tz = args[0]
+	case name == dateTime64TypeName && len(args) == 2:
+		tz = args[1]
+	}
+	if !isTimezoneArg(tz) {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(tz, timezoneArgQuote), timezoneArgQuote)
+}
+
 // splitTypeArgs splits a ClickHouse type `Name` or `Name(a, b)` into its
 // name and trimmed arguments. A timezone name holds no comma, so a plain
 // split on the separator is exact for the types

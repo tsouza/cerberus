@@ -109,7 +109,16 @@ func runDeltaMatrixPrefixLevelQuery(
 	t *testing.T, db *sql.DB, r *chplan.RangeWindow, lookback time.Duration, readEnabled bool,
 ) map[string]map[int64]float64 {
 	t.Helper()
-	ctx := WithDeltaPrefixLookback(context.Background(), lookback)
+	return runDeltaMatrixPrefixLevelQueryIn(context.Background(), t, db, r, lookback, readEnabled)
+}
+
+// runDeltaMatrixPrefixLevelQueryIn is runDeltaMatrixPrefixLevelQuery
+// emitting under base, which carries the statement's SchemaStrategies.
+func runDeltaMatrixPrefixLevelQueryIn(
+	base context.Context, t *testing.T, db *sql.DB, r *chplan.RangeWindow, lookback time.Duration, readEnabled bool,
+) map[string]map[int64]float64 {
+	t.Helper()
+	ctx := WithDeltaPrefixLookback(base, lookback)
 	ctx = WithDeltaPrefixReadEnabled(ctx, readEnabled)
 	sqlText, args, err := Emit(ctx, r)
 	if err != nil {

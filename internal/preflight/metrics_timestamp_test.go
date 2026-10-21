@@ -181,18 +181,54 @@ func TestRunMetricsTimestampMixedPrecisionsFails(t *testing.T) {
 	if res.Fatal == nil {
 		t.Fatal("mixed timestamp precisions across tables must fail boot")
 	}
+	msg := res.Fatal.Error()
 	for _, want := range []string{
 		"metrics timestamp columns mix precisions",
-		"otel_metrics_gauge.TimeUnix DateTime64(9)",
-		"otel_metrics_histogram.TimeUnix DateTime64(9)",
-		"otel_metrics_sum.TimeUnix DateTime",
 		"CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION",
 		"schema.metricsTimestampPrecision",
 	} {
-		if !strings.Contains(res.Fatal.Error(), want) {
+		if !strings.Contains(msg, want) {
 			t.Errorf("message missing %q: %v", want, res.Fatal)
 		}
 	}
+	nanos, seconds := mixedPrecisionSides(t, msg)
+	for _, side := range []struct {
+		name, list string
+		in, out    []string
+	}{
+		{"nanosecond", nanos, []string{"otel_metrics_gauge.TimeUnix DateTime64(9)", "otel_metrics_histogram.TimeUnix DateTime64(9)"}, []string{"otel_metrics_sum.TimeUnix DateTime"}},
+		{"coarser", seconds, []string{"otel_metrics_sum.TimeUnix DateTime"}, []string{"otel_metrics_gauge.", "otel_metrics_histogram."}},
+	} {
+		for _, col := range side.in {
+			if !strings.Contains(side.list, col) {
+				t.Errorf("%s side %q does not list %s", side.name, side.list, col)
+			}
+		}
+		for _, col := range side.out {
+			if strings.Contains(side.list, col) {
+				t.Errorf("%s side %q lists %s", side.name, side.list, col)
+			}
+		}
+	}
+}
+
+// mixedPrecisionSides splits a mixed-precision verdict into the column list
+// it names as nanosecond and the one it names as coarser.
+func mixedPrecisionSides(t *testing.T, msg string) (nanos, seconds string) {
+	t.Helper()
+	_, rest, ok := strings.Cut(msg, "nanosecond: ")
+	if !ok {
+		t.Fatalf("verdict names no nanosecond side: %s", msg)
+	}
+	nanos, rest, ok = strings.Cut(rest, "; coarser: ")
+	if !ok {
+		t.Fatalf("verdict names no coarser side: %s", msg)
+	}
+	seconds, _, ok = strings.Cut(rest, " — ")
+	if !ok {
+		t.Fatalf("verdict's coarser side is unterminated: %s", msg)
+	}
+	return nanos, seconds
 }
 
 // TestRunMetricsTimestampColumnsMixWithinTableFails pins the same verdict
@@ -246,5 +282,34 @@ func TestRunMetricsTimestampNotProbedWithoutMetricsSignal(t *testing.T) {
 	}
 	if got := res.Strategies.Metrics.MetricsTimestamp; got != schema.MetricsTimestampNanos {
 		t.Errorf("MetricsTimestamp = %v, want the zero value", got)
+	}
+}
+
+// TestRunResolvesSumTimestampTimezone pins that the check resolves the
+// timezone the sum table's sample timestamp column names — the one the
+// DELTA-prefix view buckets by — and only that column's.
+func TestRunResolvesSumTimestampTimezone(t *testing.T) {
+	t.Parallel()
+	m := schema.DefaultOTelMetrics()
+	const zoned = "DateTime64(9, 'America/Sao_Paulo')"
+	sumZoned := withMetricsTimestampTypes("DateTime64(9)")
+	sumZoned[m.SumTable] = setColumnType(sumZoned[m.SumTable], m.TimestampColumn, zoned)
+	othersZoned := withMetricsTimestampTypes(zoned)
+	othersZoned[m.SumTable] = setColumnType(othersZoned[m.SumTable], m.TimestampColumn, "DateTime64(9)")
+	for name, c := range map[string]struct {
+		cols map[string][]chclient.NameTypePair
+		want string
+	}{
+		"sum zoned":    {sumZoned, "America/Sao_Paulo"},
+		"others zoned": {othersZoned, ""},
+		"none zoned":   {withMetricsTimestampTypes("DateTime64(9)"), ""},
+	} {
+		res := runMetricsTimestamp(c.cols)
+		if res.Fatal != nil {
+			t.Fatalf("%s: %v", name, res.Fatal)
+		}
+		if got := res.Strategies.Metrics.SumTimestampTimezone; got != c.want {
+			t.Errorf("%s: sum timestamp timezone = %q, want %q", name, got, c.want)
+		}
 	}
 }

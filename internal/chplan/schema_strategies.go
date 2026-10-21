@@ -26,6 +26,14 @@ type SchemaStrategies struct {
 	// columns, which decides how a timestamp read over them renders.
 	MetricsTimestamp schema.MetricsTimestampPrecision
 
+	// SumTimestampTimezone is the timezone the metrics sum table's sample
+	// timestamp column is declared with (schema.TimestampTimezoneOfType),
+	// "" for a column that names none. The DELTA-prefix materialized view
+	// buckets that column by toStartOfDay, which runs in the column's
+	// timezone, so the DELTA-prefix read renders each calendar day it
+	// splits at in the same one.
+	SumTimestampTimezone string
+
 	// SortingKeyPrefixes maps each of the signal's tables, by physical
 	// name, to the leading run of bare columns of its deployed sorting key
 	// (schema.SortingKeyPrefixOf). internal/engine reads it to decide

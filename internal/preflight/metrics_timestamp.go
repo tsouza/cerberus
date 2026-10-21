@@ -94,3 +94,14 @@ func resolveMetricsTimestamp(cols []deployedColumn) (schema.MetricsTimestampPrec
 	}
 	return schema.MetricsTimestampNanos, nil
 }
+
+// sumTimestampTimezone returns the timezone the sum table's deployed sample
+// timestamp column names, "" when it names none or was not introspected.
+func sumTimestampTimezone(m schema.Metrics, cols []deployedColumn) string {
+	for _, c := range cols {
+		if c.table == m.SumTable && c.column == m.TimestampColumn {
+			return schema.TimestampTimezoneOfType(c.typ)
+		}
+	}
+	return ""
+}
