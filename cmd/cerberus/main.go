@@ -2459,6 +2459,14 @@ func (s *schemaPresentSignal) setReason(reason string) {
 	s.reason = reason
 }
 
+// schemaReadiness is the readiness side of a schema re-probe: the reason it
+// keeps fresh while the schema is not ready, and the flip once it is.
+// *schemaPresentSignal implements it.
+type schemaReadiness interface {
+	setReason(reason string)
+	markPresent()
+}
+
 // reprobeSchema re-runs the requirements check on the auto-create retry
 // cadence until the configured schema is fully provisioned AND ClickHouse is
 // reachable (or ctx is cancelled). It only ever transitions a not-present
@@ -2475,7 +2483,7 @@ func reprobeSchema(
 	logger *slog.Logger,
 	q preflight.Querier,
 	req preflight.Requirements,
-	signal *schemaPresentSignal,
+	signal schemaReadiness,
 	strategies *chsql.SchemaStrategiesCell,
 	interval time.Duration,
 ) {

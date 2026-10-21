@@ -117,10 +117,12 @@ func lateSchemaColumns() map[string][]chclient.NameTypePair {
 }
 
 // TestReprobeSchema_StoresEveryResolvedStrategy pins that the schema
-// re-probe — the path a boot takes when its tables do not exist yet — stores
-// every strategy the late tables resolve to, for every signal, before it
-// reports ready: the logs and traces attribute strategies as well as the
-// metrics timestamp precision.
+// re-probe — the path a boot takes when its tables do not exist yet — has
+// stored every strategy the late tables resolve to, for every signal, by the
+// moment it reports ready: the logs and traces attribute strategies as well
+// as the metrics timestamp precision. The cell is read inside markPresent,
+// so a request /readyz admits right after the flip cannot render under the
+// configured strategies.
 func TestReprobeSchema_StoresEveryResolvedStrategy(t *testing.T) {
 	t.Parallel()
 	req := preflight.Requirements{
@@ -130,21 +132,66 @@ func TestReprobeSchema_StoresEveryResolvedStrategy(t *testing.T) {
 		Traces:   schema.DefaultOTelTraces(),
 	}
 	cell := chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
-	signal := newSchemaPresentSignal("tables absent")
+	signal := &cellAtReady{schemaPresentSignal: newSchemaPresentSignal("tables absent"), cell: cell}
 	const reprobeInterval = time.Millisecond
 	reprobeSchema(t.Context(), quietLogger(), columnsQuerier{columns: lateSchemaColumns()}, req, signal, cell, reprobeInterval)
 
 	if present, reason := signal.Func()(); !present {
 		t.Fatalf("re-probe did not report ready: %s", reason)
 	}
-	got := cell.Load()
+	if signal.atReady == nil {
+		t.Fatal("re-probe never flipped readiness")
+	}
+	got := *signal.atReady
 	if s := got.Logs.Attrs.Lookup(req.Logs.ResourceAttributesColumn); s != chsql.AttrStrategyJSON {
-		t.Errorf("logs %s strategy = %v, want JSON", req.Logs.ResourceAttributesColumn, s)
+		t.Errorf("logs %s strategy at ready = %v, want JSON", req.Logs.ResourceAttributesColumn, s)
 	}
 	if s := got.Traces.Attrs.Lookup(req.Traces.ResourceAttributesColumn); s != chsql.AttrStrategyJSON {
-		t.Errorf("traces %s strategy = %v, want JSON", req.Traces.ResourceAttributesColumn, s)
+		t.Errorf("traces %s strategy at ready = %v, want JSON", req.Traces.ResourceAttributesColumn, s)
 	}
 	if p := got.Metrics.MetricsTimestamp; p != schema.MetricsTimestampSeconds {
-		t.Errorf("metrics timestamp precision = %v, want seconds", p)
+		t.Errorf("metrics timestamp precision at ready = %v, want seconds", p)
+	}
+}
+
+// cellAtReady is a schemaPresentSignal that records what cell holds at the
+// moment readiness flips.
+type cellAtReady struct {
+	*schemaPresentSignal
+	cell    *chsql.SchemaStrategiesCell
+	atReady *chsql.ResolvedSchemaStrategies
+}
+
+func (c *cellAtReady) markPresent() {
+	got := c.cell.Load()
+	c.atReady = &got
+	c.schemaPresentSignal.markPresent()
+}
+
+// TestRunRequirementsCheck_NotReadyRendersConfiguredPrecision pins that a
+// boot whose server cannot be introspected yet renders for the configured
+// metrics timestamp precision until the re-probe stores the deployed one.
+func TestRunRequirementsCheck_NotReadyRendersConfiguredPrecision(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.FromEnv()
+	if err != nil {
+		t.Fatalf("config.FromEnv: %v", err)
+	}
+	cfg.RequirementsCheck = true
+	cfg.SchemaProvisioning.MetricsTimestampPrecision = schema.MetricsTimestampSeconds
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	present, probes, err := runRequirementsCheck(ctx, quietLogger(), lazyClient(t), cfg)
+	if err != nil {
+		t.Fatalf("runRequirementsCheck: %v", err)
+	}
+	if present == nil {
+		t.Fatal("an unreachable server must boot not ready")
+	}
+	if ready, _ := present(); ready {
+		t.Fatal("an unreachable server reported ready")
+	}
+	if got := probes.Strategies.Load().Metrics.MetricsTimestamp; got != schema.MetricsTimestampSeconds {
+		t.Errorf("not-ready heads render for %v, want the configured seconds", got)
 	}
 }
