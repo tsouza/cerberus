@@ -7,8 +7,11 @@
 // Lifecycle (mirrors run-prometheus-compatibility.mjs):
 //
 //   1. `docker compose up --wait` brings reference Loki + cerberus + CH up.
-//   2. The Go seeder pushes a deterministic fixture to both targets and
-//      asserts /labels is non-empty (the original PR 1 smoke).
+//   2. The Go seeder pushes the deterministic corpus to both targets
+//      (-stage=corpus), the reference Loki is restarted so it serves the
+//      corpus index from its object store, and the seeder then pushes the
+//      now-anchored /patterns fixture and asserts /labels is non-empty on
+//      both targets (-stage=live).
 //   3. Builds the cerberus-owned diff driver (cmd/loki-compliance-tester);
 //      the binary imports the vendored upstream/loki-bench/ corpus loader,
 //      so a `-mod=mod` build is required.
@@ -135,10 +138,21 @@ function main() {
   );
   exitOnSpawnFailure(bringUp, 'build-with-registry-retry.mjs docker compose up');
 
-  log('==> running seeder (go run ./cmd/seed)');
+  // The seeder runs in two stages around a restart of the reference Loki
+  // (the stage contract is documented on stageCorpus in
+  // compatibility/loki/cmd/seed/main.go): the graceful stop builds the
+  // flushed corpus into a TSDB index file and uploads it, so the restarted
+  // process serves the corpus index from the object store alone.
+  log('==> seeding the corpus (go run ./cmd/seed -stage=corpus)');
+  exitOnSpawnFailure(spawnSync('go', ['run', './compatibility/loki/cmd/seed/', '-stage=corpus'], { stdio: 'inherit' }), 'loki seeder (corpus)');
+
+  log('==> restarting reference loki (index the corpus into the object store)');
+  exitOnSpawnFailure(spawnSync('docker', ['compose', 'restart', 'loki'], { cwd: ROOT_DIR, stdio: 'inherit' }), 'docker compose restart loki');
+
+  log('==> seeding the live /patterns fixture (go run ./cmd/seed -stage=live)');
   exitOnSpawnFailure(
-    spawnSync('go', ['run', './compatibility/loki/cmd/seed/', `-live-patterns-metadata=${LIVE_PATTERNS_METADATA}`], { stdio: 'inherit' }),
-    'loki seeder',
+    spawnSync('go', ['run', './compatibility/loki/cmd/seed/', '-stage=live', `-live-patterns-metadata=${LIVE_PATTERNS_METADATA}`], { stdio: 'inherit' }),
+    'loki seeder (live)',
   );
 
   if (process.env.DRIVER_SKIP) {

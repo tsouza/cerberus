@@ -246,9 +246,21 @@ label discovery is bounded by matchers, not by the request window
 (`TSDBIndex.LabelNames` / `LabelValues` discard `from`/`through`): a
 selector-less `/labels`, `/label/{name}/values` or `/detected_labels`
 answers with every stream in every index file overlapping the window, and
-the now-anchored `/patterns` fixture shares the ingester's head index with
-the corpus until that head rotates. The fixture sits in its own
-`live-patterns` cluster so the corpus selector excludes it by construction.
+the now-anchored `/patterns` fixture is ingested into the same reference
+Loki. The fixture sits in its own `live-patterns` cluster so the corpus
+selector excludes it by construction.
+
+The seeder runs in two stages around a restart of the reference Loki. The
+corpus stage pushes and flushes the corpus; `docker compose restart loki`
+then builds the ingester's TSDB head into an index file, uploads it, and
+brings the reference back up with an empty WAL, head and local index
+directory (a tmpfs); the live stage pushes the `/patterns` fixture and
+checks both targets. The reference therefore serves the corpus index from
+its object store alone, where each chunk is in exactly one index. That is
+the state in which `/index/stats` is exact: upstream sums per-chunk
+statistics over every index copy it holds and deduplicates only streams,
+so an `entries` count read while the corpus also sat in a TSDB head would
+be a multiple of the data's.
 
 The comparison is set-valued and order-insensitive on the list routes
 because upstream's query frontend merges split responses in encounter

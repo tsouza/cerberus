@@ -165,26 +165,69 @@ func main() {
 	}
 }
 
+// The seeder runs in two stages around a restart of the reference Loki.
+// .github/scripts/run-loki-compatibility.mjs drives the sequence:
+//
+//  1. `-stage=corpus` writes the deterministic corpus to ClickHouse and
+//     to the reference Loki, forces the ingester to flush, and waits
+//     until every pushed chunk has left ingester memory
+//     (waitLokiFlushDrained).
+//  2. `docker compose restart loki`. The graceful stop builds the
+//     ingester's TSDB head into an index file and uploads it to the
+//     object store; the restarted process comes up with an empty WAL,
+//     head and local index directory (all three live on a tmpfs — see
+//     loki-config.yaml and docker-compose.yml), so it reads the corpus
+//     index from the object store and from nowhere else.
+//  3. `-stage=live` writes the now-anchored /patterns fixture to both
+//     targets, checks both answer /labels over the corpus window, and
+//     writes the fixture handshake for the diff driver.
+//
+// The restart is what makes the reference's /index/stats exact.
+// Single-binary Loki answers index stats by summing per-chunk statistics
+// over every index it holds — the active TSDB head, the head rotated out
+// at the last 15-minute wall-clock boundary (kept to serve queries until
+// queriers download its built file), the built file in the shipper's
+// local upload set (kept for IndexCacheValidity + 3×resync_interval
+// after upload) and the same file downloaded back from the object store
+// — and deduplicates only streams, never chunks
+// (pkg/storage/stores/index/stats.Blooms). A corpus flushed into the head
+// is therefore counted once until the next rotation and two or three
+// times after it, so `entries` depended on whether the diff driver ran
+// before or after the boundary. Served from the object store alone, each
+// chunk is in exactly one index and the count is the data's.
+const (
+	stageCorpus = "corpus"
+	stageLive   = "live"
+)
+
 func run(logger *slog.Logger) error {
-	// `-timeout` worst-case budget:
-	//   waitCHReady (30s) + waitLokiReady (60s) + insertCHLogs / pushLoki
-	//   + flushLoki (synchronous, ingester-bound) + waitLokiIndexSettle
-	//   (90s) + waitLabelsNonEmpty × 2 (60s)
-	// 3 minutes is the bare minimum; 4 leaves headroom for slow CI runners
-	// and the post-flush TSDB index-build pass.
+	// `-timeout` worst-case budget, per stage:
+	//   corpus: waitCHReady (30s) + waitLokiReady (60s) + insertCHLogs /
+	//           pushLoki + flushLoki + waitLokiFlushDrained (90s)
+	//   live:   waitCHReady (30s) + waitLokiReady (60s) + the fixture
+	//           writes + waitLabelsNonEmpty × 2 (60s) + the /patterns
+	//           probes (2 × livePatternsProbeTimeout)
+	// 4 minutes leaves headroom for slow CI runners in either stage.
 	var (
+		stage    = flag.String("stage", "", "seed stage: "+stageCorpus+" (before the reference Loki restart) or "+stageLive+" (after it)")
 		addr     = flag.String("addr", envOr("CERBERUS_CH_ADDR", "localhost:28000"), "ClickHouse host:port")
 		database = flag.String("database", envOr("CERBERUS_CH_DATABASE", "otel"), "ClickHouse database")
 		username = flag.String("user", envOr("CERBERUS_CH_USERNAME", "cerberus"), "ClickHouse username")
 		password = flag.String("password", envOr("CERBERUS_CH_PASSWORD", "cerberus"), "ClickHouse password")
 		lokiURL  = flag.String("loki-url", envOr("LOKI_URL", "http://localhost:23100"), "Reference Loki base URL")
 		cerbURL  = flag.String("cerberus-url", envOr("CERBERUS_URL", "http://localhost:29092"), "cerberus LogQL base URL")
-		livePath = flag.String("live-patterns-metadata", envOr("LIVE_PATTERNS_METADATA", ""), "Path for the now-anchored /patterns fixture handshake (required)")
+		livePath = flag.String("live-patterns-metadata", envOr("LIVE_PATTERNS_METADATA", ""), "Path for the now-anchored /patterns fixture handshake (required by -stage="+stageLive+")")
 		timeout  = flag.Duration("timeout", 4*time.Minute, "overall dial + push + verify timeout")
 	)
 	flag.Parse()
-	if *livePath == "" {
-		return errors.New("-live-patterns-metadata is required")
+	switch *stage {
+	case stageCorpus:
+	case stageLive:
+		if *livePath == "" {
+			return errors.New("-live-patterns-metadata is required by -stage=" + stageLive)
+		}
+	default:
+		return fmt.Errorf("-stage must be %q or %q, got %q", stageCorpus, stageLive, *stage)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
@@ -209,8 +252,17 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	if *stage == stageCorpus {
+		return seedCorpus(ctx, conn, *database, *lokiURL, logger)
+	}
+	return seedLive(ctx, conn, *lokiURL, *cerbURL, *livePath, logger)
+}
+
+// seedCorpus is stage 1: the deterministic corpus, written to both
+// targets and flushed out of the reference ingester's memory.
+func seedCorpus(ctx context.Context, conn driver.Conn, database, lokiURL string, logger *slog.Logger) error {
 	logger.Info("applying ddl", "signal", "logs")
-	cfg := ddl.Config{Database: *database}
+	cfg := ddl.Config{Database: database}
 	if err := ddl.ApplyWithConfig(ctx, conn, cfg, []ddl.Signal{ddl.Logs}); err != nil {
 		return fmt.Errorf("ddl.Apply: %w", err)
 	}
@@ -220,14 +272,13 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("parse anchor: %w", err)
 	}
 
-	fixture := buildLivePatternsFixture(time.Now().UTC())
-	streams := append(buildStreams(start), fixture.stream)
+	streams := buildStreams(start)
 	totalEntries := 0
 	for _, s := range streams {
 		totalEntries += len(s.entries)
 	}
 	logger.Info(
-		"generated fixture",
+		"generated corpus",
 		"streams", len(streams),
 		"entries_per_service", entriesPerService,
 		"total_entries", totalEntries,
@@ -240,68 +291,75 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("insert clickhouse: %w", err)
 	}
 
-	logger.Info("waiting for loki readiness", "url", *lokiURL)
-	if err := waitLokiReady(ctx, *lokiURL, logger); err != nil {
+	logger.Info("waiting for loki readiness", "url", lokiURL)
+	if err := waitLokiReady(ctx, lokiURL, logger); err != nil {
 		return fmt.Errorf("loki not ready: %w", err)
 	}
 
-	// Snapshot the ingester's flush + shipper-upload counters *before*
-	// pushing. The settle gate downstream waits for these counters to
-	// move past the baseline by the expected deltas (one flushed chunk
-	// per pushed stream; ≥1 TSDB shipper upload after the flush). A
-	// pre-push baseline is robust against the harness running against a
-	// Loki instance that has handled traffic earlier in the same
-	// process lifetime (re-run, restart-without-volume-wipe, etc.).
-	baseline, err := readLokiMetricsBaseline(ctx, *lokiURL)
+	// Snapshot the ingester's flushed-chunk counter *before* pushing.
+	// The drain gate downstream waits for it to move past the baseline
+	// by at least one chunk per pushed stream. A pre-push baseline is
+	// robust against the harness running against a Loki instance that
+	// has handled traffic earlier in the same process lifetime.
+	baseline, err := readLokiMetricsBaseline(ctx, lokiURL)
 	if err != nil {
 		return fmt.Errorf("read loki metrics baseline: %w", err)
 	}
-	logger.Info(
-		"loki metrics baseline captured",
-		"chunks_flushed_total", baseline.chunksFlushed,
-		"shipper_uploads_total", baseline.shipperUploads,
-	)
+	logger.Info("loki metrics baseline captured", "chunks_flushed_total", baseline.chunksFlushed)
 
-	logger.Info("pushing into loki", "url", *lokiURL)
-	if err := pushLoki(ctx, *lokiURL, streams); err != nil {
+	logger.Info("pushing into loki", "url", lokiURL)
+	if err := pushLoki(ctx, lokiURL, streams); err != nil {
 		return fmt.Errorf("push loki: %w", err)
 	}
 
-	// Force the reference Loki ingester to flush its in-memory chunks
-	// into the TSDB index. Without this, the seed timestamps (anchored
-	// at `2026-05-11T00:00:00Z`, drifting further into the past as
-	// real time advances) age past `query_ingesters_within` (default
-	// 3h) and `/loki/api/v1/series` returns 0 — even though the
-	// chunks are still in the ingester's WAL and `/labels` happily
-	// surfaces them. The flush handler is synchronous (returns 204
-	// after `sweepUsers(immediate=true)` drains all chunks), so the
-	// subsequent settle wait only has to absorb the asynchronous TSDB
-	// shipper upload that follows the in-memory→object-store flush.
-	logger.Info("flushing loki ingester to tsdb", "url", *lokiURL)
-	if err := flushLoki(ctx, *lokiURL); err != nil {
+	logger.Info("flushing loki ingester", "url", lokiURL)
+	if err := flushLoki(ctx, lokiURL); err != nil {
 		return fmt.Errorf("flush loki: %w", err)
+	}
+	if err := waitLokiFlushDrained(ctx, lokiURL, len(streams), baseline, logger); err != nil {
+		return err
+	}
+
+	logger.Info("corpus seeded", "streams", len(streams), "total_entries", totalEntries)
+	return nil
+}
+
+// seedLive is stage 3, run against the restarted reference Loki: the
+// now-anchored /patterns fixture, written to both targets, then the
+// both-targets visibility checks the diff driver relies on.
+func seedLive(ctx context.Context, conn driver.Conn, lokiURL, cerbURL, livePath string, logger *slog.Logger) error {
+	logger.Info("waiting for loki readiness", "url", lokiURL)
+	if err := waitLokiReady(ctx, lokiURL, logger); err != nil {
+		return fmt.Errorf("loki not ready: %w", err)
+	}
+
+	fixture := buildLivePatternsFixture(time.Now().UTC())
+	fixtureStreams := []stream{fixture.stream}
+	logger.Info("generated live /patterns fixture", "entries", len(fixture.stream.entries), "selector", fixture.metadata.Selector)
+
+	logger.Info("inserting live fixture into clickhouse otel_logs")
+	if err := insertCHLogs(ctx, conn, fixtureStreams); err != nil {
+		return fmt.Errorf("insert clickhouse: %w", err)
+	}
+	logger.Info("pushing live fixture into loki", "url", lokiURL)
+	if err := pushLoki(ctx, lokiURL, fixtureStreams); err != nil {
+		return fmt.Errorf("push loki: %w", err)
 	}
 
 	logger.Info("verifying /labels is non-empty on both targets")
-	if err := verifyBothNonEmpty(ctx, conn, *lokiURL, *cerbURL, streams, baseline, logger); err != nil {
+	if err := verifyBothNonEmpty(ctx, conn, lokiURL, cerbURL, logger); err != nil {
 		return fmt.Errorf("verify: %w", err)
 	}
 
 	logger.Info("waiting for live /patterns fixture on both targets", "selector", fixture.metadata.Selector)
-	if err := waitLivePatternsBoth(ctx, *lokiURL, *cerbURL, fixture.metadata, logger); err != nil {
+	if err := waitLivePatternsBoth(ctx, lokiURL, cerbURL, fixture.metadata, logger); err != nil {
 		return fmt.Errorf("verify live patterns: %w", err)
 	}
-	if err := writeLivePatternsMetadata(*livePath, fixture.metadata); err != nil {
+	if err := writeLivePatternsMetadata(livePath, fixture.metadata); err != nil {
 		return fmt.Errorf("write live patterns metadata: %w", err)
 	}
 
-	logger.Info("sample log line", "line", streams[0].entries[0].line)
-	logger.Info(
-		"seed done",
-		"streams", len(streams),
-		"total_entries", totalEntries,
-		"live_patterns_metadata", *livePath,
-	)
+	logger.Info("seed done", "live_patterns_metadata", livePath)
 	return nil
 }
 
@@ -853,22 +911,20 @@ func pushLoki(ctx context.Context, baseURL string, streams []stream) error {
 
 // flushLoki POSTs to the reference Loki's `/flush` endpoint, which is
 // the ingester's `FlushHandler` (single-binary exposes it on the same
-// HTTP listener as `/loki/api/v1/*`). The handler calls
-// `sweepUsers(immediate=true, mayRemoveStreams=true)` and blocks until
-// every in-memory chunk has been uploaded to the configured object
-// store (filesystem in the harness) and indexed into the TSDB. Success
-// returns 204 No Content.
+// HTTP listener as `/loki/api/v1/*`). The handler enqueues every
+// in-memory chunk for an immediate flush to the configured object store
+// (filesystem in the harness) and returns 204 No Content; the flush
+// workers then write the chunks and record them in the TSDB head.
+// waitLokiFlushDrained is what waits for that work to finish.
 //
 // Without this call, the seed's hard-coded `2026-05-11T00:00:00Z`
 // anchor ages past the default `chunk_idle_period` (30m) +
 // `max_chunk_age` (2h) thresholds the ingester uses to decide when to
-// rotate a chunk to the store; the chunks then linger in memory and
-// `/loki/api/v1/series` against the seed time-window returns 0 because
-// the TSDB has nothing to scan (the ingester is skipped by the
-// querier's 3h `query_ingesters_within` gate for windows that lie
-// entirely in the past). Forcing the flush populates the TSDB so the
-// settle gate (waitLokiIndexSettle) succeeds reliably regardless of
-// how far the seed anchor has drifted from real time.
+// move a chunk to the store, and the chunks would linger in memory. The
+// ingester does not flush on shutdown either (its WAL is what normally
+// carries unflushed chunks across a restart, and the harness's WAL is on
+// a tmpfs), so a chunk still in memory when the corpus stage hands over
+// to the reference Loki restart would be lost.
 //
 // The flush is intended for local testing per Loki's own docs — which
 // is exactly the harness's lifecycle.
@@ -891,7 +947,12 @@ func flushLoki(ctx context.Context, baseURL string) error {
 	return nil
 }
 
-func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL string, streams []stream, baseline lokiMetricsSnapshot, logger *slog.Logger) error {
+// verifyBothNonEmpty checks that both targets answer the corpus: the
+// ClickHouse table has rows, and `/labels` over the corpus window is
+// non-empty on the reference Loki and on cerberus. Run after the
+// reference restart, the Loki half is positive evidence that the
+// restarted process reads the corpus index from the object store.
+func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL string, logger *slog.Logger) error {
 	var chCount uint64
 	if err := conn.QueryRow(ctx, "SELECT count() FROM otel_logs").Scan(&chCount); err != nil {
 		return fmt.Errorf("ch count: %w", err)
@@ -907,15 +968,6 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 	}
 	start, end := verifyLabelsWindow(anchorTS)
 
-	// Wait for the reference Loki ingester to drain its flush queue and
-	// for the TSDB shipper to publish at least one fresh index table.
-	// Cerberus reads ClickHouse directly so its visibility is bounded by
-	// the INSERT round-trip (sub-second); only the reference Loki target
-	// needs this gate.
-	if err := waitLokiIndexSettle(ctx, lokiURL, len(streams), baseline, logger); err != nil {
-		return err
-	}
-
 	for _, target := range []struct {
 		label, base string
 	}{
@@ -929,20 +981,18 @@ func verifyBothNonEmpty(ctx context.Context, conn driver.Conn, lokiURL, cerbURL 
 	return nil
 }
 
-// lokiMetricsSnapshot is a baseline reading of the two ingester /
-// shipper counters the settle gate watches: chunks the ingester has
-// flushed and table uploads the TSDB shipper has completed. The gate
-// waits for these counters to move past the baseline by the deltas
-// implied by the just-pushed batch.
+// lokiMetricsSnapshot is a baseline reading of the ingester counter the
+// drain gate watches: the chunks the ingester has flushed. The gate
+// waits for it to move past the baseline by the delta implied by the
+// just-pushed batch.
 type lokiMetricsSnapshot struct {
-	chunksFlushed  float64
-	shipperUploads float64
+	chunksFlushed float64
 }
 
-// readLokiMetricsBaseline pulls the current values of the two counters
-// the settle gate keys on. Used to anchor the post-flush deltas so the
-// gate works whether the reference Loki is freshly booted or being
-// re-used across seed runs.
+// readLokiMetricsBaseline pulls the current value of the counter the
+// drain gate keys on. Used to anchor the post-flush delta so the gate
+// works whether the reference Loki is freshly booted or being re-used
+// across seed runs.
 func readLokiMetricsBaseline(ctx context.Context, baseURL string) (lokiMetricsSnapshot, error) {
 	metrics, err := fetchLokiMetrics(ctx, baseURL)
 	if err != nil {
@@ -956,79 +1006,66 @@ func readLokiMetricsBaseline(ctx context.Context, baseURL string) (lokiMetricsSn
 // payloads.
 func extractSnapshot(metrics map[string]float64) lokiMetricsSnapshot {
 	return lokiMetricsSnapshot{
-		chunksFlushed:  sumMatching(metrics, "loki_ingester_chunks_flushed_total"),
-		shipperUploads: sumMatching(metrics, `loki_tsdb_shipper_tables_upload_operation_total{status="success"`),
+		chunksFlushed: sumMatching(metrics, "loki_ingester_chunks_flushed_total"),
 	}
 }
 
-// Settle-gate cadence. Declared as `var` (not `const`) so unit tests
+// Drain-gate cadence. Declared as `var` (not `const`) so unit tests
 // can shrink the budget — production keeps the 90s/500ms/5s shape the
 // function doc-comment pins. Do not mutate at runtime outside of tests.
 var (
-	settleTimeout    = 90 * time.Second
-	settleInterval   = 500 * time.Millisecond
-	settleProgressAt = 5 * time.Second
+	drainTimeout    = 90 * time.Second
+	drainInterval   = 500 * time.Millisecond
+	drainProgressAt = 5 * time.Second
 )
 
-// waitLokiIndexSettle polls the reference Loki's `/metrics` endpoint
-// until the ingester and TSDB shipper signal that the just-pushed batch
-// has been fully flushed and indexed.
+// waitLokiFlushDrained polls the reference Loki's `/metrics` endpoint
+// until the ingester signals that the just-pushed batch has been
+// flushed out of memory into the object store.
 //
-// The earlier implementation polled `/loki/api/v1/labels` and
-// `/loki/api/v1/series` and guessed "are we done?" from cardinality.
-// That heuristic accumulated four PRs of patches across #66 → #561 →
-// #576 → #608: timeout bumps, sticky latches, and a 90 % cardinality
-// floor to mask a single straggling stream. None of them got at the
-// real signal — they were all proxies for "has the ingester finished
-// flushing?" Loki itself answers that directly through its Prometheus
-// `/metrics` endpoint, which is what this implementation now polls.
-//
-// Settle criteria — all four must hold concurrently in a single poll
+// Drain criteria — all three must hold concurrently in a single poll
 // (no latches, no thresholds, no straggler tolerance):
 //
 //   - `loki_ingester_flush_queue_length == 0` — the ingester's flush
-//     queue has drained. The flush handler enqueues work synchronously
-//     under `sweepUsers(immediate=true)`; when the queue is empty the
-//     ingester has nothing more to push to the chunk store.
+//     queue has drained.
 //   - `loki_ingester_memory_chunks == 0` — no chunks remain held in
-//     memory waiting on a flush. Together with the queue-length check
-//     this rules out both "queued but not started" and "started but
-//     not finished" flushes.
+//     memory. Together with the queue-length check this rules out both
+//     "queued but not started" and "started but not finished" flushes.
 //   - `loki_ingester_chunks_flushed_total` has incremented by at least
 //     `expectedStreams` since the pre-push baseline. Every pushed
 //     stream produces at least one chunk; the counter going up by
 //     ≥expectedStreams is positive evidence that *our* push made it
 //     through the flush path (rather than a stale baseline reading
 //     happening to satisfy the queue/memory checks).
-//   - `loki_tsdb_shipper_tables_upload_operation_total{status="success"}`
-//     has incremented by at least 1 since the baseline. The TSDB
-//     shipper uploads fresh index tables asynchronously after the
-//     in-memory→object-store flush; without waiting for at least one
-//     successful upload, `/query_range` can still race the index
-//     publication and see an empty TSDB.
+//
+// The gate deliberately says nothing about the index. The flushed
+// chunks are recorded in the ingester's TSDB head, and the index the
+// diff driver reads is built from that head and uploaded by the
+// graceful stop of the reference restart that follows this stage (see
+// stageCorpus). verifyBothNonEmpty, in the live stage, is the check
+// that the restarted process serves it.
 //
 // On deadline expiry the error carries every counter's current value
 // alongside the baseline so the failure mode is recoverable from a
 // single log line. A missing metric (e.g. an upstream Loki rename) is
 // reported as a structured error rather than silently treated as zero.
-func waitLokiIndexSettle(ctx context.Context, baseURL string, expectedStreams int, baseline lokiMetricsSnapshot, logger *slog.Logger) error {
+func waitLokiFlushDrained(ctx context.Context, baseURL string, expectedStreams int, baseline lokiMetricsSnapshot, logger *slog.Logger) error {
 	logger.Info(
-		"waiting for reference loki index to settle",
+		"waiting for the reference loki ingester to drain",
 		"url", baseURL,
 		"expected_streams", expectedStreams,
 		"baseline_chunks_flushed", baseline.chunksFlushed,
-		"baseline_shipper_uploads", baseline.shipperUploads,
-		"timeout", settleTimeout,
+		"timeout", drainTimeout,
 	)
 
 	begin := time.Now()
-	deadline := begin.Add(settleTimeout)
+	deadline := begin.Add(drainTimeout)
 	lastProgress := begin
-	var lastSnapshot lokiSettleSnapshot
+	var lastSnapshot lokiDrainSnapshot
 	var lastErr error
 
 	for {
-		snap, err := fetchLokiSettleSnapshot(ctx, baseURL)
+		snap, err := fetchLokiDrainSnapshot(ctx, baseURL)
 		if err != nil {
 			lastErr = err
 		} else {
@@ -1036,33 +1073,29 @@ func waitLokiIndexSettle(ctx context.Context, baseURL string, expectedStreams in
 			lastSnapshot = snap
 
 			flushedDelta := snap.chunksFlushed - baseline.chunksFlushed
-			uploadsDelta := snap.shipperUploads - baseline.shipperUploads
 
 			if snap.flushQueueLength == 0 &&
 				snap.memoryChunks == 0 &&
-				flushedDelta >= float64(expectedStreams) &&
-				uploadsDelta >= 1 {
+				flushedDelta >= float64(expectedStreams) {
 				logger.Info(
-					"loki index settled",
+					"loki ingester drained",
 					"flush_queue_length", snap.flushQueueLength,
 					"memory_chunks", snap.memoryChunks,
 					"chunks_flushed_delta", flushedDelta,
 					"chunks_flushed_needed", expectedStreams,
-					"shipper_uploads_delta", uploadsDelta,
 					"elapsed", time.Since(begin).Round(time.Millisecond),
 				)
 				return nil
 			}
 		}
 
-		if time.Since(lastProgress) >= settleProgressAt {
+		if time.Since(lastProgress) >= drainProgressAt {
 			logger.Info(
-				"still waiting for loki index settle",
+				"still waiting for the loki ingester to drain",
 				"flush_queue_length", lastSnapshot.flushQueueLength,
 				"memory_chunks", lastSnapshot.memoryChunks,
 				"chunks_flushed_delta", lastSnapshot.chunksFlushed-baseline.chunksFlushed,
 				"chunks_flushed_needed", expectedStreams,
-				"shipper_uploads_delta", lastSnapshot.shipperUploads-baseline.shipperUploads,
 				"last_err", lastErr,
 				"remaining", time.Until(deadline).Round(time.Second),
 			)
@@ -1071,47 +1104,45 @@ func waitLokiIndexSettle(ctx context.Context, baseURL string, expectedStreams in
 
 		if time.Now().After(deadline) {
 			if lastErr != nil {
-				return fmt.Errorf("loki index settle: last error: %w (after %s, baseline_chunks_flushed=%v baseline_shipper_uploads=%v)",
-					lastErr, settleTimeout, baseline.chunksFlushed, baseline.shipperUploads)
+				return fmt.Errorf("loki ingester drain: last error: %w (after %s, baseline_chunks_flushed=%v)",
+					lastErr, drainTimeout, baseline.chunksFlushed)
 			}
 			return fmt.Errorf(
-				"loki index settle: timed out after %s (flush_queue_length=%v memory_chunks=%v chunks_flushed=%v→%v needed_delta=%d shipper_uploads=%v→%v needed_delta=1)",
-				settleTimeout,
+				"loki ingester drain: timed out after %s (flush_queue_length=%v memory_chunks=%v chunks_flushed=%v→%v needed_delta=%d)",
+				drainTimeout,
 				lastSnapshot.flushQueueLength,
 				lastSnapshot.memoryChunks,
 				baseline.chunksFlushed, lastSnapshot.chunksFlushed,
 				expectedStreams,
-				baseline.shipperUploads, lastSnapshot.shipperUploads,
 			)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(settleInterval):
+		case <-time.After(drainInterval):
 		}
 	}
 }
 
-// lokiSettleSnapshot is the per-poll reading the settle loop diffs
+// lokiDrainSnapshot is the per-poll reading the drain loop diffs
 // against the baseline. Kept as plain float64 because Prometheus text
 // exposition itself uses float64 for every numeric value (including
 // counters).
-type lokiSettleSnapshot struct {
+type lokiDrainSnapshot struct {
 	flushQueueLength float64
 	memoryChunks     float64
 	chunksFlushed    float64
-	shipperUploads   float64
 }
 
-// fetchLokiSettleSnapshot pulls `/metrics` and resolves the four
-// settle-gate signals. The required-metrics check is strict: a missing
+// fetchLokiDrainSnapshot pulls `/metrics` and resolves the three
+// drain-gate signals. The required-metrics check is strict: a missing
 // metric is returned as an error rather than silently coerced to zero,
 // so an upstream Loki rename surfaces immediately instead of looking
-// like an instantly-settled gate.
-func fetchLokiSettleSnapshot(ctx context.Context, baseURL string) (lokiSettleSnapshot, error) {
+// like an instantly-drained gate.
+func fetchLokiDrainSnapshot(ctx context.Context, baseURL string) (lokiDrainSnapshot, error) {
 	metrics, err := fetchLokiMetrics(ctx, baseURL)
 	if err != nil {
-		return lokiSettleSnapshot{}, err
+		return lokiDrainSnapshot{}, err
 	}
 	required := []string{
 		"loki_ingester_flush_queue_length",
@@ -1120,26 +1151,21 @@ func fetchLokiSettleSnapshot(ctx context.Context, baseURL string) (lokiSettleSna
 	}
 	for _, name := range required {
 		if !hasMatching(metrics, name) {
-			return lokiSettleSnapshot{}, fmt.Errorf("loki /metrics missing required gauge/counter %q (upstream rename? regenerate gate against grafana/loki version in use)", name)
+			return lokiDrainSnapshot{}, fmt.Errorf("loki /metrics missing required gauge/counter %q (upstream rename? regenerate gate against grafana/loki version in use)", name)
 		}
 	}
-	// The shipper-upload counter only appears after the first upload
-	// has been attempted; on a freshly-booted Loki it is absent until
-	// the first table flush. We treat missing-but-zero as zero so the
-	// pre-push baseline read doesn't fail on a cold start.
-	return lokiSettleSnapshot{
+	return lokiDrainSnapshot{
 		flushQueueLength: sumMatching(metrics, "loki_ingester_flush_queue_length"),
 		memoryChunks:     sumMatching(metrics, "loki_ingester_memory_chunks"),
 		chunksFlushed:    sumMatching(metrics, "loki_ingester_chunks_flushed_total"),
-		shipperUploads:   sumMatching(metrics, `loki_tsdb_shipper_tables_upload_operation_total{status="success"`),
 	}, nil
 }
 
 // fetchLokiMetrics fetches the raw Prometheus text-format `/metrics`
 // payload and parses every sample line into a name→value map. The
 // parser is intentionally line-oriented (no full Prometheus expfmt
-// dependency): the settle gate only needs to look up a handful of
-// metric names by prefix-match.
+// dependency): the drain gate only needs to look up a handful of
+// metric families by name.
 func fetchLokiMetrics(ctx context.Context, baseURL string) (map[string]float64, error) {
 	u := strings.TrimRight(baseURL, "/") + "/metrics"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -1200,18 +1226,18 @@ func parsePromMetrics(body []byte) map[string]float64 {
 // parseFloatOrNaN wraps strconv.ParseFloat so the caller doesn't need
 // the import directly. NaN values are returned as-is; downstream code
 // treats them as "metric present but unusable" which is the right
-// semantic for the settle gate.
+// semantic for the drain gate.
 func parseFloatOrNaN(s string) (float64, error) {
 	return strconv.ParseFloat(s, 64)
 }
 
 // hasMatching reports whether `metrics` contains either the exact key
-// `prefix` (an unlabelled scalar) or any key of the shape
-// `prefix{...}` (a labelled metric family). Used to detect the presence
-// of a metric without caring about its label set.
-func hasMatching(metrics map[string]float64, prefix string) bool {
+// `name` (an unlabelled scalar) or any key of the shape `name{...}` (a
+// labelled metric family). Used to detect the presence of a metric
+// without caring about its label set.
+func hasMatching(metrics map[string]float64, name string) bool {
 	for k := range metrics {
-		if matchesPrefix(k, prefix) {
+		if matchesFamily(k, name) {
 			return true
 		}
 	}
@@ -1219,60 +1245,24 @@ func hasMatching(metrics map[string]float64, prefix string) bool {
 }
 
 // sumMatching collapses a metric family to a single scalar by summing
-// every sample matched by `prefix`. The match is exact for an
-// unlabelled scalar or `prefix{...}` for a labelled family — but the
-// caller may also pass a partial label-set match like
-// `loki_tsdb_shipper_tables_upload_operation_total{status="success"`
-// (no closing brace), in which case every key starting with that
-// literal is summed. That partial form lets the gate target a single
-// `status` value without enumerating the full label set.
-func sumMatching(metrics map[string]float64, prefix string) float64 {
+// every sample of `name`: the unlabelled scalar or every `name{...}`
+// row of the labelled family.
+func sumMatching(metrics map[string]float64, name string) float64 {
 	var total float64
 	for k, v := range metrics {
-		if matchesPrefix(k, prefix) {
+		if matchesFamily(k, name) {
 			total += v
 		}
 	}
 	return total
 }
 
-// matchesPrefix encodes the family/partial match rule shared by
-// hasMatching and sumMatching. Two shapes are supported:
-//
-//   - An unlabelled metric-name match like
-//     `loki_ingester_flush_queue_length` matches the exact key (an
-//     unlabelled scalar) or any `<prefix>{...}` (the labelled
-//     family).
-//   - A name+label-selector match like
-//     `loki_tsdb_shipper_tables_upload_operation_total{status="success"`
-//     matches any key whose metric name equals the literal up to the
-//     `{` AND whose label set contains the literal after the `{`
-//     anywhere inside the brace pair. We can't use HasPrefix on the
-//     label portion because Prometheus serialises labels in
-//     alphabetical order — `component` sorts before `status`, so the
-//     `status="success"` literal lands mid-string in the rendered
-//     key.
-func matchesPrefix(key, prefix string) bool {
-	if key == prefix {
-		return true
-	}
-	braceIdx := strings.IndexRune(prefix, '{')
-	if braceIdx < 0 {
-		return strings.HasPrefix(key, prefix+"{")
-	}
-	name := prefix[:braceIdx]
-	selector := prefix[braceIdx+1:]
-	// Key must be `<name>{<labels>}` and the requested selector must
-	// appear inside the brace pair. Strict prefix on the name guards
-	// against `foo_total` matching `foo_total_bucket`.
-	if !strings.HasPrefix(key, name+"{") {
-		return false
-	}
-	end := strings.IndexRune(key, '}')
-	if end < 0 {
-		return false
-	}
-	return strings.Contains(key[len(name)+1:end], selector)
+// matchesFamily is the rule shared by hasMatching and sumMatching: the
+// key is the unlabelled metric `name` itself or a `name{...}` sample of
+// its labelled family. The brace keeps `foo_total` from matching
+// `foo_total_bucket`.
+func matchesFamily(key, name string) bool {
+	return key == name || strings.HasPrefix(key, name+"{")
 }
 
 // verifyLabelsWindow returns the /labels query window for the

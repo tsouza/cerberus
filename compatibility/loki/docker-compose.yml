@@ -11,7 +11,7 @@
 # Seeding is invoked by `go run ./compatibility/loki/cmd/seed/`
 # from .github/scripts/run-loki-compatibility.mjs — it pushes the same
 # deterministic log streams to both Loki (/loki/api/v1/push) and the CH
-# `otel_logs` table.
+# `otel_logs` table, in two stages around a restart of the loki service.
 #
 # Port allocation mirrors the prometheus compatibility harness but offset
 # by one so the two stacks can coexist on the same dev host:
@@ -22,7 +22,9 @@
 #   node .github/scripts/run-loki-compatibility.mjs
 # or:
 #   docker compose up --wait
-#   go run ./compatibility/loki/cmd/seed/
+#   go run ./compatibility/loki/cmd/seed/ -stage=corpus
+#   docker compose restart loki
+#   go run ./compatibility/loki/cmd/seed/ -stage=live -live-patterns-metadata=reports/live-patterns-metadata.json
 #   docker compose down -v
 
 # Empty suffix in a primary checkout (and in CI); a per-worktree one otherwise,
@@ -60,8 +62,20 @@ services:
     image: grafana/loki:3.7.0
     command:
       - -config.file=/etc/loki/loki-config.yaml
+    # The ingester WAL and the TSDB shipper's local index directories
+    # (paths in loki-config.yaml). A tmpfs is recreated empty on every
+    # container start, so after the seeder's `docker compose restart loki`
+    # the reference holds no head, no local index file and no replayed
+    # chunks: it reads the corpus index from the object store
+    # (/tmp/loki/chunks, which survives the restart) and from nowhere else.
+    # See stageCorpus in cmd/seed/main.go. The loki image runs as a
+    # non-root user, so the mount is world-writable (sticky, like /tmp).
     volumes:
       - ./loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - type: tmpfs
+        target: /tmp/loki-ephemeral
+        tmpfs:
+          mode: 01777
     ports:
       - "23100:3100"
     # No Docker-level healthcheck: the grafana/loki image ships distroless

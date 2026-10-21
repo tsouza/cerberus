@@ -12,42 +12,39 @@ import (
 	"time"
 )
 
-// TestWaitLokiIndexSettle pins the contract of the metric-based settle
-// gate. The previous cardinality-polling implementation accumulated
-// four PRs of patches (#66 → #561 → #576 → #608) trying to model
-// "ingester is done" indirectly through `/labels` + `/series` counts;
-// this gate now reads Loki's own `/metrics` endpoint, which exposes the
-// authoritative signals (`loki_ingester_flush_queue_length`,
-// `loki_ingester_memory_chunks`, `loki_ingester_chunks_flushed_total`,
-// `loki_tsdb_shipper_tables_upload_operation_total`).
+// TestWaitLokiFlushDrained pins the contract of the metric-based drain
+// gate the corpus stage runs before the reference Loki restart. It reads
+// Loki's own `/metrics` endpoint, which exposes the authoritative
+// signals (`loki_ingester_flush_queue_length`,
+// `loki_ingester_memory_chunks`, `loki_ingester_chunks_flushed_total`).
 //
 // The cases below pin:
-//   - the AND of all four conditions gating return-nil;
+//   - the AND of all three conditions gating return-nil;
 //   - the delta accounting against the pre-push baseline;
 //   - a structured error when a required metric is missing (upstream
 //     rename detection);
 //   - the timeout error shape — every counter's value end-to-end so
 //     on-call can root-cause from a single log line.
-func TestWaitLokiIndexSettle(t *testing.T) {
-	// No t.Parallel(): this test mutates the package-level settle*
+func TestWaitLokiFlushDrained(t *testing.T) {
+	// No t.Parallel(): this test mutates the package-level drain*
 	// cadence vars.
-	origTimeout, origInterval, origProgressAt := settleTimeout, settleInterval, settleProgressAt
-	settleTimeout = 500 * time.Millisecond
-	settleInterval = 5 * time.Millisecond
-	settleProgressAt = 100 * time.Millisecond
+	origTimeout, origInterval, origProgressAt := drainTimeout, drainInterval, drainProgressAt
+	drainTimeout = 500 * time.Millisecond
+	drainInterval = 5 * time.Millisecond
+	drainProgressAt = 100 * time.Millisecond
 	t.Cleanup(func() {
-		settleTimeout = origTimeout
-		settleInterval = origInterval
-		settleProgressAt = origProgressAt
+		drainTimeout = origTimeout
+		drainInterval = origInterval
+		drainProgressAt = origProgressAt
 	})
 
 	const expectedStreams = 13
 
 	// buildMetricsBody returns a `/metrics` text-exposition payload with
-	// the four signals the gate keys on. Other metrics are intentionally
+	// the three signals the gate keys on. Other metrics are intentionally
 	// omitted — the gate must not depend on anything outside its
 	// declared contract.
-	buildMetricsBody := func(flushQueue, memChunks, chunksFlushed, shipperUploads float64) string {
+	buildMetricsBody := func(flushQueue, memChunks, chunksFlushed float64) string {
 		return fmt.Sprintf(`# HELP loki_ingester_flush_queue_length unused
 # TYPE loki_ingester_flush_queue_length gauge
 loki_ingester_flush_queue_length %g
@@ -57,36 +54,35 @@ loki_ingester_memory_chunks %g
 # HELP loki_ingester_chunks_flushed_total unused
 # TYPE loki_ingester_chunks_flushed_total counter
 loki_ingester_chunks_flushed_total{reason="forced"} %g
-# HELP loki_tsdb_shipper_tables_upload_operation_total unused
-# TYPE loki_tsdb_shipper_tables_upload_operation_total counter
-loki_tsdb_shipper_tables_upload_operation_total{component="index-store-tsdb-2024-01-01",status="success"} %g
-`, flushQueue, memChunks, chunksFlushed, shipperUploads)
+`, flushQueue, memChunks, chunksFlushed)
 	}
 
-	runSettle := func(t *testing.T, handler http.HandlerFunc, baseline lokiMetricsSnapshot) error {
+	serveMetrics := func(body func() string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/metrics" {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write([]byte(body()))
+		}
+	}
+
+	runDrain := func(t *testing.T, handler http.HandlerFunc, baseline lokiMetricsSnapshot) error {
 		t.Helper()
 		srv := httptest.NewServer(handler)
 		t.Cleanup(srv.Close)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		t.Cleanup(cancel)
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-		return waitLokiIndexSettle(ctx, srv.URL, expectedStreams, baseline, logger)
+		return waitLokiFlushDrained(ctx, srv.URL, expectedStreams, baseline, logger)
 	}
 
 	t.Run("all_signals_ready_immediately", func(t *testing.T) {
-		// Happy path: queue drained, memory empty, counters past
+		// Happy path: queue drained, memory empty, counter past
 		// baseline. Gate returns on tick 1.
-		baseline := lokiMetricsSnapshot{chunksFlushed: 0, shipperUploads: 0}
-		body := buildMetricsBody(0, 0, expectedStreams, 1)
-		handler := func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/metrics" {
-				http.NotFound(w, r)
-				return
-			}
-			_, _ = w.Write([]byte(body))
-		}
-		if err := runSettle(t, handler, baseline); err != nil {
-			t.Fatalf("expected nil error for fully-ready server, got: %v", err)
+		body := buildMetricsBody(0, 0, expectedStreams)
+		if err := runDrain(t, serveMetrics(func() string { return body }), lokiMetricsSnapshot{}); err != nil {
+			t.Fatalf("expected nil error for fully-drained server, got: %v", err)
 		}
 	})
 
@@ -94,21 +90,14 @@ loki_tsdb_shipper_tables_upload_operation_total{component="index-store-tsdb-2024
 		// First poll: queue non-zero. Second poll: queue at zero with
 		// all other conditions met. The gate must wait for the queue
 		// to drain before returning.
-		baseline := lokiMetricsSnapshot{chunksFlushed: 0, shipperUploads: 0}
 		var polls atomic.Int32
-		handler := func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/metrics" {
-				http.NotFound(w, r)
-				return
+		handler := serveMetrics(func() string {
+			if polls.Add(1) == 1 {
+				return buildMetricsBody(5, 2, 8)
 			}
-			n := polls.Add(1)
-			if n == 1 {
-				_, _ = w.Write([]byte(buildMetricsBody(5, 2, 8, 0)))
-				return
-			}
-			_, _ = w.Write([]byte(buildMetricsBody(0, 0, expectedStreams, 1)))
-		}
-		if err := runSettle(t, handler, baseline); err != nil {
+			return buildMetricsBody(0, 0, expectedStreams)
+		})
+		if err := runDrain(t, handler, lokiMetricsSnapshot{}); err != nil {
 			t.Fatalf("expected nil error after queue drains, got: %v", err)
 		}
 		if got := polls.Load(); got < 2 {
@@ -116,48 +105,36 @@ loki_tsdb_shipper_tables_upload_operation_total{component="index-store-tsdb-2024
 		}
 	})
 
-	t.Run("delta_must_exceed_baseline", func(t *testing.T) {
-		// The counter values are above zero but match the baseline
-		// exactly — no work has happened since baseline was taken.
-		// The gate must not return.
-		baseline := lokiMetricsSnapshot{chunksFlushed: 50, shipperUploads: 3}
-		handler := func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/metrics" {
-				http.NotFound(w, r)
-				return
-			}
-			_, _ = w.Write([]byte(buildMetricsBody(0, 0, 50, 3)))
-		}
-		err := runSettle(t, handler, baseline)
+	t.Run("memory_chunks_must_reach_zero", func(t *testing.T) {
+		// Queue drained and the counter past baseline, but chunks are
+		// still held in memory: a flush that started but has not
+		// finished. The gate must not return.
+		body := buildMetricsBody(0, 1, expectedStreams)
+		err := runDrain(t, serveMetrics(func() string { return body }), lokiMetricsSnapshot{})
 		if err == nil {
-			t.Fatalf("expected timeout when counters match baseline, got nil")
+			t.Fatalf("expected timeout while memory_chunks > 0, got nil")
+		}
+		if !contains(err.Error(), "memory_chunks=1") {
+			t.Fatalf("timeout error missing memory_chunks diagnostic in: %v", err)
+		}
+	})
+
+	t.Run("delta_must_exceed_baseline", func(t *testing.T) {
+		// The counter is above zero but matches the baseline exactly —
+		// no work has happened since the baseline was taken. The gate
+		// must not return.
+		body := buildMetricsBody(0, 0, 50)
+		err := runDrain(t, serveMetrics(func() string { return body }), lokiMetricsSnapshot{chunksFlushed: 50})
+		if err == nil {
+			t.Fatalf("expected timeout when the counter matches baseline, got nil")
 		}
 		for _, want := range []string{
 			"chunks_flushed=50→50",
 			"needed_delta=13",
-			"shipper_uploads=3→3",
 		} {
 			if !contains(err.Error(), want) {
 				t.Fatalf("timeout error missing diagnostic %q in: %v", want, err)
 			}
-		}
-	})
-
-	t.Run("shipper_upload_required", func(t *testing.T) {
-		// Chunks flushed past baseline + queue drained, but the TSDB
-		// shipper has not yet uploaded. /query_range would race the
-		// index publication — the gate must wait.
-		baseline := lokiMetricsSnapshot{chunksFlushed: 0, shipperUploads: 5}
-		handler := func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/metrics" {
-				http.NotFound(w, r)
-				return
-			}
-			_, _ = w.Write([]byte(buildMetricsBody(0, 0, expectedStreams+10, 5)))
-		}
-		err := runSettle(t, handler, baseline)
-		if err == nil {
-			t.Fatalf("expected timeout when shipper upload counter hasn't moved, got nil")
 		}
 	})
 
@@ -166,22 +143,16 @@ loki_tsdb_shipper_tables_upload_operation_total{component="index-store-tsdb-2024
 		// gauge is missing entirely. The gate must surface this as a
 		// structured error rather than treat the missing value as
 		// zero (which would silently flip to "settled").
-		baseline := lokiMetricsSnapshot{}
-		handler := func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/metrics" {
-				http.NotFound(w, r)
-				return
-			}
-			body := `# HELP loki_ingester_memory_chunks unused
+		handler := serveMetrics(func() string {
+			return `# HELP loki_ingester_memory_chunks unused
 # TYPE loki_ingester_memory_chunks gauge
 loki_ingester_memory_chunks 0
 # HELP loki_ingester_chunks_flushed_total unused
 # TYPE loki_ingester_chunks_flushed_total counter
 loki_ingester_chunks_flushed_total{reason="forced"} 13
 `
-			_, _ = w.Write([]byte(body))
-		}
-		err := runSettle(t, handler, baseline)
+		})
+		err := runDrain(t, handler, lokiMetricsSnapshot{})
 		if err == nil {
 			t.Fatalf("expected error when required metric is missing, got nil")
 		}
@@ -196,11 +167,10 @@ loki_ingester_chunks_flushed_total{reason="forced"} 13
 	t.Run("metrics_endpoint_unreachable_times_out_with_last_err", func(t *testing.T) {
 		// /metrics always 500s — gate times out and the error carries
 		// the last underlying HTTP failure for diagnostics.
-		baseline := lokiMetricsSnapshot{}
 		handler := func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "boom", http.StatusInternalServerError)
 		}
-		err := runSettle(t, handler, baseline)
+		err := runDrain(t, handler, lokiMetricsSnapshot{})
 		if err == nil {
 			t.Fatalf("expected timeout when /metrics is unreachable, got nil")
 		}
@@ -212,7 +182,7 @@ loki_ingester_chunks_flushed_total{reason="forced"} 13
 
 // TestParsePromMetrics pins the parser shape so a future Loki version
 // emitting exemplars / a histogram extension doesn't silently break the
-// settle gate.
+// drain gate.
 func TestParsePromMetrics(t *testing.T) {
 	t.Parallel()
 
@@ -254,10 +224,9 @@ loki_ingester_checkpoint_duration_seconds{quantile="0.5"} NaN
 		t.Errorf("sumMatching(chunks_flushed_total) = %v, want 30", gotFlushed)
 	}
 
-	// The targeted-label-set form must match only the success row.
-	gotUpload := sumMatching(got, `loki_tsdb_shipper_tables_upload_operation_total{component="x",status="success"`)
-	if gotUpload != 5 {
-		t.Errorf("sumMatching(tables_upload_operation success-only) = %v, want 5", gotUpload)
+	// A family name must not match a longer name it is a prefix of.
+	if gotFoo := sumMatching(got, "fo"); gotFoo != 0 {
+		t.Errorf("sumMatching(fo) = %v, want 0 (no family named fo)", gotFoo)
 	}
 }
 
@@ -266,21 +235,14 @@ func TestExtractSnapshot(t *testing.T) {
 	t.Parallel()
 
 	metrics := map[string]float64{
-		`loki_ingester_chunks_flushed_total{reason="forced"}`:                             11,
-		`loki_ingester_chunks_flushed_total{reason="full"}`:                               2,
-		`loki_tsdb_shipper_tables_upload_operation_total{component="x",status="success"}`: 4,
-		`loki_tsdb_shipper_tables_upload_operation_total{component="x",status="failure"}`: 1,
-		`loki_ingester_flush_queue_length`:                                                0,
+		`loki_ingester_chunks_flushed_total{reason="forced"}`: 11,
+		`loki_ingester_chunks_flushed_total{reason="full"}`:   2,
+		`loki_ingester_chunks_flushed_total_bogus`:            100,
+		`loki_ingester_flush_queue_length`:                    0,
 	}
 	snap := extractSnapshot(metrics)
 	if snap.chunksFlushed != 13 {
-		t.Errorf("chunksFlushed = %v, want 13", snap.chunksFlushed)
-	}
-	// Only the status="success" row should be in the upload total —
-	// the status="failure" row matters for an alerting metric but not
-	// for "did the index publish".
-	if snap.shipperUploads != 4 {
-		t.Errorf("shipperUploads = %v, want 4 (success-only)", snap.shipperUploads)
+		t.Errorf("chunksFlushed = %v, want 13 (both reason rows, nothing else)", snap.chunksFlushed)
 	}
 }
 
