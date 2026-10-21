@@ -54,7 +54,7 @@ func TestEligibleForAggregationInOrder_Positive(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			plan := aggOverScan(tc.table, tc.cols...)
-			if !r.eligibleForAggregationInOrder(shapeOf(plan)) {
+			if !r.eligibleForAggregationInOrder(shapeOf(plan), chsql.SchemaStrategies{}) {
 				t.Errorf("GROUP BY %v on %s: want eligible", tc.cols, tc.table)
 			}
 		})
@@ -99,10 +99,59 @@ func TestEligibleForAggregationInOrder_Negative(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if r.eligibleForAggregationInOrder(shapeOf(tc.plan)) {
+			if r.eligibleForAggregationInOrder(shapeOf(tc.plan), chsql.SchemaStrategies{}) {
 				t.Errorf("%s: want NOT eligible", tc.name)
 			}
 		})
+	}
+}
+
+// TestEligibleForAggregationInOrder_DeployedSortingKey pins that the
+// eligibility check matches a GROUP BY against the sorting key the deployed
+// table carries, as the request's SchemaStrategies report it per table:
+// stamped exactly for the GROUP BY shapes that prefix that key, whatever the
+// key cerberus provisions would say. It goes through applyFacts, so the
+// strategies are read off the request ctx the way the dispatch seams pass
+// them.
+func TestEligibleForAggregationInOrder_DeployedSortingKey(t *testing.T) {
+	t.Parallel()
+	const (
+		gauge     = "otel_metrics_gauge"
+		sum       = "otel_metrics_sum"
+		histogram = "otel_metrics_histogram"
+		expHist   = "otel_metrics_exp_histogram"
+	)
+	strategies := chsql.SchemaStrategies{SortingKeyPrefixes: map[string][]string{
+		gauge:     {"ServiceName", "MetricName"},               // stock v0.157
+		sum:       {"ServiceName", "MetricName", "Attributes"}, // stock before v0.157
+		histogram: {"MetricName", "Attributes", "ServiceName"}, // cerberus
+		expHist:   {},                                          // unreadable
+	}}
+	cases := []struct {
+		table string
+		cols  []string
+		want  bool
+	}{
+		{gauge, []string{"ServiceName"}, true},
+		{gauge, []string{"ServiceName", "MetricName"}, true},
+		{gauge, []string{"ServiceName", "MetricName", "Attributes"}, false},
+		{gauge, []string{"MetricName"}, false},
+		{gauge, []string{"MetricName", "Attributes"}, false},
+		{sum, []string{"ServiceName", "MetricName", "Attributes"}, true},
+		{sum, []string{"MetricName"}, false},
+		{histogram, []string{"MetricName", "Attributes"}, true},
+		{histogram, []string{"ServiceName"}, false},
+		{expHist, []string{"MetricName"}, false},
+		{expHist, []string{"ServiceName"}, false},
+		// A table the strategies carry no key for keeps the provisioned one.
+		{"otel_traces", []string{"ServiceName", "SpanName"}, true},
+	}
+	ctx := chsql.WithSchemaStrategies(context.Background(), strategies)
+	for _, tc := range cases {
+		got := settingValue(defaultRules().apply(ctx, aggOverScan(tc.table, tc.cols...)), settingOptimizeAggregationInOrder) == 1
+		if got != tc.want {
+			t.Errorf("GROUP BY %v on %s: stamped = %v, want %v", tc.cols, tc.table, got, tc.want)
+		}
 	}
 }
 

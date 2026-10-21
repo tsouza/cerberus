@@ -102,7 +102,7 @@ type lang struct {
 
 // EmitSchemaStrategies reports the SchemaStrategies this lang's plans
 // render under; the engine threads them onto the emit context.
-func (l *lang) EmitSchemaStrategies() chsql.SchemaStrategies { return l.Strategies }
+func (l *lang) EmitSchemaStrategies(context.Context) chsql.SchemaStrategies { return l.Strategies }
 
 // Compile-time check that *lang satisfies engine.Lang.
 var _ engine.Lang = (*lang)(nil)

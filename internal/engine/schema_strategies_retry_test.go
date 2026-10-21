@@ -20,7 +20,7 @@ import (
 // second-precision metrics timestamps.
 type secondsStrategiesLang struct{ routedCorpusLang }
 
-func (secondsStrategiesLang) EmitSchemaStrategies() chsql.SchemaStrategies {
+func (secondsStrategiesLang) EmitSchemaStrategies(context.Context) chsql.SchemaStrategies {
 	return chsql.SchemaStrategies{MetricsTimestamp: schema.MetricsTimestampSeconds}
 }
 

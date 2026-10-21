@@ -143,8 +143,9 @@ type Handler struct {
 	// check resolved for every signal's tables (for metrics, the precision
 	// of the timestamp columns), wired in cmd/cerberus and updated by the
 	// schema re-probe when the tables appear after boot. Every statement
-	// this head emits renders under the metrics ones a request loads
-	// (metricsStrategies): the engine's PromQL requests through the lang's
+	// this head emits renders under the one snapshot of the metrics ones a
+	// request takes when it enters the handler (Mount, metricsStrategies):
+	// the engine's PromQL requests through the lang's
 	// EmitSchemaStrategies, the metadata and exemplar statements the
 	// handler builds itself directly. A nil cell loads the zero value,
 	// which renders for DateTime64(9) timestamp columns.
@@ -254,8 +255,12 @@ func (h *Handler) SetLowerers(table promql.RangeLowerers) {
 // installed by [Handler.SetLowerers] when there is one, else the wired
 // [Handler.Lowerers]. The single query-path read goes through here so a live
 // swap needs no lock and no second read site can go on consulting a stale table.
-// metricsStrategies loads the metrics SchemaStrategies Strategies holds.
-func (h *Handler) metricsStrategies() chsql.SchemaStrategies { return h.Strategies.Load().Metrics }
+// metricsStrategies returns the metrics SchemaStrategies a request renders
+// under: the snapshot Mount took when the request entered the handler, or
+// what Strategies holds now for a ctx that carries none.
+func (h *Handler) metricsStrategies(ctx context.Context) chsql.SchemaStrategies {
+	return h.Strategies.RequestStrategies(ctx, chsql.SignalMetrics)
+}
 
 func (h *Handler) lowerers() promql.RangeLowerers {
 	if live := h.liveLowerers.Load(); live != nil {
@@ -282,7 +287,12 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		// Rejections are not counted by QueryMiddleware (the inner
 		// handler never runs); they show up on
 		// cerberus.admit.rejected_total instead.
-		handler := promHeadersMiddleware(telemetry.QueryMiddleware("promql", panicEnvelope, hf))
+		// The request's one metrics SchemaStrategies snapshot: every
+		// statement it emits renders under it (metricsStrategies).
+		snapshot := func(w http.ResponseWriter, r *http.Request) {
+			hf(w, r.WithContext(h.Strategies.WithRequestStrategies(r.Context(), chsql.SignalMetrics)))
+		}
+		handler := promHeadersMiddleware(telemetry.QueryMiddleware("promql", panicEnvelope, http.HandlerFunc(snapshot)))
 		mux.Handle(pattern, h.Limiter.Middleware(1, handler))
 	}
 	register("GET /api/v1/query", h.handleQuery)
@@ -966,7 +976,7 @@ func (h *Handler) executeRangeStreaming(
 		ResourceBounds:         h.ResourceBounds,
 		TagGroups:              h.TagGroups,
 		ThrowDuplicateSeriesIf: h.ThrowDuplicateSeriesIf,
-		Strategies:             h.metricsStrategies(),
+		Strategies:             h.metricsStrategies(ctx),
 	}
 	// Time the entire QueryCursor entry so the cursor-open round-trip
 	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-
@@ -1018,7 +1028,7 @@ func (h *Handler) executeInstant(ctx context.Context, query string, start, end t
 		ResourceBounds:         h.ResourceBounds,
 		TagGroups:              h.TagGroups,
 		ThrowDuplicateSeriesIf: h.ThrowDuplicateSeriesIf,
-		Strategies:             h.metricsStrategies(),
+		Strategies:             h.metricsStrategies(ctx),
 	}
 	res, err := h.Engine.Query(h.withSampleDrainBudget(ctx), l, query)
 	if err != nil {

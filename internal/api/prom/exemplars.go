@@ -149,7 +149,7 @@ func (h *Handler) handleQueryExemplars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sql, args, physicalScans, err := chsql.EmitQueryExemplarsUnion(chsql.WithSchemaStrategies(r.Context(), h.metricsStrategies()), arms, start, end, h.Schema)
+	sql, args, physicalScans, err := chsql.EmitQueryExemplarsUnion(chsql.WithSchemaStrategies(r.Context(), h.metricsStrategies(r.Context())), arms, start, end, h.Schema)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrInternal, err)
 		return

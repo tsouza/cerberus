@@ -7,6 +7,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclienttest"
+	"github.com/tsouza/cerberus/internal/preflight"
 )
 
 // Compile-time guard: *chclienttest.Client must satisfy every handler's
@@ -14,7 +15,8 @@ import (
 // different signature) this file fails to build and the divergence is
 // caught at PR time, not at test-run time.
 var (
-	_ prom.Querier  = (*chclienttest.Client)(nil)
-	_ loki.Querier  = (*chclienttest.Client)(nil)
-	_ tempo.Querier = (*chclienttest.Client)(nil)
+	_ prom.Querier      = (*chclienttest.Client)(nil)
+	_ loki.Querier      = (*chclienttest.Client)(nil)
+	_ tempo.Querier     = (*chclienttest.Client)(nil)
+	_ preflight.Querier = (*chclienttest.Client)(nil)
 )

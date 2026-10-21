@@ -190,16 +190,28 @@ type Handler struct {
 	// Strategies holds the chsql.SchemaStrategies the boot requirements
 	// check resolved for every signal's tables, wired in cmd/cerberus and
 	// updated by the schema re-probe when the tables appear after boot.
-	// Every TraceQL statement renders under the traces ones
-	// (tracesStrategies): the engine's through the Lang the handler hands
-	// it, the statements the handler builds itself directly. A nil cell
-	// loads the zero value, which renders every traces attribute column as a
-	// Map.
+	// Every TraceQL statement of a request renders under the one snapshot of
+	// the traces ones the request took (WithRequestStrategies,
+	// tracesStrategies): the engine's through the Lang the handler hands it,
+	// the statements the handler builds itself directly. A nil cell loads
+	// the zero value, which renders every traces attribute column as a Map.
 	Strategies *chsql.SchemaStrategiesCell
 }
 
-// tracesStrategies loads the traces SchemaStrategies Strategies holds.
-func (h *Handler) tracesStrategies() chsql.SchemaStrategies { return h.Strategies.Load().Traces }
+// tracesStrategies returns the traces SchemaStrategies a request renders
+// under: the snapshot WithRequestStrategies took when the request entered
+// the handler, or what Strategies holds now for a ctx that carries none.
+func (h *Handler) tracesStrategies(ctx context.Context) chsql.SchemaStrategies {
+	return h.Strategies.RequestStrategies(ctx, chsql.SignalTraces)
+}
+
+// WithRequestStrategies returns ctx carrying the traces SchemaStrategies
+// Strategies holds now: the one snapshot every statement of the request
+// renders under. Every HTTP route Mount registers takes it, and the gRPC
+// service takes it for every RPC.
+func (h *Handler) WithRequestStrategies(ctx context.Context) context.Context {
+	return h.Strategies.WithRequestStrategies(ctx, chsql.SignalTraces)
+}
 
 // New constructs a Handler with the seed optimizer wired in.
 func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *Handler {
@@ -301,7 +313,10 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		// admit.Middleware (outer) → telemetry.QueryMiddleware (inner)
 		// — same layering as the Prom + Loki heads. Rejections land
 		// on cerberus.admit.rejected_total, not cerberus.queries.*.
-		mux.Handle(pattern, h.Limiter.Middleware(1, telemetry.QueryMiddleware("traceql", panicEnvelope, hf)))
+		snapshot := func(w http.ResponseWriter, r *http.Request) {
+			hf(w, r.WithContext(h.WithRequestStrategies(r.Context())))
+		}
+		mux.Handle(pattern, h.Limiter.Middleware(1, telemetry.QueryMiddleware("traceql", panicEnvelope, http.HandlerFunc(snapshot))))
 	}
 	register("GET /api/echo", h.handleEcho)
 	register("GET /api/status/version", h.handleVersion)

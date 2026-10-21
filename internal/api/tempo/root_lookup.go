@@ -99,7 +99,7 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 	// than 502ing the whole search — but degrading a working feature by
 	// omission is still wrong to leave unfixed.
 	ctx = chsql.WithSpansTable(ctx, h.Schema.SpansTable)
-	ctx = chsql.WithSchemaStrategies(ctx, h.tracesStrategies())
+	ctx = chsql.WithSchemaStrategies(ctx, h.tracesStrategies(ctx))
 	sql, args, physicalScans, err := chsql.EmitCounted(ctx, plan)
 	if err != nil {
 		return nil, fmt.Errorf("root lookup: emit: %w", err)

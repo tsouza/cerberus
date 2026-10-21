@@ -55,7 +55,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 		selectorGroups = append(selectorGroups, matchers)
 	}
 
-	sqlStr, args, err := buildSeriesSQL(h.Schema, h.Strategies.Load().Logs, selectorGroups, start, end)
+	sqlStr, args, err := buildSeriesSQL(h.Schema, h.logsStrategies(r.Context()), selectorGroups, start, end)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return

@@ -221,7 +221,7 @@ func (h *Handler) detectedFieldsPeek(w http.ResponseWriter, r *http.Request, rou
 		return nil, 0, false
 	}
 
-	sqlStr, args, err := buildDetectedFieldsSQL(h.Schema, h.Strategies.Load().Logs, matchers, start, end, lineLimit)
+	sqlStr, args, err := buildDetectedFieldsSQL(h.Schema, h.logsStrategies(r.Context()), matchers, start, end, lineLimit)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return nil, 0, false

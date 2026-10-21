@@ -129,7 +129,7 @@ func (h *Handler) execMetricsRangeHistogram(
 	}
 	wrapped := wrapHistogramForSample(rw, hist)
 
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable, strategies: h.tracesStrategies()}, wrapped, engine.Meta{
+	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable, strategies: h.tracesStrategies(ctx)}, wrapped, engine.Meta{
 		IsMetric:      true,
 		ResponseShape: shape,
 	})
@@ -209,7 +209,7 @@ func (h *Handler) runMetricsWindow(
 	// metricsLang.ProjectSamples is a passthrough (the Sample
 	// projection is already wrapped above) so engine.QueryPlan runs
 	// optimize → emit → execute without re-wrapping the shape.
-	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable, strategies: h.tracesStrategies()}, wrapped, engine.Meta{
+	res, qerr := h.Engine.QueryPlan(ctx, metricsLang{spansTable: h.Schema.SpansTable, strategies: h.tracesStrategies(ctx)}, wrapped, engine.Meta{
 		IsMetric:      true,
 		ResponseShape: shape,
 	})
@@ -252,7 +252,11 @@ func (h *Handler) attachMetricsExemplars(
 	rw *chplan.RangeWindow,
 	metrics *chplan.MetricsAggregate,
 ) {
-	exSQL, exArgs, exScans, exErr := chsql.EmitMetricsExemplars(ctx, rw, metrics,
+	// The exemplars statement is emitted here, not through the engine, so the
+	// request's traces strategies are stamped on its emit ctx directly: a
+	// JSON-typed attribute column must render JSON paths here exactly as it
+	// does in the matrix query beside it.
+	exSQL, exArgs, exScans, exErr := chsql.EmitMetricsExemplars(chsql.WithSchemaStrategies(ctx, h.tracesStrategies(ctx)), rw, metrics,
 		h.Schema.TraceIDColumn, h.Schema.SpanIDColumn, exemplarsPerSeries, h.Schema.SpansTable)
 	if exErr != nil {
 		h.Logger.Warn("cerberus tempo metrics exemplars emit failed (matrix returns without exemplars)", "err", exErr)

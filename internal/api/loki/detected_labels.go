@@ -85,7 +85,7 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sqlStr, args, err := buildDetectedLabelsSQL(h.Schema, h.Strategies.Load().Logs, matchers, start, end)
+	sqlStr, args, err := buildDetectedLabelsSQL(h.Schema, h.logsStrategies(r.Context()), matchers, start, end)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return

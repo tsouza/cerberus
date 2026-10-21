@@ -86,7 +86,7 @@ type Lang struct {
 // under; internal/engine threads them onto the request's emit context.
 // Returns the chplan type rather than importing chsql: logql may not depend
 // on chsql (.go-arch-lint.yml).
-func (l *Lang) EmitSchemaStrategies() chplan.SchemaStrategies { return l.Strategies }
+func (l *Lang) EmitSchemaStrategies(context.Context) chplan.SchemaStrategies { return l.Strategies }
 
 // errorTypes mirrors the Loki errorType vocabulary the handler emits.
 // Duplicated here (not re-imported from internal/api/loki) so the LogQL

@@ -7,6 +7,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 )
 
 func TestProbeQuerySettings(t *testing.T) {
@@ -16,7 +17,7 @@ func TestProbeQuerySettings(t *testing.T) {
 	)
 	plan := tempoSearchRecentPlan(queryLimit)
 	rules := SettingsRules{LazyMaterialization: true}
-	probe := ProbeQuerySettings(plan, rules, memoryCap)
+	probe := ProbeQuerySettings(plan, rules, memoryCap, chsql.SchemaStrategies{})
 	if got := probe.Settings[settingQueryPlanOptimizeLazyMaterialization]; got != 1 {
 		t.Errorf("lazy materialization = %v, want 1", got)
 	}
@@ -29,22 +30,22 @@ func TestProbeQuerySettings(t *testing.T) {
 	if got := probe.Settings[settingMaxBytesBeforeExternalGroupBy]; got != memoryCap/spillCapDenominator {
 		t.Errorf("group-by spill threshold = %v, want %d", got, memoryCap/spillCapDenominator)
 	}
-	if got := ProbeQuerySettings(plan, SettingsRules{}, memoryCap).Settings[settingQueryPlanOptimizeLazyMaterialization]; got != nil {
+	if got := ProbeQuerySettings(plan, SettingsRules{}, memoryCap, chsql.SchemaStrategies{}).Settings[settingQueryPlanOptimizeLazyMaterialization]; got != nil {
 		t.Errorf("disabled lazy materialization = %v, want absent", got)
 	}
-	if got := ProbeQuerySettings(&chplan.Scan{Table: "otel_traces"}, rules, memoryCap).Settings[settingQueryPlanOptimizeLazyMaterialization]; got != nil {
+	if got := ProbeQuerySettings(&chplan.Scan{Table: "otel_traces"}, rules, memoryCap, chsql.SchemaStrategies{}).Settings[settingQueryPlanOptimizeLazyMaterialization]; got != nil {
 		t.Errorf("ineligible lazy materialization = %v, want absent", got)
 	}
 	t.Run("native grid setting", func(t *testing.T) {
 		native := &chplan.RangeWindowGridNative{Input: &chplan.Scan{Table: "otel_metrics_sum"}}
-		if got := ProbeQuerySettings(native, SettingsRules{}, memoryCap).Settings[chclient.SettingExperimentalTSGridAggregate]; got != 1 {
+		if got := ProbeQuerySettings(native, SettingsRules{}, memoryCap, chsql.SchemaStrategies{}).Settings[chclient.SettingExperimentalTSGridAggregate]; got != 1 {
 			t.Errorf("native grid setting = %v, want 1", got)
 		}
 	})
 	t.Run("independent result maps", func(t *testing.T) {
-		want := ProbeQuerySettings(plan, rules, memoryCap)
+		want := ProbeQuerySettings(plan, rules, memoryCap, chsql.SchemaStrategies{})
 		probe.Settings[settingQueryPlanOptimizeLazyMaterialization] = 0
-		if got := ProbeQuerySettings(plan, rules, memoryCap); !reflect.DeepEqual(got, want) {
+		if got := ProbeQuerySettings(plan, rules, memoryCap, chsql.SchemaStrategies{}); !reflect.DeepEqual(got, want) {
 			t.Errorf("probe mutation leaked: got %+v, want %+v", got, want)
 		}
 	})

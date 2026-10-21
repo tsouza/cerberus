@@ -79,7 +79,7 @@ func (h *Handler) handleIndexVolume(w http.ResponseWriter, r *http.Request) {
 	matchers = append(matchers, targetLabelPresenceMatchers(targetLabels, matchers)...)
 	keyLabels := volumeKeyLabels(targetLabels, matchers, aggregateBy)
 
-	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.Strategies.Load().Logs, matchers, start, end, limit, keyLabels, aggregateBy)
+	sqlStr, args, err := buildIndexVolumeSQL(h.Schema, h.logsStrategies(r.Context()), matchers, start, end, limit, keyLabels, aggregateBy)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return

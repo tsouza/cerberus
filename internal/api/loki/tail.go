@@ -201,12 +201,13 @@ func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.runTailLoop(r.Context(), conn, tailLoopCfg{
-		matchers: matchers,
-		schema:   h.Schema,
-		cursor:   start,
-		delayFor: delayFor,
-		limit:    limit,
-		tx:       tx,
+		matchers:   matchers,
+		schema:     h.Schema,
+		strategies: h.logsStrategies(r.Context()),
+		cursor:     start,
+		delayFor:   delayFor,
+		limit:      limit,
+		tx:         tx,
 	})
 }
 
@@ -216,10 +217,13 @@ func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
 type tailLoopCfg struct {
 	matchers []*labels.Matcher
 	schema   schema.Logs
-	cursor   time.Time
-	delayFor time.Duration
-	limit    int
-	tx       lineTransform
+	// strategies are the logs SchemaStrategies the tail request took when it
+	// connected; every poll renders under them.
+	strategies chsql.SchemaStrategies
+	cursor     time.Time
+	delayFor   time.Duration
+	limit      int
+	tx         lineTransform
 }
 
 // runTailLoop is the polling driver. It ticks every tailPollInterval,
@@ -261,7 +265,7 @@ func (h *Handler) runTailLoop(ctx context.Context, conn *websocket.Conn, cfg tai
 			continue
 		}
 
-		sqlStr, args, err := buildTailSQL(cfg.schema, cfg.matchers, cursor, end, cfg.limit)
+		sqlStr, args, err := buildTailSQL(cfg.schema, cfg.strategies, cfg.matchers, cursor, end, cfg.limit)
 		if err != nil {
 			h.Logger.Error("cerberus loki tail buildSQL failed", "err", err)
 			return
@@ -376,16 +380,23 @@ func writeTailCapClose(conn *websocket.Conn, writeTimeout time.Duration) {
 // chclient.LogRow. All identifiers and time-range bounds flow through
 // chsql.QueryBuilder — no fmt.Sprintf-on-SQL.
 //
+// The statement renders under strategies, so a JSON-typed resource
+// attribute column is matched by its JSON paths and projected as the Map
+// the row decoder reads (attrMapFrag).
+//
 // Rows are sorted ascending so the runTailLoop cursor-advance logic
 // picks the genuinely latest sample. Without ORDER BY the LIMIT could
 // truncate to an arbitrary subset and the cursor would skip over rows
 // that arrive on the next poll.
-func buildTailSQL(s schema.Logs, matchers []*labels.Matcher, cursor, end time.Time, limit int) (string, []any, error) {
+func buildTailSQL(
+	s schema.Logs, strategies chsql.SchemaStrategies, matchers []*labels.Matcher, cursor, end time.Time, limit int,
+) (string, []any, error) {
 	pred := logql.SelectorPredicate(matchers, s)
 	sb := chsql.NewQuery().
+		WithSchemaStrategies(strategies).
 		Select(
 			chsql.As(chsql.Col(s.BodyColumn), logql.LogLineColumn),
-			chsql.As(chsql.Col(s.ResourceAttributesColumn), "Attributes"),
+			chsql.As(attrMapFrag(strategies.Attrs, s.ResourceAttributesColumn), "Attributes"),
 			chsql.As(chsql.Col(s.TimestampColumn), "TimeUnix"),
 		).
 		From(chsql.Col(s.LogsTable))

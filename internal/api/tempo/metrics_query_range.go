@@ -206,7 +206,9 @@ func (l metricsLang) SpansTable() string { return l.spansTable }
 // EmitSchemaStrategies reports the strategies the metrics-pipeline plan
 // renders under, exactly like traceqlLang.EmitSchemaStrategies — see this
 // type's own doc for why the metrics pipeline needs it.
-func (l metricsLang) EmitSchemaStrategies() chsql.SchemaStrategies { return l.strategies }
+func (l metricsLang) EmitSchemaStrategies(context.Context) chsql.SchemaStrategies {
+	return l.strategies
+}
 
 func (metricsLang) Parse(_ context.Context, _ string) (chplan.Node, engine.Meta, error) {
 	// Engine.QueryPlan never calls Parse; the error keeps the adapter

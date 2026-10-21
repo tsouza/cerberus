@@ -541,7 +541,7 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string, start,
 
 	var out []chclient.MetricMetaRow
 	for _, spec := range specs {
-		sql, args, physicalScans := h.metricMetaSQL(spec.table, metricName, spec.monotonic, start, end, nowAnchored)
+		sql, args, physicalScans := h.metricMetaSQL(ctx, spec.table, metricName, spec.monotonic, start, end, nowAnchored)
 		// Engine bypass: one table per spec today, counted so a widened
 		// statement can never under-charge the data-shard fan-out gate.
 		rows, err := h.Client.QueryMetricMeta(chclient.WithDataShardFanoutMultiplier(ctx, physicalScans), sql, spec.kind, args...)
@@ -624,7 +624,7 @@ func monotonicPred(col string, monotonic, nowAnchored bool) (pred chsql.Frag, us
 	return pred, nowAnchored
 }
 
-func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool, start, end time.Time, nowAnchored bool) (string, []any, int) {
+func (h *Handler) metricMetaSQL(ctx context.Context, table, metricName string, monotonic *bool, start, end time.Time, nowAnchored bool) (string, []any, int) {
 	nameCol := h.Schema.MetricNameColumn
 	descCol := h.Schema.MetricDescriptionColumn
 	unitCol := h.Schema.MetricUnitColumn
@@ -639,10 +639,10 @@ func (h *Handler) metricMetaSQL(table, metricName string, monotonic *bool, start
 		GroupBy(chsql.Col(nameCol))
 
 	if nowAnchored {
-		if since := h.metadataSincePred(start); since != nil {
+		if since := h.metadataSincePred(ctx, start); since != nil {
 			sb.Having(since)
 		}
-	} else if pred := h.metadataWindowPred(start, end); pred != nil {
+	} else if pred := h.metadataWindowPred(ctx, start, end); pred != nil {
 		sb.Where(pred)
 	}
 
@@ -786,7 +786,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) fetchLabelNames(ctx context.Context, start, end time.Time, nowAnchored bool) ([]string, error) {
 	names, err := timeCH(ctx, func() ([]string, error) {
 		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any, int) {
-			sql, physicalScans := h.unionLabelNamesSQL(tables, start, end, nowAnchored)
+			sql, physicalScans := h.unionLabelNamesSQL(ctx, tables, start, end, nowAnchored)
 			return sql, nil, physicalScans
 		})
 	})
@@ -815,7 +815,7 @@ func (h *Handler) fetchLabelNames(ctx context.Context, start, end time.Time, now
 func (h *Handler) fetchResourceLabelNames(ctx context.Context, start, end time.Time) ([]string, error) {
 	resNames, err := timeCH(ctx, func() ([]string, error) {
 		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any, int) {
-			sql, physicalScans := h.unionResourceLabelNamesSQL(tables, start, end)
+			sql, physicalScans := h.unionResourceLabelNamesSQL(ctx, tables, start, end)
 			return sql, nil, physicalScans
 		})
 	})
@@ -848,7 +848,7 @@ func (h *Handler) fetchLabelValues(ctx context.Context, name string, start, end 
 	}
 	values, err := timeCH(ctx, func() ([]string, error) {
 		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any, int) {
-			return h.unionLabelValuesSQL(tables, name, start, end, nowAnchored)
+			return h.unionLabelValuesSQL(ctx, tables, name, start, end, nowAnchored)
 		})
 	})
 	if err != nil {
@@ -897,7 +897,7 @@ func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Tim
 	if len(bareTables) > 0 {
 		bare, err := timeCH(ctx, func() ([]string, error) {
 			return h.queryStringsDegradingUnknownTable(ctx, bareTables, func(tables []string) (string, []any, int) {
-				sql, physicalScans := h.metricNamesSQL(tables, start, end, nowAnchored)
+				sql, physicalScans := h.metricNamesSQL(ctx, tables, start, end, nowAnchored)
 				return sql, nil, physicalScans
 			})
 		})
@@ -956,7 +956,7 @@ func (h *Handler) histogramBaseNames(ctx context.Context, start, end time.Time, 
 	}
 	names, err := timeCH(ctx, func() ([]string, error) {
 		return h.queryStringsDegradingUnknownTable(ctx, []string{histogramTable}, func(tables []string) (string, []any, int) {
-			sql, physicalScans := h.metricNamesSQL(tables, start, end, nowAnchored)
+			sql, physicalScans := h.metricNamesSQL(ctx, tables, start, end, nowAnchored)
 			return sql, nil, physicalScans
 		})
 	})
@@ -1244,7 +1244,7 @@ func (h *Handler) catalogMatcherSQL(
 		return "", nil, 0, &apiError{Kind: ErrBadData, Err: err, Status: http.StatusBadRequest}
 	}
 	plan = h.Optimizer.Run(ctx, plan)
-	sql, args, physicalScans, err = chsql.EmitCounted(chsql.WithSchemaStrategies(ctx, h.metricsStrategies()), plan)
+	sql, args, physicalScans, err = chsql.EmitCounted(chsql.WithSchemaStrategies(ctx, h.metricsStrategies(ctx)), plan)
 	if err != nil {
 		return "", nil, 0, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
@@ -1550,7 +1550,7 @@ func (h *Handler) seriesMatcherSQL(ctx context.Context, matcher string, start, e
 		return "", nil, 0, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
 	plan = h.Optimizer.Run(ctx, plan)
-	sql, args, physicalScans, err = chsql.EmitCounted(chsql.WithSchemaStrategies(ctx, h.metricsStrategies()), plan)
+	sql, args, physicalScans, err = chsql.EmitCounted(chsql.WithSchemaStrategies(ctx, h.metricsStrategies(ctx)), plan)
 	if err != nil {
 		return "", nil, 0, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError}
 	}
@@ -1624,10 +1624,10 @@ func (h *Handler) resourceLabelValueArmActive(promLabel string) bool {
 // ONE shape keeps the mapKeys(...) spelling rather than the <col>.keys
 // subcolumn form arrayJoinMapKeysFrag uses everywhere else. A user-supplied
 // finite window keeps the exact WHERE-bounded scan.
-func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowAnchored bool) (sql string, physicalScans int) {
+func (h *Handler) unionLabelNamesSQL(ctx context.Context, tables []string, start, end time.Time, nowAnchored bool) (sql string, physicalScans int) {
 	attrsCol := h.Schema.AttributesColumn
 	metricCol := h.Schema.MetricNameColumn
-	pred := h.metadataWindowPred(start, end)
+	pred := h.metadataWindowPred(ctx, start, end)
 	nameFrag := arrayJoinMapKeysFrag(attrsCol)
 	if nowAnchored {
 		nameFrag = arrayJoinMapKeysLegacyFrag(attrsCol)
@@ -1639,7 +1639,7 @@ func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowA
 			From(chsql.PhysicalTable(t))
 		if nowAnchored {
 			arm = arm.GroupBy(chsql.Col(metricCol), chsql.Col(attrsCol))
-			if since := h.metadataSincePred(start); since != nil {
+			if since := h.metadataSincePred(ctx, start); since != nil {
 				arm = arm.Having(since)
 			}
 		} else if pred != nil {
@@ -1661,9 +1661,9 @@ func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowA
 // sanitizes + allowlist-filters in Go (cheaper than an N-key SQL IN over
 // every row's map, and it keeps the Attributes union byte-identical so the
 // promote-all default adds no churn to existing fixtures).
-func (h *Handler) unionResourceLabelNamesSQL(tables []string, start, end time.Time) (sql string, physicalScans int) {
+func (h *Handler) unionResourceLabelNamesSQL(ctx context.Context, tables []string, start, end time.Time) (sql string, physicalScans int) {
 	resCol := h.Schema.ResourceAttributesColumn
-	pred := h.metadataWindowPred(start, end)
+	pred := h.metadataWindowPred(ctx, start, end)
 	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
 		arm := chsql.NewQuery().
@@ -1696,7 +1696,7 @@ func (h *Handler) unionResourceLabelNamesSQL(tables []string, start, end time.Ti
 // compares Unix nanoseconds rather than a clamped time literal. Returns
 // nil when no bound remains (no WHERE emitted, the inherent exact answer
 // when the caller supplies no window).
-func (h *Handler) metadataWindowPred(start, end time.Time) chsql.Frag {
+func (h *Handler) metadataWindowPred(ctx context.Context, start, end time.Time) chsql.Frag {
 	ts := chsql.Col(h.Schema.TimestampColumn)
 	var bounds []chsql.Frag
 	if b, ok := chplan.AtLeastBound(start); ok && !start.IsZero() {
@@ -1709,9 +1709,9 @@ func (h *Handler) metadataWindowPred(start, end time.Time) chsql.Frag {
 	case 0:
 		return nil
 	case 1:
-		return chsql.UnderSchemaStrategies(h.metricsStrategies(), bounds[0])
+		return chsql.UnderSchemaStrategies(h.metricsStrategies(ctx), bounds[0])
 	default:
-		return chsql.UnderSchemaStrategies(h.metricsStrategies(), chsql.And(bounds...))
+		return chsql.UnderSchemaStrategies(h.metricsStrategies(ctx), chsql.And(bounds...))
 	}
 }
 
@@ -1720,12 +1720,12 @@ func (h *Handler) metadataWindowPred(start, end time.Time) chsql.Frag {
 // [start, now] exactly when its latest sample is at or after start. It
 // takes the exact form [chplan.AtLeastBound] gives it, and it is nil when
 // start is zero or no stored sample can lie before it.
-func (h *Handler) metadataSincePred(start time.Time) chsql.Frag {
+func (h *Handler) metadataSincePred(ctx context.Context, start time.Time) chsql.Frag {
 	b, ok := chplan.AtLeastBound(start)
 	if !ok || start.IsZero() {
 		return nil
 	}
-	return chsql.UnderSchemaStrategies(h.metricsStrategies(), chsql.TimeBound(chsql.Call("max", chsql.Col(h.Schema.TimestampColumn)), b))
+	return chsql.UnderSchemaStrategies(h.metricsStrategies(ctx), chsql.TimeBound(chsql.Call("max", chsql.Col(h.Schema.TimestampColumn)), b))
 }
 
 // metricNamesSQL returns the distinct MetricName values across the
@@ -1756,7 +1756,7 @@ func (h *Handler) metadataSincePred(start time.Time) chsql.Frag {
 //     straddle but skip the window would be a false positive), and the
 //     request's own range is where MergeTree partition pruning already bounds
 //     the scan.
-func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAnchored bool) (sql string, physicalScans int) {
+func (h *Handler) metricNamesSQL(ctx context.Context, tables []string, start, end time.Time, nowAnchored bool) (sql string, physicalScans int) {
 	metricCol := h.Schema.MetricNameColumn
 	parts := make([]chsql.Frag, 0, len(tables))
 	if nowAnchored {
@@ -1765,13 +1765,13 @@ func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAncho
 				Select(chsql.As(chsql.Col(metricCol), "value")).
 				From(chsql.PhysicalTable(t)).
 				GroupBy(chsql.Col(metricCol))
-			if since := h.metadataSincePred(start); since != nil {
+			if since := h.metadataSincePred(ctx, start); since != nil {
 				arm = arm.Having(since)
 			}
 			parts = append(parts, arm.Frag())
 		}
 	} else {
-		pred := h.metadataWindowPred(start, end)
+		pred := h.metadataWindowPred(ctx, start, end)
 		for _, t := range tables {
 			arm := chsql.NewQuery().
 				Select(chsql.As(distinctIdent(metricCol), "value")).
@@ -1806,13 +1806,13 @@ func (h *Handler) metricNamesSQL(tables []string, start, end time.Time, nowAncho
 // Mirrors the matcher-side `attributeLookup` chain in
 // `internal/promql/lower.go`: both query and listing surfaces now
 // resolve the same Prom-grammar → OTel-key candidates the same way.
-func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end time.Time, nowAnchored bool) (string, []any, int) {
+func (h *Handler) unionLabelValuesSQL(ctx context.Context, tables []string, name string, start, end time.Time, nowAnchored bool) (string, []any, int) {
 	attrsCol := h.Schema.AttributesColumn
 	metricCol := h.Schema.MetricNameColumn
 	candidates := labelValueCandidates(name)
 	resCol := h.Schema.ResourceAttributesColumn
 	resourceArm := h.resourceLabelValueArmActive(name)
-	pred := h.metadataWindowPred(start, end)
+	pred := h.metadataWindowPred(ctx, start, end)
 	// nowAnchoredAttrsArm builds the Attributes-map arm for the windowless
 	// (Grafana variable-refresh) request shape: the grouped form
 	// `GROUP BY MetricName, Attributes HAVING max(TimeUnix) >= start` routes
@@ -1829,7 +1829,7 @@ func (h *Handler) unionLabelValuesSQL(tables []string, name string, start, end t
 			From(chsql.PhysicalTable(t)).
 			GroupBy(chsql.Col(metricCol), chsql.Col(attrsCol)).
 			Having(attrmap.NotEmpty(attrsCol, k))
-		if since := h.metadataSincePred(start); since != nil {
+		if since := h.metadataSincePred(ctx, start); since != nil {
 			arm.Having(since)
 		}
 		return arm.Frag()

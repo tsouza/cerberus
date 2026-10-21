@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -37,7 +38,7 @@ func FormatQuerySettings(plan chplan.Node) string {
 		Metrics:                    schema.DefaultOTelMetrics(),
 		Logs:                       schema.DefaultOTelLogs(),
 		Traces:                     schema.DefaultOTelTraces(),
-	}, probeQueryMemoryCap)
+	}, probeQueryMemoryCap, chsql.SchemaStrategies{})
 	sort.Strings(probe.EnabledOpts)
 	lines := []string{"enabled_opts=" + strings.Join(probe.EnabledOpts, ",")}
 	for key, value := range probe.Settings {

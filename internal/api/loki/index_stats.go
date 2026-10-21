@@ -55,7 +55,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sqlStr, args, err := buildIndexStatsSQL(h.Schema, h.Strategies.Load().Logs, matchers, start, end)
+	sqlStr, args, err := buildIndexStatsSQL(h.Schema, h.logsStrategies(r.Context()), matchers, start, end)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return

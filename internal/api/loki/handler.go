@@ -152,9 +152,10 @@ type Handler struct {
 	// Strategies holds the chsql.SchemaStrategies the boot requirements
 	// check resolved for every signal's tables, wired in cmd/cerberus and
 	// updated by the schema re-probe when the tables appear after boot.
-	// Each request loads the logs ones once: langForRequest /
-	// langForRangeRequest copy them onto the per-request *logql.Lang, and
-	// the metadata builders thread them onto every QueryBuilder they build
+	// Each request takes one snapshot of the logs ones when it enters the
+	// handler (Mount, logsStrategies): langForRequest / langForRangeRequest
+	// copy it onto the per-request *logql.Lang, and the metadata and tail
+	// builders thread it onto every QueryBuilder they build
 	// (attr_strategy.go). A nil cell loads the zero value, which renders
 	// every logs attribute column as a Map.
 	Strategies *chsql.SchemaStrategiesCell
@@ -210,6 +211,22 @@ func New(client Querier, s schema.Logs, logger *slog.Logger) *Handler {
 	}
 }
 
+// logsStrategies returns the logs SchemaStrategies a request renders under:
+// the snapshot withRequestStrategies took when the request entered the
+// handler, or what Strategies holds now for a ctx that carries none.
+func (h *Handler) logsStrategies(ctx context.Context) chsql.SchemaStrategies {
+	return h.Strategies.RequestStrategies(ctx, chsql.SignalLogs)
+}
+
+// withRequestStrategies wraps hf so the request it serves carries one
+// snapshot of the logs SchemaStrategies, which every statement it emits
+// renders under.
+func (h *Handler) withRequestStrategies(hf http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hf(w, r.WithContext(h.Strategies.WithRequestStrategies(r.Context(), chsql.SignalLogs)))
+	}
+}
+
 // Mount registers the Loki-compatible endpoints under /loki/api/v1/ on
 // mux. Query + range + index/stats + index/volume cover the data-plane;
 // the metadata endpoints (/labels, /label/{name}/values, /series,
@@ -229,7 +246,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// cerberus.queries.*. See prom.Handler.Mount for the full layering
 	// note.
 	registerWith := func(limiter *admit.Limiter, pattern string, hf http.HandlerFunc) {
-		mux.Handle(pattern, limiter.Middleware(1, telemetry.QueryMiddleware("logql", panicEnvelope, hf)))
+		mux.Handle(pattern, limiter.Middleware(1, telemetry.QueryMiddleware("logql", panicEnvelope, h.withRequestStrategies(hf))))
 	}
 	// register mounts an ordinary, short-lived Loki route on the shared
 	// request budget (CERBERUS_ADMIT_LOKI). /tail is the one route that
@@ -276,7 +293,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// #2048). handleTail therefore acquires TailLimiter itself, after
 	// Upgrade succeeds; mounting it bypasses registerWith so the standard
 	// admission wrapper cannot double-gate the same budget beforehand.
-	mux.Handle("GET /loki/api/v1/tail", telemetry.QueryMiddleware("logql", panicEnvelope, http.HandlerFunc(h.handleTail)))
+	mux.Handle("GET /loki/api/v1/tail", telemetry.QueryMiddleware("logql", panicEnvelope, h.withRequestStrategies(h.handleTail)))
 	// Format-query + build-info probes. Grafana's Loki datasource hits
 	// /status/buildinfo on every page load to gate feature flags
 	// (LogQL editor capabilities, label-browser presence) and uses
@@ -431,7 +448,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	// see [qlcommon.InstantLookback]'s doc. Upstream's instant handler
 	// 400s a log selector outright, and its own 30s
 	// `max_look_back_period` is unreachable from HTTP.
-	res, err := h.Engine.Query(ctx, h.langForRequest(ts.Add(-qlcommon.InstantLookback), ts, limit, dir), q)
+	res, err := h.Engine.Query(ctx, h.langForRequest(ctx, ts.Add(-qlcommon.InstantLookback), ts, limit, dir), q)
 	if err != nil {
 		h.respondError(r.Context(), w, classifyEngineErr(err))
 		return
@@ -516,7 +533,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cancel()
 
-	res, err := h.Engine.Query(ctx, h.langForRangeRequest(start, end, step, limit, dir), q)
+	res, err := h.Engine.Query(ctx, h.langForRangeRequest(ctx, start, end, step, limit, dir), q)
 	if err != nil {
 		h.respondError(r.Context(), w, classifyEngineErr(err))
 		return
@@ -554,7 +571,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 // metric query, which the handler doesn't know it's building until the
 // lowering classifies the parsed expression — since
 // maybePushLogLineLimit only ever engages for a genuine log-line plan.
-func (h *Handler) langForRequest(start, end time.Time, limit int, dir logDirection) *logql.Lang {
+func (h *Handler) langForRequest(ctx context.Context, start, end time.Time, limit int, dir logDirection) *logql.Lang {
 	return &logql.Lang{
 		Schema:              h.Schema,
 		Start:               start,
@@ -562,7 +579,7 @@ func (h *Handler) langForRequest(start, end time.Time, limit int, dir logDirecti
 		TextIndexLineFilter: h.TextIndexLineFilter,
 		LogLineLimit:        int64(limit),
 		LogLineBackward:     dir == directionBackward,
-		Strategies:          h.Strategies.Load().Logs,
+		Strategies:          h.logsStrategies(ctx),
 	}
 }
 
@@ -620,7 +637,7 @@ func parseQueryRangeStep(raw string, start, end time.Time) (time.Duration, error
 // `now64(9)`. Log queries also use this entry point — Step is harmless
 // on the non-metric path since lowerCtx.rangeMode() only fires inside
 // the range-aggregation lowering.
-func (h *Handler) langForRangeRequest(start, end time.Time, step time.Duration, limit int, dir logDirection) *logql.Lang {
+func (h *Handler) langForRangeRequest(ctx context.Context, start, end time.Time, step time.Duration, limit int, dir logDirection) *logql.Lang {
 	return &logql.Lang{
 		Schema:              h.Schema,
 		Start:               start,
@@ -629,7 +646,7 @@ func (h *Handler) langForRangeRequest(start, end time.Time, step time.Duration, 
 		TextIndexLineFilter: h.TextIndexLineFilter,
 		LogLineLimit:        int64(limit),
 		LogLineBackward:     dir == directionBackward,
-		Strategies:          h.Strategies.Load().Logs,
+		Strategies:          h.logsStrategies(ctx),
 	}
 }
 

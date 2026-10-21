@@ -50,7 +50,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sqlStr, args, physicalScans, err := buildLabelValuesSQL(h.Schema, h.Strategies.Load().Logs, name, matchers, start, end)
+	sqlStr, args, physicalScans, err := buildLabelValuesSQL(h.Schema, h.logsStrategies(r.Context()), name, matchers, start, end)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return

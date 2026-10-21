@@ -6,6 +6,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -276,9 +277,10 @@ type SettingsRules struct {
 
 	// Metrics / Traces / Logs are the schema instances whose SortingKeyPrefix
 	// the aggregation-in-order eligibility check reads to map a scanned table
-	// name to its bare-column sort-key prefix. They mirror the same schema the
-	// query heads read; a renamed table simply fails to match and the setting
-	// is not stamped (fail-safe).
+	// name to its bare-column sort-key prefix when the request's
+	// SchemaStrategies carry no deployed key for it. They mirror the same
+	// schema the query heads read; a renamed table simply fails to match and
+	// the setting is not stamped (fail-safe).
 	Metrics schema.Metrics
 	Traces  schema.Traces
 	Logs    schema.Logs
@@ -348,7 +350,10 @@ func (r SettingsRules) now() time.Time {
 // enumerates every rule pair for this class of collision.
 func (r SettingsRules) applyFacts(ctx context.Context, f planShapeFacts) context.Context {
 	analyzerHazard := f.nativeHistogramAnalyzerHazard
-	if r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(f) {
+	// The request's SchemaStrategies (on ctx since the entry point that
+	// lowered the plan) carry the sorting keys of the deployed tables.
+	strategies, _ := chsql.SchemaStrategiesFromContext(ctx)
+	if r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(f, strategies) {
 		ctx = chclient.WithQuerySetting(ctx, settingOptimizeAggregationInOrder, 1)
 	}
 	if r.ConditionCache && !analyzerHazard && predicateStableForConditionCache(f) {
@@ -838,8 +843,10 @@ func EligibleForLazyMaterialization(plan chplan.Node) (limit int64, ok bool) {
 //     no second Scan from a join). A union/join has no single sort key to be
 //     a prefix of.
 //   - the GROUP BY column-name sequence is an ordered prefix of that table's
-//     schema SortingKeyPrefix.
-func (r SettingsRules) eligibleForAggregationInOrder(f planShapeFacts) bool {
+//     sorting key (sortingKeyPrefixFor): the one the deployed table carries,
+//     as the request's SchemaStrategies report it, else the one cerberus
+//     provisions.
+func (r SettingsRules) eligibleForAggregationInOrder(f planShapeFacts, strategies chsql.SchemaStrategies) bool {
 	agg, ok := f.singleAggregate()
 	if !ok {
 		return false
@@ -852,7 +859,7 @@ func (r SettingsRules) eligibleForAggregationInOrder(f planShapeFacts) bool {
 	if !ok {
 		return false
 	}
-	sortKey := r.sortingKeyPrefixFor(table)
+	sortKey := r.sortingKeyPrefixFor(table, strategies)
 	return isOrderedPrefix(groupCols, sortKey)
 }
 
@@ -949,10 +956,16 @@ func bareGroupByColumns(agg *chplan.Aggregate) (cols []string, ok bool) {
 }
 
 // sortingKeyPrefixFor maps a scanned table name to its bare-column
-// sorting-key prefix using the configured schema. An unknown table (renamed,
-// or a table cerberus doesn't model the sort key for) returns nil, so the
-// prefix check fails closed and the setting is not stamped.
-func (r SettingsRules) sortingKeyPrefixFor(table string) []string {
+// sorting-key prefix. The deployed key the boot requirements check read for
+// the table (strategies.SortingKeyPrefixes) wins; a table it did not read
+// falls back to the key cerberus provisions it with, from the configured
+// schema. An unknown table (renamed, or a table cerberus doesn't model the
+// sort key for) returns nil, so the prefix check fails closed and the
+// setting is not stamped.
+func (r SettingsRules) sortingKeyPrefixFor(table string, strategies chsql.SchemaStrategies) []string {
+	if deployed, ok := strategies.SortingKeyPrefixes[table]; ok {
+		return deployed
+	}
 	switch table {
 	case r.Metrics.GaugeTable, r.Metrics.SumTable, r.Metrics.HistogramTable,
 		r.Metrics.ExpHistogramTable, r.Metrics.SummaryTable:

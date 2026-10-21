@@ -431,6 +431,33 @@ func (c *Client) QueryStrings(ctx context.Context, query string, args ...any) ([
 	return out, nil
 }
 
+// QueryNameTypePairs runs sql and decodes a two-string-column result into
+// chclient.NameTypePair tuples, the shape the boot requirements check reads
+// system.columns and system.tables through.
+func (c *Client) QueryNameTypePairs(ctx context.Context, query string, args ...any) ([]chclient.NameTypePair, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	rows, err := c.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chclienttest: query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []chclient.NameTypePair
+	for rows.Next() {
+		var p chclient.NameTypePair
+		if err := rows.Scan(&p.Name, &p.Type); err != nil {
+			return nil, fmt.Errorf("chclienttest: scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
+		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // QueryDetectedFieldRows runs sql and decodes a (String, Map, Map, Map,
 // Map) five-column result set into chclient.DetectedFieldRow tuples.
 // Used by /loki/api/v1/detected_fields and

@@ -39,10 +39,18 @@ func WithSchemaStrategies(ctx context.Context, s SchemaStrategies) context.Conte
 	return context.WithValue(ctx, schemaStrategiesCtxKey{}, s)
 }
 
+// SchemaStrategiesFromContext reads the SchemaStrategies WithSchemaStrategies
+// set on ctx, and reports whether it was ever called; the value is the zero
+// value when it was not.
+func SchemaStrategiesFromContext(ctx context.Context) (SchemaStrategies, bool) {
+	s, ok := ctx.Value(schemaStrategiesCtxKey{}).(SchemaStrategies)
+	return s, ok
+}
+
 // schemaStrategiesFromCtx reads the SchemaStrategies WithSchemaStrategies
 // set, or the zero value when it was never called.
 func schemaStrategiesFromCtx(ctx context.Context) SchemaStrategies {
-	s, _ := ctx.Value(schemaStrategiesCtxKey{}).(SchemaStrategies)
+	s, _ := SchemaStrategiesFromContext(ctx)
 	return s
 }
 
@@ -75,8 +83,9 @@ type ResolvedSchemaStrategies struct {
 // requirements check resolved; a check that ran before the tables existed
 // stores the value its background re-probe resolves once they appear,
 // before the process reports ready. Every head Loads it once per request,
-// concurrently with that Store. A nil cell, or one never stored, loads the
-// zero value.
+// concurrently with that Store, and renders every statement of that request
+// under the one value it loaded (WithSchemaStrategies on the request
+// context). A nil cell, or one never stored, loads the zero value.
 type SchemaStrategiesCell struct {
 	p atomic.Pointer[ResolvedSchemaStrategies]
 }
@@ -102,3 +111,45 @@ func (c *SchemaStrategiesCell) Load() ResolvedSchemaStrategies {
 // Store replaces the strategies the cell holds. r's AttrStrategies maps are
 // shared with every later Load and must not be mutated afterwards.
 func (c *SchemaStrategiesCell) Store(r ResolvedSchemaStrategies) { c.p.Store(&r) }
+
+// Signal names the telemetry signal whose SchemaStrategies a head renders
+// under.
+type Signal int
+
+// The signals of ResolvedSchemaStrategies.
+const (
+	SignalMetrics Signal = iota
+	SignalLogs
+	SignalTraces
+)
+
+// For returns the SchemaStrategies of signal.
+func (r ResolvedSchemaStrategies) For(signal Signal) SchemaStrategies {
+	switch signal {
+	case SignalLogs:
+		return r.Logs
+	case SignalTraces:
+		return r.Traces
+	default:
+		return r.Metrics
+	}
+}
+
+// WithRequestStrategies loads signal's strategies from the cell once and
+// returns ctx carrying them (WithSchemaStrategies): the one snapshot every
+// statement of the request renders under, however many it emits and however
+// the schema re-probe Stores meanwhile. A head calls it where a request
+// enters it.
+func (c *SchemaStrategiesCell) WithRequestStrategies(ctx context.Context, signal Signal) context.Context {
+	return WithSchemaStrategies(ctx, c.Load().For(signal))
+}
+
+// RequestStrategies returns the strategies ctx carries — the request's
+// snapshot (WithRequestStrategies) — or, for a ctx that carries none, loads
+// signal's strategies from the cell.
+func (c *SchemaStrategiesCell) RequestStrategies(ctx context.Context, signal Signal) SchemaStrategies {
+	if s, ok := SchemaStrategiesFromContext(ctx); ok {
+		return s
+	}
+	return c.Load().For(signal)
+}

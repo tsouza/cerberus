@@ -67,36 +67,11 @@ func orderByTuple(t *testing.T, ddl string) []string {
 	return nil
 }
 
-// bareColumnPrefix applies sortingkey.go's documented rule: the LEADING run of
-// plain column references. A function-wrapped element terminates the prefix,
-// because optimize_aggregation_in_order can only exploit a GROUP BY expressed
-// over the same bare columns.
+// bareColumnPrefix applies sortingkey.go's documented rule to a parsed
+// ORDER BY tuple through SortingKeyPrefixOf, the reduction the boot probe
+// applies to a deployed table's sorting_key.
 func bareColumnPrefix(elems []string) []string {
-	out := []string{}
-	for _, e := range elems {
-		if !isBareIdentifier(e) {
-			return out
-		}
-		out = append(out, e)
-	}
-	return out
-}
-
-func isBareIdentifier(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		alpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
-		// A digit is legal in an identifier but never leads one.
-		digit := c >= '0' && c <= '9' && i > 0
-		if alpha || digit {
-			continue
-		}
-		return false
-	}
-	return true
+	return SortingKeyPrefixOf(strings.Join(elems, ", "))
 }
 
 // allMetricsTimestampPrecisions is every metrics timestamp precision schema
@@ -175,7 +150,7 @@ func TestLogsSortingKeyPrefix_EmptyBecauseTheDDLLeadsWithAFunction(t *testing.T)
 	if len(elems) == 0 {
 		t.Fatal("parsed no logs ORDER BY elements — the parser is broken, not the DDL")
 	}
-	if isBareIdentifier(elems[0]) {
+	if len(bareColumnPrefix(elems[:1])) != 0 {
 		t.Fatalf("the logs ORDER BY now LEADS with a bare column (%q); SortingKeyPrefix returns "+
 			"nil unconditionally, so optimize_aggregation_in_order would stay ineligible for logs "+
 			"that have become eligible", elems[0])
@@ -196,5 +171,44 @@ func TestMetricsSortingKeyPrefix_HonoursColumnOverrides(t *testing.T) {
 	want := []string{"Name", "Labels", "Svc"}
 	if !slices.Equal(got, want) {
 		t.Errorf("overridden metrics SortingKeyPrefix = %v; want %v", got, want)
+	}
+}
+
+// TestSortingKeyPrefixOf pins the reduction of a system.tables sorting_key
+// to its leading bare-column run, over the keys cerberus provisions and the
+// stock exporter keys a deployment may carry instead.
+func TestSortingKeyPrefixOf(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, key string
+		want      []string
+	}{
+		{
+			"cerberus metrics", "MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix)",
+			[]string{"MetricName", "Attributes", "ServiceName"},
+		},
+		{
+			"stock metrics before v0.157", "ServiceName, MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix)",
+			[]string{"ServiceName", "MetricName", "Attributes"},
+		},
+		{
+			"stock metrics from v0.157", "ServiceName, MetricName, toStartOfHour(TimeUnix), cityHash64(Attributes), TimeUnix",
+			[]string{"ServiceName", "MetricName"},
+		},
+		{"function-led key", "toStartOfFiveMinutes(Timestamp), ServiceName, Timestamp", []string{}},
+		{"comma inside a call does not split", "MetricName, tuple(a, b), ServiceName", []string{"MetricName"}},
+		{"back-quoted identifier", "`service.name`, MetricName", []string{"service.name", "MetricName"}},
+		{"expression is not bare", "MetricName, ServiceName || 'x'", []string{"MetricName"}},
+		{"leading digit is not an identifier", "1, MetricName", []string{}},
+		{"no sorting key", "", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := SortingKeyPrefixOf(tc.key)
+			if got == nil || !slices.Equal(got, tc.want) {
+				t.Errorf("SortingKeyPrefixOf(%q) = %#v, want %#v", tc.key, got, tc.want)
+			}
+		})
 	}
 }

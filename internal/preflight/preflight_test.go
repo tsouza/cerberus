@@ -39,7 +39,10 @@ func dialRefusedErr() error {
 // the configured storage policy from Volumes (or VolumesErr), and the
 // per-table system.columns read from Columns keyed by the bound table
 // name (the second positional arg the introspection SQL binds). A table
-// absent from Columns reports zero rows (== "not found").
+// absent from Columns reports zero rows (== "not found"). The system.tables
+// sorting-key read answers each table present in Columns with
+// (Engines[table] or MergeTree, SortingKeys[table]), and fails with
+// SortingKeyErr when set.
 type stubQuerier struct {
 	Version    string
 	VersionErr error
@@ -53,7 +56,20 @@ type stubQuerier struct {
 	Columns      map[string][]chclient.NameTypePair
 	ColumnsErr   error
 	NoVersionRow bool
+
+	SortingKeys   map[string]string
+	Engines       map[string]string
+	SortingKeyErr error
 }
+
+// stubMergeTreeEngine is the engine the stub reports for a table Engines
+// does not name.
+const stubMergeTreeEngine = "MergeTree"
+
+// isSortingKeyQuery reports whether sql is the system.tables sorting-key
+// read rather than the system.columns introspection; both bind (database,
+// table).
+func isSortingKeyQuery(sql string) bool { return strings.Contains(sql, "sorting_key") }
 
 func (s *stubQuerier) QueryStrings(_ context.Context, sql string, _ ...any) ([]string, error) {
 	// Both string-scalar probes land here; the storage-policy gate is the only
@@ -73,7 +89,7 @@ func (s *stubQuerier) QueryStrings(_ context.Context, sql string, _ ...any) ([]s
 	return []string{s.Version}, nil
 }
 
-func (s *stubQuerier) QueryNameTypePairs(_ context.Context, _ string, args ...any) ([]chclient.NameTypePair, error) {
+func (s *stubQuerier) QueryNameTypePairs(_ context.Context, sql string, args ...any) ([]chclient.NameTypePair, error) {
 	if s.ColumnsErr != nil {
 		return nil, s.ColumnsErr
 	}
@@ -83,6 +99,19 @@ func (s *stubQuerier) QueryNameTypePairs(_ context.Context, _ string, args ...an
 		return nil, errors.New("stub: expected (database, table) args")
 	}
 	table, _ := args[1].(string)
+	if isSortingKeyQuery(sql) {
+		if s.SortingKeyErr != nil {
+			return nil, s.SortingKeyErr
+		}
+		if _, ok := s.Columns[table]; !ok {
+			return nil, nil
+		}
+		engine := s.Engines[table]
+		if engine == "" {
+			engine = stubMergeTreeEngine
+		}
+		return []chclient.NameTypePair{{Name: engine, Type: s.SortingKeys[table]}}, nil
+	}
 	return s.Columns[table], nil
 }
 
@@ -1133,7 +1162,7 @@ func (c *countingQuerier) QueryNameTypePairs(ctx context.Context, sql string, ar
 	if c.tableQueries == nil {
 		c.tableQueries = map[string]int{}
 	}
-	if len(args) >= 2 {
+	if len(args) >= 2 && !isSortingKeyQuery(sql) {
 		if table, ok := args[1].(string); ok {
 			c.tableQueries[table]++
 		}

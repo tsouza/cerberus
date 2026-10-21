@@ -1,5 +1,7 @@
 package schema
 
+import "strings"
+
 // This file exposes each OTel-CH table's ORDER BY (sorting key) as
 // structured data, narrowed to the leading run of PLAIN COLUMN keys.
 //
@@ -37,18 +39,15 @@ package schema
 //	    ORDER BY (toStartOfFiveMinutes(Timestamp), ServiceName, Timestamp)
 //	    -> bare prefix: () the first key element is function-wrapped
 //
-// These are the keys of the tables cerberus provisions. A metrics table a
-// stock exporter created carries a different key — before v0.157
-// (ServiceName, MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix)),
-// from v0.157 (ServiceName, MetricName, toStartOfHour(TimeUnix),
-// cityHash64(Attributes), TimeUnix) — and CREATE TABLE IF NOT EXISTS keeps
-// it. Nothing reads the deployed key, so Metrics.SortingKeyPrefix answers
-// the provisioned prefix over such a table too: the eligibility check can
-// stamp optimize_aggregation_in_order on a GROUP BY that is no prefix of the
-// deployed key, where ClickHouse finds no matching key and aggregates as it
-// would without the setting, and withholds it from one that is. Either
-// changes only how ClickHouse aggregates, never the rows a query returns.
-// Reading the deployed key is cerberus issue #3948.
+// These are the keys of the tables cerberus provisions. A table created
+// outside cerberus keeps its own key, because cerberus's DDL is CREATE TABLE
+// IF NOT EXISTS: a stock exporter's metrics tables are ordered by
+// (ServiceName, MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix))
+// before v0.157 and by (ServiceName, MetricName, toStartOfHour(TimeUnix),
+// cityHash64(Attributes), TimeUnix) from v0.157. The boot requirements check
+// (internal/preflight) therefore reads each table's deployed key from
+// system.tables and reduces it with SortingKeyPrefixOf; the accessors below
+// answer only for a table whose key was not read.
 
 // SortingKeyPrefix returns the leading run of bare-column sorting-key
 // columns for the metrics tables, in ORDER BY order. Every metrics table
@@ -76,4 +75,78 @@ func (t Traces) SortingKeyPrefix() []string {
 // never eligible for logs.
 func (Logs) SortingKeyPrefix() []string {
 	return nil
+}
+
+// SortingKeyPrefixOf reduces a sorting key as system.tables reports it
+// (sorting_key: the ORDER BY elements, comma-separated, e.g.
+// "ServiceName, MetricName, toStartOfHour(TimeUnix), TimeUnix") to its
+// leading run of bare column names, the same contract as SortingKeyPrefix:
+// the run stops at the first element that is not a bare (optionally
+// back-quoted) identifier. An empty key yields an empty, non-nil prefix.
+func SortingKeyPrefixOf(sortingKey string) []string {
+	prefix := []string{}
+	for _, elem := range splitTopLevel(sortingKey) {
+		name, ok := bareIdentifier(strings.TrimSpace(elem))
+		if !ok {
+			break
+		}
+		prefix = append(prefix, name)
+	}
+	return prefix
+}
+
+// splitTopLevel splits a sorting-key expression list on the commas outside
+// any parentheses or quotes. An all-blank list yields no elements.
+func splitTopLevel(list string) []string {
+	if strings.TrimSpace(list) == "" {
+		return nil
+	}
+	var (
+		elems []string
+		depth int
+		quote rune
+		start int
+	)
+	for i, r := range list {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+		case r == '`' || r == '\'' || r == '"':
+			quote = r
+		case r == '(' || r == '[':
+			depth++
+		case r == ')' || r == ']':
+			depth--
+		case r == ',' && depth == 0:
+			elems = append(elems, list[start:i])
+			start = i + 1
+		}
+	}
+	return append(elems, list[start:])
+}
+
+// bareIdentifier reports whether elem is a bare column reference — an
+// unquoted identifier or one back-quoted identifier — and returns the column
+// name it names.
+func bareIdentifier(elem string) (string, bool) {
+	if len(elem) > len("``") && strings.HasPrefix(elem, "`") && strings.HasSuffix(elem, "`") {
+		inner := elem[1 : len(elem)-1]
+		if strings.Contains(inner, "`") {
+			return "", false
+		}
+		return inner, true
+	}
+	if elem == "" {
+		return "", false
+	}
+	for i, r := range elem {
+		letter := r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		digit := r >= '0' && r <= '9'
+		if !letter && (!digit || i == 0) {
+			return "", false
+		}
+	}
+	return elem, true
 }

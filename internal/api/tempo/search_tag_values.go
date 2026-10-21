@@ -179,10 +179,10 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 			physicalScans int
 		)
 		if resolved.IsIntrinsic {
-			sqlStr, args, physicalScans = buildIntrinsicValuesSQL(h.Schema, resolved.IntrinsicCol, filter, start, end, h.tracesStrategies())
+			sqlStr, args, physicalScans = buildIntrinsicValuesSQL(h.Schema, resolved.IntrinsicCol, filter, start, end, h.tracesStrategies(ctx))
 			valueTyp = intrinsicType(resolved.IntrinsicName)
 		} else {
-			sqlStr, args, physicalScans = buildAttributeValuesSQL(h.Schema, resolved.Key, resolved.MapScope, filter, start, end, h.tracesStrategies())
+			sqlStr, args, physicalScans = buildAttributeValuesSQL(h.Schema, resolved.Key, resolved.MapScope, filter, start, end, h.tracesStrategies(ctx))
 		}
 		h.Logger.Debug("cerberus tempo /search/tag/values",
 			"tag", name,

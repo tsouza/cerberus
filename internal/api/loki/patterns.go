@@ -110,7 +110,7 @@ func (h *Handler) handlePatterns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sqlStr, args, err := buildPatternsSQL(h.Schema, h.Strategies.Load().Logs, matchers, start, end, lineLimit)
+	sqlStr, args, err := buildPatternsSQL(h.Schema, h.logsStrategies(r.Context()), matchers, start, end, lineLimit)
 	if err != nil {
 		h.respondError(r.Context(), w, &apiError{Kind: ErrInternal, Err: err, Status: http.StatusInternalServerError})
 		return

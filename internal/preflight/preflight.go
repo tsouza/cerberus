@@ -335,6 +335,9 @@ type Result struct {
 	//   - Metrics.MetricsTimestamp is the precision of the metrics timestamp
 	//     columns (resolveMetricsTimestamp). A column of a non-timestamp
 	//     type, or columns of different precisions, are Fatal instead.
+	//   - SortingKeyPrefixes maps each introspected table of the signal to
+	//     the bare-column prefix of the sorting key system.tables reports for
+	//     it (probeSortingKey).
 	//
 	// The zero value — no table introspected — renders the default schema.
 	// cmd/cerberus is the only intended consumer: it stores them in the
@@ -489,9 +492,20 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 		Warnings:     warnings,
 		AbsentTables: sf.absent,
 		Strategies: chsql.ResolvedSchemaStrategies{
-			Metrics: chsql.SchemaStrategies{MetricsTimestamp: metricsTimestamp},
-			Logs:    chsql.SchemaStrategies{Attrs: attrStrategiesFor(sf.jsonColsByTable[req.Logs.LogsTable])},
-			Traces:  chsql.SchemaStrategies{Attrs: attrStrategiesFor(sf.jsonColsByTable[req.Traces.SpansTable])},
+			Metrics: chsql.SchemaStrategies{
+				MetricsTimestamp: metricsTimestamp,
+				SortingKeyPrefixes: sf.sortingKeysOf(
+					req.Metrics.GaugeTable, req.Metrics.SumTable, req.Metrics.HistogramTable, req.Metrics.ExpHistogramTable,
+				),
+			},
+			Logs: chsql.SchemaStrategies{
+				Attrs:              attrStrategiesFor(sf.jsonColsByTable[req.Logs.LogsTable]),
+				SortingKeyPrefixes: sf.sortingKeysOf(req.Logs.LogsTable),
+			},
+			Traces: chsql.SchemaStrategies{
+				Attrs:              attrStrategiesFor(sf.jsonColsByTable[req.Traces.SpansTable]),
+				SortingKeyPrefixes: sf.sortingKeysOf(req.Traces.SpansTable),
+			},
 		},
 
 		StaleMarkerFlagsMissing: sf.flagsMissing,
@@ -1063,6 +1077,7 @@ func nonEmpty(vals ...string) []string {
 func checkSchema(ctx context.Context, q Querier, req Requirements) (f schemaFindings, unreachable error) {
 	seen := map[string]bool{}
 	f.jsonColsByTable = map[string][]string{}
+	f.sortingKeys = map[string][]string{}
 	for _, t := range requiredTables(req) {
 		if t.name == "" || seen[t.name] {
 			continue
@@ -1088,15 +1103,39 @@ func checkSchema(ctx context.Context, q Querier, req Requirements) (f schemaFind
 			f.jsonColsByTable[t.name] = append(f.jsonColsByTable[t.name], tf.jsonCols...)
 		}
 		f.metricsTimestamps = append(f.metricsTimestamps, tf.metricsTimestamps...)
+		if tf.sortingKey.known {
+			f.sortingKeys[t.name] = tf.sortingKey.prefix
+		}
+		if tf.sortingKey.warning != "" {
+			f.warnings = append(f.warnings, tf.sortingKey.warning)
+		}
 	}
 	return f, nil
+}
+
+// sortingKeysOf returns the sorting-key prefixes the probe read for tables,
+// keyed by table name, or nil when it read none of them.
+func (f schemaFindings) sortingKeysOf(tables ...string) map[string][]string {
+	var out map[string][]string
+	for _, t := range tables {
+		prefix, ok := f.sortingKeys[t]
+		if !ok {
+			continue
+		}
+		if out == nil {
+			out = map[string][]string{}
+		}
+		out[t] = prefix
+	}
+	return out
 }
 
 // schemaFindings is what checkSchema's gate-2 pass found across every
 // configured table: the FATAL wrong-shape problems, the ABSENT tables, the
 // boot-probe warnings, the JSON-typed attribute columns per
-// jsonAttrMapCompat table, the metric tables lacking their Flags column, and
-// the deployed type of every metrics timestamp column found.
+// jsonAttrMapCompat table, the metric tables lacking their Flags column, the
+// deployed type of every metrics timestamp column found, and the
+// sorting-key prefix of every table whose key the probe knows.
 type schemaFindings struct {
 	problems          []string
 	absent            []string
@@ -1104,6 +1143,7 @@ type schemaFindings struct {
 	jsonColsByTable   map[string][]string
 	flagsMissing      []string
 	metricsTimestamps []deployedColumn
+	sortingKeys       map[string][]string
 }
 
 // tableFindings is checkTable's verdict on one table — see schemaFindings
@@ -1115,6 +1155,7 @@ type tableFindings struct {
 	absent            bool
 	flagsMissing      bool
 	metricsTimestamps []deployedColumn
+	sortingKey        sortingKeyFinding
 }
 
 // tableColumnsSQL lists one table's (name, type) columns from
@@ -1150,7 +1191,8 @@ func tableColumnsSQL(database, table string) (string, []any) {
 //     boot-probe compat; see tableReq.jsonAttrMapCompat and isJSONAttrType).
 //
 // flagsMissing reports a table that exists without its t.staleMarkerFlags
-// column, and comes with a warning naming the consequence.
+// column, and comes with a warning naming the consequence. A table that
+// exists also has its sorting key read (probeSortingKey).
 func checkTable(ctx context.Context, q Querier, database string, t tableReq) (f tableFindings, unreachable error) {
 	sql, args := tableColumnsSQL(database, t.name)
 	rows, err := q.QueryNameTypePairs(ctx, sql, args...)
@@ -1172,6 +1214,10 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (f 
 		if i := slices.IndexFunc(rows, func(r chclient.NameTypePair) bool { return r.Name == col }); i >= 0 {
 			f.metricsTimestamps = append(f.metricsTimestamps, deployedColumn{table: t.name, column: col, typ: rows[i].Type})
 		}
+	}
+	f.sortingKey, unreachable = probeSortingKey(ctx, q, database, t.name)
+	if unreachable != nil {
+		return tableFindings{}, unreachable
 	}
 	return f, nil
 }

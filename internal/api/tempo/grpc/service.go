@@ -94,7 +94,9 @@ func NewService(handler *tempo.Handler, limiter *admit.Limiter, logger *slog.Log
 // deadline the CLIENT set, and Grafana's streaming datasource sets none,
 // so without this a hung backend held a slot of the limiter this service
 // shares with the HTTP surface until the driver's own read timeout fired.
-// The caller MUST defer cancel.
+// The RPC's one traces SchemaStrategies snapshot is taken here too
+// (Handler.WithRequestStrategies), as every HTTP route takes it. The caller
+// MUST defer cancel.
 func (s *Service) queryContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return reqctx.WithQueryBudget(ctx, s.Handler.QueryTimeout)
+	return reqctx.WithQueryBudget(s.Handler.WithRequestStrategies(ctx), s.Handler.QueryTimeout)
 }

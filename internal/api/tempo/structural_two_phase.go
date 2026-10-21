@@ -240,7 +240,7 @@ func (h *Handler) runStructuralTwoPhase(ctx context.Context, sj *chplan.Structur
 func (h *Handler) runStructuralPhaseA(ctx context.Context, sj *chplan.StructuralJoin, limit int) ([]string, error) {
 	phaseA := buildStructuralPhaseAPlan(sj, h.Schema, limit)
 	ctx = chsql.WithSpansTable(ctx, h.Schema.SpansTable)
-	ctx = chsql.WithSchemaStrategies(ctx, h.tracesStrategies())
+	ctx = chsql.WithSchemaStrategies(ctx, h.tracesStrategies(ctx))
 	sql, args, physicalScans, err := chsql.EmitCounted(ctx, phaseA)
 	if err != nil {
 		// Mirror the engine's `emit:` wrapping so ClassifyErr maps this

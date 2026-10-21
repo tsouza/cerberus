@@ -111,9 +111,9 @@ type spansTabler interface{ SpansTable() string }
 // tables its signal reads: the Prom head's lang (the metrics timestamp
 // precision), *logql.Lang and the TraceQL head's langs (the attribute-map
 // storage). Each head loads its signal's strategies once per request, so a
-// Lang reports the value that request renders under.
+// Lang reports the value the request ctx it is asked with renders under.
 type schemaStrategier interface {
-	EmitSchemaStrategies() chsql.SchemaStrategies
+	EmitSchemaStrategies(ctx context.Context) chsql.SchemaStrategies
 }
 
 // withSchemaStrategies threads lang's SchemaStrategies onto ctx for a Lang
@@ -126,10 +126,12 @@ type schemaStrategier interface {
 // through ChsqlEmitter, which never sees a Lang. Stamping the request ctx
 // is what makes a shard render under exactly the strategies route A would
 // have for the same (re-anchored) plan. QueryPlanCursor's drain-retry
-// closures stamp again: their ctx is the drain's, not the request's.
+// closures stamp the value read here again (chsql.SchemaStrategiesFromContext
+// on the returned ctx): their ctx is the drain's, not the request's, and the
+// retry renders under the same strategies as the attempt it replaces.
 func withSchemaStrategies(ctx context.Context, lang Lang) context.Context {
 	if s, ok := lang.(schemaStrategier); ok {
-		return chsql.WithSchemaStrategies(ctx, s.EmitSchemaStrategies())
+		return chsql.WithSchemaStrategies(ctx, s.EmitSchemaStrategies(ctx))
 	}
 	return ctx
 }
@@ -330,10 +332,12 @@ type QuerySettingsProbe struct {
 // routeAQuerySettings, the function execContext itself calls — so a stamp
 // the route-A seam carries is by construction what the probe (and the spec
 // goldens' -- settings -- sections) report. Callers supply the optimized
-// plan, resolved rules, and statement memory cap; a fixed rules.Now makes
-// result-cache eligibility reproducible in diagnostics and tests.
-func ProbeQuerySettings(plan chplan.Node, rules SettingsRules, memCap int64) QuerySettingsProbe {
-	ctx := routeAQuerySettings(context.Background(), plan, memCap, rules)
+// plan, resolved rules, statement memory cap, and the SchemaStrategies the
+// plan's signal renders under (the zero value: the tables cerberus
+// provisions); a fixed rules.Now makes result-cache eligibility reproducible
+// in diagnostics and tests.
+func ProbeQuerySettings(plan chplan.Node, rules SettingsRules, memCap int64, strategies chsql.SchemaStrategies) QuerySettingsProbe {
+	ctx := routeAQuerySettings(chsql.WithSchemaStrategies(context.Background(), strategies), plan, memCap, rules)
 	return QuerySettingsProbe{
 		Settings:    chclient.QuerySettingsFromContext(ctx),
 		EnabledOpts: rules.enabledOpts(),
@@ -2383,6 +2387,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		return CursorResult{}, fmt.Errorf("engine: nil plan")
 	}
 	ctx = withSchemaStrategies(ctx, lang)
+	strategies, _ := chsql.SchemaStrategiesFromContext(ctx)
 
 	// Inflight bookkeeping — symmetrical with QueryPlan so the gauge
 	// covers both the eager and streaming pipelines. Cursor consumers
@@ -2445,7 +2450,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		result.Retry = func(retryCtx context.Context, drainErr error) (CursorResult, bool) {
 			// retryCtx is the drain's, not the one this request entered
 			// with, so the request's strategies are stamped on it again.
-			retryCtx = withSchemaStrategies(retryCtx, lang)
+			retryCtx = chsql.WithSchemaStrategies(retryCtx, strategies)
 			// The verdict already existed before this dispatch (that is
 			// what made it a memo-hit); a clean drain needed no
 			// re-confirmation, but this closure only ever runs when the
@@ -2506,7 +2511,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		result.Retry = func(retryCtx context.Context, drainErr error) (CursorResult, bool) {
 			// retryCtx is the drain's, not the one this request entered
 			// with, so the request's strategies are stamped on it again.
-			retryCtx = withSchemaStrategies(retryCtx, lang)
+			retryCtx = chsql.WithSchemaStrategies(retryCtx, strategies)
 			// dispatchStart is captured, so elapsed spans the open AND the
 			// drain — the full wall time this route-A attempt cost before the
 			// caller saw drainErr, which is what the cancellation floor reads.

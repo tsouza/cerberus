@@ -85,7 +85,7 @@ func (h *Handler) CollectAttributeTagScopes(
 	if err != nil {
 		return nil, err
 	}
-	return h.collectAttributeTagScopes(ctx, scope, filter, start, end, h.tracesStrategies())
+	return h.collectAttributeTagScopes(ctx, scope, filter, start, end, h.tracesStrategies(ctx))
 }
 
 // SortedUnique returns the de-duplicated, lexicographically sorted
@@ -159,10 +159,10 @@ func (h *Handler) FetchTagValues(
 		physicalScans int
 	)
 	if r.IsIntrinsic {
-		sqlStr, args, physicalScans = buildIntrinsicValuesSQL(h.Schema, r.IntrinsicCol, filter, start, end, h.tracesStrategies())
+		sqlStr, args, physicalScans = buildIntrinsicValuesSQL(h.Schema, r.IntrinsicCol, filter, start, end, h.tracesStrategies(ctx))
 		valueType = intrinsicType(r.IntrinsicName)
 	} else {
-		sqlStr, args, physicalScans = buildAttributeValuesSQL(h.Schema, r.Key, r.mapScope, filter, start, end, h.tracesStrategies())
+		sqlStr, args, physicalScans = buildAttributeValuesSQL(h.Schema, r.Key, r.mapScope, filter, start, end, h.tracesStrategies(ctx))
 		valueType = "string"
 	}
 	// Engine bypass: stamp the data-shard fan-out weight from the emitted

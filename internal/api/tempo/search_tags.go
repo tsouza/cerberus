@@ -217,7 +217,7 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, route Tags
 		scopes, ok = h.tagsFromCatalog(ctx, scope)
 	}
 	if !ok {
-		scopes, err = h.collectAttributeTagScopes(ctx, scope, filter, start, end, h.tracesStrategies())
+		scopes, err = h.collectAttributeTagScopes(ctx, scope, filter, start, end, h.tracesStrategies(ctx))
 		if err != nil {
 			writeError(w, tagsErrStatus(err), "", "", err)
 			return

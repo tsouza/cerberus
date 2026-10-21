@@ -56,11 +56,12 @@ var (
 type traceqlLang struct {
 	schema schema.Traces
 
-	// strategies loads the traces chsql.SchemaStrategies the plans render
-	// under (Handler.tracesStrategies), read per request because this Lang
-	// is one long-lived instance while the schema re-probe can store new
-	// strategies after boot. nil renders under the zero value.
-	strategies func() chsql.SchemaStrategies
+	// strategies reads the traces chsql.SchemaStrategies a request's plans
+	// render under off that request's ctx (Handler.tracesStrategies),
+	// because this Lang is one long-lived instance while the schema
+	// re-probe can store new strategies after boot. nil renders under the
+	// zero value.
+	strategies func(ctx context.Context) chsql.SchemaStrategies
 }
 
 func (l *traceqlLang) Name() string { return telemetry.QLTraceQL }
@@ -71,14 +72,14 @@ func (l *traceqlLang) Name() string { return telemetry.QLTraceQL }
 // is resource-bounded.
 func (l *traceqlLang) SpansTable() string { return l.schema.SpansTable }
 
-// EmitSchemaStrategies returns the SchemaStrategies this Lang's plans
-// render under; internal/engine threads them onto the request's emit
-// context.
-func (l *traceqlLang) EmitSchemaStrategies() chsql.SchemaStrategies {
+// EmitSchemaStrategies returns the SchemaStrategies the request ctx carries
+// this Lang's plans render under; internal/engine threads them onto the
+// request's emit context.
+func (l *traceqlLang) EmitSchemaStrategies(ctx context.Context) chsql.SchemaStrategies {
 	if l.strategies == nil {
 		return chsql.SchemaStrategies{}
 	}
-	return l.strategies()
+	return l.strategies(ctx)
 }
 
 func (l *traceqlLang) Parse(ctx context.Context, query string) (chplan.Node, engine.Meta, error) {
