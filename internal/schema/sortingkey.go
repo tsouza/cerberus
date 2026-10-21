@@ -21,10 +21,14 @@ package schema
 // never legitimately match past the first function-wrapped key element. This
 // keeps every consumer conservative by construction.
 //
-// The OTel-CH ORDER BY tuples reflected here (exporter v0.152.0):
+// The OTel-CH ORDER BY tuples reflected here (the cerberus-ddl fork's
+// templates, docs/upstream-forks.md):
 //
-//	otel_metrics_{gauge,sum,histogram,exp_histogram,summary}
+//	otel_metrics_{gauge,sum,histogram,exp_histogram,summary}, nanos precision
 //	    ORDER BY (MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix))
+//	    -> bare prefix: (MetricName, Attributes, ServiceName)
+//	otel_metrics_{gauge,sum,histogram,exp_histogram,summary}, seconds precision
+//	    ORDER BY (MetricName, Attributes, ServiceName, toUnixTimestamp(TimeUnix))
 //	    -> bare prefix: (MetricName, Attributes, ServiceName)
 //	otel_traces
 //	    ORDER BY (ServiceName, SpanName, toDateTime(Timestamp))
@@ -36,9 +40,9 @@ package schema
 // SortingKeyPrefix returns the leading run of bare-column sorting-key
 // columns for the metrics tables, in ORDER BY order. Every metrics table
 // (gauge / sum / histogram / exp_histogram / summary) shares the same
-// ORDER BY, so the prefix is identical for all of them. The fourth key
-// element, toUnixTimestamp64Nano(TimeUnix), is function-wrapped and so is
-// excluded. Returns a fresh slice each call (callers may retain it).
+// ORDER BY, so the prefix is identical for all of them, at either timestamp
+// precision. The fourth key element — toUnixTimestamp64Nano(TimeUnix) or
+// toUnixTimestamp(TimeUnix) — is function-wrapped and so is excluded. Returns a fresh slice each call (callers may retain it).
 func (m Metrics) SortingKeyPrefix() []string {
 	return []string{m.MetricNameColumn, m.AttributesColumn, m.ServiceNameColumn}
 }

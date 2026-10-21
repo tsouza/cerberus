@@ -197,7 +197,7 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/influxdata/tdigest v0.0.2-0.20210216194612-fc98d27c9e8b // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/jaegertracing/jaeger-idl v0.6.0 // indirect
+	github.com/jaegertracing/jaeger-idl v0.9.0 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/julienschmidt/httprouter v1.3.0 // indirect
@@ -230,9 +230,9 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/mwitkow/go-conntrack v0.0.0-20190716064945-2f068394615f // indirect
 	github.com/oklog/ulid/v2 v2.1.2 // indirect
-	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal v0.152.0 // indirect
+	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal v0.157.0 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/internal/exp/metrics v0.160.0 // indirect
-	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils v0.152.0 // indirect
+	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils v0.157.0 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil v0.160.0 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger v0.152.0 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/processor/deltatocumulativeprocessor v0.160.0 // indirect
@@ -393,10 +393,10 @@ replace github.com/grafana/tempo => github.com/tsouza/tempo v0.0.5-cerberus-acce
 // contrib uses a per-subdirectory module layout, so each imported submodule
 // needs its own replace directive pointing at the matching submodule tag.
 replace (
-	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.0.3-cerberus-ddl
-	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal => github.com/tsouza/opentelemetry-collector-contrib/internal/coreinternal v0.0.3-cerberus-ddl
-	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils => github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.3-cerberus-ddl
-	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.3-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter => github.com/tsouza/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.0.5-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal => github.com/tsouza/opentelemetry-collector-contrib/internal/coreinternal v0.0.5-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils => github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.5-cerberus-ddl
+	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.5-cerberus-ddl
 )
 
 ignore ./compatibility/tempo/upstream

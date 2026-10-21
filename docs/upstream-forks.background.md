@@ -140,8 +140,11 @@ emitted `toUnixTimestamp64Nano(TimeUnix)` rejects, and the mechanical rebase
 turned the fork's MetricName-first sort-key patch into a different key. It
 built cleanly, and the chDB suites passed because they seed their own
 `DateTime64(9)` tables. `TestTimestampColumnsAreNanosDateTime64_InUpstreamDDL`
-exists so that kind of bump fails on its own pull request; the decision it
-forces is tracked in #3935. A human reads each bump before it is queued.
+exists so that kind of bump fails on its own pull request. That decision
+was made in `v0.0.5-cerberus-ddl`: the fork renders the metrics tables at
+either precision, keeps the MetricName-first key for both, and cerberus
+provisions nanoseconds unless told otherwise while reading whichever type a
+deployment carries. A human reads each bump before it is queued.
 
 ### Why prometheus gets an issue instead
 

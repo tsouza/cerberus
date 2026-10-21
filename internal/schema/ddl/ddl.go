@@ -151,6 +151,12 @@ type Config struct {
 	LogsSettings   []schema.KV
 	TracesSettings []schema.KV
 
+	// MetricsTimestampPrecision is the type the metrics tables' timestamp
+	// columns are created with: schema.MetricsTimestampNanos (the default
+	// when empty) renders DateTime64(9), schema.MetricsTimestampSeconds
+	// renders DateTime. See metricsCreateTables.
+	MetricsTimestampPrecision schema.MetricsTimestampPrecision
+
 	// DeltaPrefixEnabled gates provisioning the DELTA-temporality
 	// prefix-reconstruction aggregate table + its materialized view
 	// (Tables.MetricsDeltaPrefix; cerberus issue #2389) alongside the five
@@ -625,6 +631,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.DeltaPrefixBucketColumn == "" {
 		c.DeltaPrefixBucketColumn = defaultDeltaPrefixBucketColumn
+	}
+	if c.MetricsTimestampPrecision == "" {
+		c.MetricsTimestampPrecision = schema.MetricsTimestampNanos
 	}
 	if c.DeltaPrefixSumColumn == "" {
 		c.DeltaPrefixSumColumn = defaultDeltaPrefixSumColumn
@@ -1217,12 +1226,13 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 	switch s {
 	case Metrics:
 		ttl := cfg.ttlExpr("TimeUnix", cfg.TTL.Metrics, cfg.Tiering.Metrics)
+		tmpl := metricsCreateTables(cfg.MetricsTimestampPrecision)
 		stmts := []string{
-			renderMetricsTable(sqltemplates.MetricsGaugeCreateTable, cfg, cfg.Tables.MetricsGauge, ttl),
-			renderMetricsTable(sqltemplates.MetricsSumCreateTable, cfg, cfg.Tables.MetricsSum, ttl),
-			renderMetricsTable(sqltemplates.MetricsHistogramCreateTable, cfg, cfg.Tables.MetricsHistogram, ttl),
-			renderMetricsTable(sqltemplates.MetricsExpHistogramCreateTable, cfg, cfg.Tables.MetricsExpHistogram, ttl),
-			renderMetricsTable(sqltemplates.MetricsSummaryCreateTable, cfg, cfg.Tables.MetricsSummary, ttl),
+			renderMetricsTable(tmpl.Gauge, cfg, cfg.Tables.MetricsGauge, ttl),
+			renderMetricsTable(tmpl.Sum, cfg, cfg.Tables.MetricsSum, ttl),
+			renderMetricsTable(tmpl.Histogram, cfg, cfg.Tables.MetricsHistogram, ttl),
+			renderMetricsTable(tmpl.ExpHistogram, cfg, cfg.Tables.MetricsExpHistogram, ttl),
+			renderMetricsTable(tmpl.Summary, cfg, cfg.Tables.MetricsSummary, ttl),
 		}
 		// Each CREATE is immediately followed by the curated registry's
 		// idempotent ADD PROJECTION ALTERs on the same table — CREATE precedes
@@ -1393,6 +1403,19 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 // upstream template shape is `(database, table, cluster, engine, ttl)` —
 // see metrics_*_table.sql in the fork and internal/metrics/metrics_model.go
 // in upstream for the canonical Sprintf call.
+// metricsCreateTables returns the exporter's metrics CREATE TABLE templates
+// for precision, rendered by the collector-contrib fork's sqltemplates
+// (MetricsCreateTables): their timestamp columns typed DateTime64(9) and
+// sorted by toUnixTimestamp64Nano(TimeUnix) for schema.MetricsTimestampNanos,
+// typed DateTime and sorted by toUnixTimestamp(TimeUnix) for
+// schema.MetricsTimestampSeconds. Every other line is the exporter's own.
+func metricsCreateTables(precision schema.MetricsTimestampPrecision) sqltemplates.MetricsCreateTableSet {
+	if precision == schema.MetricsTimestampSeconds {
+		return sqltemplates.MetricsCreateTables(sqltemplates.MetricsTimestampSeconds)
+	}
+	return sqltemplates.MetricsCreateTables(sqltemplates.MetricsTimestampNanos)
+}
+
 func renderMetricsTable(tmpl string, cfg Config, table, ttl string) string {
 	return cfg.appendSettings(
 		fmt.Sprintf(tmpl, cfg.Database, table, cfg.clusterClause(), cfg.Engine, ttl),
@@ -2013,6 +2036,17 @@ func withDownsampleTierRecordedValueFilter(body *chsql.QueryBuilder, cfg Config)
 	return body.Where(downsampleTierRecordedValuePredicate(cfg.DownsampleTierFlagsColumn))
 }
 
+// downsampleTierSampleTime is the sample timestamp the downsample-tier views
+// fold into the tier's timeSeriesLastTwoSamples state, whose type is fixed at
+// DateTime64(9) (renderDownsampleTierTable). An AggregateFunction state does
+// not convert between argument types, and the source table's TimeUnix is
+// DateTime64(9) or DateTime depending on who created it, so the view reads it
+// through toDateTime64(TimeUnix, 9): the identity on DateTime64(9), an exact
+// widening of DateTime.
+func downsampleTierSampleTime() chsql.Frag {
+	return chsql.ToDateTime64Nanos(chsql.Col(metricTimeColumn))
+}
+
 // renderDownsampleTierView renders the CREATE MATERIALIZED VIEW feeding
 // renderDownsampleTierTable from the Sum table (cerberus issue #2751): every
 // recorded raw sample (downsampleTierRecordedValuePredicate), bucketed to its
@@ -2046,7 +2080,7 @@ func renderDownsampleTierView(cfg Config) string {
 			chsql.Col(metricResourceAttributesColumn),
 			chsql.Col(metricServiceNameColumn),
 			chsql.As(bucketEnd, schema.DownsampleTierBucketColumn),
-			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", chsql.Col(metricTimeColumn), chsql.Col(metricValueColumn)), schema.DownsampleTierSamplesColumn),
+			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", downsampleTierSampleTime(), chsql.Col(metricValueColumn)), schema.DownsampleTierSamplesColumn),
 			chsql.As(chsql.Call("any", chsql.Col(aggregationTemporalityColumn)), schema.DownsampleTierTemporalityColumn),
 		).
 		From(chsql.Qual(cfg.Database, cfg.Tables.MetricsSum)).
@@ -2109,7 +2143,7 @@ func renderDownsampleTierGaugeView(cfg Config) string {
 			chsql.Col(metricResourceAttributesColumn),
 			chsql.Col(metricServiceNameColumn),
 			chsql.As(bucketEnd, schema.DownsampleTierBucketColumn),
-			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", chsql.Col(metricTimeColumn), chsql.Col(metricValueColumn)), schema.DownsampleTierSamplesColumn),
+			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", downsampleTierSampleTime(), chsql.Col(metricValueColumn)), schema.DownsampleTierSamplesColumn),
 			chsql.As(chsql.InlineLit(schema.DownsampleTierGaugeTemporalitySentinel), schema.DownsampleTierTemporalityColumn),
 		).
 		From(chsql.Qual(cfg.Database, cfg.Tables.MetricsGauge)).

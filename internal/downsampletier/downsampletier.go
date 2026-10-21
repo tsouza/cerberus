@@ -242,7 +242,10 @@ func backfillSelectSQL(c Columns, src downsampleTierSource, before *time.Time) *
 			chsql.Col(c.ResourceAttributesColumn),
 			chsql.Col(c.ServiceNameColumn),
 			chsql.As(bucket, schema.DownsampleTierBucketColumn),
-			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", chsql.Col(c.TimestampColumn), chsql.Col(c.ValueColumn)), schema.DownsampleTierSamplesColumn),
+			// The tier's state is typed DateTime64(9); the source column is
+			// DateTime64(9) or DateTime depending on who created the table,
+			// and toDateTime64(…, 9) reads either as the former.
+			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", chsql.ToDateTime64Nanos(chsql.Col(c.TimestampColumn)), chsql.Col(c.ValueColumn)), schema.DownsampleTierSamplesColumn),
 			chsql.As(src.temporality, schema.DownsampleTierTemporalityColumn),
 		).
 		From(chsql.Qual(c.Database, src.table))

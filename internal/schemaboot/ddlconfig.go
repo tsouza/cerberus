@@ -135,9 +135,13 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 		// resolved schema struct every other table name above is threaded
 		// from), the enable bit from SchemaProvisioning (the SAME struct
 		// every other DDL-shaping knob on this Config comes from).
-		DeltaPrefixEnabled:      p.DeltaPrefixEnabled,
-		DeltaPrefixBucketColumn: cfg.Schema.DeltaPrefixBucketColumn,
-		DeltaPrefixSumColumn:    cfg.Schema.DeltaPrefixSumColumn,
+		DeltaPrefixEnabled: p.DeltaPrefixEnabled,
+		// MetricsTimestampPrecision picks the metrics tables' timestamp
+		// column type (DateTime64(9) or DateTime) from the same
+		// SchemaProvisioning struct.
+		MetricsTimestampPrecision: p.MetricsTimestampPrecision,
+		DeltaPrefixBucketColumn:   cfg.Schema.DeltaPrefixBucketColumn,
+		DeltaPrefixSumColumn:      cfg.Schema.DeltaPrefixSumColumn,
 		// ColumnStatisticsEnabled (cerberus issue #2766) is the resolved
 		// chopt column_statistics verdict, back-filled by cmd/cerberus's boot
 		// resolver (or, for the offline `migrate schema` preview,

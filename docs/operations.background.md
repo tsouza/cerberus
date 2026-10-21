@@ -902,6 +902,48 @@ then failed every metrics query with `ILLEGAL_TYPE_OF_ARGUMENT`.
   there would reproduce the failure this detection exists to remove until the
   next restart. The cost is one atomic load per request.
 
+## Why provisioning defaults to nanosecond metrics timestamps
+
+`CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION` exists because the exporter
+moved its metrics schema to `DateTime` at v0.157, and an operator whose
+collector writes into tables cerberus created may want the two to agree. It
+defaults to `nanos` all the same.
+
+- **`seconds` loses data.** A `DateTime` column cannot hold a sub-second
+  offset, so two samples of one series inside a second collapse into
+  duplicates, and every answer that reads a timestamp (`timestamp()`,
+  `ts_of_*`, rates over short windows, exemplar timestamps) moves to the
+  second. Cerberus answers exactly over whatever the table holds, but it
+  cannot restore what the insert dropped. A default that silently discards
+  precision is the wrong default.
+- **The compatibility harness stays on `nanos`.** The reference backends keep
+  millisecond-or-better timestamps, so a `seconds` schema would differ from
+  them by construction, and those differences are not cerberus bugs. The
+  harness keeps diffing the lossless schema. `seconds` is covered instead by
+  the read-side differential and the upstream-DDL chDB tests, which compare
+  answers over whole-second data.
+- **The seconds sort key is `toUnixTimestamp(TimeUnix)`.** It mirrors the
+  nanos key one-for-one: the same bare `(MetricName, Attributes, ServiceName)`
+  prefix the `optimize_aggregation_in_order` eligibility check reads
+  (`schema.Metrics.SortingKeyPrefix`), and a function of `TimeUnix` that is
+  monotonic, so range predicates on `TimeUnix` still prune the primary key.
+  The stock v0.157 key, `(ServiceName, MetricName, toStartOfHour(TimeUnix),
+  cityHash64(Attributes), TimeUnix)`, would give up the MetricName-first
+  pruning the fork exists for. The fork's earlier rebase moved `MetricName`
+  to the front of that key, which left a `(MetricName, ServiceName)` prefix
+  that matches no cerberus `GROUP BY`.
+- **The fork's exported templates are the seconds rendering.** The exporter
+  inside the fork keeps creating the schema upstream creates, so the fork's
+  own build and tests stay those of upstream. Cerberus picks a rendering
+  explicitly through `MetricsCreateTables`.
+- **The downsample tier always widens its sample timestamp.** Its
+  `timeSeriesLastTwoSamples` state is typed `DateTime64(9)`, and ClickHouse
+  will not convert a `DateTime` state into it (`CANNOT_CONVERT_TYPE`). The
+  source table can be either type whatever this knob says: a collector may
+  have created it, and `CREATE TABLE IF NOT EXISTS` keeps an existing table.
+  So the views and the backfill read `toDateTime64(TimeUnix, 9)`, the
+  identity on `DateTime64(9)`, instead of branching on the knob.
+
 ## Why the two-tier fence is a fixed split, not a per-diff prediction
 
 An earlier, more elaborate

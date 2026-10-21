@@ -789,6 +789,16 @@ type SchemaProvisioning struct {
 	// deliberately independent knobs rather than one.
 	DeltaPrefixEnabled bool
 
+	// MetricsTimestampPrecision (CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION)
+	// is the type the auto-created metrics tables give their timestamp
+	// columns (TimeUnix, StartTimeUnix, Exemplars.TimeUnix):
+	// schema.MetricsTimestampNanos (`nanos`, the default) creates
+	// DateTime64(9), schema.MetricsTimestampSeconds (`seconds`) creates
+	// DateTime, which truncates every sample timestamp to its second. It
+	// shapes only the tables cerberus creates; the read path serves whichever
+	// type the deployed tables carry, as the boot requirements check detects.
+	MetricsTimestampPrecision schema.MetricsTimestampPrecision
+
 	// TraceMaterializedAttrsEnabled (CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED)
 	// opts into provisioning the curated default set of materialized
 	// span/resource attribute columns on the traces spans table
@@ -1054,6 +1064,7 @@ const (
 	envSchemaTierAfterTraces        = "CERBERUS_SCHEMA_TIER_AFTER_TRACES"
 	envSchemaSettings               = "CERBERUS_SCHEMA_SETTINGS"
 	envSchemaDeltaPrefixEnabled     = "CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED"
+	envSchemaMetricsTimestampPrec   = "CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION"
 	// envSchemaTraceMaterializedAttrsEnabled is the SAME literal name
 	// schema.EnvTracesMaterializedAttrsEnabled uses — see that constant's
 	// doc for why internal/config reads it independently rather than
@@ -1507,6 +1518,7 @@ var allEnvKeys = []string{
 	envSchemaTierAfterTraces,
 	envSchemaSettings,
 	envSchemaDeltaPrefixEnabled,
+	envSchemaMetricsTimestampPrec,
 	envSchemaTraceMaterializedAttrsEnabled,
 	envRequirementsCheck,
 	envExperimentalTSGrid,
@@ -1678,6 +1690,7 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envSchemaTierAfterLogs, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaTierAfterTraces, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaDeltaPrefixEnabled, defaultSchemaDeltaPrefixEnabled)
+	v.SetDefault(envSchemaMetricsTimestampPrec, string(schema.MetricsTimestampNanos))
 	v.SetDefault(envSchemaTraceMaterializedAttrsEnabled, defaultSchemaTraceMaterializedAttrsEnabled)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
@@ -3221,6 +3234,10 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
+	metricsTimestampPrecision, err := schema.ParseMetricsTimestampPrecision(getString(v, envSchemaMetricsTimestampPrec))
+	if err != nil {
+		return SchemaProvisioning{}, fmt.Errorf("%s: %w", envSchemaMetricsTimestampPrec, err)
+	}
 	return SchemaProvisioning{
 		Cluster:                       getString(v, envSchemaCluster),
 		TableEngine:                   getString(v, envSchemaTableEngine),
@@ -3242,6 +3259,7 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 		TierAfterTraces:               tierAfterTraces,
 		Settings:                      settings,
 		DeltaPrefixEnabled:            deltaPrefixEnabled,
+		MetricsTimestampPrecision:     metricsTimestampPrecision,
 		TraceMaterializedAttrsEnabled: traceMaterializedAttrsEnabled,
 	}, nil
 }

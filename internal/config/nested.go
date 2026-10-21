@@ -174,6 +174,7 @@ var bindings = []binding{
 	{"schema.replicated.zookeeperPath", envSchemaDBReplPath, bindScalar},
 	{"schema.replicated.shard", envSchemaDBReplShard, bindScalar},
 	{"schema.replicated.replica", envSchemaDBReplReplica, bindScalar},
+	{"schema.metricsTimestampPrecision", envSchemaMetricsTimestampPrec, bindScalar},
 
 	// Read-side schema shape: the tables cerberus queries, and the
 	// resource-attribute allowlist it projects as Prometheus labels.

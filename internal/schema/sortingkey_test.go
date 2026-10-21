@@ -99,45 +99,62 @@ func isBareIdentifier(s string) bool {
 	return true
 }
 
-// metricsTemplates is every metrics table's DDL. sortingkey.go states that all
-// five share one ORDER BY and returns a single prefix for them; nothing checked
-// that, so the claim is asserted here rather than assumed.
-func metricsTemplates() map[string]string {
+// metricsPrecisions is every metrics timestamp precision schema provisioning
+// can render, paired with the fork's own selector for it.
+var metricsPrecisions = map[MetricsTimestampPrecision]sqltemplates.MetricsTimestampPrecision{
+	MetricsTimestampNanos:   sqltemplates.MetricsTimestampNanos,
+	MetricsTimestampSeconds: sqltemplates.MetricsTimestampSeconds,
+}
+
+// metricsTemplates is every metrics table's DDL for one timestamp precision.
+// sortingkey.go states that all five share one ORDER BY and returns a single
+// prefix for them; nothing checked that, so the claim is asserted here rather
+// than assumed.
+func metricsTemplates(p sqltemplates.MetricsTimestampPrecision) map[string]string {
+	set := sqltemplates.MetricsCreateTables(p)
 	return map[string]string{
-		"gauge":         sqltemplates.MetricsGaugeCreateTable,
-		"sum":           sqltemplates.MetricsSumCreateTable,
-		"histogram":     sqltemplates.MetricsHistogramCreateTable,
-		"exp_histogram": sqltemplates.MetricsExpHistogramCreateTable,
-		"summary":       sqltemplates.MetricsSummaryCreateTable,
+		"gauge":         set.Gauge,
+		"sum":           set.Sum,
+		"histogram":     set.Histogram,
+		"exp_histogram": set.ExpHistogram,
+		"summary":       set.Summary,
 	}
 }
 
 func TestEveryMetricsTableSharesOneOrderBy(t *testing.T) {
-	var first []string
-	var firstName string
-	for name, ddl := range metricsTemplates() {
-		got := orderByTuple(t, ddl)
-		if first == nil {
-			first, firstName = got, name
-			continue
+	for precision, p := range metricsPrecisions {
+		var first []string
+		var firstName string
+		for name, ddl := range metricsTemplates(p) {
+			got := orderByTuple(t, ddl)
+			if first == nil {
+				first, firstName = got, name
+				continue
+			}
+			if !slices.Equal(got, first) {
+				t.Errorf("%s: metrics ORDER BY differs: %s=%v vs %s=%v — SortingKeyPrefix returns ONE prefix "+
+					"for all five metrics tables, which is only sound while they agree", precision, name, got, firstName, first)
+			}
 		}
-		if !slices.Equal(got, first) {
-			t.Errorf("metrics ORDER BY differs: %s=%v vs %s=%v — SortingKeyPrefix returns ONE prefix "+
-				"for all five metrics tables, which is only sound while they agree", name, got, firstName, first)
+		if len(first) == 0 {
+			t.Fatalf("%s: parsed no metrics ORDER BY elements — the parser is broken, not the DDL", precision)
 		}
-	}
-	if len(first) == 0 {
-		t.Fatal("parsed no metrics ORDER BY elements — the parser is broken, not the DDL")
 	}
 }
 
+// TestMetricsSortingKeyPrefix_MatchesUpstreamDDL derives the bare-column
+// prefix from the metrics DDL of every precision: SortingKeyPrefix answers
+// for whichever of them a deployment was provisioned with, so both have to
+// agree with it.
 func TestMetricsSortingKeyPrefix_MatchesUpstreamDDL(t *testing.T) {
-	want := bareColumnPrefix(orderByTuple(t, sqltemplates.MetricsGaugeCreateTable))
-	if len(want) == 0 {
-		t.Fatal("derived an empty metrics prefix from the DDL — the deriver is broken")
-	}
-	if got := DefaultOTelMetrics().SortingKeyPrefix(); !slices.Equal(got, want) {
-		t.Errorf("metrics SortingKeyPrefix = %v; the pinned exporter's ORDER BY gives %v", got, want)
+	for precision, p := range metricsPrecisions {
+		want := bareColumnPrefix(orderByTuple(t, metricsTemplates(p)["gauge"]))
+		if len(want) == 0 {
+			t.Fatalf("%s: derived an empty metrics prefix from the DDL — the deriver is broken", precision)
+		}
+		if got := DefaultOTelMetrics().SortingKeyPrefix(); !slices.Equal(got, want) {
+			t.Errorf("metrics SortingKeyPrefix = %v; the pinned exporter's %s ORDER BY gives %v", got, precision, want)
+		}
 	}
 }
 

@@ -3251,18 +3251,36 @@ opposed to a clean zero-row absence of a table nobody named, or the
 Cerberus auto-creates the OTel-CH schema from upstream's own DDL
 templates (the `sqltemplates` API exposed by the
 [`cerberus-ddl` fork](upstream-forks.md)), so the tables cerberus writes
-match a stock OTel ClickHouse Exporter deployment — with **one
-deliberate exception**. The five metrics tables (`otel_metrics_gauge`,
-`otel_metrics_sum`, `otel_metrics_histogram`,
-`otel_metrics_exponential_histogram`, `otel_metrics_summary`) carry a
-**MetricName-first sort key**:
+match a stock OTel ClickHouse Exporter deployment — with **two
+deliberate exceptions**, both on the five metrics tables
+(`otel_metrics_gauge`, `otel_metrics_sum`, `otel_metrics_histogram`,
+`otel_metrics_exponential_histogram`, `otel_metrics_summary`):
+
+- They carry a **MetricName-first sort key**, where stock OTel-CH leads
+  its `ORDER BY` with `ServiceName`.
+- Their timestamp columns (`TimeUnix`, `StartTimeUnix`,
+  `Exemplars.TimeUnix`) take the type
+  `CERBERUS_SCHEMA_METRICS_TIMESTAMP_PRECISION` selects. The default,
+  `nanos`, creates `DateTime64(9)`; `seconds` creates `DateTime`, the type
+  the stock exporter creates from v0.157.
+
+The sort key for each precision:
 
 ```sql
+-- nanos (default): DateTime64(9) timestamps
 ORDER BY (MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix))
+-- seconds: DateTime timestamps
+ORDER BY (MetricName, Attributes, ServiceName, toUnixTimestamp(TimeUnix))
 ```
 
-where stock OTel-CH leads its `ORDER BY` with `ServiceName`. The traces
-and logs tables are unchanged from stock.
+`seconds` is **lossy**: ClickHouse truncates every sample, start and
+exemplar timestamp to its second on insert. Two samples of one series
+within the same second become duplicates, and sub-second offsets are
+gone from every answer. Choose it to match a schema a v0.157+ collector
+also writes to, not for storage savings. Queries serve either type,
+whichever created the tables (see
+[Startup requirements preflight](#startup-requirements-preflight)). The
+traces and logs tables are unchanged from stock.
 
 This divergence is **correctness-neutral**. A ClickHouse `ORDER BY`
 (the table sort key) governs only data-skipping and on-disk row layout —

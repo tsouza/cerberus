@@ -73,7 +73,7 @@ func TestBackfillSQL(t *testing.T) {
 		"(`MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `BucketEnd`, `LastTwoSamples`, `Temporality`) " +
 		"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
 		"toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300) AS `BucketEnd`, " +
-		"timeSeriesLastTwoSamplesState(`TimeUnix`, `Value`) AS `LastTwoSamples`, " +
+		"timeSeriesLastTwoSamplesState(toDateTime64(`TimeUnix`, 9), `Value`) AS `LastTwoSamples`, " +
 		"any(`AggregationTemporality`) AS `Temporality` " +
 		"FROM `otel`.`otel_metrics_sum` WHERE " + recordedValueSQL + " AND `TimeUnix` < ? " +
 		"GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
@@ -88,7 +88,7 @@ func TestBackfillSQL(t *testing.T) {
 		"(`MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `BucketEnd`, `LastTwoSamples`, `Temporality`) " +
 		"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
 		"toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300) AS `BucketEnd`, " +
-		"timeSeriesLastTwoSamplesState(`TimeUnix`, `Value`) AS `LastTwoSamples`, " +
+		"timeSeriesLastTwoSamplesState(toDateTime64(`TimeUnix`, 9), `Value`) AS `LastTwoSamples`, " +
 		"-1 AS `Temporality` " +
 		"FROM `otel`.`otel_metrics_gauge` WHERE " + recordedValueSQL + " AND `TimeUnix` < ? " +
 		"GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +

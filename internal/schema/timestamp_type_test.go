@@ -7,11 +7,17 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter/sqltemplates"
 )
 
-// nanosTimestampType is the ClickHouse type cerberus's emitter requires of
-// every signal's timestamp column: it reads them through
-// toUnixTimestamp64Nano / fromUnixTimestamp64Nano, which ClickHouse rejects on
-// any other type with ILLEGAL_TYPE_OF_ARGUMENT.
+// nanosTimestampType is the ClickHouse type of the traces and logs timestamp
+// columns, and of the metrics ones under MetricsTimestampNanos.
 const nanosTimestampType = "DateTime64(9)"
+
+// metricsTimestampTypes is the metrics timestamp column type each precision
+// provisions. The read path serves both: the boot requirements check detects
+// which one a deployment carries.
+var metricsTimestampTypes = map[MetricsTimestampPrecision]string{
+	MetricsTimestampNanos:   nanosTimestampType,
+	MetricsTimestampSeconds: "DateTime",
+}
 
 // columnType returns the declared type of column in a CREATE TABLE template:
 // the token after the first top-level definition line that names the column,
@@ -33,21 +39,29 @@ func columnType(t *testing.T, ddl, column string) string {
 
 // TestTimestampColumnsAreNanosDateTime64_InUpstreamDDL pins the timestamp type
 // of every table internal/schema/ddl renders from the pinned exporter's
-// templates. A fork-tag bump that changes it builds cleanly and passes every
-// chDB suite that seeds its own tables, and then fails every query against a
-// table cerberus created itself; this test is where such a bump goes red.
+// templates: DateTime64(9) for traces and logs, and for metrics the type each
+// MetricsTimestampPrecision promises. A fork-tag bump that changes one builds
+// cleanly and passes every chDB suite that seeds its own tables, and then
+// fails every query against a table cerberus created itself; this test is
+// where such a bump goes red.
 func TestTimestampColumnsAreNanosDateTime64_InUpstreamDDL(t *testing.T) {
-	metricsTS := DefaultOTelMetrics().TimestampColumn
-	tables := map[string]struct{ ddl, column string }{
-		"traces": {sqltemplates.TracesCreateTable, DefaultOTelTraces().TimestampColumn},
-		"logs":   {sqltemplates.LogsCreateTable, DefaultOTelLogs().TimestampColumn},
+	type table struct{ ddl, column, want string }
+	tables := map[string]table{
+		"traces": {sqltemplates.TracesCreateTable, DefaultOTelTraces().TimestampColumn, nanosTimestampType},
+		"logs":   {sqltemplates.LogsCreateTable, DefaultOTelLogs().TimestampColumn, nanosTimestampType},
 	}
-	for name, ddl := range metricsTemplates() {
-		tables["metrics_"+name] = struct{ ddl, column string }{ddl, metricsTS}
+	m := DefaultOTelMetrics()
+	for precision, p := range metricsPrecisions {
+		want := metricsTimestampTypes[precision]
+		for name, ddl := range metricsTemplates(p) {
+			prefix := string(precision) + "/metrics_" + name
+			tables[prefix] = table{ddl, m.TimestampColumn, want}
+			tables[prefix+"/start"] = table{ddl, m.StartTimeColumn, want}
+		}
 	}
 	for name, tbl := range tables {
-		if got := columnType(t, tbl.ddl, tbl.column); got != nanosTimestampType {
-			t.Errorf("%s: %s is %s in the pinned exporter's DDL, want %s", name, tbl.column, got, nanosTimestampType)
+		if got := columnType(t, tbl.ddl, tbl.column); got != tbl.want {
+			t.Errorf("%s: %s is %s in the pinned exporter's DDL, want %s", name, tbl.column, got, tbl.want)
 		}
 	}
 }

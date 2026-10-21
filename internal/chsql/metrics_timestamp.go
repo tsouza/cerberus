@@ -128,7 +128,7 @@ func unixTimestamp64(fn chplan.Fn, x Frag) Frag {
 func timestampDateTime64(x Frag) Frag {
 	return func(b *Builder) {
 		if b.metricsTimestamp == MetricsTimestampDateTime {
-			Call(toDateTime64Fn, x, InlineLit(int64(nanoScale)))(b)
+			ToDateTime64Nanos(x)(b)
 			return
 		}
 		x(b)
@@ -137,6 +137,11 @@ func timestampDateTime64(x Frag) Frag {
 
 // toDateTime64Fn is ClickHouse's DateTime64 conversion function.
 const toDateTime64Fn = "toDateTime64"
+
+// ToDateTime64Nanos renders `toDateTime64(<x>, 9)`: the timestamp x as a
+// DateTime64(9), an exact widening of a DateTime and the identity on a
+// DateTime64(9).
+func ToDateTime64Nanos(x Frag) Frag { return Call(toDateTime64Fn, x, InlineLit(int64(nanoScale))) }
 
 // exprUnixTimestamp64 renders a chplan.FuncCall of FnToUnixNanos /
 // FnToUnixMillis through unixTimestamp64. It is special-cased in exprFunc
