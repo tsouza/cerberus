@@ -354,8 +354,9 @@ replace github.com/hashicorp/memberlist => github.com/grafana/memberlist v0.3.1-
 // pinned by a fork tag. tsouza/cerberus-forks-monitor keeps them current
 // daily: the prometheus fork follows upstream releases, and the
 // collector-contrib fork rebases onto upstream main when the subtree
-// cerberus consumes changed. A new fork tag reaches the replace lines
-// below through a hand-made bump. See docs/upstream-forks.md.
+// cerberus consumes changed. .github/workflows/fork-tag-drift.yml moves the
+// replace lines below onto a newer fork tag by pull request (by issue for the
+// release-tracked prometheus fork). See docs/upstream-forks.md.
 //
 // Neither LogQL nor TraceQL is PARSED through a fork: cerberus parses both
 // with its own clean-room Apache reimplementations (internal/logql/lsyntax,

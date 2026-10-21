@@ -1,0 +1,52 @@
+name: fork-tag-drift
+
+# Moves go.mod's tsouza/* fork `replace` targets onto the newest
+# `-cerberus-*` tag each fork carries. tsouza/cerberus-forks-monitor mints
+# those tags, and Dependabot does not rewrite `replace` targets, so without
+# this job a new fork tag reaches go.mod only when someone notices it.
+#
+# A newer tag on a replace-only fork (collector-contrib, tempo) becomes one
+# pull request from `deps/fork-tag/<fork>`. A newer tag on the release-tracked
+# prometheus fork becomes one issue, because moving it also moves the
+# `require` and the reference image. `.github/scripts/fork-tag-drift.mjs` has
+# the logic; docs/upstream-forks.md describes the flow.
+#
+# Token: the pull request has to run its checks, which a push or a pull
+# request made with GITHUB_TOKEN does not do, so the checkout persists
+# RELEASE_PAT as the push credential and `gh` uses it too. The job checks
+# out and runs only the default branch's code.
+on:
+  schedule:
+    # Daily, an hour after the forks-monitor's 10:17 UTC run mints its tags.
+    - cron: '23 11 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-tag-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - uses: ./.github/actions/setup-go
+        with:
+          also-warm: test/oracle/go.mod
+
+      - name: fork-tag-drift self-test
+        run: node --test .github/scripts/fork-tag-drift.test.mjs
+
+      - name: Bump stale fork replaces
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: node .github/scripts/fork-tag-drift.mjs

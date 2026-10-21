@@ -27,8 +27,8 @@ updates:
     #
     # These are upstream `require` bumps. Prometheus, tempo and
     # collector-contrib are `replace`d by tsouza/* fork tags, and Dependabot
-    # does not rewrite `replace` targets, so a new fork tag reaches go.mod
-    # only through a hand-made bump (#3934).
+    # does not rewrite `replace` targets; `.github/workflows/fork-tag-drift.yml`
+    # moves those onto a new fork tag instead.
     #
     # prometheus/prometheus has a group of its own: its require, its fork
     # tag and the reference image must name one release

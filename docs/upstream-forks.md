@@ -58,7 +58,24 @@ Fidelity is held by two independent layers, neither of which links the AGPL pars
 
 With a base chosen, the monitor rebases `cerberus-<branch>` onto it, runs the configured subtree tests, force-pushes the branch and mints the new tag: the release's library version on `track: release`, the next patch on `track: main` (plus the per-submodule tags for collector-contrib). On a rebase conflict or red tests it opens, or comments on, one issue per fork and failure kind in the monitor repo, and leaves the fork untouched.
 
-A newly minted fork tag reaches cerberus only through a pull request that bumps the `replace` directives by hand; Dependabot does not rewrite `replace` targets (#3934).
+## Fork-tag drift
+
+Dependabot does not rewrite `replace` targets. `.github/workflows/fork-tag-drift.yml` does, daily at 11:23 UTC (an hour after the forks-monitor) and on dispatch, through `.github/scripts/fork-tag-drift.mjs`:
+
+1. It reads every `replace … => github.com/tsouza/<fork>[/<subdir>] vX.Y.Z-cerberus-<flavor>` line in every tracked `go.mod`.
+2. It lists each fork's tags and takes the newest `-cerberus-<flavor>` version tagged for every replaced submodule path, so the collector-contrib submodules always move together.
+3. When that version is newer than a pinned one:
+   - a **replace-only fork** (collector-contrib, tempo) gets one pull request from `deps/fork-tag/<fork>`, labelled `dependencies`, that rewrites the replace lines in every `go.mod` and re-tidies each module. A branch that already pins the version is left untouched, so an open bump pull request is not re-pushed and a closed one is not reopened;
+   - a **release-tracked fork**, recognised by a tag version core equal to the module's `require` (prometheus), gets one issue instead. Moving it is the [release move](#moving-prometheus-to-a-new-release).
+
+The bump pull request is not queued automatically. Before adding `queue`, read what the tag changes (`git log <old>..<new>` on the fork, limited to the paths cerberus imports) and, when the change reaches the DDL templates or a parser, dispatch `compatibility.yml` on the branch. `TestMetricsSortingKeyPrefix_MatchesUpstreamDDL` and `TestTimestampColumnsAreNanosDateTime64_InUpstreamDDL` (`internal/schema`) fail a collector-contrib tag that changes the metrics sort key or a timestamp column type.
+
+Run it now, or preview it without side effects:
+
+```bash
+gh workflow run fork-tag-drift.yml
+DRY_RUN=1 node .github/scripts/fork-tag-drift.mjs
+```
 
 ## Dependabot and the queue
 
@@ -91,7 +108,7 @@ If the gate fails, **bump whichever side is wrong** (the reference image to matc
 
 One pull request:
 
-1. Make sure `tsouza/prometheus` carries the release. The monitor mints `v0.(300+MINOR).PATCH-cerberus-parser` on the release commit on its first run after the release is published; otherwise [rebase the fork by hand](#manually-rebase-a-fork).
+1. Make sure `tsouza/prometheus` carries the release. The monitor mints `v0.(300+MINOR).PATCH-cerberus-parser` on the release commit on its first run after the release is published, and [fork-tag drift](#fork-tag-drift) then opens an issue for the move; otherwise [rebase the fork by hand](#manually-rebase-a-fork).
 2. Bump the `require` and the `replace` in the root `go.mod` and in `test/oracle/go.mod`.
 3. Bump every `prom/prometheus` image pin: `compatibility/prometheus/docker-compose.yml`, the restatements the gate lists, and the GHCR mirror inventory in `.github/scripts/lib/mirror.mjs` (pinned by `test/regression/mirror_inventory_test.go`).
 
@@ -129,7 +146,7 @@ git tag "$NEXT"
 git push origin --tags
 ```
 
-Collector-contrib also needs the per-submodule tags at the same SHA. Then bump the `replace` directives in cerberus in a pull request.
+Collector-contrib also needs the per-submodule tags at the same SHA. [Fork-tag drift](#fork-tag-drift) then opens the cerberus pull request that bumps the `replace` directives on its next run.
 
 ### Add a new upstream
 
@@ -153,6 +170,7 @@ Two kinds of `go.mod` directive sit outside the `tsouza/*` fork boundary and are
 - [`tsouza/cerberus-forks-monitor`](https://github.com/tsouza/cerberus-forks-monitor) — the daily cron repo. `README.md` there has the operational detail.
 - `.github/dependabot.yml` — the daily `upstream-parsers` and `prometheus-release` groups.
 - `.github/workflows/auto-merge-deps.yml` — queues trusted patch-only bumps into the merge queue.
+- `.github/workflows/fork-tag-drift.yml` / `.github/scripts/fork-tag-drift.mjs` — moves `replace` targets onto new fork tags.
 - `.github/scripts/agpl-clean.mjs` — the licence gate (fails if any AGPL package reaches `cmd/cerberus`).
 - `.golangci.yml` — `forbidigo` rule blocking `unsafe.Pointer` / `reflect.Value.FieldByName` anywhere under `internal/**`.
 - `internal/logql/lsyntax`, `internal/logql/logpattern`, `internal/drain`, `internal/traceql/ast` — the in-house Apache parsers.

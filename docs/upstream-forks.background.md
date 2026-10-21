@@ -105,6 +105,53 @@ bump hostage in a shared grouped pull request. The pull request still has a
 use: it is the notice that a release exists, and the companion changes turn
 it into the release move.
 
+## Why fork-tag drift lives in cerberus
+
+Dependabot's Go updater bumps `require` lines against the upstream module
+path and never rewrites a `replace` target, so it does not see a fork tag at
+all. Before the drift job existed every move of a `tsouza/*` replace was made
+by hand, and `v0.0.4-cerberus-ddl` sat on the collector-contrib fork for
+months while `go.mod` pinned `v0.0.3-cerberus-ddl`.
+
+The job runs in cerberus rather than in the forks-monitor because cerberus
+owns the `replace` lines, the `go mod tidy` of each nested module, the
+pull-request gates and the merge queue. A monitor that opened the pull
+request would need write access to cerberus and a copy of its module layout,
+and would still miss a tag minted by hand, as tempo's are. Polling every fork
+daily from cerberus catches a tag however it was made.
+
+It opens a pull request rather than failing a scheduled run, because a red
+scheduled run reaches nobody, while a pull request runs every gate against the
+bump and stays visible until someone merges or closes it. The pull request
+needs `RELEASE_PAT`: one opened with the workflow's own token starts no
+`pull_request` checks.
+
+The branch is named per fork and left alone once it pins the target, so a
+daily run neither restarts an open pull request's checks nor reopens one a
+maintainer closed. A newer tag on the same fork rewrites the branch.
+
+### Why the bump pull request is never queued automatically
+
+A fork tag is a rebase onto upstream, and upstream changes things cerberus
+depends on. `v0.0.4-cerberus-ddl` carried upstream's metrics schema rewrite
+(open-telemetry/opentelemetry-collector-contrib#49438): the metrics
+`TimeUnix` columns became second-precision `DateTime`, which cerberus's
+emitted `toUnixTimestamp64Nano(TimeUnix)` rejects, and the mechanical rebase
+turned the fork's MetricName-first sort-key patch into a different key. It
+built cleanly, and the chDB suites passed because they seed their own
+`DateTime64(9)` tables. `TestTimestampColumnsAreNanosDateTime64_InUpstreamDDL`
+exists so that kind of bump fails on its own pull request; the decision it
+forces is tracked in #3935. A human reads each bump before it is queued.
+
+### Why prometheus gets an issue instead
+
+The prometheus fork's tag core equals its `require` version, because both
+name the upstream release the reference image runs. A replace-only bump would
+fail `TestForkVersionSkew`, so the job opens an issue that names the release
+move. Detecting the coupling from `go.mod` itself, rather than from a list of
+fork names, keeps the rule true for any future fork that tracks releases the
+same way.
+
 ## Why the version-skew gate checks each head at its grain
 
 - **Prometheus at the exact release.** The require, the fork tag and the

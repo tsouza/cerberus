@@ -1047,6 +1047,11 @@ jobs:
       - name: Assert the perf-nightly-health notifier cannot go silently hollow
         run: node --test .github/scripts/notify-perf-nightly-failure.test.mjs
 
+      # fork-tag-drift.yml runs only on schedule/dispatch, so its planner's
+      # pure tests run here as well, where a change to the script is reviewed.
+      - name: Assert the fork-tag drift planner
+        run: node --test .github/scripts/fork-tag-drift.test.mjs
+
       # Third consumer (#2437's periodic self-check) — same reason.
       - name: Assert the perf-nightly-selfcheck-health notifier cannot go silently hollow
         run: node --test .github/scripts/notify-perf-nightly-selfcheck-failure.test.mjs

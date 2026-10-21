@@ -2541,6 +2541,21 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `1` on a parse failure / `helm push` / `oras push` error, or when the
     version-gate cannot definitively determine existence (fails closed, with one
     `::error::`).
+- **`fork-tag-drift.mjs`** — `fork-tag-drift.yml`, the daily `drift` job.
+  Reads every tracked go.mod's `tsouza/*` fork `replace` lines, lists each
+  fork's `-cerberus-*` tags with `git ls-remote`, and picks the newest version
+  tagged for every replaced submodule. A newer tag on a replace-only fork is
+  pushed to `deps/fork-tag/<fork>` (every go.mod rewritten, each module
+  re-tidied) and opened as one pull request; a branch that already pins the tag
+  is left alone. A fork whose tag core equals its `require` (prometheus) gets
+  one issue instead, since its move also moves the require and the reference
+  image.
+  - Env: `GITHUB_REPOSITORY`, `GH_TOKEN` (RELEASE_PAT, so the pull request runs
+    its checks), `BASE_BRANCH` (default `main`), `DRY_RUN=1` (report only),
+    `FORK_HOST` (default `https://github.com`). Suite:
+    `fork-tag-drift.test.mjs`.
+  - Exit: `0` when the plan was carried out or empty; `1` when a git, go or gh
+    step failed, or a required env var is missing.
 - **`release-gate-drift.mjs`** — `release-gate-drift.yml`, the weekly `drift`
   job. Rot detector for the EXPECTED set `release-preflight.mjs` gates on. Reads
   `RELEASE_REQUIRED_CHECKS` + `RELEASE_INFORMATIONAL_CHECKS` out of release.yml
