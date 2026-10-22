@@ -29,6 +29,24 @@
       "expected_status": 200,
       "max_of_n_bytes": 504336252,
       "ceiling_bytes": 756504378
+    },
+    {
+      "name": "label_values_matcher_stock_key",
+      "expected_status": 200,
+      "max_of_n_bytes": 25884493,
+      "ceiling_bytes": 31061391
+    },
+    {
+      "name": "label_values_matcher_stock_key_renamed",
+      "expected_status": 200,
+      "max_of_n_bytes": 25963344,
+      "ceiling_bytes": 31156012
+    },
+    {
+      "name": "instant_selector_in_order",
+      "expected_status": 200,
+      "max_of_n_bytes": 52092528,
+      "ceiling_bytes": 78138792
     }
   ]
 }

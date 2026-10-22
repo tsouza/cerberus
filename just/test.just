@@ -720,22 +720,23 @@ histogram-dashboard-unit:
 # into .github/workflows/perf-nightly.yml.
 
 # Regenerate the nightly per-sentinel memory ceilings. Needs Docker; review the diff.
-update-nightly-perf-baseline:
+update-nightly-perf-baseline *sentinels:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    UPDATE_NIGHTLY_PERF_BASELINE=1 go test -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
+    UPDATE_NIGHTLY_PERF_BASELINE=1 UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS="{{replace(sentinels, ' ', ',')}}" go test -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/nightly-baseline.json
 
-# Run #2437's periodic self-check: deliberately breaks two real
-# memory-bounding mechanisms (the #2429 fanout resource bound, the spill
-# safety net) one at a time and asserts `just perf-nightly-integration`
-# actually fails under each — proving the nightly gate is still armed rather
+# Run #2437's periodic self-check: deliberately breaks each mechanism its
+# MUTATIONS list names (the #2429 fanout resource bound, the spill safety
+# net, the join-spill stamp, the PREWHERE split, the in-order aggregation
+# stamp) one at a time and asserts the sentinel recipe that owns it
+# actually fails under each — proving the perf gates are still armed rather
 # than having silently bit-rotted since the last real regression tripped it.
 # Reverts every mutation via `git checkout --` even on failure; never
 # commits or pushes anything. Requires Docker and a clean working tree (it
 # refuses to mutate on top of unrelated uncommitted changes). Weekly, not
 # nightly — see .github/workflows/perf-nightly-selfcheck.yml.
 
-# Prove the nightly perf gate is still armed by breaking two bounds. Needs Docker, clean tree.
+# Prove the perf sentinel gates are still armed by breaking each mechanism. Needs Docker, clean tree.
 perf-nightly-selfcheck:
     @just _pull-retry {{CH_TEST_IMAGE}}
     node --test .github/scripts/perf-nightly-selfcheck.test.mjs

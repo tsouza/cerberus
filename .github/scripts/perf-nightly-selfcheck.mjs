@@ -62,9 +62,27 @@
 //      are identical whether it fired or the mechanism was deleted outright.
 //      This mutation is what proves the sentinel is not a hollow green.
 //
-// The three are ORTHOGONAL memory-bounding mechanisms (a resource-bound
-// throwIf, a disk-spill fallback, a chopt-gated per-query stamp) exercising
-// different sentinels in different corpora — proving one still works says
+//   4. prewhere-split-forced — internal/chsql/emit_node.go's filtered-scan
+//      PREWHERE gate, stripped of its SchemaStrategies.PrewhereByServer
+//      test, so the emitter writes its own PREWHERE split on a server
+//      where move_to_prewhere resolved in (cerberus issue #3955). The
+//      nightly label_values_matcher_stock_key{,_renamed} sentinels read the
+//      matcher's attribute maps for every row of the metric's granules
+//      again and go red on their committed memory ceiling.
+//
+//   5. aggregation-in-order-stamp-lost — internal/engine/
+//      query_settings_rules.go's optimize_aggregation_in_order stamp,
+//      disabled. ClickHouse then hash-aggregates the instant selector the
+//      nightly instant_selector_in_order sentinel issues; peak memory does
+//      not separate the two plans beyond run-to-run noise, so that
+//      sentinel goes red on its pipeline prong, which requires
+//      AggregatingInOrderTransform in EXPLAIN PIPELINE of the dispatched
+//      statement.
+//
+// The five are ORTHOGONAL mechanisms (a resource-bound throwIf, a
+// disk-spill fallback, a chopt-gated per-query stamp, the PREWHERE split, the
+// in-order aggregation stamp) exercising different sentinels in different
+// corpora — proving one still works says
 // nothing about the others. Per #2437's own scope, this is deliberately NOT
 // exhaustive: one representative injected regression per mechanism is the
 // goal, not covering every possible defeat of every sentinel.
@@ -131,6 +149,28 @@ export const MUTATIONS = [
     file: 'internal/engine/spill.go',
     find: '\treturn chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalJoin, spillThreshold(maxMemory))\n',
     replace: '\treturn ctx\n',
+  },
+  {
+    id: 'prewhere-split-forced',
+    description:
+      "Strip internal/chsql/emit_node.go's filtered-scan PREWHERE gate of its PrewhereByServer test, so the " +
+      'emitter writes its own PREWHERE split where move_to_prewhere resolved in (issue #3955). The nightly ' +
+      'label_values_matcher_stock_key{,_renamed} sentinels must go red on their committed memory ceiling.',
+    recipe: 'perf-nightly-integration',
+    file: 'internal/chsql/emit_node.go',
+    find: 'if !strategies.PrewhereByServer && !scanReadsSubquery(scan) && projectionTouchesWide(scan.Columns, shape) {\n',
+    replace: 'if !scanReadsSubquery(scan) && projectionTouchesWide(scan.Columns, shape) {\n',
+  },
+  {
+    id: 'aggregation-in-order-stamp-lost',
+    description:
+      "Disable internal/engine/query_settings_rules.go's optimize_aggregation_in_order stamp, so ClickHouse " +
+      'hash-aggregates a GROUP BY over a sorting-key prefix. The nightly instant_selector_in_order sentinel ' +
+      'must go red on its pipeline prong (AggregatingInOrderTransform in EXPLAIN PIPELINE).',
+    recipe: 'perf-nightly-integration',
+    file: 'internal/engine/query_settings_rules.go',
+    find: 'if r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(f, strategies) {\n',
+    replace: 'if false && r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(f, strategies) {\n',
   },
 ];
 

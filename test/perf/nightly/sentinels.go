@@ -93,6 +93,19 @@ const (
 	// conservative choice: keep the pre-tightening 1.5x until a real
 	// multi-run sweep for this specific sentinel justifies going tighter.
 	nativeHistogramBaselineHeadroom = 1.50
+	// labelValuesBaselineHeadroom (label_values_matcher_stock_key and its
+	// renamed twin, n=7 independent runs): 25.85M-25.89M bytes, max/min =
+	// 1.0014x (CV 0.06%), and 25.92M-25.98M, 1.0022x (CV 0.07%). The
+	// regression they exist for, the emitter's PREWHERE split on a server
+	// where move_to_prewhere resolved in, measured 35.8M-40.1M and
+	// 36.8M-45.3M on the same data and server — at least 1.38x. 1.20x sits
+	// two orders of magnitude above the noise and well under that step.
+	labelValuesBaselineHeadroom = 1.20
+	// instantSelectorBaselineHeadroom (instant_selector_in_order, n=7):
+	// 49.5M-58.1M bytes, max/min = 1.175x (CV 5.44%). Its memory prong is
+	// a backstop — the pipeline prong is what separates the plan it guards
+	// — so it keeps the conservative 1.5x (1.5x / 1.175x = 1.28x cushion).
+	instantSelectorBaselineHeadroom = 1.50
 )
 
 // Sentinel describes one real-data query the nightly harness issues and the
@@ -143,7 +156,76 @@ type Sentinel struct {
 	// noise data each value is calibrated against, and why a single
 	// package-wide multiplier does not fit all four sentinels.
 	BaselineHeadroom float64
+	// Deployment is the tables, and the strategies resolved from them, the
+	// request reads. The zero value is the metrics tables cerberus
+	// provisions under their default names.
+	Deployment Deployment
+	// QuerySettings are ClickHouse settings stamped on every request of this
+	// sentinel (chclient.WithQuerySetting), on top of the ones the
+	// production wiring stamps.
+	QuerySettings map[string]any
+	// WantPipelineStep, when set, names a processor that EXPLAIN PIPELINE of
+	// the statement cerberus dispatched — its text and settings, read back
+	// from system.query_log — must contain. It is the check for a mechanism
+	// that changes the plan without moving peak memory beyond run-to-run
+	// noise.
+	WantPipelineStep string
 }
+
+// Deployment names the metrics tables a sentinel's request reads. Each one
+// is served by its own prom handler, wired as cmd/cerberus wires one: the
+// SchemaStrategies the boot requirements check resolves from those tables,
+// with the server facts the resolved optimizations decide
+// (choptwire.SetServerStrategies).
+type Deployment int
+
+const (
+	// DeploymentProvisioned is the four metrics tables cerberus provisions,
+	// in the default database under their default names.
+	DeploymentProvisioned Deployment = iota
+	// DeploymentStockKey is the same tables as the OpenTelemetry exporter
+	// v0.157 creates them — its ServiceName-first sorting key and DateTime
+	// timestamps — in database stockKeyDB under their default names.
+	DeploymentStockKey
+	// DeploymentStockKeyRenamed is DeploymentStockKey's tables under the
+	// non-default names stockKeyRenamedTables gives them, in database
+	// stockKeyRenamedDB.
+	DeploymentStockKeyRenamed
+)
+
+// The databases the stock-keyed deployments live in.
+const (
+	stockKeyDB        = "stock_key"
+	stockKeyRenamedDB = "stock_key_renamed"
+)
+
+// stockKeyRenamedTables maps each metrics table of DeploymentStockKey to its
+// name in DeploymentStockKeyRenamed.
+var stockKeyRenamedTables = map[string]string{
+	"otel_metrics_gauge":                 "metrics_gauge_v2",
+	"otel_metrics_sum":                   "metrics_sum_v2",
+	"otel_metrics_histogram":             "metrics_histogram_v2",
+	"otel_metrics_exponential_histogram": "metrics_exp_histogram_v2",
+}
+
+// settingUseQueryConditionCache switches ClickHouse's query condition cache
+// off on a sentinel whose peak memory would otherwise depend on what earlier
+// repeats left in it.
+const settingUseQueryConditionCache = "use_query_condition_cache"
+
+// The sample slice the label-matcher sentinels read: one real, scrubbed
+// method value of sumMetric over the last five minutes before 12:30, a span
+// the captured day covers without a gap.
+const scrubbedMethod = "scrubbed-0cf008d48ef1"
+
+var (
+	matcherWindowStart = time.Date(2026, 8, 18, 12, 25, 0, 0, time.UTC)
+	matcherWindowEnd   = time.Date(2026, 8, 18, 12, 30, 0, 0, time.UTC)
+)
+
+// pipelineAggregatingInOrder is the processor ClickHouse runs a GROUP BY
+// with when optimize_aggregation_in_order reads the table in its sort order.
+const pipelineAggregatingInOrder = "AggregatingInOrderTransform"
 
 // Sentinels is PR A's "prove the mechanism, print the numbers" corpus — no
 // baseline/gate yet (see realch_perfnightly_integration_test.go's doc
@@ -332,6 +414,65 @@ var Sentinels = []Sentinel{
 			return url.Values{
 				"query": {`histogram_quantile(0.95, ` + nativeHistogramMetric + `)`},
 			}
+		},
+	},
+	{
+		// The label-values read of one metric under a label matcher, against
+		// the exporter's own sorting key. The emitter's PREWHERE split keeps
+		// only the metric-name filter in PREWHERE and switches off the
+		// server's move of the matcher and the time bounds, so every row of
+		// the metric's granules is read with its attribute maps; where
+		// move_to_prewhere is resolved in, the server's split filters first.
+		Name:             "label_values_matcher_stock_key",
+		Family:           "label values under a matcher on the exporter's sorting key — the PREWHERE/WHERE split of a filtered scan",
+		Path:             "/api/v1/label/http_route/values",
+		ExpectedStatus:   http.StatusOK,
+		WindowStart:      matcherWindowStart,
+		WindowEnd:        matcherWindowEnd,
+		Step:             time.Minute,
+		BaselineHeadroom: labelValuesBaselineHeadroom,
+		Deployment:       DeploymentStockKey,
+		QuerySettings:    map[string]any{settingUseQueryConditionCache: 0},
+		Params: func(start, end time.Time) url.Values {
+			return url.Values{"match[]": {sumMetric + `{method="` + scrubbedMethod + `"}`}}
+		},
+	},
+	{
+		// label_values_matcher_stock_key over the same tables under
+		// non-default names, whose shape the emitter reads from the deployed
+		// tables rather than from the default names it knows.
+		Name:             "label_values_matcher_stock_key_renamed",
+		Family:           "label values under a matcher on renamed exporter-keyed tables — the PREWHERE/WHERE split of a filtered scan",
+		Path:             "/api/v1/label/http_route/values",
+		ExpectedStatus:   http.StatusOK,
+		WindowStart:      matcherWindowStart,
+		WindowEnd:        matcherWindowEnd,
+		Step:             time.Minute,
+		BaselineHeadroom: labelValuesBaselineHeadroom,
+		Deployment:       DeploymentStockKeyRenamed,
+		QuerySettings:    map[string]any{settingUseQueryConditionCache: 0},
+		Params: func(start, end time.Time) url.Values {
+			return url.Values{"match[]": {sumMetric + `{method="` + scrubbedMethod + `"}`}}
+		},
+	},
+	{
+		// An instant selector groups by (MetricName, Attributes), a prefix of
+		// the sorting key cerberus provisions, so the engine stamps
+		// optimize_aggregation_in_order and ClickHouse aggregates in the
+		// key's order. Losing the stamp changes the plan but not peak memory
+		// beyond run-to-run noise, so the sentinel also requires the
+		// in-order processor in the dispatched statement's pipeline.
+		Name:             "instant_selector_in_order",
+		Family:           "instant selector on cerberus's sorting key — GROUP BY a sort-key prefix aggregated in order",
+		Path:             "/api/v1/query",
+		ExpectedStatus:   http.StatusOK,
+		WindowStart:      matcherWindowEnd,
+		WindowEnd:        matcherWindowEnd,
+		BaselineHeadroom: instantSelectorBaselineHeadroom,
+		QuerySettings:    map[string]any{settingUseQueryConditionCache: 0},
+		WantPipelineStep: pipelineAggregatingInOrder,
+		Params: func(start, end time.Time) url.Values {
+			return url.Values{"query": {sumMetric}}
 		},
 	},
 }

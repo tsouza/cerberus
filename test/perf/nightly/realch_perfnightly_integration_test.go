@@ -95,10 +95,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
 	"github.com/tsouza/cerberus/internal/api/prom"
@@ -106,7 +109,10 @@ import (
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/chopttest"
 	"github.com/tsouza/cerberus/internal/choptwire"
+	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/chsqltest"
 	"github.com/tsouza/cerberus/internal/optcorpus"
+	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
@@ -177,58 +183,47 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	}
 	t.Logf("derived native histogram sample: %d rows", nativeHistRows)
 
+	// The exporter-keyed deployments (sentinels.go's Deployment): the
+	// exporter's own DDL in stockKeyDB, holding the counter sample, and the
+	// same tables renamed in stockKeyRenamedDB.
+	stockKeyClient := newPerfNightlyClient(ctx, t, container, stockKeyDB)
+	stockKeyRenamedClient := newPerfNightlyClient(ctx, t, container, stockKeyRenamedDB)
+	createStockKeyDeployments(ctx, t, container, client, stockKeyClient)
+
 	// OPTIMIZE ... FINAL before measuring: controls background-merge-state
 	// noise so a sentinel's memory reading reflects the query itself, not an
 	// in-flight merge competing for the same cap (same rationale as
 	// test/perf/smoke's optimizeTableFinal).
-	for _, table := range []string{"otel_metrics_histogram", "otel_metrics_sum", "otel_metrics_gauge", "otel_metrics_exponential_histogram"} {
+	for _, table := range []string{
+		"otel_metrics_histogram", "otel_metrics_sum", "otel_metrics_gauge", "otel_metrics_exponential_histogram",
+		stockKeyDB + ".otel_metrics_sum", stockKeyRenamedDB + "." + stockKeyRenamedTables["otel_metrics_sum"],
+	} {
 		if err := conn.Exec(ctx, "OPTIMIZE TABLE "+table+" FINAL"); err != nil {
 			t.Fatalf("optimize table %s: %v", table, err)
 		}
 	}
 
-	metricsSchema := schema.DefaultOTelMetrics()
-	metricsHandler := prom.New(client, metricsSchema, nil)
-
 	// ONE probe-and-resolve pass, exactly as cmd/cerberus's boot does, feeding
-	// BOTH boot-wired axes this lane needs from it.
+	// every boot-wired axis this lane needs from it.
 	set := chopttest.ResolveEnabledSet(ctx, t, client, "auto")
-
-	// Axis 1 — the SAME classic-histogram native/fan-out decision
-	// cmd/cerberus's own boot path makes (nativeRangeLowerers, main.go),
-	// scoped to just this one field: prom.New's zero-value Lowerers table
-	// alone would leave chplan.RangeBucketGridNative permanently unreachable
-	// here regardless of perfNightlyCHImage's pinned version, because
-	// promql.RangeLowerers.withDefaults normalises every nil field to its
-	// concrete FAN-OUT impl at the lowering entry. That gap is repo-wide and
-	// issue #2487 tracks wiring the other six native ts_grid families across
-	// the other lanes, so this stays scoped to the ONE field this lane's
-	// histogram sentinel needs.
-	metricsHandler.Lowerers.ClassicHistogram = nightlyClassicHistogramLowerer(t, set)
-
-	// Axis 2 — the per-query engine.SettingsRules (cerberus issue #2820).
-	// prom.New leaves Engine.Settings at its zero value, which applies
-	// NOTHING: before this, every SettingsRules mechanism
-	// (optimize_aggregation_in_order, use_query_condition_cache,
-	// max_bytes_before_external_join) was unreachable in this corpus no
-	// matter which server it ran against, so no sentinel here could ever
-	// have measured one.
-	rules := choptwire.SettingsRules(set, metricsSchema, schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
-	if rules.ResultCache {
-		t.Fatalf("the resolved set enabled chopt.FeatureResultCache — a query RESULT cache would serve "+
-			"repeats 1..%d of every sentinel from cache, so the max-of-N ceiling would stop measuring the "+
-			"query and start measuring a cache hit", nightlySentinelRepeats-1)
+	// pipelineConns read each deployment's database, the one its dispatched
+	// statements resolve unqualified table names against.
+	pipelineConns := map[Deployment]driver.Conn{
+		DeploymentProvisioned:     conn,
+		DeploymentStockKey:        stockKeyClient.Conn(),
+		DeploymentStockKeyRenamed: stockKeyRenamedClient.Conn(),
 	}
-	metricsHandler.Engine.SetSettings(rules)
-	t.Logf("settings rules wired: %+v", rules)
-
-	mux := http.NewServeMux()
-	metricsHandler.Mount(mux)
+	muxes := map[Deployment]*http.ServeMux{
+		DeploymentProvisioned:     nightlyMux(ctx, t, client, perfNightlyDB, schema.DefaultOTelMetrics(), set),
+		DeploymentStockKey:        nightlyMux(ctx, t, stockKeyClient, stockKeyDB, schema.DefaultOTelMetrics(), set),
+		DeploymentStockKeyRenamed: nightlyMux(ctx, t, stockKeyRenamedClient, stockKeyRenamedDB, stockKeyRenamedMetrics(), set),
+	}
 
 	logSource := optcorpus.NewCHQueryLogSource(conn, 30*time.Second, time.Hour)
 
 	baseline := loadNightlyBaseline(t)
 	update := os.Getenv("UPDATE_NIGHTLY_PERF_BASELINE") == "1"
+	calibrate := calibrationSelection(t, update)
 	updated := make(map[string]nightlyBound, len(Sentinels))
 
 	// results accumulates one SentinelResult per sentinel regardless of
@@ -241,6 +236,11 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	results := make([]SentinelResult, 0, len(Sentinels))
 
 	for _, sentinel := range Sentinels {
+		if update && !calibrate(sentinel.Name) {
+			continue
+		}
+		mux := muxes[sentinel.Deployment]
+
 		t.Run(sentinel.Name, func(t *testing.T) {
 			// result accumulates this sentinel's outcome as the subtest
 			// progresses; Pass defaults to false and is only ever flipped to
@@ -308,6 +308,20 @@ func TestPerfNightlyRealCH(t *testing.T) {
 				}
 				if rows[0].MemoryUsage > maxBytes {
 					maxBytes = rows[0].MemoryUsage
+				}
+
+				// The plan prong, on every repeat like the status check: a
+				// mechanism that fires intermittently is as broken as one
+				// that never fires.
+				if sentinel.WantPipelineStep != "" {
+					pipeline, err := pipelineSteps(ctx, pipelineConns[sentinel.Deployment], queryID)
+					if err != nil {
+						t.Fatalf("%s repeat %d: %v", sentinel.Name, i, err)
+					}
+					if !strings.Contains(pipeline, sentinel.WantPipelineStep) {
+						t.Fatalf("%s repeat %d: EXPLAIN PIPELINE of the dispatched statement has no %s — %s may have regressed:\n%s",
+							sentinel.Name, i, sentinel.WantPipelineStep, sentinel.Family, pipeline)
+					}
 				}
 			}
 			// Every repeat above matched sentinel.ExpectedStatus exactly, or
@@ -381,6 +395,11 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	}
 
 	if update {
+		for _, bound := range baseline.Sentinels {
+			if _, measured := updated[bound.Name]; !measured && !calibrate(bound.Name) {
+				updated[bound.Name] = bound
+			}
+		}
 		writeNightlyBaseline(t, updated)
 	}
 }
@@ -399,12 +418,20 @@ func runSentinelOnce(t *testing.T, mux *http.ServeMux, sentinel Sentinel, queryI
 		start, end, step = sentinel.WindowStart, sentinel.WindowEnd, sentinel.Step
 	}
 	params := sentinel.Params(start, end)
-	params.Set("start", formatPromTime(start))
-	params.Set("end", formatPromTime(end))
-	params.Set("step", step.String())
+	if start.Equal(end) {
+		params.Set("time", formatPromTime(end))
+	} else {
+		params.Set("start", formatPromTime(start))
+		params.Set("end", formatPromTime(end))
+		params.Set("step", step.String())
+	}
 
 	req := httptest.NewRequest(http.MethodGet, sentinel.Path+"?"+params.Encode(), nil)
-	req = req.WithContext(chclient.WithQueryID(req.Context(), queryID))
+	reqCtx := chclient.WithQueryID(req.Context(), queryID)
+	for name, value := range sentinel.QuerySettings {
+		reqCtx = chclient.WithQuerySetting(reqCtx, name, value)
+	}
+	req = req.WithContext(reqCtx)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String()
@@ -458,6 +485,13 @@ func startPerfNightlyCH(ctx context.Context, t *testing.T) (*tcclickhouse.ClickH
 	}
 	t.Cleanup(func() { _ = container.Terminate(ctx) })
 
+	return container, newPerfNightlyClient(ctx, t, container, perfNightlyDB)
+}
+
+// newPerfNightlyClient connects to database on container with the lane's
+// memory cap, closing the client when t ends.
+func newPerfNightlyClient(ctx context.Context, t *testing.T, container *tcclickhouse.ClickHouseContainer, database string) *chclient.Client {
+	t.Helper()
 	host, err := container.Host(ctx)
 	if err != nil {
 		t.Fatalf("host: %v", err)
@@ -468,17 +502,165 @@ func startPerfNightlyCH(ctx context.Context, t *testing.T) (*tcclickhouse.ClickH
 	}
 	client, err := chclient.New(chclient.Config{
 		Addr:                host + ":" + port.Port(),
-		Database:            perfNightlyDB,
+		Database:            database,
 		Username:            "cerberus",
 		Password:            "cerberus",
 		BreakerDisabled:     true,
 		MaxQueryMemoryBytes: perfNightlyMemoryCapBytes,
 	})
 	if err != nil {
-		t.Fatalf("connect: %v", err)
+		t.Fatalf("connect %s: %v", database, err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	return container, client
+	return client
+}
+
+// createStockKeyDeployments creates DeploymentStockKey's tables from the
+// exporter's DDL, loads the counter sample into them, and copies them to
+// DeploymentStockKeyRenamed's tables. admin runs the DDL; stockKeyClient
+// reads the stock-key database the sample loads into.
+func createStockKeyDeployments(ctx context.Context, t *testing.T, container *tcclickhouse.ClickHouseContainer, admin, stockKeyClient *chclient.Client) {
+	t.Helper()
+	conn := admin.Conn()
+	stmts, err := chsqltest.UpstreamDateTimeMetricsDDL(stockKeyDB)
+	if err != nil {
+		t.Fatalf("render the exporter's metrics DDL: %v", err)
+	}
+	for _, stmt := range append([]string{"CREATE DATABASE " + stockKeyDB}, stmts...) {
+		if err := conn.Exec(ctx, stmt); err != nil {
+			t.Fatalf("create the stock-key deployment: %v\n%s", err, stmt)
+		}
+	}
+	rows, err := loadSumSample(ctx, container, stockKeyClient, sampleParquetPath(t, "svc_http_requests_total.parquet"))
+	if err != nil {
+		t.Fatalf("load the counter sample into %s: %v", stockKeyDB, err)
+	}
+	t.Logf("loaded counter sample into %s: %d rows", stockKeyDB, rows)
+
+	if err := conn.Exec(ctx, "CREATE DATABASE "+stockKeyRenamedDB); err != nil {
+		t.Fatalf("create %s: %v", stockKeyRenamedDB, err)
+	}
+	for from, to := range stockKeyRenamedTables {
+		src, dst := stockKeyDB+"."+from, stockKeyRenamedDB+"."+to
+		for _, stmt := range []string{"CREATE TABLE " + dst + " AS " + src, "INSERT INTO " + dst + " SELECT * FROM " + src} {
+			if err := conn.Exec(ctx, stmt); err != nil {
+				t.Fatalf("copy %s to %s: %v", src, dst, err)
+			}
+		}
+	}
+}
+
+// stockKeyRenamedMetrics is the metrics schema naming DeploymentStockKeyRenamed's
+// tables.
+func stockKeyRenamedMetrics() schema.Metrics {
+	m := schema.DefaultOTelMetrics()
+	m.GaugeTable = stockKeyRenamedTables[m.GaugeTable]
+	m.SumTable = stockKeyRenamedTables[m.SumTable]
+	m.HistogramTable = stockKeyRenamedTables[m.HistogramTable]
+	m.ExpHistogramTable = stockKeyRenamedTables[m.ExpHistogramTable]
+	return m
+}
+
+// nightlyMux mounts a prom handler on client's database the way cmd/cerberus
+// wires one from the boot-resolved set: the classic-histogram lowering, the
+// per-query settings rules, and the SchemaStrategies the requirements check
+// resolves from the deployed tables, with the server facts set decides.
+func nightlyMux(ctx context.Context, t *testing.T, client *chclient.Client, database string, metrics schema.Metrics, set chopt.EnabledSet) *http.ServeMux {
+	t.Helper()
+	handler := prom.New(client, metrics, nil)
+
+	// prom.New's zero-value Lowerers table would leave
+	// chplan.RangeBucketGridNative unreachable whatever the server's
+	// version: promql.RangeLowerers.withDefaults normalises every nil field
+	// to its fan-out impl at the lowering entry (issue #2487).
+	handler.Lowerers.ClassicHistogram = nightlyClassicHistogramLowerer(t, set)
+
+	// prom.New leaves Engine.Settings at its zero value, which applies
+	// nothing, so no SettingsRules mechanism would be reachable here
+	// (cerberus issue #2820).
+	rules := choptwire.SettingsRules(set, metrics, schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
+	if rules.ResultCache {
+		t.Fatalf("the resolved set enabled chopt.FeatureResultCache — a query RESULT cache would serve "+
+			"repeats 1..%d of every sentinel from cache, so the max-of-N ceiling would stop measuring the "+
+			"query and start measuring a cache hit", nightlySentinelRepeats-1)
+	}
+	handler.Engine.SetSettings(rules)
+
+	res := preflight.Run(ctx, client, preflight.Requirements{
+		Database: database,
+		Metrics:  metrics,
+		Logs:     schema.DefaultOTelLogs(),
+		Traces:   schema.DefaultOTelTraces(),
+		Signals:  preflight.Signals{Metrics: true},
+	})
+	if res.Fatal != nil {
+		t.Fatalf("requirements check on %s: %v", database, res.Fatal)
+	}
+	cell := chsql.NewSchemaStrategiesCell(res.Strategies)
+	choptwire.SetServerStrategies(cell, set)
+	handler.Strategies = cell
+	t.Logf("%s: optimize_aggregation_in_order=%v sorting-key prefixes %v prewhere-by-server=%v", database,
+		rules.OptimizeAggregationInOrder, cell.Load().Metrics.SortingKeyPrefixes, cell.Load().Metrics.PrewhereByServer)
+
+	mux := http.NewServeMux()
+	handler.Mount(mux)
+	return mux
+}
+
+// pipelineSteps returns EXPLAIN PIPELINE of the statement cerberus
+// dispatched under queryID, rebuilt from system.query_log: its text and the
+// settings it ran with.
+func pipelineSteps(ctx context.Context, conn driver.Conn, queryID string) (string, error) {
+	var (
+		settings map[string]string
+		query    string
+	)
+	if err := conn.QueryRow(ctx, `SELECT Settings, query FROM system.query_log `+
+		`WHERE type = 'QueryFinish' AND query_id = ? ORDER BY event_time_microseconds DESC LIMIT 1`, queryID).
+		Scan(&settings, &query); err != nil {
+		return "", fmt.Errorf("read query_log for %q: %w", queryID, err)
+	}
+	stamped := make(clickhouse.Settings, len(settings))
+	for name, value := range settings {
+		stamped[name] = value
+	}
+	rows, err := conn.Query(clickhouse.Context(ctx, clickhouse.WithSettings(stamped)), "EXPLAIN PIPELINE "+query)
+	if err != nil {
+		return "", fmt.Errorf("EXPLAIN PIPELINE of %q: %w", queryID, err)
+	}
+	defer rows.Close()
+	var pipeline strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return "", err
+		}
+		pipeline.WriteString(line)
+		pipeline.WriteByte('\n')
+	}
+	return pipeline.String(), rows.Err()
+}
+
+// calibrationSelection reports which sentinels a calibration run measures:
+// every one, or — when UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS lists names —
+// only those, keeping every other sentinel's committed bound as it is. It
+// fails on a listed name no sentinel carries.
+func calibrationSelection(t *testing.T, update bool) func(name string) bool {
+	t.Helper()
+	listed := os.Getenv("UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS")
+	if !update || listed == "" {
+		return func(string) bool { return true }
+	}
+	selected := make(map[string]bool)
+	for name := range strings.SplitSeq(listed, ",") {
+		selected[strings.TrimSpace(name)] = true
+	}
+	for name := range selected {
+		if !slices.ContainsFunc(Sentinels, func(s Sentinel) bool { return s.Name == name }) {
+			t.Fatalf("UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS names %q, which is no sentinel", name)
+		}
+	}
+	return func(name string) bool { return selected[name] }
 }
 
 // --- baseline load/write (invariant 9: never hand-edited) -----------------

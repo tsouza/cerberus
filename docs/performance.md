@@ -143,6 +143,8 @@ The typed emitter is CH-native, not ANSI-ish:
 - **`PREWHERE` promotion** fuses `Filter(Scan)` and partitions conjuncts into a
   sort-prefix bucket / skip-index bucket / rest, promoting cheap predicates
   that touch no wide column so CH evaluates them before reading wide columns.
+  On the servers `move_to_prewhere` auto-selects, the emitter writes no
+  `PREWHERE` and the server's `optimize_move_to_prewhere` places the split.
 - **Single-pass spanset intersect** — TraceQL `&&` is a trace-level
   conjunction over a span-level union, and the portable spelling of it names
   each arm as a `WITH` CTE referenced three times. A non-recursive CTE is a
@@ -256,7 +258,15 @@ every PR) to *broad* (corpus-wide, nightly).
    handlers with the SAME boot-resolved `engine.SettingsRules` a real
    deployment carries (`choptwire.SettingsRules` from a live
    probe-and-resolve), because `prom.New` / `tempo.New` leave `Engine.Settings`
-   at its zero value, which applies nothing at all.
+   at its zero value, which applies nothing at all. The nightly corpus also
+   wires the `SchemaStrategies` the requirements check resolves from each
+   deployment's tables, with the server facts the resolved set decides
+   (`choptwire.SetServerStrategies`), and runs some sentinels against the
+   exporter's own sorting key and against renamed tables. A nightly sentinel
+   whose mechanism changes the plan without moving peak memory beyond noise
+   names a processor (`Sentinel.WantPipelineStep`) that `EXPLAIN PIPELINE` of
+   the statement it dispatched, rebuilt from `system.query_log`, must contain
+   on every repeat.
 
 The static fan-out lint is the per-PR gate (in the required `check` job); the
 scaling harness and cardinality ratchet are release-gate checks that no-op on
