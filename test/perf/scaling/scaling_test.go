@@ -29,23 +29,22 @@ func TestScaling_ChDB(t *testing.T) {
 	}
 }
 
-func runConstruct(t *testing.T, c Construct) {
-	if c.CardinalityBound <= 0 {
-		t.Fatalf("construct %q: CardinalityBound must be > 0", c.Name)
-	}
-	slack := c.SubLinearSlack
-	if slack == 0 {
-		slack = 0.75
-	}
+// measured is one sweep point's result: its parameter, its wall (the
+// minimum over wallRounds interleaved rounds) and its peak intermediate
+// cardinality.
+type measured struct {
+	param   int64
+	wall    time.Duration
+	peakCar int64
+}
 
+// sweep seeds c, samples every point of its sweep and returns the
+// per-point measurements plus the scan-row count the cardinality bound
+// divides by.
+func sweep(t *testing.T, c Construct) ([]measured, int64) {
+	t.Helper()
 	if (c.Seed == nil) == (c.Reseed == nil) {
 		t.Fatalf("construct %q: set exactly one of Seed / Reseed", c.Name)
-	}
-
-	if c.KnownSuperlinear != "" && c.WallAxisLinearByDesign != "" {
-		t.Fatalf("construct %q: set at most one of KnownSuperlinear / WallAxisLinearByDesign — "+
-			"the first quarantines a tracked super-linear bug, the second records a permanently "+
-			"uninformative wall axis; a construct is one or the other, not both.", c.Name)
 	}
 
 	// Each construct gets its own connection / session so a seed or DROP in
@@ -78,52 +77,91 @@ func runConstruct(t *testing.T, c Construct) {
 		t.Fatalf("construct %q: a compute-scaling sweep needs >=3 parameter points, got %d", c.Name, len(points))
 	}
 
-	type measured struct {
-		param   int64
-		wall    time.Duration
-		peakCar int64
+	rows := make([]measured, len(points))
+
+	// Sample the sweep in wallRounds interleaved rounds and keep each point's
+	// minimum wall (see wallRounds). The intermediate cardinality is
+	// deterministic, so it is counted once, in the first round.
+	for round := range wallRounds {
+		for i, p := range points {
+			if c.Reseed != nil {
+				reseedPoint(t, db, c, p.Param, i == 0 && round == 0, &scanRows)
+			}
+
+			wall := timeWall(t, db, p.SQL, p.Args)
+			if round > 0 {
+				rows[i].wall = min(rows[i].wall, wall)
+				continue
+			}
+
+			levels := p.LevelSQLs
+			if len(levels) == 0 {
+				levels = []string{p.SQL}
+			}
+			var peak int64
+			for _, lvl := range levels {
+				if car := cardinalityOf(t, db, lvl, p.Args); car > peak {
+					peak = car
+				}
+			}
+			rows[i] = measured{p.Param, wall, peak}
+		}
 	}
-	rows := make([]measured, 0, len(points))
-
-	for i, p := range points {
-		if c.Reseed != nil {
-			c.Reseed(t, db, p.Param)
-			var pointScan int64
-			if err := db.QueryRow(c.ScanRowsSQL).Scan(&pointScan); err != nil {
-				t.Fatalf("scan-row count (%s) at %s=%d: %v", c.ScanRowsSQL, c.Param, p.Param, err)
-			}
-			if pointScan <= 0 {
-				t.Fatalf("construct %q: scan-row count is %d at %s=%d — the reseed produced no rows",
-					c.Name, pointScan, c.Param, p.Param)
-			}
-			if i == 0 {
-				scanRows = pointScan
-			} else if drift := float64(pointScan) / float64(scanRows); drift > 1.25 || drift < 0.8 {
-				t.Fatalf("construct %q: scan rows drifted to %d at %s=%d (vs fixed %d, %.2fx) — the reseed "+
-					"must hold scan rows ~constant so the parameter is the only variable.",
-					c.Name, pointScan, c.Param, p.Param, scanRows, drift)
-			}
-		}
-
-		wall := medianWall(t, db, p.SQL, p.Args, c.Iters)
-
-		levels := p.LevelSQLs
-		if len(levels) == 0 {
-			levels = []string{p.SQL}
-		}
-		var peak int64
-		for _, lvl := range levels {
-			if car := cardinalityOf(t, db, lvl, p.Args); car > peak {
-				peak = car
-			}
-		}
-
-		rows = append(rows, measured{p.Param, wall, peak})
+	for _, m := range rows {
 		t.Logf("%-8s=%-8d  wall=%-12v  peak_intermediate=%-10d  (%.2fx scan_rows=%d)",
-			c.Param, p.Param, wall.Round(time.Microsecond), peak,
-			float64(peak)/float64(scanRows), scanRows)
+			c.Param, m.param, m.wall.Round(time.Microsecond), m.peakCar,
+			float64(m.peakCar)/float64(scanRows), scanRows)
 	}
 
+	return rows, scanRows
+}
+
+// wallGate returns the sweep's parameter growth, its wall growth (last point
+// over first) and the gate the wall growth must stay under:
+// paramGrowth x slack + wallJitterMargin.
+func wallGate(c Construct, rows []measured) (paramGrowth, wallGrowth, gate float64) {
+	first, last := rows[0], rows[len(rows)-1]
+	paramGrowth = fratio(float64(last.param), float64(first.param))
+	wallGrowth = ratio(last.wall, first.wall)
+	return paramGrowth, wallGrowth, paramGrowth*c.slack() + wallJitterMargin
+}
+
+// slack is the construct's SubLinearSlack, or defaultSubLinearSlack when it
+// sets none.
+func (c Construct) slack() float64 {
+	if c.SubLinearSlack == 0 {
+		return defaultSubLinearSlack
+	}
+	return c.SubLinearSlack
+}
+
+// wallJitterMargin is the additive headroom the wall gate leaves on top of
+// paramGrowth x slack, for the residual difference between two endpoint
+// walls that are each a minimum over wallRounds rounds. It is ADDITIVE and
+// bounded: it absorbs a flat shape's residual noise but is dwarfed by a
+// genuinely super-linear construct, whose wall growth overshoots the gate by
+// a multiple (see TestScalingWallGate_CatchesSuperlinear). A LINEAR fan-out
+// is a different matter: when a fixed scan cost dominates the first point,
+// wall grows by less than the parameter even for rows x N work, so the wall
+// axis is not what catches it. The deterministic cardinality invariant (b)
+// is the primary anti-fan-out gate and carries no margin.
+const wallJitterMargin = 0.25
+
+// defaultSubLinearSlack is the SubLinearSlack a construct gets when it sets
+// none: wall may grow by at most three quarters of the parameter's growth.
+const defaultSubLinearSlack = 0.75
+
+func runConstruct(t *testing.T, c Construct) {
+	if c.CardinalityBound <= 0 {
+		t.Fatalf("construct %q: CardinalityBound must be > 0", c.Name)
+	}
+	if c.KnownSuperlinear != "" && c.WallAxisLinearByDesign != "" {
+		t.Fatalf("construct %q: set at most one of KnownSuperlinear / WallAxisLinearByDesign — "+
+			"the first quarantines a tracked super-linear bug, the second records a permanently "+
+			"uninformative wall axis; a construct is one or the other, not both.", c.Name)
+	}
+
+	rows, scanRows := sweep(t, c)
 	first, last := rows[0], rows[len(rows)-1]
 
 	// --- Invariant (a): wall grows SUB-LINEARLY in the parameter ----------
@@ -131,23 +169,9 @@ func runConstruct(t *testing.T, c Construct) {
 	// Contrast the measured wall-growth ratio against the parameter's own
 	// growth across the sweep. A true compute fan-out makes wall track the
 	// parameter 1:1 (or worse); a bounded shape grows far flatter. The gate
-	// is `wallGrowth < paramGrowth x slack + jitter` — runner-portable (a
-	// ratio of ratios, no absolute-ms threshold).
-	//
-	// The wall is measured as a per-point MEDIAN (see medianWall) so a
-	// single fast/slow sample can't skew the ratio; wallJitterMargin is the
-	// residual headroom for cross-run variance the median can't remove (the
-	// two endpoints are independent timings on a shared runner). Crucially,
-	// this margin is ADDITIVE and bounded — it tolerates a flat shape's
-	// jitter but is dwarfed by a genuine super-linear regression, which adds
-	// a MULTIPLE of paramGrowth (here a real #88-class re-execution would
-	// push wallGrowth toward paramGrowth itself, ~4x, far past gate ~3.85x),
-	// and is caught regardless by the deterministic cardinality axis below,
-	// which is the PRIMARY hard anti-fan-out invariant and carries no margin.
-	const wallJitterMargin = 0.25
-	paramGrowth := fratio(float64(last.param), float64(first.param))
-	wallGrowth := ratio(last.wall, first.wall)
-	gate := paramGrowth*slack + wallJitterMargin
+	// is `wallGrowth < paramGrowth x slack + wallJitterMargin` — runner-portable
+	// (a ratio of ratios, no absolute-ms threshold).
+	paramGrowth, wallGrowth, gate := wallGate(c, rows)
 	t.Logf("%s: param grew %.2fx (%d->%d), wall grew %.2fx (%v->%v)",
 		c.Name, paramGrowth, first.param, last.param, wallGrowth,
 		first.wall.Round(time.Microsecond), last.wall.Round(time.Microsecond))
@@ -171,7 +195,7 @@ func runConstruct(t *testing.T, c Construct) {
 		msg := func(verb string) string {
 			return verb + ": compute-scaling violation in " + c.Name + " (" + c.Why + "): wall-time grew " +
 				ftoa(wallGrowth) + "x while " + c.Param + " grew only " + ftoa(paramGrowth) + "x (slack=" +
-				ftoa(slack) + ", jitter=" + ftoa(wallJitterMargin) + " -> gate " + ftoa(gate) +
+				ftoa(c.slack()) + ", jitter=" + ftoa(wallJitterMargin) + " -> gate " + ftoa(gate) +
 				"x). Wall is tracking the parameter."
 		}
 		if c.KnownSuperlinear != "" {
@@ -208,6 +232,42 @@ func runConstruct(t *testing.T, c Construct) {
 				"%s fan-out is materialising rows x parameter instead of a bounded multiple.",
 				c.Name, c.Why, c.Param, m.param, m.peakCar, mult, scanRows, c.CardinalityBound, c.Why)
 		}
+	}
+}
+
+// scanRowDriftTolerance is how far a reseeded point's scan-row count may
+// move from the sweep's fixed denominator, as a fraction. Every registered
+// reseed holds the count exactly at its swept parameters (the recursion-depth
+// row math divides evenly at D = 4, 16, 48); the tolerance admits the
+// whole-trace rounding a new depth could introduce and rejects a reseed whose
+// row count actually follows the parameter.
+const scanRowDriftTolerance = 0.25
+
+// reseedPoint rebuilds a Reseed construct's row set for one parameter value
+// and checks its scan-row count. The first reseed of the sweep fixes the
+// denominator the cardinality bound uses; every later one (each point, in
+// every sampling round) must stay within 25% of it so the parameter remains
+// the only variable.
+func reseedPoint(t *testing.T, db *sql.DB, c Construct, param int64, first bool, scanRows *int64) {
+	t.Helper()
+	c.Reseed(t, db, param)
+	var pointScan int64
+	if err := db.QueryRow(c.ScanRowsSQL).Scan(&pointScan); err != nil {
+		t.Fatalf("scan-row count (%s) at %s=%d: %v", c.ScanRowsSQL, c.Param, param, err)
+	}
+	if pointScan <= 0 {
+		t.Fatalf("construct %q: scan-row count is %d at %s=%d — the reseed produced no rows",
+			c.Name, pointScan, c.Param, param)
+	}
+	if first {
+		*scanRows = pointScan
+		return
+	}
+	if drift := float64(pointScan) / float64(*scanRows); drift > 1+scanRowDriftTolerance ||
+		drift < 1/(1+scanRowDriftTolerance) {
+		t.Fatalf("construct %q: scan rows drifted to %d at %s=%d (vs fixed %d, %.2fx) — the reseed "+
+			"must hold scan rows ~constant so the parameter is the only variable.",
+			c.Name, pointScan, c.Param, param, *scanRows, drift)
 	}
 }
 

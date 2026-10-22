@@ -100,48 +100,40 @@ func init() {
 // (all service.name='noise'). The pushed-down closure walks only the
 // candidates; the pre-fix bare-rescan re-read every noise row per level.
 // Total span rows = (candidates + noise) x depth.
+//
+// Row n of numbers() is span n of the table: trace n/depth, level n%depth.
+// Candidate traces come first, so a trace ordinal below `candidates` is a
+// candidate. Span ids are the 1-based span ordinal in hex, a span's parent is
+// the span before it in its chain, and a trace id is a population prefix
+// ('a' candidate, 'b' noise) followed by the 1-based ordinal within that
+// population in hex.
+//
+// The rows are generated in-engine (INSERT ... SELECT FROM numbers()) rather
+// than as a VALUES literal: a VALUES row carrying a map() expression is
+// evaluated row by row, which took ~40s per 60k-row point and made the
+// per-round reseed the wall sampler needs (see wallRounds) unaffordable. The
+// generated set is the same: EXCEPT ALL against the former Go-built VALUES
+// literal is empty in both directions at every swept depth.
 func structuralSeedInsert(candidates, noise, depth int) string {
-	hexID := func(n int) string { return fmt.Sprintf("%016x", n+1) }
-	hexTrace := func(prefix byte, n int) string { return fmt.Sprintf("%c%031x", prefix, n+1) }
-	var b []byte
-	b = append(b, "INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, ResourceAttributes) VALUES\n"...)
-	first := true
-	gid := 0
-	emit := func(traceID string, depth int, marker bool) {
-		base := gid
-		for lvl := range depth {
-			var parent string
-			if lvl > 0 {
-				parent = hexID(base + lvl - 1)
-			}
-			name := "noise"
-			if marker {
-				name = "mid"
-				switch lvl {
-				case 0:
-					name = "root_marker"
-				case depth - 1:
-					name = "leaf_marker"
-				}
-			}
-			if !first {
-				b = append(b, ",\n"...)
-			}
-			first = false
-			b = append(b, fmt.Sprintf("('%s', '%s', '%s', map('service.name', '%s'))",
-				traceID, hexID(base+lvl), parent, name)...)
-		}
-		gid += depth
-	}
-	for tr := range candidates {
-		emit(hexTrace('a', tr), depth, true)
-	}
-	for tr := range noise {
-		emit(hexTrace('b', tr), depth, false)
-	}
-	b = append(b, ';')
-	return string(b)
+	return fmt.Sprintf(`INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, ResourceAttributes)
+SELECT
+  concat(if(tr < %[1]d, 'a', 'b'),
+         leftPad(lower(hex(if(tr < %[1]d, toUInt64(tr), toUInt64(tr - %[1]d)) + 1)), %[4]d, '0')),
+  leftPad(lower(hex(toUInt64(number + 1))), %[5]d, '0'),
+  if(lvl = 0, '', leftPad(lower(hex(toUInt64(number))), %[5]d, '0')),
+  map('service.name', multiIf(tr >= %[1]d, 'noise', lvl = 0, 'root_marker', lvl = %[3]d - 1, 'leaf_marker', 'mid'))
+FROM (SELECT number, intDiv(number, %[3]d) AS tr, number %% %[3]d AS lvl FROM numbers(%[2]d));`,
+		candidates, (candidates+noise)*depth, depth, structuralTraceOrdinalHexWidth, structuralSpanIDHexWidth)
 }
+
+// structuralSpanIDHexWidth is the hex-digit width of a span id: a 64-bit id
+// rendered as 16 hex digits, the OTel span-id width.
+const structuralSpanIDHexWidth = 16
+
+// structuralTraceOrdinalHexWidth is the hex-digit width of a trace id's
+// ordinal part: the OTel 32-hex-digit trace id minus its one-character
+// population prefix.
+const structuralTraceOrdinalHexWidth = 31
 
 // emitStructuralRecursiveSQL lowers `root_marker >> leaf_marker` through
 // the real cerberus parse -> lower -> emit chain — the pushed-down shape.
