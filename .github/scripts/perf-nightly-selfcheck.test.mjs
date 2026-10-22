@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { MUTATIONS, applyMutation } from './perf-nightly-selfcheck.mjs';
+import { MUTATIONS, applyMutation, failedSentinels } from './perf-nightly-selfcheck.mjs';
 
 // KNOWN_RECIPES are the two #2370 sentinel gate recipes a mutation may name.
 // Pinned as a closed set so a typo'd recipe fails here rather than as a
@@ -46,6 +46,39 @@ test('MUTATIONS is non-empty and every entry is well-formed', () => {
     assert.ok(KNOWN_RECIPES.has(m.recipe), `${m.id}: unknown gate recipe ${m.recipe}`);
     assert.notEqual(m.find, m.replace, `${m.id}: find and replace must differ, or the mutation is a no-op`);
   }
+});
+
+// SENTINEL_SOURCES are the corpora whose sentinel names a mutation may cite,
+// keyed by the recipe that runs them.
+const SENTINEL_SOURCES = {
+  'perf-nightly-integration': 'test/perf/nightly/sentinels.go',
+  'perf-smoke-integration': 'test/perf/smoke/sentinels.go',
+};
+
+test('every mutation names sentinels its own recipe runs', () => {
+  for (const m of MUTATIONS) {
+    assert.ok(Array.isArray(m.sentinels) && m.sentinels.length > 0, `${m.id}: names no sentinel to catch it`);
+    const src = readFileSync(SENTINEL_SOURCES[m.recipe], 'utf8');
+    for (const name of m.sentinels) {
+      assert.match(src, new RegExp(`Name:\\s+"${name}"`), `${m.id}: ${name} is no sentinel of ${m.recipe}`);
+    }
+  }
+});
+
+test('failedSentinels counts only the named subtests that failed', () => {
+  const output = [
+    '    --- PASS: TestPerfNightlyRealCH/label_values_matcher_stock_key (1.12s)',
+    '    --- FAIL: TestPerfNightlyRealCH/label_values_matcher_stock_key_renamed (1.60s)',
+    '    --- FAIL: TestPerfNightlyRealCH/classic_native_histogram_derived (18.23s)',
+    '        --- FAIL: TestPerfSmokeRealCH/join-spill/join_spill_vector_join (3.01s)',
+    'FAIL',
+  ].join('\n');
+  assert.deepEqual(
+    failedSentinels(output, ['label_values_matcher_stock_key', 'label_values_matcher_stock_key_renamed']),
+    ['label_values_matcher_stock_key_renamed'],
+  );
+  assert.deepEqual(failedSentinels(output, ['instant_selector_in_order']), []);
+  assert.deepEqual(failedSentinels(output, ['join_spill_vector_join']), ['join_spill_vector_join']);
 });
 
 test('MUTATIONS ids are unique', () => {

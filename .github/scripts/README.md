@@ -3625,15 +3625,18 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
 
 - **`perf-nightly-selfcheck.mjs`** — `perf-nightly-selfcheck.yml`, the
   `perf-nightly-selfcheck` job. #2437's periodic mutation-style self-check
-  that the #2370 nightly perf gate (`perf-nightly.yml`) still catches a real
-  regression: deliberately breaks two orthogonal memory-bounding mechanisms
-  one at a time — `internal/chsql/rate_window_fanout_bound.go`'s
-  `maxRateWindowFanoutRows` (1000x wider, defeating #2429's resource bound)
-  and `internal/engine/spill.go`'s `spillThreshold` (inflated, disabling the
-  external-group-by/sort spill safety net) — and asserts `just
-  perf-nightly-integration` actually FAILS under each, via an exact-string
-  replacement that throws if the target text has drifted rather than
-  silently mutating nothing. Reverts every mutation via `git checkout --`
+  that the #2370 perf sentinel gates (`perf-nightly.yml`, and the smoke
+  corpus) still catch a real regression: deliberately breaks each mechanism
+  its `MUTATIONS` list names one at a time — among them
+  `internal/chsql/rate_window_fanout_bound.go`'s `maxRateWindowFanoutRows`
+  (1000x wider, defeating #2429's resource bound), `internal/engine/
+  spill.go`'s `spillThreshold` (inflated, disabling the external-group-by/sort
+  spill safety net), the emitter's PREWHERE split and the in-order
+  aggregation stamp — and asserts the mutation's own recipe FAILS under each,
+  via an exact-string replacement that throws if the target text has drifted
+  rather than silently mutating nothing. A mutation counts as caught only
+  when every sentinel it names reports a failed subtest, so a recipe that
+  fails for an unrelated sentinel does not read as coverage. Reverts every mutation via `git checkout --`
   from a `finally` block, even on a crash; never commits or pushes. A gate
   that stays green through an injected regression is worse than no gate — it
   reads as coverage that is not there. `perf-nightly-selfcheck.test.mjs` is
