@@ -88,6 +88,11 @@ type ResolvedSchemaStrategies struct {
 // context). A nil cell, or one never stored, loads the zero value.
 type SchemaStrategiesCell struct {
 	p atomic.Pointer[ResolvedSchemaStrategies]
+
+	// prewhereByServer is stamped on every signal's strategies at Load
+	// (SetPrewhereByServer), so a later Store of re-probed strategies keeps
+	// it.
+	prewhereByServer atomic.Bool
 }
 
 // NewSchemaStrategiesCell returns a cell holding r.
@@ -97,15 +102,29 @@ func NewSchemaStrategiesCell(r ResolvedSchemaStrategies) *SchemaStrategiesCell {
 	return c
 }
 
-// Load returns the strategies the cell holds.
+// Load returns the strategies the cell holds, each signal's carrying the
+// cell's PrewhereByServer.
 func (c *SchemaStrategiesCell) Load() ResolvedSchemaStrategies {
 	if c == nil {
 		return ResolvedSchemaStrategies{}
 	}
-	if r := c.p.Load(); r != nil {
-		return *r
+	var r ResolvedSchemaStrategies
+	if stored := c.p.Load(); stored != nil {
+		r = *stored
 	}
-	return ResolvedSchemaStrategies{}
+	byServer := c.prewhereByServer.Load()
+	r.Metrics.PrewhereByServer = byServer
+	r.Logs.PrewhereByServer = byServer
+	r.Traces.PrewhereByServer = byServer
+	return r
+}
+
+// SetPrewhereByServer sets the PrewhereByServer every signal's strategies
+// load with, whatever strategies the cell holds now or is stored later.
+// cmd/cerberus sets it from the resolved optimizations
+// (chopt.FeatureMoveToPrewhere) before the heads serve.
+func (c *SchemaStrategiesCell) SetPrewhereByServer(byServer bool) {
+	c.prewhereByServer.Store(byServer)
 }
 
 // Store replaces the strategies the cell holds. r's AttrStrategies maps are

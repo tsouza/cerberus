@@ -695,6 +695,89 @@ time and recreated automatically, so a boot-time refusal says nothing
 permanent about the deployment. The measurements behind this are in
 [`solver.background.md`](solver.background.md#query-log-source-what-the-local-log-misses-measured).
 
+## Why `move_to_prewhere` is auto only on servers from 24.11 to before 26.2
+
+The emitter's own `PREWHERE` split (promote the cheap, narrow conjuncts of a
+filtered scan whose projection reads a wide column) came from the
+pre-release hardening pass, whose stated aim was to discard granules before
+the fat payload columns are read; it carried no measurement. An explicit
+`PREWHERE` switches the server's `optimize_move_to_prewhere` off for that
+scan, so whatever the emitter left in `WHERE` — the label matcher on the
+`Attributes` map, and the time bounds an outer range-window layer pushes
+down — is evaluated only after every row of the surviving granules is read
+with all its columns. On the exporter's own `ServiceName`-first sorting key
+the metric name does not prune well, which is how the split lost to the
+server's (cerberus issue #3955).
+
+Two fixes were measured against today's split ("current"): no explicit
+`PREWHERE` at all, leaving the split to the server ("none"), and an explicit
+`PREWHERE` holding every conjunct the server would move ("all"). The data is
+the nightly lane's counter sample (`svc_http_requests_total`, one method
+matched), on cerberus's provisioned tables ("cerberus key"), the exporter's
+DDL ("stock key") and the same tables renamed, plus synthetic logs and spans
+for the Loki and Tempo heads; `use_query_condition_cache=0` where the server
+has the setting; peak memory as the range over 6 repeats, MB.
+
+| ClickHouse   | query (table)                            | current       | none          | all           |
+| ------------ | ---------------------------------------- | ------------- | ------------- | ------------- |
+| 24.8         | label values, matcher (stock key)        | 41.3–46.6     | 26.0          | 26.0          |
+| 24.8         | rate by route 5m (stock key)             | 54.0–58.1     | 61.3–66.6     | 679.2–747.9   |
+| 24.8         | rate by route 5m (renamed)               | 56.4–58.4     | 59.9–63.7     | 656.7–783.0   |
+| 24.10        | rate by route 5m (stock key)             | 53.8–58.4     | 58.3–63.1     | —             |
+| 24.11        | rate by route 5m (stock key)             | 56.7–57.4     | 43.2–45.7     | —             |
+| 24.11        | instant selector, matcher (cerberus)     | 47.7–53.3     | 31.2          | —             |
+| 24.11        | Tempo `&&` intersect                     | 77.7–87.7     | 81.8–94.9     | —             |
+| 25.9         | label values, matcher (stock key)        | 35.8–40.1     | 25.9          | 25.8          |
+| 25.9         | label values, matcher (renamed)          | 36.8–45.3     | 26.0          | 26.0          |
+| 25.9         | rate by route 5m (stock key)             | 55.4–60.6     | 38.7–47.9     | 590.7–700.9   |
+| 25.9         | rate by route 5m (cerberus key)          | 56.4–57.9     | 45.9–52.3     | 301.5–445.9   |
+| 25.9         | Tempo span attribute + name              | 37.4–37.6     | 17.1          | 25.3–29.6     |
+| 25.9         | Loki line filter 1h                      | 28.5–28.7     | 24.5–28.7     | 28.5–28.7     |
+| 26.1         | rate by route 5m (stock key)             | 56.8–60.4     | 44.4–48.4     | —             |
+| 26.2         | rate by route 5m (stock key)             | 57.0–59.0     | 372.9–459.9   | —             |
+| 26.6         | rate by route 5m (stock key)             | 41.0–45.2     | 231.2–321.1   | —             |
+| 26.6         | label values, matcher (cerberus key)     | 35.6–36.1     | 51.8–56.7     | —             |
+
+"all" is several times worse than both on every rate query on every
+version: the time bounds and the map matcher in `PREWHERE` are evaluated on
+every row of the metric's granules before the range window narrows it, so
+it was rejected outright. Between the other two neither dominates, and the
+version decides which wins:
+
+- Below 24.11 the server's move is mixed — it wins label values but loses
+  the rate queries by 5–10 MB on the stock key and the renamed tables.
+- From 24.11 to 26.1 (every minor between was bisected: 24.11, 24.12, 25.1,
+  25.3, 25.9, 25.11, 26.1) "none" wins or ties every query on every table,
+  both log and trace shapes included. On 25.9 the stock-key rate query reads
+  846 MB instead of 2.08 GB.
+- From 26.2 (26.2, 26.3 and 26.6 measured) the server's move turns the rate
+  queries several times worse. `EXPLAIN actions=1` shows why: the server
+  moves the same conjuncts on 25.9 and 26.6, but from 26.2 it orders the
+  `Attributes` map-subcolumn matcher first, so the map is decoded for every
+  row before the metric name and the time bounds discard any.
+
+The emitter's split stays the default, then, and `move_to_prewhere` is
+auto-selected only where the server's split measured not worse anywhere:
+`>= 24.11` and `< 26.2`. An explicit listing still selects it on any server,
+since the feature is result-equivalent and needs no capability. Loki's
+filtered scans project no wide column, so neither choice changes a Loki
+statement.
+
+The perf-nightly corpus measures the decision where it is auto-selected
+(its 25.9 image) on the stock key and the renamed tables, with the query
+condition cache off so a repeat cannot read what an earlier one cached. The
+in-order aggregation stamp is a neighbouring decision that peak memory does
+not separate: on cerberus's key a hash aggregation of the instant selector
+measured 116–124 MB against 101–116 MB in order, so its nightly sentinel
+asserts `AggregatingInOrderTransform` in `EXPLAIN PIPELINE` of the
+dispatched statement instead. On the exporter's key the stamp, right or
+wrong, changes nothing: `EXPLAIN PIPELINE` is identical stamped and
+unstamped (no `AggregatingInOrderTransform` either way, since `ServiceName`
+leads the key) and peak memory overlaps (131.8–138.9 MB against
+134.8–142.8 MB), so that decision is pinned by the chDB test
+`TestDeployedMetricsSortingKeyDecidesAggregationInOrder` rather than by a
+sentinel.
+
 ## Audited, not adopted
 
 Not every settings family the audit epic (#2778) reviews earns a registry

@@ -7,6 +7,10 @@ import "github.com/tsouza/cerberus/internal/schema"
 // carries: the facts the boot requirements check (internal/preflight) derives
 // from the deployed tables, rather than ones the configuration states.
 //
+// PrewhereByServer is the one field the deployed server, not its tables,
+// decides; it rides here because every emission path already carries this
+// value.
+//
 // One value is scoped to the signal a statement reads — each signal's head
 // reads its own (chsql.ResolvedSchemaStrategies) — so a field another
 // signal's tables decide is left at its zero value. The zero value renders
@@ -54,4 +58,13 @@ type SchemaStrategies struct {
 	// no entry reads the provisioned shape of the default-named table of
 	// that name, or none.
 	TableShapes map[string]TableShape
+
+	// PrewhereByServer leaves the PREWHERE/WHERE split of a filtered scan to
+	// the server's optimize_move_to_prewhere: the emitter writes every
+	// conjunct into WHERE and no PREWHERE clause. It is not a fact of the
+	// tables but of the server they run on — set for every signal when the
+	// resolved optimizations include chopt.FeatureMoveToPrewhere
+	// (chsql.SchemaStrategiesCell.SetPrewhereByServer). The zero value keeps
+	// the emitter's own partition (internal/chsql's prewhere.go).
+	PrewhereByServer bool
 }

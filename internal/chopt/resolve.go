@@ -170,7 +170,8 @@ const SelectionAuto = selectionAuto
 //
 //   - "off"  -> the empty set. "off" is absolute and may NOT be combined with
 //     any other token (off + anything -> FATAL).
-//   - "auto" -> unions in every AUTO-SELECT feature whose MinVersion <= server.
+//   - "auto" -> unions in every AUTO-SELECT feature whose MinVersion <= server
+//     and whose AutoRange contains server.
 //     Auto-eligibility (Feature.AutoSelect) is a separate axis from maturity
 //     (Feature.Stability): most native timeSeries*ToGrid aggregates are
 //     Experimental in maturity yet AutoSelect=true, so auto picks them on a
@@ -270,8 +271,9 @@ func resolveTokens(tokens []string, cfg Config, server Version, enabled map[stri
 				if !f.AutoSelect {
 					continue
 				}
-				if !server.AtLeast(f.MinVersion) {
-					// Version too old: silent skip, auto is "best available".
+				if !server.AtLeast(f.MinVersion) || !f.AutoRange.Contains(server) {
+					// Version too old, or outside the range auto picks the
+					// feature in: silent skip, auto is "best available".
 					continue
 				}
 				if ranges := f.unsafeRanges(server); len(ranges) > 0 {

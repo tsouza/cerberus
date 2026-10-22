@@ -2228,6 +2228,21 @@ const (
 	// provisions the server side — and never fatal when blocked, because the
 	// local log is a complete fallback for every row it can see.
 	FeatureQueryLogUnion = "query_log_union"
+
+	// FeatureMoveToPrewhere leaves the PREWHERE/WHERE split of a filtered
+	// table scan to ClickHouse's own optimize_move_to_prewhere: the emitter
+	// writes every conjunct into WHERE and no PREWHERE clause
+	// (chsql.SchemaStrategies.PrewhereByServer). An explicit PREWHERE turns
+	// the server's move off, and on the release lines this feature covers
+	// the server's split reads less and peaks lower than the emitter's own
+	// partition, which keeps the time bounds and label matchers a query's
+	// outer layers push down in WHERE. Below 24.11 neither split wins
+	// everywhere, and from 26.2 the server orders a label matcher's map read
+	// ahead of the metric-name filter, which multiplies a rate query's peak
+	// memory, so auto keeps the emitter's partition on both sides
+	// (Feature.AutoRange). Every server runs the WHERE-only statement, so an
+	// explicit listing enables it anywhere. Result-equivalent.
+	FeatureMoveToPrewhere = "move_to_prewhere"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -2326,7 +2341,41 @@ type Feature struct {
 	// server-side default would engage the same mechanism can switch it off
 	// explicitly instead of merely not asking for it.
 	UnsafeBuilds []BuildRange
-	Doc          string
+	// AutoRange narrows auto-selection to the servers it contains, for a
+	// feature every supported server runs correctly but only some run
+	// faster: auto picks the feature only inside the range, and an explicit
+	// listing enables it on any server meeting MinVersion. The zero value
+	// contains every server.
+	AutoRange VersionRange
+	Doc       string
+}
+
+// VersionRange is a half-open span [From, Until) of release lines. A zero
+// From sets no floor and a zero Until no ceiling.
+type VersionRange struct {
+	From  Version
+	Until Version
+}
+
+// Contains reports whether v falls inside the range.
+func (r VersionRange) Contains(v Version) bool {
+	return v.AtLeast(r.From) && (r.Until == (Version{}) || v.Less(r.Until))
+}
+
+// String renders the range for the generated docs and boot logs:
+// ">=24.11, <26.2", or just the bound it sets.
+func (r VersionRange) String() string {
+	from, until := "", ""
+	if r.From != (Version{}) {
+		from = ">=" + r.From.String()
+	}
+	if r.Until != (Version{}) {
+		until = "<" + r.Until.String()
+	}
+	if from != "" && until != "" {
+		return from + ", " + until
+	}
+	return from + until
 }
 
 // BuildRange is a half-open span [From, Until) of ClickHouse builds carrying
@@ -2782,6 +2831,15 @@ var registry = []Feature{
 		Doc: "read query actuals from system.all_query_log (rotated query_log tables and cluster replicas) instead of the local system.query_log " +
 			"(opt-in, probe-gated on the server's create_union_system_log_tables section and SELECT grant, falls back to the local log when blocked)",
 	},
+	{
+		ID:         FeatureMoveToPrewhere,
+		MinVersion: AlwaysAvailable,
+		Stability:  Stable,
+		AutoSelect: true,
+		AutoRange:  VersionRange{From: Version{Major: 24, Minor: 11}, Until: Version{Major: 26, Minor: 2}},
+		Doc: "emit no explicit PREWHERE on a filtered scan and leave the split to the server's optimize_move_to_prewhere " +
+			"(result-equivalent; auto picks it on server >= 24.11 and < 26.2, where the server's split measured lower peak memory)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -2797,7 +2855,7 @@ var registry = []Feature{
 // lazy_materialization, explain_estimate, cardinality_probe,
 // full_text_index, text_index_line_filter, trace_id_external_table,
 // ts_tag_groups, ts_throw_duplicate_series_if, exp_histogram_two_level,
-// query_log_union).
+// query_log_union, move_to_prewhere).
 // The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the

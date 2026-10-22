@@ -320,7 +320,7 @@ func mountAPIHeads(
 
 	return apiHeads{
 		grpcServer: grpcServer,
-		consumers:  chOptConsumers{client: client, engines: engines, prom: promHandler},
+		consumers:  chOptConsumers{client: client, engines: engines, prom: promHandler, strategies: probes.Strategies},
 		loki:       lokiHandler,
 		tempo:      tempoHandler,
 	}, nil
@@ -592,6 +592,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	choptwire.SetServerStrategies(probes.Strategies, optSet)
 
 	// Build the admission-control limiters (see newAdmitLimiters).
 	limiters := newAdmitLimiters(cfg, logger)

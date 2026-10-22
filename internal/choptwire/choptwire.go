@@ -1,9 +1,10 @@
 // Package choptwire turns a resolved ClickHouse-optimization EnabledSet into
-// the two things the query stack is configured with from it: the polymorphic
-// PromQL range-lowering dispatch table, and the per-query engine settings
-// rules.
+// the things the query stack is configured with from it: the polymorphic
+// PromQL range-lowering dispatch table, the per-query engine settings rules,
+// and the server-decided facts of the schema strategies every head renders
+// under.
 //
-// It exists because both compositions have exactly two callers that must
+// It exists because these compositions have exactly two callers that must
 // agree and could not share code: cmd/cerberus's boot path, where they are
 // `package main` and therefore unimportable, and internal/chopttest, which
 // every real-ClickHouse activation test wires its handler through. The test
@@ -23,6 +24,7 @@ package choptwire
 
 import (
 	"github.com/tsouza/cerberus/internal/chopt"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -432,4 +434,12 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 		Traces:                     traces,
 		Logs:                       logs,
 	}
+}
+
+// SetServerStrategies sets on cell the SchemaStrategies facts the resolved set
+// decides rather than the deployed tables: whether every head leaves the
+// PREWHERE split to the server (chopt.FeatureMoveToPrewhere,
+// chsql.SchemaStrategies.PrewhereByServer).
+func SetServerStrategies(cell *chsql.SchemaStrategiesCell, set chopt.EnabledSet) {
+	cell.SetPrewhereByServer(set.Has(chopt.FeatureMoveToPrewhere))
 }

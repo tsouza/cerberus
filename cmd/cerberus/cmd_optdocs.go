@@ -139,7 +139,7 @@ func optdocRenderBlock() (string, error) {
 			ID:                  "`" + f.ID + "`",
 			MinVersion:          optdocRenderMinVersion(f.MinVersion),
 			Stability:           optdocRenderStability(f.Stability),
-			AutoSelect:          optdocRenderAutoSelect(f.AutoSelect),
+			AutoSelect:          optdocRenderAutoSelect(f.AutoSelect, f.AutoRange),
 			ExperimentalSetting: optdocRenderExperimentalSetting(f.RequiresExperimentalTSGrid),
 			Doc:                 optdocRenderDoc(f.Doc),
 		})
@@ -188,12 +188,16 @@ func optdocRenderStability(s chopt.Stability) string {
 	return "experimental"
 }
 
-// optdocRenderAutoSelect stringifies a feature's auto-eligibility.
-func optdocRenderAutoSelect(auto bool) string {
-	if auto {
+// optdocRenderAutoSelect stringifies a feature's auto-eligibility, naming
+// the server range auto picks it in when its AutoRange narrows that.
+func optdocRenderAutoSelect(auto bool, autoRange chopt.VersionRange) string {
+	if !auto {
+		return "no"
+	}
+	if autoRange == (chopt.VersionRange{}) {
 		return "yes"
 	}
-	return "no"
+	return "yes (" + autoRange.String() + ")"
 }
 
 // optdocRenderExperimentalSetting names the server setting a feature needs

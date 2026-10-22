@@ -589,12 +589,13 @@ deps:
       - promql
       - choptwire
   # choptwire composes the boot-resolved capability set onto the query stack:
-  # the promql lowering table and the engine settings rules. Those two are its
-  # whole dependency set.
+  # the promql lowering table, the engine settings rules and the server facts
+  # of the chsql schema strategies. Those three are its whole dependency set.
   choptwire:
     mayDependOn:
       - promql
       - engine
+      - chsql
   # api-reqctx resolves the per-request query budget and threads it onto
   # the context, so it needs chclient for the WithQueryTimeout carrier
   # (the `?timeout=` parse itself comes from the api-format

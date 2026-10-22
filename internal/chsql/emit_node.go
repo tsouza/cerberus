@@ -523,7 +523,8 @@ func (e *emitter) emitFilter(f *chplan.Filter) error {
 // promotion is worthwhile). An empty Columns slice renders as
 // `SELECT *`, which CH treats as touching every column — PREWHERE
 // promotion always activates in that case when the table shape has
-// wide columns registered.
+// wide columns registered and the statement's strategies do not leave the
+// split to the server (SchemaStrategies.PrewhereByServer).
 func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
 	sb, err := filterScanQuery(f, scan, e.strategies)
 	if err != nil {
@@ -545,7 +546,9 @@ func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
 // four cheap PREWHERE-pruned reads for one unpruned one.
 //
 // strategies are the statement's: the scanned table's shape is the one they
-// carry for its deployed sorting key (tableShapeFor).
+// carry for its deployed sorting key (tableShapeFor), and PrewhereByServer
+// replaces the emitter's split with the server's own, for the fused scan
+// exactly as for an arm's Filter(Scan).
 func filterScanQuery(f *chplan.Filter, scan *chplan.Scan, strategies SchemaStrategies) (*QueryBuilder, error) {
 	if err := validateScanShape(scan); err != nil {
 		return nil, err
@@ -572,8 +575,10 @@ func filterScanQuery(f *chplan.Filter, scan *chplan.Scan, strategies SchemaStrat
 
 	var prewhereExprs, whereExprs []chplan.Expr
 	// A time-shifted or time-bounded scan reads a subquery, which takes
-	// no PREWHERE.
-	if !scanReadsSubquery(scan) && projectionTouchesWide(scan.Columns, shape) {
+	// no PREWHERE. Under PrewhereByServer the server's own
+	// optimize_move_to_prewhere places the split, which an explicit PREWHERE
+	// would switch off.
+	if !strategies.PrewhereByServer && !scanReadsSubquery(scan) && projectionTouchesWide(scan.Columns, shape) {
 		prewhereExprs, whereExprs = partitionPrewhere(conjuncts, shape)
 	} else {
 		whereExprs = conjuncts

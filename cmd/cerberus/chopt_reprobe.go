@@ -12,6 +12,8 @@ import (
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
+	"github.com/tsouza/cerberus/internal/choptwire"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
 )
@@ -95,14 +97,18 @@ type chOptConsumers struct {
 	// prom is the PromQL handler, or nil when the prom head is disabled. It is
 	// the only head with a native-lowering dispatch table.
 	prom *prom.Handler
+	// strategies is the SchemaStrategies cell every head renders under, or
+	// nil in a harness that serves no queries. The set decides its server
+	// facts (choptwire.SetServerStrategies).
+	strategies *chsql.SchemaStrategiesCell
 }
 
-// apply installs the decisions res implies on every consumer. The two swaps
-// are independent pointer stores, so a query dispatched between them lowers
+// apply installs the decisions res implies on every consumer. The swaps
+// are independent stores, so a query dispatched between them lowers
 // with one table and executes with the other's settings — both of which are
 // individually valid for the same server, since a capability the set dropped
 // only ever DISABLES a native path and a capability it gained only ever
-// enables one.
+// enables one, and either PREWHERE split returns the same rows.
 //
 // cfg.CHQueryWorkload is overridden from res.QueryWorkload (rather than left
 // at whatever boot resolved) so a live reprobe's freshly re-probed verdict —
@@ -117,6 +123,9 @@ func (c chOptConsumers) apply(cfg config.Config, res chOptResolution) {
 	}
 	if c.prom != nil {
 		c.prom.SetLowerers(nativeRangeLowerers(res.Set))
+	}
+	if c.strategies != nil {
+		choptwire.SetServerStrategies(c.strategies, res.Set)
 	}
 }
 

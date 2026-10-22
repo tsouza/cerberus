@@ -522,7 +522,9 @@ The emitter is also CH-native rather than ANSI-ish:
   `SELECT … FROM <table> [PREWHERE …] WHERE …`, partitions conjuncts
   into a sort-prefix bucket / skip-index bucket / rest, and promotes
   cheap predicates that touch no wide column into `PREWHERE` when the
-  projection reads any wide column.
+  projection reads any wide column. Under the `move_to_prewhere`
+  optimization (`SchemaStrategies.PrewhereByServer`) it writes every
+  conjunct into `WHERE` instead and leaves the split to the server.
 - **`WITH RECURSIVE`** for label-set / trace-graph traversal.
 - **Streaming `clickhouse-go/v2` cursor** — bounded RSS, no row buffer
   on the hot path; the engine's `QueryCursor` opens a streaming

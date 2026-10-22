@@ -120,11 +120,15 @@ func TestOptdocRenderStabilityAndAutoSelect(t *testing.T) {
 	if got := optdocRenderStability(chopt.Experimental); got != "experimental" {
 		t.Errorf("optdocRenderStability(Experimental) = %q; want %q", got, "experimental")
 	}
-	if got := optdocRenderAutoSelect(true); got != "yes" {
+	if got := optdocRenderAutoSelect(true, chopt.VersionRange{}); got != "yes" {
 		t.Errorf("optdocRenderAutoSelect(true) = %q; want %q", got, "yes")
 	}
-	if got := optdocRenderAutoSelect(false); got != "no" {
+	if got := optdocRenderAutoSelect(false, chopt.VersionRange{}); got != "no" {
 		t.Errorf("optdocRenderAutoSelect(false) = %q; want %q", got, "no")
+	}
+	narrowed := chopt.VersionRange{From: chopt.Version{Major: 24, Minor: 11}, Until: chopt.Version{Major: 26, Minor: 2}}
+	if got, want := optdocRenderAutoSelect(true, narrowed), "yes (>=24.11, <26.2)"; got != want {
+		t.Errorf("optdocRenderAutoSelect(true, %v) = %q; want %q", narrowed, got, want)
 	}
 }
 

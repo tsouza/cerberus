@@ -11,6 +11,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/info"
 	"github.com/tsouza/cerberus/internal/chopt"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/promql"
@@ -196,6 +197,27 @@ func TestCHOptConsumers_ApplyToleratesAHeadThatIsNotServed(t *testing.T) {
 
 	chOptConsumers{engines: []*engine.Engine{{}}}.apply(cfg, res)
 	chOptConsumers{}.apply(cfg, res)
+}
+
+// TestCHOptConsumers_ApplySetsPrewhereByServer pins that a re-resolved set
+// reaches the shared strategies cell: a server upgraded out of
+// move_to_prewhere's auto range takes the emitter's PREWHERE split back
+// without a restart, and one upgraded into it leaves the split to the server.
+func TestCHOptConsumers_ApplySetsPrewhereByServer(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{Schema: schema.DefaultOTelMetrics()}
+	cell := chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
+	consumers := chOptConsumers{strategies: cell}
+
+	consumers.apply(cfg, resolutionAt(t, chopt.Version{Major: 25, Minor: 9}, chopt.FeatureMoveToPrewhere))
+	if !cell.Load().Metrics.PrewhereByServer {
+		t.Fatal("a set with move_to_prewhere left PrewhereByServer unset")
+	}
+	consumers.apply(cfg, resolutionAt(t, chopt.Version{Major: 26, Minor: 6}))
+	if cell.Load().Metrics.PrewhereByServer {
+		t.Fatal("a set without move_to_prewhere left PrewhereByServer set")
+	}
 }
 
 // TestReprobeCHOptimizations_SwapsWhenTheAnswerChanges — the loop's whole job.
