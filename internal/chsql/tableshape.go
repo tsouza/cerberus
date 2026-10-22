@@ -1,73 +1,21 @@
 package chsql
 
 import (
-	"slices"
-
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TableShape captures the ClickHouse-side facts the codegen needs to
-// produce sort-key-aware filter orderings and PREWHERE promotion.
-//
-// SortColumns lists the table's ORDER BY columns in declaration order;
-// the codegen prefers emitting predicates whose LHS references columns
-// that appear earlier in this list. WideColumns names the "fat"
-// columns (large strings, Maps, Arrays) that PREWHERE wants to avoid
-// reading until predicates have culled the row set.
-//
-// IntegerDiscriminatorColumns names narrow enum-like columns whose integer
-// equality predicates should stay in PREWHERE even when no WHERE predicate
-// remains. SkipIndexColumns names columns covered by registered Bloom-filter
-// or set indexes. The default tables expose none — the field is plumbed so an
-// override can populate it without a schema migration.
-type TableShape struct {
-	SortColumns                 []string
-	WideColumns                 []string
-	IntegerDiscriminatorColumns []string
-	SkipIndexColumns            []string
-}
+// TableShape is an alias of chplan.TableShape, declared there so
+// SchemaStrategies can carry one per deployed table: the sort columns,
+// wide columns and integer discriminators PREWHERE promotion and the
+// conjunct ordering read off the scanned table (prewhere.go).
+type TableShape = chplan.TableShape
 
-// IsSortColumn reports whether name is listed in SortColumns.
-func (s TableShape) IsSortColumn(name string) bool {
-	return slices.Contains(s.SortColumns, name)
-}
-
-// SortRank returns the position of name in SortColumns, or -1 when
-// the column is not part of the sort key. Lower rank = earlier in the
-// ORDER BY, i.e. more selective for granule pruning.
-func (s TableShape) SortRank(name string) int {
-	for i, c := range s.SortColumns {
-		if c == name {
-			return i
-		}
-	}
-	return -1
-}
-
-// IsWideColumn reports whether name is listed in WideColumns.
-func (s TableShape) IsWideColumn(name string) bool {
-	return slices.Contains(s.WideColumns, name)
-}
-
-// IsIntegerDiscriminatorColumn reports whether name is an explicitly
-// registered narrow enum-like integer discriminator.
-func (s TableShape) IsIntegerDiscriminatorColumn(name string) bool {
-	return slices.Contains(s.IntegerDiscriminatorColumns, name)
-}
-
-// IsSkipIndexColumn reports whether name has a registered skip index.
-// Always false today (no defaults populate SkipIndexColumns) — kept as
-// part of the public surface so future schema overrides can plug in.
-func (s TableShape) IsSkipIndexColumn(name string) bool {
-	return slices.Contains(s.SkipIndexColumns, name)
-}
-
-// defaultTableShapes is the static lookup populated from the OTel-CH
-// schema defaults. Keyed by table name so emitFilter can resolve a
-// Scan's table to its shape without threading an explicit schema
-// pointer through the emitter — the chsql package stays
-// schema-agnostic at its public surface; this bridge is the one
-// place that knows about both worlds.
+// defaultTableShapes is the shape of every table of the default OTel-CH
+// schema, by its default name, ordered by the sorting key cerberus
+// provisions it with. tableShapeFor reads it for a table the request's
+// SchemaStrategies carry no shape for: the requirements check did not run,
+// or ran before the table existed.
 //
 // Callers should treat the value as read-only.
 var defaultTableShapes = buildDefaultTableShapes()
@@ -77,98 +25,107 @@ func buildDefaultTableShapes() map[string]TableShape {
 	traces := schema.DefaultOTelTraces()
 	metrics := schema.DefaultOTelMetrics()
 
-	out := make(map[string]TableShape)
-
-	// OTel-CH `otel_logs` ORDER BY (exporter v0.152.0):
-	// (toStartOfFiveMinutes(Timestamp), ServiceName, Timestamp) — pinned
-	// by internal/schema/ddl/ddl_test.go. The leading key is a monotonic
-	// bucketing of Timestamp, so ClickHouse prunes granules on it from a
-	// plain Timestamp predicate; the ranking here only ever consumes bare
-	// column names (collectColumnRefs strips expressions), so the shape
-	// models the *effective column prefix*: Timestamp at rank 0 (it
-	// constrains the bucket expression), ServiceName at rank 1. The
-	// trailing raw Timestamp key introduces no new column, and
-	// SeverityText / TraceId left the sort key in v0.152.0. Wide columns
-	// are the large per-row payloads (Body / ResourceAttributes /
-	// LogAttributes / ScopeAttributes); PREWHERE wants to defer reading
-	// them until granule pruning has narrowed the candidate set.
-	out[logs.LogsTable] = TableShape{
-		SortColumns: []string{
-			logs.TimestampColumn,
-			logs.ServiceNameColumn,
-		},
-		WideColumns: []string{
-			logs.BodyColumn,
-			logs.ResourceAttributesColumn,
-			logs.AttributesColumn,
-			logs.ScopeAttributesColumn,
-		},
-	}
-
-	// OTel-CH `otel_traces` ORDER BY: (ServiceName, SpanName,
-	// toUnixTimestamp(Timestamp), TraceId). Wide columns include the
-	// SpanAttributes / ResourceAttributes maps and the Nested Events /
-	// Links columns.
-	out[traces.SpansTable] = TableShape{
-		SortColumns: []string{
-			traces.ServiceNameColumn,
-			traces.SpanNameColumn,
-			traces.TimestampColumn,
-			traces.TraceIDColumn,
-		},
-		WideColumns: []string{
-			traces.AttributesColumn,
-			traces.ResourceAttributesColumn,
-			traces.EventsColumn,
-			traces.LinksColumn,
-		},
-	}
-
-	// OTel-CH metrics tables: all share ORDER BY (MetricName, Attributes,
-	// ServiceName, toUnixTimestamp64Nano(TimeUnix)) — the cerberus-ddl fork
-	// leads with MetricName so the common metric-name-first query (no
-	// service.name matcher) binary-searches the PK instead of falling to a
-	// generic-exclusion granule scan (measured 8-17x fewer granules). The
-	// schema package carries no per-signal WideColumns notion (chsql's own
-	// TableShape.WideColumns above is the only registry of "fat" columns),
-	// so the wide set is supplied inline — ResourceAttributes and
-	// ScopeAttributes are the large maps; Exemplars is a Nested column.
-	metricsShape := TableShape{
-		SortColumns: []string{
-			metrics.MetricNameColumn,
-			metrics.AttributesColumn,
-			metrics.ServiceNameColumn,
-			metrics.TimestampColumn,
-		},
-		WideColumns: []string{
-			metrics.ResourceAttributesColumn,
-			metrics.ScopeAttributesColumn,
-			metrics.ExemplarsColumn,
-		},
-		IntegerDiscriminatorColumns: []string{
-			metrics.AggregationTemporalityColumn,
-		},
+	out := map[string]TableShape{
+		logs.LogsTable:    LogsTableShape(logs, nil),
+		traces.SpansTable: TracesTableShape(traces, nil),
 	}
 	for _, tbl := range []string{
-		metrics.GaugeTable,
-		metrics.SumTable,
-		metrics.HistogramTable,
-		metrics.ExpHistogramTable,
-		metrics.SummaryTable,
+		metrics.GaugeTable, metrics.SumTable, metrics.HistogramTable, metrics.ExpHistogramTable, metrics.SummaryTable,
 	} {
-		out[tbl] = metricsShape
+		out[tbl] = MetricsTableShape(metrics, nil)
 	}
-
 	return out
 }
 
-// tableShapeFor returns the TableShape for table, or the zero value if
-// the table is not registered. The zero TableShape has no sort columns
-// and no wide columns, which makes the predicate classifier a no-op —
-// callers get the unmodified WHERE clause back.
-func tableShapeFor(table string) TableShape {
-	if s, ok := defaultTableShapes[table]; ok {
+// LogsTableShape is the shape of a logs table of l whose sorting key sorts
+// by sortColumns (schema.SortingKeyColumnsOf of its deployed key), or by the
+// key cerberus provisions when sortColumns is nil.
+//
+// The provisioned OTel-CH `otel_logs` ORDER BY (exporter v0.152.0) is
+// (toStartOfFiveMinutes(Timestamp), ServiceName, Timestamp) — pinned by
+// internal/schema/ddl/ddl_test.go. The leading key is a monotonic bucketing
+// of Timestamp, so ClickHouse prunes granules on it from a plain Timestamp
+// predicate; the ranking only ever consumes bare column names
+// (collectColumnRefs strips expressions), so the sort columns are the
+// key's effective column order: Timestamp at rank 0, ServiceName at rank 1.
+// Wide columns are the large per-row payloads (Body / ResourceAttributes /
+// LogAttributes / ScopeAttributes); PREWHERE wants to defer reading them
+// until granule pruning has narrowed the candidate set.
+func LogsTableShape(l schema.Logs, sortColumns []string) TableShape {
+	if sortColumns == nil {
+		sortColumns = []string{l.TimestampColumn, l.ServiceNameColumn}
+	}
+	return TableShape{
+		SortColumns: sortColumns,
+		WideColumns: []string{
+			l.BodyColumn,
+			l.ResourceAttributesColumn,
+			l.AttributesColumn,
+			l.ScopeAttributesColumn,
+		},
+	}
+}
+
+// TracesTableShape is the shape of a spans table of t whose sorting key
+// sorts by sortColumns, or by the key cerberus provisions when sortColumns
+// is nil: ORDER BY (ServiceName, SpanName, toDateTime(Timestamp)), whose
+// columns are ServiceName, SpanName, Timestamp. Wide columns include the
+// SpanAttributes / ResourceAttributes maps and the Nested Events / Links
+// columns.
+func TracesTableShape(t schema.Traces, sortColumns []string) TableShape {
+	if sortColumns == nil {
+		sortColumns = []string{t.ServiceNameColumn, t.SpanNameColumn, t.TimestampColumn}
+	}
+	return TableShape{
+		SortColumns: sortColumns,
+		WideColumns: []string{
+			t.AttributesColumn,
+			t.ResourceAttributesColumn,
+			t.EventsColumn,
+			t.LinksColumn,
+		},
+	}
+}
+
+// MetricsTableShape is the shape of a metrics table of m whose sorting key
+// sorts by sortColumns, or by the key cerberus provisions when sortColumns
+// is nil: every metrics table shares ORDER BY (MetricName, Attributes,
+// ServiceName, toUnixTimestamp64Nano(TimeUnix)) — the cerberus-ddl fork
+// leads with MetricName so the common metric-name-first query (no
+// service.name matcher) binary-searches the PK instead of falling to a
+// generic-exclusion granule scan (measured 8-17x fewer granules). A stock
+// exporter's table leads with ServiceName instead, which is why the
+// deployed key, when read, decides the order. The schema package carries no
+// per-signal WideColumns notion, so the wide set is supplied here —
+// ResourceAttributes and ScopeAttributes are the large maps; Exemplars is a
+// Nested column.
+func MetricsTableShape(m schema.Metrics, sortColumns []string) TableShape {
+	if sortColumns == nil {
+		sortColumns = []string{m.MetricNameColumn, m.AttributesColumn, m.ServiceNameColumn, m.TimestampColumn}
+	}
+	return TableShape{
+		SortColumns: sortColumns,
+		WideColumns: []string{
+			m.ResourceAttributesColumn,
+			m.ScopeAttributesColumn,
+			m.ExemplarsColumn,
+		},
+		IntegerDiscriminatorColumns: []string{
+			m.AggregationTemporalityColumn,
+		},
+	}
+}
+
+// tableShapeFor returns the TableShape of table under strategies: the shape
+// the requirements check resolved for the deployed table
+// (SchemaStrategies.TableShapes), else the provisioned shape of a
+// default-named table (defaultTableShapes), else the zero value. The zero
+// TableShape has no sort columns and no wide columns, which makes the
+// predicate classifier a no-op — callers get the unmodified WHERE clause
+// back.
+func tableShapeFor(table string, strategies SchemaStrategies) TableShape {
+	if s, ok := strategies.TableShapes[table]; ok {
 		return s
 	}
-	return TableShape{}
+	return defaultTableShapes[table]
 }

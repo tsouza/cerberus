@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -150,4 +151,72 @@ func TestRunSortingKeyTransportFailureIsUnreachable(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{Version: "25.8.2.1", Columns: healthyColumns(), SortingKeyErr: dialRefusedErr()}
 	assertTransient(t, Run(context.Background(), q, defaultReq()))
+}
+
+// TestRunResolvesDeployedTableShapes pins that the boot probe resolves each
+// configured table's chsql.TableShape — the order PREWHERE promotion ranks a
+// scan's filters by — from the columns of its deployed sorting key, keyed by
+// the table's configured (here renamed) name, and from the key cerberus
+// provisions where it read none: an unreadable key, and a table the probe
+// does not read (the summary table).
+func TestRunResolvesDeployedTableShapes(t *testing.T) {
+	t.Parallel()
+	req := defaultReq()
+	m := req.Metrics
+	const renamedSum = "metrics_sum_v2"
+	cols := healthyColumns()
+	cols[renamedSum] = cols[m.SumTable]
+	delete(cols, m.SumTable)
+	req.Metrics.SumTable = renamedSum
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols, SortingKeys: map[string]string{
+		m.GaugeTable:          stockMetricsKeyV0157,
+		renamedSum:            stockMetricsKeyBeforeV0157,
+		m.HistogramTable:      "MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix)",
+		req.Logs.LogsTable:    stockLogsKey,
+		req.Traces.SpansTable: cerberusTracesKey,
+		m.ExpHistogramTable:   "tuple(a, b)",
+	}}
+	res := Run(context.Background(), q, req)
+	if res.Fatal != nil {
+		t.Fatalf("Run: %v", res.Fatal)
+	}
+	provisionedMetrics := chsql.MetricsTableShape(req.Metrics, nil).SortColumns
+	want := map[string]map[string][]string{
+		"metrics": {
+			m.GaugeTable:        {"ServiceName", "MetricName", "TimeUnix", "Attributes"},
+			renamedSum:          {"ServiceName", "MetricName", "Attributes", "TimeUnix"},
+			m.HistogramTable:    provisionedMetrics,
+			m.ExpHistogramTable: {},
+			m.SummaryTable:      provisionedMetrics,
+		},
+		"logs":   {req.Logs.LogsTable: {"ServiceName", "TimestampTime", "Timestamp"}},
+		"traces": {req.Traces.SpansTable: {"ServiceName", "SpanName", "Timestamp"}},
+	}
+	got := map[string]map[string]chsql.TableShape{
+		"metrics": res.Strategies.Metrics.TableShapes,
+		"logs":    res.Strategies.Logs.TableShapes,
+		"traces":  res.Strategies.Traces.TableShapes,
+	}
+	for signal, tables := range want {
+		if len(got[signal]) != len(tables) {
+			t.Errorf("%s shapes = %v, want one per table of %v", signal, got[signal], tables)
+		}
+		for table, sortColumns := range tables {
+			shape, ok := got[signal][table]
+			if !ok || !slices.Equal(shape.SortColumns, sortColumns) || len(shape.WideColumns) == 0 {
+				t.Errorf("%s table %s shape = %+v (present %v), want sort columns %v and wide columns",
+					signal, table, shape, ok, sortColumns)
+			}
+		}
+	}
+	if _, ok := res.Strategies.Metrics.TableShapes[m.SumTable]; ok {
+		t.Errorf("the default sum table name %s has a shape though the configuration renames it", m.SumTable)
+	}
+
+	unreadable := Run(context.Background(), &stubQuerier{
+		Version: "25.8.2.1", Columns: healthyColumns(), SortingKeyErr: errors.New("code: 497, ACCESS_DENIED"),
+	}, defaultReq())
+	if got := unreadable.Strategies.Metrics.TableShapes[m.GaugeTable].SortColumns; !slices.Equal(got, provisionedMetrics) {
+		t.Errorf("an unreadable key's sort columns = %v, want the provisioned %v", got, provisionedMetrics)
+	}
 }

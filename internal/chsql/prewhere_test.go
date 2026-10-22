@@ -402,7 +402,7 @@ func TestProjectionTouchesWide(t *testing.T) {
 func TestTableShapeForKnownTables(t *testing.T) {
 	t.Parallel()
 	for _, tbl := range []string{"otel_logs", "otel_traces", "otel_metrics_gauge", "otel_metrics_sum"} {
-		shape := tableShapeFor(tbl)
+		shape := tableShapeFor(tbl, SchemaStrategies{})
 		if len(shape.SortColumns) == 0 {
 			t.Errorf("tableShapeFor(%q): empty SortColumns; expected an OTel-CH order key", tbl)
 		}
@@ -411,7 +411,7 @@ func TestTableShapeForKnownTables(t *testing.T) {
 		}
 	}
 	// Unknown table returns zero shape.
-	if shape := tableShapeFor("not_a_table"); len(shape.SortColumns) != 0 || len(shape.WideColumns) != 0 {
+	if shape := tableShapeFor("not_a_table", SchemaStrategies{}); len(shape.SortColumns) != 0 || len(shape.WideColumns) != 0 {
 		t.Errorf("tableShapeFor(unknown) = %+v, want zero shape", shape)
 	}
 }

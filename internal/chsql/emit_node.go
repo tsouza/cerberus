@@ -525,7 +525,7 @@ func (e *emitter) emitFilter(f *chplan.Filter) error {
 // promotion always activates in that case when the table shape has
 // wide columns registered.
 func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
-	sb, err := filterScanQuery(f, scan)
+	sb, err := filterScanQuery(f, scan, e.strategies)
 	if err != nil {
 		return err
 	}
@@ -543,18 +543,21 @@ func (e *emitter) emitFilterScan(f *chplan.Filter, scan *chplan.Scan) error {
 // Filter(Scan) would have received, then adds its QUALIFY window gate.
 // Sharing the assembly is what keeps the fast path from silently trading
 // four cheap PREWHERE-pruned reads for one unpruned one.
-func filterScanQuery(f *chplan.Filter, scan *chplan.Scan) (*QueryBuilder, error) {
+//
+// strategies are the statement's: the scanned table's shape is the one they
+// carry for its deployed sorting key (tableShapeFor).
+func filterScanQuery(f *chplan.Filter, scan *chplan.Scan, strategies SchemaStrategies) (*QueryBuilder, error) {
 	if err := validateScanShape(scan); err != nil {
 		return nil, err
 	}
 	// For a UnionTables scan every member table shares the metric-row
-	// shape (the cerberus-created metrics tables all order by
-	// (MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix))
-	// — the MetricName-first sort key, cerberus's one deliberate divergence
-	// from stock OTel-CH — and carry the same wide columns; see
-	// internal/chsql/tableshape.go). Resolving against the first member is
-	// correct for shape lookup; the PREWHERE/WHERE split CH then translates
-	// uniformly to every arm of the merge() fanout.
+	// shape (the metrics tables of one deployment share one sorting key —
+	// cerberus provisions every one with (MetricName, Attributes,
+	// ServiceName, toUnixTimestamp64Nano(TimeUnix)), a stock exporter every
+	// one with its own ServiceName-first key — and carry the same wide
+	// columns; see internal/chsql/tableshape.go). Resolving against the
+	// first member is correct for shape lookup; the PREWHERE/WHERE split CH
+	// then translates uniformly to every arm of the merge() fanout.
 	//
 	// validateScanShape above admits exactly two states — Table set with no
 	// UnionTables, or UnionTables set with no Table — so an empty Table is
@@ -563,7 +566,7 @@ func filterScanQuery(f *chplan.Filter, scan *chplan.Scan) (*QueryBuilder, error)
 	if shapeKey == "" {
 		shapeKey = scan.UnionTables[0]
 	}
-	shape := tableShapeFor(shapeKey)
+	shape := tableShapeFor(shapeKey, strategies)
 	conjuncts := flattenAnd(f.Predicate)
 	conjuncts = orderedConjuncts(conjuncts, shape)
 

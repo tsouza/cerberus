@@ -27,23 +27,29 @@ func tableSortingKeySQL(database, table string) (string, []any) {
 
 // sortingKeyFinding is what probeSortingKey read for one table: whether it
 // knows the table's key (known), the leading bare-column run of that key
-// (prefix), and the warning a failed read raises.
+// (prefix), the columns the key sorts by (columns: nil unless the key itself
+// was read), and the warning a failed read raises.
 type sortingKeyFinding struct {
 	known   bool
 	prefix  []string
+	columns []string
 	warning string
 }
 
 // probeSortingKey reads table's deployed sorting key and reduces it to its
 // bare-column prefix (schema.SortingKeyPrefixOf), which the
 // optimize_aggregation_in_order eligibility check in internal/engine matches
-// a GROUP BY against.
+// a GROUP BY against, and to the columns it sorts by
+// (schema.SortingKeyColumnsOf), which the emitter's PREWHERE promotion ranks
+// a scan's filters by (chsql.TableShape).
 //
 //   - A transport failure is returned as unreachable, exactly as checkTable
 //     reports one.
 //   - Any other failure, or a table system.tables does not list, is known
 //     with an empty prefix and a warning: no GROUP BY is a prefix of a key
 //     cerberus could not read, so the setting is not stamped on that table.
+//     Its columns stay nil: the PREWHERE ranking, which never changes a
+//     result, keeps the key cerberus provisions rather than none.
 //   - A Distributed table is not known: its rows, and the sorting key that
 //     orders them, live in the local tables it reads, so its statements keep
 //     the key cerberus provisions those with.
@@ -69,5 +75,9 @@ func probeSortingKey(ctx context.Context, q Querier, database, table string) (f 
 	if engine == distributedEngine {
 		return sortingKeyFinding{}, nil
 	}
-	return sortingKeyFinding{known: true, prefix: schema.SortingKeyPrefixOf(sortingKey)}, nil
+	return sortingKeyFinding{
+		known:   true,
+		prefix:  schema.SortingKeyPrefixOf(sortingKey),
+		columns: schema.SortingKeyColumnsOf(sortingKey),
+	}, nil
 }

@@ -1,6 +1,9 @@
 package schema
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // This file exposes each OTel-CH table's ORDER BY (sorting key) as
 // structured data, narrowed to the leading run of PLAIN COLUMN keys.
@@ -93,6 +96,53 @@ func SortingKeyPrefixOf(sortingKey string) []string {
 		prefix = append(prefix, name)
 	}
 	return prefix
+}
+
+// SortingKeyColumnsOf reduces a sorting key as system.tables reports it to
+// the columns it sorts by, in key order: each element that reads exactly one
+// column — a bare (optionally back-quoted) column, or that column wrapped in
+// one or more single-argument calls such as toUnixTimestamp64Nano(TimeUnix)
+// or toStartOfHour(TimeUnix) — contributes that column, once, at its first
+// position. The run stops at the first element that does not reduce to one
+// column. An empty key yields an empty, non-nil list.
+//
+// Unlike SortingKeyPrefixOf, a function-wrapped element does not end the
+// run: a filter on the column it wraps still lets ClickHouse prune granules
+// on that element, which is the order PREWHERE promotion ranks filters by.
+func SortingKeyColumnsOf(sortingKey string) []string {
+	columns := []string{}
+	for _, elem := range splitTopLevel(sortingKey) {
+		name, ok := singleColumnOf(strings.TrimSpace(elem))
+		if !ok {
+			break
+		}
+		if !slices.Contains(columns, name) {
+			columns = append(columns, name)
+		}
+	}
+	return columns
+}
+
+// singleColumnOf unwraps elem's single-argument calls, `fn(<arg>)`, and
+// reports the bare column the innermost argument names.
+func singleColumnOf(elem string) (string, bool) {
+	for {
+		if name, ok := bareIdentifier(elem); ok {
+			return name, true
+		}
+		open := strings.IndexByte(elem, '(')
+		if open <= 0 || !strings.HasSuffix(elem, ")") {
+			return "", false
+		}
+		if _, ok := bareIdentifier(elem[:open]); !ok {
+			return "", false
+		}
+		args := splitTopLevel(elem[open+1 : len(elem)-1])
+		if len(args) != 1 {
+			return "", false
+		}
+		elem = strings.TrimSpace(args[0])
+	}
 }
 
 // splitTopLevel splits a sorting-key expression list on the commas outside

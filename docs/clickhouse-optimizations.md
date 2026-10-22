@@ -228,7 +228,9 @@ Notes:
   its eligibility check passes: single Aggregate, all GROUP BY keys bare columns, single
   physical table, GROUP BY an ordered prefix of the table's deployed sorting key
   (see [Schema divergence](operations.md#schema-divergence-metrics-sort-key-and-timestamp-type)).
-  Its enablement flows from the resolved set.
+  Its enablement flows from the resolved set. The emitter's `PREWHERE`
+  promotion, which is not a registry feature, ranks a filter's conjuncts by
+  the same deployed key.
 - **`condition_cache`** activates only on server `>= 25.3`, outside the builds
   listed under [Known-defective server builds](#known-defective-server-builds),
   and only on a predicate-stable read path, gated conservatively (it needs the

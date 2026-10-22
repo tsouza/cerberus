@@ -3302,6 +3302,19 @@ gets the setting for no `GROUP BY`, and startup logs a warning naming it. A
 the check does not run (`CERBERUS_REQUIREMENTS_CHECK=false`, `cerberus
 migrate`'s preview) use the key cerberus provisions.
 
+`PREWHERE` promotion follows the same deployed key. A filter over a table
+whose wide columns the statement reads is split into `PREWHERE` and `WHERE`,
+and its conjuncts are ordered by the position their column takes in the
+table's sort key — each key element counted as the column it reads, so
+`toUnixTimestamp64Nano(TimeUnix)` ranks `TimeUnix`. Over a stock
+ServiceName-first table a `ServiceName` conjunct therefore comes before a
+`MetricName` one. A table renamed through `CERBERUS_SCHEMA_*` is ranked by
+its own deployed key. A table whose key cannot be read, a `Distributed`
+table, and a table the check did not reach rank by the key cerberus
+provisions; with the check off, only the default-named tables get a
+`PREWHERE` split, ranked by the provisioned key. The ranking never changes
+a result, only which columns ClickHouse reads first.
+
 The timestamp type is **not** correctness-neutral. `seconds` is **lossy**:
 ClickHouse truncates every sample, start and exemplar timestamp to its
 second on insert. Two samples of one series within the same second become

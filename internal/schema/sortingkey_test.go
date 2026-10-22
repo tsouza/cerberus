@@ -212,3 +212,45 @@ func TestSortingKeyPrefixOf(t *testing.T) {
 		})
 	}
 }
+
+// TestSortingKeyColumnsOf pins the reduction of a system.tables sorting_key
+// to the columns it sorts by: each element that reads one column through
+// single-argument calls contributes it once, and the run ends at the first
+// element that reads none or several.
+func TestSortingKeyColumnsOf(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, key string
+		want      []string
+	}{
+		{
+			"cerberus metrics", "MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix)",
+			[]string{"MetricName", "Attributes", "ServiceName", "TimeUnix"},
+		},
+		{
+			"stock metrics before v0.157", "ServiceName, MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix)",
+			[]string{"ServiceName", "MetricName", "Attributes", "TimeUnix"},
+		},
+		{
+			"stock metrics from v0.157", "ServiceName, MetricName, toStartOfHour(TimeUnix), cityHash64(Attributes), TimeUnix",
+			[]string{"ServiceName", "MetricName", "TimeUnix", "Attributes"},
+		},
+		{"function-led key", "toStartOfFiveMinutes(Timestamp), ServiceName, Timestamp", []string{"Timestamp", "ServiceName"}},
+		{"nested single-argument calls", "toDate(toDateTime(Timestamp)), ServiceName", []string{"Timestamp", "ServiceName"}},
+		{"back-quoted identifier", "`service.name`, toDateTime(`ts`)", []string{"service.name", "ts"}},
+		{"a two-argument call ends the run", "MetricName, toStartOfInterval(TimeUnix, toIntervalHour(1)), ServiceName", []string{"MetricName"}},
+		{"a multi-column tuple ends the run", "MetricName, tuple(a, b), ServiceName", []string{"MetricName"}},
+		{"an expression ends the run", "MetricName, ServiceName || 'x', TimeUnix", []string{"MetricName"}},
+		{"a literal argument ends the run", "MetricName, toDate('2026-01-01'), TimeUnix", []string{"MetricName"}},
+		{"no sorting key", "", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := SortingKeyColumnsOf(tc.key)
+			if got == nil || !slices.Equal(got, tc.want) {
+				t.Errorf("SortingKeyColumnsOf(%q) = %#v, want %#v", tc.key, got, tc.want)
+			}
+		})
+	}
+}

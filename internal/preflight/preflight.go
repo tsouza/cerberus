@@ -338,6 +338,9 @@ type Result struct {
 	//   - SortingKeyPrefixes maps each introspected table of the signal to
 	//     the bare-column prefix of the sorting key system.tables reports for
 	//     it (probeSortingKey).
+	//   - TableShapes maps each configured table of the signal to its
+	//     chsql.TableShape: the sort columns of the key system.tables reports
+	//     for it, or the provisioned key's where none was read.
 	//
 	// The zero value — no table introspected — renders the default schema.
 	// cmd/cerberus is the only intended consumer: it stores them in the
@@ -498,14 +501,27 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 				SortingKeyPrefixes: sf.sortingKeysOf(
 					req.Metrics.GaugeTable, req.Metrics.SumTable, req.Metrics.HistogramTable, req.Metrics.ExpHistogramTable,
 				),
+				TableShapes: sf.tableShapes(
+					func(cols []string) chsql.TableShape { return chsql.MetricsTableShape(req.Metrics, cols) },
+					req.Metrics.GaugeTable, req.Metrics.SumTable, req.Metrics.HistogramTable,
+					req.Metrics.ExpHistogramTable, req.Metrics.SummaryTable,
+				),
 			},
 			Logs: chsql.SchemaStrategies{
 				Attrs:              attrStrategiesFor(sf.jsonColsByTable[req.Logs.LogsTable]),
 				SortingKeyPrefixes: sf.sortingKeysOf(req.Logs.LogsTable),
+				TableShapes: sf.tableShapes(
+					func(cols []string) chsql.TableShape { return chsql.LogsTableShape(req.Logs, cols) },
+					req.Logs.LogsTable,
+				),
 			},
 			Traces: chsql.SchemaStrategies{
 				Attrs:              attrStrategiesFor(sf.jsonColsByTable[req.Traces.SpansTable]),
 				SortingKeyPrefixes: sf.sortingKeysOf(req.Traces.SpansTable),
+				TableShapes: sf.tableShapes(
+					func(cols []string) chsql.TableShape { return chsql.TracesTableShape(req.Traces, cols) },
+					req.Traces.SpansTable,
+				),
 			},
 		},
 
@@ -1079,6 +1095,7 @@ func checkSchema(ctx context.Context, q Querier, req Requirements) (f schemaFind
 	seen := map[string]bool{}
 	f.jsonColsByTable = map[string][]string{}
 	f.sortingKeys = map[string][]string{}
+	f.sortingKeyColumns = map[string][]string{}
 	for _, t := range requiredTables(req) {
 		if t.name == "" || seen[t.name] {
 			continue
@@ -1107,6 +1124,9 @@ func checkSchema(ctx context.Context, q Querier, req Requirements) (f schemaFind
 		if tf.sortingKey.known {
 			f.sortingKeys[t.name] = tf.sortingKey.prefix
 		}
+		if tf.sortingKey.columns != nil {
+			f.sortingKeyColumns[t.name] = tf.sortingKey.columns
+		}
 		if tf.sortingKey.warning != "" {
 			f.warnings = append(f.warnings, tf.sortingKey.warning)
 		}
@@ -1131,12 +1151,26 @@ func (f schemaFindings) sortingKeysOf(tables ...string) map[string][]string {
 	return out
 }
 
+// tableShapes returns the chsql.TableShape of each of tables, named by
+// table name, that shape builds from the sort columns the probe read for it
+// (nil — the provisioned key — where it read none).
+func (f schemaFindings) tableShapes(shape func(sortColumns []string) chsql.TableShape, tables ...string) map[string]chsql.TableShape {
+	out := make(map[string]chsql.TableShape, len(tables))
+	for _, t := range tables {
+		if t != "" {
+			out[t] = shape(f.sortingKeyColumns[t])
+		}
+	}
+	return out
+}
+
 // schemaFindings is what checkSchema's gate-2 pass found across every
 // configured table: the FATAL wrong-shape problems, the ABSENT tables, the
 // boot-probe warnings, the JSON-typed attribute columns per
 // jsonAttrMapCompat table, the metric tables lacking their Flags column, the
-// deployed type of every metrics timestamp column found, and the
-// sorting-key prefix of every table whose key the probe knows.
+// deployed type of every metrics timestamp column found, the sorting-key
+// prefix of every table whose key the probe knows, and the sort columns of
+// every table whose key it read.
 type schemaFindings struct {
 	problems          []string
 	absent            []string
@@ -1145,6 +1179,7 @@ type schemaFindings struct {
 	flagsMissing      []string
 	metricsTimestamps []deployedColumn
 	sortingKeys       map[string][]string
+	sortingKeyColumns map[string][]string
 }
 
 // tableFindings is checkTable's verdict on one table — see schemaFindings

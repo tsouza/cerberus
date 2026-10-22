@@ -52,7 +52,7 @@ func TestMetricsTableShapeLeadsWithMetricName(t *testing.T) {
 	}
 
 	for label, tbl := range tables {
-		shape := tableShapeFor(tbl)
+		shape := tableShapeFor(tbl, SchemaStrategies{})
 		got := shape.SortColumns
 
 		if len(got) != len(want) {

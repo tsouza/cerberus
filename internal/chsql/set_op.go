@@ -548,7 +548,7 @@ func (e *emitter) emitFusedIntersect(fused fusedIntersect, traceIDColumn, spanID
 		err error
 	)
 	if len(conds) > 0 {
-		sb, err = filterScanQuery(&chplan.Filter{Input: scan, Predicate: conjoinExprs(conds)}, scan)
+		sb, err = filterScanQuery(&chplan.Filter{Input: scan, Predicate: conjoinExprs(conds)}, scan, e.strategies)
 	} else {
 		// Every arm matches every span, so there is nothing to restrict
 		// the scan by.

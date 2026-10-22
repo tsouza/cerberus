@@ -44,4 +44,14 @@ type SchemaStrategies struct {
 	// table whose key could not be read maps to an empty prefix, which no
 	// GROUP BY matches.
 	SortingKeyPrefixes map[string][]string
+
+	// TableShapes maps each of the signal's tables, by physical name, to the
+	// shape the emitter's conjunct ordering and PREWHERE promotion read off a
+	// scan of it (internal/chsql's prewhere.go): its wide and discriminator
+	// columns from the configured schema, and the sort columns of its
+	// deployed sorting key (schema.SortingKeyColumnsOf), or of the key
+	// cerberus provisions where the deployed one was not read. A table with
+	// no entry reads the provisioned shape of the default-named table of
+	// that name, or none.
+	TableShapes map[string]TableShape
 }
