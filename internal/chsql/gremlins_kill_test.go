@@ -3225,7 +3225,7 @@ func TestOrderedConjuncts_StableSameRankTiebreak(t *testing.T) {
 }
 
 // TestIsSkipIndexColumn_Match pins the membership lookup at
-// tableshape.go:IsSkipIndexColumn:`slices.Contains(s.SkipIndexColumns, name)`.
+// internal/chplan/table_shape.go:IsSkipIndexColumn:`slices.Contains(s.SkipIndexColumns, name)`.
 // With a matching name the lookup must report true; a non-member must
 // report false. IsSortColumn below gets the same pair of checks.
 func TestIsSkipIndexColumn_Match(t *testing.T) {
@@ -3240,7 +3240,7 @@ func TestIsSkipIndexColumn_Match(t *testing.T) {
 }
 
 // TestIsSortColumn_Match pins the membership lookup at
-// tableshape.go:IsSortColumn:`slices.Contains(s.SortColumns, name)`.
+// internal/chplan/table_shape.go:IsSortColumn:`slices.Contains(s.SortColumns, name)`.
 func TestIsSortColumn_Match(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName", "Timestamp"}}
