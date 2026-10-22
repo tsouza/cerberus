@@ -657,15 +657,17 @@ native-lowerers-smoke-integration:
 # ClickHouse and issues a curated sentinel corpus, gating each one's
 # max-of-N peak memory against a committed baseline (nightly-baseline.json)
 # plus an absolute cap-relative ceiling, and its HTTP status against the
-# outcome each sentinel was calibrated to expect (PR B of #2370). Requires
-# Docker; gated behind the `integration` build tag. See
+# outcome each sentinel was calibrated to expect (PR B of #2370), on the
+# ClickHouse image named — the bound set asserted is the one calibrated on
+# that server's release line. perf-nightly.yml runs it once per server of its
+# matrix. Requires Docker; gated behind the `integration` build tag. See
 # test/perf/nightly/realch_perfnightly_integration_test.go and
 # .github/workflows/perf-nightly.yml.
 
-# Run the nightly memory gate over the real trimmed sample. Needs Docker and git-lfs.
-perf-nightly-integration:
-    @just _pull-retry {{CH_TEST_IMAGE}}
-    go test -v -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
+# Run the nightly memory gate over the real trimmed sample on one ClickHouse image. Needs Docker and git-lfs.
+perf-nightly-integration image:
+    @just _pull-retry {{image}}
+    PERF_NIGHTLY_CH_IMAGE={{image}} go test -v -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
 
 # Complete dense native rate/aggregate/quantile dashboard: numeric parity and memory.
 native-histogram-dashboard-integration image=CH_STRICT_SCAN_IMAGE:
@@ -679,9 +681,9 @@ native-histogram-dashboard-floor-integration:
 # Run the ts_grid_instant real-data memory measurement (#2748): reuses this
 # package's own real, trimmed production sample
 # (test/perf/nightly/testdata/samples/svc_http_requests_total.parquet) in a
-# SECOND, dedicated ClickHouse container (CH_STRICT_SCAN_IMAGE, 26.6-alpine —
-# ts_grid_instant floors at 26.5, ABOVE this package's own 25.9-alpine
-# perfNightlyCHImage), issuing the SAME instant `rate(m[1d])` query once
+# dedicated ClickHouse container (CH_STRICT_SCAN_IMAGE, 26.6-alpine —
+# ts_grid_instant floors at 26.5, above the sentinel legs' 24.8 and 25.9
+# servers), issuing the SAME instant `rate(m[1d])` query once
 # through the fan-out and once through the new instant native lowering
 # (chplan.RangeWindowGridNativeInstant), reading real peak memory_usage back
 # from system.query_log for both. Requires Docker; gated behind the
@@ -707,10 +709,12 @@ histogram-dashboard-unit:
 	go test -race -timeout 3m -count=1 -run 'TestResourceBoundClassification_Exhaustive' ./internal/engine
 	go test -race -timeout 3m -count=1 -run 'TestChplanPrint' ./test/spec
 
-# Regenerate nightly-baseline.json: for each #2370 nightly sentinel the
-# calibration-time max-of-N peak memory_usage plus the headroom-multiplied
-# ceiling (nightlyBaselineHeadroom) the gate actually asserts against, and
-# the HTTP status it was calibrated to expect. Requires Docker and (once,
+# Regenerate one ClickHouse release line's bound set in nightly-baseline.json
+# (the line of the image named; every other line's set is left unchanged):
+# for each #2370 nightly sentinel the calibration-time max-of-N peak
+# memory_usage plus the headroom-multiplied ceiling (Sentinel.BaselineHeadroom)
+# the gate actually asserts against, and the HTTP status it was calibrated to
+# expect. Naming sentinels after the image recalibrates only those. Requires Docker and (once,
 # if not already fetched) `git lfs pull` for the trimmed sample parquet
 # files. Run this — and REVIEW THE DIFF — only when a bound move is
 # genuinely intended (a real, justified memory-cost increase, or a
@@ -719,10 +723,10 @@ histogram-dashboard-unit:
 # exists to catch. The gating assertion is TestPerfNightlyRealCH, wired
 # into .github/workflows/perf-nightly.yml.
 
-# Regenerate the nightly per-sentinel memory ceilings. Needs Docker; review the diff.
-update-nightly-perf-baseline *sentinels:
-    @just _pull-retry {{CH_TEST_IMAGE}}
-    UPDATE_NIGHTLY_PERF_BASELINE=1 UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS="{{replace(sentinels, ' ', ',')}}" go test -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
+# Regenerate the nightly per-sentinel memory ceilings of one ClickHouse image. Needs Docker; review the diff.
+update-nightly-perf-baseline image *sentinels:
+    @just _pull-retry {{image}}
+    PERF_NIGHTLY_CH_IMAGE={{image}} UPDATE_NIGHTLY_PERF_BASELINE=1 UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS="{{replace(sentinels, ' ', ',')}}" go test -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/nightly-baseline.json
 
 # Run #2437's periodic self-check: deliberately breaks each mechanism its
@@ -732,15 +736,18 @@ update-nightly-perf-baseline *sentinels:
 # actually fails under each — proving the perf gates are still armed rather
 # than having silently bit-rotted since the last real regression tripped it.
 # Reverts every mutation via `git checkout --` even on failure; never
-# commits or pushes anything. Requires Docker and a clean working tree (it
-# refuses to mutate on top of unrelated uncommitted changes). Weekly, not
-# nightly — see .github/workflows/perf-nightly-selfcheck.yml.
+# commits or pushes anything. Runs the mutations of the ClickHouse image
+# named (each mutation names the release lines it applies to); the workflow
+# runs one leg per server of perf-nightly.yml's matrix. Requires Docker and a
+# clean working tree (it refuses to mutate on top of unrelated uncommitted
+# changes). Weekly, not nightly — see
+# .github/workflows/perf-nightly-selfcheck.yml.
 
-# Prove the perf sentinel gates are still armed by breaking each mechanism. Needs Docker, clean tree.
-perf-nightly-selfcheck:
-    @just _pull-retry {{CH_TEST_IMAGE}}
+# Prove the perf sentinel gates are still armed on one ClickHouse image by breaking each mechanism. Needs Docker, clean tree.
+perf-nightly-selfcheck image:
+    @just _pull-retry {{image}}
     node --test .github/scripts/perf-nightly-selfcheck.test.mjs
-    node .github/scripts/perf-nightly-selfcheck.mjs
+    PERF_NIGHTLY_CH_IMAGE={{image}} node .github/scripts/perf-nightly-selfcheck.mjs
 
 # Run the solver's mandatory per-shard memory-apportionment real-CH guard:
 # proves Executor.runShard's max_memory_usage WithQuerySetting override is

@@ -1804,14 +1804,14 @@
         "context_job": "perf-nightly-selfcheck"
       },
       "executions": ["default"],
-      "context": { "match": "exact", "name": "perf-nightly-selfcheck", "protected": false },
+      "context": { "match": "prefix", "name": "perf-nightly-selfcheck (", "protected": false },
       "purpose": "performance",
       "layers": ["11"],
       "oracle_class": "performance",
       "recipes": ["perf-nightly-selfcheck"],
       "command": "node .github/scripts/perf-nightly-selfcheck.mjs",
       "build_tags": ["integration"],
-      "package_globs": ["test/perf/nightly/**", "internal/chsql/rate_window_fanout_bound.go", "internal/engine/spill.go"],
+      "package_globs": ["test/perf/nightly/**", "internal/chsql/rate_window_fanout_bound.go", "internal/engine/spill.go", "internal/chsql/emit_node.go", "internal/chopt/registry.go"],
       "substrate": "real-clickhouse",
       "risk_domains": ["performance"],
       "merge_posture": "never",
@@ -1819,8 +1819,8 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "timeout_minutes": 30,
-      "slo_minutes": 30,
+      "timeout_minutes": 60,
+      "slo_minutes": 60,
       "accountable_owner": "query-quality"
     },
     {
@@ -1857,8 +1857,8 @@
       "description": "Replays the reported classic-histogram dashboard queries over the captured LFS production dataset, proving exact Prometheus results and bounded ClickHouse rows and peak memory for singular and shared quantiles.",
       "owner": {
         "workflow": ".github/workflows/perf-nightly.yml",
-        "jobs": ["perf-nightly"],
-        "producer_jobs": [],
+        "jobs": ["perf-nightly-replays", "perf-nightly"],
+        "producer_jobs": ["perf-nightly-replays"],
         "context_job": "perf-nightly"
       },
       "executions": ["default"],
@@ -1887,8 +1887,8 @@
       "description": "#2370 nightly real-data regression gate: loads the real, trimmed production sample into a real ClickHouse and asserts each sentinel's max-of-5 peak memory (and expected HTTP outcome) against a committed baseline plus an absolute cap-relative ceiling (PR B).",
       "owner": {
         "workflow": ".github/workflows/perf-nightly.yml",
-        "jobs": ["perf-nightly"],
-        "producer_jobs": [],
+        "jobs": ["perf-nightly-sentinels", "perf-nightly"],
+        "producer_jobs": ["perf-nightly-sentinels"],
         "context_job": "perf-nightly"
       },
       "executions": ["default"],
@@ -1907,8 +1907,8 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "timeout_minutes": 20,
-      "slo_minutes": 20,
+      "timeout_minutes": 30,
+      "slo_minutes": 30,
       "accountable_owner": "query-quality"
     },
     {
@@ -1945,8 +1945,8 @@
       "description": "#2748 ts_grid_instant real-data memory measurement: loads the real, trimmed production sample into a SECOND dedicated (>= 26.5) ClickHouse and compares real peak memory_usage for an instant rate() between the fan-out and the new native instant lowering.",
       "owner": {
         "workflow": ".github/workflows/perf-nightly.yml",
-        "jobs": ["perf-nightly"],
-        "producer_jobs": [],
+        "jobs": ["perf-nightly-replays", "perf-nightly"],
+        "producer_jobs": ["perf-nightly-replays"],
         "context_job": "perf-nightly"
       },
       "executions": ["default"],

@@ -17,6 +17,9 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
+
+	"github.com/tsouza/cerberus/internal/chopt"
 )
 
 // perfNightlyMemoryCapBytes matches CERBERUS_CH_QUERY_MAX_MEMORY's default —
@@ -116,17 +119,66 @@ type nightlyBound struct {
 	CeilingBytes   uint64 `json:"ceiling_bytes"`
 }
 
-type nightlyBaseline struct {
-	Sentinels []nightlyBound `json:"sentinels"`
+// nightlyVersionBaseline is the bound set of one ClickHouse release line
+// ("major.minor"): the lane runs on several servers (perf-nightly.yml's
+// matrix), and the same sentinel peaks differently on each, so each server's
+// bounds are calibrated on that server alone.
+type nightlyVersionBaseline struct {
+	ClickHouse string         `json:"clickhouse"`
+	Sentinels  []nightlyBound `json:"sentinels"`
 }
 
-func baselineFor(b nightlyBaseline, name string) (nightlyBound, bool) {
+type nightlyBaseline struct {
+	Versions []nightlyVersionBaseline `json:"versions"`
+}
+
+// forVersion returns the bound set calibrated on ClickHouse line version.
+func (b nightlyBaseline) forVersion(version string) (nightlyVersionBaseline, bool) {
+	for _, v := range b.Versions {
+		if v.ClickHouse == version {
+			return v, true
+		}
+	}
+	return nightlyVersionBaseline{}, false
+}
+
+// withVersion returns b with version's bound set replaced by bounds (added
+// when b has none), every other version's set unchanged, and the sets ordered
+// by ascending server version so the committed file diffs cleanly.
+func (b nightlyBaseline) withVersion(version string, bounds []nightlyBound) (nightlyBaseline, error) {
+	out := nightlyBaseline{Versions: make([]nightlyVersionBaseline, 0, len(b.Versions)+1)}
+	for _, v := range b.Versions {
+		if v.ClickHouse != version {
+			out.Versions = append(out.Versions, v)
+		}
+	}
+	out.Versions = append(out.Versions, nightlyVersionBaseline{ClickHouse: version, Sentinels: bounds})
+	var sortErr error
+	slices.SortFunc(out.Versions, func(x, y nightlyVersionBaseline) int {
+		vx, okx := chopt.ParseVersion(x.ClickHouse)
+		vy, oky := chopt.ParseVersion(y.ClickHouse)
+		if !okx || !oky {
+			sortErr = fmt.Errorf("baseline names an unparseable ClickHouse version (%q, %q)", x.ClickHouse, y.ClickHouse)
+			return 0
+		}
+		return vx.Compare(vy)
+	})
+	return out, sortErr
+}
+
+func baselineFor(b nightlyVersionBaseline, name string) (nightlyBound, bool) {
 	for _, s := range b.Sentinels {
 		if s.Name == name {
 			return s, true
 		}
 	}
 	return nightlyBound{}, false
+}
+
+// releaseLine renders a probed server version as the "major.minor" key its
+// bound set is filed under.
+func releaseLine(v chopt.Version) string {
+	return chopt.Version{Major: v.Major, Minor: v.Minor}.String()
 }
 
 // readNightlyBaseline parses the committed bound file. It returns the read and
@@ -144,12 +196,12 @@ func readNightlyBaseline() (nightlyBaseline, error) {
 	return b, nil
 }
 
-// writeNightlyBaselineFile serialises bounds (in Sentinels order) as pretty
-// JSON with a trailing newline, so the committed file diffs cleanly and is
-// never hand-edited (invariant 9). Its only caller is the
-// UPDATE_NIGHTLY_PERF_BASELINE=1 calibration path.
-func writeNightlyBaselineFile(bounds []nightlyBound) error {
-	buf, err := json.MarshalIndent(nightlyBaseline{Sentinels: bounds}, "", "  ")
+// writeNightlyBaselineFile serialises b as pretty JSON with a trailing
+// newline, so the committed file diffs cleanly and is never hand-edited
+// (invariant 9). Its only caller is the UPDATE_NIGHTLY_PERF_BASELINE=1
+// calibration path.
+func writeNightlyBaselineFile(b nightlyBaseline) error {
+	buf, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal baseline: %w", err)
 	}

@@ -35,7 +35,7 @@ func TestWriteResultsJSON_RoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := writeResultsJSON(results); err != nil {
+	if err := writeResultsJSON("26.6", results); err != nil {
 		t.Fatalf("writeResultsJSON: %v", err)
 	}
 
@@ -49,6 +49,9 @@ func TestWriteResultsJSON_RoundTrip(t *testing.T) {
 	}
 	if !got.AllPass {
 		t.Errorf("AllPass = false, want true (every sentinel above has Pass=true)")
+	}
+	if got.ClickHouse != "26.6" {
+		t.Errorf("ClickHouse = %q, want the server line the run measured on, 26.6", got.ClickHouse)
 	}
 	if len(got.Sentinels) != len(results) {
 		t.Fatalf("len(Sentinels) = %d, want %d", len(got.Sentinels), len(results))
@@ -72,7 +75,7 @@ func TestWriteResultsJSON_AllPassFalseOnAnyFailure(t *testing.T) {
 		{Name: "b", Pass: false},
 		{Name: "c", Pass: true},
 	}
-	if err := writeResultsJSON(results); err != nil {
+	if err := writeResultsJSON("26.6", results); err != nil {
 		t.Fatalf("writeResultsJSON: %v", err)
 	}
 	buf, err := os.ReadFile(path)

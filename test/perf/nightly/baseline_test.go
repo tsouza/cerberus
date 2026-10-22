@@ -1,6 +1,11 @@
 package nightly
 
-import "testing"
+import (
+	"slices"
+	"testing"
+
+	"github.com/tsouza/cerberus/internal/chopt"
+)
 
 // TestCommittedCeilingBytes_ClampsToTheAbsoluteCeiling pins the clamp itself.
 // Without it the calibration path is free to write a PRONG (b) ceiling that
@@ -43,34 +48,45 @@ func TestCommittedCeilingBytes_ClampsToTheAbsoluteCeiling(t *testing.T) {
 
 // TestNightlyBaseline_ProngBIsNeverLooserThanProngA asserts, over the COMMITTED
 // baseline rather than over arithmetic alone, that every sentinel's PRONG (b)
-// ceiling is one PRONG (a) can actually let a measurement reach — and that the
-// committed number is exactly what committedCeilingBytes derives from the
-// committed measurement and the sentinel's own headroom, so a hand-edited or
-// half-regenerated baseline (invariant 9) fails here rather than silently
-// gating less than it claims.
+// ceiling on every calibrated server is one PRONG (a) can actually let a
+// measurement reach — and that the committed number is exactly what
+// committedCeilingBytes derives from the committed measurement and the
+// sentinel's own headroom, so a hand-edited or half-regenerated baseline
+// (invariant 9) fails here rather than silently gating less than it claims.
 //
 // test/perf/smoke's baseline_test.go carries the same assertion over its own
 // corpus. Both lanes clamp, so both are held to it: an invariant enforced in
 // one of two sibling corpora is one the other is free to drift away from.
 func TestNightlyBaseline_ProngBIsNeverLooserThanProngA(t *testing.T) {
-	baseline := mustReadBaseline(t)
-	for _, sentinel := range Sentinels {
-		bound, ok := baselineFor(baseline, sentinel.Name)
-		if !ok {
-			t.Errorf("%s: no committed bound in %s — the sentinel runs with PRONG (b) missing entirely",
-				sentinel.Name, nightlyBaselinePath)
-			continue
+	for _, version := range mustReadBaseline(t).Versions {
+		set := SentinelsFor(version.ClickHouse)
+		for _, sentinel := range set {
+			bound, ok := baselineFor(version, sentinel.Name)
+			if !ok {
+				t.Errorf("%s: no committed bound for ClickHouse %s in %s — the sentinel runs there with PRONG (b) "+
+					"missing entirely", sentinel.Name, version.ClickHouse, nightlyBaselinePath)
+				continue
+			}
+			if bound.CeilingBytes > nightlyCapCeilingBytes {
+				t.Errorf("%s on %s: committed ceiling %d exceeds the absolute cap-relative ceiling %d — "+
+					"PRONG (a) rejects first, so PRONG (b) can never fire and this sentinel gates "+
+					"with one of its two guards dead",
+					sentinel.Name, version.ClickHouse, bound.CeilingBytes, nightlyCapCeilingBytes)
+			}
+			if want := committedCeilingBytes(bound.MaxOfNBytes, sentinel.BaselineHeadroom); bound.CeilingBytes != want {
+				t.Errorf("%s on %s: committed ceiling %d is not committedCeilingBytes(%d, %v) = %d — regenerate with "+
+					"`just update-nightly-perf-baseline` rather than editing the file",
+					sentinel.Name, version.ClickHouse, bound.CeilingBytes, bound.MaxOfNBytes, sentinel.BaselineHeadroom, want)
+			}
+			if bound.ExpectedStatus != sentinel.ExpectedStatus {
+				t.Errorf("%s on %s: committed bound expects status %d but the sentinel expects %d",
+					sentinel.Name, version.ClickHouse, bound.ExpectedStatus, sentinel.ExpectedStatus)
+			}
 		}
-		if bound.CeilingBytes > nightlyCapCeilingBytes {
-			t.Errorf("%s: committed ceiling %d exceeds the absolute cap-relative ceiling %d — "+
-				"PRONG (a) rejects first, so PRONG (b) can never fire and this sentinel gates "+
-				"with one of its two guards dead",
-				sentinel.Name, bound.CeilingBytes, nightlyCapCeilingBytes)
-		}
-		if want := committedCeilingBytes(bound.MaxOfNBytes, sentinel.BaselineHeadroom); bound.CeilingBytes != want {
-			t.Errorf("%s: committed ceiling %d is not committedCeilingBytes(%d, %v) = %d — regenerate with "+
-				"`just update-nightly-perf-baseline` rather than editing the file",
-				sentinel.Name, bound.CeilingBytes, bound.MaxOfNBytes, sentinel.BaselineHeadroom, want)
+		for _, bound := range version.Sentinels {
+			if !slices.ContainsFunc(set, func(s Sentinel) bool { return s.Name == bound.Name }) {
+				t.Errorf("ClickHouse %s: committed bound %q names no sentinel of that server's set", version.ClickHouse, bound.Name)
+			}
 		}
 	}
 }
@@ -80,18 +96,72 @@ func TestNightlyBaseline_ProngBIsNeverLooserThanProngA(t *testing.T) {
 // still passes. The calibration-time max-of-N committed alongside each ceiling
 // is the most legitimate measurement there is, so it must clear both prongs.
 func TestNightlyBaseline_CalibrationMeasurementPassesBothProngs(t *testing.T) {
-	baseline := mustReadBaseline(t)
-	for _, bound := range baseline.Sentinels {
-		if exceedsCapCeiling(bound.MaxOfNBytes) {
-			t.Errorf("%s: calibration measurement %d already exceeds the absolute ceiling %d — "+
-				"the committed baseline records a PRONG (a) failure",
-				bound.Name, bound.MaxOfNBytes, nightlyCapCeilingBytes)
+	for _, version := range mustReadBaseline(t).Versions {
+		for _, bound := range version.Sentinels {
+			if exceedsCapCeiling(bound.MaxOfNBytes) {
+				t.Errorf("%s on %s: calibration measurement %d already exceeds the absolute ceiling %d — "+
+					"the committed baseline records a PRONG (a) failure",
+					bound.Name, version.ClickHouse, bound.MaxOfNBytes, nightlyCapCeilingBytes)
+			}
+			if exceedsCommittedCeiling(bound.MaxOfNBytes, bound) {
+				t.Errorf("%s on %s: calibration measurement %d already exceeds its own committed ceiling %d — "+
+					"the gate is red on the very run that produced it",
+					bound.Name, version.ClickHouse, bound.MaxOfNBytes, bound.CeilingBytes)
+			}
 		}
-		if exceedsCommittedCeiling(bound.MaxOfNBytes, bound) {
-			t.Errorf("%s: calibration measurement %d already exceeds its own committed ceiling %d — "+
-				"the gate is red on the very run that produced it",
-				bound.Name, bound.MaxOfNBytes, bound.CeilingBytes)
+	}
+}
+
+// TestNightlyBaseline_VersionsAreReleaseLinesInOrder pins the shape the
+// calibration writer produces: one bound set per "major.minor" release line —
+// the key a run looks its server up under (releaseLine) — each line once, in
+// ascending order.
+func TestNightlyBaseline_VersionsAreReleaseLinesInOrder(t *testing.T) {
+	var prev chopt.Version
+	for i, version := range mustReadBaseline(t).Versions {
+		v, ok := chopt.ParseVersion(version.ClickHouse)
+		if !ok || releaseLine(v) != version.ClickHouse {
+			t.Fatalf("bound set %d is filed under %q, not a major.minor release line", i, version.ClickHouse)
 		}
+		if i > 0 && !prev.Less(v) {
+			t.Fatalf("bound set %s follows %s: the sets must be in strictly ascending server order", v, prev)
+		}
+		prev = v
+	}
+}
+
+// TestNightlyBaseline_WithVersionReplacesOnlyItsOwnSet drives the writer's
+// merge: calibrating one server must leave every other server's bounds as
+// they were and keep the sets ordered.
+func TestNightlyBaseline_WithVersionReplacesOnlyItsOwnSet(t *testing.T) {
+	old := nightlyBound{Name: "s", ExpectedStatus: 200, MaxOfNBytes: 1, CeilingBytes: 2}
+	fresh := nightlyBound{Name: "s", ExpectedStatus: 200, MaxOfNBytes: 3, CeilingBytes: 4}
+	base := nightlyBaseline{Versions: []nightlyVersionBaseline{
+		{ClickHouse: "25.9", Sentinels: []nightlyBound{old}},
+		{ClickHouse: "26.6", Sentinels: []nightlyBound{old}},
+	}}
+
+	replaced, err := base.withVersion("26.6", []nightlyBound{fresh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := replaced.Versions; len(got) != 2 || got[0].Sentinels[0] != old || got[1].Sentinels[0] != fresh {
+		t.Fatalf("replacing 26.6 gave %+v", got)
+	}
+
+	added, err := base.withVersion("24.8", []nightlyBound{fresh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, v := range added.Versions {
+		order = append(order, v.ClickHouse)
+	}
+	if want := []string{"24.8", "25.9", "26.6"}; !slices.Equal(order, want) {
+		t.Fatalf("adding 24.8 ordered the sets %v, want %v", order, want)
+	}
+	if added.Versions[1].Sentinels[0] != old || added.Versions[2].Sentinels[0] != old {
+		t.Fatalf("adding 24.8 changed another server's bounds: %+v", added.Versions)
 	}
 }
 
@@ -101,8 +171,30 @@ func mustReadBaseline(t *testing.T) nightlyBaseline {
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	if len(baseline.Sentinels) == 0 {
-		t.Fatalf("%s carries no sentinel bounds", nightlyBaselinePath)
+	if len(baseline.Versions) == 0 {
+		t.Fatalf("%s carries no bound set", nightlyBaselinePath)
+	}
+	for _, version := range baseline.Versions {
+		if len(version.Sentinels) == 0 {
+			t.Fatalf("%s: ClickHouse %s carries no sentinel bounds", nightlyBaselinePath, version.ClickHouse)
+		}
 	}
 	return baseline
+}
+
+// TestSentinels_NotOnNamesCalibratedServers holds every per-server exclusion
+// to a server the lane runs on and to a stated reason: an exclusion naming a
+// server the matrix dropped, or naming none, would silently shrink a set.
+func TestSentinels_NotOnNamesCalibratedServers(t *testing.T) {
+	baseline := mustReadBaseline(t)
+	for _, s := range Sentinels {
+		for version, reason := range s.NotOn {
+			if _, ok := baseline.forVersion(version); !ok {
+				t.Errorf("%s: NotOn names ClickHouse %s, which has no bound set (perf-nightly does not run there)", s.Name, version)
+			}
+			if reason == "" {
+				t.Errorf("%s: NotOn names ClickHouse %s without a reason", s.Name, version)
+			}
+		}
+	}
 }

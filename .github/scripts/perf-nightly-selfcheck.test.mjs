@@ -23,7 +23,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { MUTATIONS, applyMutation, failedSentinels } from './perf-nightly-selfcheck.mjs';
+import {
+  MUTATIONS,
+  applyMutation,
+  failedSentinels,
+  gateArgs,
+  mutationsFor,
+  releaseLine,
+} from './perf-nightly-selfcheck.mjs';
+import { SELFCHECK_JOB, SELFCHECK_WORKFLOW, readClickHouseMatrix } from './lib/perf-nightly-matrix.mjs';
 
 // KNOWN_RECIPES are the two #2370 sentinel gate recipes a mutation may name.
 // Pinned as a closed set so a typo'd recipe fails here rather than as a
@@ -137,4 +145,47 @@ test('applyMutation throws when the target text matches more than once (ambiguou
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// The servers the self-check runs a leg on (perf-nightly-selfcheck.yml's
+// matrix, which clickhouse-version-sync.mjs holds to perf-nightly's).
+const LEGS = readClickHouseMatrix(readFileSync(SELFCHECK_WORKFLOW, 'utf8'), SELFCHECK_JOB);
+
+test('every mutation runs on servers the self-check has a leg for, and every leg checks something', () => {
+  assert.ok(Array.isArray(LEGS) && LEGS.length > 0, `could not read ${SELFCHECK_WORKFLOW}'s clickhouse matrix`);
+  for (const m of MUTATIONS) {
+    assert.ok(Array.isArray(m.clickhouse) && m.clickhouse.length > 0, `${m.id}: names no ClickHouse line to run on`);
+    for (const line of m.clickhouse) {
+      assert.ok(LEGS.includes(line), `${m.id}: ClickHouse ${line} has no self-check leg (${LEGS})`);
+    }
+  }
+  for (const leg of LEGS) {
+    assert.ok(mutationsFor(leg).length > 0, `the ClickHouse ${leg} leg applies no mutation and would check nothing`);
+  }
+});
+
+test('the PREWHERE split is broken on both sides of move_to_prewhere\'s auto range', () => {
+  // 25.9 is inside the range (ClickHouse places PREWHERE); 24.8 and 26.6 are
+  // outside it (the emitter does).
+  assert.ok(mutationsFor('25.9').some((m) => m.id === 'prewhere-split-forced'));
+  for (const line of ['24.8', '26.6']) {
+    assert.ok(
+      mutationsFor(line).some((m) => m.id === 'prewhere-split-partition-bypassed'),
+      `no explicit-split mutation on ${line}`,
+    );
+  }
+});
+
+test('releaseLine reads the major.minor of an image tag', () => {
+  assert.equal(releaseLine('clickhouse/clickhouse-server:26.6-alpine'), '26.6');
+  assert.equal(releaseLine('clickhouse/clickhouse-server:24.8'), '24.8');
+  assert.equal(releaseLine('clickhouse/clickhouse-server:26.6.1.1193-alpine'), '26.6');
+  assert.equal(releaseLine('clickhouse/clickhouse-server:latest'), null);
+  assert.equal(releaseLine(''), null);
+});
+
+test('gateArgs passes the leg image only to the recipe that boots it', () => {
+  const image = 'clickhouse/clickhouse-server:24.8-alpine';
+  assert.deepEqual(gateArgs('perf-nightly-integration', image), ['perf-nightly-integration', image]);
+  assert.deepEqual(gateArgs('perf-smoke-integration', image), ['perf-smoke-integration']);
 });

@@ -148,3 +148,8 @@ test('a real results file renders the verdict table into $GITHUB_STEP_SUMMARY', 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('renderSummary names the server line a matrix leg measured on', () => {
+  assert.match(renderSummary({ clickhouse: '24.8', sentinels: [], all_pass: true }), /^### perf-nightly — ClickHouse 24\.8$/m);
+  assert.match(renderSummary({ sentinels: [], all_pass: true }), /^### perf-nightly$/m);
+});

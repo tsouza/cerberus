@@ -68,7 +68,25 @@
 //      where move_to_prewhere resolved in (cerberus issue #3955). The
 //      nightly label_values_matcher_stock_key{,_renamed} sentinels read the
 //      matcher's attribute maps for every row of the metric's granules
-//      again and go red on their committed memory ceiling.
+//      again and go red on their committed memory ceiling. Runs on 25.9,
+//      the matrix's server inside move_to_prewhere's auto range — on the
+//      others the gate's PrewhereByServer test is already false.
+//
+//   4b. prewhere-split-partition-bypassed — the same gate's partition
+//      (partitionPrewhere) bypassed, so the emitter's explicit PREWHERE
+//      holds every conjunct of the filtered scan, the label matcher on the
+//      attribute maps included, instead of only the narrow ones. On the
+//      servers where the emitter places PREWHERE (24.8 and 26.6 in the
+//      matrix) the nightly rate_by_route_matcher_stock_key sentinel decodes
+//      both maps for every row of the metric's granules ahead of any
+//      filtering — measured 696 MB on 24.8 and 416 MB on 26.6 against
+//      58 MB and 40 MB unmutated — and goes red on its committed ceiling.
+//
+//   4c. move-to-prewhere-auto-range-widened — internal/chopt/registry.go's
+//      move_to_prewhere AutoRange, its upper end lifted past 26.6, so auto
+//      leaves the split to the server on a line where the server orders
+//      the matcher's map read first. On 26.6 rate_by_route_matcher_stock_key
+//      measured 296 MB against 40 MB and goes red on its committed ceiling.
 //
 //   5. aggregation-in-order-stamp-lost — internal/engine/
 //      query_settings_rules.go's optimize_aggregation_in_order stamp,
@@ -88,7 +106,15 @@
 //      same input. Peak memory does not rise, so the nightly
 //      native_histogram_quantiles_rate sentinel goes red on its planning prong.
 //
-// The six are ORTHOGONAL mechanisms (a resource-bound throwIf, a
+// Each mutation names the perf-nightly ClickHouse release lines whose
+// self-check leg applies it (`clickhouse`): the self-check runs once per
+// server of perf-nightly.yml's matrix, the leg's server named by
+// PERF_NIGHTLY_CH_IMAGE, and a PREWHERE mutation is only a regression on the
+// servers where the decision it breaks is in force. A mutation whose gate
+// recipe takes no image (the smoke corpus boots its own server) is applied
+// on one leg.
+//
+// The mechanisms are ORTHOGONAL (a resource-bound throwIf, a
 // disk-spill fallback, a chopt-gated per-query stamp, the PREWHERE split, the
 // in-order aggregation stamp, the native-histogram analyzer stamp) exercising
 // different sentinels in different corpora — proving one still works says
@@ -98,7 +124,7 @@
 //
 // How it runs
 // -----------
-// For each mutation: assert the working tree is clean, apply the mutation
+// For each mutation of the leg: assert the working tree is clean, apply the mutation
 // (a plain, exact string replacement — if the target text has drifted since
 // this script was written, it fails LOUDLY rather than silently mutating
 // nothing), run the mutation's own `just` recipe, revert the file
@@ -110,11 +136,17 @@
 // anything — the mutation lives only in the ephemeral CI checkout for the
 // span of one `just` invocation.
 //
-// Exit: 0 when every mutation was caught (the gate failed under each one);
-// 1 when the working tree was not clean at the start, a mutation's target
-// text was not found, or ANY mutation was NOT caught (the gate stayed green
-// despite the injected regression — the actual bit-rot signal this script
-// exists to surface).
+// Env:
+//   PERF_NIGHTLY_CH_IMAGE  the ClickHouse image of this leg; its tag's
+//                          major.minor selects the leg's mutations and the
+//                          perf-nightly-integration gate boots it.
+//
+// Exit: 0 when every mutation of the leg was caught (the gate failed under
+// each one); 1 when the image is unset or no mutation applies to its line,
+// the working tree was not clean at the start, a mutation's target text was
+// not found, or ANY mutation was NOT caught (the gate stayed green despite
+// the injected regression — the actual bit-rot signal this script exists to
+// surface).
 //
 // node: builtins only (via lib/gh.mjs's capture()/git()).
 
@@ -133,6 +165,7 @@ const GATE_TIMEOUT_MS = 15 * 60 * 1000;
 export const MUTATIONS = [
   {
     id: 'rate-window-fanout-bound-widened',
+    clickhouse: ['25.9'],
     description:
       'Widen internal/chsql/rate_window_fanout_bound.go\'s maxRateWindowFanoutRows 1000x, defeating the ' +
       '#2429 resource bound request_rate_by_method/error_ratio_by_namespace rely on to be rejected (422).',
@@ -144,6 +177,7 @@ export const MUTATIONS = [
   },
   {
     id: 'spill-threshold-disabled',
+    clickhouse: ['25.9'],
     description:
       'Inflate internal/engine/spill.go\'s spillThreshold so the external-group-by/sort spill safety net ' +
       'never engages, letting pod_status_reason_gauge (~77% of the memory cap) OOM for real instead of spilling.',
@@ -155,6 +189,7 @@ export const MUTATIONS = [
   },
   {
     id: 'join-spill-stamp-removed',
+    clickhouse: ['25.9'],
     description:
       "Strip internal/engine/spill.go's applyJoinSpillSettings of its max_bytes_before_external_join stamp, " +
       'so a join-bearing plan dispatches with no join-spill bound at all. The smoke corpus\'s ' +
@@ -167,6 +202,7 @@ export const MUTATIONS = [
   },
   {
     id: 'prewhere-split-forced',
+    clickhouse: ['25.9'],
     description:
       "Strip internal/chsql/emit_node.go's filtered-scan PREWHERE gate of its PrewhereByServer test, so the " +
       'emitter writes its own PREWHERE split where move_to_prewhere resolved in (issue #3955). The nightly ' +
@@ -178,7 +214,34 @@ export const MUTATIONS = [
     replace: 'if !scanReadsSubquery(scan) && projectionTouchesWide(scan.Columns, shape) {\n',
   },
   {
+    id: 'prewhere-split-partition-bypassed',
+    clickhouse: ['24.8', '26.6'],
+    description:
+      "Bypass internal/chsql/emit_node.go's PREWHERE partition, so the emitter's explicit PREWHERE holds every " +
+      'conjunct of a filtered scan, the label matcher on the attribute maps included. The nightly ' +
+      'rate_by_route_matcher_stock_key sentinel must go red on its committed memory ceiling.',
+    recipe: 'perf-nightly-integration',
+    file: 'internal/chsql/emit_node.go',
+    sentinels: ['rate_by_route_matcher_stock_key'],
+    find: '\t\tprewhereExprs, whereExprs = partitionPrewhere(conjuncts, shape)\n',
+    replace: '\t\tprewhereExprs, whereExprs = conjuncts, nil\n',
+  },
+  {
+    id: 'move-to-prewhere-auto-range-widened',
+    clickhouse: ['26.6'],
+    description:
+      "Lift the upper end of internal/chopt/registry.go's move_to_prewhere AutoRange past 26.6, so auto leaves " +
+      'the PREWHERE split to a server that reads the matcher\'s attribute maps first. The nightly ' +
+      'rate_by_route_matcher_stock_key sentinel must go red on its committed memory ceiling.',
+    recipe: 'perf-nightly-integration',
+    file: 'internal/chopt/registry.go',
+    sentinels: ['rate_by_route_matcher_stock_key'],
+    find: 'AutoRange:  VersionRange{From: Version{Major: 24, Minor: 11}, Until: Version{Major: 26, Minor: 2}},\n',
+    replace: 'AutoRange:  VersionRange{From: Version{Major: 24, Minor: 11}, Until: Version{Major: 99, Minor: 0}},\n',
+  },
+  {
     id: 'aggregation-in-order-stamp-lost',
+    clickhouse: ['25.9'],
     description:
       "Disable internal/engine/query_settings_rules.go's optimize_aggregation_in_order stamp, so ClickHouse " +
       'hash-aggregates a GROUP BY over a sorting-key prefix. The nightly instant_selector_in_order sentinel ' +
@@ -191,6 +254,7 @@ export const MUTATIONS = [
   },
   {
     id: 'plural-native-quantile-analyzer-hazard-lost',
+    clickhouse: ['25.9'],
     description:
       "Drop chplan.HistogramQuantilesNative from internal/engine/plan_shape.go's native-histogram analyzer " +
       'hazard, so histogram_quantiles over a native histogram plans under the analyzer the fix turns off. ' +
@@ -248,11 +312,34 @@ function revertMutation(mutation) {
   }
 }
 
-// runGate — `just <recipe>`. Returns { caught, output } where `caught` is
-// true iff the recipe exited non-zero (the gate failed, as it must under an
-// injected regression).
-function runGate(recipe) {
-  const res = capture('just', [recipe], { timeout: GATE_TIMEOUT_MS });
+// IMAGE_RECIPES are the gate recipes that boot the leg's ClickHouse image,
+// passed as their argument; every other gate recipe boots its own server.
+const IMAGE_RECIPES = new Set(['perf-nightly-integration']);
+
+// gateArgs — the `just` arguments that run recipe on image.
+export function gateArgs(recipe, image) {
+  return IMAGE_RECIPES.has(recipe) ? [recipe, image] : [recipe];
+}
+
+// releaseLine — the "major.minor" of a ClickHouse image's tag
+// ("clickhouse/clickhouse-server:26.6-alpine" -> "26.6"), or null when the
+// tag carries none.
+export function releaseLine(image) {
+  const tag = String(image).split(':').pop();
+  const m = /^(\d+)\.(\d+)(?:\D|$)/.exec(tag);
+  return m ? `${Number(m[1])}.${Number(m[2])}` : null;
+}
+
+// mutationsFor — the mutations whose `clickhouse` lines include line.
+export function mutationsFor(line) {
+  return MUTATIONS.filter((m) => m.clickhouse.includes(line));
+}
+
+// runGate — `just <recipe> [image]`. Returns { caught, output } where
+// `caught` is true iff the recipe exited non-zero (the gate failed, as it
+// must under an injected regression).
+function runGate(recipe, image) {
+  const res = capture('just', gateArgs(recipe, image), { timeout: GATE_TIMEOUT_MS });
   return { caught: res.status !== 0, output: `${res.stdout}\n${res.stderr}` };
 }
 
@@ -280,10 +367,10 @@ export function failureDetail(output, names) {
 // runOneMutation — apply, run, revert (always), report. Never leaves the
 // tree mutated even if `just` itself throws an unexpected error. The mutation
 // is caught when the recipe failed AND every sentinel it names failed.
-export function runOneMutation(mutation) {
+export function runOneMutation(mutation, image) {
   applyMutation(mutation);
   try {
-    const { caught: recipeFailed, output } = runGate(mutation.recipe);
+    const { caught: recipeFailed, output } = runGate(mutation.recipe, image);
     const failed = failedSentinels(output, mutation.sentinels);
     const caught = recipeFailed && failed.length === mutation.sentinels.length;
     return {
@@ -301,15 +388,24 @@ export function runOneMutation(mutation) {
 }
 
 async function main() {
+  const image = process.env.PERF_NIGHTLY_CH_IMAGE || '';
+  const line = releaseLine(image);
+  if (!line) {
+    throw new Error(`PERF_NIGHTLY_CH_IMAGE (${JSON.stringify(image)}) names no ClickHouse major.minor tag`);
+  }
+  const mutations = mutationsFor(line);
+  if (mutations.length === 0) {
+    throw new Error(`no mutation applies to ClickHouse ${line} — this leg would check nothing`);
+  }
   assertCleanTree('before any mutation');
 
   const results = [];
-  for (const mutation of MUTATIONS) {
+  for (const mutation of mutations) {
     notice(
-      `perf-nightly-selfcheck: applying mutation "${mutation.id}" (gate: just ${mutation.recipe}) — ` +
-        mutation.description,
+      `perf-nightly-selfcheck: applying mutation "${mutation.id}" on ClickHouse ${line} ` +
+        `(gate: just ${gateArgs(mutation.recipe, image).join(' ')}) — ${mutation.description}`,
     );
-    const result = runOneMutation(mutation);
+    const result = runOneMutation(mutation, image);
     assertCleanTree(`after reverting mutation "${mutation.id}"`);
     results.push(result);
     if (result.caught) {
@@ -338,7 +434,10 @@ async function main() {
     process.exit(1);
   }
 
-  notice(`perf-nightly-selfcheck: all ${results.length} mutation(s) were caught — the perf sentinel gates are still armed.`);
+  notice(
+    `perf-nightly-selfcheck: all ${results.length} mutation(s) for ClickHouse ${line} were caught — ` +
+      'the perf sentinel gates are still armed.',
+  );
 }
 
 const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;

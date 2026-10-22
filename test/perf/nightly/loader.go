@@ -87,9 +87,10 @@ const clickhouseUserFilesDir = "/var/lib/clickhouse/user_files"
 //	ResourceAttributes.deployment.environment.name in block. There are only
 //	columns: ResourceAttributes.deployment.environment
 //
-// ClickHouse 25.9 (perfNightlyCHImage) resolved the same dot access
-// correctly, which is why only the 26.6 leg — the ts_grid_instant memory
-// measurement, whose floor sits above 25.9 — went red.
+// ClickHouse 25.9, then the sentinel harness's only server, resolved the
+// same dot access correctly, which is why only the 26.6 leg — the
+// ts_grid_instant memory measurement, whose floor sits above 25.9 — went
+// red.
 //
 // tupleElement takes the field name as a string LITERAL, so no path
 // splitting happens at all and every field, prefix-colliding or not,

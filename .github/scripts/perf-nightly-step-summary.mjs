@@ -89,7 +89,7 @@ export function renderSummary(doc) {
   });
 
   return [
-    '### perf-nightly',
+    doc.clickhouse ? `### perf-nightly — ClickHouse ${doc.clickhouse}` : '### perf-nightly',
     '',
     `**${headline}**`,
     '',
