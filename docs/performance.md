@@ -533,16 +533,17 @@ That analyzer re-walks a derived query's whole subtree for every derived-query
 level above it, so a request's planning time grows with its nesting depth times
 the size of the expressions beneath each level. Emitters keep nesting shallow:
 
-- A per-row value that several expressions read is bound once as a lambda
-  parameter over a one-element array — `arrayMap((x, …) -> <body>, [<value>],
-  …)[1]` — inside the SELECT that reads it, not projected by its own
-  `SELECT *, <value> AS x FROM (…)` stage. The native `histogram_quantile` and
-  `histogram_quantiles` walk helpers (bucket walk, running counts, stop and
-  value indexes, populated bounds) are bound this way.
-- A subexpression that one expression reads more than once is bound once. A
-  binding is a lambda parameter in a lambda that already exists wherever one
-  fits, and a new one-element binding only where its body reads no array
-  column. In the native-histogram lowerings:
+- The native `histogram_quantile` and `histogram_quantiles` walk helpers
+  (histogram fields, bucket walk, running counts, stop and value indexes,
+  populated bounds) are bound once each as SELECT-scope aliases inside the
+  SELECT that reads them — `tupleElement(tuple(<value> AS x, …, <body>), n)` —
+  not projected by their own `SELECT *, <value> AS x FROM (…)` stages and not
+  bound as lambda parameters over one-element arrays.
+- In the native-histogram lowerings, a subexpression that one expression
+  reads more than once is bound once. A binding is a lambda parameter in a
+  lambda that already exists wherever one fits, and a new one-element
+  `arrayMap((x, …) -> <body>, [<value>], …)[1]` binding only where its body
+  reads no array column:
   - a merged bucket range binds its start and end together, and its length
     reads both bindings;
   - the counter-reset mask's per-pair lambda takes the pair's reconciled scale
@@ -550,14 +551,16 @@ the size of the expressions beneath each level. Emitters keep nesting shallow:
   - the merge budget guard binds each ladder's clamped width before squaring it.
 - The native `histogram_quantile` reads its input's histogram fields straight
   off the ARRAY JOIN materialization boundary's tuple when its output keys are
-  input columns and the field names are bare identifiers; otherwise an
-  unpacking SELECT sits between the boundary and the quantile.
+  input columns; otherwise an unpacking SELECT sits between the boundary and
+  the quantile.
 - The PromQL sample projection returns a Project that already publishes
   `MetricName`, `Attributes`, `TimeUnix`, `Value` in order as is, instead of
   re-projecting it.
 
 `TestEmit_HistogramQuantileNative_SingleSelectOverBoundary` pins the native
-quantile's depth over its input. `TestExpHistogramRepeatedSubexpressionsRenderOnce`
+quantile's depth over its input, and
+`TestEmit_HistogramQuantileNative_BindsWithoutLambdaCopies` pins that its
+helpers are not lambda bindings. `TestExpHistogramRepeatedSubexpressionsRenderOnce`
 and `TestNativeHistogramDashboardBindsRepeatedSubexpressions` pin one render of
 each bound subexpression per binding scope.
 

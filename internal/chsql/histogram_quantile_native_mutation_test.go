@@ -113,19 +113,19 @@ func TestMutation_HQNativeHelperColumns_MaterializedOnceAndReadBack(t *testing.T
 
 	sql := emitNodeSQL(t, hqNativeMutationPlan(reverseWalkPhi))
 
-	// Each helper is DEFINED once, by expansion, as the value its lambda
-	// parameter is bound to …
+	// Each helper is DEFINED once, by expansion, as the value its alias is
+	// bound to …
 	for _, want := range []string{
-		"[arrayReverse(arrayCumSum(arrayReverse(`_cerb_hq_buckets`)))]",
-		"`_cerb_hq_idx`)])[1]",
-		"[arrayFirstIndex(c -> c > 0, `_cerb_hq_buckets`)]",
-		"[arrayLastIndex(c -> c > 0, `_cerb_hq_buckets`)]",
+		"arrayReverse(arrayCumSum(arrayReverse(`_cerb_hq_buckets`))) AS `_cerb_hq_revcum`",
+		"`_cerb_hq_idx`) AS `_cerb_hq_value_idx`",
+		"arrayFirstIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_first_populated`",
+		"arrayLastIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_last_populated`",
 	} {
 		if got := strings.Count(sql, want); got != 1 {
 			t.Fatalf("helper must be bound once by expansion: expected %q once, got %d, in\n%s", want, got, sql)
 		}
 	}
-	// … and READ BACK through that parameter everywhere inside it.
+	// … and READ BACK through that alias everywhere it is used.
 	for _, want := range []string{
 		"`_cerb_hq_revcum`[`_cerb_hq_idx`]",
 		"if(`_cerb_hq_value_idx` <= length(`NegativeBucketCounts`)",
@@ -140,38 +140,5 @@ func TestMutation_HQNativeHelperColumns_MaterializedOnceAndReadBack(t *testing.T
 	// backticks, which no legitimate identifier in this query produces.
 	if strings.Contains(sql, "``") {
 		t.Fatalf("emitted SQL contains an empty backtick-quoted identifier:\n%s", sql)
-	}
-}
-
-// TestIsBareIdentifier pins the gate on binding a histogram field as a lambda
-// parameter: the parameter is written unquoted, so only a name ClickHouse
-// parses as a plain identifier may take that path.
-func TestIsBareIdentifier(t *testing.T) {
-	t.Parallel()
-
-	for name, want := range map[string]bool{
-		"Count":                 true,
-		"_hq_x9":                true,
-		"a":                     true,
-		"z":                     true,
-		"A":                     true,
-		"Z":                     true,
-		"a0":                    true,
-		"a:":                    false,
-		"a/":                    false,
-		"`a":                    false,
-		"{":                     false,
-		"@":                     false,
-		"[":                     false,
-		"":                      false,
-		"9lives":                false,
-		"Positive.BucketCounts": false,
-		"zero-count":            false,
-		"sum count":             false,
-		"ñ":                     false,
-	} {
-		if got := isBareIdentifier(name); got != want {
-			t.Errorf("isBareIdentifier(%q) = %t, want %t", name, got, want)
-		}
 	}
 }

@@ -512,20 +512,24 @@ func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperCol
 	// lambda body — not an arbitrary outer-SELECT column or subquery
 	// — so embedding target directly in `c -> ...` fails with
 	// "Unknown expression or function identifier `anchor_ts` in scope
-	// c -> ...". hqNativeLet evaluates target once, outside any
-	// lambda, and rebinds it as a genuine lambda parameter that the
-	// nested `c -> ...` may then reference like any enclosing closure.
+	// c -> ...". Mapping a lambda over the one-element array [target]
+	// evaluates target once, outside any lambda, and rebinds it as a
+	// genuine lambda parameter that the nested `c -> ...` may then
+	// reference like any enclosing closure. A SELECT-scope alias
+	// (hqNativeLet) would not do: the older analyzer substitutes an
+	// alias's expression at every read, so the correlated lookup would
+	// land back inside `c -> ...`.
 	w.idx = func() Frag {
 		if helpers.idx != "" {
 			return Col(helpers.idx)
 		}
 		if h.PhiExpr != nil {
 			const targetAlias = "_cerb_hqc_target"
-			return hqNativeLet([]hqNativeBinding{{targetAlias, w.target()}}, func() Frag {
-				cmp := Gte(BareIdent("c"), BareIdent(targetAlias))
-				pred := Paren(Eq(If(cmp, InlineLit(1), InlineLit(0)), InlineLit(1)))
-				return Call("arrayFirstIndex", Lambda1("c", pred), w.cum())
-			})
+			cmp := Gte(BareIdent("c"), BareIdent(targetAlias))
+			pred := Paren(Eq(If(cmp, InlineLit(1), InlineLit(0)), InlineLit(1)))
+			search := Call("arrayFirstIndex", Lambda1("c", pred), w.cum())
+			bound := func(b *Builder) { b.Lambda([]string{targetAlias}, search) }
+			return Subscript(Call("arrayMap", bound, Array(w.target())), InlineLit(1))
 		}
 		cmp := Gte(BareIdent("c"), w.target())
 		return Call("arrayFirstIndex", Lambda1("c", cmp), w.cum())

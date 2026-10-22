@@ -216,11 +216,11 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 }
 
 // TestEmit_HistogramQuantileNative_FactorsSharedExpressions pins the
-// let-bindings that keep the native bucket walk from being expanded at every
+// bindings that keep the native bucket walk from being expanded at every
 // use. Re-expanding these expressions is semantically equivalent, but makes
 // shifting-histogram compatibility queries exceed the ClickHouse 24.8 request
-// deadline. Each defining expression renders exactly once, as the value its
-// lambda parameter is bound to.
+// deadline. Each defining expression renders exactly once, as the value of
+// the SELECT-scope alias it is bound to.
 func TestEmit_HistogramQuantileNative_FactorsSharedExpressions(t *testing.T) {
 	t.Parallel()
 
@@ -230,17 +230,48 @@ func TestEmit_HistogramQuantileNative_FactorsSharedExpressions(t *testing.T) {
 	}
 
 	wantOnce := []string{
-		"(_cerb_hq_buckets) -> ",
-		"[arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)]",
-		"(_cerb_hq_cum, _cerb_hq_first_populated, _cerb_hq_last_populated) -> ",
-		"[arrayCumSum(`_cerb_hq_buckets`)]",
-		"(_cerb_hq_idx) -> ",
-		"[arrayFirstIndex(c -> c >= (0.25 * `Count`), `_cerb_hq_cum`)]",
-		"(_cerb_hq_count, _cerb_hq_value_idx) -> ",
+		"arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`) AS `_cerb_hq_buckets`",
+		"arrayCumSum(`_cerb_hq_buckets`) AS `_cerb_hq_cum`",
+		"arrayFirstIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_first_populated`",
+		"arrayLastIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_last_populated`",
+		"arrayFirstIndex(c -> c >= (0.25 * `Count`), `_cerb_hq_cum`) AS `_cerb_hq_idx`",
+		"toFloat64(least(`_cerb_hq_cum`[`_cerb_hq_idx`], `Count`)) AS `_cerb_hq_count`",
+		"`_cerb_hq_idx`) AS `_cerb_hq_value_idx`",
 	}
 	for _, fragment := range wantOnce {
 		if got := strings.Count(sql, fragment); got != 1 {
 			t.Errorf("SQL contains shared-expression fragment %q %d times, want 1\n--- sql ---\n%s", fragment, got, sql)
+		}
+	}
+}
+
+// TestEmit_HistogramQuantileNative_BindsWithoutLambdaCopies pins how the
+// native quantile binds its walk helpers: as SELECT-scope aliases, never as
+// lambda parameters over one-element arrays. ClickHouse copies a value into
+// the one-element array it is mapped over, and copies every array column a
+// lambda body captures once per element, so stacking such bindings over the
+// bucket arrays multiplied the per-row array copies and raised the query's
+// peak memory by about half on the nightly native-histogram sentinel.
+func TestEmit_HistogramQuantileNative_BindsWithoutLambdaCopies(t *testing.T) {
+	t.Parallel()
+
+	plans := map[string]chplan.Node{
+		"single forward":  hqNativePlan(0.25, nil),
+		"single backward": hqNativePlan(0.95, nil),
+		"plural": nativeQuantilesPlan(
+			chplan.HistogramQuantileLevel{Phi: 0.25, Label: "0.25"},
+			chplan.HistogramQuantileLevel{Phi: 0.95, Label: "0.95"},
+		),
+	}
+	for name, plan := range plans {
+		sql := emitQuantilesSQL(t, plan)
+		if !strings.Contains(sql, " AS `_cerb_hq_buckets`") {
+			t.Errorf("%s: native quantile SQL does not bind the bucket walk as an alias\n--- sql ---\n%s", name, sql)
+		}
+		for _, banned := range []string{"arrayMap(", ")[1]"} {
+			if strings.Contains(sql, banned) {
+				t.Errorf("%s: native quantile SQL contains %q, a lambda binding over a one-element array\n--- sql ---\n%s", name, banned, sql)
+			}
 		}
 	}
 }
@@ -286,7 +317,7 @@ func TestEmit_HistogramQuantileNative_SingleSelectOverBoundary(t *testing.T) {
 			groupBy: attributes,
 			aliases: []string{"Attributes"},
 			wantHeads: []string{
-				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, arrayMap((Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts, ZeroThreshold) -> arrayMap((_cerb_hq_buckets) -> ",
+				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, tupleElement(tuple(`_cerb_histogram_input`.2 AS `Count`, `_cerb_histogram_input`.3 AS `Sum`, ",
 				boundary,
 			},
 		},
@@ -296,7 +327,7 @@ func TestEmit_HistogramQuantileNative_SingleSelectOverBoundary(t *testing.T) {
 			groupBy: attributes,
 			aliases: []string{"labels"},
 			wantHeads: []string{
-				"SELECT `_cerb_histogram_input`.1 AS `labels`, arrayMap((Count, Sum, ",
+				"SELECT `_cerb_histogram_input`.1 AS `labels`, tupleElement(tuple(`_cerb_histogram_input`.2 AS `Count`, ",
 				boundary,
 			},
 		},
@@ -306,19 +337,18 @@ func TestEmit_HistogramQuantileNative_SingleSelectOverBoundary(t *testing.T) {
 			groupBy: &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{attributes}},
 			aliases: []string{"Attributes"},
 			wantHeads: []string{
-				"SELECT mapSort(`Attributes`) AS `Attributes`, arrayMap((_cerb_hq_buckets) -> ",
+				"SELECT mapSort(`Attributes`) AS `Attributes`, tupleElement(tuple(arrayConcat(",
 				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, `_cerb_histogram_input`.2 AS `Count`, ",
 				boundary,
 			},
 		},
 		{
-			name:    "non-identifier field keeps the unpacking query",
+			name:    "non-identifier field reads the boundary tuple",
 			input:   withAttributes(map[string]string{"Sum": "sum.total"}),
 			groupBy: attributes,
 			aliases: []string{"Attributes"},
 			wantHeads: []string{
-				"SELECT `Attributes` AS `Attributes`, arrayMap((_cerb_hq_buckets) -> ",
-				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, `_cerb_histogram_input`.2 AS `Count`, `_cerb_histogram_input`.3 AS `sum.total`, ",
+				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, tupleElement(tuple(`_cerb_histogram_input`.2 AS `Count`, `_cerb_histogram_input`.3 AS `sum.total`, ",
 				"SELECT arrayJoin([(`Attributes`, `Count`, `sum.total`, ",
 			},
 		},
