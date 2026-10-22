@@ -333,3 +333,80 @@ The classic quantile's computed-phi target keeps its one-element lambda
 binding. That binding exists to evaluate a correlated scalar lookup outside the
 rank-search lambda. An alias would put the lookup back inside the lambda body,
 because the older analyzer substitutes alias expressions where they are read.
+
+## Why the plural native quantile is a native-histogram analyzer plan
+
+`histogram_quantiles` over a native histogram once planned for half a minute or
+more on the older builds, against under two seconds for the single-phi
+`histogram_quantile` over the same input. The plural statement was longer, since
+it rendered each level's rank walk inline at every use. Length was not the cause.
+The plural plan reached ClickHouse under the new analyzer.
+
+The plan-shape walk identified a native-histogram plan by its
+`HistogramQuantileNative` node, and `HistogramQuantilesNative.Children()` is the
+folded input, not the singular node it carries. Over a scale-carrying fan-out the
+plan was marked anyway. Over an aggregate of `rate()` it was not, so the statement
+ran with the server's default analyzer and without the exp-histogram two-level
+threshold. The new analyzer resolves the nested lambda and array expressions of a
+native quantile walk at a cost that grows sharply with their nesting. The older
+analyzer plans the same text in seconds. Replaying the unchanged plural text with
+the older analyzer on 24.8 planned in 3.6 s instead of 70 s.
+
+The plural quantile is therefore recognised as a native-histogram node in its
+own right. Its SQL also takes the singular quantile's shape. Each level binds its
+stop index, running count and value index once as SELECT-scope aliases. When the
+output keys are input columns, one SELECT over the folded-input boundary reads
+the histogram fields and expands the levels through its own `ARRAY JOIN`. That
+takes the dashboard statement from 51,749 to 41,779 bytes; the single-phi one is
+34,303.
+
+The dashboard's exact dispatched statements, replayed on memory-capped (4 GiB,
+2 CPU) containers with the settings cerberus stamps (`use_query_condition_cache=0`
+where the build has it), seven interleaved rounds. Planning is `EXPLAIN PLAN`
+wall time. "Before" is the old plural as dispatched. "Settings only" is the old
+plural text under the corrected settings. "After" is the current plural.
+Median / min ms, and max peak `memory_usage` in MB:
+
+| Build | Query   | Statement     | Planning      | Total         | Peak memory |
+| ----- | ------- | ------------- | ------------- | ------------- | ----------- |
+| 24.8  | instant | single-phi    | 1574 / 1454   | 1419 / 1329   | 59          |
+| 24.8  | instant | before        | 38613 / 29148 | 33090 / 29362 | 42          |
+| 24.8  | instant | settings only | 1852 / 1730   | 1791 / 1743   | 84          |
+| 24.8  | instant | after         | 1641 / 1512   | 1686 / 1486   | 71          |
+| 24.8  | range   | single-phi    | 3024 / 2814   | 6625 / 6196   | 397         |
+| 24.8  | range   | before        | 39465 / 35577 | 50406 / 45139 | 364         |
+| 24.8  | range   | settings only | 3705 / 3288   | 13974 / 13439 | 410         |
+| 24.8  | range   | after         | 3385 / 3099   | 7030 / 6712   | 406         |
+| 25.9  | instant | single-phi    | 1830 / 1442   | 1822 / 1516   | 62          |
+| 25.9  | instant | before        | 63699 / 48391 | 54099 / 47718 | 49          |
+| 25.9  | instant | settings only | 1848 / 1779   | 1952 / 1838   | 85          |
+| 25.9  | instant | after         | 1892 / 1606   | 1757 / 1617   | 71          |
+| 25.9  | range   | single-phi    | 3000 / 2793   | 6449 / 5736   | 399         |
+| 25.9  | range   | before        | 68756 / 54423 | 87794 / 68080 | 375         |
+| 25.9  | range   | settings only | 3974 / 3506   | 17845 / 14210 | 411         |
+| 25.9  | range   | after         | 4688 / 3591   | 8141 / 6128   | 406         |
+| 26.6  | instant | single-phi    | 1594 / 1290   | 1957 / 1634   | 44          |
+| 26.6  | instant | before        | 2548 / 1623   | 2568 / 1711   | 43          |
+| 26.6  | instant | settings only | 2029 / 1606   | 2114 / 1700   | 43          |
+| 26.6  | instant | after         | 1817 / 1419   | 2073 / 1491   | 45          |
+| 26.6  | range   | single-phi    | 3587 / 2870   | 9094 / 6734   | 356         |
+| 26.6  | range   | before        | 2912 / 2245   | 16158 / 13298 | 350         |
+| 26.6  | range   | settings only | 3839 / 3229   | 17705 / 14757 | 361         |
+| 26.6  | range   | after         | 3505 / 3104   | 9496 / 7568   | 361         |
+
+The settings alone remove the planning cost. The shared-boundary SQL halves the
+range query's total time, and it brings peak memory back from the settings-only
+level to the single-phi statement's level. On 26.6 the range plan moves from the
+new analyzer to the older one and plans about 0.6 s longer, still level with the
+single-phi statement, while its total time drops by 40%. The sorted-row hash of
+the plural answer is the same before and after on all three builds, for both
+the instant and the range query.
+
+On the nightly data the `native_histogram_quantiles_rate` sentinel's statement
+planned for about 110 s before and about 3.4 s after on 25.9, against about
+2.5 s for its single-phi peer. Its peak memory stayed in the peer's range.
+Planning time, not memory, is what regressed, so the sentinel bounds planning
+against the peer. Wall time on a shared runner varies by several times between
+runs, while the ratio of two statements planned back to back on the same server
+does not. The 4x bound leaves room for the plural statement's extra levels and
+for noise, and it sits an order of magnitude below the regressed plan.

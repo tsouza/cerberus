@@ -143,6 +143,20 @@ const perfNightlyDB = "default"
 // median/mean.
 const nightlySentinelRepeats = 5
 
+// nightlyPlanningSamples is how many interleaved planning-time samples of a
+// sentinel's statement and of its planning peer's the planning prong takes;
+// it compares the minimum of each.
+const nightlyPlanningSamples = 3
+
+// maxPlanningPeerRatio bounds how much longer a sentinel's statement may take
+// to plan than its planning peer's (Sentinel.PlanningPeer). The plural native
+// quantile over a rate()-folded native histogram plans in 1.2-1.4x the time
+// of the single-phi quantile over the same input, and in 20-45x when it
+// reaches ClickHouse under the analyzer the native-histogram analyzer fix
+// turns off — measured on 24.8, 25.9 and 26.6. 4x leaves the first a wide
+// margin and sits far below the second.
+const maxPlanningPeerRatio = 4.0
+
 func TestPerfNightlyRealCH(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
@@ -275,6 +289,32 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			} else if sentinel.ExpectedStatus != http.StatusOK && !strings.Contains(body, sentinel.ExpectedErrorSubstring) {
 				result.ActualStatus = code
 				t.Fatalf("%s warm-up: HTTP %d body does not carry %q: %s", sentinel.Name, code, sentinel.ExpectedErrorSubstring, body)
+			}
+
+			// The planning prong, once per sentinel: planning time does not
+			// depend on the data a repeat reads, and an unbounded plan costs
+			// minutes per sample, so sampling it on every repeat would only
+			// slow the run down.
+			if sentinel.PlanningPeer != nil {
+				peerID := fmt.Sprintf("perfnightly-%s-planning-peer", sentinel.Name)
+				peer := sentinel
+				peer.Params = sentinel.PlanningPeer
+				if code, body := runSentinelOnce(t, mux, peer, peerID); code != http.StatusOK {
+					t.Fatalf("%s planning peer: HTTP %d: %s", sentinel.Name, code, body)
+				}
+				if err := conn.Exec(ctx, "SYSTEM FLUSH LOGS"); err != nil {
+					t.Fatalf("%s: flush logs: %v", sentinel.Name, err)
+				}
+				ratio, planned, peerPlanned, abandoned, err := planningRatio(ctx, pipelineConns[sentinel.Deployment], warmupID, peerID)
+				if err != nil {
+					t.Fatalf("%s: %v", sentinel.Name, err)
+				}
+				t.Logf("%s: planning min-of-%d %v against its peer's %v (%.2fx; bound %.0fx; %d of %d samples abandoned at the bound)",
+					sentinel.Name, nightlyPlanningSamples, planned, peerPlanned, ratio, maxPlanningPeerRatio, abandoned, nightlyPlanningSamples)
+				if ratio > maxPlanningPeerRatio {
+					t.Fatalf("%s: planning the dispatched statement takes %.2fx its peer's (%v against %v), over the %.0fx bound — %s may have regressed",
+						sentinel.Name, ratio, planned, peerPlanned, maxPlanningPeerRatio, sentinel.Family)
+				}
 			}
 
 			var maxBytes uint64
@@ -607,10 +647,9 @@ func nightlyMux(ctx context.Context, t *testing.T, client *chclient.Client, data
 	return mux
 }
 
-// pipelineSteps returns EXPLAIN PIPELINE of the statement cerberus
-// dispatched under queryID, rebuilt from system.query_log: its text and the
-// settings it ran with.
-func pipelineSteps(ctx context.Context, conn driver.Conn, queryID string) (string, error) {
+// dispatchedStatement reads back the statement cerberus dispatched under
+// queryID from system.query_log: its text and the settings it ran with.
+func dispatchedStatement(ctx context.Context, conn driver.Conn, queryID string) (string, clickhouse.Settings, error) {
 	var (
 		settings map[string]string
 		query    string
@@ -618,11 +657,22 @@ func pipelineSteps(ctx context.Context, conn driver.Conn, queryID string) (strin
 	if err := conn.QueryRow(ctx, `SELECT Settings, query FROM system.query_log `+
 		`WHERE type = 'QueryFinish' AND query_id = ? ORDER BY event_time_microseconds DESC LIMIT 1`, queryID).
 		Scan(&settings, &query); err != nil {
-		return "", fmt.Errorf("read query_log for %q: %w", queryID, err)
+		return "", nil, fmt.Errorf("read query_log for %q: %w", queryID, err)
 	}
 	stamped := make(clickhouse.Settings, len(settings))
 	for name, value := range settings {
 		stamped[name] = value
+	}
+	return query, stamped, nil
+}
+
+// pipelineSteps returns EXPLAIN PIPELINE of the statement cerberus
+// dispatched under queryID, rebuilt from system.query_log: its text and the
+// settings it ran with.
+func pipelineSteps(ctx context.Context, conn driver.Conn, queryID string) (string, error) {
+	query, stamped, err := dispatchedStatement(ctx, conn, queryID)
+	if err != nil {
+		return "", err
 	}
 	rows, err := conn.Query(clickhouse.Context(ctx, clickhouse.WithSettings(stamped)), "EXPLAIN PIPELINE "+query)
 	if err != nil {
@@ -639,6 +689,85 @@ func pipelineSteps(ctx context.Context, conn driver.Conn, queryID string) (strin
 		pipeline.WriteByte('\n')
 	}
 	return pipeline.String(), rows.Err()
+}
+
+// planningTime is the wall time ClickHouse takes to plan the statement
+// cerberus dispatched under queryID — EXPLAIN PLAN of its text under the
+// settings it ran with, which analyses and plans the statement without
+// executing it. A positive limit abandons the sample once it runs that long
+// and reports the limit itself with over set: a plan that blew through its
+// bound costs the run the bound, not the minutes the regressed plan takes.
+func planningTime(ctx context.Context, conn driver.Conn, queryID string, limit time.Duration) (took time.Duration, over bool, err error) {
+	query, stamped, err := dispatchedStatement(ctx, conn, queryID)
+	if err != nil {
+		return 0, false, err
+	}
+	sampleCtx := ctx
+	if limit > 0 {
+		var cancel context.CancelFunc
+		sampleCtx, cancel = context.WithTimeout(ctx, limit)
+		defer cancel()
+	}
+	began := time.Now()
+	explain := func() error {
+		rows, err := conn.Query(clickhouse.Context(sampleCtx, clickhouse.WithSettings(stamped)), "EXPLAIN PLAN "+query)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		var step string
+		for rows.Next() {
+			if err := rows.Scan(&step); err != nil {
+				return err
+			}
+		}
+		return rows.Err()
+	}
+	if err := explain(); err != nil {
+		// The driver reports the abandoned sample as an I/O timeout on its
+		// read deadline, not always as the context's own error, so the
+		// deadline having passed is what identifies it.
+		if deadline, ok := sampleCtx.Deadline(); ok && limit > 0 && ctx.Err() == nil && !time.Now().Before(deadline) {
+			return limit, true, nil
+		}
+		return 0, false, fmt.Errorf("EXPLAIN PLAN of %q: %w", queryID, err)
+	}
+	return time.Since(began), false, nil
+}
+
+// planningRatio is the sentinel's planning prong: the ratio of the minimum
+// planning time of the statement dispatched under queryID to the minimum
+// planning time of the one dispatched under peerID, over
+// nightlyPlanningSamples interleaved samples of each. The minimum is each
+// statement's cost with the least interference from whatever else the host
+// is running, and interleaving exposes both statements to the same host. A
+// sample of the sentinel's statement is abandoned at maxPlanningPeerRatio
+// times the peer sample before it, and counts as exactly that ratio.
+func planningRatio(ctx context.Context, conn driver.Conn, queryID, peerID string) (ratio float64, query, peer time.Duration, abandoned int, err error) {
+	for range nightlyPlanningSamples {
+		peerSample, _, err := planningTime(ctx, conn, peerID, 0)
+		if err != nil {
+			return 0, 0, 0, 0, err
+		}
+		limit := time.Duration(float64(peerSample) * maxPlanningPeerRatio)
+		querySample, over, err := planningTime(ctx, conn, queryID, limit)
+		if err != nil {
+			return 0, 0, 0, 0, err
+		}
+		if over {
+			abandoned++
+			// Abandoned at the bound: one nanosecond past it, so a run whose
+			// every sample was abandoned fails the prong.
+			querySample = limit + time.Nanosecond
+		}
+		if peer == 0 || peerSample < peer {
+			peer = peerSample
+		}
+		if query == 0 || querySample < query {
+			query = querySample
+		}
+	}
+	return float64(query) / float64(peer), query, peer, abandoned, nil
 }
 
 // calibrationSelection reports which sentinels a calibration run measures:

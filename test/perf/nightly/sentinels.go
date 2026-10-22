@@ -106,6 +106,12 @@ const (
 	// a backstop — the pipeline prong is what separates the plan it guards
 	// — so it keeps the conservative 1.5x (1.5x / 1.175x = 1.28x cushion).
 	instantSelectorBaselineHeadroom = 1.50
+	// nativeQuantilesBaselineHeadroom (native_histogram_quantiles_rate, n=7
+	// replays of its dispatched statement on a 2-CPU server): 143.3M-193.8M
+	// bytes, max/min = 1.352x. Its memory prong is a backstop — the planning
+	// prong is what separates the plan it guards — so it keeps the
+	// conservative 1.5x (1.5x / 1.352x = 1.11x cushion).
+	nativeQuantilesBaselineHeadroom = 1.50
 )
 
 // Sentinel describes one real-data query the nightly harness issues and the
@@ -170,6 +176,15 @@ type Sentinel struct {
 	// that changes the plan without moving peak memory beyond run-to-run
 	// noise.
 	WantPipelineStep string
+	// PlanningPeer, when set, is the request parameters of the sentinel's
+	// planning peer: a query over the same data whose statement plans in a
+	// comparable time. The planning prong requires the time ClickHouse takes
+	// to plan the sentinel's dispatched statement (EXPLAIN PLAN of its text
+	// and settings, read back from system.query_log) to stay within a fixed
+	// multiple of the time it takes to plan the peer's. It is the check for a
+	// mechanism whose cost is planning time, which peak memory does not
+	// measure; the ratio cancels the speed of the host running it.
+	PlanningPeer func(start, end time.Time) url.Values
 }
 
 // Deployment names the metrics tables a sentinel's request reads. Each one
@@ -413,6 +428,38 @@ var Sentinels = []Sentinel{
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {`histogram_quantile(0.95, ` + nativeHistogramMetric + `)`},
+			}
+		},
+	},
+	{
+		// The plural native quantile over a rate()-folded native histogram,
+		// the shape a Grafana panel asking for several quantiles issues. Its
+		// statement must plan in about the time the single-phi quantile over
+		// the same input plans in (PlanningPeer): it reaches the same
+		// merge/window-fold machinery, so the engine must dispatch it with the
+		// same settings. Dispatched without the native-histogram analyzer fix,
+		// it planned for about 110 s on this data against about 2.5 s for the
+		// single-phi peer, while its peak memory stayed within the noise of the
+		// fixed plan's — so peak memory alone cannot see the regression.
+		//
+		// An instant query: the range form over this window is rejected by the
+		// histogram window fold's collapsed-payload resource bound before it
+		// plans the quantile at all.
+		Name:             "native_histogram_quantiles_rate",
+		Family:           "histogram_quantiles over rate() of a DERIVED exponential histogram — planning cost of the plural native quantile",
+		Path:             "/api/v1/query",
+		ExpectedStatus:   http.StatusOK,
+		BaselineHeadroom: nativeQuantilesBaselineHeadroom,
+		WindowStart:      time.Date(2026, 8, 18, 9, 14, 0, 0, time.UTC),
+		WindowEnd:        time.Date(2026, 8, 18, 9, 14, 0, 0, time.UTC),
+		Params: func(start, end time.Time) url.Values {
+			return url.Values{
+				"query": {`histogram_quantiles(sum by (http_route) (rate(` + nativeHistogramMetric + `[5m])), "quantile", 0.5, 0.9, 0.95)`},
+			}
+		},
+		PlanningPeer: func(start, end time.Time) url.Values {
+			return url.Values{
+				"query": {`histogram_quantile(0.95, sum by (http_route) (rate(` + nativeHistogramMetric + `[5m])))`},
 			}
 		},
 	},

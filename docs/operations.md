@@ -1399,8 +1399,9 @@ ordinary cerberus queries are not exposed. But
 `internal/engine/query_settings_rules.go`'s `applyNativeHistogramAnalyzerFix`
 **unconditionally forces `enable_analyzer=0`** — reactivating the exact
 legacy pipeline `#29332` lived in — for every query whose plan reaches a
-`chplan.HistogramQuantileNative` or `chplan.HistogramProjection` node (the
-native/exponential-histogram `histogram_quantile()`/`sum()`/`avg()`/
+`chplan.HistogramQuantileNative`, `chplan.HistogramQuantilesNative` or
+`chplan.HistogramProjection` node (the native/exponential-histogram
+`histogram_quantile()`/`histogram_quantiles()`/`sum()`/`avg()`/
 `rate()`/`increase()` family). And that SAME family routinely builds
 `chplan.ScalarSubquery` nodes — `internal/chplan/histogram_quantile.go` and
 `histogram_quantile_native.go` both document the cross-series total as

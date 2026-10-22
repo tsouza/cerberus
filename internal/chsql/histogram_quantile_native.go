@@ -262,21 +262,7 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 	// extra nesting level makes ClickHouse's query analysis re-walk the
 	// whole subtree beneath it — see hqNativeLet.
 	value := hqNativeBindPrepared(h, reachesReverseArm(h), func(prepared hqNativeHelperColumns) Frag {
-		idxW := newHQNativeWriters(h, prepared)
-		return hqNativeLet([]hqNativeBinding{{hqQuantileIdxColumn, idxW.idx()}}, func() Frag {
-			indexed := prepared
-			indexed.idx = hqQuantileIdxColumn
-			stopW := newHQNativeWriters(h, indexed)
-			return hqNativeLet([]hqNativeBinding{
-				{hqQuantileRunningCountColumn, stopW.runningCount()},
-				{hqQuantileValueIdxColumn, stopW.valueIdx()},
-			}, func() Frag {
-				helpers := indexed
-				helpers.runningCount = hqQuantileRunningCountColumn
-				helpers.valueIdx = hqQuantileValueIdxColumn
-				return histogramQuantileNativeValueFrag(h, helpers)
-			})
-		})
+		return hqNativeBoundValue(h, prepared, "")
 	})
 
 	row := h.Input.RowType()
@@ -436,6 +422,38 @@ func hqNativeBindPrepared(h *chplan.HistogramQuantileNative, needsReverse bool, 
 			prepared.revCum = hqQuantileRevCumColumn
 		}
 		return hqNativeLet(bindings, func() Frag { return body(prepared) })
+	})
+}
+
+// hqNativeBoundValue renders one phi's quantile over the phi-independent
+// walk arrays prepared names (see [hqNativeBindPrepared]). The phi-dependent
+// stop index is bound once, then the running count and value index read off
+// it are bound once, each as a SELECT-scope alias ([hqNativeLet]), and the
+// interpolation reads them by name. Without the bindings every use site of
+// the stop index re-renders its rank-walk lambda, and the running count and
+// value index each re-render the stop index again.
+//
+// suffix distinguishes the bindings of one phi from another's when several
+// phis share a SELECT ([emitHistogramQuantilesNative]): the alias names are
+// SELECT-scope, so each level binds its own.
+func hqNativeBoundValue(h *chplan.HistogramQuantileNative, prepared hqNativeHelperColumns, suffix string) Frag {
+	idxName := hqQuantileIdxColumn + suffix
+	runningCountName := hqQuantileRunningCountColumn + suffix
+	valueIdxName := hqQuantileValueIdxColumn + suffix
+	idxW := newHQNativeWriters(h, prepared)
+	return hqNativeLet([]hqNativeBinding{{idxName, idxW.idx()}}, func() Frag {
+		indexed := prepared
+		indexed.idx = idxName
+		stopW := newHQNativeWriters(h, indexed)
+		return hqNativeLet([]hqNativeBinding{
+			{runningCountName, stopW.runningCount()},
+			{valueIdxName, stopW.valueIdx()},
+		}, func() Frag {
+			helpers := indexed
+			helpers.runningCount = runningCountName
+			helpers.valueIdx = valueIdxName
+			return histogramQuantileNativeValueFrag(h, helpers)
+		})
 	})
 }
 
