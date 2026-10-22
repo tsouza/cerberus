@@ -31,13 +31,12 @@
 //   CODE_CHANGED    the paths-filter `code` output ('true' / 'false' / '') — compute
 //   GITHUB_OUTPUT   where the outputs go; logged when absent.
 
-import { appendFileSync } from 'node:fs';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
 import { DEFAULT_REGISTRY_PATH, loadRegistry } from './ci-lane-contract.mjs';
-import { error, log, setOutput } from './lib/gh.mjs';
+import { error, setOutput } from './lib/gh.mjs';
 
 // FILTER_KEY is the one paths-filter key the action reads back.
 export const FILTER_KEY = 'code';
@@ -62,22 +61,11 @@ export function docsOnly({ eventName, codeChanged }) {
   return eventName === 'pull_request' && codeChanged === 'false';
 }
 
-// setMultilineOutput — a heredoc-delimited output, the runner's form for a
-// value with newlines.
-function setMultilineOutput(name, value) {
-  const file = process.env.GITHUB_OUTPUT;
-  if (!file) {
-    log(`${name}<<EOF\n${value}EOF`);
-    return;
-  }
-  appendFileSync(file, `${name}<<DOCS_ONLY_FILTERS_EOF\n${value}DOCS_ONLY_FILTERS_EOF\n`);
-}
-
 function main() {
   const mode = process.env.MODE;
   if (mode === 'filters') {
     const registry = loadRegistry(process.env.CI_LANE_REGISTRY || DEFAULT_REGISTRY_PATH, { root: process.cwd() });
-    setMultilineOutput('filters', filtersYAML(registry.impact_selection.known_nonimpact_globs));
+    setOutput('filters', filtersYAML(registry.impact_selection.known_nonimpact_globs));
     return;
   }
   if (mode === 'compute') {

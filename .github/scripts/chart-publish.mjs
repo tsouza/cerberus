@@ -31,12 +31,13 @@
 //   CHART_TGZ        (push) path to the packaged .tgz
 //   GITHUB_OUTPUT    (provided by the runner) step-output sink
 //
-// Imports only node: builtins. Run with `node .github/scripts/chart-publish.mjs <cmd>`.
+// Imports only node: builtins and ./lib/gh.mjs (itself node:-only). Run with `node .github/scripts/chart-publish.mjs <cmd>`.
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, appendFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import process from 'node:process';
+import { setOutput } from './lib/gh.mjs';
 
 const CHART_DIR = process.env.CHART_DIR || 'deploy/helm/cerberus';
 const OCI_REPO = process.env.OCI_REPO || 'oci://ghcr.io/tsouza/cerberus/charts';
@@ -48,12 +49,6 @@ function ghError(msg) {
 
 function ghNotice(msg) {
   process.stdout.write(`::notice::${String(msg).replace(/\r?\n/g, '%0A')}\n`);
-}
-
-function setOutput(name, value) {
-  const out = process.env.GITHUB_OUTPUT;
-  if (out) appendFileSync(out, `${name}=${value}\n`);
-  else process.stdout.write(`[output] ${name}=${value}\n`);
 }
 
 function run(cmd, args, opts = {}) {

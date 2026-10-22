@@ -51,7 +51,9 @@ test('MODE=filters renders exactly the live registry globs into $GITHUB_OUTPUT',
     const written = readFileSync(output, 'utf8');
     const registry = loadRegistry('.github/ci-lanes.json', { root: REPO_ROOT });
     const expected = filtersYAML(registry.impact_selection.known_nonimpact_globs);
-    assert.equal(written, `filters<<DOCS_ONLY_FILTERS_EOF\n${expected}DOCS_ONLY_FILTERS_EOF\n`);
+    const entry = written.match(/^filters<<(ghadelimiter_[0-9a-f-]{36})\n([\s\S]*)\n\1\n$/);
+    assert.ok(entry, `not one heredoc entry: ${JSON.stringify(written)}`);
+    assert.equal(entry[2], expected);
     assert.ok(registry.impact_selection.known_nonimpact_globs.includes('README*'), 'README* is a non-impact path');
   } finally {
     rmSync(dir, { recursive: true, force: true });

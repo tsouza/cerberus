@@ -178,6 +178,18 @@ test('findTrackingIssue returns the oldest open issue with the exact title, skip
   assert.match(seen[0], /\/repos\/o\/r\/issues\?state=open&labels=link-rot&per_page=100&page=1$/);
 });
 
+test('findTrackingIssue refuses an issue number that is not a positive integer', async () => {
+  const title = 'Weekly external link check found dead links';
+  for (const number of ['3766\nis_latest=true', 0, -4, 1.5, Number.MAX_SAFE_INTEGER + 1, null]) {
+    const fetchImpl = async () => Response.json([{ number, title }]);
+    await assert.rejects(
+      findTrackingIssue({ repo: 'o/r', token: 't', title, label: 'link-rot', fetchImpl }),
+      /is not a positive integer/,
+      JSON.stringify(number),
+    );
+  }
+});
+
 test('findTrackingIssue honours a non-default API base', async () => {
   const seen = [];
   await findTrackingIssue({

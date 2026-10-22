@@ -170,7 +170,13 @@ export async function findTrackingIssue({
   const match = issues
     .filter((issue) => !issue.pull_request && issue.title === title)
     .sort((a, b) => a.number - b.number)[0];
-  return match ? match.number : null;
+  if (!match) return null;
+  // The number leaves this script as a step output that a later step reads
+  // as the issue to update; anything but a positive integer is a malformed API answer.
+  if (!Number.isSafeInteger(match.number) || match.number <= 0) {
+    throw new Error(`list link-rot issues: issue number ${JSON.stringify(match.number)} is not a positive integer`);
+  }
+  return match.number;
 }
 
 async function main() {
