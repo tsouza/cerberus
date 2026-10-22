@@ -221,7 +221,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			chopt.FeatureLagInFrameAdjacency:
 			// A RangeLowerers dispatch strategy (or a modifier on one) —
 			// composed by choptwire.RangeLowerers from the resolved set.
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel, chopt.FeatureMoveToPrewhere:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
@@ -268,7 +268,11 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// ClickHouse partitions the aggregation it is handed, never which
 			// RangeLowerers strategy built that plan. The exp-histogram
 			// lowerings it fires on do not route through promql.RangeLowerers'
-			// native/fan-out dispatch at all.
+			// native/fan-out dispatch at all. FeatureMoveToPrewhere decides only
+			// where internal/chsql's emitter writes a filtered scan's conjuncts
+			// (SchemaStrategies.PrewhereByServer), after the plan the solver
+			// classifies is built, so it reaches neither promql.RangeLowerers
+			// nor the plan.
 		default:
 			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know whether it is a "+
 				"RangeLowerers strategy or an emit-time setting — update this helper and, if it is a "+
