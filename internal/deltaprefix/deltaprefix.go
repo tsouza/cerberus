@@ -2,6 +2,7 @@ package deltaprefix
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -128,13 +129,92 @@ func dayBucket(col string) chsql.Frag {
 	return chsql.Call("toStartOfDay", chsql.Col(col))
 }
 
-// cutoverDay is the start of before's own calendar day, in UTC — the day the
-// MV was created on, and the one day whose aggregate bucket carries both
-// backfilled and MV-captured contributions. Verify's two totals reads are
-// both bounded strictly below it; see aggregateTotalsSQL.
-func cutoverDay(before time.Time) time.Time {
-	utc := before.UTC()
-	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+// sumTimestampTypeSQL renders the read of the deployed type of the sum
+// table's timestamp column from system.columns — the type whose timezone the
+// DELTA-prefix view's toStartOfDay(TimestampColumn) buckets in.
+func sumTimestampTypeSQL(c Columns) (string, []any) {
+	return chsql.NewQuery().
+		Select(chsql.Col("type")).
+		From(chsql.Qual("system", "columns")).
+		Where(
+			chsql.Eq(chsql.Col("database"), chsql.Lit(c.Database)),
+			chsql.Eq(chsql.Col("table"), chsql.Lit(c.SumTable)),
+			chsql.Eq(chsql.Col("name"), chsql.Lit(c.TimestampColumn)),
+		).
+		Build()
+}
+
+// cutoverDaySQL renders the read of the cutover day's start: the start of
+// the calendar day holding before, split by chsql.SumDayStart under
+// timezone — the timezone the sum table's timestamp column names, "" for a
+// column that names none. That is the split the DELTA-prefix view buckets
+// with (toStartOfDay of the column, in its own timezone, else the server's)
+// and the one the DELTA-prefix read path renders, so the cutover day is the
+// one day whose aggregate bucket carries both backfilled and MV-captured
+// contributions. ClickHouse evaluates it, so an unzoned column's day is the
+// server's, exactly as the view's is.
+//
+// It reads the day start as Unix seconds, plus the name and UTC offset of
+// the timezone it was split in, so Report.CutoverDay names that calendar
+// day rather than the UTC one its instant falls on.
+func cutoverDaySQL(before time.Time, timezone string) (string, []any) {
+	day := chsql.UnderSchemaStrategies(
+		chsql.SchemaStrategies{SumTimestampTimezone: timezone},
+		chsql.SumDayStart(instantLit(before)),
+	)
+	return chsql.NewQuery().
+		Select(
+			chsql.Call("toInt64", chsql.Call("toUnixTimestamp", day)),
+			chsql.Call("timezoneOf", day),
+			chsql.Call("toInt64", chsql.Call("timeZoneOffset", day)),
+		).
+		Build()
+}
+
+// queryCutoverDay resolves the cutover day's start: it reads the sum table's
+// timestamp column type (sumTimestampTypeSQL), takes the timezone it names
+// (schema.TimestampTimezoneOfType, the same reduction the boot requirements
+// check resolves SchemaStrategies.SumTimestampTimezone with), and has
+// ClickHouse split before's day in it (cutoverDaySQL). Verify's two totals
+// reads are both bounded strictly below the returned instant; see
+// aggregateTotalsSQL.
+func queryCutoverDay(ctx context.Context, conn Conn, c Columns, before time.Time) (time.Time, error) {
+	typeSQL, typeArgs := sumTimestampTypeSQL(c)
+	var typ string
+	if err := scanRow(ctx, conn, typeSQL, typeArgs, &typ); err != nil {
+		return time.Time{}, fmt.Errorf("read the type of %s.%s: %w", c.SumTable, c.TimestampColumn, err)
+	}
+	daySQL, dayArgs := cutoverDaySQL(before, schema.TimestampTimezoneOfType(typ))
+	var (
+		unix, offset int64
+		zone         string
+	)
+	if err := scanRow(ctx, conn, daySQL, dayArgs, &unix, &zone, &offset); err != nil {
+		return time.Time{}, fmt.Errorf("compute the cutover day: %w", err)
+	}
+	return time.Unix(unix, 0).In(time.FixedZone(zone, int(offset))), nil
+}
+
+// errNoRow reports a single-row read that returned no row.
+var errNoRow = errors.New("no row returned")
+
+// scanRow runs sql and scans its first row into dest.
+func scanRow(ctx context.Context, conn Conn, sql string, args []any, dest ...any) error {
+	rows, err := conn.Query(withCaps(ctx), sql, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return errNoRow
+	}
+	if err := rows.Scan(dest...); err != nil {
+		return err
+	}
+	return rows.Err()
 }
 
 // BackfillSQL renders the one-time `INSERT INTO ... SELECT` that populates
@@ -298,10 +378,17 @@ func Backfill(ctx context.Context, conn Conn, c Columns, before time.Time, reten
 }
 
 // aggregateTotalsSQL renders the per-metric-name sum(PartialSum) read from
-// the DELTA-prefix table, bounded the same exact instant BackfillSQL bounds
-// its own write — strictly before before, not before's calendar day. Using
-// The bound is the START OF before's calendar day, not the exact instant,
-// and this is the one place in the package where that is right.
+// the DELTA-prefix table, bounded strictly below cutover: the START of
+// before's calendar day as the view buckets it (queryCutoverDay), not the
+// exact instant BackfillSQL bounds its own write by. This is the one place
+// in the package where the day start is right.
+//
+// cutover is an absolute instant, and both sides compare against it as one:
+// every bucket the view writes starts at a midnight of the same timezone the
+// cutover day was split in, so a bucket starting before cutover holds only
+// rows from before it, and the base side's `TimestampColumn < cutover` reads
+// exactly those rows. A cutover split in any other timezone would cut one
+// of those buckets in two.
 // DeltaPrefixBucketColumn is calendar-day granularity, so the cutover day's
 // bucket holds BOTH halves of that day: the rows BackfillSQL wrote (strictly
 // before the instant) AND every row the live MV has captured since. The base
@@ -328,8 +415,8 @@ func Backfill(ctx context.Context, conn Conn, c Columns, before time.Time, reten
 // bound excludes every day already outside the aggregate table's own TTL as
 // of now (cerberus issue #2652) — those days are reported separately via
 // queryOutsideRetentionDays, never folded into this total.
-func aggregateTotalsSQL(c Columns, before, boundary time.Time, retentionActive bool) (string, []any) {
-	conds := []chsql.Frag{chsql.Lt(chsql.Col(c.DeltaPrefixBucketColumn), chsql.Lit(cutoverDay(before)))}
+func aggregateTotalsSQL(c Columns, cutover, boundary time.Time, retentionActive bool) (string, []any) {
+	conds := []chsql.Frag{chsql.Lt(chsql.Col(c.DeltaPrefixBucketColumn), instantLit(cutover))}
 	if retentionActive {
 		conds = append(conds, chsql.Gte(chsql.Col(c.DeltaPrefixBucketColumn), chsql.Lit(boundary)))
 	}
@@ -343,7 +430,8 @@ func aggregateTotalsSQL(c Columns, before, boundary time.Time, retentionActive b
 
 // baseTotalsSQL renders the per-metric-name sum(Value) read from the base
 // sum table, restricted to DELTA-temporality rows falling strictly before
-// before's own calendar day — the same window aggregateTotalsSQL reads, and
+// cutover, the start of before's calendar day as the view buckets it — the
+// same window aggregateTotalsSQL reads, and
 // a subset of the population BackfillSQL writes, so a correct backfill makes
 // the two totals agree per metric name. See aggregateTotalsSQL for why the
 // day start rather than the exact instant is the comparable bound on both
@@ -356,10 +444,10 @@ func aggregateTotalsSQL(c Columns, before, boundary time.Time, retentionActive b
 // day-granularity storage resolution and outsideRetentionDaysSQL's day list
 // exactly, so both sides of the comparison drop precisely the same days
 // (cerberus issue #2652).
-func baseTotalsSQL(c Columns, before, boundary time.Time, retentionActive bool) (string, []any) {
+func baseTotalsSQL(c Columns, cutover, boundary time.Time, retentionActive bool) (string, []any) {
 	conds := []chsql.Frag{
 		chsql.Eq(chsql.Col(c.AggregationTemporalityColumn), chsql.InlineLit(schema.AggregationTemporalityDelta)),
-		chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(cutoverDay(before))),
+		chsql.Lt(chsql.Col(c.TimestampColumn), instantLit(cutover)),
 	}
 	if retentionActive {
 		conds = append(conds, chsql.Gte(dayBucket(c.TimestampColumn), chsql.Lit(boundary)))
@@ -370,6 +458,16 @@ func baseTotalsSQL(c Columns, before, boundary time.Time, retentionActive bool) 
 		Where(conds...).
 		GroupBy(chsql.Col(c.MetricNameColumn))
 	return q.Build()
+}
+
+// instantLit renders t as an inline DateTime64(9) literal of the instant
+// itself (chsql's DateTime64Lit: the UTC wall clock with an explicit `Z`).
+// The cutover bound is compared against a timestamp column and a bucket
+// column that may each name a different timezone; a literal that names its
+// own instant reads the same against both, where a bound parameter's wall
+// clock would be read in each column's timezone.
+func instantLit(t time.Time) chsql.Frag {
+	return func(b *chsql.Builder) { b.DateTime64Lit(t) }
 }
 
 // Mismatch is one metric name whose DELTA-prefix aggregate total disagrees
@@ -424,7 +522,9 @@ type Report struct {
 	// DELTA-prefix backfill runbook.
 	OutsideRetentionDays []time.Time
 
-	// CutoverDay is the start of Before's own calendar day — the single day
+	// CutoverDay is the start of Before's own calendar day, as the instant
+	// the DELTA-prefix view's buckets split at: midnight in the timezone the
+	// sum table's timestamp column names, else in the server's — the single day
 	// whose aggregate bucket carries BOTH the rows Backfill wrote (strictly
 	// before Before) and every row the live MV has captured since, because
 	// DeltaPrefixBucketColumn is calendar-day granularity. It is EXCLUDED
@@ -468,12 +568,17 @@ func Verify(ctx context.Context, conn Conn, c Columns, before time.Time, toleran
 		}
 	}
 
-	aggSQL, aggArgs := aggregateTotalsSQL(c, before, boundary, active)
+	cutover, err := queryCutoverDay(ctx, conn, c, before)
+	if err != nil {
+		return Report{}, fmt.Errorf("deltaprefix: %w", err)
+	}
+
+	aggSQL, aggArgs := aggregateTotalsSQL(c, cutover, boundary, active)
 	agg, err := scanTotals(ctx, conn, aggSQL, aggArgs)
 	if err != nil {
 		return Report{}, fmt.Errorf("deltaprefix: read %s totals: %w", c.DeltaPrefixTable, err)
 	}
-	baseSQL, baseArgs := baseTotalsSQL(c, before, boundary, active)
+	baseSQL, baseArgs := baseTotalsSQL(c, cutover, boundary, active)
 	base, err := scanTotals(ctx, conn, baseSQL, baseArgs)
 	if err != nil {
 		return Report{}, fmt.Errorf("deltaprefix: read %s totals: %w", c.SumTable, err)
@@ -485,7 +590,7 @@ func Verify(ctx context.Context, conn Conn, c Columns, before time.Time, toleran
 		rep.RetentionBoundary = boundary
 	}
 	rep.OutsideRetentionDays = outsideDays
-	rep.CutoverDay = cutoverDay(before)
+	rep.CutoverDay = cutover
 	return rep, nil
 }
 

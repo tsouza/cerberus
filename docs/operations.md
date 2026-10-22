@@ -2733,7 +2733,10 @@ against a morning — every post-cutover write would read as a mismatch, and
 on a deployment still taking DELTA traffic a clean PASS would be
 unreachable no matter how complete the backfill was. Both reads are
 therefore bounded strictly below the start of the cutover day, and the day
-is named in its own `NOTE` rather than silently dropped. It needs no sum
+is named in its own `NOTE` rather than silently dropped. The cutover day is
+`--before`'s calendar day in the timezone the sum table's timestamp column
+type names, or the server's when it names none — the day the MV's
+`toStartOfDay(TimeUnix)` buckets split at. It needs no sum
 check: the backfill covers everything strictly older than the instant and
 the MV covers everything from the instant onward, so the two windows meet
 exactly — the property the exact-instant `--before` bound exists to

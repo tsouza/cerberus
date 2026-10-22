@@ -28,6 +28,10 @@ func testColumns() Columns {
 
 var testBefore = time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC)
 
+// testCutover is the cutover day the scripted Conns below report for
+// testBefore over an unzoned TimeUnix on a UTC server: its UTC midnight.
+var testCutover = time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+
 // TestBackfillSQL pins the rendered INSERT ... SELECT shape: the target
 // column list, the DELTA-only + exact-instant-before WHERE (NOT rounded to
 // a day boundary — see the package doc comment for why), and the
@@ -65,31 +69,21 @@ func TestBackfillSQL(t *testing.T) {
 // why excluding that one day costs no coverage.
 func TestAggregateAndBaseTotalsSQL(t *testing.T) {
 	c := testColumns()
+	// The cutover is the same instant literal on both sides.
+	day := "parseDateTime64BestEffort('2026-08-20 00:00:00.000000000Z', 9)"
 
-	aggSQL, aggArgs := aggregateTotalsSQL(c, testBefore, time.Time{}, false)
+	aggSQL, aggArgs := aggregateTotalsSQL(c, testCutover, time.Time{}, false)
 	wantAgg := "SELECT `MetricName`, sum(`PartialSum`) FROM `otel`.`otel_metrics_sum_delta_prefix` " +
-		"WHERE `BucketStart` < ? GROUP BY `MetricName`"
-	if aggSQL != wantAgg {
-		t.Errorf("aggregateTotalsSQL sql =\n%s\nwant\n%s", aggSQL, wantAgg)
-	}
-	wantDay := cutoverDay(testBefore)
-	if len(aggArgs) != 1 || aggArgs[0] != wantDay {
-		t.Errorf("aggregateTotalsSQL args = %v; want [%v]", aggArgs, wantDay)
+		"WHERE `BucketStart` < " + day + " GROUP BY `MetricName`"
+	if aggSQL != wantAgg || len(aggArgs) != 0 {
+		t.Errorf("aggregateTotalsSQL =\n%s %v\nwant\n%s []", aggSQL, aggArgs, wantAgg)
 	}
 
-	baseSQL, baseArgs := baseTotalsSQL(c, testBefore, time.Time{}, false)
+	baseSQL, baseArgs := baseTotalsSQL(c, testCutover, time.Time{}, false)
 	wantBase := "SELECT `MetricName`, sum(`Value`) FROM `otel`.`otel_metrics_sum` " +
-		"WHERE `AggregationTemporality` = 1 AND `TimeUnix` < ? GROUP BY `MetricName`"
-	if baseSQL != wantBase {
-		t.Errorf("baseTotalsSQL sql =\n%s\nwant\n%s", baseSQL, wantBase)
-	}
-	if len(baseArgs) != 1 || baseArgs[0] != wantDay {
-		t.Errorf("baseTotalsSQL args = %v; want [%v]", baseArgs, wantDay)
-	}
-	// The bug this pins: two DIFFERENT upper bounds is what made a clean
-	// PASS unreachable on a live deployment.
-	if aggArgs[0] != baseArgs[0] {
-		t.Errorf("verify reads bound differently: aggregate < %v, base < %v", aggArgs[0], baseArgs[0])
+		"WHERE `AggregationTemporality` = 1 AND `TimeUnix` < " + day + " GROUP BY `MetricName`"
+	if baseSQL != wantBase || len(baseArgs) != 0 {
+		t.Errorf("baseTotalsSQL =\n%s %v\nwant\n%s []", baseSQL, baseArgs, wantBase)
 	}
 }
 
@@ -103,26 +97,26 @@ func TestAggregateAndBaseTotalsSQL(t *testing.T) {
 func TestAggregateAndBaseTotalsSQL_RetentionActive(t *testing.T) {
 	c := testColumns()
 	boundary := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	day := "parseDateTime64BestEffort('2026-08-20 00:00:00.000000000Z', 9)"
 
-	aggSQL, aggArgs := aggregateTotalsSQL(c, testBefore, boundary, true)
+	aggSQL, aggArgs := aggregateTotalsSQL(c, testCutover, boundary, true)
 	wantAgg := "SELECT `MetricName`, sum(`PartialSum`) FROM `otel`.`otel_metrics_sum_delta_prefix` " +
-		"WHERE `BucketStart` < ? AND `BucketStart` >= ? GROUP BY `MetricName`"
+		"WHERE `BucketStart` < " + day + " AND `BucketStart` >= ? GROUP BY `MetricName`"
 	if aggSQL != wantAgg {
 		t.Errorf("aggregateTotalsSQL sql =\n%s\nwant\n%s", aggSQL, wantAgg)
 	}
-	wantDay := cutoverDay(testBefore)
-	if len(aggArgs) != 2 || aggArgs[0] != wantDay || aggArgs[1] != boundary {
-		t.Errorf("aggregateTotalsSQL args = %v; want [%v %v]", aggArgs, wantDay, boundary)
+	if len(aggArgs) != 1 || aggArgs[0] != boundary {
+		t.Errorf("aggregateTotalsSQL args = %v; want [%v]", aggArgs, boundary)
 	}
 
-	baseSQL, baseArgs := baseTotalsSQL(c, testBefore, boundary, true)
+	baseSQL, baseArgs := baseTotalsSQL(c, testCutover, boundary, true)
 	wantBase := "SELECT `MetricName`, sum(`Value`) FROM `otel`.`otel_metrics_sum` " +
-		"WHERE `AggregationTemporality` = 1 AND `TimeUnix` < ? AND toStartOfDay(`TimeUnix`) >= ? GROUP BY `MetricName`"
+		"WHERE `AggregationTemporality` = 1 AND `TimeUnix` < " + day + " AND toStartOfDay(`TimeUnix`) >= ? GROUP BY `MetricName`"
 	if baseSQL != wantBase {
 		t.Errorf("baseTotalsSQL sql =\n%s\nwant\n%s", baseSQL, wantBase)
 	}
-	if len(baseArgs) != 2 || baseArgs[0] != wantDay || baseArgs[1] != boundary {
-		t.Errorf("baseTotalsSQL args = %v; want [%v %v]", baseArgs, wantDay, boundary)
+	if len(baseArgs) != 1 || baseArgs[0] != boundary {
+		t.Errorf("baseTotalsSQL args = %v; want [%v]", baseArgs, boundary)
 	}
 }
 
@@ -353,6 +347,9 @@ func (c *fakeConn) Query(_ context.Context, query string, _ ...any) (driver.Rows
 	if c.rowsErr != nil {
 		return nil, c.rowsErr
 	}
+	if rows, ok := cutoverRows(query); ok {
+		return rows, nil
+	}
 	for match, rows := range c.respond {
 		if contains(query, match) {
 			return &fakeRows{data: rows}, nil
@@ -360,6 +357,57 @@ func (c *fakeConn) Query(_ context.Context, query string, _ ...any) (driver.Rows
 	}
 	return &fakeRows{}, nil
 }
+
+// cutoverRows answers the two reads queryCutoverDay issues the way a UTC
+// server answers them for an unzoned DateTime64(9) TimeUnix: the column
+// type, then testCutover as Unix seconds in UTC. ok is false for any other
+// query.
+func cutoverRows(query string) (rows driver.Rows, ok bool) {
+	switch {
+	case contains(query, "`system`.`columns`"):
+		return &valueRows{data: [][]any{{"DateTime64(9)"}}}, true
+	case contains(query, "timezoneOf("):
+		return &valueRows{data: [][]any{{testCutover.Unix(), "UTC", int64(0)}}}, true
+	}
+	return nil, false
+}
+
+// valueRows is a canned driver.Rows over rows of any arity, scanning each
+// value into a destination of its own type.
+type valueRows struct {
+	driver.Rows
+	data [][]any
+	pos  int
+}
+
+func (r *valueRows) Next() bool {
+	if r.pos >= len(r.data) {
+		return false
+	}
+	r.pos++
+	return true
+}
+
+func (r *valueRows) Scan(dest ...any) error {
+	row := r.data[r.pos-1]
+	if len(dest) != len(row) {
+		return fmt.Errorf("valueRows: scan arity %d != %d", len(dest), len(row))
+	}
+	for i, v := range row {
+		switch d := dest[i].(type) {
+		case *string:
+			*d = v.(string)
+		case *int64:
+			*d = v.(int64)
+		default:
+			return fmt.Errorf("valueRows: dest[%d] is %T", i, dest[i])
+		}
+	}
+	return nil
+}
+
+func (r *valueRows) Err() error   { return nil }
+func (r *valueRows) Close() error { return nil }
 
 func contains(s, substr string) bool {
 	return len(substr) == 0 || (len(s) >= len(substr) && indexOf(s, substr) >= 0)
@@ -408,10 +456,11 @@ func (c *singleRowsConn) Query(context.Context, string, ...any) (driver.Rows, er
 	return c.rows, nil
 }
 
-// twoCallConn succeeds on its first Query and fails on its second — the
-// shape Verify's own two reads (aggregate table, then base table) need to
-// reach its second error-wrap branch. TestVerify_PropagatesQueryError
-// already covers the first (fakeConn.rowsErr fails immediately).
+// twoCallConn answers the cutover-day reads, then succeeds on its first
+// totals Query and fails on its second — the shape Verify's own two totals
+// reads (aggregate table, then base table) need to reach its second
+// error-wrap branch. TestVerify_PropagatesQueryError already covers the
+// first (fakeConn.rowsErr fails immediately).
 type twoCallConn struct {
 	calls int
 	err   error
@@ -419,7 +468,10 @@ type twoCallConn struct {
 
 func (c *twoCallConn) Exec(context.Context, string, ...any) error { return nil }
 
-func (c *twoCallConn) Query(context.Context, string, ...any) (driver.Rows, error) {
+func (c *twoCallConn) Query(_ context.Context, query string, _ ...any) (driver.Rows, error) {
+	if rows, ok := cutoverRows(query); ok {
+		return rows, nil
+	}
 	c.calls++
 	if c.calls == 2 {
 		return nil, c.err
@@ -596,8 +648,8 @@ func TestVerify_ReadsBothTotalsAndDiffs(t *testing.T) {
 	if len(rep.OutsideRetentionDays) != 0 {
 		t.Errorf("OutsideRetentionDays = %v; want none with retention=0", rep.OutsideRetentionDays)
 	}
-	if len(conn.queries) != 2 {
-		t.Fatalf("expected 2 queries (aggregate + base), got %d: %v", len(conn.queries), conn.queries)
+	if len(conn.queries) != 4 {
+		t.Fatalf("expected 4 queries (column type + cutover day + aggregate + base), got %d: %v", len(conn.queries), conn.queries)
 	}
 	if rep.Pass() {
 		t.Fatal("expected a mismatch (missed_metric absent from the aggregate table)")
@@ -705,8 +757,8 @@ func TestVerify_ExcludesOutsideRetentionDaysFromMismatches(t *testing.T) {
 	if len(rep.OutsideRetentionDays) != 1 || !rep.OutsideRetentionDays[0].Equal(doomedDay) {
 		t.Errorf("OutsideRetentionDays = %v; want [%v]", rep.OutsideRetentionDays, doomedDay)
 	}
-	if len(conn.queries) != 3 {
-		t.Fatalf("expected 3 queries (day-scan + aggregate + base), got %d: %v", len(conn.queries), conn.queries)
+	if len(conn.queries) != 5 {
+		t.Fatalf("expected 5 queries (day-scan + column type + cutover day + aggregate + base), got %d: %v", len(conn.queries), conn.queries)
 	}
 }
 
@@ -782,23 +834,80 @@ func TestScanTotals_PropagatesRowsErr(t *testing.T) {
 	}
 }
 
-// TestCutoverDay pins the day-start derivation both verify reads bound by:
-// UTC, midnight, and idempotent on an instant already at a day boundary
-// (the case where the new bound coincides with the old exact-instant one).
-func TestCutoverDay(t *testing.T) {
-	midDay := time.Date(2026, 8, 20, 14, 32, 10, 0, time.UTC)
-	midnight := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
-	if got := cutoverDay(midDay); !got.Equal(midnight) {
-		t.Errorf("cutoverDay(%v) = %v; want %v", midDay, got, midnight)
+// TestCutoverDaySQL pins the two reads queryCutoverDay issues: the sum
+// table's timestamp column type from system.columns, then the day start of
+// before split by chsql.SumDayStart — with no timezone argument for an
+// unzoned column (the server's day, as the view's toStartOfDay(TimeUnix)
+// runs) and with the column's timezone for a zoned one.
+func TestCutoverDaySQL(t *testing.T) {
+	typeSQL, typeArgs := sumTimestampTypeSQL(testColumns())
+	wantType := "SELECT `type` FROM `system`.`columns` WHERE `database` = ? AND `table` = ? AND `name` = ?"
+	if typeSQL != wantType {
+		t.Errorf("sumTimestampTypeSQL sql =\n%s\nwant\n%s", typeSQL, wantType)
 	}
-	if got := cutoverDay(midnight); !got.Equal(midnight) {
-		t.Errorf("cutoverDay is not idempotent at a day boundary: %v", got)
+	if fmt.Sprint(typeArgs) != "[otel otel_metrics_sum TimeUnix]" {
+		t.Errorf("sumTimestampTypeSQL args = %v", typeArgs)
 	}
-	// A non-UTC instant must resolve to the UTC day BucketStart is stored
-	// in, not to the caller's local calendar day.
-	east := time.FixedZone("UTC+10", 10*60*60)
-	lateLocal := time.Date(2026, 8, 21, 6, 0, 0, 0, east) // = 2026-08-20T20:00:00Z
-	if got := cutoverDay(lateLocal); !got.Equal(midnight) {
-		t.Errorf("cutoverDay(%v) = %v; want the UTC day %v", lateLocal, got, midnight)
+
+	lit := "parseDateTime64BestEffort('2026-08-20 12:30:00.000000000Z', 9)"
+	for _, tc := range []struct{ timezone, day string }{
+		{"", "toStartOfDay(" + lit + ")"},
+		{"Asia/Kolkata", "toStartOfDay(" + lit + ", 'Asia/Kolkata')"},
+	} {
+		sql, args := cutoverDaySQL(testBefore, tc.timezone)
+		want := "SELECT toInt64(toUnixTimestamp(" + tc.day + ")), timezoneOf(" + tc.day + "), " +
+			"toInt64(timeZoneOffset(" + tc.day + "))"
+		if sql != want || len(args) != 0 {
+			t.Errorf("cutoverDaySQL(%q) = %s %v\nwant %s []", tc.timezone, sql, args, want)
+		}
 	}
+}
+
+// TestQueryCutoverDay_NamesTheZonesDay pins that the reported cutover day
+// is the instant ClickHouse returned, in the timezone it was split in, so
+// it formats as that zone's calendar day: Kolkata's 2026-01-15 starts at
+// 2026-01-14T18:30:00Z, which a UTC rendering would name as Jan 14.
+func TestQueryCutoverDay_NamesTheZonesDay(t *testing.T) {
+	start := time.Date(2026, 1, 14, 18, 30, 0, 0, time.UTC)
+	conn := &scriptedConn{answers: [][]any{
+		{"DateTime64(9, 'Asia/Kolkata')"},
+		{start.Unix(), "Asia/Kolkata", int64(19800)},
+	}}
+	got, err := queryCutoverDay(context.Background(), conn, testColumns(), time.Date(2026, 1, 15, 6, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("queryCutoverDay: %v", err)
+	}
+	if !got.Equal(start) || got.Format(time.DateOnly) != "2026-01-15" {
+		t.Errorf("cutover = %v (%s); want %v, named 2026-01-15", got, got.Format(time.DateOnly), start)
+	}
+	if !contains(conn.queries[1], "'Asia/Kolkata')") {
+		t.Errorf("the day split does not name the column's timezone: %s", conn.queries[1])
+	}
+}
+
+// TestQueryCutoverDay_NoColumn confirms a sum table whose timestamp column
+// system.columns does not list fails Verify rather than splitting at a
+// guessed timezone.
+func TestQueryCutoverDay_NoColumn(t *testing.T) {
+	_, err := queryCutoverDay(context.Background(), &scriptedConn{}, testColumns(), testBefore)
+	if !errors.Is(err, errNoRow) {
+		t.Fatalf("queryCutoverDay error = %v; want errNoRow", err)
+	}
+}
+
+// scriptedConn answers its Nth Query with the single row answers[N], or no
+// row once they run out.
+type scriptedConn struct {
+	answers [][]any
+	queries []string
+}
+
+func (c *scriptedConn) Exec(context.Context, string, ...any) error { return nil }
+
+func (c *scriptedConn) Query(_ context.Context, query string, _ ...any) (driver.Rows, error) {
+	c.queries = append(c.queries, query)
+	if len(c.queries) > len(c.answers) {
+		return &valueRows{}, nil
+	}
+	return &valueRows{data: [][]any{c.answers[len(c.queries)-1]}}, nil
 }

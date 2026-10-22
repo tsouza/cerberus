@@ -59,8 +59,10 @@
 // deployment still receiving DELTA traffic the aggregate side over-counts
 // the cutover day by exactly the afternoon's writes and a clean pass is
 // unreachable however perfect the backfill was. Both of Verify's reads are
-// therefore bounded strictly below the start of the cutover day, and the
-// day is reported on Report.CutoverDay rather than silently dropped.
+// therefore bounded strictly below the start of the cutover day — split in
+// the timezone the view's toStartOfDay buckets in, the sum timestamp
+// column's own or else the server's — and the day is reported on
+// Report.CutoverDay rather than silently dropped.
 // Excluding it costs no coverage — the backfill and the MV meet exactly at
 // the instant by construction, which is what the exact `before` bound
 // above establishes — and a sum comparison could not check that day in any

@@ -105,13 +105,15 @@ func isUnixTimestamp64Fn(fn chplan.Fn) bool {
 // toStartOfDayFn is ClickHouse's calendar-day truncation.
 const toStartOfDayFn = "toStartOfDay"
 
-// sumDayStart renders the start of the calendar day holding the timestamp x
+// SumDayStart renders the start of the calendar day holding the timestamp x
 // as the metrics sum table's timestamp column reckons it:
 // `toStartOfDay(<x>)` when the column names no timezone (the server's), and
 // `toStartOfDay(<x>, '<tz>')` when it names one
 // (SchemaStrategies.SumTimestampTimezone) — the day the DELTA-prefix
-// materialized view's toStartOfDay(TimeUnix) buckets a sample into.
-func sumDayStart(x Frag) Frag {
+// materialized view's toStartOfDay(TimeUnix) buckets a sample into. The
+// DELTA-prefix read path and the backfill verifier (internal/deltaprefix)
+// both split days with it, so the two can never disagree on a boundary.
+func SumDayStart(x Frag) Frag {
 	return func(b *Builder) {
 		if tz := b.strategies.SumTimestampTimezone; tz != "" {
 			Call(toStartOfDayFn, x, InlineLit(tz))(b)
