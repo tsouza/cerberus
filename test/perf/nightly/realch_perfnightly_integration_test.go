@@ -305,12 +305,12 @@ func TestPerfNightlyRealCH(t *testing.T) {
 				if err := conn.Exec(ctx, "SYSTEM FLUSH LOGS"); err != nil {
 					t.Fatalf("%s: flush logs: %v", sentinel.Name, err)
 				}
-				ratio, planned, peerPlanned, err := planningRatio(ctx, pipelineConns[sentinel.Deployment], warmupID, peerID)
+				ratio, planned, peerPlanned, abandoned, err := planningRatio(ctx, pipelineConns[sentinel.Deployment], warmupID, peerID)
 				if err != nil {
 					t.Fatalf("%s: %v", sentinel.Name, err)
 				}
-				t.Logf("%s: planning min-of-%d %v against its peer's %v (%.2fx; bound %.0fx)",
-					sentinel.Name, nightlyPlanningSamples, planned, peerPlanned, ratio, maxPlanningPeerRatio)
+				t.Logf("%s: planning min-of-%d %v against its peer's %v (%.2fx; bound %.0fx; %d of %d samples abandoned at the bound)",
+					sentinel.Name, nightlyPlanningSamples, planned, peerPlanned, ratio, maxPlanningPeerRatio, abandoned, nightlyPlanningSamples)
 				if ratio > maxPlanningPeerRatio {
 					t.Fatalf("%s: planning the dispatched statement takes %.2fx its peer's (%v against %v), over the %.0fx bound — %s may have regressed",
 						sentinel.Name, ratio, planned, peerPlanned, maxPlanningPeerRatio, sentinel.Family)
@@ -724,7 +724,10 @@ func planningTime(ctx context.Context, conn driver.Conn, queryID string, limit t
 		return rows.Err()
 	}
 	if err := explain(); err != nil {
-		if limit > 0 && ctx.Err() == nil && sampleCtx.Err() != nil {
+		// The driver reports the abandoned sample as an I/O timeout on its
+		// read deadline, not always as the context's own error, so the
+		// deadline having passed is what identifies it.
+		if deadline, ok := sampleCtx.Deadline(); ok && limit > 0 && ctx.Err() == nil && !time.Now().Before(deadline) {
 			return limit, true, nil
 		}
 		return 0, false, fmt.Errorf("EXPLAIN PLAN of %q: %w", queryID, err)
@@ -740,18 +743,19 @@ func planningTime(ctx context.Context, conn driver.Conn, queryID string, limit t
 // is running, and interleaving exposes both statements to the same host. A
 // sample of the sentinel's statement is abandoned at maxPlanningPeerRatio
 // times the peer sample before it, and counts as exactly that ratio.
-func planningRatio(ctx context.Context, conn driver.Conn, queryID, peerID string) (ratio float64, query, peer time.Duration, err error) {
+func planningRatio(ctx context.Context, conn driver.Conn, queryID, peerID string) (ratio float64, query, peer time.Duration, abandoned int, err error) {
 	for range nightlyPlanningSamples {
 		peerSample, _, err := planningTime(ctx, conn, peerID, 0)
 		if err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, 0, err
 		}
 		limit := time.Duration(float64(peerSample) * maxPlanningPeerRatio)
 		querySample, over, err := planningTime(ctx, conn, queryID, limit)
 		if err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, 0, err
 		}
 		if over {
+			abandoned++
 			// Abandoned at the bound: one nanosecond past it, so a run whose
 			// every sample was abandoned fails the prong.
 			querySample = limit + time.Nanosecond
@@ -763,7 +767,7 @@ func planningRatio(ctx context.Context, conn driver.Conn, queryID, peerID string
 			query = querySample
 		}
 	}
-	return float64(query) / float64(peer), query, peer, nil
+	return float64(query) / float64(peer), query, peer, abandoned, nil
 }
 
 // calibrationSelection reports which sentinels a calibration run measures:
