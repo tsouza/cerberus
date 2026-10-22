@@ -110,10 +110,10 @@ func init() {
 //
 // The rows are generated in-engine (INSERT ... SELECT FROM numbers()) rather
 // than as a VALUES literal: a VALUES row carrying a map() expression is
-// evaluated row by row, which took ~40s per 60k-row point and made the
-// per-round reseed the wall sampler needs (see wallRounds) unaffordable. The
-// generated set is the same: EXCEPT ALL against the former Go-built VALUES
-// literal is empty in both directions at every swept depth.
+// evaluated row by row, which took ~40s per 60k-row point, about three
+// quarters of the whole harness's runtime. The generated set is the same:
+// EXCEPT ALL against the former Go-built VALUES literal is empty in both
+// directions at every swept depth.
 func structuralSeedInsert(candidates, noise, depth int) string {
 	return fmt.Sprintf(`INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, ResourceAttributes)
 SELECT

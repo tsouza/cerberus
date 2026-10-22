@@ -4,6 +4,7 @@ package scaling
 
 import (
 	"database/sql"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -81,11 +82,19 @@ func sweep(t *testing.T, c Construct) ([]measured, int64) {
 
 	// Sample the sweep in wallRounds interleaved rounds and keep each point's
 	// minimum wall (see wallRounds). The intermediate cardinality is
-	// deterministic, so it is counted once, in the first round.
+	// deterministic, so it is counted once, in the first round. A Reseed
+	// construct builds each point's row set once, in the first round, inside
+	// that point's own database, and later rounds switch back to it.
+	if c.Reseed != nil {
+		t.Cleanup(func() { execAll(t, db, "USE default") })
+	}
 	for round := range wallRounds {
 		for i, p := range points {
 			if c.Reseed != nil {
-				reseedPoint(t, db, c, p.Param, i == 0 && round == 0, &scanRows)
+				usePointDatabase(t, db, c, i, round == 0)
+				if round == 0 {
+					reseedPoint(t, db, c, p.Param, i == 0, &scanRows)
+				}
 			}
 
 			wall := timeWall(t, db, p.SQL, p.Args)
@@ -235,6 +244,22 @@ func runConstruct(t *testing.T, c Construct) {
 	}
 }
 
+// usePointDatabase makes point i's database current for a Reseed construct,
+// creating it on the first round. Each point keeps its row set in its own
+// database so the interleaved rounds can return to it without rebuilding it:
+// the constructs' SQL names its tables unqualified, so it resolves against
+// whichever point database is current. Rebuilding per round instead churns a
+// DROP per round, and chDB's Atomic database keeps a dropped table's data
+// until a delayed cleanup, so that grows memory with every round.
+func usePointDatabase(t *testing.T, db *sql.DB, c Construct, i int, create bool) {
+	t.Helper()
+	name := "scaling_" + c.Name + "_p" + strconv.Itoa(i)
+	if create {
+		execAll(t, db, "CREATE DATABASE IF NOT EXISTS "+name)
+	}
+	execAll(t, db, "USE "+name)
+}
+
 // scanRowDriftTolerance is how far a reseeded point's scan-row count may
 // move from the sweep's fixed denominator, as a fraction. Every registered
 // reseed holds the count exactly at its swept parameters (the recursion-depth
@@ -243,11 +268,10 @@ func runConstruct(t *testing.T, c Construct) {
 // row count actually follows the parameter.
 const scanRowDriftTolerance = 0.25
 
-// reseedPoint rebuilds a Reseed construct's row set for one parameter value
-// and checks its scan-row count. The first reseed of the sweep fixes the
-// denominator the cardinality bound uses; every later one (each point, in
-// every sampling round) must stay within 25% of it so the parameter remains
-// the only variable.
+// reseedPoint builds a Reseed construct's row set for one parameter value
+// and checks its scan-row count. The first point's count fixes the
+// denominator the cardinality bound uses; every later point must stay within
+// scanRowDriftTolerance of it so the parameter remains the only variable.
 func reseedPoint(t *testing.T, db *sql.DB, c Construct, param int64, first bool, scanRows *int64) {
 	t.Helper()
 	c.Reseed(t, db, param)

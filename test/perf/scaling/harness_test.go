@@ -129,9 +129,10 @@ type Construct struct {
 	// (the recursion-depth case).
 	Seed func() string
 
-	// Reseed rebuilds the row set for one parameter value, run before each
-	// Point in every sampling round (see wallRounds), so it must stay cheap
-	// next to the query it seeds. It must hold the scan-row count ~constant across the sweep
+	// Reseed rebuilds the row set for one parameter value, run once per
+	// Point inside that Point's own database (the driver makes it current;
+	// see usePointDatabase), so its statements and the Point's SQL must name
+	// tables unqualified. It must hold the scan-row count ~constant across the sweep
 	// (the driver records each point's scan rows and bounds the
 	// cardinality against the SAME denominator, so a drifting scan count
 	// would make the bound meaningless — assert it stays fixed in the
@@ -230,9 +231,8 @@ func openChDB(t *testing.T) *sql.DB {
 
 // wallRounds is the number of interleaved sampling rounds behind every
 // point's wall, and the wall is the MINIMUM over those rounds. One round
-// times each point of the sweep once, in sweep order (reseeding first for a
-// Reseed construct), so every point is sampled across the same stretch of
-// wall-clock time.
+// times each point of the sweep once, in sweep order, so every point is
+// sampled across the same stretch of wall-clock time.
 //
 // Interference on a shared runner only ever ADDS time to a run: a
 // scheduler stall, CFS throttling or a noisy neighbour delays the query
@@ -246,11 +246,23 @@ func openChDB(t *testing.T) *sql.DB {
 // query shape) are discarded the same way, so no untimed warm-up pass is
 // needed.
 //
-// The value is the smallest round count whose minimum held every gated
-// construct's endpoint ratio below its gate across all trials of the
-// contended measurement (see wallRoundsMeasurement); a real super-linear
-// regression slows every round, so the minimum still carries it.
-const wallRounds = 7
+// 9 is measured, not chosen. Under synthetic contention (the harness in a
+// 300% CPUQuota cgroup, whose CFS throttling stalls a multithreaded query
+// mid-run, beside stress-ng bursts on a 200% quota, on a 6-core host already
+// at load 6-15) 30 trials of every wall-gated construct recorded 15
+// interleaved rounds each. Taking the minimum over every 9-of-15 subset of a
+// trial's rounds (900,900 resampled sweeps across the six gated constructs)
+// tripped no gate; the worst endpoint ratio reached 0.88 of its gate
+// (setop_chain), and the six constructs' worst cases were 0.15-0.88. At 7
+// rounds one resampled sweep in 1.16M crossed a gate (setop_chain, 1.02);
+// at 5, 38 in 540,540 did, and a single round failed up to 2 of a
+// construct's 30 trials.
+// The former estimator (a warm-up pass, then the median of 5 back-to-back
+// samples per point) failed 3 of the same 180 trials outright: setop_chain
+// twice (5.62x against 5.45x) and structural_recursive once (16.37x against
+// 15.25x). A real super-linear regression slows every round, so the minimum
+// still carries it (see TestScalingWallGate_CatchesSuperlinear).
+const wallRounds = 9
 
 // timeWall runs `SELECT count() FROM (<q>)` once and returns its wall time.
 func timeWall(t *testing.T, db *sql.DB, q string, args []any) time.Duration {
