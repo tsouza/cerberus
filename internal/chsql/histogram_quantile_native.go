@@ -253,8 +253,8 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 
 	// Native quantile interpolation reuses the bucket walk, cumulative
 	// counts, stop index, value index, and the first/last populated-bucket
-	// positions many times. Each is bound ONCE per row as a lambda
-	// parameter (see hqNativeLet) rather than expanded at every use site:
+	// positions many times. Each is bound ONCE per row as a SELECT-scope
+	// alias (see hqNativeLet) rather than expanded at every use site:
 	// expansion pushed the CH 24.8 compatibility floor past its request
 	// deadline and re-derived the firstPopulated/lastPopulated array walks
 	// at each of their four use sites. The bindings live inside a single
@@ -281,12 +281,11 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 
 	row := h.Input.RowType()
 	// The quantile reads its input through the ARRAY JOIN materialization
-	// boundary. When every output key is one of the input's own columns and
-	// every histogram field is a bare identifier, the fields are bound
-	// straight off the boundary's tuple (hqNativeLet again) inside this
-	// SELECT, rather than through the derived query that would otherwise
-	// unpack the tuple back into columns — one nesting level fewer over the
-	// whole folded-histogram subtree.
+	// boundary. When every output key is one of the input's own columns, the
+	// fields are bound straight off the boundary's tuple (hqNativeLet again)
+	// inside this SELECT, rather than through the derived query that would
+	// otherwise unpack the tuple back into columns — one nesting level fewer
+	// over the whole folded-histogram subtree.
 	if keys, fields, ok := hqNativeInlineUnpack(h, row); ok {
 		sb := NewQuery().From(histogramInputBoundary(sub, row))
 		for _, key := range keys {
@@ -325,8 +324,8 @@ type hqNativeInputKey struct {
 // its input fields straight off the materialization boundary's tuple. It can
 // when every GroupBy entry is a bare reference to an input column (so the key
 // is that tuple field under its alias) and every histogram field the value
-// reads is an input column whose name is a bare identifier (so it can be a
-// lambda parameter). It returns the keys to publish and the field bindings.
+// reads is an input column. It returns the keys to publish and the field
+// bindings.
 func hqNativeInlineUnpack(h *chplan.HistogramQuantileNative, row chplan.Schema) ([]hqNativeInputKey, []hqNativeBinding, bool) {
 	position := make(map[string]int, len(row.Columns))
 	for i, column := range row.Columns {
@@ -359,7 +358,7 @@ func hqNativeInlineUnpack(h *chplan.HistogramQuantileNative, row chplan.Schema) 
 	fields := make([]hqNativeBinding, 0, len(names))
 	for _, name := range names {
 		index, ok := position[name]
-		if !ok || !isBareIdentifier(name) {
+		if !ok {
 			return nil, nil, false
 		}
 		fields = append(fields, hqNativeBinding{name: name, value: histogramInputField(index)})
@@ -367,47 +366,46 @@ func hqNativeInlineUnpack(h *chplan.HistogramQuantileNative, row chplan.Schema) 
 	return keys, fields, true
 }
 
-// hqNativeBinding is one lambda parameter of an [hqNativeLet]: the name the
-// body reads and the per-row value bound to it.
+// hqNativeBinding is one value an [hqNativeLet] binds: the name the body
+// reads it by and the per-row value bound to it.
 type hqNativeBinding struct {
 	name  string
 	value Frag
 }
 
-// hqNativeLet renders `arrayMap((<name>, …) -> <body>, [<value>], …)[1]`.
-// ClickHouse has no `let`; binding each value as the parameter of a lambda
-// mapped over a one-element array evaluates it once per row and lets the
-// body read it by name any number of times. The alternative — one
-// `SELECT *, <value> AS <name> FROM (…)` stage per helper — is equivalent
-// at execution time but not at analysis time: ClickHouse's query analysis
-// re-walks a derived query's whole subtree for every level above it, so
-// each stage stacked over the (large) folded-histogram input added a
-// fraction of that input's own analysis cost to every request.
+// hqNativeLet renders `tupleElement(tuple(<value> AS <name>, …, <body>), <n>)`,
+// where n is the body's position. ClickHouse has no `let`; an alias declared
+// anywhere in a SELECT names one per-row value the whole SELECT can read, so
+// each value is evaluated once and the body reads it by name any number of
+// times. The tuple only carries the declarations: its elements are the
+// columns themselves, and tupleElement returns the body's.
+//
+// Two other spellings are equivalent in answer but not in cost:
+//
+//   - One `SELECT *, <value> AS <name> FROM (…)` stage per binding. Every
+//     extra nesting level makes ClickHouse's query analysis re-walk the
+//     derived query's whole subtree, so each stage stacked over the (large)
+//     folded-histogram input added a fraction of that input's own analysis
+//     cost to every request.
+//   - A lambda parameter over a one-element array,
+//     `arrayMap((<name>, …) -> <body>, [<value>], …)[1]`. ClickHouse copies
+//     the bound array values into the one-element arrays and copies every
+//     column the lambda body captures once per element, so nesting such
+//     bindings over bucket arrays multiplied the per-row array copies and
+//     raised the query's peak memory.
+//
+// The names are SELECT-scope, so a binding must not reuse a name the same
+// SELECT gives another value. The helper names are emitter-reserved; a field
+// binding takes the field's column name, which the output keys never reuse
+// because the lowering publishes them under the schema's attribute and
+// timestamp column names.
 func hqNativeLet(bindings []hqNativeBinding, body func() Frag) Frag {
-	params := make([]string, len(bindings))
-	values := make([]Frag, len(bindings))
-	for i, binding := range bindings {
-		params[i] = binding.name
-		values[i] = Array(binding.value)
+	parts := make([]Frag, 0, len(bindings)+1)
+	for _, binding := range bindings {
+		parts = append(parts, As(binding.value, binding.name))
 	}
-	bodyFrag := body()
-	lambda := func(b *Builder) { b.Lambda(params, bodyFrag) }
-	return Subscript(Call("arrayMap", append([]Frag{lambda}, values...)...), InlineLit(1))
-}
-
-// isBareIdentifier reports whether name matches `[A-Za-z_][A-Za-z0-9_]*`,
-// the shape a lambda parameter is written in unquoted (see Lambda1).
-func isBareIdentifier(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i, r := range name {
-		letter := r == '_' || ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z')
-		if !letter && (i == 0 || r < '0' || r > '9') {
-			return false
-		}
-	}
-	return true
+	parts = append(parts, body())
+	return Call("tupleElement", Call("tuple", parts...), InlineLit(len(parts)))
 }
 
 // hqNativeBindPrepared binds the phi-independent per-row walk arrays every

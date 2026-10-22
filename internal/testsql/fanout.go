@@ -259,10 +259,8 @@ func seededTables(seed string) map[string][]string {
 // A lambda parameter is excluded the same way. ClickHouse lambda syntax
 // (`(<p1>, <p2>, ...) -> <body>`, [Builder.Lambda]'s own rendering) binds
 // its parameter names locally to the lambda body; they are never base
-// columns even when — as in the native histogram_quantile kernel's
-// hqNativeLet helper — the parameter is spelled the same as an
-// emitter-chosen helper-column constant (`_cerb_hq_buckets`,
-// `_cerb_hq_cum`, …) and is read back inside the body through a
+// columns even when the parameter is spelled the same as an emitter-chosen
+// helper-column constant and is read back inside the body through a
 // backtick-quoted [Col], which renders indistinguishably from a real
 // column reference. Treating that read as a base-column reference is a
 // category error: the name is bound by the enclosing arrayMap's lambda,

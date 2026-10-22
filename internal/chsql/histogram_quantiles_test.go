@@ -172,19 +172,16 @@ func TestEmitHistogramQuantiles_SharedAggregateCarriesEveryLevel(t *testing.T) {
 
 // TestEmitHistogramQuantilesNative_MaterialisesReverseWalkOnlyWhenALevelNeedsIt
 // pins the shared reverse cumulative walk: it is bound once (as a
-// hqNativeLet lambda parameter, not a derived-query column — see
+// hqNativeLet SELECT-scope alias, not a derived-query column — see
 // hqNativeBindPrepared) when any level can take the backward rank walk (a
 // literal phi at or above 0.5), and left out when every level resolves to
 // the forward walk at emit time.
 func TestEmitHistogramQuantilesNative_MaterialisesReverseWalkOnlyWhenALevelNeedsIt(t *testing.T) {
 	t.Parallel()
 
-	// hqNativeBindPrepared always binds _cerb_hq_revcum last among the
-	// lambda's parameters when it binds it at all, so its bare (unquoted)
-	// spelling immediately before the lambda arrow is the one-and-only
-	// binding site; every read of the bound value inside the lambda body
-	// quotes it as an ordinary identifier, `_cerb_hq_revcum`.
-	const declSite = ", _cerb_hq_revcum) ->"
+	// The alias declaration is the one-and-only binding site; every read of
+	// the bound value names it as an ordinary identifier, `_cerb_hq_revcum`.
+	const declSite = " AS `_cerb_hq_revcum`"
 	const useSite = "`_cerb_hq_revcum`"
 	forward := emitQuantilesSQL(t, nativeQuantilesPlan(
 		chplan.HistogramQuantileLevel{Phi: 0.1, Label: "0.1"},
@@ -200,9 +197,9 @@ func TestEmitHistogramQuantilesNative_MaterialisesReverseWalkOnlyWhenALevelNeeds
 	if got := strings.Count(mixed, declSite); got != 1 {
 		t.Errorf("a level at phi 0.9 needs the reverse walk bound once, got %d\nSQL: %s", got, mixed)
 	}
-	// The level's value reads the bound parameter rather than re-deriving
-	// the reverse walk inline.
-	if uses := strings.Count(mixed, useSite); uses == 0 {
+	// The level's value reads the bound alias rather than re-deriving the
+	// reverse walk inline; the declaration itself spells the name once.
+	if uses := strings.Count(mixed, useSite) - strings.Count(mixed, declSite); uses == 0 {
 		t.Errorf("the phi 0.9 level never reads the bound reverse walk\nSQL: %s", mixed)
 	}
 }

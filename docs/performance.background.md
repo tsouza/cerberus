@@ -270,3 +270,66 @@ Peak memory did not rise: 24.8 instant 60 → 56 MiB and range 379 → 379 MiB,
 
 Every group, anchor and value of the instant and 121-anchor range answers was
 byte-identical before and after on both builds.
+
+## Why the native quantile binds its helpers as aliases, not lambdas
+
+The single SELECT that holds the native quantile walk first bound its helpers
+as lambda parameters over one-element arrays,
+`arrayMap((x, …) -> <body>, [<value>], …)[1]`, five lambdas deep. That cut
+planning depth but raised peak execution memory. ClickHouse copies each bound
+value into the one-element array it maps over, and it copies every column a
+lambda body captures once per element of that array. Each level's body read the
+histogram's bucket arrays and the walk arrays bound above it, so every row's
+bucket ladder was copied again at every level. The nightly
+`classic_native_histogram_derived` sentinel's max-of-5 peak `memory_usage` rose
+from about 596 MB to 714–753 MB on ClickHouse 25.9, 94–99.6% of its committed
+ceiling. The other nightly sentinels did not move.
+
+Binding the same helpers as SELECT-scope aliases evaluates each value once per
+row with no copy. A tuple carries the declarations, and `tupleElement` returns
+the body. The depth over the folded-histogram input stays the same.
+
+`WITH <value> AS <name>` is not an option here. Under the older analyzer a
+`WITH` alias is propagated into every subquery of its SELECT, where field
+aliases such as `Count` shadow the input's own columns and break the inner
+scans. Publishing the helpers as ordinary select-list columns would change the
+quantile's output columns.
+
+The sentinel's exact statement, measured on held containers with the nightly
+data and the settings cerberus stamps (`use_query_condition_cache=0` where the
+build has it). Seven interleaved rounds give max / min peak `memory_usage` and
+median / min `EXPLAIN PLAN` wall time:
+
+| Build | Shape                      | Peak memory (MB) | Planning (ms) |
+| ----- | -------------------------- | ---------------- | ------------- |
+| 25.9  | derived-query stages       | 578 / 555        | 504 / 470     |
+| 25.9  | lambda bindings            | 744 / 723        | 233 / 211     |
+| 25.9  | alias bindings             | 606 / 586        | 300 / 285     |
+| 24.8  | lambda bindings            | 763 / 734        | 223 / 199     |
+| 24.8  | alias bindings             | 623 / 595        | 316 / 271     |
+
+The aliases cost the sentinel tens of milliseconds of planning, because the
+older analyzer substitutes an alias's expression at each read. On the dense
+native-histogram dashboard that the depth work was measured on, the difference
+stays within run-to-run noise. Median / min ms, seven interleaved rounds,
+memory-capped (4 GiB, 2 CPU) containers:
+
+| Build | Query   | Planning, lambdas | Planning, aliases | Total, lambdas | Total, aliases |
+| ----- | ------- | ----------------- | ----------------- | -------------- | -------------- |
+| 24.8  | instant | 2966 / 2778       | 2933 / 2764       | 2996 / 2911    | 3065 / 2952    |
+| 24.8  | range   | 5720 / 5316       | 5866 / 5797       | 12401 / 11919  | 12313 / 11734  |
+| 26.6  | instant | 2673 / 2467       | 2643 / 2268       | 2861 / 2424    | 2815 / 2685    |
+| 26.6  | range   | 4338 / 3469       | 4272 / 3861       | 10679 / 9596   | 10690 / 9186   |
+
+The dashboard's peak memory did not move, since its folded-state boundary
+dominates it. Every answer stayed the same: the sentinel's row hash on both
+builds, and the dashboard's instant, range, computed-`scalar()`-phi and
+three-level `histogram_quantiles` responses on both builds.
+
+Flattening the nested tuples into one tuple measured the same, so each binding
+scope keeps its own tuple.
+
+The classic quantile's computed-phi target keeps its one-element lambda
+binding. That binding exists to evaluate a correlated scalar lookup outside the
+rank-search lambda. An alias would put the lookup back inside the lambda body,
+because the older analyzer substitutes alias expressions where they are read.
