@@ -3,6 +3,7 @@ package chsql
 import (
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"regexp"
 	"regexp/syntax"
@@ -1167,6 +1168,9 @@ func (b *Builder) emitGoModulo(left, right chplan.Expr) error {
 func (b *Builder) exprFunc(f *chplan.FuncCall) error {
 	if f.Fn == chplan.FnMapContainsKey {
 		return b.exprMapContainsKey(f.Args)
+	}
+	if f.Fn == chplan.FnMapSort {
+		return b.exprCanonicalMap(f.Args)
 	}
 	if jsonFullMapFns[f.Fn] {
 		f = b.substituteJSONFullMapArgs(f)
@@ -2578,6 +2582,53 @@ func Cast(f Frag, typ string) Frag {
 		b.sb.WriteString(typ)
 		b.sb.WriteByte(')')
 	}
+}
+
+// SelfTypedCast returns a Frag rendering f cast to the type ClickHouse
+// parses from f's own type name:
+//
+//	CAST((<f> AS `_typed_<h>`), toTypeName(`_typed_<h>`))
+//
+// f is rendered once and named by an inline alias, so the cast's type
+// argument reads f's type without repeating f's text; toTypeName is folded
+// to a constant during analysis. The alias is selfTypedAliasPrefix plus
+// the FNV-64a hash of f's rendered SQL and bound arguments, so two
+// renderings of one expression — a SELECT key and its GROUP BY twin —
+// declare the same alias for the same expression, and two different
+// expressions in one scope never share an alias.
+//
+// The cast changes no value and, where f's type already equals the parsed
+// type, ClickHouse executes it as the identity. It exists for a type
+// whose in-memory instance can differ from its parsed instance while
+// printing the same name — see [CanonicalMap].
+func SelfTypedCast(f Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("CAST((")
+		sqlStart, argStart := b.sb.Len(), len(b.args)
+		f(b)
+		alias := selfTypedAlias(b.sb.String()[sqlStart:], b.args[argStart:])
+		b.sb.WriteString(" AS ")
+		b.Ident(alias)
+		b.sb.WriteString("), toTypeName(")
+		b.Ident(alias)
+		b.sb.WriteString("))")
+	}
+}
+
+// selfTypedAliasPrefix starts every [SelfTypedCast] alias. No schema
+// column or emitter alias starts with it.
+const selfTypedAliasPrefix = "_typed_"
+
+// selfTypedAlias names a [SelfTypedCast] operand by the content of its
+// rendering: its SQL text and the type and value of each argument it
+// bound, in order.
+func selfTypedAlias(sql string, args []any) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(sql))
+	for _, a := range args {
+		_, _ = fmt.Fprintf(h, "\x00%T\x00%v", a, a)
+	}
+	return selfTypedAliasPrefix + strconv.FormatUint(h.Sum64(), 16)
 }
 
 // Array returns a Frag rendering a CH array literal "[<e0>, <e1>, …]".

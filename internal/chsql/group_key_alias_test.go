@@ -52,13 +52,13 @@ func TestEmitAggregate_ShadowingGroupKeyNamesItsAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	if !strings.Contains(sql, "mapSort(`Attributes`) AS `Attributes`") {
+	if !strings.Contains(sql, chsql.CanonicalKeySQL("`Attributes`")+" AS `Attributes`") {
 		t.Errorf("SELECT list lost the canonicalising projection\nsql=%s", sql)
 	}
 	if !strings.Contains(sql, "GROUP BY `Attributes`") {
 		t.Errorf("GROUP BY must name the alias\nsql=%s", sql)
 	}
-	if strings.Contains(sql, "GROUP BY mapSort(") {
+	if strings.Contains(sql, "GROUP BY "+chsql.CanonicalKeyOpen) {
 		t.Errorf("GROUP BY re-rendered a self-shadowing expression\nsql=%s", sql)
 	}
 }
@@ -88,7 +88,7 @@ func TestEmitAggregate_UnaliasedGroupKeyKeepsItsExpression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	if !strings.Contains(sql, "GROUP BY mapSort(`Attributes`)") {
+	if !strings.Contains(sql, "GROUP BY "+chsql.CanonicalKeySQL("`Attributes`")) {
 		t.Errorf("un-aliased key must group by its expression\nsql=%s", sql)
 	}
 }

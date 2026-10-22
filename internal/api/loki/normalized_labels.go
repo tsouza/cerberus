@@ -1,7 +1,6 @@
 package loki
 
 import (
-	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 )
 
@@ -115,9 +114,9 @@ func promLabelNameFrag(key chsql.Frag) chsql.Frag {
 //     served name that came out empty, which happens only for the empty
 //     stored key.
 //  3. `CAST(… AS Map(String, String))` over the surviving
-//     `(served, value)` pairs, wrapped in [canonicalLabelsFrag]'s own
-//     `mapSort`, because the array is in policy order rather than key
-//     order and a CH Map compares positionally.
+//     `(served, value)` pairs, wrapped in [chsql.CanonicalMap], because
+//     the array is in policy order rather than key order and a CH Map
+//     compares positionally.
 //
 // [rankIndexVolumeRows] still runs [format.NormalizeLabelMap] over what
 // comes back. That is not belt-and-braces: it is the DEFINITION of the
@@ -174,7 +173,7 @@ func normalizedLabelsFrag(stored chsql.Frag) chsql.Frag {
 		)),
 		winners,
 	)
-	return chsql.Call(chplan.CanonicalMapFunc, chsql.Cast(pairs, servedLabelMapType))
+	return chsql.CanonicalMap(chsql.Cast(pairs, servedLabelMapType))
 }
 
 // servedLabelMapType is the CH type the served label set casts to. Every

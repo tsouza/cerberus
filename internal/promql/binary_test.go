@@ -7,10 +7,20 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// canonicalAttributes is the canonical series-identity key over the
+// Attributes column, rendered through the shared chsql primitive.
+var canonicalAttributes, _ = chsql.Render(chsql.CanonicalMap(chsql.Col("Attributes")))
+
+// canonicalOpen is the canonical key rendering up to the start of the Map
+// expression it canonicalises, for a key whose inner expression binds
+// arguments (and so whose alias hash a test cannot spell).
+const canonicalOpen = "CAST((" + chplan.CanonicalMapFunc + "("
 
 // TestLower_Binary_VectorSetOps covers the happy path for the vector
 // set operators (`and` / `or` / `unless`). Each shape lowers to a
@@ -38,12 +48,12 @@ func TestLower_Binary_VectorSetOps(t *testing.T) {
 		{
 			name:      "and default match",
 			query:     `up and up`,
-			wantInSQL: []string{"mapSort(`Attributes`) GLOBAL IN (", "DISTINCT mapSort(`Attributes`)"},
+			wantInSQL: []string{canonicalAttributes + " GLOBAL IN (", "DISTINCT " + canonicalAttributes},
 		},
 		{
 			name:      "unless default match",
 			query:     `up unless up`,
-			wantInSQL: []string{"mapSort(`Attributes`) GLOBAL NOT IN (", "DISTINCT mapSort(`Attributes`)"},
+			wantInSQL: []string{canonicalAttributes + " GLOBAL NOT IN (", "DISTINCT " + canonicalAttributes},
 		},
 		{
 			name:  "or default match",
@@ -56,19 +66,19 @@ func TestLower_Binary_VectorSetOps(t *testing.T) {
 			wantInSQL: []string{
 				"UNION ALL",
 				"`_setop_side`",
-				"max(`_setop_side` = 0) OVER (PARTITION BY mapSort(`Attributes`))",
+				"max(`_setop_side` = 0) OVER (PARTITION BY " + canonicalAttributes + ")",
 				"`_setop_has_left`",
 			},
 		},
 		{
 			name:      "and ignoring",
 			query:     `up and ignoring(instance) up`,
-			wantInSQL: []string{"mapSort(mapFilter((k, v) -> NOT (k IN (?)), `Attributes`)) GLOBAL IN ("},
+			wantInSQL: []string{canonicalOpen + "mapFilter((k, v) -> NOT (k IN (?)), `Attributes`)) AS `_typed_", "`)) GLOBAL IN ("},
 		},
 		{
 			name:      "unless on",
 			query:     `up unless on(job) up`,
-			wantInSQL: []string{"mapSort(mapFilter((k, v) -> k IN (?), `Attributes`)) GLOBAL NOT IN ("},
+			wantInSQL: []string{canonicalOpen + "mapFilter((k, v) -> k IN (?), `Attributes`)) AS `_typed_", "`)) GLOBAL NOT IN ("},
 		},
 	}
 	for _, tc := range cases {

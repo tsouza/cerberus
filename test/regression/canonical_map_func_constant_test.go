@@ -13,9 +13,10 @@ package regression
 //   - chplan.CanonicalAttributesExpr skips re-wrapping by matching a
 //     FuncCall against the constant, so a site that wrapped with a
 //     different function would be re-wrapped rather than recognised;
-//   - internal/chsql emits the plan IR's calls verbatim;
-//   - internal/api/loki builds the same wrap as a Frag for the metadata
-//     endpoints, which never cross the plan IR at all.
+//   - internal/chsql renders the plan IR's calls, and its own match keys,
+//     through chsql.CanonicalMap;
+//   - internal/api/loki builds the same wrap with that Frag for the
+//     metadata endpoints, which never cross the plan IR at all.
 //
 // A spelled-out literal at any of those sites can drift onto a different
 // function while the other layers keep believing the map is canonical —

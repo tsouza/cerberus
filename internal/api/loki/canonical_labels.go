@@ -1,9 +1,6 @@
 package loki
 
-import (
-	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/chsql"
-)
+import "github.com/tsouza/cerberus/internal/chsql"
 
 // canonicalLabelsFrag wraps a label-set Map expression in ClickHouse's
 // canonical key-order function, establishing the invariant every
@@ -18,11 +15,11 @@ import (
 // Any metadata endpoint that keys on the whole Map (a GROUP BY label set,
 // a uniqExact stream count) then sees two streams where there is one.
 //
-// The function name is shared with the plan IR's
-// [chplan.CanonicalAttributesExpr] via [chplan.CanonicalMapFunc] so the
-// Frag layer and the IR layer cannot drift onto different functions. It
-// is order-only and idempotent, so it can never merge two genuinely
-// different label sets and re-wrapping is a no-op.
+// The rendering is [chsql.CanonicalMap], the same one the plan IR's
+// canonical key (chplan.CanonicalAttributesExpr) emits through, so the
+// Frag layer and the IR layer cannot drift onto different shapes. It is
+// order-only and idempotent, so it can never merge two genuinely
+// different label sets.
 //
 // Callers MUST keep the wrap inside a SELECT alias whose name differs
 // from the underlying column, and keep grouping by that alias. ClickHouse
@@ -30,5 +27,5 @@ import (
 // columns, so `SELECT mapSort(RA) AS RA ... GROUP BY mapSort(RA)` groups
 // by mapSort(mapSort(RA)) and fails with NOT_AN_AGGREGATE.
 func canonicalLabelsFrag(inner chsql.Frag) chsql.Frag {
-	return chsql.Call(chplan.CanonicalMapFunc, inner)
+	return chsql.CanonicalMap(inner)
 }

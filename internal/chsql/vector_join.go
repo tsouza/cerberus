@@ -595,12 +595,12 @@ func setOpMatchKeyFrag(m chplan.VectorMatch, metricNameCol, attrsCol string) Fra
 // order-only and idempotent, so it can never merge two genuinely
 // different label sets.
 //
-// The function is named by [chplan.CanonicalMapFunc] rather than spelled
-// here: the plan IR ([chplan.CanonicalAttributesExpr]) and the Loki
-// metadata Frags read the same constant, and its idempotence check
-// matches on that name. A literal here would let this site drift onto a
-// different function while the IR kept believing the map was canonical.
-func canonicalMatchKeyFrag(key Frag) Frag { return Call(chplan.CanonicalMapFunc, key) }
+// It renders through [CanonicalMap], the same shape the plan IR's
+// canonical key ([chplan.CanonicalAttributesExpr]) and the Loki metadata
+// Frags emit, so a spilled GROUP BY over this key reads back on every
+// supported server and this site cannot drift onto a different shape
+// while the IR keeps believing the map is canonical.
+func canonicalMatchKeyFrag(key Frag) Frag { return CanonicalMap(key) }
 
 // matchKeyGroupExprFrag returns a Frag for the GROUP BY expression
 // that collapses rows onto a single matching key. For default matching
