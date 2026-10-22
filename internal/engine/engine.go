@@ -336,6 +336,9 @@ type QuerySettingsProbe struct {
 // plan's signal renders under (the zero value: the tables cerberus
 // provisions); a fixed rules.Now makes result-cache eligibility reproducible
 // in diagnostics and tests.
+//
+// perf-sentinel: neutral — a diagnostic mirror of the route-A seam that runs
+// no query, so nothing it computes bounds a query's memory.
 func ProbeQuerySettings(plan chplan.Node, rules SettingsRules, memCap int64, strategies chsql.SchemaStrategies) QuerySettingsProbe {
 	ctx := routeAQuerySettings(chsql.WithSchemaStrategies(context.Background(), strategies), plan, memCap, rules)
 	return QuerySettingsProbe{
