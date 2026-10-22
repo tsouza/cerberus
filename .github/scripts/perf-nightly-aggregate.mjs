@@ -6,7 +6,9 @@
 // replays in their own job (`perf-nightly-replays`). This job passes only
 // when both `needs` results are `success`: a matrix job's result is
 // `success` only when every leg succeeded, so one red server fails it, and a
-// skipped or cancelled leg fails it rather than reading as green.
+// skipped or cancelled leg fails it rather than reading as green. The one
+// exception is a recalibration dispatch (CALIBRATE=true), which skips the
+// replays by design.
 //
 // It also writes each perf-nightly job's wall time of this run attempt to
 // the step summary, read from the run's own job list. The table is a report,
@@ -16,6 +18,7 @@
 // Env:
 //   SENTINELS_RESULT  needs.perf-nightly-sentinels.result
 //   REPLAYS_RESULT    needs.perf-nightly-replays.result
+//   CALIBRATE         "true" on a recalibration dispatch
 //   GH_TOKEN          a token with actions: read on REPO
 //   REPO              owner/name
 //   RUN_ID            github.run_id
@@ -37,10 +40,11 @@ const SECOND_MS = 1000;
 const MINUTE_S = 60;
 
 // verdict — the failures of the two `needs` results, empty when both passed.
-export function verdict({ sentinels, replays }) {
+export function verdict({ sentinels, replays, calibrate }) {
   const failures = [];
   if (sentinels !== 'success') failures.push(`perf-nightly-sentinels: ${sentinels || 'unknown'}`);
-  if (replays !== 'success') failures.push(`perf-nightly-replays: ${replays || 'unknown'}`);
+  const replaysOK = replays === 'success' || (calibrate && replays === 'skipped');
+  if (!replaysOK) failures.push(`perf-nightly-replays: ${replays || 'unknown'}`);
   return failures;
 }
 
@@ -85,7 +89,11 @@ async function reportWallTimes(env) {
 }
 
 async function main() {
-  const failures = verdict({ sentinels: process.env.SENTINELS_RESULT, replays: process.env.REPLAYS_RESULT });
+  const failures = verdict({
+    sentinels: process.env.SENTINELS_RESULT,
+    replays: process.env.REPLAYS_RESULT,
+    calibrate: process.env.CALIBRATE === 'true',
+  });
   try {
     await reportWallTimes(process.env);
   } catch (e) {

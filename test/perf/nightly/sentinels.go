@@ -106,10 +106,11 @@ const (
 	// split was chosen (docs/clickhouse-optimizations.background.md): 54.0M-
 	// 58.1M on 24.8 and 41.0M-45.2M on 26.6 under the emitter's split (1.08x
 	// and 1.10x max/min), 38.7M-47.9M on 25.9 under the server's (1.24x).
-	// The regressions it exists for move it by several times — the server's
-	// split on 26.6 measured 231M-321M, an explicit PREWHERE holding the
-	// matcher and the time bounds 679M-748M on 24.8 — so it keeps the
-	// conservative 1.5x (1.5x / 1.24x = 1.21x cushion on the noisiest line).
+	// The regressions it exists for move it by several times: the server's
+	// split on 26.6 measured 296M against 40M, and an explicit PREWHERE
+	// holding the matcher 696M against 58M on 24.8 and 416M against 40M on
+	// 26.6 (max-of-5 each). So it keeps the conservative 1.5x (1.5x / 1.24x
+	// = 1.21x cushion on the noisiest line).
 	rateByRouteBaselineHeadroom = 1.50
 	// instantSelectorBaselineHeadroom (instant_selector_in_order, n=7):
 	// 49.5M-58.1M bytes, max/min = 1.175x (CV 5.44%). Its memory prong is

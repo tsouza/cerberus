@@ -15,6 +15,13 @@ test('verdict passes only when the sentinel legs and the replays both succeeded'
   assert.equal(verdict({ sentinels: 'failure', replays: 'failure' }).length, 2);
 });
 
+test('a recalibration dispatch skips the replays, and only it may', () => {
+  assert.deepEqual(verdict({ sentinels: 'success', replays: 'skipped', calibrate: true }), []);
+  assert.equal(verdict({ sentinels: 'success', replays: 'skipped', calibrate: false }).length, 1);
+  assert.equal(verdict({ sentinels: 'failure', replays: 'skipped', calibrate: true }).length, 1);
+  assert.equal(verdict({ sentinels: 'success', replays: 'failure', calibrate: true }).length, 1);
+});
+
 test('formatDuration renders minutes and seconds', () => {
   assert.equal(formatDuration(0), '0m 0s');
   assert.equal(formatDuration(59.6), '1m 0s');

@@ -3667,8 +3667,9 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   `perf-nightly-replays` job both succeeded, and writes each perf-nightly
   job's wall time of the run attempt to the step summary (a report; a
   failure to read it does not change the verdict).
-  - Env: `SENTINELS_RESULT`, `REPLAYS_RESULT`, `GH_TOKEN`, `REPO`, `RUN_ID`,
-    `RUN_ATTEMPT`.
+  - Env: `SENTINELS_RESULT`, `REPLAYS_RESULT`, `CALIBRATE` (`true` on a
+    recalibration dispatch, which skips the replays), `GH_TOKEN`, `REPO`,
+    `RUN_ID`, `RUN_ATTEMPT`.
   - Exit: `0` when both results are `success`, `1` otherwise.
   - Tests: `perf-nightly-aggregate.test.mjs` (run in `ci.yml`).
 

@@ -1,6 +1,59 @@
 {
   "versions": [
     {
+      "clickhouse": "24.8",
+      "sentinels": [
+        {
+          "name": "request_rate_by_method",
+          "expected_status": 422,
+          "max_of_n_bytes": 128997244,
+          "ceiling_bytes": 193495866
+        },
+        {
+          "name": "error_ratio_by_namespace",
+          "expected_status": 422,
+          "max_of_n_bytes": 149378197,
+          "ceiling_bytes": 216598385
+        },
+        {
+          "name": "classic_native_histogram_derived",
+          "expected_status": 200,
+          "max_of_n_bytes": 614045463,
+          "ceiling_bytes": 912680550
+        },
+        {
+          "name": "native_histogram_quantiles_rate",
+          "expected_status": 200,
+          "max_of_n_bytes": 202786338,
+          "ceiling_bytes": 304179507
+        },
+        {
+          "name": "label_values_matcher_stock_key",
+          "expected_status": 200,
+          "max_of_n_bytes": 37431966,
+          "ceiling_bytes": 44918359
+        },
+        {
+          "name": "label_values_matcher_stock_key_renamed",
+          "expected_status": 200,
+          "max_of_n_bytes": 37406741,
+          "ceiling_bytes": 44888089
+        },
+        {
+          "name": "rate_by_route_matcher_stock_key",
+          "expected_status": 200,
+          "max_of_n_bytes": 40761793,
+          "ceiling_bytes": 61142689
+        },
+        {
+          "name": "instant_selector_in_order",
+          "expected_status": 200,
+          "max_of_n_bytes": 39156052,
+          "ceiling_bytes": 58734078
+        }
+      ]
+    },
+    {
       "clickhouse": "25.9",
       "sentinels": [
         {
@@ -52,10 +105,81 @@
           "ceiling_bytes": 31156012
         },
         {
+          "name": "rate_by_route_matcher_stock_key",
+          "expected_status": 200,
+          "max_of_n_bytes": 39710169,
+          "ceiling_bytes": 59565253
+        },
+        {
           "name": "instant_selector_in_order",
           "expected_status": 200,
           "max_of_n_bytes": 52092528,
           "ceiling_bytes": 78138792
+        }
+      ]
+    },
+    {
+      "clickhouse": "26.6",
+      "sentinels": [
+        {
+          "name": "classic_histogram_quantile_by_route",
+          "expected_status": 200,
+          "max_of_n_bytes": 425978700,
+          "ceiling_bytes": 511174440
+        },
+        {
+          "name": "request_rate_by_method",
+          "expected_status": 422,
+          "max_of_n_bytes": 83194754,
+          "ceiling_bytes": 124792131
+        },
+        {
+          "name": "pod_status_reason_gauge",
+          "expected_status": 200,
+          "max_of_n_bytes": 732023809,
+          "ceiling_bytes": 912680550
+        },
+        {
+          "name": "error_ratio_by_namespace",
+          "expected_status": 422,
+          "max_of_n_bytes": 83390146,
+          "ceiling_bytes": 120915711
+        },
+        {
+          "name": "classic_native_histogram_derived",
+          "expected_status": 200,
+          "max_of_n_bytes": 622342140,
+          "ceiling_bytes": 912680550
+        },
+        {
+          "name": "native_histogram_quantiles_rate",
+          "expected_status": 200,
+          "max_of_n_bytes": 212808129,
+          "ceiling_bytes": 319212193
+        },
+        {
+          "name": "label_values_matcher_stock_key",
+          "expected_status": 200,
+          "max_of_n_bytes": 39492471,
+          "ceiling_bytes": 47390965
+        },
+        {
+          "name": "label_values_matcher_stock_key_renamed",
+          "expected_status": 200,
+          "max_of_n_bytes": 39824388,
+          "ceiling_bytes": 47789265
+        },
+        {
+          "name": "rate_by_route_matcher_stock_key",
+          "expected_status": 200,
+          "max_of_n_bytes": 47760266,
+          "ceiling_bytes": 71640399
+        },
+        {
+          "name": "instant_selector_in_order",
+          "expected_status": 200,
+          "max_of_n_bytes": 39664289,
+          "ceiling_bytes": 59496433
         }
       ]
     }

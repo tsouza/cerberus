@@ -143,6 +143,8 @@ jobs:
   # matrix leg's, so they run once, beside the sentinel legs.
   perf-nightly-replays:
     name: perf-nightly-replays
+    # A recalibration dispatch measures the sentinels only.
+    if: ${{ !inputs.calibrate }}
     runs-on: ubuntu-latest
     # The ts_grid_instant measurement's dedicated server and real-data load,
     # plus the classic-histogram production-report replay (its recipe's own
@@ -208,6 +210,7 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           SENTINELS_RESULT: ${{ needs.perf-nightly-sentinels.result }}
           REPLAYS_RESULT: ${{ needs.perf-nightly-replays.result }}
+          CALIBRATE: ${{ inputs.calibrate && 'true' || 'false' }}
         run: node .github/scripts/perf-nightly-aggregate.mjs
 
   # Files/refreshes a single tracking issue when the SCHEDULE run does not
