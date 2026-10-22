@@ -619,6 +619,14 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		p.walkHistogramQuantile(v, predStart, predEnd, predStep, depth, sig)
 		return
 
+	case *chplan.HistogramQuantiles:
+		// The plural sibling, registered slice-invariant alike. Its group keys
+		// live on the embedded Histogram, which Children() does not return
+		// (it returns Histogram.Input), so the default arm would never sweep
+		// them; the singular sweep covers the keys and the shared Input.
+		p.walkHistogramQuantile(v.Histogram, predStart, predEnd, predStep, depth, sig)
+		return
+
 	case *chplan.StepGrid:
 		// StepGrid carries an eval grid (Start/End/Step) that ReanchorRange
 		// clones VERBATIM — the grid-prediction guard cannot see it and the
@@ -1267,6 +1275,9 @@ func rangeLWRGridMatches(v *chplan.RangeLWR, predStart, predEnd time.Time) bool 
 // Factored out of walkNode's switch to keep that function under funlen's
 // statement cap.
 func (p *Planner) walkHistogramQuantile(v *chplan.HistogramQuantile, predStart, predEnd time.Time, predStep time.Duration, depth int, sig *signals) {
+	if v == nil {
+		return
+	}
 	for _, e := range v.GroupBy {
 		p.walkExpr(e, predStart, predEnd, predStep, sig)
 	}

@@ -22,7 +22,8 @@ package chplan
 // [WalkDeep] composes the two.
 //
 // EXHAUSTIVENESS CONTRACT: every concrete Node type that carries an
-// Expr-bearing field MUST have an arm here. A node whose Expr slots are not
+// Expr-bearing field — directly, or on an embedded node field Children() does
+// not return — MUST have an arm here. A node whose Expr slots are not
 // enumerated hides every plan subtree nested inside them, which is exactly
 // the blind spot [WalkDeep] exists to close. TestNodeExprs_Exhaustive
 // derives the Expr-bearing fields of every Node type by reflection and
@@ -73,6 +74,16 @@ func nodeExprs(n Node, visit func(Expr)) {
 	case *HistogramQuantileNative:
 		visitExpr(v.PhiExpr, visit)
 		visitExprs(v.GroupBy, visit)
+	case *HistogramQuantiles:
+		// The embedded Histogram is not a child — Children() returns its
+		// Input — so its Expr slots are this node's to report.
+		if v.Histogram != nil {
+			nodeExprs(v.Histogram, visit)
+		}
+	case *HistogramQuantilesNative:
+		if v.Histogram != nil {
+			nodeExprs(v.Histogram, visit)
+		}
 	case *HistogramProjection:
 		visitExprs(v.GroupBy, visit)
 	case *MetricsAggregate:

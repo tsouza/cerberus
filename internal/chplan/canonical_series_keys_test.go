@@ -383,3 +383,39 @@ func TestCanonicalizeSeriesIdentityKeys_ScansPastANonBindingProjection(t *testin
 		t.Fatalf("want the Attributes column canonicalised beneath the Aggregate; got %#v", reps)
 	}
 }
+
+// TestCanonicalizeSeriesIdentityKeys_RepairsPluralHistogramQuantiles pins that
+// the plural quantile nodes are repaired exactly as their singular siblings:
+// their series identity is the embedded Histogram's GroupBy, read against the
+// Histogram's Input, which is the plural node's own child.
+func TestCanonicalizeSeriesIdentityKeys_RepairsPluralHistogramQuantiles(t *testing.T) {
+	t.Parallel()
+	rawKeys := func() []chplan.Expr { return []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}} }
+	levels := []chplan.HistogramQuantileLevel{{Phi: 0.5, Label: "0.5"}, {Phi: 0.9, Label: "0.9"}}
+	cases := []struct {
+		name string
+		in   chplan.Node
+	}{
+		{"HistogramQuantile", &chplan.HistogramQuantile{Input: gaugeScan(), Phi: 0.5, GroupBy: rawKeys()}},
+		{"HistogramQuantileNative", &chplan.HistogramQuantileNative{Input: gaugeScan(), Phi: 0.5, GroupBy: rawKeys()}},
+		{"HistogramQuantiles", &chplan.HistogramQuantiles{
+			Histogram: &chplan.HistogramQuantile{Input: gaugeScan(), GroupBy: rawKeys()},
+			LabelName: "quantile", Levels: levels,
+		}},
+		{"HistogramQuantilesNative", &chplan.HistogramQuantilesNative{
+			Histogram: &chplan.HistogramQuantileNative{Input: gaugeScan(), GroupBy: rawKeys()},
+			LabelName: "quantile", Levels: levels,
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			out := chplan.CanonicalizeSeriesIdentityKeys(c.in, attrCols())
+			reps := projectReplacements(t, out)
+			if len(reps) != 1 || reps[0].Alias != "Attributes" {
+				t.Fatalf("want one Attributes replacement beneath %s keyed on a raw Attributes map, got %#v",
+					c.name, reps)
+			}
+		})
+	}
+}

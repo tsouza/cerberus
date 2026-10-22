@@ -41,10 +41,10 @@ const maxExprSlotDepth = 8
 // typeCarriesExpr reports whether a value of type t can hold an Expr —
 // directly, or nested inside a struct / slice / array / map / pointer.
 //
-// The descent stops at a Node-typed field, interface or concrete: a child
-// node's own Expr slots are that node's to report, and nodeExprs is
-// deliberately non-recursive, so counting them here would demand a slot the
-// enumeration must not surface. Children() is what reaches them.
+// The descent stops at a Node-typed field, interface or concrete. Whether
+// that field's Expr slots are the enclosing node's to report depends on
+// whether Children() returns it, which only a built value can answer:
+// [plantNodeFields] resolves it per field.
 func typeCarriesExpr(t reflect.Type, seen map[reflect.Type]bool) bool {
 	if t == exprInterfaceType {
 		return true
@@ -138,6 +138,99 @@ func plantExprSlots(t *testing.T, v reflect.Value, path string, out *[]plantedSl
 	}
 }
 
+// nodeField is one Node-typed struct field plantNodeFields populated: the
+// value it planted there, the Expr sentinels planted inside that value, and
+// the Node-typed fields nested in it.
+type nodeField struct {
+	path   string
+	node   Node
+	iface  bool
+	slots  []plantedSlot
+	nested []nodeField
+}
+
+// plantNodeFields populates every direct Node-typed field of the struct v.
+// An interface field gets a fresh Expr-free node; a concrete node field gets
+// a fresh value with its own Expr slots and Node fields planted in turn.
+//
+// A Node field is a child exactly when Children() returns it, and a child's
+// Expr slots are the child's to report. A concrete node field Children() does
+// NOT return — an embedded node, such as [HistogramQuantiles].Histogram — is
+// part of the enclosing node, so its Expr slots are the enclosing node's.
+// [resolveNodeFields] applies that rule once the node is built.
+func plantNodeFields(t *testing.T, v reflect.Value, path string, depth int) []nodeField {
+	t.Helper()
+	if depth > maxExprSlotDepth {
+		t.Fatalf("%s: Node field nesting exceeded %d levels — a self-referential field type?", path, maxExprSlotDepth)
+	}
+	var out []nodeField
+	vt := v.Type()
+	for i := range vt.NumField() {
+		f := vt.Field(i)
+		if !f.Type.Implements(nodeInterfaceType) {
+			continue
+		}
+		fpath := path + "." + f.Name
+		nf := nodeField{path: fpath}
+		switch f.Type.Kind() {
+		case reflect.Interface:
+			nf.node, nf.iface = &OneRow{}, true
+			v.Field(i).Set(reflect.ValueOf(nf.node))
+		case reflect.Pointer:
+			v.Field(i).Set(reflect.New(f.Type.Elem()))
+			plantExprSlots(t, v.Field(i).Elem(), fpath, &nf.slots, depth+1)
+			nf.nested = plantNodeFields(t, v.Field(i).Elem(), fpath, depth+1)
+			nf.node, _ = v.Field(i).Interface().(Node)
+		default:
+			t.Fatalf("%s is a Node field of unsupported kind %s — teach the planter to build it", fpath, f.Type.Kind())
+		}
+		out = append(out, nf)
+	}
+	return out
+}
+
+// resolveNodeFields applies plantNodeFields' rule to the built node: a field
+// Children() returns is left to its own row of the test; a concrete one it
+// does not return contributes its Expr slots to planted; an interface one it
+// does not return is a plan subtree nothing reaches, and fails the test.
+func resolveNodeFields(t *testing.T, fields []nodeField, children map[Node]bool, planted *[]plantedSlot) {
+	t.Helper()
+	for _, f := range fields {
+		if children[f.node] {
+			continue
+		}
+		if f.iface {
+			t.Errorf("%s is a Node-typed field Children() does not return, so the subtree it holds "+
+				"is reachable neither as a child nor through nodeExprs", f.path)
+			continue
+		}
+		*planted = append(*planted, f.slots...)
+		resolveNodeFields(t, f.nested, children, planted)
+	}
+}
+
+// plantNodeCase builds a zero value of c's node type with every Expr slot the
+// node owns planted — its own fields' and those of every embedded node field
+// Children() does not return — and reports the planted sentinels.
+func plantNodeCase(t *testing.T, c nodeExhaustivenessCase) (Node, []plantedSlot) {
+	t.Helper()
+	ptr := reflect.New(reflect.TypeOf(c.node).Elem())
+	var planted []plantedSlot
+	plantExprSlots(t, ptr.Elem(), c.name, &planted, 0)
+	fields := plantNodeFields(t, ptr.Elem(), c.name, 0)
+
+	node, ok := ptr.Interface().(Node)
+	if !ok {
+		t.Fatalf("%s: reflect-built value does not implement Node", c.name)
+	}
+	children := map[Node]bool{}
+	for _, ch := range node.Children() {
+		children[ch] = true
+	}
+	resolveNodeFields(t, fields, children, &planted)
+	return node, planted
+}
+
 // TestNodeExprs_Exhaustive is the staleness guard. For every concrete Node
 // type it derives the Expr-bearing fields by reflection, plants a sentinel
 // in each, and asserts nodeExprs reports every one. A Node type that grows
@@ -149,14 +242,7 @@ func TestNodeExprs_Exhaustive(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 
-			ptr := reflect.New(reflect.TypeOf(c.node).Elem())
-			var planted []plantedSlot
-			plantExprSlots(t, ptr.Elem(), c.name, &planted, 0)
-
-			node, ok := ptr.Interface().(Node)
-			if !ok {
-				t.Fatalf("%s: reflect-built value does not implement Node", c.name)
-			}
+			node, planted := plantNodeCase(t, c)
 
 			reported := map[Expr]bool{}
 			nodeExprs(node, func(e Expr) { reported[e] = true })
@@ -168,7 +254,7 @@ func TestNodeExprs_Exhaustive(t *testing.T) {
 						p.path, c.name)
 				}
 			}
-			if len(reported) != len(planted) {
+			if len(reported) > len(planted) {
 				t.Errorf("%s: nodeExprs reported %d Exprs, %d were planted — it surfaced an Expr the "+
 					"reflective derivation did not plant", c.name, len(reported), len(planted))
 			}
@@ -184,10 +270,7 @@ func TestNodeExprs_FindsEveryNodeTypeWithExprSlots(t *testing.T) {
 	withSlots := map[string]bool{}
 	for _, c := range allNodeCases() {
 		elem := reflect.TypeOf(c.node).Elem()
-		ptr := reflect.New(elem)
-		var planted []plantedSlot
-		plantExprSlots(t, ptr.Elem(), c.name, &planted, 0)
-		if len(planted) > 0 {
+		if _, planted := plantNodeCase(t, c); len(planted) > 0 {
 			// Keyed by the CONCRETE TYPE name, which is what the other
 			// side of this comparison reads out of the switch. The
 			// table's row name is a label and nothing pins the two
