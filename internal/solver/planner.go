@@ -607,7 +607,7 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		p.walkRangeBucketGridNative(v, predStart, predEnd, depth, sig)
 		return
 
-	case *chplan.HistogramQuantile:
+	case *chplan.HistogramQuantile, *chplan.HistogramQuantiles:
 		// The classic-histogram quantile interpolation: off-grid immutable
 		// itself (see chplan.reanchor's *HistogramQuantile arm — a
 		// pass-through mirroring *Project), so it carries no own grid to
@@ -615,16 +615,11 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		// unswept-slot hazard walkScalarInterior's own doc already names by
 		// example ("a histogram_quantile's phi... escaped the gate and
 		// routed B") — see walkHistogramQuantile (factored out to keep
-		// walkNode under funlen's statement cap).
-		p.walkHistogramQuantile(v, predStart, predEnd, predStep, depth, sig)
-		return
-
-	case *chplan.HistogramQuantiles:
-		// The plural sibling, registered slice-invariant alike. Its group keys
-		// live on the embedded Histogram, which Children() does not return
-		// (it returns Histogram.Input), so the default arm would never sweep
-		// them; the singular sweep covers the keys and the shared Input.
-		p.walkHistogramQuantile(v.Histogram, predStart, predEnd, predStep, depth, sig)
+		// walkNode under funlen's statement cap). The plural sibling is
+		// registered slice-invariant alike and keeps its keys on the embedded
+		// Histogram, which Children() does not return, so it takes the same
+		// sweep through classicHistogramOf.
+		p.walkHistogramQuantile(classicHistogramOf(v), predStart, predEnd, predStep, depth, sig)
 		return
 
 	case *chplan.StepGrid:
@@ -1262,6 +1257,18 @@ func rangeWindowGridMatches(v *chplan.RangeWindow, predStart, predEnd time.Time)
 // no separate OuterRange field, so the predicted span is End-Start directly.
 func rangeLWRGridMatches(v *chplan.RangeLWR, predStart, predEnd time.Time) bool {
 	return v.Start.Equal(predStart) && v.End.Equal(predEnd)
+}
+
+// classicHistogramOf returns the classic-histogram quantile node n evaluates:
+// n itself, or the Histogram a [chplan.HistogramQuantiles] embeds.
+func classicHistogramOf(n chplan.Node) *chplan.HistogramQuantile {
+	switch v := n.(type) {
+	case *chplan.HistogramQuantile:
+		return v
+	case *chplan.HistogramQuantiles:
+		return v.Histogram
+	}
+	return nil
 }
 
 // walkHistogramQuantile sweeps a HistogramQuantile's GroupBy and PhiExpr for
