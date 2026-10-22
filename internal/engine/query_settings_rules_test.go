@@ -427,6 +427,25 @@ func TestApplyNativeHistogramAnalyzerFix_QuantileStampsDisabled(t *testing.T) {
 	}
 }
 
+// TestApplyNativeHistogramAnalyzerFix_PluralQuantileStampsDisabled — the
+// plural chplan.HistogramQuantilesNative (histogram_quantiles() over a native
+// histogram) reaches the same merge/window-fold machinery as the single-phi
+// quantile, so it gets the same stamp. Its Children() is the folded input, not
+// the HistogramQuantileNative it carries, so the walk never sees that one: the
+// plural node itself is the trigger.
+func TestApplyNativeHistogramAnalyzerFix_PluralQuantileStampsDisabled(t *testing.T) {
+	plan := &chplan.HistogramQuantilesNative{
+		Histogram: &chplan.HistogramQuantileNative{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")},
+		Levels:    []chplan.HistogramQuantileLevel{{Phi: 0.5, Label: "0.5"}},
+	}
+
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
+
+	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
+		t.Errorf("enable_analyzer = %v; want %v", got, want)
+	}
+}
+
 // TestApplyNativeHistogramAnalyzerFix_ProjectionStampsDisabled — a plan whose
 // root is chplan.HistogramProjection (a histogram-VALUED sum()/avg()/rate()/
 // bare-selector result over a native histogram) gets the same stamp, since it
@@ -576,6 +595,27 @@ func TestApplyExpHistogramTwoLevelBound_WindowedExpHistogramStampsThreshold(t *t
 	const wantThresholdBytes = 1
 
 	ctx := applyExpHistogramTwoLevelBound(context.Background(), shapeOf(expHistogramWindowPlan()), true)
+
+	if got, want := settingValue(ctx, settingGroupByTwoLevelThresholdBytes), wantThresholdBytes; got != want {
+		t.Errorf("group_by_two_level_threshold_bytes = %v; want %v", got, want)
+	}
+}
+
+// TestApplyExpHistogramTwoLevelBound_PluralQuantileStampsThreshold — a
+// windowed plural native quantile is an exponential-histogram window plan like
+// the single-phi one, so it gets the same threshold.
+func TestApplyExpHistogramTwoLevelBound_PluralQuantileStampsThreshold(t *testing.T) {
+	// Literal, not expHistogramTwoLevelThresholdBytes — see
+	// TestApplyExpHistogramTwoLevelBound_WindowedExpHistogramStampsThreshold's
+	// wantThresholdBytes for why.
+	const wantThresholdBytes = 1
+
+	plan := &chplan.HistogramQuantilesNative{
+		Histogram: expHistogramWindowPlan().(*chplan.HistogramQuantileNative),
+		Levels:    []chplan.HistogramQuantileLevel{{Phi: 0.5, Label: "0.5"}},
+	}
+
+	ctx := applyExpHistogramTwoLevelBound(context.Background(), shapeOf(plan), true)
 
 	if got, want := settingValue(ctx, settingGroupByTwoLevelThresholdBytes), wantThresholdBytes; got != want {
 		t.Errorf("group_by_two_level_threshold_bytes = %v; want %v", got, want)

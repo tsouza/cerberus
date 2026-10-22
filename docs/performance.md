@@ -266,7 +266,11 @@ every PR) to *broad* (corpus-wide, nightly).
    whose mechanism changes the plan without moving peak memory beyond noise
    names a processor (`Sentinel.WantPipelineStep`) that `EXPLAIN PIPELINE` of
    the statement it dispatched, rebuilt from `system.query_log`, must contain
-   on every repeat.
+   on every repeat. A nightly sentinel whose mechanism is planning cost names
+   a planning peer (`Sentinel.PlanningPeer`): a query over the same data whose
+   statement plans in a comparable time. `EXPLAIN PLAN` of the sentinel's
+   dispatched statement, minimum of three samples interleaved with the
+   peer's, must take at most `maxPlanningPeerRatio` (4x) the peer's minimum.
 
 The static fan-out lint is the per-PR gate (in the required `check` job); the
 scaling harness and cardinality ratchet are release-gate checks that no-op on
@@ -549,16 +553,25 @@ the size of the expressions beneath each level. Emitters keep nesting shallow:
   - the counter-reset mask's per-pair lambda takes the pair's reconciled scale
     as an argument;
   - the merge budget guard binds each ladder's clamped width before squaring it.
-- The native `histogram_quantile` reads its input's histogram fields straight
-  off the ARRAY JOIN materialization boundary's tuple when its output keys are
-  input columns; otherwise an unpacking SELECT sits between the boundary and
-  the quantile.
+- The native `histogram_quantile` and `histogram_quantiles` read their input's
+  histogram fields straight off the ARRAY JOIN materialization boundary's
+  tuple when their output keys are input columns; otherwise an unpacking
+  SELECT sits between the boundary and the quantile. `histogram_quantiles`
+  computes every level in that same SELECT and expands the levels into rows
+  through its own `ARRAY JOIN`.
+- `histogram_quantiles` binds the phi-independent walk helpers once for all
+  levels, and each level's stop index, running count and value index once per
+  level under level-suffixed names, exactly as `histogram_quantile` binds its
+  own.
 - The PromQL sample projection returns a Project that already publishes
   `MetricName`, `Attributes`, `TimeUnix`, `Value` in order as is, instead of
   re-projecting it.
 
-`TestEmit_HistogramQuantileNative_SingleSelectOverBoundary` pins the native
-quantile's depth over its input, and
+`TestEmit_HistogramQuantileNative_SingleSelectOverBoundary` and
+`TestEmitHistogramQuantilesNative_SingleSelectOverBoundary` pin the native
+quantiles' depth over their input,
+`TestEmitHistogramQuantilesNative_BindsEachLevelsStopOnce` pins one binding of
+each level's stop index, running count and value index, and
 `TestEmit_HistogramQuantileNative_BindsWithoutLambdaCopies` pins that its
 helpers are not lambda bindings. `TestExpHistogramRepeatedSubexpressionsRenderOnce`
 and `TestNativeHistogramDashboardBindsRepeatedSubexpressions` pin one render of

@@ -10,7 +10,7 @@ import (
 // broken request in the real-ClickHouse integration lane, where a driver
 // error is much more expensive to root-cause than this unit check.
 func TestSentinels_Roster(t *testing.T) {
-	const wantCount = 8
+	const wantCount = 9
 	if len(Sentinels) != wantCount {
 		t.Fatalf("len(Sentinels) = %d, want %d", len(Sentinels), wantCount)
 	}
@@ -40,6 +40,9 @@ func TestSentinels_Roster(t *testing.T) {
 		params := s.Params(sampleWindowStart, sampleWindowEnd)
 		if params.Get("query") == "" && params.Get("match[]") == "" {
 			t.Fatalf("sentinel %s produced neither a query nor a series selector", s.Name)
+		}
+		if s.PlanningPeer != nil && s.PlanningPeer(sampleWindowStart, sampleWindowEnd).Get("query") == "" {
+			t.Fatalf("sentinel %s has a planning peer that produced no query", s.Name)
 		}
 	}
 }

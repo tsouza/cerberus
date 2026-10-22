@@ -79,10 +79,19 @@
 //      AggregatingInOrderTransform in EXPLAIN PIPELINE of the dispatched
 //      statement.
 //
-// The five are ORTHOGONAL mechanisms (a resource-bound throwIf, a
+//   6. plural-native-quantile-analyzer-hazard-lost — internal/engine/
+//      plan_shape.go's native-histogram analyzer hazard, blind to the plural
+//      chplan.HistogramQuantilesNative node again. histogram_quantiles over
+//      rate() of a native histogram then reaches ClickHouse under the analyzer
+//      the native-histogram analyzer fix turns off, and its statement plans
+//      for about 110 s against about 2.5 s for the single-phi quantile over the
+//      same input. Peak memory does not rise, so the nightly
+//      native_histogram_quantiles_rate sentinel goes red on its planning prong.
+//
+// The six are ORTHOGONAL mechanisms (a resource-bound throwIf, a
 // disk-spill fallback, a chopt-gated per-query stamp, the PREWHERE split, the
-// in-order aggregation stamp) exercising different sentinels in different
-// corpora — proving one still works says
+// in-order aggregation stamp, the native-histogram analyzer stamp) exercising
+// different sentinels in different corpora — proving one still works says
 // nothing about the others. Per #2437's own scope, this is deliberately NOT
 // exhaustive: one representative injected regression per mechanism is the
 // goal, not covering every possible defeat of every sentinel.
@@ -179,6 +188,18 @@ export const MUTATIONS = [
     sentinels: ['instant_selector_in_order'],
     find: 'if r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(f, strategies) {\n',
     replace: 'if false && r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(f, strategies) {\n',
+  },
+  {
+    id: 'plural-native-quantile-analyzer-hazard-lost',
+    description:
+      "Drop chplan.HistogramQuantilesNative from internal/engine/plan_shape.go's native-histogram analyzer " +
+      'hazard, so histogram_quantiles over a native histogram plans under the analyzer the fix turns off. ' +
+      'The nightly native_histogram_quantiles_rate sentinel must go red on its planning prong.',
+    recipe: 'perf-nightly-integration',
+    file: 'internal/engine/plan_shape.go',
+    sentinels: ['native_histogram_quantiles_rate'],
+    find: 'case *chplan.HistogramQuantileNative, *chplan.HistogramQuantilesNative, *chplan.HistogramProjection:\n',
+    replace: 'case *chplan.HistogramQuantileNative, *chplan.HistogramProjection:\n',
   },
 ];
 
