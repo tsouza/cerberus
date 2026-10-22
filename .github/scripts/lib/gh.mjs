@@ -15,6 +15,9 @@
 //   - appendStepSummary(): append markdown to $GITHUB_STEP_SUMMARY.
 //   - setOutput(): append `name=value` to $GITHUB_OUTPUT.
 //   - exportEnv(): append `NAME=value` to $GITHUB_ENV.
+//     Both build each entry with fileCommandEntry(), which refuses a
+//     non-identifier name and writes a multi-line value in the heredoc form
+//     under a random delimiter.
 //   - createFreshFileFd() / writeFreshFile(): CWE-377/378-safe creation of a
 //     file at a FIXED, well-known path (a log or PID file another script or
 //     workflow step finds by that same literal path afterward).
@@ -24,6 +27,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, openSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import process from 'node:process';
 
 // GitHub escapes `%`, `\r`, `\n` in workflow-command *data* (the message
@@ -252,10 +256,41 @@ export function appendStepSummary(markdown, { quiet = false } = {}) {
   appendFileSync(file, markdown.endsWith('\n') ? markdown : `${markdown}\n`);
 }
 
+// fileCommandEntry() — one entry for a workflow file-command file
+// ($GITHUB_OUTPUT / $GITHUB_ENV), without the trailing newline.
+//
+// The runner reads those files line by line: `name=value` is one entry, and
+// `name<<DELIM` opens a value that runs until a line equal to DELIM. Written
+// naively, a name beyond identifier characters, or a value carrying a line
+// break, lets whoever controls that string append entries of its own — another
+// step output, or (through $GITHUB_ENV) a variable such as NODE_OPTIONS that
+// every later step of the job inherits. So a name must be an identifier
+// (refused otherwise), and a value with a line break is written in the heredoc
+// form under a random `ghadelimiter_<uuid>` delimiter, the runner toolkit's own
+// scheme, after checking the value does not contain it. A single-line value
+// keeps the plain `name=value` form, byte for byte.
+const FILE_COMMAND_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const LINE_BREAK = /[\r\n]/;
+
+export function fileCommandEntry(name, value) {
+  if (typeof name !== 'string' || !FILE_COMMAND_NAME.test(name)) {
+    error(`file command: refusing entry name ${JSON.stringify(name)} — names must match ${FILE_COMMAND_NAME}`);
+    process.exit(1);
+  }
+  const text = String(value);
+  if (!LINE_BREAK.test(text)) return `${name}=${text}`;
+  const delimiter = `ghadelimiter_${randomUUID()}`;
+  if (text.includes(delimiter)) {
+    error(`file command: the value of ${name} contains its own heredoc delimiter ${delimiter}`);
+    process.exit(1);
+  }
+  return `${name}<<${delimiter}\n${text}\n${delimiter}`;
+}
+
 // setOutput() — append `name=value` to $GITHUB_OUTPUT for downstream steps.
 export function setOutput(name, value) {
+  const line = fileCommandEntry(name, value);
   const file = process.env.GITHUB_OUTPUT;
-  const line = `${name}=${value}`;
   if (!file) {
     log(line);
     return;
@@ -273,10 +308,12 @@ export function setOutput(name, value) {
 // has no such single reader, and threading it through every step's `env:` is
 // the per-leg shape that goes stale the moment a step is added.
 //
-// Logged rather than written when the variable is absent, so a local run says
-// what it would have exported instead of silently doing nothing.
+// Every pair is validated before any is written, so a rejected pair never
+// leaves the earlier ones half-exported. Logged rather than written when the
+// variable is absent, so a local run says what it would have exported instead
+// of silently doing nothing.
 export function exportEnv(entries) {
-  const block = entries.map(([name, value]) => `${name}=${value}`).join('\n');
+  const block = entries.map(([name, value]) => fileCommandEntry(name, value)).join('\n');
   const file = process.env.GITHUB_ENV;
   if (!file) {
     log(`[no $GITHUB_ENV in env; the following would have been exported]\n${block}`);

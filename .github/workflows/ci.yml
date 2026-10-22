@@ -552,6 +552,12 @@ jobs:
       - name: gh-api self-test (404 policy + pagination)
         run: node --test .github/scripts/lib/gh-api.test.mjs
 
+      # The two writers of the runner's file-command files. A name or value
+      # that could start a second entry in $GITHUB_OUTPUT / $GITHUB_ENV is
+      # refused, and ordinary values reach the file byte for byte.
+      - name: gh file-command self-test (output/env injection guard)
+        run: node --test .github/scripts/lib/gh.test.mjs
+
       # The two release.yml steps that used to be inline shell: the tag cut
       # (idempotent at the merge commit, refuses to move a tag) and the
       # "highest stable release" signal. Same rationale as the preflight

@@ -23,7 +23,14 @@ wrappers around `node:child_process`, a `lsFiles` `git ls-files -z`
 wrapper, plus `appendStepSummary` / `setOutput` / `exportEnv` for the runner
 files. `setOutput` and `exportEnv` differ by consumer, not by mechanism: a step
 output has to be named by whoever reads it, while `$GITHUB_ENV` carries a
-decision that changes how the REST of the job behaves and has no single reader.
+decision that changes how the REST of the job behaves and has no single reader. Both
+build each entry with `fileCommandEntry`: a name outside
+`[A-Za-z_][A-Za-z0-9_]*` is refused (`::error::`, exit 1), a single-line value
+is written as `name=value` byte for byte, and a value with `\n` or `\r` is
+written in the heredoc form under a random `ghadelimiter_<uuid>` delimiter the
+value is checked not to contain, so no value can add a second entry to either
+file. Every script writes the runner files through these helpers rather than a
+local copy. `lib/gh.test.mjs` is the `node --test` guard (ci.yml).
 
 `lib/image-globs.mjs` is the one image-ref glob (`*` never crosses a `/`)
 behind every "skip these images" filter: `k3d-image-import.mjs`'s

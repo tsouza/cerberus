@@ -34,9 +34,10 @@
 //                             flow branches off `origin/main` instead)
 //
 // argv `--self-test` runs the in-process assertion suite and exits.
-import { readFileSync, writeFileSync, appendFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import process from 'node:process'
+import { setOutput } from './lib/gh.mjs'
 import { renderHelmDocs } from './lib/helm-docs.mjs'
 
 const CHART = 'deploy/helm/cerberus/Chart.yaml'
@@ -209,11 +210,6 @@ export function commitsSinceLastTag() {
 
 function today() {
   return new Date().toISOString().slice(0, 10)
-}
-
-function setOutput(k, v) {
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${k}=${v}\n`)
-  console.log(`${k}=${v}`)
 }
 
 // --- branch / commit-message helpers (just/release.just's shared logic) ----

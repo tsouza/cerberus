@@ -92,6 +92,7 @@ import {
   orderShards,
   resolveRequested,
 } from './lib/golden-shards.mjs';
+import { fileCommandEntry } from './lib/gh.mjs';
 
 const SCRIPT = fileURLToPath(import.meta.url);
 
@@ -289,7 +290,7 @@ function assertSafeGeneratedChanges(root) {
 
 function writeOutput(name, value, output = process.env.GITHUB_OUTPUT) {
   if (!output) return;
-  writeFileSync(output, `${name}=${value}\n`, { flag: 'a' });
+  writeFileSync(output, `${fileCommandEntry(name, value)}\n`, { flag: 'a' });
 }
 
 function remoteHead(root, branch) {
