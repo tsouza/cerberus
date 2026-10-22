@@ -22,8 +22,7 @@ const pollInterval = 50 * time.Millisecond
 // callProgress is the part of one system.processes row the inCall
 // predicates read.
 type callProgress struct {
-	elapsed             time.Duration
-	readRows, totalRows uint64
+	elapsed time.Duration
 	// filterPassedRows and functionExecutions are the query's
 	// FilterTransformPassedRows and FunctionExecute profile events: the rows
 	// its FilterTransforms have passed, and the function executions it has
@@ -177,31 +176,63 @@ type naturalProfile struct {
 	loopExecutions   uint64
 }
 
-// inputRead reports that the query's sources have read every row they will
-// read.
-func (p callProgress) inputRead() bool { return p.totalRows > 0 && p.readRows >= p.totalRows }
-
-// regexCallRunning is regex_replace's inCall. The normalization runs
-// replaceRegexpAll once over the block the read produced, so for the whole
-// call the query's function-execution count stands still. The actions ahead
-// of it in the same expression each run briefly over bytes the read already
-// produced; on 26.7.13.12 a cancellation landing after the read's progress
-// report but before the call was observed to end the query at once. None of
-// those actions takes as long as producing its input took, so the count
-// standing still, with the input read, for longer than the query needed to
-// read that input is the call running.
-func regexCallRunning(readings []callProgress) bool {
-	i := slices.IndexFunc(readings, callProgress.inputRead)
-	if i < 0 {
-		return false
+// regexCallRunning is regex_replace's inCall on a dispatch path whose call
+// entry count is entry (see callEntryCount). On every pinned build
+// ClickHouse's ExpressionActions::execute increments the query's
+// FunctionExecute count immediately before it calls each function of an
+// expression, and replaceRegexpAll then runs over the read's one block
+// without executing another function. The count reaching entry is therefore
+// the call's own increment: the query has entered the call. Nothing ahead of
+// the call takes the count there, however long it lasts — the read, the
+// other actions of the call's expression, or a stall between them, in which a
+// cancellation ends the query at once on every build. A zero entry is no
+// path's entry, since the call's own increment makes it at least one, and
+// never reports the call running.
+func regexCallRunning(entry uint64) func(readings []callProgress) bool {
+	return func(readings []callProgress) bool {
+		return entry > 0 && len(readings) > 0 && readings[len(readings)-1].functionExecutions >= entry
 	}
-	last := len(readings) - 1
-	since := last
-	for since > i && readings[since-1].functionExecutions == readings[last].functionExecutions {
-		since--
-	}
-	return readings[last].elapsed-readings[since].elapsed > readings[i].elapsed
 }
+
+// callEntryCount is the FunctionExecute count at which one dispatch path of
+// regex_replace enters its call, read from readings, every system.processes
+// reading of one uncancelled run on that path (oldest first). The call is the
+// bulk of the shape's run, and the count stands still at its entry for the
+// whole call, so the entry is the count the run held over the longest
+// stretch of server time: from the first reading that shows it to the first
+// that shows another. The count follows the path's plan — its settings, its
+// tables, the pipelines a Distributed read runs — and not the size of the
+// label the call normalizes, so each path is measured on its own. ok is false
+// when no count held for more than 1/callBulkFraction of the run's server
+// time, or the count held longest is zero: the readings then show no call
+// that dominates the run, and its entry cannot be told from a stall ahead of
+// it.
+func callEntryCount(readings []callProgress) (entry uint64, ok bool) {
+	if len(readings) == 0 {
+		return 0, false
+	}
+	run := readings[len(readings)-1].elapsed
+	var longest time.Duration
+	for i := 0; i < len(readings); {
+		j := i
+		for j < len(readings) && readings[j].functionExecutions == readings[i].functionExecutions {
+			j++
+		}
+		end := run
+		if j < len(readings) {
+			end = readings[j].elapsed
+		}
+		if held := end - readings[i].elapsed; held > longest {
+			longest, entry = held, readings[i].functionExecutions
+		}
+		i = j
+	}
+	return entry, entry > 0 && longest*callBulkFraction > run
+}
+
+// callBulkFraction bounds the share of a run the call's count must hold: more
+// than 1/callBulkFraction, the bulk of it.
+const callBulkFraction = 2
 
 // deadlineLanding is where a request deadline's cancellation fell, judged
 // only from the readings taken before it: whether those readings can stand

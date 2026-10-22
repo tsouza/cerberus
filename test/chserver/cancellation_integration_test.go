@@ -5,6 +5,7 @@ package chserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -85,8 +86,16 @@ type cancelShape struct {
 	// grows with the seed and with the runner's load: a cancellation that
 	// lands in it can end the query within milliseconds whatever the build's
 	// cancellation gap. Every probe therefore cancels only once inCall
-	// holds, never after a fixed elapsed time.
-	inCall func(readings []callProgress) bool
+	// holds, never after a fixed elapsed time. inCall is the predicate for a
+	// statement the production handler dispatches, and siblingInCall the one
+	// for a routed sibling.
+	inCall, siblingInCall func(readings []callProgress) bool
+	// inCallAt, when set, builds the predicate from entry, the
+	// FunctionExecute count at which a statement enters the call, which
+	// differs from one dispatch path to another (see callEntryCount).
+	// calibrateShape then measures each path's entry and sets inCall and
+	// siblingInCall from it; a shape without it sets both here.
+	inCallAt func(entry uint64) func(readings []callProgress) bool
 	// query is the calibrated query, set by calibrateShape.
 	query string
 }
@@ -115,6 +124,8 @@ FROM numbers(%d)`, metric, cancelEvalTime.Unix(), foldSampleSpacingMicros, size)
 		meter:    loopExecutions,
 		bounded:  func(fold, _ bool) bool { return fold },
 		inCall:   foldLoopRunning,
+		// The fold's baseline is the filter's pass on every path.
+		siblingInCall: foldLoopRunning,
 	},
 	{
 		// Every PromQL selector normalizes label names with
@@ -135,7 +146,7 @@ SELECT 'svc', '%s', map(arrayStringConcat(arrayMap(x -> repeat('.', %d), range(%
 		warmSize: 1,
 		meter:    wallClock,
 		bounded:  func(_, regex bool) bool { return regex },
-		inCall:   regexCallRunning,
+		inCallAt: regexCallRunning,
 	},
 }
 
@@ -253,7 +264,7 @@ func TestCancellation_CPUBoundEmittedShapesAcrossBuilds(t *testing.T) {
 				t.Run(shape.name, func(t *testing.T) {
 					bounded := shape.bounded(build.foldBounded, build.regexBounded)
 					assertCancellationPolicy(t, s.version, shape.function, bounded)
-					shape, prof := s.calibrateShape(ctx, t, shape)
+					shape, prof := s.calibrateShape(ctx, t, rules, shape)
 					want := cancelExpectation{bounded: bounded, meter: shape.meter, naturalProfile: prof}
 
 					t.Run("request_deadline", func(t *testing.T) {
@@ -504,7 +515,7 @@ func probeClientDisconnect(ctx context.Context, t *testing.T, s *server, rules e
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() { done <- p.serve(reqCtx, shape) }()
 
-	seen := s.waitInCall(ctx, t, shape, qid)
+	seen := s.waitInCall(ctx, t, shape.inCall, shape.function, qid)
 	cancelAt := time.Now()
 	disconnect()
 	budget := handlerSlack
@@ -605,7 +616,7 @@ func (s *server) siblingsInCall(ctx context.Context, t *testing.T, shape cancelS
 	t.Helper()
 	seen := make(map[string][]callProgress, len(d.ids))
 	for _, id := range d.ids {
-		seen[id] = s.waitInCall(ctx, t, shape, id)
+		seen[id] = s.waitInCall(ctx, t, shape.siblingInCall, shape.function, id)
 	}
 	for _, id := range d.ids {
 		p, running := s.callProgress(ctx, t, id)
@@ -659,22 +670,23 @@ func (s *server) runningCount(ctx context.Context, t *testing.T, ids []string) u
 	return n
 }
 
-// waitInCall reads the running query qid every pollInterval until
-// shape.inCall holds for the readings so far, so a cancellation issued next
-// lands inside the query's CPU-bound call rather than in work ahead of it. It
-// returns the readings, oldest first; the last shows the query as it is now.
-func (s *server) waitInCall(ctx context.Context, t *testing.T, shape cancelShape, qid string) []callProgress {
+// waitInCall reads the running query qid every pollInterval until inCall, the
+// shape's predicate for the path qid was dispatched on, holds for the
+// readings so far, so a cancellation issued next lands inside the query's
+// call of function rather than in work ahead of it. It returns the readings,
+// oldest first; the last shows the query as it is now.
+func (s *server) waitInCall(ctx context.Context, t *testing.T, inCall func([]callProgress) bool, function, qid string) []callProgress {
 	t.Helper()
 	deadline := time.Now().Add(runningBudget)
 	var readings []callProgress
 	for {
 		if p, running := s.callProgress(ctx, t, qid); running {
-			if readings = append(readings, p); shape.inCall(readings) {
+			if readings = append(readings, p); inCall(readings) {
 				return readings
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("query %s never reached its %s call within %s", qid, shape.function, runningBudget)
+			t.Fatalf("query %s never reached its %s call within %s", qid, function, runningBudget)
 		}
 		time.Sleep(pollInterval)
 	}
@@ -689,10 +701,10 @@ func (s *server) callProgress(ctx context.Context, t *testing.T, qid string) (p 
 		elapsed float64
 	)
 	err := s.admin.Conn().QueryRow(ctx,
-		"SELECT count(), max(elapsed), max(read_rows), max(total_rows_approx), "+
+		"SELECT count(), max(elapsed), "+
 			"max(ProfileEvents['FilterTransformPassedRows']), max(ProfileEvents['FunctionExecute']) "+
 			"FROM system.processes WHERE query_id = ?", qid).
-		Scan(&n, &elapsed, &p.readRows, &p.totalRows, &p.filterPassedRows, &p.functionExecutions)
+		Scan(&n, &elapsed, &p.filterPassedRows, &p.functionExecutions)
 	if err != nil {
 		t.Fatalf("read system.processes: %v", err)
 	}
@@ -814,12 +826,10 @@ func (s *server) finalExecutions(ctx context.Context, t *testing.T, id string) u
 // flushes the system logs (flushLogs), and once a log table has gathered
 // enough parts the server merges them. On cancelProbeNanoCPUs's half CPU, a
 // merge started just before the next dispatch slows that statement's work
-// ahead of its call. An inCall predicate that judges entry by how long the
-// statement's progress stood still against how long the read took
-// (regexCallRunning) then reports the call entered while the statement has
-// not reached it yet. A dispatch on an idle server meets the same server
-// every probe calibrated against. A merge still running after
-// mergesIdleBudget fails the probe.
+// ahead of its call and through it, so the work a cancellation leaves is no
+// longer the share of the natural run the probe judges it against. A
+// dispatch on an idle server meets the same server every probe calibrated
+// against. A merge still running after mergesIdleBudget fails the probe.
 func (s *server) awaitMergesIdle(ctx context.Context, t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(mergesIdleBudget)
@@ -899,43 +909,125 @@ func (s *server) runShape(ctx context.Context, t *testing.T, shape cancelShape, 
 }
 
 // naturalRun runs shape's emitted SQL to completion, uncancelled, and returns
-// its profile.
+// its profile. A shape with inCallAt enters the call where the run's own
+// readings show the call's entry count (callEntryCount).
 func (s *server) naturalRun(ctx context.Context, t *testing.T, shape cancelShape) naturalProfile {
 	t.Helper()
 	qid := cancelQueryID(shape, "natural")
-	done := s.runShape(ctx, t, shape, qid)
-	var (
-		readings []callProgress
-		inCall   bool
-		prof     naturalProfile
-	)
-	for finished := false; !finished; {
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("natural run of %s: %v", shape.query, err)
-			}
-			finished = true
-		case <-time.After(pollInterval):
-			if p, running := s.callProgress(ctx, t, qid); running && !inCall {
-				readings = append(readings, p)
-				if inCall = shape.inCall(readings); inCall {
-					prof.entered = p.elapsed
-				}
-			}
-		}
+	seen, err := s.readUntilDone(ctx, t, []string{qid}, s.runShape(ctx, t, shape, qid))
+	if err != nil {
+		t.Fatalf("natural run of %s: %v", shape.query, err)
 	}
+	readings := seen[qid]
 	started, ended := s.workSpan(ctx, t, []string{qid})
-	prof.natural = ended.Sub(started)
-	if !inCall {
+	prof := naturalProfile{natural: ended.Sub(started)}
+	inCall := shape.inCall
+	if shape.inCallAt != nil {
+		inCall = shape.inCallAt(callEntryOn(t, shape, "the natural run", readings))
+	}
+	entered, ok := callEntry(inCall, readings)
+	if !ok {
 		prof.entered = prof.natural
 		return prof
 	}
+	prof.entered = entered
 	if shape.meter == loopExecutions {
 		base, _ := foldLoopBaseline(readings)
 		prof.loopExecutions = s.finalExecutions(ctx, t, qid) - base
 	}
 	return prof
+}
+
+// readUntilDone reads every statement of ids in system.processes every
+// pollInterval until done delivers, and returns each statement's readings,
+// oldest first, with what done delivered.
+func (s *server) readUntilDone(ctx context.Context, t *testing.T, ids []string, done <-chan error) (map[string][]callProgress, error) {
+	t.Helper()
+	seen := make(map[string][]callProgress, len(ids))
+	for {
+		select {
+		case err := <-done:
+			return seen, err
+		case <-time.After(pollInterval):
+			for _, id := range ids {
+				if p, running := s.callProgress(ctx, t, id); running {
+					seen[id] = append(seen[id], p)
+				}
+			}
+		}
+	}
+}
+
+// callEntryOn is callEntryCount over readings, every reading of one
+// uncancelled run of shape on the dispatch path run names. It fails the test
+// when the readings show no call dominating the run.
+func callEntryOn(t *testing.T, shape cancelShape, run string, readings []callProgress) uint64 {
+	t.Helper()
+	entry, ok := callEntryCount(readings)
+	if !ok {
+		t.Fatalf("%s of %s: no FunctionExecute count held through more than 1/%d of the run's %d readings, so the "+
+			"entry into its %s call cannot be read: %+v", run, shape.query, callBulkFraction, len(readings), shape.function, readings)
+	}
+	t.Logf("%s of %s entered its %s call at %d function executions", run, shape.query, shape.function, entry)
+	return entry
+}
+
+// handlerEntry runs shape's calibrated query uncancelled through the
+// production handler, as request_deadline and client_disconnect dispatch it,
+// and returns the FunctionExecute count at which it entered the call.
+func (s *server) handlerEntry(ctx context.Context, t *testing.T, rules engine.SettingsRules, shape cancelShape) uint64 {
+	t.Helper()
+	s.awaitMergesIdle(ctx, t)
+	p := newPromProbe(t, s, rules, 0)
+	qid := cancelQueryID(shape, "handlerentry")
+	done := make(chan error, 1)
+	go func() {
+		rec := p.serve(chclient.WithQueryID(ctx, qid), shape)
+		if rec.Code != http.StatusOK {
+			done <- fmt.Errorf("HTTP %d: %s", rec.Code, rec.Body.String())
+			return
+		}
+		done <- nil
+	}()
+	seen, err := s.readUntilDone(ctx, t, []string{qid}, done)
+	if err != nil {
+		t.Fatalf("uncancelled handler run of %s: %v", shape.query, err)
+	}
+	return callEntryOn(t, shape, "the handler's uncancelled run", seen[qid])
+}
+
+// siblingEntry dispatches the routed siblings of shape's calibrated query
+// uncancelled, reads them to their end, and returns the FunctionExecute count
+// at which they entered the call. The siblings run one plan, so they must
+// agree on it.
+func (s *server) siblingEntry(ctx context.Context, t *testing.T, shape cancelShape) uint64 {
+	t.Helper()
+	d := s.dispatchSiblings(ctx, t, shape, "siblingentry")
+	defer d.cancel()
+	done := make(chan error, 1)
+	go func() {
+		var err error
+		for _, cur := range d.cursors {
+			for cur.Next() {
+			}
+			err = errors.Join(err, cur.Err(), cur.Close())
+		}
+		done <- err
+	}()
+	seen, err := s.readUntilDone(ctx, t, d.ids, done)
+	if err != nil {
+		t.Fatalf("uncancelled routed siblings of %s: %v", shape.query, err)
+	}
+	var entry uint64
+	for i, id := range d.ids {
+		e := callEntryOn(t, shape, "routed sibling "+id, seen[id])
+		if i > 0 && e != entry {
+			t.Fatalf("routed siblings %v of one plan entered their %s call at different function executions: %d and %d",
+				d.ids, shape.function, entry, e)
+		}
+		entry = e
+	}
+	return entry
 }
 
 // warmShape brings the server to the state in which it runs shape's
@@ -1019,12 +1111,16 @@ var shardedTables = []string{"otel_metrics_gauge", "otel_metrics_sum"}
 // single siblingsAtCall measurement is itself noisy under contention, so each
 // round takes calibrationSiblingSamples measurements and keeps the worst (the
 // one leaving the least work), the same way a single slow sample would sink
-// the real probe. It returns the shape with its calibrated query and that
-// query's natural profile. A run still short of the target at maxSize is
+// the real probe. For a shape with inCallAt each round also runs the query
+// uncancelled through the production handler (handlerEntry) and as routed
+// siblings (siblingEntry) and sets the shape's predicates from the entry
+// counts those runs show, before any sibling sample waits on them. It returns
+// the shape with its calibrated query and predicates and that query's
+// natural profile. A run still short of the target at maxSize is
 // returned as is: the scenario assertions then fail with the separation they
 // could not get, rather than judging a probe that cannot tell the two
 // outcomes apart.
-func (s *server) calibrateShape(ctx context.Context, t *testing.T, shape cancelShape) (cancelShape, naturalProfile) {
+func (s *server) calibrateShape(ctx context.Context, t *testing.T, rules engine.SettingsRules, shape cancelShape) (cancelShape, naturalProfile) {
 	t.Helper()
 	s.warmShape(ctx, t, shape)
 	size := shape.baseSize
@@ -1036,6 +1132,10 @@ func (s *server) calibrateShape(ctx context.Context, t *testing.T, shape cancelS
 		s.exec(ctx, t, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s.otel_metrics_gauge WHERE MetricName = ?", local, serverDB), metric)
 		shape.query = shape.queryFor(metric)
 		prof = s.naturalRun(ctx, t, shape)
+		if shape.inCallAt != nil {
+			shape.inCall = shape.inCallAt(s.handlerEntry(ctx, t, rules, shape))
+			shape.siblingInCall = shape.inCallAt(s.siblingEntry(ctx, t, shape))
+		}
 		want := cancelExpectation{meter: shape.meter, naturalProfile: prof}
 		margin := math.Inf(1)
 		for sample := range calibrationSiblingSamples {

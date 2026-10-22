@@ -374,38 +374,41 @@ func TestJudgeLoop_PastFloorIsUnjudgeable(t *testing.T) {
 }
 
 // The modelled regex_replace query: it reads its one label for
-// modelRegexRead, then runs replaceRegexpAll as a single function execution
-// until modelRegexNatural.
+// modelRegexRead, executing one function per pollInterval, stands still for
+// modelRegexStall, longer than the read took, and then enters
+// replaceRegexpAll, which runs as a single function execution until
+// modelRegexNatural.
 const (
 	modelRegexRead    = time.Second
+	modelRegexStall   = 2 * modelRegexRead
 	modelRegexNatural = 14 * time.Second
-	modelRegexRows    = 1
+	// modelRegexEntry is the count the call's own increment takes the query
+	// to: one execution per pollInterval of the read, then the call's.
+	modelRegexEntry = uint64(modelRegexRead/pollInterval) + 1
 )
 
-// regexReading is the reading of a regex_replace query after run of server
-// progress: its read progresses and executes one function per pollInterval,
-// and then the call holds the count still.
+// regexReading is the reading of the modelled regex_replace query after run
+// of server progress.
 func regexReading(run time.Duration) callProgress {
 	var p callProgress
-	if run > 0 {
-		read := min(run, modelRegexRead)
-		p.totalRows = modelRegexRows
-		p.readRows = uint64(float64(modelRegexRows) * float64(read) / float64(modelRegexRead))
-		p.functionExecutions = uint64(read / pollInterval)
+	switch {
+	case run >= modelRegexRead+modelRegexStall:
+		p.functionExecutions = modelRegexEntry
+	case run > 0:
+		p.functionExecutions = uint64(min(run, modelRegexRead) / pollInterval)
 	}
 	return p
 }
 
 // Under wallClock, wherever a query that starts late on the server enters the
 // call, the cancellation still leaves the minRemaining of server time the
-// verdict judges. regexCallRunning waits as long into the call as the read
-// took, so a start delayed past the first deadline would leave too little of
-// the call to judge whatever the deadline: the sweep stops at half the
-// judgeable call, and the re-armed deadline is covered under loopExecutions.
+// verdict judges. The sweep stops at half the judgeable call, and the
+// re-armed deadline is covered under loopExecutions.
 func TestLandRequestDeadline_WallClockDelayedEntry(t *testing.T) {
 	natural := &modelDispatch{at: regexReading, length: modelRegexNatural}
 	obs, _ := natural.observe(t, func([]callProgress) bool { return false }, modelRegexNatural-pollInterval)
-	entered, ok := callEntry(regexCallRunning, obs.seen)
+	inCall := regexCallRunning(modelRegexEntry)
+	entered, ok := callEntry(inCall, obs.seen)
 	if !ok {
 		t.Fatal("the undelayed modelled query never entered its call")
 	}
@@ -424,12 +427,12 @@ func TestLandRequestDeadline_WallClockDelayedEntry(t *testing.T) {
 				started: delay,
 				length:  delay + modelRegexNatural,
 			}
-			obs, run := m.observe(t, regexCallRunning, deadline)
+			obs, run := m.observe(t, inCall, deadline)
 			cancelled = run
-			landings = append(landings, want.landing(regexCallRunning, obs.seen))
+			landings = append(landings, want.landing(inCall, obs.seen))
 			return obs
 		}
-		if _, _, err := want.landRequestDeadline(regexCallRunning, dispatch, func() {}); err != nil {
+		if _, _, err := want.landRequestDeadline(inCall, dispatch, func() {}); err != nil {
 			t.Fatalf("delay %s: %v", delay, err)
 		}
 		if fmt.Sprint(landings) != fmt.Sprint([]deadlineLanding{landedInWindow}) {
@@ -438,5 +441,92 @@ func TestLandRequestDeadline_WallClockDelayedEntry(t *testing.T) {
 		if remaining := delay + modelRegexNatural - cancelled; remaining < minRemaining {
 			t.Errorf("delay %s: the cancellation leaves %s of the run; want at least %s", delay, remaining, minRemaining)
 		}
+	}
+}
+
+// The client_disconnect dispatch of regex_replace on 26.7.13.12 that ended
+// 4.6ms after its cancellation: its handler returned 251ms after dispatch,
+// while the lone run entered the call after 300ms. On that build the query
+// reads its label by about 60ms, at 70 function executions, and the call's
+// own increment takes it to 76.
+const (
+	stallReadAt   = 60 * time.Millisecond
+	stallEntryAt  = 300 * time.Millisecond
+	stallReadExec = 70
+	stallEntry    = 76
+)
+
+// A query that has read its input and then stands still ahead of the call is
+// not in the call, however long the stall outlasts the read; the reading that
+// shows the call's own increment is.
+func TestRegexCallRunning_PostReadStallIsNotTheCall(t *testing.T) {
+	inCall := regexCallRunning(stallEntry)
+	var readings []callProgress
+	for at := stallReadAt; at < stallEntryAt; at += pollInterval {
+		readings = append(readings, callProgress{elapsed: at, functionExecutions: stallReadExec})
+		if inCall(readings) {
+			t.Fatalf("regexCallRunning reports the call running at %s, %s after the read, with %d function executions; "+
+				"the call enters at %d", at, at-stallReadAt, stallReadExec, uint64(stallEntry))
+		}
+	}
+	if readings = append(readings, callProgress{elapsed: stallEntryAt, functionExecutions: stallEntry}); !inCall(readings) {
+		t.Errorf("regexCallRunning does not report the call running at its entry, %d function executions", uint64(stallEntry))
+	}
+}
+
+// A zero entry is no dispatch path's: an uncalibrated predicate never reports
+// the call running.
+func TestRegexCallRunning_ZeroEntryNeverRuns(t *testing.T) {
+	if regexCallRunning(0)([]callProgress{{elapsed: stallEntryAt, functionExecutions: stallEntry}}) {
+		t.Error("regexCallRunning(0) reports a call running")
+	}
+}
+
+// regexRun is the readings of one uncancelled regex_replace run on 26.7.13.12,
+// one per pollInterval: the read up to stallReadAt, the stall at
+// stallReadExec, the call at stallEntry for call, and the work after it.
+func regexRun(call time.Duration) []callProgress {
+	const (
+		readStart  = 5
+		readEnd    = 64
+		afterCall  = 87
+		finalCount = 92
+	)
+	var readings []callProgress
+	add := func(at time.Duration, executions uint64) {
+		readings = append(readings, callProgress{elapsed: at, functionExecutions: executions})
+	}
+	add(stallReadAt-2*pollInterval/5, readStart)
+	add(stallReadAt-pollInterval/5, readEnd)
+	for at := stallReadAt; at < stallEntryAt; at += pollInterval {
+		add(at, stallReadExec)
+	}
+	for at := stallEntryAt; at < stallEntryAt+call; at += pollInterval {
+		add(at, stallEntry)
+	}
+	add(stallEntryAt+call, afterCall)
+	add(stallEntryAt+call+pollInterval, finalCount)
+	return readings
+}
+
+// The entry count is the count the uncancelled run held through its call, not
+// the one it stalled at after its read.
+func TestCallEntryCount_IsTheCountHeldThroughTheCall(t *testing.T) {
+	entry, ok := callEntryCount(regexRun(modelRegexNatural))
+	if !ok || entry != stallEntry {
+		t.Errorf("callEntryCount = %d, %v; want %d, true", entry, ok, uint64(stallEntry))
+	}
+}
+
+// A run whose longest-held count is no bulk of it shows no call to read an
+// entry from: here the stall ahead of a call that has not yet begun is the
+// longest stretch, but covers less than half the run.
+func TestCallEntryCount_NoDominantCountFails(t *testing.T) {
+	readings := regexRun(stallEntryAt - stallReadAt - pollInterval)
+	if entry, ok := callEntryCount(readings); ok {
+		t.Errorf("callEntryCount = %d, true over a run no count dominates; want false", entry)
+	}
+	if entry, ok := callEntryCount(nil); ok {
+		t.Errorf("callEntryCount(nil) = %d, true; want false", entry)
 	}
 }
