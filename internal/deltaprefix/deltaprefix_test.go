@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,11 +345,11 @@ func (c *fakeConn) Exec(_ context.Context, query string, args ...any) error {
 
 func (c *fakeConn) Query(_ context.Context, query string, _ ...any) (driver.Rows, error) {
 	c.queries = append(c.queries, query)
-	if c.rowsErr != nil {
-		return nil, c.rowsErr
-	}
 	if rows, ok := cutoverRows(query); ok {
 		return rows, nil
+	}
+	if c.rowsErr != nil {
+		return nil, c.rowsErr
 	}
 	for match, rows := range c.respond {
 		if contains(query, match) {
@@ -664,8 +665,9 @@ func TestVerify_ReadsBothTotalsAndDiffs(t *testing.T) {
 func TestVerify_PropagatesQueryError(t *testing.T) {
 	c := testColumns()
 	conn := &fakeConn{rowsErr: errors.New("connection reset")}
-	if _, err := Verify(context.Background(), conn, c, testBefore, 0.01, 0); err == nil {
-		t.Fatal("expected an error from a failing Query")
+	_, err := Verify(context.Background(), conn, c, testBefore, 0.01, 0)
+	if !errors.Is(err, conn.rowsErr) || !strings.Contains(err.Error(), c.DeltaPrefixTable) {
+		t.Fatalf("Verify error = %v; want the aggregate read's failure naming %s", err, c.DeltaPrefixTable)
 	}
 }
 
@@ -910,4 +912,50 @@ func (c *scriptedConn) Query(_ context.Context, query string, _ ...any) (driver.
 		return &valueRows{}, nil
 	}
 	return &valueRows{data: [][]any{c.answers[len(c.queries)-1]}}, nil
+}
+
+// TestRowReads_PropagateDriverErrors pins that every single-row and day-list
+// read surfaces the driver's own error — from Scan, and from Err either after
+// the last row or in place of any row — rather than a zero value.
+func TestRowReads_PropagateDriverErrors(t *testing.T) {
+	scanErr, finalErr := errors.New("scan failed"), errors.New("stream failed")
+	for _, tc := range []struct {
+		name string
+		rows *erroringRows
+		want error
+	}{
+		{"scan error", &erroringRows{hasRow: true, scanErr: scanErr}, scanErr},
+		{"stream error after the row", &erroringRows{hasRow: true, finalErr: finalErr}, finalErr},
+		{"stream error with no row", &erroringRows{finalErr: finalErr}, finalErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var dest string
+			if err := scanRow(context.Background(), &singleRowsConn{rows: tc.rows}, "SELECT 1", nil, &dest); !errors.Is(err, tc.want) {
+				t.Errorf("scanRow error = %v; want %v", err, tc.want)
+			}
+			tc.rows.yielded = false
+			if err := scanRow(context.Background(), &fakeConn{rowsErr: tc.want}, "SELECT 1", nil, &dest); !errors.Is(err, tc.want) {
+				t.Errorf("scanRow over a failed Query: error = %v; want %v", err, tc.want)
+			}
+			if _, err := queryOutsideRetentionDays(
+				context.Background(), &singleRowsConn{rows: tc.rows}, testColumns(), testBefore, testBefore,
+			); !errors.Is(err, tc.want) {
+				t.Errorf("queryOutsideRetentionDays error = %v; want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestVerify_PropagatesCutoverDayError pins that Verify stops, with the
+// cause, when ClickHouse cannot compute the cutover day: the column type
+// reads but the day query returns no row.
+func TestVerify_PropagatesCutoverDayError(t *testing.T) {
+	conn := &scriptedConn{answers: [][]any{{"DateTime64(9)"}}}
+	_, err := Verify(context.Background(), conn, testColumns(), testBefore, 0, 0)
+	if !errors.Is(err, errNoRow) || !strings.Contains(err.Error(), "compute the cutover day") {
+		t.Fatalf("Verify error = %v; want the cutover-day read's errNoRow", err)
+	}
+	if len(conn.queries) != 2 {
+		t.Errorf("Verify issued %d queries; want the two cutover reads and no totals read", len(conn.queries))
+	}
 }

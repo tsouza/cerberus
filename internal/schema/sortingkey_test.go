@@ -200,6 +200,9 @@ func TestSortingKeyPrefixOf(t *testing.T) {
 		{"back-quoted identifier", "`service.name`, MetricName", []string{"service.name", "MetricName"}},
 		{"expression is not bare", "MetricName, ServiceName || 'x'", []string{"MetricName"}},
 		{"leading digit is not an identifier", "1, MetricName", []string{}},
+		{"an expression ending in a call ends the run", "MetricName, x + f(TimeUnix), ServiceName", []string{"MetricName"}},
+		{"a malformed back-quoted name ends the run", "MetricName, `a`b`", []string{"MetricName"}},
+		{"an empty element ends the run", "MetricName, , ServiceName", []string{"MetricName"}},
 		{"no sorting key", "", []string{}},
 	}
 	for _, tc := range cases {
@@ -242,6 +245,9 @@ func TestSortingKeyColumnsOf(t *testing.T) {
 		{"a multi-column tuple ends the run", "MetricName, tuple(a, b), ServiceName", []string{"MetricName"}},
 		{"an expression ends the run", "MetricName, ServiceName || 'x', TimeUnix", []string{"MetricName"}},
 		{"a literal argument ends the run", "MetricName, toDate('2026-01-01'), TimeUnix", []string{"MetricName"}},
+		{"an expression ending in a call ends the run", "MetricName, x + f(TimeUnix), ServiceName", []string{"MetricName"}},
+		{"a malformed back-quoted name ends the run", "MetricName, `a`b`", []string{"MetricName"}},
+		{"an empty element ends the run", "MetricName, , ServiceName", []string{"MetricName"}},
 		{"no sorting key", "", []string{}},
 	}
 	for _, tc := range cases {
