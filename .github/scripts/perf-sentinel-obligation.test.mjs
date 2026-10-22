@@ -220,14 +220,6 @@ const FAKE_SEAM = [
   '	return run(ctx, plan)',
   '}',
   '',
-  '// probe reports what applyAll stamps, without running a query.',
-  '//',
-  '// perf-sentinel: neutral — a diagnostic mirror of the seam.',
-  'func probe(plan chplan.Node) context.Context {',
-  '	ctx := applyAll(context.Background(), plan, 0)',
-  '	return ctx',
-  '}',
-  '',
 ].join('\n');
 
 const FAKE = {
@@ -239,19 +231,6 @@ const FAKE = {
 
 function unifiedDiff(file, lines) {
   return [`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -1,1 +1,1 @@', ...lines].join('\n');
-}
-
-// lineOf — the 1-based line of `src` whose text is exactly `text`; it must be unique.
-function lineOf(src, text) {
-  const hits = src.split('\n').flatMap((l, i) => (l === text ? [i + 1] : []));
-  assert.equal(hits.length, 1, `${JSON.stringify(text)} must occur exactly once`);
-  return hits[0];
-}
-
-// replaceLineDiff — a position-accurate diff replacing line `at` of `file`
-// (the same number on both sides) with `added`.
-function replaceLineDiff(file, at, removed, added) {
-  return [`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, `@@ -${at},1 +${at},1 @@`, `-${removed}`, `+${added}`].join('\n');
 }
 
 test('parseGoDecls finds every top-level declaration, grouped consts included', () => {
@@ -323,6 +302,25 @@ test('a memory bound stamped through a bare string literal FAILS the gate', () =
   });
   assert.equal(problems.length, 1);
   assert.match(problems[0], /bare literal "max_memory_usage"/);
+});
+
+test('a FUNCTION classified neutral FAILS the gate — no declaration is exempt from the obligation', () => {
+  const problems = surfaceViolations({
+    ...FAKE,
+    [TRIGGER_FILES[3]]: [
+      FAKE_SEAM,
+      '// probe reports what applyAll stamps, without running a query.',
+      '//',
+      '// perf-sentinel: neutral — claims its lines owe nothing.',
+      'func probe(plan chplan.Node) context.Context {',
+      '\treturn applyAll(context.Background(), plan, 0)',
+      '}',
+      '',
+    ].join('\n'),
+  });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /func probe is classified .*perf-sentinel: neutral/);
+  assert.deepEqual(surfaceViolations(FAKE), []);
 });
 
 test('an unreadable trigger file FAILS the gate instead of narrowing the surface', () => {
@@ -534,78 +532,6 @@ test('every real setting const is classified exactly one of the two classes', ()
       );
     }
   }
-});
-
-// --- neutral functions -------------------------------------------------------
-
-const SEAM = TRIGGER_FILES[3];
-const PROBE_CALL = '\tctx := applyAll(context.Background(), plan, 0)';
-const DISPATCH_CALL = '\tctx = applyAll(ctx, plan, 0)';
-
-test('changedCodeLines numbers each line on its own side of the diff', () => {
-  const diff = [
-    `diff --git a/${SEAM} b/${SEAM}`, `--- a/${SEAM}`, `+++ b/${SEAM}`,
-    '@@ -10,3 +20,3 @@', ' keep()', '-gone()', '+added()', '+more()', ' keep()',
-  ].join('\n');
-  assert.deepEqual(
-    changedCodeLines(diff, TRIGGER_FILES).map((l) => [l.code, l.added, l.line]),
-    [['gone()', false, 11], ['added()', true, 21], ['more()', true, 22]],
-  );
-});
-
-test('DOES NOT FIRE: editing the surface call inside a neutral function owes nothing', () => {
-  const at = lineOf(FAKE_SEAM, PROBE_CALL);
-  const diff = replaceLineDiff(SEAM, at, PROBE_CALL, '\tctx := applyAll(context.TODO(), plan, 0)');
-  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(FAKE), { head: FAKE, base: FAKE });
-  assert.deepEqual(edits, []);
-});
-
-test('FIRES: the same edit on the dispatch path, which runs queries, obligates a sentinel', () => {
-  const at = lineOf(FAKE_SEAM, DISPATCH_CALL);
-  const diff = replaceLineDiff(SEAM, at, DISPATCH_CALL, '\tctx = applyAll(context.TODO(), plan, 0)');
-  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(FAKE), { head: FAKE, base: FAKE });
-  assert.equal(edits.length, 2);
-});
-
-test('FIRES: a removal is placed in the BASE source, an addition in the HEAD source', () => {
-  // HEAD moves dispatch below probe, so the line number of the probe call in
-  // BASE is the line number of the dispatch call in HEAD. A removal of the
-  // probe call (BASE) is exempt; an addition of the dispatch call (HEAD)
-  // fires. Placing either on the wrong side inverts both.
-  const dispatchBlock = FAKE_SEAM.slice(FAKE_SEAM.indexOf('// dispatch runs'), FAKE_SEAM.indexOf('// probe reports'));
-  const probeBlock = FAKE_SEAM.slice(FAKE_SEAM.indexOf('// probe reports'));
-  const headSeam = FAKE_SEAM.replace(dispatchBlock + probeBlock, `${probeBlock}//\n${dispatchBlock}`);
-  const at = lineOf(FAKE_SEAM, PROBE_CALL);
-  assert.equal(lineOf(headSeam, DISPATCH_CALL), at);
-  const diff = replaceLineDiff(SEAM, at, PROBE_CALL, DISPATCH_CALL);
-  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(FAKE), {
-    head: { ...FAKE, [SEAM]: headSeam },
-    base: FAKE,
-  });
-  assert.deepEqual(edits.map((l) => l.added), [true]);
-});
-
-test('a neutral function that stamps a memory bound itself FAILS the gate', () => {
-  const sources = {
-    ...FAKE,
-    [SEAM]: `${FAKE_SEAM}\n// sneak stamps the thread cap.\n//\n// perf-sentinel: neutral — claims to be a mirror.\nfunc sneak(ctx context.Context) context.Context {\n\treturn chclient.WithQuerySetting(ctx, settingThreads, 4)\n}\n`,
-  };
-  assert.ok(surfaceViolations(sources).some((p) => p.includes('func sneak') && p.includes('settingThreads')));
-  assert.deepEqual(surfaceViolations(FAKE), []);
-});
-
-test('DOES NOT FIRE on the real seam: editing the surface call in ProbeQuerySettings', () => {
-  const engine = 'internal/engine/engine.go';
-  const call = REAL[engine].split('\n').find((l) => /^\tctx := routeAQuerySettings\(/.test(l));
-  assert.ok(call, 'ProbeQuerySettings calls routeAQuerySettings');
-  const diff = replaceLineDiff(engine, lineOf(REAL[engine], call), call, call.replace('memCap', 'memCap /* probe */'));
-  const edits = mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(REAL), { head: REAL, base: REAL });
-  assert.deepEqual(edits, []);
-  assert.equal(
-    mechanismEdits(changedCodeLines(diff, TRIGGER_FILES), memoryBoundingSurface(REAL)).length,
-    2,
-    'without the sources to place it, the same edit fires',
-  );
 });
 
 // --- touchesTriggerFile / satisfiesViaSentinel --------------------------------

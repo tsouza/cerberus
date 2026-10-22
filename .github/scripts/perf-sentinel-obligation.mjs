@@ -48,6 +48,9 @@
 //      carry the `memory-bounding` tag too, for a mechanism that stamps no
 //      const of its own but every bound reads — the engine's single plan
 //      inspection (inspectPlanShape), whose facts decide which bound fires.
+//      Only a setting const may be classified `neutral`: the gate exempts no
+//      declaration, so a function, var or field carrying `neutral` FAILS it
+//      rather than being read as a claim that its lines owe nothing.
 //   2. `memoryBoundingSurface` closes over the trigger files' own reference
 //      graph from those tagged declarations. The closure is DIRECTIONAL:
 //
@@ -76,14 +79,6 @@
 //      removed, code only, comments stripped — names something in that
 //      surface. A comment-only edit, a neutral-setting edit and a rename of
 //      unrelated machinery all leave the surface untouched and owe nothing.
-//   4. A FUNCTION may instead carry the `neutral` tag: it calls into the
-//      surface but runs no query (a diagnostic mirror of a seam, such as
-//      ProbeQuerySettings reporting the route-A stamps for the spec goldens),
-//      so nothing it computes bounds a query's memory. Its own lines owe
-//      nothing however much of the surface they name — the dispatch path
-//      that does run queries carries no tag and still obligates. A `neutral`
-//      function that names a memory-bounding setting itself fails the gate:
-//      the tag cannot hide a stamper.
 //
 // Two structural guards keep that derivation from going quietly vacuous:
 // the gate fails if the surface resolves to nothing at all, and it fails if
@@ -124,7 +119,7 @@ import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
-import { appendStepSummary, error, git, log, notice } from './lib/gh.mjs';
+import { appendStepSummary, error, log, notice } from './lib/gh.mjs';
 import {
   commitsIn,
   descriptionSurface,
@@ -261,11 +256,9 @@ function declName(header) {
 
 /**
  * parseGoDecls — every top-level declaration in one gofumpt-formatted Go
- * source, as `{ name, kind, doc, body, start, end }`. `kind` is `func`,
- * `const`, `var`, `type` or `field`; `doc` is the contiguous run of `//`
- * lines immediately above the declaration; `body` is its code text with
- * comments stripped; `start`..`end` are the 1-based source lines it spans,
- * doc excluded.
+ * source, as `{ name, kind, doc, body }`. `kind` is `func`, `const`, `var`,
+ * `type` or `field`; `doc` is the contiguous run of `//` lines immediately
+ * above the declaration; `body` is its code text with comments stripped.
  * Members of a `const (` / `var (` group are returned individually, each with
  * the doc comment written directly above it inside the group, and so are the
  * fields of a `type X struct {` block (kind `field`, the type itself with
@@ -324,8 +317,6 @@ export function parseGoDecls(src) {
               kind: 'const',
               doc: memberDoc.length > 0 ? memberDoc : groupDoc,
               body: stripComments(member),
-              start: i + 1,
-              end: i + 1,
             });
           }
           memberDoc = [];
@@ -338,7 +329,6 @@ export function parseGoDecls(src) {
 
     if (STRUCT_DECL_OPEN_PATTERN.test(line)) {
       const header = line;
-      const start = i + 1;
       const declDoc = flushDoc();
       const named = declName(header);
       i += 1;
@@ -354,19 +344,18 @@ export function parseGoDecls(src) {
           // identifier is the field name. An embedded field or a `}` of a
           // nested literal type never occurs in the trigger files.
           const name = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s/.exec(member)?.[1] ?? null;
-          if (name) decls.push({ name, kind: 'field', doc: fieldDoc, body: stripComments(member), start: i + 1, end: i + 1 });
+          if (name) decls.push({ name, kind: 'field', doc: fieldDoc, body: stripComments(member) });
           fieldDoc = [];
         }
         i += 1;
       }
       i += 1;
-      if (named) decls.push({ name: named.name, kind: 'type', doc: declDoc, body: stripComments(header), start, end: i });
+      if (named) decls.push({ name: named.name, kind: 'type', doc: declDoc, body: stripComments(header) });
       continue;
     }
 
     if (TOP_LEVEL_DECL_PATTERN.test(line)) {
       const header = line;
-      const start = i + 1;
       const declDoc = flushDoc();
       const body = [stripComments(header)];
       // A block-form declaration closes at the next flush-left `}` or `)`.
@@ -379,7 +368,7 @@ export function parseGoDecls(src) {
       }
       i += 1;
       const named = declName(header);
-      if (named) decls.push({ name: named.name, kind: named.kind, doc: declDoc, body: body.join('\n'), start, end: i });
+      if (named) decls.push({ name: named.name, kind: named.kind, doc: declDoc, body: body.join('\n') });
       continue;
     }
 
@@ -416,29 +405,23 @@ export function surfaceViolations(sources) {
       continue;
     }
     for (const decl of parseGoDecls(src)) {
-      if (!SETTING_CONST_PATTERN.test(decl.name)) continue;
+      // `neutral` classifies a stamped setting's value, never code: the gate
+      // grants no per-declaration exemption, so a function, var or field
+      // tagged `neutral` claims one that does not exist.
+      if (!SETTING_CONST_PATTERN.test(decl.name)) {
+        if (classificationOf(decl) === CLASS_NEUTRAL) {
+          problems.push(
+            `${path}: ${decl.kind} ${decl.name} is classified \`perf-sentinel: neutral\`, which only a `
+              + '`setting<Name>` const may carry — a changed line naming the memory-bounding surface owes a '
+              + 'sentinel wherever it sits',
+          );
+        }
+        continue;
+      }
       if (classificationOf(decl) === null) {
         problems.push(
           `${path}: const ${decl.name} carries no \`// perf-sentinel: memory-bounding|neutral\` `
             + 'classification, so this gate cannot tell whether changing it bounds memory',
-        );
-      }
-    }
-    // A `neutral` function exempts its own lines, so it must not be a
-    // stamper: one naming a memory-bounding const directly IS the mechanism.
-    const decls = parseGoDecls(src);
-    const bounds = new Set(
-      decls
-        .filter((d) => SETTING_CONST_PATTERN.test(d.name) && classificationOf(d) === CLASS_MEMORY_BOUNDING)
-        .map((d) => d.name),
-    );
-    for (const d of decls) {
-      if (d.kind !== 'func' || classificationOf(d) !== CLASS_NEUTRAL) continue;
-      const stamped = [...String(d.body).matchAll(IDENTIFIER_PATTERN)].map((m) => m[0]).find((w) => bounds.has(w));
-      if (stamped) {
-        problems.push(
-          `${path}: func ${d.name} is classified \`perf-sentinel: neutral\` but stamps the memory bound `
-            + `${stamped} — a stamper is the mechanism itself and cannot be exempted`,
         );
       }
     }
@@ -548,19 +531,9 @@ export function memoryBoundingSurface(sources) {
   return surface;
 }
 
-/** isNeutralFunc — a function its doc classifies `perf-sentinel: neutral` (header item 4). */
-function isNeutralFunc(decl) {
-  return decl?.kind === 'func' && classificationOf(decl) === CLASS_NEUTRAL;
-}
-
-// HUNK_HEADER_PATTERN — `@@ -<old start>[,n] +<new start>[,n] @@`.
-const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
-
 /**
  * changedCodeLines — every line a unified diff ADDS or REMOVES in one of
- * `paths`, with comments stripped, as `{ file, code, added, line }`: `line`
- * is its 1-based number on its own side of the diff (the new file for an
- * addition, the old one for a removal), read off the hunk headers.
+ * `paths`, with comments stripped.
  *
  * forbid-deferral.mjs's `parseDiff` deliberately drops removed lines (a
  * deletion cannot introduce a deferral marker) and is shared by that gate's
@@ -572,8 +545,6 @@ export function changedCodeLines(diffText, paths) {
   const want = new Set(paths ?? []);
   const out = [];
   let file = null;
-  let oldLine = 0;
-  let newLine = 0;
   for (const raw of String(diffText ?? '').split('\n')) {
     if (raw.startsWith('diff --git ')) {
       file = null;
@@ -584,59 +555,23 @@ export function changedCodeLines(diffText, paths) {
       file = p === '/dev/null' ? null : p.replace(/^b\//, '');
       continue;
     }
-    if (raw.startsWith('--- ') || raw.startsWith('\\')) continue;
-    const hunk = HUNK_HEADER_PATTERN.exec(raw);
-    if (hunk) {
-      oldLine = Number(hunk[1]);
-      newLine = Number(hunk[2]);
-      continue;
+    if (raw.startsWith('--- ') || raw.startsWith('@@') || raw.startsWith('\\')) continue;
+    if (file === null || !want.has(file)) continue;
+    if (raw.startsWith('+') || raw.startsWith('-')) {
+      const code = stripComments(raw.slice(1)).trim();
+      if (code !== '') out.push({ file, code, added: raw.startsWith('+') });
     }
-    if (raw.startsWith('@@')) continue;
-    const added = raw.startsWith('+');
-    const removed = raw.startsWith('-');
-    const line = added ? newLine : oldLine;
-    if (added) newLine += 1;
-    else if (removed) oldLine += 1;
-    else {
-      oldLine += 1;
-      newLine += 1;
-    }
-    if (file === null || !want.has(file) || !(added || removed)) continue;
-    const code = stripComments(raw.slice(1)).trim();
-    if (code !== '') out.push({ file, code, added, line });
-  }
-  return out;
-}
-
-/**
- * neutralFuncLines — for each trigger file in `sources`, the line spans of
- * its `neutral`-classified functions (header item 4).
- */
-export function neutralFuncLines(sources) {
-  const out = new Map();
-  for (const path of TRIGGER_FILES) {
-    out.set(
-      path,
-      parseGoDecls(sources?.[path] ?? '').filter(isNeutralFunc).map((d) => [d.start, d.end]),
-    );
   }
   return out;
 }
 
 /**
  * mechanismEdits — the changed lines that name something in the surface,
- * i.e. the evidence that this change actually touched a memory bound, minus
- * the lines inside a `neutral` function. `head` and `base` are the trigger
- * files' sources on each side of the diff: an added line is placed in the
- * head source, a removed one in the base source. Without them no line is
- * exempted.
+ * i.e. the evidence that this change actually touched a memory bound.
  */
-export function mechanismEdits(changed, surface, { head, base } = {}) {
-  const neutral = { head: neutralFuncLines(head), base: neutralFuncLines(base) };
-  const inNeutralFunc = (l) =>
-    (neutral[l.added ? 'head' : 'base'].get(l.file) ?? []).some(([from, to]) => l.line >= from && l.line <= to);
-  return (changed ?? []).filter(
-    (l) => [...String(l.code).matchAll(IDENTIFIER_PATTERN)].some((m) => surface.has(m[0])) && !inNeutralFunc(l),
+export function mechanismEdits(changed, surface) {
+  return (changed ?? []).filter((l) =>
+    [...String(l.code).matchAll(IDENTIFIER_PATTERN)].some((m) => surface.has(m[0])),
   );
 }
 
@@ -781,22 +716,7 @@ async function main() {
     process.exit(1);
   }
 
-  // The diff is base...head, so its removed lines number the merge base's
-  // sources; a trigger file that did not exist there reads as empty.
-  const mergeBase = git(['merge-base', base, head]);
-  if (mergeBase.status !== 0) {
-    throw new Error(`git merge-base ${base} ${head} failed: ${mergeBase.stderr.trim()}`);
-  }
-  const baseSources = Object.fromEntries(
-    TRIGGER_FILES.map((p) => {
-      const shown = git(['show', `${mergeBase.stdout.trim()}:${p}`]);
-      return [p, shown.status === 0 ? shown.stdout : ''];
-    }),
-  );
-  const edits = mechanismEdits(changedCodeLines(diffText, TRIGGER_FILES), surface, {
-    head: sources,
-    base: baseSources,
-  });
+  const edits = mechanismEdits(changedCodeLines(diffText, TRIGGER_FILES), surface);
   if (edits.length === 0) {
     notice(
       `perf-sentinel-obligation: ${TRIGGER_FILES.filter((f) => files.includes(f)).join(', ')} changed, `

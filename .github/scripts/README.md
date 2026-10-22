@@ -1606,7 +1606,10 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   The surface is derived from the trigger files under `internal/engine/`
   through each `setting<Name>` const's `perf-sentinel:` classification
   (`memory-bounding` or `neutral`); an unclassified setting, an empty
-  surface, or a bare string literal passed to `WithQuerySetting` fails.
+  surface, or a bare string literal passed to `WithQuerySetting` fails. Only
+  a setting const may be classified `neutral`: a function, var or field
+  carrying that tag fails, since no declaration's lines are exempt from the
+  obligation.
   Citation resolution reuses `forbid-deferral.mjs`'s exports.
   - Env: the same as `forbid-deferral.mjs` (`GITHUB_REPOSITORY`,
     `GITHUB_TOKEN`, `GITHUB_EVENT_NAME`, `PR_BODY`, `GITHUB_EVENT_PATH`,
