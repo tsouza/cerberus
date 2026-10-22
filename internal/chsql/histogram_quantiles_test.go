@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -68,11 +69,19 @@ func classicQuantilesPlan(levels ...chplan.HistogramQuantileLevel) *chplan.Histo
 }
 
 // nativeQuantilesPlan is the exponential-histogram sibling of
-// classicQuantilesPlan.
+// classicQuantilesPlan. Its input carries the group keys as columns, as the
+// lowering's folded-histogram input does.
 func nativeQuantilesPlan(levels ...chplan.HistogramQuantileLevel) *chplan.HistogramQuantilesNative {
+	input := nativeQuantileTestInput(true)
+	input.Columns = append([]string{"Attributes", "MetricName", "TimeUnix"}, input.Columns...)
+	input.Roles = append([]chplan.Column{
+		{Name: "Attributes", Role: chplan.RoleAttributes},
+		{Name: "MetricName", Role: chplan.RoleMetricName},
+		{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+	}, input.Roles...)
 	return &chplan.HistogramQuantilesNative{
 		Histogram: &chplan.HistogramQuantileNative{
-			Input:            nativeQuantileTestInput(true),
+			Input:            input,
 			GroupBy:          quantilesGroupBy(),
 			GroupByAliases:   quantilesGroupByAliases(),
 			AttributesColumn: "Attributes",
@@ -103,26 +112,108 @@ func emitQuantilesSQL(t *testing.T, plan chplan.Node) string {
 
 // TestEmitHistogramQuantiles_OneRowPerLevelWithLabelledAttributes pins the
 // output rows both plural emitters share: every group key under its alias,
-// the key past the end of the alias list unaliased, the level label stamped
-// into the Attributes carrier only, and the level's quantile as Value — one
-// row per level via arrayJoin over (label, value) pairs.
+// the key past the end of the alias list under its own name, the level label
+// stamped into the Attributes carrier only, and the level's quantile as
+// Value — one row per level over (label, value) pairs. The classic emitter,
+// and the native one when a key is not an input column, expand the pairs with
+// arrayJoin in a derived query; the native one otherwise expands them with
+// the ARRAY JOIN of the SELECT that reads the input boundary's tuple.
 func TestEmitHistogramQuantiles_OneRowPerLevelWithLabelledAttributes(t *testing.T) {
 	t.Parallel()
 
 	levels := []chplan.HistogramQuantileLevel{{Phi: 0.25, Label: "0.25"}, {Phi: 0.75, Label: "0.75"}}
-	const wantPrefix = "SELECT mapConcat(`Attributes`, map('quantile', `_cerb_hq_level`.1)) AS `Attributes`, " +
+	const staged = "SELECT mapConcat(`Attributes`, map('quantile', `_cerb_hq_level`.1)) AS `Attributes`, " +
 		"`MetricName` AS `Metric`, `TimeUnix`, `_cerb_hq_level`.2 AS `Value` " +
 		"FROM (SELECT *, arrayJoin(arrayZip(['0.25', '0.75'], `_cerb_hq_levels`)) AS `_cerb_hq_level` FROM ("
-	for name, plan := range map[string]chplan.Node{
-		"classic": classicQuantilesPlan(levels...),
-		"native":  nativeQuantilesPlan(levels...),
+	const inline = "SELECT mapConcat(`_cerb_histogram_input`.1, map('quantile', `_cerb_hq_level`.1)) AS `Attributes`, " +
+		"`_cerb_histogram_input`.2 AS `Metric`, `_cerb_histogram_input`.3 AS `TimeUnix`, `_cerb_hq_level`.2 AS `Value` " +
+		"FROM (SELECT arrayJoin([(`Attributes`, `MetricName`, `TimeUnix`, "
+	computedKey := nativeQuantilesPlan(levels...)
+	computedKey.Histogram.GroupBy = append([]chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}},
+	}, computedKey.Histogram.GroupBy[1:]...)
+	const computedStaged = "SELECT mapConcat(mapSort(`Attributes`), map('quantile', `_cerb_hq_level`.1)) AS `Attributes`, " +
+		"`MetricName` AS `Metric`, `TimeUnix`, `_cerb_hq_level`.2 AS `Value` " +
+		"FROM (SELECT *, arrayJoin(arrayZip(['0.25', '0.75'], `_cerb_hq_levels`)) AS `_cerb_hq_level` FROM ("
+	for name, tc := range map[string]struct {
+		plan       chplan.Node
+		wantPrefix string
+		wantJoin   string
+	}{
+		"classic":             {plan: classicQuantilesPlan(levels...), wantPrefix: staged},
+		"native":              {plan: nativeQuantilesPlan(levels...), wantPrefix: inline, wantJoin: ") ARRAY JOIN arrayZip(['0.25', '0.75'], "},
+		"native/computed key": {plan: computedKey, wantPrefix: computedStaged},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if sql := emitQuantilesSQL(t, plan); !strings.HasPrefix(sql, wantPrefix) {
-				t.Errorf("level rows:\n got: %s\nwant prefix: %s", sql, wantPrefix)
+			sql := emitQuantilesSQL(t, tc.plan)
+			if !strings.HasPrefix(sql, tc.wantPrefix) {
+				t.Errorf("level rows:\n got: %s\nwant prefix: %s", sql, tc.wantPrefix)
+			}
+			if tc.wantJoin != "" && !strings.Contains(sql, tc.wantJoin) {
+				t.Errorf("level rows do not expand through %q\n--- sql ---\n%s", tc.wantJoin, sql)
 			}
 		})
+	}
+}
+
+// TestEmitHistogramQuantilesNative_SingleSelectOverBoundary pins the nesting
+// depth of the plural native quantile. ClickHouse's query analysis re-walks a
+// derived query's whole subtree for every level above it, so the plural
+// quantile, like the single-phi one, is exactly two SELECTs over its input:
+// the ARRAY JOIN materialization boundary, and the SELECT that reads the
+// histogram fields off the boundary's tuple, computes every level and expands
+// the levels into rows through its own ARRAY JOIN.
+func TestEmitHistogramQuantilesNative_SingleSelectOverBoundary(t *testing.T) {
+	t.Parallel()
+
+	plan := nativeQuantilesPlan(
+		chplan.HistogramQuantileLevel{Phi: 0.25, Label: "0.25"},
+		chplan.HistogramQuantileLevel{Phi: 0.9, Label: "0.9"},
+	)
+	sql := emitQuantilesSQL(t, plan)
+	input, _, err := chsql.Emit(context.Background(), plan.Histogram.Input)
+	if err != nil {
+		t.Fatalf("Emit input: %v", err)
+	}
+	const quantileAndBoundary = 2
+	if got, want := strings.Count(sql, "SELECT "), strings.Count(input, "SELECT ")+quantileAndBoundary; got != want {
+		t.Errorf("plural native quantile renders %d SELECTs over an input of %d, want %d\n--- sql ---\n%s",
+			got, strings.Count(input, "SELECT "), want, sql)
+	}
+}
+
+// TestEmitHistogramQuantilesNative_BindsEachLevelsStopOnce pins that each
+// level binds its own rank-walk stop index, running count and value index
+// exactly once, under names no other level shares, and that the rank walk
+// itself is rendered once per arm a level can take. Rendered at every use
+// site instead, the walk and the values read off it repeat many times per
+// level, and on ClickHouse's analyzer that repetition is planning cost.
+func TestEmitHistogramQuantilesNative_BindsEachLevelsStopOnce(t *testing.T) {
+	t.Parallel()
+
+	levels := []chplan.HistogramQuantileLevel{
+		{Phi: 0.25, Label: "0.25"},
+		{Phi: 0.75, Label: "0.75"},
+		{Phi: 0.9, Label: "0.9"},
+	}
+	sql := emitQuantilesSQL(t, nativeQuantilesPlan(levels...))
+	for i := range levels {
+		for _, helper := range []string{"_cerb_hq_idx", "_cerb_hq_count", "_cerb_hq_value_idx"} {
+			decl := " AS `" + helper + "_" + strconv.Itoa(i+1) + "`"
+			if got := strings.Count(sql, decl); got != 1 {
+				t.Errorf("level %d binds %s %d times, want 1\n--- sql ---\n%s", i+1, helper, got, sql)
+			}
+		}
+	}
+	// Every level can take the forward walk (a NaN Sum forces it); the two
+	// levels at or above 0.5 can also take the backward one.
+	const forwardWalks, backwardWalks = 3, 2
+	if got := strings.Count(sql, "arrayFirstIndex(c -> c >= ("); got != forwardWalks {
+		t.Errorf("forward rank walk rendered %d times, want %d\n--- sql ---\n%s", got, forwardWalks, sql)
+	}
+	if got := strings.Count(sql, "arrayLastIndex(c -> c >= ((1 - "); got != backwardWalks {
+		t.Errorf("backward rank walk rendered %d times, want %d\n--- sql ---\n%s", got, backwardWalks, sql)
 	}
 }
 

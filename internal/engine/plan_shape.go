@@ -36,8 +36,8 @@ type planShapeFacts struct {
 	hasJoin bool
 	// hasCompare: a chplan.MetricsCompare node — TraceQL compare().
 	hasCompare bool
-	// nativeHistogramAnalyzerHazard: a HistogramQuantileNative or
-	// HistogramProjection node, or a RangeBucketFanout whose RowType carries
+	// nativeHistogramAnalyzerHazard: a HistogramQuantileNative,
+	// HistogramQuantilesNative or HistogramProjection node, or a RangeBucketFanout whose RowType carries
 	// the exponential-only HistogramFieldScale column — see
 	// applyNativeHistogramAnalyzerFix for the two shapes and why both.
 	nativeHistogramAnalyzerHazard bool
@@ -154,7 +154,7 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 		f.hasCompare = true
 	case *chplan.StructuralJoin:
 		f.hasStructuralJoin = true
-	case *chplan.HistogramQuantileNative, *chplan.HistogramProjection:
+	case *chplan.HistogramQuantileNative, *chplan.HistogramQuantilesNative, *chplan.HistogramProjection:
 		f.nativeHistogramAnalyzerHazard = true
 		f.expHistogramNode = true
 	case *chplan.RangeBucketFanout:

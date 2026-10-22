@@ -3,6 +3,7 @@ package chsql
 import (
 	"fmt"
 	"math"
+	"strconv"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -94,12 +95,8 @@ type hqLevelGrouping struct {
 // aliased as the attributes column, and carries the level's quantile as
 // `Value`.
 func hqLevelRows(valued *QueryBuilder, g hqLevelGrouping, levels []chplan.HistogramQuantileLevel) *QueryBuilder {
-	labels := make([]Frag, len(levels))
-	for i, level := range levels {
-		labels[i] = InlineLit(level.Label)
-	}
 	expanded := NewQuery().Select(Star(), As(
-		Call("arrayJoin", Call("arrayZip", Array(labels...), Col(hqLevelsColumn))),
+		Call("arrayJoin", Call("arrayZip", hqLevelLabels(levels), Col(hqLevelsColumn))),
 		hqLevelColumn,
 	)).From(Subquery(valued))
 
@@ -111,12 +108,32 @@ func hqLevelRows(valued *QueryBuilder, g hqLevelGrouping, levels []chplan.Histog
 		}
 		groupFrag := func(b *Builder) { _ = b.Expr(group) }
 		if alias == g.attributesColumn {
-			query.Select(As(Call("mapConcat", groupFrag, Call("map", InlineLit(g.labelName), TupleIndex(Col(hqLevelColumn), 1))), alias))
+			query.Select(As(g.levelKey(groupFrag, alias), alias))
 		} else {
 			query.SelectAs(groupFrag, alias)
 		}
 	}
 	return query.Select(As(TupleIndex(Col(hqLevelColumn), 2), "Value"))
+}
+
+// hqLevelLabels is the array of level labels, positionally aligned with the
+// per-level quantile array the plural emitters zip it with.
+func hqLevelLabels(levels []chplan.HistogramQuantileLevel) Frag {
+	labels := make([]Frag, len(levels))
+	for i, level := range levels {
+		labels[i] = InlineLit(level.Label)
+	}
+	return Array(labels...)
+}
+
+// levelKey is the output value of the group key published as alias, on a row
+// whose expanded level is hqLevelColumn: the key itself, except that the key
+// published as the attributes column also carries labelName=Level.Label.
+func (g hqLevelGrouping) levelKey(key Frag, alias string) Frag {
+	if alias != g.attributesColumn {
+		return key
+	}
+	return Call("mapConcat", key, Call("map", InlineLit(g.labelName), TupleIndex(Col(hqLevelColumn), 1)))
 }
 
 func sharedPrometheusQuantilesAggregate(h *chplan.HistogramQuantile, levels []chplan.HistogramQuantileLevel, helpers hqClassicHelperColumns) Frag {
@@ -211,22 +228,46 @@ func (e *emitter) emitHistogramQuantilesNative(q *chplan.HistogramQuantilesNativ
 	// Every level reads the same once-bound walk arrays (hqNativeBindPrepared)
 	// inside this single SELECT — including binding the reverse-walk array
 	// only when needsReverse, so a plan that never reaches the backward arm
-	// pays for no extra array walk — and only the rank position and
-	// interpolation are per level.
+	// pays for no extra array walk. Only the rank position and interpolation
+	// are per level, and each level binds its own stop index, running count
+	// and value index once (hqNativeBoundValue), exactly as the single-phi
+	// emitter does.
 	values := hqNativeBindPrepared(&h, needsReverse, func(helpers hqNativeHelperColumns) Frag {
 		perLevel := make([]Frag, len(q.Levels))
 		for i, level := range q.Levels {
 			levelHistogram := h
 			levelHistogram.Phi, levelHistogram.PhiExpr = level.Phi, nil
-			perLevel[i] = histogramQuantileNativeValueFrag(&levelHistogram, helpers)
+			perLevel[i] = hqNativeBoundValue(&levelHistogram, helpers, hqNativeLevelSuffix(i))
 		}
 		return Array(perLevel...)
 	})
-	valued := NewQuery().Select(Star(), As(values, hqLevelsColumn)).From(sub)
-	return e.emitSelect(hqLevelRows(valued, hqLevelGrouping{
+	grouping := hqLevelGrouping{
 		groupBy:          h.GroupBy,
 		groupByAliases:   h.GroupByAliases,
 		attributesColumn: h.AttributesColumn,
 		labelName:        q.LabelName,
-	}, q.Levels))
+	}
+	// As in the single-phi emitter, when every output key is an input column
+	// the fields are bound straight off the ARRAY JOIN materialization
+	// boundary's tuple, and the levels expand through this same SELECT's
+	// ARRAY JOIN, so one SELECT sits over the folded-histogram subtree instead
+	// of the three derived queries hqLevelRows stacks over it.
+	row := h.Input.RowType()
+	if keys, fields, ok := hqNativeInlineUnpack(&h, row); ok {
+		levels := hqNativeLet(fields, func() Frag { return values })
+		sb := NewQuery().From(histogramInputBoundary(sub, row)).
+			ArrayJoin(As(Call("arrayZip", hqLevelLabels(q.Levels), levels), hqLevelColumn))
+		for _, key := range keys {
+			sb.Select(As(grouping.levelKey(histogramInputField(key.index), key.alias), key.alias))
+		}
+		return e.emitSelect(sb.Select(As(TupleIndex(Col(hqLevelColumn), 2), "Value")))
+	}
+	valued := NewQuery().Select(Star(), As(values, hqLevelsColumn)).From(sub)
+	return e.emitSelect(hqLevelRows(valued, grouping, q.Levels))
+}
+
+// hqNativeLevelSuffix names level i's per-phi bindings apart from every other
+// level's inside the one SELECT [emitHistogramQuantilesNative] renders.
+func hqNativeLevelSuffix(i int) string {
+	return "_" + strconv.Itoa(i+1)
 }
