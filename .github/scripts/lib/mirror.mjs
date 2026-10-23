@@ -127,6 +127,9 @@ export const mirroredImages = [
   // reuse the querylog floor (24.8.14.39) and the chserver floor (25.3.14.14) above.
   'clickhouse/clickhouse-server:26.5.7.64-alpine',
   'clickhouse/clickhouse-server:26.8.10.6-alpine',
+  // test/chserver's analyzer-posture probe: the first line whose analyzer is
+  // mandatory.
+  'clickhouse/clickhouse-server:26.9.25.15-alpine',
 
   // Reference backends the three heads are diffed against, plus the reference
   // Prometheus the PromQL surface gate probes and the reference Mimir the
