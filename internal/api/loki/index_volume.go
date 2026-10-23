@@ -357,7 +357,7 @@ func buildIndexVolumeSQL(
 	served := normalizedLabelsFrag(chsql.Col(volumeStoredLabelsAlias))
 	bytesFrag := chsql.As(chsql.Call("sum", chsql.Col(volumeStoredBytesAlias)), "bytes")
 
-	sb := chsql.NewQuery().From(chsql.Subquery(stored))
+	sb := chsql.NewQuery().From(chsql.Subquery(stored)).WithSchemaStrategies(strategies)
 	if aggregateBy == aggregateByLabels {
 		sb.Select(chsql.As(volumeLabelNameMapFrag(), "labels"), bytesFrag).
 			ArrayJoin(chsql.As(chsql.Call("mapKeys", served), volumeLabelNameAlias))

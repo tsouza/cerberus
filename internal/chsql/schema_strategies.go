@@ -93,6 +93,10 @@ type SchemaStrategiesCell struct {
 	// (SetPrewhereByServer), so a later Store of re-probed strategies keeps
 	// it.
 	prewhereByServer atomic.Bool
+
+	// canonicalMapTypeCast is stamped on every signal's strategies at Load
+	// (SetCanonicalMapTypeCast), the same way prewhereByServer is.
+	canonicalMapTypeCast atomic.Bool
 }
 
 // NewSchemaStrategiesCell returns a cell holding r.
@@ -103,7 +107,7 @@ func NewSchemaStrategiesCell(r ResolvedSchemaStrategies) *SchemaStrategiesCell {
 }
 
 // Load returns the strategies the cell holds, each signal's carrying the
-// cell's PrewhereByServer.
+// cell's PrewhereByServer and CanonicalMapTypeCast.
 func (c *SchemaStrategiesCell) Load() ResolvedSchemaStrategies {
 	if c == nil {
 		return ResolvedSchemaStrategies{}
@@ -116,6 +120,10 @@ func (c *SchemaStrategiesCell) Load() ResolvedSchemaStrategies {
 	r.Metrics.PrewhereByServer = byServer
 	r.Logs.PrewhereByServer = byServer
 	r.Traces.PrewhereByServer = byServer
+	typeCast := c.canonicalMapTypeCast.Load()
+	r.Metrics.CanonicalMapTypeCast = typeCast
+	r.Logs.CanonicalMapTypeCast = typeCast
+	r.Traces.CanonicalMapTypeCast = typeCast
 	return r
 }
 
@@ -125,6 +133,14 @@ func (c *SchemaStrategiesCell) Load() ResolvedSchemaStrategies {
 // (chopt.FeatureMoveToPrewhere) before the heads serve.
 func (c *SchemaStrategiesCell) SetPrewhereByServer(byServer bool) {
 	c.prewhereByServer.Store(byServer)
+}
+
+// SetCanonicalMapTypeCast sets the CanonicalMapTypeCast every signal's
+// strategies load with, whatever strategies the cell holds now or is stored
+// later. cmd/cerberus sets it from the resolved optimizations
+// (chopt.FeatureCanonicalMapTypeCast) before the heads serve.
+func (c *SchemaStrategiesCell) SetCanonicalMapTypeCast(typeCast bool) {
+	c.canonicalMapTypeCast.Store(typeCast)
 }
 
 // Store replaces the strategies the cell holds. r's AttrStrategies maps are

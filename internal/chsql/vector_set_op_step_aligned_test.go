@@ -54,20 +54,20 @@ func TestEmitVectorSetOp_StepAlignedMatchKey(t *testing.T) {
 		{
 			name:        "and",
 			op:          chplan.VectorSetAnd,
-			stepAligned: "WHERE (" + chsql.CanonicalKeySQL("`Attributes`") + ", `TimeUnix`) GLOBAL IN (SELECT DISTINCT " + chsql.CanonicalKeySQL("`Attributes`") + ", `TimeUnix` FROM",
-			labelOnly:   "WHERE " + chsql.CanonicalKeySQL("`Attributes`") + " GLOBAL IN (SELECT DISTINCT " + chsql.CanonicalKeySQL("`Attributes`") + " FROM",
+			stepAligned: "WHERE (mapSort(`Attributes`), `TimeUnix`) GLOBAL IN (SELECT DISTINCT mapSort(`Attributes`), `TimeUnix` FROM",
+			labelOnly:   "WHERE mapSort(`Attributes`) GLOBAL IN (SELECT DISTINCT mapSort(`Attributes`) FROM",
 		},
 		{
 			name:        "unless",
 			op:          chplan.VectorSetUnless,
-			stepAligned: "WHERE (" + chsql.CanonicalKeySQL("`Attributes`") + ", `TimeUnix`) GLOBAL NOT IN ((SELECT DISTINCT " + chsql.CanonicalKeySQL("`Attributes`") + ", `TimeUnix` FROM",
-			labelOnly:   "WHERE " + chsql.CanonicalKeySQL("`Attributes`") + " GLOBAL NOT IN ((SELECT DISTINCT " + chsql.CanonicalKeySQL("`Attributes`") + " FROM",
+			stepAligned: "WHERE (mapSort(`Attributes`), `TimeUnix`) GLOBAL NOT IN ((SELECT DISTINCT mapSort(`Attributes`), `TimeUnix` FROM",
+			labelOnly:   "WHERE mapSort(`Attributes`) GLOBAL NOT IN ((SELECT DISTINCT mapSort(`Attributes`) FROM",
 		},
 		{
 			name:        "or",
 			op:          chplan.VectorSetOr,
-			stepAligned: "OVER (PARTITION BY " + chsql.CanonicalKeySQL("`Attributes`") + ", `TimeUnix`)",
-			labelOnly:   "OVER (PARTITION BY " + chsql.CanonicalKeySQL("`Attributes`") + ")",
+			stepAligned: "OVER (PARTITION BY mapSort(`Attributes`), `TimeUnix`)",
+			labelOnly:   "OVER (PARTITION BY mapSort(`Attributes`))",
 		},
 	}
 
@@ -106,12 +106,12 @@ func TestEmitVectorSetOp_MetricNameMatchKey(t *testing.T) {
 		want       string
 		forbidName bool
 	}{
-		{name: "default", want: "PARTITION BY " + chsql.CanonicalKeySQL("`Attributes`"), forbidName: true},
+		{name: "default", want: "PARTITION BY mapSort(`Attributes`)", forbidName: true},
 		{name: "on name", match: chplan.VectorMatch{On: true, Labels: []string{"__name__"}}, want: "PARTITION BY `MetricName`"},
-		{name: "on name and label", match: chplan.VectorMatch{On: true, Labels: []string{"__name__", "series"}}, want: "PARTITION BY tuple(`MetricName`, " + chsql.CanonicalKeyOpen + "mapFilter("},
-		{name: "on ordinary label", match: chplan.VectorMatch{On: true, Labels: []string{"series"}}, want: "PARTITION BY " + chsql.CanonicalKeyOpen + "mapFilter(", forbidName: true},
-		{name: "ignoring name", match: chplan.VectorMatch{Labels: []string{"__name__"}}, want: "PARTITION BY " + chsql.CanonicalKeySQL("`Attributes`"), forbidName: true},
-		{name: "ignoring ordinary label", match: chplan.VectorMatch{Labels: []string{"series"}}, want: "PARTITION BY " + chsql.CanonicalKeyOpen + "mapFilter(", forbidName: true},
+		{name: "on name and label", match: chplan.VectorMatch{On: true, Labels: []string{"__name__", "series"}}, want: "PARTITION BY tuple(`MetricName`, mapSort(mapFilter("},
+		{name: "on ordinary label", match: chplan.VectorMatch{On: true, Labels: []string{"series"}}, want: "PARTITION BY mapSort(mapFilter(", forbidName: true},
+		{name: "ignoring name", match: chplan.VectorMatch{Labels: []string{"__name__"}}, want: "PARTITION BY mapSort(`Attributes`)", forbidName: true},
+		{name: "ignoring ordinary label", match: chplan.VectorMatch{Labels: []string{"series"}}, want: "PARTITION BY mapSort(mapFilter(", forbidName: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

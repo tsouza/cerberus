@@ -3,7 +3,6 @@ package chsql
 import (
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"math"
 	"regexp"
 	"regexp/syntax"
@@ -2584,51 +2583,42 @@ func Cast(f Frag, typ string) Frag {
 	}
 }
 
-// SelfTypedCast returns a Frag rendering f cast to the type ClickHouse
-// parses from f's own type name:
+// CanonicalMap renders the canonical, key-ordered form of a label Map —
+// the series-identity key every GROUP BY, ORDER BY, PARTITION BY and match
+// key over a whole label set binds to — as [chplan.CanonicalMapFunc] over
+// m. Under SchemaStrategies.CanonicalMapTypeCast the call is cast back to
+// the type ClickHouse parses from m's type name:
 //
-//	CAST((<f> AS `_typed_<h>`), toTypeName(`_typed_<h>`))
+//	CAST(mapSort(<m>), toTypeName(<m>))
 //
-// f is rendered once and named by an inline alias, so the cast's type
-// argument reads f's type without repeating f's text; toTypeName is folded
-// to a constant during analysis. The alias is selfTypedAliasPrefix plus
-// the FNV-64a hash of f's rendered SQL and bound arguments, so two
-// renderings of one expression — a SELECT key and its GROUP BY twin —
-// declare the same alias for the same expression, and two different
-// expressions in one scope never share an alias.
-//
-// The cast changes no value and, where f's type already equals the parsed
-// type, ClickHouse executes it as the identity. It exists for a type
-// whose in-memory instance can differ from its parsed instance while
-// printing the same name — see [CanonicalMap].
-func SelfTypedCast(f Frag) Frag {
+// m is rendered once; its text and bound arguments are replayed into
+// toTypeName rather than rendered a second time, and toTypeName is folded
+// to a constant during analysis, so the replayed copy is never evaluated.
+// mapSort keeps its argument's key and value types, so m's type name is
+// the name of the sorted Map's own type and the cast converts no value.
+// canonical_map.go records why the cast exists and why it reads m's type
+// rather than naming the sorted Map with an inline alias.
+func CanonicalMap(m Frag) Frag {
 	return func(b *Builder) {
-		b.sb.WriteString("CAST((")
-		sqlStart, argStart := b.sb.Len(), len(b.args)
-		f(b)
-		alias := selfTypedAlias(b.sb.String()[sqlStart:], b.args[argStart:])
-		b.sb.WriteString(" AS ")
-		b.Ident(alias)
-		b.sb.WriteString("), toTypeName(")
-		b.Ident(alias)
+		typeCast := b.strategies.CanonicalMapTypeCast
+		if typeCast {
+			b.sb.WriteString("CAST(")
+		}
+		b.sb.WriteString(chplan.CanonicalMapFunc)
+		b.sb.WriteByte('(')
+		start, argStart, scanStart := b.sb.Len(), len(b.args), b.physicalScans
+		m(b)
+		b.sb.WriteByte(')')
+		if !typeCast {
+			return
+		}
+		text, argEnd := b.sb.String()[start:b.sb.Len()-1], len(b.args)
+		b.sb.WriteString(", toTypeName(")
+		b.sb.WriteString(text)
+		b.args = append(b.args, b.args[argStart:argEnd]...)
+		b.physicalScans += b.physicalScans - scanStart
 		b.sb.WriteString("))")
 	}
-}
-
-// selfTypedAliasPrefix starts every [SelfTypedCast] alias. No schema
-// column or emitter alias starts with it.
-const selfTypedAliasPrefix = "_typed_"
-
-// selfTypedAlias names a [SelfTypedCast] operand by the content of its
-// rendering: its SQL text and the type and value of each argument it
-// bound, in order.
-func selfTypedAlias(sql string, args []any) string {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(sql))
-	for _, a := range args {
-		_, _ = fmt.Fprintf(h, "\x00%T\x00%v", a, a)
-	}
-	return selfTypedAliasPrefix + strconv.FormatUint(h.Sum64(), 16)
 }
 
 // Array returns a Frag rendering a CH array literal "[<e0>, <e1>, …]".

@@ -7,9 +7,9 @@ import "github.com/tsouza/cerberus/internal/schema"
 // carries: the facts the boot requirements check (internal/preflight) derives
 // from the deployed tables, rather than ones the configuration states.
 //
-// PrewhereByServer is the one field the deployed server, not its tables,
-// decides; it rides here because every emission path already carries this
-// value.
+// PrewhereByServer and CanonicalMapTypeCast are the fields the deployed
+// server, not its tables, decides; they ride here because every emission
+// path already carries this value.
 //
 // One value is scoped to the signal a statement reads — each signal's head
 // reads its own (chsql.ResolvedSchemaStrategies) — so a field another
@@ -67,4 +67,13 @@ type SchemaStrategies struct {
 	// (chsql.SchemaStrategiesCell.SetPrewhereByServer). The zero value keeps
 	// the emitter's own partition (internal/chsql's prewhere.go).
 	PrewhereByServer bool
+
+	// CanonicalMapTypeCast casts every canonical series key — the
+	// key-ordered label Map a GROUP BY, ORDER BY, PARTITION BY or match key
+	// binds to — back to the type ClickHouse parses from its operand's type
+	// name (internal/chsql's CanonicalMap). It is set for every signal when
+	// the resolved optimizations include chopt.FeatureCanonicalMapTypeCast
+	// (chsql.SchemaStrategiesCell.SetCanonicalMapTypeCast). The zero value
+	// renders the bare key-ordering call.
+	CanonicalMapTypeCast bool
 }

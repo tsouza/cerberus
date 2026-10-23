@@ -61,14 +61,14 @@ func emitJoin(t *testing.T, j *chplan.VectorJoin) string {
 func TestMatchKeyFrags_CanonicaliseMapKeys(t *testing.T) {
 	t.Parallel()
 
-	const canonical = chsql.CanonicalKeyOpen
+	const canonical = "mapSort("
 
 	// Map-valued keys — the wrapper must be present, and the raw
 	// (unwrapped) shape must be gone.
 	t.Run("join_default_on_predicate", func(t *testing.T) {
 		t.Parallel()
 		sql := emitJoin(t, matchKeyJoin(chplan.VectorMatch{}))
-		wantOn := "ON " + chsql.CanonicalKeySQL("L.`Attributes`") + " = " + chsql.CanonicalKeySQL("R.`Attributes`")
+		wantOn := "ON mapSort(L.`Attributes`) = mapSort(R.`Attributes`)"
 		if !strings.Contains(sql, wantOn) {
 			t.Errorf("default-matching join ON: missing %q; sql=%s", wantOn, sql)
 		}
@@ -80,13 +80,13 @@ func TestMatchKeyFrags_CanonicaliseMapKeys(t *testing.T) {
 	t.Run("join_ignoring_on_predicate", func(t *testing.T) {
 		t.Parallel()
 		sql := emitJoin(t, matchKeyJoin(chplan.VectorMatch{Labels: []string{"env"}}))
-		wantOn := "ON " + chsql.CanonicalKeySQL("mapFilter((k, v) -> NOT (k IN (?)), L.`Attributes`)", "env") + " = " +
-			chsql.CanonicalKeySQL("mapFilter((k, v) -> NOT (k IN (?)), R.`Attributes`)", "env")
+		wantOn := "ON mapSort(mapFilter((k, v) -> NOT (k IN (?)), L.`Attributes`)) = " +
+			"mapSort(mapFilter((k, v) -> NOT (k IN (?)), R.`Attributes`))"
 		if !strings.Contains(sql, wantOn) {
 			t.Errorf("ignoring() join ON: missing %q; sql=%s", wantOn, sql)
 		}
 		// The roleOne per-side aggregation groups by the same key.
-		wantGroup := "GROUP BY " + chsql.CanonicalKeySQL("mapFilter((k, v) -> NOT (k IN (?)), `Attributes`)", "env")
+		wantGroup := "GROUP BY mapSort(mapFilter((k, v) -> NOT (k IN (?)), `Attributes`))"
 		if !strings.Contains(sql, wantGroup) {
 			t.Errorf("ignoring() join GROUP BY: missing %q; sql=%s", wantGroup, sql)
 		}
@@ -95,7 +95,7 @@ func TestMatchKeyFrags_CanonicaliseMapKeys(t *testing.T) {
 	t.Run("setop_default_signature", func(t *testing.T) {
 		t.Parallel()
 		sql := emitSetOp(t, matchKeySetOp(chplan.VectorMatch{}))
-		want := "WHERE " + chsql.CanonicalKeySQL("`Attributes`") + " GLOBAL IN (SELECT DISTINCT " + chsql.CanonicalKeySQL("`Attributes`") + " FROM"
+		want := "WHERE mapSort(`Attributes`) GLOBAL IN (SELECT DISTINCT mapSort(`Attributes`) FROM"
 		if !strings.Contains(sql, want) {
 			t.Errorf("default-matching set op: missing %q; sql=%s", want, sql)
 		}
@@ -107,8 +107,8 @@ func TestMatchKeyFrags_CanonicaliseMapKeys(t *testing.T) {
 	t.Run("setop_on_labels_signature", func(t *testing.T) {
 		t.Parallel()
 		sql := emitSetOp(t, matchKeySetOp(chplan.VectorMatch{Labels: []string{"job", "dc"}, On: true}))
-		key := chsql.CanonicalKeySQL("mapFilter((k, v) -> k IN (?, ?), `Attributes`)", "job", "dc")
-		want := "WHERE " + key + " GLOBAL IN (SELECT DISTINCT " + key + " FROM"
+		want := "WHERE mapSort(mapFilter((k, v) -> k IN (?, ?), `Attributes`)) GLOBAL IN " +
+			"(SELECT DISTINCT mapSort(mapFilter((k, v) -> k IN (?, ?), `Attributes`)) FROM"
 		if !strings.Contains(sql, want) {
 			t.Errorf("on(labels) set op: missing %q; sql=%s", want, sql)
 		}
@@ -117,8 +117,8 @@ func TestMatchKeyFrags_CanonicaliseMapKeys(t *testing.T) {
 	t.Run("setop_ignoring_signature", func(t *testing.T) {
 		t.Parallel()
 		sql := emitSetOp(t, matchKeySetOp(chplan.VectorMatch{Labels: []string{"env"}}))
-		key := chsql.CanonicalKeySQL("mapFilter((k, v) -> NOT (k IN (?)), `Attributes`)", "env")
-		want := "WHERE " + key + " GLOBAL IN (SELECT DISTINCT " + key + " FROM"
+		want := "WHERE mapSort(mapFilter((k, v) -> NOT (k IN (?)), `Attributes`)) GLOBAL IN " +
+			"(SELECT DISTINCT mapSort(mapFilter((k, v) -> NOT (k IN (?)), `Attributes`)) FROM"
 		if !strings.Contains(sql, want) {
 			t.Errorf("ignoring() set op: missing %q; sql=%s", want, sql)
 		}

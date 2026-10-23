@@ -38,7 +38,7 @@ import (
 //     nothing can prune it; `throwIf` returns 0 on success, hence `= 0`.
 //   - The message is inlined rather than bound as `?`, because ClickHouse
 //     requires throwIf's message to be a compile-time constant.
-var manyToManyGuardSQL = "HAVING throwIf(uniqExact(" + canonicalAttributes + ") > 1, '" +
+var manyToManyGuardSQL = "HAVING throwIf(uniqExact(mapSort(`Attributes`)) > 1, '" +
 	chplan.ManyToManyMatchMessage + "') = 0"
 
 func TestLower_VectorMatch_Cardinality(t *testing.T) {
@@ -209,7 +209,7 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		// aggregation is wrapped in an outer Project that renames
 		// `_join_*` aliases back to canonical names, so the GROUP BY
 		// clause closes with `)) AS L`.
-		if !strings.Contains(sql, "GROUP BY "+canonicalAttributes+")) AS L") {
+		if !strings.Contains(sql, "GROUP BY mapSort(`Attributes`))) AS L") {
 			t.Errorf("expected left side per-series aggregation; got:\n%s", sql)
 		}
 		// The "one" (right) side aggregates by the matching key with
@@ -244,7 +244,7 @@ func TestLower_VectorMatch_Cardinality(t *testing.T) {
 		// emits a constant `'' AS _join_MetricName` (joinMetricNameFrag)
 		// instead of reading the operand's MetricName. The per-side outer
 		// Project closes the inner agg's GROUP BY with a second `)`.
-		if !strings.Contains(sql, "GROUP BY "+canonicalAttributes+")) AS R") {
+		if !strings.Contains(sql, "GROUP BY mapSort(`Attributes`))) AS R") {
 			t.Errorf("expected right side per-series aggregation; got:\n%s", sql)
 		}
 		// Output MetricName is empty (arithmetic V-V drops `__name__`

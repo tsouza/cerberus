@@ -71,8 +71,7 @@ func TestIndexVolume_HappyPath(t *testing.T) {
 	if !strings.Contains(lastSQL, "LIMIT 100") {
 		t.Errorf("default limit absent: %q", lastSQL)
 	}
-	if !strings.Contains(lastSQL, canonicalOpen+"mapFilter((k, v) -> v != ?, map(?, `ResourceAttributes`[?]))) AS `_typed_") ||
-		!strings.Contains(lastSQL, "`)) AS `"+loki.StoredLabelsAlias+"`") {
+	if !strings.Contains(lastSQL, "mapSort(mapFilter((k, v) -> v != ?, map(?, `ResourceAttributes`[?]))) AS `"+loki.StoredLabelsAlias+"`") {
 		t.Errorf("stored-key pre-aggregation should group by the projection onto the matcher labels: %q", lastSQL)
 	}
 }
@@ -119,10 +118,10 @@ func TestIndexVolume_SeriesKeyIsTheMatcherLabels(t *testing.T) {
 		// The projected key: a two-entry map literal (`cluster` read off
 		// the attribute map, `service_name` through its hoisted-column
 		// resolution), absent labels filtered — never the bare full map.
-		if !strings.Contains(lastSQL, canonicalOpen+"mapFilter((k, v) -> v != ?, map(?, `ResourceAttributes`[?], ?, coalesce(nullIf(`ServiceName`, ?)") {
+		if !strings.Contains(lastSQL, "mapSort(mapFilter((k, v) -> v != ?, map(?, `ResourceAttributes`[?], ?, coalesce(nullIf(`ServiceName`, ?)") {
 			t.Errorf("series key should be the projection onto the matcher labels: %q", lastSQL)
 		}
-		if strings.Contains(lastSQL, canonicalLabelsCol+" AS `"+loki.StoredLabelsAlias+"`") {
+		if strings.Contains(lastSQL, "mapSort(`ResourceAttributes`) AS `"+loki.StoredLabelsAlias+"`") {
 			t.Errorf("series key must not be the full attribute map: %q", lastSQL)
 		}
 		// The map literal renders first in the SELECT and binds its keys
@@ -142,7 +141,7 @@ func TestIndexVolume_SeriesKeyIsTheMatcherLabels(t *testing.T) {
 
 	// labels without targetLabels: every label the stream carries.
 	lastSQL := get(t, `query=%7Bservice_name%3D~%22.%2B%22%7D&aggregateBy=labels`)
-	if !strings.Contains(lastSQL, canonicalLabelsCol+" AS `"+loki.StoredLabelsAlias+"`") {
+	if !strings.Contains(lastSQL, "mapSort(`ResourceAttributes`) AS `"+loki.StoredLabelsAlias+"`") {
 		t.Errorf("labels aggregation without targetLabels should charge every label (full RA map): %q", lastSQL)
 	}
 }

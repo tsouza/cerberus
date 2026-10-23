@@ -221,7 +221,7 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 		{
 			name:   "24.8 only aggregation_in_order",
 			server: v(24, 8),
-			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
+			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache, FeatureCanonicalMapTypeCast},
 		},
 		{
 			name:       "25.3 meets condition_cache's floor on a known-unsafe build, no native aggregates",
@@ -388,7 +388,7 @@ func TestResolve_Auto_OldServerExcludesUnsupportedStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache, FeatureCanonicalMapTypeCast)
 	if set.Has(FeatureConditionCache) {
 		t.Error("auto enabled condition_cache on 24.8; needs 25.3")
 	}
@@ -557,7 +557,8 @@ func TestResolve_AutoPlusOptIn_AutoSetStillVersionGated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureColumnarResultDecode, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureColumnarResultDecode, FeatureResultCache,
+		FeatureCanonicalMapTypeCast)
 	if len(warns) != 0 {
 		t.Errorf("auto-skip in a composed selection emitted warnings %v; want none", warns)
 	}
@@ -772,6 +773,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureExpHistogramTwoLevel:         {ID: FeatureExpHistogramTwoLevel, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureQueryLogUnion:                {ID: FeatureQueryLogUnion, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresQueryLogUnionCapability: true},
 		FeatureMoveToPrewhere:               {ID: FeatureMoveToPrewhere, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{From: v(24, 11), Until: v(26, 2)}},
+		FeatureCanonicalMapTypeCast:         {ID: FeatureCanonicalMapTypeCast, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{Until: v(25, 1)}},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))

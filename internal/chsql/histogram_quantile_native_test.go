@@ -337,7 +337,7 @@ func TestEmit_HistogramQuantileNative_SingleSelectOverBoundary(t *testing.T) {
 			groupBy: &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{attributes}},
 			aliases: []string{"Attributes"},
 			wantHeads: []string{
-				"SELECT " + chsql.CanonicalKeySQL("`Attributes`") + " AS `Attributes`, tupleElement(tuple(arrayConcat(",
+				"SELECT mapSort(`Attributes`) AS `Attributes`, tupleElement(tuple(arrayConcat(",
 				"SELECT `_cerb_histogram_input`.1 AS `Attributes`, `_cerb_histogram_input`.2 AS `Count`, ",
 				boundary,
 			},

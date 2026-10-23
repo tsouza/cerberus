@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/chsql"
 )
 
 // vectorJoinArgAndMaxFusionPlan builds a minimal VectorJoin over two plain
@@ -78,7 +77,7 @@ func TestEmitVectorJoin_ArgAndMaxFusion_RoleOne(t *testing.T) {
 		"tupleElement(",
 		// The Attributes-picking argMax (a DIFFERENT pair — argMax by
 		// TimeUnix, no companion max) is untouched by the fusion.
-		"argMax(" + chsql.CanonicalKeySQL("`Attributes`") + ", `TimeUnix`)",
+		"argMax(mapSort(`Attributes`), `TimeUnix`)",
 	} {
 		if !strings.Contains(fusedSQL, want) {
 			t.Errorf("fused roleOne emit missing %q; got:\n%s", want, fusedSQL)

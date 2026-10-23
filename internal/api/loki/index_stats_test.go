@@ -55,7 +55,7 @@ func TestIndexStats_HappyPath(t *testing.T) {
 	// adjudicated against the Go normaliser by
 	// TestNormalizedLabelsFrag_ChDB_MatchesGoNormalizer; here only the
 	// composition is pinned.
-	if !strings.HasPrefix(lastSQL, "SELECT uniqExact("+canonicalOpen) ||
+	if !strings.HasPrefix(lastSQL, "SELECT uniqExact(mapSort(") ||
 		!strings.Contains(lastSQL, "mapKeys(`ResourceAttributes`), mapValues(`ResourceAttributes`)") {
 		t.Errorf("missing served-identity uniqExact in SQL: %q", lastSQL)
 	}

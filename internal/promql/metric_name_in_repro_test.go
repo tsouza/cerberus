@@ -120,7 +120,7 @@ func TestMetricNameQueryRange_RenderedSQLBounded(t *testing.T) {
 	// projection adds a fixed `mapUpdate(sanitize(RA), sanitize(Attributes))`
 	// wrapper per arm; and a `_sum`/`_count` selector unions THREE arms —
 	// histogram (bare), sum (suffixed) and gauge (suffixed) — so a standalone
-	// `<x>_sum` gauge resolves. This 3-arm union renders ~3KB for the
+	// `<x>_sum` gauge resolves. This 3-arm union renders ~2.5KB for the
 	// 64-candidate worst case (vs ~1.6KB for the prior 2-arm union).
 	//
 	// This bounds a SINGLE user query, which is nowhere near 256KB. The
@@ -129,12 +129,8 @@ func TestMetricNameQueryRange_RenderedSQLBounded(t *testing.T) {
 	// which re-measures each built chunk's BOUND byte length and splits it
 	// further (down to one arm) whenever it breaches the budget. So the 256KB
 	// ceiling never depends on this heuristic; the pin just catches a gross
-	// per-query regression. Each arm's canonical series key also carries
-	// chsql.CanonicalMap's fixed spill-safe wrapper — `CAST((mapSort(…) AS
-	// <alias>), toTypeName(<alias>))`, ~76 bytes — so the three arms render
-	// ~3.2KB. 3.5KB leaves margin for that while still failing a key that
-	// repeats its whole Map expression (~4.4KB here).
-	const perQueryBound = 3584
+	// per-query regression. 3KB leaves margin for the gauge arm.
+	const perQueryBound = 3072
 	if len(sql) >= perQueryBound {
 		t.Errorf("single 64-candidate span-metric query rendered %d bytes (want < %d) — gross per-query size regression:\n%.400s",
 			len(sql), perQueryBound, sql)

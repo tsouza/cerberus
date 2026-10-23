@@ -2243,6 +2243,18 @@ const (
 	// (Feature.AutoRange). Every server runs the WHERE-only statement, so an
 	// explicit listing enables it anywhere. Result-equivalent.
 	FeatureMoveToPrewhere = "move_to_prewhere"
+
+	// FeatureCanonicalMapTypeCast casts every canonical series key — the
+	// mapSort-ordered label Map a GROUP BY, ORDER BY, PARTITION BY or match
+	// key binds to — back to the type ClickHouse parses from its operand's
+	// type name (chsql.SchemaStrategies.CanonicalMapTypeCast). Below 25.1
+	// mapSort returns a Map whose inner Tuple is unnamed, a type unequal to
+	// the one an aggregation or sort that spills reads its blocks back as,
+	// so without the cast a spilled GROUP BY over the key fails with
+	// TYPE_MISMATCH; from 25.1 mapSort returns the parsed type and the cast
+	// is the identity, so auto picks it only below 25.1 (Feature.AutoRange).
+	// Result-equivalent on every server.
+	FeatureCanonicalMapTypeCast = "canonical_map_type_cast"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -2840,6 +2852,16 @@ var registry = []Feature{
 		Doc: "emit no explicit PREWHERE on a filtered scan and leave the split to the server's optimize_move_to_prewhere " +
 			"(result-equivalent; auto picks it on server >= 24.11 and < 26.2, where the server's split measured lower peak memory)",
 	},
+	{
+		ID:         FeatureCanonicalMapTypeCast,
+		MinVersion: AlwaysAvailable,
+		Stability:  Stable,
+		AutoSelect: true,
+		AutoRange:  VersionRange{Until: Version{Major: 25, Minor: 1}},
+		Doc: "cast the mapSort-ordered series key back to its operand's parsed type so a GROUP BY or sort over it " +
+			"that spills reads its blocks back (result-equivalent; auto picks it on server < 25.1, where mapSort " +
+			"returns a type the spilled read-back rejects)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -2855,7 +2877,7 @@ var registry = []Feature{
 // lazy_materialization, explain_estimate, cardinality_probe,
 // full_text_index, text_index_line_filter, trace_id_external_table,
 // ts_tag_groups, ts_throw_duplicate_series_if, exp_histogram_two_level,
-// query_log_union, move_to_prewhere).
+// query_log_union, move_to_prewhere, canonical_map_type_cast).
 // The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the

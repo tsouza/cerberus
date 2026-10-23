@@ -30,7 +30,7 @@ RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value gro
     Filter predicate=(ResourceAttributes["job"] = "api")
       Scan(otel_logs)
 -- sql --
-SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT CAST((mapSort(mapFilter((k, v) -> ((k IN (?, ?, ?)) OR (k = ?)), `ResourceAttributes`)) AS `_typed_99c637ee09735fe1`), toTypeName(`_typed_99c637ee09735fe1`)) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`
+SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapFilter((k, v) -> ((k IN (?, ?, ?)) OR (k = ?)), `ResourceAttributes`)) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`
 -- parity --
 oracle: loki
 endpoint: /api/v1/query
@@ -51,4 +51,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT CAST((mapSort(mapFilter((k, v) -> ((k IN (?, ?, ?)) OR (k = ?)), `ResourceAttributes`)) AS `_typed_99c637ee09735fe1`), toTypeName(`_typed_99c637ee09735fe1`)) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT `ResourceAttributes`, `Timestamp` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`
+SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapFilter((k, v) -> ((k IN (?, ?, ?)) OR (k = ?)), `ResourceAttributes`)) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT `ResourceAttributes`, `Timestamp` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`

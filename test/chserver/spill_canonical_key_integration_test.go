@@ -13,14 +13,18 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chopt"
+	"github.com/tsouza/cerberus/internal/choptwire"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
 // spillKeyBuilds are the builds the spilled-aggregation probe runs on: the
 // supported floor, whose mapSort returns a Map type unequal to the one its
-// spilled blocks are read back as, and a build whose mapSort returns the
-// parsed type itself.
+// spilled blocks are read back as (auto resolves
+// chopt.FeatureCanonicalMapTypeCast in), and a build whose mapSort returns
+// the parsed type itself (auto leaves it out).
 var spillKeyBuilds = []string{
 	"clickhouse/clickhouse-server:24.8.14.39-alpine",
 	"clickhouse/clickhouse-server:26.6.1.1193-alpine",
@@ -53,7 +57,8 @@ var spillKeyEvalTime = time.Date(2026, 5, 14, 11, 0, 0, 0, time.UTC)
 // TestSpill_CanonicalSeriesKeyAcrossBuilds drives a PromQL aggregation whose
 // series-identity GROUP BY spills to disk through the production Prometheus
 // handler, on a client whose per-query memory cap makes the engine's own
-// spill threshold fire, and requires on every build that the query succeeds
+// spill threshold fire and under the server strategies the build's auto
+// optimizations resolve, and requires on every build that the query succeeds
 // with every series counted once under its reason, and that it did spill —
 // system.query_log records the spilled parts — so a pass is not a query that
 // stayed in memory.
@@ -65,8 +70,16 @@ func TestSpill_CanonicalSeriesKeyAcrossBuilds(t *testing.T) {
 			seedSpillKeyProbe(ctx, t, s)
 
 			client := s.client(t, adminUser, adminPassword, chclient.Config{MaxQueryMemoryBytes: spillKeyQueryMemoryBytes})
+			set, _, err := chopt.Resolve(chopt.Config{Optimizations: chopt.SelectionAuto, Mode: chopt.Permissive}, s.version)
+			if err != nil {
+				t.Fatalf("resolve auto against %s: %v", s.version, err)
+			}
+			cell := chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
+			choptwire.SetServerStrategies(cell, set)
+			handler := prom.New(client, schema.DefaultOTelMetrics(), nil)
+			handler.Strategies = cell
 			mux := http.NewServeMux()
-			prom.New(client, schema.DefaultOTelMetrics(), nil).Mount(mux)
+			handler.Mount(mux)
 
 			qid := fmt.Sprintf("spill-key-probe-%d", time.Now().UnixNano())
 			params := url.Values{}

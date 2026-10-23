@@ -132,7 +132,7 @@ func TestEmitHistogramQuantiles_OneRowPerLevelWithLabelledAttributes(t *testing.
 	computedKey.Histogram.GroupBy = append([]chplan.Expr{
 		&chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}},
 	}, computedKey.Histogram.GroupBy[1:]...)
-	computedStaged := "SELECT mapConcat(" + chsql.CanonicalKeySQL("`Attributes`") + ", map('quantile', `_cerb_hq_level`.1)) AS `Attributes`, " +
+	const computedStaged = "SELECT mapConcat(mapSort(`Attributes`), map('quantile', `_cerb_hq_level`.1)) AS `Attributes`, " +
 		"`MetricName` AS `Metric`, `TimeUnix`, `_cerb_hq_level`.2 AS `Value` " +
 		"FROM (SELECT *, arrayJoin(arrayZip(['0.25', '0.75'], `_cerb_hq_levels`)) AS `_cerb_hq_level` FROM ("
 	for name, tc := range map[string]struct {

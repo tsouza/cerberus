@@ -7,20 +7,14 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/chplan"
-	"github.com/tsouza/cerberus/internal/chsql"
 )
 
 // canonicalLabelsCol is the exact token every Loki metadata query that
 // keys on the whole label-set Map must emit for its identity key: the
-// canonical key rendering applied to the raw attributes column. Rendered
-// through chsql.CanonicalMap so this pin tracks the shared primitive
-// rather than hard-coding a second copy of its shape.
-var canonicalLabelsCol, _ = chsql.Render(chsql.CanonicalMap(chsql.Col("ResourceAttributes")))
-
-// canonicalOpen is the canonical key rendering up to the start of the
-// Map expression it canonicalises, for a key whose inner expression binds
-// arguments (and so whose alias hash a test cannot spell).
-const canonicalOpen = "CAST((" + chplan.CanonicalMapFunc + "("
+// canonical key-order function applied to the raw attributes column.
+// Built from chplan.CanonicalMapFunc so this pin tracks the shared
+// primitive rather than hard-coding a second copy of the function name.
+var canonicalLabelsCol = chplan.CanonicalMapFunc + "(`ResourceAttributes`)"
 
 // labelsAlias is the SELECT alias the three GROUP BY-on-label-set
 // queries project the canonicalised Map under. It MUST differ from the
@@ -85,7 +79,7 @@ func TestMetadataSQL_CanonicalisesWholeMapIdentityKeys(t *testing.T) {
 			// mapValues.
 			name: "index/stats counts distinct canonicalised served label sets",
 			path: `/loki/api/v1/index/stats?query=%7Bjob%3D%22api%22%7D&` + window,
-			want: "uniqExact(" + canonicalOpen + "CAST(",
+			want: "uniqExact(mapSort(CAST(",
 		},
 		{
 			name:  "series groups by the canonicalised label set",
