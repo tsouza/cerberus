@@ -10,6 +10,12 @@
           "ceiling_bytes": 193495866
         },
         {
+          "name": "pod_status_reason_gauge",
+          "expected_status": 200,
+          "max_of_n_bytes": 719589995,
+          "ceiling_bytes": 912680550
+        },
+        {
           "name": "error_ratio_by_namespace",
           "expected_status": 422,
           "max_of_n_bytes": 149378197,
