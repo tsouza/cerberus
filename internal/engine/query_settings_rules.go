@@ -142,8 +142,8 @@ type SettingsRules struct {
 	// nothing is stamped. The cache is result-equivalent on every build the
 	// feature resolves on, so this is safe whenever it fires; the eligibility
 	// check (predicateStableForConditionCache) is still conservative. A plan
-	// the native-histogram analyzer fix stamps enable_analyzer=0 on (below
-	// ClickHouse 26.9, NativeHistogramLegacyAnalyzer) is never stamped: the
+	// the native-histogram analyzer fix stamps enable_analyzer=0 on (unless
+	// AnalyzerMandatory) is never stamped: the
 	// cache is analyzer-gated and the fix's 0 must not be overwritten by this
 	// rule's co-stamp.
 	ConditionCache bool
@@ -275,18 +275,19 @@ type SettingsRules struct {
 	// whose 0 this rule's co-stamp must not overwrite.
 	LazyMaterialization bool
 
-	// NativeHistogramLegacyAnalyzer, when true, stamps enable_analyzer=0 on a
-	// plan carrying the native-histogram analyzer hazard
-	// (applyNativeHistogramAnalyzerFix). Driven by the resolved set's
-	// chopt.EnabledSet.LegacyAnalyzer, which no optimization selection
-	// decides — "off" and an explicit list carry it like "auto" — and which
-	// holds only while every reachable node runs a build below ClickHouse
-	// 26.9: from 26.9 the analyzer is mandatory and the server rejects
-	// enable_analyzer=0 with code 452, so the flag is false there, nothing is
-	// stamped, and the plan runs under the analyzer like every other plan —
-	// including the condition-cache and lazy-materialisation co-stamps the
-	// hazard otherwise suppresses.
-	NativeHistogramLegacyAnalyzer bool
+	// AnalyzerMandatory, when true, withholds the enable_analyzer=0 stamp
+	// applyNativeHistogramAnalyzerFix puts on a plan carrying the
+	// native-histogram analyzer hazard: a reachable node runs ClickHouse 26.9
+	// or newer, where the analyzer is mandatory and enable_analyzer=0 is
+	// rejected with code 452. The plan then runs under the analyzer like every
+	// other plan — including the condition-cache and lazy-materialisation
+	// co-stamps the hazard otherwise suppresses. Driven by the resolved set's
+	// chopt.EnabledSet.AnalyzerMandatory, which no optimization selection
+	// decides: "off" and an explicit list carry it like "auto". The zero value
+	// keeps the stamp, so an engine whose settings were never wired (a bare
+	// prom.New harness) runs these plans under the older analyzer, as every
+	// server below 26.9 does.
+	AnalyzerMandatory bool
 
 	// Metrics / Traces / Logs are the schema instances whose SortingKeyPrefix
 	// the aggregation-in-order eligibility check reads to map a scanned table
@@ -328,7 +329,7 @@ func (r SettingsRules) enabledOpts() []string {
 	if r.LazyMaterialization {
 		opts = append(opts, "lazy_materialization")
 	}
-	if r.NativeHistogramLegacyAnalyzer {
+	if !r.AnalyzerMandatory {
 		opts = append(opts, "native_histogram_legacy_analyzer")
 	}
 	if r.QueryWorkload != "" {
@@ -573,8 +574,8 @@ func applySortedSlabOverTimeMemoryBound(ctx context.Context, f planShapeFacts) c
 //
 // From 26.9 the analyzer is mandatory: the server rejects enable_analyzer=0
 // with code 452 (SETTING_CONSTRAINT_VIOLATION), and 26.10 accepts it again but
-// ignores it. The stamp is therefore gated on rules.NativeHistogramLegacyAnalyzer,
-// which holds only while no reachable node runs such a build
+// ignores it. The stamp is therefore withheld under rules.AnalyzerMandatory,
+// which holds once any reachable node runs such a build
 // (chopt.AnalyzerMandatory). That is the server's own ceiling, not a
 // performance choice: on every server that can still take the stamp, the
 // stamp is applied.
@@ -685,11 +686,11 @@ func applyNativeHistogramAnalyzerFix(ctx context.Context, f planShapeFacts, rule
 
 // legacyAnalyzerStamped reports whether applyNativeHistogramAnalyzerFix
 // stamps enable_analyzer=0 on the plan f was inspected from: the plan
-// carries the hazard and the server still lets the analyzer be disabled
-// (NativeHistogramLegacyAnalyzer). applyFacts reads the same answer, so its
+// carries the hazard and the servers still let the analyzer be disabled
+// (not AnalyzerMandatory). applyFacts reads the same answer, so its
 // analyzer co-stamps are suppressed exactly when the fix fires.
 func (r SettingsRules) legacyAnalyzerStamped(f planShapeFacts) bool {
-	return f.nativeHistogramAnalyzerHazard && r.NativeHistogramLegacyAnalyzer
+	return f.nativeHistogramAnalyzerHazard && !r.AnalyzerMandatory
 }
 
 // settingGroupByTwoLevelThresholdBytes is the ClickHouse setting naming the

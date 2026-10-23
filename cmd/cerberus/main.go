@@ -1400,7 +1400,7 @@ var supportedFloorVersion = chopt.Version{Major: 24, Minor: 8}
 // collapsing what would otherwise be five separate statements in run() into
 // one call + the mandatory error check.
 func startCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chopt.EnabledSet, *chOptLive, chOptResolution, error) {
-	optRes, err := resolveCHOptimizations(ctx, logger, client, cfg)
+	optRes, err := resolveCHOptimizations(ctx, logger, client, cfg, liveFleetProber(*cfg))
 	if err != nil {
 		return chopt.EnabledSet{}, nil, chOptResolution{}, err
 	}
@@ -1416,7 +1416,7 @@ func startCHOptReprobe(ctx context.Context, logger *slog.Logger, cfg config.Conf
 }
 
 // resolveCHOptimizations probes the build of every ClickHouse node cerberus
-// can reach (liveFleetProber) and resolves the CERBERUS_CH_OPTIMIZATIONS
+// can reach (probeFleet; liveFleetProber in production) and resolves the CERBERUS_CH_OPTIMIZATIONS
 // auto-picker against the oldest of them at boot (fleetResolutionVersion),
 // returning the EnabledSet the process starts on. It back-fills
 // cfg.ExperimentalTSGridRange from the resolved set so the legacy ts-grid
@@ -1437,12 +1437,12 @@ func startCHOptReprobe(ctx context.Context, logger *slog.Logger, cfg config.Conf
 // reprobeCHOptimizations reaches a server that answers. A genuine CONFIG fault
 // (unknown feature id, or an unsupported explicit id under enforcing) is still
 // fatal — that is a typo/operator error, independent of connectivity.
-func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chOptResolution, error) {
+func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config, probeFleet fleetProber) (chOptResolution, error) {
 	rawQueryWorkload := cfg.CHQueryWorkload
 	// The fleet probe reads every node cerberus can reach; resolution runs
-	// against the oldest of them and the condition-cache override below reads
-	// the same pass.
-	fleet := liveFleetProber(*cfg)(ctx)
+	// against the oldest of them, and the analyzer decision and the
+	// condition-cache override below read the same pass.
+	fleet := probeFleet(ctx)
 	resolvedVersion, err := fleetResolutionVersion(fleet, nil)
 	versionFallback := err != nil
 	if err != nil {
@@ -1496,8 +1496,8 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	}
 	// The set is resolved against the oldest node, but a single node on a
 	// mandatory-analyzer build refuses enable_analyzer=0, so the analyzer
-	// decision reads the whole pass (legacyAnalyzerAllowed).
-	set = set.WithLegacyAnalyzer(legacyAnalyzerAllowed(fleet, set.LegacyAnalyzer()))
+	// decision reads the whole pass (analyzerMandatoryOnFleet).
+	set = set.WithAnalyzerMandatory(analyzerMandatoryOnFleet(fleet, set.AnalyzerMandatory()))
 	for _, w := range warnings {
 		logger.Warn("ch_opt: " + w)
 	}
@@ -1598,7 +1598,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"server_query_workload_capability", queryWorkloadCapability.String(),
 		"enabled", strings.Join(set.IDs(), ","),
 		"query_condition_cache_forced_off", client.QueryConditionCacheDisabled(),
-		"native_histogram_legacy_analyzer", set.LegacyAnalyzer(),
+		"analyzer_mandatory", set.AnalyzerMandatory(),
 	)
 	return chOptResolution{
 		Set:              set,

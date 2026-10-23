@@ -412,8 +412,13 @@ func TestApplySortedSlabOverTimeMemoryBound_NestedStampsMaxBlockSize(t *testing.
 }
 
 // legacyAnalyzerRules is the rule set a fleet below ClickHouse 26.9 resolves:
-// its set permits the legacy analyzer, so the fix stamps.
-var legacyAnalyzerRules = SettingsRules{NativeHistogramLegacyAnalyzer: true}
+// the analyzer is not mandatory, so the fix stamps. It is the zero value,
+// which is also what an engine whose settings were never wired runs under.
+var legacyAnalyzerRules = SettingsRules{}
+
+// mandatoryAnalyzerRules is the rule set a fleet with a node on ClickHouse
+// 26.9 or newer resolves: the fix stamps nothing.
+var mandatoryAnalyzerRules = SettingsRules{AnalyzerMandatory: true}
 
 // TestApplyNativeHistogramAnalyzerFix_AnalyzerMandatoryStampsNothing — on a
 // server where the analyzer is mandatory (ClickHouse >= 26.9, which rejects
@@ -430,7 +435,7 @@ func TestApplyNativeHistogramAnalyzerFix_AnalyzerMandatoryStampsNothing(t *testi
 			if !f.nativeHistogramAnalyzerHazard {
 				t.Fatalf("plan carries no analyzer hazard; the test no longer exercises the gate")
 			}
-			ctx := applyNativeHistogramAnalyzerFix(context.Background(), f, SettingsRules{})
+			ctx := applyNativeHistogramAnalyzerFix(context.Background(), f, mandatoryAnalyzerRules)
 			if got, ok := chclient.QuerySettingsFromContext(ctx)[settingEnableAnalyzer]; ok {
 				t.Errorf("enable_analyzer = %v stamped; want no stamp when the analyzer is mandatory", got)
 			}
@@ -454,7 +459,7 @@ func TestApplyFacts_AnalyzerMandatoryCoStampsOnHazardPlan(t *testing.T) {
 			f.nativeHistogramAnalyzerHazard, predicateStableForConditionCache(f))
 	}
 
-	mandatory := SettingsRules{ConditionCache: true}.applyFacts(context.Background(), f)
+	mandatory := SettingsRules{ConditionCache: true, AnalyzerMandatory: true}.applyFacts(context.Background(), f)
 	if got, want := settingValue(mandatory, settingUseQueryConditionCache), 1; got != want {
 		t.Errorf("analyzer mandatory: use_query_condition_cache = %v; want %v", got, want)
 	}
@@ -462,7 +467,7 @@ func TestApplyFacts_AnalyzerMandatoryCoStampsOnHazardPlan(t *testing.T) {
 		t.Errorf("analyzer mandatory: enable_analyzer = %v; want %v", got, want)
 	}
 
-	legacy := SettingsRules{ConditionCache: true, NativeHistogramLegacyAnalyzer: true}.applyFacts(context.Background(), f)
+	legacy := SettingsRules{ConditionCache: true}.applyFacts(context.Background(), f)
 	if got := settingValue(legacy, settingUseQueryConditionCache); got != nil {
 		t.Errorf("legacy analyzer: use_query_condition_cache = %v; want no stamp", got)
 	}

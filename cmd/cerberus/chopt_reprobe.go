@@ -266,10 +266,10 @@ func reprobeCHOptimizations(
 			refreshConditionCacheOverride(logger, consumers.client, fleet)
 		}
 		inForce := live.get()
-		legacyAnalyzer := legacyAnalyzerAllowed(fleet, inForce.Set.LegacyAnalyzer())
+		analyzerMandatory := analyzerMandatoryOnFleet(fleet, inForce.Set.AnalyzerMandatory())
 		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload, fleet, &inForce)
 		if !ok {
-			if legacyAnalyzer == inForce.Set.LegacyAnalyzer() {
+			if analyzerMandatory == inForce.Set.AnalyzerMandatory() {
 				// The resolution in force is unchanged, so the delay is
 				// derived from it: still on the floor means still retrying
 				// fast.
@@ -280,7 +280,7 @@ func reprobeCHOptimizations(
 			// decision: install it on the resolution in force.
 			next = inForce
 		}
-		next.Set = next.Set.WithLegacyAnalyzer(legacyAnalyzer)
+		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory)
 		prev := live.get()
 		timer.Reset(nextReprobeDelay(next, interval))
 		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion && next.QueryWorkload == prev.QueryWorkload {
@@ -302,8 +302,8 @@ func reprobeCHOptimizations(
 			"previous_enabled", strings.Join(prev.Set.IDs(), ","),
 			"query_workload", next.QueryWorkload,
 			"previous_query_workload", prev.QueryWorkload,
-			"native_histogram_legacy_analyzer", next.Set.LegacyAnalyzer(),
-			"previous_native_histogram_legacy_analyzer", prev.Set.LegacyAnalyzer(),
+			"analyzer_mandatory", next.Set.AnalyzerMandatory(),
+			"previous_analyzer_mandatory", prev.Set.AnalyzerMandatory(),
 		)
 	}
 }

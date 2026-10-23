@@ -4290,7 +4290,8 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   `::stop-commands::<token>` and `::<token>::` (random token per run), so the
   `::error::` / `::warning::` / `::notice::` lines a suite's failure-path cases
   print stay log text instead of becoming annotations. The child runs without
-  `NODE_TEST_CONTEXT`, which would otherwise make it skip every file.
+  `NODE_TEST_CONTEXT`, which would otherwise make it skip every file. A failed
+  run prints one `::error::` naming its suites after the resume marker.
   - Usage: `node .github/scripts/run-node-tests.mjs <suite.test.mjs>...`
   - Env: `GITHUB_ACTIONS` (`true` prints the markers).
   - Exit: the exit code of `node --test`; `1` when no suite is named or the

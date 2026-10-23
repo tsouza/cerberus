@@ -82,11 +82,11 @@ var analyzerShapes = []analyzerShape{
 
 // TestNativeHistogram_AnalyzerPostureAcrossBuilds drives native-histogram
 // PromQL through the production Prometheus handler under the settings rules
-// the build's auto optimizations resolve, and requires on every build that
-// each query answers with data. It also checks the version policy
-// chopt records, under every analyzerSelections entry alike: the resolved
-// set's LegacyAnalyzer holds exactly below 26.9, where system.query_log shows
-// the query ran with the analyzer disabled; from 26.9 the query must not carry
+// each analyzerSelections entry resolves on the build, and requires on every
+// build that each query answers with data. It also checks the version policy
+// chopt records, under every selection alike: the resolved set reports the
+// analyzer mandatory exactly from 26.9; below it, system.query_log shows the
+// query ran with the analyzer disabled, and from it the query must not carry
 // enable_analyzer=0, which the server refuses.
 func TestNativeHistogram_AnalyzerPostureAcrossBuilds(t *testing.T) {
 	for _, image := range analyzerBuilds {
@@ -105,9 +105,9 @@ func TestNativeHistogram_AnalyzerPostureAcrossBuilds(t *testing.T) {
 			for _, selection := range analyzerSelections {
 				t.Run(selection, func(t *testing.T) {
 					set := chopttest.ResolveEnabledSet(ctx, t, s.admin, selection)
-					legacy := set.LegacyAnalyzer()
+					legacy := !set.AnalyzerMandatory()
 					if mandatory := s.version.AtLeast(analyzerMandatorySince); legacy == mandatory {
-						t.Fatalf("selection %q resolves LegacyAnalyzer() = %v on %s; want it exactly below 26.9", selection, legacy, s.version)
+						t.Fatalf("selection %q resolves the legacy analyzer = %v on %s; want it exactly below 26.9", selection, legacy, s.version)
 					}
 					rules := choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
 					handler := prom.New(client, schema.DefaultOTelMetrics(), nil)

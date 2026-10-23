@@ -52,10 +52,22 @@ test('under Actions the suites run between a stop marker and its own resume mark
   assert.ok(stop < command && command < resume, `want stop < ::error::boom < resume, got ${stop}, ${command}, ${resume}:\n${res.stdout}`);
 });
 
-test('a failing suite fails the wrapper', () => {
-  const res = runWrapper([suite(false)], true);
+test('a failing suite fails the wrapper and names it after the resume marker', () => {
+  const failing = suite(false);
+  const res = runWrapper([failing], true);
   assert.notEqual(res.status, 0);
-  assert.match(res.stdout, /^::stop-commands::/m);
+  const lines = res.stdout.split('\n');
+  const stop = lines.findIndex((l) => l.startsWith('::stop-commands::'));
+  assert.notEqual(stop, -1, `no stop marker in:\n${res.stdout}`);
+  const resume = lines.indexOf(`::${lines[stop].slice('::stop-commands::'.length)}::`);
+  const named = lines.findIndex((l) => l.startsWith('::error::run-node-tests:') && l.includes(failing));
+  assert.ok(resume !== -1 && named > resume, `want the failure named after the resume marker, got resume ${resume}, error ${named}:\n${res.stdout}`);
+});
+
+test('a passing suite prints no failure annotation', () => {
+  const res = runWrapper([suite(true)], true);
+  assert.equal(res.status, 0, res.stderr);
+  assert.doesNotMatch(res.stdout, /^::error::run-node-tests:/m);
 });
 
 test('outside Actions no markers are printed', () => {

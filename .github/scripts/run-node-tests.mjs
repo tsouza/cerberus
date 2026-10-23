@@ -16,6 +16,10 @@
 //   GITHUB_ACTIONS — when `true`, the stop/resume markers are printed;
 //                    elsewhere the suites run with no markers.
 //
+// A failed run prints one `::error::` naming its suites after the resume
+// marker, so the step's annotation says which suites failed; the failures
+// themselves are in the log.
+//
 // Exit: the exit code of `node --test`; 1 when no suite is named or the
 // child is killed by a signal.
 
@@ -52,7 +56,11 @@ export function run(suites, { inActions = process.env.GITHUB_ACTIONS === 'true',
     error(`run-node-tests: could not start node --test: ${child.error.message}`);
     return 1;
   }
-  return child.status ?? 1;
+  const status = child.status ?? 1;
+  if (status !== 0) {
+    error(`run-node-tests: ${suites.join(' ')} failed (${child.signal ?? `exit ${status}`}); see the log above for the failing tests`);
+  }
+  return status;
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {

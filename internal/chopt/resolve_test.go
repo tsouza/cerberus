@@ -1598,19 +1598,19 @@ func TestAnalyzerMandatory(t *testing.T) {
 	}
 }
 
-// TestResolve_LegacyAnalyzerIgnoresSelection pins that whether a query may
-// disable the analyzer is read off the build alone: auto, off, an explicit
-// list without auto, and a permissive list all resolve it the same way, and it
-// never appears among the ids.
-func TestResolve_LegacyAnalyzerIgnoresSelection(t *testing.T) {
+// TestResolve_AnalyzerMandatoryIgnoresSelection pins that whether a query may
+// no longer disable the analyzer is read off the build alone: auto, off, an
+// explicit list without auto, and a permissive list all resolve it the same
+// way, and it never appears among the ids.
+func TestResolve_AnalyzerMandatoryIgnoresSelection(t *testing.T) {
 	for _, server := range []struct {
 		version Version
 		want    bool
 	}{
-		{Version{Major: 24, Minor: 8}, true},
-		{Version{Major: 26, Minor: 8, Patch: 10, Build: 6}, true},
-		{Version{Major: 26, Minor: 9, Patch: 25, Build: 15}, false},
-		{Version{Major: 26, Minor: 10}, false},
+		{Version{Major: 24, Minor: 8}, false},
+		{Version{Major: 26, Minor: 8, Patch: 10, Build: 6}, false},
+		{Version{Major: 26, Minor: 9, Patch: 25, Build: 15}, true},
+		{Version{Major: 26, Minor: 10}, true},
 	} {
 		for _, cfg := range []Config{
 			{Optimizations: SelectionAuto},
@@ -1622,8 +1622,8 @@ func TestResolve_LegacyAnalyzerIgnoresSelection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Resolve(%q) on %s: %v", cfg.Optimizations, server.version, err)
 			}
-			if got := set.LegacyAnalyzer(); got != server.want {
-				t.Errorf("Resolve(%q) on %s: LegacyAnalyzer() = %v; want %v", cfg.Optimizations, server.version, got, server.want)
+			if got := set.AnalyzerMandatory(); got != server.want {
+				t.Errorf("Resolve(%q) on %s: AnalyzerMandatory() = %v; want %v", cfg.Optimizations, server.version, got, server.want)
 			}
 			if slices.Contains(set.IDs(), "native_histogram_legacy_analyzer") {
 				t.Errorf("Resolve(%q) on %s: IDs() = %v; the analyzer fact is not a feature id", cfg.Optimizations, server.version, set.IDs())
@@ -1632,25 +1632,29 @@ func TestResolve_LegacyAnalyzerIgnoresSelection(t *testing.T) {
 	}
 }
 
-// TestEnabledSet_WithLegacyAnalyzer pins that the override replaces only the
-// analyzer fact and that Equal sees it, so a re-probe that learns a node now
-// runs a mandatory-analyzer build swaps the rules even though no id moved.
-func TestEnabledSet_WithLegacyAnalyzer(t *testing.T) {
+// TestEnabledSet_WithAnalyzerMandatory pins that the override replaces only
+// the analyzer fact, that Equal sees it — so a re-probe that learns a node now
+// runs a mandatory-analyzer build swaps the rules even though no id moved —
+// and that a set nobody resolved keeps the stamp.
+func TestEnabledSet_WithAnalyzerMandatory(t *testing.T) {
+	if (EnabledSet{}).AnalyzerMandatory() {
+		t.Fatal("the zero EnabledSet reports the analyzer mandatory; an unresolved set must keep the stamp")
+	}
 	set, _, err := Resolve(Config{Optimizations: SelectionAuto}, Version{Major: 26, Minor: 8})
 	if err != nil {
 		t.Fatal(err)
 	}
-	withheld := set.WithLegacyAnalyzer(false)
-	if withheld.LegacyAnalyzer() || !set.LegacyAnalyzer() {
-		t.Fatalf("WithLegacyAnalyzer(false): got %v, original %v; want false, true", withheld.LegacyAnalyzer(), set.LegacyAnalyzer())
+	mandatory := set.WithAnalyzerMandatory(true)
+	if !mandatory.AnalyzerMandatory() || set.AnalyzerMandatory() {
+		t.Fatalf("WithAnalyzerMandatory(true): got %v, original %v; want true, false", mandatory.AnalyzerMandatory(), set.AnalyzerMandatory())
 	}
-	if !slices.Equal(withheld.IDs(), set.IDs()) {
-		t.Errorf("WithLegacyAnalyzer changed the ids: %v -> %v", set.IDs(), withheld.IDs())
+	if !slices.Equal(mandatory.IDs(), set.IDs()) {
+		t.Errorf("WithAnalyzerMandatory changed the ids: %v -> %v", set.IDs(), mandatory.IDs())
 	}
-	if set.Equal(withheld) {
-		t.Error("Equal reports sets that disagree on LegacyAnalyzer as equal")
+	if set.Equal(mandatory) {
+		t.Error("Equal reports sets that disagree on AnalyzerMandatory as equal")
 	}
-	if !set.Equal(withheld.WithLegacyAnalyzer(true)) {
+	if !set.Equal(mandatory.WithAnalyzerMandatory(false)) {
 		t.Error("Equal reports sets with the same ids and analyzer fact as different")
 	}
 }

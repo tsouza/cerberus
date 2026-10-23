@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -45,7 +46,7 @@ var compositionRuleFlags = []settingsRuleFlag{
 	{"LogCommentShape", func(r *SettingsRules) { r.LogCommentShape = true }},
 	{"ResultCache", func(r *SettingsRules) { r.ResultCache = true }},
 	{"LazyMaterialization", func(r *SettingsRules) { r.LazyMaterialization = true }},
-	{"NativeHistogramLegacyAnalyzer", func(r *SettingsRules) { r.NativeHistogramLegacyAnalyzer = true }},
+	{"AnalyzerMandatory", func(r *SettingsRules) { r.AnalyzerMandatory = true }},
 	{"QueryWorkload", func(r *SettingsRules) { r.QueryWorkload = "cerberus_queries" }},
 }
 
@@ -99,7 +100,7 @@ func compositionContributors() []settingsContributor {
 	}
 	for _, f := range compositionRuleFlags {
 		switch f.name {
-		case "JoinSpill", "ExpHistogramTwoLevel", "NativeHistogramLegacyAnalyzer":
+		case "JoinSpill", "ExpHistogramTwoLevel", "AnalyzerMandatory":
 			// Applied by the dedicated bound above, not by SettingsRules.apply.
 			continue
 		}
@@ -109,11 +110,11 @@ func compositionContributors() []settingsContributor {
 				if !flagIsSet(rules, f) {
 					return ctx
 				}
-				// NativeHistogramLegacyAnalyzer is not a contributor of its
+				// AnalyzerMandatory is not a contributor of its
 				// own here but decides whether the analyzer co-stamps fire on
 				// a hazard plan, so each isolated rule carries its value.
 				only := onlyFlag(f)
-				only.NativeHistogramLegacyAnalyzer = rules.NativeHistogramLegacyAnalyzer
+				only.AnalyzerMandatory = rules.AnalyzerMandatory
 				return only.apply(ctx, plan)
 			},
 		})
@@ -144,8 +145,8 @@ func flagIsSet(rules SettingsRules, f settingsRuleFlag) bool {
 		return rules.ResultCache == probe.ResultCache
 	case "LazyMaterialization":
 		return rules.LazyMaterialization == probe.LazyMaterialization
-	case "NativeHistogramLegacyAnalyzer":
-		return rules.NativeHistogramLegacyAnalyzer == probe.NativeHistogramLegacyAnalyzer
+	case "AnalyzerMandatory":
+		return rules.AnalyzerMandatory == probe.AnalyzerMandatory
 	case "QueryWorkload":
 		return rules.QueryWorkload == probe.QueryWorkload
 	}
@@ -312,15 +313,13 @@ func describeWriters(values map[string][]string) string {
 // the two analyzer-gated rules (condition cache, lazy materialisation) stamp
 // nothing — they are inert under enable_analyzer=0 anyway, so a stamp would
 // only misreport the query's posture in system.query_log. On a server where
-// the analyzer is mandatory (NativeHistogramLegacyAnalyzer off, ClickHouse
-// >= 26.9) the fix stamps nothing and the co-stamps fire as on any plan.
+// the analyzer is mandatory (AnalyzerMandatory, ClickHouse >= 26.9) the fix stamps nothing and the co-stamps fire as on any plan.
 func TestSharedQuerySettings_AnalyzerFixWinsOverCoStamps(t *testing.T) {
 	t.Parallel()
 
 	rules := compositionBaseRules()
 	rules.ConditionCache = true
 	rules.LazyMaterialization = true
-	rules.NativeHistogramLegacyAnalyzer = true
 	plan := &chplan.Limit{
 		Count: 20,
 		Input: &chplan.OrderBy{
@@ -344,7 +343,7 @@ func TestSharedQuerySettings_AnalyzerFixWinsOverCoStamps(t *testing.T) {
 	// The analyzer is mandatory: nothing holds enable_analyzer at 0, so the
 	// co-stamps fire on the hazard plan too and the composed value is 1.
 	mandatory := rules
-	mandatory.NativeHistogramLegacyAnalyzer = false
+	mandatory.AnalyzerMandatory = true
 	got = chclient.QuerySettingsFromContext(applySharedQuerySettings(context.Background(), shapeOf(plan), testQueryMemoryCap, mandatory))
 	if v := got[settingEnableAnalyzer]; v != 1 {
 		t.Errorf("analyzer mandatory: enable_analyzer = %v, want 1 (the co-stamp; 0 is rejected from ClickHouse 26.9)", v)
@@ -392,9 +391,14 @@ func TestSharedQuerySettings_EveryFlagIsEnumerated(t *testing.T) {
 			t.Errorf("enabledOpts reports %q but no single compositionRuleFlags row produces it", opt)
 		}
 	}
-	// LogCommentShape has no enabledOpts id; it is covered by its row above.
-	if len(compositionRuleFlags) != len(wantOpts)+1 {
-		t.Errorf("compositionRuleFlags has %d rows, enabledOpts reports %d ids (+1 for LogCommentShape): a SettingsRules flag is missing a row",
+	// LogCommentShape has no enabledOpts id, and AnalyzerMandatory withholds
+	// one (native_histogram_legacy_analyzer, reported only while it is off);
+	// both are covered by their rows above.
+	if len(compositionRuleFlags) != len(wantOpts)+2 {
+		t.Errorf("compositionRuleFlags has %d rows, enabledOpts reports %d ids (+2 for LogCommentShape and AnalyzerMandatory): a SettingsRules flag is missing a row",
 			len(compositionRuleFlags), len(wantOpts))
+	}
+	if !slices.Contains(compositionBaseRules().enabledOpts(), "native_histogram_legacy_analyzer") {
+		t.Error("the flag-free rules do not report native_histogram_legacy_analyzer; the zero value must keep the stamp")
 	}
 }
