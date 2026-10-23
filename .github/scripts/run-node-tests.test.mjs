@@ -45,8 +45,10 @@ test('under Actions the suites run between a stop marker and its own resume mark
   assert.ok(token.length > 0, 'empty token');
   const resume = lines.indexOf(`::${token}::`);
   // node --test relays a suite's stderr onto its own stdout, so the suite's
-  // ::error:: line must sit between the two markers there.
-  const command = lines.indexOf('::error::boom');
+  // ::error:: line must sit between the two markers there. The spec reporter
+  // relays it as is and the TAP reporter (Node 20's default off a TTY) as a
+  // `# ` comment, so the line is found by its text, not its start.
+  const command = lines.findIndex((l) => l.includes('::error::boom'));
   assert.ok(stop < command && command < resume, `want stop < ::error::boom < resume, got ${stop}, ${command}, ${resume}:\n${res.stdout}`);
 });
 
