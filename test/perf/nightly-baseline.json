@@ -30,8 +30,8 @@
         {
           "name": "native_histogram_quantiles_rate",
           "expected_status": 200,
-          "max_of_n_bytes": 202786338,
-          "ceiling_bytes": 304179507
+          "max_of_n_bytes": 265713297,
+          "ceiling_bytes": 398569945
         },
         {
           "name": "label_values_matcher_stock_key",
@@ -95,8 +95,8 @@
         {
           "name": "native_histogram_quantiles_rate",
           "expected_status": 200,
-          "max_of_n_bytes": 257101510,
-          "ceiling_bytes": 385652265
+          "max_of_n_bytes": 266062368,
+          "ceiling_bytes": 399093552
         },
         {
           "name": "label_values_matcher_stock_key",
@@ -160,8 +160,8 @@
         {
           "name": "native_histogram_quantiles_rate",
           "expected_status": 200,
-          "max_of_n_bytes": 212808129,
-          "ceiling_bytes": 319212193
+          "max_of_n_bytes": 302008164,
+          "ceiling_bytes": 453012246
         },
         {
           "name": "label_values_matcher_stock_key",

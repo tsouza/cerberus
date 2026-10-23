@@ -121,7 +121,11 @@ const (
 	// replays of its dispatched statement on a 2-CPU server): 143.3M-193.8M
 	// bytes, max/min = 1.352x. Its memory prong is a backstop — the planning
 	// prong is what separates the plan it guards — so it keeps the
-	// conservative 1.5x (1.5x / 1.352x = 1.11x cushion).
+	// conservative 1.5x (1.5x / 1.352x = 1.11x cushion). On the CI runners
+	// one max-of-5 draw is not enough to calibrate it: unchanged code
+	// measured 212.8M-324.1M on 26.6, 192.4M-265.5M on 24.8 and
+	// 197.5M-264.6M on 25.9 across runs, so each server's bound is the
+	// highest max-of-5 of three calibration runs.
 	nativeQuantilesBaselineHeadroom = 1.50
 )
 
