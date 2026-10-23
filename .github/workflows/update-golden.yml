@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: node --test .github/scripts/manual-golden-update.test.mjs
+      - run: node .github/scripts/run-node-tests.mjs .github/scripts/manual-golden-update.test.mjs
 
   plan:
     name: plan golden shards

@@ -34,7 +34,7 @@ jobs:
           persist-credentials: false
 
       - name: Guard the requeue logic
-        run: node --test .github/scripts/merge-queue-requeue.test.mjs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/merge-queue-requeue.test.mjs
 
       - name: Re-apply the queue label
         env:

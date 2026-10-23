@@ -116,7 +116,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: update-golden-guard self-test
-        run: node --test .github/scripts/update-golden-guard.test.mjs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/update-golden-guard.test.mjs
 
       - name: Check for any in-flight update-golden.yml dispatch against this branch
         if: github.event_name == 'pull_request'

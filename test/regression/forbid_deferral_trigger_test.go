@@ -42,7 +42,7 @@ const (
 
 	// The two steps that make the lane a gate rather than a checkout: the
 	// scanner's own unit guard, then the scan.
-	forbidDeferralUnitStep = "node --test .github/scripts/forbid-deferral.test.mjs"
+	forbidDeferralUnitStep = "node .github/scripts/run-node-tests.mjs .github/scripts/forbid-deferral.test.mjs"
 	forbidDeferralScanStep = "node .github/scripts/forbid-deferral.mjs"
 )
 

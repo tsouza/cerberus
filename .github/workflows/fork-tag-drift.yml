@@ -43,7 +43,7 @@ jobs:
           also-warm: test/oracle/go.mod
 
       - name: fork-tag-drift self-test
-        run: node --test .github/scripts/fork-tag-drift.test.mjs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/fork-tag-drift.test.mjs
 
       - name: Bump stale fork replaces
         env:

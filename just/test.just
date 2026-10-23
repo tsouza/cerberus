@@ -746,7 +746,7 @@ update-nightly-perf-baseline image *sentinels:
 # Prove the perf sentinel gates are still armed on one ClickHouse image by breaking each mechanism. Needs Docker, clean tree.
 perf-nightly-selfcheck image:
     @just _pull-retry {{image}}
-    node --test .github/scripts/perf-nightly-selfcheck.test.mjs
+    node .github/scripts/run-node-tests.mjs .github/scripts/perf-nightly-selfcheck.test.mjs
     PERF_NIGHTLY_CH_IMAGE={{image}} node .github/scripts/perf-nightly-selfcheck.mjs
 
 # Run the solver's mandatory per-shard memory-apportionment real-CH guard:

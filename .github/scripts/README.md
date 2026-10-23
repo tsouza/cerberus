@@ -4276,13 +4276,26 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Tests: `wait-container-ready.test.mjs` (run in `ci.yml`, with a stub
     `docker` on PATH).
 - **`assert-gate-suites-wired.mjs`** — `ci.yml`, the `lint` job. Enumerates
-  every `.github/scripts/**/*.test.mjs` on disk and every literal `node --test
-  <path>` invocation across `.github/workflows/`, and fails on any suite no
-  workflow runs.
+  every `.github/scripts/**/*.test.mjs` on disk and every literal
+  `node .github/scripts/run-node-tests.mjs <path>...` invocation across
+  `.github/workflows/`, and fails on any suite no workflow runs. It also fails
+  on any bare `node --test <suite>` in `.github/workflows/` or `just/`.
   - Env: `REPO_ROOT` (default cwd), `SCRIPTS_DIR` (default
-    `.github/scripts`), `WORKFLOW_DIR` (default `.github/workflows`).
-  - Exit: `0` when every suite is invoked, `1` otherwise.
+    `.github/scripts`), `WORKFLOW_DIR` (default `.github/workflows`),
+    `JUST_DIR` (default `just`).
+  - Exit: `0` when every suite is invoked through the wrapper, `1` otherwise.
   - Tests: `assert-gate-suites-wired.test.mjs` (run in `ci.yml`).
+- **`run-node-tests.mjs`** — every workflow step and just recipe that runs a
+  suite. Runs `node --test` over the named suites between
+  `::stop-commands::<token>` and `::<token>::` (random token per run), so the
+  `::error::` / `::warning::` / `::notice::` lines a suite's failure-path cases
+  print stay log text instead of becoming annotations. The child runs without
+  `NODE_TEST_CONTEXT`, which would otherwise make it skip every file.
+  - Usage: `node .github/scripts/run-node-tests.mjs <suite.test.mjs>...`
+  - Env: `GITHUB_ACTIONS` (`true` prints the markers).
+  - Exit: the exit code of `node --test`; `1` when no suite is named or the
+    child is killed by a signal.
+  - Tests: `run-node-tests.test.mjs` (run in `ci.yml`).
 - **`assert-image-jobs-authenticate.mjs`** — the required `check` lane. Fails
   when a job that acquires an image has not logged in to the registry it
   acquires from. An anonymous pull is not an error: it succeeds until the shared
@@ -4299,9 +4312,9 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `registry-login.mjs` is a login on the same terms.
   - There is no allow-list and no exempted job name. The one shape that looks
     like an acquisition and is not — this lane's own `node --test` of a module
-    that pulls images — is excluded because `node --test` imports a module and
-    runs its tests rather than its CLI, which is a fact about the command and
-    holds for every module.
+    that pulls images, directly or through `run-node-tests.mjs` — is excluded
+    because `node --test` imports a module and runs its tests rather than its
+    CLI, which is a fact about the command and holds for every module.
   - Presence is not order. R5 requires the `ghcr.io` login to run BEFORE the
     Docker Hub one where a job has both: every login is a hard gate, so
     authenticating the fallback ahead of the primary path is what let a Docker

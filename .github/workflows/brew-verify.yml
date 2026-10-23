@@ -101,7 +101,7 @@ jobs:
           echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
 
       - name: brew-smoke self-test
-        run: node --test .github/scripts/brew-smoke.test.mjs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/brew-smoke.test.mjs
 
       - name: install from the tap and smoke the published binary
         env:

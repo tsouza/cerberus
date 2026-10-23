@@ -98,6 +98,6 @@ test('perf-nightly-selfcheck.yml carries no pull_request or push trigger', () =>
 });
 
 test('the self-test runs on the PR path via ci.yml', () => {
-  assert.match(ciWorkflow, /node --test \.github\/scripts\/notify-perf-nightly-selfcheck-failure\.test\.mjs/);
-  assert.match(ciWorkflow, /node --test \.github\/scripts\/perf-nightly-selfcheck\.test\.mjs/);
+  assert.match(ciWorkflow, /node \.github\/scripts\/run-node-tests\.mjs \.github\/scripts\/notify-perf-nightly-selfcheck-failure\.test\.mjs/);
+  assert.match(ciWorkflow, /node \.github\/scripts\/run-node-tests\.mjs \.github\/scripts\/perf-nightly-selfcheck\.test\.mjs/);
 });

@@ -143,7 +143,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Test property gates
-        run: node --test .github/scripts/property-run-heavy.test.mjs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/property-run-heavy.test.mjs
 
       # Computed as a step output rather than a static job-level `env:` GHA
       # expression: a `push` event needs a network call (resolve the source PR

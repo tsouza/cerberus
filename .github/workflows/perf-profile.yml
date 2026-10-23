@@ -137,7 +137,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Test perf-profile run_heavy gate
-        run: node --test .github/scripts/perf-profile-run-heavy.test.mjs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/perf-profile-run-heavy.test.mjs
 
       - id: run_heavy
         name: decide run_heavy

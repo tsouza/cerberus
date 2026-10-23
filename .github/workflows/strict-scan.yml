@@ -543,7 +543,7 @@ jobs:
       # The planner's own guard first: the shards cover every test, and an
       # empty selection or a failed shard cannot pass.
       - name: Guard the shard planner
-        run: node --test .github/scripts/ch-server-safety-shards.test.mjs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/ch-server-safety-shards.test.mjs
       - name: Plan the shards from test/chserver's build table
         id: plan
         run: node .github/scripts/ch-server-safety-shards.mjs plan

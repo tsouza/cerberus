@@ -724,7 +724,7 @@ func assertCILaneContractIsGated(t *testing.T, workflows map[string]ciLaneWorkfl
 }
 
 var ciLaneContractCommands = []string{
-	"node --test .github/scripts/ci-lane-contract.test.mjs",
+	"node .github/scripts/run-node-tests.mjs .github/scripts/ci-lane-contract.test.mjs",
 	"MODE=registry node .github/scripts/ci-lane-contract.mjs",
 }
 

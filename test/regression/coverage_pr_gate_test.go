@@ -18,7 +18,7 @@ const (
 	coveragePlanJobName       = "coverage-plan"
 	coverageEnrollmentJobName = "coverage-enrollment"
 	coverageAggregatorJobName = "coverage"
-	coverageGateTest          = "node --test .github/scripts/coverage-package-floor.test.mjs"
+	coverageGateTest          = "node .github/scripts/run-node-tests.mjs .github/scripts/coverage-package-floor.test.mjs"
 	coverageGateRun           = "node .github/scripts/coverage-package-floor.mjs"
 	// Go setup reaches the upstream Action only through the local composite
 	// (tsouza/cerberus#2676), which warms GOMODCACHE so no job can archive an
@@ -199,7 +199,7 @@ func workflowStepContaining(t *testing.T, job, needle string) string {
 const (
 	coverageMeasurementVerdictStep = "Report the coverage measurement verdict"
 	coverageMeasurementVerdictRun  = "node .github/scripts/coverage-verdict.mjs"
-	coverageMeasurementVerdictTest = "node --test .github/scripts/coverage-verdict.test.mjs"
+	coverageMeasurementVerdictTest = "node .github/scripts/run-node-tests.mjs .github/scripts/coverage-verdict.test.mjs"
 	coverageFloorGateOutcomeExpr   = "steps.floor-gate.outcome"
 	coverageRunHeavyOutputExpr     = "needs.coverage-plan.outputs.run_heavy"
 	// The job-level `env:` entry, at its own indentation. `coverage.yml` also

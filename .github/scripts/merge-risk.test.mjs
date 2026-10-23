@@ -331,7 +331,7 @@ const forbidDeferralWorkflow = readFileSync(resolve('.github/workflows/forbid-de
 
 test('the merge-risk gate rides forbid-deferral.yml and invokes the script', () => {
   assert.match(forbidDeferralWorkflow, /run: node \.github\/scripts\/merge-risk\.mjs/);
-  assert.match(forbidDeferralWorkflow, /run: node --test \.github\/scripts\/merge-risk\.test\.mjs/);
+  assert.match(forbidDeferralWorkflow, /run: node \.github\/scripts\/run-node-tests\.mjs \.github\/scripts\/merge-risk\.test\.mjs/);
 });
 
 test('the job sets Go up through the hardened wrapper, which the attribution needs', () => {

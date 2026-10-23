@@ -100,9 +100,9 @@ jobs:
 
       - name: Guard the gate logic
         run: |
-          node --test .github/scripts/pr-body-check.test.mjs
-          node --test .github/scripts/pr-hygiene-metadata.test.mjs
-          node --test .github/scripts/lib/merge-queue-draft.test.mjs
+          node .github/scripts/run-node-tests.mjs .github/scripts/pr-body-check.test.mjs
+          node .github/scripts/run-node-tests.mjs .github/scripts/pr-hygiene-metadata.test.mjs
+          node .github/scripts/run-node-tests.mjs .github/scripts/lib/merge-queue-draft.test.mjs
 
       # Reject an empty / stub PR description (the `--body 'cat'` incident).
       # PR_BODY is attacker-controlled, so it is passed via env and read by the
@@ -145,9 +145,9 @@ jobs:
       - name: Guard the squash-subject gate logic
         if: github.event_name == 'pull_request'
         run: |
-          node --test .github/scripts/commitlint-pr-title.test.mjs
-          node --test .github/scripts/dependabot-pr-title.test.mjs
-          node --test .github/scripts/commitlint-toolchain.test.mjs
+          node .github/scripts/run-node-tests.mjs .github/scripts/commitlint-pr-title.test.mjs
+          node .github/scripts/run-node-tests.mjs .github/scripts/dependabot-pr-title.test.mjs
+          node .github/scripts/run-node-tests.mjs .github/scripts/commitlint-toolchain.test.mjs
 
       # PR_TITLE is attacker-controlled, so it is passed via env and read by the
       # script — never interpolated into a shell `run:` line, exactly as PR_BODY
@@ -174,7 +174,7 @@ jobs:
       # running this off a release branch would fail on every routine commit.
       - name: Pin the freshness-gate logic
         if: startsWith(github.head_ref, 'release/')
-        run: node --test .github/scripts/verify-changelog-fresh.test.mjs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/verify-changelog-fresh.test.mjs
 
       # verify-changelog-fresh.mjs imports its changelog helpers from
       # prepare-release.mjs (cerberus#2739), which also imports

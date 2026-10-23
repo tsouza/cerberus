@@ -90,5 +90,5 @@ test('perf-nightly-health-notify has issues: write and invokes the script', () =
 });
 
 test('the self-test runs on the PR path via ci.yml', () => {
-  assert.match(ciWorkflow, /node --test \.github\/scripts\/notify-perf-nightly-failure\.test\.mjs/);
+  assert.match(ciWorkflow, /node \.github\/scripts\/run-node-tests\.mjs \.github\/scripts\/notify-perf-nightly-failure\.test\.mjs/);
 });

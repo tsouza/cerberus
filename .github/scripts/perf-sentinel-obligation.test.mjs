@@ -665,5 +665,5 @@ const forbidDeferralWorkflow = readFileSync(resolve('.github/workflows/forbid-de
 
 test('the obligation gate rides forbid-deferral.yml and invokes the script', () => {
   assert.match(forbidDeferralWorkflow, /run: node \.github\/scripts\/perf-sentinel-obligation\.mjs/);
-  assert.match(forbidDeferralWorkflow, /run: node --test \.github\/scripts\/perf-sentinel-obligation\.test\.mjs/);
+  assert.match(forbidDeferralWorkflow, /run: node \.github\/scripts\/run-node-tests\.mjs \.github\/scripts\/perf-sentinel-obligation\.test\.mjs/);
 });

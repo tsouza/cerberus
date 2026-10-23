@@ -46,11 +46,13 @@
 // and such a list is where a real regression goes to hide, because the cheapest
 // way to make a new red job green is to append its name. So the one shape that
 // looked like a violation and is not — `ci.yml`'s discipline lane running
-// `node --test .github/scripts/compose-pull-images.test.mjs`, which mentions an
+// `node .github/scripts/run-node-tests.mjs
+// .github/scripts/compose-pull-images.test.mjs`, which mentions an
 // image-pulling module and pulls nothing — is excluded by a STRUCTURAL fact
-// about the command, not by its name: `node --test X` hands X to the node test
-// runner, which imports the module rather than running its CLI (every module
-// here guards `main` behind an `import.meta.url` check). Anything that has to be
+// about the command, not by its name: `node --test X`, which run-node-tests.mjs
+// runs over its arguments, hands X to the node test runner, which imports the
+// module rather than running its CLI (every module here guards `main` behind
+// an `import.meta.url` check). Anything that has to be
 // excluded has to be excluded by a fact of that kind.
 //
 // HOW IT READS A JOB. A step's text is not evidence on its own — most of the
@@ -80,6 +82,9 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import { error, log, notice } from './lib/gh.mjs';
+
+// runNodeTestsScript runs `node --test` over the suites it is handed.
+const runNodeTestsScript = '.github/scripts/run-node-tests.mjs';
 
 // The acquisition primitives R3 is about: lib/registry.mjs's one policy, under
 // its synchronous single-image driver, its asynchronous one, and the bounded
@@ -948,6 +953,9 @@ class Resolver {
     if (scriptIdx === -1) return;
     const script = expandVars(rest[scriptIdx], scope) ?? rest[scriptIdx];
     if (/\.test\.mjs$/.test(script)) return;
+    // run-node-tests.mjs is `node --test` over its arguments, for the reason
+    // above.
+    if (script === runNodeTestsScript) return;
 
     const source = this.read(script);
     if (source === null) {

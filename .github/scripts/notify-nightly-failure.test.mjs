@@ -206,7 +206,7 @@ test('nightly-health-notify has issues: write and invokes the script', () => {
 });
 
 test('the self-test runs on the PR path via ci.yml', () => {
-  assert.match(ciWorkflow, /node --test \.github\/scripts\/notify-nightly-failure\.test\.mjs/);
+  assert.match(ciWorkflow, /node \.github\/scripts\/run-node-tests\.mjs \.github\/scripts\/notify-nightly-failure\.test\.mjs/);
 });
 
 test('every EXPERIMENTAL lane is a real terminal job the notify step still needs (advisory != dropped)', () => {

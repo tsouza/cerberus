@@ -14,18 +14,27 @@
 // run. Wiring those three fixed the instance; this fixes the class.
 //
 // The check is deliberately structural rather than a list: it enumerates the
-// suites on disk and the `node --test <path>` invocations across the workflow
-// files, and reports the difference. There is no allow-list — a suite that
-// genuinely should not run in CI has no reason to exist.
+// suites on disk and the `node .github/scripts/run-node-tests.mjs <path>`
+// invocations across the workflow files, and reports the difference. There is
+// no allow-list — a suite that genuinely should not run in CI has no reason to
+// exist.
+//
+// Every suite runs through run-node-tests.mjs, never a bare `node --test`: a
+// suite drives its script's failure paths, which print `::error::` workflow
+// commands, and the wrapper pauses the runner's command processing so those
+// lines do not surface as annotations on a green run. A bare `node --test
+// <suite>` in a workflow or a just recipe is therefore reported too.
 //
 // ENV CONTRACT
 //   REPO_ROOT     — repository root. Default `process.cwd()`.
 //   SCRIPTS_DIR   — suites to require. Default `.github/scripts`.
 //   WORKFLOW_DIR  — workflows to scan. Default `.github/workflows`.
+//   JUST_DIR      — just recipe files scanned for a bare `node --test`.
+//                   Default `just`.
 //
 // Exit: 0 when every suite is invoked, 1 otherwise.
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
@@ -44,34 +53,60 @@ function walk(dir, root, out = []) {
   return out;
 }
 
-// invokedSuites — every path named by a `node --test <path>` in the workflows.
-// Matched on the literal path because that is what a workflow actually runs; a
-// glob or a variable would make this gate unable to answer its own question,
-// and is worth failing on rather than guessing about.
+// invokedSuites — every path named by a `node .github/scripts/run-node-tests.mjs
+// <path>...` in the workflows. Matched on the literal paths because that is
+// what a workflow actually runs; a glob or a variable would make this gate
+// unable to answer its own question, and is worth failing on rather than
+// guessing about.
 export function invokedSuites(workflowText) {
   const found = new Set();
-  for (const m of workflowText.matchAll(/node\s+--test\s+(\S+\.test\.mjs)/g)) {
-    found.add(m[1]);
+  for (const m of workflowText.matchAll(/node\s+\.github\/scripts\/run-node-tests\.mjs((?:[ \t]+\S+\.test\.mjs)+)/g)) {
+    for (const p of m[1].trim().split(/\s+/)) found.add(p);
   }
   return found;
 }
 
-export function scan({ root = process.cwd(), scriptsDir = '.github/scripts', workflowDir = '.github/workflows' } = {}) {
+// bareInvocations — every `node --test <suite>` in text, which runs the suite
+// without run-node-tests.mjs and lets its workflow commands reach the runner.
+export function bareInvocations(text) {
+  return [...text.matchAll(/node\s+--test\s+(\S+\.test\.mjs)/g)].map((m) => m[0]);
+}
+
+export function scan({
+  root = process.cwd(),
+  scriptsDir = '.github/scripts',
+  workflowDir = '.github/workflows',
+  justDir = 'just',
+} = {}) {
   const abs = (p) => (isAbsolute(p) ? p : join(root, p));
 
   const suites = walk(abs(scriptsDir), root).filter((p) => p.endsWith(suiteSuffix));
 
   const invoked = new Set();
+  const bare = [];
   for (const file of readdirSync(abs(workflowDir))) {
     if (!file.endsWith('.yml') && !file.endsWith('.yaml')) continue;
-    for (const p of invokedSuites(readFileSync(join(abs(workflowDir), file), 'utf8'))) invoked.add(p);
+    const text = readFileSync(join(abs(workflowDir), file), 'utf8');
+    for (const p of invokedSuites(text)) invoked.add(p);
+    for (const b of bareInvocations(text)) bare.push(`${join(workflowDir, file)}: ${b}`);
+  }
+  if (existsSync(abs(justDir))) {
+    for (const file of readdirSync(abs(justDir))) {
+      if (!file.endsWith('.just')) continue;
+      for (const b of bareInvocations(readFileSync(join(abs(justDir), file), 'utf8'))) bare.push(`${join(justDir, file)}: ${b}`);
+    }
   }
 
-  return { suites, invoked: [...invoked], unwired: suites.filter((s) => !invoked.has(s)) };
+  return { suites, invoked: [...invoked], unwired: suites.filter((s) => !invoked.has(s)), bare };
 }
 
 function main() {
-  const { suites, unwired } = scan();
+  const { suites, unwired, bare } = scan({
+    root: process.env.REPO_ROOT || process.cwd(),
+    scriptsDir: process.env.SCRIPTS_DIR || '.github/scripts',
+    workflowDir: process.env.WORKFLOW_DIR || '.github/workflows',
+    justDir: process.env.JUST_DIR || 'just',
+  });
   if (suites.length === 0) {
     // A gate that passes because it found nothing to check reports the same
     // green as a satisfied one.
@@ -82,8 +117,17 @@ function main() {
     error(
       `${unwired.length} gate test suite(s) are never invoked by any workflow:\n` +
         unwired.map((s) => `  - ${s}`).join('\n') +
-        `\n\nAdd a \`node --test <path>\` step for each. A suite nothing runs reads as coverage ` +
-        `in review and provides none.`,
+        `\n\nAdd a \`node .github/scripts/run-node-tests.mjs <path>\` step for each. A suite nothing ` +
+        `runs reads as coverage in review and provides none.`,
+    );
+    return 1;
+  }
+  if (bare.length > 0) {
+    error(
+      `${bare.length} suite invocation(s) run a bare \`node --test\`:\n` +
+        bare.map((b) => `  - ${b}`).join('\n') +
+        `\n\nRun each through \`node .github/scripts/run-node-tests.mjs <path>\`, which keeps the ` +
+        `workflow commands a suite prints from surfacing as annotations.`,
     );
     return 1;
   }

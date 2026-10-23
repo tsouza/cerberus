@@ -186,13 +186,13 @@ jobs:
         run: node .github/scripts/release-preflight.mjs --self-test
 
       - name: preflight required-set guard
-        run: node --test .github/scripts/release-preflight.test.mjs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/release-preflight.test.mjs
 
       - name: release-source-pr-dashboard-gate self-test
         run: node .github/scripts/release-source-pr-dashboard-gate.mjs --self-test
 
       - name: release-source-pr-dashboard-gate guard
-        run: node --test .github/scripts/release-source-pr-dashboard-gate.test.mjs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/release-source-pr-dashboard-gate.test.mjs
 
       - name: Verify every required lane ran and the commit is fully green
         env:
@@ -678,7 +678,7 @@ jobs:
           echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
 
       - name: brew-smoke self-test
-        run: node --test .github/scripts/brew-smoke.test.mjs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/brew-smoke.test.mjs
 
       - name: install from the tap and smoke the published binary
         env:
