@@ -110,3 +110,17 @@ func TestSchemaStrategiesCell_CanonicalMapTypeCast(t *testing.T) {
 		t.Fatalf("cleared cell still loads CanonicalMapTypeCast: %+v", got)
 	}
 }
+
+// The replayed copy of the operand carries the physical-table reads of the
+// rendered one, so a statement's scan count (Builder.physicalScans) covers
+// both copies the server analyses.
+func TestCanonicalMap_TypeCastReplaysOperandScans(t *testing.T) {
+	t.Parallel()
+
+	operand := Subquery(NewQuery().From(PhysicalTable("otel_metrics_gauge")).Select(Call("any", Col("Attributes"))))
+	_, _, bare := RenderCounted(CanonicalMap(operand))
+	_, _, cast := RenderCounted(UnderSchemaStrategies(typeCastStrategies, CanonicalMap(operand)))
+	if bare != 1 || cast != 2 {
+		t.Fatalf("physical scans: bare=%d cast=%d, want 1 and 2", bare, cast)
+	}
+}
