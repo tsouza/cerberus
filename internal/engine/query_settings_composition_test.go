@@ -45,6 +45,7 @@ var compositionRuleFlags = []settingsRuleFlag{
 	{"LogCommentShape", func(r *SettingsRules) { r.LogCommentShape = true }},
 	{"ResultCache", func(r *SettingsRules) { r.ResultCache = true }},
 	{"LazyMaterialization", func(r *SettingsRules) { r.LazyMaterialization = true }},
+	{"NativeHistogramLegacyAnalyzer", func(r *SettingsRules) { r.NativeHistogramLegacyAnalyzer = true }},
 	{"QueryWorkload", func(r *SettingsRules) { r.QueryWorkload = "cerberus_queries" }},
 }
 
@@ -86,8 +87,8 @@ func compositionContributors() []settingsContributor {
 		{"compare_memory_bound", func(ctx context.Context, plan chplan.Node, memCap int64, _ SettingsRules) context.Context {
 			return applyCompareMemoryBound(ctx, shapeOf(plan), memCap)
 		}},
-		{"native_histogram_analyzer_fix", func(ctx context.Context, plan chplan.Node, _ int64, _ SettingsRules) context.Context {
-			return applyNativeHistogramAnalyzerFix(ctx, shapeOf(plan))
+		{"native_histogram_analyzer_fix", func(ctx context.Context, plan chplan.Node, _ int64, rules SettingsRules) context.Context {
+			return applyNativeHistogramAnalyzerFix(ctx, shapeOf(plan), rules)
 		}},
 		{"sorted_slab_memory_bound", func(ctx context.Context, plan chplan.Node, _ int64, _ SettingsRules) context.Context {
 			return applySortedSlabOverTimeMemoryBound(ctx, shapeOf(plan))
@@ -98,7 +99,7 @@ func compositionContributors() []settingsContributor {
 	}
 	for _, f := range compositionRuleFlags {
 		switch f.name {
-		case "JoinSpill", "ExpHistogramTwoLevel":
+		case "JoinSpill", "ExpHistogramTwoLevel", "NativeHistogramLegacyAnalyzer":
 			// Applied by the dedicated bound above, not by SettingsRules.apply.
 			continue
 		}
@@ -108,7 +109,12 @@ func compositionContributors() []settingsContributor {
 				if !flagIsSet(rules, f) {
 					return ctx
 				}
-				return onlyFlag(f).apply(ctx, plan)
+				// NativeHistogramLegacyAnalyzer is not a contributor of its
+				// own here but decides whether the analyzer co-stamps fire on
+				// a hazard plan, so each isolated rule carries its value.
+				only := onlyFlag(f)
+				only.NativeHistogramLegacyAnalyzer = rules.NativeHistogramLegacyAnalyzer
+				return only.apply(ctx, plan)
 			},
 		})
 	}
@@ -138,6 +144,8 @@ func flagIsSet(rules SettingsRules, f settingsRuleFlag) bool {
 		return rules.ResultCache == probe.ResultCache
 	case "LazyMaterialization":
 		return rules.LazyMaterialization == probe.LazyMaterialization
+	case "NativeHistogramLegacyAnalyzer":
+		return rules.NativeHistogramLegacyAnalyzer == probe.NativeHistogramLegacyAnalyzer
 	case "QueryWorkload":
 		return rules.QueryWorkload == probe.QueryWorkload
 	}
@@ -303,13 +311,16 @@ func describeWriters(values map[string][]string) string {
 // the composed ctx carries enable_analyzer=0 whatever else is enabled, and
 // the two analyzer-gated rules (condition cache, lazy materialisation) stamp
 // nothing — they are inert under enable_analyzer=0 anyway, so a stamp would
-// only misreport the query's posture in system.query_log.
+// only misreport the query's posture in system.query_log. On a server where
+// the analyzer is mandatory (NativeHistogramLegacyAnalyzer off, ClickHouse
+// >= 26.9) the fix stamps nothing and the co-stamps fire as on any plan.
 func TestSharedQuerySettings_AnalyzerFixWinsOverCoStamps(t *testing.T) {
 	t.Parallel()
 
 	rules := compositionBaseRules()
 	rules.ConditionCache = true
 	rules.LazyMaterialization = true
+	rules.NativeHistogramLegacyAnalyzer = true
 	plan := &chplan.Limit{
 		Count: 20,
 		Input: &chplan.OrderBy{
@@ -327,6 +338,20 @@ func TestSharedQuerySettings_AnalyzerFixWinsOverCoStamps(t *testing.T) {
 	for _, key := range []string{settingUseQueryConditionCache, settingQueryPlanOptimizeLazyMaterialization, settingQueryPlanMaxLimitForLazyMaterialization} {
 		if v, ok := got[key]; ok {
 			t.Errorf("%s = %v stamped on a plan running under enable_analyzer=0; the setting is analyzer-gated and inert there", key, v)
+		}
+	}
+
+	// The analyzer is mandatory: nothing holds enable_analyzer at 0, so the
+	// co-stamps fire on the hazard plan too and the composed value is 1.
+	mandatory := rules
+	mandatory.NativeHistogramLegacyAnalyzer = false
+	got = chclient.QuerySettingsFromContext(applySharedQuerySettings(context.Background(), shapeOf(plan), testQueryMemoryCap, mandatory))
+	if v := got[settingEnableAnalyzer]; v != 1 {
+		t.Errorf("analyzer mandatory: enable_analyzer = %v, want 1 (the co-stamp; 0 is rejected from ClickHouse 26.9)", v)
+	}
+	for _, key := range []string{settingUseQueryConditionCache, settingQueryPlanOptimizeLazyMaterialization} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("analyzer mandatory: %s not stamped on the hazard plan; want the co-stamp", key)
 		}
 	}
 

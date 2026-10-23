@@ -24,20 +24,21 @@ const (
 // RunRoundTripSQL retains its own floor-compatible execution configuration.
 func FormatQuerySettings(plan chplan.Node) string {
 	probe := engine.ProbeQuerySettings(plan, engine.SettingsRules{
-		OptimizeAggregationInOrder: true,
-		ConditionCache:             true,
-		TraceIDBitmapFilter:        true,
-		LogCommentShape:            true,
-		ResultCache:                true,
-		LazyMaterialization:        true,
-		JoinSpill:                  true,
-		ExpHistogramTwoLevel:       true,
-		ResultCacheIngestLag:       probeResultCacheIngestLag,
-		ResultCacheTTL:             probeResultCacheTTL,
-		Now:                        func() time.Time { return time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC) },
-		Metrics:                    schema.DefaultOTelMetrics(),
-		Logs:                       schema.DefaultOTelLogs(),
-		Traces:                     schema.DefaultOTelTraces(),
+		OptimizeAggregationInOrder:    true,
+		ConditionCache:                true,
+		TraceIDBitmapFilter:           true,
+		LogCommentShape:               true,
+		ResultCache:                   true,
+		LazyMaterialization:           true,
+		JoinSpill:                     true,
+		ExpHistogramTwoLevel:          true,
+		NativeHistogramLegacyAnalyzer: true,
+		ResultCacheIngestLag:          probeResultCacheIngestLag,
+		ResultCacheTTL:                probeResultCacheTTL,
+		Now:                           func() time.Time { return time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC) },
+		Metrics:                       schema.DefaultOTelMetrics(),
+		Logs:                          schema.DefaultOTelLogs(),
+		Traces:                        schema.DefaultOTelTraces(),
 	}, probeQueryMemoryCap, chsql.SchemaStrategies{})
 	sort.Strings(probe.EnabledOpts)
 	lines := []string{"enabled_opts=" + strings.Join(probe.EnabledOpts, ",")}

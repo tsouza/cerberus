@@ -411,6 +411,66 @@ func TestApplySortedSlabOverTimeMemoryBound_NestedStampsMaxBlockSize(t *testing.
 	}
 }
 
+// legacyAnalyzerRules is the rule set a server below ClickHouse 26.9 resolves:
+// the native_histogram_legacy_analyzer feature is in, so the fix stamps.
+var legacyAnalyzerRules = SettingsRules{NativeHistogramLegacyAnalyzer: true}
+
+// TestApplyNativeHistogramAnalyzerFix_AnalyzerMandatoryStampsNothing — on a
+// server where the analyzer is mandatory (ClickHouse >= 26.9, which rejects
+// enable_analyzer=0 with code 452), the feature is out of the resolved set and
+// the fix stamps nothing on any hazard shape, so the query is not refused.
+func TestApplyNativeHistogramAnalyzerFix_AnalyzerMandatoryStampsNothing(t *testing.T) {
+	plans := map[string]chplan.Node{
+		"quantile":        &chplan.HistogramQuantileNative{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")},
+		"value fn fanout": expHistogramValueFnFanoutPlan(),
+	}
+	for name, plan := range plans {
+		t.Run(name, func(t *testing.T) {
+			f := shapeOf(plan)
+			if !f.nativeHistogramAnalyzerHazard {
+				t.Fatalf("plan carries no analyzer hazard; the test no longer exercises the gate")
+			}
+			ctx := applyNativeHistogramAnalyzerFix(context.Background(), f, SettingsRules{})
+			if got, ok := chclient.QuerySettingsFromContext(ctx)[settingEnableAnalyzer]; ok {
+				t.Errorf("enable_analyzer = %v stamped; want no stamp when the analyzer is mandatory", got)
+			}
+		})
+	}
+}
+
+// TestApplyFacts_AnalyzerMandatoryCoStampsOnHazardPlan — with the legacy
+// analyzer unavailable, nothing holds enable_analyzer at 0 on a hazard plan,
+// so the condition-cache co-stamp is no longer suppressed there: it stamps
+// use_query_condition_cache=1 with enable_analyzer=1, as on any other plan.
+// Under the legacy analyzer the same plan gets neither.
+func TestApplyFacts_AnalyzerMandatoryCoStampsOnHazardPlan(t *testing.T) {
+	plan := &chplan.HistogramQuantileNative{Input: &chplan.Filter{
+		Input:     &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
+		Predicate: &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "MetricName"}, Right: &chplan.LitString{V: "x"}},
+	}}
+	f := shapeOf(plan)
+	if !f.nativeHistogramAnalyzerHazard || !predicateStableForConditionCache(f) {
+		t.Fatalf("plan must carry the hazard and a cacheable predicate (hazard=%v, cacheable=%v)",
+			f.nativeHistogramAnalyzerHazard, predicateStableForConditionCache(f))
+	}
+
+	mandatory := SettingsRules{ConditionCache: true}.applyFacts(context.Background(), f)
+	if got, want := settingValue(mandatory, settingUseQueryConditionCache), 1; got != want {
+		t.Errorf("analyzer mandatory: use_query_condition_cache = %v; want %v", got, want)
+	}
+	if got, want := settingValue(mandatory, settingEnableAnalyzer), 1; got != want {
+		t.Errorf("analyzer mandatory: enable_analyzer = %v; want %v", got, want)
+	}
+
+	legacy := SettingsRules{ConditionCache: true, NativeHistogramLegacyAnalyzer: true}.applyFacts(context.Background(), f)
+	if got := settingValue(legacy, settingUseQueryConditionCache); got != nil {
+		t.Errorf("legacy analyzer: use_query_condition_cache = %v; want no stamp", got)
+	}
+	if got := settingValue(legacy, settingEnableAnalyzer); got != nil {
+		t.Errorf("legacy analyzer: enable_analyzer = %v from applyFacts; want no co-stamp", got)
+	}
+}
+
 // TestApplyNativeHistogramAnalyzerFix_QuantileStampsDisabled — a plan whose
 // root is chplan.HistogramQuantileNative (histogram_quantile() over a native
 // histogram, e.g. cerberus issue #2355's
@@ -420,7 +480,7 @@ func TestApplySortedSlabOverTimeMemoryBound_NestedStampsMaxBlockSize(t *testing.
 func TestApplyNativeHistogramAnalyzerFix_QuantileStampsDisabled(t *testing.T) {
 	plan := &chplan.HistogramQuantileNative{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan), legacyAnalyzerRules)
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -439,7 +499,7 @@ func TestApplyNativeHistogramAnalyzerFix_PluralQuantileStampsDisabled(t *testing
 		Levels:    []chplan.HistogramQuantileLevel{{Phi: 0.5, Label: "0.5"}},
 	}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan), legacyAnalyzerRules)
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -453,7 +513,7 @@ func TestApplyNativeHistogramAnalyzerFix_PluralQuantileStampsDisabled(t *testing
 func TestApplyNativeHistogramAnalyzerFix_ProjectionStampsDisabled(t *testing.T) {
 	plan := &chplan.HistogramProjection{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan), legacyAnalyzerRules)
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -474,7 +534,7 @@ func TestApplyNativeHistogramAnalyzerFix_NestedStampsDisabled(t *testing.T) {
 		}},
 	}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan), legacyAnalyzerRules)
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -487,7 +547,7 @@ func TestApplyNativeHistogramAnalyzerFix_NestedStampsDisabled(t *testing.T) {
 func TestApplyNativeHistogramAnalyzerFix_NonHistogramStampsNothing(t *testing.T) {
 	plan := &chplan.RangeWindow{Input: aggOverScan("otel_metrics_sum", "MetricName")}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan), legacyAnalyzerRules)
 
 	if got := settingValue(ctx, settingEnableAnalyzer); got != nil {
 		t.Errorf("non-histogram plan: enable_analyzer = %v; want absent", got)
@@ -501,7 +561,7 @@ func TestApplyNativeHistogramAnalyzerFix_NonHistogramStampsNothing(t *testing.T)
 // no HistogramQuantileNative/HistogramProjection wrapper ever covers — see
 // planHasNativeHistogramAnalyzerHazard, this fix's other trigger.
 func TestApplyNativeHistogramAnalyzerFix_ValueFnFanoutStampsDisabled(t *testing.T) {
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(expHistogramValueFnFanoutPlan()))
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(expHistogramValueFnFanoutPlan()), legacyAnalyzerRules)
 
 	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
 		t.Errorf("enable_analyzer = %v; want %v", got, want)
@@ -529,7 +589,7 @@ func TestApplyNativeHistogramAnalyzerFix_ClassicFanoutStampsNothing(t *testing.T
 		}},
 	}
 
-	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan))
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), shapeOf(plan), legacyAnalyzerRules)
 
 	if got := settingValue(ctx, settingEnableAnalyzer); got != nil {
 		t.Errorf("classic fan-out: enable_analyzer = %v; want absent", got)

@@ -170,8 +170,9 @@ const SelectionAuto = selectionAuto
 //
 //   - "off"  -> the empty set. "off" is absolute and may NOT be combined with
 //     any other token (off + anything -> FATAL).
-//   - "auto" -> unions in every AUTO-SELECT feature whose MinVersion <= server
-//     and whose AutoRange contains server.
+//   - "auto" -> unions in every AUTO-SELECT feature whose MinVersion <= server,
+//     whose RemovedIn (if set) is above server, and whose AutoRange contains
+//     server.
 //     Auto-eligibility (Feature.AutoSelect) is a separate axis from maturity
 //     (Feature.Stability): most native timeSeries*ToGrid aggregates are
 //     Experimental in maturity yet AutoSelect=true, so auto picks them on a
@@ -271,9 +272,10 @@ func resolveTokens(tokens []string, cfg Config, server Version, enabled map[stri
 				if !f.AutoSelect {
 					continue
 				}
-				if !server.AtLeast(f.MinVersion) || !f.AutoRange.Contains(server) {
-					// Version too old, or outside the range auto picks the
-					// feature in: silent skip, auto is "best available".
+				if !server.AtLeast(f.MinVersion) || f.removedOn(server) || !f.AutoRange.Contains(server) {
+					// Version too old, too new, or outside the range auto
+					// picks the feature in: silent skip, auto is "best
+					// available".
 					continue
 				}
 				if ranges := f.unsafeRanges(server); len(ranges) > 0 {
@@ -361,6 +363,9 @@ func featureBlockReason(f Feature, server Version, cfg Config) string {
 	if !server.AtLeast(f.MinVersion) {
 		return fmt.Sprintf("needs ClickHouse >=%s, server is %s", f.MinVersion, server)
 	}
+	if f.removedOn(server) {
+		return fmt.Sprintf("removed in ClickHouse %s, server is %s", f.RemovedIn, server)
+	}
 	if ranges := f.unsafeRanges(server); len(ranges) > 0 {
 		return unsafeBuildBlockReason(server, ranges)
 	}
@@ -372,13 +377,14 @@ func featureBlockReason(f Feature, server Version, cfg Config) string {
 
 // blockIsNonFatal reports whether feature f's block may degrade with a WARN
 // even for an explicit request under enforcing. It is true only once the
-// version floor passes (a too-old server is a definitive, fatal-eligible
-// block) AND the declared axis either returned an INCONCLUSIVE verdict
-// (Unreachable / Unknown) -- mirroring the version probe's connectivity
-// fallback -- or is an axis whose block always degrades. A definitive block
-// on any other axis (too old, or Forbidden) stays fatal under enforcing.
+// version window passes (a too-old or too-new server is a definitive,
+// fatal-eligible block) AND the declared axis either returned an
+// INCONCLUSIVE verdict (Unreachable / Unknown) -- mirroring the version
+// probe's connectivity fallback -- or is an axis whose block always degrades.
+// A definitive block on any other axis (too old, too new, or Forbidden) stays
+// fatal under enforcing.
 func blockIsNonFatal(f Feature, server Version, cfg Config) bool {
-	if !server.AtLeast(f.MinVersion) {
+	if !server.AtLeast(f.MinVersion) || f.removedOn(server) {
 		return false
 	}
 	if len(f.unsafeRanges(server)) > 0 {

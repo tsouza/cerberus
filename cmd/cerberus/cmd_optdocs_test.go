@@ -95,17 +95,25 @@ func TestOptdocReplaceBlock_RejectsMalformedMarkers(t *testing.T) {
 // TestOptdocRenderMinVersion pins the special case its own comment calls out:
 // the AlwaysAvailable zero floor must read "none", because a literal "0.0"
 // in the published table would tell an operator there is a version
-// requirement to check when there is none.
+// requirement to check when there is none. A RemovedIn ceiling follows the
+// floor, so an operator reads both ends of the window in one cell.
 func TestOptdocRenderMinVersion(t *testing.T) {
-	if got := optdocRenderMinVersion(chopt.AlwaysAvailable); got != "none" {
+	if got := optdocRenderMinVersion(chopt.AlwaysAvailable, chopt.Version{}); got != "none" {
 		t.Errorf("optdocRenderMinVersion(AlwaysAvailable) = %q; want %q", got, "none")
 	}
 	v := chopt.Version{Major: 25, Minor: 8}
-	if got, want := optdocRenderMinVersion(v), v.String(); got != want {
+	if got, want := optdocRenderMinVersion(v, chopt.Version{}), v.String(); got != want {
 		t.Errorf("optdocRenderMinVersion(%v) = %q; want %q", v, got, want)
 	}
-	if got := optdocRenderMinVersion(chopt.Version{Major: 25, Minor: 8}); got == "none" {
+	if got := optdocRenderMinVersion(chopt.Version{Major: 25, Minor: 8}, chopt.Version{}); got == "none" {
 		t.Errorf("a real version floor rendered as %q; want the version, not the no-floor sentinel", "none")
+	}
+	removedIn := chopt.Version{Major: 26, Minor: 9}
+	if got, want := optdocRenderMinVersion(chopt.AlwaysAvailable, removedIn), "none (removed in 26.9)"; got != want {
+		t.Errorf("optdocRenderMinVersion(AlwaysAvailable, %v) = %q; want %q", removedIn, got, want)
+	}
+	if got, want := optdocRenderMinVersion(v, removedIn), "25.8 (removed in 26.9)"; got != want {
+		t.Errorf("optdocRenderMinVersion(%v, %v) = %q; want %q", v, removedIn, got, want)
 	}
 }
 

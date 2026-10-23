@@ -423,16 +423,17 @@ func downsampleAndSlabLowerers(l *promql.RangeLowerers, optSet chopt.EnabledSet)
 // silently hollow out a max-of-N memory measurement.
 func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.Traces, logs schema.Logs) engine.SettingsRules {
 	return engine.SettingsRules{
-		OptimizeAggregationInOrder: set.Has(chopt.FeatureAggregationInOrder),
-		ConditionCache:             set.Has(chopt.FeatureConditionCache),
-		JoinSpill:                  set.Has(chopt.FeatureJoinSpill),
-		ExpHistogramTwoLevel:       set.Has(chopt.FeatureExpHistogramTwoLevel),
-		TraceIDBitmapFilter:        set.Has(chopt.FeatureTraceIDBitmapFilter),
-		ResultCache:                set.Has(chopt.FeatureResultCache),
-		LazyMaterialization:        set.Has(chopt.FeatureLazyMaterialization),
-		Metrics:                    metrics,
-		Traces:                     traces,
-		Logs:                       logs,
+		OptimizeAggregationInOrder:    set.Has(chopt.FeatureAggregationInOrder),
+		ConditionCache:                set.Has(chopt.FeatureConditionCache),
+		JoinSpill:                     set.Has(chopt.FeatureJoinSpill),
+		ExpHistogramTwoLevel:          set.Has(chopt.FeatureExpHistogramTwoLevel),
+		TraceIDBitmapFilter:           set.Has(chopt.FeatureTraceIDBitmapFilter),
+		ResultCache:                   set.Has(chopt.FeatureResultCache),
+		LazyMaterialization:           set.Has(chopt.FeatureLazyMaterialization),
+		NativeHistogramLegacyAnalyzer: set.Has(chopt.FeatureNativeHistogramLegacyAnalyzer),
+		Metrics:                       metrics,
+		Traces:                        traces,
+		Logs:                          logs,
 	}
 }
 

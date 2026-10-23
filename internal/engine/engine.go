@@ -465,13 +465,14 @@ func applySharedQuerySettings(ctx context.Context, f planShapeFacts, memCap int6
 	// for the wide attribute Map columns can't blow the budget even after the
 	// aggregation spills.
 	ctx = applyCompareMemoryBound(ctx, f, memCap)
-	// Native-histogram-only: disable ClickHouse's newer query analyzer, whose
-	// cost on the merge/window-fold machinery's deeply nested lambda/arrayMap
-	// expressions is wildly superlinear on the floor-pinned CH 24.8 relative
-	// to the older analyzer (cerberus issue #2355). rules.applyFacts below
+	// Native-histogram-only, below ClickHouse 26.9 (where the analyzer is
+	// mandatory): disable ClickHouse's newer query analyzer, whose cost on the
+	// merge/window-fold machinery's deeply nested lambda/arrayMap expressions
+	// is wildly superlinear on the floor-pinned CH 24.8 relative to the older
+	// analyzer (cerberus issue #2355). rules.applyFacts below
 	// reads the same fact so its analyzer-gated rules never co-stamp
 	// enable_analyzer=1 over this fix's 0 — see that method's own doc.
-	ctx = applyNativeHistogramAnalyzerFix(ctx, f)
+	ctx = applyNativeHistogramAnalyzerFix(ctx, f, rules)
 	// Sorted-slab-eligible shapes only: cap max_block_size at 1 so the
 	// per-anchor arrayFilter/arrayMap intermediates the emitter builds per
 	// series row are freed row-by-row instead of retained across an entire

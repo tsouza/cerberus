@@ -152,7 +152,7 @@ func TestResolve_Auto_EnablesAutoSelectByVersion(t *testing.T) {
 	if !KnownUnsafe(FeatureConditionCache, v(25, 9)) {
 		t.Errorf("25.9 not reported known-unsafe for %q", FeatureConditionCache)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache, FeatureMoveToPrewhere)
@@ -172,7 +172,7 @@ func TestResolve_Auto_NativeAggregatesOffBelow259(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
 	for _, off := range []string{
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
@@ -189,7 +189,7 @@ func TestResolve_Auto_EmptySelectionDefaultsToAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache)
@@ -221,31 +221,31 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 		{
 			name:   "24.8 only aggregation_in_order",
 			server: v(24, 8),
-			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache, FeatureCanonicalMapTypeCast},
+			want:   []string{FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache, FeatureCanonicalMapTypeCast},
 		},
 		{
 			name:       "25.3 meets condition_cache's floor on a known-unsafe build, no native aggregates",
 			server:     v(25, 3),
-			want:       []string{FeatureExpHistogramTwoLevel, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
+			want:       []string{FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
 			wantWarned: []string{FeatureConditionCache},
 		},
 		{
 			name:       "25.6 below the 25.9 native floor (closed-window aggregates)",
 			server:     v(25, 6),
-			want:       []string{FeatureExpHistogramTwoLevel, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
+			want:       []string{FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
 			wantWarned: []string{FeatureConditionCache},
 		},
 		{
 			name:       "25.8 still below the 25.9 native floor",
 			server:     v(25, 8),
-			want:       []string{FeatureExpHistogramTwoLevel, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
+			want:       []string{FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
 			wantWarned: []string{FeatureConditionCache},
 		},
 		{
 			name:   "25.9 adds eleven ts_grid_* features (left-open window; ts_grid_changes stays opt-in)",
 			server: v(25, 9),
 			want: []string{
-				FeatureAggregationInOrder, FeatureExpHistogramTwoLevel, FeatureLagInFrameAdjacency, FeatureMoveToPrewhere,
+				FeatureAggregationInOrder, FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureLagInFrameAdjacency, FeatureMoveToPrewhere,
 				FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 				FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 				FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache,
@@ -344,6 +344,56 @@ func TestResolve_MoveToPrewhere_AutoRange(t *testing.T) {
 	}
 }
 
+func TestResolve_NativeHistogramLegacyAnalyzer_RemovedIn269(t *testing.T) {
+	// From 26.9 the analyzer is mandatory and the server rejects
+	// enable_analyzer=0, so native_histogram_legacy_analyzer is withheld
+	// there in both modes: auto skips it silently, an explicit listing is
+	// refused under enforcing and skipped with a WARN under permissive.
+	// Below 26.9 auto picks it and an explicit listing enables it.
+	cases := []struct {
+		name   string
+		server Version
+		want   bool
+	}{
+		{"24.8 the supported floor", v(24, 8), true},
+		{"26.8.10.6 the last build of the 26.8 LTS line", Version{Major: 26, Minor: 8, Patch: 10, Build: 6}, true},
+		{"26.9 the first line with a mandatory analyzer", v(26, 9), false},
+		{"26.9.25.15 a 26.9 patch build", Version{Major: 26, Minor: 9, Patch: 25, Build: 15}, false},
+		{"26.10 which ignores the setting", v(26, 10), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			set, warns, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable, ResultCacheCapability: CapabilityAvailable}, tc.server)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if got := set.Has(FeatureNativeHistogramLegacyAnalyzer); got != tc.want {
+				t.Errorf("server %v: auto native_histogram_legacy_analyzer = %v; want %v", tc.server, got, tc.want)
+			}
+			if slices.Contains(warnedFeatures(warns), FeatureNativeHistogramLegacyAnalyzer) {
+				t.Errorf("auto warned about native_histogram_legacy_analyzer on %v: %v; want a silent skip", tc.server, warns)
+			}
+			explicit, _, err := Resolve(Config{Optimizations: FeatureNativeHistogramLegacyAnalyzer, Mode: Enforcing}, tc.server)
+			if tc.want {
+				if err != nil || !explicit.Has(FeatureNativeHistogramLegacyAnalyzer) {
+					t.Errorf("server %v: explicit listing under enforcing = %v, err %v; want it enabled", tc.server, explicit, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "removed in ClickHouse 26.9") {
+				t.Errorf("server %v: explicit listing under enforcing err = %v; want a fatal naming the 26.9 removal", tc.server, err)
+			}
+			permissive, pwarns, err := Resolve(Config{Optimizations: FeatureNativeHistogramLegacyAnalyzer, Mode: Permissive}, tc.server)
+			if err != nil || permissive.Has(FeatureNativeHistogramLegacyAnalyzer) {
+				t.Errorf("server %v: explicit listing under permissive = %v, err %v; want it skipped", tc.server, permissive, err)
+			}
+			if !slices.Contains(warnedFeatures(pwarns), FeatureNativeHistogramLegacyAnalyzer) {
+				t.Errorf("server %v: permissive skip emitted no WARN: %v", tc.server, pwarns)
+			}
+		})
+	}
+}
+
 func TestVersionRange(t *testing.T) {
 	r := VersionRange{From: v(24, 11), Until: v(26, 2)}
 	for _, tc := range []struct {
@@ -388,7 +438,7 @@ func TestResolve_Auto_OldServerExcludesUnsupportedStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache, FeatureCanonicalMapTypeCast)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache, FeatureCanonicalMapTypeCast)
 	if set.Has(FeatureConditionCache) {
 		t.Error("auto enabled condition_cache on 24.8; needs 25.3")
 	}
@@ -538,7 +588,7 @@ func TestResolve_AutoPlusOptIn_UnionsBoth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(auto,columnar_result_decode): %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureMoveToPrewhere,
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureMoveToPrewhere,
 		FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
@@ -557,7 +607,7 @@ func TestResolve_AutoPlusOptIn_AutoSetStillVersionGated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureColumnarResultDecode, FeatureResultCache,
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureColumnarResultDecode, FeatureResultCache,
 		FeatureCanonicalMapTypeCast)
 	if len(warns) != 0 {
 		t.Errorf("auto-skip in a composed selection emitted warnings %v; want none", warns)
@@ -702,7 +752,7 @@ func TestResolve_LegacyUnset_NoEffect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
 		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta)
@@ -727,53 +777,54 @@ func TestRegistry_SeededEntries(t *testing.T) {
 	// RequiresResultCacheCapability marks only result_cache, gated on its OWN
 	// boot probe (see capability.go / resolve.go).
 	want := map[string]Feature{
-		FeatureAggregationInOrder:           {ID: FeatureAggregationInOrder, MinVersion: v(24, 8), Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
-		FeatureConditionCache:               {ID: FeatureConditionCache, MinVersion: v(25, 3), Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
-		FeatureTSGridRange:                  {ID: FeatureTSGridRange, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
-		FeatureTSGridIncrease:               {ID: FeatureTSGridIncrease, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
-		FeatureTSGridResample:               {ID: FeatureTSGridResample, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
-		FeatureColumnarResultDecode:         {ID: FeatureColumnarResultDecode, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureTSGridChanges:                {ID: FeatureTSGridChanges, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
-		FeatureTSGridResets:                 {ID: FeatureTSGridResets, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
-		FeatureTSGridDeriv:                  {ID: FeatureTSGridDeriv, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
-		FeatureTSGridPredictLinear:          {ID: FeatureTSGridPredictLinear, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
-		FeatureTSGridInstant:                {ID: FeatureTSGridInstant, MinVersion: v(26, 5), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
-		FeatureTSGridRecollapse:             {ID: FeatureTSGridRecollapse, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
-		FeatureTSGridVectorAgg:              {ID: FeatureTSGridVectorAgg, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
-		FeatureTSGridHistogram:              {ID: FeatureTSGridHistogram, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
-		FeatureQuantilePromHistogram:        {ID: FeatureQuantilePromHistogram, MinVersion: v(25, 10), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureTSGridDelta:                  {ID: FeatureTSGridDelta, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
-		FeatureTSGridIrate:                  {ID: FeatureTSGridIrate, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
-		FeatureTSGridIdelta:                 {ID: FeatureTSGridIdelta, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
-		FeatureLagInFrameAdjacency:          {ID: FeatureLagInFrameAdjacency, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
-		FeatureFixedAccumulatorExtrapolated: {ID: FeatureFixedAccumulatorExtrapolated, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureSortedSlabOverTime:           {ID: FeatureSortedSlabOverTime, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureTSGridGroupArray:             {ID: FeatureTSGridGroupArray, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
-		FeatureMapBucketedSerialization:     {ID: FeatureMapBucketedSerialization, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureTSGridLastOverTime:           {ID: FeatureTSGridLastOverTime, MinVersion: v(26, 6), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
-		FeatureColumnStatistics:             {ID: FeatureColumnStatistics, MinVersion: v(26, 3), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureClassicBucketMergeSumMap:     {ID: FeatureClassicBucketMergeSumMap, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureExpHistogramMergeSumMap:      {ID: FeatureExpHistogramMergeSumMap, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureJoinSpill:                    {ID: FeatureJoinSpill, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
-		FeatureTraceIDProjection:            {ID: FeatureTraceIDProjection, MinVersion: v(25, 5), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureLokiCatalogMV:                {ID: FeatureLokiCatalogMV, MinVersion: v(24, 10), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureTempoTagCatalogMV:            {ID: FeatureTempoTagCatalogMV, MinVersion: v(24, 10), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureTraceIDBitmapFilter:          {ID: FeatureTraceIDBitmapFilter, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
-		FeatureArgAndMaxFusion:              {ID: FeatureArgAndMaxFusion, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
-		FeatureResultCache:                  {ID: FeatureResultCache, MinVersion: v(24, 8), Stability: Stable, AutoSelect: true, RequiresResultCacheCapability: true},
-		FeatureLazyMaterialization:          {ID: FeatureLazyMaterialization, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
-		FeatureExplainEstimate:              {ID: FeatureExplainEstimate, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureCardinalityProbe:             {ID: FeatureCardinalityProbe, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureFullTextIndex:                {ID: FeatureFullTextIndex, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureTextIndexLineFilter:          {ID: FeatureTextIndexLineFilter, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureDownsampleTier:               {ID: FeatureDownsampleTier, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
-		FeatureTraceIDExternalTable:         {ID: FeatureTraceIDExternalTable, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureTSGridTagGroups:              {ID: FeatureTSGridTagGroups, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
-		FeatureTSThrowDuplicateSeriesIf:     {ID: FeatureTSThrowDuplicateSeriesIf, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
-		FeatureExpHistogramTwoLevel:         {ID: FeatureExpHistogramTwoLevel, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
-		FeatureQueryLogUnion:                {ID: FeatureQueryLogUnion, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresQueryLogUnionCapability: true},
-		FeatureMoveToPrewhere:               {ID: FeatureMoveToPrewhere, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{From: v(24, 11), Until: v(26, 2)}},
-		FeatureCanonicalMapTypeCast:         {ID: FeatureCanonicalMapTypeCast, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{Until: v(25, 1)}},
+		FeatureAggregationInOrder:            {ID: FeatureAggregationInOrder, MinVersion: v(24, 8), Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureConditionCache:                {ID: FeatureConditionCache, MinVersion: v(25, 3), Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureTSGridRange:                   {ID: FeatureTSGridRange, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridIncrease:                {ID: FeatureTSGridIncrease, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridResample:                {ID: FeatureTSGridResample, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureColumnarResultDecode:          {ID: FeatureColumnarResultDecode, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTSGridChanges:                 {ID: FeatureTSGridChanges, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
+		FeatureTSGridResets:                  {ID: FeatureTSGridResets, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridDeriv:                   {ID: FeatureTSGridDeriv, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridPredictLinear:           {ID: FeatureTSGridPredictLinear, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridInstant:                 {ID: FeatureTSGridInstant, MinVersion: v(26, 5), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
+		FeatureTSGridRecollapse:              {ID: FeatureTSGridRecollapse, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridVectorAgg:               {ID: FeatureTSGridVectorAgg, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
+		FeatureTSGridHistogram:               {ID: FeatureTSGridHistogram, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureQuantilePromHistogram:         {ID: FeatureQuantilePromHistogram, MinVersion: v(25, 10), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTSGridDelta:                   {ID: FeatureTSGridDelta, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridIrate:                   {ID: FeatureTSGridIrate, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridIdelta:                  {ID: FeatureTSGridIdelta, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureLagInFrameAdjacency:           {ID: FeatureLagInFrameAdjacency, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureFixedAccumulatorExtrapolated:  {ID: FeatureFixedAccumulatorExtrapolated, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureSortedSlabOverTime:            {ID: FeatureSortedSlabOverTime, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTSGridGroupArray:              {ID: FeatureTSGridGroupArray, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
+		FeatureMapBucketedSerialization:      {ID: FeatureMapBucketedSerialization, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTSGridLastOverTime:            {ID: FeatureTSGridLastOverTime, MinVersion: v(26, 6), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
+		FeatureColumnStatistics:              {ID: FeatureColumnStatistics, MinVersion: v(26, 3), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureClassicBucketMergeSumMap:      {ID: FeatureClassicBucketMergeSumMap, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureExpHistogramMergeSumMap:       {ID: FeatureExpHistogramMergeSumMap, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureJoinSpill:                     {ID: FeatureJoinSpill, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureTraceIDProjection:             {ID: FeatureTraceIDProjection, MinVersion: v(25, 5), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureLokiCatalogMV:                 {ID: FeatureLokiCatalogMV, MinVersion: v(24, 10), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTempoTagCatalogMV:             {ID: FeatureTempoTagCatalogMV, MinVersion: v(24, 10), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTraceIDBitmapFilter:           {ID: FeatureTraceIDBitmapFilter, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureArgAndMaxFusion:               {ID: FeatureArgAndMaxFusion, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureResultCache:                   {ID: FeatureResultCache, MinVersion: v(24, 8), Stability: Stable, AutoSelect: true, RequiresResultCacheCapability: true},
+		FeatureLazyMaterialization:           {ID: FeatureLazyMaterialization, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureExplainEstimate:               {ID: FeatureExplainEstimate, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureCardinalityProbe:              {ID: FeatureCardinalityProbe, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureFullTextIndex:                 {ID: FeatureFullTextIndex, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTextIndexLineFilter:           {ID: FeatureTextIndexLineFilter, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureDownsampleTier:                {ID: FeatureDownsampleTier, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
+		FeatureTraceIDExternalTable:          {ID: FeatureTraceIDExternalTable, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTSGridTagGroups:               {ID: FeatureTSGridTagGroups, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTSThrowDuplicateSeriesIf:      {ID: FeatureTSThrowDuplicateSeriesIf, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureExpHistogramTwoLevel:          {ID: FeatureExpHistogramTwoLevel, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureQueryLogUnion:                 {ID: FeatureQueryLogUnion, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresQueryLogUnionCapability: true},
+		FeatureMoveToPrewhere:                {ID: FeatureMoveToPrewhere, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{From: v(24, 11), Until: v(26, 2)}},
+		FeatureCanonicalMapTypeCast:          {ID: FeatureCanonicalMapTypeCast, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{Until: v(25, 1)}},
+		FeatureNativeHistogramLegacyAnalyzer: {ID: FeatureNativeHistogramLegacyAnalyzer, MinVersion: AlwaysAvailable, RemovedIn: v(26, 9), Stability: Stable, AutoSelect: true},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))
@@ -784,7 +835,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 			t.Errorf("unexpected feature %q", f.ID)
 			continue
 		}
-		if f.MinVersion != w.MinVersion || f.AutoRange != w.AutoRange || f.Stability != w.Stability || f.AutoSelect != w.AutoSelect ||
+		if f.MinVersion != w.MinVersion || f.RemovedIn != w.RemovedIn || f.AutoRange != w.AutoRange || f.Stability != w.Stability || f.AutoSelect != w.AutoSelect ||
 			f.RequiresExperimentalTSGrid != w.RequiresExperimentalTSGrid || f.RequiresResultCacheCapability != w.RequiresResultCacheCapability ||
 			f.RequiresQueryLogUnionCapability != w.RequiresQueryLogUnionCapability {
 			t.Errorf("feature %q = %+v; want minVersion/stability/autoSelect/capability axes %+v", f.ID, f, w)
@@ -812,7 +863,7 @@ func TestResolve_Auto_CapabilityForbidden_DropsNativeKeepsStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
 	// 25.9 is also a known-unsafe condition_cache build; its WARN is a
 	// different axis and is set aside before counting the capability ones.
 	var capabilityWarns []string
@@ -852,7 +903,7 @@ func TestResolve_Auto_CapabilityUnreachable_DropsNative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
 	for _, native := range []string{FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets} {
 		if set.Has(native) {
 			t.Errorf("auto enabled %q on an unreachable-capability server; want it dropped", native)
@@ -868,7 +919,7 @@ func TestResolve_Auto_CapabilityUnknown_DropsNative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureNativeHistogramLegacyAnalyzer, FeatureMoveToPrewhere, FeatureAggregationInOrder, FeatureLagInFrameAdjacency)
 }
 
 func TestResolve_ExplicitTSGrid_CapabilityForbidden_EnforcingFatal(t *testing.T) {
