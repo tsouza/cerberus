@@ -221,7 +221,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			chopt.FeatureLagInFrameAdjacency:
 			// A RangeLowerers dispatch strategy (or a modifier on one) —
 			// composed by choptwire.RangeLowerers from the resolved set.
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel, chopt.FeatureMoveToPrewhere, chopt.FeatureCanonicalMapTypeCast, chopt.FeatureNativeHistogramLegacyAnalyzer:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel, chopt.FeatureMoveToPrewhere, chopt.FeatureCanonicalMapTypeCast:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
@@ -275,11 +275,6 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// nor the plan. FeatureCanonicalMapTypeCast likewise decides only
 			// how the emitter renders the canonical series key
 			// (SchemaStrategies.CanonicalMapTypeCast).
-			// FeatureNativeHistogramLegacyAnalyzer is the FeatureJoinSpill
-			// shape again: applyNativeHistogramAnalyzerFix stamps
-			// enable_analyzer=0 on a plan-shape predicate (the native-
-			// histogram analyzer hazard), choosing which ClickHouse planner
-			// runs the plan, never which RangeLowerers strategy built it.
 		default:
 			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know whether it is a "+
 				"RangeLowerers strategy or an emit-time setting — update this helper and, if it is a "+

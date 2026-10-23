@@ -277,13 +277,15 @@ type SettingsRules struct {
 
 	// NativeHistogramLegacyAnalyzer, when true, stamps enable_analyzer=0 on a
 	// plan carrying the native-histogram analyzer hazard
-	// (applyNativeHistogramAnalyzerFix). Driven by the
-	// native_histogram_legacy_analyzer registry feature, which resolves in
-	// only below ClickHouse 26.9: from 26.9 the analyzer is mandatory and the
-	// server rejects enable_analyzer=0 with code 452, so the flag is false
-	// there, nothing is stamped, and the plan runs under the analyzer like
-	// every other plan — including the condition-cache and
-	// lazy-materialisation co-stamps the hazard otherwise suppresses.
+	// (applyNativeHistogramAnalyzerFix). Driven by the resolved set's
+	// chopt.EnabledSet.LegacyAnalyzer, which no optimization selection
+	// decides — "off" and an explicit list carry it like "auto" — and which
+	// holds only while every reachable node runs a build below ClickHouse
+	// 26.9: from 26.9 the analyzer is mandatory and the server rejects
+	// enable_analyzer=0 with code 452, so the flag is false there, nothing is
+	// stamped, and the plan runs under the analyzer like every other plan —
+	// including the condition-cache and lazy-materialisation co-stamps the
+	// hazard otherwise suppresses.
 	NativeHistogramLegacyAnalyzer bool
 
 	// Metrics / Traces / Logs are the schema instances whose SortingKeyPrefix
@@ -572,8 +574,8 @@ func applySortedSlabOverTimeMemoryBound(ctx context.Context, f planShapeFacts) c
 // From 26.9 the analyzer is mandatory: the server rejects enable_analyzer=0
 // with code 452 (SETTING_CONSTRAINT_VIOLATION), and 26.10 accepts it again but
 // ignores it. The stamp is therefore gated on rules.NativeHistogramLegacyAnalyzer,
-// which the native_histogram_legacy_analyzer feature resolves in only below
-// 26.9 (chopt.Feature.RemovedIn). That is the server's own ceiling, not a
+// which holds only while no reachable node runs such a build
+// (chopt.AnalyzerMandatory). That is the server's own ceiling, not a
 // performance choice: on every server that can still take the stamp, the
 // stamp is applied.
 //
@@ -606,10 +608,11 @@ func applySortedSlabOverTimeMemoryBound(ctx context.Context, f planShapeFacts) c
 // supported range, and change the stamp only if THAT measurement says to.
 //
 // It is an execution-PLANNER choice, not a result rewrite — RESULT-EQUIVALENT
-// like every other rule in this file — so it is unconditional (no CERBERUS_*
-// opt-in) and always stamped when the plan shape matches, mirroring
-// applyCompareMemoryBound's always-on treatment of a validated, plan-shape-
-// gated fix rather than SettingsRules' operator-opt-in rules.
+// like every other rule in this file — so it has no CERBERUS_* opt-in and no
+// chopt selection: it is stamped whenever the plan shape matches and the
+// servers still permit it, mirroring applyCompareMemoryBound's always-on
+// treatment of a validated, plan-shape-gated fix rather than SettingsRules'
+// operator-opt-in rules.
 //
 // Two OTHER levers were tried and measured flat before this one: hoisting
 // promHistogramKahanSum's shared fold lambda into a query-level

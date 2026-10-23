@@ -2255,18 +2255,6 @@ const (
 	// is the identity, so auto picks it only below 25.1 (Feature.AutoRange).
 	// Result-equivalent on every server.
 	FeatureCanonicalMapTypeCast = "canonical_map_type_cast"
-
-	// FeatureNativeHistogramLegacyAnalyzer runs every native-histogram plan
-	// under ClickHouse's older query analyzer (enable_analyzer=0, stamped by
-	// the engine's applyNativeHistogramAnalyzerFix): the newer analyzer's
-	// planning cost on the merge/window-fold machinery's nested
-	// lambda/arrayMap expressions is superlinear, and on the shapes measured
-	// the older one runs about 5x faster. From 26.9 the analyzer is mandatory
-	// and ClickHouse rejects enable_analyzer=0 (code 452,
-	// SETTING_CONSTRAINT_VIOLATION; 26.10 accepts it again but ignores it), so
-	// the feature is removed there (Feature.RemovedIn): auto leaves it out and
-	// an explicit listing is refused. Result-equivalent.
-	FeatureNativeHistogramLegacyAnalyzer = "native_histogram_legacy_analyzer"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -2371,13 +2359,6 @@ type Feature struct {
 	// listing enables it on any server meeting MinVersion. The zero value
 	// contains every server.
 	AutoRange VersionRange
-	// RemovedIn is the first release line that can no longer run the
-	// feature: the server rejects or ignores what the feature stamps. A
-	// server at or above it has the feature withheld in both modes, auto
-	// skips it silently, and an explicit request is refused under
-	// enforcing, exactly as a server below MinVersion is. The zero value
-	// sets no ceiling.
-	RemovedIn Version
 	Doc       string
 }
 
@@ -2439,11 +2420,6 @@ func (r BuildRange) Contains(v Version) bool {
 }
 
 // unsafeRanges returns every UnsafeBuilds range containing server.
-// removedOn reports whether server is at or above f's RemovedIn ceiling.
-func (f Feature) removedOn(server Version) bool {
-	return f.RemovedIn != (Version{}) && server.AtLeast(f.RemovedIn)
-}
-
 func (f Feature) unsafeRanges(server Version) []BuildRange {
 	var out []BuildRange
 	for _, r := range f.UnsafeBuilds {
@@ -2460,6 +2436,19 @@ func (f Feature) unsafeRanges(server Version) []BuildRange {
 func KnownUnsafe(id string, server Version) bool {
 	f, ok := featureByID(id)
 	return ok && len(f.unsafeRanges(server)) > 0
+}
+
+// AnalyzerMandatorySince is the first ClickHouse release line whose query
+// analyzer a query cannot disable: 26.9 refuses enable_analyzer=0 with
+// SETTING_CONSTRAINT_VIOLATION (code 452), and later lines accept the setting
+// but ignore it.
+var AnalyzerMandatorySince = Version{Major: 26, Minor: 9}
+
+// AnalyzerMandatory reports whether server runs every query under the query
+// analyzer, so a query must not ask for enable_analyzer=0. Like KnownUnsafe it
+// is independent of any selection: it is a property of the build.
+func AnalyzerMandatory(server Version) bool {
+	return server.AtLeast(AnalyzerMandatorySince)
 }
 
 // conditionCacheUnsafeBuilds are the ClickHouse builds on which the query
@@ -2885,16 +2874,6 @@ var registry = []Feature{
 		Doc: "cast the mapSort-ordered series key back to its operand's parsed type so a GROUP BY or sort over it " +
 			"that spills reads its blocks back (result-equivalent; auto picks it on server < 25.1, where mapSort " +
 			"returns a type the spilled read-back rejects)",
-	},
-	{
-		ID:         FeatureNativeHistogramLegacyAnalyzer,
-		MinVersion: AlwaysAvailable,
-		RemovedIn:  Version{Major: 26, Minor: 9},
-		Stability:  Stable,
-		AutoSelect: true,
-		Doc: "run native-histogram plans under the older query analyzer (enable_analyzer=0), whose planning cost on " +
-			"their nested lambda/arrayMap expressions is far lower (result-equivalent; removed in 26.9, where the " +
-			"analyzer is mandatory and the server rejects enable_analyzer=0)",
 	},
 }
 

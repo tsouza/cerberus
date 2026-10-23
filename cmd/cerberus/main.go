@@ -1494,6 +1494,10 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	if err != nil {
 		return chOptResolution{}, fmt.Errorf("resolve clickhouse optimizations: %w", err)
 	}
+	// The set is resolved against the oldest node, but a single node on a
+	// mandatory-analyzer build refuses enable_analyzer=0, so the analyzer
+	// decision reads the whole pass (legacyAnalyzerAllowed).
+	set = set.WithLegacyAnalyzer(legacyAnalyzerAllowed(fleet, set.LegacyAnalyzer()))
 	for _, w := range warnings {
 		logger.Warn("ch_opt: " + w)
 	}
@@ -1594,6 +1598,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"server_query_workload_capability", queryWorkloadCapability.String(),
 		"enabled", strings.Join(set.IDs(), ","),
 		"query_condition_cache_forced_off", client.QueryConditionCacheDisabled(),
+		"native_histogram_legacy_analyzer", set.LegacyAnalyzer(),
 	)
 	return chOptResolution{
 		Set:              set,

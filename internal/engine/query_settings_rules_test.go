@@ -411,13 +411,13 @@ func TestApplySortedSlabOverTimeMemoryBound_NestedStampsMaxBlockSize(t *testing.
 	}
 }
 
-// legacyAnalyzerRules is the rule set a server below ClickHouse 26.9 resolves:
-// the native_histogram_legacy_analyzer feature is in, so the fix stamps.
+// legacyAnalyzerRules is the rule set a fleet below ClickHouse 26.9 resolves:
+// its set permits the legacy analyzer, so the fix stamps.
 var legacyAnalyzerRules = SettingsRules{NativeHistogramLegacyAnalyzer: true}
 
 // TestApplyNativeHistogramAnalyzerFix_AnalyzerMandatoryStampsNothing — on a
 // server where the analyzer is mandatory (ClickHouse >= 26.9, which rejects
-// enable_analyzer=0 with code 452), the feature is out of the resolved set and
+// enable_analyzer=0 with code 452), the resolved set withholds the legacy analyzer and
 // the fix stamps nothing on any hazard shape, so the query is not refused.
 func TestApplyNativeHistogramAnalyzerFix_AnalyzerMandatoryStampsNothing(t *testing.T) {
 	plans := map[string]chplan.Node{

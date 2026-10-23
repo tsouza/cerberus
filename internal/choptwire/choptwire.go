@@ -430,7 +430,7 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 		TraceIDBitmapFilter:           set.Has(chopt.FeatureTraceIDBitmapFilter),
 		ResultCache:                   set.Has(chopt.FeatureResultCache),
 		LazyMaterialization:           set.Has(chopt.FeatureLazyMaterialization),
-		NativeHistogramLegacyAnalyzer: set.Has(chopt.FeatureNativeHistogramLegacyAnalyzer),
+		NativeHistogramLegacyAnalyzer: set.LegacyAnalyzer(),
 		Metrics:                       metrics,
 		Traces:                        traces,
 		Logs:                          logs,

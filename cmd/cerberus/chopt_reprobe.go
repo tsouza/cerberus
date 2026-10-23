@@ -255,22 +255,32 @@ func reprobeCHOptimizations(
 		case <-timer.C:
 		}
 
-		// One fleet probe feeds both decisions. The condition-cache override
-		// follows it on every pass, before and regardless of the resolution: a
-		// resolve error, a floor fallback, or an unchanged set must never
-		// leave a known-unsafe build serving from its cache.
+		// One fleet probe feeds every decision. The condition-cache override
+		// and the analyzer decision follow it on every pass, regardless of
+		// the resolution: a resolve error, a floor fallback, or an unchanged
+		// set must never leave a known-unsafe build serving from its cache,
+		// nor keep stamping enable_analyzer=0 once a node runs a build that
+		// refuses it.
 		fleet := probeFleet(ctx)
 		if consumers.client != nil {
 			refreshConditionCacheOverride(logger, consumers.client, fleet)
 		}
 		inForce := live.get()
+		legacyAnalyzer := legacyAnalyzerAllowed(fleet, inForce.Set.LegacyAnalyzer())
 		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload, fleet, &inForce)
 		if !ok {
-			// The resolution in force is unchanged, so the delay is derived
-			// from it: still on the floor means still retrying fast.
-			timer.Reset(nextReprobeDelay(live.get(), interval))
-			continue
+			if legacyAnalyzer == inForce.Set.LegacyAnalyzer() {
+				// The resolution in force is unchanged, so the delay is
+				// derived from it: still on the floor means still retrying
+				// fast.
+				timer.Reset(nextReprobeDelay(inForce, interval))
+				continue
+			}
+			// The resolution failed, but the fleet moved the analyzer
+			// decision: install it on the resolution in force.
+			next = inForce
 		}
+		next.Set = next.Set.WithLegacyAnalyzer(legacyAnalyzer)
 		prev := live.get()
 		timer.Reset(nextReprobeDelay(next, interval))
 		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion && next.QueryWorkload == prev.QueryWorkload {
@@ -292,6 +302,8 @@ func reprobeCHOptimizations(
 			"previous_enabled", strings.Join(prev.Set.IDs(), ","),
 			"query_workload", next.QueryWorkload,
 			"previous_query_workload", prev.QueryWorkload,
+			"native_histogram_legacy_analyzer", next.Set.LegacyAnalyzer(),
+			"previous_native_histogram_legacy_analyzer", prev.Set.LegacyAnalyzer(),
 		)
 	}
 }

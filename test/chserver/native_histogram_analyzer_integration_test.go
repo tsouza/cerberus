@@ -42,8 +42,15 @@ const (
 )
 
 // analyzerMandatorySince is the first release line whose analyzer cannot be
-// disabled, stated here independently of the registry the probe checks.
+// disabled, stated here independently of the chopt.AnalyzerMandatorySince the
+// probe checks.
 var analyzerMandatorySince = chopt.Version{Major: 26, Minor: 9}
+
+// analyzerSelections are the optimization selections the probe resolves
+// under: the default, and "off", which enables no feature and must still stamp
+// enable_analyzer=0 on a build that permits it, because that stamp follows the
+// build, not the selection.
+var analyzerSelections = []string{chopt.SelectionAuto, "off"}
 
 // analyzerEvalTime is the instant the probe evaluates at; the seed ends there.
 var analyzerEvalTime = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -77,10 +84,10 @@ var analyzerShapes = []analyzerShape{
 // PromQL through the production Prometheus handler under the settings rules
 // the build's auto optimizations resolve, and requires on every build that
 // each query answers with data. It also checks the version policy
-// chopt records: native_histogram_legacy_analyzer resolves in exactly below
-// 26.9, where system.query_log shows the query ran with the analyzer
-// disabled; from 26.9 the query must not carry enable_analyzer=0, which the
-// server refuses.
+// chopt records, under every analyzerSelections entry alike: the resolved
+// set's LegacyAnalyzer holds exactly below 26.9, where system.query_log shows
+// the query ran with the analyzer disabled; from 26.9 the query must not carry
+// enable_analyzer=0, which the server refuses.
 func TestNativeHistogram_AnalyzerPostureAcrossBuilds(t *testing.T) {
 	for _, image := range analyzerBuilds {
 		t.Run(image, func(t *testing.T) {
@@ -94,38 +101,41 @@ func TestNativeHistogram_AnalyzerPostureAcrossBuilds(t *testing.T) {
 				t.Fatalf("%s: seed: %v", s.image, err)
 			}
 
-			set := chopttest.ResolveEnabledSet(ctx, t, s.admin, chopt.SelectionAuto)
-			legacy := set.Has(chopt.FeatureNativeHistogramLegacyAnalyzer)
-			if mandatory := s.version.AtLeast(analyzerMandatorySince); legacy == mandatory {
-				t.Fatalf("auto resolves native_histogram_legacy_analyzer = %v on %s; want it exactly below 26.9", legacy, s.version)
-			}
-			rules := choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
-
 			client := s.client(t, adminUser, adminPassword, chclient.Config{})
-			handler := prom.New(client, schema.DefaultOTelMetrics(), nil)
-			handler.Engine.SetSettings(rules)
-			mux := http.NewServeMux()
-			handler.Mount(mux)
+			for _, selection := range analyzerSelections {
+				t.Run(selection, func(t *testing.T) {
+					set := chopttest.ResolveEnabledSet(ctx, t, s.admin, selection)
+					legacy := set.LegacyAnalyzer()
+					if mandatory := s.version.AtLeast(analyzerMandatorySince); legacy == mandatory {
+						t.Fatalf("selection %q resolves LegacyAnalyzer() = %v on %s; want it exactly below 26.9", selection, legacy, s.version)
+					}
+					rules := choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
+					handler := prom.New(client, schema.DefaultOTelMetrics(), nil)
+					handler.Engine.SetSettings(rules)
+					mux := http.NewServeMux()
+					handler.Mount(mux)
 
-			for _, shape := range analyzerShapes {
-				t.Run(shape.name, func(t *testing.T) {
-					qid := fmt.Sprintf("analyzer-probe-%s-%d", shape.name, time.Now().UnixNano())
-					var resp struct {
-						Data struct {
-							Result []any `json:"result"`
-						} `json:"data"`
+					for _, shape := range analyzerShapes {
+						t.Run(shape.name, func(t *testing.T) {
+							qid := fmt.Sprintf("analyzer-probe-%s-%s-%d", selection, shape.name, time.Now().UnixNano())
+							var resp struct {
+								Data struct {
+									Result []any `json:"result"`
+								} `json:"data"`
+							}
+							// serveJSON fails the test on any status but 200: a
+							// server refusing enable_analyzer=0 answers 502.
+							serveJSON(chclient.WithQueryID(ctx, qid), t, mux, shape.path(), &resp)
+							if len(resp.Data.Result) == 0 {
+								t.Fatalf("%s on %s: empty result; want the seeded series", shape.name, s.version)
+							}
+							if legacy {
+								chopttest.AssertQuerySettingStamped(ctx, t, s.admin.Conn(), qid, "enable_analyzer", "0")
+								return
+							}
+							assertAnalyzerNotDisabled(ctx, t, s, qid)
+						})
 					}
-					// serveJSON fails the test on any status but 200: a
-					// server refusing enable_analyzer=0 answers 502.
-					serveJSON(chclient.WithQueryID(ctx, qid), t, mux, shape.path(), &resp)
-					if len(resp.Data.Result) == 0 {
-						t.Fatalf("%s on %s: empty result; want the seeded series", shape.name, s.version)
-					}
-					if legacy {
-						chopttest.AssertQuerySettingStamped(ctx, t, s.admin.Conn(), qid, "enable_analyzer", "0")
-						return
-					}
-					assertAnalyzerNotDisabled(ctx, t, s, qid)
 				})
 			}
 		})

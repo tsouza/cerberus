@@ -137,7 +137,7 @@ func optdocRenderBlock() (string, error) {
 	for _, f := range features {
 		rows = append(rows, optdocRow{
 			ID:                  "`" + f.ID + "`",
-			MinVersion:          optdocRenderMinVersion(f.MinVersion, f.RemovedIn),
+			MinVersion:          optdocRenderMinVersion(f.MinVersion),
 			Stability:           optdocRenderStability(f.Stability),
 			AutoSelect:          optdocRenderAutoSelect(f.AutoSelect, f.AutoRange),
 			ExperimentalSetting: optdocRenderExperimentalSetting(f.RequiresExperimentalTSGrid),
@@ -170,19 +170,14 @@ func optdocRenderBlock() (string, error) {
 	return buf.String(), nil
 }
 
-// optdocRenderMinVersion stringifies a feature's version floor, followed by
-// its RemovedIn ceiling when it has one. The AlwaysAvailable zero floor
-// (Version{0,0}) is special-cased to "none" — a literal "0.0" would read as a
-// real version requirement.
-func optdocRenderMinVersion(v, removedIn chopt.Version) string {
-	floor := v.String()
+// optdocRenderMinVersion stringifies a feature's version floor. The
+// AlwaysAvailable zero floor (Version{0,0}) is special-cased to "none" — a
+// literal "0.0" would read as a real version requirement.
+func optdocRenderMinVersion(v chopt.Version) string {
 	if v == chopt.AlwaysAvailable {
-		floor = "none"
+		return "none"
 	}
-	if removedIn == (chopt.Version{}) {
-		return floor
-	}
-	return floor + " (removed in " + removedIn.String() + ")"
+	return v.String()
 }
 
 // optdocRenderStability maps the Stability enum onto the doc's display vocabulary.

@@ -106,8 +106,12 @@ type Config struct {
 // auto-picker decided to enable against the probed server version. It is the
 // single source of truth every consumer reads; nothing downstream re-reads the
 // raw env.
+//
+// Beside the feature ids it carries one build fact no selection decides:
+// whether a query may still disable the analyzer (LegacyAnalyzer).
 type EnabledSet struct {
-	ids map[string]struct{}
+	ids            map[string]struct{}
+	legacyAnalyzer bool
 }
 
 // Has reports whether feature id is in the resolved set.
@@ -116,12 +120,31 @@ func (s EnabledSet) Has(id string) bool {
 	return ok
 }
 
-// Equal reports whether s and other enable exactly the same feature ids. A
-// periodic re-resolution compares its result against the set already in force
-// and swaps (and logs) only on a genuine transition, so a server whose
-// capabilities have not moved produces no churn and no log noise.
+// LegacyAnalyzer reports whether a query may run with the analyzer disabled
+// (enable_analyzer=0): true when the set was resolved against a build on which
+// AnalyzerMandatory does not hold. Every selection, "off" included, resolves
+// it the same way, because it is not a feature the operator turns on — it
+// records what the server still permits. It is not among IDs.
+func (s EnabledSet) LegacyAnalyzer() bool {
+	return s.legacyAnalyzer
+}
+
+// WithLegacyAnalyzer returns s with LegacyAnalyzer replaced by allowed, for a
+// caller that knows more builds than the one s was resolved against: one
+// reachable build on which the analyzer is mandatory is enough to withhold
+// it, while the ids are resolved against the oldest.
+func (s EnabledSet) WithLegacyAnalyzer(allowed bool) EnabledSet {
+	s.legacyAnalyzer = allowed
+	return s
+}
+
+// Equal reports whether s and other enable exactly the same feature ids and
+// agree on LegacyAnalyzer. A periodic re-resolution compares its result
+// against the set already in force and swaps (and logs) only on a genuine
+// transition, so a server whose capabilities have not moved produces no churn
+// and no log noise.
 func (s EnabledSet) Equal(other EnabledSet) bool {
-	return sameIDs(s.ids, other.ids)
+	return s.legacyAnalyzer == other.legacyAnalyzer && sameIDs(s.ids, other.ids)
 }
 
 // sameIDs reports whether a and b hold exactly the same keys.
@@ -170,9 +193,8 @@ const SelectionAuto = selectionAuto
 //
 //   - "off"  -> the empty set. "off" is absolute and may NOT be combined with
 //     any other token (off + anything -> FATAL).
-//   - "auto" -> unions in every AUTO-SELECT feature whose MinVersion <= server,
-//     whose RemovedIn (if set) is above server, and whose AutoRange contains
-//     server.
+//   - "auto" -> unions in every AUTO-SELECT feature whose MinVersion <= server
+//     and whose AutoRange contains server.
 //     Auto-eligibility (Feature.AutoSelect) is a separate axis from maturity
 //     (Feature.Stability): most native timeSeries*ToGrid aggregates are
 //     Experimental in maturity yet AutoSelect=true, so auto picks them on a
@@ -247,7 +269,7 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 	}
 	warnings = append(warnings, legacyWarns...)
 
-	return EnabledSet{ids: enabled}, warnings, nil
+	return EnabledSet{ids: enabled, legacyAnalyzer: !AnalyzerMandatory(server)}, warnings, nil
 }
 
 // resolveTokens walks the parsed selection tokens. An "auto" token unions in
@@ -272,10 +294,9 @@ func resolveTokens(tokens []string, cfg Config, server Version, enabled map[stri
 				if !f.AutoSelect {
 					continue
 				}
-				if !server.AtLeast(f.MinVersion) || f.removedOn(server) || !f.AutoRange.Contains(server) {
-					// Version too old, too new, or outside the range auto
-					// picks the feature in: silent skip, auto is "best
-					// available".
+				if !server.AtLeast(f.MinVersion) || !f.AutoRange.Contains(server) {
+					// Version too old, or outside the range auto picks the
+					// feature in: silent skip, auto is "best available".
 					continue
 				}
 				if ranges := f.unsafeRanges(server); len(ranges) > 0 {
@@ -363,9 +384,6 @@ func featureBlockReason(f Feature, server Version, cfg Config) string {
 	if !server.AtLeast(f.MinVersion) {
 		return fmt.Sprintf("needs ClickHouse >=%s, server is %s", f.MinVersion, server)
 	}
-	if f.removedOn(server) {
-		return fmt.Sprintf("removed in ClickHouse %s, server is %s", f.RemovedIn, server)
-	}
 	if ranges := f.unsafeRanges(server); len(ranges) > 0 {
 		return unsafeBuildBlockReason(server, ranges)
 	}
@@ -377,14 +395,13 @@ func featureBlockReason(f Feature, server Version, cfg Config) string {
 
 // blockIsNonFatal reports whether feature f's block may degrade with a WARN
 // even for an explicit request under enforcing. It is true only once the
-// version window passes (a too-old or too-new server is a definitive,
-// fatal-eligible block) AND the declared axis either returned an
-// INCONCLUSIVE verdict (Unreachable / Unknown) -- mirroring the version
-// probe's connectivity fallback -- or is an axis whose block always degrades.
-// A definitive block on any other axis (too old, too new, or Forbidden) stays
-// fatal under enforcing.
+// version floor passes (a too-old server is a definitive, fatal-eligible
+// block) AND the declared axis either returned an INCONCLUSIVE verdict
+// (Unreachable / Unknown) -- mirroring the version probe's connectivity
+// fallback -- or is an axis whose block always degrades. A definitive block
+// on any other axis (too old, or Forbidden) stays fatal under enforcing.
 func blockIsNonFatal(f Feature, server Version, cfg Config) bool {
-	if !server.AtLeast(f.MinVersion) || f.removedOn(server) {
+	if !server.AtLeast(f.MinVersion) {
 		return false
 	}
 	if len(f.unsafeRanges(server)) > 0 {
