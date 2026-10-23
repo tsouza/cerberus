@@ -1,6 +1,8 @@
 package main
 
 import (
+	"slices"
+
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 )
@@ -15,10 +17,8 @@ import (
 // that could not reach every node and saw no mandatory-analyzer build leaves
 // the decision unchanged.
 func legacyAnalyzerAllowed(fv chclient.FleetVersions, current bool) bool {
-	for _, v := range fv.Versions {
-		if chopt.AnalyzerMandatory(v) {
-			return false
-		}
+	if slices.ContainsFunc(fv.Versions, chopt.AnalyzerMandatory) {
+		return false
 	}
 	if !fv.Complete {
 		return current
