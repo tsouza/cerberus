@@ -202,6 +202,15 @@ func seriesIdentityKeys(n Node) []Expr {
 		return v.GroupBy
 	case *HistogramQuantileNative:
 		return v.GroupBy
+	case *HistogramQuantiles:
+		// Keyed by the embedded Histogram, whose Input is this node's child.
+		if v.Histogram != nil {
+			return seriesIdentityKeys(v.Histogram)
+		}
+	case *HistogramQuantilesNative:
+		if v.Histogram != nil {
+			return seriesIdentityKeys(v.Histogram)
+		}
 	case *RangeWindow:
 		return v.GroupBy
 	case *RangeWindowGridNative:
@@ -377,6 +386,15 @@ func seriesIdentityKeyAliases(n Node) []string {
 		return v.GroupByAliases
 	case *HistogramQuantileNative:
 		return v.GroupByAliases
+	case *HistogramQuantiles:
+		// Keyed by the embedded Histogram, whose Input is this node's child.
+		if v.Histogram != nil {
+			return seriesIdentityKeyAliases(v.Histogram)
+		}
+	case *HistogramQuantilesNative:
+		if v.Histogram != nil {
+			return seriesIdentityKeyAliases(v.Histogram)
+		}
 	case *RangeBucketFanout:
 		return v.GroupByAliases
 	case *RangeBucketGridNative:

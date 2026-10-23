@@ -1330,3 +1330,44 @@ func TestClassifyNeverReportsEligibleBelowTheShardFloor(t *testing.T) {
 	}
 	t.Logf("swept %d eligible shapes, %d of them relying on the floor clamp", eligible, floorClamped)
 }
+
+// TestPlan_Now64InHistogramQuantilesGroupByRejected is the plural sibling of
+// TestPlan_Now64InHistogramQuantilePhiExprRejected. HistogramQuantiles is
+// registered slice-invariant too, and its group keys sit on the embedded
+// Histogram, which Children() does not return — so a now64 in them escapes the
+// gate unless walkNode sweeps that embedded node's slots.
+func TestPlan_Now64InHistogramQuantilesGroupByRejected(t *testing.T) {
+	t.Parallel()
+	scalarInner := &chplan.Aggregate{
+		Input: leafScan(),
+		AggFuncs: []chplan.AggFunc{{
+			Fn:    chplan.FnSum,
+			Args:  []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: 9}}}},
+			Alias: "v",
+		}},
+	}
+	plan := &chplan.HistogramQuantiles{
+		Histogram: &chplan.HistogramQuantile{
+			Input:                rangeBucketFanoutSpine(),
+			GroupBy:              []chplan.Expr{&chplan.ScalarSubquery{Input: scalarInner}},
+			BucketCountsColumn:   "BucketCounts",
+			ExplicitBoundsColumn: "ExplicitBounds",
+			MetricNameColumn:     "MetricName",
+			AttributesColumn:     "Attributes",
+			TimestampColumn:      "TimeUnix",
+		},
+		LabelName: "quantile",
+		Levels:    []chplan.HistogramQuantileLevel{{Phi: 0.5, Label: "0.5"}, {Phi: 0.9, Label: "0.9"}},
+	}
+	p := &Planner{Cfg: autoCfg()}
+	d, routed := p.Plan(plan, oomMeta())
+	if routed {
+		t.Fatal("now64 in HistogramQuantiles' group keys must not route")
+	}
+	if d.Reason != ReasonNow64 {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonNow64)
+	}
+	if _, ok := p.Eligible(plan, oomMeta()); ok {
+		t.Fatal("Eligible must not slice a plan with now64 in HistogramQuantiles' group keys")
+	}
+}

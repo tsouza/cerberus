@@ -196,6 +196,11 @@ test('the macOS-only scan does not fire on prose, comments or ruby identifiers',
       '    app = staged_path/"cerberus"',
       '    pkg = nil',
       '  end',
+      '  postflight_steps do',
+      '    on_macos do',
+      '      run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{staged_path}}/cerberus"]',
+      '    end',
+      '  end',
     ].join('\n'),
   );
   assert.deepEqual(caskPortabilityProblems(src), []);

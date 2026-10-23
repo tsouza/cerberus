@@ -113,12 +113,14 @@ homebrew_casks:
         # quarantines them on download and the first run dies with "cerberus is
         # damaged and can't be opened" — a broken install that the tap looks
         # perfectly healthy for. Stripping the quarantine xattr is Homebrew's
-        # and goreleaser's documented workaround. Guarded on OS.mac? because
-        # there is no such attribute on Linux and `xattr` is not there to run.
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr",
-                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/cerberus"]
+        # and goreleaser's documented workaround. Written as Homebrew's
+        # declarative install steps (rendered as `postflight_steps`), which
+        # replace the deprecated Ruby `postflight` stanza. Guarded by
+        # `on_macos` because there is no such attribute on Linux and `xattr`
+        # is not there to run.
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/cerberus"]
           end
 
 checksum:

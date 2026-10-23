@@ -121,3 +121,50 @@ func TestSeriesIdentityKeyAliases_TwoLevelShapeAnswersNil(t *testing.T) {
 			"fall-through; got %q", aliases)
 	}
 }
+
+// TestSeriesIdentityKeys_PluralQuantilesAnswerAsTheirHistogram pins that the
+// plural quantile nodes answer with their embedded Histogram's keys and
+// aliases, the same lists the singular sibling answers with on its own.
+func TestSeriesIdentityKeys_PluralQuantilesAnswerAsTheirHistogram(t *testing.T) {
+	t.Parallel()
+	keys := []Expr{&ColumnRef{Name: "MetricName"}, &ColumnRef{Name: "Attributes"}}
+	aliases := []string{"MetricName", "Attributes"}
+	classic := &HistogramQuantile{GroupBy: keys, GroupByAliases: aliases}
+	native := &HistogramQuantileNative{GroupBy: keys, GroupByAliases: aliases}
+	cases := []struct {
+		name   string
+		plural Node
+		single Node
+		empty  Node
+	}{
+		{"HistogramQuantiles", &HistogramQuantiles{Histogram: classic}, classic, &HistogramQuantiles{}},
+		{"HistogramQuantilesNative", &HistogramQuantilesNative{Histogram: native}, native, &HistogramQuantilesNative{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			gotKeys, wantKeys := seriesIdentityKeys(c.plural), seriesIdentityKeys(c.single)
+			if len(wantKeys) != len(keys) || len(gotKeys) != len(wantKeys) {
+				t.Fatalf("seriesIdentityKeys = %d keys, want the Histogram's %d", len(gotKeys), len(wantKeys))
+			}
+			for i := range wantKeys {
+				if gotKeys[i] != wantKeys[i] {
+					t.Errorf("key %d = %#v, want %#v", i, gotKeys[i], wantKeys[i])
+				}
+			}
+			gotAliases := seriesIdentityKeyAliases(c.plural)
+			wantAliases := seriesIdentityKeyAliases(c.single)
+			if len(wantAliases) != len(aliases) || len(gotAliases) != len(wantAliases) {
+				t.Fatalf("seriesIdentityKeyAliases = %v, want the Histogram's %v", gotAliases, wantAliases)
+			}
+			for i := range wantAliases {
+				if gotAliases[i] != wantAliases[i] {
+					t.Errorf("alias %d = %q, want %q", i, gotAliases[i], wantAliases[i])
+				}
+			}
+			if seriesIdentityKeys(c.empty) != nil || seriesIdentityKeyAliases(c.empty) != nil {
+				t.Error("a plural node with no Histogram must answer nil, not panic")
+			}
+		})
+	}
+}

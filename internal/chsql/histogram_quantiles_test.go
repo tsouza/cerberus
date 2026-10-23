@@ -171,6 +171,17 @@ func TestEmitHistogramQuantilesNative_SingleSelectOverBoundary(t *testing.T) {
 		chplan.HistogramQuantileLevel{Phi: 0.25, Label: "0.25"},
 		chplan.HistogramQuantileLevel{Phi: 0.9, Label: "0.9"},
 	)
+	// The lowering hands the quantile an input whose Attributes key is
+	// already canonical. A raw one would get the emit path's series-key
+	// repair Project spliced beneath the quantile, a level the input emitted
+	// on its own does not have.
+	plan.Histogram.Input = &chplan.Project{
+		Input: plan.Histogram.Input,
+		Replacements: []chplan.Projection{{
+			Expr:  chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}),
+			Alias: "Attributes",
+		}},
+	}
 	sql := emitQuantilesSQL(t, plan)
 	input, _, err := chsql.Emit(context.Background(), plan.Histogram.Input)
 	if err != nil {

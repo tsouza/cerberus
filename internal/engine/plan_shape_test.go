@@ -135,3 +135,35 @@ func TestInspectPlanShape_UnionScanIsNeverASingleTable(t *testing.T) {
 		t.Errorf("singleScanTable = %q, ok; want fail-closed on a union Scan", table)
 	}
 }
+
+// TestInspectPlanShape_SeesPluralQuantileGroupKeys pins that an expression in
+// a plural quantile's group keys reaches the expression facts. The keys live
+// on the embedded Histogram, which Children() does not return, so only
+// chplan.InspectNodeExprs surfacing that node's Expr slots makes them visible.
+func TestInspectPlanShape_SeesPluralQuantileGroupKeys(t *testing.T) {
+	t.Parallel()
+
+	nowKey := func() []chplan.Expr { return []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnNow}} }
+	levels := []chplan.HistogramQuantileLevel{{Phi: 0.5, Label: "0.5"}, {Phi: 0.9, Label: "0.9"}}
+	cases := []struct {
+		name string
+		plan chplan.Node
+	}{
+		{"HistogramQuantiles", &chplan.HistogramQuantiles{
+			Histogram: &chplan.HistogramQuantile{Input: &chplan.Scan{Table: "otel_metrics_histogram"}, GroupBy: nowKey()},
+			LabelName: "quantile", Levels: levels,
+		}},
+		{"HistogramQuantilesNative", &chplan.HistogramQuantilesNative{
+			Histogram: &chplan.HistogramQuantileNative{Input: &chplan.Scan{Table: "otel_metrics_exponential_histogram"}, GroupBy: nowKey()},
+			LabelName: "quantile", Levels: levels,
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if !shapeOf(c.plan).hasNowExpr {
+				t.Errorf("the now() call in %s's group keys was not found", c.name)
+			}
+		})
+	}
+}
