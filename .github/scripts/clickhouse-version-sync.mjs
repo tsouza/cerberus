@@ -12,6 +12,10 @@
 //   - .github/workflows/compatibility.yml the prometheus-floor lane's CH_IMAGE
 //                                         override (the ONE lane that deliberately
 //                                         runs BELOW chdb_substrate — see (f))
+//   - .github/workflows/perf-nightly.yml  the sentinel legs' ClickHouse matrix, and
+//     .github/workflows/perf-nightly-selfcheck.yml
+//                                         the self-check's, with
+//     test/perf/nightly-baseline.json     one bound set per server (see (h))
 //
 // and the quickstart MUST be new enough to actually demo every optimization
 // it enables. This script reads versions.yaml as the SoT and asserts:
@@ -53,6 +57,17 @@
 //       DELIBERATE exception (this one lane, and only this lane, runs below
 //       chdb_substrate) a tracked invariant instead of an unenforced escape
 //       hatch from (c).
+//   (h) perf-nightly's sentinel matrix measures both of move_to_prewhere's
+//       PREWHERE paths on the servers that matter: it contains
+//       min_clickhouse (the supported floor) and quickstart_clickhouse (the
+//       deployment pin), at least one server inside move_to_prewhere's
+//       AutoRange (read from the registry, where ClickHouse places PREWHERE)
+//       and one outside it (where the emitter does). Each server's image,
+//       `clickhouse/clickhouse-server:<server>-alpine`, is one just/common.just
+//       pins; the self-check's matrix is the same list; and
+//       test/perf/nightly-baseline.json carries one bound set per server and
+//       no other. A bump of either pin that leaves perf-nightly on the old
+//       server, or a server added without its calibrated bounds, fails here.
 //
 // No version floor is re-pinned here; floor data is derived from the registry.
 // When a future optimization raises the floor above the quickstart, (d) fails
@@ -69,6 +84,13 @@
 // Exit codes: 0 = consistent (or self-test green), 1 = a drift was found.
 
 import { error, log } from './lib/gh.mjs';
+import {
+  PERF_NIGHTLY_JOB,
+  PERF_NIGHTLY_WORKFLOW,
+  SELFCHECK_JOB,
+  SELFCHECK_WORKFLOW,
+  readClickHouseMatrix,
+} from './lib/perf-nightly-matrix.mjs';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -218,9 +240,19 @@ function readRegistryEntries(text) {
     const body = chunks[i + 1];
     const mv = /MinVersion:\s*(?:Version\{Major:\s*(\d+),\s*Minor:\s*(\d+)\}|(AlwaysAvailable))/.exec(body);
     const auto = /AutoSelect:\s*(true|false)/.exec(body);
+    const range =
+      /AutoRange:\s*VersionRange\{From:\s*Version\{Major:\s*(\d+),\s*Minor:\s*(\d+)\},\s*Until:\s*Version\{Major:\s*(\d+),\s*Minor:\s*(\d+)\}\}/.exec(
+        body,
+      );
     entries[id] = {
       floor: !mv || mv[3] === 'AlwaysAvailable' ? null : { major: Number(mv[1]), minor: Number(mv[2]) },
       autoSelect: auto ? auto[1] === 'true' : false,
+      autoRange: range
+        ? {
+            from: { major: Number(range[1]), minor: Number(range[2]) },
+            until: { major: Number(range[3]), minor: Number(range[4]) },
+          }
+        : null,
     };
   }
   return entries;
@@ -389,7 +421,104 @@ export function runChecks(sources) {
     notes.push(`(f) prometheus-floor CH_IMAGE == min_clickhouse ${vstr(minCH)}`);
   }
 
+  checkPerfNightlyMatrix(sources, { minCH, quickstart, registry }, failures, notes);
+
   return { failures, notes };
+}
+
+// PERF_NIGHTLY_SPLIT_FEATURE is the chopt feature whose auto range decides
+// who places PREWHERE, the decision perf-nightly's matrix measures both
+// sides of.
+const PERF_NIGHTLY_SPLIT_FEATURE = 'move_to_prewhere';
+
+// alpineImage — the image a perf-nightly leg boots for a server.
+function alpineImage(server) {
+  return `clickhouse/clickhouse-server:${server}-alpine`;
+}
+
+// readJustImages — every clickhouse-server image a `NAME := "image"` line
+// of just/common.just pins.
+function readJustImages(text) {
+  const images = new Set();
+  const re = /^[A-Z0-9_]+\s*:=\s*"(clickhouse\/clickhouse-server:[^"]+)"/gm;
+  for (let m; (m = re.exec(text)); ) images.add(m[1]);
+  return images;
+}
+
+// (h) — see the header.
+function checkPerfNightlyMatrix(sources, { minCH, quickstart, registry }, failures, notes) {
+  const matrix = readClickHouseMatrix(sources.perfNightlyWorkflow, PERF_NIGHTLY_JOB);
+  if (!matrix || matrix.length === 0) {
+    failures.push(`(h) ${PERF_NIGHTLY_WORKFLOW}: could not read job ${PERF_NIGHTLY_JOB}'s clickhouse matrix`);
+    return;
+  }
+  if (matrix.some((raw) => !/^\d+\.\d+$/.test(raw))) {
+    failures.push(`(h) ${PERF_NIGHTLY_WORKFLOW}: the clickhouse matrix [${matrix}] holds a value that is not major.minor`);
+    return;
+  }
+  const servers = matrix.map(parseVersion);
+  if (new Set(matrix).size !== matrix.length) {
+    failures.push(`(h) ${PERF_NIGHTLY_WORKFLOW}: the clickhouse matrix [${matrix}] repeats a server`);
+  }
+  const has = (want) => servers.some((v) => sameMM(v, want));
+  for (const [key, want] of [
+    ['min_clickhouse', minCH],
+    ['quickstart_clickhouse', quickstart],
+  ]) {
+    if (want && !has(want)) {
+      failures.push(
+        `(h) perf-nightly's clickhouse matrix [${matrix}] does not run on versions.yaml ${key} ${vstr(want)}`,
+      );
+    }
+  }
+
+  const range = registry[PERF_NIGHTLY_SPLIT_FEATURE]?.autoRange;
+  if (!range) {
+    failures.push(`(h) internal/chopt/registry.go: could not read ${PERF_NIGHTLY_SPLIT_FEATURE}'s AutoRange`);
+  } else {
+    const inside = (v) => atLeast(v, range.from) && !atLeast(v, range.until);
+    const bounds = `[${vstr(range.from)}, ${vstr(range.until)})`;
+    if (!servers.some(inside)) {
+      failures.push(
+        `(h) perf-nightly's clickhouse matrix [${matrix}] has no server inside ${PERF_NIGHTLY_SPLIT_FEATURE}'s ` +
+          `auto range ${bounds}, so ClickHouse's own PREWHERE placement is measured nowhere`,
+      );
+    }
+    if (!servers.some((v) => !inside(v))) {
+      failures.push(
+        `(h) perf-nightly's clickhouse matrix [${matrix}] has no server outside ${PERF_NIGHTLY_SPLIT_FEATURE}'s ` +
+          `auto range ${bounds}, so the emitter's explicit PREWHERE split is measured nowhere`,
+      );
+    }
+  }
+
+  const pinned = readJustImages(sources.justCommon);
+  for (const server of matrix) {
+    if (!pinned.has(alpineImage(server))) {
+      failures.push(`(h) perf-nightly runs ${alpineImage(server)}, which no just/common.just image variable pins`);
+    }
+  }
+
+  const selfcheck = readClickHouseMatrix(sources.selfcheckWorkflow, SELFCHECK_JOB);
+  if (!selfcheck || [...selfcheck].sort().join() !== [...matrix].sort().join()) {
+    failures.push(
+      `(h) ${SELFCHECK_WORKFLOW}'s clickhouse matrix [${selfcheck ?? 'unreadable'}] is not perf-nightly's [${matrix}]`,
+    );
+  }
+
+  let baselineServers = null;
+  try {
+    baselineServers = (JSON.parse(sources.nightlyBaseline).versions ?? []).map((v) => v.clickhouse);
+  } catch (e) {
+    failures.push(`(h) test/perf/nightly-baseline.json: ${e.message}`);
+  }
+  if (baselineServers && [...baselineServers].sort().join() !== [...matrix].sort().join()) {
+    failures.push(
+      `(h) test/perf/nightly-baseline.json carries bound sets for [${baselineServers}], not for perf-nightly's ` +
+        `servers [${matrix}] — calibrate a server's bounds when adding it, drop them when removing it`,
+    );
+  }
+  notes.push(`(h) perf-nightly runs on [${matrix}], with a bound set per server`);
 }
 
 function sameMM(a, b) {
@@ -411,6 +540,10 @@ function loadSources() {
     migrationTier1: readFile('test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml'),
     chartValues: readFile('deploy/helm/cerberus/values.yaml'),
     compatibilityWorkflow: readFile('.github/workflows/compatibility.yml'),
+    perfNightlyWorkflow: readFile(PERF_NIGHTLY_WORKFLOW),
+    selfcheckWorkflow: readFile(SELFCHECK_WORKFLOW),
+    nightlyBaseline: readFile('test/perf/nightly-baseline.json'),
+    justCommon: readFile('just/common.just'),
   };
 }
 
@@ -429,7 +562,7 @@ function main() {
 // self-test - pins the parse / compare / drift-detection logic against
 // synthetic fixtures, the same contract forbid-skip.test.mjs provides for
 // forbid-skip.mjs. Asserts a consistent fixture passes and that each of
-// the checks (a)/(b)/(c)/(d)/(e)/(f)/(g) FAILS when its source is deliberately
+// the checks (a)/(b)/(c)/(d)/(e)/(f)/(g)/(h) FAILS when its source is deliberately
 // drifted - so a future refactor that breaks a reader is caught here.
 // ---------------------------------------------------------------------------
 
@@ -454,12 +587,15 @@ const (
   FeatureConditionCache     = "condition_cache"
   FeatureTSGridRange        = "ts_grid_range"
   FeatureColumnarResultDecode = "columnar_result_decode"
+  FeatureMoveToPrewhere = "move_to_prewhere"
 )
 var registry = []Feature{
   { ID: FeatureAggregationInOrder, MinVersion: Version{Major: 24, Minor: 8}, AutoSelect: true, },
   { ID: FeatureConditionCache, MinVersion: Version{Major: 25, Minor: 3}, AutoSelect: true, },
   { ID: FeatureTSGridRange, MinVersion: Version{Major: 25, Minor: 6}, AutoSelect: true, },
   { ID: FeatureColumnarResultDecode, MinVersion: AlwaysAvailable, AutoSelect: false, },
+  { ID: FeatureMoveToPrewhere, MinVersion: AlwaysAvailable, AutoSelect: true,
+    AutoRange:  VersionRange{From: Version{Major: 24, Minor: 11}, Until: Version{Major: 26, Minor: 2}}, },
 }`;
   const entries = readRegistryEntries(fakeRegistry);
   ok(
@@ -470,6 +606,12 @@ var registry = []Feature{
   ok('registry columnar_result_decode AlwaysAvailable -> null floor', entries['columnar_result_decode'].floor === null);
   ok('registry reads AutoSelect true', entries['ts_grid_range']?.autoSelect === true);
   ok('registry reads AutoSelect false', entries['columnar_result_decode']?.autoSelect === false);
+  ok(
+    'registry reads an AutoRange',
+    JSON.stringify(entries['move_to_prewhere']?.autoRange) ===
+      JSON.stringify({ from: { major: 24, minor: 11 }, until: { major: 26, minor: 2 } }),
+  );
+  ok('registry reads no AutoRange as null', entries['ts_grid_range']?.autoRange === null);
   ok(
     'registry does not attribute a neighbour AutoSelect to an entry that declares none',
     readRegistryEntries(
@@ -556,6 +698,20 @@ var registry = []Feature{
     chartValues: '  bundled:\n    image: clickhouse/clickhouse-server:26.5\n',
     compatibilityWorkflow:
       'jobs:\n  prometheus-floor:\n    steps:\n      - run: echo seed\n        env:\n          CH_IMAGE: "clickhouse/clickhouse-server:24.8"\n',
+    // perf-nightly runs the floor, one server inside move_to_prewhere's auto
+    // range and the quickstart, each pinned in just/common.just and each with
+    // a bound set.
+    perfNightlyWorkflow:
+      "jobs:\n  perf-nightly-sentinels:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '25.9', '26.5']\n" +
+      '  perf-nightly:\n    steps: []\n',
+    selfcheckWorkflow: "jobs:\n  perf-nightly-selfcheck:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '25.9', '26.5']\n",
+    nightlyBaseline: JSON.stringify({
+      versions: [{ clickhouse: '24.8' }, { clickhouse: '25.9' }, { clickhouse: '26.5' }],
+    }),
+    justCommon:
+      'CH_TEST_IMAGE := "clickhouse/clickhouse-server:25.9-alpine"\n' +
+      'CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"\n' +
+      'CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.5-alpine"\n',
   };
   ok('consistent fixtures => no failures', runChecks(goodSources).failures.length === 0);
 
@@ -650,6 +806,63 @@ var registry = []Feature{
     drift((s) => (s.compatibilityWorkflow = 'jobs:\n  other-job:\n    steps: []\n')).some(
       (f) => f.includes('prometheus-floor'),
     ),
+  );
+
+  const hFails = (mutate) => drift(mutate).filter((f) => f.startsWith('(h)'));
+  ok(
+    'readClickHouseMatrix reads the sentinel job\'s list',
+    readClickHouseMatrix(goodSources.perfNightlyWorkflow, PERF_NIGHTLY_JOB)?.join() === '24.8,25.9,26.5',
+  );
+  ok('readClickHouseMatrix missing job -> null', readClickHouseMatrix('jobs:\n  other:\n', PERF_NIGHTLY_JOB) === null);
+  ok(
+    '(h) a quickstart bump perf-nightly does not follow is caught',
+    hFails((s) => {
+      s.versionsYaml = s.versionsYaml.replace('quickstart_clickhouse: "26.5"', 'quickstart_clickhouse: "26.6"');
+      s.compose = s.compose.replace('clickhouse-server:26.5', 'clickhouse-server:26.6');
+      s.migrationTier1 = 'image: clickhouse/clickhouse-server:26.6\n';
+      s.chartValues = '  bundled:\n    image: clickhouse/clickhouse-server:26.6\n';
+    }).some((f) => f.includes('quickstart_clickhouse')),
+  );
+  ok(
+    '(h) a matrix without the supported floor is caught',
+    hFails((s) => (s.perfNightlyWorkflow = s.perfNightlyWorkflow.replace("'24.8', ", ''))).some((f) =>
+      f.includes('min_clickhouse'),
+    ),
+  );
+  ok(
+    "(h) a matrix with no server inside move_to_prewhere's auto range is caught",
+    hFails((s) => (s.perfNightlyWorkflow = s.perfNightlyWorkflow.replace("'25.9'", "'24.8'"))).some((f) =>
+      f.includes('inside'),
+    ),
+  );
+  ok(
+    "(h) a matrix with no server outside move_to_prewhere's auto range is caught",
+    hFails((s) => {
+      s.registry = s.registry.replace('Until: Version{Major: 26, Minor: 2}', 'Until: Version{Major: 99, Minor: 0}');
+      s.registry = s.registry.replace('From: Version{Major: 24, Minor: 11}', 'From: Version{Major: 24, Minor: 1}');
+    }).some((f) => f.includes('outside')),
+  );
+  ok(
+    '(h) a server whose image just/common.just does not pin is caught',
+    hFails((s) => (s.justCommon = s.justCommon.replace('26.5-alpine', '26.4-alpine'))).some((f) =>
+      f.includes('pins'),
+    ),
+  );
+  ok(
+    "(h) a self-check matrix that differs from perf-nightly's is caught",
+    hFails((s) => (s.selfcheckWorkflow = s.selfcheckWorkflow.replace("'26.5'", "'26.4'"))).some((f) =>
+      f.includes('perf-nightly-selfcheck'),
+    ),
+  );
+  ok(
+    '(h) a server without a bound set is caught',
+    hFails((s) => (s.nightlyBaseline = JSON.stringify({ versions: [{ clickhouse: '25.9' }] }))).some((f) =>
+      f.includes('nightly-baseline.json'),
+    ),
+  );
+  ok(
+    '(h) a non major.minor matrix value is caught',
+    hFails((s) => (s.perfNightlyWorkflow = s.perfNightlyWorkflow.replace("'25.9'", "'25.9-alpine'"))).length > 0,
   );
 
   if (fails.length > 0) {

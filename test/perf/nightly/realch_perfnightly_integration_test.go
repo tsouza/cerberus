@@ -118,9 +118,12 @@ import (
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
-// perfNightlyCHImage matches every other strict-scan/perf real-CH lane's
-// pinned tag (test/perf/smoke's own perfSmokeCHImage).
-const perfNightlyCHImage = "clickhouse/clickhouse-server:25.9-alpine"
+// perfNightlyCHImageEnv names the ClickHouse image the lane boots.
+// perf-nightly.yml runs the lane once per server of its matrix, each leg
+// setting this through `just perf-nightly-integration <image>`; the bound set
+// a run asserts is the one calibrated on the release line the booted server
+// reports (nightly-baseline.json).
+const perfNightlyCHImageEnv = "PERF_NIGHTLY_CH_IMAGE"
 
 const perfNightlyDB = "default"
 
@@ -163,6 +166,8 @@ func TestPerfNightlyRealCH(t *testing.T) {
 
 	container, client := startPerfNightlyCH(ctx, t)
 	conn := client.Conn()
+	version := serverReleaseLine(ctx, t, conn)
+	t.Logf("ClickHouse release line %s", version)
 
 	if err := ddl.Apply(ctx, conn, []ddl.Signal{ddl.Metrics}); err != nil {
 		t.Fatalf("apply DDL: %v", err)
@@ -234,8 +239,10 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	}
 
 	logSource := optcorpus.NewCHQueryLogSource(conn, 30*time.Second, time.Hour)
+	known := knownSettings(ctx, t, conn)
 
 	baseline := loadNightlyBaseline(t)
+	versionBaseline, _ := baseline.forVersion(version)
 	update := os.Getenv("UPDATE_NIGHTLY_PERF_BASELINE") == "1"
 	calibrate := calibrationSelection(t, update)
 	updated := make(map[string]nightlyBound, len(Sentinels))
@@ -250,10 +257,15 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	results := make([]SentinelResult, 0, len(Sentinels))
 
 	for _, sentinel := range Sentinels {
+		if reason, out := sentinel.NotOn[version]; out {
+			t.Logf("%s is not in ClickHouse %s's sentinel set: %s", sentinel.Name, version, reason)
+			continue
+		}
 		if update && !calibrate(sentinel.Name) {
 			continue
 		}
 		mux := muxes[sentinel.Deployment]
+		sentinel.QuerySettings = settingsServerKnows(sentinel.QuerySettings, known)
 
 		t.Run(sentinel.Name, func(t *testing.T) {
 			// result accumulates this sentinel's outcome as the subtest
@@ -397,9 +409,10 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			}
 
 			// PRONG (b): committed per-sentinel ceiling.
-			bound, ok := baselineFor(baseline, sentinel.Name)
+			bound, ok := baselineFor(versionBaseline, sentinel.Name)
 			if !ok {
-				t.Fatalf("%s: no committed bound in nightly-baseline.json — run `just update-nightly-perf-baseline`", sentinel.Name)
+				t.Fatalf("%s: no committed bound for ClickHouse %s in nightly-baseline.json — run `just update-nightly-perf-baseline`",
+					sentinel.Name, version)
 			}
 			result.HasBaseline = true
 			if bound.ExpectedStatus != sentinel.ExpectedStatus {
@@ -429,18 +442,18 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	}
 
 	if !update {
-		if err := writeResultsJSON(results); err != nil {
+		if err := writeResultsJSON(version, results); err != nil {
 			t.Fatalf("write nightly results JSON: %v", err)
 		}
 	}
 
 	if update {
-		for _, bound := range baseline.Sentinels {
+		for _, bound := range versionBaseline.Sentinels {
 			if _, measured := updated[bound.Name]; !measured && !calibrate(bound.Name) {
 				updated[bound.Name] = bound
 			}
 		}
-		writeNightlyBaseline(t, updated)
+		writeNightlyBaseline(t, baseline, version, updated)
 	}
 }
 
@@ -515,7 +528,7 @@ func startPerfNightlyCH(ctx context.Context, t *testing.T) (*tcclickhouse.ClickH
 	t.Helper()
 	container, err := tcclickhouse.Run(
 		ctx,
-		perfNightlyCHImage,
+		perfNightlyImage(t),
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 		tcclickhouse.WithDatabase(perfNightlyDB),
@@ -526,6 +539,71 @@ func startPerfNightlyCH(ctx context.Context, t *testing.T) (*tcclickhouse.ClickH
 	t.Cleanup(func() { _ = container.Terminate(ctx) })
 
 	return container, newPerfNightlyClient(ctx, t, container, perfNightlyDB)
+}
+
+// perfNightlyImage is the image perfNightlyCHImageEnv names. Unset is an
+// error rather than a default: a default would pick one server silently, and
+// the bound set the run asserts follows the server.
+func perfNightlyImage(t *testing.T) string {
+	t.Helper()
+	image := os.Getenv(perfNightlyCHImageEnv)
+	if image == "" {
+		t.Fatalf("%s is unset — run the lane through `just perf-nightly-integration <image>`", perfNightlyCHImageEnv)
+	}
+	return image
+}
+
+// serverReleaseLine is the "major.minor" release line of the server conn
+// reaches, the key its bound set is filed under.
+func serverReleaseLine(ctx context.Context, t *testing.T, conn driver.Conn) string {
+	t.Helper()
+	var raw string
+	if err := conn.QueryRow(ctx, "SELECT version()").Scan(&raw); err != nil {
+		t.Fatalf("read the server version: %v", err)
+	}
+	v, ok := chopt.ParseVersion(raw)
+	if !ok {
+		t.Fatalf("unparseable server version %q", raw)
+	}
+	return releaseLine(v)
+}
+
+// knownSettings is the set of setting names the server conn reaches has.
+func knownSettings(ctx context.Context, t *testing.T, conn driver.Conn) map[string]bool {
+	t.Helper()
+	rows, err := conn.Query(ctx, "SELECT name FROM system.settings")
+	if err != nil {
+		t.Fatalf("read system.settings: %v", err)
+	}
+	defer rows.Close()
+	known := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("read system.settings: %v", err)
+		}
+		known[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read system.settings: %v", err)
+	}
+	return known
+}
+
+// settingsServerKnows is the subset of settings the server has. Every
+// Sentinel.QuerySettings entry switches a server mechanism off so it cannot
+// carry state between repeats (settingUseQueryConditionCache); a server
+// without the setting has no such mechanism — the query condition cache
+// arrived in 25.3 — and rejects the unknown name outright, so the entry is
+// dropped there rather than sent.
+func settingsServerKnows(settings map[string]any, known map[string]bool) map[string]any {
+	out := make(map[string]any, len(settings))
+	for name, value := range settings {
+		if known[name] {
+			out[name] = value
+		}
+	}
+	return out
 }
 
 // newPerfNightlyClient connects to database on container with the lane's
@@ -810,21 +888,29 @@ func loadNightlyBaseline(t *testing.T) nightlyBaseline {
 	return b
 }
 
-// writeNightlyBaseline orders updated (keyed by sentinel name) by Sentinels and
-// hands it to writeNightlyBaselineFile — this is the ONLY code path that
-// writes nightly-baseline.json, gated on UPDATE_NIGHTLY_PERF_BASELINE=1.
-func writeNightlyBaseline(t *testing.T, updated map[string]nightlyBound) {
+// writeNightlyBaseline orders updated (keyed by sentinel name) by version's
+// sentinel set (SentinelsFor),
+// files it as version's bound set in baseline, and hands the result to
+// writeNightlyBaselineFile — this is the ONLY code path that writes
+// nightly-baseline.json, gated on UPDATE_NIGHTLY_PERF_BASELINE=1. Every other
+// version's bound set is written back unchanged.
+func writeNightlyBaseline(t *testing.T, baseline nightlyBaseline, version string, updated map[string]nightlyBound) {
 	t.Helper()
-	bounds := make([]nightlyBound, 0, len(Sentinels))
-	for _, s := range Sentinels {
+	set := SentinelsFor(version)
+	bounds := make([]nightlyBound, 0, len(set))
+	for _, s := range set {
 		bound, ok := updated[s.Name]
 		if !ok {
 			t.Fatalf("writeNightlyBaseline: no measurement for sentinel %q", s.Name)
 		}
 		bounds = append(bounds, bound)
 	}
-	if err := writeNightlyBaselineFile(bounds); err != nil {
+	next, err := baseline.withVersion(version, bounds)
+	if err != nil {
 		t.Fatalf("write baseline: %v", err)
 	}
-	t.Logf("wrote %s", nightlyBaselinePath)
+	if err := writeNightlyBaselineFile(next); err != nil {
+		t.Fatalf("write baseline: %v", err)
+	}
+	t.Logf("wrote ClickHouse %s's bounds to %s", version, nightlyBaselinePath)
 }

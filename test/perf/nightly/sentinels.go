@@ -101,6 +101,17 @@ const (
 	// 36.8M-45.3M on the same data and server — at least 1.38x. 1.20x sits
 	// two orders of magnitude above the noise and well under that step.
 	labelValuesBaselineHeadroom = 1.20
+	// rateByRouteBaselineHeadroom (rate_by_route_matcher_stock_key): the
+	// same rate query measured over 6 repeats per server when the PREWHERE
+	// split was chosen (docs/clickhouse-optimizations.background.md): 54.0M-
+	// 58.1M on 24.8 and 41.0M-45.2M on 26.6 under the emitter's split (1.08x
+	// and 1.10x max/min), 38.7M-47.9M on 25.9 under the server's (1.24x).
+	// The regressions it exists for move it by several times: the server's
+	// split on 26.6 measured 296M against 40M, and an explicit PREWHERE
+	// holding the matcher 696M against 58M on 24.8 and 416M against 40M on
+	// 26.6 (max-of-5 each). So it keeps the conservative 1.5x (1.5x / 1.24x
+	// = 1.21x cushion on the noisiest line).
+	rateByRouteBaselineHeadroom = 1.50
 	// instantSelectorBaselineHeadroom (instant_selector_in_order, n=7):
 	// 49.5M-58.1M bytes, max/min = 1.175x (CV 5.44%). Its memory prong is
 	// a backstop — the pipeline prong is what separates the plan it guards
@@ -185,6 +196,25 @@ type Sentinel struct {
 	// mechanism whose cost is planning time, which peak memory does not
 	// measure; the ratio cancels the speed of the host running it.
 	PlanningPeer func(start, end time.Time) url.Values
+	// NotOn names the ClickHouse release lines ("major.minor") of
+	// perf-nightly.yml's matrix this sentinel is not part of the set of, each
+	// with the reason: a construct whose feature floors above that server, or
+	// a server defect tracked by the issue the reason cites. The sentinel set
+	// of a line is SentinelsFor(line); nightly-baseline.json carries a bound
+	// for exactly that set.
+	NotOn map[string]string
+}
+
+// SentinelsFor is the sentinel set of ClickHouse release line version: every
+// sentinel whose NotOn does not name it.
+func SentinelsFor(version string) []Sentinel {
+	set := make([]Sentinel, 0, len(Sentinels))
+	for _, s := range Sentinels {
+		if _, out := s.NotOn[version]; !out {
+			set = append(set, s)
+		}
+	}
+	return set
 }
 
 // Deployment names the metrics tables a sentinel's request reads. Each one
@@ -295,6 +325,11 @@ var Sentinels = []Sentinel{
 		WindowEnd:        time.Date(2026, 8, 18, 9, 10, 0, 0, time.UTC),
 		Step:             time.Minute,
 		BaselineHeadroom: histogramBaselineHeadroom,
+		NotOn: map[string]string{
+			"24.8": "the native classic-histogram grid this sentinel measures (chopt ts_grid_histogram) floors at 25.9; " +
+				"on 24.8 the fan-out lowering's collapsed-payload resource bound rejects this window by design (" +
+				"chsql.RangeBucketFanoutGroupBudgetMessage)",
+		},
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {`histogram_quantile(0.95, sum by (http_route, le) (rate(` + histogramMetric + `_bucket[5m])))`},
@@ -332,6 +367,10 @@ var Sentinels = []Sentinel{
 		Path:             "/api/v1/query_range",
 		ExpectedStatus:   http.StatusOK,
 		BaselineHeadroom: gaugeBaselineHeadroom,
+		NotOn: map[string]string{
+			"24.8": "ClickHouse 24.8-24.12 fails reading back a spilled GROUP BY over the mapSort-built series " +
+				"identity (TYPE_MISMATCH, issue #3971), which this aggregation spills into",
+		},
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {`sum by (reason) (` + gaugeMetric + `)`},
@@ -500,6 +539,30 @@ var Sentinels = []Sentinel{
 		QuerySettings:    map[string]any{settingUseQueryConditionCache: 0},
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{"match[]": {sumMetric + `{method="` + scrubbedMethod + `"}`}}
+		},
+	},
+	{
+		// The rate of one metric under a label matcher, grouped by a label,
+		// against the exporter's own sorting key. On a server where
+		// move_to_prewhere is not resolved in, the emitter's PREWHERE split
+		// keeps the metric-name filter in PREWHERE and the matcher and the
+		// time bounds the range window pushes down in WHERE; the server's own
+		// split there orders the matcher's map read first (from 26.2), and a
+		// PREWHERE holding the matcher and the time bounds evaluates them on
+		// every row of the metric's granules — each several times the peak
+		// memory of the emitter's split.
+		Name:             "rate_by_route_matcher_stock_key",
+		Family:           "rate() by a label under a matcher on the exporter's sorting key — the explicit PREWHERE/WHERE split of a range-window scan",
+		Path:             "/api/v1/query_range",
+		ExpectedStatus:   http.StatusOK,
+		WindowStart:      matcherWindowStart,
+		WindowEnd:        matcherWindowEnd,
+		Step:             time.Minute,
+		BaselineHeadroom: rateByRouteBaselineHeadroom,
+		Deployment:       DeploymentStockKey,
+		QuerySettings:    map[string]any{settingUseQueryConditionCache: 0},
+		Params: func(start, end time.Time) url.Values {
+			return url.Values{"query": {`sum by (http_route) (rate(` + sumMetric + `{method="` + scrubbedMethod + `"}[5m]))`}}
 		},
 	},
 	{

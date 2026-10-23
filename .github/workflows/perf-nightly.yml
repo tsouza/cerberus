@@ -8,6 +8,15 @@ name: perf-nightly
 # ceiling. See test/perf/nightly/realch_perfnightly_integration_test.go's
 # doc comment for the full "why" and gate mechanics.
 #
+# The sentinels run once per ClickHouse server of the matrix below, each leg
+# against the bound set calibrated on its own server. The servers are the
+# supported floor (versions.yaml min_clickhouse), the deployment pin
+# (quickstart_clickhouse) and one server inside chopt's move_to_prewhere auto
+# range: auto leaves the PREWHERE split to ClickHouse only inside that range,
+# so the two PREWHERE paths are each measured. clickhouse-version-sync.mjs
+# (check h) holds the matrix to those pins and to the bound sets in
+# nightly-baseline.json.
+#
 # There is deliberately NO `pull_request:` trigger — same posture and same
 # reasoning as migration-e2e.yml: this workflow can never become a
 # branch-protection (merge-gate) check, only a RELEASE-gate one
@@ -25,6 +34,18 @@ on:
     # 05:17 UTC — offset from perf-profile.yml's 05:00 nightly cron.
     - cron: '17 5 * * *'
   workflow_dispatch:
+    inputs:
+      calibrate:
+        description: >-
+          Recalibrate instead of gating: each leg runs `just
+          update-nightly-perf-baseline` on its server and uploads the rewritten
+          nightly-baseline.json as the artifact nightly-baseline-<clickhouse>.
+        type: boolean
+        default: false
+      calibrate_sentinels:
+        description: Space-separated sentinel names to recalibrate (empty recalibrates every sentinel).
+        type: string
+        default: ''
 
 concurrency:
   # Main pushes and matching cron schedules replace only their own modes.
@@ -41,15 +62,22 @@ permissions:
   packages: read
 
 jobs:
-  perf-nightly:
-    name: perf-nightly
+  perf-nightly-sentinels:
+    name: perf-nightly-sentinels (${{ matrix.clickhouse }})
     runs-on: ubuntu-latest
-    # Generous: pulls one ClickHouse image, loads ~4.3M real rows across 3
-    # tables, and issues 4 sentinel queries, plus dedicated ClickHouse
-    # containers and real-data loads for the ts_grid_instant memory measurement
-    # (#2748) and the classic-histogram production-report replay below.
-    timeout-minutes: 90
+    strategy:
+      # One server's failure must not cancel the others into an ambiguous
+      # `cancelled`: every server's verdict is reported.
+      fail-fast: false
+      matrix:
+        clickhouse: ['24.8', '25.9', '26.6']
+    # Pulls one ClickHouse image, loads ~4.3M real rows across 3 tables plus
+    # the exporter-keyed copies, and issues the sentinel corpus five times.
+    timeout-minutes: 30
     env:
+      # The image the leg boots: the alpine tag of its release line, the form
+      # every real-ClickHouse lane pins (just/common.just).
+      PERF_NIGHTLY_CH_IMAGE: clickhouse/clickhouse-server:${{ matrix.clickhouse }}-alpine
       # Read by results.go's writeResultsJSON (the test step) and by
       # perf-nightly-step-summary.mjs (the summary step below) — same
       # variable name, same literal value, so the two steps can never point
@@ -63,9 +91,9 @@ jobs:
         with:
           # The trimmed sample parquet files are LFS-tracked; a plain
           # checkout only pulls the LFS pointer text, never the actual
-          # bytes. This is the only job in the repo that needs real LFS
-          # content, so the fetch is explicit here rather than a repo-wide
-          # `lfs: true` on every checkout.
+          # bytes. The sentinels and the replays below load them, so the
+          # fetch is explicit here rather than a repo-wide `lfs: true` on
+          # every checkout.
           lfs: true
 
       - uses: ./.github/actions/setup-go
@@ -78,27 +106,26 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
-      - name: "Run the #2370 nightly measurement harness (real ClickHouse)"
-        run: just perf-nightly-integration
+      - name: "Run the #2370 nightly sentinels on ClickHouse ${{ matrix.clickhouse }}"
+        if: ${{ !inputs.calibrate }}
+        run: just perf-nightly-integration "$PERF_NIGHTLY_CH_IMAGE"
 
-      # The ts_grid_instant real-data memory measurement (#2748): reuses
-      # THIS package's own real, trimmed production sample
-      # (testdata/samples/svc_http_requests_total.parquet) in a SECOND,
-      # dedicated ClickHouse container (>= the 26.5 ts_grid_instant floor,
-      # above this job's own 25.9-alpine), issuing the SAME instant
-      # `rate(m[1d])` query once through the fan-out
-      # (emitWindowedArrayExtrapolated's per-series groupArray) and once
-      # through the new instant native lowering
-      # (chplan.RangeWindowGridNativeInstant, a degenerate one-point grid),
-      # and reading real peak memory_usage back from system.query_log for
-      # both — the actual, measured memory win this feature exists to
-      # deliver, not a synthetic estimate. See
-      # realch_ts_grid_instant_memory_integration_test.go.
-      - name: "Run the ts_grid_instant real-data memory measurement (real ClickHouse)"
-        run: just ts-grid-instant-memory-integration
+      - name: Recalibrate the bound set of ClickHouse ${{ matrix.clickhouse }}
+        if: ${{ inputs.calibrate }}
+        env:
+          CALIBRATE_SENTINELS: ${{ inputs.calibrate_sentinels }}
+        # Each space-separated name is its own recipe argument.
+        run: |
+          read -ra sentinels <<< "$CALIBRATE_SENTINELS"
+          just update-nightly-perf-baseline "$PERF_NIGHTLY_CH_IMAGE" "${sentinels[@]}"
 
-      - name: Run classic-histogram production-report replay
-        run: just histogram-report-lfs-integration
+      - name: Upload the recalibrated baseline
+        if: ${{ inputs.calibrate }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-baseline-${{ matrix.clickhouse }}
+          path: test/perf/nightly-baseline.json
+          if-no-files-found: error
 
       # Renders the per-sentinel verdict as a clear table in the job's
       # Summary tab BEFORE the raw log — see perf-nightly-step-summary.mjs's
@@ -111,6 +138,80 @@ jobs:
       - name: Render the nightly verdict summary
         if: always()
         run: node .github/scripts/perf-nightly-step-summary.mjs
+
+  # The real-data replays that pin their own ClickHouse servers rather than a
+  # matrix leg's, so they run once, beside the sentinel legs.
+  perf-nightly-replays:
+    name: perf-nightly-replays
+    # A recalibration dispatch measures the sentinels only.
+    if: ${{ !inputs.calibrate }}
+    runs-on: ubuntu-latest
+    # The ts_grid_instant measurement's dedicated server and real-data load,
+    # plus the classic-histogram production-report replay (its recipe's own
+    # go test timeout is 40 minutes).
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Both replays load the LFS-tracked samples; see the sentinel legs.
+          lfs: true
+
+      - uses: ./.github/actions/setup-go
+
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
+        with:
+          tool: just@1.46.0
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+
+      # The ts_grid_instant real-data memory measurement (#2748): reuses
+      # this package's own real, trimmed production sample
+      # (testdata/samples/svc_http_requests_total.parquet) in a dedicated
+      # ClickHouse container (>= the 26.5 ts_grid_instant floor), issuing the
+      # SAME instant `rate(m[1d])` query once through the fan-out
+      # (emitWindowedArrayExtrapolated's per-series groupArray) and once
+      # through the instant native lowering
+      # (chplan.RangeWindowGridNativeInstant, a degenerate one-point grid),
+      # and reading real peak memory_usage back from system.query_log for
+      # both — the actual, measured memory win this feature exists to
+      # deliver, not a synthetic estimate. See
+      # realch_ts_grid_instant_memory_integration_test.go.
+      - name: "Run the ts_grid_instant real-data memory measurement (real ClickHouse)"
+        run: just ts-grid-instant-memory-integration
+
+      - name: Run classic-histogram production-report replay
+        run: just histogram-report-lfs-integration
+
+  # The perf-nightly context release.yml's preflight waits on: green only
+  # when every sentinel leg and the replays succeeded. It also reports each
+  # leg's wall time. See perf-nightly-aggregate.mjs.
+  perf-nightly:
+    name: perf-nightly
+    needs: [perf-nightly-sentinels, perf-nightly-replays]
+    # Bare `always()`: this context reports on every run, so a failed,
+    # cancelled or skipped leg fails it rather than leaving it unposted.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Job-level permissions REPLACE the workflow-level block — contents: read
+    # for checkout, actions: read to list this run's jobs for the wall times.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: gate on every leg and report their wall times
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SENTINELS_RESULT: ${{ needs.perf-nightly-sentinels.result }}
+          REPLAYS_RESULT: ${{ needs.perf-nightly-replays.result }}
+          CALIBRATE: ${{ inputs.calibrate && 'true' || 'false' }}
+        run: node .github/scripts/perf-nightly-aggregate.mjs
 
   # Files/refreshes a single tracking issue when the SCHEDULE run does not
   # reach a clean pass, closes it on the next clean night. Same mechanism

@@ -1247,7 +1247,7 @@
       },
       {
         "lane_id": "perf-nightly-selfcheck.perf-nightly-selfcheck",
-        "context_name": "perf-nightly-selfcheck",
+        "context_name": "perf-nightly-selfcheck (",
         "merge_required": false,
         "release_required": false,
         "binding_ids": [
@@ -6128,7 +6128,7 @@
             },
             {
               "lane_id": "perf-nightly-selfcheck.perf-nightly-selfcheck",
-              "context_name": "perf-nightly-selfcheck",
+              "context_name": "perf-nightly-selfcheck (",
               "merge_required": false,
               "release_required": false
             },
@@ -6243,7 +6243,7 @@
             },
             {
               "lane_id": "perf-nightly-selfcheck.perf-nightly-selfcheck",
-              "context_name": "perf-nightly-selfcheck",
+              "context_name": "perf-nightly-selfcheck (",
               "merge_required": false,
               "release_required": false
             },

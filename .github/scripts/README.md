@@ -3624,15 +3624,20 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     short-circuited, `1` otherwise.
 
 - **`perf-nightly-selfcheck.mjs`** — `perf-nightly-selfcheck.yml`, the
-  `perf-nightly-selfcheck` job. #2437's periodic mutation-style self-check
+  `perf-nightly-selfcheck (<clickhouse>)` matrix legs, one per server of
+  `perf-nightly.yml`'s matrix. Each leg applies the mutations whose
+  `clickhouse` lines include its server's, so the PREWHERE split is broken
+  where the emitter places it (24.8, 26.6) and where ClickHouse does (25.9).
+  #2437's periodic mutation-style self-check
   that the #2370 perf sentinel gates (`perf-nightly.yml`, and the smoke
   corpus) still catch a real regression: deliberately breaks each mechanism
   its `MUTATIONS` list names one at a time — among them
   `internal/chsql/rate_window_fanout_bound.go`'s `maxRateWindowFanoutRows`
   (1000x wider, defeating #2429's resource bound), `internal/engine/
   spill.go`'s `spillThreshold` (inflated, disabling the external-group-by/sort
-  spill safety net), the emitter's PREWHERE split and the in-order
-  aggregation stamp — and asserts the mutation's own recipe FAILS under each,
+  spill safety net), the emitter's PREWHERE split, its partition,
+  `move_to_prewhere`'s auto range and the in-order aggregation stamp — and
+  asserts the mutation's own recipe FAILS under each,
   via an exact-string replacement that throws if the target text has drifted
   rather than silently mutating nothing. A mutation counts as caught only
   when every sentinel it names reports a failed subtest, so a recipe that
@@ -3649,12 +3654,28 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   zero-or-multiple-occurrences drift detection is pinned against a temp
   file. The actual mutate-and-assert-caught path (needs Docker + real
   ClickHouse) is exercised only by the weekly workflow itself.
-  - Exit: `0` when every mutation was caught, `1` when the working tree
-    wasn't clean at the start, a mutation's target text was not found, or
-    any mutation was not caught (the real bit-rot signal).
+  - Env: `PERF_NIGHTLY_CH_IMAGE` (the leg's ClickHouse image; its tag's
+    major.minor selects the leg's mutations).
+  - Exit: `0` when every mutation of the leg was caught, `1` when the image
+    is unset or no mutation applies to it, the working tree wasn't clean at
+    the start, a mutation's target text was not found, or any mutation was
+    not caught (the real bit-rot signal).
 
-- **`perf-nightly-step-summary.mjs`** — `perf-nightly.yml`, the
-  `perf-nightly` job, under `if: always()` after the test step. Renders the
+- **`perf-nightly-aggregate.mjs`** — `perf-nightly.yml`, the `perf-nightly`
+  job: the context `release.yml`'s preflight waits on. Passes only when the
+  `perf-nightly-sentinels` matrix (one leg per ClickHouse server) and the
+  `perf-nightly-replays` job both succeeded, and writes each perf-nightly
+  job's wall time of the run attempt to the step summary (a report; a
+  failure to read it does not change the verdict).
+  - Env: `SENTINELS_RESULT`, `REPLAYS_RESULT`, `CALIBRATE` (`true` on a
+    recalibration dispatch, which skips the replays), `GH_TOKEN`, `REPO`,
+    `RUN_ID`, `RUN_ATTEMPT`.
+  - Exit: `0` when both results are `success`, `1` otherwise.
+  - Tests: `perf-nightly-aggregate.test.mjs` (run in `ci.yml`).
+
+- **`perf-nightly-step-summary.mjs`** — `perf-nightly.yml`, each
+  `perf-nightly-sentinels (<clickhouse>)` leg, under `if: always()` after the
+  test step. Renders the
   per-sentinel verdict JSON the Go test wrote into a Markdown table in the
   step summary, taking pass/fail from the JSON's own `Pass` field; a missing
   results file prints a notice.

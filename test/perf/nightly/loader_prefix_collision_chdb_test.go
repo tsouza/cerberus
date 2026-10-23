@@ -20,10 +20,10 @@
 //	Code: 10. Not found column or subcolumn
 //	ResourceAttributes.deployment.environment.name in block.
 //
-// perf-nightly's own harness pins ClickHouse 25.9, which resolved that dot
-// access correctly — so only the ts_grid_instant memory measurement, whose
-// feature floor sits above 25.9 and which therefore boots its own 26.6
-// container, went red. The lane's merge_posture is "never"
+// perf-nightly's own harness then ran on ClickHouse 25.9 alone, which
+// resolved that dot access correctly — so only the ts_grid_instant memory
+// measurement, whose feature floor sits above 25.9 and which therefore boots
+// its own 26.6 container, went red. The lane's merge_posture is "never"
 // (.github/ci-lanes.json), so no PR ran it and the break landed on main.
 //
 // # Why this pin, on this substrate

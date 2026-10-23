@@ -82,8 +82,11 @@ type SentinelResult struct {
 // NightlyResults is the top-level document written to
 // PERF_NIGHTLY_RESULTS_JSON.
 type NightlyResults struct {
-	Sentinels []SentinelResult `json:"sentinels"`
-	AllPass   bool             `json:"all_pass"`
+	// ClickHouse is the release line ("major.minor") of the server the run
+	// measured on — the perf-nightly.yml matrix leg.
+	ClickHouse string           `json:"clickhouse"`
+	Sentinels  []SentinelResult `json:"sentinels"`
+	AllPass    bool             `json:"all_pass"`
 }
 
 // nightlyResultsPath resolves where to write the results document: the
@@ -105,7 +108,7 @@ func nightlyResultsPath() string {
 // summary has something to render even when a sentinel subtest failed
 // (a Go subtest's t.Errorf/t.Fatalf aborts only that subtest's goroutine;
 // the parent test function — and this write — still runs after the loop).
-func writeResultsJSON(results []SentinelResult) error {
+func writeResultsJSON(clickhouse string, results []SentinelResult) error {
 	allPass := true
 	for _, r := range results {
 		if !r.Pass {
@@ -113,7 +116,7 @@ func writeResultsJSON(results []SentinelResult) error {
 			break
 		}
 	}
-	doc := NightlyResults{Sentinels: results, AllPass: allPass}
+	doc := NightlyResults{ClickHouse: clickhouse, Sentinels: results, AllPass: allPass}
 	buf, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err

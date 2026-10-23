@@ -1072,6 +1072,12 @@ jobs:
       - name: "Assert #2437's self-check mutations are well-formed"
         run: node --test .github/scripts/perf-nightly-selfcheck.test.mjs
 
+      # perf-nightly.yml's `perf-nightly` aggregate posts the context
+      # release.yml's preflight waits on; perf-nightly.yml has no
+      # pull_request trigger, so its verdict logic is pinned here.
+      - name: Assert the perf-nightly aggregate fails on any red leg
+        run: node --test .github/scripts/perf-nightly-aggregate.test.mjs
+
       # Pins e2e.yml's dashboard-crawl-merge wiring: the required `dashboard`
       # aggregator must depend on it (so a merge failure can gate a release),
       # and the release/dispatch trigger conditions that decide when the

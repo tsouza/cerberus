@@ -25,12 +25,14 @@
 // captured production data (testdata/samples/README.md), just narrower in
 // calendar span.
 //
-// # Why its own ClickHouse container, not perfNightlyCHImage
+// # Why its own ClickHouse container, not a sentinel leg's
 //
 // ts_grid_instant floors at 26.5 (chopt.FeatureTSGridInstant's own doc) —
-// ABOVE perfNightlyCHImage's pinned 25.9, which predates the extreme-
-// parameter / staleness overflow fixes (#103223/#105319) the floor exists
-// for. This test boots its OWN dedicated container at 26.6-alpine instead,
+// ABOVE the 24.8 and 25.9 servers the sentinel legs also run on, which
+// predate the extreme-parameter / staleness overflow fixes
+// (#103223/#105319) the floor exists for. This test is one comparison, run
+// once (perf-nightly.yml's perf-nightly-replays job), so it boots its OWN
+// dedicated container at 26.6-alpine instead,
 // mirroring how the strict-scan lane's quantile_prom_histogram and
 // ts_grid_last_over_time real-CH tests each pin their own floor-appropriate
 // image rather than reusing their job's shared one.
@@ -75,7 +77,7 @@ import (
 )
 
 // tsGridInstantCHImage is pinned above the ts_grid_instant 26.5 floor — see
-// this file's own doc for why it cannot reuse perfNightlyCHImage (25.9).
+// this file's own doc for why it boots its own rather than a sentinel leg's.
 const tsGridInstantCHImage = "clickhouse/clickhouse-server:26.6-alpine"
 
 // tsGridInstantLookback is the wide-lookback shape cerberus issue #2748
