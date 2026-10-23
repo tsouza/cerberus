@@ -4,6 +4,102 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.23.0] — 2026-10-23
+
+### Added
+
+- **schema:** provision metrics tables with nanosecond or second timestamps (#3946)
+- **preflight:** detect DateTime metrics timestamps and render PromQL for them (#3943)
+- **promql:** answer @ pins outside the int64-nanosecond range (#3890)
+
+### Fixed
+
+- **e2e:** import containerd-store images for the k3d node's exact platform (#3976)
+- **chsql:** keep the canonical series key readable after a GROUP BY spill (#3973)
+- **release:** write the cask quarantine hook as goreleaser install_steps (#3974)
+- **chplan:** surface plural quantile group keys to plan walkers (#3970)
+- **chsql:** let ClickHouse place PREWHERE where it measured better (fixes #3955) (#3958)
+- **ci:** make step-output and env writes injection-safe (#3956)
+- split verify cutover in the column zone and rank PREWHERE by deployed sort key (#3954)
+- **chclient:** confirm a server-aborted dispatch is gone before releasing capacity (#3950)
+- **schema:** accept every DateTime metrics timestamp and re-resolve all schema strategies (#3949)
+- **ci:** restore the seeder coverage floor and label epic issues (#3944)
+- **compat:** serve the loki corpus index from the object store only (#3940)
+- **promql:** extrapolate histogram rate to the edges of a window cut at the storage edge (#3937)
+- pre-release audit fixes for v1.23.0 (#3932)
+- **chserver:** hold the query at its observed entry until the request deadline (#3929)
+- **ci:** set Go up through the hardened action in the tempo compat lane (#3924)
+- **compat:** align the promql parser, oracle and reference server on v3.15.0 (#3923)
+- **promql:** fold bare start() and end() to the request's bounds (#3922)
+- **promql:** fold step() and range() per request, reject sub-ms subquery steps (#3917)
+- **promql:** answer ranges and subqueries whose step outspans the range (#3919)
+- **promql:** answer subqueries reaching past the DateTime64 range (#3909)
+- **spec:** fail a parity seed reader whose reference query errors (#3912)
+- **testsql:** unquote backtick-quoted names in SeedTableColumns (#3904)
+- **chsql:** count and place grid anchors exactly past 292 years (#3903)
+- **promql:** keep a subquery's widened span representable past 292y (#3899)
+- **promql:** lower mixed-or select fns inside a nested subquery (#3897)
+- **promql:** shift nested-subquery and request-pin regions out of range (#3898)
+- **promql:** pre-1970 histogram ts_of_last and time()/timestamp() precision (#3891)
+- **promql:** evaluate nodes below a subquery in their own context (#3889)
+- **promql:** forecast predict_linear from the evaluation instant (#3887)
+- **promql:** extrapolate rate past the stored range to Prometheus's edges (#3885)
+- **promql:** answer @ pins and grids outside DateTime64(9) in SQL (#3874)
+- **promql:** compare exemplar window bounds before 1900 exactly (#3868)
+- **promql:** compare metadata window bounds before 1900 exactly (#3865)
+- **promql:** compute date functions exactly over the full int64 range (#3854)
+- **promql:** give a float-narrowed mixed relation its float schema as an operand (#3861)
+- **promql:** keep every emitted instant inside ClickHouse's DateTime64(9) range (#3858)
+- **promql:** lower a wrapper over a mixed or as a set-op operand (#3852)
+- **hooks:** require lefthook's git hooks only in a repository that uses lefthook (#3850)
+- **promql:** answer queries outside the evaluation domain as Prometheus does (#3840)
+- **ci:** restore the newest per-mutant cache entry whose producing run verifies (#3831)
+- **promql:** lower an or between a mixed operand and a histogram operand (#3827)
+- **chclient:** disable hedged requests so the replica pin holds (#3813)
+- **chsql:** drop the unreachable nil-seed fallback in the compare emitter (#3816)
+- **chdbsession:** pin the embedded ClickHouse server timezone to UTC (#3810)
+- **goldens:** regenerate the query_exemplars fixtures in the promql shard (#3807)
+- **chserver:** re-arm the request deadline until it lands inside the call (#3809)
+- **ci:** make the GHCR copies the source of record for the retained MinIO images (#3805)
+- **chsql:** pin time-bound literals to UTC whatever the ClickHouse server timezone (#3796)
+- **chserver:** judge array_fold cancellation by loop executions on a warmed server (#3799)
+- **logql:** anchor instant range aggregations at the request time (#3786)
+- **hooks:** read the hook payload as a stream so a guard cannot fail open (#3798)
+- **prom:** answer query_exemplars for any expression, not only a bare selector (#3790)
+- **chdb:** repair Parquet output after a rejected query (#3761) (#3771)
+
+### Performance
+
+- **engine:** plan plural native quantiles under the native-histogram analyzer fix (#3966)
+- **chsql:** bind native quantile helpers as aliases, not lambdas (#3961)
+- **engine:** read each table's deployed sort key and snapshot strategies once per request (#3953)
+- **chplan:** divide span helpers in int64 when the span fits a Duration (#3914)
+
+### CI
+
+- **perf:** run perf-nightly sentinels on ClickHouse 24.8, 25.9 and 26.6 (#3972)
+- **deps:** open a pull request when a tsouza fork carries a newer tag (#3936)
+- **merge-queue:** lint each batch member's squash subject on a merge-queue draft (#3848)
+- **merge-queue:** re-apply the queue label after a push to a queued pull request (#3846)
+- **merge-queue:** queue labelled pull requests in batches of five (#3837)
+- **merge-queue:** judge a merge-queue draft by the descriptions of its batch (#3836)
+- **update-golden:** stop the parity predecessor asserting manual classification (#3835)
+- **merge-queue:** queue pull requests through Mergify with in-place checks (#3834)
+- **mutation:** pin the gremlins fork that splits --cache-env-ignore on commas (#3829)
+- **ruleset:** require ch-server-safety on main and in the release preflight (#3820)
+- **strict-scan:** shard ch-server-safety per cancellation build (#3814)
+- **mutation:** pin the cover-gap and verdict-cache gremlins fork (#3817)
+- **chdb:** run the probe lane on an 8-vCPU Ubicloud runner (#3797)
+- run the self-hosted jobs on Ubicloud runners (#3794)
+
+### Documentation
+
+- **operations:** run the release perf regression gate per shard (#3938)
+- **readme:** serve the DeepWiki badge from shields.io (#3905)
+- **chclient:** state that the distributed-read pins cannot be overridden (#3822)
+- **compat:** make the frozen v3.7.0 loki-bench snapshot the LogQL corpus of record (#3806)
+- repair dead external links and stop counting bot challenges (#3793)
+
 ## [v1.22.0] — 2026-09-27
 
 ### Added

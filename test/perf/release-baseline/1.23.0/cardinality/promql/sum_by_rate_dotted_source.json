@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/sum_by_rate_dotted_source",
+  "fan_factor": 5.833333333333333,
+  "scan_rows": 18,
+  "peak_intermediate": 105,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
