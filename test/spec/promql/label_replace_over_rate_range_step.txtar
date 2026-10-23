@@ -182,7 +182,7 @@ SELECT `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `
 [51] int64 = 0
 -- settings --
 enable_analyzer=1
-enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
 log_comment=cerb:agg;agg=3;rw
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912

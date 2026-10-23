@@ -284,7 +284,7 @@ VectorSetOp op=or match=default mixed
             Scan(otel_metrics_exponential_histogram)
 -- settings --
 enable_analyzer=0
-enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
 log_comment=cerb:node;agg=1
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912

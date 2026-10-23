@@ -141,7 +141,7 @@ SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`
 [48] int64 = 0
 -- settings --
 enable_analyzer=0
-enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
 log_comment=cerb:node;agg=1;join
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_join=536870912

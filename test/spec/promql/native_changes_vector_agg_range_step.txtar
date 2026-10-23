@@ -133,7 +133,7 @@ SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `bucket_ts` AS `TimeUn
 allow_experimental_parallel_reading_from_replicas=0
 allow_experimental_time_series_aggregate_functions=1
 enable_analyzer=1
-enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
 log_comment=cerb:project;rwn;union
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912

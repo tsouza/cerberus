@@ -42,7 +42,7 @@ RangeWindow func=max_over_time range=5m0s step=0s ts=anchor_ts value=Value group
             Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, anchor_ts AS TimeUnix, 1 AS Value]
               StepGrid start=2025-12-31T23:54:45.000000000Z end=2026-01-01T00:00:00.000000000Z step=45s
 -- settings --
-enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,result_cache,trace_id_bitmap_filter
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
 log_comment=cerb:rw;rw;sg
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
