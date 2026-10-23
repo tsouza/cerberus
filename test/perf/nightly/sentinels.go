@@ -367,10 +367,6 @@ var Sentinels = []Sentinel{
 		Path:             "/api/v1/query_range",
 		ExpectedStatus:   http.StatusOK,
 		BaselineHeadroom: gaugeBaselineHeadroom,
-		NotOn: map[string]string{
-			"24.8": "ClickHouse 24.8-24.12 fails reading back a spilled GROUP BY over the mapSort-built series " +
-				"identity (TYPE_MISMATCH, issue #3971), which this aggregation spills into",
-		},
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {`sum by (reason) (` + gaugeMetric + `)`},
