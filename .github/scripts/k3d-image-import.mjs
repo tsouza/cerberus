@@ -30,10 +30,15 @@
 // `ctr: content digest sha256:…: not found`. Every one of k3d's import
 // modes (`tools-node`, `direct`) passes that flag, so on the containerd
 // store this script bypasses k3d and streams `docker save` straight into
-// the server node's `ctr -n k8s.io images import -` — which, without
-// `--all-platforms`, imports the node's own platform only and accepts the
-// containerd-store tarball. The store is detected once from `docker info`
-// and the overlay2 path is the unchanged `k3d image import` CI runs today.
+// the server node's `ctr -n k8s.io images import --platform <node> -`. The
+// explicit `--platform` matters as much as the missing `--all-platforms`:
+// ctr's default matcher on linux/amd64 also accepts linux/386, so an index
+// that lists a 386 manifest (otel/opentelemetry-collector-contrib does)
+// sends it after that manifest's blobs, which the tarball never holds, and
+// fails with the same `content digest … not found`. Naming the node's exact
+// platform imports that platform alone. The store and the daemon's
+// platform are detected once from `docker info` / `docker version`, and the
+// overlay2 path is the unchanged `k3d image import`.
 //
 // Digest-pinned public images are acquired directly by node containerd. Docker
 // archives can discard digest-only names; graphdriver exports also reconstruct
@@ -102,16 +107,23 @@ const containerdDriverTypePrefix = 'io.containerd.snapshotter.';
 const dockerInfoDriverStatusArgs = ['info', '--format', '{{json .DriverStatus}}'];
 
 // The POSIX `sh -c` pipeline the containerd path runs. `$1` is the image
-// ref and `$2` the server node container, passed as positional parameters
-// so neither is ever interpolated into shell text. Deliberately no
-// `--all-platforms`: that flag is exactly what makes k3d's own import
-// refuse the containerd-store tarball. dash has no `pipefail`, so the
+// ref, `$2` the server node container and `$3` the node's platform, passed
+// as positional parameters so none is ever interpolated into shell text.
+// Deliberately no `--all-platforms`: that flag is exactly what makes k3d's
+// own import refuse the containerd-store tarball. `--platform "$3"` keeps
+// ctr from matching a compatible platform (386 on amd64) whose blobs the
+// tarball does not hold. dash has no `pipefail`, so the
 // status this pipeline reports is `ctr`'s alone; a `docker save` failure
 // surfaces as a truncated tarball `ctr` rejects, and the containerd
 // verification after every attempt is the arbiter either way, the same
 // contract the k3d path has always had.
 const containerdStoreImportPipeline =
-  'docker save "$1" | docker exec -i "$2" ctr -n k8s.io images import -';
+  'docker save "$1" | docker exec -i "$2" ctr -n k8s.io images import --platform "$3" -';
+
+// The k3d nodes are containers on the same daemon, so the daemon's own
+// os/arch is the platform their containerd runs.
+const dockerVersionPlatformArgs = ['version', '--format', '{{.Server.Os}}/{{.Server.Arch}}'];
+const platformRe = /^[a-z0-9]+\/[a-z0-9]+$/;
 
 // Human-readable names for the failure message: what the store is and the
 // path this script took on it, so an exhausted import says which of the
@@ -153,16 +165,30 @@ export function detectImageStore(captureImpl = capture) {
   return parseImageStore(res.stdout);
 }
 
+// detectNodePlatform — the `os/arch` the k3d nodes run, from the daemon
+// that hosts them. Throws when `docker version` fails or answers anything
+// but `os/arch`, for the same reason detectImageStore does.
+export function detectNodePlatform(captureImpl = capture) {
+  const res = captureImpl('docker', dockerVersionPlatformArgs);
+  const platform = res.stdout.trim();
+  if (res.status !== 0 || !platformRe.test(platform)) {
+    throw new Error(
+      `docker ${dockerVersionPlatformArgs.join(' ')} did not name a platform (status ${res.status}): ${platform} ${res.stderr.trim()}`,
+    );
+  }
+  return platform;
+}
+
 // importOnce — one import attempt of `img` on the given store; returns the
 // capture result of the command run. On the graphdriver store this is the
 // exact `k3d image import` invocation CI has always run; on the containerd
 // store it is the `docker save | ctr import` pipeline (module header).
-export function importOnce(img, store, { cluster, serverContainer, captureImpl = capture }) {
+export function importOnce(img, store, { cluster, serverContainer, platform, captureImpl = capture }) {
   if (img.includes('@sha256:')) {
     return captureImpl('docker', ['exec', serverContainer, 'ctr', '-n', 'k8s.io', 'images', 'pull', normalizeRef(img)]);
   }
   if (store === imageStore.containerd) {
-    return captureImpl('sh', ['-c', containerdStoreImportPipeline, 'sh', img, serverContainer]);
+    return captureImpl('sh', ['-c', containerdStoreImportPipeline, 'sh', img, serverContainer, platform]);
   }
   return captureImpl('k3d', ['image', 'import', img, '-c', cluster]);
 }
@@ -216,7 +242,7 @@ export function containerdHasImage(serverContainer, ref, captureImpl = capture) 
 // without a real docker/k3d or real wall-clock waits.
 export async function importAndVerifyOne(
   img,
-  { cluster, serverContainer, store, attempts, backoffStepSeconds, sleepFn = sleep, captureImpl = capture },
+  { cluster, serverContainer, store, platform, attempts, backoffStepSeconds, sleepFn = sleep, captureImpl = capture },
 ) {
   const ref = normalizeRef(img);
   let lastStderr = '';
@@ -227,7 +253,7 @@ export async function importAndVerifyOne(
     // verification below decides landed/not-landed. The stderr is kept for
     // the exhausted-budget message, where the containerd path's `ctr`
     // error is the one line that says why.
-    lastStderr = importOnce(img, store, { cluster, serverContainer, captureImpl }).stderr;
+    lastStderr = importOnce(img, store, { cluster, serverContainer, platform, captureImpl }).stderr;
     if (containerdHasImage(serverContainer, ref, captureImpl)) return { landed: true, lastStderr };
     log(`    import attempt ${attempt}/${attempts}: ${ref} not in containerd yet, retrying after backoff`);
     if (attempt < attempts) await sleepFn(attempt * backoffStepSeconds * 1000);
@@ -271,13 +297,26 @@ if (isMain()) {
     error(`cannot determine the Docker host's image store, so no import path can be chosen: ${e.message}`);
     process.exit(1);
   }
-  log(`==> docker host image store: ${storeDescription[store].store} — importing via ${storeDescription[store].path}`);
+  let platform;
+  if (store === imageStore.containerd) {
+    try {
+      platform = detectNodePlatform();
+    } catch (e) {
+      error(`cannot determine the k3d nodes' platform for the containerd-store import: ${e.message}`);
+      process.exit(1);
+    }
+  }
+  log(
+    `==> docker host image store: ${storeDescription[store].store} — importing via ${storeDescription[store].path}` +
+      (platform ? ` (platform ${platform})` : ''),
+  );
 
   for (const img of toImport) {
     const { landed, lastStderr } = await importAndVerifyOne(img, {
       cluster,
       serverContainer,
       store,
+      platform,
       attempts,
       backoffStepSeconds,
     });

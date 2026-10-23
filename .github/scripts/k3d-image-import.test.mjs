@@ -16,6 +16,7 @@ import {
   importAndVerifyOne,
   parseImageStore,
   detectImageStore,
+  detectNodePlatform,
   importOnce,
   exhaustedMessage,
   imageStore,
@@ -189,6 +190,23 @@ test('detectImageStore fails loudly when docker info fails or answers nonsense',
   assert.throws(() => detectImageStore(nonsense), /docker info.*DriverStatus.*not json/s);
 });
 
+test('detectNodePlatform reads os/arch from docker version', () => {
+  const argvSeen = [];
+  const fake = (cmd, args) => {
+    argvSeen.push([cmd, ...args]);
+    return { status: 0, stdout: 'linux/amd64\n', stderr: '' };
+  };
+  assert.equal(detectNodePlatform(fake), 'linux/amd64');
+  assert.deepEqual(argvSeen, [['docker', 'version', '--format', '{{.Server.Os}}/{{.Server.Arch}}']]);
+});
+
+test('detectNodePlatform fails loudly when docker version fails or names no platform', () => {
+  const failing = () => ({ status: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon' });
+  assert.throws(() => detectNodePlatform(failing), /did not name a platform.*Cannot connect/s);
+  const empty = () => ({ status: 0, stdout: '/\n', stderr: '' });
+  assert.throws(() => detectNodePlatform(empty), /did not name a platform/);
+});
+
 test('importOnce on the graphdriver store runs exactly the k3d image import CI uses today', () => {
   const argvSeen = [];
   const fakeCapture = (cmd, args) => {
@@ -212,6 +230,7 @@ test('importOnce on the containerd store streams docker save into the node ctr, 
   importOnce('clickhouse/clickhouse-server:26.6', imageStore.containerd, {
     cluster: 'cerberus-e2e',
     serverContainer: 'k3d-cerberus-e2e-server-0',
+    platform: 'linux/amd64',
     captureImpl: fakeCapture,
   });
   assert.equal(argvSeen.length, 1);
@@ -221,8 +240,11 @@ test('importOnce on the containerd store streams docker save into the node ctr, 
   assert.equal(argv0, 'sh');
   // The image ref and the node container travel as positional parameters,
   // never interpolated into the pipeline text.
-  assert.deepEqual(positional, ['clickhouse/clickhouse-server:26.6', 'k3d-cerberus-e2e-server-0']);
-  assert.match(pipeline, /docker save "\$1" \| docker exec -i "\$2" ctr -n k8s\.io images import -/);
+  assert.deepEqual(positional, ['clickhouse/clickhouse-server:26.6', 'k3d-cerberus-e2e-server-0', 'linux/amd64']);
+  // `--platform` names the node's exact platform: ctr's default matcher on
+  // linux/amd64 also accepts linux/386, and an index listing a 386 manifest
+  // then fails the import on blobs the tarball never holds.
+  assert.match(pipeline, /docker save "\$1" \| docker exec -i "\$2" ctr -n k8s\.io images import --platform "\$3" -/);
   // Never `--all-platforms`: that is the flag k3d's own import passes and
   // the reason the containerd-store tarball (an index naming every platform,
   // blobs for one) is refused.
@@ -240,6 +262,7 @@ test('importAndVerifyOne threads the detected store through to the import path',
     cluster: 'cerberus-e2e',
     serverContainer: 'k3d-cerberus-e2e-server-0',
     store: imageStore.containerd,
+    platform: 'linux/arm64',
     attempts: 1,
     backoffStepSeconds: 2,
     sleepFn: async () => {},
@@ -247,6 +270,7 @@ test('importAndVerifyOne threads the detected store through to the import path',
   });
   assert.equal(landed, true);
   assert.equal(argvSeen[0][0], 'sh');
+  assert.equal(argvSeen[0].at(-1), 'linux/arm64');
   assert.equal(argvSeen.some((a) => a[0] === 'k3d'), false);
 });
 
