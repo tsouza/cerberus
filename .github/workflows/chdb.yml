@@ -494,15 +494,20 @@ jobs:
       # is the diagnosis.
       fail-fast: false
       matrix:
-        # The shard count. Three mirrors chdb-roundtrip.mjs's own
-        # FANOUT.promql — the same "diminishing past ~3-4" ceiling that
-        # motivates the in-runner number is a reasonable starting point for
-        # the outer axis too — so total effective parallelism is 3 runners ×
-        # 3 in-runner processes = 9, up from 3. Changing this list is the
-        # whole knob: chdb-roundtrip.mjs derives ROUNDTRIP_SHARD_COUNT from
-        # `strategy.job-total`, never a repeated literal, so the partition
-        # rebalances itself and no context name moves.
-        shard: [1, 2, 3]
+        # The shard count: 6 runners × chdb-roundtrip.mjs's FANOUT.promql
+        # (2 in-runner processes) = 12 global legs. Each leg holds 1/12 of
+        # TestLower's fixture walk plus its name-hash share of the package's
+        # other top-level tests, and the heaviest of those run 300-950s
+        # each, so the slowest leg is set by which of them hash together.
+        # At 6 legs, two of them shared leg 1 and its internal/promql binary
+        # passed the 32m GO_TEST_TIMEOUT_MINUTES on a slow runner, where
+        # every test ran about 1.9x its usual time (#4001). At 12 legs the
+        # slowest leg sums to about 800s at normal speed and 1520s at 1.9x.
+        # Changing this list is the whole knob: chdb-roundtrip.mjs derives
+        # ROUNDTRIP_SHARD_COUNT from `strategy.job-total`, never a repeated
+        # literal, so the partition rebalances itself and no context name
+        # moves.
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v7
 
