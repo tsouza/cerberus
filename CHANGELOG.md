@@ -4,6 +4,17 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.23.1] — 2026-10-24
+
+### Fixed
+
+- **engine:** keep the legacy-analyzer stamp on unwired settings rules (#3992)
+- **engine:** stop stamping enable_analyzer=0 on ClickHouse 26.9+ (#3989)
+
+### CI
+
+- keep script-suite workflow commands from surfacing as annotations (#3990)
+
 ## [v1.23.0] — 2026-10-23
 
 ### Added

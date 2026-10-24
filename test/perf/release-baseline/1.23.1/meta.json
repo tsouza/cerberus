@@ -1,0 +1,7 @@
+{
+  "version": "1.23.1",
+  "source_dir": "test/perf/cardinality-baseline",
+  "source_ref": "(working tree)",
+  "source_commit": "99cefef842544054e322ad60a8f4e0d48117b3d4",
+  "shard_count": 1318
+}
