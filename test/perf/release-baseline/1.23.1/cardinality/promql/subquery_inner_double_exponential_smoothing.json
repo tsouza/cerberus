@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/subquery_inner_double_exponential_smoothing",
+  "fan_factor": 1,
+  "scan_rows": 15,
+  "peak_intermediate": 15,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
