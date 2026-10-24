@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/histogram_quantile_native_range",
+  "fan_factor": 6.666666666666667,
+  "scan_rows": 3,
+  "peak_intermediate": 20,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
