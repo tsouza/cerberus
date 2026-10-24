@@ -100,8 +100,12 @@ func compositionContributors() []settingsContributor {
 	}
 	for _, f := range compositionRuleFlags {
 		switch f.name {
-		case "JoinSpill", "ExpHistogramTwoLevel", "AnalyzerMandatory":
+		case "JoinSpill", "ExpHistogramTwoLevel":
 			// Applied by the dedicated bound above, not by SettingsRules.apply.
+			continue
+		case "AnalyzerMandatory":
+			// Withholds the analyzer fix above rather than applying a rule
+			// of its own; each isolated rule below carries its value.
 			continue
 		}
 		contributors = append(contributors, settingsContributor{
@@ -313,7 +317,8 @@ func describeWriters(values map[string][]string) string {
 // the two analyzer-gated rules (condition cache, lazy materialisation) stamp
 // nothing — they are inert under enable_analyzer=0 anyway, so a stamp would
 // only misreport the query's posture in system.query_log. On a server where
-// the analyzer is mandatory (AnalyzerMandatory, ClickHouse >= 26.9) the fix stamps nothing and the co-stamps fire as on any plan.
+// the analyzer is mandatory (AnalyzerMandatory, ClickHouse >= 26.9) the fix
+// stamps nothing and the co-stamps fire as on any plan.
 func TestSharedQuerySettings_AnalyzerFixWinsOverCoStamps(t *testing.T) {
 	t.Parallel()
 

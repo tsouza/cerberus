@@ -36,7 +36,8 @@ func TestAnalyzerMandatoryOnFleet_ConservativeAcrossTheFleet(t *testing.T) {
 		{"every node older", chclient.FleetVersions{Versions: []chopt.Version{analyzerOptionalBuild, analyzerOptionalBuild}, Complete: true}, true, false},
 		{"older nodes seen, one unreachable, mandatory in force", chclient.FleetVersions{Versions: []chopt.Version{analyzerOptionalBuild}}, true, true},
 		{"older nodes seen, one unreachable, not mandatory in force", chclient.FleetVersions{Versions: []chopt.Version{analyzerOptionalBuild}}, false, false},
-		{"nothing reachable", chclient.FleetVersions{}, false, false},
+		{"nothing reachable, not mandatory in force", chclient.FleetVersions{}, false, false},
+		{"nothing reachable, mandatory in force", chclient.FleetVersions{}, true, true},
 	}
 	for _, tc := range cases {
 		if got := analyzerMandatoryOnFleet(tc.fv, tc.current); got != tc.want {

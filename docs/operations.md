@@ -1397,9 +1397,9 @@ non-issue.** `enable_analyzer` defaults to `1` (the new analyzer) on every
 ClickHouse version cerberus supports (>= 24.8, well past the 24.3+ fix), so
 ordinary cerberus queries are not exposed. But
 `internal/engine/query_settings_rules.go`'s `applyNativeHistogramAnalyzerFix`
-**forces `enable_analyzer=0` while every reachable node runs a build below 26.9**
-— reactivating the exact
-legacy pipeline `#29332` lived in — for every query whose plan reaches a
+**forces `enable_analyzer=0` unless a reachable node is known to run 26.9 or
+newer** — including when the version probe reaches no node — reactivating the
+exact legacy pipeline `#29332` lived in — for every query whose plan reaches a
 `chplan.HistogramQuantileNative`, `chplan.HistogramQuantilesNative` or
 `chplan.HistogramProjection` node (the native/exponential-histogram
 `histogram_quantile()`/`histogram_quantiles()`/`sum()`/`avg()`/
