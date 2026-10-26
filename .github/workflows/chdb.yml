@@ -216,7 +216,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91  # v2.87.31
         with:
           tool: just@1.46.0
       # Cache the pinned libchdb.so so the install step is a no-op cache
@@ -280,7 +280,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91  # v2.87.31
         with:
           tool: just@1.46.0
       - name: Install libchdb.so
@@ -366,7 +366,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
 
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91  # v2.87.31
         if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         with:
           tool: just@1.46.0
@@ -513,7 +513,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91  # v2.87.31
         with:
           tool: just@1.46.0
       # Cache the pinned libchdb.so, same key as `chdb-build`'s and
@@ -689,7 +689,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91  # v2.87.31
         with:
           tool: just@1.46.0
       # Cache the pinned libchdb.so, same key as `chdb-build`'s step. This
@@ -788,7 +788,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91  # v2.87.31
         with:
           tool: just@1.46.0
       - name: Cache libchdb.so
@@ -823,7 +823,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91  # v2.87.31
         with:
           tool: just@1.46.0
       - name: Cache libchdb.so
@@ -858,7 +858,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91  # v2.87.31
         with:
           tool: just@1.46.0
       - name: Cache libchdb.so
