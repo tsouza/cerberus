@@ -40,6 +40,44 @@ follows it.
 
 Tracked in [#4019](https://github.com/tsouza/cerberus/issues/4019).
 
+## Authentication
+
+cerberus ships no authentication and relies on the deployment boundary in front of it
+([docs/operations.md](docs/operations.md#security-posture)). Built-in, opt-in authentication lets
+Grafana connect to cerberus directly, using credentials the Grafana Prometheus, Loki and Tempo
+datasources already send:
+
+- **Basic auth and bearer tokens**, checked against hashed credentials in the configuration.
+- **OpenID Connect.** The datasources' Forward OAuth identity option forwards the signed-in user's
+  token; cerberus validates it against the identity provider's published keys, issuer, audience and
+  expiry.
+- **Mutual TLS.** Client certificates verified against a configured certificate authority.
+
+Authentication is off by default, so a deployment behind an authenticating proxy is unchanged, and
+the health and readiness probes stay unauthenticated.
+
+Tracked in [#4020](https://github.com/tsouza/cerberus/issues/4020).
+
+## Multi-tenancy
+
+One deployment serving several isolated tenants over one ClickHouse cluster, opt-in.
+
+- **Tenant identity.** The `X-Scope-OrgID` header that Loki, Mimir and Tempo use, so existing
+  datasources work unchanged, and a request without a tenant is rejected. With authentication
+  enabled, the tenant comes from the authenticated identity, and the header is trusted only from a
+  configured proxy.
+- **Isolation enforced by ClickHouse.** Each tenant maps to a ClickHouse user whose grants and row
+  policies scope what it reads: a database per tenant, or row policies on shared tables. cerberus
+  runs each tenant's queries as that user, so isolation does not depend on every lowering emitting
+  the right predicate.
+- **Per-tenant limits** through ClickHouse quotas and settings profiles, so one tenant's load cannot
+  starve another.
+- **Verification.** Cross-tenant leak tests on all three heads and every metadata endpoint, and a
+  correctness check of every ClickHouse optimization cerberus enables when a row policy applies.
+- **Later stage:** cross-tenant queries in Loki's `tenant-a|tenant-b` form.
+
+Tracked in [#4021](https://github.com/tsouza/cerberus/issues/4021).
+
 ## ClickHouse releases
 
 cerberus tracks each ClickHouse release for new functions and settings it can use, and for fixes and
@@ -84,8 +122,8 @@ These are boundaries of the project, not gaps in it:
 - **New query languages.** cerberus speaks the upstream languages as they are.
 - **AGPL code in the binary.** The LogQL and TraceQL parsers are clean-room Apache-2.0
   reimplementations.
-- **Authentication and tenant isolation.** These belong to the deployment boundary in front of
-  cerberus; see [docs/operations.md](docs/operations.md#security-posture).
+- **Identity management.** Users, groups and roles live in the identity provider; cerberus verifies
+  identities and does not store them.
 
 [gfi]: https://github.com/tsouza/cerberus/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22
 [hw]: https://github.com/tsouza/cerberus/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22
