@@ -40,8 +40,8 @@ Most changes to cerberus are written by AI coding agents working under a maintai
   through standing instructions to the agents. A merged change is the maintainer's responsibility,
   whoever or whatever wrote it.
 - **Merge gates.** The `main` ruleset requires a pull request, a squash merge, every review thread
-  resolved, and a fixed set of passing status checks, and no one can bypass it, administrators
-  included. The checks are listed in
+  resolved, and a fixed set of passing status checks. Its bypass list is empty, so it binds
+  administrators as well. The checks are listed in
   [CONTRIBUTING.md](CONTRIBUTING.md) and documented gate by gate in
   [docs/test-strategy.md](docs/test-strategy.md). They include the test suite under the race
   detector, the architecture and invariant scans, and the license boundary check. A release is
@@ -116,8 +116,9 @@ time, with or without the maintainers.
 
 Everyone in the project's spaces follows the [Code of Conduct](CODE_OF_CONDUCT.md). Reports go to the
 address it lists and are handled privately by the maintainers. A maintainer who is the subject of a
-report takes no part in handling it. While the project has a single maintainer, a report about that
-maintainer can be made to GitHub through its
+report takes no part in handling it. While the project has a single maintainer, no other maintainer
+can handle a report about that maintainer; conduct that breaks GitHub's own Community Guidelines can
+be reported to GitHub through its
 [abuse reporting](https://docs.github.com/en/communities/maintaining-your-safety-on-github/reporting-abuse-or-spam).
 
 ## Security response
