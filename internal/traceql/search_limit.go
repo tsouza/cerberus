@@ -576,7 +576,7 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 // the query predicate. SearchTraceLimit is only constructed for the bounded
 // search path, whose caller always applies the canonical sample projection.
 func searchTraceLimitInputColumns(existing []string, predicate chplan.Expr, s schema.Traces) []string {
-	columns := make(map[string]struct{}, len(existing)+7)
+	columns := make(map[string]struct{}, len(existing))
 	add := func(name string) {
 		if name != "" {
 			columns[name] = struct{}{}

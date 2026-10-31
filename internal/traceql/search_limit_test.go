@@ -340,3 +340,28 @@ func TestSearchWindow_GroupByAggregateWindowed(t *testing.T) {
 		t.Fatalf("group-by aggregate window bounds = %d, want 2", got)
 	}
 }
+
+// TestSearchWindow_TraceScopedCohortWindowed — a trace-scoped intrinsic
+// (`traceDuration`) carries its per-trace aggregate inside an InSubquery of
+// the plain-search predicate. stampSearchTraceLimit must fold the request
+// window into that cohort as well as onto the outer scan, or the inner
+// GROUP BY TraceId scans full retention.
+func TestSearchWindow_TraceScopedCohortWindowed(t *testing.T) {
+	t.Parallel()
+	plan := lowerSearchWindowed(t, `{ traceDuration > 1s }`, 200, winStart, winEnd)
+	stl, ok := plan.(*chplan.SearchTraceLimit)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.SearchTraceLimit", plan)
+	}
+	f, ok := stl.Input.(*chplan.Filter)
+	if !ok {
+		t.Fatalf("SearchTraceLimit input = %T, want *chplan.Filter", stl.Input)
+	}
+	cohorts := cohortSubqueries(f.Predicate)
+	if len(cohorts) != 1 {
+		t.Fatalf("got %d cohort subqueries, want 1", len(cohorts))
+	}
+	if got := countWindowBounds(cohorts[0].Subquery); got != 2 {
+		t.Fatalf("cohort window bounds = %d, want 2 (start and end folded into the per-trace aggregate)", got)
+	}
+}
