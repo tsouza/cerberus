@@ -275,7 +275,7 @@ function openPullRequest(bump, files, repo, base) {
     must(capture('go', ['mod', 'tidy'], { cwd: dir }), `go mod tidy in ${dir}`);
   }
   must(git(['add', '--', ...files.flatMap((f) => [f.path, f.path.replace(/go\.mod$/, 'go.sum')])]), 'git add');
-  must(git([...COMMIT_IDENTITY, 'commit', '--quiet', '-m', prTitle(bump)]), 'git commit');
+  must(git([...COMMIT_IDENTITY, 'commit', '--quiet', '--signoff', '-m', prTitle(bump)]), 'git commit');
   must(git(['push', '--force', 'origin', `HEAD:refs/heads/${branch}`]), `push ${branch}`);
   const existing = JSON.parse(
     must(capture('gh', ['pr', 'list', '-R', repo, '--head', branch, '--state', 'open', '--json', 'number']), 'gh pr list'),

@@ -112,7 +112,12 @@ per-layer "catches X / misses Y" guidance.
    marker cites an issue in this repository that is open and is an issue rather than a pull request.
    There is no tolerance file and no exemption list.
 4. **Conventional Commits**, enforced by `commitlint` (`.commitlintrc.json`). Subject ≤ 100
-   characters.
+   characters. Every commit is signed off for the Developer Certificate of Origin (`git commit -s`),
+   which the `lint` check's `dco` step (`.github/scripts/dco.mjs`) verifies against the commit author.
+   An agent's commit discloses the assistance with an `Assisted-by: <tool>:<model>` trailer (for
+   example `Assisted-by: Claude Code:claude-opus-5-5`) placed before the `Signed-off-by`, and never
+   a `Co-Authored-By` trailer: the author and the sign-off are the directing maintainer's, given on
+   their standing authorization (`GOVERNANCE.md`, "How cerberus is developed").
 5. **No speculative pre-flight, but a red check is reproduced locally before the next push.** These
    are two halves of one rule, and the second half wins wherever they meet.
    - *Before* a push, do not run `just test`, `just lint`, `go test`, `golangci-lint run`,

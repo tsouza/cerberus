@@ -8,12 +8,12 @@ Thanks for your interest. cerberus is small + opinionated — here's how to land
 git checkout -b feat/<short-name>
 # ...edit...
 go test -run '^TestName$' ./internal/<pkg>/   # the ONE narrowed test for what changed, not the tree
-git commit -m "feat(<scope>): <subject>"   # Conventional Commits; lefthook lints the message
+git commit -s -m "feat(<scope>): <subject>"   # Conventional Commits + DCO sign-off; lefthook lints the message
 git push -u origin <branch>
 gh pr create
 ```
 
-The `main` ruleset blocks a merge on 17 status checks: `check` (golangci-lint + race tests + build), `lint` (commitlint + markdownlint), `CodeQL`, `agpl-clean`, `ch-server-safety`, `chart-validate`, `config-docs`, `coverage`, `forbid-deferral`, `forbid-skip`, `link-check`, `pr-body`, `probe`, `property (PromQL + LogQL + TraceQL, rapid N=500)`, `quickstart`, `schema-ddl` and `strict-scan`. That set is the ruleset's to state, not this file's — read it back with
+The `main` ruleset blocks a merge on 17 status checks: `check` (race-detected tests + build, among others), `lint` (golangci-lint, go-arch-lint, actionlint, commitlint, DCO sign-off and markdownlint, among others), `CodeQL`, `agpl-clean`, `ch-server-safety`, `chart-validate`, `config-docs`, `coverage`, `forbid-deferral`, `forbid-skip`, `link-check`, `pr-body`, `probe`, `property (PromQL + LogQL + TraceQL, rapid N=500)`, `quickstart`, `schema-ddl` and `strict-scan`. That set is the ruleset's to state, not this file's — read it back with
 
 ```sh
 gh api repos/tsouza/cerberus/rules/branches/main \
@@ -25,13 +25,55 @@ The heavier lanes — the three `compatibility/<head>` harnesses, `compatibility
 
 ## House rules
 
-1. **PR-per-change.** No direct pushes to `main` — branch protection rejects them. Even tiny fixes go through a PR.
+1. **PR-per-change.** No direct pushes to `main` — the `main` ruleset rejects them, and its bypass list is empty, so that holds for administrators too. Even tiny fixes go through a PR.
 2. **Issues are open for bug reports + design discussion, and are where out-of-scope work goes.** File one if you want to flag a bug, propose a feature, or ask a design question before implementing. They are also mandatory in one direction: if your PR turns up a real problem that belongs outside its scope, open an issue for it rather than writing "follow-up" / "deferred" / "not fixed here" into the PR description. Once the PR merges, that sentence is invisible; an issue stays open until someone closes it. A clear issue plus a follow-up PR is the whole workflow.
 3. **Conventional Commits.** Subjects look like `feat(promql): support offset modifier` or `chore(deps): bump grafana/loki/v3 to v3.8.0`. `subject-case` is relaxed (Dependabot's `Bump X from Y to Z` passes); type + scope are still enforced. `.commitlintrc.json` is the source of truth. The PR title is linted as the squash subject, `(#N)` suffix included; `pr-hygiene.yml`'s `dependabot-title` job shortens a Dependabot title that would exceed `header-max-length` before `pr-body` lints it.
 4. **PR labels.** Every PR carries exactly one *type* label, derived from its Conventional-Commit prefix: `feat → enhancement`, `fix → bug`, `docs → documentation`, `chore(deps)`/`build(deps)` → `dependencies`, `ci → ci`, `test → test`, `refactor → refactor`, `perf → performance`, `chore → chore`, `build → build`, `revert → revert`. Release PRs (`chore(release)`) also get `release`. The `.github/workflows/pr-label.yml` auto-labeler applies this from the PR title on open/edit — you don't have to set it by hand; just keep the title's Conventional-Commit prefix correct. `area/*` labels are orthogonal and applied as needed.
 5. **Justfile is the canonical task runner.** `just` lists every recipe. Don't run `go test ./...` directly — `just test` sets the race flag, cover profile, and correct toolchain. If you want a new workflow, add a recipe.
 6. **Fixture-first PRs.** A new PromQL/LogQL/TraceQL feature lands with its TXTAR spec first (failing, with the right `query.<ql>` section), then implementation that turns it green. Reviewers can sanity-check intent by reading fixtures before code.
 7. **Compatibility suite is the source of truth.** If a PromQL feature lands but doesn't move the `prometheus/compliance` pass rate, the PR is incomplete. There is no allow-list for any head — every diff against the reference backend is a real bug to fix at the source. The only pinned exclusion set is `compatibility/loki/upstream-skip-baseline.txt`, which records corpus entries *upstream itself* marks `skip: true`; see `docs/compatibility.md`.
+
+## Developer Certificate of Origin
+
+Every commit in a pull request carries a [Developer Certificate of Origin](https://developercertificate.org)
+sign-off: a `Signed-off-by: Your Name <you@example.com>` line stating that you have the right to
+submit the change under the project's Apache-2.0 license. `git commit -s` adds it from your git
+identity. The name is the one you are known by in the community — not an anonymous handle — and the
+email must be the commit's author email.
+
+The required `lint` check runs `.github/scripts/dco.mjs`, which fails a pull request containing a
+commit without its author's sign-off. Merge commits, commits that change no files, and commits authored
+by the Dependabot and GitHub Actions service accounts are not checked. Every other author, including an
+AI coding agent's GitHub App, needs the sign-off.
+To sign off commits already on your branch:
+
+```sh
+git rebase --signoff origin/main
+git push --force-with-lease
+```
+
+## AI-assisted contributions
+
+You may use AI tools to write a contribution. cerberus itself is developed mostly by AI agents under
+a maintainer's direction ([GOVERNANCE.md](GOVERNANCE.md#how-cerberus-is-developed)), and
+[AGENTS.md](AGENTS.md) gives an AI tool the project's conventions and invariants. A contribution
+written with AI is held to the same rules as any other:
+
+- **You are the author.** You understand every line you submit, you can explain and defend it in
+  review, and you answer review comments yourself. A pull request whose author cannot answer for it
+  is closed.
+- **You sign off.** The `Signed-off-by` trailer is yours. It certifies the Developer Certificate of
+  Origin for the whole contribution, including what a tool generated: that you have the right to
+  submit it under Apache-2.0, and that it does not reproduce code under an incompatible license. An
+  AI tool never signs off in its own name.
+- **You disclose it.** A commit written with an AI tool ends with an `Assisted-by: <tool>:<model>`
+  trailer, for example `Assisted-by: Claude Code:claude-opus-5-5`, placed before your
+  `Signed-off-by`. A pull request written with one says so in its description.
+- **The gates are the same.** An AI-written change passes every required check, comes with tests
+  that fail when the code under them is broken, and follows the hard invariants in
+  [CLAUDE.md](CLAUDE.md). There is no lighter path for generated code, and no heavier one.
+- **Keep it reviewable.** Submit one focused change per pull request, scoped as an issue describes,
+  rather than a large generated rewrite.
 
 ## Setup
 

@@ -147,9 +147,13 @@ export const ROOT_ALLOWLIST = [
   'CLAUDE.md',
   'CODE_OF_CONDUCT.md',
   'CONTRIBUTING.md',
+  'CONTRIBUTOR_LADDER.md',
+  'GOVERNANCE.md',
   'LICENSE',
+  'MAINTAINERS.md',
   'NOTICE',
   'README.md',
+  'ROADMAP.md',
   'SECURITY.md',
   // Build, packaging, and task-runner entrypoints.
   'Dockerfile',

@@ -388,6 +388,16 @@ are welcome any time; open an issue or discussion before a large one. The
 local-dev and end-to-end commands live in
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+Everyone taking part in cerberus follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+How the project is run is described in [`GOVERNANCE.md`](GOVERNANCE.md), including how it is
+developed: mostly by AI agents under a maintainer's direction, with every change held to the same
+required gates. Its maintainers and reviewers are listed in [`MAINTAINERS.md`](MAINTAINERS.md), the
+path to each role is in the [contributor ladder](CONTRIBUTOR_LADDER.md), and where the project is
+headed is in [`ROADMAP.md`](ROADMAP.md). Commits in a pull request carry a
+[Developer Certificate of Origin](https://developercertificate.org) sign-off
+(`git commit -s`), and AI-assisted contributions follow the
+[policy in `CONTRIBUTING.md`](CONTRIBUTING.md#ai-assisted-contributions).
+
 ## License
 
 [Apache 2.0](LICENSE) © Thiago Souza.

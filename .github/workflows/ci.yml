@@ -408,6 +408,22 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node .github/scripts/commitlint-range.mjs
 
+      # Developer Certificate of Origin: every commit a pull request
+      # contributes must carry its author's `Signed-off-by` trailer
+      # (`git commit -s`). Same commit range as commitlint above — merge
+      # commits and file-less commits contribute nothing to certify. The
+      # gate's own suite runs first so a broken gate cannot pass vacuously.
+      - name: dco self-test
+        if: github.event_name == 'pull_request'
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/dco.test.mjs
+
+      - name: dco
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node .github/scripts/dco.mjs
+
       # Markdown lint. This ran DavidAnson/markdownlint-cli2-action, which
       # bundles its own markdownlint-cli2 (v24.2.0 -> 0.23.2 -> markdownlint
       # 0.41.1). Nothing local could reach that engine: `just lint-md` pinned
