@@ -53,8 +53,36 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, Spa
     ('a0000000000000000000000000000004', '0000000000000030', '',                 toDateTime64('2024-01-01 00:00:00', 9), 1000000000, 'q', 'edge',     'Server',   map('service.name', 'edge'),     map()),
     ('a0000000000000000000000000000004', '0000000000000031', '0000000000000030', toDateTime64('2024-01-01 00:00:02', 9), 1000000000, 'w', 'edge',     'Client',   map('service.name', 'edge'),     map('peer', 'q'));
 -- expected_rows --
-[]
+[
+  ["", {"__cerberus_parentSpanID": "0000000000000010", "__cerberus_spanID": "0000000000000011", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": ""}, "2024-01-01T00:00:01Z", 1000000000],
+  ["b", {"__cerberus_parentSpanID": "0000000000000000", "__cerberus_spanID": "0000000000000010", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": "svc-b"}, "2024-01-01T00:00:00Z", 2000000000]
+]
 -- parity --
 oracle: tempo
 endpoint: /api/search
 scope: full
+-- args --
+[0] int64 = 5000000000
+[1] int64 = 1000000000
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_spanID"
+[3] int64 = 5000000000
+[4] int64 = 1000000000
+-- chplan --
+TraceLookupFilter lookups=1 predicate=((5000000000 % _cerb_trace_duration) = 1000000000)
+  Scan(otel_traces)
+  Project [_cerb_lookup_trace_id AS _cerb_lookup_trace_id, (_cerb_trace_end_ns - _cerb_trace_start_ns) AS _cerb_trace_duration]
+    Aggregate groupBy=[TraceId AS _cerb_lookup_trace_id] funcs=[FnMin(FnToUnixNanos(Timestamp)) AS _cerb_trace_start_ns, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS _cerb_trace_end_ns]
+      Scan(otel_traces)
+-- settings --
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=1;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+-- sql --
+SELECT `m`.* FROM (SELECT * FROM `otel_traces`) AS m LEFT JOIN (SELECT `_cerb_lookup_trace_id` AS `_cerb_lookup_trace_id`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_duration` FROM (SELECT `TraceId` AS `_cerb_lookup_trace_id`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces`) GROUP BY `_cerb_lookup_trace_id`)) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id` WHERE (arrayMap((__mx, __my) -> arrayMap(__myabs -> arrayMap(__myexp -> if(isNaN(__mx) OR isNaN(__my) OR isInfinite(__mx) OR __myabs = 0, CAST(0 AS Float64) / 0, if(isInfinite(__myabs), __mx, if(__mx < 0, CAST(-1 AS Float64), CAST(1 AS Float64)) * arrayFold((__macc, __mi) -> if(__macc >= __myabs, __macc - exp2(if(__myabs * exp2(if(__macc = 0, CAST(0 AS Float64), floor(log2(__macc))) + 1 - __myexp) > __macc, -1, 0) + if(__macc = 0, CAST(0 AS Float64), floor(log2(__macc))) + 1 - __myexp) * __myabs, __macc), CAST(range(64) AS Array(UInt8)), CAST(abs(__mx) AS Float64)))), [if(__myabs = 0, CAST(0 AS Float64), floor(log2(__myabs)) + 1)])[1], [abs(__my)])[1], [CAST(ifNull(?, nan) AS Float64)], [CAST(ifNull(`_cerb_trace_duration`, nan) AS Float64)])[1] = ?)
+-- sql_optimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `m`.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces`) AS m LEFT JOIN (SELECT `_cerb_lookup_trace_id` AS `_cerb_lookup_trace_id`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_duration` FROM (SELECT `TraceId` AS `_cerb_lookup_trace_id`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT `Duration`, `Timestamp`, `TraceId` FROM `otel_traces`) GROUP BY `_cerb_lookup_trace_id`)) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id` WHERE (arrayMap((__mx, __my) -> arrayMap(__myabs -> arrayMap(__myexp -> if(isNaN(__mx) OR isNaN(__my) OR isInfinite(__mx) OR __myabs = 0, CAST(0 AS Float64) / 0, if(isInfinite(__myabs), __mx, if(__mx < 0, CAST(-1 AS Float64), CAST(1 AS Float64)) * arrayFold((__macc, __mi) -> if(__macc >= __myabs, __macc - exp2(if(__myabs * exp2(if(__macc = 0, CAST(0 AS Float64), floor(log2(__macc))) + 1 - __myexp) > __macc, -1, 0) + if(__macc = 0, CAST(0 AS Float64), floor(log2(__macc))) + 1 - __myexp) * __myabs, __macc), CAST(range(64) AS Array(UInt8)), CAST(abs(__mx) AS Float64)))), [if(__myabs = 0, CAST(0 AS Float64), floor(log2(__myabs)) + 1)])[1], [abs(__my)])[1], [CAST(ifNull(?, nan) AS Float64)], [CAST(ifNull(`_cerb_trace_duration`, nan) AS Float64)])[1] = ?))

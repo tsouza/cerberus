@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:traceScopedLookupColumn#9f6d7a12",
+      "message": "traceql: intrinsic %s has no per-trace lookup column",
+      "class": "",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerTraceScopedPeer",
+          "traceScopedRowExpr"
+        ]
+      }
+    }
+  ]
+}
