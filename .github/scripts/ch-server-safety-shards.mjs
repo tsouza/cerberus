@@ -56,6 +56,7 @@ import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
 import { error, errorStderr, log, notice, setOutput } from './lib/gh.mjs';
+import { needsProblems } from './lib/needs-verdict.mjs';
 
 export const PACKAGE_DIR = 'test/chserver';
 export const CANCELLATION_SOURCE = join(PACKAGE_DIR, 'cancellation_integration_test.go');
@@ -227,12 +228,14 @@ export function verdict(events, expect) {
 
 // aggregate — the problems in the shard jobs' results.
 export function aggregate({ changes, docsOnly, setup, shards }) {
-  const results = [['changes', changes]];
-  if (changes === 'success' && docsOnly === 'true') return [];
-  results.push(['ch-server-safety-setup', setup], ['ch-server-safety-shard', shards]);
-  return results
-    .filter(([, result]) => result !== 'success')
-    .map(([job, result]) => `${job} did not succeed (${result || 'no result'})`);
+  return needsProblems({
+    changes,
+    docsOnly,
+    producers: [
+      ['ch-server-safety-setup', setup],
+      ['ch-server-safety-shard', shards],
+    ],
+  });
 }
 
 // builtUnderIntegration — whether a Go source compiles into the package under
