@@ -123,6 +123,26 @@ type SpanEntry struct {
 	DurationNanos     int64             `json:"durationNanos,omitempty"`
 	Status            SpanStatus        `json:"status"`
 	Attributes        map[string]string `json:"attributes,omitempty"`
+	Events            []SpanEventEntry  `json:"events,omitempty"`
+	Links             []SpanLinkEntry   `json:"links,omitempty"`
+}
+
+// SpanEventEntry is one OTel span event (e.g. the `exception` event an
+// SDK's RecordError writes, carrying exception.message /
+// exception.stacktrace in Attributes).
+type SpanEventEntry struct {
+	TimeUnixNano string            `json:"timeUnixNano"`
+	Name         string            `json:"name"`
+	Attributes   map[string]string `json:"attributes,omitempty"`
+}
+
+// SpanLinkEntry is one OTel span link to another span, possibly in another
+// trace.
+type SpanLinkEntry struct {
+	TraceID    string            `json:"traceId"`
+	SpanID     string            `json:"spanId"`
+	TraceState string            `json:"traceState,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 // SpanStatus mirrors the OTel status block (Code: "Unset" / "Ok" /

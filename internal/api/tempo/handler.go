@@ -1040,6 +1040,22 @@ const (
 	// is also the OTLP-correct shape.
 	traceByIDKeyScopeName    = "__cerberus_scopeName"
 	traceByIDKeyScopeVersion = "__cerberus_scopeVersion"
+	// traceByIDKeyStatusMessage carries the StatusMessage column, the
+	// human-readable half of the OTel status block (e.g. "not found"
+	// on an errored span). groupBatches / groupBatchesProto surface it
+	// as status.message, which Grafana's trace view renders next to
+	// the status code.
+	traceByIDKeyStatusMessage = "__cerberus_statusMessage"
+	// traceByIDKeyEventsJSON / traceByIDKeyLinksJSON carry the Nested
+	// Events / Links columns, each JSON-encoded as an array of
+	// positional tuples (see traceByIDEventsJSON / traceByIDLinksJSON)
+	// for the same reason SpanAttributes is JSON-encoded: the flat
+	// Labels map only holds String values. Span events are where an
+	// OTel SDK records exceptions (`exception.message`,
+	// `exception.stacktrace`), so without them Grafana's trace view
+	// shows an errored span with no error detail at all.
+	traceByIDKeyEventsJSON = "__cerberus_eventsJSON"
+	traceByIDKeyLinksJSON  = "__cerberus_linksJSON"
 
 	// searchKeyTraceID is the reserved Labels key that carries the
 	// hex-encoded TraceId on /api/search responses. Same constant value
@@ -1428,6 +1444,21 @@ func traceByIDProjections(s schema.Traces) []chplan.Projection {
 		// {"http.method":"GET","http.status_code":"200"}. The Go
 		// handler json-decodes it back into a Go map[string]string.
 		&chplan.FuncCall{Fn: chplan.FnToJSONString, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}},
+	}
+	// The status message, events and links are optional columns: a custom
+	// schema that does not declare one simply leaves the matching span
+	// field empty, the same as a span that carried none.
+	if s.StatusMessageColumn != "" {
+		metaKVPairs = append(metaKVPairs,
+			&chplan.LitString{V: traceByIDKeyStatusMessage},
+			&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.StatusMessageColumn}}},
+		)
+	}
+	if s.EventsColumn != "" {
+		metaKVPairs = append(metaKVPairs, &chplan.LitString{V: traceByIDKeyEventsJSON}, traceByIDEventsJSON(s.EventsColumn))
+	}
+	if s.LinksColumn != "" {
+		metaKVPairs = append(metaKVPairs, &chplan.LitString{V: traceByIDKeyLinksJSON}, traceByIDLinksJSON(s.LinksColumn))
 	}
 	metaMap := &chplan.FuncCall{Fn: chplan.FnMap, Args: metaKVPairs}
 
@@ -2182,8 +2213,10 @@ func groupBatches(samples []chclient.Sample) []ResourceSpans {
 				Kind:              row.meta[traceByIDKeySpanKind],
 				StartTimeUnixNano: strconv.FormatInt(row.sample.Timestamp.UnixNano(), 10),
 				DurationNanos:     int64(row.sample.Value),
-				Status:            SpanStatus{Code: row.meta[traceByIDKeyStatusCode]},
+				Status:            SpanStatus{Code: row.meta[traceByIDKeyStatusCode], Message: row.meta[traceByIDKeyStatusMessage]},
 				Attributes:        row.spanAttrs,
+				Events:            spanEventsJSON(decodeSpanEvents(row.meta[traceByIDKeyEventsJSON])),
+				Links:             spanLinksJSON(decodeSpanLinks(row.meta[traceByIDKeyLinksJSON])),
 			})
 		}
 		out = append(out, rs)
@@ -2222,8 +2255,9 @@ func splitTraceByIDLabels(labels map[string]string) (resourceAttrs, spanAttrs, m
 			}
 			spanAttrs = parsed
 		case traceByIDKeyTraceID, traceByIDKeySpanID, traceByIDKeyParentSpanID,
-			traceByIDKeySpanKind, traceByIDKeyStatusCode,
-			traceByIDKeyScopeName, traceByIDKeyScopeVersion:
+			traceByIDKeySpanKind, traceByIDKeyStatusCode, traceByIDKeyStatusMessage,
+			traceByIDKeyScopeName, traceByIDKeyScopeVersion,
+			traceByIDKeyEventsJSON, traceByIDKeyLinksJSON:
 			if meta == nil {
 				meta = map[string]string{}
 			}

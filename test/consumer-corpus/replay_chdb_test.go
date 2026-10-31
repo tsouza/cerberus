@@ -30,7 +30,7 @@ import (
 //	internal/api/tempo/search_select_nested_set_chdb_test.go —
 //	r1 GET /home (Server, frontend, root)
 //	├─ c1 auth     (Internal, auth)
-//	└─ c2 checkout (Server, checkout, Error)
+//	└─ c2 checkout (Server, checkout, Error, one `exception` span event)
 //	   └─ g1 db    (Client, db)
 //	trace B (b…02): a single Error root (Server, payments) so the
 //	Comparison tab's compare({status = error}) selection cohort is
@@ -50,14 +50,25 @@ const tracesChDBSeed = `CREATE TABLE otel_traces (
     ScopeName String,
     ScopeVersion String,
     SpanAttributes Map(String, String),
-    ResourceAttributes Map(String, String)
+    ResourceAttributes Map(String, String),
+    Events Nested (
+        Timestamp DateTime64(9),
+        Name LowCardinality(String),
+        Attributes Map(LowCardinality(String), String)
+    ),
+    Links Nested (
+        TraceId String,
+        SpanId String,
+        TraceState String,
+        Attributes Map(LowCardinality(String), String)
+    )
 ) ENGINE = MergeTree() ORDER BY (Timestamp);
 INSERT INTO otel_traces VALUES
-    ('a0000000000000000000000000000001', '1000000000000001', '', 'GET /home', 'Server', 'frontend', 1000, toDateTime64('2026-05-01 10:00:00.000000001', 9), 'Unset', '', '', '', map(), map('service.name', 'frontend')),
-    ('a0000000000000000000000000000001', '1000000000000002', '1000000000000001', 'auth', 'Internal', 'auth', 500, toDateTime64('2026-05-01 10:00:00.000000002', 9), 'Unset', '', '', '', map(), map('service.name', 'auth')),
-    ('a0000000000000000000000000000001', '1000000000000003', '1000000000000001', 'checkout', 'Server', 'checkout', 700, toDateTime64('2026-05-01 10:00:00.000000003', 9), 'Error', '', '', '', map(), map('service.name', 'checkout')),
-    ('a0000000000000000000000000000001', '1000000000000004', '1000000000000003', 'db', 'Client', 'db', 300, toDateTime64('2026-05-01 10:00:00.000000004', 9), 'Unset', '', '', '', map(), map('service.name', 'db')),
-    ('b0000000000000000000000000000002', '2000000000000001', '', 'POST /pay', 'Server', 'payments', 900, toDateTime64('2026-05-01 10:00:30.000000001', 9), 'Error', 'card declined', '', '', map(), map('service.name', 'payments'));`
+    ('a0000000000000000000000000000001', '1000000000000001', '', 'GET /home', 'Server', 'frontend', 1000, toDateTime64('2026-05-01 10:00:00.000000001', 9), 'Unset', '', '', '', map(), map('service.name', 'frontend'), [], [], [], [], [], [], []),
+    ('a0000000000000000000000000000001', '1000000000000002', '1000000000000001', 'auth', 'Internal', 'auth', 500, toDateTime64('2026-05-01 10:00:00.000000002', 9), 'Unset', '', '', '', map(), map('service.name', 'auth'), [], [], [], [], [], [], []),
+    ('a0000000000000000000000000000001', '1000000000000003', '1000000000000001', 'checkout', 'Server', 'checkout', 700, toDateTime64('2026-05-01 10:00:00.000000003', 9), 'Error', '', '', '', map(), map('service.name', 'checkout'), [toDateTime64('2026-05-01 10:00:00.000000005', 9)], ['exception'], [map('exception.message', 'cart is empty')], [], [], [], []),
+    ('a0000000000000000000000000000001', '1000000000000004', '1000000000000003', 'db', 'Client', 'db', 300, toDateTime64('2026-05-01 10:00:00.000000004', 9), 'Unset', '', '', '', map(), map('service.name', 'db'), [], [], [], [], [], [], []),
+    ('b0000000000000000000000000000002', '2000000000000001', '', 'POST /pay', 'Server', 'payments', 900, toDateTime64('2026-05-01 10:00:30.000000001', 9), 'Error', 'card declined', '', '', map(), map('service.name', 'payments'), [], [], [], [], [], [], []);`
 
 // chdbTraceID is the trace the chdb lane resolves ${TRACE_ID} to.
 const chdbTraceID = "a0000000000000000000000000000001"

@@ -133,8 +133,13 @@ func groupBatchesProto(samples []chclient.Sample) *tempopb.Trace {
 				// float64 duration to a non-negative uint64 so the gosec G115
 				// signed-to-unsigned conversion check stays happy on the cast.
 				EndTimeUnixNano: uint64(row.sample.Timestamp.UnixNano()) + durationNanosFromValue(row.sample.Value),
-				Status:          &tracev1.Status{Code: statusCodeFromCH(row.meta[traceByIDKeyStatusCode])},
-				Attributes:      attrMapToKVList(row.spanAttrs),
+				Status: &tracev1.Status{
+					Code:    statusCodeFromCH(row.meta[traceByIDKeyStatusCode]),
+					Message: row.meta[traceByIDKeyStatusMessage],
+				},
+				Attributes: attrMapToKVList(row.spanAttrs),
+				Events:     spanEventsProto(decodeSpanEvents(row.meta[traceByIDKeyEventsJSON])),
+				Links:      spanLinksProto(decodeSpanLinks(row.meta[traceByIDKeyLinksJSON])),
 			})
 		}
 		sortStrings(scopeKeys)
