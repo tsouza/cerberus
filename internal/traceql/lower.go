@@ -1753,12 +1753,14 @@ func lowerInOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr,
 		return pred, nil
 	}
 
-	if valueNode, ok := traceScopedValueNode(attr.Intrinsic, s); ok {
+	if isTraceScopedIntrinsic(attr.Intrinsic) {
 		in := chplan.Expr(&chplan.InList{Left: &chplan.ColumnRef{Name: traceScopedValueAlias}, List: elems})
 		if b.Op == traceql.OpNotIn {
 			in = &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{in}}
 		}
-		return traceScopedInSubquery(valueNode, in, s), nil
+		if membership, ok := traceScopedMembership(attr.Intrinsic, in, s); ok {
+			return membership, nil
+		}
 	}
 
 	left, lerr := lowerAttribute(attr, s)
@@ -1854,9 +1856,17 @@ func lowerRegexMatchArray(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	if pred, absent := absentAttributePredicate(attr, s); absent {
 		return pred, nil
 	}
-	left, err := lowerAttribute(attr, s)
-	if err != nil {
-		return nil, err
+	// A trace-scoped intrinsic (rootName / rootServiceName) has no per-span
+	// column, so the folded tree compares its per-trace value — exactly as
+	// the unfolded `=~` / `!~` spelling does through lowerTraceScopedBinary.
+	// Lowering it as a span attribute would read the unbacked-intrinsic
+	// empty string on every span instead.
+	traceScoped := isTraceScopedIntrinsic(attr.Intrinsic)
+	var left chplan.Expr = &chplan.ColumnRef{Name: traceScopedValueAlias}
+	if !traceScoped {
+		if left, err = lowerAttribute(attr, s); err != nil {
+			return nil, err
+		}
 	}
 
 	elemOp, combineOp := chplan.OpMatch, chplan.OpOr
@@ -1877,6 +1887,11 @@ func lowerRegexMatchArray(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 			continue
 		}
 		tree = &chplan.Binary{Op: combineOp, Left: tree, Right: cmp}
+	}
+	if traceScoped {
+		if membership, ok := traceScopedMembership(attr.Intrinsic, tree, s); ok {
+			return membership, nil
+		}
 	}
 	// Both polarities need the existence probe: match-none is true for a
 	// span whose ” default matches none of the patterns, and match-any is
@@ -2017,12 +2032,10 @@ func attributeHasNoBacking(attr traceql.Attribute, s schema.Traces) bool {
 // parser change starts emitting them directly.
 func isTraceScopedIntrinsic(i traceql.Intrinsic) bool {
 	switch i {
-	case traceql.IntrinsicTraceRootService, traceql.ScopedIntrinsicTraceRootService,
-		traceql.IntrinsicTraceRootSpan, traceql.ScopedIntrinsicTraceRootName,
-		traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceDuration:
+	case traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceDuration:
 		return true
 	}
-	return false
+	return isTraceRootIdentityIntrinsic(i)
 }
 
 // rootParentSpanID is the ParentSpanId value that makes a span the ROOT
@@ -2065,64 +2078,68 @@ func traceScopedRootSpanCond(s schema.Traces) chplan.Expr {
 	}
 }
 
+// rootSpanScan is the span scan narrowed to root spans
+// (traceScopedRootSpanCond): the one input both root-identity resolvers —
+// traceScopedValueNode and metrics_compare.go's compareRootLookup —
+// aggregate per trace. Only a root span can name a trace's root, so the
+// GROUP BY TraceId above it runs over root rows alone instead of every
+// span in the window.
+func rootSpanScan(s schema.Traces) chplan.Node {
+	return &chplan.Filter{Input: spanScan(s), Predicate: traceScopedRootSpanCond(s)}
+}
+
 // traceScopedValueAlias is the synthetic SELECT-list alias
 // traceScopedValueNode plants for the per-trace root-identity value a
 // caller's Filter predicate then compares against.
 const traceScopedValueAlias = "_cerb_trace_scoped_val"
 
 // traceScopedValueNode returns the un-filtered per-trace aggregate for a
-// trace-scoped root-identity intrinsic: one row per TraceId, with the
-// resolved root-service / root-name / trace-duration value under
-// traceScopedValueAlias. rootService/rootName resolve via a single
-// argMinIf (the root span's ServiceName/SpanName, keyed by earliest
-// Timestamp among root-flagged rows, mirroring root_lookup.go's
-// technique); duration needs two aggregates (max(end) - min(start)), so
-// it routes through an extra Project layer that computes the
-// subtraction the single-AggFunc SELECT-list shape can't express
-// directly. ok is false for any intrinsic other than the three
-// trace-scoped ones.
+// trace-scoped intrinsic, with the resolved root-service / root-name /
+// trace-duration value under traceScopedValueAlias. ok is false for any
+// intrinsic other than the three trace-scoped ones.
+//
+// rootService / rootName aggregate rootSpanScan — root spans only — with
+// a single argMin keyed on Timestamp (the earliest root-flagged row,
+// mirroring root_lookup.go's technique), so the result has one row per
+// trace that HAS a root span and none for a trace without one. That
+// missing row is not the answer for a rootless trace: reference Tempo
+// gives such a trace an empty root name, and traceScopedMembership is
+// what answers it as one.
+//
+// Duration needs two aggregates (max(end) - min(start)) over EVERY span,
+// so it keeps the full span scan and routes through an extra Project
+// layer that computes the subtraction the single-AggFunc SELECT-list
+// shape can't express directly. Every trace with a span in the scan has
+// a duration row.
 func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Node, ok bool) {
-	base := spanScan(s)
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}}
 	groupByAliases := []string{s.TraceIDColumn}
-	rootCond := traceScopedRootSpanCond(s)
+	rootValue := func(column string) chplan.Node {
+		return &chplan.Aggregate{
+			Input: rootSpanScan(s), GroupBy: groupBy, GroupByAliases: groupByAliases,
+			AggFuncs: []chplan.AggFunc{{
+				Fn: chplan.FnArgMin,
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: column},
+					&chplan.ColumnRef{Name: s.TimestampColumn},
+				},
+				Alias: traceScopedValueAlias,
+			}},
+		}
+	}
 
 	switch i {
 	case traceql.IntrinsicTraceRootService, traceql.ScopedIntrinsicTraceRootService:
-		return &chplan.Aggregate{
-			Input: base, GroupBy: groupBy, GroupByAliases: groupByAliases,
-			AggFuncs: []chplan.AggFunc{{
-				Fn:          chplan.FnArgMin,
-				Combinators: []chplan.AggCombinator{chplan.CombIf},
-				Args: []chplan.Expr{
-					&chplan.ColumnRef{Name: s.ServiceNameColumn},
-					&chplan.ColumnRef{Name: s.TimestampColumn},
-					rootCond,
-				},
-				Alias: traceScopedValueAlias,
-			}},
-		}, true
+		return rootValue(s.ServiceNameColumn), true
 	case traceql.IntrinsicTraceRootSpan, traceql.ScopedIntrinsicTraceRootName:
-		return &chplan.Aggregate{
-			Input: base, GroupBy: groupBy, GroupByAliases: groupByAliases,
-			AggFuncs: []chplan.AggFunc{{
-				Fn:          chplan.FnArgMin,
-				Combinators: []chplan.AggCombinator{chplan.CombIf},
-				Args: []chplan.Expr{
-					&chplan.ColumnRef{Name: s.SpanNameColumn},
-					&chplan.ColumnRef{Name: s.TimestampColumn},
-					rootCond,
-				},
-				Alias: traceScopedValueAlias,
-			}},
-		}, true
+		return rootValue(s.SpanNameColumn), true
 	case traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceDuration:
 		tsNs := func() chplan.Expr {
 			return &chplan.FuncCall{Fn: chplan.FnToUnixNanos, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}}
 		}
 		const startAlias, endAlias = "_cerb_trace_start_ns", "_cerb_trace_end_ns"
 		agg := &chplan.Aggregate{
-			Input: base, GroupBy: groupBy, GroupByAliases: groupByAliases,
+			Input: spanScan(s), GroupBy: groupBy, GroupByAliases: groupByAliases,
 			AggFuncs: []chplan.AggFunc{
 				{Fn: chplan.FnMin, Args: []chplan.Expr{tsNs()}, Alias: startAlias},
 				{Fn: chplan.FnMax, Args: []chplan.Expr{
@@ -2153,6 +2170,53 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 		}, true
 	}
 	return nil, false
+}
+
+// traceScopedMembership lowers pred — a predicate over
+// traceScopedValueAlias — against trace-scoped intrinsic i into the span
+// predicate that keeps exactly the spans of the traces whose value
+// satisfies it. ok is false when i is not trace-scoped.
+//
+// traceDuration's aggregate has a row for every trace in the scan, so it
+// is the plain `TraceId IN (<traces satisfying pred>)`.
+//
+// rootName / rootServiceName aggregate root spans only (traceScopedValueNode),
+// so a trace without a root span has no row — yet reference Tempo answers
+// it with an empty root name, which pred may well accept (`!= "x"`,
+// `= ""`, `!~ "x"`). Which of two equivalent memberships is emitted turns
+// on that one question, rootlessTraceMatches(pred):
+//
+//   - false: `TraceId IN (<rooted traces satisfying pred>)` — a rootless
+//     trace is outside the set, and it must not match.
+//   - true: `NOT (TraceId IN (<rooted traces satisfying NOT pred>))` — a
+//     rootless trace is outside the set, so it matches; a rooted trace
+//     matches exactly when its value does not fail pred.
+//
+// Both forms keep the GROUP BY over root rows, and the negated form's set
+// is the traces that do NOT match — the small side of a `!=`.
+func traceScopedMembership(i traceql.Intrinsic, pred chplan.Expr, s schema.Traces) (chplan.Expr, bool) {
+	valueNode, ok := traceScopedValueNode(i, s)
+	if !ok {
+		return nil, false
+	}
+	if !isTraceRootIdentityIntrinsic(i) || !rootlessTraceMatches(pred) {
+		return traceScopedInSubquery(valueNode, pred, s), true
+	}
+	notPred := &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{pred}}
+	return &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{traceScopedInSubquery(valueNode, notPred, s)}}, true
+}
+
+// isTraceRootIdentityIntrinsic reports whether i is one of the
+// trace-scoped intrinsics resolved from the trace's root span —
+// rootName / rootServiceName, bare or trace:-scoped spelling — as opposed
+// to traceDuration, which every span of the trace contributes to.
+func isTraceRootIdentityIntrinsic(i traceql.Intrinsic) bool {
+	switch i {
+	case traceql.IntrinsicTraceRootService, traceql.ScopedIntrinsicTraceRootService,
+		traceql.IntrinsicTraceRootSpan, traceql.ScopedIntrinsicTraceRootName:
+		return true
+	}
+	return false
 }
 
 // traceScopedInSubquery wraps pred (a predicate over traceScopedValueAlias)
@@ -2203,10 +2267,6 @@ func lowerTraceScopedBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sc
 		return nil, false, nil
 	}
 
-	valueNode, ok := traceScopedValueNode(attr.Intrinsic, s)
-	if !ok {
-		return nil, false, nil
-	}
 	rhs, err := lowerFieldExpr(valueSide, s)
 	if err != nil {
 		return nil, true, err
@@ -2217,7 +2277,8 @@ func lowerTraceScopedBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sc
 	left := chplan.Expr(&chplan.ColumnRef{Name: traceScopedValueAlias})
 	left, rhs = coerceNumericFieldAccess(effectiveOp, left, rhs, numericIntrinsicColumn(attr.Intrinsic))
 	pred := &chplan.Binary{Op: effectiveOp, Left: left, Right: rhs}
-	return traceScopedInSubquery(valueNode, pred, s), true, nil
+	membership, ok := traceScopedMembership(attr.Intrinsic, pred, s)
+	return membership, ok, nil
 }
 
 // lowerStaticArray turns a TraceQL array Static (TypeStringArray /

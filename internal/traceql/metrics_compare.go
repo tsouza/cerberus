@@ -185,10 +185,10 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 // of the LEFT JOIN as empty strings — which is also what reference
 // reports for a trace whose root was never ingested.
 //
-// The root test is traceScopedRootSpanCond — the same empty-ParentSpanId
-// predicate the `{ rootName = … }` spanset filter (lower.go's
-// traceScopedValueNode) uses, so the two query-answering resolvers agree
-// on what a root span is, and both agree with upstream's Span.IsRoot().
+// The input is rootSpanScan — the same root-only scan the
+// `{ rootName = … }` spanset filter (lower.go's traceScopedValueNode)
+// aggregates, so the two query-answering resolvers agree on what a root
+// span is, and both agree with upstream's Span.IsRoot().
 // argMin keyed on Timestamp picks
 // the EARLIEST root-flagged span rather than an arbitrary one, so a
 // trace carrying more than one root-flagged row (a partial/merged trace)
@@ -197,10 +197,7 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 // relation shared with the spanset-aggregate path that issue cites.
 func compareRootLookup(s schema.Traces) chplan.Node {
 	return &chplan.Aggregate{
-		Input: &chplan.Filter{
-			Input:     spanScan(s),
-			Predicate: traceScopedRootSpanCond(s),
-		},
+		Input:   rootSpanScan(s),
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
 		AggFuncs: []chplan.AggFunc{
 			{

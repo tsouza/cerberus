@@ -3033,7 +3033,7 @@
     {
      "cerberus": {
       "expect": "nonempty",
-      "why": "rootName is a trace-scoped intrinsic: cerberus resolves it per trace from the root span (argMinIf over ParentSpanId IN ('', all-zero hex)), matching reference Tempo's trace-level RootSpanName. The showcase seed's b0...001 trace is rooted at gateway's `GET /api/checkout`, so exactly that trace comes back \u2014 and only that trace, never one that merely contains a non-root span of the same name."
+      "why": "rootName is a trace-scoped intrinsic: cerberus resolves it per trace from the root span (argMin over the spans whose ParentSpanId is empty), matching reference Tempo's trace-level RootSpanName. The showcase seed's b0...001 trace is rooted at gateway's `GET /api/checkout`, so exactly that trace comes back \u2014 and only that trace, never one that merely contains a non-root span of the same name."
      },
      "datasource": {
       "type": "tempo",
@@ -3103,7 +3103,7 @@
     {
      "cerberus": {
       "expect": "nonempty",
-      "why": "rootServiceName is trace-scoped, not a per-span column: cerberus resolves each trace's root-span ServiceName with the same argMinIf-over-root-condition aggregate rootName uses, matching reference Tempo's trace-level RootServiceName. Both showcase traces are rooted in the `gateway` service, so both come back."
+      "why": "rootServiceName is trace-scoped, not a per-span column: cerberus resolves each trace's root-span ServiceName with the same argMin-over-root-spans aggregate rootName uses, matching reference Tempo's trace-level RootServiceName. Both showcase traces are rooted in the `gateway` service, so both come back."
      },
      "datasource": {
       "type": "tempo",

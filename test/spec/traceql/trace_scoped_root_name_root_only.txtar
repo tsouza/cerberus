@@ -3,8 +3,8 @@
 # EMPTY — upstream's Span.IsRoot() is `len(ParentSpanID) == 0`, and a
 # trace with no such span has an empty RootSpanName that matches nothing.
 # The fixture is built so a lowering that resolved root identity from an
-# arbitrary span (the `any(SpanName)` shape, rather than argMinIf keyed
-# on the root-span condition) would be caught, and so would one that read
+# arbitrary span (the `any(SpanName)` shape, rather than argMin over the
+# root spans alone) would be caught, and so would one that read
 # a parent naming a row that is not in the data as rootness:
 #
 #   trace ...0001  root  'GET /api/checkout'  (ParentSpanId = '')     -> MATCHES

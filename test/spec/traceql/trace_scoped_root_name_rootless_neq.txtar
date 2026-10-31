@@ -1,0 +1,55 @@
+# A trace with NO root span has an empty rootName: reference Tempo writes
+# RootSpanName = "" for it (vparquet4 schema.go traceToParquet) and
+# evaluates the trace-level condition against that empty string, so
+# `rootName != "<x>"` MATCHES a rootless trace. The lowering narrows the
+# per-trace aggregate to root spans before its GROUP BY, which leaves a
+# rootless trace with no aggregate row at all; this fixture pins that the
+# rootless trace is still answered as if its rootName were "".
+#
+#   trace ...0001  root  'GET /api/checkout'                      -> must NOT match
+#                  child 'charge'
+#   trace ...0002  root  'POST /api/orders'                       -> MATCHES
+#                  child 'GET /api/checkout'
+#   trace ...0003  span  'GET /api/checkout'  (ParentSpanId = all-zero hex,
+#                        a value NO row in the trace carries)      -> MATCHES:
+#                  child 'charge'              no root, so rootName is ''
+#
+# A matching trace contributes ALL of its spans, so the expected row set
+# is traces 2 and 3 in full and nothing from trace 1.
+-- query.traceql --
+{ rootName != "GET /api/checkout" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:00', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:01', 9), 'charge'),
+    ('a0000000000000000000000000000002', '0000000000000010', '',                 toDateTime64('2024-01-01 00:00:00', 9), 'POST /api/orders'),
+    ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:00:01', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000003', '0000000000000020', '0000000000000000', toDateTime64('2024-01-01 00:00:00', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:00:01', 9), 'charge');
+-- expected_rows --
+[
+  ["GET /api/checkout", {"__cerberus_parentSpanID": "0000000000000000", "__cerberus_spanID": "0000000000000020", "__cerberus_traceID": "a0000000000000000000000000000003"}, "2024-01-01T00:00:00Z", 0],
+  ["GET /api/checkout", {"__cerberus_parentSpanID": "0000000000000010", "__cerberus_spanID": "0000000000000011", "__cerberus_traceID": "a0000000000000000000000000000002"}, "2024-01-01T00:00:01Z", 0],
+  ["POST /api/orders", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000010", "__cerberus_traceID": "a0000000000000000000000000000002"}, "2024-01-01T00:00:00Z", 0],
+  ["charge", {"__cerberus_parentSpanID": "0000000000000020", "__cerberus_spanID": "0000000000000021", "__cerberus_traceID": "a0000000000000000000000000000003"}, "2024-01-01T00:00:01Z", 0]
+]
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

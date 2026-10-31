@@ -1,0 +1,43 @@
+# `rootName !~ "a" && rootName !~ "b"` is folded by the parser into one
+# OpRegexMatchNone operation over the array ["a", "b"]. rootName is a
+# trace-scoped intrinsic, so the folded form must resolve it per trace from
+# the root span exactly like its unfolded spelling does — not as an
+# unbacked intrinsic reading the empty string on every span. The rootless
+# trace has rootName "" (reference Tempo's RootSpanName for a trace without
+# a root), which matches neither pattern, so it matches.
+#
+#   trace ...0001  root  'GET /api/checkout'                      -> must NOT match
+#   trace ...0002  root  'POST /api/orders'                       -> must NOT match
+#   trace ...0003  no root (ParentSpanId = all-zero hex)          -> MATCHES
+-- query.traceql --
+{ rootName !~ "GET .*" && rootName !~ "POST .*" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:00', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:01', 9), 'charge'),
+    ('a0000000000000000000000000000002', '0000000000000010', '',                 toDateTime64('2024-01-01 00:00:00', 9), 'POST /api/orders'),
+    ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:00:01', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000003', '0000000000000020', '0000000000000000', toDateTime64('2024-01-01 00:00:00', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:00:01', 9), 'charge');
+-- expected_rows --
+[]
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
