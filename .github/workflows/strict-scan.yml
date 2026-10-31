@@ -91,26 +91,44 @@ jobs:
       - id: docs
         uses: ./.github/actions/docs-only
 
-  strict-scan:
-    name: strict-scan
+  # The strict-scan lane's real-ClickHouse differentials, split across parallel
+  # shards. Run one after another in a single job they took 15 to 19 minutes
+  # on a normal runner and overran a 25-minute limit on a slower one
+  # (tsouza/cerberus#4022). Each step below belongs to exactly one shard
+  # through its `if: matrix.shard == '<shard>'` line, and the shards group
+  # steps by the Go packages they compile, so each shard builds its own
+  # package graph once: `spec` (test/spec), `handlers` (internal/api/*,
+  # internal/solver, internal/routerrules, internal/optcorpus), `chclient`
+  # (the one `-race` build, alone because the race detector makes it the
+  # slowest step on a slow runner), `chsql` (internal/chsql) and `perf`
+  # (test/perf/smoke, test/perf/nightly). TestStrictScanShards in
+  # test/regression pins that every step names one declared shard, that every
+  # shard runs something, and that the steps run exactly the recipes the
+  # `chdb.strict-scan` lane registers. `strict-scan` below is the one status
+  # context; it aggregates the shards.
+  strict-scan-shard:
+    name: strict-scan-shard (${{ matrix.shard }})
     needs: changes
     # `always()` is load-bearing, exactly as it is on ci.yml's `check`
     # aggregator: with a plain `needs:` this job is SKIPPED when `changes`
-    # fails, and a skipped required check reports GREEN to branch
-    # protection. The condition below runs the job whenever `changes` did
-    # not succeed, and the first step then fails it loudly. A docs-only
-    # change still skips by design.
+    # fails. The condition below runs the job whenever `changes` did not
+    # succeed, and the first step then fails it loudly. A docs-only change
+    # still skips by design, and the `strict-scan` aggregate reports it.
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
     runs-on: ubuntu-latest
-    # Generous: the lane pulls THREE ClickHouse images and seeds + executes the
-    # full matrix-shaped golden corpus (~330 fixtures) against the first. The
-    # second and third are the perf-smoke corpus's join-spill and
-    # distinct-spill tiers (test/perf/smoke's perfSmokeJoinSpillCHImage and
-    # perfSmokeDistinctSpillCHImage, >= chopt.FeatureJoinSpill's 26.4 and
-    # chopt.FeatureDistinctSpill's 26.9 floors), each of which boots and runs
-    # its own sentinel in about a minute on top of everything below.
+    strategy:
+      # One shard's failure must not cancel its siblings into an ambiguous
+      # `cancelled`: every shard's verdict is reported.
+      fail-fast: false
+      matrix:
+        shard: [spec, handlers, chclient, chsql, perf]
+    # The slowest shard settles in about six minutes on a normal runner. The
+    # floor of the limit is the recipes' own clocks: perf-smoke-integration
+    # and stale-marker-flags-integration run `go test -timeout 20m`, and the
+    # job must outlast that by enough for the timed-out binary's goroutine
+    # dump to reach the log (TestGoTestTimeoutFitsItsJobBudget).
     timeout-minutes: 25
     steps:
       - name: gate on the changes job
@@ -130,21 +148,15 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
-      - name: Run strict-scan differential (real ClickHouse)
-        run: just strict-scan-test
+      # ---- shard `spec`: test/spec against CH_STRICT_SCAN_IMAGE and CH_TEST_IMAGE.
+      #
+      # The strict-scan differential proper: the matrix-shaped golden corpus
+      # (~330 fixtures) seeded into and executed against a real ClickHouse
+      # through the production strict scan.
 
-      # The router-calibration corpus has two CH seams — the WRITE path
-      # (optcorpus.CHTableSink: real CREATE DDL + columnar Enum8 batch) and the
-      # READ path (routerrules.chCorpusSource: strict-scanned aggregates) — that
-      # run against a real ClickHouse via clickhouse-go/v2 in production but,
-      # being OFFLINE (never on the data plane), are exercised nowhere in CI:
-      # compose-smoke / e2e drive the gateway, and their only unit coverage uses
-      # a no-op fake batch / chDB (which leniently coerces integer columns into
-      # *float64 — the exact #1064 strict-scan blind spot). This step runs both
-      # seams through the same testcontainers real-CH harness this lane already
-      # owns. See internal/routerrules/realch_integration_test.go.
-      - name: Run router-corpus write+read differential (real ClickHouse)
-        run: just router-corpus-integration
+      - name: Run strict-scan differential (real ClickHouse)
+        if: matrix.shard == 'spec'
+        run: just strict-scan-test
 
       # The TraceQL whole-trace drilldown legs (Grafana Traces Drilldown
       # Structure + Comparison tabs) read otel_traces through recursive CTEs and
@@ -159,7 +171,44 @@ jobs:
       # that the compare scan fails closed on an absent window. See
       # test/spec/traces_scan_resource_bound_integration_test.go.
       - name: Run TraceQL spans-scan resource-bound differential (real ClickHouse)
+        if: matrix.shard == 'spec'
         run: just traces-scan-bound-integration
+
+      # The Loki + Prometheus metadata/label-values endpoints (/series,
+      # /labels, /label/<name>/values, /index/stats, /index/volume,
+      # /metadata) call a chclient.Client decoder method directly from the
+      # handler — QueryLabelSets / QueryIndexStats / QueryStrings /
+      # QueryIndexVolume / QueryMetricMeta — bypassing engine.QueryPlan
+      # entirely, so the SQL these handlers build is exactly what
+      # production sends. Every other spec fixture is query-body-shaped (a
+      # PromQL/LogQL/TraceQL string that lowers into a chplan); these
+      # endpoints are matcher + time-range driven and carried no fixture
+      # corpus at all before this step (#1634) — the same strict-scan blind
+      # spot documented above, left open on six decoder methods never
+      # exercised against a real server. This step drives a real
+      # loki.Handler + prom.Handler through one real case per endpoint
+      # against a real ClickHouse. See
+      # test/spec/metadata_endpoints_realch_integration_test.go.
+      - name: Run metadata-endpoints real-CH differential (real ClickHouse)
+        if: matrix.shard == 'spec'
+        run: just metadata-endpoints-integration
+
+      # ---- shard `handlers`: the production HTTP handlers, the solver and the
+      # offline router corpus.
+
+      # The router-calibration corpus has two CH seams — the WRITE path
+      # (optcorpus.CHTableSink: real CREATE DDL + columnar Enum8 batch) and the
+      # READ path (routerrules.chCorpusSource: strict-scanned aggregates) — that
+      # run against a real ClickHouse via clickhouse-go/v2 in production but,
+      # being OFFLINE (never on the data plane), are exercised nowhere in CI:
+      # compose-smoke / e2e drive the gateway, and their only unit coverage uses
+      # a no-op fake batch / chDB (which leniently coerces integer columns into
+      # *float64 — the exact #1064 strict-scan blind spot). This step runs both
+      # seams through the same testcontainers real-CH harness this lane already
+      # owns. See internal/routerrules/realch_integration_test.go.
+      - name: Run router-corpus write+read differential (real ClickHouse)
+        if: matrix.shard == 'handlers'
+        run: just router-corpus-integration
 
       # The Tempo HTTP traces-scan WINDOW invariant (#1154's follow-up,
       # tracked as an orphaned test by #1509): `TraceId IN (<seed>)` membership
@@ -176,6 +225,7 @@ jobs:
       # lane before #1509. See
       # internal/api/tempo/traces_scan_window_integration_test.go.
       - name: Run Tempo traces-scan WINDOW differential (real ClickHouse)
+        if: matrix.shard == 'handlers'
         run: just traces-scan-window-integration
 
       # Issue #2783: the structural two-phase phase-B restriction may push its
@@ -189,6 +239,7 @@ jobs:
       # route-B shard). See
       # internal/api/tempo/structural_two_phase_external_table_integration_test.go.
       - name: Run structural two-phase external-trace-id-table verification (real ClickHouse)
+        if: matrix.shard == 'handlers'
         run: just structural-two-phase-external-table-integration
 
       # The failure-driven route memo's mandatory per-shard memory
@@ -199,6 +250,7 @@ jobs:
       # ClickHouse server can prove the setting is actually forwarded AND
       # enforced server-side. See internal/solver/executor_realch_integration_test.go.
       - name: Run solver memory-apportionment differential (real ClickHouse)
+        if: matrix.shard == 'handlers'
         run: just solver-memory-apportion-integration
 
       # Route B (the sharded-pushdown solver) has no lane that drives it
@@ -218,6 +270,7 @@ jobs:
       # results are byte-identical. See
       # internal/api/prom/handler_route_b_realch_integration_test.go.
       - name: Run route-B real-CH result differential (real ClickHouse)
+        if: matrix.shard == 'handlers'
         run: just route-b-differential-integration
 
       # A Prometheus stale marker is an OTel NoRecordedValue point, read
@@ -228,25 +281,8 @@ jobs:
       # than failing the query. See
       # internal/api/prom/handler_stale_marker_realch_integration_test.go.
       - name: Run stale-marker Flags pins (real ClickHouse)
+        if: matrix.shard == 'handlers'
         run: just stale-marker-flags-integration
-
-      # The Loki + Prometheus metadata/label-values endpoints (/series,
-      # /labels, /label/<name>/values, /index/stats, /index/volume,
-      # /metadata) call a chclient.Client decoder method directly from the
-      # handler — QueryLabelSets / QueryIndexStats / QueryStrings /
-      # QueryIndexVolume / QueryMetricMeta — bypassing engine.QueryPlan
-      # entirely, so the SQL these handlers build is exactly what
-      # production sends. Every other spec fixture is query-body-shaped (a
-      # PromQL/LogQL/TraceQL string that lowers into a chplan); these
-      # endpoints are matcher + time-range driven and carried no fixture
-      # corpus at all before this step (#1634) — the same strict-scan blind
-      # spot documented above, left open on six decoder methods never
-      # exercised against a real server. This step drives a real
-      # loki.Handler + prom.Handler through one real case per endpoint
-      # against a real ClickHouse. See
-      # test/spec/metadata_endpoints_realch_integration_test.go.
-      - name: Run metadata-endpoints real-CH differential (real ClickHouse)
-        run: just metadata-endpoints-integration
 
       # TestHistogram_RealExporterSchema_Integration provisions the table
       # shapes the REAL upstream clickhouseexporter creates — LowCardinality-
@@ -265,10 +301,12 @@ jobs:
       # already pre-pulls rather than adding a new substrate. See
       # internal/api/prom/handler_histogram_integration_test.go.
       - name: Run histogram real-exporter-schema differential (real ClickHouse)
+        if: matrix.shard == 'handlers'
         run: just histogram-realexporter-integration
 
       # Every real-CH integration test that built a *prom.Handler in this
-      # package (the two steps above) left .Lowerers at prom.New's zero
+      # package (the route-B and histogram real-exporter steps above) left
+      # .Lowerers at prom.New's zero
       # value, which promql.RangeLowerers.withDefaults normalizes to
       # fan-out-only regardless of the connected server's version — so
       # NativeRateLowerer, NativeStalenessLowerer, NativeChangesLowerer,
@@ -282,7 +320,25 @@ jobs:
       # fall-back. See
       # internal/api/prom/handler_native_lowerers_integration_test.go.
       - name: Run native range-window lowerer activation, prom package (real ClickHouse)
+        if: matrix.shard == 'handlers'
         run: just native-lowerers-prom-integration
+
+      # The ts_tag_groups real-CH differential (#2750): the instant-mode
+      # duplicate-labelset guard's UInt64-group-id collapse
+      # (guardNameDropCollisionByTagGroup) answers byte-identical to the
+      # existing Map-grouped path it replaces, driven through the REAL
+      # production HTTP handler + emitter against a REAL ClickHouse. This is
+      # what chopt.FeatureTSGridTagGroups's registry entry rests its
+      # correctness claim on. timeSeriesThrowDuplicateSeriesIf's 26.2 floor
+      # is above every other integration lane's pin, so this step boots its
+      # own dedicated server (CH_TAG_GROUPS_IMAGE) rather than reusing the
+      # `spec` shard's CH_STRICT_SCAN_IMAGE container. See
+      # internal/api/prom/handler_tag_groups_realch_integration_test.go.
+      - name: Run ts_tag_groups differential (real ClickHouse)
+        if: matrix.shard == 'handlers'
+        run: just tag-groups-differential-integration
+
+      # ---- shard `chclient`: internal/chclient under the race detector.
 
       # Whether a pooled ClickHouse connection SURVIVES a cursor teardown is
       # observable only against a real driver + server: clickhouse-go releases a
@@ -294,7 +350,95 @@ jobs:
       # real driver and asserts the pool. See
       # internal/chclient/conn_teardown_integration_test.go.
       - name: Run chclient connection-teardown differential (real ClickHouse)
+        if: matrix.shard == 'chclient'
         run: just chclient-integration
+
+      # ---- shard `chsql`: internal/chsql's native-function pins, each booting
+      # its own pinned builds.
+
+      # The quantile_prom_histogram real-CH differential (#2755): for every
+      # representative classic-histogram bucket layout and the full phi
+      # domain, emits BOTH the hand-rolled rank walk and the native
+      # quantilePrometheusHistogram aggregate for the identical
+      # chplan.HistogramQuantile plan and asserts they agree exactly. This is
+      # what chopt.FeatureQuantilePromHistogram's AutoSelect: false decision
+      # rests on. quantilePrometheusHistogram shipped in ClickHouse 25.10 —
+      # above every other integration lane's pin — so this step boots its own
+      # dedicated server (CH_QUANTILE_PROM_HISTOGRAM_IMAGE) rather than
+      # reusing the `spec` shard's CH_STRICT_SCAN_IMAGE container. See
+      # internal/chsql/histogram_quantile_rankwalk_native_realch_integration_test.go.
+      - name: Run quantile_prom_histogram rank-walk differential (real ClickHouse)
+        if: matrix.shard == 'chsql'
+        run: just quantile-prom-histogram-rankwalk-integration
+
+      # The ts_grid_last_over_time real-CH regression pin (#2747): reproduces
+      # upstream's own ClickHouse/ClickHouse#106577 regression fixture shape
+      # (a staleness window narrower than the query_range grid step) through
+      # cerberus's own lowering + emitter, and asserts the native
+      # timeSeriesResampleToGridWithStaleness path agrees with the fan-out —
+      # absent on the sample the pre-#106577 bug wrongly carried forward,
+      # present on a control sample placed inside a real window. This is
+      # what chopt.FeatureTSGridLastOverTime's 26.6 floor (ABOVE the
+      # family's usual 25.9) and AutoSelect: false decision rest on. Boots
+      # its own fresh testcontainer at the CH_STRICT_SCAN_IMAGE tag
+      # rather than pinning a dedicated image variable — see the Justfile
+      # recipe's own doc for why that pin is shared, not the container. See
+      # internal/chsql/range_window_last_over_time_realch_integration_test.go.
+      - name: Run ts_grid_last_over_time window-narrower-than-step regression (real ClickHouse)
+        if: matrix.shard == 'chsql'
+        run: just ts-grid-last-over-time-integration
+
+      # The ts_grid_group_array real-CH precondition + regression pin
+      # (#2749): timeSeriesGroupArray accepts a DateTime64(9) timestamp
+      # directly and losslessly (contrary to its own documented
+      # UInt32/DateTime/UInt64 signature); the -If combinator filters before
+      # the duplicate-timestamp collapse; and, end to end through cerberus's
+      # own lowering + emitter, rate()'s native array-fold assembly matches
+      # the fan-out exactly on a genuine duplicate, non-NaN timestamp. Boots
+      # its own fresh testcontainer at CH_TEST_IMAGE (the feature's own 25.9
+      # floor) rather than the higher CH_STRICT_SCAN_IMAGE pin. See
+      # internal/chsql/range_window_group_array_realch_integration_test.go.
+      - name: Run ts_grid_group_array duplicate-timestamp + DateTime64 preconditions (real ClickHouse)
+        if: matrix.shard == 'chsql'
+        run: just ts-grid-group-array-integration
+
+      # The native timeSeries* duplicate-timestamp survivor pins, on each
+      # side of ClickHouse #115920 (the family's 25.9 floor and 26.7.13.12
+      # collapse a NaN-bearing duplicate by scan order; 26.8.1.2041 keeps the
+      # finite sample): every native member cerberus emits, every collision
+      # kind (NaN, stale marker, all-NaN, unequal finite), both insertion and
+      # both partial-state merge orders; the production
+      # dedupWindowPairsByTsFrag Frag's order-independent survivor; and the
+      # native-versus-fan-out answer end to end through cerberus's own
+      # lowering + emitter. Boots its own pinned builds. See internal/chsql/
+      # range_window_grid_native_nan_duplicate_realch_integration_test.go.
+      - name: Run timeSeries* NaN-duplicate survivor pins (real ClickHouse)
+        if: matrix.shard == 'chsql'
+        run: just ts-grid-nan-duplicate-integration
+
+      # The native timeSeries*ToGrid state-format boundary: two-shard
+      # Distributed rigs on each step of a rolling upgrade across the 26.7
+      # and 26.8 state-format bumps. Cerberus's native SQL must answer the
+      # fan-out reference from both initiators of every mixed rig under every
+      # Distributed setting a profile can change (it never ships a partial
+      # state), a control aggregate over the Distributed table must fail with
+      # INCORRECT_DATA across each boundary, the persisted
+      # timeSeriesLastTwoSamples tier state must cross versions, and a
+      # mixed-version replica pair with parallel replicas on in the server
+      # profile must ship states unpinned and answer correctly pinned.
+      # Boots its own pinned builds (CH_TS_STATE_*_IMAGE). See internal/chsql/
+      # range_window_grid_native_state_format_realch_integration_test.go.
+      - name: Run timeSeries*ToGrid state-format boundary (real ClickHouse, mixed-version Distributed)
+        if: matrix.shard == 'chsql'
+        run: just ts-grid-state-format-integration
+
+      # ---- shard `perf`: test/perf/smoke and test/perf/nightly. The perf-smoke
+      # sentinels boot THREE ClickHouse images: CH_TEST_IMAGE, then the
+      # join-spill and distinct-spill tiers (test/perf/smoke's
+      # perfSmokeJoinSpillCHImage and perfSmokeDistinctSpillCHImage, >=
+      # chopt.FeatureJoinSpill's 26.4 and chopt.FeatureDistinctSpill's 26.9
+      # floors), each of which boots and runs its own sentinel in about a
+      # minute.
 
       # The perf-smoke sentinel differential (#2370 PR 1): the real-CH
       # memory-bounding guard for the #2364 incident class. PR #2358 disabled
@@ -322,109 +466,53 @@ jobs:
       # (cerberus issue #2820) — and a THIRD for the distinct-spill tier,
       # whose chopt.FeatureDistinctSpill floors at 26.9.
       - name: Run perf-smoke sentinel differential (real ClickHouse)
+        if: matrix.shard == 'perf'
         run: just perf-smoke-integration
-
-      - name: Run dense native histogram dashboard correctness and memory regression
-        run: just native-histogram-dashboard-integration
-
-      - name: Run dense native histogram dashboard on the supported ClickHouse floor
-        run: just native-histogram-dashboard-floor-integration
 
       # test/perf/smoke's own TestPerfSmokeRealCH (the step above) also
       # leaves .Lowerers at prom.New's zero value, so it never exercised any
       # native ts_grid_* family either (#2487) — the package-local sibling of
-      # the prom-package step above, wiring internal/chopttest against this
+      # the prom-package step of the `handlers` shard, wiring
+      # internal/chopttest against this
       # package's own testcontainers ClickHouse and asserting all six native
       # families' function names land in system.query_log for their
       # respective query_range request. See
       # test/perf/smoke/realch_native_lowerers_integration_test.go.
       - name: Run native range-window lowerer activation, smoke package (real ClickHouse)
+        if: matrix.shard == 'perf'
         run: just native-lowerers-smoke-integration
 
-      # The quantile_prom_histogram real-CH differential (#2755): for every
-      # representative classic-histogram bucket layout and the full phi
-      # domain, emits BOTH the hand-rolled rank walk and the native
-      # quantilePrometheusHistogram aggregate for the identical
-      # chplan.HistogramQuantile plan and asserts they agree exactly. This is
-      # what chopt.FeatureQuantilePromHistogram's AutoSelect: false decision
-      # rests on. quantilePrometheusHistogram shipped in ClickHouse 25.10 —
-      # above every other integration lane's pin — so this step boots its own
-      # dedicated server (CH_QUANTILE_PROM_HISTOGRAM_IMAGE) rather than
-      # reusing this job's CH_STRICT_SCAN_IMAGE container. See
-      # internal/chsql/histogram_quantile_rankwalk_native_realch_integration_test.go.
-      - name: Run quantile_prom_histogram rank-walk differential (real ClickHouse)
-        run: just quantile-prom-histogram-rankwalk-integration
+      - name: Run dense native histogram dashboard correctness and memory regression
+        if: matrix.shard == 'perf'
+        run: just native-histogram-dashboard-integration
 
-      # The ts_tag_groups real-CH differential (#2750): the instant-mode
-      # duplicate-labelset guard's UInt64-group-id collapse
-      # (guardNameDropCollisionByTagGroup) answers byte-identical to the
-      # existing Map-grouped path it replaces, driven through the REAL
-      # production HTTP handler + emitter against a REAL ClickHouse. This is
-      # what chopt.FeatureTSGridTagGroups's registry entry rests its
-      # correctness claim on. timeSeriesThrowDuplicateSeriesIf's 26.2 floor
-      # is above every other integration lane's pin, so this step boots its
-      # own dedicated server (CH_TAG_GROUPS_IMAGE) rather than reusing this
-      # job's CH_STRICT_SCAN_IMAGE container. See
-      # internal/api/prom/handler_tag_groups_realch_integration_test.go.
-      - name: Run ts_tag_groups differential (real ClickHouse)
-        run: just tag-groups-differential-integration
+      - name: Run dense native histogram dashboard on the supported ClickHouse floor
+        if: matrix.shard == 'perf'
+        run: just native-histogram-dashboard-floor-integration
 
-      # The ts_grid_last_over_time real-CH regression pin (#2747): reproduces
-      # upstream's own ClickHouse/ClickHouse#106577 regression fixture shape
-      # (a staleness window narrower than the query_range grid step) through
-      # cerberus's own lowering + emitter, and asserts the native
-      # timeSeriesResampleToGridWithStaleness path agrees with the fan-out —
-      # absent on the sample the pre-#106577 bug wrongly carried forward,
-      # present on a control sample placed inside a real window. This is
-      # what chopt.FeatureTSGridLastOverTime's 26.6 floor (ABOVE the
-      # family's usual 25.9) and AutoSelect: false decision rest on. Boots
-      # its own fresh testcontainer at this job's CH_STRICT_SCAN_IMAGE tag
-      # rather than pinning a dedicated image variable — see the Justfile
-      # recipe's own doc for why that pin is shared, not the container. See
-      # internal/chsql/range_window_last_over_time_realch_integration_test.go.
-      - name: Run ts_grid_last_over_time window-narrower-than-step regression (real ClickHouse)
-        run: just ts-grid-last-over-time-integration
-
-      # The ts_grid_group_array real-CH precondition + regression pin
-      # (#2749): timeSeriesGroupArray accepts a DateTime64(9) timestamp
-      # directly and losslessly (contrary to its own documented
-      # UInt32/DateTime/UInt64 signature); the -If combinator filters before
-      # the duplicate-timestamp collapse; and, end to end through cerberus's
-      # own lowering + emitter, rate()'s native array-fold assembly matches
-      # the fan-out exactly on a genuine duplicate, non-NaN timestamp. Boots
-      # its own fresh testcontainer at CH_TEST_IMAGE (the feature's own 25.9
-      # floor) rather than this job's higher CH_STRICT_SCAN_IMAGE pin. See
-      # internal/chsql/range_window_group_array_realch_integration_test.go.
-      - name: Run ts_grid_group_array duplicate-timestamp + DateTime64 preconditions (real ClickHouse)
-        run: just ts-grid-group-array-integration
-
-      # The native timeSeries* duplicate-timestamp survivor pins, on each
-      # side of ClickHouse #115920 (the family's 25.9 floor and 26.7.13.12
-      # collapse a NaN-bearing duplicate by scan order; 26.8.1.2041 keeps the
-      # finite sample): every native member cerberus emits, every collision
-      # kind (NaN, stale marker, all-NaN, unequal finite), both insertion and
-      # both partial-state merge orders; the production
-      # dedupWindowPairsByTsFrag Frag's order-independent survivor; and the
-      # native-versus-fan-out answer end to end through cerberus's own
-      # lowering + emitter. Boots its own pinned builds. See internal/chsql/
-      # range_window_grid_native_nan_duplicate_realch_integration_test.go.
-      - name: Run timeSeries* NaN-duplicate survivor pins (real ClickHouse)
-        run: just ts-grid-nan-duplicate-integration
-
-      # The native timeSeries*ToGrid state-format boundary: two-shard
-      # Distributed rigs on each step of a rolling upgrade across the 26.7
-      # and 26.8 state-format bumps. Cerberus's native SQL must answer the
-      # fan-out reference from both initiators of every mixed rig under every
-      # Distributed setting a profile can change (it never ships a partial
-      # state), a control aggregate over the Distributed table must fail with
-      # INCORRECT_DATA across each boundary, the persisted
-      # timeSeriesLastTwoSamples tier state must cross versions, and a
-      # mixed-version replica pair with parallel replicas on in the server
-      # profile must ship states unpinned and answer correctly pinned.
-      # Boots its own pinned builds (CH_TS_STATE_*_IMAGE). See internal/chsql/
-      # range_window_grid_native_state_format_realch_integration_test.go.
-      - name: Run timeSeries*ToGrid state-format boundary (real ClickHouse, mixed-version Distributed)
-        run: just ts-grid-state-format-integration
+  strict-scan:
+    name: strict-scan
+    needs: [changes, strict-scan-shard]
+    # Bare `always()`: this context reports on every run, so a failed,
+    # cancelled or skipped shard fails it rather than leaving it unposted. On a
+    # docs-only change the shards skip by design and the verdict reports green
+    # without work, as ci.yml's `check` aggregator does.
+    if: always()
+    # Reads three `needs` values and runs no tool: the smallest runner.
+    runs-on: ubicloud-standard-2
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      # The roll-up's own guard first: a failed, cancelled or skipped shard,
+      # or a `changes` job that did not decide, cannot pass.
+      - name: Guard the shard roll-up
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/lib/needs-verdict.test.mjs .github/scripts/strict-scan-aggregate.test.mjs
+      - name: gate on every shard
+        run: node .github/scripts/strict-scan-aggregate.mjs
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          SHARDS_RESULT: ${{ needs.strict-scan-shard.result }}
 
   # ClickHouse 26.7 compiles a subset of regular expressions to native code
   # (compile_regular_expressions, on by default), and falls back to RE2 for
@@ -439,8 +527,8 @@ jobs:
   regex-jit:
     name: regex-jit
     needs: changes
-    # `always()` for the same reason as strict-scan above: a failed `changes`
-    # must fail this job, never skip it into green.
+    # `always()` for the same reason as strict-scan-shard above: a failed
+    # `changes` must fail this job, never skip it into green.
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
@@ -479,12 +567,13 @@ jobs:
   # native packet path already covers the dispatching process's own queries,
   # and that the union finds the rest without accounting any query twice. See
   # test/querylog/doc.go. It is its own job, beside strict-scan rather than a
-  # step inside it, because strict-scan already runs close to its SLO.
+  # step inside one of its shards, so neither lane's wall clock grows with the
+  # other's.
   query-log-union:
     name: query-log-union
     needs: changes
-    # `always()` for the same reason as strict-scan above: a failed `changes`
-    # must fail this job, never skip it into green.
+    # `always()` for the same reason as strict-scan-shard above: a failed
+    # `changes` must fail this job, never skip it into green.
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
@@ -553,9 +642,9 @@ jobs:
   ch-server-safety-shard:
     name: ch-server-safety-shard (${{ matrix.name }})
     needs: [changes, ch-server-safety-setup]
-    # `always()` for the same reason as strict-scan above: a failed `changes`
-    # must fail this job, never skip it into green. A failed setup leaves no
-    # matrix to fan out; the aggregate reports it.
+    # `always()` for the same reason as strict-scan-shard above: a failed
+    # `changes` must fail this job, never skip it into green. A failed setup
+    # leaves no matrix to fan out; the aggregate reports it.
     if: >-
       always() &&
       needs.ch-server-safety-setup.result == 'success' &&
