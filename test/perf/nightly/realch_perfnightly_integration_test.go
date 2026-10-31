@@ -167,7 +167,10 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	container, client := startPerfNightlyCH(ctx, t)
 	conn := client.Conn()
 	version := serverReleaseLine(ctx, t, conn)
-	line, _ := chopt.ParseVersion(version)
+	line, ok := chopt.ParseVersion(version)
+	if !ok {
+		t.Fatalf("release line %q does not parse as a ClickHouse version", version)
+	}
 	t.Logf("ClickHouse release line %s", version)
 
 	if err := ddl.Apply(ctx, conn, []ddl.Signal{ddl.Metrics}); err != nil {

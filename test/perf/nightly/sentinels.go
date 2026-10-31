@@ -239,12 +239,13 @@ func (s Sentinel) WantedOn(line chopt.Version) []WantSetting {
 }
 
 // histogramAdaptiveAggregatorOff is the stamp
-// chopt.FeatureHistogramAdaptiveAggregatorOff puts on a histogram
-// sample-window statement. Its line is written out rather than read from the registry, so a
-// floor that drifts upward fails here instead of moving the check with it.
-// Measured on 26.8.36.3 (#3986) through this harness, the classic by-route
-// quantile peaks at 586 MiB without it and 375 MiB with it, and the plural
-// native quantile over rate() at 319 and 185 MiB.
+// chopt.FeatureHistogramAdaptiveAggregatorOff puts on a statement whose sample
+// reductions are all exponential-histogram counter windows. Its line is
+// written out rather than read from the registry, so a floor that drifts
+// upward fails here instead of moving the check with it. Measured on
+// 26.8.36.3 (#3986) through this harness, median of 7 warm runs, the plural
+// native quantile over rate() peaks at 319 MiB without it and 185 MiB with
+// it.
 var histogramAdaptiveAggregatorOff = WantSetting{
 	Name:  "enable_adaptive_aggregator",
 	Value: "0",
@@ -371,7 +372,6 @@ var Sentinels = []Sentinel{
 		WindowEnd:        time.Date(2026, 8, 18, 9, 10, 0, 0, time.UTC),
 		Step:             time.Minute,
 		BaselineHeadroom: histogramBaselineHeadroom,
-		WantSettings:     []WantSetting{histogramAdaptiveAggregatorOff},
 		NotOn: map[string]string{
 			"24.8": "the native classic-histogram grid this sentinel measures (chopt ts_grid_histogram) floors at 25.9; " +
 				"on 24.8 the fan-out lowering's collapsed-payload resource bound rejects this window by design (" +

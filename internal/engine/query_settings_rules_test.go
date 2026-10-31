@@ -797,6 +797,18 @@ func TestSettingsRulesEnabledOpts_ReportsExpHistogramTwoLevel(t *testing.T) {
 	}
 }
 
+// TestSettingsRulesEnabledOpts_ReportsHistogramAdaptiveAggregatorOff pins the
+// enabled-optimization id the rule reports while it is on, and only then.
+func TestSettingsRulesEnabledOpts_ReportsHistogramAdaptiveAggregatorOff(t *testing.T) {
+	const id = "histogram_adaptive_aggregator_off"
+	if got := (SettingsRules{HistogramAdaptiveAggregatorOff: true}).enabledOpts(); !slices.Contains(got, id) {
+		t.Errorf("enabledOpts() = %v; want it to contain %q", got, id)
+	}
+	if got := (SettingsRules{}).enabledOpts(); slices.Contains(got, id) {
+		t.Errorf("enabledOpts() with the rule off = %v; want no %s", got, id)
+	}
+}
+
 // expHistogramSampleScan is an exponential-histogram Scan declaring the
 // three roles a sample window reads: the timestamp, the positive bucket
 // arrays and the aggregation temporality.
@@ -841,12 +853,25 @@ func TestApplyHistogramAdaptiveAggregatorOff_SampleWindowStamps(t *testing.T) {
 	// from the const stayed green.
 	const wantDisabled = 0
 
+	window := expHistogramWindowAggregate(true)
 	cases := map[string]chplan.Node{
 		"exp rate window": expHistogramWindowAggregate(true),
 		"exp rate window under a plural quantile": &chplan.HistogramQuantilesNative{
 			Histogram: &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(true)},
 		},
-		"classic bucket grid": &chplan.RangeBucketGridNative{Input: &chplan.Scan{Table: "otel_metrics_histogram"}},
+		"exp rate window as a range fan-out": &chplan.RangeBucketFanout{
+			Input:    window.Input,
+			GroupBy:  window.GroupBy,
+			AggFuncs: window.AggFuncs,
+		},
+		"cross-series merge above the window": &chplan.Aggregate{
+			Input:    expHistogramWindowAggregate(true),
+			AggFuncs: []chplan.AggFunc{{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: "_hq_pos_buckets"}}, Alias: "_hq_merged"}},
+		},
+		"two windows joined": &chplan.HistogramVectorJoin{
+			Left:  &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(true)},
+			Right: &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(true)},
+		},
 	}
 	for name, plan := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -861,8 +886,9 @@ func TestApplyHistogramAdaptiveAggregatorOff_SampleWindowStamps(t *testing.T) {
 // TestApplyHistogramAdaptiveAggregatorOff_OtherShapesStampNothing — the
 // shapes the #3986 measurement left on the adaptive aggregator: the
 // bare-selector lookback (no temporality), a cross-series merge (no
-// timestamps), the classic quantile and the windowed fan-out, and a
-// scalar-state aggregation.
+// timestamps), classic windows and merges, a fan-out that reduces nothing,
+// a scalar-state aggregation, and a counter window sharing the statement
+// with any of them (the setting covers every subquery).
 func TestApplyHistogramAdaptiveAggregatorOff_OtherShapesStampNothing(t *testing.T) {
 	temporality := chplan.AggFunc{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "AggregationTemporality"}}, Alias: "_hq_temporality"}
 	// Each negative Aggregate drops exactly one of the three conjuncts, so
@@ -890,12 +916,30 @@ func TestApplyHistogramAdaptiveAggregatorOff_OtherShapesStampNothing(t *testing.
 			temporality,
 		},
 	}
+	beside := func(other chplan.Node) chplan.Node {
+		return &chplan.HistogramVectorJoin{
+			Left:  &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(true)},
+			Right: other,
+		}
+	}
+	classicGrid := &chplan.RangeBucketGridNative{Input: &chplan.Scan{Table: "otel_metrics_histogram"}}
 	cases := map[string]chplan.Node{
-		"exp bare-selector lookback":  &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(false)},
-		"exp cross-series merge":      merge,
-		"classic bucket-array window": classicWindow,
-		"exp range window fan-out":    expHistogramWindowPlan(),
-		"classic quantile":            &chplan.HistogramQuantile{Input: &chplan.Scan{Table: "otel_metrics_histogram"}},
+		"exp bare-selector lookback":            &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(false)},
+		"exp cross-series merge":                merge,
+		"classic bucket-array window":           classicWindow,
+		"exp fan-out without window aggregates": expHistogramWindowPlan(),
+		"classic bucket grid":                   classicGrid,
+		"window beside a bare-selector lookback": beside(&chplan.HistogramQuantileNative{Input: &chplan.Aggregate{
+			Input:   expHistogramWindowAggregate(false),
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "route"}},
+		}}),
+		"window beside a classic merge": beside(&chplan.HistogramQuantile{Input: &chplan.Aggregate{
+			Input:   &chplan.Scan{Table: "otel_metrics_histogram"},
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "route"}},
+		}}),
+		"window beside a classic bucket grid": beside(classicGrid),
+		"window beside a scalar window":       beside(&chplan.RangeWindow{Input: &chplan.Scan{Table: "otel_metrics_sum"}}),
+		"classic quantile":                    &chplan.HistogramQuantile{Input: &chplan.Scan{Table: "otel_metrics_histogram"}},
 		"scalar aggregate": &chplan.Aggregate{
 			Input:   &chplan.Scan{Table: "otel_metrics_sum"},
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},

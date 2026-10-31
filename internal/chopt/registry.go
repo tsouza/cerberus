@@ -2252,7 +2252,7 @@ const (
 	//
 	// The stamp still holds on ClickHouse 26.8.36.3, whose adaptive aggregator
 	// (FeatureHistogramAdaptiveAggregatorOff) changed the single-level path
-	// beneath it. Re-measured for #3986 against 26.6.4.55 on the same 10-series
+	// beneath it. Re-measured for #3986 against 26.6.8.7 on the same 10-series
 	// exp-histogram rate() window, stamped / 50 MB default / disabled: 21
 	// anchors 41.2 / 41.2 / 41.2 MiB on both lines; 61 anchors 26.6 41.1 / 94.0
 	// / 94.0 and 26.8 41.2 / 98.3 / 98.2 MiB; 500 series at 61 anchors 26.6
@@ -2286,10 +2286,11 @@ const (
 	FeatureExpHistogramTwoLevel = "exp_histogram_two_level"
 
 	// FeatureHistogramAdaptiveAggregatorOff stamps
-	// enable_adaptive_aggregator=0 on a plan carrying a per-series window over
-	// histogram samples, so the window's bucket arrays aggregate in the
-	// per-thread hash tables every server before 26.8 ran instead of in the
-	// adaptive aggregator 26.8 turns on by default (ClickHouse#111459).
+	// enable_adaptive_aggregator=0 on a plan whose sample reductions are all
+	// exponential-histogram counter windows (rate(), increase(), irate()) or
+	// sit above one, so the window's bucket arrays aggregate in per-thread
+	// hash tables instead of in the adaptive aggregator 26.8 turns on by
+	// default (ClickHouse#111459).
 	//
 	// The adaptive aggregator freezes each thread's local table once it holds
 	// adaptive_aggregator_freeze_threshold keys or
@@ -2298,11 +2299,13 @@ const (
 	// aggregates. A histogram window collects every in-window sample's bucket
 	// arrays per series, so the frozen tables fill almost at once and the
 	// backlogs hold those arrays until the merge. Measured on ClickHouse
-	// 26.8.36.3 against 26.6.8.7 with the perf-nightly sample (#3986):
+	// 26.8.36.3 against 26.6.8.7 with the perf-nightly sample (#3986), as an
+	// instant query, median of 5 warm runs:
 	// `histogram_quantiles(sum by (http_route) (rate(<exp-hist>[5m])), ...)`
 	// went from 256 MiB on 26.6 to 289 MiB on 26.8 and to 143 MiB stamped, and
-	// its single-phi form from 220 to 292 and to 184 MiB. The same statements
-	// under compatibility=26.7 land near the stamped figure.
+	// its single-phi form from 220 to 292 and to 184 MiB. The plural form as a
+	// query_range peaked at 173 MiB under compatibility=26.6 against 154 MiB
+	// stamped in the same run.
 	//
 	// It is RESULT-EQUIVALENT: the adaptive aggregator is an execution
 	// strategy, and either path emits the same groups with the same states.
@@ -2311,16 +2314,21 @@ const (
 	// server rejects the name. AutoSelect is true for the reason
 	// FeatureExpHistogramTwoLevel gives: a peak that grows on a server upgrade
 	// is an availability regression, and the stamp is result-equivalent.
-	// Stability is Stable: the stamp selects the aggregation every server
-	// before 26.8 ran.
+	// Stability is Stable: the setting is a documented boolean that 26.8 ships
+	// on by default, and the stamp only turns it off. Turning it off on 26.8 is
+	// not the same as running 26.6, which is why the plan-shape gate below
+	// matters: on a classic merge the setting-off path costs more than 26.6
+	// did.
 	//
-	// The plan-shape gate is load-bearing. On other histogram shapes the
+	// The plan-shape gate is load-bearing, and it covers the whole statement
+	// because the setting applies to every subquery. On other reductions the
 	// adaptive aggregator is the cheaper path on 26.8, and switching it off
 	// costs more than 26.6 did: the instant classic
 	// `histogram_quantile(0.95, sum by (http_route, le) (<bucket>))` measured
-	// 61 MiB on 26.8 against 235 MiB with the setting off. See internal/engine's
-	// applyHistogramAdaptiveAggregatorOff for the predicate and the shapes left
-	// outside it.
+	// 61 MiB on 26.8 (71 on 26.6) against 235 MiB with the setting off. A
+	// statement that pairs a counter window with such a reduction gets no
+	// stamp. See internal/engine's applyHistogramAdaptiveAggregatorOff for the
+	// predicate and the shapes left outside it.
 	FeatureHistogramAdaptiveAggregatorOff = "histogram_adaptive_aggregator_off"
 
 	// FeatureQueryLogUnion points the query-actuals reconciler (internal/engine's
@@ -2984,9 +2992,10 @@ var registry = []Feature{
 		MinVersion: Version{Major: 26, Minor: 8},
 		Stability:  Stable,
 		AutoSelect: true,
-		Doc: "stamp enable_adaptive_aggregator=0 on a histogram sample-window plan so its bucket arrays aggregate per thread " +
-			"as before 26.8 instead of through the adaptive aggregator's backlogs (result-equivalent, server >= 26.8, " +
-			"measured 289 -> 143 MiB on the plural native quantile over rate() -- #3986)",
+		Doc: "stamp enable_adaptive_aggregator=0 on a plan whose sample reductions are all exponential-histogram counter " +
+			"windows or sit above one, so the bucket arrays aggregate per thread instead of through the adaptive " +
+			"aggregator's backlogs (result-equivalent, server >= 26.8, measured 289 -> 143 MiB on the instant plural " +
+			"native quantile over rate() -- #3986)",
 	},
 	{
 		ID:                              FeatureQueryLogUnion,

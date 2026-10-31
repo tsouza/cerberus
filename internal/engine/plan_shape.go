@@ -47,12 +47,17 @@ type planShapeFacts struct {
 	// RangeBucketFanout — see applyExpHistogramTwoLevelBound for why neither
 	// conjunct alone is the predicate.
 	expHistogramWindowGrouping bool
-	// histogramSampleWindow: a per-series window over histogram samples — a
-	// RangeBucketGridNative, or an Aggregate collecting both the sample
-	// timestamps and a bucket-array column per group
-	// (histogramSampleWindowAggregate). See
-	// applyHistogramAdaptiveAggregatorOff.
+	// histogramSampleWindow: an exponential-histogram counter window
+	// (histogramSampleWindowAggregate) somewhere in the plan.
 	histogramSampleWindow bool
+	// foreignSampleReduction: a node that reduces samples (an Aggregate, a
+	// range window, a ts_grid carrier, a reducing RangeBucketFanout) with no
+	// counter window at or beneath it — a cross-series merge over raw rows, a
+	// bare-selector lookback, a scalar or classic window. A ClickHouse
+	// setting applies to every subquery of the statement, so
+	// applyHistogramAdaptiveAggregatorOff stamps only a plan where this is
+	// false.
+	foreignSampleReduction bool
 	// tsGridNative: a node from the experimental timeSeries*ToGrid family —
 	// see planHasTSGridNative for the member list.
 	tsGridNative bool
@@ -129,22 +134,56 @@ func inspectPlanShape(plan chplan.Node, traceIDColumn string) planShapeFacts {
 // spine), inspecting every sub-expression on the way — the same reach
 // chplan.WalkDeep composed with chplan.InspectNodeExprs + chplan.InspectExpr
 // has.
-func (f *planShapeFacts) visit(n chplan.Node, spine bool, traceIDColumn string) {
+//
+// It reports whether n's subtree, n and its embedded plans included, holds an
+// exponential-histogram counter window, which is how the walk tells a merge
+// above a window (allowed under the adaptive-aggregator stamp) from a sample
+// reduction with no window beneath it (foreignSampleReduction).
+func (f *planShapeFacts) visit(n chplan.Node, spine bool, traceIDColumn string) bool {
 	if n == nil {
-		return
+		return false
 	}
 	f.recordNode(n, spine)
+	windowBelow := false
 	for _, c := range n.Children() {
-		f.visit(c, spine, traceIDColumn)
+		if f.visit(c, spine, traceIDColumn) {
+			windowBelow = true
+		}
 	}
 	chplan.InspectNodeExprs(n, func(e chplan.Expr) {
 		chplan.InspectExprNodes(e, func(sub chplan.Expr) bool {
 			f.recordExpr(sub, traceIDColumn)
 			return true
 		}, func(embedded chplan.Node) {
-			f.visit(embedded, false, traceIDColumn)
+			if f.visit(embedded, false, traceIDColumn) {
+				windowBelow = true
+			}
 		})
 	})
+	if histogramSampleWindowNode(n) {
+		f.histogramSampleWindow = true
+		return true
+	}
+	if !windowBelow && reducesSamples(n) {
+		f.foreignSampleReduction = true
+	}
+	return windowBelow
+}
+
+// reducesSamples reports whether n reduces rows into per-group state: an
+// Aggregate, a range window, a ts_grid carrier, or a RangeBucketFanout that
+// carries its own aggregates. A Project, Filter or quantile node over such a
+// reduction does not reduce anything itself.
+func reducesSamples(n chplan.Node) bool {
+	switch v := n.(type) {
+	case *chplan.Aggregate, *chplan.RangeWindow, *chplan.RangeBucketGridNative,
+		*chplan.RangeWindowGridNative, *chplan.RangeWindowGridNativeInstant,
+		*chplan.RangeWindowGridNativeVectorAgg, *chplan.RangeWindowStaleResample:
+		return true
+	case *chplan.RangeBucketFanout:
+		return len(v.AggFuncs) > 0
+	}
+	return false
 }
 
 // recordNode records the node-kind facts for n.
@@ -176,10 +215,7 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 		if v.DownsampleTier || v.NativeGroupArray {
 			f.tsGridNative = true
 		}
-	case *chplan.RangeBucketGridNative:
-		f.tsGridNative = true
-		f.histogramSampleWindow = true
-	case *chplan.RangeWindowGridNative, *chplan.RangeWindowGridNativeInstant,
+	case *chplan.RangeBucketGridNative, *chplan.RangeWindowGridNative, *chplan.RangeWindowGridNativeInstant,
 		*chplan.RangeWindowStaleResample:
 		f.tsGridNative = true
 	case *chplan.Limit:
@@ -190,9 +226,6 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 			}
 		}
 	case *chplan.Aggregate:
-		if !f.histogramSampleWindow && histogramSampleWindowAggregate(v) {
-			f.histogramSampleWindow = true
-		}
 		if spine {
 			f.spineAggregate = v
 			f.spineAggregates++
@@ -217,22 +250,53 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 	}
 }
 
-// histogramSampleWindowAggregate reports whether a is the per-series counter
-// window over exponential-histogram samples the instant rate() and increase()
-// lowerings reduce (internal/promql's expHistogramValuedWindowStageBy): per
-// group it collects the sample timestamps and the exponential bucket arrays
-// through groupArray, and it reads the series' aggregation temporality. The
-// bare-selector lookback collects the same arrays but no temporality, and a
-// cross-series merge collects bucket arrays but no timestamps, so neither
-// matches. The input's RowType is resolved only once an aggregate argument
-// is a bare column, so a plan without one pays nothing.
-func histogramSampleWindowAggregate(a *chplan.Aggregate) bool {
-	var (
-		input                           chplan.Schema
-		resolved                        bool
-		timestamps, arrays, temporality bool
-	)
-	for _, agg := range a.AggFuncs {
+// histogramSampleWindowNode reports whether n is an exponential-histogram
+// counter window: an instant query reduces the window in an Aggregate, a
+// query_range in the RangeBucketFanout that fans every series out per anchor,
+// and both carry the same aggregates (histogramSampleWindowAggregate).
+func histogramSampleWindowNode(n chplan.Node) bool {
+	switch v := n.(type) {
+	case *chplan.Aggregate:
+		return histogramSampleWindowAggregate(v.Input, v.AggFuncs)
+	case *chplan.RangeBucketFanout:
+		return histogramSampleWindowAggregate(v.Input, v.AggFuncs)
+	}
+	return false
+}
+
+// histogramSampleWindowAggregate reports whether aggs over input are the
+// per-series counter window over exponential-histogram samples that
+// internal/promql builds for rate(), increase() and irate() (counterWindowFn,
+// through expHistogramValuedWindowStageBy): per group it collects the sample
+// timestamps and the exponential bucket arrays through groupArray, and it
+// reads the series' aggregation temporality.
+//
+// The temporality read is what tells a counter window from a bare-selector
+// lookback or a sum_over_time() window, which collect the same arrays
+// without it; a cross-series merge collects bucket arrays but no timestamps.
+// The lowering reads temporality only when the schema declares
+// AggregationTemporalityColumn, so a schema override that clears that column
+// leaves no counter window this predicate can see, and those deployments do
+// not get the adaptive-aggregator stamp.
+//
+// The input's RowType is resolved only for a node carrying at least two
+// groupArray-of-column aggregates, so the scalar aggregations every other
+// plan carries pay nothing.
+func histogramSampleWindowAggregate(input chplan.Node, aggs []chplan.AggFunc) bool {
+	groupArrays := 0
+	for _, agg := range aggs {
+		if agg.Fn == chplan.FnGroupArray && len(agg.Args) == 1 {
+			if _, ok := agg.Args[0].(*chplan.ColumnRef); ok {
+				groupArrays++
+			}
+		}
+	}
+	if groupArrays < minSampleWindowGroupArrays {
+		return false
+	}
+	columns := input.RowType()
+	var timestamps, arrays, temporality bool
+	for _, agg := range aggs {
 		if len(agg.Args) != 1 {
 			continue
 		}
@@ -240,10 +304,7 @@ func histogramSampleWindowAggregate(a *chplan.Aggregate) bool {
 		if !ok {
 			continue
 		}
-		if !resolved {
-			input, resolved = a.Input.RowType(), true
-		}
-		column, ok := input.ByName(ref.Name)
+		column, ok := columns.ByName(ref.Name)
 		if !ok {
 			continue
 		}
@@ -260,6 +321,11 @@ func histogramSampleWindowAggregate(a *chplan.Aggregate) bool {
 	}
 	return timestamps && arrays && temporality
 }
+
+// minSampleWindowGroupArrays is the fewest groupArray-of-column aggregates a
+// counter window carries: one over the timestamps and one over a bucket
+// array.
+const minSampleWindowGroupArrays = 2
 
 // recordGridCarrier records the result-cache window facts of one carrier —
 // the DATA edge (DataWindowEnd, offset-adjusted) for every carrier, and the

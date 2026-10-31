@@ -197,10 +197,11 @@ type SettingsRules struct {
 	ExpHistogramTwoLevel bool
 
 	// HistogramAdaptiveAggregatorOff, when true, stamps
-	// enable_adaptive_aggregator=0 on a plan carrying a per-series window over
-	// histogram samples (see applyHistogramAdaptiveAggregatorOff), so the
-	// window's bucket arrays aggregate per thread as before ClickHouse 26.8
-	// instead of through the adaptive aggregator's backlogs. Driven by the
+	// enable_adaptive_aggregator=0 on a plan whose sample reductions are all
+	// exponential-histogram counter windows or sit above one (see
+	// applyHistogramAdaptiveAggregatorOff), so the window's bucket arrays
+	// aggregate per thread instead of through the adaptive aggregator's
+	// backlogs. Driven by the
 	// histogram_adaptive_aggregator_off registry feature, which only resolves
 	// in on server >= 26.8, the first release carrying the setting; below that
 	// this flag is false and nothing is stamped.
@@ -806,7 +807,7 @@ const settingGroupByTwoLevelThresholdBytes = "group_by_two_level_threshold_bytes
 // name a number near it.
 //
 // ClickHouse 26.8.36.3 keeps the same shape (#3986): at 61 anchors the same
-// window peaks at 41.2 MiB stamped against 98.3 MiB at the default, as 26.6.4.55
+// window peaks at 41.2 MiB stamped against 98.3 MiB at the default, as 26.6.8.7
 // does at 41.1 against 94.0, so the 26.8 adaptive aggregator does not make the
 // stamp redundant.
 //
@@ -910,55 +911,69 @@ func applyExpHistogramTwoLevelBound(ctx context.Context, f planShapeFacts, expHi
 // adaptive_aggregator_freeze_threshold_bytes of state, and every later key is
 // routed into a per-bucket backlog the bucket-parallel merge aggregates.
 //
-// perf-sentinel: memory-bounding — on a histogram sample window the backlogs
-// hold every in-window sample's bucket arrays until the merge, which is what
+// perf-sentinel: memory-bounding — on an exponential-histogram counter window
+// the backlogs hold every in-window sample's bucket arrays until the merge, which is what
 // raised the native-histogram rate() peaks on 26.8. See
 // applyHistogramAdaptiveAggregatorOff for the measurement.
 const settingEnableAdaptiveAggregator = "enable_adaptive_aggregator"
 
 // histogramAdaptiveAggregatorDisabled is the enable_adaptive_aggregator value
 // applyHistogramAdaptiveAggregatorOff stamps: the setting is a boolean, and 0
-// selects the per-thread aggregation every server before 26.8 ran.
+// turns the adaptive aggregator off, so each thread aggregates into its own
+// table without freezing it into backlogs.
 const histogramAdaptiveAggregatorDisabled = 0
 
 // applyHistogramAdaptiveAggregatorOff stamps enable_adaptive_aggregator=0 on
-// a plan carrying a per-series window over histogram samples
-// (planShapeFacts.histogramSampleWindow), when the boot-resolved
+// a plan whose every sample reduction is an exponential-histogram counter
+// window or sits above one: the plan carries a counter window
+// (planShapeFacts.histogramSampleWindow, the rate() / increase() / irate()
+// window histogramSampleWindowAggregate matches) and no sample reduction
+// without a window beneath it (planShapeFacts.foreignSampleReduction). It
+// applies only when the boot-resolved
 // chopt.FeatureHistogramAdaptiveAggregatorOff verdict
 // (SettingsRules.HistogramAdaptiveAggregatorOff) is on.
 //
 // Measured on ClickHouse 26.8.36.3 against 26.6.8.7 over the perf-nightly
-// sample (#3986), the statement cerberus dispatches replayed with each
-// setting, median of 5 to 7 warm runs, peak memory_usage in MiB:
+// sample (#3986), replaying the statement cerberus dispatches with each
+// setting, peak memory_usage in MiB:
 //
-//	shape                                             26.6   26.8   26.8 stamped
-//	histogram_quantiles over rate(<exp>[5m]), instant  256    289    143
-//	histogram_quantile over rate(<exp>[5m]), instant   220    292    184
-//	classic by-route quantile, RangeBucketGridNative   372    586    375
+//	shape                                                 runs  26.6  26.8  26.8 stamped
+//	histogram_quantiles over rate(<exp>[5m]), query_range    7   266   319   185
+//	histogram_quantiles over rate(<exp>[5m]), instant        5   256   289   143
+//	histogram_quantile over rate(<exp>[5m]), instant         5   220   292   184
 //
-// The predicate is the two shapes behind those rows, not every histogram
-// plan, because switching the adaptive aggregator off is not a win anywhere
-// else that was measured and is a large loss on some:
+// irate() lowers to the same window and is matched with it; it was not
+// measured on its own.
+//
+// The predicate is that shape and nothing wider, because the setting covers
+// every subquery of the statement and switching the adaptive aggregator off
+// is a loss on reductions outside a counter window:
 //
 //   - the instant classic `histogram_quantile(0.95, sum by (http_route, le)
-//     (<bucket>))`: 61 MiB on 26.8, 235 MiB with the setting off (71 on
+//     (<bucket>))` merge: 61 MiB on 26.8, 235 MiB with the setting off (71 on
 //     26.6);
-//   - the instant bare exponential selector merged by
-//     `sum by (route)` at 2000 series x 160 buckets, the
-//     maxHistogramMergeCostUnits calibration shape: 797 MiB on 26.8, 1028
-//     MiB with the setting off, past the 1 GiB default cap. The same lookback
-//     window over the real sample went 358 -> 250 MiB, so the bare-selector
-//     lookback stays out: its gain depends on samples per series, which the
-//     plan does not show, and its loss lands on a bound;
-//   - the exponential range windows built on RangeBucketFanout, the classic
-//     fan-out window and `sum by (le)` over RangeBucketGridNative moved by
-//     less than 6 MiB either way.
+//   - the instant bare exponential selector merged by `sum by (route)` at
+//     2000 series x 160 buckets, the maxHistogramMergeCostUnits calibration
+//     shape: 797 MiB on 26.8, 1028 MiB with the setting off, past the 1 GiB
+//     default cap. The same lookback over the real sample went 358 -> 250
+//     MiB, so the bare-selector lookback stays out: its gain depends on
+//     samples per series, which the plan does not show, and its loss lands
+//     on a bound;
+//   - the classic windows, which production lowers to the ts_grid carriers
+//     (RangeWindowGridNative and its vector aggregation): 214 MiB on 26.8,
+//     213 MiB with the setting off (208 on 26.6) for the classic by-route
+//     quantile over rate(), and less than 6 MiB either way for the bucket
+//     grid and fan-out windows by `le` and by `route`.
+//
+// So a statement that pairs a counter window with any of those reductions,
+// for example a binary operation between the quantile over rate() and a
+// classic or bare-selector quantile, gets no stamp.
 //
 // Like every rule reachable from applySharedQuerySettings the setting is
 // RESULT-EQUIVALENT: both aggregation paths emit the same groups with the same
 // states, so an over-match costs memory, never correctness.
 func applyHistogramAdaptiveAggregatorOff(ctx context.Context, f planShapeFacts, enabled bool) context.Context {
-	if !enabled || !f.histogramSampleWindow {
+	if !enabled || !f.histogramSampleWindow || f.foreignSampleReduction {
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingEnableAdaptiveAggregator, histogramAdaptiveAggregatorDisabled)

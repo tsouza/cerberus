@@ -59,13 +59,12 @@ func TestSentinels_SampleWindowInsideCapturedSpan(t *testing.T) {
 }
 
 // TestSentinels_HistogramShapesWantAdaptiveAggregatorOff pins which sentinels
-// require the enable_adaptive_aggregator=0 stamp and from which line: the two
-// histogram sample-window sentinels on 26.8 and later, none below it, where the
+// require the enable_adaptive_aggregator=0 stamp and from which line: the
+// exponential-histogram counter-window sentinel on 26.8 and later, none below it, where the
 // setting does not exist and the server would reject it.
 func TestSentinels_HistogramShapesWantAdaptiveAggregatorOff(t *testing.T) {
 	want := map[string]bool{
-		"classic_histogram_quantile_by_route": true,
-		"native_histogram_quantiles_rate":     true,
+		"native_histogram_quantiles_rate": true,
 	}
 	for _, line := range []struct {
 		version chopt.Version
