@@ -57,7 +57,6 @@ A contributor who owns the review of one [area](#areas).
   - Listed in [MAINTAINERS.md](MAINTAINERS.md) and in [.github/CODEOWNERS](.github/CODEOWNERS) for
     the area, so that changes to it request their review.
   - Triage permission on the repository.
-  - An approving review from a reviewer counts toward the merge of a change in their area.
 
 ## Maintainer
 
@@ -79,7 +78,7 @@ A reviewer who shares responsibility for the whole project.
 - **Privileges:**
   - Write access to the repository.
   - A vote in project decisions.
-  - Administration of the project's accounts and release signing, shared among the maintainers.
+  - Administration of the repository and of the project's accounts, shared among the maintainers.
 
 ## Inactivity and stepping down
 

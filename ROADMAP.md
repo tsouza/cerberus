@@ -1,8 +1,8 @@
 # Roadmap
 
-This roadmap lists the directions cerberus is working in. Each theme links to the GitHub issues that
-track it, and those issues carry the current status, the scope and the discussion. The roadmap is
-reviewed with every minor release. To propose a direction, open an issue; to help with one, comment
+This roadmap lists the directions cerberus is working in. A theme with tracking issues links to them, and
+those issues carry the current status, the scope and the discussion. The roadmap changes by pull
+request, like any other document. To propose a direction, open an issue; to help with one, comment
 on its issues, or start from [`good first issue`][gfi] and [`help wanted`][hw].
 
 ## Query-language parity

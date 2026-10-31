@@ -33,30 +33,29 @@ own authority.
 
 Most changes to cerberus are written by AI coding agents working under a maintainer's direction.
 
-- **A maintainer is accountable for every change.** The maintainer decides what work is done, sets
-  the agents' instructions (the hard invariants in [CLAUDE.md](CLAUDE.md), which
-  [AGENTS.md](AGENTS.md) points to), and decides what merges. A merged change is the maintainer's
-  responsibility, whoever or whatever wrote it.
-- **Correctness is enforced by gates, not by trust in the author.** A change merges only when every
-  status check that the `main` ruleset requires passes, and every review thread is resolved. The
-  checks are listed in [CONTRIBUTING.md](CONTRIBUTING.md) and documented gate by gate in
+- **A maintainer is accountable for every change.** The maintainer decides what work is done and
+  sets the agents' instructions: the hard invariants in [CLAUDE.md](CLAUDE.md), which
+  [AGENTS.md](AGENTS.md) points to. Changes merge on the maintainer's decision, given directly or
+  through standing instructions to the agents. A merged change is the maintainer's responsibility,
+  whoever or whatever wrote it.
+- **Merge gates.** The `main` ruleset requires a pull request, a squash merge, every review thread
+  resolved, and a fixed set of passing status checks. The checks are listed in
+  [CONTRIBUTING.md](CONTRIBUTING.md) and documented gate by gate in
   [docs/test-strategy.md](docs/test-strategy.md). They include the test suite under the race
-  detector, the architecture and invariant scans, and the license boundary check. Before a release,
-  the differential harnesses compare cerberus with Prometheus, Loki and Tempo
-  ([docs/compatibility.md](docs/compatibility.md)), with no allow-list.
-- **Changes are reviewed adversarially.** A non-trivial change is reviewed by an independent pass
-  that tries to refute it: its correctness, its tests (a test must fail when the code under test is
-  broken), and its consistency with the code, the documents and the invariants.
-- **AI assistance is disclosed.** A commit written with an AI tool carries an
-  `Assisted-by: <tool>:<model>` trailer, and a pull request written with one says so in its
-  description.
-- **Sign-off is the maintainer's certification.** An agent's commit carries the directing
-  maintainer's `Signed-off-by` trailer, added on the maintainer's standing authorization. With it the
-  maintainer certifies the [Developer Certificate of Origin](https://developercertificate.org) for
-  that commit and accepts responsibility for it as if they had written it.
-- **Every contributor follows the same rules.** Contributions from people outside the project, with
-  or without AI tools, follow the policy in
-  [CONTRIBUTING.md](CONTRIBUTING.md#ai-assisted-contributions).
+  detector, the architecture and invariant scans, and the license boundary check. A release is
+  published only when the differential harnesses, which compare cerberus with Prometheus, Loki and
+  Tempo ([docs/compatibility.md](docs/compatibility.md)) with no allow-list, pass for the code being
+  released.
+- **Disclosure.** A commit written with an AI tool must carry an `Assisted-by: <tool>:<model>`
+  trailer, as [CONTRIBUTING.md](CONTRIBUTING.md#ai-assisted-contributions) specifies.
+- **Sign-off.** The `lint` check requires every commit in a pull request to carry its author's
+  `Signed-off-by` trailer, except commits authored by a GitHub bot account. An agent's commit is
+  authored and signed off in the directing maintainer's name, on the maintainer's standing
+  authorization. With that sign-off the maintainer certifies the
+  [Developer Certificate of Origin](https://developercertificate.org) for the commit and accepts
+  responsibility for it as if they had written it.
+- **One policy for everyone.** Contributions from people outside the project, with or without AI
+  tools, follow the same rules, in [CONTRIBUTING.md](CONTRIBUTING.md#ai-assisted-contributions).
 
 ## Decision making
 
@@ -103,8 +102,8 @@ they have the time and means to do so.
 A maintainer who can no longer continue announces it on a public `governance` issue at least thirty
 days before stepping down, wherever circumstances allow. If that would leave the project without a
 maintainer, the departing maintainer first offers maintainership to the most active contributors who
-meet the criteria above, and hands over repository administration, release signing and the project's
-accounts to whoever accepts.
+meet the criteria above, and hands over repository administration and the project's accounts to
+whoever accepts.
 
 If no successor accepts, the repository is archived with a notice in the README, and its issues stay
 readable. cerberus is licensed under Apache-2.0, so anyone can fork it and continue the work at any
