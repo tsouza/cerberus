@@ -120,14 +120,26 @@ func TestWalkShardIsATotalDisjointCover(t *testing.T) {
 			"vacuously", shardedCorpusDir)
 	}
 
-	seen := make(map[string]int, len(whole))
+	legs := make([][]string, 0, goldenUpdateShardCount)
 	for index := 1; index <= goldenUpdateShardCount; index++ {
 		shard := Shard{Index: index, Count: goldenUpdateShardCount}
-		for _, name := range walkedNames(t, fmt.Sprintf("leg%d", index), shard) {
+		legs = append(legs, walkedNames(t, fmt.Sprintf("leg%d", index), shard))
+	}
+	assertTotalDisjointCover(t, fmt.Sprintf("fixture(s) of a %d-way split", goldenUpdateShardCount), whole, legs)
+}
+
+// assertTotalDisjointCover fails t unless every name in whole appears in
+// exactly one of legs and no leg holds a name outside whole. what names the
+// members in the failure messages.
+func assertTotalDisjointCover(t *testing.T, what string, whole []string, legs [][]string) {
+	t.Helper()
+
+	seen := make(map[string]int, len(whole))
+	for _, leg := range legs {
+		for _, name := range leg {
 			seen[name]++
 		}
 	}
-
 	var missing, duplicated []string
 	for _, name := range whole {
 		switch seen[name] {
@@ -139,19 +151,85 @@ func TestWalkShardIsATotalDisjointCover(t *testing.T) {
 		}
 	}
 	if len(missing) > 0 {
-		t.Errorf("%d fixture(s) belong to NO leg of a %d-way split, so no process regenerates their "+
-			"goldens and `update-golden` reports a diff that only looks complete: %v",
-			len(missing), goldenUpdateShardCount, truncate(missing))
+		t.Errorf("%d %s belong to NO leg, so nothing runs them and every leg still reports green: %v",
+			len(missing), what, truncate(missing))
 	}
 	if len(duplicated) > 0 {
-		t.Errorf("%d fixture(s) belong to MORE THAN ONE leg, so two concurrent processes rewrite the "+
-			"same fixture file: %v", len(duplicated), truncate(duplicated))
+		t.Errorf("%d %s belong to MORE THAN ONE leg, so they run twice (and a golden writer rewrites "+
+			"the same file from two processes): %v", len(duplicated), what, truncate(duplicated))
 	}
 	for name := range seen {
 		if !contains(whole, name) {
-			t.Errorf("a leg walked %q, which the unsharded walk does not visit at all", name)
+			t.Errorf("a leg ran %q, which the unsharded run does not hold at all", name)
 		}
 	}
+}
+
+// subtestShardCaseCount is the size of the synthetic case table the
+// SubtestShard partition is asserted over: as large as the largest case table
+// a self-sharding internal/promql test loops over, so the cover holds for
+// tables of that size and not only for small ones.
+const subtestShardCaseCount = 120
+
+// subtestShardMaxLegs is the widest split the SubtestShard cover is asserted
+// at. Every count from one leg up to it is checked, which spans the
+// roundtrip-promql matrix's leg count with room for it to grow, and includes
+// splits wider than some case tables, where a leg legitimately creates none
+// of a table's subtests.
+const subtestShardMaxLegs = 32
+
+// TestSubtestShardIsATotalDisjointCover is the correctness assertion for the
+// self-sharding tests built on SubtestShard: across all legs of a split, each
+// subtest of a case table is created on exactly one leg. It drives the real
+// code path — NewSubtestShard reading the shard environment, and Run creating
+// subtests through t.Run — and records which subtest bodies actually ran.
+func TestSubtestShardIsATotalDisjointCover(t *testing.T) {
+	whole := make([]string, subtestShardCaseCount)
+	for i := range whole {
+		whole[i] = fmt.Sprintf("op%d/grouping%d", i%7, i)
+	}
+	for count := 1; count <= subtestShardMaxLegs; count++ {
+		legs := make([][]string, 0, count)
+		for index := 1; index <= count; index++ {
+			legs = append(legs, createdSubtests(t, Shard{Index: index, Count: count}, whole))
+		}
+		assertTotalDisjointCover(t, fmt.Sprintf("subtest(s) of a %d-way split", count), whole, legs)
+	}
+}
+
+// TestSubtestShardRefusesADuplicateName pins the guard that keeps the
+// partition well defined: two cases with one name would share one id.
+func TestSubtestShardRefusesADuplicateName(t *testing.T) {
+	s := &SubtestShard{t: t, shard: WholeCorpus, seen: map[string]bool{}}
+	if _, err := s.claim("sum/by(bucket)"); err != nil {
+		t.Fatalf("first claim of a name: %v", err)
+	}
+	if _, err := s.claim("sum/by(bucket)"); err == nil {
+		t.Fatal("claiming the same subtest name twice succeeded; two cases would then share one partition id")
+	}
+}
+
+// createdSubtests runs every name of table through a SubtestShard under the
+// shard environment of leg shard, inside one parent subtest, and returns the
+// names whose bodies ran.
+func createdSubtests(t *testing.T, shard Shard, table []string) []string {
+	t.Helper()
+
+	var created []string
+	t.Run(fmt.Sprintf("leg%d_of_%d", shard.Index, shard.Count), func(t *testing.T) {
+		t.Setenv(ShardIndexEnv, fmt.Sprint(shard.Index))
+		t.Setenv(ShardCountEnv, fmt.Sprint(shard.Count))
+		s := NewSubtestShard(t)
+		for _, name := range table {
+			s.Run(name, func(sub *testing.T) {
+				if want := t.Name() + "/" + name; sub.Name() != want {
+					sub.Errorf("subtest ran as %q, want %q", sub.Name(), want)
+				}
+				created = append(created, name)
+			})
+		}
+	})
+	return created
 }
 
 // TestWalkShardBalancesTheRealCorpus asserts the split actually splits. A

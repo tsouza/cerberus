@@ -27,12 +27,13 @@ func TestCountValuesNestedMixedSerialization_ChDB(t *testing.T) {
 	custom := standard
 	custom.MetricNameColumn, custom.AttributesColumn = "metric_id", "label_map"
 	custom.TimestampColumn, custom.ValueColumn = "sample_time", "sample_value"
+	subtests := spec.NewSubtestShard(t)
 	for _, s := range []schema.Metrics{standard, custom} {
 		for _, shadow := range []bool{false, true} {
 			for _, histFirst := range []bool{false, true} {
 				for _, step := range []time.Duration{0, time.Second} {
 					for _, grouping := range []string{"", " by (series)"} {
-						t.Run(fmt.Sprintf("%s/shadow=%v/histFirst=%v/%s/%s", s.ValueColumn, shadow, histFirst, step, grouping), func(t *testing.T) {
+						subtests.Run(fmt.Sprintf("%s/shadow=%v/histFirst=%v/%s/%s", s.ValueColumn, shadow, histFirst, step, grouping), func(t *testing.T) {
 							seed, series, histMetric, floatMetric := countValuesMixedSeed(shadow)
 							left, right := floatMetric, histMetric
 							if histFirst {

@@ -47,12 +47,13 @@ func TestSumAvgNestedMixedGroupParity_ChDB(t *testing.T) {
 		shadowedFloatGroupSum = 109.0
 		pureGroupSize         = 2
 	)
+	subtests := spec.NewSubtestShard(t)
 	for _, op := range []string{"sum", "avg"} {
 		for _, histFirst := range []bool{false, true} {
 			for _, wrapper := range []string{"sort_by_label", "sort_by_label_desc"} {
 				for _, step := range []time.Duration{0, time.Second} {
 					for _, grouping := range []string{"", " by(bucket)", " without(series)", "empty"} {
-						t.Run(fmt.Sprintf("%s/%v/%s/%s/%s", op, histFirst, wrapper, step, grouping), func(t *testing.T) {
+						subtests.Run(fmt.Sprintf("%s/%v/%s/%s/%s", op, histFirst, wrapper, step, grouping), func(t *testing.T) {
 							hist, floats := "group_exp_hist", "group_gauge"
 							clause := grouping
 							if grouping == "empty" {

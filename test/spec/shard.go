@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -251,4 +252,77 @@ func WalkShard(t *testing.T, dir string, shard Shard, fn func(t *testing.T, c *C
 // `.txtar` suffix, matching the name Walk gives its subtest.
 func fixtureIDOfPath(path string) string {
 	return trimFixtureExt(filepath.Base(path))
+}
+
+// SubtestShard creates the subtests of one top-level test that this process's
+// shard holds, so a test that loops over a large case table splits its cost
+// across the CI legs instead of landing whole on one of them.
+//
+// It decides which subtests to CREATE: a subtest another leg holds is never
+// started on this one, so nothing is skipped and every leg's report lists only
+// the work it did. A test built on it must run on every leg — it is a
+// self-sharding test, registered in SELF_SHARDING_TESTS in
+// .github/scripts/chdb-roundtrip.mjs, which test/regression pins against every
+// test that reads the shard environment.
+//
+// The id a subtest is hashed by is the top-level test's name, a slash, and the
+// subtest's name, so two tests whose case tables share subtest names still
+// spread independently. Only the top-level segment of the parent's name enters
+// the id: a SubtestShard opened inside a subtest whose own name differed per
+// leg would otherwise hash each case differently on each leg.
+//
+// Subtests run sequentially in the parent's goroutine, exactly as plain t.Run
+// would; see [WalkShard] for why a chdb-tagged corpus must not use t.Parallel.
+type SubtestShard struct {
+	t       *testing.T
+	shard   Shard
+	seen    map[string]bool
+	created int
+}
+
+// NewSubtestShard reads the shard this process owns from [ShardIndexEnv] /
+// [ShardCountEnv] (the whole case table when neither is set) and returns the
+// creator of t's subtests. On cleanup it logs how many of the table's
+// subtests this leg created.
+func NewSubtestShard(t *testing.T) *SubtestShard {
+	t.Helper()
+
+	shard, err := ShardFromEnv()
+	if err != nil {
+		t.Fatalf("spec.NewSubtestShard: %v", err)
+	}
+	s := &SubtestShard{t: t, shard: shard, seen: map[string]bool{}}
+	t.Cleanup(func() {
+		t.Logf("%v: created %d of %d subtests", s.shard, s.created, len(s.seen))
+	})
+	return s
+}
+
+// Run creates subtest name with body fn when this shard holds it. Every
+// subtest name of the table is passed through Run on every leg, and a name
+// passed twice fails the test: two cases sharing a name would share an id, so
+// the partition could not tell them apart.
+func (s *SubtestShard) Run(name string, fn func(t *testing.T)) {
+	s.t.Helper()
+
+	held, err := s.claim(name)
+	if err != nil {
+		s.t.Fatalf("spec.SubtestShard: %v", err)
+	}
+	if !held {
+		return
+	}
+	s.created++
+	s.t.Run(name, fn)
+}
+
+// claim records name as a member of the case table and reports whether this
+// shard holds it.
+func (s *SubtestShard) claim(name string) (bool, error) {
+	if s.seen[name] {
+		return false, fmt.Errorf("%s declares subtest %q twice; each case of a self-sharding test needs its own name", s.t.Name(), name)
+	}
+	s.seen[name] = true
+	topLevel, _, _ := strings.Cut(s.t.Name(), "/")
+	return s.shard.Holds(topLevel + "/" + name), nil
 }
