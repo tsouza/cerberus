@@ -273,6 +273,46 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 	}
 }
 
+// TestResolve_DistinctSpill_VersionBoundaries pins distinct_spill's 26.9
+// floor for an explicit listing: 26.8 (whose latest build rejects
+// max_bytes_before_external_distinct with code 115) leaves it out — and
+// refuses it under enforcing — while 26.9 (the first release carrying
+// ClickHouse#116569) and later enable it. `auto` alone never picks it (see
+// the registry entry's AutoSelect doc).
+func TestResolve_DistinctSpill_VersionBoundaries(t *testing.T) {
+	cases := []struct {
+		name   string
+		server Version
+		want   bool
+	}{
+		{"26.8 below the 26.9 floor", Version{Major: 26, Minor: 8, Patch: 36, Build: 3}, false},
+		{"26.9 at the floor (first release with the setting)", Version{Major: 26, Minor: 9, Patch: 1, Build: 1629}, true},
+		{"26.10 above the floor", Version{Major: 26, Minor: 10, Patch: 2, Build: 103}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			listed, _, err := Resolve(Config{Optimizations: "auto," + FeatureDistinctSpill, Mode: Permissive}, tc.server)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if got := listed.Has(FeatureDistinctSpill); got != tc.want {
+				t.Errorf("server %v: listed distinct_spill enabled = %v; want %v", tc.server, got, tc.want)
+			}
+			auto, _, err := Resolve(Config{Optimizations: "auto"}, tc.server)
+			if err != nil {
+				t.Fatalf("Resolve auto: %v", err)
+			}
+			if auto.Has(FeatureDistinctSpill) {
+				t.Errorf("server %v: auto enabled distinct_spill; it is reached only by explicit listing", tc.server)
+			}
+			_, _, err = Resolve(Config{Optimizations: FeatureDistinctSpill, Mode: Enforcing}, tc.server)
+			if refused := err != nil; refused == tc.want {
+				t.Errorf("server %v: explicit distinct_spill under enforcing refused = %v (%v); want %v", tc.server, refused, err, !tc.want)
+			}
+		})
+	}
+}
+
 // TestResolve_Auto_JoinSpill_VersionBoundaries pins join_spill's own 26.4
 // floor across below/at/above, independent of TestResolve_Auto_VersionBoundaries
 // above (which stops at 25.9 and would otherwise need every AutoSelect=true
@@ -755,6 +795,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureClassicBucketMergeSumMap:     {ID: FeatureClassicBucketMergeSumMap, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureExpHistogramMergeSumMap:      {ID: FeatureExpHistogramMergeSumMap, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureJoinSpill:                    {ID: FeatureJoinSpill, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureDistinctSpill:                {ID: FeatureDistinctSpill, MinVersion: v(26, 9), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureTraceIDProjection:            {ID: FeatureTraceIDProjection, MinVersion: v(25, 5), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureLokiCatalogMV:                {ID: FeatureLokiCatalogMV, MinVersion: v(24, 10), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureTempoTagCatalogMV:            {ID: FeatureTempoTagCatalogMV, MinVersion: v(24, 10), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},

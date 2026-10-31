@@ -104,12 +104,13 @@ jobs:
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
     runs-on: ubuntu-latest
-    # Generous: the lane pulls TWO ClickHouse images and seeds + executes the
+    # Generous: the lane pulls THREE ClickHouse images and seeds + executes the
     # full matrix-shaped golden corpus (~330 fixtures) against the first. The
-    # second is the perf-smoke corpus's join-spill tier
-    # (test/perf/smoke's perfSmokeJoinSpillCHImage, >= chopt.FeatureJoinSpill's
-    # 26.4 floor), which boots and runs its own sentinel in about a minute on
-    # top of everything below.
+    # second and third are the perf-smoke corpus's join-spill and
+    # distinct-spill tiers (test/perf/smoke's perfSmokeJoinSpillCHImage and
+    # perfSmokeDistinctSpillCHImage, >= chopt.FeatureJoinSpill's 26.4 and
+    # chopt.FeatureDistinctSpill's 26.9 floors), each of which boots and runs
+    # its own sentinel in about a minute on top of everything below.
     timeout-minutes: 25
     steps:
       - name: gate on the changes job
@@ -318,7 +319,8 @@ jobs:
       # tier — chopt.FeatureJoinSpill floors at 26.4, above this job's own
       # server, and max_bytes_before_external_join does not exist below it, so
       # that sentinel cannot run on the container this job already owns
-      # (cerberus issue #2820).
+      # (cerberus issue #2820) — and a THIRD for the distinct-spill tier,
+      # whose chopt.FeatureDistinctSpill floors at 26.9.
       - name: Run perf-smoke sentinel differential (real ClickHouse)
         run: just perf-smoke-integration
 

@@ -611,6 +611,10 @@ perf-smoke-integration:
     @# every chopt floor — the same reuse the ts_grid_instant lane in
     @# test/perf/nightly makes.
     @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
+    @# The distinct-spill tier (smoke.FloorDistinctSpill) boots a THIRD one:
+    @# chopt.FeatureDistinctSpill floors at 26.9. The tag is
+    @# CH_DISTINCT_SPILL_IMAGE, a build test/chserver already pins.
+    @just _pull-retry {{CH_DISTINCT_SPILL_IMAGE}}
     go test -timeout 20m -tags=integration -count=1 -run TestPerfSmoke ./test/perf/smoke/...
 
 # Run the ts_grid_* native range-window lowerer activation lane (#2487): wires
@@ -1407,9 +1411,23 @@ update-scale-wall-baseline:
 # Regenerate the perf-smoke per-sentinel memory ceilings. Needs Docker; review the diff.
 update-perf-smoke-baseline:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    @# Second tier — see the perf-smoke-integration recipe for why.
+    @# Second and third tiers — see the perf-smoke-integration recipe for why.
     @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
+    @just _pull-retry {{CH_DISTINCT_SPILL_IMAGE}}
     UPDATE_PERF_SMOKE_BASELINE=1 go test -timeout 20m -tags=integration -count=1 -run TestPerfSmokeRealCH ./test/perf/smoke/...
+    @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/perf-smoke-baseline.json
+
+# Calibrate ONLY the perf-smoke sentinels perf-smoke-baseline.json has no bound
+# for, gating every other sentinel against its committed bound as usual. Use it
+# when adding a sentinel: the existing bounds stay the reference the release
+# cut measured, which update-perf-smoke-baseline would re-measure.
+
+# Calibrate the perf-smoke sentinels that have no committed bound yet. Needs Docker.
+add-perf-smoke-baseline:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
+    @just _pull-retry {{CH_DISTINCT_SPILL_IMAGE}}
+    UPDATE_PERF_SMOKE_BASELINE=missing go test -timeout 20m -tags=integration -count=1 -run TestPerfSmokeRealCH ./test/perf/smoke/...
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/perf-smoke-baseline.json
 
 # Regenerate the METADATA QUERY-SIZE budget — the perf guard for the rendered

@@ -40,7 +40,8 @@ OTEL_COLLECTOR_CONTRIB_IMAGE := "otel/opentelemetry-collector-contrib:0.152.1"
 # 25.9, and chopt.FeatureTSGridLastOverTime's own 26.6 floor (the highest in
 # the registry as of that feature). A pin below that floor does not go red;
 # the server rejects the query before a row decodes and the shape silently
-# drops out of scope. Kept at or above the highest chopt MinVersion by
+# drops out of scope. Kept at or above the highest MinVersion among the chopt
+# features that emit SQL (a SettingOnly feature emits none) by
 # TestStrictScanImageClearsChoptFloors.
 CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.6-alpine"
 
@@ -93,16 +94,24 @@ CH_TS_STATE_V3_FIRST_IMAGE := "clickhouse/clickhouse-server:26.7.1.1315-alpine"
 CH_TS_STATE_V3_IMAGE := "clickhouse/clickhouse-server:26.7.13.12-alpine"
 CH_TS_STATE_V4_IMAGE := "clickhouse/clickhouse-server:26.8.1.2041-alpine"
 
+# CH_DISTINCT_SPILL_IMAGE is the 26.9 build the perf-smoke corpus's
+# distinct-spill tier boots (test/perf/smoke's perfSmokeDistinctSpillCHImage):
+# chopt.FeatureDistinctSpill floors at 26.9, above every other perf-smoke
+# image. It is one of CH_SERVER_SAFETY_IMAGES below.
+CH_DISTINCT_SPILL_IMAGE := "clickhouse/clickhouse-server:26.9.25.15-alpine"
+
 # CH_SERVER_SAFETY_IMAGES are the exact builds test/chserver's real-server
 # probes pin, beyond CH_HISTOGRAM_REPORT_IMAGE (26.6.1.1193, which they share):
 # the supported floor, whose spilled GROUP BY over the canonical series key
 # the spill probe runs; the condition cache's supported floor and the
 # last-affected / first-fixed releases of every backported line; the
-# releases whose functions first honour cancellation mid-call; and the first
-# line whose analyzer is mandatory, which refuses enable_analyzer=0. Exact tags
+# releases whose functions first honour cancellation mid-call; the first
+# line whose analyzer is mandatory, which refuses enable_analyzer=0; and the
+# first 26.9 release, the first build carrying the external DISTINCT the
+# distinct-spill probe pins (26.8.10.6 is the build below it). Exact tags
 # rather than floating ones, because each probe asserts what that specific
 # build does.
-CH_SERVER_SAFETY_IMAGES := "clickhouse/clickhouse-server:24.8.14.39-alpine clickhouse/clickhouse-server:25.3.14.14-alpine clickhouse/clickhouse-server:26.3.12.3-alpine clickhouse/clickhouse-server:26.3.13.31-alpine clickhouse/clickhouse-server:26.3.17.4-alpine clickhouse/clickhouse-server:26.3.17.56-alpine clickhouse/clickhouse-server:26.4.3.37-alpine clickhouse/clickhouse-server:26.4.4.38-alpine clickhouse/clickhouse-server:26.4.5.143-alpine clickhouse/clickhouse-server:26.5.1.882-alpine clickhouse/clickhouse-server:26.5.2.39-alpine clickhouse/clickhouse-server:26.5.5.8-alpine clickhouse/clickhouse-server:26.5.6.64-alpine clickhouse/clickhouse-server:26.7.13.12-alpine clickhouse/clickhouse-server:26.8.10.6-alpine clickhouse/clickhouse-server:26.9.25.15-alpine"
+CH_SERVER_SAFETY_IMAGES := "clickhouse/clickhouse-server:24.8.14.39-alpine clickhouse/clickhouse-server:25.3.14.14-alpine clickhouse/clickhouse-server:26.3.12.3-alpine clickhouse/clickhouse-server:26.3.13.31-alpine clickhouse/clickhouse-server:26.3.17.4-alpine clickhouse/clickhouse-server:26.3.17.56-alpine clickhouse/clickhouse-server:26.4.3.37-alpine clickhouse/clickhouse-server:26.4.4.38-alpine clickhouse/clickhouse-server:26.4.5.143-alpine clickhouse/clickhouse-server:26.5.1.882-alpine clickhouse/clickhouse-server:26.5.2.39-alpine clickhouse/clickhouse-server:26.5.5.8-alpine clickhouse/clickhouse-server:26.5.6.64-alpine clickhouse/clickhouse-server:26.7.13.12-alpine clickhouse/clickhouse-server:26.8.10.6-alpine clickhouse/clickhouse-server:26.9.1.1629-alpine clickhouse/clickhouse-server:26.9.25.15-alpine"
 
 # Exact production-report replay image. Kept separate from CH_STRICT_SCAN_IMAGE
 # because the captured incident records the full patch version it ran against.

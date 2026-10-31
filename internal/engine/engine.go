@@ -461,6 +461,9 @@ func applySharedQuerySettings(ctx context.Context, f planShapeFacts, memCap int6
 	// Join-bearing plans only, and only when the join_spill feature resolved
 	// in (server >= 26.4): the same guardrail for a large join's hash build.
 	ctx = applyJoinSpillSettings(ctx, f, memCap, rules.JoinSpill)
+	// Every plan, once the distinct_spill feature resolved in (server >=
+	// 26.9): the same guardrail for a high-cardinality DISTINCT's key set.
+	ctx = applyDistinctSpillSettings(ctx, memCap, rules.DistinctSpill)
 	// Compare()-only: cap read parallelism so the concurrent S3 read buffers
 	// for the wide attribute Map columns can't blow the budget even after the
 	// aggregation spills.

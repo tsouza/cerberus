@@ -1553,6 +1553,73 @@ const (
 	// it does not change the AutoSelect posture.
 	FeatureJoinSpill = "join_spill"
 
+	// FeatureDistinctSpill stamps max_bytes_before_external_distinct = cap/2
+	// (internal/engine/spill.go's spillThreshold, the arithmetic the group_by,
+	// sort and join spill stamps share) on every data-plane query (cerberus
+	// issue #3981). Before ClickHouse 26.9 a DISTINCT had no spill path at all:
+	// it held every distinct key in an in-memory hash set and aborted with
+	// MEMORY_LIMIT_EXCEEDED (code 241) at the cap, and neither the group_by nor
+	// the sort threshold reaches it. Cerberus emits high-cardinality DISTINCT
+	// in the TraceQL structural recursive closures, the PromQL/LogQL set
+	// operations' match-key subqueries, and the lag-adjacency sample dedup.
+	//
+	// VERSION FLOOR 26.9: ClickHouse#116569 (merged 2026-09-17) adds the
+	// external DISTINCT and both of its settings; its backport #120572 lands
+	// on the 26.9 branch before v26.9.1.1629-stable, the line's first release,
+	// and no 26.8 backport exists — 26.8.36.3 rejects the setting name with
+	// code 115, which errors the whole query. test/chserver's
+	// TestDistinctSpill_StructuralTraceQLAcrossBuilds pins both sides.
+	//
+	// EXPLICIT stamp, not the native ratio default: 26.9 also ships
+	// max_bytes_ratio_before_external_distinct=0.5, but that ratio is taken of
+	// the server or user memory limit, never of max_memory_usage, and has no
+	// effect when neither is configured (the ClickHouse#76740 failure mode
+	// FeatureJoinSpill's doc describes). The per-query cap cerberus sets is
+	// the limit a DISTINCT actually aborts at, so the threshold is sized from
+	// it.
+	//
+	// UNCONDITIONAL within the floor, like the group_by/sort stamps and unlike
+	// FeatureJoinSpill's chplan.HasJoin gate: DISTINCT is not a plan node —
+	// the emitter introduces it inside several lowerings (structural closures,
+	// set-operation subqueries, sample dedup) — so no plan predicate names
+	// every query that carries one, and a missed shape would silently keep
+	// its unbounded hash set. The stamp costs nothing on a query without a
+	// DISTINCT (only the DISTINCT transform reads it) or on one whose memory
+	// stays under the threshold, which ClickHouse compares with the WHOLE
+	// query's tracked memory.
+	//
+	// Result caveat, from the upstream PR: once a DISTINCT has spilled, float
+	// keys that compare equal but differ in their bits (0. and -0., NaN
+	// payloads) collapse to one row; a value class handled entirely in memory
+	// keeps the distinction. The only cerberus DISTINCT carrying a float is
+	// the lag-adjacency sample dedup's (timestamp, value) key, where two such
+	// rows at one series and timestamp are the conflicting-duplicate case.
+	// The alternative to a spill is the code-241 abort, and 26.9's ratio
+	// default spills the same way under a server limit whether or not
+	// cerberus stamps anything.
+	//
+	// Inside a recursive CTE (the TraceQL structural closures) the DISTINCT
+	// of the anchor and of each recursive step spills — system.query_log
+	// records ExternalDistinctWritePart on such queries — but ClickHouse's
+	// RecursiveCTESource keeps each step's OUTPUT in memory, so the stamp
+	// removes the hash set's share of the step's memory, not the working
+	// table's: a closure whose distinct rows alone outgrow the cap still
+	// aborts with code 241.
+	//
+	// Stability is Experimental: the external DISTINCT is new in 26.9 and
+	// upstream is still refining it (ClickHouse#121772 trims unnecessary
+	// spilling).
+	//
+	// AutoSelect is false although the stamp only turns an abort near the cap
+	// into a disk-backed completion, the posture FeatureJoinSpill auto-selects
+	// on: every AutoSelect floor must be one the quickstart's ClickHouse can
+	// demonstrate (versions.yaml quickstart_clickhouse, check (d) of
+	// .github/scripts/clickhouse-version-sync.mjs), and the quickstart runs
+	// below 26.9. Until it reaches 26.9 the feature is reached by explicit
+	// listing (CERBERUS_CH_OPTIMIZATIONS=auto,distinct_spill); cerberus issue
+	// #4014 tracks flipping it.
+	FeatureDistinctSpill = "distinct_spill"
+
 	// FeatureTraceIDBitmapFilter stamps
 	// min_table_rows_to_use_projection_index=0 (internal/engine's
 	// settingMinTableRowsToUseProjectionIndex) on a query plan carrying a
@@ -2344,6 +2411,15 @@ type Feature struct {
 	// server may drop and re-create at any time makes a definitive
 	// "forbidden" verdict meaningless at boot.
 	RequiresQueryLogUnionCapability bool
+	// SettingOnly marks a feature whose whole effect is a per-query ClickHouse
+	// setting stamped at dispatch through engine.SettingsRules: it changes no
+	// emitted SQL. A lane that executes emitted SQL text without the dispatch
+	// settings (the strict-scan differential) cannot exercise such a feature,
+	// so its server-floor ratchet leaves the feature's MinVersion out. False
+	// is the conservative value: an unmarked feature is treated as one that
+	// emits SQL. test/regression holds a marked feature to it by requiring
+	// its Feature* constant to be read nowhere but choptwire.SettingsRules.
+	SettingOnly bool
 	// UnsafeBuilds lists the ClickHouse builds on which the feature is known to
 	// return WRONG RESULTS even though the version floor is met — an upstream
 	// defect whose fix landed on each maintained release line at its own patch
@@ -2736,6 +2812,16 @@ var registry = []Feature{
 		Doc:        "stamp max_bytes_before_external_join=cap/2 on join-bearing plans (server >= 26.4, auto-enabled) — mirrors the group_by/sort spill stamps; explicit, not the 26.5+ ratio default, silently ignored with no memory limit configured (cf. ClickHouse#76740)",
 	},
 	{
+		ID:          FeatureDistinctSpill,
+		MinVersion:  Version{Major: 26, Minor: 9},
+		Stability:   Experimental,
+		AutoSelect:  false,
+		SettingOnly: true,
+		Doc: "stamp max_bytes_before_external_distinct=cap/2 on every data-plane query (server >= 26.9, ClickHouse#116569, " +
+			"opt-in via CERBERUS_CH_OPTIMIZATIONS until the quickstart reaches 26.9) — lets a high-cardinality DISTINCT " +
+			"spill instead of aborting at the cap; inside a recursive CTE the step's DISTINCT spills but the step's output stays in memory",
+	},
+	{
 		ID:         FeatureTraceIDProjection,
 		MinVersion: Version{Major: 25, Minor: 5},
 		Stability:  Experimental,
@@ -2885,7 +2971,7 @@ var registry = []Feature{
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
 // sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
 // column_statistics, classic_bucket_merge_summap, exp_histogram_merge_summap,
-// join_spill, trace_id_projection, loki_catalog_mv, tempo_tag_catalog_mv,
+// join_spill, distinct_spill, trace_id_projection, loki_catalog_mv, tempo_tag_catalog_mv,
 // trace_id_bitmap_filter, arg_and_max_fusion, result_cache,
 // lazy_materialization, explain_estimate, cardinality_probe,
 // full_text_index, text_index_line_filter, trace_id_external_table,

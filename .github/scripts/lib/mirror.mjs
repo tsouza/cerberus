@@ -128,7 +128,9 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.5.7.64-alpine',
   'clickhouse/clickhouse-server:26.8.10.6-alpine',
   // test/chserver's analyzer-posture probe: the first line whose analyzer is
-  // mandatory.
+  // mandatory. 26.9.1.1629, the line's first release, is the distinct-spill
+  // probe's floor build: the first carrying the external DISTINCT.
+  'clickhouse/clickhouse-server:26.9.1.1629-alpine',
   'clickhouse/clickhouse-server:26.9.25.15-alpine',
 
   // Reference backends the three heads are diffed against, plus the reference

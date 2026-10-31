@@ -137,6 +137,7 @@ func TestRouteBExecCtx_ParityTableCoversEveryStampedKey(t *testing.T) {
 		settingMaxBytesBeforeExternalGroupBy,
 		settingMaxBytesBeforeExternalSort,
 		settingMaxBytesBeforeExternalJoin,
+		settingMaxBytesBeforeExternalDistinct,
 		settingMaxThreads,
 		settingMaxBlockSize,
 		settingGroupByTwoLevelThresholdBytes,

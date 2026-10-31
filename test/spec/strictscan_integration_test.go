@@ -108,10 +108,10 @@ import (
 var strictScanHeads = []string{"promql", "logql", "traceql"}
 
 // strictScanCHImage pins the ClickHouse server the strict-scan differential
-// boots. It must clear the highest chopt feature floor (currently 26.6,
-// chopt.FeatureTSGridLastOverTime) so every shape the emitter produces
-// actually EXECUTES here rather than being rejected before a row decodes and
-// silently dropping out of the differential's scope. Held equal to the
+// boots. It must clear the highest floor among the chopt features that emit
+// SQL (currently 26.6, chopt.FeatureTSGridLastOverTime) so every shape the
+// emitter produces actually EXECUTES here rather than being rejected before a
+// row decodes and silently dropping out of the differential's scope. Held equal to the
 // Justfile's CH_STRICT_SCAN_IMAGE pre-pull by TestStrictScanImageClearsChoptFloors.
 const strictScanCHImage = "clickhouse/clickhouse-server:26.6-alpine"
 

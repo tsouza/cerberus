@@ -14,7 +14,7 @@ import (
 // broken request in the real-ClickHouse integration lane, where a driver
 // error is much more expensive to root-cause than this unit check.
 func TestSentinels_Roster(t *testing.T) {
-	const wantCount = 5
+	const wantCount = 6
 	if len(Sentinels) != wantCount {
 		t.Fatalf("len(Sentinels) = %d, want %d", len(Sentinels), wantCount)
 	}
@@ -47,9 +47,8 @@ func TestSentinels_Roster(t *testing.T) {
 // to a floor the harness never boots would silently never run, which is the
 // coverage-loss failure mode this corpus exists to prevent.
 func TestSentinels_FloorsArePartitioned(t *testing.T) {
-	floors := []ServerFloor{FloorBase, FloorJoinSpill}
 	total := 0
-	for _, floor := range floors {
+	for _, floor := range Floors {
 		got := SentinelsForFloor(floor)
 		if len(got) == 0 {
 			t.Errorf("floor %s has no sentinels — the harness boots a real ClickHouse for it regardless", floor)
@@ -96,6 +95,34 @@ func TestSentinels_JoinSpillStampIsAsserted(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("join_spill sentinel RequiredSettings[%q] = %q, want %q", k, got[k], v)
 		}
+	}
+}
+
+// TestSentinels_DistinctSpillStampIsAsserted pins what makes the
+// distinct_spill sentinel falsifiable and reachable: it must require the
+// max_bytes_before_external_distinct stamp at half the live memory cap, run on
+// the 26.9 tier, and resolve against the explicit opt-in listing with an
+// activation guard — chopt.FeatureDistinctSpill is AutoSelect: false, so the
+// tier's "auto" lane would never stamp it.
+func TestSentinels_DistinctSpillStampIsAsserted(t *testing.T) {
+	distinctSpill := SentinelsForFloor(FloorDistinctSpill)
+	if len(distinctSpill) != 1 {
+		t.Fatalf("SentinelsForFloor(FloorDistinctSpill) returned %d sentinels, want 1", len(distinctSpill))
+	}
+	s := distinctSpill[0]
+	if s.Optimizations != OptInDistinctSpill || s.RequiredFeature != chopt.FeatureDistinctSpill {
+		t.Errorf("distinct_spill sentinel resolves %q with RequiredFeature %q; want %q and %q",
+			s.Optimizations, s.RequiredFeature, OptInDistinctSpill, chopt.FeatureDistinctSpill)
+	}
+	if q := s.Params(time.Unix(0, 0), time.Unix(0, 0).Add(sentinelWindow)).Get("q"); !strings.Contains(q, "} > {") {
+		t.Errorf("distinct_spill sentinel query %q is not a structural child-of; it would not lower to the DISTINCT closure", q)
+	}
+
+	const cap1GiB int64 = 1 << 30
+	got := s.RequiredSettings(cap1GiB)
+	want := map[string]string{settingMaxBytesBeforeExternalDistinct: "536870912"} // 1 GiB / 2
+	if len(got) != len(want) || got[settingMaxBytesBeforeExternalDistinct] != want[settingMaxBytesBeforeExternalDistinct] {
+		t.Errorf("distinct_spill sentinel RequiredSettings = %v, want %v", got, want)
 	}
 }
 
@@ -242,7 +269,7 @@ func TestSentinels_CompareParams(t *testing.T) {
 // of in strict-scan.
 func TestSentinels_StepIsPromWireParseable(t *testing.T) {
 	checked := 0
-	for _, floor := range []ServerFloor{FloorBase, FloorJoinSpill} {
+	for _, floor := range Floors {
 		for _, s := range SentinelsForFloor(floor) {
 			if s.Step <= 0 {
 				continue
