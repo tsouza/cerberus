@@ -40,11 +40,22 @@ func TestTraceScopedRootlessMembershipForm(t *testing.T) {
 		{`{ rootServiceName !~ ".*" }`, false},
 		{`{ rootName < "a" }`, true},
 		{`{ rootName > "a" }`, false},
+		{`{ rootName < "" }`, false},
+		{`{ rootName <= "" }`, true},
+		{`{ rootName <= "a" }`, true},
+		{`{ rootName > "" }`, false},
+		{`{ rootName >= "" }`, true},
+		{`{ rootName >= "a" }`, false},
+		{`{ trace:rootService = "" || trace:rootService = "checkout" }`, true},
 		{`{ "GET /home" != trace:rootName }`, true},
 		{`{ trace:rootService = "checkout" || trace:rootService = "billing" }`, false},
 		{`{ trace:rootService != "checkout" && trace:rootService != "billing" }`, true},
 		{`{ rootName =~ "GET .*" || rootName =~ "POST .*" }`, false},
 		{`{ rootName !~ "GET .*" && rootName !~ "POST .*" }`, true},
+		{`{ rootName !~ "" && rootName !~ "GET .*" }`, false},
+		{`{ rootName !~ "GET .*" && rootName !~ "" }`, false},
+		{`{ rootName =~ "" || rootName =~ "GET .*" }`, true},
+		{`{ rootName =~ "GET .*" || rootName =~ "" }`, true},
 	} {
 		expr, err := tempo.Parse(tc.query)
 		if err != nil {
