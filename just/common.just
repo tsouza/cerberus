@@ -40,7 +40,8 @@ OTEL_COLLECTOR_CONTRIB_IMAGE := "otel/opentelemetry-collector-contrib:0.152.1"
 # 25.9, and chopt.FeatureTSGridLastOverTime's own 26.6 floor (the highest in
 # the registry as of that feature). A pin below that floor does not go red;
 # the server rejects the query before a row decodes and the shape silently
-# drops out of scope. Kept at or above the highest chopt MinVersion by
+# drops out of scope. Kept at or above the highest MinVersion among the chopt
+# features that emit SQL (a SettingOnly feature emits none) by
 # TestStrictScanImageClearsChoptFloors.
 CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.6-alpine"
 
@@ -92,6 +93,12 @@ CH_TS_STATE_V2_IMAGE := "clickhouse/clickhouse-server:26.6.8.7-alpine"
 CH_TS_STATE_V3_FIRST_IMAGE := "clickhouse/clickhouse-server:26.7.1.1315-alpine"
 CH_TS_STATE_V3_IMAGE := "clickhouse/clickhouse-server:26.7.13.12-alpine"
 CH_TS_STATE_V4_IMAGE := "clickhouse/clickhouse-server:26.8.1.2041-alpine"
+
+# CH_DISTINCT_SPILL_IMAGE is the 26.9 build the perf-smoke corpus's
+# distinct-spill tier boots (test/perf/smoke's perfSmokeDistinctSpillCHImage):
+# chopt.FeatureDistinctSpill floors at 26.9, above every other perf-smoke
+# image. It is one of CH_SERVER_SAFETY_IMAGES below.
+CH_DISTINCT_SPILL_IMAGE := "clickhouse/clickhouse-server:26.9.25.15-alpine"
 
 # CH_SERVER_SAFETY_IMAGES are the exact builds test/chserver's real-server
 # probes pin, beyond CH_HISTOGRAM_REPORT_IMAGE (26.6.1.1193, which they share):

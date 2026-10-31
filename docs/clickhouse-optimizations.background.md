@@ -371,6 +371,67 @@ when no server/user memory limit is configured — the same failure mode
 documents for the analogous group_by ratio — so cerberus cannot rely on it
 regardless of an operator's ClickHouse profile.
 
+## Why `distinct_spill` is ungated, explicit, and opt-in
+
+Before ClickHouse 26.9 a `DISTINCT` had no spill path. It held every distinct
+key in an in-memory hash set, and neither the group_by nor the sort threshold
+reached it, though an earlier `spill.go` comment claimed they covered TraceQL
+structural `DISTINCT`.
+
+**Floor 26.9, from the upstream history.**
+[ClickHouse#116569](https://github.com/ClickHouse/ClickHouse/pull/116569)
+merged to master on 2026-09-17. Its 26.9 backport, #120572, merged the same
+day, and the compare API reports `v26.9.1.1629-stable`, the line's first
+release, as ahead of the backport's merge commit. No 26.8 backport exists:
+26.8.36.3, the newest 26.8 LTS checked, rejects the setting with code 115.
+`test/chserver` pins 26.8.10.6, 26.9.1.1629 and 26.9.25.15.
+
+**No plan-shape gate.** `join_spill` gates on `chplan.HasJoin`, because a join
+is a plan node. A `DISTINCT` is a modifier the emitter adds inside several
+lowerings: the structural closures, the set-operation subqueries, and the
+lag-adjacency dedup. No `planShapeFacts` predicate names all of them, and a
+predicate that missed one would leave that shape's hash set unbounded.
+Without a gate the stamp costs nothing elsewhere, because only a `DISTINCT`
+transform reads it.
+
+**Explicit byte value, not the native ratio.** 26.9 also ships
+`max_bytes_ratio_before_external_distinct=0.5`, enabled by default. The ratio
+is taken of the memory left under the strictest server or user limit when
+the pipeline is built. `max_memory_usage` does not take part, and the ratio
+has no effect when neither limit is set. Cerberus aborts a query at its own
+per-query cap, so the threshold is sized from that cap.
+
+**Opt-in until the quickstart reaches 26.9.** The stamp turns an abort near
+the cap into a disk-backed completion, which is the posture `join_spill`
+auto-selects on. Check (d) of `clickhouse-version-sync.mjs` requires the
+quickstart's ClickHouse to meet every `AutoSelect` floor. The quickstart is
+26.6, and #3985 moves it to the 26.8 LTS. Flipping `AutoSelect` is tracked in
+[#4014](https://github.com/tsouza/cerberus/issues/4014).
+
+**Measurements on 26.9.25.15** (container capped at 2 CPUs and 8 GiB):
+
+- A plain `SELECT DISTINCT` of 30M two-string keys under a 256 MiB cap
+  aborts with code 241 in `ExternalDistinctTransform`. With a 128 MiB
+  threshold it completes.
+- A recursive CTE whose anchor is that `DISTINCT` (30M rows, `count()`
+  outside) still aborts with the threshold stamped, but in
+  `RecursiveCTESource`. `system.query_log` records 14
+  `ExternalDistinctWritePart`, so the anchor's `DISTINCT` did spill. At
+  5M–10M rows under a 512 MiB cap it aborts without the threshold and
+  completes with it. At 15M rows it aborts either way.
+- A recursive step that produces 5M distinct rows from a one-row anchor
+  aborts under a 512 MiB cap without the threshold. With a 256 MiB threshold
+  it completes, peaking at 311 MiB with 4 spilled parts.
+- The `test/chserver` probe runs 1.5M root/child trace pairs through
+  `{ resource.service.name = "frontend" } > { resource.service.name = "api" }`
+  under a 1 GiB cap. Without the stamp it aborts with code 241 in
+  `CreatingSetsTransform` (would use 1.08–1.09 GiB). With it, it completes
+  at a peak of about 976–979 MB with 7 spilled parts. Run to run the peaks
+  varied by under 0.5%. The probe fails without the stamp at every size from
+  1.25M to 2M pairs. At 2M pairs it aborts with the stamp too. Its
+  `DISTINCT` feeds a `GLOBAL IN` set of the same rows, which the threshold
+  does not bound.
+
 ## Why `lazy_materialization` replaced the hand-rolled `late_mat.go` rewrite
 
 This replaces cerberus's own hand-rolled late-materialisation rewrite (formerly

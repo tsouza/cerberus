@@ -86,12 +86,25 @@ const (
 	// the image that clears it and why it is a SECOND tier rather than a
 	// bump of the first.
 	FloorJoinSpill
+
+	// FloorDistinctSpill is chopt.FeatureDistinctSpill's own 26.9 floor —
+	// the first ClickHouse that has max_bytes_before_external_distinct at
+	// all. See realch_perfsmoke_integration_test.go's
+	// perfSmokeDistinctSpillCHImage.
+	FloorDistinctSpill
 )
+
+// Floors is every tier the harness boots, in boot order. A sentinel whose
+// Floor is not listed here never runs.
+var Floors = []ServerFloor{FloorBase, FloorJoinSpill, FloorDistinctSpill}
 
 // String renders the floor for test output and failure messages.
 func (f ServerFloor) String() string {
-	if f == FloorJoinSpill {
+	switch f {
+	case FloorJoinSpill:
 		return "join_spill (>= 26.4)"
+	case FloorDistinctSpill:
+		return "distinct_spill (>= 26.9)"
 	}
 	return "base"
 }
@@ -101,6 +114,25 @@ func (f ServerFloor) String() string {
 // chopt.FeatureJoinSpill has resolved in. Named here because the sentinel
 // corpus is what asserts the stamp actually reaches the server.
 const settingMaxBytesBeforeExternalJoin = "max_bytes_before_external_join"
+
+// settingMaxBytesBeforeExternalDistinct is the ClickHouse setting
+// internal/engine's applyDistinctSpillSettings stamps on every data-plane
+// query once chopt.FeatureDistinctSpill has resolved in. Named here for the
+// reason settingMaxBytesBeforeExternalJoin above gives.
+const settingMaxBytesBeforeExternalDistinct = "max_bytes_before_external_distinct"
+
+// OptInDistinctSpill is the explicit CERBERUS_CH_OPTIMIZATIONS listing the
+// distinct-spill sentinel resolves against: chopt.FeatureDistinctSpill is
+// AutoSelect: false until the quickstart's ClickHouse reaches its 26.9 floor
+// (cerberus issue #4014), so "auto" alone never stamps it on any server.
+const OptInDistinctSpill = "auto," + chopt.FeatureDistinctSpill
+
+// distinctSpillTraceQL is the distinct-spill sentinel's query: a structural
+// child-of over SeedWideAttributeTraces' root/child span pairs. Its rooted
+// closure is a recursive CTE of SELECT DISTINCT TraceId, SpanId[,
+// ParentSpanId] over every span of the matching traces, read back through
+// SELECT DISTINCT TraceId, SpanId — the DISTINCT shape the stamp bounds.
+const distinctSpillTraceQL = `{ kind = server } > { kind = client } | count_over_time()`
 
 // settingGroupByTwoLevelThresholdBytes is the ClickHouse setting naming the
 // aggregation-state size at which the aggregator converts to its two-level
@@ -137,15 +169,16 @@ const settingEnableAnalyzer = "enable_analyzer"
 // surface.
 const wantNativeHistogramEnableAnalyzer = "0"
 
-// joinSpillCapDenominator mirrors internal/engine/spill.go's
-// spillCapDenominator: applyJoinSpillSettings stamps spillThreshold(cap),
-// which is the live per-query memory cap divided by this. Both engine
+// spillCapDenominator mirrors internal/engine/spill.go's
+// spillCapDenominator: applyJoinSpillSettings and applyDistinctSpillSettings
+// stamp spillThreshold(cap), which is the live per-query memory cap divided
+// by this. Both engine
 // constants are unexported, so the expected value is re-derived here rather
 // than imported — deliberately, and as a cross-check rather than an accident:
-// if the engine's own arithmetic moves, the join_spill sentinel's stamp
-// assertion goes red and whoever moved it has to look at this corpus instead
+// if the engine's own arithmetic moves, the spill sentinels' stamp
+// assertions go red and whoever moved it has to look at this corpus instead
 // of silently changing what production stamps.
-const joinSpillCapDenominator int64 = 2
+const spillCapDenominator int64 = 2
 
 // OptInSortedSlabOverTime is the explicit CERBERUS_CH_OPTIMIZATIONS listing
 // the sorted-slab memory-bound sentinel must resolve chopt.EnabledSet
@@ -164,7 +197,7 @@ const OptInSortedSlabOverTime = "auto," + chopt.FeatureSortedSlabOverTime
 // (query_settings_rules.go), and wantSortedSlabOverTimeMaxBlockSize mirrors
 // its sortedSlabOverTimeMaxBlockSize — both re-derived here (never
 // imported: both are unexported) as a cross-check the same way
-// joinSpillCapDenominator re-derives spillCapDenominator above: if the
+// spillCapDenominator re-derives the engine's own above: if the
 // engine's own setting name or value moves, this sentinel's stamp assertion
 // goes red rather than silently asserting nothing.
 const (
@@ -317,7 +350,7 @@ var Sentinels = []Sentinel{
 	},
 	{
 		// Join spill, chopt-gated: applyJoinSpillSettings (spill.go) stamps
-		// max_bytes_before_external_join = cap/joinSpillCapDenominator on a
+		// max_bytes_before_external_join = cap/spillCapDenominator on a
 		// plan chplan.HasJoin matches, but ONLY once SettingsRules.JoinSpill is
 		// true — the boot-resolved chopt.FeatureJoinSpill verdict, false on
 		// every server below 26.4. Hence Floor: FloorJoinSpill.
@@ -355,7 +388,43 @@ var Sentinels = []Sentinel{
 		Step:   sentinelStep,
 		RequiredQuerySettings: func(memoryCapBytes int64) map[string]string {
 			return map[string]string{
-				settingMaxBytesBeforeExternalJoin: strconv.FormatInt(memoryCapBytes/joinSpillCapDenominator, 10),
+				settingMaxBytesBeforeExternalJoin: strconv.FormatInt(memoryCapBytes/spillCapDenominator, 10),
+			}
+		},
+	},
+	{
+		// Distinct spill, chopt-gated and opt-in: applyDistinctSpillSettings
+		// (spill.go) stamps max_bytes_before_external_distinct =
+		// cap/spillCapDenominator on every plan once
+		// SettingsRules.DistinctSpill is true — the resolved
+		// chopt.FeatureDistinctSpill verdict, false below 26.9 and, while the
+		// feature is AutoSelect: false, false under "auto" on every server.
+		// Hence Floor: FloorDistinctSpill and the OptInDistinctSpill lane.
+		//
+		// The instant endpoint, not query_range: a range metrics query also
+		// runs its exemplars statement under the same query_id, outside the
+		// engine and so without the stamp, and the measured QueryFinish row
+		// would be that statement rather than the closure's.
+		//
+		// RequiredQuerySettings is the load-bearing assertion, as it is for
+		// join_spill_vector_join: at this scale the closure's DISTINCT stays
+		// under spillThreshold(cap), so peak memory alone measures the same
+		// with the stamp deleted. Spilling itself is pinned against real
+		// builds by test/chserver's TestDistinctSpill_StructuralTraceQLAcrossBuilds.
+		Name:            "distinct_spill_structural_traceql",
+		Mechanism:       "applyDistinctSpillSettings (internal/engine/spill.go) via SettingsRules.DistinctSpill / chopt.FeatureDistinctSpill",
+		Floor:           FloorDistinctSpill,
+		Path:            "/api/metrics/query",
+		Optimizations:   OptInDistinctSpill,
+		RequiredFeature: chopt.FeatureDistinctSpill,
+		Params: func(start, end time.Time) url.Values {
+			return url.Values{"q": {distinctSpillTraceQL}}
+		},
+		Window: sentinelWindow,
+		Step:   0,
+		RequiredQuerySettings: func(memoryCapBytes int64) map[string]string {
+			return map[string]string{
+				settingMaxBytesBeforeExternalDistinct: strconv.FormatInt(memoryCapBytes/spillCapDenominator, 10),
 			}
 		},
 	},

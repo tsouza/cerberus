@@ -21,6 +21,11 @@
       "ceiling_bytes": 674571117
     },
     {
+      "name": "distinct_spill_structural_traceql",
+      "max_of_n_bytes": 37232728,
+      "ceiling_bytes": 55849092
+    },
+    {
       "name": "sorted_slab_over_time_memory_bound",
       "max_of_n_bytes": 89771133,
       "ceiling_bytes": 134656699

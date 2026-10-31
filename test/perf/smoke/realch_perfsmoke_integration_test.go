@@ -25,13 +25,14 @@
 // #2370's small, ships-fast first slice: a targeted sentinel differential for
 // the EXACT incident, not the full multi-week design #2370 itself describes.
 //
-// # Two servers, not one
+// # One server per floor
 //
 // The corpus is tiered by smoke.ServerFloor and the harness boots ONE
 // container per floor: perfSmokeCHImage (25.9-alpine, the tag every other
-// strict-scan real-CH lane uses) for FloorBase, and perfSmokeJoinSpillCHImage
-// for FloorJoinSpill, whose mechanism chopt gates behind a 26.4 server. Each
-// constant's own comment carries the why.
+// strict-scan real-CH lane uses) for FloorBase, perfSmokeJoinSpillCHImage
+// for FloorJoinSpill, whose mechanism chopt gates behind a 26.4 server, and
+// perfSmokeDistinctSpillCHImage for FloorDistinctSpill, gated behind 26.9.
+// Each constant's own comment carries the why.
 //
 // # Two boot-resolved axes, and two kinds of lane
 //
@@ -114,7 +115,21 @@ const perfSmokeCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 // before running a single FloorJoinSpill sentinel.
 const perfSmokeJoinSpillCHImage = "clickhouse/clickhouse-server:26.6-alpine"
 
+// perfSmokeDistinctSpillCHImage backs smoke.FloorDistinctSpill: a THIRD
+// container, for the reason perfSmokeJoinSpillCHImage is a second one.
+// chopt.FeatureDistinctSpill floors at 26.9 — max_bytes_before_external_distinct
+// does not exist below it — so its stamp can fire on neither of the other two
+// images, and bumping either would move their sentinels' calibrated
+// baselines. The tag is the 26.9 build test/chserver already pins and
+// pre-pulls (just/common.just's CH_SERVER_SAFETY_IMAGES); the harness
+// asserts the feature resolved in against it before running the tier.
+const perfSmokeDistinctSpillCHImage = "clickhouse/clickhouse-server:26.9.25.15-alpine"
+
 const perfSmokeDB = "default"
+
+// baselineModeMissing is the UPDATE_PERF_SMOKE_BASELINE value that calibrates
+// only the sentinels perf-smoke-baseline.json carries no bound for.
+const baselineModeMissing = "missing"
 
 // --- calibrated constants (task 4) ----------------------------------------
 //
@@ -225,14 +240,26 @@ func TestPerfSmokeRealCH(t *testing.T) {
 	start := end.Add(-sentinelWindow)
 
 	baseline := loadPerfSmokeBaseline(t)
-	update := os.Getenv("UPDATE_PERF_SMOKE_BASELINE") == "1"
+	// UPDATE_PERF_SMOKE_BASELINE=1 re-cuts every sentinel's bound (the
+	// release ritual); =missing calibrates only the sentinels the committed
+	// file carries no bound for and gates every other one against its
+	// committed bound as usual, so adding a sentinel never re-measures the
+	// reference the existing ones are held to.
+	mode := os.Getenv("UPDATE_PERF_SMOKE_BASELINE")
+	update := func(name string) bool {
+		if mode == "1" {
+			return true
+		}
+		_, committed := baselineFor(baseline, name)
+		return mode == baselineModeMissing && !committed
+	}
 	updated := make(map[string]sentinelBound, len(Sentinels))
 
-	// One container per floor, base first. Both are brought up in the same
+	// One container per floor, base first. All are brought up in the same
 	// test so the single committed baseline file stays the product of ONE
 	// calibration run — two top-level tests would each write it and the
 	// second would silently drop the first's measurements.
-	for _, floor := range []ServerFloor{FloorBase, FloorJoinSpill} {
+	for _, floor := range Floors {
 		sentinels := SentinelsForFloor(floor)
 		if len(sentinels) == 0 {
 			t.Fatalf("floor %s has no sentinels — the tier is booting a real ClickHouse for nothing", floor)
@@ -241,8 +268,8 @@ func TestPerfSmokeRealCH(t *testing.T) {
 		runSentinelFloor(ctx, t, lane, sentinels, start, end, baseline, update, updated)
 	}
 
-	if update {
-		writePerfSmokeBaseline(t, updated)
+	if len(updated) > 0 {
+		writePerfSmokeBaseline(t, baseline, updated)
 	}
 }
 
@@ -252,7 +279,7 @@ func TestPerfSmokeRealCH(t *testing.T) {
 // capture).
 func runSentinelFloor(
 	ctx context.Context, t *testing.T, lane sentinelLane, sentinels []Sentinel,
-	start, end time.Time, baseline perfSmokeBaseline, update bool, updated map[string]sentinelBound,
+	start, end time.Time, baseline perfSmokeBaseline, update func(name string) bool, updated map[string]sentinelBound,
 ) {
 	t.Helper()
 	conn, logSource := lane.conn, lane.logSource
@@ -317,7 +344,7 @@ func runSentinelFloor(
 				sentinel.Name, sentinel.Mechanism, sentinelRepeats, maxBytes,
 				100*float64(maxBytes)/float64(sentinelMemoryCapBytes), sentinelMemoryCapBytes, capCeiling)
 
-			if update {
+			if update(sentinel.Name) {
 				// calibratedBound refuses a measurement whose headroom
 				// multiple the absolute ceiling would clamp — see its own
 				// comment for why a clamped PRONG (b) gates nothing of its
@@ -340,7 +367,7 @@ func runSentinelFloor(
 			// PRONG (b): committed per-sentinel ceiling.
 			bound, ok := baselineFor(baseline, sentinel.Name)
 			if !ok {
-				t.Fatalf("%s: no committed bound in perf-smoke-baseline.json — run `just update-perf-smoke-baseline`", sentinel.Name)
+				t.Fatalf("%s: no committed bound in perf-smoke-baseline.json — run `just add-perf-smoke-baseline`", sentinel.Name)
 			}
 			if maxBytes > bound.CeilingBytes {
 				// The headroom reported is the committed ceiling's ACTUAL
@@ -450,6 +477,11 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 		// never queries would cost this lane real time for no measurement.
 		signals = []ddl.Signal{ddl.Metrics}
 	}
+	if floor == FloorDistinctSpill {
+		image = perfSmokeDistinctSpillCHImage
+		// Traces only: the tier's one sentinel reads the seeded traces.
+		signals = []ddl.Signal{ddl.Traces}
+	}
 
 	client := startPerfSmokeCH(ctx, t, image)
 	conn := client.Conn()
@@ -494,6 +526,14 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 		t.Logf("seeded high-cardinality counter: %d rows, %d series", counterRows, joinSpillSeriesCount)
 
 		tables = []string{"otel_metrics_sum"}
+	case FloorDistinctSpill:
+		traceRows, err := SeedWideAttributeTraces(ctx, conn, wideTraceCount, start, end)
+		if err != nil {
+			t.Fatalf("seed wide-attribute traces: %v", err)
+		}
+		t.Logf("seeded wide-attribute traces: %d rows, %d traces", traceRows, wideTraceCount)
+
+		tables = []string{"otel_traces"}
 	}
 
 	// OPTIMIZE ... FINAL before measuring: controls background-merge-state
@@ -651,7 +691,7 @@ func loadPerfSmokeBaseline(t *testing.T) perfSmokeBaseline {
 	t.Helper()
 	b, err := readPerfSmokeBaseline()
 	if err != nil {
-		if os.Getenv("UPDATE_PERF_SMOKE_BASELINE") == "1" && errors.Is(err, fs.ErrNotExist) {
+		if os.Getenv("UPDATE_PERF_SMOKE_BASELINE") != "" && errors.Is(err, fs.ErrNotExist) {
 			return perfSmokeBaseline{}
 		}
 		t.Fatalf("%v — run `just update-perf-smoke-baseline` to create it", err)
@@ -659,14 +699,19 @@ func loadPerfSmokeBaseline(t *testing.T) perfSmokeBaseline {
 	return b
 }
 
-// writePerfSmokeBaseline orders updated (keyed by sentinel name) by Sentinels
-// and hands it to writePerfSmokeBaselineFile — this is the ONLY code path that
-// writes perf-smoke-baseline.json, gated on UPDATE_PERF_SMOKE_BASELINE=1.
-func writePerfSmokeBaseline(t *testing.T, updated map[string]sentinelBound) {
+// writePerfSmokeBaseline orders the bounds by Sentinels — each sentinel's
+// fresh calibration from updated, or its committed bound from baseline when
+// this run did not re-calibrate it — and hands them to
+// writePerfSmokeBaselineFile. This is the ONLY code path that writes
+// perf-smoke-baseline.json, gated on UPDATE_PERF_SMOKE_BASELINE.
+func writePerfSmokeBaseline(t *testing.T, baseline perfSmokeBaseline, updated map[string]sentinelBound) {
 	t.Helper()
 	bounds := make([]sentinelBound, 0, len(Sentinels))
 	for _, s := range Sentinels {
 		bound, ok := updated[s.Name]
+		if !ok {
+			bound, ok = baselineFor(baseline, s.Name)
+		}
 		if !ok {
 			t.Fatalf("writePerfSmokeBaseline: no measurement for sentinel %q", s.Name)
 		}

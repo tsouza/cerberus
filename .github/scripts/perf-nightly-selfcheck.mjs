@@ -62,6 +62,13 @@
 //      are identical whether it fired or the mechanism was deleted outright.
 //      This mutation is what proves the sentinel is not a hollow green.
 //
+//   3b. distinct-spill-stamp-removed — the same file's
+//      applyDistinctSpillSettings, stripped of its
+//      max_bytes_before_external_distinct stamp. The smoke corpus's
+//      `distinct_spill_structural_traceql` sentinel (cerberus issue #3981)
+//      reads the stamp back the way join_spill_vector_join does, so the gate
+//      goes red on the settings prong.
+//
 //   4. prewhere-split-forced — internal/chsql/emit_node.go's filtered-scan
 //      PREWHERE gate, stripped of its SchemaStrategies.PrewhereByServer
 //      test, so the emitter writes its own PREWHERE split on a server
@@ -198,6 +205,19 @@ export const MUTATIONS = [
     file: 'internal/engine/spill.go',
     sentinels: ['join_spill_vector_join'],
     find: '\treturn chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalJoin, spillThreshold(maxMemory))\n',
+    replace: '\treturn ctx\n',
+  },
+  {
+    id: 'distinct-spill-stamp-removed',
+    clickhouse: ['25.9'],
+    description:
+      "Strip internal/engine/spill.go's applyDistinctSpillSettings of its max_bytes_before_external_distinct " +
+      'stamp, so a DISTINCT-bearing plan dispatches with no distinct-spill bound. The smoke corpus\'s ' +
+      'distinct_spill_structural_traceql sentinel reads that setting back out of system.query_log and must go red.',
+    recipe: 'perf-smoke-integration',
+    file: 'internal/engine/spill.go',
+    sentinels: ['distinct_spill_structural_traceql'],
+    find: '\treturn chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalDistinct, spillThreshold(maxMemory))\n',
     replace: '\treturn ctx\n',
   },
   {
