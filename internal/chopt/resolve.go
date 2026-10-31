@@ -2,6 +2,7 @@ package chopt
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -107,11 +108,13 @@ type Config struct {
 // single source of truth every consumer reads; nothing downstream re-reads the
 // raw env.
 //
-// Beside the feature ids it carries one build fact no selection decides:
-// whether a query may no longer disable the analyzer (AnalyzerMandatory).
+// Beside the feature ids it carries build facts no selection decides: whether
+// a query may no longer disable the analyzer (AnalyzerMandatory), and which
+// shape defects the build carries (HasShapeDefect).
 type EnabledSet struct {
 	ids               map[string]struct{}
 	analyzerMandatory bool
+	shapeDefects      map[string]DefectGate
 }
 
 // Has reports whether feature id is in the resolved set.
@@ -139,13 +142,66 @@ func (s EnabledSet) WithAnalyzerMandatory(mandatory bool) EnabledSet {
 	return s
 }
 
+// ShapeDefectGate reports how queries of shape defect id's shape are handled:
+// DefectAbsent when no known build carries it, DefectGated when the
+// resolution was against a build carrying it (KnownShapeDefect) or
+// WithShapeDefects said so, DefectRefused when WithShapeDefects found the
+// fleet mixing a build that carries it with one too old to accept the gate's
+// setting. Every selection resolves it the same way: like AnalyzerMandatory it
+// records what the server does, not what the operator turned on.
+func (s EnabledSet) ShapeDefectGate(id string) DefectGate {
+	return s.shapeDefects[id]
+}
+
+// HasShapeDefect reports whether shape defect id is in force, gated or
+// refused.
+func (s EnabledSet) HasShapeDefect(id string) bool {
+	return s.ShapeDefectGate(id) != DefectAbsent
+}
+
+// ShapeDefectIDs returns the shape defects in force, sorted, for logs.
+func (s EnabledSet) ShapeDefectIDs() []string {
+	return s.shapeDefectsWhere(func(g DefectGate) bool { return g != DefectAbsent })
+}
+
+// RefusedShapeDefectIDs returns the shape defects whose shape is refused,
+// sorted, for logs.
+func (s EnabledSet) RefusedShapeDefectIDs() []string {
+	return s.shapeDefectsWhere(func(g DefectGate) bool { return g == DefectRefused })
+}
+
+func (s EnabledSet) shapeDefectsWhere(keep func(DefectGate) bool) []string {
+	out := make([]string, 0, len(s.shapeDefects))
+	for id, g := range s.shapeDefects {
+		if keep(g) {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// WithShapeDefects returns s carrying exactly gates as its shape defects, for
+// a caller that knows more builds than the one s was resolved against: one
+// reachable build carrying a defect is enough, while the ids are resolved
+// against the oldest. A DefectAbsent entry is dropped.
+func (s EnabledSet) WithShapeDefects(gates map[string]DefectGate) EnabledSet {
+	s.shapeDefects = make(map[string]DefectGate, len(gates))
+	for id, g := range gates {
+		if g != DefectAbsent {
+			s.shapeDefects[id] = g
+		}
+	}
+	return s
+}
+
 // Equal reports whether s and other enable exactly the same feature ids and
-// agree on AnalyzerMandatory. A periodic re-resolution compares its result
-// against the set already in force and swaps (and logs) only on a genuine
-// transition, so a server whose capabilities have not moved produces no churn
-// and no log noise.
+// agree on AnalyzerMandatory and the shape defects. A periodic re-resolution
+// compares its result against the set already in force and swaps (and logs)
+// only on a genuine transition, so a server whose capabilities have not moved
+// produces no churn and no log noise.
 func (s EnabledSet) Equal(other EnabledSet) bool {
-	return s.analyzerMandatory == other.analyzerMandatory && sameIDs(s.ids, other.ids)
+	return s.analyzerMandatory == other.analyzerMandatory && sameIDs(s.ids, other.ids) && maps.Equal(s.shapeDefects, other.shapeDefects)
 }
 
 // sameIDs reports whether a and b hold exactly the same keys.
@@ -270,7 +326,7 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 	}
 	warnings = append(warnings, legacyWarns...)
 
-	return EnabledSet{ids: enabled, analyzerMandatory: AnalyzerMandatory(server)}, warnings, nil
+	return EnabledSet{ids: enabled, analyzerMandatory: AnalyzerMandatory(server), shapeDefects: shapeDefectsOf(server)}, warnings, nil
 }
 
 // resolveTokens walks the parsed selection tokens. An "auto" token unions in

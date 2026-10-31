@@ -277,6 +277,9 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	// decode declined to use the result, and the row-path fallback that
 	// follows dispatches (and gates) a SEPARATE physical execution of its
 	// own via queryOpen.
+	if err := c.admitDispatch(ctx); err != nil {
+		return nil, true, err
+	}
 	release, err := c.acquireDataShardFanout(ctx)
 	if err != nil {
 		c.br.record(ctx, err)

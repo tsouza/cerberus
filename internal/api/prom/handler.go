@@ -1643,6 +1643,12 @@ func classifySentinelError(err error) *apiError {
 	if httperr.IsDistributedShardErr(err) {
 		return distributedShardAPIError(err)
 	}
+	// A dispatch refused on a fleet mixing a build that needs a defect-gate
+	// setting with one too old to accept it: 503 errorType=unavailable, with
+	// the defect and the upgrade that lifts it.
+	if msg, ok := httperr.UnsafeMixedFleetMessage(err); ok {
+		return &apiError{Kind: ErrUnavailable, Err: errors.New(msg), Status: http.StatusServiceUnavailable}
+	}
 	// Caller-initiated cancellation (open path): the client hung up before
 	// the cursor opened. 503 errorType=canceled for upstream parity; the
 	// telemetry reason is "canceled" rather than backend_unavailable, since

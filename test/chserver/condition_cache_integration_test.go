@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclient"
@@ -26,36 +27,45 @@ import (
 // conditionCacheBuilds are the pinned builds the condition-cache reproductions
 // run against, with the outcome each upstream defect's reproduction must show
 // there. The expectations are observations of the builds themselves; the test
-// separately requires chopt's recorded UnsafeBuilds ranges to agree with them.
+// separately requires chopt's recorded ranges — condition_cache's UnsafeBuilds
+// and the conversion shape defect's builds — to agree with them.
 // Every backported line is pinned at the last release affected by, and the
 // first release fixed for, each defect whose boundary falls on that line:
 //
 //   - 25.3.14.14: the supported floor. Skip-index reads before PREWHERE do not
-//     exist yet; the row-policy attribution defect does.
+//     exist yet; the row-policy attribution and conversion-setting keying
+//     defects do.
 //   - 26.3: 26.3.12.3 / 26.3.13.31 bracket the skip-index backport, and
 //     26.3.17.4 / 26.3.17.56 the row-policy backport.
 //   - 26.4: 26.4.3.37 / 26.4.4.38 and 26.4.4.38 / 26.4.5.143.
 //   - 26.5: 26.5.1.882 / 26.5.2.39 and 26.5.5.8 / 26.5.6.64.
-//   - 26.6.1.1193: the first release of the line both fixes merged into.
+//   - 26.6.1.1193: the first release of the line both attribution fixes merged
+//     into.
+//   - 26.8.36.3 / 26.9.1.1629: the latest release of the last line the
+//     conversion-setting keying defect reaches, and the first release of the
+//     line it does not.
 var conditionCacheBuilds = []struct {
-	image                string
-	skipIndexPoisons     bool
-	rowPolicyPoisons     bool
-	conditionCacheUnsafe bool
+	image                    string
+	skipIndexPoisons         bool
+	rowPolicyPoisons         bool
+	conversionSettingPoisons bool
+	conditionCacheUnsafe     bool
 }{
-	{"clickhouse/clickhouse-server:25.3.14.14-alpine", false, true, true},
-	{"clickhouse/clickhouse-server:26.3.12.3-alpine", true, true, true},
-	{"clickhouse/clickhouse-server:26.3.13.31-alpine", false, true, true},
-	{"clickhouse/clickhouse-server:26.3.17.4-alpine", false, true, true},
-	{"clickhouse/clickhouse-server:26.3.17.56-alpine", false, false, false},
-	{"clickhouse/clickhouse-server:26.4.3.37-alpine", true, true, true},
-	{"clickhouse/clickhouse-server:26.4.4.38-alpine", false, true, true},
-	{"clickhouse/clickhouse-server:26.4.5.143-alpine", false, false, false},
-	{"clickhouse/clickhouse-server:26.5.1.882-alpine", true, true, true},
-	{"clickhouse/clickhouse-server:26.5.2.39-alpine", false, true, true},
-	{"clickhouse/clickhouse-server:26.5.5.8-alpine", false, true, true},
-	{"clickhouse/clickhouse-server:26.5.6.64-alpine", false, false, false},
-	{"clickhouse/clickhouse-server:26.6.1.1193-alpine", false, false, false},
+	{"clickhouse/clickhouse-server:25.3.14.14-alpine", false, true, true, true},
+	{"clickhouse/clickhouse-server:26.3.12.3-alpine", true, true, true, true},
+	{"clickhouse/clickhouse-server:26.3.13.31-alpine", false, true, true, true},
+	{"clickhouse/clickhouse-server:26.3.17.4-alpine", false, true, true, true},
+	{"clickhouse/clickhouse-server:26.3.17.56-alpine", false, false, true, false},
+	{"clickhouse/clickhouse-server:26.4.3.37-alpine", true, true, true, true},
+	{"clickhouse/clickhouse-server:26.4.4.38-alpine", false, true, true, true},
+	{"clickhouse/clickhouse-server:26.4.5.143-alpine", false, false, true, false},
+	{"clickhouse/clickhouse-server:26.5.1.882-alpine", true, true, true, true},
+	{"clickhouse/clickhouse-server:26.5.2.39-alpine", false, true, true, true},
+	{"clickhouse/clickhouse-server:26.5.5.8-alpine", false, true, true, true},
+	{"clickhouse/clickhouse-server:26.5.6.64-alpine", false, false, true, false},
+	{"clickhouse/clickhouse-server:26.6.1.1193-alpine", false, false, true, false},
+	{"clickhouse/clickhouse-server:26.8.36.3-alpine", false, false, true, false},
+	{"clickhouse/clickhouse-server:26.9.1.1629-alpine", false, false, false, false},
 }
 
 // conditionCacheConcurrentBuilds bounds how many pinned builds run at once,
@@ -65,8 +75,9 @@ const conditionCacheConcurrentBuilds = 3
 // Upstream defect references, matched against the Defect text of chopt's
 // recorded UnsafeBuilds ranges.
 const (
-	skipIndexDefect = "ClickHouse#105686"
-	rowPolicyDefect = "ClickHouse#107145"
+	skipIndexDefect         = "ClickHouse#105686"
+	rowPolicyDefect         = "ClickHouse#107145"
+	conversionSettingDefect = "ClickHouse#119168"
 )
 
 // Seed shape. Both tables are ordered so the rows a probe's narrow predicate
@@ -110,26 +121,34 @@ const (
 	broadTraceQL  = `{ duration > 100ms && resource.service.name != "none" } | count_over_time()`
 )
 
-// TestConditionCache_CerberusShapesAcrossBuilds ports ClickHouse#105686's and
-// ClickHouse#107145's reproductions to cerberus's own schema and emitted
-// queries and runs each priming query and the later read on the same server.
+// TestConditionCache_CerberusShapesAcrossBuilds ports ClickHouse#105686's,
+// ClickHouse#107145's and ClickHouse#119168's reproductions to cerberus's own
+// schema and emitted queries and runs each priming query and the later read on
+// the same server.
 // For every pinned build it establishes, through a client that pins the cache
 // on or off per query:
 //
 //   - whether a narrow TraceQL query poisons the broad one (skip-index
 //     attribution), and whether a restricted user reading the metrics table
-//     directly poisons cerberus's PromQL read of it (row-policy attribution);
+//     directly poisons cerberus's PromQL read of it (row-policy attribution),
+//     and whether another client replaying cerberus's LogQL SQL with the
+//     opposite precise_float_parsing poisons cerberus's next read of it
+//     (conversion-setting keying);
 //   - that re-running a narrow query with its skip indexes switched off after
 //     priming with them on stays correct — the index-selection change
 //     ClickHouse#108548 fixed, which needs an index whose verdict can disagree
 //     with the row predicate, and cerberus provisions none;
 //
-// then requires chopt's recorded ranges to agree with what the build did, and
-// requires the production wiring — the resolved set, the engine settings
-// rules and the client-wide override — to return the true answer through a
-// poisoned cache on every build, with the effective use_query_condition_cache
-// the query actually ran under read back from system.query_log. The same is
-// checked under the "off" selection, the operator's explicit opt-out.
+// then requires chopt's recorded ranges to agree with what the build did,
+// shows that use_query_condition_cache=0 on one query neither reads another
+// session's entry nor writes one another session reads, and requires the
+// production wiring — the resolved set, the engine settings rules and the
+// client-wide override — to return the true answer through a poisoned cache
+// on every build, with the effective use_query_condition_cache the query
+// actually ran under read back from system.query_log: off on the conversion
+// shape wherever the conversion defect reaches, and on for the other shapes
+// wherever condition_cache resolves. The same is checked under the "off"
+// selection, the operator's explicit opt-out.
 //
 // No probe enables the query RESULT cache: the resolved sets below are
 // required to leave result_cache out, so every answer is computed.
@@ -186,9 +205,23 @@ func TestConditionCache_CerberusShapesAcrossBuilds(t *testing.T) {
 				t.Errorf("index-selection change: narrow count with skip indexes off after an indexed priming = %v; want %v", got, truthNarrow)
 			}
 
+			truthConversion := raw.conversionTruths(ctx, t, s)
+			conversionPoisoned := raw.conversionPoisoned(ctx, t, s, truthConversion, 1)
+			if conversionPoisoned != build.conversionSettingPoisons {
+				t.Errorf("conversion-setting keying: LogQL answer after an opposite-parsing priming poisoned = %v; want %v",
+					conversionPoisoned, build.conversionSettingPoisons)
+			}
+
 			// --- chopt's recorded ranges agree with the build ---
 			assertDefectRange(t, s.version, skipIndexDefect, skipIndexPoisoned)
 			assertDefectRange(t, s.version, rowPolicyDefect, rowPolicyPoisoned)
+			if got := chopt.KnownShapeDefect(chopt.ShapeDefectConversionConditionCache, s.version); got != conversionPoisoned {
+				t.Errorf("chopt says %s affects %s = %v, but the reproduction poisoned = %v",
+					conversionSettingDefect, s.version, got, conversionPoisoned)
+			}
+
+			// --- use_query_condition_cache=0 on one query neither reads nor writes ---
+			s.assertConversionCacheOffIsolated(ctx, t, raw, truthConversion, build.conversionSettingPoisons)
 
 			// --- the production wiring answers correctly through a poisoned cache ---
 			for _, selection := range []string{chopt.SelectionAuto, "off"} {
@@ -197,24 +230,33 @@ func TestConditionCache_CerberusShapesAcrossBuilds(t *testing.T) {
 					if got := chopt.KnownUnsafe(chopt.FeatureConditionCache, s.version); got != build.conditionCacheUnsafe {
 						t.Fatalf("KnownUnsafe(condition_cache) on %s = %v; want %v", s.version, got, build.conditionCacheUnsafe)
 					}
+					if got := set.HasShapeDefect(chopt.ShapeDefectConversionConditionCache); got != build.conversionSettingPoisons {
+						t.Fatalf("resolved set carries %s on %s = %v; want %v", conversionSettingDefect, s.version, got, build.conversionSettingPoisons)
+					}
 					rules := choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
 					if rules.ResultCache {
 						t.Fatal("the resolved set enabled result_cache; every probe answer must be computed, not served from cache")
 					}
 					prodClient := s.client(t, adminUser, adminPassword, chclient.Config{})
-					prodClient.SetQueryConditionCacheDisabled(chopt.KnownUnsafe(chopt.FeatureConditionCache, s.version))
+					prodClient.SetQueryConditionCacheOverride(conditionCacheOverrideOn(s.version))
 					prod := newProbeMux(t, prodClient, rules)
 
 					// The effective setting cerberus's query ran under: forced off
 					// on a known-unsafe build under every selection, on where the
 					// feature resolved in, and the server's own default under the
-					// opt-out on a fixed build.
+					// opt-out on a fixed build. A String-to-float filter on a
+					// build carrying the conversion defect runs with it off under
+					// every selection; every other shape keeps want.
 					want := s.defaultSetting(ctx, t, settingQCC)
 					switch {
 					case build.conditionCacheUnsafe:
 						want = "0"
 					case selection == chopt.SelectionAuto:
 						want = "1"
+					}
+					wantConversion := want
+					if build.conversionSettingPoisons {
+						wantConversion = "0"
 					}
 
 					s.dropConditionCache(ctx, t)
@@ -231,6 +273,21 @@ func TestConditionCache_CerberusShapesAcrossBuilds(t *testing.T) {
 					qid = probeQueryID("metrics", selection)
 					if got := prod.promSeries(chclient.WithQueryID(ctx, qid), t, -1); !sameSeries(got, truthSeries) {
 						t.Errorf("production PromQL answer through a restricted user's primed cache = %v; want %v", got, truthSeries)
+					}
+					s.assertEffectiveSetting(ctx, t, qid, settingQCC, want)
+
+					if prod.conversionPoisoned(ctx, t, s, truthConversion, -1) {
+						t.Error("production LogQL answer through an opposite-parsing session's primed cache differs from the cache-off answer")
+					}
+					qid = probeQueryID("logs-conversion", selection)
+					prod.logCount(chclient.WithQueryID(ctx, qid), t, conversionProbeQueries[0], -1)
+					s.assertEffectiveSetting(ctx, t, qid, settingQCC, wantConversion)
+
+					// A LogQL read with no String-to-float filter keeps the cache
+					// on the same build.
+					qid = probeQueryID("logs-line-filter", selection)
+					if got := prod.logCount(chclient.WithQueryID(ctx, qid), t, conversionProbeLineFilterQuery, -1); got != conversionProbeLogs {
+						t.Errorf("production LogQL line-filter count = %v; want every seeded log (%d)", got, conversionProbeLogs)
 					}
 					s.assertEffectiveSetting(ctx, t, qid, settingQCC, want)
 				})
@@ -265,6 +322,14 @@ func assertDefectRange(t *testing.T, version chopt.Version, defect string, poiso
 	}
 }
 
+// conditionCacheOverrideOn is the client-wide override cmd/cerberus installs
+// against a single-node fleet on version (chopt.FleetDefectGate, as its
+// conditionCacheOverride decides).
+func conditionCacheOverrideOn(version chopt.Version) chopt.DefectGate {
+	unsafe := func(v chopt.Version) bool { return chopt.KnownUnsafe(chopt.FeatureConditionCache, v) }
+	return chopt.FleetDefectGate([]chopt.Version{version}, true, unsafe, chopt.QueryConditionCacheSettingSince, chopt.DefectAbsent)
+}
+
 // probeQueryID is a unique query_id for one production-wiring dispatch.
 func probeQueryID(shape, selection string) string {
 	return fmt.Sprintf("cc-probe-%s-%s-%d", shape, selection, time.Now().UnixNano())
@@ -275,7 +340,7 @@ func probeQueryID(shape, selection string) string {
 // hides every job but the first tenantVisibleJobs.
 func seedConditionCacheProbe(ctx context.Context, t *testing.T, s *server) {
 	t.Helper()
-	if err := ddl.Apply(ctx, s.admin.Conn(), []ddl.Signal{ddl.Traces, ddl.Metrics}); err != nil {
+	if err := ddl.Apply(ctx, s.admin.Conn(), []ddl.Signal{ddl.Traces, ddl.Metrics, ddl.Logs}); err != nil {
 		t.Fatalf("%s: apply DDL: %v", s.image, err)
 	}
 	s.exec(ctx, t, fmt.Sprintf(`
@@ -323,6 +388,7 @@ FROM numbers(%d)`,
 		"CREATE ROW POLICY cc_tenant_jobs ON %s.otel_metrics_gauge FOR SELECT USING toUInt64(Value) < %d TO %s",
 		serverDB, tenantVisibleJobs, tenantUser,
 	))
+	seedConversionProbe(ctx, t, s)
 }
 
 // tenantPrimingSQL is what another ClickHouse client — a dashboard reading the
@@ -392,7 +458,7 @@ func (s *server) assertEffectiveSetting(ctx context.Context, t *testing.T, qid, 
 	}
 }
 
-// probeMux mounts the production Prometheus and Tempo handlers over one
+// probeMux mounts the production Prometheus, Loki and Tempo handlers over one
 // client, with rules as the engine's settings rules.
 type probeMux struct {
 	mux http.Handler
@@ -403,10 +469,13 @@ func newProbeMux(t *testing.T, client *chclient.Client, rules engine.SettingsRul
 	mux := http.NewServeMux()
 	ph := prom.New(client, schema.DefaultOTelMetrics(), nil)
 	th := tempo.New(client, schema.DefaultOTelTraces(), "chserver-probe", nil)
+	lh := loki.New(client, schema.DefaultOTelLogs(), nil)
 	ph.Engine.SetSettings(rules)
 	th.Engine.SetSettings(rules)
+	lh.Engine.SetSettings(rules)
 	ph.Mount(mux)
 	th.Mount(mux)
+	lh.Mount(mux)
 	return probeMux{mux: mux}
 }
 

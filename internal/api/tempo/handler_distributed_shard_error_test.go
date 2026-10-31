@@ -73,3 +73,27 @@ func TestSearchRecent_StaleReplicaFallbackDenied503(t *testing.T) {
 		t.Fatalf("body %q does not carry the stale-replica-fallback message", body)
 	}
 }
+
+// TestSearchRecent_UnsafeMixedFleet503 — a dispatch chclient refused because
+// the fleet mixes a build that needs a defect-gate setting with one too old
+// to accept it answers 503 (ErrClassUnavailable) carrying the refusal's
+// reason, not a 5xx internal fault.
+func TestSearchRecent_UnsafeMixedFleet503(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{err: &chclient.UnsafeMixedFleetError{Reason: "shape defect projection_filtering"}}
+	srv := newServer(q, "v-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search/recent")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status: got %d (body %q), want 503", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "shape defect projection_filtering") {
+		t.Fatalf("body %q does not carry the refusal's reason", body)
+	}
+}

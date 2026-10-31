@@ -55,36 +55,43 @@ rather than taken from the changelog:
   `PREWHERE` itself without attributing it.
 
 Every boundary was located on released images, with the cerberus-shaped
-reproductions of both defects run against each:
+reproductions run against each. The third column is the conversion-setting
+defect, which is gated per query shape rather than per build (below):
 
-| Build         | Skip-index defect | Row-policy defect |
-| ------------- | ----------------- | ----------------- |
-| `25.3.14.14`  | clean             | reproduces        |
-| `25.4.13.22`  | clean             | not probed        |
-| `25.6.13.41`  | clean             | not probed        |
-| `25.8.33.6`   | clean             | reproduces        |
-| `25.10.7.6`   | clean             | not probed        |
-| `25.12.11.4`  | clean             | reproduces        |
-| `26.1.12.23`  | reproduces        | reproduces        |
-| `26.2.19.43`  | reproduces        | reproduces        |
-| `26.3.12.3`   | reproduces        | reproduces        |
-| `26.3.13.31`  | clean             | not probed        |
-| `26.3.16.16`  | clean             | reproduces        |
-| `26.3.17.4`   | clean             | reproduces        |
-| `26.3.17.56`  | clean             | clean             |
-| `26.3.33.24`  | clean             | clean             |
-| `26.4.3.37`   | reproduces        | not probed        |
-| `26.4.4.38`   | clean             | reproduces        |
-| `26.4.5.143`  | clean             | clean             |
-| `26.5.1.882`  | reproduces        | not probed        |
-| `26.5.2.39`   | clean             | not probed        |
-| `26.5.5.8`    | clean             | reproduces        |
-| `26.5.6.64`   | clean             | clean             |
-| `26.5.7.64`   | clean             | not probed        |
-| `26.6.1.1193` | clean             | clean             |
-| `26.6.8.7`    | clean             | clean             |
-| `26.7.13.12`  | clean             | not probed        |
-| `26.8.10.6`   | clean             | clean             |
+| Build         | Skip-index defect | Row-policy defect | Conversion-setting defect |
+| ------------- | ----------------- | ----------------- | ------------------------- |
+| `25.3.14.14`  | clean             | reproduces        | reproduces                |
+| `25.4.13.22`  | clean             | not probed        | not probed                |
+| `25.6.13.41`  | clean             | not probed        | not probed                |
+| `25.8.33.6`   | clean             | reproduces        | not probed                |
+| `25.10.7.6`   | clean             | not probed        | not probed                |
+| `25.11.9.34`  | clean             | reproduces        | reproduces                |
+| `25.12.11.4`  | clean             | reproduces        | not probed                |
+| `26.1.12.23`  | reproduces        | reproduces        | not probed                |
+| `26.2.19.43`  | reproduces        | reproduces        | reproduces                |
+| `26.3.12.3`   | reproduces        | reproduces        | reproduces                |
+| `26.3.13.31`  | clean             | reproduces        | reproduces                |
+| `26.3.16.16`  | clean             | reproduces        | not probed                |
+| `26.3.17.4`   | clean             | reproduces        | reproduces                |
+| `26.3.17.56`  | clean             | clean             | reproduces                |
+| `26.3.33.24`  | clean             | clean             | not probed                |
+| `26.3.62.3`   | clean             | clean             | reproduces                |
+| `26.4.3.37`   | reproduces        | reproduces        | reproduces                |
+| `26.4.4.38`   | clean             | reproduces        | reproduces                |
+| `26.4.5.143`  | clean             | clean             | reproduces                |
+| `26.5.1.882`  | reproduces        | reproduces        | reproduces                |
+| `26.5.2.39`   | clean             | reproduces        | reproduces                |
+| `26.5.5.8`    | clean             | reproduces        | reproduces                |
+| `26.5.6.64`   | clean             | clean             | reproduces                |
+| `26.5.7.64`   | clean             | not probed        | not probed                |
+| `26.6.1.1193` | clean             | clean             | reproduces                |
+| `26.6.8.7`    | clean             | clean             | not probed                |
+| `26.7.13.12`  | clean             | not probed        | not probed                |
+| `26.7.38.18`  | clean             | clean             | reproduces                |
+| `26.8.10.6`   | clean             | clean             | not probed                |
+| `26.8.36.3`   | clean             | clean             | reproduces                |
+| `26.9.1.1629` | clean             | clean             | clean                     |
+| `26.9.27.3`   | clean             | clean             | clean                     |
 
 Each range's upper bound is the first released build the reproduction came
 back clean on, not the upstream backport build number (`26.3.17.50`,
@@ -95,9 +102,10 @@ number and differ in the fix, which is why the version model carries the build
 component and not only the patch.
 
 The real-server test pins the last affected and first fixed release of every
-backported line for each defect — thirteen builds — and runs them three at a
-time; the reproductions are correctness checks, so sharing CPUs cannot change
-a verdict, and one after another they would add six minutes to the lane.
+backported line for each defect, plus the latest 26.8 release and 26.9's first
+for the conversion-setting defect — fifteen builds — and runs them three at a
+time; the reproductions are correctness checks, so sharing CPUs cannot change a
+verdict, and one after another they would add six minutes to the lane.
 
 The override is decided across every node cerberus can reach rather than the
 one node the resolution probes, because the poisoning is per server: a mixed
@@ -125,6 +133,290 @@ and on every other build the cache stays a result-equivalent win. The row-policy
 defect is also why the gate cannot key on whether cerberus's own user has a
 row policy — the poisoning query can come from any user of the server, and a
 restricted user often cannot see `system.row_policies` to find out.
+
+## Why String-to-float filters skip the condition cache on 25.3 through 26.8
+
+A conversion function captures the conversion settings of the session that
+built it, but the query condition cache keyed its filter by the function alone
+(ClickHouse#119168), so a session that parses a value differently shares the
+verdict. A LogQL numeric label filter lowers to
+`toFloat64OrZero(<label>) <op> toFloat64(<literal>)`; another client replaying
+cerberus's SQL from `system.query_log` with the opposite
+`precise_float_parsing` poisons cerberus's next read. Over 1.2 million logs,
+half carrying `1.1e-300`, `| v != 1.1e-300` counted 601,984 (610,176 on 25.x)
+instead of 1,200,000 where fast parsing is the default (26.3 and earlier), and
+`| v = 1.1e-300` counted 0 instead of 600,000 where precise parsing is (26.7
+and later). The defect is as old as the cache: it reproduces on every line from
+25.3 through 26.8, including the latest 26.3 and 26.8 LTS releases, and on no
+26.9 release probed (the survey table above). The upstream fix landed in 26.10
+and was not backported to 26.3 or 26.8.
+
+The trigger is a filter that parses a String to a float, and nothing else, so
+the gate is that shape rather than the build. Withholding the feature on every
+build the defect reaches would switch the cache off for every query on both
+LTS lines and on the 26.6 build the Helm chart bundles, to protect a minority
+of LogQL and TraceQL queries. The shape is read off the plan's `Filter`
+predicates, the `WHERE` / `PREWHERE` the cache keys on; a parse that sits in a
+projection or an aggregate argument is never a granule filter. The lowerings
+that put one in a filter are the LogQL numeric and bytes label filters
+(`toFloat64OrZero`, `toFloat64OrNull`), the TraceQL numeric attribute coercion
+(`toFloat64OrNull` over each attribute arm) and PromQL's `le` read over float
+bucket series (`isNotNull(toFloat64OrNull(le))`). Plain `toFloat64` is left out
+because every lowering that emits it passes a number (a sample value, a count,
+a duration, a numeric tuple element), and a number-to-float cast reads no
+conversion setting; the plan carries no static types, so the function name is
+the signal. `internal/engine`'s lowering test runs each head's emitting query
+through the gate, so a lowering that moves its parse out of a filter fails
+there.
+
+The `0` is stamped whatever the selection resolved, `off` included, because
+the server turns the cache on by default from 25.9; the `1` the
+`condition_cache` rule would stamp is withheld on the same plan. That a
+per-query `use_query_condition_cache=0` switches the cache off for that query
+in both directions was checked on every pinned build rather than assumed: after
+an opposite-parsing session primes the cache, cerberus's SQL with the setting
+`0` returns the cache-off answer (it does not read the entry), and after
+cerberus's SQL runs with the setting `0`, an opposite-parsing session reading
+through the cache gets its own cache-off answer (it wrote none), where the same
+SQL with the setting `1` poisons that session on every affected build.
+
+## Why `TraceId` reads skip the projection index on a negated conjunction from 25.11 to 26.10
+
+From 25.11 (ClickHouse#81021) the server can filter a part's rows through a
+normal projection that was not selected to serve the read, which is how
+`proj_trace_id` turns a `TraceId` predicate into a row bitmap. ClickHouse#120286
+fixed that analysis for a negated `AND` over the projection key: the negation
+was dropped, so the projection index removed exactly the rows the predicate
+keeps. TraceQL's `!( … )` over a compound reaches it.
+`{ trace:id = "X" && !(trace:id = "X" && span.foo = "nope") }` lowers to
+`PREWHERE (TraceId = ?) WHERE … AND not((TraceId = ?) AND (SpanAttributes[?] = ?))`,
+and with the projection installed `/api/search` matched none of the trace's 60
+spans, every one of which the predicate keeps; the same request with
+`optimize_use_projection_filtering=0` matched all of them. The seed is 20,000
+traces of 60 interleaved spans, 1.2 million rows. Its parts are each smaller
+than the server's default `min_table_rows_to_use_projection_index`, so the
+reproduction lowers that threshold to 0 the way `trace_id_bitmap_filter` does;
+a production-sized part clears the default on its own.
+
+| Build         | Negated `AND` through `proj_trace_id` |
+| ------------- | ------------------------------------- |
+| `25.9.7.56`   | clean                                 |
+| `25.10.7.6`   | clean                                 |
+| `25.11.1.558` | drops every span                      |
+| `25.11.9.34`  | drops every span                      |
+| `25.12.11.4`  | drops every span                      |
+| `26.1.12.23`  | drops every span                      |
+| `26.2.19.43`  | drops every span                      |
+| `26.3.17.56`  | drops every span                      |
+| `26.3.62.3`   | drops every span                      |
+| `26.8.36.3`   | drops every span                      |
+| `26.9.25.15`  | drops every span                      |
+| `26.9.27.3`   | drops every span                      |
+| `26.10.2.103` | clean                                 |
+| `26.10.3.7`   | clean                                 |
+
+The fix was not backported, so the range spans whole lines.
+
+### The trigger, and why the gate is that shape
+
+The weakening replaces a conjunct the projection cannot compute by `true`, and
+under a negation that makes the prefilter stricter than the predicate:
+`NOT (TraceId = X AND b)` becomes `NOT (TraceId = X)`, or `NOT true` when no
+conjunct is computable. Each variant below was run on `26.3.17.56` as
+`{ trace:id = "X" && <e> }`, with the projection threshold at 0, projection
+filtering on and the condition cache off, against the 60 spans of trace `X`:
+
+| `<e>`                                      | Matched |
+| ------------------------------------------ | ------- |
+| `!(trace:id = "X" && span.foo = "nope")`   | 0       |
+| `!(span.foo = "nope" && span.bar = "x")`   | 0       |
+| `!(duration > 1h && trace:id = "X")`       | 0       |
+| `!(trace:id = "Y" && name = "nope")`       | 60      |
+| `!(trace:id = "Y" \|\| span.foo = "nope")` | 60      |
+| `!(span.foo = "nope" \|\| span.bar = "x")` | 60      |
+| `!(trace:id = "Y" \|\| trace:id = "Z")`    | 60      |
+
+A negated disjunction is left intact, and a negated conjunction loses rows
+whether or not `TraceId` sits inside it. `!(trace:id = "Y" && name = "nope")`
+answered correctly only because the weakened `NOT (TraceId = Y)` happens to
+keep every span of `X`. The gate is therefore a `TraceId`-keyed read whose
+filter holds a `not(…)` over an `AND` that reads any column other than
+`TraceId`: it covers the lucky case too, since its correctness depends on the
+literals rather than the shape, and leaves out the negated disjunctions and an
+`AND` of `TraceId` tests, which the projection computes in full. A read that is
+not `TraceId`-keyed never filters through `proj_trace_id`, so it is out of
+scope whatever its filter negates.
+
+Gating the shape rather than the build keeps the projection index on every
+other `TraceId` read — the trace-by-id lookup, the search root lookup, the
+structure tab and every structural join — on every release from 25.11 through
+26.9, both LTS lines included, and keeps an explicit `trace_id_projection`
+bootable under `enforcing` there.
+
+### The 25.11 plain lookup
+
+On 25.11 a plain `{ trace:id = "X" }` lost spans through the same read as well
+(10 of 60 on `25.11.1.558` and `25.11.9.34`), which `25.12.11.4` no longer
+does. Raw SQL on `25.11.1.558` narrows the trigger: `SELECT count() … WHERE
+TraceId = X` counts all 60, and any query that also reads a column the
+projection does not store (`Timestamp >= …`, `max(SpanName)`) sees 18. It is
+the same with `max_threads = 1`, so it is not the parallel-replica race
+ClickHouse#89762 fixed, and with the table merged into one part (4 of 60). No
+upstream change was identified as its fix.
+
+The exact trigger is therefore a `TraceId`-keyed read through the projection
+index that reads any column outside `(TraceId, _part_offset)`. Every
+`TraceId`-keyed read cerberus emits reads such a column — no head asks for a
+bare count of a trace's rows — so the per-query gate is every `TraceId`-keyed
+read, scoped to the 25.11 line by its own range (`[25.11, 25.12.11.4)`). That
+is the narrowest gate the shape allows; on 25.11 it amounts to the projection
+index being off for cerberus's reads, which is why the operator guidance is to
+upgrade.
+
+### Why the stamp does not depend on `trace_id_bitmap_filter`
+
+The server enables projection filtering by default, and a projection, once
+added, stays on the table whatever a later selection says: a deployment that
+installed `proj_trace_id` and then rolled ClickHouse forward into the range
+filters through it whenever a part clears the server's
+`min_table_rows_to_use_projection_index` default. So
+`optimize_use_projection_filtering=0` rides the affected shape whether or not
+`trace_id_bitmap_filter` resolved, and under `off` too. The setting only
+governs filtering through a projection the read did not select; the
+aggregating metric-catalog projections are chosen to serve a read, a separate
+mechanism it does not switch.
+
+The real-server test checks the projection index is really used on the shapes
+left ungated, not only that the setting keeps its default: the plain lookup's
+ProfileEvents count an `IndexBinarySearchAlgorithm` analysis, which only
+`proj_trace_id`'s `TraceId`-first key admits for that predicate (the table's
+own key leads with `ServiceName`), and the same lookup with projection
+filtering off counts none.
+
+## Why defect gates are per query shape where the trigger allows it
+
+A build-wide range withholds a feature on every query of every deployment on
+that build. For the three defects above that cost was out of proportion to the
+trigger: it would have switched the condition cache off on every build before
+26.9 — both LTS lines and the 26.6 the Helm chart bundles — withheld the
+auto-selected `trace_id_bitmap_filter` from 25.11 through 26.9, and failed boot
+on an explicit `trace_id_projection` under `enforcing` on those releases, to
+protect a handful of query shapes. Each of these defects has a trigger the
+lowered plan shows, so each is gated on the queries of that shape with the
+setting that switches the mechanism off for one query, and the operator-facing
+change is none on every other shape.
+
+The build-wide ranges stay where the trigger is not in the plan:
+ClickHouse#105686 and #107145 poison the cache through what another query or
+another user does (a skip index dropping marks before `PREWHERE`, a row
+policy), so no property of cerberus's own query predicts which entry is
+poisoned.
+
+A shape defect is decided across the fleet the same way as the analyzer
+posture, and for the same reason: a query of the defective shape can land on
+any reached node, so one node on an affected build is enough to put the defect
+in force, and only a complete pass with every node outside the range lifts it.
+It is a fact about the server, not a selection, which is why `off` carries it
+like `auto`.
+
+## Why a mixed fleet refuses a gated shape rather than stamp or skip its gate
+
+The supported floor is 24.8, so a fleet can mix a node too old to know a gate's
+setting with a node inside a defect's range — a rolling upgrade from 24.8
+straight onto a 26.x LTS line is the common case. Cerberus sends every
+per-query setting through clickhouse-go's settings path over the native
+protocol, and clickhouse-go v2 marks each such setting important; a server
+that does not know an important setting rejects the whole query. Sent that way
+through `chclient`, against real servers:
+
+| Build        | `use_query_condition_cache=0` | `optimize_use_projection_filtering=0` |
+| ------------ | ----------------------------- | ------------------------------------- |
+| `24.8.14.39` | code 115, `Unknown setting`   | code 115, `Unknown setting`           |
+| `25.3.14.14` | accepted                      | code 115, `Unknown setting`           |
+| `25.4.13.22` | accepted                      | code 115, `Unknown setting`           |
+| `25.5.11.15` | accepted                      | code 115, `Unknown setting`           |
+| `25.6.13.41` | accepted                      | accepted                              |
+| `25.10.7.6`  | accepted                      | accepted                              |
+
+`test/chserver`'s `TestShapeDefectGates_SettingFloors` pins the 24.8, 25.3
+and 25.10 rows; the 25.4 to 25.6 rows were run once to place the projection
+setting's floor at 25.6. A setting is not silently ignored, so the
+one-node-is-enough rule alone would break every gated query on such a fleet:
+the stamp it chose fails on the old node, intermittently, with an error naming
+a setting the operator never set. The same held for the build-wide
+condition-cache override, which stamps `use_query_condition_cache=0` on every
+query: a 24.8 node beside a known-unsafe build failed every query that landed
+on it.
+
+On the old node itself there is nothing to mitigate: every affected range
+starts at or above its gate's first accepting release, because a defect cannot
+predate the mechanism the setting switches off. The difficulty is only a query
+that can land on either node. Four answers were considered:
+
+- **Decide per node.** The setting would go only to the nodes that know it.
+  Cerberus cannot route that way: one driver pool picks the node per
+  connection, and replicas behind `clusterAllReplicas`, a `Distributed` table
+  or a load balancer are reached through whichever node the connection landed
+  on, so cerberus never chooses which node runs a given query.
+- **Send the setting anyway.** The old node's share of the traffic fails with
+  `UNKNOWN_SETTING`, at random from the client's view, with a message that
+  points at neither the defect nor the upgrade.
+- **Skip the gate.** The affected node answers the defect's shape wrong, with
+  no error. This is the outcome the gates exist to prevent.
+- **Refuse the shape.** Every query of the shape fails with one deterministic
+  error that names the defect, the setting and the upgrade that lifts it; every
+  other shape keeps working, and nothing reaches ClickHouse.
+
+Refusing is the only answer that never returns wrong rows and never fails at
+random, so it is the one taken. The client-wide condition-cache override
+cannot see a query's shape, so its refused state covers every query, which is
+also the scope its gated state already had. The refusal answers 503
+`errorType=unavailable`: ClickHouse is healthy and the query is well-formed;
+the fleet cannot answer it correctly until the upgrade finishes. It is
+breaker-neutral for the same reason as the fan-out admission gate — cerberus
+decided not to send the query, and ClickHouse never saw it.
+
+## ClickHouse 26.10 wrong-result fixes no cerberus query reaches
+
+The 26.10 release fixed several other wrong-result defects in mechanisms
+cerberus enables. Each was checked against cerberus's emitted SQL and DDL, and
+where a shape came close it was run against an affected build:
+
+- **ClickHouse#119823, a join runtime filter's condition-cache verdict.** The
+  defect writes a cache entry for a `PREWHERE` that carries a join runtime
+  filter, on 26.9 before `26.9.23.15`. Cerberus's TraceQL structural joins do
+  plant `__applyFilter` in the left read's `PREWHERE`, but the residual filter
+  there holds a `globalIn(tuple(TraceId, SpanId), …)` set membership the cache
+  writer refuses, so no entry is written: every structural operator on
+  `26.9.22.3` left the cache empty except `<<` and `>>`, whose one entry is
+  benign, and a live-ingest rerun that inserted the roots after priming matched
+  the cache-off answer. PromQL binary operators keep the runtime filter in a
+  filter step above the read, a shape the cache already declines.
+- **ClickHouse#122538 / #122617, top-K cache entries.** Both need `SAMPLE` or
+  mutations applied on the fly; cerberus emits no `SAMPLE`, issues no
+  mutation or lightweight update, and never sets `apply_mutations_on_fly` or
+  `apply_patch_parts`. Top-K recording (ClickHouse#114659) is not in any
+  released line before 26.10.
+- **ClickHouse#124442, a sparse column expanded under lazy materialisation of
+  a JOIN.** Lazy materialisation across a JOIN arrived with ClickHouse#122682,
+  backported only to 26.10, which already carries the fix; no released build
+  has the one without the other.
+- **ClickHouse#124022, a partial projection with
+  `query_plan_remove_unused_columns=0`.** The defect is in reading through a
+  normal projection that serves the read. `proj_trace_id` stores only
+  `(TraceId, _part_offset)` and no cerberus read selects only those columns;
+  the metric-catalog projections are aggregating, a different path; cerberus
+  never sets `query_plan_remove_unused_columns`, whose default is 1. The
+  upstream reproduction does not reproduce on `26.3.62.3`, `26.8.10.6` or
+  `26.8.36.3` either.
+- **ClickHouse#124303, minmax and set index verdicts across `AND` / `OR`.**
+  The shift needs an atom the index cannot convert — a non-monotonic function
+  chain or an unconvertible constant — over a minmax- or set-indexed column.
+  Cerberus's indexed columns (`Duration`, `TimeUnix`,
+  `AggregationTemporality`) are only ever compared directly against constants.
+  Thirteen TraceQL `||` shapes over `duration` and `status` returned the same
+  answer with `use_skip_indexes` on and off on `26.3.62.3`, where the upstream
+  reproduction does reproduce (0 rows against 667).
 
 ## Why every cancelled dispatch kills its own statement
 

@@ -831,6 +831,12 @@ func classifySentinelErr(err error) *apiError {
 			Status: http.StatusServiceUnavailable,
 		}
 	}
+	// A dispatch refused on a fleet mixing a build that needs a defect-gate
+	// setting with one too old to accept it: 503 errorType=unavailable, with
+	// the defect and the upgrade that lifts it.
+	if msg, ok := httperr.UnsafeMixedFleetMessage(err); ok {
+		return &apiError{Kind: ErrUnavailable, Err: errors.New(msg), Status: http.StatusServiceUnavailable}
+	}
 	// Caller-initiated cancellation: the client closed the connection (a
 	// browser tab shutting on a slow panel, an aborted fetch, a dashboard
 	// refresh superseding its own in-flight request), so net/http cancels

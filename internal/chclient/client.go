@@ -23,6 +23,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/tsouza/cerberus/internal/cerbtrace"
+	"github.com/tsouza/cerberus/internal/chopt"
 )
 
 // tracer emits the `execute` pipeline-stage span on every ClickHouse
@@ -534,10 +535,11 @@ type Client struct {
 	// Close first stops the single loop exactly once via recovery.stop.
 	recovery *recoveryLoop
 
-	// conditionCacheDisabled forces use_query_condition_cache=0 onto every
-	// data-plane query; see SetQueryConditionCacheDisabled. A pointer so every
-	// ForHead view shares the one switch the capability re-probe flips.
-	conditionCacheDisabled *atomic.Bool
+	// conditionCacheOverride holds the chopt.DefectGate of the client-wide
+	// condition-cache override; see SetQueryConditionCacheOverride. A pointer
+	// so every ForHead view shares the one switch the capability re-probe
+	// flips.
+	conditionCacheOverride *atomic.Uint32
 }
 
 // buildBreakers constructs the per-head breaker registry shared by all of a
@@ -845,7 +847,7 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 		dataShardFanoutCap:  dataShardFanoutCap,
 		queryTimeout:        cfg.QueryTimeout,
 
-		conditionCacheDisabled: new(atomic.Bool),
+		conditionCacheOverride: new(atomic.Uint32),
 	}
 	// Resolve the cursor-decode strategy ONCE, here at construction. The
 	// default is the concrete row path; when Config.ColumnarMatrixDecode is set
@@ -988,7 +990,7 @@ func (c *Client) querySettings(ctx context.Context) clickhouse.Settings {
 	// caps. They are merged last so a future shape-gated override of a cap
 	// is intentional and visible here, not accidental.
 	maps.Copy(s, perQuery)
-	if c.QueryConditionCacheDisabled() {
+	if c.QueryConditionCacheOverride() == chopt.DefectGated {
 		// Applied after the per-query settings: the override exists because
 		// the server build is known to return wrong results through the
 		// cache, so nothing may re-enable it for a single query.
@@ -1318,7 +1320,7 @@ func newWithConn(conn driver.Conn) *Client {
 	// tests. nil metrics = the no-telemetry path (these tests assert breaker
 	// state via currentState(), not via the metric label).
 	def, registry := buildBreakers(false, 0, 0, 0, nil)
-	c := &Client{conn: conn, br: def, breakers: registry, conditionCacheDisabled: new(atomic.Bool)}
+	c := &Client{conn: conn, br: def, breakers: registry, conditionCacheOverride: new(atomic.Uint32)}
 	// The cursor-decode strategy is ALWAYS non-nil — the row path is the
 	// default, matching production New with the columnar flag off. QueryCursor
 	// dispatches to it unconditionally, so the seam must wire it too.

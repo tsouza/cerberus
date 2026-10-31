@@ -1499,6 +1499,9 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// mandatory-analyzer build refuses enable_analyzer=0, so the analyzer
 	// decision reads the whole pass (analyzerMandatoryOnFleet).
 	set = set.WithAnalyzerMandatory(analyzerMandatoryOnFleet(fleet, set.AnalyzerMandatory()))
+	// Likewise one node on a build carrying a shape defect is enough for the
+	// engine to gate that shape (shapeDefectsOnFleet).
+	set = set.WithShapeDefects(shapeDefectsOnFleet(fleet, set))
 	for _, w := range warnings {
 		logger.Warn("ch_opt: " + w)
 	}
@@ -1598,8 +1601,11 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"query_workload", cfg.CHQueryWorkload,
 		"server_query_workload_capability", queryWorkloadCapability.String(),
 		"enabled", strings.Join(set.IDs(), ","),
-		"query_condition_cache_forced_off", client.QueryConditionCacheDisabled(),
+		"query_condition_cache_forced_off", client.QueryConditionCacheOverride() == chopt.DefectGated,
+		"queries_refused", client.QueryConditionCacheOverride() == chopt.DefectRefused,
 		"analyzer_mandatory", set.AnalyzerMandatory(),
+		"shape_defects", strings.Join(set.ShapeDefectIDs(), ","),
+		"refused_shape_defects", strings.Join(set.RefusedShapeDefectIDs(), ","),
 	)
 	return chOptResolution{
 		Set:              set,

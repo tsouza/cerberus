@@ -448,6 +448,29 @@ line alone, because its build numbers do not follow upstream's: a vendor build
 on any line an affected range touches is treated as affected, and cerberus logs
 a warning at boot.
 
+Every build from 25.3 through 26.8 — the 26.3 and 26.8 LTS lines included —
+also shares the cache's verdict across sessions that parse a String to a float
+differently ([ClickHouse#119168](https://github.com/ClickHouse/ClickHouse/pull/119168)).
+That one needs no action: while any node it can reach runs such a build,
+cerberus sends `use_query_condition_cache=0` on just the queries whose filter
+parses a String to a float (a LogQL numeric or bytes label filter, a TraceQL
+numeric attribute comparison), and every other query keeps the cache
+([Shape-scoped defects](clickhouse-optimizations.md#shape-scoped-defects)).
+
+**Upgrade a fleet still on 24.8 past 25.6 before any node enters these
+ranges.** The settings cerberus sends against these defects do not exist on
+older servers, which reject the whole query (`UNKNOWN_SETTING`):
+`use_query_condition_cache` below 25.3 and `optimize_use_projection_filtering`
+below 25.6. While the nodes cerberus reaches mix an affected build with one
+too old for the setting, cerberus refuses the affected queries — every query,
+for the condition-cache ranges above — with HTTP 503 `errorType=unavailable`
+and a message naming the setting, rather than send them to a node that would
+reject them or answer them wrong on the affected one. The boot line and every
+re-probe transition log the refused defects (`refused_shape_defects`,
+`queries_refused`). The refusal lifts on the next re-probe once the fleet no
+longer mixes the two
+([Mixed-version fleets](clickhouse-optimizations.md#mixed-version-fleets)).
+
 ### ClickHouse 26.5 — known-defective line
 
 **Do not run cerberus on ClickHouse 26.5.x.** The 26.5 line (reproduced on
@@ -1961,6 +1984,21 @@ setting is a pure query-time knob with no DDL and no version floor below
 floor, the same way `aggregation_in_order` / `condition_cache` do for their
 own floors. It is harmless (a no-op) on a table that carries no
 `proj_trace_id` projection at all.
+
+#### ClickHouse builds that filter wrong through `proj_trace_id`
+
+Releases from 25.11 up to 26.10 — 26.3 LTS, 26.8 LTS and 26.9 included —
+drop rows a `TraceId`-keyed read should return when its filter negates a
+conjunction (TraceQL `!(… && …)`) and the read filters through the
+projection's index
+([ClickHouse#120286](https://github.com/ClickHouse/ClickHouse/pull/120286)).
+25.11 releases also drop rows of a plain `TraceId` lookup. No action is
+needed: on those builds cerberus sends `optimize_use_projection_filtering=0`
+on just the affected queries, both projection features stay available, and
+every other query keeps filtering through `proj_trace_id`
+([Shape-scoped defects](clickhouse-optimizations.md#shape-scoped-defects)).
+On 25.11 that is every `TraceId`-keyed read, so upgrade to 25.12.11.4 or later
+to use the projection index there.
 
 ### Config-driven materialized span/resource attribute columns
 

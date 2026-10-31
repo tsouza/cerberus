@@ -122,6 +122,17 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.5.2.39-alpine',
   'clickhouse/clickhouse-server:26.5.5.8-alpine',
   'clickhouse/clickhouse-server:26.5.6.64-alpine',
+  // The conversion-setting keying boundary (the latest 26.8 release and the
+  // first 26.9 release), and the projection-filtering boundaries (the last
+  // line before the projection-index read, its first release, the first
+  // release whose plain TraceId lookup is whole again, and the first release
+  // of the line carrying the fix).
+  'clickhouse/clickhouse-server:26.8.36.3-alpine',
+  'clickhouse/clickhouse-server:26.9.1.1629-alpine',
+  'clickhouse/clickhouse-server:25.10.7.6-alpine',
+  'clickhouse/clickhouse-server:25.11.1.558-alpine',
+  'clickhouse/clickhouse-server:25.12.11.4-alpine',
+  'clickhouse/clickhouse-server:26.10.2.103-alpine',
   // The clickhouse-upgrade lane's exact builds (CH_UPGRADE_FLOOR_IMAGE,
   // CH_UPGRADE_TARGET_IMAGE, CH_TEXT_INDEX_V0_READER_IMAGE, CH_PRE_KEYED_IMAGES)
   // reuse the querylog floor (24.8.14.39) and the chserver floor (25.3.14.14) above.

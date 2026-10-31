@@ -288,6 +288,14 @@ func classifyBreakerOutcome(err error) breakerOutcome {
 		return breakerOutcome{Scope: breakerScopeClient, Code: chCodeNoServerAnswer}
 	}
 
+	// A refused dispatch (ErrUnsafeMixedFleet) is cerberus's own decision,
+	// taken before any connection is opened: the fleet's builds cannot all
+	// run the query correctly. ClickHouse never saw it, so it says nothing
+	// about server health.
+	if errors.Is(err, ErrUnsafeMixedFleet) {
+		return breakerOutcome{Scope: breakerScopeClient, Code: chCodeNoServerAnswer}
+	}
+
 	// The columnar sample-budget sentinel is cerberus's OWN stop signal: the
 	// decoder latched a *TooManySamplesError and returned errBudgetExceeded
 	// purely to unwind ch-go's pool.Do. ClickHouse was mid-answer and
