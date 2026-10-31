@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { checkCommit, run, signOffEmails } from './dco.mjs';
+import { checkCommit, isBotAuthor, run, signOffEmails } from './dco.mjs';
 
 const AUTHOR = { authorName: 'Ada Lovelace', authorEmail: 'ada@example.com' };
 
@@ -41,6 +41,33 @@ test("checkCommit rejects a sign-off that is not the author's", () => {
   assert.match(
     checkCommit({ ...AUTHOR, message: 'feat: x\n\nSigned-off-by: Someone Else <else@example.com>' }),
     /signed off by else@example\.com, but the author is Ada Lovelace <ada@example\.com>/,
+  );
+});
+
+// Dependabot's real commit identity (PR #4008): its author email is a GitHub
+// bot noreply address, and its sign-off names support@github.com.
+const DEPENDABOT = {
+  authorName: 'dependabot[bot]',
+  authorEmail: '49699333+dependabot[bot]@users.noreply.github.com',
+};
+const DEPENDABOT_MESSAGE = 'chore(deps): bump x\n\nSigned-off-by: dependabot[bot] <support@github.com>';
+
+test('isBotAuthor accepts GitHub bot noreply addresses only', () => {
+  assert.equal(isBotAuthor(DEPENDABOT.authorEmail), true);
+  assert.equal(isBotAuthor('github-actions[bot]@users.noreply.github.com'), true);
+  assert.equal(isBotAuthor('122435+tsouza@users.noreply.github.com'), false);
+  assert.equal(isBotAuthor('dependabot[bot]@example.com'), false);
+  assert.equal(isBotAuthor('dependabot[bot]@users.noreply.github.com.example.com'), false);
+});
+
+test("checkCommit exempts Dependabot's commit despite its mismatched sign-off", () => {
+  assert.equal(checkCommit({ ...DEPENDABOT, message: DEPENDABOT_MESSAGE }), null);
+});
+
+test('checkCommit still rejects an unsigned commit from a human noreply address', () => {
+  assert.match(
+    checkCommit({ authorName: 'Someone', authorEmail: '1+someone@users.noreply.github.com', message: 'feat: x' }),
+    /no Signed-off-by trailer/,
   );
 });
 
@@ -89,6 +116,18 @@ test('run fails on one unsigned commit among signed ones', () => {
   try {
     commitFile(repo.cwd, 'e.txt', 'fix: unsigned e');
     assert.equal(run({ baseSha: repo.base, headSha: repo.head(), cwd: repo.cwd }), 1);
+  } finally {
+    rmSync(repo.cwd, { recursive: true, force: true });
+  }
+});
+
+test('run passes a Dependabot-authored commit beside signed human commits', () => {
+  const repo = makeRepo();
+  try {
+    commitFile(repo.cwd, 'g.txt', DEPENDABOT_MESSAGE, [
+      `--author=${DEPENDABOT.authorName} <${DEPENDABOT.authorEmail}>`,
+    ]);
+    assert.equal(run({ baseSha: repo.base, headSha: repo.head(), cwd: repo.cwd }), 0);
   } finally {
     rmSync(repo.cwd, { recursive: true, force: true });
   }

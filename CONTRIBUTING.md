@@ -42,7 +42,8 @@ identity. The name is the one you are known by in the community — not an anony
 email must be the commit's author email.
 
 The required `lint` check runs `.github/scripts/dco.mjs`, which fails a pull request containing a
-commit without its author's sign-off. Merge commits and commits that change no files are not checked.
+commit without its author's sign-off. Merge commits, commits that change no files, and commits authored
+by a GitHub bot account (such as Dependabot) are not checked.
 To sign off commits already on your branch:
 
 ```sh

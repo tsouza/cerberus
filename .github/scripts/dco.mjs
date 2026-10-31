@@ -22,7 +22,15 @@
 // range contributes none), 1 = at least one commit is not, or the range could
 // not be resolved (an unresolvable range is a failure, never a silent pass).
 //
-// The pure parts (signOffEmails, checkCommit, run) are exported and pinned by
+// A commit authored by a GitHub bot account (an author email of the form
+// `[<id>+]<name>[bot]@users.noreply.github.com`, such as Dependabot's or
+// github-actions') is exempt: no person authored it, so there is no one whose
+// certificate a sign-off would record. Dependabot signs off as
+// `support@github.com`, which never equals its author email. The exemption
+// matches GitHub's bot noreply domain exactly, so a look-alike address on any
+// other domain is checked like any other commit.
+//
+// The pure parts (signOffEmails, isBotAuthor, checkCommit, run) are exported and pinned by
 // the `node --test` guard dco.test.mjs.
 
 import process from 'node:process';
@@ -41,9 +49,22 @@ export function signOffEmails(message) {
   return [...message.matchAll(SIGN_OFF_TRAILER)].map((m) => m[1].toLowerCase());
 }
 
-// checkCommit — null when the commit is signed off by its author, otherwise a
-// one-line reason naming what is missing.
+// BOT_AUTHOR_EMAIL matches the noreply address GitHub gives a bot account:
+// an optional numeric account ID, the bot's name ending in `[bot]`, and the
+// users.noreply.github.com domain.
+const BOT_AUTHOR_EMAIL = /^(?:\d+\+)?[^@\s]+\[bot\]@users\.noreply\.github\.com$/i;
+
+// isBotAuthor — whether authorEmail is a GitHub bot account's noreply address.
+export function isBotAuthor(authorEmail) {
+  return BOT_AUTHOR_EMAIL.test(authorEmail);
+}
+
+// checkCommit — null when the commit is signed off by its author or authored
+// by a GitHub bot, otherwise a one-line reason naming what is missing.
 export function checkCommit({ authorName, authorEmail, message }) {
+  if (isBotAuthor(authorEmail)) {
+    return null;
+  }
   const emails = signOffEmails(message);
   if (emails.includes(authorEmail.toLowerCase())) {
     return null;
