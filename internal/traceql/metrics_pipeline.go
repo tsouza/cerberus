@@ -87,9 +87,12 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 		return nil, err
 	}
 
-	attr, err := metricsAggregateAttr(op, agg.Attribute(), s)
+	attr, nullable, err := metricsAggregateAttr(op, agg.Attribute(), s)
 	if err != nil {
 		return nil, err
+	}
+	if nullable {
+		prev = keepNumericObservations(prev, attr)
 	}
 
 	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), s)
@@ -151,9 +154,12 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 // — so we just unwrap the accessor fields and produce the same
 // chplan.MetricsAggregate node.
 func lowerAverageOverTime(prev chplan.Node, agg *traceql.AverageOverTimeAggregator, s schema.Traces) (chplan.Node, error) {
-	attr, err := metricsAggregateAttr(traceql.MetricsAggregateAvgOverTime, agg.Attribute(), s)
+	attr, nullable, err := metricsAggregateAttr(traceql.MetricsAggregateAvgOverTime, agg.Attribute(), s)
 	if err != nil {
 		return nil, err
+	}
+	if nullable {
+		prev = keepNumericObservations(prev, attr)
 	}
 
 	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), s)
@@ -224,13 +230,13 @@ func mapMetricsAggregateOp(op traceql.MetricsAggregateOp) (chplan.MetricsOp, err
 // to sum / avg / min / max / quantile aggregations — all the
 // duration-aware *_over_time forms; rate / count_over_time fall out of
 // the switch above before this code runs.
-func metricsAggregateAttr(op traceql.MetricsAggregateOp, attr traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
+func metricsAggregateAttr(op traceql.MetricsAggregateOp, attr traceql.Attribute, s schema.Traces) (expr chplan.Expr, nullable bool, err error) {
 	switch op {
 	case traceql.MetricsAggregateRate, traceql.MetricsAggregateCountOverTime:
-		return nil, nil
+		return nil, false, nil
 	}
 	if attr == (traceql.Attribute{}) {
-		return nil, fmt.Errorf("traceql: %s requires an attribute operand", op)
+		return nil, false, fmt.Errorf("traceql: %s requires an attribute operand", op)
 	}
 	// Map(String, String) coercion: see coerceMapNumericAggInput in
 	// aggregate.go. `*_over_time(span.foo)` resolves to a FieldAccess
@@ -247,23 +253,49 @@ func metricsAggregateAttr(op traceql.MetricsAggregateOp, attr traceql.Attribute,
 	// engine_metrics.go), and the min/max/sum reducers skip a NaN
 	// (engine_metrics_functions.go).
 	//
-	// The one shape that does not map across is a step whose every
-	// matched span was skipped: the reference reports the NaN its
-	// aggregator was initialised with, while ClickHouse's aggregate
-	// answers NULL. cerberus renders that step the same way it renders a
-	// step with no matching spans at all — the two are indistinguishable
-	// in the reference too, since its aggregator initialises every empty
-	// step to the same NaN — so the step falls to the range-fill policy
-	// rather than to a value invented here.
+	// A step whose every matched span was skipped is the one shape the
+	// aggregate alone does not map across: the reference reports the NaN
+	// its aggregator was initialised with and drops it from the response,
+	// while ClickHouse's aggregate answers NULL. The reported nullable
+	// flag tells the caller to apply keepNumericObservations, which makes
+	// that step indistinguishable from a step with no matching spans.
 	attrExpr, err := lowerAttribute(attr, s)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	expr, _ := coerceMapNumericAggInput(attrExpr)
+	expr, nullable = coerceMapNumericAggInput(attrExpr)
 	if attr.Intrinsic == traceql.IntrinsicDuration {
 		expr = durationNsToSeconds(expr)
 	}
-	return expr, nil
+	return expr, nullable, nil
+}
+
+// keepNumericObservations filters the metrics aggregate's input down to
+// the spans whose coerced operand is a number, `isNotNull(<attr>)`.
+//
+// The aggregate already skips a NULL operand, so a step with at least one
+// numeric span answers the same with or without this filter. What the
+// filter changes is a step (or a by() group) whose every matched span
+// carried no numeric value: without it ClickHouse still emits that step's
+// row with a NULL Value, which the scan cannot bind into
+// chclient.Sample.Value. The reference never reports such a step: its
+// aggregator initialises every step to NaN, and the series-to-proto
+// conversion (pkg/traceql/engine_metrics.go) skips a NaN sample and omits
+// a series left with none. Filtering the input makes the step produce no
+// row at all, the same as a step with no matching spans.
+//
+// The filter sits below the aggregate rather than on its Value alias
+// (the dropNullValueRows shape in aggregate.go) because the range path's
+// emitter matches a RangeWindow whose input is the MetricsAggregate
+// itself.
+func keepNumericObservations(prev chplan.Node, attr chplan.Expr) chplan.Node {
+	return &chplan.Filter{
+		Input: prev,
+		Predicate: &chplan.FuncCall{
+			Fn:   chplan.FnIsNotNull,
+			Args: []chplan.Expr{attr},
+		},
+	}
 }
 
 // nanosecondsPerSecond is the divisor used to rebase Int64-ns duration
