@@ -7,7 +7,8 @@ happens if a maintainer can no longer continue.
 ## Values
 
 - **Openness.** Discussion and decisions happen in public, in GitHub issues and pull requests, where
-  they stay discoverable.
+  they stay discoverable. Security and Code of Conduct matters are the exception and are handled
+  privately.
 - **Fairness.** Anyone can propose a change, and every contribution is judged on its merits.
 - **Community over product or company.** cerberus is not a part of any company's product. Each
   contributor participates as an individual.
@@ -26,8 +27,8 @@ happens if a maintainer can no longer continue.
 
 The [contributor ladder](CONTRIBUTOR_LADDER.md) defines each role's responsibilities, requirements
 and privileges, and how a contributor moves from one role to the next. Every role is held by a
-person. AI tools and agents hold no role, have no vote, and cannot approve or merge a change on their
-own authority.
+person. AI tools and agents hold no role, have no vote, and hold no authority of their own to approve
+or merge a change.
 
 ## How cerberus is developed
 
@@ -39,7 +40,8 @@ Most changes to cerberus are written by AI coding agents working under a maintai
   through standing instructions to the agents. A merged change is the maintainer's responsibility,
   whoever or whatever wrote it.
 - **Merge gates.** The `main` ruleset requires a pull request, a squash merge, every review thread
-  resolved, and a fixed set of passing status checks. The checks are listed in
+  resolved, and a fixed set of passing status checks, and no one can bypass it, administrators
+  included. The checks are listed in
   [CONTRIBUTING.md](CONTRIBUTING.md) and documented gate by gate in
   [docs/test-strategy.md](docs/test-strategy.md). They include the test suite under the race
   detector, the architecture and invariant scans, and the license boundary check. A release is
@@ -48,14 +50,15 @@ Most changes to cerberus are written by AI coding agents working under a maintai
   released.
 - **Disclosure.** A commit written with an AI tool must carry an `Assisted-by: <tool>:<model>`
   trailer, as [CONTRIBUTING.md](CONTRIBUTING.md#ai-assisted-contributions) specifies.
-- **Sign-off.** The `lint` check requires every commit in a pull request to carry its author's
-  `Signed-off-by` trailer, except commits authored by a GitHub bot account. An agent's commit is
+- **Sign-off.** The `lint` check requires every commit a pull request contributes to carry its
+  author's `Signed-off-by` trailer, with the exceptions listed in
+  [CONTRIBUTING.md](CONTRIBUTING.md#developer-certificate-of-origin). An agent's commit is
   authored and signed off in the directing maintainer's name, on the maintainer's standing
   authorization. With that sign-off the maintainer certifies the
   [Developer Certificate of Origin](https://developercertificate.org) for the commit and accepts
   responsibility for it as if they had written it.
 - **One policy for everyone.** Contributions from people outside the project, with or without AI
-  tools, follow the same rules, in [CONTRIBUTING.md](CONTRIBUTING.md#ai-assisted-contributions).
+  tools, follow the same policy, in [CONTRIBUTING.md](CONTRIBUTING.md#ai-assisted-contributions).
 
 ## Decision making
 
@@ -113,7 +116,9 @@ time, with or without the maintainers.
 
 Everyone in the project's spaces follows the [Code of Conduct](CODE_OF_CONDUCT.md). Reports go to the
 address it lists and are handled privately by the maintainers. A maintainer who is the subject of a
-report takes no part in handling it.
+report takes no part in handling it. While the project has a single maintainer, a report about that
+maintainer can be made to GitHub through its
+[abuse reporting](https://docs.github.com/en/communities/maintaining-your-safety-on-github/reporting-abuse-or-spam).
 
 ## Security response
 

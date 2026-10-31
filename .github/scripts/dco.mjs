@@ -18,20 +18,21 @@
 //   HEAD_SHA  REQUIRED. Range end (inclusive) — a resolvable ref/SHA.
 //   GIT_CWD   Working directory for git invocations. Default: process.cwd()
 //
-// Exit codes: 0 = every contributed commit is signed off by its author (or the
-// range contributes none), 1 = at least one commit is not, or the range could
-// not be resolved (an unresolvable range is a failure, never a silent pass).
+// Exit codes: 0 = every contributed commit is signed off by its author or
+// authored by an exempt service account (or the range contributes none),
+// 1 = at least one commit is neither, or the range could not be resolved (an
+// unresolvable range is a failure, never a silent pass).
 //
-// A commit authored by a GitHub bot account (an author email of the form
-// `[<id>+]<name>[bot]@users.noreply.github.com`, such as Dependabot's or
-// github-actions') is exempt: no person authored it, so there is no one whose
-// certificate a sign-off would record. Dependabot signs off as
-// `support@github.com`, which never equals its author email. The exemption
-// matches GitHub's bot noreply domain exactly, so a look-alike address on any
-// other domain is checked like any other commit.
+// Commits authored by the GitHub service accounts in SERVICE_BOT_AUTHORS are
+// exempt. They are automated dependency and maintenance updates with no person
+// as author; Dependabot signs off as `support@github.com`, which never equals
+// its author email. Any other bot account, including an AI coding agent's
+// GitHub App, is checked like a person: its commits need the sign-off of the
+// human who answers for them.
 //
-// The pure parts (signOffEmails, isBotAuthor, checkCommit, run) are exported and pinned by
-// the `node --test` guard dco.test.mjs.
+// signOffEmails, isServiceBotAuthor and checkCommit are pure; run and
+// defaultAuthorOf read git. All are exported and pinned by the `node --test`
+// guard dco.test.mjs.
 
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
@@ -49,20 +50,24 @@ export function signOffEmails(message) {
   return [...message.matchAll(SIGN_OFF_TRAILER)].map((m) => m[1].toLowerCase());
 }
 
-// BOT_AUTHOR_EMAIL matches the noreply address GitHub gives a bot account:
-// an optional numeric account ID, the bot's name ending in `[bot]`, and the
-// users.noreply.github.com domain.
-const BOT_AUTHOR_EMAIL = /^(?:\d+\+)?[^@\s]+\[bot\]@users\.noreply\.github\.com$/i;
+// SERVICE_BOT_AUTHORS — the author emails of the exempt GitHub service
+// accounts, lower-cased: Dependabot and the GitHub Actions bot.
+const SERVICE_BOT_AUTHORS = new Set([
+  '49699333+dependabot[bot]@users.noreply.github.com',
+  '41898282+github-actions[bot]@users.noreply.github.com',
+  'github-actions[bot]@users.noreply.github.com',
+]);
 
-// isBotAuthor — whether authorEmail is a GitHub bot account's noreply address.
-export function isBotAuthor(authorEmail) {
-  return BOT_AUTHOR_EMAIL.test(authorEmail);
+// isServiceBotAuthor — whether authorEmail is an exempt service account's.
+export function isServiceBotAuthor(authorEmail) {
+  return SERVICE_BOT_AUTHORS.has(authorEmail.toLowerCase());
 }
 
 // checkCommit — null when the commit is signed off by its author or authored
-// by a GitHub bot, otherwise a one-line reason naming what is missing.
+// by an exempt service account, otherwise a one-line reason naming what is
+// missing.
 export function checkCommit({ authorName, authorEmail, message }) {
-  if (isBotAuthor(authorEmail)) {
+  if (isServiceBotAuthor(authorEmail)) {
     return null;
   }
   const emails = signOffEmails(message);

@@ -6,8 +6,8 @@ takes to reach it, and what it grants. The process for adding and removing peopl
 [MAINTAINERS.md](MAINTAINERS.md).
 
 Every role is held by a person. Contributions written with AI tools count toward a role the same way
-as any other contribution, because each role is earned by the understanding and judgment a person
-shows: in review, in design discussion, and in answering for their changes.
+as any other contribution. Each role's requirements are met by the understanding and judgment a
+person shows: in review, in design discussion, and in answering for their changes.
 
 ## Areas
 

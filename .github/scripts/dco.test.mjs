@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { checkCommit, isBotAuthor, run, signOffEmails } from './dco.mjs';
+import { checkCommit, isServiceBotAuthor, run, signOffEmails } from './dco.mjs';
 
 const AUTHOR = { authorName: 'Ada Lovelace', authorEmail: 'ada@example.com' };
 
@@ -52,12 +52,24 @@ const DEPENDABOT = {
 };
 const DEPENDABOT_MESSAGE = 'chore(deps): bump x\n\nSigned-off-by: dependabot[bot] <support@github.com>';
 
-test('isBotAuthor accepts GitHub bot noreply addresses only', () => {
-  assert.equal(isBotAuthor(DEPENDABOT.authorEmail), true);
-  assert.equal(isBotAuthor('github-actions[bot]@users.noreply.github.com'), true);
-  assert.equal(isBotAuthor('122435+tsouza@users.noreply.github.com'), false);
-  assert.equal(isBotAuthor('dependabot[bot]@example.com'), false);
-  assert.equal(isBotAuthor('dependabot[bot]@users.noreply.github.com.example.com'), false);
+test('isServiceBotAuthor accepts the listed service accounts only', () => {
+  assert.equal(isServiceBotAuthor(DEPENDABOT.authorEmail), true);
+  assert.equal(isServiceBotAuthor('41898282+github-actions[bot]@users.noreply.github.com'), true);
+  assert.equal(isServiceBotAuthor('github-actions[bot]@users.noreply.github.com'), true);
+  assert.equal(isServiceBotAuthor('122435+tsouza@users.noreply.github.com'), false);
+  assert.equal(isServiceBotAuthor('dependabot[bot]@example.com'), false);
+  assert.equal(isServiceBotAuthor('49699333+dependabot[bot]@users.noreply.github.com.example.com'), false);
+});
+
+test("checkCommit rejects an AI agent bot's unsigned commit", () => {
+  assert.match(
+    checkCommit({
+      authorName: 'devin-ai-integration[bot]',
+      authorEmail: '158243242+devin-ai-integration[bot]@users.noreply.github.com',
+      message: 'feat: x',
+    }),
+    /no Signed-off-by trailer/,
+  );
 });
 
 test("checkCommit exempts Dependabot's commit despite its mismatched sign-off", () => {

@@ -1854,16 +1854,20 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   author's (case-insensitive) — the trailer `git commit -s` writes. The
   commits checked are `commitlint-range.mjs`'s (`selectLintableCommits`,
   imported rather than duplicated): non-merge commits in the range that
-  touched a file.
+  touched a file. Commits authored by the Dependabot and GitHub Actions
+  service accounts (`SERVICE_BOT_AUTHORS`) are exempt; every other author,
+  including any other bot account, needs the sign-off.
   - Env: `BASE_SHA` / `HEAD_SHA` (required, PR base/head SHAs), `GIT_CWD`
     (optional; default `process.cwd()`).
-  - Exit: `0` when every contributed commit is signed off by its author (or
-    the range contributes none), `1` when one is not, or on a missing bound or
-    an unresolvable range.
+  - Exit: `0` when every contributed commit is signed off by its author or
+    authored by an exempt service account (or the range contributes none),
+    `1` when one is neither, or on a missing bound or an unresolvable range.
   - Tests: `dco.test.mjs` (run in `ci.yml` immediately before the `dco`
     step), against real ephemeral git repos. Negative controls: an unsigned
     commit beside signed ones fails, a sign-off by someone other than the
-    author fails, and an unresolvable range fails.
+    author fails, an unresolvable range fails, a look-alike of a service
+    account's address is checked, and an AI agent bot's unsigned commit
+    fails.
 - **`markdownlint-run.mjs`** — the ONLY markdownlint-cli2 invocation in the
   repository, shared by three callers: `ci.yml`'s `lint` job, the `lint-md` /
   `fmt-md` recipes, and lefthook's `markdownlint` pre-commit hook. It exists

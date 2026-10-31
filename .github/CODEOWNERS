@@ -1,39 +1,62 @@
 # CODEOWNERS — auto-request review on touched paths.
 # Format: <pattern> <owner1> <owner2> ...
+#
+# The area sections match the areas in CONTRIBUTOR_LADDER.md: a reviewer of
+# an area is added as an owner of every path in its section.
 
 # Fallback: everything goes to @tsouza
 *                                          @tsouza
 
-# QL heads + shared IR + emitter + optimizer
-/internal/chplan/                          @tsouza
-/internal/chsql/                           @tsouza
-/internal/optimizer/                       @tsouza
+# PromQL head
 /internal/promql/                          @tsouza
+/internal/api/prom/                        @tsouza
+/compatibility/prometheus/                 @tsouza
+
+# LogQL head
 /internal/logql/                           @tsouza
+/internal/drain/                           @tsouza
+/internal/api/loki/                        @tsouza
+/compatibility/loki/                       @tsouza
+
+# TraceQL head
 /internal/traceql/                         @tsouza
+/internal/api/tempo/                       @tsouza
+/compatibility/tempo/                      @tsouza
 
-# HTTP API surface
-/internal/api/                             @tsouza
+# Plan IR and optimizer
+/internal/chplan/                          @tsouza
+/internal/optimizer/                       @tsouza
 
-# Schema, config, CH client
-/internal/schema/                          @tsouza
-/internal/config/                          @tsouza
+# SQL and ClickHouse
+/internal/chsql/                           @tsouza
+/internal/engine/                          @tsouza
+/internal/chopt/                           @tsouza
 /internal/chclient/                        @tsouza
+/internal/schema/                          @tsouza
 
-# CI + workflows + release plumbing
+# Deployment and operations
+/deploy/                                   @tsouza
+/internal/config/                          @tsouza
+/cmd/cerberus/                             @tsouza
+
+# CI and test infrastructure
 /.github/                                  @tsouza
-/.goreleaser.yml                           @tsouza
-/Justfile                                  @tsouza
-
-# Test surfaces
 /test/                                     @tsouza
-/harness/                                  @tsouza
+/Justfile                                  @tsouza
+/just/                                     @tsouza
 
-# Docs + roadmap
+# Release plumbing
+/.goreleaser.yml                           @tsouza
+
+# Project documents
 /docs/                                     @tsouza
 /README.md                                 @tsouza
 /CLAUDE.md                                 @tsouza
 /AGENTS.md                                 @tsouza
 /CONTRIBUTING.md                           @tsouza
+/CONTRIBUTOR_LADDER.md                     @tsouza
+/GOVERNANCE.md                             @tsouza
+/MAINTAINERS.md                            @tsouza
+/ROADMAP.md                                @tsouza
 /CODE_OF_CONDUCT.md                        @tsouza
 /SECURITY.md                               @tsouza

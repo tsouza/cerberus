@@ -3,18 +3,17 @@
 This roadmap lists the directions cerberus is working in. A theme with tracking issues links to them, and
 those issues carry the current status, the scope and the discussion. The roadmap changes by pull
 request, like any other document. To propose a direction, open an issue; to help with one, comment
-on its issues, or start from [`good first issue`][gfi] and [`help wanted`][hw].
+on its issues.
 
 ## Query-language parity
 
-cerberus answers PromQL, LogQL and TraceQL exactly as Prometheus, Loki and Tempo do, measured by the
+The goal is that cerberus answers PromQL, LogQL and TraceQL exactly as Prometheus, Loki and Tempo do, measured by the
 differential harnesses described in [docs/compatibility.md](docs/compatibility.md). Every difference
 from a reference backend is a bug, fixed at its source.
 
 - Close every open divergence on the three heads: [PromQL][promql], [LogQL][logql],
   [TraceQL][traceql].
-- Widen the TraceQL corpus. No third-party TraceQL conformance suite exists, so its corpus is the
-  project's own and its confidence the lowest of the three heads; every reported TraceQL divergence
+- Widen the TraceQL corpus, which the project maintains itself: every reported TraceQL divergence
   becomes a corpus case.
 - Divergences that need a fix in an upstream dependency are tracked under [`upstream`][upstream]
   until that fix lands.
@@ -81,11 +80,12 @@ Tracked in [#4021](https://github.com/tsouza/cerberus/issues/4021).
 ## ClickHouse releases
 
 cerberus tracks each ClickHouse release for new functions and settings it can use, and for fixes and
-regressions that change what it can safely enable. Each supported server line has a version floor
-per optimization, recorded in [docs/clickhouse-optimizations.md](docs/clickhouse-optimizations.md).
+regressions that change what it can safely enable. Each optimization records the ClickHouse versions it
+is enabled on, in [docs/clickhouse-optimizations.md](docs/clickhouse-optimizations.md).
 
 - Release-by-release capability audits: [`ch-capability-audit`][audit].
-- Keep the bundled ClickHouse in the Helm chart and quickstart on a current long-term-support line.
+- Move the bundled ClickHouse in the Helm chart and quickstart to the current long-term-support line,
+  26.8 ([#3985](https://github.com/tsouza/cerberus/issues/3985)), and keep it on one.
 
 ## Performance and resource safety
 
@@ -93,13 +93,11 @@ Every query is computed by ClickHouse, and cerberus's job is to lower it to SQL 
 fast and within its memory limit.
 
 - Cheaper lowerings and new optimizer rules: [`performance`][perf].
-- Every unbounded operator has a memory bound or a spill-to-disk backstop, on every serving path.
+- Give every unbounded operator a memory bound or a spill-to-disk backstop, on every serving path.
 - Performance baselines are measured per release and gate the next one; see
   [docs/performance.md](docs/performance.md).
 
 ## Test and CI health
-
-The test suite is the project's specification, and a slow or flaky lane erodes it.
 
 - Keep every CI lane well inside its time budget as the corpus grows: [`area/ci`][ci].
 - Keep every local recipe runnable on a developer machine.
@@ -125,8 +123,6 @@ These are boundaries of the project, not gaps in it:
 - **Identity management.** Users, groups and roles live in the identity provider; cerberus verifies
   identities and does not store them.
 
-[gfi]: https://github.com/tsouza/cerberus/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22
-[hw]: https://github.com/tsouza/cerberus/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22
 [promql]: https://github.com/tsouza/cerberus/issues?q=is%3Aopen+is%3Aissue+label%3Aarea%2Fpromql
 [logql]: https://github.com/tsouza/cerberus/issues?q=is%3Aopen+is%3Aissue+label%3Aarea%2Flogql
 [traceql]: https://github.com/tsouza/cerberus/issues?q=is%3Aopen+is%3Aissue+label%3Aarea%2Ftraceql

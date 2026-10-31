@@ -13,7 +13,7 @@ git push -u origin <branch>
 gh pr create
 ```
 
-The `main` ruleset blocks a merge on 17 status checks: `check` (golangci-lint + race tests + build), `lint` (commitlint + markdownlint), `CodeQL`, `agpl-clean`, `ch-server-safety`, `chart-validate`, `config-docs`, `coverage`, `forbid-deferral`, `forbid-skip`, `link-check`, `pr-body`, `probe`, `property (PromQL + LogQL + TraceQL, rapid N=500)`, `quickstart`, `schema-ddl` and `strict-scan`. That set is the ruleset's to state, not this file's — read it back with
+The `main` ruleset blocks a merge on 17 status checks: `check` (race-detected tests + build), `lint` (golangci-lint, go-arch-lint, actionlint, commitlint, DCO sign-off, markdownlint, and the CI scripts' self-tests), `CodeQL`, `agpl-clean`, `ch-server-safety`, `chart-validate`, `config-docs`, `coverage`, `forbid-deferral`, `forbid-skip`, `link-check`, `pr-body`, `probe`, `property (PromQL + LogQL + TraceQL, rapid N=500)`, `quickstart`, `schema-ddl` and `strict-scan`. That set is the ruleset's to state, not this file's — read it back with
 
 ```sh
 gh api repos/tsouza/cerberus/rules/branches/main \
@@ -25,7 +25,7 @@ The heavier lanes — the three `compatibility/<head>` harnesses, `compatibility
 
 ## House rules
 
-1. **PR-per-change.** No direct pushes to `main` — branch protection rejects them. Even tiny fixes go through a PR.
+1. **PR-per-change.** No direct pushes to `main` — the `main` ruleset rejects them, administrators included. Even tiny fixes go through a PR.
 2. **Issues are open for bug reports + design discussion, and are where out-of-scope work goes.** File one if you want to flag a bug, propose a feature, or ask a design question before implementing. They are also mandatory in one direction: if your PR turns up a real problem that belongs outside its scope, open an issue for it rather than writing "follow-up" / "deferred" / "not fixed here" into the PR description. Once the PR merges, that sentence is invisible; an issue stays open until someone closes it. A clear issue plus a follow-up PR is the whole workflow.
 3. **Conventional Commits.** Subjects look like `feat(promql): support offset modifier` or `chore(deps): bump grafana/loki/v3 to v3.8.0`. `subject-case` is relaxed (Dependabot's `Bump X from Y to Z` passes); type + scope are still enforced. `.commitlintrc.json` is the source of truth. The PR title is linted as the squash subject, `(#N)` suffix included; `pr-hygiene.yml`'s `dependabot-title` job shortens a Dependabot title that would exceed `header-max-length` before `pr-body` lints it.
 4. **PR labels.** Every PR carries exactly one *type* label, derived from its Conventional-Commit prefix: `feat → enhancement`, `fix → bug`, `docs → documentation`, `chore(deps)`/`build(deps)` → `dependencies`, `ci → ci`, `test → test`, `refactor → refactor`, `perf → performance`, `chore → chore`, `build → build`, `revert → revert`. Release PRs (`chore(release)`) also get `release`. The `.github/workflows/pr-label.yml` auto-labeler applies this from the PR title on open/edit — you don't have to set it by hand; just keep the title's Conventional-Commit prefix correct. `area/*` labels are orthogonal and applied as needed.
@@ -43,7 +43,8 @@ email must be the commit's author email.
 
 The required `lint` check runs `.github/scripts/dco.mjs`, which fails a pull request containing a
 commit without its author's sign-off. Merge commits, commits that change no files, and commits authored
-by a GitHub bot account (such as Dependabot) are not checked.
+by the Dependabot and GitHub Actions service accounts are not checked. Every other author, including an
+AI coding agent's GitHub App, needs the sign-off.
 To sign off commits already on your branch:
 
 ```sh
@@ -72,7 +73,7 @@ written with AI is held to the same rules as any other:
   that fail when the code under them is broken, and follows the hard invariants in
   [CLAUDE.md](CLAUDE.md). There is no lighter path for generated code, and no heavier one.
 - **Keep it reviewable.** Submit one focused change per pull request, scoped as an issue describes,
-  rather than a large generated rewrite. Reviewer time is the project's scarcest resource.
+  rather than a large generated rewrite.
 
 ## Setup
 
