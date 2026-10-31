@@ -2817,7 +2817,9 @@ var registry = []Feature{
 		Stability:   Experimental,
 		AutoSelect:  false,
 		SettingOnly: true,
-		Doc:         "stamp max_bytes_before_external_distinct=cap/2 on every data-plane query (server >= 26.9, ClickHouse#116569, opt-in via CERBERUS_CH_OPTIMIZATIONS until the quickstart reaches 26.9) — lets a high-cardinality DISTINCT spill instead of aborting at the cap; inside a recursive CTE the step's DISTINCT spills but the step's output stays in memory",
+		Doc: "stamp max_bytes_before_external_distinct=cap/2 on every data-plane query (server >= 26.9, ClickHouse#116569, " +
+			"opt-in via CERBERUS_CH_OPTIMIZATIONS until the quickstart reaches 26.9) — lets a high-cardinality DISTINCT " +
+			"spill instead of aborting at the cap; inside a recursive CTE the step's DISTINCT spills but the step's output stays in memory",
 	},
 	{
 		ID:         FeatureTraceIDProjection,
