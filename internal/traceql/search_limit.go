@@ -283,6 +283,17 @@ func pushLeafPredicate(n chplan.Node, pred chplan.Expr) chplan.Node {
 		}
 		v.Input = pushLeafPredicate(v.Input, pred)
 		return v
+	case *chplan.TraceLookupFilter:
+		// Same Expr-slot blind spot as the Filter arm: a trace-scoped
+		// comparison against a literal, OR'd with a row comparison
+		// (`{ rootName = name || traceDuration > 1s }`), keeps its per-trace
+		// membership subquery in this predicate. The children — the row
+		// source and every lookup relation — take the generic recurse.
+		pushLeafPredicateIntoCohort(v.Predicate, pred)
+		out, _ := chplan.RewriteChildren(v, func(c chplan.Node) (chplan.Node, bool) {
+			return pushLeafPredicate(c, pred), true
+		})
+		return out
 	case *chplan.SearchTraceLimit:
 		// Already fully windowed: stampSearchTraceLimit creates this node and
 		// folds the window onto its plain-search leaves at
@@ -526,7 +537,9 @@ func searchWindowFromCtx(ctx context.Context) (time.Time, time.Time) {
 // property harness, /traces/{id}) is a no-op: the plan is returned unchanged.
 //
 // Only the plain-search shape is matched — a bare Scan (`{}`) or a
-// Filter(Scan) (`{ <matchers> }`). Metrics pipelines (Aggregate), structural
+// Filter(Scan) (`{ <matchers> }`), alone or as the Input of a
+// TraceLookupFilter (`{ rootName = name }`, whose output rows are its Input's
+// span rows, so ranking them by trace is the same top-N). Metrics pipelines (Aggregate), structural
 // joins, set operations, and the already-bounded nested-set / structure-tab
 // plans (handled by stampNestedSetTraceLimit) are returned unchanged: those
 // either don't drain per-trace summaries or carry their own bound.
@@ -534,9 +547,43 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 	if limit <= 0 || plan == nil {
 		return plan
 	}
-	scan, pred, ok := plainSearchSource(plan)
+	if lookup, ok := plan.(*chplan.TraceLookupFilter); ok {
+		input, ok := boundPlainSearchSource(lookup.Input, lookup.Predicate, start, end, s)
+		if !ok {
+			return plan
+		}
+		// The per-trace lookups and any membership subquery in the joined
+		// predicate scan the spans table too; stampSearchWindow does not
+		// enter the SearchTraceLimit built here, so they take the request
+		// window now, as the plain shape's cohort does below.
+		bounded := *lookup
+		bounded.Input = input
+		if window := andWindow(nil, start, end, s.TimestampColumn); window != nil {
+			bounded.Lookups = make([]chplan.Node, len(lookup.Lookups))
+			for i, l := range lookup.Lookups {
+				bounded.Lookups[i] = pushLeafPredicate(l, window)
+			}
+			pushLeafPredicateIntoCohort(bounded.Predicate, window)
+		}
+		return &chplan.SearchTraceLimit{Input: &bounded, TraceLimit: limit}
+	}
+	input, ok := boundPlainSearchSource(plan, nil, start, end, s)
 	if !ok {
 		return plan
+	}
+	return &chplan.SearchTraceLimit{Input: input, TraceLimit: limit}
+}
+
+// boundPlainSearchSource returns the plain-search row source plan — a Scan or
+// a Filter(Scan), see plainSearchSource — with the request window folded into
+// its predicate and its Scan closed over the columns the search response, the
+// trace ranking, its own predicate and alsoRead (the predicate of a
+// TraceLookupFilter above it, nil otherwise) read off a span row. ok is false
+// for any other shape.
+func boundPlainSearchSource(plan chplan.Node, alsoRead chplan.Expr, start, end time.Time, s schema.Traces) (chplan.Node, bool) {
+	scan, pred, ok := plainSearchSource(plan)
+	if !ok {
+		return nil, false
 	}
 
 	// A trace-scoped intrinsic (traceDuration / rootName / rootServiceName)
@@ -544,9 +591,10 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 	// predicate — a Node behind an Expr slot, invisible to every
 	// RewriteChildren-based walk. stampSearchWindow's cohort descent cannot
 	// reach it either: that pass does not enter a SearchTraceLimit, which is
-	// exactly what this function is about to build. Left unstamped, the
-	// aggregate GROUPs BY TraceId over full retention behind a membership
-	// test that looks bounded — the traces-drilldown unbounded-scan class.
+	// exactly what stampSearchTraceLimit is about to build. Left unstamped,
+	// the aggregate GROUPs BY TraceId over full retention behind a
+	// membership test that looks bounded — the traces-drilldown
+	// unbounded-scan class.
 	//
 	// Stamp it before the outer fold, using the same leaf push the
 	// spanset-aggregate cohort already goes through.
@@ -558,22 +606,19 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 	// subquery and the outer drain scan only [start, end].
 	pred = andWindow(pred, start, end, s.TimestampColumn)
 	closedScan := *scan
-	closedScan.Columns = searchTraceLimitInputColumns(scan.Columns, pred, s)
+	closedScan.Columns = searchTraceLimitInputColumns(scan.Columns, conjoin(pred, alsoRead), s)
 	scan = &closedScan
 
-	var input chplan.Node = scan
-	if pred != nil {
-		input = &chplan.Filter{Input: scan, Predicate: pred}
+	if pred == nil {
+		return scan, true
 	}
-	return &chplan.SearchTraceLimit{
-		Input:      input,
-		TraceLimit: limit,
-	}
+	return &chplan.Filter{Input: scan, Predicate: pred}, true
 }
 
 // searchTraceLimitInputColumns closes the plain-search Scan over the columns
 // consumed by the search response projection, the trace-ranking drain, and
-// the query predicate. SearchTraceLimit is only constructed for the bounded
+// the query predicate. A per-trace lookup column a TraceLookupFilter joins in
+// (traceScopedLookups) is not a span column and stays out. SearchTraceLimit is only constructed for the bounded
 // search path, whose caller always applies the canonical sample projection.
 func searchTraceLimitInputColumns(existing []string, predicate chplan.Expr, s schema.Traces) []string {
 	columns := make(map[string]struct{}, len(existing))
@@ -593,7 +638,7 @@ func searchTraceLimitInputColumns(existing []string, predicate chplan.Expr, s sc
 	add(s.TimestampColumn)
 	add(s.DurationColumn)
 	chplan.InspectExpr(predicate, func(expr chplan.Expr) bool {
-		if ref, ok := expr.(*chplan.ColumnRef); ok {
+		if ref, ok := expr.(*chplan.ColumnRef); ok && !isTraceScopedLookupColumn(ref.Name) {
 			add(ref.Name)
 		}
 		return true

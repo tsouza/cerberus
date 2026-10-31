@@ -1,0 +1,95 @@
+# A trace-scoped intrinsic compared with a per-span operand is evaluated per
+# span: each span compares its OWN trace's value with its OWN operand.
+# Reference Tempo gives a trace without a root span an empty RootSpanName /
+# RootServiceName (vparquet4 traceToParquet) and compares that.
+#
+#   trace ...01  rootName 'm', rootServiceName 'frontend', traceDuration 3s
+#     0001 root  'm' frontend  server    0s +3s
+#     0002       'm' backend   client    1s +1s    span.peer 'm'
+#     0003       'a' frontend  internal  1s +2s
+#     0004       'z' db        client    2s +0.5s  span.peer 'x'
+#   trace ...02  NO root span (0010's parent is a span no row carries):
+#                rootName '', rootServiceName '', traceDuration 2s
+#     0010       'b' svc-b     internal  0s +2s
+#     0011       ''  ''        server    1s +1s
+#   trace ...03  rootName 'n', rootServiceName 'api', traceDuration 1s
+#     0020 root  'n' api       server    0s +1s
+#     0021       'c' api       client    0s +1s    span.peer 'n'
+#   trace ...04  rootName 'q', rootServiceName 'edge', traceDuration 3s,
+#                which no single span covers (the longest span is 1s)
+#     0030 root  'q' edge      server    0s +1s
+#     0031       'w' edge      client    2s +1s    span.peer 'q'
+#
+# Matches 0001, 0011, 0020 and 0030. The `kind` conjunct reads no per-trace
+# value and filters the span scan below the join.
+-- query.traceql --
+{ rootName = name && kind = server }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName, ServiceName, SpanKind, ResourceAttributes, SpanAttributes) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:00', 9), 3000000000, 'm', 'frontend', 'Server',   map('service.name', 'frontend'), map()),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:01', 9), 1000000000, 'm', 'backend',  'Client',   map('service.name', 'backend'),  map('peer', 'm')),
+    ('a0000000000000000000000000000001', '0000000000000003', '0000000000000001', toDateTime64('2024-01-01 00:00:01', 9), 2000000000, 'a', 'frontend', 'Internal', map('service.name', 'frontend'), map()),
+    ('a0000000000000000000000000000001', '0000000000000004', '0000000000000001', toDateTime64('2024-01-01 00:00:02', 9), 500000000,  'z', 'db',       'Client',   map('service.name', 'db'),       map('peer', 'x')),
+    ('a0000000000000000000000000000002', '0000000000000010', '0000000000000000', toDateTime64('2024-01-01 00:00:00', 9), 2000000000, 'b', 'svc-b',    'Internal', map('service.name', 'svc-b'),    map()),
+    ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:00:01', 9), 1000000000, '',  '',         'Server',   map('service.name', ''),         map()),
+    ('a0000000000000000000000000000003', '0000000000000020', '',                 toDateTime64('2024-01-01 00:00:00', 9), 1000000000, 'n', 'api',      'Server',   map('service.name', 'api'),      map()),
+    ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:00:00', 9), 1000000000, 'c', 'api',      'Client',   map('service.name', 'api'),      map('peer', 'n')),
+    ('a0000000000000000000000000000004', '0000000000000030', '',                 toDateTime64('2024-01-01 00:00:00', 9), 1000000000, 'q', 'edge',     'Server',   map('service.name', 'edge'),     map()),
+    ('a0000000000000000000000000000004', '0000000000000031', '0000000000000030', toDateTime64('2024-01-01 00:00:02', 9), 1000000000, 'w', 'edge',     'Client',   map('service.name', 'edge'),     map('peer', 'q'));
+-- expected_rows --
+[
+  ["", {"__cerberus_parentSpanID": "0000000000000010", "__cerberus_spanID": "0000000000000011", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": ""}, "2024-01-01T00:00:01Z", 1000000000],
+  ["m", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 3000000000],
+  ["n", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000020", "__cerberus_traceID": "a0000000000000000000000000000003", "service.name": "api"}, "2024-01-01T00:00:00Z", 1000000000],
+  ["q", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000030", "__cerberus_traceID": "a0000000000000000000000000000004", "service.name": "edge"}, "2024-01-01T00:00:00Z", 1000000000]
+]
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
+-- args --
+[0] string = "Server"
+[1] string = ""
+[2] string = ""
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_spanID"
+[3] string = "Server"
+[4] string = ""
+[5] string = ""
+-- chplan --
+TraceLookupFilter lookups=1 predicate=(FnIfNull(_cerb_root_name, "") = SpanName)
+  Filter predicate=(SpanKind = "Server")
+    Scan(otel_traces)
+  Aggregate groupBy=[TraceId AS _cerb_lookup_trace_id] funcs=[FnArgMin(SpanName, Timestamp) AS _cerb_root_name]
+    Filter predicate=(ParentSpanId = "")
+      Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=1;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT `m`.* FROM (SELECT * FROM `otel_traces` WHERE (`SpanKind` = ?)) AS m LEFT JOIN (SELECT `TraceId` AS `_cerb_lookup_trace_id`, argMin(`SpanName`, `Timestamp`) AS `_cerb_root_name` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `_cerb_lookup_trace_id`) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id` WHERE (ifNull(`_cerb_root_name`, ?) = `SpanName`)
+-- sql_optimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `m`.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanKind`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`SpanKind` = ?)) AS m LEFT JOIN (SELECT `TraceId` AS `_cerb_lookup_trace_id`, argMin(`SpanName`, `Timestamp`) AS `_cerb_root_name` FROM (SELECT `ParentSpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `_cerb_lookup_trace_id`) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id` WHERE (ifNull(`_cerb_root_name`, ?) = `SpanName`))

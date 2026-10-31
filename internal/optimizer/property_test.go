@@ -348,8 +348,8 @@ const maxDroppedPlansPerVerified = 2
 // each generated directly over Scan or Filter(Scan) because that is the
 // adjacency applyStageScan matches. See generateStagePlan. The last arm
 // draws one of the shapes that read a seed of their own — VectorJoin,
-// StructuralJoin and TopK — with the same weight as the whole stage
-// family, so that each of the three is drawn often enough per run for
+// StructuralJoin, TraceLookupFilter and TopK — with the same weight as the
+// whole stage family, so that each of the four is drawn often enough per run for
 // the coverage ledger to pin it rather than depend on the seed's luck.
 func generatePlan(rng *rand.Rand, depth int) chplan.Node {
 	if depth >= 3 {
@@ -393,11 +393,13 @@ func generatePlan(rng *rand.Rand, depth int) chplan.Node {
 // generateSeededShape draws one of the shapes that cannot be generated
 // over the leaf grammar's gauge seed and read a seed of their own.
 func generateSeededShape(rng *rand.Rand) chplan.Node {
-	switch rng.Intn(3) {
+	switch rng.Intn(4) {
 	case 0:
 		return generateVectorJoin(rng)
 	case 1:
 		return generateStructuralJoin(rng, 0)
+	case 2:
+		return generateTraceLookupFilter(rng)
 	default:
 		return generateTopK(rng)
 	}

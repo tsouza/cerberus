@@ -114,6 +114,8 @@ func (ProjectionPushdown) Apply(n chplan.Node) (chplan.Node, bool) {
 			return applyProjectScan(node, child)
 		case *chplan.Filter:
 			return applyProjectFilterScan(node, child)
+		case *chplan.TraceLookupFilter:
+			return applyProjectTraceLookupFilter(node, child)
 		default:
 			return n, false
 		}
@@ -157,34 +159,46 @@ func (ProjectionPushdown) Apply(n chplan.Node) (chplan.Node, bool) {
 // avoids fighting MVSubstitution, which deliberately clears Columns when
 // it rewrites a Scan onto a rollup MV.
 func applyStageScan(stage, input chplan.Node, stageCols []string) (chplan.Node, bool) {
+	newInput, ok := narrowScanSource(input, stageCols)
+	if !ok {
+		return stage, false
+	}
+	return cloneStageOverInput(stage, newInput), true
+}
+
+// narrowScanSource narrows the Scan of input — a Scan, or a Filter(Scan)
+// whose predicate columns are unioned in — to cols, returning a fresh input.
+// ok is false for any other shape, for a Scan already narrowed (the
+// idempotence guard applyStageScan documents), and for an empty column set.
+func narrowScanSource(input chplan.Node, cols []string) (chplan.Node, bool) {
 	switch in := input.(type) {
 	case *chplan.Scan:
 		if len(in.Columns) > 0 {
-			return stage, false
+			return nil, false
 		}
-		cols := unionSortedColumns(stageCols, nil)
+		cols := unionSortedColumns(cols, nil)
 		if len(cols) == 0 {
-			return stage, false
+			return nil, false
 		}
 		newScan := *in
 		newScan.Columns = cols
-		return cloneStageOverInput(stage, &newScan), true
+		return &newScan, true
 	case *chplan.Filter:
 		scan, ok := in.Input.(*chplan.Scan)
 		if !ok || len(scan.Columns) > 0 {
-			return stage, false
+			return nil, false
 		}
-		cols := unionSortedColumns(stageCols, predicateColumns(in.Predicate))
+		cols := unionSortedColumns(cols, predicateColumns(in.Predicate))
 		if len(cols) == 0 {
-			return stage, false
+			return nil, false
 		}
 		newScan := *scan
 		newScan.Columns = cols
 		newFilter := *in
 		newFilter.Input = &newScan
-		return cloneStageOverInput(stage, &newFilter), true
+		return &newFilter, true
 	default:
-		return stage, false
+		return nil, false
 	}
 }
 
@@ -724,6 +738,50 @@ func applyProjectFilterScan(p *chplan.Project, f *chplan.Filter) (chplan.Node, b
 	newScan.Columns = cols
 	newFilter := *f
 	newFilter.Input = &newScan
+	newProject := *p
+	newProject.Input = &newFilter
+	return &newProject, true
+}
+
+// applyProjectTraceLookupFilter handles `Project(TraceLookupFilter(Scan))` and
+// `Project(TraceLookupFilter(Filter(Scan)))`. A TraceLookupFilter passes its
+// Input's rows through unchanged, so the Input Scan must carry the
+// projection's columns, every column the joined predicate reads off the span
+// row, and the trace id the lookups join on. A predicate column a lookup
+// relation provides is not an Input column and stays off the Scan; a lookup
+// whose row type is open cannot say which columns it provides, so the rule
+// declines.
+func applyProjectTraceLookupFilter(p *chplan.Project, f *chplan.TraceLookupFilter) (chplan.Node, bool) {
+	projCols := referencedColumns(p.Projections)
+	if len(projCols) == 0 {
+		return p, false
+	}
+	traceID, err := f.Input.RowType().UniqueNamedRole(chplan.RoleTraceID)
+	if err != nil {
+		return p, false
+	}
+	provided := map[string]struct{}{}
+	for _, lookup := range f.Lookups {
+		rowType := lookup.RowType()
+		if rowType.Open {
+			return p, false
+		}
+		for _, c := range rowType.Columns {
+			provided[c.Name] = struct{}{}
+		}
+	}
+	inputCols := []string{traceID.Name}
+	for _, c := range predicateColumns(f.Predicate) {
+		if _, fromLookup := provided[c]; !fromLookup {
+			inputCols = append(inputCols, c)
+		}
+	}
+	newInput, ok := narrowScanSource(f.Input, unionSortedColumns(projCols, inputCols))
+	if !ok {
+		return p, false
+	}
+	newFilter := *f
+	newFilter.Input = newInput
 	newProject := *p
 	newProject.Input = &newFilter
 	return &newProject, true

@@ -836,7 +836,7 @@ func lowerSpansetFilter(f *traceql.SpansetFilter, s schema.Traces) (chplan.Node,
 	// notContextTop: f.Expression is the very top of the spanset filter's
 	// boolean tree — the one position where reference Tempo's
 	// constant-false NOT-evaluation bug (see lowerUnaryNot) applies.
-	pred, err := lowerBooleanFieldExpr(f.Expression, s, notContextTop)
+	pred, err := lowerBooleanFieldExpr(f.Expression, s, notContextTop, withLookupJoin)
 	if err != nil {
 		return nil, err
 	}
@@ -852,7 +852,7 @@ func lowerSpansetFilter(f *traceql.SpansetFilter, s schema.Traces) (chplan.Node,
 	if pred == nil {
 		return input, nil
 	}
-	return &chplan.Filter{Input: input, Predicate: pred}, nil
+	return traceScopedFilter(input, pred, s), nil
 }
 
 // predicateUsesNestedSetColumns reports whether expr references any of
@@ -879,14 +879,30 @@ func predicateUsesNestedSetColumns(expr chplan.Expr) bool {
 	return false
 }
 
+// lookupJoin says whether the field expression being lowered can read a
+// trace-scoped intrinsic's per-trace value from a joined lookup column.
+//
+// Only a spanset filter's predicate can: traceScopedFilter joins the lookups
+// its row expressions read onto the spans (TraceLookupFilter). A value
+// position outside a filter — an aggregate argument, a `by()` key, a
+// `select()` field — has no such join, so there a trace-scoped intrinsic
+// keeps the per-trace membership lowering and never names a lookup column
+// nothing would provide.
+type lookupJoin bool
+
+const (
+	noLookupJoin   lookupJoin = false
+	withLookupJoin lookupJoin = true
+)
+
 // lowerFieldExpr recursively translates a TraceQL FieldExpression into
 // a chplan.Expr. Handles BinaryOperation (= / != / </ <= / > / >= /
 // =~ / !~ / + / - / etc.), Attribute (dotted paths), Static (typed
 // literal).
-func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, error) {
+func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces, j lookupJoin) (chplan.Expr, error) {
 	switch v := e.(type) {
 	case *traceql.BinaryOperation:
-		return lowerBinaryOperation(v, s)
+		return lowerBinaryOperation(v, s, j)
 	case *traceql.UnaryOperation:
 		// This generic dispatch only ever sees a NOT node for value
 		// (non-boolean) positions, where TraceQL's grammar does not
@@ -895,9 +911,9 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 		// falling through here. notContextOrOperand is the conservative
 		// choice for this unreachable-in-practice path: it folds a
 		// stray NOT to constant-false rather than constant-true.
-		return lowerUnaryOperation(*v, s, notContextOrOperand)
+		return lowerUnaryOperation(*v, s, notContextOrOperand, j)
 	case traceql.UnaryOperation:
-		return lowerUnaryOperation(v, s, notContextOrOperand)
+		return lowerUnaryOperation(v, s, notContextOrOperand, j)
 	case *traceql.Attribute:
 		return lowerAttributeExpr(*v, s)
 	case traceql.Attribute:
@@ -936,7 +952,7 @@ func lowerFieldExpr(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, er
 // tree — see notContext — which determines how a NOT node found at (or
 // under) e resolves reference Tempo's evaluation quirks; see
 // lowerUnaryNot's doc comment.
-func lowerBooleanFieldExpr(e traceql.FieldExpression, s schema.Traces, ctx notContext) (chplan.Expr, error) {
+func lowerBooleanFieldExpr(e traceql.FieldExpression, s schema.Traces, ctx notContext, j lookupJoin) (chplan.Expr, error) {
 	if attr, ok := fieldExprAttribute(e); ok && attr.Intrinsic == traceql.IntrinsicParent {
 		return &chplan.Binary{
 			Op:    chplan.OpNe,
@@ -945,9 +961,9 @@ func lowerBooleanFieldExpr(e traceql.FieldExpression, s schema.Traces, ctx notCo
 		}, nil
 	}
 	if u, ok := asUnaryOperation(e); ok && u.Op == traceql.OpNot {
-		return lowerUnaryNot(u, s, ctx)
+		return lowerUnaryNot(u, s, ctx, j)
 	}
-	return lowerFieldExpr(e, s)
+	return lowerFieldExpr(e, s, j)
 }
 
 // notContext identifies where a `!(...)` unary-NOT node sits in the
@@ -1020,7 +1036,7 @@ const (
 //     [attributeHasNoBacking]. `= nil` is rejected by the OpNotExists
 //     guard that covers every intrinsic (upstream ast_validate.go:
 //     "intrinsics cannot be = nil"), not by anything childCount-specific.
-func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces, ctx notContext) (chplan.Expr, error) {
+func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces, ctx notContext, j lookupJoin) (chplan.Expr, error) {
 	switch u.Op {
 	case traceql.OpExists, traceql.OpNotExists:
 		attr, ok := fieldExprAttribute(u.Expression)
@@ -1038,9 +1054,9 @@ func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces, ctx notConte
 		}
 		return lowerNilComparison(u.Op, attr, s)
 	case traceql.OpNot:
-		return lowerUnaryNot(u, s, ctx)
+		return lowerUnaryNot(u, s, ctx, j)
 	case traceql.OpSub:
-		return lowerUnaryMinus(u, s)
+		return lowerUnaryMinus(u, s, j)
 	}
 	return nil, fmt.Errorf("traceql: unary operator %s is unsupported", u.Op)
 }
@@ -1071,8 +1087,8 @@ func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces, ctx notConte
 // coerceNumericFieldAccess, so duration/int/float operands all land as
 // Float64 — numerically identical to reference's typed negation for the
 // comparisons TraceQL allows (`<neg-expr> <op> <numeric-literal>`).
-func lowerUnaryMinus(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, error) {
-	operand, err := lowerFieldExpr(u.Expression, s)
+func lowerUnaryMinus(u traceql.UnaryOperation, s schema.Traces, j lookupJoin) (chplan.Expr, error) {
+	operand, err := lowerFieldExpr(u.Expression, s, j)
 	if err != nil {
 		return nil, err
 	}
@@ -1122,7 +1138,7 @@ func lowerUnaryMinus(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, er
 // logically-correct translation there: SQL `not(<inner>)` (Tempo's own
 // UnaryOperation.execute OpNot semantics), wrapping the recursively
 // lowered operand in `chplan.FuncCall{Fn: chplan.FnNot}`.
-func lowerUnaryNot(u traceql.UnaryOperation, s schema.Traces, ctx notContext) (chplan.Expr, error) {
+func lowerUnaryNot(u traceql.UnaryOperation, s schema.Traces, ctx notContext, j lookupJoin) (chplan.Expr, error) {
 	if inner, ok := asUnaryNot(u.Expression); ok {
 		// Double negation cancels unconditionally: lower the
 		// doubly-wrapped operand as if neither `!` were there, at the
@@ -1132,7 +1148,7 @@ func lowerUnaryNot(u traceql.UnaryOperation, s schema.Traces, ctx notContext) (c
 		// lowerBinaryOperation (see lowerBooleanFieldExpr's doc comment):
 		// `!(!(parent))` must lower via `ParentSpanId != ""`, not a bare
 		// ColumnRef.
-		return lowerBooleanFieldExpr(inner, s, ctx)
+		return lowerBooleanFieldExpr(inner, s, ctx, j)
 	}
 	if ctx == notContextTop {
 		return &chplan.LitBool{V: false}, nil
@@ -1144,7 +1160,7 @@ func lowerUnaryNot(u traceql.UnaryOperation, s schema.Traces, ctx notContext) (c
 		// `x || false` to `x`).
 		return &chplan.LitBool{V: ctx == notContextAndOperand}, nil
 	}
-	inner, err := lowerBooleanFieldExpr(u.Expression, s, ctx)
+	inner, err := lowerBooleanFieldExpr(u.Expression, s, ctx, j)
 	if err != nil {
 		return nil, err
 	}
@@ -1375,7 +1391,7 @@ func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, erro
 	return lowerAttribute(a, s)
 }
 
-func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, error) {
+func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces, j lookupJoin) (chplan.Expr, error) {
 	// `attr = a || attr = b` is folded by the Tempo parser into a single
 	// `attr IN [a, b]` BinaryOperation (OpIn / OpNotIn) — Grafana's Traces
 	// Drilldown emits this shape for multi-value filters. Intercept it
@@ -1415,7 +1431,7 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// trace's overall time bounds), so the comparison is real rather
 	// than constant-false. Intercept before generic lowering would
 	// mis-resolve the name to a SpanAttributes map lookup.
-	if expr, handled, err := lowerTraceScopedBinary(b, op, s); handled {
+	if expr, handled, err := lowerTraceScopedBinary(b, op, s, j); handled {
 		return expr, err
 	}
 	// Nested-set intrinsics (nestedSetParent / nestedSetLeft /
@@ -1423,7 +1439,7 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// before generic lowering. Root-span idioms reduce to ParentSpanId
 	// predicates, while position-dependent comparisons use the synthetic
 	// columns materialised by NestedSetAnnotate.
-	if expr, handled, err := lowerNestedSetBinary(b, op, s); handled {
+	if expr, handled, err := lowerNestedSetBinary(b, op, s, j); handled {
 		return expr, err
 	}
 	// Nested intrinsics (event:name / link:traceID / link:spanID) live on
@@ -1431,7 +1447,7 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// (Events.Name, Links.TraceId, Links.SpanId) rather than inside the
 	// per-row Attributes map; intercept them before generic lowering
 	// would mis-resolve the spelling to a SpanAttributes lookup.
-	if expr, handled, err := lowerNestedIntrinsicBinary(b, op, s); handled {
+	if expr, handled, err := lowerNestedIntrinsicBinary(b, op, s, j); handled {
 		return expr, err
 	}
 	// TraceQL link / event spanset filters live on the OTel-CH `Links` /
@@ -1439,7 +1455,7 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	//   arrayExists(x -> x[<key>] <op> <value>, <Col>.Attributes)
 	// rather than a flat column comparison; capture that as a
 	// NestedArrayExists before generic Binary lowering kicks in.
-	if nested, ok := lowerNestedAttrBinary(b, op, s); ok {
+	if nested, ok := lowerNestedAttrBinary(b, op, s, j); ok {
 		return nested, nil
 	}
 	// AND/OR operands are boolean positions — route through
@@ -1449,7 +1465,9 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 	// filter-predicate-typed) ColumnRef. Every other op's operands are
 	// value positions (`parent = "<hex>"` must keep reading the raw
 	// column), so they keep going through the generic lowerFieldExpr.
-	lowerOperand := lowerFieldExpr
+	lowerOperand := func(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, error) {
+		return lowerFieldExpr(e, s, j)
+	}
 	if op == chplan.OpAnd || op == chplan.OpOr {
 		// AND/OR operands are never the top of the spanset filter's
 		// boolean tree, so a NOT operand here never takes
@@ -1461,7 +1479,7 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces) (chplan.E
 			operandCtx = notContextAndOperand
 		}
 		lowerOperand = func(e traceql.FieldExpression, s schema.Traces) (chplan.Expr, error) {
-			return lowerBooleanFieldExpr(e, s, operandCtx)
+			return lowerBooleanFieldExpr(e, s, operandCtx, j)
 		}
 	}
 	lhs, err := lowerOperand(b.LHS, s)
@@ -1947,7 +1965,7 @@ func lowerAbsentFieldBinary(b *traceql.BinaryOperation, s schema.Traces) (chplan
 // are handled by their own dedicated path (lowerNestedSetBinary) and
 // are not classified here. The trace-scoped root-identity intrinsics
 // (rootName / rootServiceName / traceDuration) used to be classified
-// absent too; they now have a real (correlated-subquery) lowering via
+// absent too; they now have a real per-trace lowering via
 // lowerTraceScopedBinary, so attributeHasNoBacking no longer reports
 // them (see issue #1711).
 func absentAttributePredicate(attr traceql.Attribute, s schema.Traces) (chplan.Expr, bool) {
@@ -1963,8 +1981,8 @@ func absentAttributePredicate(attr traceql.Attribute, s schema.Traces) (chplan.E
 // event:timeSinceStart have no per-span column and no aggregate
 // lowering either. Every other attribute (span / resource maps,
 // intrinsics with a column, and the trace-scoped root-identity
-// intrinsics lowerTraceScopedBinary now resolves via a correlated
-// subquery) has a real backing.
+// intrinsics lowerTraceScopedBinary now resolves per trace) has a real
+// backing.
 //
 // # Why span:childCount stays here (cerberus issue #3229)
 //
@@ -2023,19 +2041,16 @@ func attributeHasNoBacking(attr traceql.Attribute, s schema.Traces) bool {
 // bare or trace:-scoped spelling. The OTel-CH schema has no per-span
 // column for these: the value depends on every span in the trace (which
 // one is root, when the trace started/ended), so lowerTraceScopedBinary
-// resolves them via a correlated per-trace subquery instead of a direct
-// column reference. traceql.ScopedIntrinsicTrace* are currently
+// resolves them from a per-trace aggregate instead of a direct column
+// reference. traceql.ScopedIntrinsicTrace* are currently
 // unreachable from the parser — scopedIntrinsic in ast/parser.go maps
 // the trace:-prefixed spellings onto the SAME unscoped Intrinsic
-// constants bareIntrinsic produces — so this switch defensively
-// includes them too, at zero runtime cost today, in case a future
-// parser change starts emitting them directly.
+// constants bareIntrinsic produces — so traceScopedLookups defensively
+// lists them too, at zero runtime cost today, in case a future parser
+// change starts emitting them directly.
 func isTraceScopedIntrinsic(i traceql.Intrinsic) bool {
-	switch i {
-	case traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceDuration:
-		return true
-	}
-	return isTraceRootIdentityIntrinsic(i)
+	_, ok := traceScopedLookupOf(i)
+	return ok
 }
 
 // rootParentSpanID is the ParentSpanId value that makes a span the ROOT
@@ -2094,9 +2109,10 @@ func rootSpanScan(s schema.Traces) chplan.Node {
 const traceScopedValueAlias = "_cerb_trace_scoped_val"
 
 // traceScopedValueNode returns the un-filtered per-trace aggregate for a
-// trace-scoped intrinsic, with the resolved root-service / root-name /
-// trace-duration value under traceScopedValueAlias. ok is false for any
-// intrinsic other than the three trace-scoped ones.
+// trace-scoped intrinsic: one row per trace, its trace id under keyAlias and
+// the resolved root-service / root-name / trace-duration value under
+// valueAlias. ok is false for any intrinsic other than the three trace-scoped
+// ones.
 //
 // rootService / rootName aggregate rootSpanScan — root spans only — with
 // a single argMin keyed on Timestamp (the earliest root-flagged row,
@@ -2111,9 +2127,9 @@ const traceScopedValueAlias = "_cerb_trace_scoped_val"
 // layer that computes the subtraction the single-AggFunc SELECT-list
 // shape can't express directly. Every trace with a span in the scan has
 // a duration row.
-func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Node, ok bool) {
+func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces, keyAlias, valueAlias string) (node chplan.Node, ok bool) {
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}}
-	groupByAliases := []string{s.TraceIDColumn}
+	groupByAliases := []string{keyAlias}
 	rootValue := func(column string) chplan.Node {
 		return &chplan.Aggregate{
 			Input: rootSpanScan(s), GroupBy: groupBy, GroupByAliases: groupByAliases,
@@ -2123,17 +2139,21 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 					&chplan.ColumnRef{Name: column},
 					&chplan.ColumnRef{Name: s.TimestampColumn},
 				},
-				Alias: traceScopedValueAlias,
+				Alias: valueAlias,
 			}},
 		}
 	}
 
-	switch i {
-	case traceql.IntrinsicTraceRootService, traceql.ScopedIntrinsicTraceRootService:
+	lookup, ok := traceScopedLookupOf(i)
+	if !ok {
+		return nil, false
+	}
+	switch lookup.intrinsic {
+	case traceql.IntrinsicTraceRootService:
 		return rootValue(s.ServiceNameColumn), true
-	case traceql.IntrinsicTraceRootSpan, traceql.ScopedIntrinsicTraceRootName:
+	case traceql.IntrinsicTraceRootSpan:
 		return rootValue(s.SpanNameColumn), true
-	case traceql.IntrinsicTraceDuration, traceql.ScopedIntrinsicTraceDuration:
+	case traceql.IntrinsicTraceDuration:
 		tsNs := func() chplan.Expr {
 			return &chplan.FuncCall{Fn: chplan.FnToUnixNanos, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}}
 		}
@@ -2157,14 +2177,14 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 		return &chplan.Project{
 			Input: agg,
 			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: s.TraceIDColumn}, Alias: s.TraceIDColumn},
+				{Expr: &chplan.ColumnRef{Name: keyAlias}, Alias: keyAlias},
 				{
 					Expr: &chplan.Binary{
 						Op:    chplan.OpSub,
 						Left:  &chplan.ColumnRef{Name: endAlias},
 						Right: &chplan.ColumnRef{Name: startAlias},
 					},
-					Alias: traceScopedValueAlias,
+					Alias: valueAlias,
 				},
 			},
 		}, true
@@ -2195,7 +2215,7 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 // Both forms keep the GROUP BY over root rows, and the negated form's set
 // is the traces that do NOT match — the small side of a `!=`.
 func traceScopedMembership(i traceql.Intrinsic, pred chplan.Expr, s schema.Traces) (chplan.Expr, bool) {
-	valueNode, ok := traceScopedValueNode(i, s)
+	valueNode, ok := traceScopedValueNode(i, s, s.TraceIDColumn, traceScopedValueAlias)
 	if !ok {
 		return nil, false
 	}
@@ -2211,12 +2231,8 @@ func traceScopedMembership(i traceql.Intrinsic, pred chplan.Expr, s schema.Trace
 // rootName / rootServiceName, bare or trace:-scoped spelling — as opposed
 // to traceDuration, which every span of the trace contributes to.
 func isTraceRootIdentityIntrinsic(i traceql.Intrinsic) bool {
-	switch i {
-	case traceql.IntrinsicTraceRootService, traceql.ScopedIntrinsicTraceRootService,
-		traceql.IntrinsicTraceRootSpan, traceql.ScopedIntrinsicTraceRootName:
-		return true
-	}
-	return false
+	lookup, ok := traceScopedLookupOf(i)
+	return ok && lookup.rootIdentity
 }
 
 // traceScopedInSubquery wraps pred (a predicate over traceScopedValueAlias)
@@ -2245,10 +2261,17 @@ func traceScopedInSubquery(valueNode chplan.Node, pred chplan.Expr, s schema.Tra
 // Spans table so ClickHouse aggregates root identity / duration once
 // per trace and the outer predicate only ever compares real values.
 //
+// That membership form needs an operand fixed at plan time. Inside a spanset
+// filter (j == withLookupJoin), a comparison against an operand read from the
+// span row (`{ rootName = name }`) and any arithmetic over the intrinsic are
+// instead row expressions over the trace's value joined onto each span — see
+// lowerTraceScopedPeer. A value position outside a filter has no such join
+// (lookupJoin) and keeps the membership form.
+//
 // Returns handled=false when neither operand references a trace-scoped
 // intrinsic (the caller continues with the next interceptor / generic
 // lowering).
-func lowerTraceScopedBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces) (chplan.Expr, bool, error) {
+func lowerTraceScopedBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces, j lookupJoin) (chplan.Expr, bool, error) {
 	// An operand that is not an attribute reads as the zero Attribute, whose
 	// IntrinsicNone is not trace-scoped, so the intrinsic test alone decides.
 	lAttr, _ := fieldExprAttribute(b.LHS)
@@ -2256,20 +2279,44 @@ func lowerTraceScopedBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sc
 
 	var attr traceql.Attribute
 	var valueSide traceql.FieldExpression
-	effectiveOp := op
+	intrinsicOnLeft := true
 	switch {
 	case isTraceScopedIntrinsic(lAttr.Intrinsic):
 		attr, valueSide = lAttr, b.RHS
 	case isTraceScopedIntrinsic(rAttr.Intrinsic):
 		attr, valueSide = rAttr, b.LHS
-		effectiveOp = flipComparisonOp(op)
+		intrinsicOnLeft = false
 	default:
 		return nil, false, nil
 	}
 
-	rhs, err := lowerFieldExpr(valueSide, s)
-	if err != nil {
-		return nil, true, err
+	var rhs chplan.Expr
+	if j == withLookupJoin {
+		peer, rowOperand, err := lowerTraceScopedPeer(valueSide, s)
+		if err != nil {
+			return nil, true, err
+		}
+		// Arithmetic (`traceDuration * 2`, `traceDuration - duration`) is a
+		// per-span VALUE, not a predicate over the trace: the membership form
+		// would hand the enclosing comparison a boolean in its place. It reads
+		// the joined per-trace value whatever the other operand is.
+		if rowOperand || isArithmeticOp(op) {
+			expr, err := traceScopedRowExpr(attr.Intrinsic, op, peer, intrinsicOnLeft)
+			return expr, true, err
+		}
+		rhs = peer
+	} else {
+		peer, err := lowerFieldExpr(valueSide, s, noLookupJoin)
+		if err != nil {
+			return nil, true, err
+		}
+		rhs = peer
+	}
+	// The membership predicate reads the per-trace value on its left, so an
+	// intrinsic written on the right flips the comparison to keep its meaning.
+	effectiveOp := op
+	if !intrinsicOnLeft {
+		effectiveOp = flipComparisonOp(op)
 	}
 	// traceDuration's per-trace aggregate is Int64 nanoseconds while
 	// rootName / rootServiceName are Strings, so only the duration case
@@ -2279,6 +2326,251 @@ func lowerTraceScopedBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sc
 	pred := &chplan.Binary{Op: effectiveOp, Left: left, Right: rhs}
 	membership, ok := traceScopedMembership(attr.Intrinsic, pred, s)
 	return membership, ok, nil
+}
+
+// lowerTraceScopedPeer lowers the operand a trace-scoped intrinsic is
+// compared with. rowOperand reports whether that operand reads the span row
+// — a span intrinsic or attribute (`name`, `span.foo`, `duration`), or
+// another trace-scoped intrinsic, which is a per-trace value every span of
+// the trace carries — rather than a value fixed at plan time.
+//
+// A plan-time operand keeps the per-trace membership test
+// (traceScopedMembership): the traces whose value satisfies the comparison
+// are one set, the same for every span. A row operand cannot be answered that
+// way — each span compares its OWN trace's value with its OWN operand — so it
+// lowers to a row predicate over the trace's value joined onto the span
+// (traceScopedRowExpr, resolved by traceScopedFilter). Folding the
+// operand into the membership's per-trace subquery instead references the
+// outer span's columns from inside it, a correlated subquery ClickHouse
+// rejects (NOT_IMPLEMENTED) as an IN argument.
+//
+// A trace-scoped peer lowers straight to its own joined value: the generic
+// attribute lowering has no column for it and would read it as "".
+func lowerTraceScopedPeer(e traceql.FieldExpression, s schema.Traces) (expr chplan.Expr, rowOperand bool, err error) {
+	if attr, ok := fieldExprAttribute(e); ok && isTraceScopedIntrinsic(attr.Intrinsic) {
+		column, err := traceScopedLookupColumn(attr.Intrinsic)
+		if err != nil {
+			return nil, false, err
+		}
+		return &chplan.ColumnRef{Name: column}, true, nil
+	}
+	expr, err = lowerFieldExpr(e, s, withLookupJoin)
+	if err != nil {
+		return nil, false, err
+	}
+	return expr, exprReadsRow(expr), nil
+}
+
+// exprReadsRow reports whether e reads any column of the row it is evaluated
+// against, as opposed to being a constant fixed at plan time.
+func exprReadsRow(e chplan.Expr) bool {
+	reads := false
+	chplan.InspectExpr(e, func(x chplan.Expr) bool {
+		switch x.(type) {
+		case *chplan.ColumnRef, *chplan.BareIdent:
+			reads = true
+		}
+		return !reads
+	})
+	return reads
+}
+
+// traceScopedRowExpr is `<the span's trace's value of i> <op> <peer>`, a row
+// expression over the per-trace value traceScopedFilter joins onto every span:
+// a predicate for a comparison op, a value for an arithmetic one. The operands
+// keep their source order (intrinsicOnLeft): `duration - traceDuration` is not
+// `traceDuration - duration`, and an ordering comparison read in source order
+// needs no flipped operator.
+//
+// It keeps the generic binary lowering's two operand rules: a numeric
+// comparison or arithmetic parses a Map-carried peer (traceDuration is Int64
+// nanoseconds), and a comparison against a peer read from an attribute map is
+// guarded by its existence probe, because reference Tempo answers every
+// comparison against an attribute the span never carried with false rather
+// than comparing the map's "" default.
+//
+// The numeric decision is taken on the bare lookup columns, before
+// withRootlessDefault wraps a root-identity one: the wrapping ifNull is a
+// function call, which coerceNumericFieldAccess would read as numeric and
+// parse a String peer to NULL.
+func traceScopedRowExpr(i traceql.Intrinsic, op chplan.BinaryOp, peer chplan.Expr, intrinsicOnLeft bool) (chplan.Expr, error) {
+	column, err := traceScopedLookupColumn(i)
+	if err != nil {
+		return nil, err
+	}
+	value := chplan.Expr(&chplan.ColumnRef{Name: column})
+	value, peer = coerceNumericFieldAccess(op, value, peer, numericIntrinsicColumn(i))
+	value, peer = withRootlessDefault(value), withRootlessDefault(peer)
+	lhs, rhs := value, peer
+	if !intrinsicOnLeft {
+		lhs, rhs = peer, value
+	}
+	expr := chplan.Expr(&chplan.Binary{Op: op, Left: lhs, Right: rhs})
+	if !needsAbsenceGuard(op, lhs, rhs) {
+		return expr, nil
+	}
+	return guardAbsentAttribute(expr, peer), nil
+}
+
+// traceScopedLookup is one trace-scoped intrinsic: its bare and trace:-scoped
+// spellings, whether it is resolved from the trace's root span, and the
+// column a TraceLookupFilter lookup carries its per-trace value under. Each
+// intrinsic has its own column so one predicate can compare several of them,
+// and none collides with a spans-table column or with
+// chplan.TraceLookupKeyColumn.
+type traceScopedLookup struct {
+	intrinsic    traceql.Intrinsic
+	scoped       traceql.Intrinsic
+	rootIdentity bool
+	column       string
+}
+
+// traceScopedLookups is the one list of trace-scoped intrinsics: every
+// predicate over the set (isTraceScopedIntrinsic,
+// isTraceRootIdentityIntrinsic) and every per-intrinsic choice
+// (traceScopedValueNode, traceScopedLookupColumn) reads it. Its order is the
+// order traceScopedFilter joins their lookups in.
+var traceScopedLookups = []traceScopedLookup{
+	{
+		intrinsic: traceql.IntrinsicTraceRootSpan, scoped: traceql.ScopedIntrinsicTraceRootName,
+		rootIdentity: true, column: "_cerb_root_name",
+	},
+	{
+		intrinsic: traceql.IntrinsicTraceRootService, scoped: traceql.ScopedIntrinsicTraceRootService,
+		rootIdentity: true, column: "_cerb_root_service_name",
+	},
+	{
+		intrinsic: traceql.IntrinsicTraceDuration, scoped: traceql.ScopedIntrinsicTraceDuration,
+		column: "_cerb_trace_duration",
+	},
+}
+
+// traceScopedLookupOf returns the traceScopedLookups entry naming i in either
+// spelling; ok is false when i is not trace-scoped.
+func traceScopedLookupOf(i traceql.Intrinsic) (traceScopedLookup, bool) {
+	for _, l := range traceScopedLookups {
+		if i == l.intrinsic || i == l.scoped {
+			return l, true
+		}
+	}
+	return traceScopedLookup{}, false
+}
+
+// isTraceScopedLookupColumn reports whether name is the lookup column of a
+// trace-scoped intrinsic rather than a column of the spans table.
+func isTraceScopedLookupColumn(name string) bool {
+	for _, l := range traceScopedLookups {
+		if l.column == name {
+			return true
+		}
+	}
+	return false
+}
+
+// traceScopedLookupColumn returns the lookup column of trace-scoped
+// intrinsic i, and an error when i is not trace-scoped: a row expression
+// over an unknown column would only fail later, inside ClickHouse.
+func traceScopedLookupColumn(i traceql.Intrinsic) (string, error) {
+	l, ok := traceScopedLookupOf(i)
+	if !ok {
+		return "", fmt.Errorf("traceql: intrinsic %s has no per-trace lookup column", i)
+	}
+	return l.column, nil
+}
+
+// withRootlessDefault gives a root-identity lookup column — the span row's
+// view of its trace's rootName / rootServiceName, read from the column
+// traceScopedFilter joins — the value reference Tempo reports for a trace
+// with no root span. Any other expression is returned unchanged.
+//
+// rootName / rootServiceName come from the trace's root span, so a trace
+// without one has no lookup row. Reference Tempo gives such a trace an empty
+// RootSpanName / RootServiceName (vparquet4 traceToParquet) and compares that,
+// so the value is ifNull'd to "": the LEFT JOIN default is already "" under
+// ClickHouse's join_use_nulls=0, and the ifNull keeps the answer the same
+// where a deployment sets join_use_nulls=1. traceDuration has a lookup row
+// for every trace with a span in the scan, so its column is read as is.
+func withRootlessDefault(e chplan.Expr) chplan.Expr {
+	ref, ok := e.(*chplan.ColumnRef)
+	if !ok {
+		return e
+	}
+	for _, l := range traceScopedLookups {
+		if l.column == ref.Name && l.rootIdentity {
+			return &chplan.FuncCall{Fn: chplan.FnIfNull, Args: []chplan.Expr{ref, &chplan.LitString{V: rootlessRootIdentity}}}
+		}
+	}
+	return e
+}
+
+// traceScopedFilter is the Filter of input by pred, joining the per-trace
+// lookup of every trace-scoped intrinsic a row expression in pred reads
+// (traceScopedRowExpr). A pred with no such expression is a plain Filter.
+//
+// Top-level conjuncts that read no lookup stay a plain Filter directly on
+// input, below the join: they need no per-trace value, and a Filter over the
+// scan keeps the PREWHERE placement and column pruning the emitter and
+// optimizer give that shape. Only the conjuncts that do read a lookup go to
+// the TraceLookupFilter above it.
+func traceScopedFilter(input chplan.Node, pred chplan.Expr, s schema.Traces) chplan.Node {
+	var plain, joined []chplan.Expr
+	for _, conjunct := range andConjuncts(pred) {
+		if len(traceScopedLookupsRead(conjunct)) > 0 {
+			joined = append(joined, conjunct)
+		} else {
+			plain = append(plain, conjunct)
+		}
+	}
+	if len(joined) == 0 {
+		return &chplan.Filter{Input: input, Predicate: pred}
+	}
+	if len(plain) > 0 {
+		input = &chplan.Filter{Input: input, Predicate: conjoinAll(plain)}
+	}
+	joinedPred := conjoinAll(joined)
+	read := traceScopedLookupsRead(joinedPred)
+	lookups := make([]chplan.Node, 0, len(read))
+	for _, l := range read {
+		node, _ := traceScopedValueNode(l.intrinsic, s, chplan.TraceLookupKeyColumn, l.column)
+		lookups = append(lookups, node)
+	}
+	return &chplan.TraceLookupFilter{Input: input, Lookups: lookups, Predicate: joinedPred}
+}
+
+// traceScopedLookupsRead returns the lookups whose column e reads, in
+// traceScopedLookups order.
+func traceScopedLookupsRead(e chplan.Expr) []traceScopedLookup {
+	readCols := map[string]bool{}
+	chplan.InspectExpr(e, func(x chplan.Expr) bool {
+		if ref, ok := x.(*chplan.ColumnRef); ok {
+			readCols[ref.Name] = true
+		}
+		return true
+	})
+	var out []traceScopedLookup
+	for _, l := range traceScopedLookups {
+		if readCols[l.column] {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// andConjuncts flattens the top-level AND chain of e into its conjuncts.
+func andConjuncts(e chplan.Expr) []chplan.Expr {
+	if b, ok := e.(*chplan.Binary); ok && b.Op == chplan.OpAnd {
+		return append(andConjuncts(b.Left), andConjuncts(b.Right)...)
+	}
+	return []chplan.Expr{e}
+}
+
+// conjoinAll ANDs conjuncts left to right; it is andConjuncts' inverse.
+func conjoinAll(conjuncts []chplan.Expr) chplan.Expr {
+	var out chplan.Expr
+	for _, c := range conjuncts {
+		out = conjoin(out, c)
+	}
+	return out
 }
 
 // lowerStaticArray turns a TraceQL array Static (TypeStringArray /
@@ -2824,7 +3116,7 @@ func isNumericExpr(expr chplan.Expr) bool {
 //
 // Returns handled=false when neither side references a nested-set
 // intrinsic (the caller continues with generic lowering).
-func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces) (chplan.Expr, bool, error) {
+func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces, j lookupJoin) (chplan.Expr, bool, error) {
 	var attr traceql.Attribute
 	var other traceql.FieldExpression
 	flipped, negated := false, false
@@ -2879,7 +3171,7 @@ func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sche
 	if !ok {
 		return nil, true, fmt.Errorf("traceql: intrinsic %s is not a nested-set position", attr.Intrinsic)
 	}
-	rhs, err := lowerFieldExpr(other, s)
+	rhs, err := lowerFieldExpr(other, s, j)
 	if err != nil {
 		return nil, true, err
 	}
@@ -3053,13 +3345,13 @@ func nonRootCmpConstant(op chplan.BinaryOp, v int64) (value, constant bool) {
 //
 // Returns handled=false when neither side references a nested intrinsic
 // (the caller continues with the next interception / generic lowering).
-func lowerNestedIntrinsicBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces) (chplan.Expr, bool, error) {
+func lowerNestedIntrinsicBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces, j lookupJoin) (chplan.Expr, bool, error) {
 	build := func(a traceql.Attribute, valueSide traceql.FieldExpression, valueOp chplan.BinaryOp) (chplan.Expr, bool, error) {
 		col, sub, ok := nestedIntrinsicTarget(a, s)
 		if !ok {
 			return nil, false, nil
 		}
-		val, err := lowerFieldExpr(valueSide, s)
+		val, err := lowerFieldExpr(valueSide, s, j)
 		if err != nil {
 			return nil, true, err
 		}
@@ -3116,13 +3408,13 @@ func nestedIntrinsicTarget(a traceql.Attribute, s schema.Traces) (col, sub strin
 // reference is always the implicit `x[?]` and the literal is the RHS
 // of the comparison. Returns ok=false when neither side is a link- or
 // event-scoped attribute (the caller falls back to flat Binary lowering).
-func lowerNestedAttrBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces) (chplan.Expr, bool) {
+func lowerNestedAttrBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s schema.Traces, j lookupJoin) (chplan.Expr, bool) {
 	if lhsAttr, ok := nestedScopedAttr(b.LHS); ok {
 		col, key, ok := nestedAttrTarget(lhsAttr, s)
 		if !ok {
 			return nil, false
 		}
-		val, err := lowerFieldExpr(b.RHS, s)
+		val, err := lowerFieldExpr(b.RHS, s, j)
 		if err != nil {
 			return nil, false
 		}
@@ -3139,7 +3431,7 @@ func lowerNestedAttrBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sch
 		if !ok {
 			return nil, false
 		}
-		val, err := lowerFieldExpr(b.LHS, s)
+		val, err := lowerFieldExpr(b.LHS, s, j)
 		if err != nil {
 			return nil, false
 		}

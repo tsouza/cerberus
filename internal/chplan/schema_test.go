@@ -29,6 +29,7 @@ func TestRowTypeEveryNode(t *testing.T) {
 		{&Limit{Input: scan}, canonical},
 		{&OrderBy{Input: scan}, canonical},
 		{&SearchTraceLimit{Input: traces}, Schema{Columns: traceRoles}},
+		{&TraceLookupFilter{Input: traces, Lookups: []Node{scan}, Predicate: &LitBool{V: true}}, Schema{Columns: traceRoles}},
 		{&MetricsSecondStage{Input: scan}, canonical},
 		{&TopK{Input: scan, Columns: []string{"labels", "value"}}, groupValue},
 		{&Project{Input: scan, Projections: []Projection{{Expr: key}, {Expr: &LitInt{V: 1}, Alias: "value"}}}, groupValue},
