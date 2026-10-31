@@ -238,7 +238,7 @@ func TestConditionCache_CerberusShapesAcrossBuilds(t *testing.T) {
 						t.Fatal("the resolved set enabled result_cache; every probe answer must be computed, not served from cache")
 					}
 					prodClient := s.client(t, adminUser, adminPassword, chclient.Config{})
-					prodClient.SetQueryConditionCacheOverride(conditionCacheOverrideOn(s.version))
+					prodClient.SetQueryConditionCacheDisabled(chopt.KnownUnsafe(chopt.FeatureConditionCache, s.version))
 					prod := newProbeMux(t, prodClient, rules)
 
 					// The effective setting cerberus's query ran under: forced off
@@ -320,14 +320,6 @@ func assertDefectRange(t *testing.T, version chopt.Version, defect string, poiso
 	if covered != poisoned {
 		t.Errorf("chopt says %s affects %s = %v, but the reproduction poisoned = %v", defect, version, covered, poisoned)
 	}
-}
-
-// conditionCacheOverrideOn is the client-wide override cmd/cerberus installs
-// against a single-node fleet on version (chopt.FleetDefectGate, as its
-// conditionCacheOverride decides).
-func conditionCacheOverrideOn(version chopt.Version) chopt.DefectGate {
-	unsafe := func(v chopt.Version) bool { return chopt.KnownUnsafe(chopt.FeatureConditionCache, v) }
-	return chopt.FleetDefectGate([]chopt.Version{version}, true, unsafe, chopt.QueryConditionCacheSettingSince, chopt.DefectAbsent)
 }
 
 // probeQueryID is a unique query_id for one production-wiring dispatch.

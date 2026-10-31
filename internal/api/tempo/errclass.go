@@ -114,17 +114,19 @@ func ClassifyErr(err error) ErrClass {
 	case errors.Is(err, chclient.ErrCircuitOpen),
 		errors.Is(err, chclient.ErrQueryTimeout),
 		errors.Is(err, context.DeadlineExceeded),
-		httperr.IsDistributedShardErr(err),
-		errors.Is(err, chclient.ErrUnsafeMixedFleet):
+		httperr.IsDistributedShardErr(err):
 		// Partial ClickHouse Distributed-cluster infrastructure trouble
 		// (cerberus issue #3078; the class is shared across every head by
 		// httperr.IsDistributedShardErr). Same 503 "back off, try again"
 		// class as a circuit-open or timed-out backend — ClickHouse itself
-		// is healthy, one shard behind the Distributed table is not. A
-		// dispatch refused on a fleet mixing a build that needs a
-		// defect-gate setting with one too old to accept it
-		// (httperr.UnsafeMixedFleetMessage) is the same class.
+		// is healthy, one shard behind the Distributed table is not.
 		return ErrClassUnavailable
+	case errors.Is(err, chclient.ErrGateSettingUnsupported):
+		// A ClickHouse node too old for a defect-gate setting cerberus sent
+		// (chclient.GateSettingUnsupportedError): an upstream failure like
+		// any other ClickHouse rejection, whose message names the setting,
+		// the defects and the upgrade.
+		return ErrClassUpstream
 	case errors.Is(err, chclient.ErrTooManySamples),
 		errors.Is(err, chclient.ErrDrainBytesExceeded),
 		errors.Is(err, chclient.ErrMemoryLimitExceeded):

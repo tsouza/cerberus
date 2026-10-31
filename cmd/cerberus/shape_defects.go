@@ -1,22 +1,29 @@
 package main
 
 import (
+	"slices"
+
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
-// shapeDefectsOnFleet decides how the engine handles each shape defect
-// (chopt.ShapeDefects), given what the fleet probe saw and the set in force
-// (chopt.FleetDefectGate): gated while a reached node carries it and every
-// reached node accepts the gate's setting, refused while a reached node
-// carries it and another is too old to accept the setting.
-func shapeDefectsOnFleet(fv chclient.FleetVersions, current chopt.EnabledSet) map[string]chopt.DefectGate {
-	gates := map[string]chopt.DefectGate{}
+// shapeDefectsOnFleet decides which shape defects (chopt.ShapeDefects) the
+// engine must gate queries against, given what the fleet probe saw and the
+// set in force. It is conservative across nodes, like the analyzer decision:
+// a query of the defect's shape can land on any reached node, so one node on
+// an affected build is enough to carry the defect. A complete pass with every
+// node outside its ranges clears it; a pass that could not reach every node
+// and saw no affected build leaves the decision in force, because the node it
+// missed may be the affected one.
+func shapeDefectsOnFleet(fv chclient.FleetVersions, current chopt.EnabledSet) []string {
+	var ids []string
 	for _, d := range chopt.ShapeDefects() {
-		affected := func(v chopt.Version) bool { return chopt.KnownShapeDefect(d.ID, v) }
-		if g := chopt.FleetDefectGate(fv.Versions, fv.Complete, affected, d.SettingSince, current.ShapeDefectGate(d.ID)); g != chopt.DefectAbsent {
-			gates[d.ID] = g
+		affected := slices.ContainsFunc(fv.Versions, func(v chopt.Version) bool {
+			return chopt.KnownShapeDefect(d.ID, v)
+		})
+		if affected || (!fv.Complete && current.HasShapeDefect(d.ID)) {
+			ids = append(ids, d.ID)
 		}
 	}
-	return gates
+	return ids
 }

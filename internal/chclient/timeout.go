@@ -229,7 +229,7 @@ func QueryTimeoutFromContext(ctx context.Context) (time.Duration, bool) {
 // wrapMemoryLimit call so the memory + throwIf + distributed-shard +
 // timeout classifications stay in lock-step across all of them.
 func (c *Client) classifyDriverErr(ctx context.Context, err error) error {
-	return wrapQueryTimeout(wrapThrowIf(wrapDistributedShardErr(wrapMemoryLimit(err, c.maxMemory))), c.effectiveQueryTimeout(ctx))
+	return wrapQueryTimeout(wrapThrowIf(wrapGateSettingUnsupported(wrapDistributedShardErr(wrapMemoryLimit(err, c.maxMemory)))), c.effectiveQueryTimeout(ctx))
 }
 
 // hiddenDeadlineContext hides ctx's own Deadline() from anything reading it

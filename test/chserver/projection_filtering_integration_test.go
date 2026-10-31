@@ -154,7 +154,7 @@ func TestProjectionFiltering_NegatedAndAcrossBuilds(t *testing.T) {
 				t.Fatal("the resolved set enabled result_cache; every probe answer must be computed, not served from cache")
 			}
 			prodClient := s.client(t, adminUser, adminPassword, chclient.Config{})
-			prodClient.SetQueryConditionCacheOverride(conditionCacheOverrideOn(s.version))
+			prodClient.SetQueryConditionCacheDisabled(chopt.KnownUnsafe(chopt.FeatureConditionCache, s.version))
 			prod := newProbeMux(t, prodClient, rules)
 
 			// The effective optimize_use_projection_filtering each query ran

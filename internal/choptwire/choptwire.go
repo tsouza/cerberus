@@ -426,7 +426,6 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 		OptimizeAggregationInOrder: set.Has(chopt.FeatureAggregationInOrder),
 		ConditionCache:             set.Has(chopt.FeatureConditionCache),
 		JoinSpill:                  set.Has(chopt.FeatureJoinSpill),
-		DistinctSpill:              set.Has(chopt.FeatureDistinctSpill),
 		ExpHistogramTwoLevel:       set.Has(chopt.FeatureExpHistogramTwoLevel),
 		TraceIDBitmapFilter:        set.Has(chopt.FeatureTraceIDBitmapFilter),
 		ResultCache:                set.Has(chopt.FeatureResultCache),
@@ -434,9 +433,9 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 		AnalyzerMandatory:          set.AnalyzerMandatory(),
 		// The fleet's shape defects gate one query shape each, whatever
 		// the selection resolved (engine.SettingsRules.applyShapeDefects).
-		ConversionConditionCacheDefect:     shapeDefectGate(set, chopt.ShapeDefectConversionConditionCache),
-		NegatedConjunctionProjectionDefect: shapeDefectGate(set, chopt.ShapeDefectNegatedConjunctionProjection),
-		TraceIDProjectionReadDefect:        shapeDefectGate(set, chopt.ShapeDefectTraceIDProjectionRead),
+		ConversionConditionCacheDefect:     set.HasShapeDefect(chopt.ShapeDefectConversionConditionCache),
+		NegatedConjunctionProjectionDefect: set.HasShapeDefect(chopt.ShapeDefectNegatedConjunctionProjection),
+		TraceIDProjectionReadDefect:        set.HasShapeDefect(chopt.ShapeDefectTraceIDProjectionRead),
 		Metrics:                            metrics,
 		Traces:                             traces,
 		Logs:                               logs,
@@ -453,17 +452,4 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 func SetServerStrategies(cell *chsql.SchemaStrategiesCell, set chopt.EnabledSet) {
 	cell.SetPrewhereByServer(set.Has(chopt.FeatureMoveToPrewhere))
 	cell.SetCanonicalMapTypeCast(set.Has(chopt.FeatureCanonicalMapTypeCast))
-}
-
-// shapeDefectGate maps set's chopt.DefectGate for shape defect id onto the
-// engine's mirror of it.
-func shapeDefectGate(set chopt.EnabledSet, id string) engine.ShapeDefectGate {
-	switch set.ShapeDefectGate(id) {
-	case chopt.DefectGated:
-		return engine.ShapeDefectGated
-	case chopt.DefectRefused:
-		return engine.ShapeDefectRefused
-	default:
-		return engine.ShapeDefectAbsent
-	}
 }

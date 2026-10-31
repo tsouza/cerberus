@@ -12,38 +12,64 @@ import "slices"
 type ShapeDefect struct {
 	ID     string
 	Builds []BuildRange
-	// SettingSince is the first release that accepts the setting the gate
-	// stamps. An older server rejects the whole query (UNKNOWN_SETTING, code
-	// 115), so the gate can only be stamped on a fleet whose every node is at
-	// or above it; such an old node also predates the defect.
-	SettingSince Version
+	// Setting is the setting the gate stamps (a GateSettings entry).
+	Setting string
 }
 
-// DefectGate is how the queries of a defect's shape are handled.
-type DefectGate uint8
+// GateSetting is a setting cerberus stamps to switch a defective ClickHouse
+// mechanism off, with the first release that accepts it. A server below Since
+// does not ignore the setting: it rejects the whole query with UNKNOWN_SETTING
+// (code 115). Such a server also predates every defect the setting avoids
+// (TestShapeDefects_RangesStartAtOrAboveTheirSetting), so on a fleet mixing
+// it with an affected node it never answers wrong; it answers that error.
+type GateSetting struct {
+	Name  string
+	Since Version
+	// Defects names the ClickHouse wrong-result defects the setting is
+	// stamped against, for the error a server below Since answers.
+	Defects []string
+}
 
+// Gate setting names, the ClickHouse settings themselves.
 const (
-	// DefectAbsent: no known node carries the defect; nothing is stamped.
-	DefectAbsent DefectGate = iota
-	// DefectGated: the gate's setting is stamped on the defect's shape.
-	DefectGated
-	// DefectRefused: a node carries the defect and another is too old to
-	// accept the gate's setting, so no query of the shape can be both sent
-	// the setting and answered by every node; the shape is refused with an
-	// error rather than answered wrong on the affected node.
-	DefectRefused
+	SettingUseQueryConditionCache         = "use_query_condition_cache"
+	SettingOptimizeUseProjectionFiltering = "optimize_use_projection_filtering"
 )
 
-// Gate setting floors, verified against real servers by test/chserver's
+// gateSettings is the table, verified against real servers by test/chserver's
 // setting-floor probe.
-var (
-	// QueryConditionCacheSettingSince is the first release accepting
-	// use_query_condition_cache, the release the cache shipped in.
-	QueryConditionCacheSettingSince = Version{Major: 25, Minor: 3}
-	// ProjectionFilteringSettingSince is the first release accepting
-	// optimize_use_projection_filtering.
-	ProjectionFilteringSettingSince = Version{Major: 25, Minor: 6}
-)
+var gateSettings = []GateSetting{
+	{
+		Name:    SettingUseQueryConditionCache,
+		Since:   Version{Major: 25, Minor: 3},
+		Defects: []string{"ClickHouse#105686", "ClickHouse#107145", "ClickHouse#119168"},
+	},
+	{
+		Name:    SettingOptimizeUseProjectionFiltering,
+		Since:   Version{Major: 25, Minor: 6},
+		Defects: []string{"ClickHouse#120286", "the 25.11 projection-index read"},
+	},
+}
+
+// GateSettings returns a copy of the gate-setting table.
+func GateSettings() []GateSetting {
+	out := make([]GateSetting, len(gateSettings))
+	for i, g := range gateSettings {
+		g.Defects = slices.Clone(g.Defects)
+		out[i] = g
+	}
+	return out
+}
+
+// GateSettingByName returns the gate setting called name.
+func GateSettingByName(name string) (GateSetting, bool) {
+	for _, g := range GateSettings() {
+		if g.Name == name {
+			return g, true
+		}
+	}
+	return GateSetting{}, false
+}
 
 // Shape defect ids, read by internal/choptwire to wire internal/engine's
 // per-query gates.
@@ -86,24 +112,24 @@ const (
 // per-build surveys are in docs/clickhouse-optimizations.background.md.
 var shapeDefects = []ShapeDefect{
 	{
-		ID:           ShapeDefectConversionConditionCache,
-		SettingSince: QueryConditionCacheSettingSince,
+		ID:      ShapeDefectConversionConditionCache,
+		Setting: SettingUseQueryConditionCache,
 		Builds: []BuildRange{{
 			From: Version{Major: 25, Minor: 3}, Until: Version{Major: 26, Minor: 9},
 			Defect: "ClickHouse#119168: conversion-function verdicts shared across sessions with different conversion settings",
 		}},
 	},
 	{
-		ID:           ShapeDefectNegatedConjunctionProjection,
-		SettingSince: ProjectionFilteringSettingSince,
+		ID:      ShapeDefectNegatedConjunctionProjection,
+		Setting: SettingOptimizeUseProjectionFiltering,
 		Builds: []BuildRange{{
 			From: Version{Major: 25, Minor: 11}, Until: Version{Major: 26, Minor: 10},
 			Defect: "ClickHouse#120286: projection index filters rows a negated conjunction keeps",
 		}},
 	},
 	{
-		ID:           ShapeDefectTraceIDProjectionRead,
-		SettingSince: ProjectionFilteringSettingSince,
+		ID:      ShapeDefectTraceIDProjectionRead,
+		Setting: SettingOptimizeUseProjectionFiltering,
 		Builds: []BuildRange{{
 			From: Version{Major: 25, Minor: 11}, Until: Version{Major: 25, Minor: 12, Patch: 11, Build: 4},
 			Defect: "25.11 projection-index read drops rows of a TraceId lookup that reads a column outside the projection",
@@ -137,43 +163,13 @@ func KnownShapeDefect(id string, server Version) bool {
 	return false
 }
 
-// shapeDefectsOf returns every shape defect server carries, gated: a server
-// inside a defect's range is at or above its SettingSince
-// (TestShapeDefects_RangesStartAtOrAboveTheirSetting).
-func shapeDefectsOf(server Version) map[string]DefectGate {
-	out := map[string]DefectGate{}
+// shapeDefectsOf returns the ids of every shape defect server carries.
+func shapeDefectsOf(server Version) map[string]struct{} {
+	out := map[string]struct{}{}
 	for _, d := range shapeDefects {
 		if KnownShapeDefect(d.ID, server) {
-			out[d.ID] = DefectGated
+			out[d.ID] = struct{}{}
 		}
 	}
 	return out
-}
-
-// FleetDefectGate decides how one defect is handled across a fleet probe
-// pass, given whether each reached build carries it (affected), the first
-// release accepting its gate's setting, whether the pass reached every node,
-// and the decision in force. One affected node puts the defect in force, as a
-// query of its shape can land there; it is gated when every reached node
-// accepts the setting and refused when one does not, because the one driver
-// pool picks the node per connection and cannot send the setting to some
-// nodes only. A pass that could not reach every node and saw no affected
-// build keeps the decision in force, refusing it if a reached node cannot take
-// the setting; a complete pass with no affected build clears it.
-func FleetDefectGate(versions []Version, complete bool, affected func(Version) bool, settingSince Version, current DefectGate) DefectGate {
-	carried, lacking := false, false
-	for _, v := range versions {
-		carried = carried || affected(v)
-		lacking = lacking || v.Less(settingSince)
-	}
-	switch {
-	case !carried && (complete || current == DefectAbsent):
-		return DefectAbsent
-	case lacking:
-		return DefectRefused
-	case carried:
-		return DefectGated
-	default:
-		return current
-	}
 }

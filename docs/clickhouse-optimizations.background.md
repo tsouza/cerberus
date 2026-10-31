@@ -319,7 +319,7 @@ in force, and only a complete pass with every node outside the range lifts it.
 It is a fact about the server, not a selection, which is why `off` carries it
 like `auto`.
 
-## Why a mixed fleet refuses a gated shape rather than stamp or skip its gate
+## Why a gate's setting is stamped on a mixed fleet
 
 The supported floor is 24.8, so a fleet can mix a node too old to know a gate's
 setting with a node inside a defect's range — a rolling upgrade from 24.8
@@ -340,41 +340,41 @@ through `chclient`, against real servers:
 
 `test/chserver`'s `TestShapeDefectGates_SettingFloors` pins the 24.8, 25.3
 and 25.10 rows; the 25.4 to 25.6 rows were run once to place the projection
-setting's floor at 25.6. A setting is not silently ignored, so the
-one-node-is-enough rule alone would break every gated query on such a fleet:
-the stamp it chose fails on the old node, intermittently, with an error naming
-a setting the operator never set. The same held for the build-wide
-condition-cache override, which stamps `use_query_condition_cache=0` on every
-query: a 24.8 node beside a known-unsafe build failed every query that landed
-on it.
+setting's floor at 25.6.
 
-On the old node itself there is nothing to mitigate: every affected range
-starts at or above its gate's first accepting release, because a defect cannot
-predate the mechanism the setting switches off. The difficulty is only a query
-that can land on either node. Four answers were considered:
+What makes stamping safe is that every affected range starts at or above its
+gate's first accepting release (`TestShapeDefects_RangesStartAtOrAboveTheirSetting`):
+a defect cannot predate the mechanism the setting switches off. A node too old
+for the setting therefore never answers the gated shape wrong; it rejects it.
+Every other node answers it correctly, so a mixed fleet keeps answering the
+shape on every node but the old one, and no node ever returns wrong rows.
+`TestShapeDefectGates_MixedFleetNeverAnswersWrong` runs that fleet — 24.8
+beside an affected 26.3 build — through the production handlers.
 
+The raw rejection would reach the caller as an opaque `ClickHouse rejected
+the query` that names neither the defect nor the remedy, so chclient
+recognises `UNKNOWN_SETTING` for a gate setting and reports the setting, the
+defects it avoids and the release to upgrade the node to. It stays a 502, the
+status of every ClickHouse rejection: the failure is on the server side, and
+the node that raised it is the one to act on.
+
+Rejected alternatives:
+
+- **Refuse the shape on such a fleet.** Cerberus would fail every query of the
+  gated shape before dispatch, with one deterministic error, whenever an
+  affected node and an old one were both reached; under the condition-cache
+  override, every query. That gains no correctness — the old node never
+  answers wrong, and the affected node answers right with the setting — and
+  cuts the shape's availability on the fleet to zero, or the whole gateway's
+  under the override.
 - **Decide per node.** The setting would go only to the nodes that know it.
   Cerberus cannot route that way: one driver pool picks the node per
   connection, and replicas behind `clusterAllReplicas`, a `Distributed` table
   or a load balancer are reached through whichever node the connection landed
-  on, so cerberus never chooses which node runs a given query.
-- **Send the setting anyway.** The old node's share of the traffic fails with
-  `UNKNOWN_SETTING`, at random from the client's view, with a message that
-  points at neither the defect nor the upgrade.
-- **Skip the gate.** The affected node answers the defect's shape wrong, with
-  no error. This is the outcome the gates exist to prevent.
-- **Refuse the shape.** Every query of the shape fails with one deterministic
-  error that names the defect, the setting and the upgrade that lifts it; every
-  other shape keeps working, and nothing reaches ClickHouse.
-
-Refusing is the only answer that never returns wrong rows and never fails at
-random, so it is the one taken. The client-wide condition-cache override
-cannot see a query's shape, so its refused state covers every query, which is
-also the scope its gated state already had. The refusal answers 503
-`errorType=unavailable`: ClickHouse is healthy and the query is well-formed;
-the fleet cannot answer it correctly until the upgrade finishes. It is
-breaker-neutral for the same reason as the fan-out admission gate — cerberus
-decided not to send the query, and ClickHouse never saw it.
+  on.
+- **Skip the gate when a node is too old.** The affected node answers the
+  defect's shape wrong, with no error — the outcome the gates exist to
+  prevent.
 
 ## ClickHouse 26.10 wrong-result fixes no cerberus query reaches
 

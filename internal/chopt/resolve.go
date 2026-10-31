@@ -2,7 +2,6 @@ package chopt
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -114,7 +113,7 @@ type Config struct {
 type EnabledSet struct {
 	ids               map[string]struct{}
 	analyzerMandatory bool
-	shapeDefects      map[string]DefectGate
+	shapeDefects      map[string]struct{}
 }
 
 // Has reports whether feature id is in the resolved set.
@@ -142,55 +141,33 @@ func (s EnabledSet) WithAnalyzerMandatory(mandatory bool) EnabledSet {
 	return s
 }
 
-// ShapeDefectGate reports how queries of shape defect id's shape are handled:
-// DefectAbsent when no known build carries it, DefectGated when the
-// resolution was against a build carrying it (KnownShapeDefect) or
-// WithShapeDefects said so, DefectRefused when WithShapeDefects found the
-// fleet mixing a build that carries it with one too old to accept the gate's
-// setting. Every selection resolves it the same way: like AnalyzerMandatory it
-// records what the server does, not what the operator turned on.
-func (s EnabledSet) ShapeDefectGate(id string) DefectGate {
-	return s.shapeDefects[id]
-}
-
-// HasShapeDefect reports whether shape defect id is in force, gated or
-// refused.
+// HasShapeDefect reports whether the set was resolved against a build carrying
+// shape defect id (KnownShapeDefect), or was told so by WithShapeDefects.
+// Every selection resolves it the same way: like AnalyzerMandatory it records
+// what the server does, not what the operator turned on.
 func (s EnabledSet) HasShapeDefect(id string) bool {
-	return s.ShapeDefectGate(id) != DefectAbsent
+	_, ok := s.shapeDefects[id]
+	return ok
 }
 
-// ShapeDefectIDs returns the shape defects in force, sorted, for logs.
+// ShapeDefectIDs returns the shape defects the set carries, sorted, for logs.
 func (s EnabledSet) ShapeDefectIDs() []string {
-	return s.shapeDefectsWhere(func(g DefectGate) bool { return g != DefectAbsent })
-}
-
-// RefusedShapeDefectIDs returns the shape defects whose shape is refused,
-// sorted, for logs.
-func (s EnabledSet) RefusedShapeDefectIDs() []string {
-	return s.shapeDefectsWhere(func(g DefectGate) bool { return g == DefectRefused })
-}
-
-func (s EnabledSet) shapeDefectsWhere(keep func(DefectGate) bool) []string {
 	out := make([]string, 0, len(s.shapeDefects))
-	for id, g := range s.shapeDefects {
-		if keep(g) {
-			out = append(out, id)
-		}
+	for id := range s.shapeDefects {
+		out = append(out, id)
 	}
 	sort.Strings(out)
 	return out
 }
 
-// WithShapeDefects returns s carrying exactly gates as its shape defects, for
-// a caller that knows more builds than the one s was resolved against: one
+// WithShapeDefects returns s carrying exactly ids as its shape defects, for a
+// caller that knows more builds than the one s was resolved against: one
 // reachable build carrying a defect is enough, while the ids are resolved
-// against the oldest. A DefectAbsent entry is dropped.
-func (s EnabledSet) WithShapeDefects(gates map[string]DefectGate) EnabledSet {
-	s.shapeDefects = make(map[string]DefectGate, len(gates))
-	for id, g := range gates {
-		if g != DefectAbsent {
-			s.shapeDefects[id] = g
-		}
+// against the oldest.
+func (s EnabledSet) WithShapeDefects(ids []string) EnabledSet {
+	s.shapeDefects = make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		s.shapeDefects[id] = struct{}{}
 	}
 	return s
 }
@@ -201,7 +178,7 @@ func (s EnabledSet) WithShapeDefects(gates map[string]DefectGate) EnabledSet {
 // only on a genuine transition, so a server whose capabilities have not moved
 // produces no churn and no log noise.
 func (s EnabledSet) Equal(other EnabledSet) bool {
-	return s.analyzerMandatory == other.analyzerMandatory && sameIDs(s.ids, other.ids) && maps.Equal(s.shapeDefects, other.shapeDefects)
+	return s.analyzerMandatory == other.analyzerMandatory && sameIDs(s.ids, other.ids) && sameIDs(s.shapeDefects, other.shapeDefects)
 }
 
 // sameIDs reports whether a and b hold exactly the same keys.

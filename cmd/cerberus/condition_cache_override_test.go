@@ -18,41 +18,32 @@ import (
 var (
 	ccUnsafeBuild = chopt.Version{Major: 26, Minor: 2, Patch: 19, Build: 43}
 	ccFixedBuild  = chopt.Version{Major: 26, Minor: 6, Patch: 1, Build: 1193}
-	// ccPreSettingBuild is the supported floor, which predates
-	// use_query_condition_cache.
-	ccPreSettingBuild = chopt.Version{Major: 24, Minor: 8, Patch: 14, Build: 39}
 )
 
 // TestConditionCacheOverride_ConservativeAcrossTheFleet pins the decision
-// table: any reached node on an unsafe build gates every query while every
-// reached node accepts use_query_condition_cache, and refuses every query
-// while one predates the setting; only a complete pass with every node on a
-// fixed build lifts it; an incomplete pass with no unsafe node leaves the
-// decision in force.
+// table: any reached node on an unsafe build turns the override on; only a
+// complete pass with every node on a fixed build turns it off; an incomplete
+// pass with no unsafe node leaves the decision in force.
 func TestConditionCacheOverride_ConservativeAcrossTheFleet(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name    string
 		fv      chclient.FleetVersions
-		current chopt.DefectGate
-		want    chopt.DefectGate
+		current bool
+		want    bool
 	}{
-		{"single unsafe node", chclient.FleetVersions{Versions: []chopt.Version{ccUnsafeBuild}, Complete: true}, chopt.DefectAbsent, chopt.DefectGated},
-		{"mixed fleet, one unsafe replica", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild, ccUnsafeBuild}, Complete: true}, chopt.DefectAbsent, chopt.DefectGated},
-		{"unsafe node seen, others unreachable", chclient.FleetVersions{Versions: []chopt.Version{ccUnsafeBuild}}, chopt.DefectAbsent, chopt.DefectGated},
-		{"unsafe node next to one predating the setting", chclient.FleetVersions{Versions: []chopt.Version{ccPreSettingBuild, ccUnsafeBuild}, Complete: true}, chopt.DefectAbsent, chopt.DefectRefused},
-		{"node predating the setting, no unsafe node", chclient.FleetVersions{Versions: []chopt.Version{ccPreSettingBuild, ccFixedBuild}, Complete: true}, chopt.DefectGated, chopt.DefectAbsent},
-		{"refused, unsafe node seen, old node unreachable", chclient.FleetVersions{Versions: []chopt.Version{ccUnsafeBuild}}, chopt.DefectRefused, chopt.DefectGated},
-		{"refused, old node seen, unsafe node unreachable", chclient.FleetVersions{Versions: []chopt.Version{ccPreSettingBuild}}, chopt.DefectRefused, chopt.DefectRefused},
-		{"every node fixed", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild, ccFixedBuild}, Complete: true}, chopt.DefectGated, chopt.DefectAbsent},
-		{"fixed nodes seen, one unreachable, override gated", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild}}, chopt.DefectGated, chopt.DefectGated},
-		{"fixed nodes seen, one unreachable, override off", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild}}, chopt.DefectAbsent, chopt.DefectAbsent},
-		{"nothing reachable", chclient.FleetVersions{}, chopt.DefectGated, chopt.DefectGated},
+		{"single unsafe node", chclient.FleetVersions{Versions: []chopt.Version{ccUnsafeBuild}, Complete: true}, false, true},
+		{"mixed fleet, one unsafe replica", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild, ccUnsafeBuild}, Complete: true}, false, true},
+		{"unsafe node seen, others unreachable", chclient.FleetVersions{Versions: []chopt.Version{ccUnsafeBuild}}, false, true},
+		{"every node fixed", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild, ccFixedBuild}, Complete: true}, true, false},
+		{"fixed nodes seen, one unreachable, override on", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild}}, true, true},
+		{"fixed nodes seen, one unreachable, override off", chclient.FleetVersions{Versions: []chopt.Version{ccFixedBuild}}, false, false},
+		{"nothing reachable", chclient.FleetVersions{}, true, true},
 	}
 	for _, tc := range cases {
 		if got := conditionCacheOverride(tc.fv, tc.current); got != tc.want {
-			t.Errorf("%s: override = %d; want %d", tc.name, got, tc.want)
+			t.Errorf("%s: override = %v; want %v", tc.name, got, tc.want)
 		}
 	}
 }
@@ -100,7 +91,7 @@ func TestReprobe_ConditionCacheOverrideEngagesWhenResolveFails(t *testing.T) {
 	}()
 
 	deadline := time.Now().Add(20 * time.Second)
-	for client.QueryConditionCacheOverride() != chopt.DefectGated {
+	for !client.QueryConditionCacheDisabled() {
 		if time.Now().After(deadline) {
 			t.Fatal("the override never engaged after the server moved into a known-unsafe build")
 		}
@@ -129,16 +120,12 @@ func TestRefreshConditionCacheOverride_SharedByHeadViews(t *testing.T) {
 	}
 
 	refreshConditionCacheOverride(quietLogger(), client, probe(ccUnsafeBuild))
-	if got := view.QueryConditionCacheOverride(); got != chopt.DefectGated {
-		t.Fatalf("override %d on a head view after an unsafe fleet probe; want gated", got)
-	}
-	refreshConditionCacheOverride(quietLogger(), client, chclient.FleetVersions{Versions: []chopt.Version{ccPreSettingBuild, ccUnsafeBuild}, Complete: true})
-	if got := view.QueryConditionCacheOverride(); got != chopt.DefectRefused {
-		t.Fatalf("override %d on a head view after a probe mixing an unsafe node with one predating the setting; want refused", got)
+	if !view.QueryConditionCacheDisabled() {
+		t.Fatal("override off on a head view after an unsafe fleet probe")
 	}
 	refreshConditionCacheOverride(quietLogger(), client, probe(ccFixedBuild))
-	if got := view.QueryConditionCacheOverride(); got != chopt.DefectAbsent {
-		t.Fatalf("override %d on a head view after every node answered from a fixed build; want absent", got)
+	if view.QueryConditionCacheDisabled() {
+		t.Fatal("override still on on a head view after every node answered from a fixed build")
 	}
 }
 
@@ -183,7 +170,7 @@ func TestLiveFleetProber_UnreachableNodesMakeAnIncompletePass(t *testing.T) {
 	if fv.Complete || len(fv.Versions) != 0 {
 		t.Fatalf("fleet probe over unreachable addresses = %+v; want an incomplete pass with no versions", fv)
 	}
-	if conditionCacheOverride(fv, chopt.DefectGated) != chopt.DefectGated {
+	if !conditionCacheOverride(fv, true) {
 		t.Fatal("an incomplete pass lifted the override")
 	}
 }

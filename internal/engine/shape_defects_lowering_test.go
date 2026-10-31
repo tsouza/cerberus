@@ -28,8 +28,8 @@ func shapeDefectFleetRules() engine.SettingsRules {
 	return engine.SettingsRules{
 		ConditionCache:                     true,
 		TraceIDBitmapFilter:                true,
-		ConversionConditionCacheDefect:     engine.ShapeDefectGated,
-		NegatedConjunctionProjectionDefect: engine.ShapeDefectGated,
+		ConversionConditionCacheDefect:     true,
+		NegatedConjunctionProjectionDefect: true,
 		Metrics:                            schema.DefaultOTelMetrics(),
 		Traces:                             schema.DefaultOTelTraces(),
 		Logs:                               schema.DefaultOTelLogs(),

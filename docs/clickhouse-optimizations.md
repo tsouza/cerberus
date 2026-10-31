@@ -977,14 +977,10 @@ and, when `CERBERUS_SCHEMA_CLUSTER` is set, every replica of that cluster
 succeeded or changed anything. It lifts only once every node answers from a
 fixed build; a pass that could not reach every node and saw no affected build
 leaves it as it was. A change is logged (`query condition cache override
-changed`, with `query_condition_cache_forced_off` and `queries_refused`).
+changed`).
 
-While a reached node runs a build inside either table row and another reached
-node predates `use_query_condition_cache` (below `25.3`, which rejects the
-whole query with `UNKNOWN_SETTING`), the override cannot be stamped. Every
-data-plane query is then refused before dispatch with HTTP 503
-`errorType=unavailable` and a message naming the setting and the release to
-upgrade to, until the fleet no longer mixes the two
+A node that predates `use_query_condition_cache` (below `25.3`) rejects every
+query the override stamps
 ([Mixed-version fleets](#mixed-version-fleets)).
 
 A server reporting a non-upstream version string — a vendor suffix
@@ -1012,9 +1008,9 @@ withhold no feature and refuse no selection: while any node cerberus can reach
 runs a build inside a defect's range, the engine stamps the setting that
 switches the defective mechanism off on the queries of that shape alone, under
 every selection including `off`, and every other query keeps the mechanism.
-The shape is read off the lowered plan, not the SQL text. When the fleet also
-reaches a node too old to accept that setting, the shape's queries are refused
-instead ([Mixed-version fleets](#mixed-version-fleets)).
+The shape is read off the lowered plan, not the SQL text. A node too old to
+accept that setting rejects the shape's queries
+([Mixed-version fleets](#mixed-version-fleets)).
 
 | Defect                                                                    | Query shape                                                                                                                                                                                                               | Stamped on that shape                 | Affected builds              |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | ---------------------------- |
@@ -1038,35 +1034,30 @@ optimization posture as `shape_defect.<id>`.
 
 ### Mixed-version fleets
 
-A server that does not know a setting rejects the whole query with
-`UNKNOWN_SETTING` (code 115); it does not ignore it. Each gate's setting has a
-first accepting release:
+A gate's setting is stamped whatever the other nodes run. A server that does
+not know a setting rejects the whole query with `UNKNOWN_SETTING` (code 115);
+it does not ignore it. Each gate's setting has a first accepting release:
 
-| Setting                             | First accepting release | Gates                                              |
-| ----------------------------------- | ----------------------- | -------------------------------------------------- |
-| `use_query_condition_cache`         | `25.3`                  | the condition-cache override, ClickHouse#119168    |
-| `optimize_use_projection_filtering` | `25.6`                  | ClickHouse#120286, the 25.11 projection-index read |
+| Setting                             | First accepting release | Stamped against                                                        |
+| ----------------------------------- | ----------------------- | ---------------------------------------------------------------------- |
+| `use_query_condition_cache`         | `25.3`                  | ClickHouse#105686, ClickHouse#107145 (the override), ClickHouse#119168 |
+| `optimize_use_projection_filtering` | `25.6`                  | ClickHouse#120286, the 25.11 projection-index read                     |
 
 Every affected range starts at or above its gate's first accepting release, so
-a node too old for the setting also predates the defect. For each gate, across
-the nodes the fleet probe reached:
+a node too old for the setting also predates the defect. On a fleet mixing
+such a node with an affected one:
 
-| Reached nodes                                                              | Decision | Queries of the shape                                                           |
-| -------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------ |
-| None affected (complete pass)                                              | absent   | Sent as lowered.                                                               |
-| One affected, every node at or above the setting's first accepting release | gated    | Sent with the setting.                                                         |
-| One affected, one below the setting's first accepting release              | refused  | Not sent: HTTP 503 `errorType=unavailable`, naming the defect and the setting. |
+| Node                                      | Query of a gated shape                                                                                |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Affected, at or above the first release   | Answered correctly, with the setting.                                                                 |
+| Unaffected, at or above the first release | Answered, with the setting.                                                                           |
+| Below the first release                   | Rejected: HTTP 502, naming the setting, the defects it avoids and the release to upgrade the node to. |
 
-A pass that reaches only some nodes and sees no affected one keeps the
-decision in force, and turns a gated decision into a refused one when a
-reached node is below the setting's first accepting release. A refused query
-never reaches ClickHouse and does not count against the circuit breaker.
-Queries of every other shape are unaffected, except under the refused
-condition-cache override, which covers every query. Refused defects are logged
-with the resolution (`refused_shape_defects`). The refusal lifts on the first
-re-probe pass after the fleet stops mixing the two: every node upgraded past
-the setting's first accepting release, or every affected node moved off its
-range.
+Queries of every other shape answer on every node, except under the
+condition-cache override, which stamps its setting on every query. No node
+answers a gated query with wrong rows. The error lasts until the old node is
+upgraded past the setting's first accepting release, or until no reached node
+carries the defect.
 
 ### Cancellation of CPU-bound expressions
 

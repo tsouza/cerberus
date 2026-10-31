@@ -2,32 +2,10 @@ package engine
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 )
-
-// ShapeDefectGate is how the engine handles the queries of one fleet shape
-// defect's shape (the ConversionConditionCacheDefect field group of
-// SettingsRules). It mirrors chopt.DefectGate, which internal/choptwire maps
-// onto it.
-type ShapeDefectGate uint8
-
-const (
-	// ShapeDefectAbsent: no reachable node carries the defect.
-	ShapeDefectAbsent ShapeDefectGate = iota
-	// ShapeDefectGated: the query carries the setting that switches the
-	// defective mechanism off.
-	ShapeDefectGated
-	// ShapeDefectRefused: a reachable node carries the defect and another
-	// rejects the setting, so the query is refused before dispatch
-	// (chclient.ErrUnsafeMixedFleet).
-	ShapeDefectRefused
-)
-
-// inForce reports whether the defect is gated or refused.
-func (g ShapeDefectGate) inForce() bool { return g != ShapeDefectAbsent }
 
 // shapeDefectFacts are the plan facts the shape-defect gates read, all taken
 // off Filter predicates: the WHERE / PREWHERE text ClickHouse's condition
@@ -66,9 +44,7 @@ func inspectShapeDefectFacts(plan chplan.Node, traceIDColumn string) shapeDefect
 // anyShapeDefect reports whether any shape defect is in force, so a fleet
 // without one never pays for the walk.
 func (r SettingsRules) anyShapeDefect() bool {
-	return r.ConversionConditionCacheDefect.inForce() ||
-		r.NegatedConjunctionProjectionDefect.inForce() ||
-		r.TraceIDProjectionReadDefect.inForce()
+	return r.ConversionConditionCacheDefect || r.NegatedConjunctionProjectionDefect || r.TraceIDProjectionReadDefect
 }
 
 // shapeDefectFactsOf returns the shape-defect facts of f's plan, or none when
@@ -80,60 +56,45 @@ func (r SettingsRules) shapeDefectFactsOf(f planShapeFacts) shapeDefectFacts {
 	return inspectShapeDefectFacts(f.plan, r.Traces.TraceIDColumn)
 }
 
-// conversionConditionCacheGate reports how f's plan is handled against
-// ClickHouse#119168: the defect's gate when a Filter of the plan parses a
-// String to a float, absent otherwise. Anything but absent also withholds the
-// condition-cache rule's 1.
-func (r SettingsRules) conversionConditionCacheGate(d shapeDefectFacts) ShapeDefectGate {
-	if !d.filterStringToFloat {
-		return ShapeDefectAbsent
-	}
-	return r.ConversionConditionCacheDefect
+// conversionConditionCacheUnsafe reports whether the condition cache would
+// share a wrong granule verdict for the plan d was read from: the fleet
+// carries ClickHouse#119168 and a Filter of the plan parses a String to a
+// float.
+func (r SettingsRules) conversionConditionCacheUnsafe(d shapeDefectFacts) bool {
+	return r.ConversionConditionCacheDefect && d.filterStringToFloat
 }
 
-// projectionFilteringGate reports how f's plan is handled against the
-// projection-index defects. The plan must be TraceId-keyed (the only reads
-// cerberus sends through proj_trace_id); then the 25.11 line's read loss
-// applies to every such read and ClickHouse#120286 to one whose Filter
-// negates a conjunction reading another column. When both apply, refused
-// wins over gated.
-func (r SettingsRules) projectionFilteringGate(f planShapeFacts, d shapeDefectFacts) ShapeDefectGate {
+// projectionFilteringUnsafe reports whether the projection index would drop
+// rows f's plan keeps: the plan is TraceId-keyed (the only reads cerberus
+// sends through proj_trace_id) and either the fleet carries the 25.11 line's
+// projection-index read loss, which every such read triggers, or it carries
+// ClickHouse#120286 and a Filter negates a conjunction reading another
+// column.
+func (r SettingsRules) projectionFilteringUnsafe(f planShapeFacts, d shapeDefectFacts) bool {
 	if !r.eligibleForTraceIDBitmapFilter(f) {
-		return ShapeDefectAbsent
+		return false
 	}
-	gate := r.TraceIDProjectionReadDefect
-	if d.negatedMixedConjunction {
-		gate = max(gate, r.NegatedConjunctionProjectionDefect)
-	}
-	return gate
+	return r.TraceIDProjectionReadDefect || (r.NegatedConjunctionProjectionDefect && d.negatedMixedConjunction)
 }
 
 // applyShapeDefects switches the defective mechanism off on a query of a
 // shape a fleet shape defect returns wrong rows for — see the
-// ConversionConditionCacheDefect field group — or, where the fleet cannot
-// accept the setting that does it, refuses the query
-// (chclient.WithDispatchRefusal). conversion is
-// conversionConditionCacheGate's verdict, computed once by the caller, which
-// also withholds the condition-cache rule's 1 on the same plan.
-func (r SettingsRules) applyShapeDefects(ctx context.Context, f planShapeFacts, d shapeDefectFacts, conversion ShapeDefectGate) context.Context {
-	ctx = applyShapeDefectGate(ctx, conversion, "conversion_condition_cache", settingUseQueryConditionCache)
-	return applyShapeDefectGate(ctx, r.projectionFilteringGate(f, d), "projection_filtering", settingOptimizeUseProjectionFiltering)
-}
-
-// applyShapeDefectGate stamps setting=0 under a gated verdict and marks the
-// query refused under a refused one, naming the defect and the setting.
-func applyShapeDefectGate(ctx context.Context, gate ShapeDefectGate, defect, setting string) context.Context {
-	switch gate {
-	case ShapeDefectGated:
-		return chclient.WithQuerySetting(ctx, setting, 0)
-	case ShapeDefectRefused:
-		return chclient.WithDispatchRefusal(ctx, fmt.Sprintf(
-			"shape defect %s: a reachable node returns wrong rows for this query unless %s=0, and another rejects that setting; upgrade every node to a build that accepts it",
-			defect, setting,
-		))
-	default:
-		return ctx
+// ConversionConditionCacheDefect field group. conversionUnsafe is
+// conversionConditionCacheUnsafe(d), computed once by the caller, which also
+// withholds the condition-cache rule's 1 on the same plan.
+//
+// The setting is stamped whatever the oldest node: a node too old to accept
+// it predates the defect, rejects the query with UNKNOWN_SETTING (which
+// chclient reports as a GateSettingUnsupportedError naming the upgrade), and
+// never answers it wrong.
+func (r SettingsRules) applyShapeDefects(ctx context.Context, f planShapeFacts, d shapeDefectFacts, conversionUnsafe bool) context.Context {
+	if conversionUnsafe {
+		ctx = chclient.WithQuerySetting(ctx, settingUseQueryConditionCache, 0)
 	}
+	if r.projectionFilteringUnsafe(f, d) {
+		ctx = chclient.WithQuerySetting(ctx, settingOptimizeUseProjectionFiltering, 0)
+	}
+	return ctx
 }
 
 // filterParsesStringToFloat reports whether pred calls toFloat64OrZero or

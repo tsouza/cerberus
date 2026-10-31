@@ -13,20 +13,23 @@ import (
 // fleetProber runs one pass of the fleet version probe.
 type fleetProber func(ctx context.Context) chclient.FleetVersions
 
-// conditionCacheOverride decides the client-wide condition-cache override,
-// given what the fleet probe saw and the decision in force
-// (chopt.FleetDefectGate): gated — use_query_condition_cache=0 on every
-// query — while a reached node runs a known-unsafe build and every reached
-// node accepts the setting; refused — every data-plane query fails with
-// chclient.ErrUnsafeMixedFleet — while a reached node runs a known-unsafe
-// build and another predates the setting, so the setting cannot be sent and
-// a query landing on the unsafe node could read a poisoned verdict. The
-// override is lifted only when every known node answered from a build
-// outside the unsafe ranges; a pass that could not reach every node and saw
-// no unsafe build leaves the decision unchanged.
-func conditionCacheOverride(fv chclient.FleetVersions, current chopt.DefectGate) chopt.DefectGate {
-	unsafe := func(v chopt.Version) bool { return chopt.KnownUnsafe(chopt.FeatureConditionCache, v) }
-	return chopt.FleetDefectGate(fv.Versions, fv.Complete, unsafe, chopt.QueryConditionCacheSettingSince, current)
+// conditionCacheOverride decides whether the client must force
+// use_query_condition_cache=0, given what the fleet probe saw and the decision
+// in force. It is conservative across nodes: any reached node on a
+// known-unsafe build keeps the override on, because a query can land on that
+// node however healthy the others are. The override is lifted only when every
+// known node answered from a build outside the unsafe ranges; a pass that could
+// not reach every node and saw no unsafe build leaves the decision unchanged.
+func conditionCacheOverride(fv chclient.FleetVersions, current bool) bool {
+	for _, v := range fv.Versions {
+		if chopt.KnownUnsafe(chopt.FeatureConditionCache, v) {
+			return true
+		}
+	}
+	if !fv.Complete {
+		return current
+	}
+	return false
 }
 
 // refreshConditionCacheOverride installs the override decision fv implies on
@@ -35,16 +38,15 @@ func conditionCacheOverride(fv chclient.FleetVersions, current chopt.DefectGate)
 // whether or not cerberus asks for it, so neither the selection nor a failed
 // or unchanged resolution may stop the override from following the fleet.
 func refreshConditionCacheOverride(logger *slog.Logger, client *chclient.Client, fv chclient.FleetVersions) {
-	current := client.QueryConditionCacheOverride()
+	current := client.QueryConditionCacheDisabled()
 	next := conditionCacheOverride(fv, current)
 	if next == current {
 		return
 	}
-	client.SetQueryConditionCacheOverride(next)
+	client.SetQueryConditionCacheDisabled(next)
 	logger.Warn(
 		"query condition cache override changed",
-		"query_condition_cache_forced_off", next == chopt.DefectGated,
-		"queries_refused", next == chopt.DefectRefused,
+		"query_condition_cache_forced_off", next,
 		"fleet_versions", fleetVersionStrings(fv),
 		"fleet_probe_complete", fv.Complete,
 	)

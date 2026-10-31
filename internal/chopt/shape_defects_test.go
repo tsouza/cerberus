@@ -106,81 +106,53 @@ func TestResolve_ShapeDefectsWithholdNothing(t *testing.T) {
 // shape defects is a transition the re-probe must swap in.
 func TestEnabledSet_ShapeDefectsInEqual(t *testing.T) {
 	a := EnabledSet{}
-	b := a.WithShapeDefects(map[string]DefectGate{ShapeDefectConversionConditionCache: DefectGated})
+	b := a.WithShapeDefects([]string{ShapeDefectConversionConditionCache})
 	if a.Equal(b) {
 		t.Error("sets differing only in shape defects compare equal")
 	}
-	if !b.Equal(a.WithShapeDefects(map[string]DefectGate{ShapeDefectConversionConditionCache: DefectGated})) {
+	if !b.Equal(a.WithShapeDefects([]string{ShapeDefectConversionConditionCache})) {
 		t.Error("sets carrying the same shape defects compare unequal")
 	}
 	if !b.HasShapeDefect(ShapeDefectConversionConditionCache) || b.HasShapeDefect(ShapeDefectTraceIDProjectionRead) {
 		t.Errorf("HasShapeDefect disagrees with WithShapeDefects: %v", b.ShapeDefectIDs())
 	}
-	refused := a.WithShapeDefects(map[string]DefectGate{ShapeDefectConversionConditionCache: DefectRefused, ShapeDefectTraceIDProjectionRead: DefectAbsent})
-	if refused.Equal(b) {
-		t.Error("a refused defect compares equal to the same defect gated")
-	}
-	if got := refused.RefusedShapeDefectIDs(); !slices.Equal(got, []string{ShapeDefectConversionConditionCache}) {
-		t.Errorf("RefusedShapeDefectIDs() = %v; want only %s", got, ShapeDefectConversionConditionCache)
-	}
-	if got := refused.ShapeDefectIDs(); !slices.Equal(got, []string{ShapeDefectConversionConditionCache}) {
-		t.Errorf("ShapeDefectIDs() = %v; a DefectAbsent entry must be dropped", got)
-	}
-	if len(b.RefusedShapeDefectIDs()) != 0 {
-		t.Errorf("a gated set reports refused defects %v", b.RefusedShapeDefectIDs())
-	}
 }
 
-// TestShapeDefects_RangesStartAtOrAboveTheirSetting pins what makes a
-// single-build resolution always gated: every build inside a defect's ranges
-// accepts the setting its gate stamps, because the defect cannot predate the
-// mechanism the setting switches off.
+// TestShapeDefects_RangesStartAtOrAboveTheirSetting pins what makes stamping
+// a gate safe on a mixed fleet: every build inside a defect's ranges, and
+// inside condition_cache's known-unsafe ranges, accepts the setting its gate
+// stamps. A node too old for the setting therefore predates the defect; it
+// rejects the query instead of answering it wrong.
 func TestShapeDefects_RangesStartAtOrAboveTheirSetting(t *testing.T) {
-	for _, d := range ShapeDefects() {
-		if d.SettingSince == (Version{}) {
-			t.Errorf("%s: no SettingSince", d.ID)
+	check := func(owner, setting string, ranges []BuildRange) {
+		g, ok := GateSettingByName(setting)
+		if !ok {
+			t.Errorf("%s: gate setting %q is not in the gate-setting table", owner, setting)
+			return
 		}
-		for _, b := range d.Builds {
-			if b.From.Less(d.SettingSince) {
-				t.Errorf("%s: range from %s starts below the setting floor %s", d.ID, b.From, d.SettingSince)
+		if len(g.Defects) == 0 {
+			t.Errorf("%s: gate setting %s names no defect", owner, setting)
+		}
+		for _, b := range ranges {
+			if b.From.Less(g.Since) {
+				t.Errorf("%s: range from %s starts below %s's first accepting release %s", owner, b.From, setting, g.Since)
 			}
 		}
 	}
+	for _, d := range ShapeDefects() {
+		check(d.ID, d.Setting, d.Builds)
+	}
+	check(FeatureConditionCache, SettingUseQueryConditionCache, mustFeature(t, FeatureConditionCache).UnsafeBuilds)
 }
 
-// TestFleetDefectGate pins the per-defect fleet decision: one affected node
-// puts the defect in force, gated when every reached node is at or above the
-// setting floor and refused when one is below it; a complete pass with no
-// affected node clears it, whatever the floor; an incomplete pass with no
-// affected node keeps the decision in force, and refuses it when a reached
-// node cannot take the setting.
-func TestFleetDefectGate(t *testing.T) {
-	floor := Version{Major: 25, Minor: 6}
-	old, affected, clean := Version{Major: 25, Minor: 3}, Version{Major: 25, Minor: 11}, Version{Major: 26, Minor: 10}
-	isAffected := func(v Version) bool { return v == affected }
-	cases := []struct {
-		name     string
-		versions []Version
-		complete bool
-		current  DefectGate
-		want     DefectGate
-	}{
-		{"affected alone", []Version{affected}, true, DefectAbsent, DefectGated},
-		{"affected beside clean", []Version{clean, affected}, true, DefectAbsent, DefectGated},
-		{"affected beside a node below the floor", []Version{old, affected}, true, DefectAbsent, DefectRefused},
-		{"affected beside a node below the floor, incomplete", []Version{old, affected}, false, DefectGated, DefectRefused},
-		{"below the floor beside clean", []Version{old, clean}, true, DefectRefused, DefectAbsent},
-		{"clean, complete", []Version{clean}, true, DefectGated, DefectAbsent},
-		{"clean, incomplete, gated in force", []Version{clean}, false, DefectGated, DefectGated},
-		{"clean, incomplete, refused in force", []Version{clean}, false, DefectRefused, DefectRefused},
-		{"below the floor, incomplete, gated in force", []Version{old}, false, DefectGated, DefectRefused},
-		{"below the floor, incomplete, nothing in force", []Version{old}, false, DefectAbsent, DefectAbsent},
-		{"nothing reached, refused in force", nil, false, DefectRefused, DefectRefused},
-		{"nothing reached, nothing in force", nil, false, DefectAbsent, DefectAbsent},
-	}
-	for _, tc := range cases {
-		if got := FleetDefectGate(tc.versions, tc.complete, isAffected, floor, tc.current); got != tc.want {
-			t.Errorf("%s: FleetDefectGate = %d; want %d", tc.name, got, tc.want)
+// mustFeature returns the registry entry for id.
+func mustFeature(t *testing.T, id string) Feature {
+	t.Helper()
+	for _, f := range Registry() {
+		if f.ID == id {
+			return f
 		}
 	}
+	t.Fatalf("feature %s is not in the registry", id)
+	return Feature{}
 }

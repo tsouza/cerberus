@@ -32,7 +32,7 @@ const settingOptimizeAggregationInOrder = "optimize_aggregation_in_order"
 // >= 25.3 and not a known-unsafe build) AND the read path is predicate-stable;
 // otherwise ConditionCache is false and this rule stamps nothing. On a
 // known-unsafe build the client itself forces the setting to 0 on every query
-// (chclient.Client.SetQueryConditionCacheOverride).
+// (chclient.Client.SetQueryConditionCacheDisabled).
 //
 // perf-sentinel: neutral — a server-side granule cache. It changes how much of
 // a predicate is re-evaluated, never how much state the query builds.
@@ -106,7 +106,7 @@ const settingMinTableRowsToUseProjectionIndex = "min_table_rows_to_use_projectio
 // perf-sentinel: neutral — switching the projection index off makes the read
 // select granules by the primary key alone. It can read more granules, never
 // build more state per row read.
-const settingOptimizeUseProjectionFiltering = "optimize_use_projection_filtering"
+const settingOptimizeUseProjectionFiltering = chclient.SettingOptimizeUseProjectionFiltering
 
 // traceIDBitmapFilterMinTableRows is the value cerberus stamps for
 // settingMinTableRowsToUseProjectionIndex. ClickHouse's own default (1,000,000)
@@ -311,16 +311,12 @@ type SettingsRules struct {
 
 	// ConversionConditionCacheDefect, NegatedConjunctionProjectionDefect and
 	// TraceIDProjectionReadDefect carry the resolved set's shape defects
-	// (chopt.EnabledSet.ShapeDefectGate): a reachable node runs a build on
+	// (chopt.EnabledSet.HasShapeDefect): a reachable node runs a build on
 	// which the named defect returns wrong rows for one recognisable query
-	// shape. Under ShapeDefectGated, applyShapeDefects switches the defective
-	// mechanism off on THAT shape's queries alone, whatever the optimization
-	// selection; every other query, and every query on an unaffected fleet,
-	// keeps it. Under ShapeDefectRefused — the fleet also reaches a node too
-	// old to accept the setting, which would reject the whole query — the
-	// shape's queries are refused before dispatch instead
-	// (chclient.ErrUnsafeMixedFleet). They are fleet facts like
-	// AnalyzerMandatory, not operator switches.
+	// shape. applyShapeDefects switches the defective mechanism off on THAT
+	// shape's queries alone, whatever the optimization selection; every other
+	// query, and every query on an unaffected fleet, keeps it. They are
+	// fleet facts like AnalyzerMandatory, not operator switches.
 	//
 	//   - ConversionConditionCacheDefect (chopt.ShapeDefectConversionConditionCache,
 	//     ClickHouse#119168): use_query_condition_cache=0 on a plan whose
@@ -338,9 +334,9 @@ type SettingsRules struct {
 	// The projection stamp is independent of TraceIDBitmapFilter: the server
 	// reaches the projection index on its own once a table clears
 	// min_table_rows_to_use_projection_index's default.
-	ConversionConditionCacheDefect     ShapeDefectGate
-	NegatedConjunctionProjectionDefect ShapeDefectGate
-	TraceIDProjectionReadDefect        ShapeDefectGate
+	ConversionConditionCacheDefect     bool
+	NegatedConjunctionProjectionDefect bool
+	TraceIDProjectionReadDefect        bool
 
 	// Metrics / Traces / Logs are the schema instances whose SortingKeyPrefix
 	// the aggregation-in-order eligibility check reads to map a scanned table
@@ -391,13 +387,13 @@ func (r SettingsRules) enabledOpts() []string {
 	if r.QueryWorkload != "" {
 		opts = append(opts, "query_workload")
 	}
-	if r.ConversionConditionCacheDefect.inForce() {
+	if r.ConversionConditionCacheDefect {
 		opts = append(opts, "shape_defect.conversion_condition_cache")
 	}
-	if r.NegatedConjunctionProjectionDefect.inForce() {
+	if r.NegatedConjunctionProjectionDefect {
 		opts = append(opts, "shape_defect.negated_conjunction_projection")
 	}
-	if r.TraceIDProjectionReadDefect.inForce() {
+	if r.TraceIDProjectionReadDefect {
 		opts = append(opts, "shape_defect.trace_id_projection_read")
 	}
 	return opts
@@ -439,8 +435,8 @@ func (r SettingsRules) applyFacts(ctx context.Context, f planShapeFacts) context
 		ctx = chclient.WithQuerySetting(ctx, settingOptimizeAggregationInOrder, 1)
 	}
 	defects := r.shapeDefectFactsOf(f)
-	conversion := r.conversionConditionCacheGate(defects)
-	if r.ConditionCache && !analyzerHazard && !conversion.inForce() && predicateStableForConditionCache(f) {
+	conversionUnsafe := r.conversionConditionCacheUnsafe(defects)
+	if r.ConditionCache && !analyzerHazard && !conversionUnsafe && predicateStableForConditionCache(f) {
 		ctx = chclient.WithQuerySetting(ctx, settingUseQueryConditionCache, 1)
 		// The condition cache is gated behind the analyzer; co-stamp
 		// enable_analyzer=1 so the cache is honored even if an operator
@@ -451,7 +447,7 @@ func (r SettingsRules) applyFacts(ctx context.Context, f planShapeFacts) context
 	if r.TraceIDBitmapFilter && r.eligibleForTraceIDBitmapFilter(f) {
 		ctx = chclient.WithQuerySetting(ctx, settingMinTableRowsToUseProjectionIndex, traceIDBitmapFilterMinTableRows)
 	}
-	ctx = r.applyShapeDefects(ctx, f, defects, conversion)
+	ctx = r.applyShapeDefects(ctx, f, defects, conversionUnsafe)
 	if r.LogCommentShape {
 		if id := planShapeID(f.plan); id != "" {
 			ctx = chclient.WithQuerySetting(ctx, settingLogComment, id)

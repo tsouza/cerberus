@@ -157,9 +157,6 @@ func withTransportRetry[T any](ctx context.Context, call func() (T, error)) (T, 
 // retry attempt and before any CH connection is opened — breaker-neutral,
 // see ErrDataShardFanoutGateBusy's own doc.
 func (c *Client) queryOpen(ctx context.Context, sql string, args ...any) (driver.Rows, error) {
-	if err := c.admitDispatch(ctx); err != nil {
-		return nil, err
-	}
 	release, err := c.acquireDataShardFanout(ctx)
 	if err != nil {
 		return nil, err

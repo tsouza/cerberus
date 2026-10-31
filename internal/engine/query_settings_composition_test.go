@@ -49,9 +49,9 @@ var compositionRuleFlags = []settingsRuleFlag{
 	{"LazyMaterialization", func(r *SettingsRules) { r.LazyMaterialization = true }},
 	{"AnalyzerMandatory", func(r *SettingsRules) { r.AnalyzerMandatory = true }},
 	{"QueryWorkload", func(r *SettingsRules) { r.QueryWorkload = "cerberus_queries" }},
-	{"ConversionConditionCacheDefect", func(r *SettingsRules) { r.ConversionConditionCacheDefect = ShapeDefectGated }},
-	{"NegatedConjunctionProjectionDefect", func(r *SettingsRules) { r.NegatedConjunctionProjectionDefect = ShapeDefectGated }},
-	{"TraceIDProjectionReadDefect", func(r *SettingsRules) { r.TraceIDProjectionReadDefect = ShapeDefectGated }},
+	{"ConversionConditionCacheDefect", func(r *SettingsRules) { r.ConversionConditionCacheDefect = true }},
+	{"NegatedConjunctionProjectionDefect", func(r *SettingsRules) { r.NegatedConjunctionProjectionDefect = true }},
+	{"TraceIDProjectionReadDefect", func(r *SettingsRules) { r.TraceIDProjectionReadDefect = true }},
 }
 
 // carryFleetFacts copies onto only the SettingsRules fields that are fleet

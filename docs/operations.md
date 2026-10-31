@@ -461,14 +461,12 @@ numeric attribute comparison), and every other query keeps the cache
 ranges.** The settings cerberus sends against these defects do not exist on
 older servers, which reject the whole query (`UNKNOWN_SETTING`):
 `use_query_condition_cache` below 25.3 and `optimize_use_projection_filtering`
-below 25.6. While the nodes cerberus reaches mix an affected build with one
-too old for the setting, cerberus refuses the affected queries — every query,
-for the condition-cache ranges above — with HTTP 503 `errorType=unavailable`
-and a message naming the setting, rather than send them to a node that would
-reject them or answer them wrong on the affected one. The boot line and every
-re-probe transition log the refused defects (`refused_shape_defects`,
-`queries_refused`). The refusal lifts on the next re-probe once the fleet no
-longer mixes the two
+below 25.6. While the fleet mixes an affected build with one too old for the
+setting, a query of the gated shape that lands on the old node fails with
+HTTP 502 and a message naming the setting, the defects it avoids and the
+release to upgrade that node to; the same query answers correctly on the
+other nodes, and no node answers it wrong. Under the condition-cache ranges
+above, the old node rejects every query this way
 ([Mixed-version fleets](clickhouse-optimizations.md#mixed-version-fleets)).
 
 ### ClickHouse 26.5 — known-defective line

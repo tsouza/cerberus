@@ -321,7 +321,6 @@ func TestBreakerClassify_ClientScopedNeverCounts(t *testing.T) {
 		"pool-acquire-timeout":         clickhouse.ErrAcquireConnTimeout,
 		"wrapped-pool-acquire-timeout": fmt.Errorf("chclient: query: %w", clickhouse.ErrAcquireConnTimeout),
 		"columnar-sample-budget":       errBudgetExceeded,
-		"unsafe-mixed-fleet-refusal":   fmt.Errorf("%w: reason", ErrUnsafeMixedFleet),
 	}
 	for name, err := range cases {
 		t.Run(name, func(t *testing.T) {

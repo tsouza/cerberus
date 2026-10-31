@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -270,7 +271,7 @@ func reprobeCHOptimizations(
 		shapeDefects := shapeDefectsOnFleet(fleet, inForce.Set)
 		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload, fleet, &inForce)
 		if !ok {
-			if analyzerMandatory == inForce.Set.AnalyzerMandatory() && inForce.Set.Equal(inForce.Set.WithShapeDefects(shapeDefects)) {
+			if analyzerMandatory == inForce.Set.AnalyzerMandatory() && slices.Equal(shapeDefects, inForce.Set.ShapeDefectIDs()) {
 				// The resolution in force is unchanged, so the delay is
 				// derived from it: still on the floor means still retrying
 				// fast.
@@ -306,7 +307,6 @@ func reprobeCHOptimizations(
 			"analyzer_mandatory", next.Set.AnalyzerMandatory(),
 			"previous_analyzer_mandatory", prev.Set.AnalyzerMandatory(),
 			"shape_defects", strings.Join(next.Set.ShapeDefectIDs(), ","),
-			"refused_shape_defects", strings.Join(next.Set.RefusedShapeDefectIDs(), ","),
 			"previous_shape_defects", strings.Join(prev.Set.ShapeDefectIDs(), ","),
 		)
 	}

@@ -1164,13 +1164,12 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 
 // settingsRules builds the per-query ClickHouse settings rules from the
 // resolved optimization EnabledSet plus the CERBERUS_* config. The
-// aggregation-in-order, condition-cache, join-spill, distinct-spill,
-// trace-id-bitmap-filter, lazy-materialization and result-cache rules are all
-// driven by the frozen EnabledSet (set.Has(...)), not raw env flags: under the
-// default `auto` the stable 24.8-safe aggregation_in_order is on,
-// condition_cache is on when the probed server is >= 25.3, join_spill is on
-// when the probed server is >= 26.4, distinct_spill when it is >= 26.9,
-// trace_id_bitmap_filter and lazy_materialization are on when the
+// aggregation-in-order, condition-cache, join-spill, trace-id-bitmap-filter,
+// lazy-materialization and result-cache rules are all driven by the frozen
+// EnabledSet (set.Has(...)), not raw env flags: under the default `auto` the
+// stable 24.8-safe aggregation_in_order is on, condition_cache is on when the
+// probed server is >= 25.3, join_spill is on when the probed server is >=
+// 26.4, trace_id_bitmap_filter and lazy_materialization are on when the
 // probed server is >= 25.11, and result_cache is on when the boot
 // result-cache capability probe came back Available (its setting family
 // predates cerberus's own 24.8 floor, so unlike the others it carries no
@@ -1601,11 +1600,9 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"query_workload", cfg.CHQueryWorkload,
 		"server_query_workload_capability", queryWorkloadCapability.String(),
 		"enabled", strings.Join(set.IDs(), ","),
-		"query_condition_cache_forced_off", client.QueryConditionCacheOverride() == chopt.DefectGated,
-		"queries_refused", client.QueryConditionCacheOverride() == chopt.DefectRefused,
+		"query_condition_cache_forced_off", client.QueryConditionCacheDisabled(),
 		"analyzer_mandatory", set.AnalyzerMandatory(),
 		"shape_defects", strings.Join(set.ShapeDefectIDs(), ","),
-		"refused_shape_defects", strings.Join(set.RefusedShapeDefectIDs(), ","),
 	)
 	return chOptResolution{
 		Set:              set,

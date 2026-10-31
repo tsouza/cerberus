@@ -8,6 +8,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chopt"
 )
 
 // TestSearchRecent_ShardUnavailable503 — when ClickHouse aborts a
@@ -74,14 +75,21 @@ func TestSearchRecent_StaleReplicaFallbackDenied503(t *testing.T) {
 	}
 }
 
-// TestSearchRecent_UnsafeMixedFleet503 — a dispatch chclient refused because
-// the fleet mixes a build that needs a defect-gate setting with one too old
-// to accept it answers 503 (ErrClassUnavailable) carrying the refusal's
-// reason, not a 5xx internal fault.
-func TestSearchRecent_UnsafeMixedFleet503(t *testing.T) {
+// TestSearchRecent_GateSettingUnsupported502 — a ClickHouse node too old for
+// a defect-gate setting cerberus sent answers 502 (ErrClassUpstream, as any
+// ClickHouse rejection) with the setting and the upgrade named in the body
+// rather than the redacted exception.
+func TestSearchRecent_GateSettingUnsupported502(t *testing.T) {
 	t.Parallel()
 
-	q := &stubQuerier{err: &chclient.UnsafeMixedFleetError{Reason: "shape defect projection_filtering"}}
+	gate, ok := chopt.GateSettingByName(chopt.SettingOptimizeUseProjectionFiltering)
+	if !ok {
+		t.Fatal("premise: optimize_use_projection_filtering is a gate setting")
+	}
+	q := &stubQuerier{err: &chclient.GateSettingUnsupportedError{
+		Gate:  gate,
+		Cause: &clickhouse.Exception{Code: 115, Name: "UNKNOWN_SETTING", Message: "Unknown setting '" + gate.Name + "'"},
+	}}
 	srv := newServer(q, "v-test")
 	t.Cleanup(srv.Close)
 
@@ -90,10 +98,12 @@ func TestSearchRecent_UnsafeMixedFleet503(t *testing.T) {
 		t.Fatalf("GET: %v", err)
 	}
 	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status: got %d (body %q), want 503", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status: got %d (body %q), want 502", resp.StatusCode, body)
 	}
-	if !strings.Contains(body, "shape defect projection_filtering") {
-		t.Fatalf("body %q does not carry the refusal's reason", body)
+	for _, want := range []string{gate.Name, gate.Since.String(), "ClickHouse#120286"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body %q does not name %q", body, want)
+		}
 	}
 }

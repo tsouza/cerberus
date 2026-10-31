@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -32,87 +31,43 @@ var (
 	}
 )
 
-// Builds below each gate's setting floor: the supported floor, which
-// predates use_query_condition_cache, and a 25.3 build, which accepts it but
-// predates optimize_use_projection_filtering.
-var (
-	supportedFloorBuild = chopt.Version{Major: 24, Minor: 8, Patch: 14, Build: 39}
-	preProjectionBuild  = chopt.Version{Major: 25, Minor: 3, Patch: 14, Build: 14}
-)
-
-// gates maps each id to g, the shape shapeDefectsOnFleet returns.
-func gates(g chopt.DefectGate, ids ...string) map[string]chopt.DefectGate {
-	out := make(map[string]chopt.DefectGate, len(ids))
-	for _, id := range ids {
-		out[id] = g
-	}
-	return out
-}
-
 // TestShapeDefectsOnFleet_ConservativeAcrossTheFleet pins the decision
-// table: a defect any reached node carries is in force — gated while every
-// reached node accepts its gate's setting, refused while one is too old to;
-// only a complete pass with no node carrying it clears it; an incomplete pass
-// keeps the decision in force for the defects no reached node carries.
+// table: a defect any reached node carries is in force; only a complete pass
+// with no node carrying it clears it; an incomplete pass keeps the decision
+// in force for the defects no reached node carries.
 func TestShapeDefectsOnFleet_ConservativeAcrossTheFleet(t *testing.T) {
 	t.Parallel()
 
 	none := chopt.EnabledSet{}
-	in263 := none.WithShapeDefects(gates(chopt.DefectGated, lts263Defects...))
-	refused263 := none.WithShapeDefects(gates(chopt.DefectRefused, lts263Defects...))
+	in263 := none.WithShapeDefects(lts263Defects)
 	cases := []struct {
 		name    string
 		fv      chclient.FleetVersions
 		current chopt.EnabledSet
-		want    map[string]chopt.DefectGate
+		want    []string
 	}{
-		{"single affected node", chclient.FleetVersions{Versions: []chopt.Version{lts263Build}, Complete: true}, none, gates(chopt.DefectGated, lts263Defects...)},
-		{"union across a mixed fleet", chclient.FleetVersions{Versions: []chopt.Version{lts263Build, line2511Build}, Complete: true}, none, gates(chopt.DefectGated, line2511Defects...)},
-		{"one affected node beside a clean one", chclient.FleetVersions{Versions: []chopt.Version{shapeCleanBuild, lts263Build}, Complete: true}, none, gates(chopt.DefectGated, lts263Defects...)},
-		{"affected node seen, others unreachable", chclient.FleetVersions{Versions: []chopt.Version{lts263Build}}, none, gates(chopt.DefectGated, lts263Defects...)},
-		{"every node clean", chclient.FleetVersions{Versions: []chopt.Version{shapeCleanBuild, beforeShapeDefectsBuild}, Complete: true}, in263, gates(chopt.DefectGated)},
-		{"clean nodes seen, one unreachable, defects in force", chclient.FleetVersions{Versions: []chopt.Version{shapeCleanBuild}}, in263, gates(chopt.DefectGated, lts263Defects...)},
-		{"clean nodes seen, one unreachable, none in force", chclient.FleetVersions{Versions: []chopt.Version{shapeCleanBuild}}, none, gates(chopt.DefectGated)},
-		{"nothing reachable, defects in force", chclient.FleetVersions{}, in263, gates(chopt.DefectGated, lts263Defects...)},
-		{"affected node beside the supported floor", chclient.FleetVersions{Versions: []chopt.Version{supportedFloorBuild, lts263Build}, Complete: true}, none, gates(chopt.DefectRefused, lts263Defects...)},
-		{
-			"25.11 node beside a node predating projection filtering",
-			chclient.FleetVersions{Versions: []chopt.Version{preProjectionBuild, line2511Build}, Complete: true},
-			none,
-			map[string]chopt.DefectGate{
-				chopt.ShapeDefectConversionConditionCache:     chopt.DefectGated,
-				chopt.ShapeDefectNegatedConjunctionProjection: chopt.DefectRefused,
-				chopt.ShapeDefectTraceIDProjectionRead:        chopt.DefectRefused,
-			},
-		},
-		{"refused, old node upgraded, affected node unreachable", chclient.FleetVersions{Versions: []chopt.Version{shapeCleanBuild}}, refused263, gates(chopt.DefectRefused, lts263Defects...)},
-		{"refused, old node upgraded", chclient.FleetVersions{Versions: []chopt.Version{shapeCleanBuild, lts263Build}, Complete: true}, refused263, gates(chopt.DefectGated, lts263Defects...)},
-		{"refused, affected node upgraded", chclient.FleetVersions{Versions: []chopt.Version{supportedFloorBuild, shapeCleanBuild}, Complete: true}, refused263, gates(chopt.DefectGated)},
+		{"single affected node", chclient.FleetVersions{Versions: []chopt.Version{lts263Build}, Complete: true}, none, lts263Defects},
+		{"union across a mixed fleet", chclient.FleetVersions{Versions: []chopt.Version{lts263Build, line2511Build}, Complete: true}, none, line2511Defects},
+		{"one affected node beside a clean one", chclient.FleetVersions{Versions: []chopt.Version{shapeCleanBuild, lts263Build}, Complete: true}, none, lts263Defects},
+		{"affected node seen, others unreachable", chclient.FleetVersions{Versions: []chopt.Version{lts263Build}}, none, lts263Defects},
+		{"every node clean", chclient.FleetVersions{Versions: []chopt.Version{shapeCleanBuild, beforeShapeDefectsBuild}, Complete: true}, in263, nil},
+		{"clean nodes seen, one unreachable, defects in force", chclient.FleetVersions{Versions: []chopt.Version{shapeCleanBuild}}, in263, lts263Defects},
+		{"clean nodes seen, one unreachable, none in force", chclient.FleetVersions{Versions: []chopt.Version{shapeCleanBuild}}, none, nil},
+		{"nothing reachable, defects in force", chclient.FleetVersions{}, in263, lts263Defects},
 	}
 	for _, tc := range cases {
 		got := shapeDefectsOnFleet(tc.fv, tc.current)
-		if !maps.Equal(got, tc.want) {
+		if !slices.Equal(got, tc.want) {
 			t.Errorf("%s: shapeDefectsOnFleet = %v; want %v", tc.name, got, tc.want)
 		}
 	}
-}
-
-// setGates returns every shape defect set has in force, with its gate.
-func setGates(set chopt.EnabledSet) map[string]chopt.DefectGate {
-	out := map[string]chopt.DefectGate{}
-	for _, id := range set.ShapeDefectIDs() {
-		out[id] = set.ShapeDefectGate(id)
-	}
-	return out
 }
 
 // TestResolveCHOptimizations_MixedFleetCarriesShapeDefects is the boot half
 // of a rolling upgrade into an affected build: the ids resolve against the
 // older node, which carries no shape defect, but the set must already carry
 // the upgraded node's, so no query of the defective shape reaches it with the
-// mechanism on before the first re-probe. The older node predates every
-// gate's setting, so each defect is refused rather than gated; a fleet of
-// 25.6 or later nodes gates them.
+// mechanism on before the first re-probe.
 func TestResolveCHOptimizations_MixedFleetCarriesShapeDefects(t *testing.T) {
 	t.Parallel()
 
@@ -128,10 +83,10 @@ func TestResolveCHOptimizations_MixedFleetCarriesShapeDefects(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		fleet chclient.FleetVersions
-		want  map[string]chopt.DefectGate
+		want  []string
 	}{
-		{"mixed fleet", chclient.FleetVersions{Versions: []chopt.Version{beforeShapeDefectsBuild, line2511Build}, Complete: true}, gates(chopt.DefectRefused, line2511Defects...)},
-		{"older fleet", chclient.FleetVersions{Versions: []chopt.Version{beforeShapeDefectsBuild, beforeShapeDefectsBuild}, Complete: true}, gates(chopt.DefectRefused)},
+		{"mixed fleet", chclient.FleetVersions{Versions: []chopt.Version{beforeShapeDefectsBuild, line2511Build}, Complete: true}, line2511Defects},
+		{"older fleet", chclient.FleetVersions{Versions: []chopt.Version{beforeShapeDefectsBuild, beforeShapeDefectsBuild}, Complete: true}, nil},
 	} {
 		probe := func(context.Context) chclient.FleetVersions { return tc.fleet }
 		res, err := resolveCHOptimizations(context.Background(), quietLogger(), client, &cfg, probe)
@@ -141,8 +96,8 @@ func TestResolveCHOptimizations_MixedFleetCarriesShapeDefects(t *testing.T) {
 		if res.ResolvedVersion != beforeShapeDefectsBuild {
 			t.Fatalf("%s: resolved against %s; want the oldest node, %s", tc.name, res.ResolvedVersion, beforeShapeDefectsBuild)
 		}
-		if got := setGates(res.Set); !maps.Equal(got, tc.want) {
-			t.Errorf("%s: shape defects %v at boot; want %v", tc.name, got, tc.want)
+		if got := res.Set.ShapeDefectIDs(); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: ShapeDefectIDs() = %v at boot; want %v", tc.name, got, tc.want)
 		}
 	}
 }
@@ -160,9 +115,8 @@ func TestReprobe_ShapeDefectsFollowTheFleet(t *testing.T) {
 		t.Fatal("premise: a set resolved below the condition cache must carry no shape defect")
 	}
 	upgrading := chclient.FleetVersions{Versions: []chopt.Version{beforeShapeDefectsBuild, lts263Build}, Complete: true}
-	refused := gates(chopt.DefectRefused, lts263Defects...)
-	got := reprobeUntilShapeDefects(t, cfg, boot, upgrading, refused)
-	if got.ResolvedVersion != beforeShapeDefectsBuild || !got.Set.Equal(boot.Set.WithShapeDefects(refused)) {
+	got := reprobeUntilShapeDefects(t, cfg, boot, upgrading, lts263Defects)
+	if got.ResolvedVersion != beforeShapeDefectsBuild || !got.Set.Equal(boot.Set.WithShapeDefects(lts263Defects)) {
 		t.Fatalf("the re-probe moved more than the shape defects: got %+v, boot %+v", got, boot)
 	}
 
@@ -171,7 +125,7 @@ func TestReprobe_ShapeDefectsFollowTheFleet(t *testing.T) {
 		t.Fatalf("premise: a set resolved on %s must carry %v; got %v", lts263Build, lts263Defects, affected.Set.ShapeDefectIDs())
 	}
 	upgraded := chclient.FleetVersions{Versions: []chopt.Version{shapeCleanBuild}, Complete: true}
-	reprobeUntilShapeDefects(t, cfg, affected, upgraded, gates(chopt.DefectGated))
+	reprobeUntilShapeDefects(t, cfg, affected, upgraded, nil)
 }
 
 // TestReprobe_ShapeDefectsWhenResolveFails pins that the shape defects follow
@@ -193,7 +147,7 @@ func TestReprobe_ShapeDefectsWhenResolveFails(t *testing.T) {
 	}
 	boot := resolutionAt(t, shapeCleanBuild, chopt.FeatureJoinSpill)
 	fleet := chclient.FleetVersions{Versions: []chopt.Version{belowJoinSpill, line2511Build}, Complete: true}
-	got := reprobeUntilShapeDefects(t, cfg, boot, fleet, gates(chopt.DefectGated, line2511Defects...))
+	got := reprobeUntilShapeDefects(t, cfg, boot, fleet, line2511Defects)
 	if got.ResolvedVersion != shapeCleanBuild || !got.Set.Has(chopt.FeatureJoinSpill) {
 		t.Fatalf("premise: the refused re-resolve should have kept the set in force; got %+v", got)
 	}
@@ -201,7 +155,7 @@ func TestReprobe_ShapeDefectsWhenResolveFails(t *testing.T) {
 
 // reprobeUntilShapeDefects runs the re-probe from boot against a fixed fleet
 // until the live resolution carries exactly want, and returns it.
-func reprobeUntilShapeDefects(t *testing.T, cfg config.Config, boot chOptResolution, fleet chclient.FleetVersions, want map[string]chopt.DefectGate) chOptResolution {
+func reprobeUntilShapeDefects(t *testing.T, cfg config.Config, boot chOptResolution, fleet chclient.FleetVersions, want []string) chOptResolution {
 	t.Helper()
 	cfg.ClickHouse.Addr = unreachableAddr(t)
 	cfg.ClickHouse.DialTimeout = 100 * time.Millisecond
@@ -216,9 +170,9 @@ func reprobeUntilShapeDefects(t *testing.T, cfg config.Config, boot chOptResolut
 		reprobeCHOptimizations(ctx, quietLogger(), cfg, live, chOptConsumers{}, time.Millisecond, "", probe)
 	}()
 	deadline := time.Now().Add(20 * time.Second)
-	for !maps.Equal(setGates(live.get().Set), want) {
+	for !slices.Equal(live.get().Set.ShapeDefectIDs(), want) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the shape defects never became %v; last %v", want, setGates(live.get().Set))
+			t.Fatalf("the shape defects never became %v; last %v", want, live.get().Set.ShapeDefectIDs())
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

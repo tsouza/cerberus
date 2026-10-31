@@ -2,10 +2,8 @@ package engine
 
 import (
 	"context"
-	"strings"
 	"testing"
 
-	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -70,8 +68,8 @@ func shapeDefectRules() SettingsRules {
 	return SettingsRules{
 		ConditionCache:                     true,
 		TraceIDBitmapFilter:                true,
-		ConversionConditionCacheDefect:     ShapeDefectGated,
-		NegatedConjunctionProjectionDefect: ShapeDefectGated,
+		ConversionConditionCacheDefect:     true,
+		NegatedConjunctionProjectionDefect: true,
 		Metrics:                            schema.DefaultOTelMetrics(),
 		Traces:                             schema.DefaultOTelTraces(),
 		Logs:                               schema.DefaultOTelLogs(),
@@ -181,7 +179,7 @@ func TestApplyShapeDefects_ConditionCache(t *testing.T) {
 	featureOff := shapeDefectRules()
 	featureOff.ConditionCache = false
 	noDefect := shapeDefectRules()
-	noDefect.ConversionConditionCacheDefect = ShapeDefectAbsent
+	noDefect.ConversionConditionCacheDefect = false
 	tests := []struct {
 		name  string
 		rules SettingsRules
@@ -212,10 +210,10 @@ func TestApplyShapeDefects_ConditionCache(t *testing.T) {
 func TestApplyShapeDefects_ProjectionFiltering(t *testing.T) {
 	negatedOnly := shapeDefectRules()
 	readLoss := shapeDefectRules()
-	readLoss.NegatedConjunctionProjectionDefect = ShapeDefectAbsent
-	readLoss.TraceIDProjectionReadDefect = ShapeDefectGated
+	readLoss.NegatedConjunctionProjectionDefect = false
+	readLoss.TraceIDProjectionReadDefect = true
 	noDefect := shapeDefectRules()
-	noDefect.NegatedConjunctionProjectionDefect = ShapeDefectAbsent
+	noDefect.NegatedConjunctionProjectionDefect = false
 	noTraceID := negatedOnly
 	noTraceID.Traces.TraceIDColumn = ""
 	negatedWithoutTraceKey := &chplan.Filter{
@@ -242,56 +240,6 @@ func TestApplyShapeDefects_ProjectionFiltering(t *testing.T) {
 			ctx := tc.rules.apply(context.Background(), tc.plan)
 			if got := settingValue(ctx, settingOptimizeUseProjectionFiltering); got != tc.want {
 				t.Errorf("%s = %v; want %v", settingOptimizeUseProjectionFiltering, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestApplyShapeDefects_RefusedShapeIsRefusedNotStamped pins the refused
-// state: a fleet mixing a node that carries a defect with one too old to
-// accept the gate's setting gets the defect's shape refused before dispatch
-// (chclient.DispatchRefusal) and never sent the setting, which the old node
-// would reject; the conversion shape still withholds the condition cache's 1;
-// a query of any other shape is neither refused nor stamped; and a refused
-// defect wins over a gated one on a plan both reach.
-func TestApplyShapeDefects_RefusedShapeIsRefusedNotStamped(t *testing.T) {
-	conversionRefused := shapeDefectRules()
-	conversionRefused.ConversionConditionCacheDefect = ShapeDefectRefused
-	negatedRefused := shapeDefectRules()
-	negatedRefused.NegatedConjunctionProjectionDefect = ShapeDefectRefused
-	negatedRefused.TraceIDProjectionReadDefect = ShapeDefectGated
-	readLossRefused := shapeDefectRules()
-	readLossRefused.NegatedConjunctionProjectionDefect = ShapeDefectAbsent
-	readLossRefused.TraceIDProjectionReadDefect = ShapeDefectRefused
-	tests := []struct {
-		name        string
-		rules       SettingsRules
-		plan        chplan.Node
-		refused     string
-		setting     string
-		wantSetting any
-	}{
-		{"conversion refused, conversion filter", conversionRefused, stringToFloatFilter(), "conversion_condition_cache", settingUseQueryConditionCache, nil},
-		{"conversion refused, other filter", conversionRefused, filterScan("otel_logs"), "", settingUseQueryConditionCache, 1},
-		{"#120286 refused over a gated read loss, negated mixed conjunction", negatedRefused, traceIDNegatedConjunctionFilter(), "projection_filtering", settingOptimizeUseProjectionFiltering, nil},
-		{"#120286 refused, plain trace-id lookup keeps the gated read loss", negatedRefused, traceIDEqualityFilter(), "", settingOptimizeUseProjectionFiltering, 0},
-		{"read loss refused, plain trace-id lookup", readLossRefused, traceIDEqualityFilter(), "projection_filtering", settingOptimizeUseProjectionFiltering, nil},
-		{"read loss refused, not trace-id keyed", readLossRefused, filterScan("otel_logs"), "", settingOptimizeUseProjectionFiltering, nil},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := tc.rules.apply(context.Background(), tc.plan)
-			reason, refused := chclient.DispatchRefusal(ctx)
-			switch {
-			case tc.refused == "" && refused:
-				t.Errorf("refused (%q); want the query dispatched", reason)
-			case tc.refused != "" && !refused:
-				t.Errorf("dispatched; want it refused for %s", tc.refused)
-			case tc.refused != "" && (!strings.Contains(reason, tc.refused) || !strings.Contains(reason, tc.setting)):
-				t.Errorf("refusal %q does not name %s and %s", reason, tc.refused, tc.setting)
-			}
-			if got := settingValue(ctx, tc.setting); got != tc.wantSetting {
-				t.Errorf("%s = %v; want %v", tc.setting, got, tc.wantSetting)
 			}
 		})
 	}
