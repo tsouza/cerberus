@@ -48,7 +48,7 @@ const (
 	textIndexRollbackFloorImage = "clickhouse/clickhouse-server:26.6.8.7-alpine"
 	// textIndexUpgradeTargetImage writes v2_with_positions text indexes and
 	// packs small skip indices into skp_idx.packed by default.
-	textIndexUpgradeTargetImage = "clickhouse/clickhouse-server:26.8.10.6-alpine"
+	textIndexUpgradeTargetImage = "clickhouse/clickhouse-server:26.8.36.3-alpine"
 	// textIndexV0ReaderImage is the newest server line that reads only
 	// v0_initial text-index parts, and that knows neither format setting.
 	textIndexV0ReaderImage = "clickhouse/clickhouse-server:26.5.7.64-alpine"

@@ -36,12 +36,13 @@ import (
 )
 
 const (
-	// priorServerImage is the server line the quickstart stack pins
-	// (docker-compose.yml); TestImagesTrackQuickstartPins keeps the two on
-	// the same major.minor.
+	// priorServerImage is the previously bundled server line, the last one
+	// before system.asynchronous_metrics carries the key_values column.
 	priorServerImage = textIndexRollbackFloorImage
-	// keyedServerImage is the first server line whose
-	// system.asynchronous_metrics carries the key_values column.
+	// keyedServerImage is the server the quickstart stack pins
+	// (docker-compose.yml), on the first line whose
+	// system.asynchronous_metrics carries the key_values column;
+	// TestImagesTrackQuickstartPins keeps the two on the same build.
 	keyedServerImage = textIndexUpgradeTargetImage
 	// oldestReceiverImage is cerberus's minimum supported server; with
 	// preFormatSettingsLTSImage it proves the collector's queries run on
@@ -193,17 +194,17 @@ func TestAsyncMetricsReceiverAcrossKeyedSchema(t *testing.T) {
 	})
 }
 
-// TestImagesTrackQuickstartPins keeps priorServerImage on the release line
-// docker-compose.yml runs, so "the current pinned server" in the test above
-// means the one the quickstart actually monitors, and keeps the Justfile's
+// TestImagesTrackQuickstartPins keeps keyedServerImage on the build
+// docker-compose.yml runs, so the keyed-schema server in the test above is
+// the one the quickstart actually monitors, and keeps the Justfile's
 // pre-pull of the collector on the image the test actually starts.
 func TestImagesTrackQuickstartPins(t *testing.T) {
 	pinned := quickstartImage(t, "clickhouse/clickhouse-server")
 	tag := strings.TrimPrefix(pinned, "clickhouse/clickhouse-server:")
-	if !strings.HasPrefix(priorServerImage, "clickhouse/clickhouse-server:"+tag+".") &&
-		!strings.HasPrefix(priorServerImage, "clickhouse/clickhouse-server:"+tag+"-") &&
-		priorServerImage != pinned {
-		t.Fatalf("docker-compose.yml pins %s but the receiver test's prior server is %s", pinned, priorServerImage)
+	if !strings.HasPrefix(keyedServerImage, "clickhouse/clickhouse-server:"+tag+".") &&
+		!strings.HasPrefix(keyedServerImage, "clickhouse/clickhouse-server:"+tag+"-") &&
+		keyedServerImage != pinned {
+		t.Fatalf("docker-compose.yml pins %s but the receiver test's keyed-schema server is %s", pinned, keyedServerImage)
 	}
 
 	collector := quickstartImage(t, "otel/opentelemetry-collector-contrib")

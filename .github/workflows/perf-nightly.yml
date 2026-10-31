@@ -70,7 +70,7 @@ jobs:
       # `cancelled`: every server's verdict is reported.
       fail-fast: false
       matrix:
-        clickhouse: ['24.8', '25.9', '26.6']
+        clickhouse: ['24.8', '25.9', '26.8']
     # Pulls one ClickHouse image, loads ~4.3M real rows across 3 tables plus
     # the exporter-keyed copies, and issues the sentinel corpus five times.
     timeout-minutes: 30

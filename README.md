@@ -220,7 +220,7 @@ was written in.
 | OTel exporter schema | **clickhouseexporter 0.152.0** | A table layout, not a binary version — any matching writer works.   |
 
 **ClickHouse 24.8+.** A query that runs on 24.8 runs on every newer server
-too, and the differential harnesses execute on ClickHouse 26.5, so the
+too, and the differential harnesses execute on ClickHouse 26.8, so the
 validated SQL is exercised well forward of the floor.
 
 You do not have to tune for your server version. The optimization

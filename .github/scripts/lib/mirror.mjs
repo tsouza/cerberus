@@ -90,9 +90,13 @@ export const mirroredImages = [
   // 26.2 is the ts_tag_groups real-CH differential's own pin
   // (timeSeriesThrowDuplicateSeriesIf shipped in 26.2 — see CH_TAG_GROUPS_IMAGE).
   'clickhouse/clickhouse-server:26.2-alpine',
-  'clickhouse/clickhouse-server:26.5',
-  'clickhouse/clickhouse-server:26.6',
   'clickhouse/clickhouse-server:26.6-alpine',
+  // The deployment surface (versions.yaml quickstart_clickhouse): the
+  // quickstart, the chart's bundled server, the compatibility harnesses and
+  // the k3d stack run this exact build; strict-scan and perf-nightly run its
+  // line.
+  'clickhouse/clickhouse-server:26.8.36.3',
+  'clickhouse/clickhouse-server:26.8-alpine',
   'clickhouse/clickhouse-server:26.6.1.1193-alpine',
   // test/regexjit's exact builds (CH_REGEX_JIT_IMAGES): one release of each
   // line that compiles regular expressions to native code.

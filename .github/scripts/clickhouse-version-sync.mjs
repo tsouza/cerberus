@@ -3,15 +3,14 @@
 // cerberus pins ClickHouse versions in several places that MUST agree:
 //   - versions.yaml                       the single source of truth (SoT)
 //   - docker-compose.yml                  the quickstart `clickhouse` image tag
-//   - compatibility/*/docker-compose.yml  the per-head test-substrate image tag
+//   - compatibility/*/docker-compose.yml  the per-head differential-harness image tag
 //   - internal/preflight/preflight.go     the boot-time min-version floor
-//   - internal/config/config.go (comment) the chDB substrate version
 //   - test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml
 //                                         the migration lane's deployment-surface tag
 //   - deploy/helm/cerberus/values.yaml    the bundled-ClickHouse chart image
 //   - .github/workflows/compatibility.yml the prometheus-floor lane's CH_IMAGE
 //                                         override (the ONE lane that deliberately
-//                                         runs BELOW chdb_substrate — see (f))
+//                                         runs BELOW quickstart_clickhouse — see (f))
 //   - .github/workflows/perf-nightly.yml  the sentinel legs' ClickHouse matrix, and
 //     .github/workflows/perf-nightly-selfcheck.yml
 //                                         the self-check's, with
@@ -24,22 +23,26 @@
 //       == quickstart_clickhouse.
 //   (b) preflight minCHBase == min_clickhouse, and minCHNativeRate
 //       == min_native_rate (the two preflight floors are the SoT mirror).
-//   (c) the chDB substrate (the compatibility prometheus/loki/tempo image
-//       tags) == chdb_substrate. compatibility/prometheus/docker-compose.yml
-//       parametrises its tag via `${CH_IMAGE:-clickhouse/clickhouse-server:X}`
-//       so the floor lane (f) can override it at run time; this check reads
-//       the `:-` DEFAULT, which is the honest "what does this file pin"
-//       answer for every trigger that doesn't set CH_IMAGE.
+//   (c) the compatibility prometheus/loki/tempo image tags
+//       == quickstart_clickhouse. The differential harnesses are the source
+//       of truth for all three heads, so they run on the server operators
+//       deploy, not on chdb_substrate (the in-process chDB engine's version,
+//       which chdb-version-sync.mjs holds). compatibility/prometheus/
+//       docker-compose.yml parametrises its tag via
+//       `${CH_IMAGE:-clickhouse/clickhouse-server:X}` so the floor lane (f)
+//       can override it at run time; this check reads the `:-` DEFAULT, which
+//       is the honest "what does this file pin" answer for every trigger that
+//       doesn't set CH_IMAGE.
 //   (d) THE CRITICAL ONE: quickstart_clickhouse >= the highest version floor
 //       among the features the quickstart's CERBERUS_CH_OPTIMIZATIONS enables.
 //       The per-feature floors are NOT duplicated here - they are read from
 //       internal/chopt/registry.go, which stays the SoT for feature floors.
 //   (e) the migration lane's Tier-1 `clickhouse` image tag
 //       == quickstart_clickhouse (NOT chdb_substrate). The two roles differ:
-//       chdb_substrate is the SQL-parity substrate the chDB suites and the
-//       compatibility harnesses run on; quickstart_clickhouse is the
-//       deployment surface operators run. The migration lane models the
-//       operator deployment, so it tracks the quickstart pin.
+//       chdb_substrate is the in-process chDB engine the parity suites run
+//       on; quickstart_clickhouse is the deployment surface operators run.
+//       The migration lane models the operator deployment, so it tracks the
+//       quickstart pin.
 //   (g) the Helm chart's bundled ClickHouse image == quickstart_clickhouse.
 //       Same role as (e): the chart IS the deployment surface, so it tracks
 //       the quickstart pin, not chdb_substrate. This tag was the one pin no
@@ -50,13 +53,13 @@
 //   (f) compatibility.yml's `prometheus-floor` job's CH_IMAGE == min_clickhouse.
 //       That job (see #1500) exists specifically to run the prometheus
 //       differential corpus against cerberus's declared floor instead of
-//       chdb_substrate, forcing internal/chopt's auto-picker to resolve every
+//       quickstart_clickhouse, forcing internal/chopt's auto-picker to resolve every
 //       above-floor feature OFF. If minCHBase moves without moving this job's
 //       CH_IMAGE (or vice versa), the floor lane silently stops testing the
-//       floor it claims to — (f) is what makes checks (b) and (c)'s
-//       DELIBERATE exception (this one lane, and only this lane, runs below
-//       chdb_substrate) a tracked invariant instead of an unenforced escape
-//       hatch from (c).
+//       floor it claims to — (f) is what makes check (c)'s DELIBERATE
+//       exception (this one lane, and only this lane, runs below
+//       quickstart_clickhouse) a tracked invariant instead of an unenforced
+//       escape hatch from (c).
 //   (h) perf-nightly's sentinel matrix measures both of move_to_prewhere's
 //       PREWHERE paths on the servers that matter: it contains
 //       min_clickhouse (the supported floor) and quickstart_clickhouse (the
@@ -278,7 +281,6 @@ export function runChecks(sources) {
   const quickstart = want('quickstart_clickhouse');
   const minCH = want('min_clickhouse');
   const minNative = want('min_native_rate');
-  const substrate = want('chdb_substrate');
 
   // (a) docker-compose quickstart image tag == quickstart_clickhouse.
   const composeTag = parseVersion(readComposeCHTag(sources.compose));
@@ -312,18 +314,19 @@ export function runChecks(sources) {
     notes.push(`(b) min_native_rate == ${vstr(minNative)}`);
   }
 
-  // (c) chDB substrate == every compatibility-lane clickhouse image tag.
+  // (c) every compatibility-lane clickhouse image tag == quickstart_clickhouse.
   for (const [name, text] of Object.entries(sources.compatibility)) {
     const tag = parseVersion(readComposeCHTag(text));
     if (!tag) {
       failures.push(`${name}: could not read the clickhouse image tag`);
-    } else if (substrate && !sameMM(tag, substrate)) {
+    } else if (quickstart && !sameMM(tag, quickstart)) {
       failures.push(
-        `(c) ${name} clickhouse tag ${vstr(tag)} != versions.yaml chdb_substrate ${vstr(substrate)}`,
+        `(c) ${name} clickhouse tag ${vstr(tag)} != versions.yaml quickstart_clickhouse ${vstr(quickstart)}. ` +
+          'The differential harnesses run on the deployment surface, not on chdb_substrate.',
       );
     }
   }
-  if (substrate) notes.push(`(c) chdb_substrate == ${vstr(substrate)} (compatibility lanes pinned to it)`);
+  if (quickstart) notes.push(`(c) compatibility lanes == quickstart ${vstr(quickstart)}`);
 
   // (d) THE CRITICAL ONE: quickstart >= highest floor among enabled features.
   // With CERBERUS_CH_OPTIMIZATIONS="auto" (what the quickstart ships) the
@@ -407,7 +410,7 @@ export function runChecks(sources) {
   }
 
   // (f) the prometheus-floor lane's CH_IMAGE == min_clickhouse. This is the
-  // ONE lane that deliberately runs below chdb_substrate (see #1500); this
+  // ONE lane that deliberately runs below quickstart_clickhouse (see #1500); this
   // check is what keeps that exception honest instead of an unenforced
   // drift point once (c) stopped being able to see it.
   const floorImage = parseVersion(readFloorJobCHImage(sources.compatibilityWorkflow));
@@ -447,6 +450,7 @@ function readJustImages(text) {
 
 // (h) — see the header.
 function checkPerfNightlyMatrix(sources, { minCH, quickstart, registry }, failures, notes) {
+  const failuresBefore = failures.length;
   const matrix = readClickHouseMatrix(sources.perfNightlyWorkflow, PERF_NIGHTLY_JOB);
   if (!matrix || matrix.length === 0) {
     failures.push(`(h) ${PERF_NIGHTLY_WORKFLOW}: could not read job ${PERF_NIGHTLY_JOB}'s clickhouse matrix`);
@@ -518,7 +522,9 @@ function checkPerfNightlyMatrix(sources, { minCH, quickstart, registry }, failur
         `servers [${matrix}] — calibrate a server's bounds when adding it, drop them when removing it`,
     );
   }
-  notes.push(`(h) perf-nightly runs on [${matrix}], with a bound set per server`);
+  if (failures.length === failuresBefore) {
+    notes.push(`(h) perf-nightly runs on [${matrix}], with a bound set per server`);
+  }
 }
 
 function sameMM(a, b) {
@@ -686,12 +692,12 @@ var registry = []Feature{
       // Prometheus uses the real parametrised-default form (the floor lane
       // overrides CH_IMAGE at run time); loki/tempo stay literal — both
       // forms of readComposeCHTag are exercised by this one fixture set.
-      'compatibility/prometheus/docker-compose.yml': 'image: ${CH_IMAGE:-clickhouse/clickhouse-server:25.8}\n',
-      'compatibility/loki/docker-compose.yml': 'image: clickhouse/clickhouse-server:25.8\n',
-      'compatibility/tempo/docker-compose.yml': 'image: clickhouse/clickhouse-server:25.8\n',
+      'compatibility/prometheus/docker-compose.yml': 'image: ${CH_IMAGE:-clickhouse/clickhouse-server:26.5.7.64}\n',
+      'compatibility/loki/docker-compose.yml': 'image: clickhouse/clickhouse-server:26.5.7.64\n',
+      'compatibility/tempo/docker-compose.yml': 'image: clickhouse/clickhouse-server:26.5\n',
     },
     // The migration tier-1 stack tracks the quickstart tag (26.5 here), NOT
-    // the 25.8 chDB substrate the compatibility lanes pin.
+    // the 25.8 chDB substrate.
     migrationTier1: 'image: clickhouse/clickhouse-server:26.5\n',
     // The chart's bundled ClickHouse tracks the quickstart tag for the same
     // deployment-surface reason.
@@ -732,8 +738,15 @@ var registry = []Feature{
     ),
   );
   ok(
-    '(c) compatibility substrate drift is caught',
+    '(c) compatibility tag drift is caught',
     drift((s) => (s.compatibility['compatibility/loki/docker-compose.yml'] = 'image: clickhouse/clickhouse-server:25.6\n')).some(
+      (f) => f.startsWith('(c)'),
+    ),
+  );
+  ok(
+    '(c) compatibility pinned to the chDB substrate instead of the quickstart is caught',
+    // 25.8 is chdb_substrate in the fixture.
+    drift((s) => (s.compatibility['compatibility/tempo/docker-compose.yml'] = 'image: clickhouse/clickhouse-server:25.8\n')).some(
       (f) => f.startsWith('(c)'),
     ),
   );

@@ -38,7 +38,7 @@ CERBERUS_BUILD_TAGS := env_var_or_default("CERBERUS_BUILD_TAGS", "")
 # because the convention it replaces had already failed silently: #1263 moved the
 # k3d ClickHouse to 26.6-alpine and left this line on 26.5-alpine, so for ten days
 # the one image the pre-pull was written for was the one it did not cover (#1461).
-E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.6-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 ghcr.io/tsouza/cerberus@sha256:37306fa251ae7e82d71b9179907782c30d9321c5a601c18dd1ac00362a79654e otel/opentelemetry-collector-contrib:0.152.1 busybox:1.37"
+E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.8.36.3-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 ghcr.io/tsouza/cerberus@sha256:37306fa251ae7e82d71b9179907782c30d9321c5a601c18dd1ac00362a79654e otel/opentelemetry-collector-contrib:0.152.1 busybox:1.37"
 
 # Extra images the bundled-ClickHouse ("bwc") object-storage lane needs on top
 # of E2E_EXTERNAL_IMAGES: the MinIO object store + its `mc` client (the
@@ -48,7 +48,7 @@ E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.6-alpine ghcr.io/open-te
 # test/e2e/k3s/cerberus-values-bwc.yaml (clickhouse.bundled.image) — the chart
 # maps the CH container's pullPolicy to .Values.image.pullPolicy (Never in the
 # e2e values), so the exact bundled-CH tag MUST be imported here.
-E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.2025-08-13T08-35-41Z clickhouse/clickhouse-server:26.6"
+E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.2025-08-13T08-35-41Z clickhouse/clickhouse-server:26.8.36.3"
 
 # The bundled ClickHouse image the two hot-only chart lanes deploy: the
 # multi-data-shard lane (cerberus issue #3079, `e2e-datashard-up`) and the
@@ -65,7 +65,7 @@ E2E_BWC_IMAGES := "minio/minio:RELEASE.2025-09-07T16-13-09Z minio/mc:RELEASE.202
 # `join_spill` at 26.4 — is only reachable under fan-out when the datashard
 # lane's server clears it; on the 26.3 this used to pin the setting did not
 # exist server-side, so the row was never observed live.
-E2E_BUNDLED_CH_IMAGES := "clickhouse/clickhouse-server:26.6"
+E2E_BUNDLED_CH_IMAGES := "clickhouse/clickhouse-server:26.8.36.3"
 
 # Extra args appended verbatim to `k3d cluster create` in `e2e-up`. Empty by
 # default (CI uses none). Interpolated unquoted, so the value is shell-parsed:

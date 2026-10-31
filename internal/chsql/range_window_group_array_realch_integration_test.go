@@ -34,7 +34,7 @@
 // floor, shared with the rest of the timeSeries*ToGrid family) — this lane
 // pins CH_TEST_IMAGE (see the ts-grid-group-array-integration Justfile
 // recipe) exactly at that floor rather than reusing CH_STRICT_SCAN_IMAGE's
-// higher 26.6 pin, since nothing here depends on a fix that landed above
+// higher pin, since nothing here depends on a fix that landed above
 // 25.9. Requires Docker; gated behind the `integration` build tag, mirroring
 // TestLastOverTime_NativeResample_WindowNarrowerThanStep_RealCH's own
 // posture for chopt.FeatureTSGridLastOverTime's floor pin.

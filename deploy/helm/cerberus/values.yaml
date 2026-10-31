@@ -249,7 +249,7 @@ clickhouse:
     # floor would ship a default deployment on which `CERBERUS_CH_OPTIMIZATIONS=auto`
     # silently resolves less than the docs promise; check (g) of
     # `.github/scripts/clickhouse-version-sync.mjs` holds the two together.
-    image: clickhouse/clickhouse-server:26.6
+    image: clickhouse/clickhouse-server:26.8.36.3
     # -- ClickHouse replica count. `1` (default) renders a single-node plain
     # MergeTree on object storage. `>1` auto-enables a Keeper ensemble +
     # ReplicatedMergeTree + zero-copy replication, and defaults cerberus's

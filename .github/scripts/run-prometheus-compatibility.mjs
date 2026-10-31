@@ -54,7 +54,7 @@
 //   TESTER_END_TIME   compatibility end timestamp (default: 2026-05-11T01:00:00Z)
 //   TESTER_RANGE      range in seconds (default: 3600 = 1h, matches seed window)
 //   CH_IMAGE          docker-compose.yml's clickhouse service image tag
-//                      (default: clickhouse/clickhouse-server:26.5). Set to
+//                      (default: clickhouse/clickhouse-server:26.8.36.3). Set to
 //                      clickhouse/clickhouse-server:24.8 to run this SAME
 //                      corpus against cerberus's declared minCHBase floor
 //                      (internal/preflight/preflight.go) — the
@@ -117,7 +117,7 @@ const RANGE = process.env.TESTER_RANGE || '3600';
 // see patchComparer() below for the full rationale (tsouza/cerberus#2707,
 // and the floor-only widening from tsouza/cerberus#3556 / #3560).
 const ORIGINAL_COMPARE_TIMEOUT = '10*time.Second';
-// COMPARER_TIMEOUT_SECONDS is the deadline every lane on the 26.5 substrate
+// COMPARER_TIMEOUT_SECONDS is the deadline every lane on the quickstart substrate
 // gets: the per-comparison wall-clock bound is the compat lanes' only
 // wall-clock bound, so it stays as tight as the measured floor-lane costs
 // allow. FLOOR_COMPARER_TIMEOUT_SECONDS applies only when CH_IMAGE pins a
@@ -133,7 +133,7 @@ export const DEFAULT_TESTER_QUERY_PARALLELISM = 2;
 export function testerParallelismArgs(env = process.env) {
   return ['-query-parallelism', env.TESTER_QUERY_PARALLELISM || String(DEFAULT_TESTER_QUERY_PARALLELISM)];
 }
-export const DEFAULT_CH_IMAGE = 'clickhouse/clickhouse-server:26.5';
+export const DEFAULT_CH_IMAGE = 'clickhouse/clickhouse-server:26.8.36.3';
 
 // chImageMinor — the [major, minor] a `clickhouse/clickhouse-server:<tag>`
 // image pins, or null for a tag that carries no version (`latest`, a digest).
@@ -290,7 +290,7 @@ async function waitForCerberusReady() {
 //    run at DEFAULT_TESTER_QUERY_PARALLELISM (2) measured 13.1s wall-clock
 //    for the whole query_range request on that host — inside 45s, with a
 //    ~3x margin that a loaded GH Actions runner does not reliably keep for
-//    the floor's fallback SQL. The 26.5 lanes never take that path, so
+//    the floor's fallback SQL. The quickstart lanes never take that path, so
 //    they keep the 45s bound (COMPARER_TIMEOUT_SECONDS); only a run whose
 //    CH_IMAGE is below the native-rate floor gets
 //    FLOOR_COMPARER_TIMEOUT_SECONDS — see comparerTimeoutSeconds().
