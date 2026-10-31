@@ -106,7 +106,7 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 	if f == nil {
 		return nil, fmt.Errorf("traceql: compare() requires a selection spanset filter")
 	}
-	sel, err := lowerFieldExpr(f.Expression, s)
+	sel, err := lowerFieldExpr(f.Expression, s, noLookupJoin)
 	if err != nil {
 		return nil, err
 	}

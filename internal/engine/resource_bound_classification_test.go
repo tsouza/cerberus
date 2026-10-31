@@ -71,6 +71,7 @@ var resourceBoundClassification = map[string]struct {
 	"MetricsHistogramOverTime": {boundRuntimeNet, "axis 4/7: per-bucket histogram over the bounded window"},
 	"CrossJoin":                {boundRuntimeNet, "axis 4: row product; current callers (absent lowering) feed it a single-row side; max_memory_usage"},
 	"InfoJoin":                 {boundRuntimeNet, "axis 4: info-metric enrichment join; spill + max_memory_usage"},
+	"TraceLookupFilter":        {boundRuntimeNet, "axis 4: LEFT JOIN of one-row-per-trace lookups (GROUP BY TraceId over the window-bounded spans scan) onto the window-bounded span rows; ≤ input rows out; join spill + max_memory_usage"},
 	"SetOperation":             {boundStructural, "≤ sum of the two bounded inputs"},
 	"NaryVectorSetOp":          {boundStructural, "≤ sum of the bounded operand vectors"},
 

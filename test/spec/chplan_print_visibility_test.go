@@ -92,6 +92,7 @@ var chplanNodePrototypes = []chplan.Node{
 	(*chplan.StepGrid)(nil),
 	(*chplan.StructuralJoin)(nil),
 	(*chplan.TopK)(nil),
+	(*chplan.TraceLookupFilter)(nil),
 	(*chplan.UnionAll)(nil),
 	(*chplan.VectorJoin)(nil),
 	(*chplan.VectorSetOp)(nil),

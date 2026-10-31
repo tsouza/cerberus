@@ -365,3 +365,53 @@ func TestSearchWindow_TraceScopedCohortWindowed(t *testing.T) {
 		t.Fatalf("cohort window bounds = %d, want 2 (start and end folded into the per-trace aggregate)", got)
 	}
 }
+
+// TestSearchTraceLimit_SpanOperandLookupBounded pins that a trace-scoped
+// intrinsic compared with a per-span operand keeps the search top-N bound: the
+// TraceLookupFilter it lowers to is ranked by SearchTraceLimit like a plain
+// Filter(Scan), its span input is closed over the span columns it needs (none
+// of the per-trace lookup columns, which no span row has), and the request
+// window reaches the span input, every per-trace lookup, and the membership
+// subquery of the literal comparison OR'd into the joined predicate.
+func TestSearchTraceLimit_SpanOperandLookupBounded(t *testing.T) {
+	t.Parallel()
+	plan := lowerSearchWindowed(t, `{ rootName = name || traceDuration > 2s }`, 20, winStart, winEnd)
+	stl, ok := plan.(*chplan.SearchTraceLimit)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.SearchTraceLimit", plan)
+	}
+	lookup, ok := stl.Input.(*chplan.TraceLookupFilter)
+	if !ok {
+		t.Fatalf("SearchTraceLimit input = %T, want *chplan.TraceLookupFilter", stl.Input)
+	}
+	inputSchema := lookup.Input.RowType()
+	if inputSchema.Open {
+		t.Fatal("TraceLookupFilter span input schema is open")
+	}
+	for _, name := range []string{"SpanName", "TraceId", "Timestamp"} {
+		if _, found := inputSchema.ByName(name); !found {
+			t.Errorf("span input lacks column %q", name)
+		}
+	}
+	for _, l := range traceScopedLookups {
+		if _, found := inputSchema.ByName(l.column); found {
+			t.Errorf("span input carries per-trace lookup column %q", l.column)
+		}
+	}
+	if got := countWindowBounds(lookup.Input); got != 2 {
+		t.Errorf("span input window bounds = %d, want 2", got)
+	}
+	if len(lookup.Lookups) != 1 {
+		t.Fatalf("got %d lookups, want 1 (rootName)", len(lookup.Lookups))
+	}
+	if got := countWindowBounds(lookup.Lookups[0]); got != 2 {
+		t.Errorf("lookup window bounds = %d, want 2", got)
+	}
+	cohorts := cohortSubqueries(lookup.Predicate)
+	if len(cohorts) != 1 {
+		t.Fatalf("got %d membership subqueries in the joined predicate, want 1", len(cohorts))
+	}
+	if got := countWindowBounds(cohorts[0].Subquery); got != 2 {
+		t.Errorf("membership subquery window bounds = %d, want 2", got)
+	}
+}

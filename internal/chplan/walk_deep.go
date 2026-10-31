@@ -39,6 +39,8 @@ func nodeExprs(n Node, visit func(Expr)) {
 		// reachable through Children().
 	case *Filter:
 		visitExpr(v.Predicate, visit)
+	case *TraceLookupFilter:
+		visitExpr(v.Predicate, visit)
 	case *Project:
 		visitProjections(v.Projections, visit)
 		visitProjections(v.Replacements, visit)
