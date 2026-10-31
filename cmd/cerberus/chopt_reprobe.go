@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -267,20 +268,21 @@ func reprobeCHOptimizations(
 		}
 		inForce := live.get()
 		analyzerMandatory := analyzerMandatoryOnFleet(fleet, inForce.Set.AnalyzerMandatory())
+		shapeDefects := shapeDefectsOnFleet(fleet, inForce.Set)
 		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload, fleet, &inForce)
 		if !ok {
-			if analyzerMandatory == inForce.Set.AnalyzerMandatory() {
+			if analyzerMandatory == inForce.Set.AnalyzerMandatory() && slices.Equal(shapeDefects, inForce.Set.ShapeDefectIDs()) {
 				// The resolution in force is unchanged, so the delay is
 				// derived from it: still on the floor means still retrying
 				// fast.
 				timer.Reset(nextReprobeDelay(inForce, interval))
 				continue
 			}
-			// The resolution failed, but the fleet moved the analyzer
-			// decision: install it on the resolution in force.
+			// The resolution failed, but the fleet moved the analyzer or
+			// shape-defect decision: install it on the resolution in force.
 			next = inForce
 		}
-		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory)
+		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory).WithShapeDefects(shapeDefects)
 		prev := live.get()
 		timer.Reset(nextReprobeDelay(next, interval))
 		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion && next.QueryWorkload == prev.QueryWorkload {
@@ -304,6 +306,8 @@ func reprobeCHOptimizations(
 			"previous_query_workload", prev.QueryWorkload,
 			"analyzer_mandatory", next.Set.AnalyzerMandatory(),
 			"previous_analyzer_mandatory", prev.Set.AnalyzerMandatory(),
+			"shape_defects", strings.Join(next.Set.ShapeDefectIDs(), ","),
+			"previous_shape_defects", strings.Join(prev.Set.ShapeDefectIDs(), ","),
 		)
 	}
 }

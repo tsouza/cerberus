@@ -1643,6 +1643,14 @@ func classifySentinelError(err error) *apiError {
 	if httperr.IsDistributedShardErr(err) {
 		return distributedShardAPIError(err)
 	}
+	// A ClickHouse node too old for a defect-gate setting cerberus sent
+	// (chclient.GateSettingUnsupportedError): a server-side failure like any
+	// other ClickHouse rejection, 502 errorType=internal, but with the
+	// setting, the defects and the upgrade named instead of the redacted
+	// exception.
+	if errors.Is(err, chclient.ErrGateSettingUnsupported) {
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	}
 	// Caller-initiated cancellation (open path): the client hung up before
 	// the cursor opened. 503 errorType=canceled for upstream parity; the
 	// telemetry reason is "canceled" rather than backend_unavailable, since

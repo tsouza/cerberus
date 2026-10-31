@@ -121,6 +121,12 @@ func ClassifyErr(err error) ErrClass {
 		// class as a circuit-open or timed-out backend — ClickHouse itself
 		// is healthy, one shard behind the Distributed table is not.
 		return ErrClassUnavailable
+	case errors.Is(err, chclient.ErrGateSettingUnsupported):
+		// A ClickHouse node too old for a defect-gate setting cerberus sent
+		// (chclient.GateSettingUnsupportedError): an upstream failure like
+		// any other ClickHouse rejection, whose message names the setting,
+		// the defects and the upgrade.
+		return ErrClassUpstream
 	case errors.Is(err, chclient.ErrTooManySamples),
 		errors.Is(err, chclient.ErrDrainBytesExceeded),
 		errors.Is(err, chclient.ErrMemoryLimitExceeded):

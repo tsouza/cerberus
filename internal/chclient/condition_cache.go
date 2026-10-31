@@ -1,10 +1,17 @@
 package chclient
 
+import "github.com/tsouza/cerberus/internal/chopt"
+
 // SettingUseQueryConditionCache is ClickHouse's query-condition-cache switch.
 // The engine stamps it to 1 on predicate-stable reads when the condition_cache
 // feature resolves in; the client stamps it to 0 on EVERY data-plane query
 // while SetQueryConditionCacheDisabled(true) is in force.
-const SettingUseQueryConditionCache = "use_query_condition_cache"
+const SettingUseQueryConditionCache = chopt.SettingUseQueryConditionCache
+
+// SettingOptimizeUseProjectionFiltering is ClickHouse's switch for filtering
+// through a projection's index, which the engine stamps to 0 on the query
+// shapes the projection-index defects return wrong rows for.
+const SettingOptimizeUseProjectionFiltering = chopt.SettingOptimizeUseProjectionFiltering
 
 // SetQueryConditionCacheDisabled turns the client-wide condition-cache
 // override on or off. While on, every query dispatched through queryContext
@@ -19,9 +26,11 @@ const SettingUseQueryConditionCache = "use_query_condition_cache"
 // cached verdict written by another query can make a later read silently drop
 // rows, and re-evaluates it on every capability re-probe.
 //
-// The setting does not exist below ClickHouse 25.3, so the override must stay
-// off against an older server; every known-unsafe build is at or above 25.3,
-// where the setting exists.
+// The setting does not exist below ClickHouse 25.3. Every known-unsafe build
+// is at or above 25.3, so the override never engages on a fleet of older
+// servers alone; on a fleet mixing an older node with an unsafe one, the
+// older node rejects every query with a *GateSettingUnsupportedError, which
+// names the upgrade, and never answers one wrong.
 //
 // The switch is shared by every ForHead view of the client.
 func (c *Client) SetQueryConditionCacheDisabled(disabled bool) {

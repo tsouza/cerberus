@@ -34,6 +34,7 @@ func metadataErrSentinels() []struct {
 		{"breaker open", fmt.Errorf("query: %w", chclient.ErrCircuitOpen), http.StatusServiceUnavailable, ErrUnavailable},
 		{"shard unavailable", fmt.Errorf("query: %w", chclient.ErrShardUnavailable), http.StatusServiceUnavailable, ErrUnavailable},
 		{"stale replica denied", fmt.Errorf("query: %w", chclient.ErrStaleReplicaFallbackDenied), http.StatusServiceUnavailable, ErrUnavailable},
+		{"gate setting unsupported", fmt.Errorf("query: %w", &chclient.GateSettingUnsupportedError{}), http.StatusBadGateway, ErrInternal},
 	}
 }
 

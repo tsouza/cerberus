@@ -831,6 +831,14 @@ func classifySentinelErr(err error) *apiError {
 			Status: http.StatusServiceUnavailable,
 		}
 	}
+	// A ClickHouse node too old for a defect-gate setting cerberus sent
+	// (chclient.GateSettingUnsupportedError): a server-side failure like any
+	// other ClickHouse rejection, 502 errorType=internal, but with the
+	// setting, the defects and the upgrade named instead of the redacted
+	// exception.
+	if errors.Is(err, chclient.ErrGateSettingUnsupported) {
+		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+	}
 	// Caller-initiated cancellation: the client closed the connection (a
 	// browser tab shutting on a slow panel, an aborted fetch, a dashboard
 	// refresh superseding its own in-flight request), so net/http cancels

@@ -256,7 +256,9 @@ Notes:
   and only on a predicate-stable read path, gated conservatively (it needs the
   analyzer); below 25.3 it is a no-op. On a listed build the data-plane client
   instead stamps `use_query_condition_cache=0` on every query, whatever the
-  selection.
+  selection. On a build carrying a [shape-scoped defect](#shape-scoped-defects)
+  of the cache, the query of that shape runs with it off and every other query
+  keeps it.
 - **`ts_grid_range`** is `experimental` in maturity but **auto-enabled** on a
   capable server (`>= 25.9`); see
   [`clickhouse-optimizations.background.md`](clickhouse-optimizations.background.md)
@@ -924,7 +926,7 @@ What a transition swaps:
 | Consumer                      | Effect of a re-resolved set                                                                                                                                                                                                                             |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | PromQL range lowering         | The native `timeSeries*ToGrid` strategy table is replaced, so subsequent `query_range` requests lower to the native shape (or back to fan-out).                                                                                                         |
-| Engine per-query settings     | The whole `SettingsRules` value is swapped in one pointer store, so subsequent queries stamp the settings the current server supports.                                                                                                                  |
+| Engine per-query settings     | The whole `SettingsRules` value is swapped in one pointer store, so subsequent queries stamp the settings the current server supports and the [shape-scoped defect](#shape-scoped-defects) gates the current fleet needs.                               |
 | `/info`                       | `clickhouse.serverVersion`, `optimizations.resolvedAgainstVersion`, and `optimizations.enabled` report the set in force, not the one booted with.                                                                                                       |
 | Query-actuals reconciler      | Reads `query_log_union` from the set in force on every poll, so it moves between `system.all_query_log` and the local `system.query_log`.                                                                                                               |
 | Data-plane client             | Not part of the transition swap: every pass, whether or not its resolution changed or succeeded, re-probes the fleet and engages or lifts the `use_query_condition_cache=0` override ([Known-defective server builds](#known-defective-server-builds)). |
@@ -977,6 +979,10 @@ fixed build; a pass that could not reach every node and saw no affected build
 leaves it as it was. A change is logged (`query condition cache override
 changed`).
 
+A node that predates `use_query_condition_cache` (below `25.3`) rejects every
+query the override stamps
+([Mixed-version fleets](#mixed-version-fleets)).
+
 A server reporting a non-upstream version string — a vendor suffix
 (`.altinitystable`), an extra version field, or a suffix glued to a field — is
 parsed with `Vendor` set and judged by its `major.minor` line alone: it is
@@ -994,6 +1000,64 @@ The index-selection defect fixed by
 needs a skip index whose verdict can disagree with the row predicate (a text
 index with a preprocessor); cerberus provisions no such index, so it carries no
 range.
+
+### Shape-scoped defects
+
+Some defects return wrong results only for one recognisable query shape. Those
+withhold no feature and refuse no selection: while any node cerberus can reach
+runs a build inside a defect's range, the engine stamps the setting that
+switches the defective mechanism off on the queries of that shape alone, under
+every selection including `off`, and every other query keeps the mechanism.
+The shape is read off the lowered plan, not the SQL text. A node too old to
+accept that setting rejects the shape's queries
+([Mixed-version fleets](#mixed-version-fleets)).
+
+| Defect                                                                    | Query shape                                                                                                                                                                                                               | Stamped on that shape                 | Affected builds              |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | ---------------------------- |
+| [ClickHouse#119168](https://github.com/ClickHouse/ClickHouse/pull/119168) | A `WHERE` / `PREWHERE` that parses a String to a float (`toFloat64OrZero`, `toFloat64OrNull`): LogQL numeric and bytes label filters, TraceQL numeric attribute comparisons, PromQL's `le` read over float bucket series. | `use_query_condition_cache=0`         | `25.3` – `26.9`              |
+| [ClickHouse#120286](https://github.com/ClickHouse/ClickHouse/pull/120286) | A `TraceId`-keyed read whose filter negates a conjunction that reads any column other than `TraceId` (TraceQL `!(… && …)`).                                                                                               | `optimize_use_projection_filtering=0` | `25.11` – `26.10`            |
+| 25.11 projection-index read                                               | Every `TraceId`-keyed read (a trace-by-id lookup, a `trace:id` predicate, a structural join, the search root lookup).                                                                                                     | `optimize_use_projection_filtering=0` | `25.11` – `25.12.11.4`       |
+
+Each upper bound is exclusive. A `TraceId`-keyed read is one with an equality
+or membership test on the bare `TraceId` column, or a TraceQL structural join.
+The projection stamp is independent of `trace_id_bitmap_filter`: a table that
+carries `proj_trace_id` and clears the server's
+`min_table_rows_to_use_projection_index` default is filtered through it either
+way.
+
+The defects in force are logged with the resolution (`shape_defects` on the
+boot line and on a re-probe transition) and decided across the fleet the same
+way as the analyzer posture: one reachable node on an affected build puts a
+defect in force; it lifts only once a complete pass finds no node inside its
+range. Each in-force defect also appears in a dispatched query's recorded
+optimization posture as `shape_defect.<id>`.
+
+### Mixed-version fleets
+
+A gate's setting is stamped whatever the other nodes run. A server that does
+not know a setting rejects the whole query with `UNKNOWN_SETTING` (code 115);
+it does not ignore it. Each gate's setting has a first accepting release:
+
+| Setting                             | First accepting release | Stamped against                                                        |
+| ----------------------------------- | ----------------------- | ---------------------------------------------------------------------- |
+| `use_query_condition_cache`         | `25.3`                  | ClickHouse#105686, ClickHouse#107145 (the override), ClickHouse#119168 |
+| `optimize_use_projection_filtering` | `25.6`                  | ClickHouse#120286, the 25.11 projection-index read                     |
+
+Every affected range starts at or above its gate's first accepting release, so
+a node too old for the setting also predates the defect. On a fleet mixing
+such a node with an affected one:
+
+| Node                                      | Query of a gated shape                                                                                |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Affected, at or above the first release   | Answered correctly, with the setting.                                                                 |
+| Unaffected, at or above the first release | Answered, with the setting.                                                                           |
+| Below the first release                   | Rejected: HTTP 502, naming the setting, the defects it avoids and the release to upgrade the node to. |
+
+Queries of every other shape answer on every node, except under the
+condition-cache override, which stamps its setting on every query. No node
+answers a gated query with wrong rows. The error lasts until the old node is
+upgraded past the setting's first accepting release, or until no reached node
+carries the defect.
 
 ### Cancellation of CPU-bound expressions
 

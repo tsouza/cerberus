@@ -107,11 +107,13 @@ type Config struct {
 // single source of truth every consumer reads; nothing downstream re-reads the
 // raw env.
 //
-// Beside the feature ids it carries one build fact no selection decides:
-// whether a query may no longer disable the analyzer (AnalyzerMandatory).
+// Beside the feature ids it carries build facts no selection decides: whether
+// a query may no longer disable the analyzer (AnalyzerMandatory), and which
+// shape defects the build carries (HasShapeDefect).
 type EnabledSet struct {
 	ids               map[string]struct{}
 	analyzerMandatory bool
+	shapeDefects      map[string]struct{}
 }
 
 // Has reports whether feature id is in the resolved set.
@@ -139,13 +141,44 @@ func (s EnabledSet) WithAnalyzerMandatory(mandatory bool) EnabledSet {
 	return s
 }
 
+// HasShapeDefect reports whether the set was resolved against a build carrying
+// shape defect id (KnownShapeDefect), or was told so by WithShapeDefects.
+// Every selection resolves it the same way: like AnalyzerMandatory it records
+// what the server does, not what the operator turned on.
+func (s EnabledSet) HasShapeDefect(id string) bool {
+	_, ok := s.shapeDefects[id]
+	return ok
+}
+
+// ShapeDefectIDs returns the shape defects the set carries, sorted, for logs.
+func (s EnabledSet) ShapeDefectIDs() []string {
+	out := make([]string, 0, len(s.shapeDefects))
+	for id := range s.shapeDefects {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// WithShapeDefects returns s carrying exactly ids as its shape defects, for a
+// caller that knows more builds than the one s was resolved against: one
+// reachable build carrying a defect is enough, while the ids are resolved
+// against the oldest.
+func (s EnabledSet) WithShapeDefects(ids []string) EnabledSet {
+	s.shapeDefects = make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		s.shapeDefects[id] = struct{}{}
+	}
+	return s
+}
+
 // Equal reports whether s and other enable exactly the same feature ids and
-// agree on AnalyzerMandatory. A periodic re-resolution compares its result
-// against the set already in force and swaps (and logs) only on a genuine
-// transition, so a server whose capabilities have not moved produces no churn
-// and no log noise.
+// agree on AnalyzerMandatory and the shape defects. A periodic re-resolution
+// compares its result against the set already in force and swaps (and logs)
+// only on a genuine transition, so a server whose capabilities have not moved
+// produces no churn and no log noise.
 func (s EnabledSet) Equal(other EnabledSet) bool {
-	return s.analyzerMandatory == other.analyzerMandatory && sameIDs(s.ids, other.ids)
+	return s.analyzerMandatory == other.analyzerMandatory && sameIDs(s.ids, other.ids) && sameIDs(s.shapeDefects, other.shapeDefects)
 }
 
 // sameIDs reports whether a and b hold exactly the same keys.
@@ -270,7 +303,7 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 	}
 	warnings = append(warnings, legacyWarns...)
 
-	return EnabledSet{ids: enabled, analyzerMandatory: AnalyzerMandatory(server)}, warnings, nil
+	return EnabledSet{ids: enabled, analyzerMandatory: AnalyzerMandatory(server), shapeDefects: shapeDefectsOf(server)}, warnings, nil
 }
 
 // resolveTokens walks the parsed selection tokens. An "auto" token unions in

@@ -4,8 +4,9 @@
 // CPU-bound expressions cerberus emits, the read-back of an aggregation
 // that spills its GROUP BY over cerberus's canonical series key, the
 // query-analyzer posture native-histogram queries run under on each release
-// line, and the external DISTINCT a structural TraceQL query spills through
-// once the distinct_spill threshold is stamped. Every test boots pinned
+// line, the first release accepting each defect gate's setting, and the
+// external DISTINCT a structural TraceQL query spills through once the
+// distinct_spill threshold is stamped. Every test boots pinned
 // clickhouse/clickhouse-server builds — the supported floor, builds a known
 // upstream defect affects, and builds carrying its fix — under container CPU
 // and memory limits, drives cerberus-emitted shapes through the production

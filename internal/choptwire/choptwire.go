@@ -432,9 +432,14 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 		ResultCache:                set.Has(chopt.FeatureResultCache),
 		LazyMaterialization:        set.Has(chopt.FeatureLazyMaterialization),
 		AnalyzerMandatory:          set.AnalyzerMandatory(),
-		Metrics:                    metrics,
-		Traces:                     traces,
-		Logs:                       logs,
+		// The fleet's shape defects gate one query shape each, whatever
+		// the selection resolved (engine.SettingsRules.applyShapeDefects).
+		ConversionConditionCacheDefect:     set.HasShapeDefect(chopt.ShapeDefectConversionConditionCache),
+		NegatedConjunctionProjectionDefect: set.HasShapeDefect(chopt.ShapeDefectNegatedConjunctionProjection),
+		TraceIDProjectionReadDefect:        set.HasShapeDefect(chopt.ShapeDefectTraceIDProjectionRead),
+		Metrics:                            metrics,
+		Traces:                             traces,
+		Logs:                               logs,
 	}
 }
 

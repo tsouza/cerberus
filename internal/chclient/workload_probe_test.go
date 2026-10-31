@@ -11,22 +11,19 @@ import (
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
-// chCodeUnknownSetting / chCodeResourceAccessDenied are the ClickHouse error
-// codes a real 26.6 server answers with for, respectively, an unrecognized
-// per-query setting NAME (a server too old to know `workload` at all) and an
-// unresolvable WORKLOAD name under `throw_on_unknown_workload=true` (a
-// hardened profile that requires every workload a query carries to name a
-// real, provisioned WORKLOAD). Verified directly against a live
-// clickhouse/clickhouse-server:26.6 instance rather than trusted from docs:
+// chCodeResourceAccessDenied is the ClickHouse error code a real 26.6 server
+// answers with for an unresolvable WORKLOAD name under
+// `throw_on_unknown_workload=true` (a hardened profile that requires every
+// workload a query carries to name a real, provisioned WORKLOAD), next to
+// chCodeUnknownSetting for a server too old to know `workload` at all.
+// Verified directly against a live clickhouse/clickhouse-server:26.6
+// instance rather than trusted from docs:
 // `SELECT 1 SETTINGS bogus_setting=1` answers `Code: 115 (UNKNOWN_SETTING)`;
 // with `throw_on_unknown_workload` reloaded to `true` server-side,
 // `SELECT 1 SETTINGS workload='nonexistent'` answers
 // `Code: 673 (RESOURCE_ACCESS_DENIED): Could not access resource 'cpu'.
 // Please check throw_on_unknown_workload setting.`
-const (
-	chCodeUnknownSetting       = 115
-	chCodeResourceAccessDenied = 673
-)
+const chCodeResourceAccessDenied = 673
 
 // TestClassifyCapabilityFromProbeErr_WorkloadShapes pins the shared
 // classifier against the rejection shapes a server that does not know the

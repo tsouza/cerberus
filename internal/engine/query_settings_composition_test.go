@@ -49,6 +49,21 @@ var compositionRuleFlags = []settingsRuleFlag{
 	{"LazyMaterialization", func(r *SettingsRules) { r.LazyMaterialization = true }},
 	{"AnalyzerMandatory", func(r *SettingsRules) { r.AnalyzerMandatory = true }},
 	{"QueryWorkload", func(r *SettingsRules) { r.QueryWorkload = "cerberus_queries" }},
+	{"ConversionConditionCacheDefect", func(r *SettingsRules) { r.ConversionConditionCacheDefect = true }},
+	{"NegatedConjunctionProjectionDefect", func(r *SettingsRules) { r.NegatedConjunctionProjectionDefect = true }},
+	{"TraceIDProjectionReadDefect", func(r *SettingsRules) { r.TraceIDProjectionReadDefect = true }},
+}
+
+// carryFleetFacts copies onto only the SettingsRules fields that are fleet
+// facts rather than rules of their own: AnalyzerMandatory decides whether the
+// analyzer co-stamps fire on a hazard plan, and the shape defects decide
+// whether the condition-cache rule withholds its 1 on a conversion plan. Each
+// isolated rule carries them, exactly as the composed rules do.
+func carryFleetFacts(only *SettingsRules, rules SettingsRules) {
+	only.AnalyzerMandatory = rules.AnalyzerMandatory
+	only.ConversionConditionCacheDefect = rules.ConversionConditionCacheDefect
+	only.NegatedConjunctionProjectionDefect = rules.NegatedConjunctionProjectionDefect
+	only.TraceIDProjectionReadDefect = rules.TraceIDProjectionReadDefect
 }
 
 // compositionBaseRules is the flag-free SettingsRules every enumerated
@@ -118,11 +133,8 @@ func compositionContributors() []settingsContributor {
 				if !flagIsSet(rules, f) {
 					return ctx
 				}
-				// AnalyzerMandatory is not a contributor of its
-				// own here but decides whether the analyzer co-stamps fire on
-				// a hazard plan, so each isolated rule carries its value.
 				only := onlyFlag(f)
-				only.AnalyzerMandatory = rules.AnalyzerMandatory
+				carryFleetFacts(&only, rules)
 				return only.apply(ctx, plan)
 			},
 		})
@@ -159,6 +171,12 @@ func flagIsSet(rules SettingsRules, f settingsRuleFlag) bool {
 		return rules.AnalyzerMandatory == probe.AnalyzerMandatory
 	case "QueryWorkload":
 		return rules.QueryWorkload == probe.QueryWorkload
+	case "ConversionConditionCacheDefect":
+		return rules.ConversionConditionCacheDefect == probe.ConversionConditionCacheDefect
+	case "NegatedConjunctionProjectionDefect":
+		return rules.NegatedConjunctionProjectionDefect == probe.NegatedConjunctionProjectionDefect
+	case "TraceIDProjectionReadDefect":
+		return rules.TraceIDProjectionReadDefect == probe.TraceIDProjectionReadDefect
 	}
 	panic("flagIsSet: unknown flag " + f.name)
 }
@@ -184,6 +202,8 @@ func compositionPlans() []struct {
 			Input: filterScan("otel_metrics_sum"), Start: closedStart, End: closedEnd, Step: time.Minute,
 		}},
 		{"trace-id equality", traceIDEqualityFilter()},
+		{"string-to-float filter", stringToFloatFilter()},
+		{"trace-id negated mixed conjunction", traceIDNegatedConjunctionFilter()},
 		{"limit over order-by", tempoSearchRecentPlan(20)},
 		{"compare", compareOverScan()},
 		{"sorted slab", &chplan.RangeWindow{Input: filterScan("otel_metrics_sum"), SortedSlabOverTime: true}},

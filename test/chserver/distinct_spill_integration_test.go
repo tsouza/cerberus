@@ -55,7 +55,6 @@ const (
 	settingExternalDistinct       = "max_bytes_before_external_distinct"
 	externalDistinctWritePart     = "ExternalDistinctWritePart"
 	memoryLimitExceeded           = 241
-	unknownSetting                = 115
 	distinctSpillProbeBudget      = 15 * time.Minute
 )
 
@@ -110,9 +109,9 @@ func TestDistinctSpill_StructuralTraceQLAcrossBuilds(t *testing.T) {
 			}
 			if !build.hasSetting {
 				err := s.admin.Conn().Exec(ctx, "SELECT 1 SETTINGS "+settingExternalDistinct+" = 1")
-				if code := exceptionCode(err); code != unknownSetting {
+				if code := exceptionCode(err); code != codeUnknownSetting {
 					t.Fatalf("stamping %s on %s: error %v (code %d); want code %d, the unknown-setting refusal the floor avoids",
-						settingExternalDistinct, s.version, err, code, unknownSetting)
+						settingExternalDistinct, s.version, err, code, codeUnknownSetting)
 				}
 				return
 			}
@@ -248,19 +247,6 @@ func (s *server) finishedException(ctx context.Context, t *testing.T, qid string
 		t.Fatalf("query_log has no finished entry for %s", qid)
 	}
 	return code, msg
-}
-
-// profileEvent sums one ProfileEvents counter over query qid's finished entries.
-func (s *server) profileEvent(ctx context.Context, t *testing.T, qid, event string) uint64 {
-	t.Helper()
-	s.flushLogs(ctx, t)
-	var n uint64
-	if err := s.admin.Conn().QueryRow(ctx,
-		"SELECT sum(ProfileEvents[?]) FROM system.query_log WHERE type = 'QueryFinish' AND query_id = ?",
-		event, qid).Scan(&n); err != nil {
-		t.Fatalf("read query_log for %s: %v", qid, err)
-	}
-	return n
 }
 
 // peakMemory is query qid's peak memory_usage.
