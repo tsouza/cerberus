@@ -196,6 +196,16 @@ type SettingsRules struct {
 	// expHistogramTwoLevelThresholdBytes for why).
 	ExpHistogramTwoLevel bool
 
+	// HistogramAdaptiveAggregatorOff, when true, stamps
+	// enable_adaptive_aggregator=0 on a plan carrying a per-series window over
+	// histogram samples (see applyHistogramAdaptiveAggregatorOff), so the
+	// window's bucket arrays aggregate per thread as before ClickHouse 26.8
+	// instead of through the adaptive aggregator's backlogs. Driven by the
+	// histogram_adaptive_aggregator_off registry feature, which only resolves
+	// in on server >= 26.8, the first release carrying the setting; below that
+	// this flag is false and nothing is stamped.
+	HistogramAdaptiveAggregatorOff bool
+
 	// TraceIDBitmapFilter, when true, stamps
 	// min_table_rows_to_use_projection_index=0 on a plan carrying a
 	// TraceId-keyed predicate or join (see eligibleForTraceIDBitmapFilter)
@@ -371,6 +381,9 @@ func (r SettingsRules) enabledOpts() []string {
 	}
 	if r.ExpHistogramTwoLevel {
 		opts = append(opts, "exp_histogram_two_level")
+	}
+	if r.HistogramAdaptiveAggregatorOff {
+		opts = append(opts, "histogram_adaptive_aggregator_off")
 	}
 	if r.TraceIDBitmapFilter {
 		opts = append(opts, "trace_id_bitmap_filter")
@@ -792,6 +805,11 @@ const settingGroupByTwoLevelThresholdBytes = "group_by_two_level_threshold_bytes
 // an earlier revision of the same lowering -- which is the other reason not to
 // name a number near it.
 //
+// ClickHouse 26.8.36.3 keeps the same shape (#3986): at 61 anchors the same
+// window peaks at 41.2 MiB stamped against 98.3 MiB at the default, as 26.6.4.55
+// does at 41.1 against 94.0, so the 26.8 adaptive aggregator does not make the
+// stamp redundant.
+//
 // Stamping it does NOT disable the sibling row threshold
 // (group_by_two_level_threshold, default 100000 keys): ClickHouse converts
 // when EITHER threshold trips, so leaving the row axis alone can only make
@@ -883,6 +901,67 @@ func applyExpHistogramTwoLevelBound(ctx context.Context, f planShapeFacts, expHi
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingGroupByTwoLevelThresholdBytes, expHistogramTwoLevelThresholdBytes)
+}
+
+// settingEnableAdaptiveAggregator is the ClickHouse 26.8+ setting that turns
+// on the adaptive GROUP BY aggregator (ClickHouse#111459, on by default from
+// 26.8): each thread's local hash table freezes at
+// adaptive_aggregator_freeze_threshold keys or
+// adaptive_aggregator_freeze_threshold_bytes of state, and every later key is
+// routed into a per-bucket backlog the bucket-parallel merge aggregates.
+//
+// perf-sentinel: memory-bounding — on a histogram sample window the backlogs
+// hold every in-window sample's bucket arrays until the merge, which is what
+// raised the native-histogram rate() peaks on 26.8. See
+// applyHistogramAdaptiveAggregatorOff for the measurement.
+const settingEnableAdaptiveAggregator = "enable_adaptive_aggregator"
+
+// histogramAdaptiveAggregatorDisabled is the enable_adaptive_aggregator value
+// applyHistogramAdaptiveAggregatorOff stamps: the setting is a boolean, and 0
+// selects the per-thread aggregation every server before 26.8 ran.
+const histogramAdaptiveAggregatorDisabled = 0
+
+// applyHistogramAdaptiveAggregatorOff stamps enable_adaptive_aggregator=0 on
+// a plan carrying a per-series window over histogram samples
+// (planShapeFacts.histogramSampleWindow), when the boot-resolved
+// chopt.FeatureHistogramAdaptiveAggregatorOff verdict
+// (SettingsRules.HistogramAdaptiveAggregatorOff) is on.
+//
+// Measured on ClickHouse 26.8.36.3 against 26.6.8.7 over the perf-nightly
+// sample (#3986), the statement cerberus dispatches replayed with each
+// setting, median of 5 to 7 warm runs, peak memory_usage in MiB:
+//
+//	shape                                             26.6   26.8   26.8 stamped
+//	histogram_quantiles over rate(<exp>[5m]), instant  256    289    143
+//	histogram_quantile over rate(<exp>[5m]), instant   220    292    184
+//	classic by-route quantile, RangeBucketGridNative   372    586    375
+//
+// The predicate is the two shapes behind those rows, not every histogram
+// plan, because switching the adaptive aggregator off is not a win anywhere
+// else that was measured and is a large loss on some:
+//
+//   - the instant classic `histogram_quantile(0.95, sum by (http_route, le)
+//     (<bucket>))`: 61 MiB on 26.8, 235 MiB with the setting off (71 on
+//     26.6);
+//   - the instant bare exponential selector merged by
+//     `sum by (route)` at 2000 series x 160 buckets, the
+//     maxHistogramMergeCostUnits calibration shape: 797 MiB on 26.8, 1028
+//     MiB with the setting off, past the 1 GiB default cap. The same lookback
+//     window over the real sample went 358 -> 250 MiB, so the bare-selector
+//     lookback stays out: its gain depends on samples per series, which the
+//     plan does not show, and its loss lands on a bound;
+//   - the exponential range windows built on RangeBucketFanout, the classic
+//     fan-out window and `sum by (le)` over RangeBucketGridNative moved by
+//     less than 6 MiB either way.
+//
+// Like every rule reachable from applySharedQuerySettings the setting is
+// RESULT-EQUIVALENT: both aggregation paths emit the same groups with the same
+// states, so an over-match costs memory, never correctness.
+func applyHistogramAdaptiveAggregatorOff(ctx context.Context, f planShapeFacts, enabled bool) context.Context {
+	if !enabled || !f.histogramSampleWindow {
+		return ctx
+	}
+	return chclient.WithQuerySetting(ctx, settingEnableAdaptiveAggregator, histogramAdaptiveAggregatorDisabled)
 }
 
 // EligibleForLazyMaterialization reports whether plan carries exactly one

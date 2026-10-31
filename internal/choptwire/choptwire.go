@@ -423,15 +423,16 @@ func downsampleAndSlabLowerers(l *promql.RangeLowerers, optSet chopt.EnabledSet)
 // silently hollow out a max-of-N memory measurement.
 func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.Traces, logs schema.Logs) engine.SettingsRules {
 	return engine.SettingsRules{
-		OptimizeAggregationInOrder: set.Has(chopt.FeatureAggregationInOrder),
-		ConditionCache:             set.Has(chopt.FeatureConditionCache),
-		JoinSpill:                  set.Has(chopt.FeatureJoinSpill),
-		DistinctSpill:              set.Has(chopt.FeatureDistinctSpill),
-		ExpHistogramTwoLevel:       set.Has(chopt.FeatureExpHistogramTwoLevel),
-		TraceIDBitmapFilter:        set.Has(chopt.FeatureTraceIDBitmapFilter),
-		ResultCache:                set.Has(chopt.FeatureResultCache),
-		LazyMaterialization:        set.Has(chopt.FeatureLazyMaterialization),
-		AnalyzerMandatory:          set.AnalyzerMandatory(),
+		OptimizeAggregationInOrder:     set.Has(chopt.FeatureAggregationInOrder),
+		ConditionCache:                 set.Has(chopt.FeatureConditionCache),
+		JoinSpill:                      set.Has(chopt.FeatureJoinSpill),
+		DistinctSpill:                  set.Has(chopt.FeatureDistinctSpill),
+		ExpHistogramTwoLevel:           set.Has(chopt.FeatureExpHistogramTwoLevel),
+		HistogramAdaptiveAggregatorOff: set.Has(chopt.FeatureHistogramAdaptiveAggregatorOff),
+		TraceIDBitmapFilter:            set.Has(chopt.FeatureTraceIDBitmapFilter),
+		ResultCache:                    set.Has(chopt.FeatureResultCache),
+		LazyMaterialization:            set.Has(chopt.FeatureLazyMaterialization),
+		AnalyzerMandatory:              set.AnalyzerMandatory(),
 		// The fleet's shape defects gate one query shape each, whatever
 		// the selection resolved (engine.SettingsRules.applyShapeDefects).
 		ConversionConditionCacheDefect:     set.HasShapeDefect(chopt.ShapeDefectConversionConditionCache),

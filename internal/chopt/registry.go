@@ -2250,6 +2250,14 @@ const (
 	// query's headroom becomes unpredictable for an operator sizing
 	// CERBERUS_CH_QUERY_MAX_MEMORY.
 	//
+	// The stamp still holds on ClickHouse 26.8.36.3, whose adaptive aggregator
+	// (FeatureHistogramAdaptiveAggregatorOff) changed the single-level path
+	// beneath it. Re-measured for #3986 against 26.6.4.55 on the same 10-series
+	// exp-histogram rate() window, stamped / 50 MB default / disabled: 21
+	// anchors 41.2 / 41.2 / 41.2 MiB on both lines; 61 anchors 26.6 41.1 / 94.0
+	// / 94.0 and 26.8 41.2 / 98.3 / 98.2 MiB; 500 series at 61 anchors 26.6
+	// 97.1 / 95.6 / 107.9 and 26.8 98.5 / 97.0 / 108.6 MiB.
+	//
 	// It is RESULT-EQUIVALENT: two-level aggregation is an execution
 	// strategy, and the rows it emits are the rows the single-level table
 	// would have emitted.
@@ -2276,6 +2284,44 @@ const (
 	// applyExpHistogramTwoLevelBound for the predicate and for the shapes
 	// deliberately left outside it.
 	FeatureExpHistogramTwoLevel = "exp_histogram_two_level"
+
+	// FeatureHistogramAdaptiveAggregatorOff stamps
+	// enable_adaptive_aggregator=0 on a plan carrying a per-series window over
+	// histogram samples, so the window's bucket arrays aggregate in the
+	// per-thread hash tables every server before 26.8 ran instead of in the
+	// adaptive aggregator 26.8 turns on by default (ClickHouse#111459).
+	//
+	// The adaptive aggregator freezes each thread's local table once it holds
+	// adaptive_aggregator_freeze_threshold keys or
+	// adaptive_aggregator_freeze_threshold_bytes of state, and routes every
+	// later key into a per-bucket backlog that the bucket-parallel merge
+	// aggregates. A histogram window collects every in-window sample's bucket
+	// arrays per series, so the frozen tables fill almost at once and the
+	// backlogs hold those arrays until the merge. Measured on ClickHouse
+	// 26.8.36.3 against 26.6.8.7 with the perf-nightly sample (#3986):
+	// `histogram_quantiles(sum by (http_route) (rate(<exp-hist>[5m])), ...)`
+	// went from 256 MiB on 26.6 to 289 MiB on 26.8 and to 143 MiB stamped, and
+	// its single-phi form from 220 to 292 and to 184 MiB. The same statements
+	// under compatibility=26.7 land near the stamped figure.
+	//
+	// It is RESULT-EQUIVALENT: the adaptive aggregator is an execution
+	// strategy, and either path emits the same groups with the same states.
+	//
+	// MinVersion is 26.8, the first release carrying the setting; an older
+	// server rejects the name. AutoSelect is true for the reason
+	// FeatureExpHistogramTwoLevel gives: a peak that grows on a server upgrade
+	// is an availability regression, and the stamp is result-equivalent.
+	// Stability is Stable: the stamp selects the aggregation every server
+	// before 26.8 ran.
+	//
+	// The plan-shape gate is load-bearing. On other histogram shapes the
+	// adaptive aggregator is the cheaper path on 26.8, and switching it off
+	// costs more than 26.6 did: the instant classic
+	// `histogram_quantile(0.95, sum by (http_route, le) (<bucket>))` measured
+	// 61 MiB on 26.8 against 235 MiB with the setting off. See internal/engine's
+	// applyHistogramAdaptiveAggregatorOff for the predicate and the shapes left
+	// outside it.
+	FeatureHistogramAdaptiveAggregatorOff = "histogram_adaptive_aggregator_off"
 
 	// FeatureQueryLogUnion points the query-actuals reconciler (internal/engine's
 	// QueryLogActualsReconciler, active only with
@@ -2932,6 +2978,15 @@ var registry = []Feature{
 		Doc: "stamp group_by_two_level_threshold_bytes=1 on a windowed exponential-histogram plan so the aggregator " +
 			"converts to its two-level table at once instead of feeding the array stages one whole-state block " +
 			"(result-equivalent, no version floor, measured 157 -> 27 MiB at 21 anchors and 383 -> 53 MiB at 61 -- #3247)",
+	},
+	{
+		ID:         FeatureHistogramAdaptiveAggregatorOff,
+		MinVersion: Version{Major: 26, Minor: 8},
+		Stability:  Stable,
+		AutoSelect: true,
+		Doc: "stamp enable_adaptive_aggregator=0 on a histogram sample-window plan so its bucket arrays aggregate per thread " +
+			"as before 26.8 instead of through the adaptive aggregator's backlogs (result-equivalent, server >= 26.8, " +
+			"measured 289 -> 143 MiB on the plural native quantile over rate() -- #3986)",
 	},
 	{
 		ID:                              FeatureQueryLogUnion,

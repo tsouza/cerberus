@@ -85,6 +85,11 @@ import (
 //	   1    3873     376.0 MiB
 //	2000    3873     440.7 MiB
 //
+// Re-measured for cerberus issue #3986 on ClickHouse 26.6.4.55 and 26.8.36.3
+// (the median of warm runs): 4096 x 3873, the width ceiling, peaks at 869.3
+// MiB on 26.6 and 867.4 MiB on 26.8, and 4096 x 160 at 49.5 and 54.2 MiB, so
+// the ceiling holds unchanged on both lines.
+//
 // Two things fall out of this table:
 //
 //  1. The width-1-row sweep is clean, close to quadratic (166.5 -> 654.3 is

@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/chsql"
 )
 
@@ -207,6 +208,47 @@ type Sentinel struct {
 	// of a line is SentinelsFor(line); nightly-baseline.json carries a bound
 	// for exactly that set.
 	NotOn map[string]string
+	// WantSettings names ClickHouse settings the statement cerberus
+	// dispatched for this sentinel must carry, read back from
+	// system.query_log, on every server at or past each entry's Since line.
+	// It is the check for a stamp the sentinel's peak depends on: a stamp
+	// that stops reaching the statement raises the peak only as far as the
+	// server's own default allows, which a committed ceiling calibrated with
+	// headroom can miss.
+	WantSettings []WantSetting
+}
+
+// WantSetting is one setting a sentinel's dispatched statement must carry:
+// Name with Value, as system.query_log's Settings map renders it, on a server
+// whose release line is Since or later.
+type WantSetting struct {
+	Name  string
+	Value string
+	Since chopt.Version
+}
+
+// WantedOn is the subset of s.WantSettings a server on release line applies.
+func (s Sentinel) WantedOn(line chopt.Version) []WantSetting {
+	var out []WantSetting
+	for _, w := range s.WantSettings {
+		if line.AtLeast(w.Since) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// histogramAdaptiveAggregatorOff is the stamp
+// chopt.FeatureHistogramAdaptiveAggregatorOff puts on a histogram
+// sample-window statement. Its line is written out rather than read from the registry, so a
+// floor that drifts upward fails here instead of moving the check with it.
+// Measured on 26.8.36.3 (#3986) through this harness, the classic by-route
+// quantile peaks at 586 MiB without it and 375 MiB with it, and the plural
+// native quantile over rate() at 319 and 185 MiB.
+var histogramAdaptiveAggregatorOff = WantSetting{
+	Name:  "enable_adaptive_aggregator",
+	Value: "0",
+	Since: chopt.Version{Major: 26, Minor: 8},
 }
 
 // SentinelsFor is the sentinel set of ClickHouse release line version: every
@@ -329,6 +371,7 @@ var Sentinels = []Sentinel{
 		WindowEnd:        time.Date(2026, 8, 18, 9, 10, 0, 0, time.UTC),
 		Step:             time.Minute,
 		BaselineHeadroom: histogramBaselineHeadroom,
+		WantSettings:     []WantSetting{histogramAdaptiveAggregatorOff},
 		NotOn: map[string]string{
 			"24.8": "the native classic-histogram grid this sentinel measures (chopt ts_grid_histogram) floors at 25.9; " +
 				"on 24.8 the fan-out lowering's collapsed-payload resource bound rejects this window by design (" +
@@ -489,6 +532,7 @@ var Sentinels = []Sentinel{
 		Path:             "/api/v1/query",
 		ExpectedStatus:   http.StatusOK,
 		BaselineHeadroom: nativeQuantilesBaselineHeadroom,
+		WantSettings:     []WantSetting{histogramAdaptiveAggregatorOff},
 		WindowStart:      time.Date(2026, 8, 18, 9, 14, 0, 0, time.UTC),
 		WindowEnd:        time.Date(2026, 8, 18, 9, 14, 0, 0, time.UTC),
 		Params: func(start, end time.Time) url.Values {

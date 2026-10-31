@@ -47,6 +47,12 @@ type planShapeFacts struct {
 	// RangeBucketFanout — see applyExpHistogramTwoLevelBound for why neither
 	// conjunct alone is the predicate.
 	expHistogramWindowGrouping bool
+	// histogramSampleWindow: a per-series window over histogram samples — a
+	// RangeBucketGridNative, or an Aggregate collecting both the sample
+	// timestamps and a bucket-array column per group
+	// (histogramSampleWindowAggregate). See
+	// applyHistogramAdaptiveAggregatorOff.
+	histogramSampleWindow bool
 	// tsGridNative: a node from the experimental timeSeries*ToGrid family —
 	// see planHasTSGridNative for the member list.
 	tsGridNative bool
@@ -170,8 +176,11 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 		if v.DownsampleTier || v.NativeGroupArray {
 			f.tsGridNative = true
 		}
+	case *chplan.RangeBucketGridNative:
+		f.tsGridNative = true
+		f.histogramSampleWindow = true
 	case *chplan.RangeWindowGridNative, *chplan.RangeWindowGridNativeInstant,
-		*chplan.RangeWindowStaleResample, *chplan.RangeBucketGridNative:
+		*chplan.RangeWindowStaleResample:
 		f.tsGridNative = true
 	case *chplan.Limit:
 		if v.Count > 0 {
@@ -181,6 +190,9 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 			}
 		}
 	case *chplan.Aggregate:
+		if !f.histogramSampleWindow && histogramSampleWindowAggregate(v) {
+			f.histogramSampleWindow = true
+		}
 		if spine {
 			f.spineAggregate = v
 			f.spineAggregates++
@@ -203,6 +215,50 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 			f.spineHasFilter = true
 		}
 	}
+}
+
+// histogramSampleWindowAggregate reports whether a is the per-series counter
+// window over exponential-histogram samples the instant rate() and increase()
+// lowerings reduce (internal/promql's expHistogramValuedWindowStageBy): per
+// group it collects the sample timestamps and the exponential bucket arrays
+// through groupArray, and it reads the series' aggregation temporality. The
+// bare-selector lookback collects the same arrays but no temporality, and a
+// cross-series merge collects bucket arrays but no timestamps, so neither
+// matches. The input's RowType is resolved only once an aggregate argument
+// is a bare column, so a plan without one pays nothing.
+func histogramSampleWindowAggregate(a *chplan.Aggregate) bool {
+	var (
+		input                           chplan.Schema
+		resolved                        bool
+		timestamps, arrays, temporality bool
+	)
+	for _, agg := range a.AggFuncs {
+		if len(agg.Args) != 1 {
+			continue
+		}
+		ref, ok := agg.Args[0].(*chplan.ColumnRef)
+		if !ok {
+			continue
+		}
+		if !resolved {
+			input, resolved = a.Input.RowType(), true
+		}
+		column, ok := input.ByName(ref.Name)
+		if !ok {
+			continue
+		}
+		switch {
+		case column.Role == chplan.RoleTemporality:
+			temporality = true
+		case agg.Fn != chplan.FnGroupArray:
+		case column.Role == chplan.RoleTimestamp:
+			timestamps = true
+		case column.HistogramField == chplan.HistogramFieldPositiveBucketCounts,
+			column.HistogramField == chplan.HistogramFieldNegativeBucketCounts:
+			arrays = true
+		}
+	}
+	return timestamps && arrays && temporality
 }
 
 // recordGridCarrier records the result-cache window facts of one carrier —

@@ -144,6 +144,14 @@ import (
 // ~15.5 bytes/unit; the rest of the table is consistent with that rate to
 // within the same rough margin the original (cubic) calibration reported.
 //
+// Re-measured for cerberus issue #3986 on ClickHouse 26.6.4.55 and 26.8.36.3
+// (identical layout, width 160, same query, the median of warm runs): rows
+// 500 / 1000 / 2000 / 2300 peak at 242 / 479 / 951 / 1013 MiB on 26.6 and
+// 273 / 537 / 798 / 802 MiB on 26.8. 2300 rows is 58.9M cost units, just
+// under the 60M ceiling, so the ceiling holds on both lines: 26.8's adaptive
+// aggregator flattens the curve past 1000 rows, and 26.6 meets the 1 GiB
+// default with about 1% to spare.
+//
 // This makes the algorithm safe at ORDINARY production scale — hundreds to
 // low thousands of series at a realistic bucket width, roughly two orders
 // of magnitude past where the OLD cubic-cost guard started rejecting

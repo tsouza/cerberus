@@ -487,6 +487,10 @@ func applySharedQuerySettings(ctx context.Context, f planShapeFacts, memCap int6
 	// per-series groupArray see 256 small blocks instead of one whole-state
 	// block (cerberus issue #3247).
 	ctx = applyExpHistogramTwoLevelBound(ctx, f, rules.ExpHistogramTwoLevel)
+	// Histogram-grouping plans only, on ClickHouse 26.8+ where the setting
+	// exists: keep the per-group bucket arrays out of the adaptive
+	// aggregator's backlogs (cerberus issue #3986).
+	ctx = applyHistogramAdaptiveAggregatorOff(ctx, f, rules.HistogramAdaptiveAggregatorOff)
 	// The flag-gated rules (workload, log_comment shape id, result cache,
 	// aggregation-in-order, condition cache, lazy materialisation, trace-id
 	// bitmap filter), driven by the boot-resolved chopt EnabledSet: most
