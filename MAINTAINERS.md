@@ -7,16 +7,24 @@ removed is described in [GOVERNANCE.md](GOVERNANCE.md).
 | ------------ | -------------------------------------- | -------------------- |
 | Thiago Souza | [@tsouza](https://github.com/tsouza)   | Independent          |
 
-## Emeritus maintainers
+## Reviewers
 
-Maintainers who have stepped back from active participation are listed here. Emeritus maintainers
-have no merge access or vote, and may be consulted on project matters.
+Reviewers own the review of one area of the codebase; the areas and the role are defined in the
+[contributor ladder](CONTRIBUTOR_LADDER.md).
+
+| Name | GitHub ID | Company/Organization | Area |
+| ---- | --------- | -------------------- | ---- |
+
+## Emeritus maintainers and reviewers
+
+Maintainers and reviewers who have stepped back from active participation are listed here. Emeritus
+members have no merge access, review ownership or vote, and may be consulted on project matters.
 
 | Name | GitHub ID | Date moved to emeritus |
 | ---- | --------- | ---------------------- |
 
 ## Affiliation updates
 
-The Company/Organization column names each maintainer's employer, or `Independent` for a maintainer
-contributing on their own behalf. A maintainer whose employer changes updates this file within 30
-days.
+The Company/Organization column names each maintainer's or reviewer's employer, or `Independent` for
+someone contributing on their own behalf. A maintainer or reviewer whose employer changes updates
+this file within 30 days.

@@ -18,9 +18,45 @@ happens if a maintainer can no longer continue.
 
 - **Contributors** are anyone who opens an issue, reviews a pull request, or submits a change. No
   permission is needed to contribute; [CONTRIBUTING.md](CONTRIBUTING.md) describes how.
+- **Reviewers** own the review of one area of the codebase. They are listed in
+  [MAINTAINERS.md](MAINTAINERS.md).
 - **Maintainers** are listed in [MAINTAINERS.md](MAINTAINERS.md). They have write access to the
   repository, review and merge pull requests, triage issues, cut releases, and are responsible for
   the project's direction, its security response and its Code of Conduct enforcement.
+
+The [contributor ladder](CONTRIBUTOR_LADDER.md) defines each role's responsibilities, requirements
+and privileges, and how a contributor moves from one role to the next. Every role is held by a
+person. AI tools and agents hold no role, have no vote, and cannot approve or merge a change on their
+own authority.
+
+## How cerberus is developed
+
+Most changes to cerberus are written by AI coding agents working under a maintainer's direction.
+
+- **A maintainer is accountable for every change.** The maintainer decides what work is done, sets
+  the agents' instructions (the hard invariants in [CLAUDE.md](CLAUDE.md), which
+  [AGENTS.md](AGENTS.md) points to), and decides what merges. A merged change is the maintainer's
+  responsibility, whoever or whatever wrote it.
+- **Correctness is enforced by gates, not by trust in the author.** A change merges only when every
+  status check that the `main` ruleset requires passes, and every review thread is resolved. The
+  checks are listed in [CONTRIBUTING.md](CONTRIBUTING.md) and documented gate by gate in
+  [docs/test-strategy.md](docs/test-strategy.md). They include the test suite under the race
+  detector, the architecture and invariant scans, and the license boundary check. Before a release,
+  the differential harnesses compare cerberus with Prometheus, Loki and Tempo
+  ([docs/compatibility.md](docs/compatibility.md)), with no allow-list.
+- **Changes are reviewed adversarially.** A non-trivial change is reviewed by an independent pass
+  that tries to refute it: its correctness, its tests (a test must fail when the code under test is
+  broken), and its consistency with the code, the documents and the invariants.
+- **AI assistance is disclosed.** A commit written with an AI tool carries an
+  `Assisted-by: <tool>:<model>` trailer, and a pull request written with one says so in its
+  description.
+- **Sign-off is the maintainer's certification.** An agent's commit carries the directing
+  maintainer's `Signed-off-by` trailer, added on the maintainer's standing authorization. With it the
+  maintainer certifies the [Developer Certificate of Origin](https://developercertificate.org) for
+  that commit and accepts responsibility for it as if they had written it.
+- **Every contributor follows the same rules.** Contributions from people outside the project, with
+  or without AI tools, follow the policy in
+  [CONTRIBUTING.md](CONTRIBUTING.md#ai-assisted-contributions).
 
 ## Decision making
 
@@ -35,28 +71,29 @@ stands unless a maintainer objects. Any maintainer can call for a vote instead.
 - While the project has a single maintainer, that maintainer's decision is the decision, and it is
   recorded on the issue or pull request concerned in the same way.
 
-## Becoming a maintainer
+## Becoming a reviewer or a maintainer
 
-A contributor becomes a maintainer by showing sustained, high-quality involvement:
+The requirements for each role are in the [contributor ladder](CONTRIBUTOR_LADDER.md).
 
-- contributions over at least three months;
-- at least five non-trivial pull requests merged, and regular reviews of other people's changes;
-- an understanding of the project's architecture, its test layers, and the invariants in
-  [CLAUDE.md](CLAUDE.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Reviewer.** A maintainer sponsors the contributor by opening a pull request that adds them to
+  [MAINTAINERS.md](MAINTAINERS.md) for an area. The pull request is decided by lazy consensus.
+- **Maintainer.** An existing maintainer nominates the reviewer on a public `governance` issue, and
+  a majority vote of the maintainers approves the nomination. A new maintainer is added to
+  [MAINTAINERS.md](MAINTAINERS.md) and granted write access.
 
-An existing maintainer nominates the contributor on a public `governance` issue, and a majority vote
-of the maintainers approves the nomination. Nominations are judged without regard to employer, and
-the maintainers weigh the organizational diversity of the maintainer group. A new maintainer is added
-to [MAINTAINERS.md](MAINTAINERS.md) and granted write access.
+Nominations are judged without regard to employer, and the maintainers weigh the organizational
+diversity of the maintainer group.
 
 ## Stepping down and removal
 
-A maintainer can step down at any time by opening a pull request that moves them to the emeritus
-section of [MAINTAINERS.md](MAINTAINERS.md).
+A reviewer or maintainer can step down at any time by opening a pull request that moves them to the
+emeritus section of [MAINTAINERS.md](MAINTAINERS.md).
 
 A maintainer who has been inactive for twelve months, or who has violated the Code of Conduct, can be
-moved to emeritus status by a two-thirds vote of the other maintainers. An emeritus maintainer
-returns to active status through the nomination process above.
+moved to emeritus status by a two-thirds vote of the other maintainers. A reviewer inactive for six
+months, or who has violated the Code of Conduct, can be moved to emeritus status by a majority vote
+of the maintainers. An emeritus reviewer or maintainer returns to active status through the process
+above.
 
 ## Continuity
 

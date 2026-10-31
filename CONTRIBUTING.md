@@ -51,6 +51,29 @@ git rebase --signoff origin/main
 git push --force-with-lease
 ```
 
+## AI-assisted contributions
+
+You may use AI tools to write a contribution. cerberus itself is developed mostly by AI agents under
+a maintainer's direction ([GOVERNANCE.md](GOVERNANCE.md#how-cerberus-is-developed)), and
+[AGENTS.md](AGENTS.md) gives an AI tool the project's conventions and invariants. A contribution
+written with AI is held to the same rules as any other:
+
+- **You are the author.** You understand every line you submit, you can explain and defend it in
+  review, and you answer review comments yourself. A pull request whose author cannot answer for it
+  is closed.
+- **You sign off.** The `Signed-off-by` trailer is yours. It certifies the Developer Certificate of
+  Origin for the whole contribution, including what a tool generated: that you have the right to
+  submit it under Apache-2.0, and that it does not reproduce code under an incompatible license. An
+  AI tool never signs off in its own name.
+- **You disclose it.** A commit written with an AI tool ends with an `Assisted-by: <tool>:<model>`
+  trailer, for example `Assisted-by: Claude Code:claude-opus-5-5`, placed before your
+  `Signed-off-by`. A pull request written with one says so in its description.
+- **The gates are the same.** An AI-written change passes every required check, comes with tests
+  that fail when the code under them is broken, and follows the hard invariants in
+  [CLAUDE.md](CLAUDE.md). There is no lighter path for generated code, and no heavier one.
+- **Keep it reviewable.** Submit one focused change per pull request, scoped as an issue describes,
+  rather than a large generated rewrite. Reviewer time is the project's scarcest resource.
+
 ## Setup
 
 ```sh
