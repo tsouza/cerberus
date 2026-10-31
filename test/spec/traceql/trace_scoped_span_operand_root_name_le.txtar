@@ -46,8 +46,42 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, Spa
     ('a0000000000000000000000000000003', '0000000000000020', '',                 toDateTime64('2024-01-01 00:00:00', 9), 1000000000, 'n', 'api',      'Server',   map('service.name', 'api'),      map()),
     ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:00:00', 9), 1000000000, 'c', 'api',      'Client',   map('service.name', 'api'),      map('peer', 'n'));
 -- expected_rows --
-[]
+[
+  ["", {"__cerberus_parentSpanID": "0000000000000010", "__cerberus_spanID": "0000000000000011", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": ""}, "2024-01-01T00:00:01Z", 1000000000],
+  ["b", {"__cerberus_parentSpanID": "0000000000000000", "__cerberus_spanID": "0000000000000010", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": "svc-b"}, "2024-01-01T00:00:00Z", 2000000000],
+  ["m", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 3000000000],
+  ["m", {"__cerberus_parentSpanID": "0000000000000001", "__cerberus_spanID": "0000000000000002", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "backend"}, "2024-01-01T00:00:01Z", 1000000000],
+  ["n", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "0000000000000020", "__cerberus_traceID": "a0000000000000000000000000000003", "service.name": "api"}, "2024-01-01T00:00:00Z", 1000000000],
+  ["z", {"__cerberus_parentSpanID": "0000000000000001", "__cerberus_spanID": "0000000000000004", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "db"}, "2024-01-01T00:00:02Z", 500000000]
+]
 -- parity --
 oracle: tempo
 endpoint: /api/search
 scope: full
+-- args --
+[0] string = ""
+[1] string = ""
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_spanID"
+[3] string = ""
+[4] string = ""
+-- chplan --
+TraceLookupFilter lookups=1 predicate=(FnIfNull(_cerb_root_name, "") <= SpanName)
+  Scan(otel_traces)
+  Aggregate groupBy=[TraceId AS _cerb_lookup_trace_id] funcs=[FnArgMin(SpanName, Timestamp) AS _cerb_root_name]
+    Filter predicate=(ParentSpanId = "")
+      Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=1;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT `m`.* FROM (SELECT * FROM `otel_traces`) AS m LEFT JOIN (SELECT `TraceId` AS `_cerb_lookup_trace_id`, argMin(`SpanName`, `Timestamp`) AS `_cerb_root_name` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `_cerb_lookup_trace_id`) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id` WHERE (ifNull(`_cerb_root_name`, ?) <= `SpanName`)
+-- sql_optimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `m`.* FROM (SELECT * FROM `otel_traces`) AS m LEFT JOIN (SELECT `TraceId` AS `_cerb_lookup_trace_id`, argMin(`SpanName`, `Timestamp`) AS `_cerb_root_name` FROM (SELECT `ParentSpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `_cerb_lookup_trace_id`) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id` WHERE (ifNull(`_cerb_root_name`, ?) <= `SpanName`))
