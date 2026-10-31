@@ -1,0 +1,69 @@
+# A trace with NO root span has an empty rootName (reference Tempo writes
+# RootSpanName = "" for it), so `rootName = ""` matches exactly the
+# rootless trace — and only it: every rooted trace here has a non-empty
+# root name. The lowering narrows the per-trace aggregate to root spans
+# before its GROUP BY, so the rootless trace has no aggregate row; this
+# fixture pins that it is still answered as if its rootName were "".
+#
+#   trace ...0001  root  'GET /api/checkout'                      -> must NOT match
+#   trace ...0002  root  'POST /api/orders'                       -> must NOT match
+#   trace ...0003  no root (ParentSpanId = all-zero hex)          -> MATCHES
+-- query.traceql --
+{ rootName = "" }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:00', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:01', 9), 'charge'),
+    ('a0000000000000000000000000000002', '0000000000000010', '',                 toDateTime64('2024-01-01 00:00:00', 9), 'POST /api/orders'),
+    ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:00:01', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000003', '0000000000000020', '0000000000000000', toDateTime64('2024-01-01 00:00:00', 9), 'GET /api/checkout'),
+    ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:00:01', 9), 'charge');
+-- expected_rows --
+[
+  ["GET /api/checkout", {"__cerberus_parentSpanID": "0000000000000000", "__cerberus_spanID": "0000000000000020", "__cerberus_traceID": "a0000000000000000000000000000003"}, "2024-01-01T00:00:00Z", 0],
+  ["charge", {"__cerberus_parentSpanID": "0000000000000020", "__cerberus_spanID": "0000000000000021", "__cerberus_traceID": "a0000000000000000000000000000003"}, "2024-01-01T00:00:01Z", 0]
+]
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
+-- args --
+[0] string = ""
+[1] string = ""
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_spanID"
+[3] string = ""
+[4] string = ""
+-- chplan --
+Filter predicate=FnNot((TraceId IN {Project [TraceId] ; Filter predicate=FnNot((_cerb_trace_scoped_val = "")) ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnArgMin(SpanName, Timestamp) AS _cerb_trace_scoped_val] ; Filter predicate=(ParentSpanId = "") ; Scan(otel_traces)}))
+  Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+min_table_rows_to_use_projection_index=0
+use_query_condition_cache=1
+-- sql --
+SELECT * FROM `otel_traces` WHERE not(`TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMin(`SpanName`, `Timestamp`) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `TraceId`) WHERE not((`_cerb_trace_scoped_val` = ?)))))
+-- sql_optimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE not(`TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMin(`SpanName`, `Timestamp`) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `TraceId`) WHERE not((`_cerb_trace_scoped_val` = ?))))))

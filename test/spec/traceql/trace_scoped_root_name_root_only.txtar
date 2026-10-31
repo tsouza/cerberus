@@ -3,8 +3,8 @@
 # EMPTY — upstream's Span.IsRoot() is `len(ParentSpanID) == 0`, and a
 # trace with no such span has an empty RootSpanName that matches nothing.
 # The fixture is built so a lowering that resolved root identity from an
-# arbitrary span (the `any(SpanName)` shape, rather than argMinIf keyed
-# on the root-span condition) would be caught, and so would one that read
+# arbitrary span (the `any(SpanName)` shape, rather than argMin over the
+# root spans alone) would be caught, and so would one that read
 # a parent naming a row that is not in the data as rootness:
 #
 #   trace ...0001  root  'GET /api/checkout'  (ParentSpanId = '')     -> MATCHES
@@ -57,10 +57,10 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, SpanName) VAL
 [0] string = ""
 [1] string = "GET /api/checkout"
 -- chplan --
-Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_scoped_val = "GET /api/checkout") ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnArgMinIf(SpanName, Timestamp, (ParentSpanId = "")) AS _cerb_trace_scoped_val] ; Scan(otel_traces)})
+Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_scoped_val = "GET /api/checkout") ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnArgMin(SpanName, Timestamp) AS _cerb_trace_scoped_val] ; Filter predicate=(ParentSpanId = "") ; Scan(otel_traces)})
   Scan(otel_traces)
 -- sql --
-SELECT * FROM `otel_traces` WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMinIf(`SpanName`, `Timestamp`, (`ParentSpanId` = ?)) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces`) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` = ?)))
+SELECT * FROM `otel_traces` WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMin(`SpanName`, `Timestamp`) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` = ?)))
 -- parity --
 oracle: tempo
 endpoint: /api/search
@@ -80,4 +80,4 @@ max_bytes_before_external_sort=536870912
 min_table_rows_to_use_projection_index=0
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMinIf(`SpanName`, `Timestamp`, (`ParentSpanId` = ?)) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces`) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` = ?))))
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMin(`SpanName`, `Timestamp`) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` = ?))))
