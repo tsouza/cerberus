@@ -1,0 +1,53 @@
+# A trace-scoped intrinsic compared with a per-span operand is evaluated per
+# span: each span compares its OWN trace's value with its OWN operand.
+# Reference Tempo gives a trace without a root span an empty RootSpanName /
+# RootServiceName (vparquet4 traceToParquet) and compares that.
+#
+#   trace ...01  rootName 'm', rootServiceName 'frontend', traceDuration 3s
+#     0001 root  'm' frontend  server    0s +3s
+#     0002       'm' backend   client    1s +1s    span.peer 'm'
+#     0003       'a' frontend  internal  1s +2s
+#     0004       'z' db        client    2s +0.5s  span.peer 'x'
+#   trace ...02  NO root span (0010's parent is a span no row carries):
+#                rootName '', rootServiceName '', traceDuration 2s
+#     0010       'b' svc-b     internal  0s +2s
+#     0011       ''  ''        server    1s +1s
+#   trace ...03  rootName 'n', rootServiceName 'api', traceDuration 1s
+#     0020 root  'n' api       server    0s +1s
+#     0021       'c' api       client    0s +1s    span.peer 'n'
+#
+# Matches 0002, 0003, 0004 and 0011.
+-- query.traceql --
+{ traceDuration > duration }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName, ServiceName, SpanKind, ResourceAttributes, SpanAttributes) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:00', 9), 3000000000, 'm', 'frontend', 'Server',   map('service.name', 'frontend'), map()),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:01', 9), 1000000000, 'm', 'backend',  'Client',   map('service.name', 'backend'),  map('peer', 'm')),
+    ('a0000000000000000000000000000001', '0000000000000003', '0000000000000001', toDateTime64('2024-01-01 00:00:01', 9), 2000000000, 'a', 'frontend', 'Internal', map('service.name', 'frontend'), map()),
+    ('a0000000000000000000000000000001', '0000000000000004', '0000000000000001', toDateTime64('2024-01-01 00:00:02', 9), 500000000,  'z', 'db',       'Client',   map('service.name', 'db'),       map('peer', 'x')),
+    ('a0000000000000000000000000000002', '0000000000000010', '0000000000000000', toDateTime64('2024-01-01 00:00:00', 9), 2000000000, 'b', 'svc-b',    'Internal', map('service.name', 'svc-b'),    map()),
+    ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:00:01', 9), 1000000000, '',  '',         'Server',   map('service.name', ''),         map()),
+    ('a0000000000000000000000000000003', '0000000000000020', '',                 toDateTime64('2024-01-01 00:00:00', 9), 1000000000, 'n', 'api',      'Server',   map('service.name', 'api'),      map()),
+    ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:00:00', 9), 1000000000, 'c', 'api',      'Client',   map('service.name', 'api'),      map('peer', 'n'));
+-- expected_rows --
+[]
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full

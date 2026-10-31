@@ -52,6 +52,12 @@ package chplan
 //     numbering subquery (and buildNestedSetNumbering's own recursive step
 //     INNER JOINs the CTE to itself) — every NestedSetAnnotate node is a
 //     join, with no gating field to check.
+//   - TraceLookupFilter — TraceQL's trace-scoped intrinsic compared to a
+//     per-span operand (`{ rootName = name }`).
+//     internal/chsql/trace_lookup_filter.go's emitTraceLookupFilter LEFT
+//     JOINs every lookup relation onto its input on the trace id; the
+//     emitter rejects a TraceLookupFilter with no lookups, so every one that
+//     reaches SQL renders at least one JOIN.
 //   - MetricsCompare with a non-nil RootLookup — TraceQL compare()'s root-span
 //     lookup. chplan.MetricsCompare's own doc names TraceIDColumn "join key
 //     for RootLookup"; internal/chsql/metrics_compare.go's compareBaseQuery
@@ -102,7 +108,7 @@ func HasJoin(node Node) bool {
 func IsJoinNode(n Node) bool {
 	switch v := n.(type) {
 	case *VectorJoin, *HistogramVectorJoin, *HistogramFloatVectorJoin, *MixedVectorJoin,
-		*InfoJoin, *StructuralJoin, *CrossJoin, *NestedSetAnnotate:
+		*InfoJoin, *StructuralJoin, *CrossJoin, *NestedSetAnnotate, *TraceLookupFilter:
 		return true
 	case *MetricsCompare:
 		return v.RootLookup != nil

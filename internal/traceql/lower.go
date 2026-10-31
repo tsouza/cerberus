@@ -852,7 +852,7 @@ func lowerSpansetFilter(f *traceql.SpansetFilter, s schema.Traces) (chplan.Node,
 	if pred == nil {
 		return input, nil
 	}
-	return &chplan.Filter{Input: input, Predicate: pred}, nil
+	return traceScopedFilter(input, pred, s), nil
 }
 
 // predicateUsesNestedSetColumns reports whether expr references any of
@@ -1947,7 +1947,7 @@ func lowerAbsentFieldBinary(b *traceql.BinaryOperation, s schema.Traces) (chplan
 // are handled by their own dedicated path (lowerNestedSetBinary) and
 // are not classified here. The trace-scoped root-identity intrinsics
 // (rootName / rootServiceName / traceDuration) used to be classified
-// absent too; they now have a real (correlated-subquery) lowering via
+// absent too; they now have a real per-trace lowering via
 // lowerTraceScopedBinary, so attributeHasNoBacking no longer reports
 // them (see issue #1711).
 func absentAttributePredicate(attr traceql.Attribute, s schema.Traces) (chplan.Expr, bool) {
@@ -1963,8 +1963,8 @@ func absentAttributePredicate(attr traceql.Attribute, s schema.Traces) (chplan.E
 // event:timeSinceStart have no per-span column and no aggregate
 // lowering either. Every other attribute (span / resource maps,
 // intrinsics with a column, and the trace-scoped root-identity
-// intrinsics lowerTraceScopedBinary now resolves via a correlated
-// subquery) has a real backing.
+// intrinsics lowerTraceScopedBinary now resolves per trace) has a real
+// backing.
 //
 // # Why span:childCount stays here (cerberus issue #3229)
 //
@@ -2023,8 +2023,8 @@ func attributeHasNoBacking(attr traceql.Attribute, s schema.Traces) bool {
 // bare or trace:-scoped spelling. The OTel-CH schema has no per-span
 // column for these: the value depends on every span in the trace (which
 // one is root, when the trace started/ended), so lowerTraceScopedBinary
-// resolves them via a correlated per-trace subquery instead of a direct
-// column reference. traceql.ScopedIntrinsicTrace* are currently
+// resolves them from a per-trace aggregate instead of a direct column
+// reference. traceql.ScopedIntrinsicTrace* are currently
 // unreachable from the parser — scopedIntrinsic in ast/parser.go maps
 // the trace:-prefixed spellings onto the SAME unscoped Intrinsic
 // constants bareIntrinsic produces — so this switch defensively
@@ -2094,9 +2094,10 @@ func rootSpanScan(s schema.Traces) chplan.Node {
 const traceScopedValueAlias = "_cerb_trace_scoped_val"
 
 // traceScopedValueNode returns the un-filtered per-trace aggregate for a
-// trace-scoped intrinsic, with the resolved root-service / root-name /
-// trace-duration value under traceScopedValueAlias. ok is false for any
-// intrinsic other than the three trace-scoped ones.
+// trace-scoped intrinsic: one row per trace, its trace id under keyAlias and
+// the resolved root-service / root-name / trace-duration value under
+// valueAlias. ok is false for any intrinsic other than the three trace-scoped
+// ones.
 //
 // rootService / rootName aggregate rootSpanScan — root spans only — with
 // a single argMin keyed on Timestamp (the earliest root-flagged row,
@@ -2111,9 +2112,9 @@ const traceScopedValueAlias = "_cerb_trace_scoped_val"
 // layer that computes the subtraction the single-AggFunc SELECT-list
 // shape can't express directly. Every trace with a span in the scan has
 // a duration row.
-func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Node, ok bool) {
+func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces, keyAlias, valueAlias string) (node chplan.Node, ok bool) {
 	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}}
-	groupByAliases := []string{s.TraceIDColumn}
+	groupByAliases := []string{keyAlias}
 	rootValue := func(column string) chplan.Node {
 		return &chplan.Aggregate{
 			Input: rootSpanScan(s), GroupBy: groupBy, GroupByAliases: groupByAliases,
@@ -2123,7 +2124,7 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 					&chplan.ColumnRef{Name: column},
 					&chplan.ColumnRef{Name: s.TimestampColumn},
 				},
-				Alias: traceScopedValueAlias,
+				Alias: valueAlias,
 			}},
 		}
 	}
@@ -2157,14 +2158,14 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 		return &chplan.Project{
 			Input: agg,
 			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: s.TraceIDColumn}, Alias: s.TraceIDColumn},
+				{Expr: &chplan.ColumnRef{Name: keyAlias}, Alias: keyAlias},
 				{
 					Expr: &chplan.Binary{
 						Op:    chplan.OpSub,
 						Left:  &chplan.ColumnRef{Name: endAlias},
 						Right: &chplan.ColumnRef{Name: startAlias},
 					},
-					Alias: traceScopedValueAlias,
+					Alias: valueAlias,
 				},
 			},
 		}, true
@@ -2195,7 +2196,7 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 // Both forms keep the GROUP BY over root rows, and the negated form's set
 // is the traces that do NOT match — the small side of a `!=`.
 func traceScopedMembership(i traceql.Intrinsic, pred chplan.Expr, s schema.Traces) (chplan.Expr, bool) {
-	valueNode, ok := traceScopedValueNode(i, s)
+	valueNode, ok := traceScopedValueNode(i, s, s.TraceIDColumn, traceScopedValueAlias)
 	if !ok {
 		return nil, false
 	}
@@ -2245,6 +2246,11 @@ func traceScopedInSubquery(valueNode chplan.Node, pred chplan.Expr, s schema.Tra
 // Spans table so ClickHouse aggregates root identity / duration once
 // per trace and the outer predicate only ever compares real values.
 //
+// That membership form needs an operand fixed at plan time. A comparison
+// against an operand read from the span row (`{ rootName = name }`) is
+// instead a row predicate over the trace's value joined onto each span —
+// see lowerTraceScopedPeer.
+//
 // Returns handled=false when neither operand references a trace-scoped
 // intrinsic (the caller continues with the next interceptor / generic
 // lowering).
@@ -2267,9 +2273,16 @@ func lowerTraceScopedBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sc
 		return nil, false, nil
 	}
 
-	rhs, err := lowerFieldExpr(valueSide, s)
+	rhs, rowOperand, err := lowerTraceScopedPeer(valueSide, s)
 	if err != nil {
 		return nil, true, err
+	}
+	// Arithmetic (`traceDuration * 2`, `traceDuration - duration`) is a
+	// per-span VALUE, not a predicate over the trace: the membership form
+	// would hand the enclosing comparison a boolean in its place. It reads
+	// the joined per-trace value whatever the other operand is.
+	if rowOperand || isArithmeticOp(effectiveOp) {
+		return traceScopedRowExpr(attr.Intrinsic, effectiveOp, rhs), true, nil
 	}
 	// traceDuration's per-trace aggregate is Int64 nanoseconds while
 	// rootName / rootServiceName are Strings, so only the duration case
@@ -2279,6 +2292,214 @@ func lowerTraceScopedBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sc
 	pred := &chplan.Binary{Op: effectiveOp, Left: left, Right: rhs}
 	membership, ok := traceScopedMembership(attr.Intrinsic, pred, s)
 	return membership, ok, nil
+}
+
+// lowerTraceScopedPeer lowers the operand a trace-scoped intrinsic is
+// compared with. rowOperand reports whether that operand reads the span row
+// — a span intrinsic or attribute (`name`, `span.foo`, `duration`), or
+// another trace-scoped intrinsic, which is a per-trace value every span of
+// the trace carries — rather than a value fixed at plan time.
+//
+// A plan-time operand keeps the per-trace membership test
+// (traceScopedMembership): the traces whose value satisfies the comparison
+// are one set, the same for every span. A row operand cannot be answered that
+// way — each span compares its OWN trace's value with its OWN operand — so it
+// lowers to a row predicate over the trace's value joined onto the span
+// (traceScopedRowExpr, resolved by traceScopedFilter). Folding the
+// operand into the membership's per-trace subquery instead references the
+// outer span's columns from inside it, a correlated subquery ClickHouse
+// rejects (NOT_IMPLEMENTED) as an IN argument.
+//
+// A trace-scoped peer lowers straight to its own joined value: the generic
+// attribute lowering has no column for it and would read it as "".
+func lowerTraceScopedPeer(e traceql.FieldExpression, s schema.Traces) (expr chplan.Expr, rowOperand bool, err error) {
+	if attr, ok := fieldExprAttribute(e); ok && isTraceScopedIntrinsic(attr.Intrinsic) {
+		return &chplan.ColumnRef{Name: traceScopedLookupColumn(attr.Intrinsic)}, true, nil
+	}
+	expr, err = lowerFieldExpr(e, s)
+	if err != nil {
+		return nil, false, err
+	}
+	return expr, exprReadsRow(expr), nil
+}
+
+// exprReadsRow reports whether e reads any column of the row it is evaluated
+// against, as opposed to being a constant fixed at plan time.
+func exprReadsRow(e chplan.Expr) bool {
+	reads := false
+	chplan.InspectExpr(e, func(x chplan.Expr) bool {
+		switch x.(type) {
+		case *chplan.ColumnRef, *chplan.BareIdent:
+			reads = true
+		}
+		return !reads
+	})
+	return reads
+}
+
+// traceScopedRowExpr is `<the span's trace's value of i> <op> <rhs>`, a row
+// expression over the per-trace value traceScopedFilter joins onto every span:
+// a predicate for a comparison op, a value for an arithmetic one.
+//
+// It keeps the generic binary lowering's two operand rules: a numeric
+// comparison or arithmetic parses a Map-carried peer (traceDuration is Int64
+// nanoseconds), and a comparison against a peer read from an attribute map is
+// guarded by its existence probe, because reference Tempo answers every
+// comparison against an attribute the span never carried with false rather
+// than comparing the map's "" default.
+//
+// The numeric decision is taken on the bare lookup columns, before
+// withRootlessDefault wraps a root-identity one: the wrapping ifNull is a
+// function call, which coerceNumericFieldAccess would read as numeric and
+// parse a String peer to NULL.
+func traceScopedRowExpr(i traceql.Intrinsic, op chplan.BinaryOp, rhs chplan.Expr) chplan.Expr {
+	lhs := chplan.Expr(&chplan.ColumnRef{Name: traceScopedLookupColumn(i)})
+	lhs, rhs = coerceNumericFieldAccess(op, lhs, rhs, numericIntrinsicColumn(i))
+	lhs, rhs = withRootlessDefault(lhs), withRootlessDefault(rhs)
+	cmp := chplan.Expr(&chplan.Binary{Op: op, Left: lhs, Right: rhs})
+	if !needsAbsenceGuard(op, lhs, rhs) {
+		return cmp
+	}
+	return guardAbsentAttribute(cmp, rhs)
+}
+
+// traceScopedLookup names the column a TraceLookupFilter lookup carries one
+// trace-scoped intrinsic's per-trace value under. Each intrinsic has its own
+// column so one predicate can compare several of them, and none collides with
+// a spans-table column or with chplan.TraceLookupKeyColumn.
+type traceScopedLookup struct {
+	intrinsic traceql.Intrinsic
+	column    string
+}
+
+// traceScopedLookups lists every trace-scoped intrinsic a row comparison can
+// read, in the order traceScopedFilter joins their lookups. The trace:-scoped
+// spellings share their bare intrinsic's lookup (canonicalTraceScopedIntrinsic).
+var traceScopedLookups = []traceScopedLookup{
+	{intrinsic: traceql.IntrinsicTraceRootSpan, column: "_cerb_root_name"},
+	{intrinsic: traceql.IntrinsicTraceRootService, column: "_cerb_root_service_name"},
+	{intrinsic: traceql.IntrinsicTraceDuration, column: "_cerb_trace_duration"},
+}
+
+// canonicalTraceScopedIntrinsic maps a trace:-scoped spelling onto the bare
+// intrinsic naming the same value.
+func canonicalTraceScopedIntrinsic(i traceql.Intrinsic) traceql.Intrinsic {
+	switch i {
+	case traceql.ScopedIntrinsicTraceRootName:
+		return traceql.IntrinsicTraceRootSpan
+	case traceql.ScopedIntrinsicTraceRootService:
+		return traceql.IntrinsicTraceRootService
+	case traceql.ScopedIntrinsicTraceDuration:
+		return traceql.IntrinsicTraceDuration
+	}
+	return i
+}
+
+// traceScopedLookupColumn returns the lookup column of trace-scoped
+// intrinsic i.
+func traceScopedLookupColumn(i traceql.Intrinsic) string {
+	i = canonicalTraceScopedIntrinsic(i)
+	for _, l := range traceScopedLookups {
+		if l.intrinsic == i {
+			return l.column
+		}
+	}
+	return ""
+}
+
+// withRootlessDefault gives a root-identity lookup column — the span row's
+// view of its trace's rootName / rootServiceName, read from the column
+// traceScopedFilter joins — the value reference Tempo reports for a trace
+// with no root span. Any other expression is returned unchanged.
+//
+// rootName / rootServiceName come from the trace's root span, so a trace
+// without one has no lookup row. Reference Tempo gives such a trace an empty
+// RootSpanName / RootServiceName (vparquet4 traceToParquet) and compares that,
+// so the value is ifNull'd to "": the LEFT JOIN default is already "" under
+// ClickHouse's join_use_nulls=0, and the ifNull keeps the answer the same
+// where a deployment sets join_use_nulls=1. traceDuration has a lookup row
+// for every trace with a span in the scan, so its column is read as is.
+func withRootlessDefault(e chplan.Expr) chplan.Expr {
+	ref, ok := e.(*chplan.ColumnRef)
+	if !ok {
+		return e
+	}
+	for _, l := range traceScopedLookups {
+		if l.column == ref.Name && isTraceRootIdentityIntrinsic(l.intrinsic) {
+			return &chplan.FuncCall{Fn: chplan.FnIfNull, Args: []chplan.Expr{ref, &chplan.LitString{V: rootlessRootIdentity}}}
+		}
+	}
+	return e
+}
+
+// traceScopedFilter is the Filter of input by pred, joining the per-trace
+// lookup of every trace-scoped intrinsic a row expression in pred reads
+// (traceScopedRowExpr). A pred with no such expression is a plain Filter.
+//
+// Top-level conjuncts that read no lookup stay a plain Filter directly on
+// input, below the join: they need no per-trace value, and a Filter over the
+// scan keeps the PREWHERE placement and column pruning the emitter and
+// optimizer give that shape. Only the conjuncts that do read a lookup go to
+// the TraceLookupFilter above it.
+func traceScopedFilter(input chplan.Node, pred chplan.Expr, s schema.Traces) chplan.Node {
+	var plain, joined []chplan.Expr
+	for _, conjunct := range andConjuncts(pred) {
+		if len(traceScopedLookupsRead(conjunct)) > 0 {
+			joined = append(joined, conjunct)
+		} else {
+			plain = append(plain, conjunct)
+		}
+	}
+	if len(joined) == 0 {
+		return &chplan.Filter{Input: input, Predicate: pred}
+	}
+	if len(plain) > 0 {
+		input = &chplan.Filter{Input: input, Predicate: conjoinAll(plain)}
+	}
+	joinedPred := conjoinAll(joined)
+	read := traceScopedLookupsRead(joinedPred)
+	lookups := make([]chplan.Node, 0, len(read))
+	for _, l := range read {
+		node, _ := traceScopedValueNode(l.intrinsic, s, chplan.TraceLookupKeyColumn, l.column)
+		lookups = append(lookups, node)
+	}
+	return &chplan.TraceLookupFilter{Input: input, Lookups: lookups, Predicate: joinedPred}
+}
+
+// traceScopedLookupsRead returns the lookups whose column e reads, in
+// traceScopedLookups order.
+func traceScopedLookupsRead(e chplan.Expr) []traceScopedLookup {
+	readCols := map[string]bool{}
+	chplan.InspectExpr(e, func(x chplan.Expr) bool {
+		if ref, ok := x.(*chplan.ColumnRef); ok {
+			readCols[ref.Name] = true
+		}
+		return true
+	})
+	var out []traceScopedLookup
+	for _, l := range traceScopedLookups {
+		if readCols[l.column] {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// andConjuncts flattens the top-level AND chain of e into its conjuncts.
+func andConjuncts(e chplan.Expr) []chplan.Expr {
+	if b, ok := e.(*chplan.Binary); ok && b.Op == chplan.OpAnd {
+		return append(andConjuncts(b.Left), andConjuncts(b.Right)...)
+	}
+	return []chplan.Expr{e}
+}
+
+// conjoinAll ANDs conjuncts left to right; it is andConjuncts' inverse.
+func conjoinAll(conjuncts []chplan.Expr) chplan.Expr {
+	var out chplan.Expr
+	for _, c := range conjuncts {
+		out = conjoin(out, c)
+	}
+	return out
 }
 
 // lowerStaticArray turns a TraceQL array Static (TypeStringArray /

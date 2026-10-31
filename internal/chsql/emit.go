@@ -555,6 +555,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitStructuralJoin(v)
 	case *chplan.NestedSetAnnotate:
 		return e.emitNestedSetAnnotate(v)
+	case *chplan.TraceLookupFilter:
+		return e.emitTraceLookupFilter(v)
 	case *chplan.SearchTraceLimit:
 		return e.emitSearchTraceLimit(v)
 	case *chplan.CrossJoin:

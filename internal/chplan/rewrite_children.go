@@ -391,6 +391,24 @@ func rewriteIrregularNode(n Node, fn func(Node) (Node, bool)) (out Node, changed
 			cp.DownsampleTierInput = newDownsampleTierInput
 		}
 		return &cp, true, true
+	case *TraceLookupFilter:
+		// Input plus N lookup relations, rewritten in Children() order.
+		newChildren := make([]Node, 0, 1+len(v.Lookups))
+		ch := false
+		for _, child := range v.Children() {
+			newChild, c := fn(child)
+			if c {
+				ch = true
+			}
+			newChildren = append(newChildren, newChild)
+		}
+		if !ch {
+			return v, false, true
+		}
+		cp := *v
+		cp.Input = newChildren[0]
+		cp.Lookups = newChildren[1:]
+		return &cp, true, true
 	case *UnionAll:
 		// Recurse into each arm so existing optimizer rules
 		// (constant-fold, PREWHERE promotion, etc.) can rewrite the

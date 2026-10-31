@@ -87,6 +87,7 @@ func allNodeCases() []nodeExhaustivenessCase {
 		{"Filter", &Filter{Input: sentinelChild(), Predicate: &LitBool{V: true}}, false},
 		{"Project", &Project{Input: sentinelChild()}, false},
 		{"NestedSetAnnotate", &NestedSetAnnotate{Input: sentinelChild()}, false},
+		{"TraceLookupFilter", &TraceLookupFilter{Input: sentinelChild(), Lookups: []Node{sentinelChild(), sentinelChild()}, Predicate: &LitBool{V: true}}, false},
 		{"SearchTraceLimit", &SearchTraceLimit{Input: sentinelChild(), TraceLimit: 20}, false},
 		{"Aggregate", &Aggregate{Input: sentinelChild()}, false},
 		{"RangeWindowGridNative", &RangeWindowGridNative{Input: sentinelChild(), Func: "rate"}, false},

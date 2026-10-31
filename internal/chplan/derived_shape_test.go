@@ -98,6 +98,7 @@ var derivedShapeVerdicts = map[string]bool{
 	"SetOperation":             false,
 	"StructuralJoin":           false,
 	"TopK":                     false,
+	"TraceLookupFilter":        false,
 	"UnionAll":                 false,
 	"VectorJoin":               false,
 	"VectorSetOp":              false,

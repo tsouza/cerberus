@@ -26,6 +26,11 @@ func (l *Limit) RowType() Schema              { return l.Input.RowType() }
 func (o *OrderBy) RowType() Schema            { return o.Input.RowType() }
 func (s *SearchTraceLimit) RowType() Schema   { return s.Input.RowType() }
 func (m *MetricsSecondStage) RowType() Schema { return m.Input.RowType() }
+
+// RowType is Input's: the lookup columns feed Predicate and are never
+// projected.
+func (f *TraceLookupFilter) RowType() Schema { return f.Input.RowType() }
+
 func (p *Project) RowType() Schema {
 	if projectRolesAlignWithOutputs(p.Projections, p.Roles) {
 		return Schema{Columns: slices.Clone(p.Roles)}
