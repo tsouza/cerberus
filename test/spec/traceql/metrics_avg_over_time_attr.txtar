@@ -17,18 +17,20 @@ INSERT INTO otel_traces (SpanAttributes, TraceId, SpanId) VALUES
 -- args --
 [0] string = "latency_ms"
 [1] bool = true
+[2] string = "latency_ms"
 -- chplan --
 MetricsAggregate op=avg_over_time attr=FnToFloat64OrNull(SpanAttributes["latency_ms"]) valueAlias=Value
-  Filter predicate=true
-    Scan(otel_traces)
+  Filter predicate=FnIsNotNull(FnToFloat64OrNull(SpanAttributes["latency_ms"]))
+    Filter predicate=true
+      Scan(otel_traces)
 -- sql --
-SELECT avg(toFloat64OrNull(`SpanAttributes`[?])) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
+SELECT avg(toFloat64OrNull(`SpanAttributes`[?])) AS `Value` FROM (SELECT * FROM (SELECT * FROM `otel_traces` WHERE ?) WHERE isNotNull(toFloat64OrNull(`SpanAttributes`[?])))
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | avg_over_time(span.latency_ms)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare
 -- args_optimized --
 [0] string = "latency_ms"
-[1] bool = true
+[1] string = "latency_ms"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
@@ -37,4 +39,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT avg(toFloat64OrNull(`SpanAttributes`[?])) AS `Value` FROM (SELECT `SpanAttributes` FROM `otel_traces` WHERE ?)
+SELECT avg(toFloat64OrNull(`SpanAttributes`[?])) AS `Value` FROM (SELECT `SpanAttributes` FROM `otel_traces` WHERE isNotNull(toFloat64OrNull(`SpanAttributes`[?])))
