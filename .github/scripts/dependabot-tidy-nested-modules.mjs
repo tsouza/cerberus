@@ -143,7 +143,7 @@ export function tidyAndPush({
     ['config', 'user.name', userName],
     ['config', 'user.email', userEmail],
     ['add', '--', ...dirs],
-    ['commit', '-m', COMMIT_MESSAGE],
+    ['commit', '--signoff', '-m', COMMIT_MESSAGE],
   ]) {
     if (step('git', args).status !== 0) return 1;
   }

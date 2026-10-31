@@ -388,6 +388,12 @@ are welcome any time; open an issue or discussion before a large one. The
 local-dev and end-to-end commands live in
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+Everyone taking part in cerberus follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+How the project is run is described in [`GOVERNANCE.md`](GOVERNANCE.md), and its
+maintainers are listed in [`MAINTAINERS.md`](MAINTAINERS.md). Every commit carries a
+[Developer Certificate of Origin](https://developercertificate.org) sign-off
+(`git commit -s`).
+
 ## License
 
 [Apache 2.0](LICENSE) © Thiago Souza.

@@ -86,7 +86,7 @@ export function main(env = process.env) {
   run('git', ['add', changelogPath]);
   run('git', ['-c', 'user.name=github-actions[bot]',
     '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com',
-    'commit', '-m', `docs(changelog): record ${tag}`]);
+    'commit', '--signoff', '-m', `docs(changelog): record ${tag}`]);
   const remote = run('git', ['ls-remote', '--heads', 'origin', `refs/heads/${topic}`]);
   run('git', ['push', forceLeaseArg(topic, remote), '--set-upstream', 'origin', topic]);
   const existing = run('gh', ['pr', 'list', '--repo', repository, '--head', topic, '--base', 'main',

@@ -169,7 +169,7 @@ jobs:
           # the same shape.
           just capture-release-perf-baseline "$VERSION"
           git add deploy/helm/cerberus/Chart.yaml deploy/helm/cerberus/README.md CHANGELOG.md "test/perf/release-baseline/${VERSION}/"
-          git commit -m "$title"
+          git commit --signoff -m "$title"
           git push -u origin "$branch"
           url="$(gh pr create --base "$BASE" --head "$branch" --title "$title" --body-file release-pr-body.md)"
           echo "url=$url" >>"$GITHUB_OUTPUT"

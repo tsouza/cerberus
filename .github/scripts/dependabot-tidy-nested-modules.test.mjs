@@ -88,7 +88,7 @@ test('a stale module is committed and pushed to the PR branch', () => {
   assert.equal(tidy(fake), 0);
   const lines = fake.calls.map((c) => c.line);
   assert.ok(lines.includes('git add -- test/oracle'));
-  assert.ok(lines.some((l) => l.startsWith('git commit -m chore: go mod tidy nested modules')));
+  assert.ok(lines.some((l) => l.startsWith('git commit --signoff -m chore: go mod tidy nested modules')));
   assert.equal(lines.at(-1), `git push origin HEAD:refs/heads/${BRANCH}`);
   assert.ok(fake.calls.every((c) => c.cwd.startsWith('target')));
 });

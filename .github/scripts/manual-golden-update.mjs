@@ -440,7 +440,7 @@ function applyAndPush(env) {
 
   git(targetRoot, ['config', 'user.name', 'github-actions[bot]']);
   git(targetRoot, ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com']);
-  git(targetRoot, ['commit', '-m', 'chore(goldens): regenerate selected shards'], { stdio: 'inherit' });
+  git(targetRoot, ['commit', '--signoff', '-m', 'chore(goldens): regenerate selected shards'], { stdio: 'inherit' });
   assertTargetUnmoved(targetRoot, branch, targetSha);
   git(targetRoot, ['push', 'origin', `HEAD:refs/heads/${branch}`], { stdio: 'inherit' });
 

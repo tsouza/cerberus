@@ -8,7 +8,7 @@ Thanks for your interest. cerberus is small + opinionated — here's how to land
 git checkout -b feat/<short-name>
 # ...edit...
 go test -run '^TestName$' ./internal/<pkg>/   # the ONE narrowed test for what changed, not the tree
-git commit -m "feat(<scope>): <subject>"   # Conventional Commits; lefthook lints the message
+git commit -s -m "feat(<scope>): <subject>"   # Conventional Commits + DCO sign-off; lefthook lints the message
 git push -u origin <branch>
 gh pr create
 ```
@@ -32,6 +32,23 @@ The heavier lanes — the three `compatibility/<head>` harnesses, `compatibility
 5. **Justfile is the canonical task runner.** `just` lists every recipe. Don't run `go test ./...` directly — `just test` sets the race flag, cover profile, and correct toolchain. If you want a new workflow, add a recipe.
 6. **Fixture-first PRs.** A new PromQL/LogQL/TraceQL feature lands with its TXTAR spec first (failing, with the right `query.<ql>` section), then implementation that turns it green. Reviewers can sanity-check intent by reading fixtures before code.
 7. **Compatibility suite is the source of truth.** If a PromQL feature lands but doesn't move the `prometheus/compliance` pass rate, the PR is incomplete. There is no allow-list for any head — every diff against the reference backend is a real bug to fix at the source. The only pinned exclusion set is `compatibility/loki/upstream-skip-baseline.txt`, which records corpus entries *upstream itself* marks `skip: true`; see `docs/compatibility.md`.
+
+## Developer Certificate of Origin
+
+Every commit in a pull request carries a [Developer Certificate of Origin](https://developercertificate.org)
+sign-off: a `Signed-off-by: Your Name <you@example.com>` line stating that you have the right to
+submit the change under the project's Apache-2.0 license. `git commit -s` adds it from your git
+identity. The name is the one you are known by in the community — not an anonymous handle — and the
+email must be the commit's author email.
+
+The required `lint` check runs `.github/scripts/dco.mjs`, which fails a pull request containing a
+commit without its author's sign-off. Merge commits and commits that change no files are not checked.
+To sign off commits already on your branch:
+
+```sh
+git rebase --signoff origin/main
+git push --force-with-lease
+```
 
 ## Setup
 
