@@ -23,6 +23,20 @@ func rewriteSingleInput(
 	return clone(newInput), true
 }
 
+// rewriteEach applies fn to every node of nodes, in order, and returns the
+// rewritten slice (always freshly allocated, never aliasing nodes) plus
+// whether any element changed.
+func rewriteEach(fn func(Node) (Node, bool), nodes []Node) ([]Node, bool) {
+	out := make([]Node, len(nodes))
+	changed := false
+	for i, n := range nodes {
+		var c bool
+		out[i], c = fn(n)
+		changed = changed || c
+	}
+	return out, changed
+}
+
 // rewriteOptionalPair is the shared clone-on-change shape for nodes with one
 // always-present child (primary) and one optional child (optional, nilable):
 // TopK's Input/KExpr, RangeWindow's Input/DeltaPrefixAggregateInput, and
@@ -393,15 +407,7 @@ func rewriteIrregularNode(n Node, fn func(Node) (Node, bool)) (out Node, changed
 		return &cp, true, true
 	case *TraceLookupFilter:
 		// Input plus N lookup relations, rewritten in Children() order.
-		newChildren := make([]Node, 0, 1+len(v.Lookups))
-		ch := false
-		for _, child := range v.Children() {
-			newChild, c := fn(child)
-			if c {
-				ch = true
-			}
-			newChildren = append(newChildren, newChild)
-		}
+		newChildren, ch := rewriteEach(fn, v.Children())
 		if !ch {
 			return v, false, true
 		}
@@ -414,15 +420,7 @@ func rewriteIrregularNode(n Node, fn func(Node) (Node, bool)) (out Node, changed
 		// (constant-fold, PREWHERE promotion, etc.) can rewrite the
 		// per-arm Project(Filter(Scan)) subtrees the PromQL
 		// classic-histogram companion-suffix lowering emits.
-		newInputs := make([]Node, len(v.Inputs))
-		ch := false
-		for i, in := range v.Inputs {
-			newIn, c := fn(in)
-			if c {
-				ch = true
-			}
-			newInputs[i] = newIn
-		}
+		newInputs, ch := rewriteEach(fn, v.Inputs)
 		if !ch {
 			return v, false, true
 		}
@@ -433,15 +431,7 @@ func rewriteIrregularNode(n Node, fn func(Node) (Node, bool)) (out Node, changed
 		// Recurse into each arm so rules already applied to the binary
 		// VectorSetOp's Left / Right children keep firing once the
 		// flatten rule has linearised the chain into N arms.
-		newArms := make([]Node, len(v.Arms))
-		ch := false
-		for i, arm := range v.Arms {
-			newArm, c := fn(arm)
-			if c {
-				ch = true
-			}
-			newArms[i] = newArm
-		}
+		newArms, ch := rewriteEach(fn, v.Arms)
 		if !ch {
 			return v, false, true
 		}
