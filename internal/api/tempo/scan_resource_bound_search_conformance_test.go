@@ -71,6 +71,16 @@ func TestSearchTraceScopedIntrinsicsBounded(t *testing.T) {
 		`{ instrumentation:version = "1.0" }`,
 		`{ resource.service.name != nil }`,
 		`{ .never.set.attr = nil }`,
+		// A trace-scoped intrinsic against a per-span operand lowers to a
+		// TraceLookupFilter, whose span input, per-trace lookups and
+		// membership subqueries must each carry the search window — at the
+		// top of the plan (the top-N bounded shape) and nested under a
+		// spanset operation (the leaf-window fold), including under an OR,
+		// where the window cannot ride a top-level conjunct.
+		`{ rootName = name }`,
+		`{ traceDuration > duration }`,
+		`{ rootName = name || traceDuration > 2s }`,
+		`{ rootName = name || traceDuration > 2s } && { kind = server }`,
 	}
 	for _, q := range family {
 		assertNoUnboundedSpansScan(t, h, q, start, end)

@@ -116,3 +116,43 @@ func spanOperandMatches(t *testing.T, db *sql.DB, query, setting string) []strin
 	slices.Sort(out)
 	return out
 }
+
+// TestTraceScopedArithmeticOutsideFilterExecutes pins that arithmetic over a
+// trace-scoped intrinsic in a value position outside a spanset filter — here
+// an aggregate argument — lowers to SQL ClickHouse runs. Only a spanset
+// filter joins the per-trace lookup columns (traceScopedFilter), so a value
+// position must not read one: it would fail with UNKNOWN_IDENTIFIER. The
+// value such a position computes is issue #4027's subject; this test pins
+// only that the query is not turned into an error.
+func TestTraceScopedArithmeticOutsideFilterExecutes(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	for _, stmt := range spanOperandSeed {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v\n%s", err, stmt)
+		}
+	}
+	for _, query := range []string{
+		`{ } | max(traceDuration * 2) > 0`,
+		`{ } | min(10s - traceDuration) > 0`,
+	} {
+		expr, err := tempo.Parse(query)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", query, err)
+		}
+		plan, err := traceql.Lower(context.Background(), expr, schema.DefaultOTelTraces())
+		if err != nil {
+			t.Fatalf("Lower(%q): %v", query, err)
+		}
+		sqlText, args, err := chsql.Emit(context.Background(), plan)
+		if err != nil {
+			t.Fatalf("Emit(%q): %v", query, err)
+		}
+		// count() over the query reads every row without scanning its
+		// Map-typed columns into Go values.
+		counted := "SELECT count() FROM (" + strings.TrimSuffix(strings.TrimSpace(sqlText), ";") + ")"
+		var n int
+		if err := db.QueryRow(counted, args...).Scan(&n); err != nil {
+			t.Fatalf("query %q: %v\n%s", query, err, sqlText)
+		}
+	}
+}

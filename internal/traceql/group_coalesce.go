@@ -66,7 +66,7 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 	if col, sub, ok := nestedIntrinsicGroupTarget(g.Expression, s); ok {
 		return groupAggregate(prev, &chplan.ColumnRef{Name: col + "." + sub}, s), nil
 	}
-	key, err := lowerFieldExpr(g.Expression, s)
+	key, err := lowerFieldExpr(g.Expression, s, noLookupJoin)
 	if err != nil {
 		return nil, err
 	}

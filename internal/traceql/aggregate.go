@@ -175,7 +175,7 @@ func scalarAggLeaf(agg traceql.Aggregate, s schema.Traces, alias string) (scalar
 			needsNestedSet: true,
 		}, nil
 	}
-	arg, err := lowerFieldExpr(inner, s)
+	arg, err := lowerFieldExpr(inner, s, noLookupJoin)
 	if err != nil {
 		return scalarAggLeafResult{}, err
 	}
