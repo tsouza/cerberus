@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/tsouza/cerberus/test/spec"
 )
 
 // mixedNestedMinute is the beforeEpochOrigin-relative instant of the
@@ -52,6 +54,7 @@ func mixedNestedLastPoint(step time.Time) time.Time {
 // answers 0 over a window holding one kind and the window's last instant
 // over a window holding both.
 func TestMixedOrNestedSubquerySelectParity_ChDB(t *testing.T) {
+	subtests := spec.NewSubtestShard(t)
 	noLabels := map[string]string{}
 	mixed := `(sum(` + beforeEpochHistMetric + `) or sum(` + beforeEpochFloatMetric + `))[10m:1m]`
 	count := func(step time.Time) float64 {
@@ -92,10 +95,10 @@ func TestMixedOrNestedSubquerySelectParity_ChDB(t *testing.T) {
 		for _, tc := range cases {
 			query := fmt.Sprintf(`max_over_time(%s(%s)[1m:1m])`, tc.fn, mixed)
 			rows := []instantDomainRow{idRow(noLabels, tc.value)}
-			t.Run(w.name+"/"+tc.fn+"/instant", func(t *testing.T) {
+			subtests.Run(w.name+"/"+tc.fn+"/instant", func(t *testing.T) {
 				runHandWrittenParity(t, beforeEpochSeed, query, w.eval, rows, false)
 			})
-			t.Run(w.name+"/"+tc.fn+"/range", func(t *testing.T) {
+			subtests.Run(w.name+"/"+tc.fn+"/range", func(t *testing.T) {
 				runHandWrittenParity(t, beforeEpochSeed, query, w.eval, rows, true)
 			})
 		}

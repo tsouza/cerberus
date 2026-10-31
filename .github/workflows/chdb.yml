@@ -496,13 +496,13 @@ jobs:
       matrix:
         # The shard count: 6 runners × chdb-roundtrip.mjs's FANOUT.promql
         # (2 in-runner processes) = 12 global legs. Each leg holds 1/12 of
-        # TestLower's fixture walk plus its name-hash share of the package's
-        # other top-level tests, and the heaviest of those run 300-950s
-        # each, so the slowest leg is set by which of them hash together.
-        # At 6 legs, two of them shared leg 1 and its internal/promql binary
-        # passed the 32m GO_TEST_TIMEOUT_MINUTES on a slow runner, where
-        # every test ran about 1.9x its usual time (#4001). At 12 legs the
-        # slowest leg sums to about 800s at normal speed and 1520s at 1.9x.
+        # every SELF_SHARDING_TESTS entry's cases — TestLower's fixture walk
+        # and the heaviest case-table tests' subtests — plus its name-hash
+        # share of the package's other top-level tests. Before the heaviest
+        # tests split themselves, each ran whole on one leg, and at 6 legs
+        # two of them shared leg 1, whose internal/promql binary passed the
+        # 32m GO_TEST_TIMEOUT_MINUTES on a slow runner where every test ran
+        # about 1.9x its usual time (#4001).
         # Changing this list is the whole knob: chdb-roundtrip.mjs derives
         # ROUNDTRIP_SHARD_COUNT from `strategy.job-total`, never a repeated
         # literal, so the partition rebalances itself and no context name

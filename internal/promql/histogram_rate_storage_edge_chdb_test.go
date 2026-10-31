@@ -129,6 +129,7 @@ func TestHistogramRateStorageEdgeParity_ChDB(t *testing.T) {
 	rate := hrEdgeExtrapolation / hrEdgeWindowSeconds
 	sumRate := hrEdgeIncrease(rate)
 	sumRate.unlabelled = true
+	subtests := spec.NewSubtestShard(t)
 	cases := []struct {
 		name   string
 		query  string
@@ -169,7 +170,7 @@ func TestHistogramRateStorageEdgeParity_ChDB(t *testing.T) {
 			if rangeMode {
 				mode = "range"
 			}
-			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+			subtests.Run(tc.name+"/"+mode, func(t *testing.T) {
 				start, step, endpoint := tc.eval, time.Duration(0), "/api/v1/query"
 				if rangeMode {
 					start, step, endpoint = tc.eval.Add(-hrEdgeRangeSteps*time.Minute), time.Minute, "/api/v1/query_range"

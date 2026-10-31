@@ -48,7 +48,7 @@
 // past 23 real minutes locally. [listTestNames] enumerates every top-level
 // test both packages declare (authoritative — `go test -list`, not a
 // source-file regex scan that could miss one), [runFilterFor] hash-
-// partitions everything except the two SELF_SHARDING_TESTS entries
+// partitions everything except the SELF_SHARDING_TESTS entries
 // (which own their OWN corpus split and must run on every leg), and
 // [legCommands] wires the result in as an extra `-run` flag. See
 // chdb-roundtrip.test.mjs's own completeness tests for the safety net a
@@ -117,9 +117,9 @@ import { runLegBuffered } from './lib/spawn-tagged.mjs';
  * Two rather than three for promql (dropped 2026-08-30): three processes on a
  * confirmed 2-vCPU runner means every leg runs at roughly two thirds of a
  * core, and `./internal/promql/...`'s own hand-written test suite — which
- * this fan-out does NOT shard (only `spec.ShardFromEnv`-aware `TestLower` and
- * `test/spec/promql`'s `TestRoundTripChDB` do; every other top-level test in
- * the package runs in full on every leg) — grew past ~2000 new lines of
+ * this fan-out did not shard at the time (only `spec.ShardFromEnv`-aware
+ * `TestLower` and `test/spec/promql`'s `TestRoundTripChDB` did; every other
+ * top-level test in the package ran in full on every leg) — grew past ~2000 new lines of
  * chDB-backed tests over the doubly/triply-nested subquery composability
  * campaign (EPIC #2617), until one leg's three-way-contended share of that
  * now-larger fixed cost missed the per-process timeout below on a real
@@ -180,12 +180,18 @@ const SPEC_SHARD_COUNT_ENV = 'SPEC_SHARD_COUNT';
 export const HEADS = Object.keys(FANOUT);
 
 /**
- * Top-level test names, keyed by ql, that already own their OWN corpus
- * partition via spec.ShardFromEnv (test/spec/promql's TestRoundTripChDB and
- * internal/promql's TestLower — the only two callers, confirmed by grepping
- * for spec.ShardFromEnv across both packages) and so must be included in
- * EVERY leg's -run filter below rather than hash-partitioned like the rest
- * of the suite. Partitioning one of these would either drop its own
+ * Top-level test names, keyed by ql, that already own their OWN partition by
+ * reading the SPEC_SHARD_INDEX/COUNT pair: test/spec/promql's
+ * TestRoundTripChDB and internal/promql's TestLower walk their slice of the
+ * fixture corpus (spec.ShardFromEnv), and the heaviest internal/promql tests
+ * create their slice of their own case tables (spec.NewSubtestShard), so
+ * their cost divides by the leg count instead of landing whole on the one leg
+ * a name hash picks (cerberus#4001). They must be included in EVERY leg's
+ * -run filter below rather than hash-partitioned like the rest of the suite.
+ * test/regression/self_sharding_tests_test.go pins this list to exactly the
+ * tests in either package that call spec.ShardFromEnv or
+ * spec.NewSubtestShard: a self-sharding test missing from it would run its
+ * slice on one leg only and drop the rest of its cases. Partitioning one of these would either drop its own
  * SPEC_SHARD_INDEX/COUNT-driven walk out of the legs that don't draw it —
  * walking none of ITS corpus on those legs, the exact "leg reports green
  * over nothing" failure class spec.WalkShard's own fatal check exists to
@@ -193,8 +199,16 @@ export const HEADS = Object.keys(FANOUT);
  * exactly what it already does; there is no scenario where partitioning
  * helps and one where it silently breaks, so these are simply exempted.
  */
-const SELF_SHARDING_TESTS = {
-  promql: ['TestLower', 'TestRoundTripChDB'],
+export const SELF_SHARDING_TESTS = {
+  promql: [
+    'TestLower',
+    'TestRoundTripChDB',
+    'TestSumAvgNestedMixedGroupParity_ChDB',
+    'TestMixedOrNestedSubquerySelectParity_ChDB',
+    'TestCountValuesNestedMixedSerialization_ChDB',
+    'TestNestedMixedConsumersAnswerLikeTheirRoots_ChDB',
+    'TestHistogramRateStorageEdgeParity_ChDB',
+  ],
 };
 
 /**

@@ -134,6 +134,7 @@ func ncQueryRows(t *testing.T, fixture *chdbFixture, s schema.Metrics, p parser.
 }
 
 func TestNestedMixedConsumersAnswerLikeTheirRoots_ChDB(t *testing.T) {
+	subtests := spec.NewSubtestShard(t)
 	fixture := newChDBFixture(t, ncSeed)
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
@@ -178,19 +179,26 @@ func TestNestedMixedConsumersAnswerLikeTheirRoots_ChDB(t *testing.T) {
 		{"histogram_avg", func(o string) string { return `histogram_avg(` + o + `)` }, nil, 2},
 		{"histogram_quantile", func(o string) string { return `histogram_quantile(0.5, ` + o + `)` }, nil, 2},
 	}
-	// Each root answer is executed once and shared by every wrapper that
-	// must reproduce it.
+	// Each root answer is executed once, by the first subtest on this leg
+	// that needs it, and shared by every later wrapper that must reproduce
+	// it. A leg that creates none of a consumer's subtests never runs its
+	// root.
 	rootRows := map[string][]ncRow{}
-	for _, c := range consumers {
-		rootQuery := c.wrap(direct)
-		if c.root != nil {
-			rootQuery = c.root(direct)
+	rootOf := func(t *testing.T, name string, wrap, root func(string) string, wantRows int) []ncRow {
+		t.Helper()
+		if want, ok := rootRows[name]; ok {
+			return want
+		}
+		rootQuery := wrap(direct)
+		if root != nil {
+			rootQuery = root(direct)
 		}
 		want := ncQueryRows(t, fixture, s, p, rootQuery)
-		if len(want) != c.wantRows {
-			t.Fatalf("root %q answered %d rows, want %d: %+v", rootQuery, len(want), c.wantRows, want)
+		if len(want) != wantRows {
+			t.Fatalf("root %q answered %d rows, want %d: %+v", rootQuery, len(want), wantRows, want)
 		}
-		rootRows[c.name] = want
+		rootRows[name] = want
+		return want
 	}
 	// A histogram-valued partner has no direct-root twin to compare
 	// against (the root `(h or f) OP <histogram>` is refused), so the
@@ -241,16 +249,17 @@ func TestNestedMixedConsumersAnswerLikeTheirRoots_ChDB(t *testing.T) {
 	}
 	for _, w := range wrappers {
 		for _, c := range consumers {
-			t.Run(w.name+"/"+c.name, func(t *testing.T) {
+			subtests.Run(w.name+"/"+c.name, func(t *testing.T) {
+				want := rootOf(t, c.name, c.wrap, c.root, c.wantRows)
 				nestedQuery := c.wrap(w.query)
 				got := ncQueryRows(t, fixture, s, p, nestedQuery)
-				if want := rootRows[c.name]; !reflect.DeepEqual(got, want) {
+				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("nested %q answers\n  %+v\nbut its root answers\n  %+v", nestedQuery, got, want)
 				}
 			})
 		}
 		for _, c := range histogramPartnerConsumers {
-			t.Run(w.name+"/"+c.name, func(t *testing.T) {
+			subtests.Run(w.name+"/"+c.name, func(t *testing.T) {
 				nestedQuery := c.wrap(w.query)
 				got := ncQueryRows(t, fixture, s, p, nestedQuery)
 				if !reflect.DeepEqual(got, c.want) {
