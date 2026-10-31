@@ -945,6 +945,23 @@ const histogramAdaptiveAggregatorDisabled = 0
 // irate() lowers to the same window and is matched with it; it was not
 // measured on its own.
 //
+// A cross-series merge above the window keeps the stamp, and at the guards'
+// admitted ceilings it costs nothing. Measured on 26.8.36.3 at the 1 GiB
+// default cap, `histogram_quantile(0.9, sum by (route) (rate(<exp>[5m])))`
+// with every series in one merge group, a 15 s scrape and 160 buckets,
+// unstamped / stamped, median of 5 warm runs:
+//
+//	query                                      series   width  unstamped  stamped
+//	instant                                      1000     160      406.8    409.3
+//	instant (maxHistogramMergeCostUnits ceiling)  2300     160      802.2    804.5
+//	query_range, 1 h at 60 s                        6     160       54.6     54.5
+//	query_range, 1 h at 60 s                       60      40      115.5    115.5
+//
+// The query_range rows sit at the RangeBucketFanout collapsed-payload bound
+// (rangeBucketFanoutFoldCostUnitsPerGiB), which refuses 8 series at width
+// 160 and 80 at width 40 before the merge bound is reached. The 797 -> 1028
+// MiB loss below is the bare-selector lookback's, not the merge's.
+//
 // The predicate is that shape and nothing wider, because the setting covers
 // every subquery of the statement and switching the adaptive aggregator off
 // is a loss on reductions outside a counter window:
