@@ -160,6 +160,15 @@ type SettingsRules struct {
 	// per-query memory cap — see engine.go's execContext.
 	JoinSpill bool
 
+	// DistinctSpill, when true, stamps max_bytes_before_external_distinct=cap/2
+	// on every data-plane query so a high-cardinality DISTINCT spills its key
+	// set to disk instead of aborting with MEMORY_LIMIT_EXCEEDED (code 241).
+	// Driven by the distinct_spill registry feature, which only resolves in on
+	// server >= 26.9, the first release carrying the setting. Applied via
+	// spill.go's applyDistinctSpillSettings, beside JoinSpill, because it needs
+	// the live per-query memory cap.
+	DistinctSpill bool
+
 	// ExpHistogramTwoLevel, when true, stamps
 	// group_by_two_level_threshold_bytes=1 on a plan carrying a windowed
 	// exponential-histogram per-series grouping (see
@@ -316,6 +325,9 @@ func (r SettingsRules) enabledOpts() []string {
 	}
 	if r.JoinSpill {
 		opts = append(opts, "join_spill")
+	}
+	if r.DistinctSpill {
+		opts = append(opts, "distinct_spill")
 	}
 	if r.ExpHistogramTwoLevel {
 		opts = append(opts, "exp_histogram_two_level")

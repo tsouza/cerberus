@@ -34,6 +34,19 @@ const (
 // hold in RAM before it spills, exactly as its group-by/sort siblings do.
 const settingMaxBytesBeforeExternalJoin = "max_bytes_before_external_join"
 
+// settingMaxBytesBeforeExternalDistinct is the ClickHouse setting that makes a
+// DISTINCT spill its key set to disk once the query's tracked memory grows
+// past the configured byte threshold, instead of holding every distinct key
+// in an in-memory hash set. Like settingMaxBytesBeforeExternalJoin it is NOT
+// version-safe back to cerberus's CH floor — it first ships in ClickHouse 26.9
+// (ClickHouse#116569), and an unknown setting name errors the whole query —
+// so stamping it is gated on the chopt.FeatureDistinctSpill boot-resolved
+// verdict (see applyDistinctSpillSettings).
+//
+// perf-sentinel: memory-bounding — caps the bytes a DISTINCT's key set may
+// hold in RAM before it spills, exactly as its group-by/sort/join siblings do.
+const settingMaxBytesBeforeExternalDistinct = "max_bytes_before_external_distinct"
+
 // spillThresholdBytes is the byte threshold at which a GROUP BY / sort begins
 // spilling to disk when NO per-query memory cap is configured. A
 // high-cardinality aggregation (TraceQL `compare()` arrayJoin, PromQL
@@ -98,8 +111,12 @@ func spillThreshold(maxMemory int64) int64 {
 // It is UNCONDITIONAL rather than scoped to one plan shape because the OOM-prone
 // GROUP BY / sort is not unique to TraceQL compare(): any head can
 // lower a high-cardinality aggregation (`sum by(user_id)`, LogQL `by(...)`,
-// TraceQL structural DISTINCT / nested-set window passes) or a large sort
-// (`topk`, `ORDER BY`) that would otherwise abort at the cap. Both settings are
+// TraceQL nested-set window passes) or a large sort
+// (`topk`, `ORDER BY`) that would otherwise abort at the cap. Neither covers a
+// DISTINCT (the TraceQL structural closures' `SELECT DISTINCT TraceId, SpanId`,
+// the set operations' match-key subqueries): ClickHouse below 26.9 has no
+// external DISTINCT at all, and from 26.9 it reads its own threshold, which
+// applyDistinctSpillSettings stamps. Both settings are
 // result-equivalent and THRESHOLD-GATED: an operation whose state stays under
 // spillThreshold(cap) never spills, so a normal query is byte-for-byte
 // unaffected (same rows, same plan, no extra disk I/O); only an operation
@@ -145,4 +162,31 @@ func applyJoinSpillSettings(ctx context.Context, f planShapeFacts, maxMemory int
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalJoin, spillThreshold(maxMemory))
+}
+
+// applyDistinctSpillSettings stamps the external-DISTINCT spill threshold on
+// ctx, with applySpillSettings' cap/2 arithmetic (spillThreshold), when
+// distinctSpillEnabled is true — the boot-resolved chopt.FeatureDistinctSpill
+// verdict (engine.SettingsRules.DistinctSpill), which is false below the
+// feature's 26.9 floor, where the setting does not exist and stamping it
+// would fail the query.
+//
+// It is UNCONDITIONAL within that floor, like the group_by/sort stamps and
+// unlike applyJoinSpillSettings' chplan.HasJoin gate: a DISTINCT is not a
+// plan node but a modifier several emitter paths introduce (the structural
+// closures, the set-operation subqueries, the lag-adjacency sample dedup),
+// so no plan-shape fact names every query that carries one. Gating on one
+// would leave every shape it missed with an unbounded hash set. Ungated, the
+// stamp is inert where it does not apply: only a DISTINCT transform reads it,
+// and only once the query's tracked memory passes spillThreshold(cap).
+//
+// Result-equivalent for every key cerberus distinguishes (strings, maps,
+// timestamps); see chopt.FeatureDistinctSpill for the float-key caveat
+// upstream documents for a spilled DISTINCT, and for what the stamp does and
+// does not bound inside a recursive CTE.
+func applyDistinctSpillSettings(ctx context.Context, maxMemory int64, distinctSpillEnabled bool) context.Context {
+	if !distinctSpillEnabled {
+		return ctx
+	}
+	return chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalDistinct, spillThreshold(maxMemory))
 }

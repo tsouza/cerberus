@@ -41,6 +41,7 @@ var compositionRuleFlags = []settingsRuleFlag{
 	{"OptimizeAggregationInOrder", func(r *SettingsRules) { r.OptimizeAggregationInOrder = true }},
 	{"ConditionCache", func(r *SettingsRules) { r.ConditionCache = true }},
 	{"JoinSpill", func(r *SettingsRules) { r.JoinSpill = true }},
+	{"DistinctSpill", func(r *SettingsRules) { r.DistinctSpill = true }},
 	{"ExpHistogramTwoLevel", func(r *SettingsRules) { r.ExpHistogramTwoLevel = true }},
 	{"TraceIDBitmapFilter", func(r *SettingsRules) { r.TraceIDBitmapFilter = true }},
 	{"LogCommentShape", func(r *SettingsRules) { r.LogCommentShape = true }},
@@ -85,6 +86,9 @@ func compositionContributors() []settingsContributor {
 		{"join_spill", func(ctx context.Context, plan chplan.Node, memCap int64, rules SettingsRules) context.Context {
 			return applyJoinSpillSettings(ctx, shapeOf(plan), memCap, rules.JoinSpill)
 		}},
+		{"distinct_spill", func(ctx context.Context, _ chplan.Node, memCap int64, rules SettingsRules) context.Context {
+			return applyDistinctSpillSettings(ctx, memCap, rules.DistinctSpill)
+		}},
 		{"compare_memory_bound", func(ctx context.Context, plan chplan.Node, memCap int64, _ SettingsRules) context.Context {
 			return applyCompareMemoryBound(ctx, shapeOf(plan), memCap)
 		}},
@@ -100,7 +104,7 @@ func compositionContributors() []settingsContributor {
 	}
 	for _, f := range compositionRuleFlags {
 		switch f.name {
-		case "JoinSpill", "ExpHistogramTwoLevel":
+		case "JoinSpill", "DistinctSpill", "ExpHistogramTwoLevel":
 			// Applied by the dedicated bound above, not by SettingsRules.apply.
 			continue
 		case "AnalyzerMandatory":
@@ -139,6 +143,8 @@ func flagIsSet(rules SettingsRules, f settingsRuleFlag) bool {
 		return rules.ConditionCache == probe.ConditionCache
 	case "JoinSpill":
 		return rules.JoinSpill == probe.JoinSpill
+	case "DistinctSpill":
+		return rules.DistinctSpill == probe.DistinctSpill
 	case "ExpHistogramTwoLevel":
 		return rules.ExpHistogramTwoLevel == probe.ExpHistogramTwoLevel
 	case "TraceIDBitmapFilter":

@@ -78,7 +78,11 @@ replicaCount: 2
 # chart-owned ClickHouse deployment contract; leaving opt-in features out would
 # make their startup, schema, and readiness paths invisible. The chopt registry
 # test fails whenever this list drifts, so adding a feature requires deciding
-# how the production-shaped Helm lane covers it in the same change.
+# how the production-shaped Helm lane covers it in the same change. The list
+# holds every feature the bundled server above can run: an explicit feature
+# above its floor fails boot under the default enforcing mode, so a feature
+# whose floor is newer than that image (distinct_spill, 26.9) is left out and
+# validated against its own builds in test/chserver.
 chOptimizations: >-
   aggregation_in_order,condition_cache,ts_grid_range,ts_grid_resample,
   columnar_result_decode,ts_grid_changes,ts_grid_resets,ts_grid_deriv,

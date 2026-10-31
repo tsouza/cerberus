@@ -426,6 +426,7 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 		OptimizeAggregationInOrder: set.Has(chopt.FeatureAggregationInOrder),
 		ConditionCache:             set.Has(chopt.FeatureConditionCache),
 		JoinSpill:                  set.Has(chopt.FeatureJoinSpill),
+		DistinctSpill:              set.Has(chopt.FeatureDistinctSpill),
 		ExpHistogramTwoLevel:       set.Has(chopt.FeatureExpHistogramTwoLevel),
 		TraceIDBitmapFilter:        set.Has(chopt.FeatureTraceIDBitmapFilter),
 		ResultCache:                set.Has(chopt.FeatureResultCache),
