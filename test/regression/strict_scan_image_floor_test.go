@@ -27,9 +27,12 @@ const strictScanImageVar = "CH_STRICT_SCAN_IMAGE"
 // (25.9 floor) sat unexercised behind a 25.8 pin while the lane reported green.
 //
 // Both sides are derived, not restated: the floor is the maximum MinVersion in
-// internal/chopt's feature registry, and the version is parsed from the image
-// tag the Justfile pre-pulls. Adding a feature with a higher floor fails here
-// until the pin moves.
+// internal/chopt's feature registry over the features that emit SQL, and the
+// version is parsed from the image tag the Justfile pre-pulls. Adding a
+// feature with a higher floor fails here until the pin moves. A feature marked
+// chopt.Feature.SettingOnly is left out: the lane executes the corpus's SQL
+// text without dispatch settings, so no pin can make it exercise one, and
+// TestSettingOnlyFeaturesReachOnlySettingsRules holds the mark to that.
 func TestStrictScanImageClearsChoptFloors(t *testing.T) {
 	t.Parallel()
 
@@ -67,7 +70,7 @@ func TestStrictScanImageClearsChoptFloors(t *testing.T) {
 	var highest chopt.Version
 	var highestID string
 	for _, f := range chopt.Registry() {
-		if !f.MinVersion.AtLeast(highest) || f.MinVersion == highest {
+		if f.SettingOnly || !f.MinVersion.AtLeast(highest) || f.MinVersion == highest {
 			continue
 		}
 		highest, highestID = f.MinVersion, f.ID

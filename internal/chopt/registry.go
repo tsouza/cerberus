@@ -2411,6 +2411,15 @@ type Feature struct {
 	// server may drop and re-create at any time makes a definitive
 	// "forbidden" verdict meaningless at boot.
 	RequiresQueryLogUnionCapability bool
+	// SettingOnly marks a feature whose whole effect is a per-query ClickHouse
+	// setting stamped at dispatch through engine.SettingsRules: it changes no
+	// emitted SQL. A lane that executes emitted SQL text without the dispatch
+	// settings (the strict-scan differential) cannot exercise such a feature,
+	// so its server-floor ratchet leaves the feature's MinVersion out. False
+	// is the conservative value: an unmarked feature is treated as one that
+	// emits SQL. test/regression holds a marked feature to it by requiring
+	// its Feature* constant to be read nowhere but choptwire.SettingsRules.
+	SettingOnly bool
 	// UnsafeBuilds lists the ClickHouse builds on which the feature is known to
 	// return WRONG RESULTS even though the version floor is met — an upstream
 	// defect whose fix landed on each maintained release line at its own patch
@@ -2803,11 +2812,12 @@ var registry = []Feature{
 		Doc:        "stamp max_bytes_before_external_join=cap/2 on join-bearing plans (server >= 26.4, auto-enabled) — mirrors the group_by/sort spill stamps; explicit, not the 26.5+ ratio default, silently ignored with no memory limit configured (cf. ClickHouse#76740)",
 	},
 	{
-		ID:         FeatureDistinctSpill,
-		MinVersion: Version{Major: 26, Minor: 9},
-		Stability:  Experimental,
-		AutoSelect: false,
-		Doc:        "stamp max_bytes_before_external_distinct=cap/2 on every data-plane query (server >= 26.9, ClickHouse#116569, opt-in via CERBERUS_CH_OPTIMIZATIONS until the quickstart reaches 26.9) — lets a high-cardinality DISTINCT spill instead of aborting at the cap; inside a recursive CTE the step's DISTINCT spills but the step's output stays in memory",
+		ID:          FeatureDistinctSpill,
+		MinVersion:  Version{Major: 26, Minor: 9},
+		Stability:   Experimental,
+		AutoSelect:  false,
+		SettingOnly: true,
+		Doc:         "stamp max_bytes_before_external_distinct=cap/2 on every data-plane query (server >= 26.9, ClickHouse#116569, opt-in via CERBERUS_CH_OPTIMIZATIONS until the quickstart reaches 26.9) — lets a high-cardinality DISTINCT spill instead of aborting at the cap; inside a recursive CTE the step's DISTINCT spills but the step's output stays in memory",
 	},
 	{
 		ID:         FeatureTraceIDProjection,
