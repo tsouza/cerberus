@@ -13,6 +13,9 @@
         "callers": [
           "lowerTraceScopedPeer",
           "traceScopedRowExpr"
+        ],
+        "cited": [
+          "isTraceScopedIntrinsic"
         ]
       }
     }
