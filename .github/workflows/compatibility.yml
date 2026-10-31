@@ -483,7 +483,7 @@ jobs:
           TITLE: compatibility/prometheus-forced-route (CERBERUS_EVAL_ROUTE=sharded)
           LABEL: prometheus (route B)
 
-      - name: Parity-regression ratchet (vs the same 26.5-lane baseline)
+      - name: Parity-regression ratchet (vs the same quickstart-lane baseline)
         # Gates on case IDENTITY against compatibility/parity-baseline/'s
         # `prometheus` roster — the same corpus, forced down route B.
         # FAIL_ON_DIFF above already fails any diff; what the ratchet adds
@@ -547,7 +547,7 @@ jobs:
     # which ClickHouse minor line executes it, so the floor run passing the
     # identical case roster is the actual proof the floor is honest. A case
     # that regresses, vanishes, or arrives failing here — but not on the
-    # 26.5 lane — is a genuine floor-specific correctness bug, not a
+    # quickstart lane — is a genuine floor-specific correctness bug, not a
     # baseline-drift false positive, because the two runs are graded
     # against the one committed roster.
     #
@@ -632,7 +632,7 @@ jobs:
         # run-prometheus-compatibility.mjs build-time patches
         # comparer.go's timeout past every measured floor-lane cost —
         # and only for a CH_IMAGE below the native-rate floor
-        # (FLOOR_COMPARER_TIMEOUT_SECONDS; the 26.5 lanes keep the tight
+        # (FLOOR_COMPARER_TIMEOUT_SECONDS; the quickstart lanes keep the tight
         # bound) — the same way it already patches the comparer's
         # matrix-sort bug. Parallelism stays low here regardless, since
         # it is still the right lever for genuine queueing contention.
@@ -652,7 +652,7 @@ jobs:
           TITLE: compatibility/prometheus-floor (ClickHouse 24.8)
           LABEL: prometheus (floor)
 
-      - name: Parity-regression ratchet (vs the same 26.5-lane baseline)
+      - name: Parity-regression ratchet (vs the same quickstart-lane baseline)
         # Gates on case IDENTITY against compatibility/parity-baseline/'s
         # `prometheus` roster — the same file/head compatibility/prometheus
         # gates on. A floor-specific divergence surfaces here as REGRESSED /

@@ -57,13 +57,13 @@ services:
     # boots in ~10-20s on the same runners.
     #
     # Pinned to versions.yaml's `quickstart_clickhouse`, NOT `chdb_substrate`.
-    # The two roles are distinct: chdb_substrate is the SQL-parity substrate the
-    # chDB suites and the compatibility harnesses run on; quickstart_clickhouse
-    # is the deployment surface operators actually run. The migration lane
+    # The two roles are distinct: chdb_substrate is the in-process chDB engine
+    # the parity suites run on; quickstart_clickhouse is the deployment surface
+    # operators actually run. The migration lane
     # models the operator deployment, so it tracks the quickstart pin. The
     # version-consistency gate (.github/scripts/clickhouse-version-sync.mjs,
     # check (e)) holds this tag equal to quickstart_clickhouse.
-    image: clickhouse/clickhouse-server:26.6
+    image: clickhouse/clickhouse-server:26.8.36.3
     environment:
       CLICKHOUSE_DB: otel
       CLICKHOUSE_USER: cerberus

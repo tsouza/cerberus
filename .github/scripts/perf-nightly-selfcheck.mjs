@@ -83,14 +83,14 @@
 //      (partitionPrewhere) bypassed, so the emitter's explicit PREWHERE
 //      holds every conjunct of the filtered scan, the label matcher on the
 //      attribute maps included, instead of only the narrow ones. On the
-//      servers where the emitter places PREWHERE (24.8 and 26.6 in the
+//      servers where the emitter places PREWHERE (24.8 and 26.8 in the
 //      matrix) the nightly rate_by_route_matcher_stock_key sentinel decodes
 //      both maps for every row of the metric's granules ahead of any
 //      filtering — measured 696 MB on 24.8 and 416 MB on 26.6 against
 //      58 MB and 40 MB unmutated — and goes red on its committed ceiling.
 //
 //   4c. move-to-prewhere-auto-range-widened — internal/chopt/registry.go's
-//      move_to_prewhere AutoRange, its upper end lifted past 26.6, so auto
+//      move_to_prewhere AutoRange, its upper end lifted past 26.8, so auto
 //      leaves the split to the server on a line where the server orders
 //      the matcher's map read first. On 26.6 rate_by_route_matcher_stock_key
 //      measured 296 MB against 40 MB and goes red on its committed ceiling.
@@ -235,7 +235,7 @@ export const MUTATIONS = [
   },
   {
     id: 'prewhere-split-partition-bypassed',
-    clickhouse: ['24.8', '26.6'],
+    clickhouse: ['24.8', '26.8'],
     description:
       "Bypass internal/chsql/emit_node.go's PREWHERE partition, so the emitter's explicit PREWHERE holds every " +
       'conjunct of a filtered scan, the label matcher on the attribute maps included. The nightly ' +
@@ -248,9 +248,9 @@ export const MUTATIONS = [
   },
   {
     id: 'move-to-prewhere-auto-range-widened',
-    clickhouse: ['26.6'],
+    clickhouse: ['26.8'],
     description:
-      "Lift the upper end of internal/chopt/registry.go's move_to_prewhere AutoRange past 26.6, so auto leaves " +
+      "Lift the upper end of internal/chopt/registry.go's move_to_prewhere AutoRange past 26.8, so auto leaves " +
       'the PREWHERE split to a server that reads the matcher\'s attribute maps first. The nightly ' +
       'rate_by_route_matcher_stock_key sentinel must go red on its committed memory ceiling.',
     recipe: 'perf-nightly-integration',

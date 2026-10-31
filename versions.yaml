@@ -19,7 +19,9 @@
 # docs/optimization-rules.md (Rule 1, step 4). The check below gates this.
 #
 # Versions are major.minor only (ClickHouse feature availability lands at
-# minor-version granularity; patch / build suffixes are dropped everywhere).
+# minor-version granularity; patch / build suffixes are dropped here). An image
+# tag that tracks one of these may pin an exact build of that line; the checks
+# compare its major.minor.
 
 # min_clickhouse - the supported / CI-tested ClickHouse floor: the lowest
 # version the SQL cerberus emits is correct on. MUST equal internal/preflight
@@ -34,20 +36,21 @@ min_clickhouse: "24.8"
 # the per-feature gate.
 min_native_rate: "25.9"
 
-# quickstart_clickhouse - the ClickHouse image tag the root docker-compose.yml
+# quickstart_clickhouse - the ClickHouse release line the root docker-compose.yml
 # quickstart ships, and the DEPLOYMENT-surface pin the Helm chart's bundled
-# ClickHouse and the migration lane's Tier-1 stack both track. It MUST be new
+# ClickHouse, the migration lane's Tier-1 stack and the compatibility
+# (prometheus / loki / tempo) harnesses all track. The differential harnesses
+# are the source of truth for all three heads, so they run on the server an
+# operator deploys. It MUST be new
 # enough to actually demo every optimization the quickstart enables via
 # CERBERUS_CH_OPTIMIZATIONS. The quickstart sets that to "auto", so the enabled
 # set is every AutoSelect feature in internal/chopt/registry.go and the derived
 # requirement is the highest AutoSelect floor. That floor is DERIVED, never
 # restated here - check (d) of .github/scripts/clickhouse-version-sync.mjs
 # asserts quickstart_clickhouse >= it.
-quickstart_clickhouse: "26.6"
+quickstart_clickhouse: "26.8"
 
-# chdb_substrate - the ClickHouse version of the test substrate: the in-process
-# chDB engine (libchdb / chdb-go) the parity + perf suites run on, and the tag
-# the compatibility (prometheus / loki / tempo) and e2e ClickHouse services
-# pin. The differential harnesses are the source of truth for all three heads,
-# so this is the version the validated SQL is actually exercised on.
+# chdb_substrate - the ClickHouse version of the in-process chDB engine
+# (libchdb / chdb-go) the parity + perf suites run on. just/chdb.just's
+# CHDB_VERSION tracks it (.github/scripts/chdb-version-sync.mjs).
 chdb_substrate: "26.5"

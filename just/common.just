@@ -12,12 +12,13 @@
 # it. TestIntegrationImagePinsMatchTheJustfile holds both against the literals in
 # the test sources.
 CH_TEST_IMAGE := "clickhouse/clickhouse-server:25.9-alpine"
-CH_SCHEMA_TEXT_INDEX_IMAGE := "clickhouse/clickhouse-server:26.6-alpine"
+CH_SCHEMA_TEXT_INDEX_IMAGE := "clickhouse/clickhouse-server:26.8-alpine"
 CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
 
 # The ClickHouse upgrade-compatibility tests (`clickhouse-upgrade-test`) roll the
-# bundled server line (CH_UPGRADE_FLOOR_IMAGE) forward to
-# CH_UPGRADE_TARGET_IMAGE and back, and prove the one rollback the text-index
+# previously bundled server line (CH_UPGRADE_FLOOR_IMAGE) forward to the
+# bundled build (CH_UPGRADE_TARGET_IMAGE, the chart's clickhouse.bundled.image)
+# and back, and prove the one rollback the text-index
 # format contract refuses on CH_TEXT_INDEX_V0_READER_IMAGE, the newest line
 # that reads only v0_initial text indexes. CH_PRE_KEYED_IMAGES are the older
 # lines (24.8, the supported floor, and 25.3 LTS) the collector's
@@ -28,7 +29,7 @@ CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
 # whose ClickHouse receiver the same lane runs; test/clickhouse-upgrade holds
 # it equal to the compose pin.
 CH_UPGRADE_FLOOR_IMAGE := "clickhouse/clickhouse-server:26.6.8.7-alpine"
-CH_UPGRADE_TARGET_IMAGE := "clickhouse/clickhouse-server:26.8.10.6-alpine"
+CH_UPGRADE_TARGET_IMAGE := "clickhouse/clickhouse-server:26.8.36.3-alpine"
 CH_TEXT_INDEX_V0_READER_IMAGE := "clickhouse/clickhouse-server:26.5.7.64-alpine"
 CH_PRE_KEYED_IMAGES := "clickhouse/clickhouse-server:24.8.14.39-alpine clickhouse/clickhouse-server:25.3.14.14-alpine"
 OTEL_COLLECTOR_CONTRIB_IMAGE := "otel/opentelemetry-collector-contrib:0.152.1"
@@ -37,13 +38,24 @@ OTEL_COLLECTOR_CONTRIB_IMAGE := "otel/opentelemetry-collector-contrib:0.152.1"
 # the other integration lanes (which pin 25.8 to reproduce a specific
 # strict-scan divergence), this lane must EXECUTE every shape the emitter can
 # produce — including the native timeSeries*ToGrid family whose chopt floor is
-# 25.9, and chopt.FeatureTSGridLastOverTime's own 26.6 floor (the highest in
-# the registry as of that feature). A pin below that floor does not go red;
-# the server rejects the query before a row decodes and the shape silently
-# drops out of scope. Kept at or above the highest MinVersion among the chopt
-# features that emit SQL (a SettingOnly feature emits none) by
-# TestStrictScanImageClearsChoptFloors.
-CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.6-alpine"
+# 25.9, and chopt.FeatureTSGridLastOverTime's own 26.6 floor. A pin below a
+# floor does not go red; the server rejects the query before a row decodes and
+# the shape silently drops out of scope. Kept at or above the highest
+# MinVersion among the chopt features that emit SQL (a SettingOnly feature
+# emits none) by TestStrictScanImageClearsChoptFloors. It is the release line
+# the deployment surface ships (versions.yaml quickstart_clickhouse), and the
+# image perf-nightly's leg on that line boots (clickhouse-version-sync.mjs
+# check (h)).
+CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.8-alpine"
+
+# CH_PERF_SMOKE_JOIN_SPILL_IMAGE is the server the perf-smoke corpus's
+# join-spill tier boots (test/perf/smoke's perfSmokeJoinSpillCHImage):
+# chopt.FeatureJoinSpill floors at 26.4, above CH_TEST_IMAGE. Its own pin, so
+# that moving CH_STRICT_SCAN_IMAGE does not move the tier's calibrated
+# perf-smoke-baseline.json bounds; the tier moves together with a baseline
+# cut. TestIntegrationImagePinsMatchTheJustfile holds this against the literal
+# in the test source.
+CH_PERF_SMOKE_JOIN_SPILL_IMAGE := "clickhouse/clickhouse-server:26.6-alpine"
 
 # CH_QUANTILE_PROM_HISTOGRAM_IMAGE is the server the quantile_prom_histogram
 # real-CH differential boots (internal/chsql's

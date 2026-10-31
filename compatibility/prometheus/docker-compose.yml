@@ -34,14 +34,15 @@ services:
     # innocently switch back to -alpine here without re-validating
     # against the GH-runner musl/scheduling regression.
     #
-    # CH_IMAGE overrides the tag (default: the standard 26.5 lane).
+    # CH_IMAGE overrides the tag (default: versions.yaml quickstart_clickhouse,
+    # the deployment surface).
     # compatibility.yml's `compatibility/prometheus-floor` job exports
     # CH_IMAGE=clickhouse/clickhouse-server:24.8 to run this SAME compose
     # stack + corpus against cerberus's declared minCHBase floor
     # (internal/preflight/preflight.go) — see #1500. `docker compose config`
     # resolves the interpolation before compose-pull-images.mjs reads the
     # model, so the override reaches both the pre-pull and `up`.
-    image: ${CH_IMAGE:-clickhouse/clickhouse-server:26.5}
+    image: ${CH_IMAGE:-clickhouse/clickhouse-server:26.8.36.3}
     environment:
       CLICKHOUSE_DB: otel
       CLICKHOUSE_USER: cerberus

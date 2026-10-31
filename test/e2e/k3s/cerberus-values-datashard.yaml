@@ -39,7 +39,7 @@ clickhouse:
     # highest floor, `join_spill` at 26.4, is only observable under fan-out
     # when the server the lane runs clears it. Gotcha #1's dedicated
     # non-`default`-user ConfigMap applies regardless of the tag.
-    image: clickhouse/clickhouse-server:26.6
+    image: clickhouse/clickhouse-server:26.8.36.3
     replicas: 1
     # Cross-shard forwarding secret (cerberus issue #3190). The chart now
     # REFUSES dataShards.count > 1 without one, because ClickHouse otherwise

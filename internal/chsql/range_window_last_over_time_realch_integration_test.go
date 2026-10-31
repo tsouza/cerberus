@@ -46,13 +46,12 @@ import (
 // pinned to. The Justfile's `ts-grid-last-over-time-integration` recipe
 // deliberately reuses CH_STRICT_SCAN_IMAGE rather than pinning its own
 // dedicated variable (unlike quantile_prom_histogram's
-// CH_QUANTILE_PROM_HISTOGRAM_IMAGE): this feature's 26.6 floor is the
-// highest in the registry, so strict-scan's own pin was raised to clear it
-// (TestStrictScanImageClearsChoptFloors) and now floors at the identical
-// version — introducing a second variable would just be the same string
-// twice. TestIntegrationImagePinsMatchTheJustfile holds this literal
+// CH_QUANTILE_PROM_HISTOGRAM_IMAGE): strict-scan's own pin is held at or
+// above every SQL-emitting chopt floor, this feature's 26.6 included
+// (TestStrictScanImageClearsChoptFloors), so a second variable would only
+// restate a server that already clears it. TestIntegrationImagePinsMatchTheJustfile holds this literal
 // against that shared pin.
-const tsGridLastOverTimeImage = "clickhouse/clickhouse-server:26.6-alpine"
+const tsGridLastOverTimeImage = "clickhouse/clickhouse-server:26.8-alpine"
 
 // TestLastOverTime_NativeResample_WindowNarrowerThanStep_RealCH reproduces,
 // end to end through cerberus's own lowering + emitter, the EXACT shape

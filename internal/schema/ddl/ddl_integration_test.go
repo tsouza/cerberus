@@ -58,7 +58,7 @@ func startClickHouse(t *testing.T) (driver.Conn, string) {
 
 	container, err := tcclickhouse.Run(
 		ctx,
-		"clickhouse/clickhouse-server:26.6-alpine",
+		"clickhouse/clickhouse-server:26.8-alpine",
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 		tcclickhouse.WithDatabase("otel"),
