@@ -488,8 +488,8 @@
       "description": "Real-ClickHouse strict decoding, resource-bound, schema, and teardown differentials.",
       "owner": {
         "workflow": ".github/workflows/strict-scan.yml",
-        "jobs": ["changes", "strict-scan"],
-        "producer_jobs": [],
+        "jobs": ["changes", "strict-scan-shard", "strict-scan"],
+        "producer_jobs": ["strict-scan-shard"],
         "context_job": "strict-scan"
       },
       "executions": ["default"],
@@ -531,7 +531,7 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "timeout_minutes": 20,
+      "timeout_minutes": 25,
       "slo_minutes": 20,
       "accountable_owner": "query-quality"
     },

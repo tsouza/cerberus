@@ -1165,6 +1165,20 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   - Env: `CH_SERVER_SAFETY_SHARD` (`go test`); `CHANGES_RESULT`, `DOCS_ONLY`,
     `SETUP_RESULT`, `SHARDS_RESULT` (`aggregate`).
   - Exit: `0` on success, `1` otherwise.
+- **`strict-scan-aggregate.mjs`** — `strict-scan.yml`, the `strict-scan` job.
+  Rolls the `strict-scan-shard` matrix up into the one `strict-scan` status
+  context: fails unless `changes` succeeded and, outside a docs-only change
+  (whose shards skip by design), every shard succeeded, so a failed, cancelled
+  or skipped shard fails it. `strict-scan-aggregate.test.mjs` is the
+  `node --test` guard, run first in the same job. Which step runs on which
+  shard is pinned by `test/regression/strict_scan_shards_test.go`.
+  - Env: `CHANGES_RESULT`, `DOCS_ONLY`, `SHARDS_RESULT`.
+  - Exit: `0` on success, `1` otherwise.
+- **`lib/needs-verdict.mjs`** — the verdict rule `strict-scan-aggregate.mjs`
+  and `ch-server-safety-shards.mjs aggregate` share: every aggregated job's
+  `needs` result must be `success`, except on a docs-only change reported by
+  a `changes` job that succeeded. `lib/needs-verdict.test.mjs` is its
+  `node --test` guard, run in `strict-scan.yml`'s `strict-scan` job.
 - **`chdb-install.mjs`** — `just/chdb.just`'s `chdb-install` recipe (issue
   #3094, epic #3091). Owns the platform-detection, chdb-core release URL
   construction, `curl`/`tar`/`sudo install` sequence, and idempotency
