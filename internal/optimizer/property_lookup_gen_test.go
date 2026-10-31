@@ -26,10 +26,18 @@ const propertyRootNameColumn = "_cerb_root_name"
 
 // generateTraceLookupFilter draws Project(TraceLookupFilter(<span input>))
 // over the spans seed, comparing each span's name with its trace's root-span
-// name. Trace t3's orphan chain keeps the rootless side of the join live: o2
-// and o3 have a root (o1), but a span whose trace had none would read the
-// LEFT JOIN default, so the predicate defaults the lookup value the way the
-// lowering does.
+// name. The predicate wraps the lookup value in ifNull the way the lowering
+// does, so the generated plan has the lowering's shape.
+//
+// This property does not exercise the rootless side of the join: every trace
+// in the spans seed has a root span, so every span finds a lookup row (t3's
+// orphan chain is unrooted as a structural chain, but t3 itself has the root
+// o1). The property compares a plan with its optimized form, and both carry the
+// same ifNull, so it could not tell a missing ifNull apart in any case. The
+// rootless LEFT JOIN default is pinned by
+// TestTraceScopedSpanOperandIndependentOfJoinUseNulls in
+// internal/traceql/trace_scoped_span_operand_chdb_test.go, under both
+// settings of join_use_nulls.
 func generateTraceLookupFilter(rng *rand.Rand) chplan.Node {
 	spans := &chplan.Scan{
 		Table: propertySpansTable,
