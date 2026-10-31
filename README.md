@@ -390,7 +390,8 @@ local-dev and end-to-end commands live in
 
 Everyone taking part in cerberus follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 How the project is run is described in [`GOVERNANCE.md`](GOVERNANCE.md), and its
-maintainers are listed in [`MAINTAINERS.md`](MAINTAINERS.md). Every commit carries a
+maintainers are listed in [`MAINTAINERS.md`](MAINTAINERS.md), and where it is headed is in
+[`ROADMAP.md`](ROADMAP.md). Every commit carries a
 [Developer Certificate of Origin](https://developercertificate.org) sign-off
 (`git commit -s`).
 

@@ -152,6 +152,7 @@ export const ROOT_ALLOWLIST = [
   'MAINTAINERS.md',
   'NOTICE',
   'README.md',
+  'ROADMAP.md',
   'SECURITY.md',
   // Build, packaging, and task-runner entrypoints.
   'Dockerfile',
