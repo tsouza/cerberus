@@ -98,6 +98,8 @@ func TestIsSliceInvariant_UnregisteredKinds(t *testing.T) {
 	// share-verbatim default and every shard would carry the FULL grid rather
 	// than its own slice) and SearchTraceLimit (a per-trace cap) are likewise
 	// default-denied — neither is a simple sliced row stream.
+	// TraceLookupFilter is default-denied: it is a TraceQL span-search filter
+	// whose lookups aggregate whole traces, not a sliced row stream.
 	// HistogramProjection is default-denied too: like
 	// HistogramQuantileNative, it aggregates bucket columns per
 	// group from its input rather than passing a sliced row stream through

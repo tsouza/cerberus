@@ -21,6 +21,7 @@ func allNodeKinds() []chplan.Node {
 	return []chplan.Node{
 		&chplan.Scan{Database: "db", Table: "t", UnionTables: []string{"a", "b"}, Columns: []string{"x"}},
 		&chplan.Filter{Input: leaf, Predicate: &chplan.LitBool{V: true}},
+		&chplan.TraceLookupFilter{Input: leaf, Lookups: []chplan.Node{leaf, leaf}, Predicate: expr},
 		&chplan.Project{Input: leaf, Projections: []chplan.Projection{{Expr: expr, Alias: "A"}}},
 		&chplan.Aggregate{
 			Input:          leaf,

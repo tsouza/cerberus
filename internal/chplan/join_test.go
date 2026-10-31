@@ -42,6 +42,7 @@ func joinCarrierCases() []struct {
 		{"StructuralJoin (TraceQL)", &StructuralJoin{}},
 		{"CrossJoin", &CrossJoin{}},
 		{"NestedSetAnnotate (TraceQL structure-tab numbering)", &NestedSetAnnotate{}},
+		{"TraceLookupFilter (TraceQL trace-scoped value vs span operand)", &TraceLookupFilter{}},
 		{
 			"MetricsCompare with RootLookup (TraceQL compare() root-span lookup)",
 			&MetricsCompare{Inner: joinScanFixture(), RootLookup: joinScanFixture()},
@@ -75,7 +76,7 @@ func joinCarrierCases() []struct {
 // TestHasJoin_CoversEveryJoinEmittingNode catches independently by deriving
 // straight from join.go's source) still fails loudly rather than the table
 // quietly shrinking to whatever HasJoin currently does.
-const wantJoinCarrierCount = 11
+const wantJoinCarrierCount = 12
 
 // TestHasJoin_DetectsEveryJoinCarrier covers every join-bearing chplan node
 // HasJoin claims to find: each one alone is enough to trip the detector.

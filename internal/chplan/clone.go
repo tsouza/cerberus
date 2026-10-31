@@ -53,6 +53,12 @@ func CloneNode(n Node) Node {
 		c.Input = CloneNode(v.Input)
 		c.Predicate = cloneExpr(v.Predicate)
 		return &c
+	case *TraceLookupFilter:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.Lookups = cloneNodes(v.Lookups)
+		c.Predicate = cloneExpr(v.Predicate)
+		return &c
 	case *SearchTraceLimit:
 		c := *v
 		c.Input = CloneNode(v.Input)

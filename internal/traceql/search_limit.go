@@ -227,6 +227,16 @@ func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string)
 		}
 		v.Input = windowRecursiveScans(v.Input, startNano, endNano, tsCol)
 		return v
+	case *chplan.TraceLookupFilter:
+		// The Filter arm's cohort descent, for the same reason; the children
+		// take the generic recurse.
+		for _, in := range cohortSubqueries(v.Predicate) {
+			in.Subquery = windowRecursiveScans(in.Subquery, startNano, endNano, tsCol)
+		}
+		out, _ := chplan.RewriteChildren(v, func(c chplan.Node) (chplan.Node, bool) {
+			return windowRecursiveScans(c, startNano, endNano, tsCol), true
+		})
+		return out
 	default:
 		out, _ := chplan.RewriteChildren(n, func(c chplan.Node) (chplan.Node, bool) {
 			return windowRecursiveScans(c, startNano, endNano, tsCol), true
@@ -283,6 +293,17 @@ func pushLeafPredicate(n chplan.Node, pred chplan.Expr) chplan.Node {
 		}
 		v.Input = pushLeafPredicate(v.Input, pred)
 		return v
+	case *chplan.TraceLookupFilter:
+		// Same Expr-slot blind spot as the Filter arm: a trace-scoped
+		// comparison against a literal, OR'd with a row comparison
+		// (`{ rootName = name || traceDuration > 1s }`), keeps its per-trace
+		// membership subquery in this predicate. The children — the row
+		// source and every lookup relation — take the generic recurse.
+		pushLeafPredicateIntoCohort(v.Predicate, pred)
+		out, _ := chplan.RewriteChildren(v, func(c chplan.Node) (chplan.Node, bool) {
+			return pushLeafPredicate(c, pred), true
+		})
+		return out
 	case *chplan.SearchTraceLimit:
 		// Already fully windowed: stampSearchTraceLimit creates this node and
 		// folds the window onto its plain-search leaves at

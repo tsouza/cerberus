@@ -33,9 +33,11 @@ const rootlessRootIdentity = ""
 //
 // A shape it cannot decide reports false, which keeps the plain
 // `TraceId IN (...)` form. Two exist: a pattern that does not compile,
-// which validation rejects before lowering, and a per-span operand
-// (`rootName = name`), whose comparison the per-trace subquery cannot
-// evaluate in either form, tracked in #4012.
+// which validation rejects before lowering, and a comparison against a
+// per-span operand (`rootName = name`), which has no plan-time answer.
+// lowerTraceScopedBinary never builds the latter as a membership predicate:
+// it lowers to a row comparison over the trace's joined value
+// (traceScopedRowExpr).
 func rootlessTraceMatches(pred chplan.Expr) bool {
 	v, ok := evalRootlessPredicate(pred)
 	return ok && v

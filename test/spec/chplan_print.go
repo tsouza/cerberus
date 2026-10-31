@@ -173,6 +173,12 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		fmt.Fprintf(b, "%sFilter predicate=%s", indent, printExpr(v.Predicate))
 		b.WriteString("\n")
 		printChild(b, visited, v.Input, depth+1)
+	case *chplan.TraceLookupFilter:
+		fmt.Fprintf(b, "%sTraceLookupFilter lookups=%d predicate=%s\n", indent, len(v.Lookups), printExpr(v.Predicate))
+		printChild(b, visited, v.Input, depth+1)
+		for _, lookup := range v.Lookups {
+			printChild(b, visited, lookup, depth+1)
+		}
 	case *chplan.Project:
 		grid := ""
 		if v.SubqueryGrid {
