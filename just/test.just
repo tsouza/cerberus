@@ -606,11 +606,10 @@ perf-smoke-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     @# The join-spill tier (smoke.FloorJoinSpill) boots a SECOND container:
     @# chopt.FeatureJoinSpill floors at 26.4, above the 25.9 CH_TEST_IMAGE, and
-    @# max_bytes_before_external_join does not exist below it. The tag reused
-    @# here is CH_STRICT_SCAN_IMAGE, which this repo already pins at or above
-    @# every chopt floor — the same reuse the ts_grid_instant lane in
-    @# test/perf/nightly makes.
-    @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
+    @# max_bytes_before_external_join does not exist below it. The tag is
+    @# CH_PERF_SMOKE_JOIN_SPILL_IMAGE, the server the tier's bounds were
+    @# calibrated on.
+    @just _pull-retry {{CH_PERF_SMOKE_JOIN_SPILL_IMAGE}}
     @# The distinct-spill tier (smoke.FloorDistinctSpill) boots a THIRD one:
     @# chopt.FeatureDistinctSpill floors at 26.9. The tag is
     @# CH_DISTINCT_SPILL_IMAGE, a build test/chserver already pins.
@@ -663,7 +662,7 @@ native-histogram-dashboard-floor-integration:
 # Run the ts_grid_instant real-data memory measurement (#2748): reuses this
 # package's own real, trimmed production sample
 # (test/perf/nightly/testdata/samples/svc_http_requests_total.parquet) in a
-# dedicated ClickHouse container (CH_STRICT_SCAN_IMAGE, 26.6-alpine —
+# dedicated ClickHouse container (CH_STRICT_SCAN_IMAGE, 26.8-alpine —
 # ts_grid_instant floors at 26.5, above the sentinel legs' 24.8 and 25.9
 # servers), issuing the SAME instant `rate(m[1d])` query once
 # through the fan-out and once through the new instant native lowering
@@ -879,7 +878,7 @@ tag-groups-differential-integration:
 # real ClickHouse >= 26.6 — chopt.FeatureTSGridLastOverTime's own floor,
 # ABOVE the family's usual 25.9 (see that registry entry) — so this lane
 # reuses CH_STRICT_SCAN_IMAGE rather than pinning its own dedicated image:
-# both now floor at exactly 26.6. Requires Docker; gated behind the
+# that pin clears every SQL-emitting chopt floor. Requires Docker; gated behind the
 # `integration` build tag. See
 # internal/chsql/range_window_last_over_time_realch_integration_test.go and
 # strict-scan.yml.
@@ -898,7 +897,7 @@ ts-grid-last-over-time-integration:
 # duplicate, non-NaN timestamp. The NaN-duplicate survivor of both forms is in
 # the ts-grid-nan-duplicate-integration sweep. The feature's own floor (25.9)
 # is the family's usual one, so this pins CH_TEST_IMAGE directly rather than
-# reusing CH_STRICT_SCAN_IMAGE's higher 26.6 pin. Requires Docker; gated
+# reusing CH_STRICT_SCAN_IMAGE's higher pin. Requires Docker; gated
 # behind the `integration` build tag. See
 # internal/chsql/range_window_group_array_realch_integration_test.go.
 

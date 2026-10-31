@@ -40,7 +40,7 @@ clickhouse:
     # the chart maps the CH container's pullPolicy to .Values.image.pullPolicy,
     # which cerberus-values.yaml pins to Never, so the exact tag MUST be in the
     # cluster's containerd.
-    image: clickhouse/clickhouse-server:26.6
+    image: clickhouse/clickhouse-server:26.8.36.3
     replicas: 2
     # Recommended for any `replicas > 1` deployment (values.yaml's own
     # `interserverSecret` doc: replica forwarding has the same exposure as

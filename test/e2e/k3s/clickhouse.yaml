@@ -75,11 +75,13 @@ spec:
             claimName: clickhouse-data
       containers:
         - name: clickhouse
-          # 26.6, not 26.5: the 26.5 line carries an upstream query-execution
-          # regression (`__topKFilter` type mismatch) that fails the Loki
-          # /detected_fields peek. See docs/operations.md, "ClickHouse 26.5 —
-          # known-defective line".
-          image: clickhouse/clickhouse-server:26.6-alpine
+          # The bundled build (deploy/helm/cerberus/values.yaml
+          # clickhouse.bundled.image), in its alpine variant. Never the 26.5
+          # line: it carries an upstream query-execution regression
+          # (`__topKFilter` type mismatch) that fails the Loki /detected_fields
+          # peek. See docs/operations.md, "ClickHouse 26.5 — known-defective
+          # line".
+          image: clickhouse/clickhouse-server:26.8.36.3-alpine
           ports:
             - name: native
               containerPort: 9000

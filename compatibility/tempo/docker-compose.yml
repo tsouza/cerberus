@@ -42,7 +42,7 @@ services:
     # NOT innocently switch to -alpine here without re-validating
     # against the GH-runner musl/scheduling regression that bit the
     # PromQL harness.
-    image: clickhouse/clickhouse-server:26.5
+    image: clickhouse/clickhouse-server:26.8.36.3
     environment:
       CLICKHOUSE_DB: otel
       CLICKHOUSE_USER: cerberus

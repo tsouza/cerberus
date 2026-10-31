@@ -25,7 +25,7 @@ test('the floor widening applies only below the native-rate floor', () => {
   assert.equal(comparerTimeoutSeconds('clickhouse/clickhouse-server:25.8'), FLOOR_COMPARER_TIMEOUT_SECONDS);
   assert.equal(comparerTimeoutSeconds('clickhouse/clickhouse-server:25.9'), COMPARER_TIMEOUT_SECONDS);
   assert.equal(comparerTimeoutSeconds('clickhouse/clickhouse-server:26.5'), COMPARER_TIMEOUT_SECONDS);
-  assert.equal(comparerTimeoutSeconds(DEFAULT_CH_IMAGE), COMPARER_TIMEOUT_SECONDS, 'the default image is a 26.5 lane');
+  assert.equal(comparerTimeoutSeconds(DEFAULT_CH_IMAGE), COMPARER_TIMEOUT_SECONDS, 'the default image is a quickstart lane');
   assert.equal(comparerTimeoutSeconds('clickhouse/clickhouse-server:latest'), COMPARER_TIMEOUT_SECONDS, 'an unreadable tag gets the tight bound');
   assert.equal(comparerTimeoutSeconds(undefined), COMPARER_TIMEOUT_SECONDS);
 });

@@ -165,10 +165,10 @@ test('every mutation runs on servers the self-check has a leg for, and every leg
 });
 
 test('the PREWHERE split is broken on both sides of move_to_prewhere\'s auto range', () => {
-  // 25.9 is inside the range (ClickHouse places PREWHERE); 24.8 and 26.6 are
+  // 25.9 is inside the range (ClickHouse places PREWHERE); 24.8 and 26.8 are
   // outside it (the emitter does).
   assert.ok(mutationsFor('25.9').some((m) => m.id === 'prewhere-split-forced'));
-  for (const line of ['24.8', '26.6']) {
+  for (const line of ['24.8', '26.8']) {
     assert.ok(
       mutationsFor(line).some((m) => m.id === 'prewhere-split-partition-bypassed'),
       `no explicit-split mutation on ${line}`,

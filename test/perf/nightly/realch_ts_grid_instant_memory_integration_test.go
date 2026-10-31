@@ -32,7 +32,7 @@
 // predate the extreme-parameter / staleness overflow fixes
 // (#103223/#105319) the floor exists for. This test is one comparison, run
 // once (perf-nightly.yml's perf-nightly-replays job), so it boots its OWN
-// dedicated container at 26.6-alpine instead,
+// dedicated container at just/common.just's CH_STRICT_SCAN_IMAGE instead,
 // mirroring how the strict-scan lane's quantile_prom_histogram and
 // ts_grid_last_over_time real-CH tests each pin their own floor-appropriate
 // image rather than reusing their job's shared one.
@@ -78,7 +78,7 @@ import (
 
 // tsGridInstantCHImage is pinned above the ts_grid_instant 26.5 floor — see
 // this file's own doc for why it boots its own rather than a sentinel leg's.
-const tsGridInstantCHImage = "clickhouse/clickhouse-server:26.6-alpine"
+const tsGridInstantCHImage = "clickhouse/clickhouse-server:26.8-alpine"
 
 // tsGridInstantLookback is the wide-lookback shape cerberus issue #2748
 // names explicitly as the alerting/recording-rule idiom this feature

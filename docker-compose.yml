@@ -80,7 +80,7 @@ services:
     # >= 25.3, the native ts_grid rate path needs >= 25.6, and >= 26.6
     # parallelizes the GROUP BY over the WITH RECURSIVE used by the TraceQL
     # structural-join path — all comfortably satisfied here.
-    image: clickhouse/clickhouse-server:26.6
+    image: clickhouse/clickhouse-server:26.8.36.3
     networks: [cerberus-dev]
     environment:
       CLICKHOUSE_DB: otel

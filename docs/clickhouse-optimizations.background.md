@@ -154,7 +154,7 @@ and was not backported to 26.3 or 26.8.
 The trigger is a filter that parses a String to a float, and nothing else, so
 the gate is that shape rather than the build. Withholding the feature on every
 build the defect reaches would switch the cache off for every query on both
-LTS lines and on the 26.6 build the Helm chart bundles, to protect a minority
+LTS lines, the 26.8 build the Helm chart bundles included, to protect a minority
 of LogQL and TraceQL queries. The shape is read off the plan's `Filter`
 predicates, the `WHERE` / `PREWHERE` the cache keys on; a parse that sits in a
 projection or an aggregate argument is never a granule filter. The lowerings
@@ -298,7 +298,7 @@ filtering off counts none.
 A build-wide range withholds a feature on every query of every deployment on
 that build. For the three defects above that cost was out of proportion to the
 trigger: it would have switched the condition cache off on every build before
-26.9 — both LTS lines and the 26.6 the Helm chart bundles — withheld the
+26.9 — both LTS lines, the 26.8 the Helm chart bundles included — withheld the
 auto-selected `trace_id_bitmap_filter` from 25.11 through 26.9, and failed boot
 on an explicit `trace_id_projection` under `enforcing` on those releases, to
 protect a handful of query shapes. Each of these defects has a trigger the
@@ -697,7 +697,7 @@ per-query cap, so the threshold is sized from that cap.
 the cap into a disk-backed completion, which is the posture `join_spill`
 auto-selects on. Check (d) of `clickhouse-version-sync.mjs` requires the
 quickstart's ClickHouse to meet every `AutoSelect` floor. The quickstart is
-26.6, and #3985 moves it to the 26.8 LTS. Flipping `AutoSelect` is tracked in
+the 26.8 LTS. Flipping `AutoSelect` is tracked in
 [#4014](https://github.com/tsouza/cerberus/issues/4014).
 
 **Measurements on 26.9.25.15** (container capped at 2 CPUs and 8 GiB):

@@ -325,8 +325,8 @@ lines:
 
 `clickhouse.bundled.settings` defaults to `packed_skip_index_max_bytes: 0`,
 rendered into `<merge_tree>` on every ClickHouse pod. It keeps every part a
-26.7 or 26.8 server writes readable by 26.6, the chart's bundled line, so the
-supported path — 26.6 to 26.7 or 26.8, rolling, with a rollback to 26.6 —
+26.7 or 26.8 server writes readable by 26.6, so the supported path — 26.6 to
+the chart's bundled 26.8 (or to 26.7), rolling, with a rollback to 26.6 —
 needs nothing else. The text-index format needs no pin on that path: 26.6
 reads all three versions.
 
@@ -346,9 +346,9 @@ sets them to `null` by hand.
 
 The `clickhouse-upgrade` lane proves this path against real servers
 (`test/clickhouse-upgrade/format_integration_test.go`): a 26.6 replica and
-a 26.8 replica running the chart's settings share every cerberus table, the
-26.6 replica fetches and reads every part the 26.8 replica merged, both answer
-the same LogQL queries, and the 26.8 replica restarts and rolls back to 26.6
+a replica on the chart's bundled 26.8 build, both running the chart's
+settings, share every cerberus table, the 26.6 replica fetches and reads every
+part the 26.8 replica merged, both answer the same LogQL queries, and the 26.8 replica restarts and rolls back to 26.6
 on its own disk with no part detached.
 
 ### Mixed clusters with a 26.2–26.5 server

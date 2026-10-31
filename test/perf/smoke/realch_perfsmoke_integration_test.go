@@ -105,14 +105,13 @@ const perfSmokeCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 // calibrated baseline — the numbers this corpus exists to hold still — for a
 // feature none of them exercise.
 //
-// The tag is 26.6-alpine rather than a 26.4 one because it is the image this
-// repo ALREADY pins and pre-pulls for its highest-floor lanes (the Justfile's
-// CH_STRICT_SCAN_IMAGE, also used by test/perf/nightly's ts_grid_instant
-// measurement), so the second tier costs strict-scan no new image download.
-// The FLOOR is chopt's 26.4; the IMAGE is the repo's existing pin at or above
-// it. Which of the two it is never has to be guessed: the harness asserts
-// chopt.FeatureJoinSpill actually resolved in against the live container
-// before running a single FloorJoinSpill sentinel.
+// The tag is just/common.just's CH_PERF_SMOKE_JOIN_SPILL_IMAGE, a server at
+// or above the 26.4 floor that the tier's committed bounds were calibrated on.
+// It is a pin of its own rather than the strict-scan server's, so a move of
+// that server does not move these bounds. The FLOOR is chopt's 26.4; the
+// IMAGE is the calibration server. Which of the two it is never has to be
+// guessed: the harness asserts chopt.FeatureJoinSpill actually resolved in
+// against the live container before running a single FloorJoinSpill sentinel.
 const perfSmokeJoinSpillCHImage = "clickhouse/clickhouse-server:26.6-alpine"
 
 // perfSmokeDistinctSpillCHImage backs smoke.FloorDistinctSpill: a THIRD

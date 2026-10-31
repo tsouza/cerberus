@@ -3,7 +3,7 @@
 // perf-nightly.yml runs its sentinels once per server of the
 // `perf-nightly-sentinels` job's matrix, and perf-nightly-selfcheck.yml runs
 // one self-check leg per server of the same list. Both declare it as the
-// one-line flow sequence `clickhouse: ['24.8', '25.9', '26.6']` under
+// one-line flow sequence `clickhouse: ['24.8', '25.9', '26.8']` under
 // `strategy.matrix`; this module reads it back for the checks that hold the
 // list to its sources (clickhouse-version-sync.mjs check h) and to the
 // self-check's mutations (perf-nightly-selfcheck.test.mjs).

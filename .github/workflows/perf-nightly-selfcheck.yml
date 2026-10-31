@@ -64,7 +64,7 @@ jobs:
         # perf-nightly.yml's sentinel matrix, server for server
         # (clickhouse-version-sync.mjs check h): each leg applies the
         # mutations whose `clickhouse` lines include its server's.
-        clickhouse: ['24.8', '25.9', '26.6']
+        clickhouse: ['24.8', '25.9', '26.8']
     # One full gate run per mutation of the leg (the 25.9 leg carries the
     # most: six `just perf-nightly-integration` runs and two `just
     # perf-smoke-integration`, which boots three ClickHouse containers) plus

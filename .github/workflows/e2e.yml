@@ -1421,7 +1421,7 @@ jobs:
     env:
       # Named once: the pre-pull and the `docker run` must name the same ref,
       # or the retry warms an image the run does not use.
-      CH_IMAGE: clickhouse/clickhouse-server:26.5
+      CH_IMAGE: clickhouse/clickhouse-server:26.8.36.3
     steps:
       - uses: actions/checkout@v7
 

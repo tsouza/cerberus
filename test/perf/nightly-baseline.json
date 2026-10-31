@@ -125,67 +125,67 @@
       ]
     },
     {
-      "clickhouse": "26.6",
+      "clickhouse": "26.8",
       "sentinels": [
         {
           "name": "classic_histogram_quantile_by_route",
           "expected_status": 200,
-          "max_of_n_bytes": 425978700,
-          "ceiling_bytes": 511174440
+          "max_of_n_bytes": 593213481,
+          "ceiling_bytes": 711856177
         },
         {
           "name": "request_rate_by_method",
           "expected_status": 422,
-          "max_of_n_bytes": 83194754,
-          "ceiling_bytes": 124792131
+          "max_of_n_bytes": 85289037,
+          "ceiling_bytes": 127933555
         },
         {
           "name": "pod_status_reason_gauge",
           "expected_status": 200,
-          "max_of_n_bytes": 732023809,
+          "max_of_n_bytes": 722049382,
           "ceiling_bytes": 912680550
         },
         {
           "name": "error_ratio_by_namespace",
           "expected_status": 422,
-          "max_of_n_bytes": 83390146,
-          "ceiling_bytes": 120915711
+          "max_of_n_bytes": 85717714,
+          "ceiling_bytes": 124290685
         },
         {
           "name": "classic_native_histogram_derived",
           "expected_status": 200,
-          "max_of_n_bytes": 622342140,
+          "max_of_n_bytes": 658057246,
           "ceiling_bytes": 912680550
         },
         {
           "name": "native_histogram_quantiles_rate",
           "expected_status": 200,
-          "max_of_n_bytes": 302008164,
-          "ceiling_bytes": 453012246
+          "max_of_n_bytes": 413192923,
+          "ceiling_bytes": 619789384
         },
         {
           "name": "label_values_matcher_stock_key",
           "expected_status": 200,
-          "max_of_n_bytes": 39492471,
-          "ceiling_bytes": 47390965
+          "max_of_n_bytes": 29471296,
+          "ceiling_bytes": 35365555
         },
         {
           "name": "label_values_matcher_stock_key_renamed",
           "expected_status": 200,
-          "max_of_n_bytes": 39824388,
-          "ceiling_bytes": 47789265
+          "max_of_n_bytes": 29517042,
+          "ceiling_bytes": 35420450
         },
         {
           "name": "rate_by_route_matcher_stock_key",
           "expected_status": 200,
-          "max_of_n_bytes": 47760266,
-          "ceiling_bytes": 71640399
+          "max_of_n_bytes": 39710920,
+          "ceiling_bytes": 59566380
         },
         {
           "name": "instant_selector_in_order",
           "expected_status": 200,
-          "max_of_n_bytes": 39664289,
-          "ceiling_bytes": 59496433
+          "max_of_n_bytes": 34857863,
+          "ceiling_bytes": 52286794
         }
       ]
     }

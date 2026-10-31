@@ -472,7 +472,7 @@ spec:
         # exporter's first Start() will succeed.
         - name: wait-for-clickhouse
           # Kept in lock-step with the server image in clickhouse.yaml.
-          image: clickhouse/clickhouse-server:26.6-alpine
+          image: clickhouse/clickhouse-server:26.8.36.3-alpine
           command:
             - sh
             - -c

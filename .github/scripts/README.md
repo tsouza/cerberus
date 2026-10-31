@@ -1739,16 +1739,17 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     unreadable blob / bad `CHECK`.
 - **`clickhouse-version-sync.mjs`** — `ci.yml`, the `forbid-skip` job's
   ClickHouse version-consistency gate. Reads `versions.yaml` (the single
-  source of truth) and asserts the docker-compose quickstart + compatibility
-  image tags, the preflight floor, and the chDB substrate all match it, that
-  the migration lane's Tier-1 stack tracks the quickstart (deployment-surface)
-  tag rather than the chDB substrate, and that the quickstart is new enough for
+  source of truth) and asserts the docker-compose quickstart, the chart's
+  bundled image, the migration lane's Tier-1 stack and the compatibility image
+  tags all track the quickstart (deployment-surface) line rather than the chDB
+  substrate, that the preflight floor matches, and that the quickstart is new
+  enough for
   every optimization it enables (floors derived from
   `internal/chopt/registry.go`, not duplicated). See
   `docs/optimization-rules.md` (Rule 1, step 4). One lane is a deliberate
-  exception to "every compatibility image == `chdb_substrate`":
+  exception to "every compatibility image == `quickstart_clickhouse`":
   `compatibility/prometheus/docker-compose.yml` parametrises its ClickHouse
-  tag as `${CH_IMAGE:-clickhouse/clickhouse-server:<chdb_substrate>}` so
+  tag as `${CH_IMAGE:-clickhouse/clickhouse-server:<quickstart build>}` so
   `compatibility.yml`'s `prometheus-floor` job (#1500) can override it to run
   the same corpus against `min_clickhouse` instead — check (f) reads that
   job's `CH_IMAGE` and asserts it equals `min_clickhouse`, keeping the
@@ -3647,7 +3648,7 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   `perf-nightly-selfcheck (<clickhouse>)` matrix legs, one per server of
   `perf-nightly.yml`'s matrix. Each leg applies the mutations whose
   `clickhouse` lines include its server's, so the PREWHERE split is broken
-  where the emitter places it (24.8, 26.6) and where ClickHouse does (25.9).
+  where the emitter places it (24.8, 26.8) and where ClickHouse does (25.9).
   #2437's periodic mutation-style self-check
   that the #2370 perf sentinel gates (`perf-nightly.yml`, and the smoke
   corpus) still catch a real regression: deliberately breaks each mechanism

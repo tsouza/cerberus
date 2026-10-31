@@ -39,7 +39,7 @@ services:
     # on GH Actions runners stalls in the entrypoint script for 5+ min
     # (never starts the server, never binds 8123). The Ubuntu-base variant
     # boots in ~10-20s on the same runners.
-    image: clickhouse/clickhouse-server:26.5
+    image: clickhouse/clickhouse-server:26.8.36.3
     environment:
       CLICKHOUSE_DB: otel
       CLICKHOUSE_USER: cerberus

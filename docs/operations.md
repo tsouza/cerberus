@@ -297,16 +297,13 @@ the SQL array machinery leaves at high cardinality. See
   sample sitting exactly on `anchor-window`, so 25.6–25.8 emit a rate at grid
   points where reference Prometheus emits nothing — a systematic divergence, not
   a measure-zero edge. So the auto floor for the whole family is **25.9**. The
-  compose / e2e deployment runs **26.6** and the compatibility deployment and the
-  chDB test substrate run **26.5** (`versions.yaml` `chdb_substrate`), both
-  ABOVE that floor, so the native path is genuinely exercised on every
-  substrate. 26.5 is a line operators must not run — see "ClickHouse 26.5 —
-  known-defective line" below — but its defect is confined to the top-K
-  prefilter behind `LIMIT n <= 1000`, and the Loki harness's
-  `/detected_fields` probe sends `line_limit=2000` (so both backends parse
-  every seeded row), which sits above that gate. The substrate therefore
-  exercises the native path validly while never reaching the defective
-  shape; it is not evidence that 26.5 is safe to deploy.
+  compose / e2e / compatibility deployment runs **26.8** (`versions.yaml`
+  `quickstart_clickhouse`) and the chDB test substrate runs **26.5**
+  (`versions.yaml` `chdb_substrate`), both ABOVE that floor, so the native
+  path is genuinely exercised on every substrate. 26.5 is a line operators
+  must not run — see "ClickHouse 26.5 — known-defective line" below; only
+  the in-process chDB substrate runs it, and that is not evidence that 26.5
+  is safe to deploy.
   The auto-picker gates on this floor automatically — it enables
   `ts_grid_range` only when the probed server is ≥ 25.9, so a connected older
   server keeps the fan-out and never diverges. (Force-enabling via the legacy
@@ -500,7 +497,7 @@ Cerberus does not work around this in emitted SQL (see
 [`operations.background.md`](operations.background.md)). The boot-time
 requirements check instead **warns** when it
 sees a 26.5 server (it does not refuse to start — the rest of the gateway is
-healthy), and the k3d e2e substrate is pinned to 26.6.
+healthy), and the k3d e2e substrate is pinned to the bundled 26.8 build.
 
 ### Prometheus resource-attribute labels
 
@@ -1201,10 +1198,11 @@ sections below.
 This is the static/docs verification the epic's settings-verification sub-issue
 scopes: for every `internal/chopt`-stamped ClickHouse setting, whether it
 forwards to a `Distributed` table's data shards as-is, is remapped, or does
-not apply — confirmed against ClickHouse's own source and docs for **26.6**,
-the version `deploy/helm/cerberus/values.yaml`'s bundled
-`clickhouse.bundled.image` pins (`clickhouse/clickhouse-server:26.6`, which
-tracks `versions.yaml`'s `quickstart_clickhouse` deployment-surface pin).
+not apply — confirmed against ClickHouse's own source and docs for **26.8**,
+the line `deploy/helm/cerberus/values.yaml`'s bundled
+`clickhouse.bundled.image` pins (`clickhouse/clickhouse-server:26.8.36.3`,
+which tracks `versions.yaml`'s `quickstart_clickhouse` deployment-surface
+pin), and for 26.6 and 25.8.
 Confirming the formulas below hold under real concurrent load against a real
 multi-shard cluster is explicitly out of scope here — that is issue #3079's
 job (chDB is single-node and cannot exercise `Distributed` fan-out at all).
@@ -1222,17 +1220,19 @@ Two source-level facts anchor every row below, verified directly against
 - **A small, named set of settings IS stripped or remapped before that
   forward, and exactly TWO of cerberus's stamped settings are touched by it:
   one is only read, the other is conditionally overridden and provably never
-  overridden in practice (cerberus issue #3086).** At the pinned tag
-  (`v26.6.4.55-stable`, matching the `clickhouse/clickhouse-server:26.6`
-  image) all of the stripping and remapping lives in one function,
-  `src/Interpreters/ClusterProxy/executeQuery.cpp`'s
-  `updateSettingsAndClientInfoForCluster` (there is no
-  `stripInitiatorOnlySettings` at this version; that helper is a later
-  refactor), and the exact set of settings that function touches is
-  identical at `v26.6.4.55-stable` and at `v25.8.1.5101-lts` — ten minor
-  releases apart — so the conclusions below hold at both. It zeroes `offset` and
-  `limit` (query-shaping settings that make sense only once, on the
-  initiator's own merge), zeroes `max_concurrent_queries_for_user` /
+  overridden in practice (cerberus issue #3086).** All of the stripping and
+  remapping lives in `src/Interpreters/ClusterProxy/executeQuery.cpp`'s
+  `updateSettingsAndClientInfoForCluster`, and the set of cerberus-stamped
+  settings it touches is the same at `v25.8.1.5101-lts`,
+  `v26.6.4.55-stable` and `v26.8.34.13-lts` (the newest published source tag
+  of the bundled line; the function is unchanged on the `26.8` branch the
+  bundled 26.8.36.3 build is cut from). It zeroes `offset` and `limit`
+  (query-shaping settings that make sense only once, on the initiator's own
+  merge) — on 26.8 through `stripInitiatorOnlySettings`, which also clears
+  `select`, `order`, `sort`, `filter`, `page`, `additional_result_filter`,
+  the result-format and `compression` settings, the HTTP path settings and
+  `database`, none of which cerberus stamps — zeroes
+  `max_concurrent_queries_for_user` /
   `max_memory_usage_for_user` (a different-user note: "Does not matter on
   remote servers, because queries are sent under different user"), derives
   `queue_max_wait_ms` from `max_execution_time`, appends to
@@ -1240,9 +1240,9 @@ Two source-level facts anchor every row below, verified directly against
   `ROUND_ROBIN` ONLY when `context->canUseParallelReplicasCustomKeyForCluster
   (cluster)` is true AND the query left `load_balancing` **unchanged**
   (`!settings[Setting::load_balancing].changed`), and — only when the QUERY
-  itself left it unset — substitutes `skip_unavailable_shards` from the
-  `Distributed` table's own DDL-level `distributed_settings` default.
-  The two cerberus-stamped settings it touches: `max_execution_time`
+  itself left it unset — substitutes `skip_unavailable_shards` (and, on 26.8,
+  `skip_unavailable_shards_mode`) from the `Distributed` table's own DDL-level
+  `distributed_settings` default. The two cerberus-stamped settings it touches: `max_execution_time`
   (`CERBERUS_QUERY_TIMEOUT`, stamped on every data-plane query) is only READ,
   to derive `queue_max_wait_ms` — it still forwards to every shard unchanged,
   and the derived setting is an addition, not a strip; and `load_balancing`,
@@ -1259,7 +1259,7 @@ setting on the pinned image (the rows marked *unconditional* are stamped by
 the engine on every matching plan shape with no registry feature behind
 them). Column 4 is that second, separate fact,
 cross-checked against each feature's `MinVersion` in
-`internal/chopt/registry.go` against the pinned 26.6 image. Every feature
+`internal/chopt/registry.go` against the pinned 26.8 image. Every feature
 row below but `distinct_spill` clears its own floor there and describes a
 live protection on the bundled image; `distinct_spill` floors at 26.9 and
 activates only against a 26.9 or newer server it is explicitly listed for.
@@ -1268,12 +1268,12 @@ their own ClickHouse instead of the bundled one needs to know which rows
 their server reaches; the highest floor the bundled image clears (26.4,
 `join_spill`) is what it has to keep clearing for those rows to stay yes.
 
-| Setting(s)                                                                                                                        | `internal/chopt` feature                                                                                                                                                                                                                                                                                                                                         | Behavior under `Distributed`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Reachable on pinned 26.6?                                                                                                                                                                         | Source/doc citation                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Setting(s)                                                                                                                        | `internal/chopt` feature                                                                                                                                                                                                                                                                                                                                         | Behavior under `Distributed`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Reachable on pinned 26.8?                                                                                                                                                                         | Source/doc citation                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `optimize_aggregation_in_order`                                                                                                   | `aggregation_in_order`                                                                                                                                                                                                                                                                                                                                           | Forwards as-is; each shard applies it to its own local `GROUP BY`, which is exactly the granularity the setting already targets                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Yes — floor 24.8                                                                                                                                                                                  | [docs: optimize-aggregation-in-order](https://clickhouse.com/docs/reference/settings/session-settings/optimize-aggregation-in-order) — "Enables GROUP BY optimization … for aggregating data in corresponding order in MergeTree tables"; absent from `updateSettingsAndClientInfoForCluster` (verified against `executeQuery.cpp` at tag `v25.8.1.5101-lts`)                                                                                                                                    |
 | `use_query_condition_cache` (+ co-stamped `enable_analyzer=1`)                                                                    | `condition_cache`                                                                                                                                                                                                                                                                                                                                                | Forwards as-is; the condition cache is a per-part server-side cache, so each shard populates and reads its OWN cache for its OWN local parts — no cross-shard sharing is expected or needed                                                                                                                                                                                                                                                                                                                                                                                                | Yes — floor 25.3                                                                                                                                                                                  | [docs: use_query_condition_cache](https://clickhouse.com/docs/reference/settings/session-settings/use-query#use_query_condition_cache) — "The cache stores ranges of granules in data parts …"; `allow_experimental_analyzer` (alias `enable_analyzer`) confirmed via `src/Core/Settings.cpp` (`DECLARE_WITH_ALIAS(Bool, allow_experimental_analyzer, true, …, enable_analyzer)`, marked `IMPORTANT`)                                                                                            |
 | `max_bytes_before_external_join`                                                                                                  | `join_spill`                                                                                                                                                                                                                                                                                                                                                     | Forwards as-is BY NAME, but — like `max_memory_usage` below — the threshold is evaluated independently by each shard's own local join build, so a K-way fan-out gets K independent spill decisions at the SAME threshold, not one shared one                                                                                                                                                                                                                                                                                                                                               | Yes — floor 26.4 (`FeatureJoinSpill`), the highest in this table; on a pre-26.4 server the setting is absent from `src/Core/Settings.cpp` entirely, not merely un-stamped                         | [docs: max_bytes_before_external_join](https://clickhouse.com/docs/reference/settings/session-settings/max-bytes#max_bytes_before_external_join)                                                                                                                                                                                                                                                                                                                                                 |
-| `max_bytes_before_external_distinct`                                                                                              | `distinct_spill`                                                                                                                                                                                                                                                                                                                                                 | Forwards as-is BY NAME; like the join threshold, each shard compares it with its own query's tracked memory, so a K-way fan-out gets K independent spill decisions at the same threshold                                                                                                                                                                                                                                                                                                                                                                                                   | No — floor 26.9 (`FeatureDistinctSpill`, opt-in), above the bundled 26.6; on a pre-26.9 server the setting does not exist and stamping it fails the query with code 115                           | [ClickHouse#116569](https://github.com/ClickHouse/ClickHouse/pull/116569); absent from `src/Interpreters/ClusterProxy/executeQuery.cpp` at tag `v26.9.25.15-stable`                                                                                                                                                                                                                                                                                                                              |
+| `max_bytes_before_external_distinct`                                                                                              | `distinct_spill`                                                                                                                                                                                                                                                                                                                                                 | Forwards as-is BY NAME; like the join threshold, each shard compares it with its own query's tracked memory, so a K-way fan-out gets K independent spill decisions at the same threshold                                                                                                                                                                                                                                                                                                                                                                                                   | No — floor 26.9 (`FeatureDistinctSpill`, opt-in), above the bundled 26.8; on a pre-26.9 server the setting does not exist and stamping it fails the query with code 115                           | [ClickHouse#116569](https://github.com/ClickHouse/ClickHouse/pull/116569); absent from `src/Interpreters/ClusterProxy/executeQuery.cpp` at tag `v26.9.25.15-stable`                                                                                                                                                                                                                                                                                                                              |
 | `max_bytes_before_external_group_by` + `max_bytes_before_external_sort`                                                           | unconditional — `applySpillSettings` (`internal/engine/spill.go`), stamped on every data-plane statement, sized at half the statement's own memory cap                                                                                                                                                                                                           | Forwards as-is BY NAME; like `max_bytes_before_external_join` above, each shard evaluates the threshold against its OWN local aggregation / sort state, so a K-way fan-out gets K independent spill decisions at the SAME threshold                                                                                                                                                                                                                                                                                                                                                        | Yes — no chopt floor; both settings predate cerberus's 24.8 floor                                                                                                                                 | [docs: max_bytes_before_external_group_by](https://clickhouse.com/docs/reference/settings/session-settings/max-bytes#max_bytes_before_external_group_by)                                                                                                                                                                                                                                                                                                                                         |
 | `max_threads` (`4`)                                                                                                               | unconditional on a TraceQL `compare()` plan — `applyCompareMemoryBound` (`internal/engine/query_settings_rules.go`)                                                                                                                                                                                                                                              | Forwards as-is; each shard caps its OWN local read parallelism (and so its own concurrent read buffers, which is what the bound exists for), independently of the initiator's merge                                                                                                                                                                                                                                                                                                                                                                                                        | Yes — no chopt floor                                                                                                                                                                              | `compareMaxThreads` in `internal/engine/query_settings_rules.go` records the measurement; ClickHouse `src/Core/Settings.cpp`                                                                                                                                                                                                                                                                                                                                                                     |
 | `max_block_size` (`1`)                                                                                                            | unconditional on a sorted-slab `RangeWindow` — `applySortedSlabOverTimeMemoryBound`; the shape itself is opt-in (`sorted_slab_over_time`, `AutoSelect: false`)                                                                                                                                                                                                   | Forwards as-is; each shard batches its OWN local pipeline one row per block, which is where the per-anchor intermediates the bound frees are built                                                                                                                                                                                                                                                                                                                                                                                                                                         | Yes — no chopt floor for the setting; the shape needs an explicit `CERBERUS_CH_OPTIMIZATIONS` listing                                                                                             | `sortedSlabOverTimeMaxBlockSize` in `internal/engine/query_settings_rules.go` records the measurement; ClickHouse `src/Core/Settings.cpp`                                                                                                                                                                                                                                                                                                                                                        |
@@ -1294,7 +1294,7 @@ results under `Distributed`, at any version — every row above is
 **forwards-as-is**, and the taxonomy has no `disabled-until-fixed` row.
 Eight of the nine feature rows, the four unconditional plan-shape stamps the
 engine applies without a chopt feature, and the five unconditional
-distributed-query pins are reachable against the bundled 26.6 image, and the
+distributed-query pins are reachable against the bundled 26.8 image, and the
 `datashard` lane runs that same image (`test/e2e/k3s/cerberus-values-datashard.yaml`,
 `E2E_BUNDLED_CH_IMAGES` in `just/e2e.just`), so each of those rows — the
 `join_spill` row at its 26.4 floor included — is observed live under fan-out,
@@ -1452,7 +1452,7 @@ image, and the chart's bundled ClickHouse at `dataShards.count: 2` and
 unmodified `defaultParallel` of 3 — epic #3074's admission-control section
 names this exact regime), running the full Go e2e correctness suite plus a
 concurrent PromQL/LogQL/TraceQL load burst. The lane runs the chart's own
-bundled image (`clickhouse/clickhouse-server:26.6`,
+bundled image (`clickhouse/clickhouse-server:26.8.36.3`,
 `test/e2e/k3s/cerberus-values-datashard.yaml`), so the settings table above
 describes the server the lane fans out to; its highest floor, `join_spill`
 at 26.4, is a setting that does not exist server-side below that version and
@@ -1498,14 +1498,12 @@ counts toward the nightly's clean-pass decision — a supported lane regressing
 is exactly as loud. `workflow_dispatch` with `datashard_only=true` runs just
 this lane for a fast, focused iteration.
 
-**What the lane does and does not observe.** It runs
-`clickhouse/clickhouse-server:26.3` (`test/e2e/k3s/cerberus-values-datashard.yaml`,
-`E2E_DATASHARD_IMAGES` in `just/e2e.just`), not the bundled 26.6 the settings
-table above is verified against. Every row whose floor is at or below 26.3 is
-therefore observed live under fan-out; the `join_spill` row (floor 26.4) is
-not — on 26.3 its setting does not exist, so cerberus never stamps it there,
-and its `Distributed` behaviour rests on the source-level verification above
-alone until the lane's image moves.
+**What the lane observes.** It runs the chart's bundled image
+(`clickhouse/clickhouse-server:26.8.36.3`,
+`test/e2e/k3s/cerberus-values-datashard.yaml`, `E2E_BUNDLED_CH_IMAGES` in
+`just/e2e.just`), the server the settings table above is verified against, so
+every row whose floor that build clears — the `join_spill` row at 26.4
+included — is observed live under fan-out.
 
 ### Compat and migration-lane scope: single ClickHouse data shard
 
