@@ -31,10 +31,10 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, ServiceName) 
 [0] string = ""
 [1] string = "checkout"
 -- chplan --
-Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_scoped_val = "checkout") ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnArgMinIf(ServiceName, Timestamp, (ParentSpanId = "")) AS _cerb_trace_scoped_val] ; Scan(otel_traces)})
+Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_scoped_val = "checkout") ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnArgMin(ServiceName, Timestamp) AS _cerb_trace_scoped_val] ; Filter predicate=(ParentSpanId = "") ; Scan(otel_traces)})
   Scan(otel_traces)
 -- sql --
-SELECT * FROM `otel_traces` WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMinIf(`ServiceName`, `Timestamp`, (`ParentSpanId` = ?)) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces`) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` = ?)))
+SELECT * FROM `otel_traces` WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMin(`ServiceName`, `Timestamp`) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` = ?)))
 -- parity --
 oracle: tempo
 endpoint: /api/search
@@ -54,4 +54,4 @@ max_bytes_before_external_sort=536870912
 min_table_rows_to_use_projection_index=0
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMinIf(`ServiceName`, `Timestamp`, (`ParentSpanId` = ?)) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces`) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` = ?))))
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMin(`ServiceName`, `Timestamp`) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces` WHERE (`ParentSpanId` = ?)) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` = ?))))

@@ -134,7 +134,10 @@ structural_union_sibling.txtar
 trace_id_intrinsic.txtar
 trace_scoped_duration_filter.txtar
 trace_scoped_root_name_in.txtar
+trace_scoped_root_name_regex_none.txtar
 trace_scoped_root_name_root_only.txtar
+trace_scoped_root_name_rootless_empty_eq.txtar
+trace_scoped_root_name_rootless_neq.txtar
 trace_scoped_root_service_eq.txtar
 unary_minus_duration.txtar
 unary_not_compound_and_operand.txtar
