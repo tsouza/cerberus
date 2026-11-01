@@ -43,6 +43,7 @@ var compositionRuleFlags = []settingsRuleFlag{
 	{"JoinSpill", func(r *SettingsRules) { r.JoinSpill = true }},
 	{"DistinctSpill", func(r *SettingsRules) { r.DistinctSpill = true }},
 	{"ExpHistogramTwoLevel", func(r *SettingsRules) { r.ExpHistogramTwoLevel = true }},
+	{"HistogramAdaptiveAggregatorOff", func(r *SettingsRules) { r.HistogramAdaptiveAggregatorOff = true }},
 	{"TraceIDBitmapFilter", func(r *SettingsRules) { r.TraceIDBitmapFilter = true }},
 	{"LogCommentShape", func(r *SettingsRules) { r.LogCommentShape = true }},
 	{"ResultCache", func(r *SettingsRules) { r.ResultCache = true }},
@@ -116,10 +117,13 @@ func compositionContributors() []settingsContributor {
 		{"exp_histogram_two_level", func(ctx context.Context, plan chplan.Node, _ int64, rules SettingsRules) context.Context {
 			return applyExpHistogramTwoLevelBound(ctx, shapeOf(plan), rules.ExpHistogramTwoLevel)
 		}},
+		{"histogram_adaptive_aggregator_off", func(ctx context.Context, plan chplan.Node, _ int64, rules SettingsRules) context.Context {
+			return applyHistogramAdaptiveAggregatorOff(ctx, shapeOf(plan), rules.HistogramAdaptiveAggregatorOff)
+		}},
 	}
 	for _, f := range compositionRuleFlags {
 		switch f.name {
-		case "JoinSpill", "DistinctSpill", "ExpHistogramTwoLevel":
+		case "JoinSpill", "DistinctSpill", "ExpHistogramTwoLevel", "HistogramAdaptiveAggregatorOff":
 			// Applied by the dedicated bound above, not by SettingsRules.apply.
 			continue
 		case "AnalyzerMandatory":
@@ -159,6 +163,8 @@ func flagIsSet(rules SettingsRules, f settingsRuleFlag) bool {
 		return rules.DistinctSpill == probe.DistinctSpill
 	case "ExpHistogramTwoLevel":
 		return rules.ExpHistogramTwoLevel == probe.ExpHistogramTwoLevel
+	case "HistogramAdaptiveAggregatorOff":
+		return rules.HistogramAdaptiveAggregatorOff == probe.HistogramAdaptiveAggregatorOff
 	case "TraceIDBitmapFilter":
 		return rules.TraceIDBitmapFilter == probe.TraceIDBitmapFilter
 	case "LogCommentShape":
@@ -209,6 +215,7 @@ func compositionPlans() []struct {
 		{"sorted slab", &chplan.RangeWindow{Input: filterScan("otel_metrics_sum"), SortedSlabOverTime: true}},
 		{"vector join", &chplan.VectorJoin{Left: filterScan("otel_metrics_sum"), Right: filterScan("otel_metrics_gauge")}},
 		{"exp-histogram window", expHistogramWindowPlan()},
+		{"exp-histogram counter window", &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(true)}},
 		{"native histogram quantile over filter", &chplan.HistogramQuantileNative{
 			Input: &chplan.RangeBucketFanout{Input: filterScan("otel_metrics_exponential_histogram")},
 		}},

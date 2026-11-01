@@ -796,3 +796,172 @@ func TestSettingsRulesEnabledOpts_ReportsExpHistogramTwoLevel(t *testing.T) {
 		t.Errorf("enabledOpts() with the rule off = %v; want no exp_histogram_two_level", got)
 	}
 }
+
+// TestSettingsRulesEnabledOpts_ReportsHistogramAdaptiveAggregatorOff pins the
+// enabled-optimization id the rule reports while it is on, and only then.
+func TestSettingsRulesEnabledOpts_ReportsHistogramAdaptiveAggregatorOff(t *testing.T) {
+	const id = "histogram_adaptive_aggregator_off"
+	if got := (SettingsRules{HistogramAdaptiveAggregatorOff: true}).enabledOpts(); !slices.Contains(got, id) {
+		t.Errorf("enabledOpts() = %v; want it to contain %q", got, id)
+	}
+	if got := (SettingsRules{}).enabledOpts(); slices.Contains(got, id) {
+		t.Errorf("enabledOpts() with the rule off = %v; want no %s", got, id)
+	}
+}
+
+// expHistogramSampleScan is an exponential-histogram Scan declaring the
+// three roles a sample window reads: the timestamp, the positive bucket
+// arrays and the aggregation temporality.
+func expHistogramSampleScan() *chplan.Scan {
+	return &chplan.Scan{
+		Table: "otel_metrics_exponential_histogram",
+		Roles: []chplan.Column{
+			{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+			{Name: "PositiveBucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldPositiveBucketCounts},
+			{Name: "AggregationTemporality", Role: chplan.RoleTemporality},
+		},
+	}
+}
+
+// expHistogramWindowAggregate builds the per-series reduction internal/promql's
+// expHistogramValuedWindowStageBy builds for an instant rate(): groupArray of
+// the timestamps and the bucket arrays, plus any() of the temporality when
+// withTemporality. Without it, it is the bare-selector lookback.
+func expHistogramWindowAggregate(withTemporality bool) *chplan.Aggregate {
+	aggs := []chplan.AggFunc{
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: "PositiveBucketCounts"}}, Alias: "_hq_pos_buckets"},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: "TimeUnix"}}, Alias: "_hq_ts_list"},
+	}
+	if withTemporality {
+		aggs = append(aggs, chplan.AggFunc{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "AggregationTemporality"}}, Alias: "_hq_temporality"})
+	}
+	return &chplan.Aggregate{
+		Input:    expHistogramSampleScan(),
+		GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		AggFuncs: aggs,
+	}
+}
+
+// TestApplyHistogramAdaptiveAggregatorOff_SampleWindowStamps — the positive
+// arm, one case per sample-window shape: each gets
+// enable_adaptive_aggregator=0 (cerberus issue #3986), including when the
+// window sits beneath the quantile node.
+func TestApplyHistogramAdaptiveAggregatorOff_SampleWindowStamps(t *testing.T) {
+	// The literal 0 the #3986 measurement validated, not
+	// histogramAdaptiveAggregatorDisabled: 1 would leave the adaptive
+	// aggregator on and make the rule a no-op while an expectation computed
+	// from the const stayed green.
+	const wantDisabled = 0
+
+	window := expHistogramWindowAggregate(true)
+	cases := map[string]chplan.Node{
+		"exp rate window": expHistogramWindowAggregate(true),
+		"exp rate window under a plural quantile": &chplan.HistogramQuantilesNative{
+			Histogram: &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(true)},
+		},
+		"exp rate window as a range fan-out": &chplan.RangeBucketFanout{
+			Input:    window.Input,
+			GroupBy:  window.GroupBy,
+			AggFuncs: window.AggFuncs,
+		},
+		"cross-series merge above the window": &chplan.Aggregate{
+			Input:    expHistogramWindowAggregate(true),
+			AggFuncs: []chplan.AggFunc{{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: "_hq_pos_buckets"}}, Alias: "_hq_merged"}},
+		},
+		"two windows joined": &chplan.HistogramVectorJoin{
+			Left:  &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(true)},
+			Right: &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(true)},
+		},
+	}
+	for name, plan := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := applyHistogramAdaptiveAggregatorOff(context.Background(), shapeOf(plan), true)
+			if got := settingValue(ctx, settingEnableAdaptiveAggregator); got != wantDisabled {
+				t.Errorf("enable_adaptive_aggregator = %v; want %v", got, wantDisabled)
+			}
+		})
+	}
+}
+
+// TestApplyHistogramAdaptiveAggregatorOff_OtherShapesStampNothing — the
+// shapes the #3986 measurement left on the adaptive aggregator: the
+// bare-selector lookback (no temporality), a cross-series merge (no
+// timestamps), classic windows and merges, a fan-out that reduces nothing,
+// a scalar-state aggregation, and a counter window sharing the statement
+// with any of them (the setting covers every subquery).
+func TestApplyHistogramAdaptiveAggregatorOff_OtherShapesStampNothing(t *testing.T) {
+	temporality := chplan.AggFunc{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "AggregationTemporality"}}, Alias: "_hq_temporality"}
+	// Each negative Aggregate drops exactly one of the three conjuncts, so
+	// the case fails if the predicate stops requiring that one.
+	merge := &chplan.Aggregate{
+		Input: expHistogramSampleScan(),
+		AggFuncs: []chplan.AggFunc{
+			{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: "PositiveBucketCounts"}}, Alias: "_hq_pos_buckets"},
+			temporality,
+		},
+	}
+	classicWindow := &chplan.Aggregate{
+		Input: &chplan.Scan{
+			Table: "otel_metrics_histogram",
+			Roles: []chplan.Column{
+				{Name: "TimeUnix", Role: chplan.RoleTimestamp},
+				{Name: "BucketCounts", Role: chplan.RoleHistogramField, HistogramField: chplan.HistogramFieldBucketCounts},
+				{Name: "AggregationTemporality", Role: chplan.RoleTemporality},
+			},
+		},
+		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		AggFuncs: []chplan.AggFunc{
+			{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}}, Alias: "_hq_buckets"},
+			{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: "TimeUnix"}}, Alias: "_hq_ts_list"},
+			temporality,
+		},
+	}
+	beside := func(other chplan.Node) chplan.Node {
+		return &chplan.HistogramVectorJoin{
+			Left:  &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(true)},
+			Right: other,
+		}
+	}
+	classicGrid := &chplan.RangeBucketGridNative{Input: &chplan.Scan{Table: "otel_metrics_histogram"}}
+	cases := map[string]chplan.Node{
+		"exp bare-selector lookback":            &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(false)},
+		"exp cross-series merge":                merge,
+		"classic bucket-array window":           classicWindow,
+		"exp fan-out without window aggregates": expHistogramWindowPlan(),
+		"classic bucket grid":                   classicGrid,
+		"window beside a bare-selector lookback": beside(&chplan.HistogramQuantileNative{Input: &chplan.Aggregate{
+			Input:   expHistogramWindowAggregate(false),
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "route"}},
+		}}),
+		"window beside a classic merge": beside(&chplan.HistogramQuantile{Input: &chplan.Aggregate{
+			Input:   &chplan.Scan{Table: "otel_metrics_histogram"},
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "route"}},
+		}}),
+		"window beside a classic bucket grid": beside(classicGrid),
+		"window beside a scalar window":       beside(&chplan.RangeWindow{Input: &chplan.Scan{Table: "otel_metrics_sum"}}),
+		"classic quantile":                    &chplan.HistogramQuantile{Input: &chplan.Scan{Table: "otel_metrics_histogram"}},
+		"scalar aggregate": &chplan.Aggregate{
+			Input:   &chplan.Scan{Table: "otel_metrics_sum"},
+			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		},
+	}
+	for name, plan := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := applyHistogramAdaptiveAggregatorOff(context.Background(), shapeOf(plan), true)
+			if got := settingValue(ctx, settingEnableAdaptiveAggregator); got != nil {
+				t.Errorf("enable_adaptive_aggregator = %v; want absent", got)
+			}
+		})
+	}
+}
+
+// TestApplyHistogramAdaptiveAggregatorOff_DisabledStampsNothing — the
+// feature-flag arm: below 26.8, or with the feature listed out, a sample
+// window carries no stamp (an older server rejects the setting's name).
+func TestApplyHistogramAdaptiveAggregatorOff_DisabledStampsNothing(t *testing.T) {
+	ctx := applyHistogramAdaptiveAggregatorOff(context.Background(), shapeOf(expHistogramWindowAggregate(true)), false)
+
+	if got := settingValue(ctx, settingEnableAdaptiveAggregator); got != nil {
+		t.Errorf("feature disabled: enable_adaptive_aggregator = %v; want absent", got)
+	}
+}

@@ -221,7 +221,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			chopt.FeatureLagInFrameAdjacency:
 			// A RangeLowerers dispatch strategy (or a modifier on one) —
 			// composed by choptwire.RangeLowerers from the resolved set.
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel, chopt.FeatureMoveToPrewhere, chopt.FeatureCanonicalMapTypeCast:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel, chopt.FeatureHistogramAdaptiveAggregatorOff, chopt.FeatureMoveToPrewhere, chopt.FeatureCanonicalMapTypeCast:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
@@ -268,7 +268,11 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// ClickHouse partitions the aggregation it is handed, never which
 			// RangeLowerers strategy built that plan. The exp-histogram
 			// lowerings it fires on do not route through promql.RangeLowerers'
-			// native/fan-out dispatch at all. FeatureMoveToPrewhere decides only
+			// native/fan-out dispatch at all. FeatureHistogramAdaptiveAggregatorOff
+			// (cerberus issue #3986) is that shape again: it stamps
+			// enable_adaptive_aggregator=0 on a plan already built, read off a
+			// histogram sample-window plan-shape fact, and never picks a
+			// RangeLowerers strategy. FeatureMoveToPrewhere decides only
 			// where internal/chsql's emitter writes a filtered scan's conjuncts
 			// (SchemaStrategies.PrewhereByServer), after the plan the solver
 			// classifies is built, so it reaches neither promql.RangeLowerers

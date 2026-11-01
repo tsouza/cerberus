@@ -167,6 +167,10 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	container, client := startPerfNightlyCH(ctx, t)
 	conn := client.Conn()
 	version := serverReleaseLine(ctx, t, conn)
+	line, ok := chopt.ParseVersion(version)
+	if !ok {
+		t.Fatalf("release line %q does not parse as a ClickHouse version", version)
+	}
 	t.Logf("ClickHouse release line %s", version)
 
 	if err := ddl.Apply(ctx, conn, []ddl.Signal{ddl.Metrics}); err != nil {
@@ -360,6 +364,21 @@ func TestPerfNightlyRealCH(t *testing.T) {
 				}
 				if rows[0].MemoryUsage > maxBytes {
 					maxBytes = rows[0].MemoryUsage
+				}
+
+				// The settings prong, on every repeat like the status check:
+				// a stamp the peak depends on must reach every dispatch.
+				if wants := sentinel.WantedOn(line); len(wants) > 0 {
+					_, stamped, err := dispatchedStatement(ctx, pipelineConns[sentinel.Deployment], queryID)
+					if err != nil {
+						t.Fatalf("%s repeat %d: %v", sentinel.Name, i, err)
+					}
+					for _, want := range wants {
+						if got := stamped[want.Name]; got != want.Value {
+							t.Fatalf("%s repeat %d: the dispatched statement ran with %s=%v, want %s on ClickHouse %s — %s may have regressed",
+								sentinel.Name, i, want.Name, got, want.Value, version, sentinel.Family)
+						}
+					}
 				}
 
 				// The plan prong, on every repeat like the status check: a
