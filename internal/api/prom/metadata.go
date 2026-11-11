@@ -949,14 +949,27 @@ func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Tim
 // [start,end], or the default retention horizon when it supplied none (see
 // boundMetadataWindow) — so it partition-prunes exactly like every other
 // metadata arm. It returns nil when no distinct histogram table is configured.
+//
+// A finite window whose end is not in the past is enumerated with the
+// now-anchored grouped arm of [Handler.metricNamesSQL], exactly as a
+// windowless request is. Grafana forwards the dashboard range on every
+// metadata call and rounds its end up to the next snap boundary, so a
+// relative range such as `now-30d .. now` arrives with an end at or after the
+// server's wall clock and nowAnchored false. Because samples are never
+// future-dated, "a sample in [start, end]" and "max(TimeUnix) >= start" select
+// the same names whenever end >= now, so the answer is identical while the
+// aggregate-only predicate is served from the metric tables' max(TimeUnix)
+// projections instead of a DISTINCT over every histogram row in the window.
+// A window that ends in the past keeps the exact WHERE-bounded DISTINCT.
 func (h *Handler) histogramBaseNames(ctx context.Context, start, end time.Time, nowAnchored bool) ([]string, error) {
 	_, histogramTable := h.catalogNameTables()
 	if histogramTable == "" {
 		return nil, nil
 	}
+	grouped := nowAnchored || windowEndsAtOrAfterNow(end)
 	names, err := timeCH(ctx, func() ([]string, error) {
 		return h.queryStringsDegradingUnknownTable(ctx, []string{histogramTable}, func(tables []string) (string, []any, int) {
-			sql, physicalScans := h.metricNamesSQL(ctx, tables, start, end, nowAnchored)
+			sql, physicalScans := h.metricNamesSQL(ctx, tables, start, end, grouped)
 			return sql, nil, physicalScans
 		})
 	})
@@ -964,6 +977,14 @@ func (h *Handler) histogramBaseNames(ctx context.Context, start, end time.Time, 
 		return nil, classifyMetadataError(err)
 	}
 	return normalizeMetricValues(names), nil
+}
+
+// windowEndsAtOrAfterNow reports whether a finite metadata window's upper
+// bound is at or after the current wall clock, so no stored sample can lie
+// beyond it. A zero end is not finite and reports false; callers treat that
+// case through their own nowAnchored flag.
+func windowEndsAtOrAfterNow(end time.Time) bool {
+	return !end.IsZero() && !end.Before(time.Now())
 }
 
 // catalogNameTables partitions the configured metric tables into the
