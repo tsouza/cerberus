@@ -1,3 +1,4 @@
+# Reports written here by .github/scripts/run-loki-compatibility.mjs; the dir
+# itself is tracked through this file.
 *.json
 !.gitignore
-!.gitkeep
