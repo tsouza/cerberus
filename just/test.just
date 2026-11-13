@@ -1449,6 +1449,23 @@ update-metadata-query-size-baseline:
     UPDATE_METADATA_QUERY_SIZE_BASELINE=1 go test -count=1 -run TestMetadataQuerySizeRatchet ./test/perf/
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/metadata-query-size-baseline.json
 
+# The promql chDB roundtrip legs' per-test weight ledger
+# (test/chdb-roundtrip/promql-weights-baseline.json). chdb-roundtrip.mjs
+# balances the legs against it. This times test/spec/promql and
+# internal/promql serially under `go test -json` with the
+# `chdb.roundtrip-promql` lane's tag set — every partitioned test whole, then
+# the self-sharding tests once per leg — so it takes hours and needs
+# libchdb.so (`just chdb-install`). Regenerate when the suite's cost has
+# moved, when the legs notice unmeasured tests or stale entries, or when
+# chdb.yml's promql leg count changes; then re-derive CI_RUNNER_SLOWDOWN in
+# chdb-roundtrip.mjs if the host differs from the one that measured it.
+
+# Regenerate the promql chDB roundtrip weight ledger. Needs libchdb.so; takes hours.
+update-chdb-roundtrip-weights:
+    @test -f "{{CHDB_INSTALL_PATH}}" || { echo "error: {{CHDB_INSTALL_PATH}} not found — run 'just chdb-install' first; the weights are measured by an in-process chDB run" >&2; exit 1; }
+    node .github/scripts/chdb-roundtrip-weights.mjs
+    @node .github/scripts/lib/regen-diff.mjs --label ledger test/chdb-roundtrip/promql-weights-baseline.json
+
 # Regenerate the publishable benchmark document (docs/benchmarks.md) from
 # LIVE measurements: optimizer before/after wins, per-construct scaling
 # curves, per-stage Go micro-benchmarks, and end-to-end query latency on a
