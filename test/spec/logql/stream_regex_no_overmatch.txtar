@@ -9,10 +9,11 @@
 -- query.logql --
 {env=~"prod|stg"}
 -- sql --
-SELECT * FROM `otel_logs` WHERE match(`ResourceAttributes`[?], ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] IN (?, ?))
 -- args --
 [0] string = "env"
-[1] string = "^(?:prod|stg)$"
+[1] string = "prod"
+[2] string = "stg"
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
@@ -32,7 +33,8 @@ reason: log-query-answer
 detail: log query `{env=~"prod|stg"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "env"
-[1] string = "^(?:prod|stg)$"
+[1] string = "prod"
+[2] string = "stg"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
@@ -41,4 +43,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE match(`ResourceAttributes`[?], ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] IN (?, ?))

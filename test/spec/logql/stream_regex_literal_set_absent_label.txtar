@@ -1,0 +1,63 @@
+# A stream-selector matcher whose regex is a set of literals renders as IN
+# (NOT IN when negated) over the set. An absent label reads as '': the
+# empty alternative of `app=~"web|"` selects the stream with no app label,
+# and `team!~"core|edge"` keeps it, as Loki does.
+
+-- query.logql --
+{env=~"prod|stg", app=~"web|", team!~"core|edge"}
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs VALUES
+    ('prod-web', map('env', 'prod', 'app', 'web')),
+    ('stg-noapp', map('env', 'stg')),
+    ('prod-api', map('env', 'prod', 'app', 'api')),
+    ('dev-web', map('env', 'dev', 'app', 'web')),
+    ('production-web', map('env', 'production', 'app', 'web')),
+    ('prod-web-core', map('env', 'prod', 'app', 'web', 'team', 'core')),
+    ('prod-web-data', map('env', 'prod', 'app', 'web', 'team', 'data'));
+-- expected_rows --
+[
+  ["prod-web", {"app": "web", "env": "prod"}],
+  ["stg-noapp", {"env": "stg"}],
+  ["prod-web-data", {"app": "web", "env": "prod", "team": "data"}]
+]
+-- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] IN (?, ?)) AND (`ResourceAttributes`[?] IN (?, ?)) AND (`ResourceAttributes`[?] NOT IN (?, ?))
+-- args --
+[0] string = "env"
+[1] string = "prod"
+[2] string = "stg"
+[3] string = "app"
+[4] string = "web"
+[5] string = ""
+[6] string = "team"
+[7] string = "core"
+[8] string = "edge"
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{env=~"prod|stg", app=~"web|", team!~"core|edge"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+-- args_optimized --
+[0] string = "env"
+[1] string = "prod"
+[2] string = "stg"
+[3] string = "app"
+[4] string = "web"
+[5] string = ""
+[6] string = "team"
+[7] string = "core"
+[8] string = "edge"
+-- chplan --
+Filter predicate=(((ResourceAttributes["env"] =~ "prod|stg") AND (ResourceAttributes["app"] =~ "web|")) AND (ResourceAttributes["team"] !~ "core|edge"))
+  Scan(otel_logs)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] IN (?, ?)) AND (`ResourceAttributes`[?] IN (?, ?)) AND (`ResourceAttributes`[?] NOT IN (?, ?))
