@@ -49,6 +49,7 @@ var compositionRuleFlags = []settingsRuleFlag{
 	{"ResultCache", func(r *SettingsRules) { r.ResultCache = true }},
 	{"LazyMaterialization", func(r *SettingsRules) { r.LazyMaterialization = true }},
 	{"AnalyzerMandatory", func(r *SettingsRules) { r.AnalyzerMandatory = true }},
+	{"NativeHistogramAnalyzerFaster", func(r *SettingsRules) { r.NativeHistogramAnalyzerFaster = true }},
 	{"QueryWorkload", func(r *SettingsRules) { r.QueryWorkload = "cerberus_queries" }},
 	{"ConversionConditionCacheDefect", func(r *SettingsRules) { r.ConversionConditionCacheDefect = true }},
 	{"NegatedConjunctionProjectionDefect", func(r *SettingsRules) { r.NegatedConjunctionProjectionDefect = true }},
@@ -56,12 +57,14 @@ var compositionRuleFlags = []settingsRuleFlag{
 }
 
 // carryFleetFacts copies onto only the SettingsRules fields that are fleet
-// facts rather than rules of their own: AnalyzerMandatory decides whether the
-// analyzer co-stamps fire on a hazard plan, and the shape defects decide
+// facts rather than rules of their own: AnalyzerMandatory and
+// NativeHistogramAnalyzerFaster decide whether the analyzer co-stamps fire on
+// a hazard plan, and the shape defects decide
 // whether the condition-cache rule withholds its 1 on a conversion plan. Each
 // isolated rule carries them, exactly as the composed rules do.
 func carryFleetFacts(only *SettingsRules, rules SettingsRules) {
 	only.AnalyzerMandatory = rules.AnalyzerMandatory
+	only.NativeHistogramAnalyzerFaster = rules.NativeHistogramAnalyzerFaster
 	only.ConversionConditionCacheDefect = rules.ConversionConditionCacheDefect
 	only.NegatedConjunctionProjectionDefect = rules.NegatedConjunctionProjectionDefect
 	only.TraceIDProjectionReadDefect = rules.TraceIDProjectionReadDefect
@@ -126,7 +129,7 @@ func compositionContributors() []settingsContributor {
 		case "JoinSpill", "DistinctSpill", "ExpHistogramTwoLevel", "HistogramAdaptiveAggregatorOff":
 			// Applied by the dedicated bound above, not by SettingsRules.apply.
 			continue
-		case "AnalyzerMandatory":
+		case "AnalyzerMandatory", "NativeHistogramAnalyzerFaster":
 			// Withholds the analyzer fix above rather than applying a rule
 			// of its own; each isolated rule below carries its value.
 			continue
@@ -175,6 +178,8 @@ func flagIsSet(rules SettingsRules, f settingsRuleFlag) bool {
 		return rules.LazyMaterialization == probe.LazyMaterialization
 	case "AnalyzerMandatory":
 		return rules.AnalyzerMandatory == probe.AnalyzerMandatory
+	case "NativeHistogramAnalyzerFaster":
+		return rules.NativeHistogramAnalyzerFaster == probe.NativeHistogramAnalyzerFaster
 	case "QueryWorkload":
 		return rules.QueryWorkload == probe.QueryWorkload
 	case "ConversionConditionCacheDefect":
@@ -429,11 +434,12 @@ func TestSharedQuerySettings_EveryFlagIsEnumerated(t *testing.T) {
 			t.Errorf("enabledOpts reports %q but no single compositionRuleFlags row produces it", opt)
 		}
 	}
-	// LogCommentShape has no enabledOpts id, and AnalyzerMandatory withholds
-	// one (native_histogram_legacy_analyzer, reported only while it is off);
-	// both are covered by their rows above.
-	if len(compositionRuleFlags) != len(wantOpts)+2 {
-		t.Errorf("compositionRuleFlags has %d rows, enabledOpts reports %d ids (+2 for LogCommentShape and AnalyzerMandatory): a SettingsRules flag is missing a row",
+	// LogCommentShape has no enabledOpts id, and AnalyzerMandatory and
+	// NativeHistogramAnalyzerFaster each withhold one
+	// (native_histogram_legacy_analyzer, reported only while both are off);
+	// all three are covered by their rows above.
+	if len(compositionRuleFlags) != len(wantOpts)+3 {
+		t.Errorf("compositionRuleFlags has %d rows, enabledOpts reports %d ids (+3 for LogCommentShape, AnalyzerMandatory and NativeHistogramAnalyzerFaster): a SettingsRules flag is missing a row",
 			len(compositionRuleFlags), len(wantOpts))
 	}
 	if !slices.Contains(compositionBaseRules().enabledOpts(), "native_histogram_legacy_analyzer") {

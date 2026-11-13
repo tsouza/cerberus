@@ -108,12 +108,15 @@ type Config struct {
 // raw env.
 //
 // Beside the feature ids it carries build facts no selection decides: whether
-// a query may no longer disable the analyzer (AnalyzerMandatory), and which
-// shape defects the build carries (HasShapeDefect).
+// a query may no longer disable the analyzer (AnalyzerMandatory), whether
+// native-histogram plans run faster under the analyzer
+// (NativeHistogramAnalyzerFaster), and which shape defects the build carries
+// (HasShapeDefect).
 type EnabledSet struct {
-	ids               map[string]struct{}
-	analyzerMandatory bool
-	shapeDefects      map[string]struct{}
+	ids                           map[string]struct{}
+	analyzerMandatory             bool
+	nativeHistogramAnalyzerFaster bool
+	shapeDefects                  map[string]struct{}
 }
 
 // Has reports whether feature id is in the resolved set.
@@ -130,6 +133,17 @@ func (s EnabledSet) Has(id string) bool {
 // zero value is false, so a set that was never resolved keeps the stamp.
 func (s EnabledSet) AnalyzerMandatory() bool {
 	return s.analyzerMandatory
+}
+
+// NativeHistogramAnalyzerFaster reports whether the set was resolved against
+// a build on which the package-level NativeHistogramAnalyzerFaster holds. The
+// set is resolved against the oldest reachable node, so it holds only when
+// every node runs such a build: a fleet that still has an older node keeps the
+// enable_analyzer=0 stamp, which pays off there and is only slower, never
+// refused, on the newer nodes. Every selection resolves it the same way, and
+// the zero value is false, so a set that was never resolved keeps the stamp.
+func (s EnabledSet) NativeHistogramAnalyzerFaster() bool {
+	return s.nativeHistogramAnalyzerFaster
 }
 
 // WithAnalyzerMandatory returns s with AnalyzerMandatory replaced by
@@ -173,12 +187,15 @@ func (s EnabledSet) WithShapeDefects(ids []string) EnabledSet {
 }
 
 // Equal reports whether s and other enable exactly the same feature ids and
-// agree on AnalyzerMandatory and the shape defects. A periodic re-resolution
+// agree on AnalyzerMandatory, NativeHistogramAnalyzerFaster and the shape
+// defects. A periodic re-resolution
 // compares its result against the set already in force and swaps (and logs)
 // only on a genuine transition, so a server whose capabilities have not moved
 // produces no churn and no log noise.
 func (s EnabledSet) Equal(other EnabledSet) bool {
-	return s.analyzerMandatory == other.analyzerMandatory && sameIDs(s.ids, other.ids) && sameIDs(s.shapeDefects, other.shapeDefects)
+	return s.analyzerMandatory == other.analyzerMandatory &&
+		s.nativeHistogramAnalyzerFaster == other.nativeHistogramAnalyzerFaster &&
+		sameIDs(s.ids, other.ids) && sameIDs(s.shapeDefects, other.shapeDefects)
 }
 
 // sameIDs reports whether a and b hold exactly the same keys.
@@ -303,7 +320,12 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 	}
 	warnings = append(warnings, legacyWarns...)
 
-	return EnabledSet{ids: enabled, analyzerMandatory: AnalyzerMandatory(server), shapeDefects: shapeDefectsOf(server)}, warnings, nil
+	return EnabledSet{
+		ids:                           enabled,
+		analyzerMandatory:             AnalyzerMandatory(server),
+		nativeHistogramAnalyzerFaster: NativeHistogramAnalyzerFaster(server),
+		shapeDefects:                  shapeDefectsOf(server),
+	}, warnings, nil
 }
 
 // resolveTokens walks the parsed selection tokens. An "auto" token unions in
