@@ -40,8 +40,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/') }}
 
 env:
-  # A git transfer that stalls is aborted, so actions/checkout retries it
-  # (test/regression/git_fetch_stall_test.go).
+  # A git transfer that stalls is aborted, so actions/checkout retries it. A
+  # stall before the transfer starts (TCP connect, TLS handshake) is bounded
+  # by each Ubicloud checkout's step cap instead, and the checkout runs once
+  # more (test/regression/git_fetch_stall_test.go).
   GIT_HTTP_LOW_SPEED_LIMIT: "1000"
   GIT_HTTP_LOW_SPEED_TIME: "30"
 
@@ -66,19 +68,31 @@ jobs:
   dependabot-title:
     name: dependabot title
     if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
-    # One REST call and a Node script: the smallest Ubicloud runner, and 5m
-    # is generous for a job that settles in seconds.
+    # One REST call and a Node script: the smallest Ubicloud runner. It settles
+    # in seconds; 12m holds two capped checkout attempts
+    # (test/regression/git_fetch_stall_test.go).
     runs-on: ubicloud-standard-2
-    timeout-minutes: 5
+    timeout-minutes: 12
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v7
+      - id: checkout
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           sparse-checkout: .github/scripts
           persist-credentials: false
+        timeout-minutes: 3
+        continue-on-error: true
+      - name: Retry the checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+        timeout-minutes: 3
 
       - name: Shorten a title whose landing subject is over the limit
         env:
@@ -98,11 +112,19 @@ jobs:
     needs: dependabot-title
     if: ${{ !cancelled() }}
     # Node-only gate scripts and their self-tests: the smallest Ubicloud
-    # runner. Settles in about a minute and a half; 5m bounds a hang.
+    # runner. Settles in about a minute and a half; 12m holds two capped
+    # checkout attempts (test/regression/git_fetch_stall_test.go) and bounds a hang.
     runs-on: ubicloud-standard-2
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v7
+      - id: checkout
+        uses: actions/checkout@v7
+        timeout-minutes: 3
+        continue-on-error: true
+      - name: Retry the checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
+        timeout-minutes: 3
 
       - name: Pin the gate logic
         run: node .github/scripts/pr-body-check.mjs --self-test
