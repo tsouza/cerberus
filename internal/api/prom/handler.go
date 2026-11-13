@@ -1643,12 +1643,12 @@ func classifySentinelError(err error) *apiError {
 	if httperr.IsDistributedShardErr(err) {
 		return distributedShardAPIError(err)
 	}
-	// A ClickHouse node too old for a defect-gate setting cerberus sent
-	// (chclient.GateSettingUnsupportedError): a server-side failure like any
-	// other ClickHouse rejection, 502 errorType=internal, but with the
-	// setting, the defects and the upgrade named instead of the redacted
-	// exception.
-	if errors.Is(err, chclient.ErrGateSettingUnsupported) {
+	// A ClickHouse node too old for a setting or function cerberus sent
+	// (chclient.GateSettingUnsupportedError, chclient.UnknownNameError): a
+	// server-side failure like any other ClickHouse rejection, 502
+	// errorType=internal, but with the name and what to do about it stated
+	// instead of the redacted exception.
+	if errors.Is(err, chclient.ErrNodeTooOld) {
 		return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 	}
 	// Caller-initiated cancellation (open path): the client hung up before

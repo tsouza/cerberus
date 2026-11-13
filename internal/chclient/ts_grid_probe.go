@@ -60,7 +60,7 @@ const tsGridCapabilityProbeSQL = "SELECT '1'"
 // means per selection mode (auto silently falls back, an explicit list errors
 // under enforcing).
 func (c *Client) ProbeTSGridCapability(ctx context.Context) chopt.Capability {
-	ctx = WithTSGridSetting(ctx)
+	ctx = WithTSGridSetting(withCapabilityCanary(ctx))
 	_, err := c.QueryStrings(ctx, tsGridCapabilityProbeSQL)
 	return classifyTSGridCapability(err)
 }

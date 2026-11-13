@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -71,7 +72,7 @@ const settingLogComment = "log_comment"
 //
 // perf-sentinel: neutral — deferring column reads until after ORDER BY + LIMIT
 // strictly REDUCES bytes read and held; it cannot raise peak memory.
-const settingQueryPlanOptimizeLazyMaterialization = "query_plan_optimize_lazy_materialization"
+const settingQueryPlanOptimizeLazyMaterialization = chopt.SettingQueryPlanOptimizeLazyMaterialization
 
 // settingQueryPlanMaxLimitForLazyMaterialization caps the LIMIT a query may
 // carry for settingQueryPlanOptimizeLazyMaterialization to still engage —
@@ -82,7 +83,7 @@ const settingQueryPlanOptimizeLazyMaterialization = "query_plan_optimize_lazy_ma
 //
 // perf-sentinel: neutral — an eligibility threshold for the lazy-materialisation
 // plan above. It gates which plan is picked, never a memory budget.
-const settingQueryPlanMaxLimitForLazyMaterialization = "query_plan_max_limit_for_lazy_materialization"
+const settingQueryPlanMaxLimitForLazyMaterialization = chopt.SettingQueryPlanMaxLimitForLazyMaterialization
 
 // settingMinTableRowsToUseProjectionIndex is the ClickHouse setting (>= 25.11,
 // upstream PR #81021) that gates whether the optimizer will even CONSIDER a
@@ -95,7 +96,7 @@ const settingQueryPlanMaxLimitForLazyMaterialization = "query_plan_max_limit_for
 // perf-sentinel: neutral — an index-SELECTION threshold. It only widens which
 // physical plan the optimizer may pick, and the plan it unlocks reads strictly
 // fewer rows (this is the classification issue #2832 was minted to record).
-const settingMinTableRowsToUseProjectionIndex = "min_table_rows_to_use_projection_index"
+const settingMinTableRowsToUseProjectionIndex = chopt.SettingMinTableRowsToUseProjectionIndex
 
 // settingOptimizeUseProjectionFiltering is the ClickHouse setting (>= 25.6)
 // that lets the planner filter a read through a projection's index. The

@@ -162,13 +162,20 @@ type columnarDecoder struct {
 // there is no in-flight query to collide with and the re-key is merely
 // redundant, never wrong: the row path is then this query's one and only
 // physical execution, under an id nothing else has used.
+//
+// A columnar attempt a node answered only after dropping droppable settings
+// it did not know hands the fallback the settings it took, so the row path
+// does not send them to be rejected and retried a second time.
 func (d columnarDecoder) decode(c *Client, ctx context.Context, sql string, args ...any) (Cursor, error) {
-	cur, ok, err := d.queryCursorColumnar(c, ctx, sql, args...)
+	cur, ok, narrowed, err := d.queryCursorColumnar(c, ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
 	if ok {
 		return cur, nil
+	}
+	if narrowed != nil {
+		ctx = context.WithValue(ctx, perQuerySettingsKey, narrowed)
 	}
 	_, ctx = freshQueryID(ctx)
 	return d.fallback.decode(c, ctx, sql, args...)

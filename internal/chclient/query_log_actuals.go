@@ -268,7 +268,7 @@ func isQueryLogUnionRefusal(err error) bool {
 // Available, a typed server rejection is Forbidden, and a transport failure
 // is Unreachable (classifyCapabilityFromProbeErr). Never returns an error.
 func (c *Client) ProbeQueryLogUnionCapability(ctx context.Context) chopt.Capability {
-	_, err := c.QueryLogActuals(ctx, QueryLogActualsRequest{
+	_, err := c.QueryLogActuals(withCapabilityCanary(ctx), QueryLogActualsRequest{
 		Union: true,
 		After: QueryLogCursor{EventTime: time.Now()},
 	})

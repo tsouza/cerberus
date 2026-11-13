@@ -1139,6 +1139,68 @@ leads the key) and peak memory overlaps (131.8–138.9 MB against
 `TestDeployedMetricsSortingKeyDecidesAggregationInOrder` rather than by a
 sentinel.
 
+## Why a node older than the set in force is answered the way it is
+
+A ClickHouse server never ignores a setting or function it does not know: it
+rejects the whole query. The set in force is resolved against the oldest node a
+probe reached, so the only way a node rejects a name cerberus sends is a fleet
+that moved below that build since — the documented 26.8 → 26.6 rolling
+rollback, or an older replica joining. Before the early re-probe, that window
+lasted until the next 5-minute probe, and on 26.8 it covered every
+exponential-histogram `rate()` / `increase()` / `irate()` window query, which
+carries `enable_adaptive_aggregator=0`.
+
+**Why only some settings are retried.** A retry is safe only when the query
+returns the same rows without the name. The droppable settings select an
+execution strategy or a memory bound: an aggregator, a spill threshold, an
+index-selection threshold, a read order. A defect gate is stamped *against*
+wrong rows, so dropping it on a node that has the defect would return them; it
+keeps its own typed error. A function is part of the statement, and answering
+without it would need the head to lower the query again against a different
+set, which belongs to the re-probe, not the client. The 26.6 ↔ 26.8 path emits
+no 26.8-only function, so the supported rollback is fully served by the retry.
+
+**Why the retry drops by release, not everything.** Dropping every droppable
+setting the query carries on any droppable rejection would over-drop: a 26.6
+node still knows `max_bytes_before_external_join` (26.4), and losing that
+threshold turns a join that would have spilled into `MEMORY_LIMIT_EXCEEDED`. A
+node that does not know a setting is older than its first release, so it knows
+nothing released at or after it, and nothing more can be inferred. Dropping
+exactly that range, and repeating on the next rejection, converges on the
+droppable settings the node knows. The number of attempts is bounded by the
+number of distinct first releases in the table, because each attempt removes
+the rejected setting and a rejection of a setting the attempt no longer carries
+ends the loop.
+
+**Why `use_query_condition_cache` is droppable only at `1`.** The setting is
+both a gate and a feature stamp. At `1`, `condition_cache` switches the cache on,
+and a node older than 25.3 has no cache, so the query returns the same rows
+without it. At `0`, it is the gate against the cache's wrong-result builds, and
+the client-wide override that stamps it is judged by the value actually sent.
+
+**Why every rejection is counted, a rejected retry included.** The counter is
+the operator's evidence of how many queries a mixed fleet touched. A retry that
+a node rejects again is a second rejection, and leaving it out would
+under-count exactly the fleets the counter exists for.
+
+**Why the capability canaries are neither retried nor reported.** The workload,
+result-cache, ts-grid and query-log-union probes send a setting or read a table
+in order to learn whether the server accepts it. Their rejection is the answer
+they ask for, and reporting it would make the re-probe keep requesting itself.
+
+**Why the columnar fallback inherits the narrowed settings.** The columnar
+matrix decode falls back to the row path after a shape mismatch, and that
+fallback reads the caller's context. Without the narrowed settings it would
+send the names the node already rejected, be rejected again, and report and
+retry a second time for one query.
+
+**Why the early re-probe is spaced 10 seconds apart.** A rejection can recur on
+every query while the probe cannot see the node behind it, such as a replica
+reached only through a load balancer. A probe per rejection would then run
+back to back. Ten seconds keeps that worst case at the floor fallback's own
+retry rate, and puts the first early probe within one dashboard refresh of the
+rollback.
+
 ## Audited, not adopted
 
 Not every settings family the audit epic (#2778) reviews earns a registry
