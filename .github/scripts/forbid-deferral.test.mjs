@@ -599,7 +599,7 @@ test('an unchanged line inside the window still supplies the citation', () => {
   assert.deepEqual(found[0].refs, [1535]);
 });
 
-test('the diff parser reports the file set and skips deletions', () => {
+test('the diff parser reports a deleted file but reads no line from it', () => {
   const diff = [
     'diff --git a/gone.go b/gone.go',
     '--- a/gone.go',
@@ -614,7 +614,7 @@ test('the diff parser reports the file set and skips deletions', () => {
     '+// added',
   ].join('\n');
   const { files, lines } = parseDiff(diff);
-  assert.deepEqual(files, ['kept.go']);
+  assert.deepEqual(files, ['gone.go', 'kept.go']);
   assert.deepEqual(
     lines.map((l) => [l.file, l.line, l.added]),
     [
@@ -622,6 +622,34 @@ test('the diff parser reports the file set and skips deletions', () => {
       ['kept.go', 2, true],
     ],
   );
+});
+
+test('a change that only deletes, or carries no hunk, still has a file set', () => {
+  // A deletion-only change is a real change: an empty file set means the
+  // parser lost track of git's output, and the gate fails closed on that.
+  const diff = [
+    'diff --git a/docs/.gitkeep b/docs/.gitkeep',
+    'deleted file mode 100644',
+    'index e69de29bb..000000000',
+    'diff --git a/dir with space/run.sh b/dir with space/run.sh',
+    'old mode 100644',
+    'new mode 100755',
+    'diff --git a/old.go b/new.go',
+    'similarity index 100%',
+    'rename from old.go',
+    'rename to new.go',
+    'diff --git a/notes.md b/notes.md',
+    'deleted file mode 100644',
+    'index 144425f1b..000000000',
+    '--- a/notes.md',
+    '+++ /dev/null',
+    '@@ -1,2 +0,0 @@',
+    '-# first',
+    '-# second',
+  ].join('\n');
+  const { files, lines } = parseDiff(diff);
+  assert.deepEqual(files, ['docs/.gitkeep', 'dir with space/run.sh', 'new.go', 'notes.md']);
+  assert.deepEqual(lines, []);
 });
 
 test('a line that merely starts with a plus inside a hunk is still content', () => {

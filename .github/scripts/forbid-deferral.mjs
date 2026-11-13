@@ -660,10 +660,26 @@ export function scanProse({ text, surface, locate, repoSlug }) {
 
 // --- diff surface -----------------------------------------------------------
 
-// parseDiff — a unified diff into { files, lines }, where `lines` carries every
-// line that exists in the NEW file (added and context) with its new-file number
-// and whether the change added it. Removed lines have no new-file position and
-// are dropped: this gate reads what the change INTRODUCES.
+// parseDiff — a unified diff into { files, lines }. `files` is every path the
+// change touches, including a deleted file and one whose diff carries no hunk
+// (an empty file added or deleted, a mode change, a pure rename): a change that
+// only deletes is a real change, not an empty one. `lines` carries every line
+// that exists in the NEW file (added and context) with its new-file number and
+// whether the change added it. Removed lines have no new-file position and are
+// dropped: this gate reads what the change INTRODUCES.
+// unchangedHeaderPath — the path of a `diff --git a/<p> b/<p>` header whose two
+// sides name the same file, or null for a rename or copy (whose paths the
+// `---` / `+++` / `rename to` lines carry). Splitting on the midpoint is
+// exact when both sides are equal, whatever spaces the path holds.
+function unchangedHeaderPath(rest) {
+  if (rest.length % 2 === 0) return null;
+  const half = (rest.length - 1) / 2;
+  const a = rest.slice(0, half);
+  const b = rest.slice(half + 1);
+  if (!a.startsWith('a/') || !b.startsWith('b/') || a.slice(2) !== b.slice(2)) return null;
+  return a.slice(2);
+}
+
 export function parseDiff(diffText) {
   const files = new Set();
   const lines = [];
@@ -675,12 +691,23 @@ export function parseDiff(diffText) {
     if (raw.startsWith('diff --git ')) {
       inHunk = false;
       file = null;
+      const path = unchangedHeaderPath(raw.slice('diff --git '.length));
+      if (path !== null) files.add(path);
+      continue;
+    }
+    if (!inHunk && raw.startsWith('--- ')) {
+      const path = raw.slice(4).trim();
+      if (path !== '/dev/null') files.add(path.replace(/^a\//, ''));
       continue;
     }
     if (!inHunk && raw.startsWith('+++ ')) {
       const path = raw.slice(4).trim();
       file = path === '/dev/null' ? null : path.replace(/^b\//, '');
       if (file) files.add(file);
+      continue;
+    }
+    if (!inHunk && raw.startsWith('rename to ')) {
+      files.add(raw.slice('rename to '.length));
       continue;
     }
     if (raw.startsWith('@@')) {
