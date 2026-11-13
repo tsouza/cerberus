@@ -19,6 +19,11 @@ INSERT INTO otel_logs VALUES
     ('prod-web-core', map('env', 'prod', 'app', 'web', 'team', 'core')),
     ('prod-web-data', map('env', 'prod', 'app', 'web', 'team', 'data'));
 -- expected_rows --
+[
+  ["prod-web", {"app": "web", "env": "prod"}],
+  ["stg-noapp", {"env": "stg"}],
+  ["prod-web-data", {"app": "web", "env": "prod", "team": "data"}]
+]
 -- sql --
 SELECT * FROM `otel_logs` WHERE match(`ResourceAttributes`[?], ?) AND match(`ResourceAttributes`[?], ?) AND NOT match(`ResourceAttributes`[?], ?)
 -- args --
