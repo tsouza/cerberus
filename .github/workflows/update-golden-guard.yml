@@ -86,7 +86,10 @@ concurrency:
   # The queue's own batching must never be a source of spurious dequeues, so
   # cancellation is switched off there and only there — the pull_request and
   # workflow_run paths keep the newest-wins behaviour described above.
-  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+  # Never on a Mergify merge-queue draft pull request: it arrives as
+  # `pull_request`, and a cancelled required check dequeues the entry
+  # (test/regression/merge_queue_test.go).
+  cancel-in-progress: ${{ github.event_name != 'merge_group' && !startsWith(github.head_ref, 'mergify/merge-queue/') }}
 
 jobs:
   update-golden-guard:

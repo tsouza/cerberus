@@ -37,6 +37,11 @@ import { ghJSON, NOT_FOUND_THROW } from './gh-api.mjs';
 export const MERGE_QUEUE_AUTHOR = 'mergify[bot]';
 export const MERGE_QUEUE_BRANCH_PREFIX = 'mergify/merge-queue/';
 
+// MERGE_QUEUE_DRAFT_GUARD — the workflow-expression conjunct that is false on
+// a merge-queue draft's runs. A `cancel-in-progress` that a draft's events can
+// reach carries it, because a cancelled required check dequeues the entry.
+export const MERGE_QUEUE_DRAFT_GUARD = "!startsWith(github.head_ref, '" + MERGE_QUEUE_BRANCH_PREFIX + "')";
+
 export function isMergeQueueDraft(pr, repository) {
   return (
     pr?.user?.login === MERGE_QUEUE_AUTHOR &&

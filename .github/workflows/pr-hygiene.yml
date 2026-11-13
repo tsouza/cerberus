@@ -34,7 +34,10 @@ concurrency:
   # Never true on `merge_group`: GitHub reads a cancelled check-run as a failed
   # one, so a cancelled queue run would dequeue the pull request it was
   # validating.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Never on a Mergify merge-queue draft pull request: it arrives as
+  # `pull_request`, and a cancelled required check dequeues the entry
+  # (test/regression/merge_queue_test.go).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/') }}
 
 env:
   # A git transfer that stalls is aborted, so actions/checkout retries it

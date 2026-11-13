@@ -18,7 +18,10 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Never on a Mergify merge-queue draft pull request: it arrives as
+  # `pull_request`, and a cancelled required check dequeues the entry
+  # (test/regression/merge_queue_test.go).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/') }}
 
 env:
   # A git transfer that stalls is aborted, so actions/checkout retries it

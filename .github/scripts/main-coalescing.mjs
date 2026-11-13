@@ -21,6 +21,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { error, log, notice } from './lib/gh.mjs';
+import { MERGE_QUEUE_DRAFT_GUARD } from './lib/merge-queue-draft.mjs';
 
 const SCRIPT = fileURLToPath(import.meta.url);
 
@@ -224,7 +225,7 @@ export const NEVER_COALESCED_LANES = Object.freeze(new Set(['perf-nightly.perf-n
 export const QUICKSTART_GROUP_EXPRESSION =
   "quickstart-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}";
 export const QUICKSTART_CANCEL_EXPRESSION =
-  "${{ github.event_name == 'pull_request' }}";
+  "${{ github.event_name == 'pull_request' && " + MERGE_QUEUE_DRAFT_GUARD + ' }}';
 
 export function coalescingDecision({
   eventName,

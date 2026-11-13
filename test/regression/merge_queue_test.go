@@ -139,8 +139,10 @@ var queueUnsafeEventInequality = regexp.MustCompile(
 const replaceableMainModeCancelInProgress = "${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}"
 
 // cancelInProgressIsQueueSafe reports whether a `cancel-in-progress:` value can
-// never be true on a `merge_group` run.
-func cancelInProgressIsQueueSafe(value string) bool {
+// never be true on a `merge_group` run. A top-level draft-guard conjunct only
+// narrows when the expression is true, so it is set aside and the rest judged.
+func cancelInProgressIsQueueSafe(value, draftGuard string) bool {
+	value = withoutConjunct(value, draftGuard)
 	if value == "false" {
 		return true
 	}
@@ -154,6 +156,27 @@ func cancelInProgressIsQueueSafe(value string) bool {
 		return m[1] == mergeGroupTrigger
 	}
 	return false
+}
+
+// withoutConjunct returns an expression with every top-level `&&` conjunct
+// equal to drop removed, or the value unchanged when it has none. Removing the
+// only conjunct leaves an expression that is always true.
+func withoutConjunct(value, drop string) string {
+	conjuncts := workflowIfConjuncts(value)
+	kept := make([]string, 0, len(conjuncts))
+	for _, c := range conjuncts {
+		if c != drop {
+			kept = append(kept, c)
+		}
+	}
+	switch {
+	case len(kept) == len(conjuncts):
+		return value
+	case len(kept) == 0:
+		return "true"
+	default:
+		return "${{ " + strings.Join(kept, " && ") + " }}"
+	}
 }
 
 // concurrencySite is one `concurrency:` block and where it was found.
@@ -210,6 +233,7 @@ type mergeQueueWorkflowDoc struct {
 
 func TestMergeGroupRunsAreNeverCancelledByConcurrency(t *testing.T) {
 	t.Parallel()
+	draftGuard := mergeQueueDraftGuard(t)
 
 	entries, err := os.ReadDir(workflowsDir)
 	if err != nil {
@@ -237,7 +261,7 @@ func TestMergeGroupRunsAreNeverCancelledByConcurrency(t *testing.T) {
 				continue // absent: GitHub defaults to false
 			}
 			value := strings.TrimSpace(site.cancelInProgress.Value)
-			if cancelInProgressIsQueueSafe(value) {
+			if cancelInProgressIsQueueSafe(value, draftGuard) {
 				continue
 			}
 			t.Errorf("%s runs on `%s:` and its concurrency block sets "+
@@ -262,6 +286,7 @@ func TestMergeGroupRunsAreNeverCancelledByConcurrency(t *testing.T) {
 // some workflow shipped it, which is the failure the sweep exists to prevent.
 func TestCancelInProgressQueueSafetyRecognisesOnlyVettedForms(t *testing.T) {
 	t.Parallel()
+	draftGuard := mergeQueueDraftGuard(t)
 
 	for _, tc := range []struct {
 		value string
@@ -278,9 +303,175 @@ func TestCancelInProgressQueueSafetyRecognisesOnlyVettedForms(t *testing.T) {
 		{replaceableMainModeCancelInProgress, true, "vetted main-mode expression"},
 		{"${{ github.ref != 'refs/heads/main' }}", false, "unrecognised shape must fail rather than be assumed harmless"},
 		{"", false, "an empty value is not one of the vetted forms"},
+		{"${{ github.event_name == 'pull_request' && " + draftGuard + " }}", true, "the draft guard only narrows a safe form"},
+		{"${{ github.event_name != 'push' && " + draftGuard + " }}", false, "the draft guard does not make an unsafe form safe"},
+		{"${{ " + draftGuard + " }}", false, "the guard alone is true on merge_group"},
 	} {
-		if got := cancelInProgressIsQueueSafe(tc.value); got != tc.safe {
+		if got := cancelInProgressIsQueueSafe(tc.value, draftGuard); got != tc.safe {
 			t.Errorf("cancelInProgressIsQueueSafe(%q) = %v, want %v: %s", tc.value, got, tc.safe, tc.why)
+		}
+	}
+}
+
+// Mergify validates a queued pull request through a draft pull request of its
+// own on a `mergify/merge-queue/<id>` branch. That draft's runs arrive as
+// `pull_request` (and `pull_request_target`) events, not `merge_group`, and a
+// draft receives several events in a few seconds. A concurrency block that
+// cancels those runs cancels the queue's own required checks, and Mergify reads
+// a cancelled check as interrupted and dequeues the entry:
+//
+//	❌ Left the queue · checks interrupted · draft #4068
+//	The merge conditions cannot be satisfied: the checks were interrupted
+//	before producing a result ("checks": ["pr-body"])
+//
+// A later run of the same check passed, but the entry had already left the
+// queue. The sweep below pins the guard: in every concurrency block of a
+// workflow a draft's events reach, each top-level `||` branch of
+// `cancel-in-progress` either carries MERGE_QUEUE_DRAFT_GUARD as a top-level
+// conjunct or requires an event a draft never sends.
+
+const mergeQueueDraftLib = "../../.github/scripts/lib/merge-queue-draft.mjs"
+
+// mergeQueuePrefixRE reads the draft branch prefix from the one place the
+// scripts define it, so the workflows and the scripts cannot disagree.
+var mergeQueuePrefixRE = regexp.MustCompile(`export const MERGE_QUEUE_BRANCH_PREFIX = '([^']+)';`)
+
+// eventPinRE matches a conjunct that requires one specific event.
+var eventPinRE = regexp.MustCompile(`^github\.event_name\s*==\s*'([a-z_]+)'$`)
+
+// draftEvents are the events a merge-queue draft pull request sends.
+var draftEvents = map[string]bool{"pull_request": true, "pull_request_target": true}
+
+// mergeQueueDraftGuard is MERGE_QUEUE_DRAFT_GUARD, rebuilt from the prefix
+// lib/merge-queue-draft.mjs exports.
+func mergeQueueDraftGuard(t *testing.T) string {
+	t.Helper()
+	m := mergeQueuePrefixRE.FindStringSubmatch(readFileString(t, mergeQueueDraftLib))
+	if m == nil {
+		t.Fatalf("%s no longer exports MERGE_QUEUE_BRANCH_PREFIX in the form this guard reads", mergeQueueDraftLib)
+	}
+	return "!startsWith(github.head_ref, '" + m[1] + "')"
+}
+
+// topLevelDisjuncts splits an expression on its top-level `||` operators
+// (parentheses respected), stripping `${{ … }}` and one pair of enclosing
+// parentheses per branch.
+func topLevelDisjuncts(expr string) []string {
+	expr = strings.TrimSpace(expr)
+	expr = strings.TrimSuffix(strings.TrimPrefix(expr, "${{"), "}}")
+	var out []string
+	depth, start := 0, 0
+	for i := 0; i < len(expr); i++ {
+		switch expr[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '|':
+			if depth == 0 && i+1 < len(expr) && expr[i+1] == '|' {
+				out = append(out, expr[start:i])
+				i++
+				start = i + 1
+			}
+		}
+	}
+	out = append(out, expr[start:])
+	for i, b := range out {
+		out[i] = strings.TrimSpace(unwrapEnclosingParens(strings.TrimSpace(b)))
+	}
+	return out
+}
+
+// cancelInProgressSparesDrafts reports whether a `cancel-in-progress:` value
+// is false on every merge-queue draft run.
+func cancelInProgressSparesDrafts(value, draftGuard string) bool {
+	switch value {
+	case "", "false":
+		return true
+	case "true":
+		return false
+	}
+	for _, branch := range topLevelDisjuncts(value) {
+		spared := false
+		for _, conjunct := range workflowIfConjuncts(branch) {
+			if conjunct == draftGuard {
+				spared = true
+				break
+			}
+			if m := eventPinRE.FindStringSubmatch(conjunct); m != nil && !draftEvents[m[1]] {
+				spared = true
+				break
+			}
+		}
+		if !spared {
+			return false
+		}
+	}
+	return true
+}
+
+func TestMergeQueueDraftRunsAreNeverCancelledByConcurrency(t *testing.T) {
+	t.Parallel()
+	draftGuard := mergeQueueDraftGuard(t)
+
+	entries, err := os.ReadDir(workflowsDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", workflowsDir, err)
+	}
+	reached := 0
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".yml" {
+			continue
+		}
+		path := filepath.Join(workflowsDir, e.Name())
+		var doc mergeQueueWorkflowDoc
+		if err := yaml.Unmarshal([]byte(readFileString(t, path)), &doc); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		if !onDeclares(doc.On, "pull_request") && !onDeclares(doc.On, "pull_request_target") {
+			continue
+		}
+		reached++
+		for _, site := range concurrencySites(path, doc) {
+			value := strings.TrimSpace(site.cancelInProgress.Value)
+			if cancelInProgressSparesDrafts(value, draftGuard) {
+				continue
+			}
+			t.Errorf("%s is reached by a merge-queue draft's events and sets "+
+				"`cancel-in-progress: %s`, which can be true on a draft's run. Mergify reads the "+
+				"cancelled required check as interrupted and dequeues the entry. Add `%s` as a "+
+				"top-level conjunct of every branch that can be true on pull_request.",
+				site.where, value, draftGuard)
+		}
+	}
+	if reached == 0 {
+		t.Fatalf("no workflow under %s triggers on a draft's event; the sweep selects nothing", workflowsDir)
+	}
+}
+
+func TestCancelInProgressDraftSafetyReadsTheExpression(t *testing.T) {
+	t.Parallel()
+	draftGuard := mergeQueueDraftGuard(t)
+
+	for _, tc := range []struct {
+		value  string
+		spared bool
+	}{
+		{"", true},
+		{"false", true},
+		{"true", false},
+		{"${{ github.event_name == 'pull_request' }}", false},
+		{"${{ github.event_name == 'pull_request' && " + draftGuard + " }}", true},
+		{"${{ github.event_name == 'pull_request' || " + draftGuard + " }}", false},
+		{"${{ !startsWith(github.head_ref, 'other/') }}", false},
+		{replaceableMainModeCancelInProgress, true},
+		{"${{ (github.event_name == 'push') || (github.event_name == 'pull_request') }}", false},
+		{"${{ github.event_name == 'pull_request_target' }}", false},
+		{"${{ github.event_name != 'merge_group' }}", false},
+		{"${{ github.event_name != 'merge_group' && " + draftGuard + " }}", true},
+	} {
+		if got := cancelInProgressSparesDrafts(tc.value, draftGuard); got != tc.spared {
+			t.Errorf("cancelInProgressSparesDrafts(%q) = %v, want %v", tc.value, got, tc.spared)
 		}
 	}
 }
