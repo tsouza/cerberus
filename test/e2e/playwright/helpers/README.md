@@ -41,8 +41,9 @@ phase 1 will retire its bespoke `driveCerberusQLPartition` /
 
 ## Pinned Grafana version
 
-The compose and k3d stacks pin the maintained Grafana image by digest (see
-`deploy/grafana/README.md`). It contains Grafana 12.2.9 and fixed plugin builds.
+The compose and k3d e2e stacks run the maintained Grafana image, built locally
+from `deploy/grafana/Dockerfile` (see `deploy/grafana/README.md`). It contains
+Grafana 12.2.9 and fixed plugin builds.
 The drilldown-app catalogue in `drilldown.ts` and panel-schema flattening in
 `dashboard.ts` both assume the
 Grafana 12.x dashboard JSON shape:

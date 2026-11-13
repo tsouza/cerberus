@@ -155,8 +155,8 @@ map. Headline:
   `main`, nightly, dispatch and on a `release/*` PR. Per-head scores are
   published to the `compat-scores` branch, and `release.yml`'s preflight
   refuses to publish past a red one.
-- **Compose smoke** — `compose-smoke` (the repo-root `docker compose up`
-  quickstart stack) is a release gate, running on release PRs, push-to-main
+- **Compose smoke** — `compose-smoke` (the repo-root compose stack with its
+  `grafana` profile, running the locally built maintained Grafana image) is a release gate, running on release PRs, push-to-main
   and nightly. The cheaper `quickstart` check does block a merge.
 - **E2E (k3d + Grafana Playwright)** — the `dashboard` job runs on release
   PRs, push-to-main, nightly and manual dispatch; it is a release gate.

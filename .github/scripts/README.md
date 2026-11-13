@@ -2899,9 +2899,9 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     (default `goreleaser`).
   - Exit: `0` when the config validates with no deprecation notices; `1` on any
     notice, or when `goreleaser check` itself fails or cannot run.
-- **`grafana-plugin-build.mjs`** — `deploy/grafana/Dockerfile`, built by
-  `grafana-image.yml`'s `publish` job (the script is in that workflow's
-  `paths` filter). Downloads the Metrics Drilldown source archive at a pinned
+- **`grafana-plugin-build.mjs`** — `deploy/grafana/Dockerfile`, built
+  locally by the e2e lanes (`just e2e-grafana-image`) and never pushed to a
+  registry. Downloads the Metrics Drilldown source archive at a pinned
   commit, verifies its SHA-256, applies `metrics-drilldown.patch`, builds the
   plugin with `pnpm` / `rspack`, and checks the built `plugin.json` names the
   pinned plugin ID and version. The archive and patch stay in the build
@@ -3492,7 +3492,7 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     path; the root README always runs; empty/uncomputable diffs run; only an
     explicit trusted-documentation result omits.
   - `verify-checkout` repeats the clean exact-SHA proof in the execution job.
-  - `up` passes the exact `docker compose up --wait` argument vector through
+  - `up` passes the exact `docker compose --profile grafana up --wait` argument vector through
     `build-with-registry-retry.mjs`, at the repository root, under a bound
     shorter than the job timeout.
   - `probe` retries `/healthz`, `/readyz`, Grafana `/`, Grafana database health,

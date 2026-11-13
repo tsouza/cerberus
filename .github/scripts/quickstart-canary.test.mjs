@@ -198,6 +198,8 @@ test("startup command is exactly the command published by the root quickstart", 
   assert.deepEqual(QUICKSTART_UP_COMMAND, [
     "docker",
     "compose",
+    "--profile",
+    "grafana",
     "up",
     "--wait",
   ]);
@@ -220,8 +222,14 @@ test("the checked-out README is bound to the exact startup and Grafana commands"
   for (const [name, readme] of [
     ["different startup", readmeQuickstart({ up: "docker compose up" })],
     [
+      "no grafana profile",
+      readmeQuickstart({ up: "docker compose up --wait" }),
+    ],
+    [
       "extra startup flag",
-      readmeQuickstart({ up: "docker compose up --wait --profile demo" }),
+      readmeQuickstart({
+        up: "docker compose --profile grafana up --wait --profile demo",
+      }),
     ],
     [
       "different browser endpoint",

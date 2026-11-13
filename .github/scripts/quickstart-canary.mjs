@@ -60,12 +60,15 @@ export const DIFF_SCOPED_EVENTS = Object.freeze([
 export const QUICKSTART_LANE_ID = "e2e.quickstart";
 
 // This literal is load-bearing. A structural regression test binds it to the
-// root README command, and MODE=up passes these four argv elements through
-// unchanged. In particular, there is no profile, override file, service subset,
-// or extra flag that could make CI exercise a different stack from a new user.
+// root README command, and MODE=up passes these argv elements through
+// unchanged. The `grafana` profile is the one the README tells a user to name;
+// there is no other profile, override file, service subset, or extra flag that
+// could make CI exercise a different stack from a new user.
 export const QUICKSTART_UP_COMMAND = Object.freeze([
   "docker",
   "compose",
+  "--profile",
+  "grafana",
   "up",
   "--wait",
 ]);
