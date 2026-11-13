@@ -142,6 +142,7 @@ export const ROOT_ALLOWLIST = [
   '.markdownlintignore',
   '.serena',
   // Project prose and policy.
+  'ADOPTERS.md',
   'AGENTS.md',
   'CHANGELOG.md',
   'CLAUDE.md',
