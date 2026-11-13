@@ -660,12 +660,11 @@ export function scanProse({ text, surface, locate, repoSlug }) {
 
 // --- diff surface -----------------------------------------------------------
 
-// parseDiff — a unified diff into { files, lines }, where `lines` carries every
+// parseDiff — a unified diff into { lines }, where `lines` carries every
 // line that exists in the NEW file (added and context) with its new-file number
 // and whether the change added it. Removed lines have no new-file position and
 // are dropped: this gate reads what the change INTRODUCES.
 export function parseDiff(diffText) {
-  const files = new Set();
   const lines = [];
   let file = null;
   let inHunk = false;
@@ -680,7 +679,6 @@ export function parseDiff(diffText) {
     if (!inHunk && raw.startsWith('+++ ')) {
       const path = raw.slice(4).trim();
       file = path === '/dev/null' ? null : path.replace(/^b\//, '');
-      if (file) files.add(file);
       continue;
     }
     if (raw.startsWith('@@')) {
@@ -706,7 +704,7 @@ export function parseDiff(diffText) {
     // Anything else ends the hunk (a mode line, a "Binary files ... differ").
     inHunk = false;
   }
-  return { files: [...files], lines };
+  return { lines };
 }
 
 // contiguousRuns — a file's diff lines split into runs of consecutive
@@ -987,12 +985,30 @@ export function commitsIn(base, head) {
     .filter((c) => c.sha !== '');
 }
 
-export function diffOf(base, head) {
-  const res = git(['diff', `--unified=${CITATION_WINDOW_LINES}`, `${base}...${head}`]);
+// DIFF_FORMAT — pinned so a runner's git config cannot change the text
+// parseDiff reads: no colour codes, no external diff driver, and the a/ b/
+// prefixes whatever `diff.noprefix` or `diff.mnemonicPrefix` say.
+const DIFF_FORMAT = ['--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/'];
+
+export function diffOf(base, head, opts = {}) {
+  const res = git(['diff', ...DIFF_FORMAT, `--unified=${CITATION_WINDOW_LINES}`, `${base}...${head}`], opts);
   if (res.status !== 0) {
     throw new Error(`git diff ${base}...${head} failed: ${res.stderr.trim()}`);
   }
   return res.stdout;
+}
+
+// changedFiles — every path the range touches, read from git rather than
+// reconstructed from diff text: `--name-only -z` prints each path raw (no
+// quoting, no prefix), and `--no-renames` reports a rename as its deletion
+// and its addition, so both sides are in the set whether or not the file was
+// also edited. A deleted file, an empty file and a mode change are all here.
+export function changedFiles(base, head, opts = {}) {
+  const res = git(['diff', '--name-only', '-z', '--no-renames', `${base}...${head}`], opts);
+  if (res.status !== 0) {
+    throw new Error(`git diff --name-only ${base}...${head} failed: ${res.stderr.trim()}`);
+  }
+  return res.stdout.split('\0').filter((p) => p !== '');
 }
 
 // probeStatus — one GET reduced to its status line. The capability probe asks
@@ -1184,11 +1200,11 @@ async function main() {
   }
 
   const diffText = diffOf(base, head);
-  const { files } = parseDiff(diffText);
+  const files = changedFiles(base, head);
   if (files.length === 0) {
     throw new Error(
       `${base.slice(0, 12)}...${head.slice(0, 12)} parsed to an empty file set — either the ` +
-        'range is wrong or the diff parser stopped understanding git output',
+        'range is wrong or git reported no changed path',
     );
   }
 

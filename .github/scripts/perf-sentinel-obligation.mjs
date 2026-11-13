@@ -121,10 +121,10 @@ import { pathToFileURL } from 'node:url';
 
 import { appendStepSummary, error, log, notice } from './lib/gh.mjs';
 import {
+  changedFiles,
   commitsIn,
   descriptionSurface,
   diffOf,
-  parseDiff,
   resolveRange,
   resolveRefs,
   stripFencedBlocks,
@@ -670,11 +670,11 @@ async function main() {
   }
 
   const diffText = diffOf(base, head);
-  const { files } = parseDiff(diffText);
+  const files = changedFiles(base, head);
   if (files.length === 0) {
     throw new Error(
       `${base.slice(0, 12)}...${head.slice(0, 12)} parsed to an empty file set — either the `
-        + 'range is wrong or the diff parser stopped understanding git output',
+        + 'range is wrong or git reported no changed path',
     );
   }
 
