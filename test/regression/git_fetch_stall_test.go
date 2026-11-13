@@ -28,46 +28,83 @@ import (
 // but a retry only fires on a failure: git has no stall timeout of its own,
 // so a stalled transfer never fails and the retry never runs.
 // GIT_HTTP_LOW_SPEED_LIMIT / GIT_HTTP_LOW_SPEED_TIME make git abort a transfer
-// that stays below the limit for that long, which turns the stall into a
-// failure the retry absorbs. actions/checkout passes the step environment,
-// and so the workflow-level env, through to every git process it starts.
+// that stays below the limit for that long once the request is under way, which
+// turns that stall into a failure the retry absorbs. libcurl applies the check
+// only after the connection is up: a stalled TCP connect or TLS handshake is not
+// covered (see #4067). actions/checkout passes the step environment, and so the
+// workflow-level env, through to every git process it starts.
 //
-// These tests pin the three properties that make the protection real: every
-// workflow that runs a job on an Ubicloud runner sets both variables, the
-// abort leaves room for checkout's retries inside the shortest such job, and
-// git really does abort a stalled fetch under them.
+// These tests pin the properties that make the protection real: every workflow
+// that runs a job on an Ubicloud runner sets both variables to the values below,
+// with no job- or step-level override; checkout's retries fit inside the
+// shortest such job with room for the job's own work; and git really does abort
+// a stalled response under them, with curl's own low-speed error.
 
 const (
 	gitLowSpeedLimitEnv  = "GIT_HTTP_LOW_SPEED_LIMIT"
 	gitLowSpeedTimeEnv   = "GIT_HTTP_LOW_SPEED_TIME"
 	ubicloudRunnerPrefix = "ubicloud-"
 
+	// The values every Ubicloud workflow sets: abort below 1000 B/s held for 30 s.
+	wantLowSpeedLimitBytesPerSecond = 1000
+	wantLowSpeedTimeSeconds         = 30
+
 	// actions/checkout's retry helper: three attempts, sleeping a random
 	// 10-20 seconds between them.
 	checkoutFetchAttempts        = 3
 	checkoutMaxRetrySleepSeconds = 20
+
+	// checkoutTimeoutShare is the share of a job's timeout a fully retried
+	// checkout may take; the rest is the job's own work.
+	checkoutTimeoutShare = 0.5
 )
+
+type stallStep struct {
+	Env map[string]any `yaml:"env"`
+}
 
 type stallWorkflow struct {
 	Env  map[string]any `yaml:"env"`
 	Jobs map[string]struct {
-		RunsOn         any `yaml:"runs-on"`
-		TimeoutMinutes any `yaml:"timeout-minutes"`
+		RunsOn         any            `yaml:"runs-on"`
+		TimeoutMinutes any            `yaml:"timeout-minutes"`
+		Env            map[string]any `yaml:"env"`
+		Steps          []stallStep    `yaml:"steps"`
 	} `yaml:"jobs"`
 }
 
-func positiveEnvInt(t *testing.T, wf string, env map[string]any, key string) int {
-	t.Helper()
-	raw := strings.TrimSpace(toString(env[key]))
-	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
-		t.Errorf("%s: workflow-level env %s = %q; want a positive integer", wf, key, raw)
-		return 0
+// runsOnUbicloud reports whether a `runs-on` value, in string or list form,
+// names an Ubicloud runner.
+func runsOnUbicloud(runsOn any) bool {
+	labels := []any{runsOn}
+	if list, ok := runsOn.([]any); ok {
+		labels = list
 	}
-	return n
+	for _, l := range labels {
+		if s, _ := l.(string); strings.HasPrefix(s, ubicloudRunnerPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkLowSpeedEnv fails unless env sets key to want; when optional, an absent
+// key is accepted (a job or step that inherits the workflow value).
+func checkLowSpeedEnv(t *testing.T, where string, env map[string]any, key string, want int, optional bool) {
+	t.Helper()
+	v, ok := env[key]
+	if !ok && optional {
+		return
+	}
+	if got := strings.TrimSpace(toString(v)); got != strconv.Itoa(want) {
+		t.Errorf("%s: env %s = %q; want %q", where, key, got, strconv.Itoa(want))
+	}
 }
 
 func TestUbicloudWorkflowsAbortStalledGitTransfers(t *testing.T) {
+	worstCheckout := checkoutFetchAttempts*wantLowSpeedTimeSeconds +
+		(checkoutFetchAttempts-1)*checkoutMaxRetrySleepSeconds
+
 	paths, err := filepath.Glob("../../.github/workflows/*.yml")
 	if err != nil {
 		t.Fatal(err)
@@ -83,47 +120,54 @@ func TestUbicloudWorkflowsAbortStalledGitTransfers(t *testing.T) {
 			t.Fatalf("%s: %v", p, err)
 		}
 		name := filepath.Base(p)
-		isUbicloud, shortestTimeout := false, 0
-		for _, job := range wf.Jobs {
-			if runsOn, _ := job.RunsOn.(string); !strings.HasPrefix(runsOn, ubicloudRunnerPrefix) {
+		isUbicloud := false
+		for jobID, job := range wf.Jobs {
+			if !runsOnUbicloud(job.RunsOn) {
 				continue
 			}
 			isUbicloud = true
-			if m, ok := job.TimeoutMinutes.(int); ok && (shortestTimeout == 0 || m < shortestTimeout) {
-				shortestTimeout = m
+			where := name + ":" + jobID
+			for _, key := range []struct {
+				name string
+				want int
+			}{{gitLowSpeedLimitEnv, wantLowSpeedLimitBytesPerSecond}, {gitLowSpeedTimeEnv, wantLowSpeedTimeSeconds}} {
+				checkLowSpeedEnv(t, where, job.Env, key.name, key.want, true)
+				for i, s := range job.Steps {
+					checkLowSpeedEnv(t, where+":step "+strconv.Itoa(i), s.Env, key.name, key.want, true)
+				}
+			}
+			if m, ok := job.TimeoutMinutes.(int); ok {
+				budget := float64(m*int(time.Minute/time.Second)) * checkoutTimeoutShare
+				if float64(worstCheckout) > budget {
+					t.Errorf("%s: %d fetch attempts aborting after %ds each, plus retry sleeps, take %ds; "+
+						"the job's %d-minute timeout leaves %.0fs for checkout",
+						where, checkoutFetchAttempts, wantLowSpeedTimeSeconds, worstCheckout, m, budget)
+				}
 			}
 		}
 		if !isUbicloud {
 			continue
 		}
 		ubicloudWorkflows++
-		positiveEnvInt(t, name, wf.Env, gitLowSpeedLimitEnv)
-		stall := positiveEnvInt(t, name, wf.Env, gitLowSpeedTimeEnv)
-		if shortestTimeout == 0 || stall == 0 {
-			continue
-		}
-		worstCheckout := checkoutFetchAttempts*stall + (checkoutFetchAttempts-1)*checkoutMaxRetrySleepSeconds
-		if budget := shortestTimeout * int(time.Minute/time.Second); worstCheckout >= budget {
-			t.Errorf("%s: %d fetch attempts aborting after %ds each, plus retry sleeps, take %ds; "+
-				"the shortest Ubicloud job's timeout is %ds, so checkout's retries cannot run",
-				name, checkoutFetchAttempts, stall, worstCheckout, budget)
-		}
+		checkLowSpeedEnv(t, name, wf.Env, gitLowSpeedLimitEnv, wantLowSpeedLimitBytesPerSecond, false)
+		checkLowSpeedEnv(t, name, wf.Env, gitLowSpeedTimeEnv, wantLowSpeedTimeSeconds, false)
 	}
 	if ubicloudWorkflows == 0 {
 		t.Fatal("no workflow runs a job on an Ubicloud runner; the guard selects nothing")
 	}
 }
 
-// stallProbeSeconds is the stall time the behavioural probe runs under: the
-// mechanism is the same at any value, and a short one keeps the test fast.
 const (
+	// stallProbeSeconds is the stall time the behavioural probe runs under:
+	// the mechanism is the same at any value, and a short one keeps the test
+	// fast.
 	stallProbeSeconds = 2
-	// stallProbeLimitBytesPerSecond is the workflows' own limit: a server
-	// that sends nothing stays below any positive one.
-	stallProbeLimitBytesPerSecond = 1000
 	// stallProbeDeadline bounds the probe: a git that ignored the variables
 	// would hang on the stalled server until this cancels it.
 	stallProbeDeadline = 20 * time.Second
+	// curlLowSpeedAbort is the error libcurl reports when the low-speed check
+	// fires, which git passes through on stderr.
+	curlLowSpeedAbort = "Operation too slow"
 )
 
 func TestGitAbortsAStalledFetchUnderTheLowSpeedEnv(t *testing.T) {
@@ -139,7 +183,7 @@ func TestGitAbortsAStalledFetchUnderTheLowSpeedEnv(t *testing.T) {
 	srv := &http.Server{
 		ReadHeaderTimeout: stallProbeDeadline,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Accept the request and send nothing: the shape of the stall.
+			// Accept the request and send nothing: a stalled response.
 			select {
 			case <-release:
 			case <-r.Context().Done():
@@ -153,24 +197,23 @@ func TestGitAbortsAStalledFetchUnderTheLowSpeedEnv(t *testing.T) {
 	})
 
 	repo := t.TempDir()
-	run := func(ctx context.Context, env []string, args ...string) error {
-		cmd := exec.CommandContext(ctx, gitPath, args...)
-		cmd.Dir = repo
-		cmd.Env = append(os.Environ(), env...)
-		return cmd.Run()
-	}
-	if err := run(context.Background(), nil, "init", "-q"); err != nil {
-		t.Fatal(err)
+	if out, err := exec.Command(gitPath, "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), stallProbeDeadline)
 	defer cancel()
-	start := time.Now()
-	err = run(ctx, []string{
-		gitLowSpeedLimitEnv + "=" + strconv.Itoa(stallProbeLimitBytesPerSecond),
-		gitLowSpeedTimeEnv + "=" + strconv.Itoa(stallProbeSeconds),
+	cmd := exec.CommandContext(ctx, gitPath, "-C", repo,
+		"fetch", "--depth=1", "http://"+ln.Addr().String()+"/repo.git", "HEAD")
+	cmd.Env = append(
+		os.Environ(),
+		gitLowSpeedLimitEnv+"="+strconv.Itoa(wantLowSpeedLimitBytesPerSecond),
+		gitLowSpeedTimeEnv+"="+strconv.Itoa(stallProbeSeconds),
 		"GIT_TERMINAL_PROMPT=0",
-	}, "fetch", "--depth=1", "http://"+ln.Addr().String()+"/repo.git", "HEAD")
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	err = cmd.Run()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		t.Fatalf("git fetch against a stalled server ran until the %s deadline: the low-speed env did not abort it",
 			stallProbeDeadline)
@@ -178,7 +221,8 @@ func TestGitAbortsAStalledFetchUnderTheLowSpeedEnv(t *testing.T) {
 	if err == nil {
 		t.Fatal("git fetch against a server that sends nothing succeeded")
 	}
-	if elapsed := time.Since(start); elapsed < stallProbeSeconds*time.Second {
-		t.Fatalf("git fetch failed after %s, before the %ds stall window: it failed for another reason", elapsed, stallProbeSeconds)
+	if !strings.Contains(stderr.String(), curlLowSpeedAbort) {
+		t.Fatalf("git fetch failed without curl's low-speed abort (%q); it failed for another reason: %s",
+			curlLowSpeedAbort, stderr.String())
 	}
 }
