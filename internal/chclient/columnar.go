@@ -323,7 +323,39 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 		},
 	}
 
-	runErr := pool.Do(ctx, q)
+	// run sends the statement on a pooled connection. A server that rejects
+	// the statement before answering any packet — an unknown setting, for
+	// one — leaves that connection unusable: a 26.6 or newer server drops
+	// it, an older one reads the next statement out of step and answers
+	// garbage. ch-go's pool cannot tell, and would hand it to the next
+	// statement, so such a connection is closed instead of released.
+	run := func() error {
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			return err
+		}
+		err = conn.Do(ctx, q)
+		if _, rejected := ch.AsException(err); rejected && !answered.Load() {
+			_ = conn.Close()
+			return err
+		}
+		conn.Release()
+		return err
+	}
+	runErr := run()
+	// A node too old for a droppable setting the statement carries rejects it
+	// before answering any packet; the row path's one retry without the
+	// droppable settings (openWithDroppableRetry) applies here too, inside
+	// the same fan-out admission.
+	if !answered.Load() {
+		if retryCtx, rej, ok := c.droppableRetryContext(ctx, translateCHGoErr(runErr)); ok {
+			c.rejections.report(rej)
+			if rej.Retried {
+				q.Settings = chSettings(c.querySettings(retryCtx))
+				runErr = run()
+			}
+		}
+	}
 	// pool.Do is synchronous, so the fan-out weight releases here, before any
 	// branch below. Only a clean return means the statement finished on the
 	// server; any error — the server's own abort, a declined block, a broken

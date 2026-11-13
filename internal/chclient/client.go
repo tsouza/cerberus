@@ -538,6 +538,11 @@ type Client struct {
 	// data-plane query; see SetQueryConditionCacheDisabled. A pointer so every
 	// ForHead view shares the one switch the capability re-probe flips.
 	conditionCacheDisabled *atomic.Bool
+
+	// rejections reports every query a node rejects for an unknown setting
+	// or function (see SetUnknownNameHook). A pointer so every ForHead view
+	// shares the one hook cmd/cerberus installs.
+	rejections *rejectionReporter
 }
 
 // buildBreakers constructs the per-head breaker registry shared by all of a
@@ -846,6 +851,7 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 		queryTimeout:        cfg.QueryTimeout,
 
 		conditionCacheDisabled: new(atomic.Bool),
+		rejections:             newGlobalRejectionReporter(),
 	}
 	// Resolve the cursor-decode strategy ONCE, here at construction. The
 	// default is the concrete row path; when Config.ColumnarMatrixDecode is set
@@ -1318,7 +1324,11 @@ func newWithConn(conn driver.Conn) *Client {
 	// tests. nil metrics = the no-telemetry path (these tests assert breaker
 	// state via currentState(), not via the metric label).
 	def, registry := buildBreakers(false, 0, 0, 0, nil)
-	c := &Client{conn: conn, br: def, breakers: registry, conditionCacheDisabled: new(atomic.Bool)}
+	c := &Client{
+		conn: conn, br: def, breakers: registry,
+		conditionCacheDisabled: new(atomic.Bool),
+		rejections:             newRejectionReporter(nil),
+	}
 	// The cursor-decode strategy is ALWAYS non-nil — the row path is the
 	// default, matching production New with the columnar flag off. QueryCursor
 	// dispatches to it unconditionally, so the seam must wire it too.

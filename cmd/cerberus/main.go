@@ -1411,9 +1411,16 @@ func startCHOptimizations(ctx context.Context, logger *slog.Logger, client *chcl
 // startCHOptReprobe starts the periodic capability re-probe: it re-resolves the
 // optimization set against the fleet cerberus can reach and swaps a changed
 // result into the mounted heads, so an upgraded ClickHouse is picked up without
-// restarting cerberus. Bound to ctx, so SIGTERM stops it.
+// restarting cerberus. A query a node rejects for an unknown setting or
+// function asks for the next probe early (chclient.Client.SetUnknownNameHook),
+// so a rolled-back node is picked up the same way. Bound to ctx, so SIGTERM
+// stops it.
 func startCHOptReprobe(ctx context.Context, logger *slog.Logger, cfg config.Config, live *chOptLive, consumers chOptConsumers, rawQueryWorkload string) {
-	go reprobeCHOptimizations(ctx, logger, cfg, live, consumers, chOptReprobeInterval, rawQueryWorkload, liveFleetProber(cfg))
+	early := newReprobeTrigger()
+	if consumers.client != nil {
+		consumers.client.SetUnknownNameHook(early.request)
+	}
+	go reprobeCHOptimizations(ctx, logger, cfg, live, consumers, productionReprobeTiming, early, rawQueryWorkload, liveFleetProber(cfg))
 }
 
 // resolveCHOptimizations probes the build of every ClickHouse node cerberus

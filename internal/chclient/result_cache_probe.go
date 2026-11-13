@@ -63,7 +63,7 @@ const resultCacheProbeTTLSeconds = 1
 // real dashboard queries. Negligible next to real query volume and not worth
 // a second, probe-suppressing code path.
 func (c *Client) ProbeResultCacheCapability(ctx context.Context) chopt.Capability {
-	ctx = WithResultCacheSetting(ctx, resultCacheProbeTTLSeconds)
+	ctx = WithResultCacheSetting(withCapabilityCanary(ctx), resultCacheProbeTTLSeconds)
 	_, err := c.QueryStrings(ctx, resultCacheCapabilityProbeSQL)
 	return classifyCapabilityFromProbeErr(err)
 }

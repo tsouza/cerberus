@@ -167,7 +167,7 @@ func reprobeUntilShapeDefects(t *testing.T, cfg config.Config, boot chOptResolut
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		reprobeCHOptimizations(ctx, quietLogger(), cfg, live, chOptConsumers{}, time.Millisecond, "", probe)
+		reprobeCHOptimizations(ctx, quietLogger(), cfg, live, chOptConsumers{}, testReprobeTiming, nil, "", probe)
 	}()
 	deadline := time.Now().Add(20 * time.Second)
 	for !slices.Equal(live.get().Set.ShapeDefectIDs(), want) {

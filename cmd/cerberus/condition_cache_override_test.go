@@ -87,7 +87,7 @@ func TestReprobe_ConditionCacheOverrideEngagesWhenResolveFails(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		reprobeCHOptimizations(ctx, quietLogger(), cfg, live, consumers, time.Millisecond, "", rolledBack)
+		reprobeCHOptimizations(ctx, quietLogger(), cfg, live, consumers, testReprobeTiming, nil, "", rolledBack)
 	}()
 
 	deadline := time.Now().Add(20 * time.Second)
@@ -238,7 +238,7 @@ func TestReprobe_ResolvesAgainstTheOldestNode(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		reprobeCHOptimizations(ctx, quietLogger(), cfg, live, chOptConsumers{}, time.Millisecond, "", mixed)
+		reprobeCHOptimizations(ctx, quietLogger(), cfg, live, chOptConsumers{}, testReprobeTiming, nil, "", mixed)
 	}()
 
 	deadline := time.Now().Add(20 * time.Second)

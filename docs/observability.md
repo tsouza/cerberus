@@ -328,6 +328,21 @@ MeterProvider is installed before any instrument is minted: OTel's
 package-global provider is a delegating shim, and a synchronous `Add`
 recorded before delegation is dropped with no buffering and no error.
 
+#### ClickHouse unknown-name rejections
+
+| Metric                                      | Type    | Attributes                 | Meaning                                                                                          |
+| ------------------------------------------- | ------- | -------------------------- | ------------------------------------------------------------------------------------------------ |
+| `cerberus_ch_unknown_name_rejections_total` | counter | `kind`, `name`, `action`   | Queries a ClickHouse node rejected because it does not know a setting or function cerberus sent. |
+
+`kind` is `setting` or `function` and `name` the rejected name. `action=retried`
+is a droppable setting: the query was sent once more without it and the client
+never saw the rejection. `action=surfaced` is every other rejection, returned to
+the client as HTTP 502. A non-zero rate on either means a node runs an older
+build than the optimization set in force was resolved against — a rolled-back
+or newly joined replica — and each rejection moves the next capability re-probe
+forward ([clickhouse-optimizations](clickhouse-optimizations.md#a-node-older-than-the-set-in-force)).
+The `retried` series of every droppable setting is exported at `0` from boot.
+
 #### ClickHouse circuit breaker
 
 The same `internal/chclient` meter scope carries the circuit breaker's own
