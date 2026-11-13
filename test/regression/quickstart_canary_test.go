@@ -235,7 +235,8 @@ func TestQuickstartCanaryRunsOnTheProjectedCommit(t *testing.T) {
 			t.Errorf("%s push trigger omits %q (branches: %v)", quickstartWorkflowPath, branch, pushBranches)
 		}
 	}
-	if got, want := doc.Concurrency.CancelInProgress, "${{ github.event_name == 'pull_request' }}"; got != want {
+	if got, want := doc.Concurrency.CancelInProgress,
+		"${{ github.event_name == 'pull_request' && "+mergeQueueDraftGuard(t)+" }}"; got != want {
 		t.Errorf("%s cancel-in-progress is %q, want %q so merge-group evidence is never cancelled",
 			quickstartWorkflowPath, got, want)
 	}

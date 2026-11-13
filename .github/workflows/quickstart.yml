@@ -22,7 +22,7 @@ concurrency:
   # it would dequeue otherwise-valid work, so only superseded PR-head runs cancel.
   # Never on a Mergify merge-queue draft pull request: it arrives as
   # `pull_request`, and a cancelled required check dequeues the entry
-  # (test/regression/merge_queue_draft_cancel_test.go).
+  # (test/regression/merge_queue_test.go).
   cancel-in-progress: ${{ github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/') }}
 
 jobs:
