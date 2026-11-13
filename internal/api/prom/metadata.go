@@ -19,6 +19,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -784,6 +785,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 // grammar forbids in identifier position; without the rewrite, panels
 // doing `sum by (service_name)` silently produce empty matrices.
 func (h *Handler) fetchLabelNames(ctx context.Context, start, end time.Time, nowAnchored bool) ([]string, error) {
+	ctx = labelNameStatement(ctx)
 	names, err := timeCH(ctx, func() ([]string, error) {
 		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any, int) {
 			sql, physicalScans := h.unionLabelNamesSQL(ctx, tables, start, end, nowAnchored)
@@ -813,6 +815,7 @@ func (h *Handler) fetchLabelNames(ctx context.Context, start, end time.Time, now
 // (the wire spelling operators see in Grafana). The caller folds these into
 // the /labels listing alongside the Attributes keys + __name__.
 func (h *Handler) fetchResourceLabelNames(ctx context.Context, start, end time.Time) ([]string, error) {
+	ctx = labelNameStatement(ctx)
 	resNames, err := timeCH(ctx, func() ([]string, error) {
 		return h.queryStringsDegradingUnknownTable(ctx, h.metricTables(), func(tables []string) (string, []any, int) {
 			sql, physicalScans := h.unionResourceLabelNamesSQL(ctx, tables, start, end)
@@ -1147,6 +1150,7 @@ func (h *Handler) labelKeysForMatchers(ctx context.Context, matchers []string, s
 	if len(matchers) == 0 {
 		return nil, nil
 	}
+	ctx = labelNameStatement(ctx)
 	combine := func(arms []chsql.Frag) (string, []any, int) {
 		return chsql.NewQuery().
 			Select(chsql.As(distinctIdent(promql.MetadataNameColumn), "")).
@@ -2015,6 +2019,13 @@ func (h *Handler) existingTables(ctx context.Context, candidates []string) ([]st
 		)).
 		Build()
 	return h.Client.QueryStrings(ctx, sql, args...)
+}
+
+// labelNameStatement marks ctx for a label-name statement, whose DISTINCT
+// runs over attribute-map keys, so the handler client withholds the DISTINCT
+// spill threshold from it (engine.StatementShape).
+func labelNameStatement(ctx context.Context) context.Context {
+	return engine.WithStatementShape(ctx, engine.StatementShape{DistinctOverMapKeys: true})
 }
 
 // arrayJoinMapKeysFrag emits `arrayJoin(<col>.keys)` — the CH idiom for

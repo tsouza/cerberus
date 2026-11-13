@@ -21,7 +21,7 @@ func TestApplyDistinctSpillSettings_StampsOnEveryPlanWhenEnabled(t *testing.T) {
 
 	for _, p := range compositionPlans() {
 		for _, enabled := range []bool{true, false} {
-			ctx := applyDistinctSpillSettings(context.Background(), testQueryMemoryCap, enabled)
+			ctx := applyDistinctSpillSettings(context.Background(), shapeOf(p.plan), testQueryMemoryCap, enabled)
 			got := settingValue(ctx, settingMaxBytesBeforeExternalDistinct)
 			switch {
 			case enabled && got != validatedDistinctSpillBytes:
@@ -42,7 +42,7 @@ func TestApplyDistinctSpillSettings_CapRelative(t *testing.T) {
 	t.Parallel()
 
 	for _, memCap := range []int64{6 * gib, 0} {
-		ctx := applyDistinctSpillSettings(context.Background(), memCap, true)
+		ctx := applyDistinctSpillSettings(context.Background(), planShapeFacts{}, memCap, true)
 		want := spillThreshold(memCap)
 		if got := settingValue(ctx, settingMaxBytesBeforeExternalDistinct); got != want {
 			t.Errorf("cap %d: max_bytes_before_external_distinct = %v; want %v (spillThreshold)", memCap, got, want)
