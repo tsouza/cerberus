@@ -55,6 +55,9 @@ type Querier interface {
 // + /index/volume, plus the metadata endpoints /labels,
 // /label/<name>/values, /series, /detected_fields, /patterns.
 type Handler struct {
+	// Client runs the statements the handler dispatches itself, outside the
+	// Engine. New wraps it so each one carries the Engine's spill thresholds
+	// (spillingQuerier).
 	Client    Querier
 	Schema    schema.Logs
 	Optimizer *optimizer.Driver
@@ -200,8 +203,7 @@ func New(client Querier, s schema.Logs, logger *slog.Logger) *Handler {
 		logger = slog.Default()
 	}
 	opt := optimizer.Default()
-	return &Handler{
-		Client:            client,
+	h := &Handler{
 		Schema:            s,
 		Optimizer:         opt,
 		Logger:            logger,
@@ -209,6 +211,8 @@ func New(client Querier, s schema.Logs, logger *slog.Logger) *Handler {
 		Lang:              &logql.Lang{Schema: s},
 		PatternsMinVolume: defaultPatternsMinVolume,
 	}
+	h.Client = &spillingQuerier{inner: client, h: h}
+	return h
 }
 
 // logsStrategies returns the logs SchemaStrategies a request renders under:

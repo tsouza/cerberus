@@ -135,6 +135,71 @@ func applySpillSettings(ctx context.Context, maxMemory int64) context.Context {
 	return ctx
 }
 
+// applySpillThresholds stamps every spill threshold a statement carries: the
+// group_by/sort pair always, the join threshold on a statement whose facts say
+// it may join once join_spill resolved in, and the DISTINCT threshold once
+// distinct_spill resolved in unless the facts say its DISTINCT runs over
+// attribute-map keys, each sized from memCap. It is the one list the engine's
+// dispatch seam (applySharedQuerySettings) and the statements dispatched
+// outside it (Engine.WithSpillThresholds) both read, so the two cannot stamp
+// different thresholds for the same cap.
+func applySpillThresholds(ctx context.Context, f planShapeFacts, memCap int64, rules SettingsRules) context.Context {
+	ctx = applySpillSettings(ctx, memCap)
+	ctx = applyJoinSpillSettings(ctx, f, memCap, rules.JoinSpill)
+	return applyDistinctSpillSettings(ctx, f, memCap, rules.DistinctSpill)
+}
+
+// WithSpillThresholds stamps on ctx the spill thresholds for a statement a
+// head's handler dispatches through its own client rather than the engine —
+// the metadata endpoints, and the statements a handler emits itself beside an
+// engine query (the Tempo exemplars, for one). Each head's handler client
+// calls it on every statement it sends. Such a statement still runs under the
+// client's max_memory_usage, so without them a high-cardinality DISTINCT,
+// GROUP BY or sort aborts with MEMORY_LIMIT_EXCEEDED (code 241) where an
+// engine query of the same size spills and completes.
+//
+// The thresholds are applySpillThresholds', sized from the cap the statement
+// runs under (queryMemoryCap) and gated on the settings rules in force, so a
+// re-resolved feature set reaches these statements exactly as it reaches the
+// engine's. A statement built outside the engine has no plan to inspect, so
+// it is stamped with the facts statementFacts derives from the
+// StatementShape its handler attached to ctx (WithStatementShape). A node
+// too old for a version-gated
+// threshold rejects it and chclient sends the statement again without it
+// (chopt.DroppableSettings).
+func (e *Engine) WithSpillThresholds(ctx context.Context) context.Context {
+	return applySpillThresholds(ctx, statementFacts(ctx), e.queryMemoryCap(), e.settings())
+}
+
+// StatementShape is what a handler knows about the shape of a statement it
+// builds itself, standing in for the plan facts the engine reads off a plan.
+// The zero value is a statement with no fact to report.
+type StatementShape struct {
+	// DistinctOverMapKeys reports that the statement's DISTINCT runs over the
+	// keys of an attribute map — label-name and tag-name discovery. See
+	// applyDistinctSpillSettings for why such a DISTINCT is not stamped.
+	DistinctOverMapKeys bool
+}
+
+// statementShapeKey keys a StatementShape on a context.
+type statementShapeKey struct{}
+
+// WithStatementShape attaches shape to ctx for the next statement a handler
+// sends; WithSpillThresholds reads it.
+func WithStatementShape(ctx context.Context, shape StatementShape) context.Context {
+	return context.WithValue(ctx, statementShapeKey{}, shape)
+}
+
+// statementFacts returns the plan facts a statement built outside the engine
+// is stamped as. Whether it joins is unknown, so it counts as one that may:
+// the join threshold rides whenever join_spill is in, and only a join reads
+// it. Whether its DISTINCT runs over attribute-map keys is the
+// StatementShape its handler attached.
+func statementFacts(ctx context.Context) planShapeFacts {
+	shape, _ := ctx.Value(statementShapeKey{}).(StatementShape)
+	return planShapeFacts{hasJoin: true, distinctOverMapKeys: shape.DistinctOverMapKeys}
+}
+
 // applyJoinSpillSettings stamps the external-join spill threshold on ctx,
 // mirroring applySpillSettings' cap/2 arithmetic (spillThreshold), but ONLY
 // when BOTH:
@@ -146,11 +211,11 @@ func applySpillSettings(ctx context.Context, maxMemory int64) context.Context {
 //     to stamp unconditionally: the setting itself does not exist before
 //     26.4, and an unknown setting name errors the whole query rather than
 //     no-op'ing.
-//   - the plan contains a join-bearing node (f.hasJoin, chplan.HasJoin's
-//     answer) — join memory is otherwise protected only by throwIf
-//     cardinality guards and structural shape restrictions, never a memory
-//     backstop, so any plan that lowers to a real ClickHouse JOIN can build
-//     an unbounded hash table.
+//   - the statement may join (f.hasJoin: chplan.HasJoin's answer for an
+//     engine plan, true for statementFacts) — join memory is
+//     otherwise protected only by throwIf cardinality guards and structural
+//     shape restrictions, never a memory backstop, so any plan that lowers
+//     to a real ClickHouse JOIN can build an unbounded hash table.
 //
 // Like its group_by/sort sibling this is RESULT-EQUIVALENT and
 // THRESHOLD-GATED: a join whose build side stays under spillThreshold(cap)
@@ -171,21 +236,33 @@ func applyJoinSpillSettings(ctx context.Context, f planShapeFacts, maxMemory int
 // feature's 26.9 floor, where the setting does not exist and stamping it
 // would fail the query.
 //
-// It is UNCONDITIONAL within that floor, like the group_by/sort stamps and
-// unlike applyJoinSpillSettings' chplan.HasJoin gate: a DISTINCT is not a
-// plan node but a modifier several emitter paths introduce (the structural
-// closures, the set-operation subqueries, the lag-adjacency sample dedup),
-// so no plan-shape fact names every query that carries one. Gating on one
-// would leave every shape it missed with an unbounded hash set. Ungated, the
-// stamp is inert where it does not apply: only a DISTINCT transform reads it,
-// and only once the query's tracked memory passes spillThreshold(cap).
+// It is stamped on every statement within that floor, like the group_by/sort
+// stamps and unlike applyJoinSpillSettings' chplan.HasJoin gate: a DISTINCT
+// is not a plan node but a modifier several emitter paths introduce (the
+// structural closures, the set-operation subqueries, the lag-adjacency
+// sample dedup), so no plan-shape fact names every query that carries one.
+// Gating on one would leave every shape it missed with an unbounded hash set.
+// The stamp is inert where it does not apply: only a DISTINCT transform reads
+// it, and only once the query's tracked memory passes spillThreshold(cap).
+//
+// The one exception is a DISTINCT over attribute-map keys
+// (f.distinctOverMapKeys), the label-name and tag-name discovery statements.
+// The keys are LowCardinality(String) in cerberus's DDL, and in memory such a
+// DISTINCT holds a fixed-size entry per key whatever the key's length, while
+// a spilled one writes the whole strings and reads them back to merge. With
+// long keys the merge outgrows the in-memory set: on ClickHouse 26.9, 1M
+// distinct 256-byte keys peak at 107 MB in memory, yet the same DISTINCT
+// spilled at 80 MiB aborts at a 160 MiB cap. Withholding the threshold keeps
+// that statement as it runs without distinct_spill. No engine plan emits a
+// DISTINCT over map keys (inspectPlanShape never sets the fact); only a
+// handler's StatementShape does.
 //
 // Result-equivalent for every key cerberus distinguishes (strings, maps,
 // timestamps); see chopt.FeatureDistinctSpill for the float-key caveat
 // upstream documents for a spilled DISTINCT, and for what the stamp does and
 // does not bound inside a recursive CTE.
-func applyDistinctSpillSettings(ctx context.Context, maxMemory int64, distinctSpillEnabled bool) context.Context {
-	if !distinctSpillEnabled {
+func applyDistinctSpillSettings(ctx context.Context, f planShapeFacts, maxMemory int64, distinctSpillEnabled bool) context.Context {
+	if !distinctSpillEnabled || f.distinctOverMapKeys {
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalDistinct, spillThreshold(maxMemory))

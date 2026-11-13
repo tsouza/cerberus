@@ -34,6 +34,11 @@ type planShapeFacts struct {
 	// hasJoin is chplan.HasJoin's answer: any node chplan.IsJoinNode
 	// classifies as join-bearing.
 	hasJoin bool
+	// distinctOverMapKeys: the statement's DISTINCT runs over attribute-map
+	// keys. No plan carries that shape, so the inspection never sets it; a
+	// statement a handler builds reports it through StatementShape
+	// (statementFacts). See applyDistinctSpillSettings.
+	distinctOverMapKeys bool
 	// hasCompare: a chplan.MetricsCompare node — TraceQL compare().
 	hasCompare bool
 	// nativeHistogramAnalyzerHazard: a HistogramQuantileNative,

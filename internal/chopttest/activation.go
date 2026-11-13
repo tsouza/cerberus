@@ -66,6 +66,18 @@ func AssertQuerySettingStamped(ctx context.Context, t testing.TB, conn driver.Co
 	}
 }
 
+// AssertQuerySettingAbsent requires queryID's dispatched query to carry no
+// value for setting in system.query_log's Settings map: the counterpart of
+// AssertQuerySettingStamped for a setting a rule withholds. The caller stamps
+// queryID onto the request context exactly as for AssertQuerySettingStamped.
+func AssertQuerySettingAbsent(ctx context.Context, t testing.TB, conn driver.Conn, queryID, setting string) {
+	t.Helper()
+	if got, present := querySettingForID(ctx, t, conn, queryID, setting); present {
+		t.Errorf("query_id %s: ClickHouse setting %q was stamped as %q on the dispatched query; want it absent",
+			queryID, setting, got)
+	}
+}
+
 // querySettingForID flushes system.query_log and returns queryID's most recent
 // QueryFinish row's value for setting, plus whether the key was present at
 // all. Fatal when no such row exists, for the same reason queryTextForID is:
