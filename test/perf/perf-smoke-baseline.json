@@ -26,6 +26,11 @@
       "ceiling_bytes": 55849092
     },
     {
+      "name": "metadata_spill_search_tags",
+      "max_of_n_bytes": 218288,
+      "ceiling_bytes": 327432
+    },
+    {
       "name": "sorted_slab_over_time_memory_bound",
       "max_of_n_bytes": 89771133,
       "ceiling_bytes": 134656699

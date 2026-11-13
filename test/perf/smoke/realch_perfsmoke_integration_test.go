@@ -336,6 +336,9 @@ func runSentinelFloor(
 				for setting, want := range sentinel.RequiredSettings(sentinelMemoryCapBytes) {
 					chopttest.AssertQuerySettingStamped(ctx, t, conn, queryID, setting, want)
 				}
+				for _, setting := range sentinel.AbsentQuerySettings {
+					chopttest.AssertQuerySettingAbsent(ctx, t, conn, queryID, setting)
+				}
 			}
 
 			const capCeiling = sentinelCapCeilingBytes
