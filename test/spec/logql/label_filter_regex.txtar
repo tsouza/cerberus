@@ -1,14 +1,15 @@
 -- query.logql --
 {job="api"} | env=~"prod|stg"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND match(if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]), ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) IN (?, ?))
 -- args --
 [0] string = "job"
 [1] string = "api"
 [2] string = "env"
 [3] string = "env"
 [4] string = "env"
-[5] string = "^(?:prod|stg)$"
+[5] string = "prod"
+[6] string = "stg"
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String) MATERIALIZED map(),
@@ -36,7 +37,8 @@ detail: log query `{job="api"} | env=~"prod|stg"` answers with log lines: the re
 [2] string = "env"
 [3] string = "env"
 [4] string = "env"
-[5] string = "^(?:prod|stg)$"
+[5] string = "prod"
+[6] string = "stg"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
@@ -45,4 +47,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND match(if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]), ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) IN (?, ?))

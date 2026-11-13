@@ -25,21 +25,27 @@ INSERT INTO otel_logs VALUES
   ["prod-web-data", {"app": "web", "env": "prod", "team": "data"}]
 ]
 -- sql --
-SELECT * FROM `otel_logs` WHERE match(`ResourceAttributes`[?], ?) AND match(`ResourceAttributes`[?], ?) AND NOT match(`ResourceAttributes`[?], ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] IN (?, ?)) AND (`ResourceAttributes`[?] IN (?, ?)) AND (`ResourceAttributes`[?] NOT IN (?, ?))
 -- args --
 [0] string = "env"
-[1] string = "^(?:prod|stg)$"
-[2] string = "app"
-[3] string = "^(?:web|)$"
-[4] string = "team"
-[5] string = "^(?:core|edge)$"
+[1] string = "prod"
+[2] string = "stg"
+[3] string = "app"
+[4] string = "web"
+[5] string = ""
+[6] string = "team"
+[7] string = "core"
+[8] string = "edge"
 -- args_optimized --
 [0] string = "env"
-[1] string = "^(?:prod|stg)$"
-[2] string = "app"
-[3] string = "^(?:web|)$"
-[4] string = "team"
-[5] string = "^(?:core|edge)$"
+[1] string = "prod"
+[2] string = "stg"
+[3] string = "app"
+[4] string = "web"
+[5] string = ""
+[6] string = "team"
+[7] string = "core"
+[8] string = "edge"
 -- chplan --
 Filter predicate=(((ResourceAttributes["env"] =~ "prod|stg") AND (ResourceAttributes["app"] =~ "web|")) AND (ResourceAttributes["team"] !~ "core|edge"))
   Scan(otel_logs)
@@ -51,4 +57,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE match(`ResourceAttributes`[?], ?) AND match(`ResourceAttributes`[?], ?) AND NOT match(`ResourceAttributes`[?], ?)
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] IN (?, ?)) AND (`ResourceAttributes`[?] IN (?, ?)) AND (`ResourceAttributes`[?] NOT IN (?, ?))
