@@ -37,16 +37,14 @@ func TestBoot_RetiredClassicMergeNameWarnsAndStarts(t *testing.T) {
 			if err != nil {
 				t.Fatalf("config.FromEnv: %v", err)
 			}
-			_, promBounds, err := resolveBoundOverrides(cfg)
+			var buf bytes.Buffer
+			_, promBounds, err := bootBounds(slog.New(slog.NewTextHandler(&buf, nil)), cfg)
 			if err != nil {
-				t.Fatalf("resolveBoundOverrides: %v", err)
+				t.Fatalf("bootBounds: %v", err)
 			}
 			if promBounds.ClassicBucketMergeMaxEntries != tc.wantCeiling {
 				t.Fatalf("ClassicBucketMergeMaxEntries = %d, want %d", promBounds.ClassicBucketMergeMaxEntries, tc.wantCeiling)
 			}
-
-			var buf bytes.Buffer
-			warnRetiredSettings(slog.New(slog.NewTextHandler(&buf, nil)), cfg)
 			lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 			if !tc.wantWarning {
 				if buf.Len() != 0 {

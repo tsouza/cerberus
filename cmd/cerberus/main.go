@@ -182,14 +182,20 @@ func resolveBoundOverrides(cfg config.Config) (engine.ResourceBoundOverrides, pr
 	return resourceBounds, promResourceBounds, nil
 }
 
-// warnRetiredSettings logs one startup warning per retired setting the
+// bootBounds is the server boot path's resolution of the resource bounds:
+// [resolveBoundOverrides], then one startup warning per retired setting the
 // configuration still sets. A retired setting is ignored rather than
 // rejected: the process starts on its replacement, or on the replacement's
 // default when that is unset.
-func warnRetiredSettings(logger *slog.Logger, cfg config.Config) {
+func bootBounds(logger *slog.Logger, cfg config.Config) (engine.ResourceBoundOverrides, promql.ResourceBounds, error) {
+	resourceBounds, promResourceBounds, err := resolveBoundOverrides(cfg)
+	if err != nil {
+		return engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, err
+	}
 	for _, w := range promql.RetiredSettingWarnings(cfg.Settings.String) {
 		logger.Warn(w)
 	}
+	return resourceBounds, promResourceBounds, nil
 }
 
 // mountAPIHeads builds and mounts ONLY the query heads enabled by
@@ -645,11 +651,10 @@ func run() error {
 	// (one process = one OOM kills all heads today). The Tempo gRPC server is
 	// likewise nil when tempo is off. /healthz + /readyz are mounted below,
 	// unconditionally, in every mode.
-	resourceBounds, promResourceBounds, err := resolveBoundOverrides(cfg)
+	resourceBounds, promResourceBounds, err := bootBounds(logger, cfg)
 	if err != nil {
 		return err
 	}
-	warnRetiredSettings(logger, cfg)
 
 	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, chOpts.queryLogUnion, limiters, logger, resourceBounds, promResourceBounds, probes)
 	if err != nil {
