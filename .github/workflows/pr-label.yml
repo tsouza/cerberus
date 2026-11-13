@@ -55,7 +55,10 @@ concurrency:
   # PR number for the event path; the run id keeps schedule/dispatch runs
   # (which carry no PR number) from cancelling each other.
   group: pr-label-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  # Never on a Mergify merge-queue draft pull request: it arrives as
+  # `pull_request`, and a cancelled required check dequeues the entry
+  # (test/regression/merge_queue_draft_cancel_test.go).
+  cancel-in-progress: ${{ !startsWith(github.head_ref, 'mergify/merge-queue/') }}
 
 jobs:
   # Event-driven path: label the single PR in the payload.

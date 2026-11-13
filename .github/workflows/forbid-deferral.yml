@@ -59,7 +59,10 @@ concurrency:
   # are queue runs: GitHub reads a cancelled check-run as a failure and dequeues
   # the entry, so this expression must stay provably false on `merge_group`.
   group: forbid-deferral-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Never on a Mergify merge-queue draft pull request: it arrives as
+  # `pull_request`, and a cancelled required check dequeues the entry
+  # (test/regression/merge_queue_draft_cancel_test.go).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/') }}
 
 jobs:
   forbid-deferral:
