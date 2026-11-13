@@ -1,7 +1,10 @@
 # An underscored label resolves through the dotted-key fallback chain
 # (k8s_namespace reads k8s.namespace too), and an absent one reads as ''.
 # The literal set {prod, ''} therefore selects the dotted 'prod' row and the
-# row with neither spelling, and not the 'dev' rows of either spelling.
+# row with neither spelling, and not the 'dev' rows of either spelling. The two
+# 'dev' rows carry distinct instances: both spellings normalise to the same
+# label, so without one they would be one series with two values at one
+# timestamp, which the reference comparison cannot rank.
 
 -- query.promql --
 up{k8s_namespace=~"prod|"}
@@ -18,8 +21,8 @@ CREATE TABLE otel_metrics_gauge (
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_gauge VALUES
     ('up', map('k8s.namespace', 'prod'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
-    ('up', map('k8s_namespace', 'dev'), toDateTime64('2026-01-01 00:00:00', 9), 2.0),
-    ('up', map('k8s.namespace', 'dev'), toDateTime64('2026-01-01 00:00:00', 9), 3.0),
+    ('up', map('k8s_namespace', 'dev', 'instance', 'i-2'), toDateTime64('2026-01-01 00:00:00', 9), 2.0),
+    ('up', map('k8s.namespace', 'dev', 'instance', 'i-3'), toDateTime64('2026-01-01 00:00:00', 9), 3.0),
     ('up', map('instance', 'i-1'), toDateTime64('2026-01-01 00:00:00', 9), 4.0);
 -- expected_rows --
 [

@@ -20,7 +20,6 @@ import { fileURLToPath } from 'node:url';
 import {
   legCommands,
   warmupCommand,
-  FANOUT,
   GO_TEST_TIMEOUT_MINUTES,
   HEADS,
   LEG_BINARY_BUDGET_SECONDS,
