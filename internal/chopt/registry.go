@@ -348,20 +348,22 @@ const (
 	// native timeSeriesRateToGrid ladder, retiring the array-expression fold
 	// (internal/promql.classicBucketWindowRunsExpr).
 	//
-	// The fold it replaces is not merely slow, it is QUADRATIC in a way no
-	// rewrite of the expression can fix: it walks the union bucket bounds with
-	// `arrayMap(u -> …)` over a body that READS the group's bounds / counts
-	// groupArrays, and ClickHouse materialises a lambda's captured columns once
-	// per outer-array element (upstream issue #54967), so the fold builds one
-	// copy of the whole per-series bucket matrix per rung. The
-	// timeSeries*ToGrid family are AGGREGATE functions — they consume rows
-	// through addBatch and never construct that replica — so expressing the
-	// same arithmetic as an aggregate over the UNNESTED ladder (one scalar
-	// counter series per `le` rung, which is exactly what reference Prometheus
-	// models `<name>_bucket{le="X"}` as) removes the replication entirely.
-	// Measured against a real ClickHouse 26.6 at realistic scale, same rows
-	// read (~88-89k), 121 anchors, 5m window: 4,123 ms / 3.411 GB peak /
-	// 51.5 CPU-s for the array fold against 148 ms / 0.130 GB peak / 0.4 CPU-s
+	// The fold it replaces is the sort-and-split array fold
+	// (internal/promql/classic_bucket_bound_runs.go), linear in the bucket
+	// entries it reads but still an array expression: it collects every
+	// in-window sample's bound and count arrays per series into one array
+	// and sorts them. The timeSeries*ToGrid family are AGGREGATE functions
+	// that consume rows through addBatch, so expressing the same arithmetic
+	// as an aggregate over the UNNESTED ladder (one scalar counter series
+	// per `le` rung, which is exactly what reference Prometheus models
+	// `<name>_bucket{le="X"}` as) keeps one scalar state per rung instead of
+	// the collected arrays. The measurement below predates the sort-and-split
+	// fold: it compares the native aggregate with the earlier per-rung
+	// `arrayMap(u -> …)` rescan, which ClickHouse's per-element replication
+	// of a lambda's captured columns (upstream issue #54967) made quadratic.
+	// Against a real ClickHouse 26.6 at realistic scale, same rows read
+	// (~88-89k), 121 anchors, 5m window: 4,123 ms / 3.411 GB peak /
+	// 51.5 CPU-s for that rescan against 148 ms / 0.130 GB peak / 0.4 CPU-s
 	// for the native aggregate — 28x faster, 26x less memory, 129x less CPU.
 	//
 	// The 25.9 floor is INHERITED from the rest of the timeSeries*ToGrid
@@ -1275,11 +1277,11 @@ const (
 	// lowerHistogramQuantileAgg / histogram_quantile_range.go's
 	// lowerHistogramQuantileClassicAggRange) onto a linear
 	// sumMap(bounds, counts) + arrayCumSum reshape for the SUM fold ONLY —
-	// see internal/promql/classic_bucket_merge_summap.go — retiring the
-	// groupArray + per-rung arrayFilter-rescan fold
-	// (classicBucketMergeRunsExpr) that classic_bucket_merge_bound.go's
-	// own audited doc identifies as quadratic in (merge width x total
-	// bucket-element volume). avg/min/max/count/group/stddev/stdvar/quantile
+	// see internal/promql/classic_bucket_merge_summap.go — in place of the
+	// groupArray sort-and-split merge (classicBucketMergeRunsExpr,
+	// internal/promql/classic_bucket_bound_runs.go). Both constructions are
+	// linear in the bucket entries the merge reads, and the same
+	// merged-entry guard bounds both. avg/min/max/count/group/stddev/stdvar/quantile
 	// folds are untouched — every non-sum operator keeps the existing
 	// groupArray-fold shaping unconditionally, chopt feature or not.
 	//
@@ -1307,7 +1309,8 @@ const (
 	//
 	// AutoSelect stays false. Its cost against the linear groupArray merge
 	// — internal/promql/classic_bucket_merge_summap.go's header has the
-	// table — is 3-7% lower per entry on 26.8 and 11-16% higher on 26.6 on
+	// table — is within 0.1% at 25,000 x 50 disjoint on both builds, 3-7%
+	// lower per entry on 26.8 and 11-16% higher on 26.6 on the larger
 	// disjoint layouts, and far lower on a shared one; whether that earns
 	// AutoSelect is
 	// https://github.com/tsouza/cerberus/issues/4079. The bucket-merge

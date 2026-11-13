@@ -504,9 +504,15 @@ healthy), and the k3d e2e substrate is pinned to the bundled 26.8 build.
 `histogram_quantile` over an aggregated classic histogram (`sum by (le)`,
 `avg by (le)`, and the other aggregations) merges every series' bucket layout
 into one. `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` (default
-`2982616`) caps the bucket entries one query may merge: every series' finite
-bounds plus its `+Inf` bucket, counted once per evaluated step and summed across
-every output group. A query past the cap is refused with HTTP 422 and the
+`2982616`) caps the bucket entries one query may merge on every path that runs
+that merge: every series' finite bounds plus its `+Inf` bucket, counted once per
+evaluated step and summed across every output group.
+
+The ceiling does not apply when the aggregated input is a `rate` that ClickHouse's
+native time-series grid functions evaluate: `ts_grid_range` for a range query,
+`ts_grid_instant` for an instant query, each selected at boot on a server that
+supports it. That path takes the quantile over per-bucket rates and runs no
+layout merge. A query past the cap is refused with HTTP 422 and the
 message `classic-histogram bucket merge exceeds the merged-bucket-entry resource
 bound` before ClickHouse runs the merge. The default keeps the merge within 75%
 of the 1 GiB `CERBERUS_CH_QUERY_MAX_MEMORY` default. Scale it with that cap when

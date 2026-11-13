@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"os"
 	"strings"
@@ -73,5 +76,43 @@ func setOrUnset(t *testing.T, key, v string) {
 		if err := os.Unsetenv(key); err != nil {
 			t.Fatalf("unsetenv %s: %v", key, err)
 		}
+	}
+}
+
+// TestRun_ResolvesBoundsThroughBootBounds pins run()'s wiring to the function
+// TestBoot_RetiredClassicMergeNameWarnsAndStarts drives. run() cannot be
+// called from a test (lifecycle_test.go has the reason), so the retired-name
+// warning reaches the server's startup only while run() resolves its bounds
+// through bootBounds: a run() that calls resolveBoundOverrides directly still
+// starts, on the right ceiling, and silently drops the warning.
+func TestRun_ResolvesBoundsThroughBootBounds(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+	var run *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "run" {
+			run = fn
+		}
+	}
+	if run == nil {
+		t.Fatal("main.go declares no run()")
+	}
+	calls := map[string]int{}
+	ast.Inspect(run, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if id, ok := call.Fun.(*ast.Ident); ok {
+				calls[id.Name]++
+			}
+		}
+		return true
+	})
+	if calls["bootBounds"] != 1 {
+		t.Errorf("run() calls bootBounds %d times, want once: the retired-setting warning is logged only on that path", calls["bootBounds"])
+	}
+	if calls["resolveBoundOverrides"] != 0 {
+		t.Errorf("run() calls resolveBoundOverrides directly; it must go through bootBounds, or a retired setting is ignored without a warning")
 	}
 }

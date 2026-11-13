@@ -59,10 +59,12 @@ import (
 // width 250 matches width 50 at equal entries — and grows in steps (buffer
 // growth doubles). Small shapes carry a fixed overhead, so their ratio of
 // peak to entries is higher (368.8 B per entry on 26.8 at 25,000 x 50,
-// 312.4 B on 26.6) while their absolute peak is low. The large-scale slope
-// — 26.8 between 100,000 x 50 and 200,000 x 50, and at 20,000 x 250 — is
-// about 270 B per entry, classicBucketMergeBytesPerEntry, and 26.6 sits
-// below 26.8 at every point.
+// 312.4 B on 26.6) while their absolute peak is low. At the largest shapes
+// the ratio settles near 270 B per entry on 26.8 — 269.4 B at 200,000 x 50
+// and 269.8 B at 20,000 x 250 — which is classicBucketMergeBytesPerEntry.
+// It is a ratio of peak to entries, not a slope: the increment between
+// 100,000 x 50 and 200,000 x 50 is 282.5 B per added entry on 26.8. 26.6
+// sits below 26.8 at every point.
 //
 // The ceiling is checked directly rather than inferred from the slope, with
 // the default guard under the 1 GiB cap: 58,000 x 50 (2,958,000 entries,
@@ -81,10 +83,13 @@ import (
 // bounds the result cerberus drains, not what ClickHouse scans. See
 // https://github.com/tsouza/cerberus/issues/4084.
 const (
-	// classicBucketMergeBytesPerEntry is the merge's large-scale peak cost
-	// per bucket entry: the slope of the calibration in this file's header
-	// (26.8, between 100,000 x 50 and 200,000 x 50, and at 20,000 x 250,
-	// about 270 bytes per entry).
+	// classicBucketMergeBytesPerEntry is the merge's peak memory per bucket
+	// entry at the largest calibrated shapes on 26.8: 2620.9 MiB over
+	// 10,200,000 entries at 200,000 x 50 (269.4 B) and 1291.6 MiB over
+	// 5,020,000 at 20,000 x 250 (269.8 B), rounded to 270. The marginal cost
+	// between 100,000 x 50 and 200,000 x 50 is higher, 282.5 B per entry,
+	// which is why the ceiling is checked directly at its value (this
+	// file's header) rather than trusted from either figure.
 	classicBucketMergeBytesPerEntry = 270
 
 	// classicBucketMergeQueryMemoryBytes is the per-query memory cap the
@@ -93,10 +98,12 @@ const (
 	classicBucketMergeQueryMemoryBytes = 1 << 30
 
 	// classicBucketMergeCapSharePercent is the share of the query cap the
-	// merge may use at the ceiling. The rest covers the scan and the
-	// per-series window stage that run in the same query, and the step the
+	// merge may use at the ceiling. The rest is headroom for the step the
 	// peak takes between calibration points (75,000 x 50 peaks at 733 MiB,
-	// 100,000 x 50 at 1247 MiB on 26.8).
+	// 100,000 x 50 at 1247 MiB on 26.8) and for the scan feeding the merge.
+	// It does not bound the per-series window stage, which runs before the
+	// guard and can by itself exceed the cap (this file's header and
+	// https://github.com/tsouza/cerberus/issues/4084).
 	classicBucketMergeCapSharePercent = 75
 
 	// percentDenominator turns classicBucketMergeCapSharePercent into a
