@@ -100,12 +100,14 @@ func twoLocalShardsConfig() testcontainers.ContainerCustomizer {
 const configFileMode = 0o644
 
 // TestNativeHistogram_LegacyAnalyzerOverDistributed runs the native-histogram
-// quantile (histogram_quantile over sum(rate()), whose plan reads the merged
-// histogram through a scalar subquery) through the production Prometheus
-// handler against Distributed tables over two shards, on a build below 26.8,
-// where the engine runs that plan under the legacy analyzer. This is the
-// combination ClickHouse#29332 broke: subquery predicate pushdown under the
-// legacy analyzer over a Distributed table. It requires that system.query_log
+// quantile (histogram_quantile over sum(rate())) through the production
+// Prometheus handler against Distributed tables over two shards, on a build
+// below 26.8, where the engine runs that plan under the legacy analyzer. The
+// statement nests the merge and window fold in derived tables (FROM (SELECT
+// …)) over a single read of the Distributed table, so the outer TimeUnix
+// predicate is pushed down through those levels into each shard's query
+// under enable_analyzer=0 — the class of rewrite ClickHouse#29332 got wrong
+// over a Distributed table. It requires that system.query_log
 // shows the query ran with enable_analyzer=0 and fanned out to both shards,
 // and that its answer equals the same query's over the unsharded table.
 func TestNativeHistogram_LegacyAnalyzerOverDistributed(t *testing.T) {
