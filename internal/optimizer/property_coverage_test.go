@@ -52,8 +52,9 @@ var uncoveredOptimizerKinds = map[string]string{
 }
 
 // assertOptimizerKindsCovered is called at the end of the property run
-// with the kinds it actually round-tripped.
-func assertOptimizerKindsCovered(t *testing.T, verified map[string]bool) {
+// with the kinds it actually round-tripped. scope names the plans those
+// kinds came from, so a failure says which set fell short.
+func assertOptimizerKindsCovered(t *testing.T, scope string, verified map[string]bool) {
 	t.Helper()
 
 	roster := optimizerNodeKindRoster(t)
@@ -74,9 +75,9 @@ func assertOptimizerKindsCovered(t *testing.T, verified map[string]bool) {
 	}
 	sort.Strings(missing)
 	for _, kind := range missing {
-		t.Errorf("internal/optimizer names chplan.%s, so a rule can act on it, but the property "+
-			"never round-tripped one: generate it in property_stage_gen_test.go, or add an entry "+
-			"to uncoveredOptimizerKinds saying what would have to exist first", kind)
+		t.Errorf("internal/optimizer names chplan.%s, so a rule can act on it, but the property's "+
+			"%s never round-tripped one: generate it in property_stage_gen_test.go, or add an entry "+
+			"to uncoveredOptimizerKinds saying what would have to exist first", kind, scope)
 	}
 
 	for kind, reason := range uncoveredOptimizerKinds {
@@ -88,8 +89,8 @@ func assertOptimizerKindsCovered(t *testing.T, verified map[string]bool) {
 			t.Errorf("uncoveredOptimizerKinds names chplan.%s, which internal/optimizer no longer "+
 				"references — drop the entry", kind)
 		case verified[kind]:
-			t.Errorf("uncoveredOptimizerKinds says chplan.%s cannot be generated, but the property "+
-				"round-tripped one — drop the entry, the gap it describes is closed", kind)
+			t.Errorf("uncoveredOptimizerKinds says chplan.%s cannot be generated, but the property's "+
+				"%s round-tripped one — drop the entry, the gap it describes is closed", kind, scope)
 		}
 	}
 }
