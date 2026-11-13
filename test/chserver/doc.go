@@ -6,9 +6,10 @@
 // query-analyzer posture native-histogram queries run under on each release
 // line, the first release accepting each defect gate's setting, the first
 // release knowing each droppable setting and the client's answer to a node
-// too old for a setting or function it sends, and the
-// external DISTINCT a structural TraceQL query spills through once the
-// distinct_spill threshold is stamped. Every test boots pinned
+// too old for a setting or function it sends, the external DISTINCT a
+// structural TraceQL query spills through once the distinct_spill threshold
+// is stamped, and the classic-histogram bucket merge's admission ceiling
+// against the 1 GiB query memory cap. Every test boots pinned
 // clickhouse/clickhouse-server builds — the supported floor, builds a known
 // upstream defect affects, and builds carrying its fix — under container CPU
 // and memory limits, drives cerberus-emitted shapes through the production

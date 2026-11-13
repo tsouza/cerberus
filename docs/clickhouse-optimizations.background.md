@@ -840,10 +840,13 @@ heterogeneous groups, closed by
 cumulates over its own buckets before the key-wise `sumMap`). The per-row
 `arraySort` / `arrayCumSum` that fix added erased the speedup the feature
 existed for: [#2923](https://github.com/tsouza/cerberus/issues/2923)'s
-real-ClickHouse re-measurement against the shipped construction found its
-cost within ~1% of the fold's at every controlled point, converging to parity
-as volume grows. The existing `maxClassicBucketMergeCostUnits` guard protects
-this path within the same margin, so no second ceiling exists.
+real-ClickHouse re-measurement found its cost within ~1% of the fold's. The
+fold has since become a linear groupArray merge; against it the sumMap path
+costs within a few percent on disjoint layouts and far less on a shared one,
+and whether that earns AutoSelect is
+[#4079](https://github.com/tsouza/cerberus/issues/4079). The
+`maxClassicBucketMergeEntries` guard bounds this path too, so no second
+ceiling exists.
 
 `exp_histogram_merge_summap`'s reconstruction step is width-squared in the
 worst case, independent of row count.

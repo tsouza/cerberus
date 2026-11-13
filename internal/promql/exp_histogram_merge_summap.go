@@ -202,8 +202,7 @@ const (
 	// Array(Float64) values), with any zero-summed bucket dropped (the
 	// same sumMap key-drop quirk classic_bucket_merge_summap.go's header
 	// documents; expHistogramSumMapLadderExpr's indexOf-based
-	// reconstruction below defaults a miss to zero the identical way
-	// classicBucketSumMapLookupExpr does).
+	// reconstruction below defaults a miss to zero).
 	hqAggPosSumMapAlias = "_hq_pos_summap"
 	hqAggNegSumMapAlias = "_hq_neg_summap"
 
@@ -667,8 +666,8 @@ func expHistogramGroupMergeAggsSumMap(mergedScale chplan.Expr, s schema.Metrics)
 // offset 0 / an empty bucket array, rather than calling arrayMin/arrayMax
 // on an empty array (a ClickHouse error).
 //
-// The non-empty reconstruction mirrors classicBucketSumMapLookupExpr's
-// indexOf-based lookup — arrayConcat([0.], sm.2)[indexOf(sm.1, u) + 1],
+// The non-empty reconstruction is an indexOf-based lookup —
+// arrayConcat([0.], sm.2)[indexOf(sm.1, u) + 1],
 // defaulting a miss to 0 via the leading zero pad — walked over
 // range(mergedLength) at ABSOLUTE indices [arrayMin(sm.1), arrayMax(sm.1)]
 // rather than over a separately-constructed union-bounds array: unlike

@@ -293,7 +293,7 @@ func lowerHistogramQuantileClassicBareRange(
 // The lookback is the rate's [range] duration; the bucket aggregation
 // collects every in-window row's layout and counts per anchor and merges
 // them over the union of bounds, mirroring the instant-mode classic-agg
-// path — see classicBucketMergeShaping and classicBucketMergedLadderExpr.
+// path — see classicBucketMergeShaping and classicBucketMergeRunsExpr.
 func lowerHistogramQuantileClassicAggRange(
 	shape histogramAggShape,
 	phi phiArg,
@@ -347,17 +347,12 @@ func lowerHistogramQuantileClassicAggRange(
 		AggFuncs:           shaping.aggs,
 		DropEmptyOnNoGroup: true,
 	}
-	// Bound the cross-series merge before the union/ladder Projects below
-	// ever read it — issue #2408's own audited "Proposed next step": this
-	// stage is the shared, previously-unguarded dominant cost regardless of
-	// which per-series mechanism fed perSeries (fan-out or the native rate
-	// ladder). See classic_bucket_merge_bound.go.
-	guardedCollapse := wrapClassicBucketMergeBudgetGuard(collapse, ctx.resourceBounds.ClassicBucketMergeMaxCostUnits)
-
-	rebuilt, cumulative := shaping.reshape(guardedCollapse, []chplan.Projection{
+	// The merge reads the aggregate through the bucket-merge guard — see
+	// classic_bucket_merge_bound.go.
+	rebuilt, cumulative := shaping.reshape(collapse, []chplan.Projection{
 		{Expr: anchorRef, Alias: stepGridAnchorColumn},
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
-	}, s)
+	}, s, ctx.resourceBounds.ClassicBucketMergeMaxCostUnits)
 	return histogramRangeQuantileTree(rebuilt, cumulative, phi, s, ctx)
 }
 
@@ -404,7 +399,7 @@ func buildHistogramRangeTree(
 	rebuilt, cumulative := shaping.reshape(agg, []chplan.Projection{
 		{Expr: anchorRef, Alias: stepGridAnchorColumn},
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
-	}, s)
+	}, s, ctx.resourceBounds.ClassicBucketMergeMaxCostUnits)
 	return histogramRangeQuantileTree(rebuilt, cumulative, phi, s, ctx)
 }
 

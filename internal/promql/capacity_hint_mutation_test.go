@@ -393,7 +393,7 @@ func TestClassicBucketReshape_CapHintMutantKilled(t *testing.T) {
 		Observe: func(t *testing.T) (int, int) {
 			// A nil fold selects the branch this hint sizes — the argMax
 			// newest-row path, which has no layouts to merge.
-			node, _ := classicBucketShaping{}.reshape(&chplan.OneRow{}, pass, s)
+			node, _ := classicBucketShaping{}.reshape(&chplan.OneRow{}, pass, s, maxClassicBucketMergeEntries)
 			projs := capHintProjections(t, node, "classicBucketShaping.reshape result")
 			return len(projs), cap(projs)
 		},

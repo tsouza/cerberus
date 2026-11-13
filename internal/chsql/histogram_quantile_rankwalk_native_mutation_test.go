@@ -138,7 +138,7 @@ func TestEmitHistogramQuantileRankWalkNative_GroupByAliases(t *testing.T) {
 func TestHistogramQuantileRankWalkNativeValueFrag_ComputedPhiNaNGuard(t *testing.T) {
 	t.Parallel()
 	helpers := hqClassicHelperColumns{
-		keptIdx:      hqClassicKeptIdxColumn,
+		keptMask:     hqClassicKeptMaskColumn,
 		buckets:      hqClassicBucketsColumn,
 		bounds:       hqClassicBoundsColumn,
 		cum:          hqClassicCumColumn,

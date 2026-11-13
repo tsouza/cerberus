@@ -30,8 +30,8 @@
 //     file's header for why no query shape reaches them.
 //   - TestClassicBucketMergeSumMap_NaNPrimitives and
 //     TestClassicBucketMergeSumMap_ZeroKeyIdentity pin the underlying
-//     ClickHouse primitives (arrayCumSum, arrayMax, sumMap, arrayDistinct,
-//     indexOf) classic_bucket_merge_summap.go's design relies on directly,
+//     ClickHouse primitives (arrayCumSum, arrayMax, sumMap, arrayDifference)
+//     the two merge constructions rely on directly,
 //     since a NaN or a -0.0/0.0 identity mismatch cannot be forced through a
 //     legitimate seeded query (Array(UInt64) BucketCounts has no NaN
 //     representation).
@@ -192,9 +192,9 @@ const summapDiffFloatTolerance = 1e-9
 // bounds 1 and 2 is exactly zero — the keys sumMap drops outright
 // (sumMap([1,2,3],[0,0,5]) returns keys=[3]), the quirk
 // classic_bucket_merge_summap.go's header documents. Both strategies must
-// still answer identically: the fan-out path never drops the bound, and
-// classicBucketSumMapLookupExpr's indexOf-based reconstruction restores the
-// dropped rung to the 0.0 the has-filter fold sums to.
+// still answer identically: the groupArray merge never drops the bound, and
+// the per-entry count of one classicBucketSumMapRowEntriesExpr carries keeps
+// sumMap from dropping it, so the rung reads the 0.0 it sums to.
 //
 // A leading empty run is what a dropped key looks like once the values are
 // per-row CUMULATIVE counts; an interior empty bucket (this case's shape
@@ -305,7 +305,7 @@ const summapDiffBareQuery = "histogram_quantile(0.95, sum by(le)(" + summapDiffM
 // What this pins is the END-TO-END answer for such an input. It does NOT
 // reach classicBucketSumMapRowArgs's own per-row bound ordering and
 // equal-bound run collapse: the per-series stage feeding the merge projects
-// classicBucketUnionBoundsExpr as each row's ExplicitBounds, so both stored
+// classicBucketWindowRunsExpr's union as each row's ExplicitBounds, so both stored
 // layouts arrive at the merge already sorted and de-duplicated. Those two
 // normalisations are pinned directly, against rows the merge cannot be
 // handed through any query shape, by
@@ -361,8 +361,8 @@ INSERT INTO otel_metrics_histogram (MetricName, Attributes, TimeUnix, BucketCoun
 //   - arrayCumSum propagates a NaN forward to every LATER element of the
 //     array it is summing. That array is now ONE ROW's own buckets, so the
 //     NaN poisons that row's rungs at and above the NaN bucket and no
-//     others — the same reach classicBucketRowCumulativeExpr's arraySum
-//     gives it on the fan-out path.
+//     others — the same reach it has through the groupArray merge, which
+//     reduces each row with the same arrayCumSum (classicBucketRowEntriesExpr).
 //   - arrayMax IGNORES a NaN, so the monotonic repair both strategies share
 //     answers a poisoned rung with the running maximum either way.
 func TestClassicBucketMergeSumMap_NaNPrimitives(t *testing.T) {
@@ -401,30 +401,16 @@ func TestClassicBucketMergeSumMap_NaNPrimitives(t *testing.T) {
 	}
 }
 
-// TestClassicBucketMergeSumMap_ZeroKeyIdentity pins, directly against real
-// ClickHouse, the four -0.0/0.0 primitives that together make the two merge
+// TestClassicBucketMergeSumMap_ZeroKeyIdentity pins, directly against
+// ClickHouse, the two -0.0/0.0 primitives that make the two merge
 // strategies agree on a group where one row reports a -0.0 bound and another
 // reports 0.0 — the case classic_bucket_merge_summap.go's header covers:
 //
-//   - sumMap merges -0.0 and 0.0 as ONE aggregate key, so the group holds a
-//     single entry for the logical zero bound.
-//   - arrayDistinct — the union-bounds dedup classicBucketUnionBoundsExpr
-//     applies — does NOT, so the merged LAYOUT carries both rungs. That is
-//     the same layout the fan-out path's own union produces from the same
-//     rows: the two strategies share this construction verbatim.
-//   - indexOf treats -0.0 and 0.0 as equal, so both of those rungs read the
-//     ONE sumMap entry — each getting that cumulative count once.
-//   - has treats them as equal too, so classicBucketMergedLadderExpr's own
-//     filter admits the same rows at both rungs and folds the same value
-//     into each.
-//
-// Reading the same cumulative count at two rungs of one bound is not a
-// double count in the cumulative domain — it is what BOTH constructions
-// produce, and emitHistogramQuantile's adjacent-duplicate-bound dedup
-// collapses it downstream. It WAS a double count for the per-bucket-counts
-// shape this feature first shipped, where the shared entry was ADDED once
-// per duplicate rung by the union-wide arrayCumSum; the zero-canonicalising
-// step that guarded that went away with the arrayCumSum itself.
+//   - sumMap merges -0.0 and 0.0 as ONE aggregate key, so the sumMap merge
+//     holds a single rung for the logical zero bound.
+//   - arrayDifference answers 0 between -0.0 and 0.0, so the groupArray
+//     merge's sort-and-split (classicBucketBoundRunsExpr) puts both in ONE
+//     run, and holds a single rung for it too.
 func TestClassicBucketMergeSumMap_ZeroKeyIdentity(t *testing.T) {
 	fixture := newChDBFixture(t, `
 CREATE OR REPLACE TABLE zero_key_identity_probe (bounds Array(Float64), counts Array(Float64)) ENGINE = Memory;
@@ -433,9 +419,7 @@ INSERT INTO zero_key_identity_probe VALUES ([-0.0, 1.0], [3.0, 4.0]), ([0.0, 1.0
 
 	// TWO rows — one reporting a -0.0-keyed bucket, the other a 0.0-keyed
 	// one — is the load-bearing cross-row case: if sumMap treated -0.0 and
-	// 0.0 as DISTINCT keys, this would answer keys=[-0,0,1] vals=[3,1,6]
-	// (two separate zero-ish keys) and each union rung would resolve to its
-	// own partial sum instead of the merged one.
+	// 0.0 as DISTINCT keys, this would answer keys=[-0,0,1] vals=[3,1,6].
 	sumMapRows := fixture.queryOverEmitted(t,
 		"toString(sm.1), toString(sm.2)", "SELECT sumMap(bounds, counts) AS sm FROM zero_key_identity_probe", nil)
 	defer func() { _ = sumMapRows.Close() }()
@@ -449,59 +433,22 @@ INSERT INTO zero_key_identity_probe VALUES ([-0.0, 1.0], [3.0, 4.0]), ([0.0, 1.0
 	if keys != "[-0,1]" || vals != "[4,6]" {
 		t.Fatalf("sumMap over a -0.0-keyed row and a 0.0-keyed row = keys=%s vals=%s, "+
 			"want keys=[-0,1] vals=[4,6] (merged into ONE key, summed 3+1=4) — sumMap no longer "+
-			"treats -0.0 and 0.0 as one key, so the two union rungs a -0.0/0.0 layout produces no "+
-			"longer read one merged entry; classic_bucket_merge_summap.go's header needs revisiting", keys, vals)
+			"treats -0.0 and 0.0 as one key, so the sumMap merge would carry two zero rungs where "+
+			"the groupArray merge carries one", keys, vals)
 	}
 
-	distinctRows := fixture.queryOverEmitted(t, "toString(arrayDistinct([-0.0, 0.0, 1.0]))", "SELECT 1", nil)
-	defer func() { _ = distinctRows.Close() }()
-	if !distinctRows.Next() {
+	diffRows := fixture.queryOverEmitted(t, "toString(arrayDifference([-0.0, 0.0, 1.0]))", "SELECT 1", nil)
+	defer func() { _ = diffRows.Close() }()
+	if !diffRows.Next() {
 		t.Fatal("no rows")
 	}
-	var distinct string
-	if err := distinctRows.Scan(&distinct); err != nil {
+	var diff string
+	if err := diffRows.Scan(&diff); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	const wantDistinct = "[-0,0,1]"
-	if distinct != wantDistinct {
-		t.Fatalf("arrayDistinct([-0.0, 0.0, 1.0]) = %s, want %s — the union layout a -0.0/0.0 group "+
-			"produces has changed shape; both merge strategies build it from this one construction, "+
-			"so they still agree, but classic_bucket_merge_summap.go's header needs revisiting",
-			distinct, wantDistinct)
-	}
-
-	indexOfRows := fixture.queryOverEmitted(t,
-		"indexOf([-0.0, 1.0, 2.0], 0.0), indexOf([0.0, 1.0, 2.0], -0.0)", "SELECT 1", nil)
-	defer func() { _ = indexOfRows.Close() }()
-	if !indexOfRows.Next() {
-		t.Fatal("no rows")
-	}
-	var idxA, idxB int
-	if err := indexOfRows.Scan(&idxA, &idxB); err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-	if idxA != 1 || idxB != 1 {
-		t.Fatalf("indexOf(-0.0/0.0 cross-lookup) = (%d, %d), want (1, 1) — "+
-			"classicBucketSumMapLookupExpr's indexOf-based reconstruction assumes indexOf treats "+
-			"-0.0 and 0.0 as equal for lookup purposes", idxA, idxB)
-	}
-
-	// has is the fan-out path's own rung filter (classicBucketMergedLadderExpr).
-	// It has to agree with indexOf about -0.0/0.0 for the two strategies to
-	// admit the same rows at the same rungs.
-	hasRows := fixture.queryOverEmitted(t,
-		"has([-0.0, 1.0, 2.0], 0.0), has([0.0, 1.0, 2.0], -0.0)", "SELECT 1", nil)
-	defer func() { _ = hasRows.Close() }()
-	if !hasRows.Next() {
-		t.Fatal("no rows")
-	}
-	var hasA, hasB int
-	if err := hasRows.Scan(&hasA, &hasB); err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-	if hasA != 1 || hasB != 1 {
-		t.Fatalf("has(-0.0/0.0 cross-lookup) = (%d, %d), want (1, 1) — the fan-out fold's own "+
-			"rung filter no longer agrees with indexOf about -0.0/0.0, so the two merge "+
-			"strategies would admit different rows at a zero bound", hasA, hasB)
+	const wantDiff = "[0,0,1]"
+	if diff != wantDiff {
+		t.Fatalf("arrayDifference([-0.0, 0.0, 1.0]) = %s, want %s — the groupArray merge's run "+
+			"boundary test would split -0.0 and 0.0 into two rungs where sumMap keeps one", diff, wantDiff)
 	}
 }

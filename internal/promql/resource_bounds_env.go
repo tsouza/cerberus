@@ -10,7 +10,7 @@ import (
 // resource_bounds_env.go closes cerberus issue #2667: the two cross-series
 // histogram-merge resource-bound cost ceilings
 // (maxHistogramMergeCostUnits, histogram_merge_bound.go;
-// maxClassicBucketMergeCostUnits, classic_bucket_merge_bound.go) were
+// maxClassicBucketMergeEntries, classic_bucket_merge_bound.go) were
 // hardcoded Go constants with no operator-facing override, the same problem
 // class #2651/#2653/#2665 fixed for internal/chsql's
 // range_bucket_grid_native_bound.go: a wrong calibration for real production
@@ -41,7 +41,7 @@ const (
 	EnvHistogramMergeMaxCostUnits = "CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS"
 
 	// EnvClassicBucketMergeMaxCostUnits overrides
-	// maxClassicBucketMergeCostUnits (classic_bucket_merge_bound.go): the
+	// maxClassicBucketMergeEntries (classic_bucket_merge_bound.go): the
 	// classic-histogram across-series bucket-merge cost ceiling. See that
 	// constant's own doc for the calibration the shipped default protects.
 	EnvClassicBucketMergeMaxCostUnits = "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS"
@@ -73,7 +73,7 @@ const (
 // ResourceBounds carries the operator-tunable cost ceilings for promql's
 // cross-series histogram-merge resource-bound guards. The zero value is NOT
 // a safe "unlimited" sentinel — histogramMergeCostOverBudgetExpr and
-// classicBucketMergeCostOverBudgetExpr both reject whenever the emitted cost
+// classicBucketMergeBudgetGuardExpr both reject whenever the emitted cost
 // EXCEEDS the configured ceiling, so a zero-valued field rejects nearly
 // every real merge rather than admitting every one. Callers should build a
 // ResourceBounds through [DefaultResourceBounds] or
@@ -93,12 +93,12 @@ type ResourceBounds struct {
 	// issue #2385's 19-real-OOM history the default must not regress.
 	HistogramMergeMaxCostUnits int64
 
-	// ClassicBucketMergeMaxCostUnits bounds `totalBucketVolume x
-	// widestRowBucketWidth` for the classic-histogram across-series bucket
-	// merge (classicBucketMergeCostOverBudgetExpr,
-	// classic_bucket_merge_bound.go). Defaults to
-	// maxClassicBucketMergeCostUnits — see that constant's own doc for the
-	// real-ClickHouse calibration behind the default.
+	// ClassicBucketMergeMaxCostUnits bounds the merged bucket-entry count
+	// (every collected row's finite bounds plus its +Inf rung) one group of
+	// the classic-histogram across-series bucket merge may carry
+	// (classicBucketMergeBudgetGuardExpr, classic_bucket_merge_bound.go).
+	// Defaults to maxClassicBucketMergeEntries — see that file's header for
+	// the real-ClickHouse calibration behind the default.
 	ClassicBucketMergeMaxCostUnits int64
 
 	// ExpHistogramWindowMaxCostUnits bounds `S x W x (S + W)` for one
@@ -120,7 +120,7 @@ type ResourceBounds struct {
 }
 
 // DefaultResourceBounds returns the shipped, load-bearing defaults —
-// maxHistogramMergeCostUnits and maxClassicBucketMergeCostUnits, the same
+// maxHistogramMergeCostUnits and maxClassicBucketMergeEntries, the same
 // named Go constants every lowering path used before this file existed.
 // Every caller that does not opt into [ResourceBoundsFromEnv] (the spec
 // harness, [Lower] / [LowerAt] / [LowerAtRange], and any [LowerOpts] built
@@ -129,7 +129,7 @@ type ResourceBounds struct {
 func DefaultResourceBounds() ResourceBounds {
 	return ResourceBounds{
 		HistogramMergeMaxCostUnits:     maxHistogramMergeCostUnits,
-		ClassicBucketMergeMaxCostUnits: maxClassicBucketMergeCostUnits,
+		ClassicBucketMergeMaxCostUnits: maxClassicBucketMergeEntries,
 	}
 }
 
@@ -201,7 +201,7 @@ func ResourceBoundsFrom(get func(string) string) (ResourceBounds, error) {
 // for cerberus issue #2667's chsql-side siblings
 // (CERBERUS_CH_*_MAX_ROWS): a cost-unit ceiling of zero or less is never a
 // legitimate operator override — histogramMergeCostOverBudgetExpr /
-// classicBucketMergeCostOverBudgetExpr both reject once the emitted cost
+// classicBucketMergeBudgetGuardExpr both reject once the emitted cost
 // EXCEEDS the ceiling, so zero would reject nearly every real merge and a
 // negative value would reject all of them — so an operator who sets one to
 // 0 or below almost certainly meant something else, and this fails fast at

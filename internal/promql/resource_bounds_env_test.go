@@ -8,7 +8,7 @@ import (
 // TestResourceBoundsFromEnv_DefaultsUnset confirms that with neither
 // CERBERUS_PROMQL_*_MAX_COST_UNITS var set, ResourceBoundsFromEnv returns
 // exactly DefaultResourceBounds — the same maxHistogramMergeCostUnits /
-// maxClassicBucketMergeCostUnits constants every lowering path enforced
+// maxClassicBucketMergeEntries constants every lowering path enforced
 // before cerberus issue #2667 added this override surface.
 func TestResourceBoundsFromEnv_DefaultsUnset(t *testing.T) {
 	t.Setenv(EnvHistogramMergeMaxCostUnits, "")
@@ -26,9 +26,9 @@ func TestResourceBoundsFromEnv_DefaultsUnset(t *testing.T) {
 		t.Fatalf("HistogramMergeMaxCostUnits = %d, want the maxHistogramMergeCostUnits constant %d",
 			got.HistogramMergeMaxCostUnits, maxHistogramMergeCostUnits)
 	}
-	if got.ClassicBucketMergeMaxCostUnits != maxClassicBucketMergeCostUnits {
-		t.Fatalf("ClassicBucketMergeMaxCostUnits = %d, want the maxClassicBucketMergeCostUnits constant %d",
-			got.ClassicBucketMergeMaxCostUnits, maxClassicBucketMergeCostUnits)
+	if got.ClassicBucketMergeMaxCostUnits != maxClassicBucketMergeEntries {
+		t.Fatalf("ClassicBucketMergeMaxCostUnits = %d, want the maxClassicBucketMergeEntries constant %d",
+			got.ClassicBucketMergeMaxCostUnits, maxClassicBucketMergeEntries)
 	}
 }
 
@@ -48,9 +48,9 @@ func TestResourceBoundsFromEnv_HistogramMergeOverride(t *testing.T) {
 	if got.HistogramMergeMaxCostUnits != 123456789 {
 		t.Fatalf("HistogramMergeMaxCostUnits = %d, want 123456789 (the env override)", got.HistogramMergeMaxCostUnits)
 	}
-	if got.ClassicBucketMergeMaxCostUnits != maxClassicBucketMergeCostUnits {
+	if got.ClassicBucketMergeMaxCostUnits != maxClassicBucketMergeEntries {
 		t.Fatalf("ClassicBucketMergeMaxCostUnits = %d, want the untouched default %d",
-			got.ClassicBucketMergeMaxCostUnits, maxClassicBucketMergeCostUnits)
+			got.ClassicBucketMergeMaxCostUnits, maxClassicBucketMergeEntries)
 	}
 }
 
@@ -129,7 +129,7 @@ func TestResourceBounds_WithDefaults(t *testing.T) {
 	if got, want := zero.HistogramMergeMaxCostUnits, int64(maxHistogramMergeCostUnits); got != want {
 		t.Fatalf("HistogramMergeMaxCostUnits = %d, want the shipped default %d", got, want)
 	}
-	if got, want := zero.ClassicBucketMergeMaxCostUnits, int64(maxClassicBucketMergeCostUnits); got != want {
+	if got, want := zero.ClassicBucketMergeMaxCostUnits, int64(maxClassicBucketMergeEntries); got != want {
 		t.Fatalf("ClassicBucketMergeMaxCostUnits = %d, want the shipped default %d", got, want)
 	}
 	// The exp-histogram ceiling is derived from the deployment's ClickHouse
@@ -170,9 +170,9 @@ func TestResourceBounds_WithDefaults(t *testing.T) {
 	if got.HistogramMergeMaxCostUnits != 7 {
 		t.Fatalf("HistogramMergeMaxCostUnits = %d, want the explicit 7 preserved", got.HistogramMergeMaxCostUnits)
 	}
-	if got.ClassicBucketMergeMaxCostUnits != maxClassicBucketMergeCostUnits {
+	if got.ClassicBucketMergeMaxCostUnits != maxClassicBucketMergeEntries {
 		t.Fatalf("ClassicBucketMergeMaxCostUnits = %d, want the unset field filled with the default %d",
-			got.ClassicBucketMergeMaxCostUnits, maxClassicBucketMergeCostUnits)
+			got.ClassicBucketMergeMaxCostUnits, maxClassicBucketMergeEntries)
 	}
 }
 
