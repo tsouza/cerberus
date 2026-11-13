@@ -90,8 +90,10 @@ on:
 # this env) is unaffected.
 env:
   GODEBUG: asyncpreemptoff=1
-  # A git transfer that stalls is aborted, so actions/checkout retries it
-  # (test/regression/git_fetch_stall_test.go).
+  # A git transfer that stalls is aborted, so actions/checkout retries it. A
+  # stall before the transfer starts (TCP connect, TLS handshake) is bounded
+  # by each Ubicloud checkout's step cap instead, and the checkout runs once
+  # more (test/regression/git_fetch_stall_test.go).
   GIT_HTTP_LOW_SPEED_LIMIT: "1000"
   GIT_HTTP_LOW_SPEED_TIME: "30"
 
@@ -271,16 +273,26 @@ jobs:
     # concurrent test binaries, so about eight libchdb sessions are busy at
     # once. Eight dedicated vCPUs give each its own core; more would sit idle.
     runs-on: ubicloud-standard-8
-    # The suite's own `-timeout 10m` plus checkout, toolchain, libchdb
-    # install and the chdb-tagged compile ahead of it.
-    timeout-minutes: 15
+    # The suite's own `-timeout 10m` and the 3m abort-reporting margin
+    # (test/regression/go_test_timeout_budget_test.go), plus the work ahead
+    # of it: two capped checkout steps run to their 3m caps
+    # (test/regression/git_fetch_stall_test.go), then toolchain, libchdb
+    # install and the chdb-tagged compile, which take under 2m.
+    timeout-minutes: 21
     steps:
       - name: gate on the changes job
         if: needs.changes.result != 'success'
         run: |
           echo "::error::changes did not succeed (${{ needs.changes.result }}); a required check must not be skipped into green."
           exit 1
-      - uses: actions/checkout@v7
+      - id: checkout
+        uses: actions/checkout@v7
+        timeout-minutes: 3
+        continue-on-error: true
+      - name: Retry the checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
+        timeout-minutes: 3
 
       - uses: ./.github/actions/setup-go
 

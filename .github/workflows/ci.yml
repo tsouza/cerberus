@@ -24,8 +24,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/') }}
 
 env:
-  # A git transfer that stalls is aborted, so actions/checkout retries it
-  # (test/regression/git_fetch_stall_test.go).
+  # A git transfer that stalls is aborted, so actions/checkout retries it. A
+  # stall before the transfer starts (TCP connect, TLS handshake) is bounded
+  # by each Ubicloud checkout's step cap instead, and the checkout runs once
+  # more (test/regression/git_fetch_stall_test.go).
   GIT_HTTP_LOW_SPEED_LIMIT: "1000"
   GIT_HTTP_LOW_SPEED_TIME: "30"
 
@@ -53,16 +55,24 @@ jobs:
   changes:
     name: changes
     # A path filter over the event's diff: no CPU-bound work, so the smallest
-    # Ubicloud runner. Settles well under a minute; 10m bounds a stuck
-    # checkout without ever firing on a real run.
+    # Ubicloud runner. Settles well under a minute; 12m holds two capped
+    # checkout attempts (test/regression/git_fetch_stall_test.go) and the
+    # job's work without ever firing on a real run.
     runs-on: ubicloud-standard-2
-    timeout-minutes: 10
+    timeout-minutes: 12
     outputs:
       docs_only: ${{ steps.docs.outputs.docs_only }}
     steps:
       # Unconditional: a `./`-referenced composite action needs the checkout
       # to exist on every event, not only on a pull request.
-      - uses: actions/checkout@v7
+      - id: checkout
+        uses: actions/checkout@v7
+        timeout-minutes: 3
+        continue-on-error: true
+      - name: Retry the checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
+        timeout-minutes: 3
 
       # The docs-only verdict comes from the lane registry's non-impact globs,
       # rendered by ./.github/actions/docs-only — one list for every workflow
@@ -98,14 +108,23 @@ jobs:
     # `just test-unit`'s own `-timeout` (just/test.just), deliberately
     # shorter so a hang is a Go panic with every goroutine's stack rather
     # than a killed job with no artefact — see that recipe's comment for the
-    # value this scales with. 20m = that 15m inner bound plus room for
-    # checkout, Go setup and `just test-chaos-sleep` ahead of it. An
-    # undeclared budget here would be GitHub's 360-minute default, which
-    # says nothing.
+    # value this scales with. 28m = that 15m inner bound and the 3m
+    # abort-reporting margin (test/regression/go_test_timeout_budget_test.go),
+    # plus the work ahead of the suite: two capped checkout steps run to
+    # their 3m caps (test/regression/git_fetch_stall_test.go), Go setup (2m)
+    # and `just test-chaos-sleep` (its own `-timeout 2m`). An undeclared
+    # budget here would be GitHub's 360-minute default, which says nothing.
     runs-on: ubicloud-standard-8
-    timeout-minutes: 20
+    timeout-minutes: 28
     steps:
-      - uses: actions/checkout@v7
+      - id: checkout
+        uses: actions/checkout@v7
+        timeout-minutes: 3
+        continue-on-error: true
+      - name: Retry the checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
+        timeout-minutes: 3
 
       - uses: ./.github/actions/setup-go
 
@@ -124,13 +143,20 @@ jobs:
     # The full build, three tagged `go vet` passes and the oracle module's
     # tests are CPU-parallel compilation work, so this half runs on the same
     # 8-vCPU Ubicloud runner as `check-test`, for the same per-vCPU-minute
-    # reason. Settles in a few minutes; same 20m budget as `check-test`
+    # reason. Settles in a few minutes; same 28m budget as `check-test`
     # because the two halves are interchangeable in what a stall costs, and
     # a single number is one fewer thing to keep in sync.
     runs-on: ubicloud-standard-8
-    timeout-minutes: 20
+    timeout-minutes: 28
     steps:
-      - uses: actions/checkout@v7
+      - id: checkout
+        uses: actions/checkout@v7
+        timeout-minutes: 3
+        continue-on-error: true
+      - name: Retry the checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
+        timeout-minutes: 3
 
       # The `test oracle module` step below runs `go test ./...` inside the
       # nested test/oracle module, whose graph the root warm step never
@@ -1643,12 +1669,20 @@ jobs:
   link-check:
     name: link-check
     # An offline file walk: no CPU-bound work, so the smallest Ubicloud
-    # runner. Settles well under a minute; 10m leaves room for the retried
+    # runner. Settles well under a minute; 12m holds two capped checkout
+    # attempts (test/regression/git_fetch_stall_test.go) and the retried
     # lychee fetch in setup-lychee without leaving a hang unbounded.
     runs-on: ubicloud-standard-2
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v7
+      - id: checkout
+        uses: actions/checkout@v7
+        timeout-minutes: 3
+        continue-on-error: true
+      - name: Retry the checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
+        timeout-minutes: 3
 
       # Fetching the checker is this lane's only network dependency, and it is
       # retried - see the action for why that matters.
@@ -1706,17 +1740,25 @@ jobs:
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
     # `go list -deps` reads module metadata and compiles nothing, so the
-    # smallest Ubicloud runner. Settles in about a minute and a half; 10m
-    # leaves room for a cold module fetch without leaving a hang unbounded.
+    # smallest Ubicloud runner. Settles in about a minute and a half; 12m
+    # holds two capped checkout attempts (test/regression/git_fetch_stall_test.go)
+    # and a cold module fetch without leaving a hang unbounded.
     runs-on: ubicloud-standard-2
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: gate on the changes job
         if: needs.changes.result != 'success'
         run: |
           echo "::error::changes did not succeed (${{ needs.changes.result }}); a required check must not be skipped into green."
           exit 1
-      - uses: actions/checkout@v7
+      - id: checkout
+        uses: actions/checkout@v7
+        timeout-minutes: 3
+        continue-on-error: true
+      - name: Retry the checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
+        timeout-minutes: 3
 
       # `go list -deps` reads module metadata only — it never compiles
       # anything, so it never touches GOCACHE. The shared setup-go cache
