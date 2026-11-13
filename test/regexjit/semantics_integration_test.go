@@ -82,10 +82,10 @@ var invalidUTF8Values = []string{"\xff", "a\xffb", "api\xff", "\x85", "caf\xe9",
 // and as a line filter (unanchored). The two flags record whether ClickHouse
 // compiles the emitted form; they are observations of the pinned builds. A
 // label matcher whose anchored pattern matches a finite set of literals
-// (“, `api`, `\s`, `(?:x(y))?api`, `api|web-3|`) renders as IN / NOT IN
-// rather than match(), so its form holds no regular expression to compile
-// and anchoredJIT is false; the reference check still holds its answer to
-// Go's regexp on every build.
+// (the empty pattern, `api`, `\s`, `(?:x(y))?api`, `api|web-3|`, `a\.b|xyz`)
+// renders as IN / NOT IN rather than match(), so its form holds no regular
+// expression to compile and anchoredJIT is false; the reference check still
+// holds its answer to Go's regexp on every build.
 type matcherCase struct {
 	pattern       string
 	anchoredJIT   bool

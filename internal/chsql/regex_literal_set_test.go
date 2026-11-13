@@ -61,6 +61,9 @@ func TestRegexMatcher_LiteralSetRendersMembership(t *testing.T) {
 		{"user_anchor_stays_regex", chplan.OpMatch, "^api$", "", nil},
 		{"replacement_char_stays_regex", chplan.OpMatch, "a\uFFFD|b", "", nil},
 		{"negated_fold_case_stays_regex", chplan.OpNotMatch, "(?i)api", "", nil},
+		// The anchored form `^(?:a)\Q)$` quotes the closing `)$`, so the
+		// pattern ends without an end-of-text anchor and matches a prefix.
+		{"quoted_end_anchor_stays_regex", chplan.OpMatch, `a)\Q`, "", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

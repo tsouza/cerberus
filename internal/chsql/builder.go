@@ -3317,7 +3317,7 @@ func NotIn(left Frag, right ...Frag) Frag { return listMembership(left, " NOT IN
 // token with its surrounding spaces and the list's opening paren.
 func listMembership(left Frag, op string, right []Frag) Frag {
 	if len(right) == 0 {
-		panic("chsql: In requires at least one right-hand part")
+		panic("chsql: In / NotIn require at least one right-hand part")
 	}
 	return func(b *Builder) {
 		left(b)
