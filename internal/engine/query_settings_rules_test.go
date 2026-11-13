@@ -411,14 +411,46 @@ func TestApplySortedSlabOverTimeMemoryBound_NestedStampsMaxBlockSize(t *testing.
 	}
 }
 
-// legacyAnalyzerRules is the rule set a fleet below ClickHouse 26.9 resolves:
-// the analyzer is not mandatory, so the fix stamps. It is the zero value,
-// which is also what an engine whose settings were never wired runs under.
+// legacyAnalyzerRules is the rule set a fleet with a node below ClickHouse
+// 26.8 and none on 26.9 or newer resolves, so the fix stamps. It is the zero
+// value, which is also what an engine whose settings were never wired runs
+// under.
 var legacyAnalyzerRules = SettingsRules{}
 
 // mandatoryAnalyzerRules is the rule set a fleet with a node on ClickHouse
 // 26.9 or newer resolves: the fix stamps nothing.
 var mandatoryAnalyzerRules = SettingsRules{AnalyzerMandatory: true}
+
+// fasterAnalyzerRules is the rule set a fleet whose every node runs
+// ClickHouse 26.8 resolves: the server would accept enable_analyzer=0, but
+// the analyzer is faster there, so the fix stamps nothing.
+var fasterAnalyzerRules = SettingsRules{NativeHistogramAnalyzerFaster: true}
+
+// TestApplyNativeHistogramAnalyzerFix_AnalyzerFasterStampsNothing — on a
+// fleet whose every node runs ClickHouse 26.8 or newer, the fix stamps
+// nothing on any hazard shape, and the analyzer-gated co-stamps are no
+// longer suppressed, exactly as under AnalyzerMandatory.
+func TestApplyNativeHistogramAnalyzerFix_AnalyzerFasterStampsNothing(t *testing.T) {
+	plans := map[string]chplan.Node{
+		"quantile":        &chplan.HistogramQuantileNative{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")},
+		"value fn fanout": expHistogramValueFnFanoutPlan(),
+	}
+	for name, plan := range plans {
+		t.Run(name, func(t *testing.T) {
+			f := shapeOf(plan)
+			if !f.nativeHistogramAnalyzerHazard {
+				t.Fatalf("plan carries no analyzer hazard; the test no longer exercises the gate")
+			}
+			ctx := applyNativeHistogramAnalyzerFix(context.Background(), f, fasterAnalyzerRules)
+			if got, ok := chclient.QuerySettingsFromContext(ctx)[settingEnableAnalyzer]; ok {
+				t.Errorf("enable_analyzer = %v stamped; want no stamp when every node runs the faster analyzer", got)
+			}
+			if slices.Contains(fasterAnalyzerRules.enabledOpts(), "native_histogram_legacy_analyzer") {
+				t.Error("enabledOpts reports native_histogram_legacy_analyzer on a fleet that withholds it")
+			}
+		})
+	}
+}
 
 // TestApplyNativeHistogramAnalyzerFix_AnalyzerMandatoryStampsNothing — on a
 // server where the analyzer is mandatory (ClickHouse >= 26.9, which rejects

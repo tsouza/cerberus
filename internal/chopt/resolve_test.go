@@ -1700,3 +1700,74 @@ func TestEnabledSet_WithAnalyzerMandatory(t *testing.T) {
 		t.Error("Equal reports sets with the same ids and analyzer fact as different")
 	}
 }
+
+// TestNativeHistogramAnalyzerFaster pins the 26.7 / 26.8 boundary: every 26.8
+// build and every later line runs native-histogram plans faster under the
+// analyzer, and nothing older does. The line sits below
+// AnalyzerMandatorySince, so 26.8 is a build that still accepts
+// enable_analyzer=0 but no longer gains from it.
+func TestNativeHistogramAnalyzerFaster(t *testing.T) {
+	for _, tc := range []struct {
+		server Version
+		want   bool
+	}{
+		{Version{Major: 24, Minor: 8}, false},
+		{Version{Major: 26, Minor: 6, Patch: 8, Build: 7}, false},
+		{Version{Major: 26, Minor: 7, Patch: 13, Build: 12}, false},
+		{Version{Major: 26, Minor: 8}, true},
+		{Version{Major: 26, Minor: 8, Patch: 36, Build: 3}, true},
+		{Version{Major: 26, Minor: 9}, true},
+		{Version{Major: 27, Minor: 1}, true},
+	} {
+		if got := NativeHistogramAnalyzerFaster(tc.server); got != tc.want {
+			t.Errorf("NativeHistogramAnalyzerFaster(%s) = %v; want %v", tc.server, got, tc.want)
+		}
+	}
+	if AnalyzerMandatory(Version{Major: 26, Minor: 8, Patch: 36, Build: 3}) {
+		t.Error("26.8 reports the analyzer mandatory; the two facts must stay distinct")
+	}
+}
+
+// TestResolve_NativeHistogramAnalyzerFasterIgnoresSelection pins that the
+// fact is read off the build alone, under every selection, that it is not a
+// feature id, and that Equal sees it.
+func TestResolve_NativeHistogramAnalyzerFasterIgnoresSelection(t *testing.T) {
+	if (EnabledSet{}).NativeHistogramAnalyzerFaster() {
+		t.Fatal("the zero EnabledSet reports the analyzer faster; an unresolved set must keep the stamp")
+	}
+	for _, server := range []struct {
+		version Version
+		want    bool
+	}{
+		{Version{Major: 26, Minor: 7, Patch: 13, Build: 12}, false},
+		{Version{Major: 26, Minor: 8, Patch: 36, Build: 3}, true},
+	} {
+		for _, cfg := range []Config{
+			{Optimizations: SelectionAuto},
+			{Optimizations: "off"},
+			{Optimizations: FeatureAggregationInOrder, Mode: Enforcing},
+		} {
+			set, _, err := Resolve(cfg, server.version)
+			if err != nil {
+				t.Fatalf("Resolve(%q) on %s: %v", cfg.Optimizations, server.version, err)
+			}
+			if got := set.NativeHistogramAnalyzerFaster(); got != server.want {
+				t.Errorf("Resolve(%q) on %s: NativeHistogramAnalyzerFaster() = %v; want %v", cfg.Optimizations, server.version, got, server.want)
+			}
+		}
+	}
+	older, _, err := Resolve(Config{Optimizations: "off"}, Version{Major: 26, Minor: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, _, err := Resolve(Config{Optimizations: "off"}, Version{Major: 26, Minor: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(older.IDs(), newer.IDs()) {
+		t.Fatalf("premise: \"off\" resolves different ids on 26.7 and 26.8: %v, %v", older.IDs(), newer.IDs())
+	}
+	if older.Equal(newer) {
+		t.Error("Equal reports sets that disagree on NativeHistogramAnalyzerFaster as equal")
+	}
+}

@@ -22,10 +22,13 @@ import (
 )
 
 // analyzerBuilds are the builds the native-histogram analyzer probe runs on:
-// the last 26.8 LTS build, which still lets a query disable the analyzer, and
-// a 26.9 build, on which the analyzer is mandatory and enable_analyzer=0 is
-// rejected with SETTING_CONSTRAINT_VIOLATION (code 452).
+// a 26.6 build, on which the legacy analyzer still pays off and the stamp is
+// applied; a 26.8 build, which still lets a query disable
+// the analyzer but runs these plans faster with it, so the stamp is withheld;
+// and a 26.9 build, on which the analyzer is mandatory and enable_analyzer=0
+// is rejected with SETTING_CONSTRAINT_VIOLATION (code 452).
 var analyzerBuilds = []string{
+	"clickhouse/clickhouse-server:26.6.1.1193-alpine",
 	"clickhouse/clickhouse-server:26.8.10.6-alpine",
 	"clickhouse/clickhouse-server:26.9.25.15-alpine",
 }
@@ -45,6 +48,11 @@ const (
 // disabled, stated here independently of the chopt.AnalyzerMandatorySince the
 // probe checks.
 var analyzerMandatorySince = chopt.Version{Major: 26, Minor: 9}
+
+// analyzerFasterSince is the first release line on which native-histogram
+// plans run faster under the analyzer, stated here independently of the
+// chopt.NativeHistogramAnalyzerFasterSince the probe checks.
+var analyzerFasterSince = chopt.Version{Major: 26, Minor: 8}
 
 // analyzerSelections are the optimization selections the probe resolves
 // under: the default, and "off", which enables no feature and must still stamp
@@ -85,9 +93,10 @@ var analyzerShapes = []analyzerShape{
 // each analyzerSelections entry resolves on the build, and requires on every
 // build that each query answers with data. It also checks the version policy
 // chopt records, under every selection alike: the resolved set reports the
-// analyzer mandatory exactly from 26.9; below it, system.query_log shows the
-// query ran with the analyzer disabled, and from it the query must not carry
-// enable_analyzer=0, which the server refuses.
+// analyzer mandatory exactly from 26.9 and faster exactly from 26.8; below
+// 26.8, system.query_log shows the query ran with the analyzer disabled, and
+// from it the query must not carry enable_analyzer=0, which 26.8 runs slower
+// and 26.9 refuses.
 func TestNativeHistogram_AnalyzerPostureAcrossBuilds(t *testing.T) {
 	for _, image := range analyzerBuilds {
 		t.Run(image, func(t *testing.T) {
@@ -105,10 +114,13 @@ func TestNativeHistogram_AnalyzerPostureAcrossBuilds(t *testing.T) {
 			for _, selection := range analyzerSelections {
 				t.Run(selection, func(t *testing.T) {
 					set := chopttest.ResolveEnabledSet(ctx, t, s.admin, selection)
-					legacy := !set.AnalyzerMandatory()
-					if mandatory := s.version.AtLeast(analyzerMandatorySince); legacy == mandatory {
-						t.Fatalf("selection %q resolves the legacy analyzer = %v on %s; want it exactly below 26.9", selection, legacy, s.version)
+					if mandatory := s.version.AtLeast(analyzerMandatorySince); set.AnalyzerMandatory() != mandatory {
+						t.Fatalf("selection %q resolves AnalyzerMandatory = %v on %s; want it exactly from 26.9", selection, set.AnalyzerMandatory(), s.version)
 					}
+					if faster := s.version.AtLeast(analyzerFasterSince); set.NativeHistogramAnalyzerFaster() != faster {
+						t.Fatalf("selection %q resolves NativeHistogramAnalyzerFaster = %v on %s; want it exactly from 26.8", selection, set.NativeHistogramAnalyzerFaster(), s.version)
+					}
+					legacy := !s.version.AtLeast(analyzerFasterSince)
 					rules := choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
 					handler := prom.New(client, schema.DefaultOTelMetrics(), nil)
 					handler.Engine.SetSettings(rules)
@@ -158,6 +170,6 @@ func assertAnalyzerNotDisabled(ctx context.Context, t *testing.T, s *server, qid
 		t.Fatalf("query_id %s: no QueryFinish row in system.query_log; the probe did not reach the server", qid)
 	}
 	if disabled != 0 {
-		t.Errorf("query_id %s on %s: %d query(ies) ran with the analyzer disabled; want none from 26.9", qid, s.version, disabled)
+		t.Errorf("query_id %s on %s: %d query(ies) ran with the analyzer disabled; want none from 26.8", qid, s.version, disabled)
 	}
 }

@@ -468,8 +468,9 @@ func applySharedQuerySettings(ctx context.Context, f planShapeFacts, memCap int6
 	// for the wide attribute Map columns can't blow the budget even after the
 	// aggregation spills.
 	ctx = applyCompareMemoryBound(ctx, f, memCap)
-	// Native-histogram-only, below ClickHouse 26.9 (where the analyzer is
-	// mandatory): disable ClickHouse's newer query analyzer, whose cost on the
+	// Native-histogram-only, while some reachable node runs a build below
+	// ClickHouse 26.8 (from which the analyzer is the faster planner on these
+	// plans) and none runs 26.9 or newer (where it is mandatory): disable ClickHouse's newer query analyzer, whose cost on the
 	// merge/window-fold machinery's deeply nested lambda/arrayMap expressions
 	// is wildly superlinear on the floor-pinned CH 24.8 relative to the older
 	// analyzer (cerberus issue #2355). rules.applyFacts below

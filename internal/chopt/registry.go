@@ -2581,6 +2581,22 @@ func AnalyzerMandatory(server Version) bool {
 	return server.AtLeast(AnalyzerMandatorySince)
 }
 
+// NativeHistogramAnalyzerFasterSince is the first ClickHouse release line on
+// which the query analyzer runs native-histogram plans faster than the legacy
+// one, so the enable_analyzer=0 stamp the engine puts on those plans no longer
+// pays off. It sits below AnalyzerMandatorySince: 26.8 still accepts
+// enable_analyzer=0, it only runs slower under it. The measurement behind the
+// line is recorded on the engine's applyNativeHistogramAnalyzerFix.
+var NativeHistogramAnalyzerFasterSince = Version{Major: 26, Minor: 8}
+
+// NativeHistogramAnalyzerFaster reports whether server runs native-histogram
+// plans faster under the query analyzer than under the legacy one. Like
+// AnalyzerMandatory it is a property of the build, independent of any
+// selection.
+func NativeHistogramAnalyzerFaster(server Version) bool {
+	return server.AtLeast(NativeHistogramAnalyzerFasterSince)
+}
+
 // conditionCacheUnsafeBuilds are the ClickHouse builds on which the query
 // condition cache silently drops rows from a later read. Both defects write a
 // "no granule matches" verdict under a predicate's cache key when something
