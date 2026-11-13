@@ -1287,6 +1287,15 @@ consume — `(.*)-[0-9]+` — is still left to RE2.
 The emitter spells the patterns it binds so that they stay inside the subset
 and cheap without changing meaning (`internal/chsql/regex_pattern.go`):
 
+- **Label matchers over a literal set** bind no pattern at all. A PromQL,
+  LogQL or TraceQL `=~` / `!~` whose anchored pattern matches exactly a
+  finite set of strings (`api|web`, `a\.b|c`, `api|`) renders as
+  `<subject> IN (…)` / `NOT IN (…)`, or `=` / `!=` for one string
+  (`internal/chsql/regex_literal_set.go`). The set may hold the empty string,
+  which an absent label reads as. A pattern with a case-insensitive flag, a
+  `.`, a word boundary, U+FFFD, an anchor of its own or an unbounded
+  repetition keeps `match()`, as does one whose set exceeds
+  `maxRegexLiteralSet` strings.
 - **`label_replace`** anchors a regex that parses on its own as
   `(?s)^(?:<re>)$`, the same program as Prometheus's `^(?s:<re>)$`. A regex
   whose `)` closes the anchor group early keeps the reference spelling.

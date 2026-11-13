@@ -841,7 +841,9 @@ func (b *Builder) exprSubscript(s *chplan.Subscript) error {
 //     infix spelling the generic branch writes is a server-side
 //     syntax error (the bug TraceQL `{ event.foo =~ "..." }` hit
 //     before the showcase pinned it). The pattern is anchored via
-//     [anchoredRegexPattern] — see its doc comment.
+//     [anchoredRegexPattern] — see its doc comment — and a pattern
+//     that matches a finite set of literals renders as membership in
+//     that set instead (see [Builder.regexMatcher]).
 //   - Presence != PresenceCompare renders the existence probes for
 //     TraceQL nil comparisons: `arrayExists(x -> mapContains(x, ?),
 //     …)` (HasKey), `arrayExists(x -> not(mapContains(x, ?)), …)`
@@ -964,10 +966,20 @@ func anchoredRegexPattern(v chplan.Expr) chplan.Expr {
 // subject that is not valid UTF-8 is matched as the reference engines'
 // Go regexp matches it. A pattern known only at query time is always
 // guarded. A pattern that fails to render latches its error on b.
+//
+// A pattern whose anchored form matches exactly a finite set of literals
+// ([anchoredRegexLiteralSet]) renders as set membership instead —
+// `<subject> IN (…)`, or `=` for a one-element set, negated for
+// OpNotMatch — which ClickHouse can answer from the primary key or a
+// skip index where match() is evaluated row by row.
 func (b *Builder) regexMatcher(op chplan.BinaryOp, subject Frag, pattern chplan.Expr) {
 	anchored := anchoredRegexPattern(pattern)
 	readsInvalid := true
 	if lit, ok := anchored.(*chplan.LitString); ok {
+		if set, ok := anchoredRegexLiteralSet(lit.V); ok {
+			literalSetMembership(op == chplan.OpNotMatch, subject, set)(b)
+			return
+		}
 		readsInvalid = regexReadsInvalidUTF8(lit.V)
 	}
 	m := goRegexMatch(subject, func(fb *Builder) { _ = fb.Expr(anchored) }, readsInvalid)
@@ -1935,12 +1947,8 @@ func textIndexLikeTokens(literal string) []string {
 // into index predicates, only recognizes the special case where a "regex"
 // carries none.
 func textIndexRegexLiteral(pattern string) (literal string, foldCase, ok bool) {
-	re, err := syntax.Parse(pattern, syntax.Perl)
-	if err != nil {
-		return "", false, false
-	}
-	re = re.Simplify()
-	if re.Op != syntax.OpLiteral {
+	re, ok := parseSimplifiedRegex(pattern)
+	if !ok || re.Op != syntax.OpLiteral {
 		return "", false, false
 	}
 	return string(re.Rune), re.Flags&syntax.FoldCase != 0, true
@@ -3299,13 +3307,21 @@ func Between(f, lo, hi Frag) Frag {
 
 // In returns a Frag rendering "<left> IN (<r0>, <r1>, ...)". Panics if
 // right is empty (an empty IN list is a CH syntax error).
-func In(left Frag, right ...Frag) Frag {
+func In(left Frag, right ...Frag) Frag { return listMembership(left, " IN (", right) }
+
+// NotIn returns a Frag rendering "<left> NOT IN (<r0>, <r1>, ...)". Panics
+// if right is empty (an empty IN list is a CH syntax error).
+func NotIn(left Frag, right ...Frag) Frag { return listMembership(left, " NOT IN (", right) }
+
+// listMembership is the shared body of In / NotIn; op is the operator
+// token with its surrounding spaces and the list's opening paren.
+func listMembership(left Frag, op string, right []Frag) Frag {
 	if len(right) == 0 {
 		panic("chsql: In requires at least one right-hand part")
 	}
 	return func(b *Builder) {
 		left(b)
-		b.sb.WriteString(" IN (")
+		b.sb.WriteString(op)
 		for i, r := range right {
 			if i > 0 {
 				b.sb.WriteString(", ")
