@@ -25,7 +25,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -45,6 +45,7 @@ import {
   joinContinuations,
   paragraphs,
   changedFiles,
+  diffOf,
   parseDiff,
   scanDiff,
   eventPayloadAuthor,
@@ -673,6 +674,33 @@ test('a change that only deletes an empty file still has a file set', () => {
     g('add', '-A');
     g('commit', '-q', '-m', 'delete');
     assert.deepEqual(changedFiles(base, g('rev-parse', 'HEAD'), { cwd: dir }), ['empty.keep']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('diffOf reads the same lines whatever the runner\'s diff config says', () => {
+  const { dir, g, base } = changedFilesRepo([
+    ['color.ui', 'always'],
+    ['diff.noprefix', 'true'],
+    ['diff.external', '/bin/false'],
+  ]);
+  try {
+    writeFileSync(join(dir, 'pure.go'), 'package 7\nline\nadded\n');
+    // A directory named `b` is where a missing prefix shows: with
+    // diff.noprefix its header is `+++ b/x.go`, which reads as `x.go`.
+    mkdirSync(join(dir, 'b'));
+    writeFileSync(join(dir, 'b', 'x.go'), 'package x\n');
+    g('add', '-A');
+    g('commit', '-q', '-m', 'edit');
+    const { lines } = parseDiff(diffOf(base, g('rev-parse', 'HEAD'), { cwd: dir }));
+    assert.deepEqual(
+      lines.filter((l) => l.added).map((l) => [l.file, l.text]),
+      [
+        ['b/x.go', 'package x'],
+        ['pure.go', 'added'],
+      ],
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

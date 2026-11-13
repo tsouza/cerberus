@@ -985,12 +985,13 @@ export function commitsIn(base, head) {
     .filter((c) => c.sha !== '');
 }
 
-// DIFF_PREFIXES — pinned so a runner's `diff.noprefix` or
-// `diff.mnemonicPrefix` cannot change the headers parseDiff reads.
-const DIFF_PREFIXES = ['--src-prefix=a/', '--dst-prefix=b/'];
+// DIFF_FORMAT — pinned so a runner's git config cannot change the text
+// parseDiff reads: no colour codes, no external diff driver, and the a/ b/
+// prefixes whatever `diff.noprefix` or `diff.mnemonicPrefix` say.
+const DIFF_FORMAT = ['--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/'];
 
-export function diffOf(base, head) {
-  const res = git(['diff', ...DIFF_PREFIXES, `--unified=${CITATION_WINDOW_LINES}`, `${base}...${head}`]);
+export function diffOf(base, head, opts = {}) {
+  const res = git(['diff', ...DIFF_FORMAT, `--unified=${CITATION_WINDOW_LINES}`, `${base}...${head}`], opts);
   if (res.status !== 0) {
     throw new Error(`git diff ${base}...${head} failed: ${res.stderr.trim()}`);
   }
