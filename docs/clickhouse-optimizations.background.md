@@ -842,8 +842,8 @@ cumulates over its own buckets before the key-wise `sumMap`). The per-row
 existed for: [#2923](https://github.com/tsouza/cerberus/issues/2923)'s
 real-ClickHouse re-measurement found its cost within ~1% of the fold's. The
 fold has since become a linear groupArray merge; against it the sumMap path
-costs within a few percent on disjoint layouts and far less on a shared one,
-and whether that earns AutoSelect is
+costs 3-7% less per entry on 26.8 and 11-16% more on 26.6 on disjoint layouts,
+and far less on a shared one, and whether that earns AutoSelect is
 [#4079](https://github.com/tsouza/cerberus/issues/4079). The
 `maxClassicBucketMergeEntries` guard bounds this path too, so no second
 ceiling exists.

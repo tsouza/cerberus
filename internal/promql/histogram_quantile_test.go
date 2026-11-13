@@ -129,9 +129,9 @@ func TestLower_HistogramQuantile_OverAggregation(t *testing.T) {
 	// including a bare `rate(...)` with no aggregation wrapper, which
 	// still merges the layouts a single series shows across the window.
 	// Each row's bounds and counts are collected verbatim and merged by
-	// the Projects above, in the cumulative per-`le` domain; the trailing
-	// sum is the group's merged bucket-entry count the merge guard reads.
-	mergeAggs := []string{"groupArray", "groupArray", "sum"}
+	// the Projects above, in the cumulative per-`le` domain. The merge
+	// guard counts entries beneath the Aggregate, not inside it.
+	mergeAggs := []string{"groupArray", "groupArray"}
 
 	cases := []struct {
 		name           string

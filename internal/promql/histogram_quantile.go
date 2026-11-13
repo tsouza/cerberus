@@ -1332,7 +1332,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	shaping := ctx.lowerers.ClassicBucketMerge.LowerClassicBucketMerge(shape.classicFold, shape.classicFoldIsSum, s)
 	agg := &chplan.Aggregate{
 		Roles:              metricRoles(s),
-		Input:              perSeries,
+		Input:              classicBucketMergeInputGate(perSeries, s, ctx.resourceBounds.ClassicBucketMergeMaxEntries),
 		GroupBy:            userGroupBy,
 		GroupByAliases:     userAliases,
 		AggFuncs:           shaping.aggs,
@@ -1341,11 +1341,11 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	// Inner Projects re-shape the aggregate output back into the
 	// histogram-row contract HistogramQuantile expects: an Attributes
 	// column (rebuilt from the gkey aliases) plus the merged
-	// BucketCounts + ExplicitBounds pair. The merge reads the aggregate
-	// through the bucket-merge guard — see classic_bucket_merge_bound.go.
+	// BucketCounts + ExplicitBounds pair. The Aggregate reads the per-series
+	// rows through the bucket-merge guard — see classic_bucket_merge_bound.go.
 	rebuilt, cumulative := shaping.reshape(agg, []chplan.Projection{
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
-	}, s, ctx.resourceBounds.ClassicBucketMergeMaxCostUnits)
+	}, s)
 
 	hq := &chplan.HistogramQuantile{
 		Input:                  rebuilt,
@@ -1552,7 +1552,6 @@ func classicBucketMergeShaping(fold classicBucketRungFold, s schema.Metrics) cla
 				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.BucketCountsColumn}},
 				Alias: hqAggCountsListAlias,
 			},
-			classicBucketMergeEntriesAgg(s),
 		},
 		fold: fold,
 	}
@@ -1564,14 +1563,13 @@ func classicBucketMergeShaping(fold classicBucketRungFold, s schema.Metrics) cla
 // the resulting BucketCounts is an already-cumulative ladder, which the
 // caller hands to chplan.HistogramQuantile.BucketCountsCumulative.
 //
-// maxMergeEntries is the merge guard's ceiling (see
-// classic_bucket_merge_bound.go), read only by a layout-merge reshape: every
-// array the merge reads off group passes through the guard's gate first.
+// A layout-merge group must read its rows through
+// classicBucketMergeInputGate (classic_bucket_merge_bound.go), which bounds
+// the merge before the Aggregate runs.
 func (sh classicBucketShaping) reshape(
 	group chplan.Node,
 	passthrough []chplan.Projection,
 	s schema.Metrics,
-	maxMergeEntries int64,
 ) (chplan.Node, bool) {
 	if sh.fold == nil {
 		projections := make([]chplan.Projection, 0, len(passthrough)+2)
@@ -1591,12 +1589,11 @@ func (sh classicBucketShaping) reshape(
 	// carries it — and both produce it one rung at a time rather than by
 	// accumulating, so both owe Layer 2's repair. See
 	// classic_bucket_bound_runs.go and classic_bucket_merge_summap.go.
-	gate := func(list chplan.Expr) chplan.Expr { return classicBucketMergeGateExpr(list, maxMergeEntries) }
 	mergedExpr := classicBucketMergeRunsExpr(sh.fold,
-		gate(&chplan.ColumnRef{Name: hqAggBoundsListAlias}),
-		gate(&chplan.ColumnRef{Name: hqAggCountsListAlias}))
+		&chplan.ColumnRef{Name: hqAggBoundsListAlias},
+		&chplan.ColumnRef{Name: hqAggCountsListAlias})
 	if sh.sumMap {
-		mergedExpr = classicBucketSumMapMergedExpr(gate)
+		mergedExpr = classicBucketSumMapMergedExpr()
 	}
 	merged := make([]chplan.Projection, 0, len(passthrough)+1)
 	merged = append(merged, passthrough...)

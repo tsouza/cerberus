@@ -465,12 +465,14 @@ instead (` + "`internal/engine/resource_bound_env.go`" + `,
   ` + "`60000000`" + `) - the native-histogram across-series merge cost ceiling that
   closed issue #2385 after 19 real production OOMs
   (` + "`internal/promql/histogram_merge_bound.go`" + `, ` + "`maxHistogramMergeCostUnits`" + `).
-- **` + "`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS`" + `** (int64, default
+- **` + "`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES`" + `** (int64, default
   ` + "`2982616`" + `) - the classic-histogram across-series bucket-merge ceiling: the
-  most merged bucket entries (each collected row's finite bounds plus its +Inf
-  rung) one merge group may carry
+  most bucket entries one query may merge (every per-series row's finite bounds
+  plus its +Inf rung, summed across every group and step)
   (` + "`internal/promql/classic_bucket_merge_bound.go`" + `,
-  ` + "`maxClassicBucketMergeEntries`" + `).
+  ` + "`maxClassicBucketMergeEntries`" + `). It replaces
+  ` + "`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS`" + `, which counted a
+  different unit; setting the old name fails startup.
 - **` + "`CERBERUS_CH_MAX_EMITTED_SQL_BYTES`" + `** (int64, default ` + "`262144`" + `) -
   the bytes of SQL cerberus will emit for one statement
   (` + "`internal/chsql/emit_size_bound.go`" + `, ` + "`maxEmittedSQLBytes`" + `).

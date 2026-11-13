@@ -1307,8 +1307,9 @@ const (
 	//
 	// AutoSelect stays false. Its cost against the linear groupArray merge
 	// — internal/promql/classic_bucket_merge_summap.go's header has the
-	// table — is within a few percent on disjoint layouts and far lower on
-	// a shared one; whether that earns AutoSelect is
+	// table — is 3-7% lower per entry on 26.8 and 11-16% higher on 26.6 on
+	// disjoint layouts, and far lower on a shared one; whether that earns
+	// AutoSelect is
 	// https://github.com/tsouza/cerberus/issues/4079. The bucket-merge
 	// guard ([maxClassicBucketMergeEntries]) bounds this path too, so no
 	// second, sumMap-specific ceiling exists. The feature is reachable by

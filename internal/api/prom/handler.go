@@ -110,7 +110,7 @@ type Handler struct {
 	// ResourceBounds carries the operator-tunable histogram cross-series
 	// merge cost ceilings (cerberus issue #2667:
 	// CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS /
-	// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS). Wired at boot
+	// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES). Wired at boot
 	// in cmd/cerberus from promql.ResourceBoundsFromEnv; the zero value
 	// resolves to promql.DefaultResourceBounds() at the lowering-entry
 	// seam (promql.LowerOpts.ResourceBounds -> ResourceBounds.withDefaults),

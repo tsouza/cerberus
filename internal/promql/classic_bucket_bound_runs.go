@@ -240,9 +240,8 @@ func classicBucketRowsEntriesFlattened(prefix string, rows chplan.Expr, withOrde
 // union bound, folded by fold over the rows carrying it, plus the trailing
 // +Inf rung folded over every row (the overflow bucket exists in every
 // layout). boundsList and countsList are the group's groupArray-collected
-// ExplicitBounds and BucketCounts lists, read through the merge guard's gate
-// (see classicBucketMergeGateExpr) so ClickHouse cannot start the merge
-// before the guard has run.
+// ExplicitBounds and BucketCounts lists. The Aggregate that collects them
+// reads its rows through the merge guard (classicBucketMergeInputGate).
 func classicBucketMergeRunsExpr(fold classicBucketRungFold, boundsList, countsList chplan.Expr) chplan.Expr {
 	rows := call(
 		chplan.FnArrayMap,

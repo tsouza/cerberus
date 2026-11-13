@@ -10,8 +10,8 @@
 // This is the issue's own repro, reproduced verbatim: one series carries
 // four samples over a 5-minute window, one sample's ExplicitBounds ending
 // in a literal `inf` and a later sample's in a literal `nan` (malformed
-// but real OTLP data can produce either). Before the #2495 fix,
-// classicBucketUnionBoundsExpr folded each row's raw ExplicitBounds
+// but real OTLP data can produce either). Before the #2495 fix, the
+// layout-union builder folded each row's raw ExplicitBounds
 // straight into the merged layout with no isFinite filter, so the
 // non-finite value survived into the node's own output ExplicitBounds and
 // emitHistogramQuantile's overflow-bucket clamp

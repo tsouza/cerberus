@@ -145,7 +145,7 @@ type apiHeads struct {
 // / CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS / CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS)
 // and the two PromQL-only histogram-merge cost-unit knobs
 // (CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS /
-// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS, wired only onto the
+// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES, wired only onto the
 // prom head's Handler.ResourceBounds — see newPromHandler's own doc for why
 // LogQL/TraceQL never see it), all five from issue #2667, plus issue #2733's
 // head-agnostic emitted-SQL statement-size bound

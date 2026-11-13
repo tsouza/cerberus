@@ -85,14 +85,18 @@ import (
 //	shared   100,000 x  50   5,100,000    149.9 MiB    149.8 MiB
 //	disjoint  10,000 x 250   2,510,000    602.1 MiB    601.3 MiB
 //
-// Per entry it costs no more than the groupArray merge on disjoint layouts
-// and far less on a shared one, whose sumMap state holds one key per
-// distinct bound, so [maxClassicBucketMergeEntries] protects this path too
-// and no second ceiling exists. Under the 1 GiB cap with the default guard,
-// 58,000 x 50 disjoint completes at 690.0 / 690.2 MiB and 60,000 x 50 is
-// refused with the guard's message. The guard runs after the sumMap
-// aggregate on this path — the aggregate is the merge — so a refused query
-// has already paid for it (712.6 / 711.4 MiB at 60,000 x 50).
+// Against the groupArray merge's calibration (classic_bucket_merge_bound.go)
+// it costs 3-7% less per entry on 26.8 on disjoint layouts, 11-16% more on
+// 26.6 (599.0 against 517.5 MiB at 50,000 x 50, 1197.8 against 1028.8 MiB at
+// 100,000 x 50, 601.3 against 539.7 MiB at 10,000 x 250), and far less on a
+// shared layout, whose sumMap state holds one key per distinct bound. Under
+// the 1 GiB cap with the default guard, 58,000 x 50 disjoint completes at
+// 747.0 / 746.4 MiB (26.8 / 26.6), inside the cap share the ceiling is sized
+// for, so [maxClassicBucketMergeEntries] bounds this path too and no second
+// ceiling exists. The guard counts the entries before the sumMap aggregate
+// reads a row (classicBucketMergeInputGate), so 60,000 x 50 is refused at
+// 128.1 / 127.7 MiB and 100,000 x 50 at 246.0 / 245.4 MiB, before the
+// aggregate runs.
 //
 // The feature keeps `AutoSelect: false`; it stays reachable through
 // `CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap`.
@@ -182,14 +186,10 @@ func classicBucketRowTotalColumnExpr(s schema.Metrics) chplan.Expr {
 // same place: classicBucketShaping.reshape aliases it to hqAggMergedAlias and
 // hands its ladder to classicBucketMonotonicExpr, because per-bound rungs
 // folded independently can dip. See this file's header.
-//
-// gate wraps each array read off the sumMap result — the merge guard's
-// classicBucketMergeGateExpr — so no part of the merge can run before the
-// guard has.
-func classicBucketSumMapMergedExpr(gate func(chplan.Expr) chplan.Expr) chplan.Expr {
+func classicBucketSumMapMergedExpr() chplan.Expr {
 	sm := chplan.Expr(&chplan.ColumnRef{Name: hqAggSumMapAlias})
-	keys := gate(&chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{sm, &chplan.LitInt{V: runsTupleBounds}}})
-	vals := gate(&chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{sm, &chplan.LitInt{V: runsTupleValues}}})
+	keys := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{sm, &chplan.LitInt{V: runsTupleBounds}}}
+	vals := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{sm, &chplan.LitInt{V: runsTupleValues}}}
 	ladder := &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{
 		vals,
 		&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: hqAggInfTotalAlias}}},
@@ -205,7 +205,6 @@ func classicBucketSumMapMergedExpr(gate func(chplan.Expr) chplan.Expr) chplan.Ex
 func classicBucketMergeShapingSumMap(s schema.Metrics) classicBucketShaping {
 	return classicBucketShaping{
 		aggs: []chplan.AggFunc{
-			classicBucketMergeEntriesAgg(s),
 			{
 				Fn:    chplan.FnSumMap,
 				Args:  []chplan.Expr{classicBucketSumMapRowEntriesExpr(s)},
@@ -218,7 +217,7 @@ func classicBucketMergeShapingSumMap(s schema.Metrics) classicBucketShaping {
 			},
 		},
 		// fold is never invoked when sumMap is set — classicBucketShaping
-		// .reshape swaps in classicBucketSumMapLadderExpr for the ladder it
+		// .reshape swaps in classicBucketSumMapMergedExpr for the ladder it
 		// would otherwise build. It is set purely so that reshape's nil
 		// check (the argMax newest-row path, which has no layouts to merge)
 		// keeps routing this shaping through the merge branch, exactly as

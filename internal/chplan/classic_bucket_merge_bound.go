@@ -2,10 +2,11 @@ package chplan
 
 // ClassicBucketMergeBudgetMessage is the `throwIf` message the
 // classic-histogram cross-series bucket merge guard
-// (internal/promql/classic_bucket_merge_bound.go) raises when one merge
-// group carries more bucket entries — every collected row's finite bounds
-// plus its +Inf rung — than the configured ceiling
-// (CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS).
+// (internal/promql/classic_bucket_merge_bound.go) raises when one query's
+// merge would read more bucket entries — every per-series row's finite
+// bounds plus its +Inf rung, across every group and step — than the
+// configured ceiling
+// (CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES).
 //
 // It lives in chplan for the same reason [HistogramMergeBudgetMessage]
 // does: the lowering that builds the guard (internal/promql) may not import
