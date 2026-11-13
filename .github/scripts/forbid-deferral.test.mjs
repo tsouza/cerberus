@@ -24,7 +24,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -43,6 +44,7 @@ import {
   issuesReadability,
   joinContinuations,
   paragraphs,
+  changedFiles,
   parseDiff,
   scanDiff,
   eventPayloadAuthor,
@@ -599,7 +601,7 @@ test('an unchanged line inside the window still supplies the citation', () => {
   assert.deepEqual(found[0].refs, [1535]);
 });
 
-test('the diff parser reports a deleted file but reads no line from it', () => {
+test('the diff parser reads no line from a deleted file', () => {
   const diff = [
     'diff --git a/gone.go b/gone.go',
     '--- a/gone.go',
@@ -613,8 +615,7 @@ test('the diff parser reports a deleted file but reads no line from it', () => {
     ' package kept',
     '+// added',
   ].join('\n');
-  const { files, lines } = parseDiff(diff);
-  assert.deepEqual(files, ['gone.go', 'kept.go']);
+  const { lines } = parseDiff(diff);
   assert.deepEqual(
     lines.map((l) => [l.file, l.line, l.added]),
     [
@@ -624,32 +625,57 @@ test('the diff parser reports a deleted file but reads no line from it', () => {
   );
 });
 
-test('a change that only deletes, or carries no hunk, still has a file set', () => {
-  // A deletion-only change is a real change: an empty file set means the
-  // parser lost track of git's output, and the gate fails closed on that.
-  const diff = [
-    'diff --git a/docs/.gitkeep b/docs/.gitkeep',
-    'deleted file mode 100644',
-    'index e69de29bb..000000000',
-    'diff --git a/dir with space/run.sh b/dir with space/run.sh',
-    'old mode 100644',
-    'new mode 100755',
-    'diff --git a/old.go b/new.go',
-    'similarity index 100%',
-    'rename from old.go',
-    'rename to new.go',
-    'diff --git a/notes.md b/notes.md',
-    'deleted file mode 100644',
-    'index 144425f1b..000000000',
-    '--- a/notes.md',
-    '+++ /dev/null',
-    '@@ -1,2 +0,0 @@',
-    '-# first',
-    '-# second',
-  ].join('\n');
-  const { files, lines } = parseDiff(diff);
-  assert.deepEqual(files, ['docs/.gitkeep', 'dir with space/run.sh', 'new.go', 'notes.md']);
-  assert.deepEqual(lines, []);
+// changedFilesRepo — a throwaway repo whose base commit holds every file the
+// changedFiles cases delete, rename or re-mode. Returns its dir and base SHA.
+function changedFilesRepo(gitConfig = []) {
+  const dir = mkdtempSync(join(tmpdir(), 'forbid-deferral-files-'));
+  const g = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  g('init', '-q');
+  g('config', 'user.email', 'test@example.com');
+  g('config', 'user.name', 'test');
+  g('config', 'core.quotePath', 'true');
+  for (const [k, v] of gitConfig) g('config', k, v);
+  for (const name of ['empty.keep', 'caf\u00e9.txt', 'tab\there', 'pure.go', 'edited.go', 'run.sh']) {
+    writeFileSync(join(dir, name), name === 'empty.keep' || name === 'tab\there' ? '' : `package ${name.length}\nline\n`);
+  }
+  g('add', '-A');
+  g('commit', '-q', '-m', 'base');
+  return { dir, g, base: g('rev-parse', 'HEAD') };
+}
+
+test('changedFiles reads every touched path from git, deletions and renames included', () => {
+  const { dir, g, base } = changedFilesRepo([['diff.noprefix', 'true']]);
+  try {
+    rmSync(join(dir, 'empty.keep'));
+    rmSync(join(dir, 'caf\u00e9.txt'));
+    rmSync(join(dir, 'tab\there'));
+    renameSync(join(dir, 'pure.go'), join(dir, 'pure2.go'));
+    renameSync(join(dir, 'edited.go'), join(dir, 'edited2.go'));
+    writeFileSync(join(dir, 'edited2.go'), 'package 9\nline\nmore\n');
+    chmodSync(join(dir, 'run.sh'), 0o755);
+    g('add', '-A');
+    g('commit', '-q', '-m', 'change');
+    const files = changedFiles(base, g('rev-parse', 'HEAD'), { cwd: dir });
+    assert.deepEqual(
+      [...files].sort(),
+      ['caf\u00e9.txt', 'edited.go', 'edited2.go', 'empty.keep', 'pure.go', 'pure2.go', 'run.sh', 'tab\there'].sort(),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a change that only deletes an empty file still has a file set', () => {
+  // The fail-closed empty-set check must not fire on a real change.
+  const { dir, g, base } = changedFilesRepo();
+  try {
+    rmSync(join(dir, 'empty.keep'));
+    g('add', '-A');
+    g('commit', '-q', '-m', 'delete');
+    assert.deepEqual(changedFiles(base, g('rev-parse', 'HEAD'), { cwd: dir }), ['empty.keep']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('a line that merely starts with a plus inside a hunk is still content', () => {

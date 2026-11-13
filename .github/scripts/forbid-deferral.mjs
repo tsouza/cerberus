@@ -660,28 +660,11 @@ export function scanProse({ text, surface, locate, repoSlug }) {
 
 // --- diff surface -----------------------------------------------------------
 
-// parseDiff — a unified diff into { files, lines }. `files` is every path the
-// change touches, including a deleted file and one whose diff carries no hunk
-// (an empty file added or deleted, a mode change, a pure rename): a change that
-// only deletes is a real change, not an empty one. `lines` carries every line
-// that exists in the NEW file (added and context) with its new-file number and
-// whether the change added it. Removed lines have no new-file position and are
-// dropped: this gate reads what the change INTRODUCES.
-// unchangedHeaderPath — the path of a `diff --git a/<p> b/<p>` header whose two
-// sides name the same file, or null for a rename or copy (whose paths the
-// `---` / `+++` / `rename to` lines carry). Splitting on the midpoint is
-// exact when both sides are equal, whatever spaces the path holds.
-function unchangedHeaderPath(rest) {
-  if (rest.length % 2 === 0) return null;
-  const half = (rest.length - 1) / 2;
-  const a = rest.slice(0, half);
-  const b = rest.slice(half + 1);
-  if (!a.startsWith('a/') || !b.startsWith('b/') || a.slice(2) !== b.slice(2)) return null;
-  return a.slice(2);
-}
-
+// parseDiff — a unified diff into { lines }, where `lines` carries every
+// line that exists in the NEW file (added and context) with its new-file number
+// and whether the change added it. Removed lines have no new-file position and
+// are dropped: this gate reads what the change INTRODUCES.
 export function parseDiff(diffText) {
-  const files = new Set();
   const lines = [];
   let file = null;
   let inHunk = false;
@@ -691,23 +674,11 @@ export function parseDiff(diffText) {
     if (raw.startsWith('diff --git ')) {
       inHunk = false;
       file = null;
-      const path = unchangedHeaderPath(raw.slice('diff --git '.length));
-      if (path !== null) files.add(path);
-      continue;
-    }
-    if (!inHunk && raw.startsWith('--- ')) {
-      const path = raw.slice(4).trim();
-      if (path !== '/dev/null') files.add(path.replace(/^a\//, ''));
       continue;
     }
     if (!inHunk && raw.startsWith('+++ ')) {
       const path = raw.slice(4).trim();
       file = path === '/dev/null' ? null : path.replace(/^b\//, '');
-      if (file) files.add(file);
-      continue;
-    }
-    if (!inHunk && raw.startsWith('rename to ')) {
-      files.add(raw.slice('rename to '.length));
       continue;
     }
     if (raw.startsWith('@@')) {
@@ -733,7 +704,7 @@ export function parseDiff(diffText) {
     // Anything else ends the hunk (a mode line, a "Binary files ... differ").
     inHunk = false;
   }
-  return { files: [...files], lines };
+  return { lines };
 }
 
 // contiguousRuns — a file's diff lines split into runs of consecutive
@@ -1014,12 +985,29 @@ export function commitsIn(base, head) {
     .filter((c) => c.sha !== '');
 }
 
+// DIFF_PREFIXES — pinned so a runner's `diff.noprefix` or
+// `diff.mnemonicPrefix` cannot change the headers parseDiff reads.
+const DIFF_PREFIXES = ['--src-prefix=a/', '--dst-prefix=b/'];
+
 export function diffOf(base, head) {
-  const res = git(['diff', `--unified=${CITATION_WINDOW_LINES}`, `${base}...${head}`]);
+  const res = git(['diff', ...DIFF_PREFIXES, `--unified=${CITATION_WINDOW_LINES}`, `${base}...${head}`]);
   if (res.status !== 0) {
     throw new Error(`git diff ${base}...${head} failed: ${res.stderr.trim()}`);
   }
   return res.stdout;
+}
+
+// changedFiles — every path the range touches, read from git rather than
+// reconstructed from diff text: `--name-only -z` prints each path raw (no
+// quoting, no prefix), and `--no-renames` reports a rename as its deletion
+// and its addition, so both sides are in the set whether or not the file was
+// also edited. A deleted file, an empty file and a mode change are all here.
+export function changedFiles(base, head, opts = {}) {
+  const res = git(['diff', '--name-only', '-z', '--no-renames', `${base}...${head}`], opts);
+  if (res.status !== 0) {
+    throw new Error(`git diff --name-only ${base}...${head} failed: ${res.stderr.trim()}`);
+  }
+  return res.stdout.split('\0').filter((p) => p !== '');
 }
 
 // probeStatus — one GET reduced to its status line. The capability probe asks
@@ -1211,11 +1199,11 @@ async function main() {
   }
 
   const diffText = diffOf(base, head);
-  const { files } = parseDiff(diffText);
+  const files = changedFiles(base, head);
   if (files.length === 0) {
     throw new Error(
       `${base.slice(0, 12)}...${head.slice(0, 12)} parsed to an empty file set — either the ` +
-        'range is wrong or the diff parser stopped understanding git output',
+        'range is wrong or git reported no changed path',
     );
   }
 
