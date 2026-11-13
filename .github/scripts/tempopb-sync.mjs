@@ -45,7 +45,7 @@ const LOCAL_IMPORT = 'github.com/tsouza/cerberus/internal/thirdparty/tempopb';
 const PIN_FILE = 'compatibility/tempo/UPSTREAM_VERSION';
 const TARGET_DIR = 'internal/thirdparty/tempopb';
 // Cerberus-authored files in the target directory, kept across a sync.
-const PRESERVED = new Set(['README.md', 'preallocbytes.go', 'preallocbytes_test.go']);
+const PRESERVED = new Set(['README.md', 'preallocbytes.go', 'preallocbytes_test.go', 'wire_roundtrip_test.go']);
 // The upstream files copied: the generated wire types, the .proto sources
 // they are generated from, and the subtree's licence. The hand-written helpers
 // beside them are not copied. pool.go and prealloc.go back PreallocBytes with

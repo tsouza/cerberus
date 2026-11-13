@@ -5,8 +5,8 @@ cerberus's Tempo head speaks, and the `StreamingQuerier` gRPC service. The
 `*.pb.go` and `*.proto` files and `LICENSE_APACHE2` are copied from `pkg/tempopb`
 of `github.com/grafana/tempo` at the commit in
 [`compatibility/tempo/UPSTREAM_VERSION`](../../../compatibility/tempo/UPSTREAM_VERSION);
-[`SOURCE`](SOURCE) names the exact module version. This file and
-`preallocbytes*.go` are cerberus code.
+[`SOURCE`](SOURCE) names the exact module version. This file,
+`preallocbytes*.go` and `wire_roundtrip_test.go` are cerberus code.
 
 That subtree is licensed Apache-2.0 by Grafana Labs
 ([`LICENSE_APACHE2`](LICENSE_APACHE2)); the rest of the Tempo module, which
