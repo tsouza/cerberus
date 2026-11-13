@@ -1,11 +1,13 @@
 package chopt
 
-import "slices"
+import (
+	"fmt"
+	"slices"
+)
 
 // Settings that version-gated features stamp and that only select an
-// execution strategy or a memory bound. The engine's settings rules name them
-// through these constants, so the table below and what is sent cannot drift
-// apart.
+// execution strategy or a memory bound. The engine's settings rules stamp
+// them through these constants.
 const (
 	SettingEnableAdaptiveAggregator                = "enable_adaptive_aggregator"
 	SettingMaxBytesBeforeExternalJoin              = "max_bytes_before_external_join"
@@ -18,22 +20,32 @@ const (
 // DroppableSetting is a setting a version-gated feature stamps that a query
 // returns the same rows without: it selects an execution strategy or a memory
 // bound, never the result. A server older than Since does not know it and
-// rejects the whole query with UNKNOWN_SETTING (code 115), so a query a node
-// rejected for it may be sent again without it — the query a fleet resolved
-// against that node would have sent.
+// rejects the whole query with UNKNOWN_SETTING (code 115). Such a server knows
+// no droppable setting whose Since is at or above the rejected one's, so a
+// query it rejected may be sent again without exactly those: the droppable
+// settings it does know still ride.
 //
 // The feature never resolves in against such a server (Since is at or below
 // the feature's MinVersion), so a node rejects the setting only when the
 // fleet holds a node older than the build the set in force was resolved
 // against: a rolling rollback, or an older node joining.
 //
-// A GateSettings entry is never droppable: it is stamped against a
-// wrong-result defect. Neither is a function, which is part of the statement.
+// A setting that is also a GateSettings entry is droppable only at OnlyAt,
+// the value that merely enables what the feature turns on; at any other value
+// it is the gate's stamp against a wrong-result defect and is never dropped.
+// Neither is a function, which is part of the statement.
 type DroppableSetting struct {
 	Name    string
 	Feature string
 	// Since is the first ClickHouse release line that knows Name.
 	Since Version
+	// OnlyAt, when non-nil, restricts the entry to a stamp of this value.
+	OnlyAt any
+}
+
+// DroppableAt reports whether the setting, sent at value, may be dropped.
+func (d DroppableSetting) DroppableAt(value any) bool {
+	return d.OnlyAt == nil || fmt.Sprint(value) == fmt.Sprint(d.OnlyAt)
 }
 
 // droppableSettings is the table. The release that first knows each setting
@@ -51,7 +63,14 @@ var droppableSettings = []DroppableSetting{
 	// A read-order choice, and the LIMIT bound it engages under.
 	{Name: SettingQueryPlanOptimizeLazyMaterialization, Feature: FeatureLazyMaterialization, Since: Version{Major: 25, Minor: 4}},
 	{Name: SettingQueryPlanMaxLimitForLazyMaterialization, Feature: FeatureLazyMaterialization, Since: Version{Major: 25, Minor: 4}},
+	// The query condition cache, switched on. Switched off (0) it is the
+	// gate against the cache's wrong-result builds, and stays.
+	{Name: SettingUseQueryConditionCache, Feature: FeatureConditionCache, Since: Version{Major: 25, Minor: 3}, OnlyAt: conditionCacheOn},
 }
+
+// conditionCacheOn is the use_query_condition_cache value condition_cache
+// stamps.
+const conditionCacheOn = 1
 
 // DroppableSettings returns a copy of the table.
 func DroppableSettings() []DroppableSetting {

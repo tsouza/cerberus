@@ -58,13 +58,34 @@ func (r *rejections) take() []chclient.UnknownNameRejection {
 	return out
 }
 
-// withDroppableSettings stamps every droppable setting on ctx, the way the
-// engine's settings rules do.
+// droppableValue is a value d may be dropped at: its OnlyAt when it has one.
+func droppableValue(d chopt.DroppableSetting) any {
+	if d.OnlyAt != nil {
+		return d.OnlyAt
+	}
+	return 0
+}
+
+// withDroppableSettings stamps every droppable setting on ctx, at a value it
+// may be dropped at, the way the engine's settings rules do.
 func withDroppableSettings(ctx context.Context) context.Context {
 	for _, d := range chopt.DroppableSettings() {
-		ctx = chclient.WithQuerySetting(ctx, d.Name, 0)
+		ctx = chclient.WithQuerySetting(ctx, d.Name, droppableValue(d))
 	}
 	return ctx
+}
+
+// releasesAbove counts the distinct first releases among the droppable
+// settings node does not know: the most retries a query carrying them all
+// can take there, one per release line the node lacks.
+func releasesAbove(node chopt.Version) int {
+	seen := map[chopt.Version]bool{}
+	for _, d := range chopt.DroppableSettings() {
+		if node.Less(d.Since) {
+			seen[d.Since] = true
+		}
+	}
+	return len(seen)
 }
 
 // TestDroppableSettings_RolledBackNodeAnswers pins chopt.DroppableSettings
@@ -74,9 +95,10 @@ func withDroppableSettings(ctx context.Context) context.Context {
 //   - each setting's first release: a build below Since rejects it with
 //     UNKNOWN_SETTING, a build at or above accepts it;
 //   - a query carrying every droppable setting answers on every build. On a
-//     build too old for one of them, the client reports one retried
-//     rejection and sends the query again without them; on a build that
-//     knows them all, it reports nothing;
+//     build too old for some of them, the client reports a retried rejection
+//     per attempt, each naming a setting newer than the node, at most one per
+//     release line the node lacks; on a build that knows them all, it reports
+//     nothing;
 //   - the columnar matrix decode retries the same way.
 func TestDroppableSettings_RolledBackNodeAnswers(t *testing.T) {
 	for _, image := range droppableSettingBuilds {
@@ -87,19 +109,19 @@ func TestDroppableSettings_RolledBackNodeAnswers(t *testing.T) {
 
 			tooOld := false
 			for _, d := range chopt.DroppableSettings() {
-				rows, err := s.admin.Conn().Query(clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{d.Name: 0})), "SELECT 1")
+				rows, err := s.admin.Conn().Query(clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{d.Name: droppableValue(d)})), "SELECT 1")
 				if err == nil {
 					_ = rows.Close()
 				}
 				if !s.version.Less(d.Since) {
 					if err != nil {
-						t.Errorf("%s=0 on %s (at or above %s): %v", d.Name, s.version, d.Since, err)
+						t.Errorf("%s on %s (at or above %s): %v", d.Name, s.version, d.Since, err)
 					}
 					continue
 				}
 				tooOld = true
 				if code := exceptionCode(err); code != codeUnknownSetting {
-					t.Errorf("%s=0 on %s (below %s): err = %v, code %d; want UNKNOWN_SETTING", d.Name, s.version, d.Since, err, code)
+					t.Errorf("%s on %s (below %s): err = %v, code %d; want UNKNOWN_SETTING", d.Name, s.version, d.Since, err, code)
 				}
 			}
 
@@ -128,11 +150,19 @@ func TestDroppableSettings_RolledBackNodeAnswers(t *testing.T) {
 					}
 					continue
 				}
-				if len(got) != 1 || !got[0].Retried || got[0].Kind != "setting" {
-					t.Fatalf("columnar=%v on %s: rejections %+v; want one retried setting rejection", columnar, s.version, got)
+				if len(got) == 0 || len(got) > releasesAbove(s.version) {
+					t.Fatalf("columnar=%v on %s: %d rejections %+v; want between 1 and %d, one per release line the node lacks at most",
+						columnar, s.version, len(got), got, releasesAbove(s.version))
 				}
-				if d, ok := chopt.LookupDroppableSetting(got[0].Name); !ok || !s.version.Less(d.Since) {
-					t.Errorf("columnar=%v on %s: rejected %q; want a droppable setting newer than the node", columnar, s.version, got[0].Name)
+				named := map[string]bool{}
+				for _, rej := range got {
+					if !rej.Retried || rej.Kind != "setting" || named[rej.Name] {
+						t.Errorf("columnar=%v on %s: rejection %+v; want each a retried setting rejection, no name twice", columnar, s.version, rej)
+					}
+					named[rej.Name] = true
+					if d, ok := chopt.LookupDroppableSetting(rej.Name); !ok || !s.version.Less(d.Since) {
+						t.Errorf("columnar=%v on %s: rejected %q; want a droppable setting newer than the node", columnar, s.version, rej.Name)
+					}
 				}
 			}
 		})
@@ -199,5 +229,39 @@ func TestColumnar_RejectedStatementDoesNotPoisonThePool(t *testing.T) {
 				_ = cur.Close()
 			}
 		})
+	}
+}
+
+// fallbackImage is the rollback target of the supported 26.6 to 26.8 upgrade.
+const fallbackImage = "clickhouse/clickhouse-server:26.6.1.1193-alpine"
+
+// TestColumnar_FallbackSendsTheSettingsTheNodeTook: a columnar statement the
+// node answered only after dropping droppable settings, whose result is not
+// the matrix shape, is handed to the row path. The row path sends the
+// settings the node took, so no name the columnar attempt saw rejected is
+// rejected again on the fallback.
+func TestColumnar_FallbackSendsTheSettingsTheNodeTook(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	s := startServer(ctx, t, fallbackImage)
+	c := s.client(t, adminUser, adminPassword, chclient.Config{ColumnarMatrixDecode: true})
+	rec := &rejections{}
+	c.SetUnknownNameHook(rec.record)
+
+	cur, err := c.QueryCursor(withDroppableSettings(ctx), "SELECT 1 AS x")
+	if err != nil {
+		t.Fatalf("non-matrix query carrying every droppable setting on %s: %v; want it answered by the row path", s.version, err)
+	}
+	_ = cur.Close()
+	got := rec.take()
+	if len(got) == 0 || len(got) > releasesAbove(s.version) {
+		t.Fatalf("rejections on %s: %+v; want between 1 and %d, one per release line the node lacks at most", s.version, got, releasesAbove(s.version))
+	}
+	named := map[string]bool{}
+	for _, rej := range got {
+		if !rej.Retried || named[rej.Name] {
+			t.Errorf("rejections on %s: %+v; want each a retried rejection and no name rejected twice — the fallback must not resend what the node rejected", s.version, got)
+		}
+		named[rej.Name] = true
 	}
 }

@@ -354,13 +354,14 @@ on its own disk with no part detached.
 ### What cerberus serves during a rollback
 
 Cerberus resolves its optimizations against the oldest node its last probe
-reached, so on a fleet fully on 26.8 it sends 26.8-only names. A replica rolled
+reached. On a fleet fully on 26.8 it sends 26.8-only names, and a replica rolled
 back to 26.6 rejects those until a probe reaches it:
 
 - A query carrying a 26.8-only setting that only selects an execution strategy
   or memory bound — `enable_adaptive_aggregator` on exponential-histogram
-  `rate()` / `increase()` / `irate()` windows — is sent again without it and
-  answers. Each such retry counts on
+  `rate()` / `increase()` / `irate()` windows — is sent again without it, and
+  without the other droppable settings 26.6 does not know, and answers. Each
+  such retry counts on
   `cerberus_ch_unknown_name_rejections_total{action="retried"}`.
 - The first rejection moves the next capability probe to at most 10 seconds
   after the previous one, and logs `clickhouse node rejected a setting cerberus
@@ -370,12 +371,13 @@ back to 26.6 rejects those until a probe reaches it:
   native-histogram `enable_analyzer=0` stamp, which 26.8 does without, returns
   in the same step.
 
-The window is therefore one probe: about 10 seconds, during which every
-affected query is answered through the retry. A replica the probe cannot reach
-individually — not among the configured addresses, and
-`CERBERUS_SCHEMA_CLUSTER` unset — is not re-resolved against, and its queries
-keep going through the retry. List every replica, or set the cluster, when
-rolling back
+The window lasts one probe, about 10 seconds, and every affected query in it is
+answered through the retry. A replica the probe cannot reach individually — not
+among the configured addresses, and `CERBERUS_SCHEMA_CLUSTER` unset — is
+re-resolved against only when a probe connection lands on it. Until then, its
+droppable-setting queries keep going through the retry, and a query that calls
+a function it lacks answers HTTP 502. List every replica, or set the cluster,
+when rolling back
 ([Runtime version probe](clickhouse-optimizations.md#runtime-version-probe)).
 
 ### Mixed clusters with a 26.2–26.5 server

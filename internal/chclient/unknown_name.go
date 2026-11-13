@@ -151,9 +151,9 @@ type UnknownNameRejection struct {
 	Name string
 	// NodeVersion is the build the rejecting node reported, or "".
 	NodeVersion string
-	// Retried reports that the name was a chopt.DroppableSettings entry, so
-	// the query was sent once more without every droppable setting it
-	// carried.
+	// Retried reports that the name was a chopt.DroppableSettings entry the
+	// query carried, so the query was sent again without the droppable
+	// settings released at or after it.
 	Retried bool
 }
 
@@ -194,7 +194,7 @@ func newRejectionReporter(mp metric.MeterProvider) *rejectionReporter {
 		metric.WithDescription(
 			"Queries a ClickHouse node rejected because it does not know a setting or function cerberus sent: "+
 				"the node runs an older build than the optimization set in force was resolved against. "+
-				"action=retried: a droppable setting, the query was sent once more without it. "+
+				"action=retried: a droppable setting, the query was sent again without it and the droppable settings released after it. "+
 				"action=surfaced: the rejection was returned to the client. Each one requests an early capability re-probe.",
 		),
 		metric.WithUnit("{query}"),
@@ -254,25 +254,33 @@ func (c *Client) SetUnknownNameHook(fn func(UnknownNameRejection)) {
 
 // openWithDroppableRetry runs open, and when a node rejects the query because
 // it does not know a chopt.DroppableSettings entry the query carries, runs it
-// exactly once more under a context that carries none of the droppable
-// settings — the query a fleet resolved against that node would have sent,
-// which returns the same rows. The second attempt's outcome is final whatever
-// it is, so the retry cannot repeat. Every rejection of an unknown name is
-// reported (rejectionReporter.report), retried or not.
+// again without the droppable settings that node cannot know: those first
+// released at or after the rejected one. The droppable settings it does know
+// keep riding. Each further attempt carries strictly fewer droppable
+// settings, so the attempts end once the node accepts what is left, rejects
+// something else, or rejects a setting the attempt no longer carries. Every
+// rejection of an unknown name is reported (rejectionReporter.report).
 //
-// open must open the statement under the context it is given: ctx is the one
-// queryContext derived, and the retry context re-derives its settings.
-func openWithDroppableRetry[T any](c *Client, ctx context.Context, open func(context.Context) (T, error)) (T, error) {
-	res, err := open(ctx)
-	retryCtx, rej, ok := c.droppableRetryContext(ctx, err)
-	if !ok {
-		return res, err
+// mayRetry, when non-nil, vetoes another attempt after a rejection: the
+// columnar path refuses once the server has answered any packet. open must
+// open the statement under the context it is given; the context returned is
+// the last attempt's, whose per-query settings are the ones the node took.
+func openWithDroppableRetry[T any](c *Client, ctx context.Context, open func(context.Context) (T, error), mayRetry func() bool) (T, context.Context, error) {
+	for {
+		res, err := open(ctx)
+		retryCtx, rej, ok := c.droppableRetryContext(ctx, err)
+		if !ok {
+			return res, ctx, err
+		}
+		if rej.Retried && mayRetry != nil && !mayRetry() {
+			rej.Retried = false
+		}
+		c.rejections.report(rej)
+		if !rej.Retried {
+			return res, ctx, err
+		}
+		ctx = retryCtx
 	}
-	c.rejections.report(rej)
-	if !rej.Retried {
-		return res, err
-	}
-	return open(retryCtx)
 }
 
 // capabilityCanaryKeyType keys the capability-canary mark on a context.
@@ -296,27 +304,37 @@ func isCapabilityCanary(ctx context.Context) bool {
 // droppableRetryContext classifies err. ok is false unless err rejects an
 // unknown setting or function on a statement that is not a capability
 // canary's. When it does, rej describes the rejection and, if rej.Retried,
-// retryCtx is ctx without every droppable setting the query carried, its
-// ClickHouse settings re-derived to match.
+// retryCtx is ctx without the droppable settings the rejecting node cannot
+// know, its ClickHouse settings re-derived to match.
+//
+// The rejection is retried when the rejected name is a droppable setting the
+// query carried at a droppable value. A node that does not know it predates
+// its release, so it knows no droppable setting released at or after it
+// either: each one the query carries at a droppable value is dropped. One
+// released earlier may be known to the node and stays.
 func (c *Client) droppableRetryContext(ctx context.Context, err error) (retryCtx context.Context, rej UnknownNameRejection, ok bool) {
-	u, ok := parseUnknownName(err)
+	u, ok := parseUnknownName(translateCHGoErr(err))
 	if !ok || isCapabilityCanary(ctx) {
 		return nil, UnknownNameRejection{}, false
 	}
 	rej = UnknownNameRejection{Kind: u.kind, Name: u.name, NodeVersion: u.nodeVersion}
-	perQuery := querySettingsFromContext(ctx)
-	if _, droppable := chopt.LookupDroppableSetting(u.name); u.kind != unknownNameSetting || !droppable {
+	if u.kind != unknownNameSetting {
 		return nil, rej, true
 	}
-	if _, stamped := perQuery[u.name]; !stamped {
+	rejected, droppable := chopt.LookupDroppableSetting(u.name)
+	perQuery := querySettingsFromContext(ctx)
+	sent := c.querySettings(ctx)
+	if _, carried := perQuery[u.name]; !droppable || !carried || !rejected.DroppableAt(sent[u.name]) {
 		return nil, rej, true
 	}
 	kept := maps.Clone(perQuery)
-	for _, s := range chopt.DroppableSettings() {
-		delete(kept, s.Name)
+	for _, d := range chopt.DroppableSettings() {
+		if _, carried := kept[d.Name]; carried && !d.Since.Less(rejected.Since) && d.DroppableAt(sent[d.Name]) {
+			delete(kept, d.Name)
+		}
 	}
 	retryCtx = context.WithValue(ctx, perQuerySettingsKey, kept)
-	retryCtx = clickhouse.Context(retryCtx, clickhouse.WithSettings(c.querySettings(retryCtx)))
+	retryCtx = withDriverSettings(retryCtx, c.querySettings(retryCtx))
 	rej.Retried = true
 	return retryCtx, rej, true
 }

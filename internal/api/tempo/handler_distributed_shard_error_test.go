@@ -7,6 +7,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 
+	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 )
@@ -102,6 +103,40 @@ func TestSearchRecent_GateSettingUnsupported502(t *testing.T) {
 		t.Fatalf("status: got %d (body %q), want 502", resp.StatusCode, body)
 	}
 	for _, want := range []string{gate.Name, gate.Since.String(), "ClickHouse#120286"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body %q does not name %q", body, want)
+		}
+	}
+}
+
+// TestSearchRecent_UnknownName502 — a ClickHouse node too old for a function
+// cerberus sent answers 502 (ErrClassUpstream, as any ClickHouse rejection)
+// with the function and the node's build named in the body rather than the
+// redacted exception.
+func TestSearchRecent_UnknownName502(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{err: &chclient.UnknownNameError{
+		Kind:        "function",
+		Name:        "argAndMax",
+		NodeVersion: "25.10.7.6",
+		Cause:       &clickhouse.Exception{Code: 46, Name: "UNKNOWN_FUNCTION", Message: "Function with name `argAndMax` does not exist"},
+	}}
+	if got := tempo.ClassifyErr(q.err); got != tempo.ErrClassUpstream {
+		t.Fatalf("ClassifyErr = %v; want ErrClassUpstream", got)
+	}
+	srv := newServer(q, "v-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search/recent")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status: got %d (body %q), want 502", resp.StatusCode, body)
+	}
+	for _, want := range []string{"argAndMax", "25.10.7.6"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body %q does not name %q", body, want)
 		}

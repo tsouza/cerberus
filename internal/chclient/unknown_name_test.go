@@ -171,13 +171,15 @@ func TestQueryStrings_RetryIsReported(t *testing.T) {
 	}
 }
 
-// TestQueryStrings_RetriesAtMostOnce: a node that rejects the retry too gets
-// no third statement; the second rejection is the typed answer.
-func TestQueryStrings_RetriesAtMostOnce(t *testing.T) {
+// TestQueryStrings_RetryRejectionIsFinalAndReported: a node that rejects the
+// retry for the setting the retry no longer carries gets no third statement;
+// that second rejection is the typed answer, and it is reported too, as
+// surfaced, so the counter sees every rejection.
+func TestQueryStrings_RetryRejectionIsFinalAndReported(t *testing.T) {
 	t.Parallel()
 	c, conn := newRolledBackClient(chopt.SettingEnableAdaptiveAggregator)
 	conn.rejectAlways = true
-	rec, _ := withObservedRejections(c)
+	rec, reader := withObservedRejections(c)
 
 	ctx := WithQuerySetting(context.Background(), chopt.SettingEnableAdaptiveAggregator, 0)
 	_, err := c.QueryStrings(ctx, "SELECT 1")
@@ -186,10 +188,20 @@ func TestQueryStrings_RetriesAtMostOnce(t *testing.T) {
 		t.Fatalf("err = %v; want an *UnknownNameError for %s", err, chopt.SettingEnableAdaptiveAggregator)
 	}
 	if got := conn.calls.Load(); got != 2 {
-		t.Errorf("statements sent = %d; want 2: the retry must not repeat", got)
+		t.Errorf("statements sent = %d; want 2: a rejection of a setting the retry no longer carries ends it", got)
 	}
-	if got := len(rec.all()); got != 1 {
-		t.Errorf("hook calls = %d; want 1: only the first rejection is reported, the retry's outcome is final", got)
+	want := []UnknownNameRejection{
+		{Kind: unknownNameSetting, Name: chopt.SettingEnableAdaptiveAggregator, Retried: true},
+		{Kind: unknownNameSetting, Name: chopt.SettingEnableAdaptiveAggregator},
+	}
+	if got := rec.all(); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("hook received %+v; want %+v", got, want)
+	}
+	for action, n := range map[string]int64{rejectionActionRetried: 1, rejectionActionSurfaced: 1} {
+		series := map[string]string{"name": chopt.SettingEnableAdaptiveAggregator, "action": action}
+		if sum, _, _ := counterSum(t, reader, unknownNameCounter, series); sum != n {
+			t.Errorf("%s series = %d; want %d", action, sum, n)
+		}
 	}
 }
 

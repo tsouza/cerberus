@@ -158,18 +158,18 @@ func withTransportRetry[T any](ctx context.Context, call func() (T, error)) (T, 
 // see ErrDataShardFanoutGateBusy's own doc.
 //
 // A node too old for a droppable setting the statement carries is answered by
-// one more open without the droppable settings (openWithDroppableRetry), inside
-// the same fan-out admission.
+// another open without the droppable settings it cannot know
+// (openWithDroppableRetry), inside the same fan-out admission.
 func (c *Client) queryOpen(ctx context.Context, sql string, args ...any) (driver.Rows, error) {
 	release, err := c.acquireDataShardFanout(ctx)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := openWithDroppableRetry(c, ctx, func(ctx context.Context) (driver.Rows, error) {
+	rows, _, err := openWithDroppableRetry(c, ctx, func(ctx context.Context) (driver.Rows, error) {
 		return withTransportRetry(ctx, func() (driver.Rows, error) {
 			return c.conn.Query(ctx, sql, args...)
 		})
-	})
+	}, nil)
 	if err != nil {
 		// No rows means the driver never got the server's answer to the
 		// statement: a cancellation here landed while it still waited for a

@@ -949,47 +949,56 @@ native path and a gained one only ever enables it.
 The set in force is resolved against the oldest node the last probe reached.
 A node older than that build — a replica rolled back, or an older replica
 joining — rejects every query carrying a setting or function its build does
-not know: `UNKNOWN_SETTING` (code 115) or `UNKNOWN_FUNCTION` (code 46). It never
-ignores the name. Every such rejection requests an early re-probe, which runs
-10 seconds after the previous probe at the earliest (immediately, when that has
-already passed) instead of waiting for the 5-minute cadence; a burst of
-rejections requests one probe. Once that probe reaches the node, the set is
-re-resolved against it and later queries carry only what it knows. A node the
-probe cannot reach — one behind a load balancer that neither the configured
-addresses nor `CERBERUS_SCHEMA_CLUSTER` name — keeps rejecting, and keeps
-requesting a probe at most every 10 seconds.
+not know: `UNKNOWN_SETTING` (code 115) or `UNKNOWN_FUNCTION` (code 46). Every
+such rejection requests an early re-probe, which runs 10 seconds after the
+previous probe at the earliest (immediately, when that has already passed)
+instead of waiting for the 5-minute cadence; a burst of rejections requests one
+probe. Once that probe reaches the node, the set is re-resolved against it and
+later queries carry only what it knows. A node the probe cannot reach — one
+behind a load balancer that neither the configured addresses nor
+`CERBERUS_SCHEMA_CLUSTER` name — keeps rejecting, and keeps requesting a probe
+at most every 10 seconds.
 
 What the rejected query itself returns depends on the name:
 
-| Name rejected                                                    | The rejected query                                                                                                                                         |
-| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A droppable setting (below)                                      | Sent once more without every droppable setting it carried, and answered with the same rows.                                                                |
-| A [defect-gate setting](#mixed-version-fleets)                   | HTTP 502 naming the setting, the defects it avoids and the release to upgrade the node to. Never dropped: it is stamped against wrong rows.                |
-| Any other setting, or a function                                 | HTTP 502 naming the setting or function, and the node's build when the protocol reports one (HTTP does, the native protocol does not).                     |
+| Name rejected                                  | The rejected query                                                                                                                                  |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A droppable setting (below)                    | Sent again without the droppable settings the node cannot know, and answered with the same rows.                                                    |
+| A [defect-gate setting](#mixed-version-fleets) | HTTP 502 naming the setting, the defects it avoids and the release to upgrade the node to. `use_query_condition_cache=1` is droppable, `=0` is not. |
+| Any other setting, or a function               | HTTP 502 naming the setting or function, and the node's build when the protocol reports one (HTTP does, the native protocol does not).              |
 
-A function — `argAndMax` (`arg_and_max_fusion`), `timeSeriesThrowDuplicateSeriesIf`
-(`ts_throw_duplicate_series_if`), the `timeSeries*ToGrid` family (the `ts_grid_*`
-features) — is part of the statement, so a query rejected over one fails until
-the early re-probe re-resolves the set and later queries lower without it.
+A query rejected over a function — `argAndMax` (`arg_and_max_fusion`),
+`timeSeriesThrowDuplicateSeriesIf` (`ts_throw_duplicate_series_if`), the
+`timeSeries*ToGrid` family (the `ts_grid_*` features) — fails until the early
+re-probe re-resolves the set and later queries lower without it.
 
 The droppable settings are the version-gated stamps that select an execution
 strategy or a memory bound, never the rows:
 
-| Setting                                         | Feature                             | First release that knows it |
-| ----------------------------------------------- | ----------------------------------- | --------------------------- |
-| `enable_adaptive_aggregator`                    | `histogram_adaptive_aggregator_off` | `26.8`                      |
-| `max_bytes_before_external_join`                | `join_spill`                        | `26.4`                      |
-| `max_bytes_before_external_distinct`            | `distinct_spill`                    | `26.9`                      |
-| `min_table_rows_to_use_projection_index`        | `trace_id_bitmap_filter`            | `25.11`                     |
-| `query_plan_optimize_lazy_materialization`      | `lazy_materialization`              | `25.4`                      |
-| `query_plan_max_limit_for_lazy_materialization` | `lazy_materialization`              | `25.4`                      |
+| Setting                                         | Feature                             | First release that knows it | Droppable at |
+| ----------------------------------------------- | ----------------------------------- | --------------------------- | ------------ |
+| `enable_adaptive_aggregator`                    | `histogram_adaptive_aggregator_off` | `26.8`                      | any value    |
+| `max_bytes_before_external_join`                | `join_spill`                        | `26.4`                      | any value    |
+| `max_bytes_before_external_distinct`            | `distinct_spill`                    | `26.9`                      | any value    |
+| `min_table_rows_to_use_projection_index`        | `trace_id_bitmap_filter`            | `25.11`                     | any value    |
+| `query_plan_optimize_lazy_materialization`      | `lazy_materialization`              | `25.4`                      | any value    |
+| `query_plan_max_limit_for_lazy_materialization` | `lazy_materialization`              | `25.4`                      | any value    |
+| `use_query_condition_cache`                     | `condition_cache`                   | `25.3`                      | `1`          |
 
-The retry is the query a fleet resolved against that node sends. Without a
-spill threshold or the adaptive-aggregator switch it can fail with
+A node rejecting a droppable setting is older than that setting's first
+release, so the retry drops every droppable setting the query carries whose
+first release is the same or later, and keeps the earlier ones. A node that
+also lacks one of those rejects the retry for it, and the query is sent again
+without the settings from that release on; each attempt carries fewer, so the
+query ends up carrying exactly the droppable settings the node knows. A
+rejection of a setting the attempt no longer carries is final. Without a spill
+threshold or the adaptive-aggregator switch the query can fail with
 `MEMORY_LIMIT_EXCEEDED` where the setting would have spilled or bounded it; it
-never returns different rows. A query is retried at most once.
+never returns different rows. A query the columnar matrix decode retried, and
+then hands to the row path, is sent there with the settings the node took.
 
-Each rejection counts on `cerberus_ch_unknown_name_rejections_total`
+Each rejection counts on `cerberus_ch_unknown_name_rejections_total`, a
+rejected retry included
 ([observability](observability.md#clickhouse-unknown-name-rejections)), and
 each early probe a rejection moves forward is logged once:
 

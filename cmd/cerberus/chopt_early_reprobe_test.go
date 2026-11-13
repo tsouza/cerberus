@@ -170,3 +170,69 @@ func TestReprobeTrigger_RequestNeverBlocks(t *testing.T) {
 		t.Errorf("pending requests = %d; want 1", got)
 	}
 }
+
+// TestReprobeCHOptimizations_EarlyProbesKeepTheirSpacing: a rejection that
+// keeps recurring — a node the probe cannot see — must not drive probes back
+// to back. Each early probe runs no sooner than earlySpacing after the
+// previous probe finished, including a request that arrives right after a
+// probe. The bound is a lower one on elapsed time, so a slow scheduler can
+// only widen the gap the test measures, never narrow it.
+func TestReprobeCHOptimizations_EarlyProbesKeepTheirSpacing(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{CHOptimizations: chopt.SelectionAuto, CHOptimizationsMode: chopt.Permissive}
+	cfg.ClickHouse.Addr = unreachableAddr(t)
+	cfg.ClickHouse.DialTimeout = 100 * time.Millisecond
+	bootSet, _, err := chopt.Resolve(chopt.Config{Optimizations: cfg.CHOptimizations, Mode: cfg.CHOptimizationsMode}, rollbackFromBuild)
+	if err != nil {
+		t.Fatalf("resolve auto against %s: %v", rollbackFromBuild, err)
+	}
+	live := newCHOptLive(chOptResolution{Set: bootSet, ResolvedVersion: rollbackFromBuild})
+
+	const wantProbes = 3
+	probed := make(chan time.Time, wantProbes)
+	probe := func(context.Context) chclient.FleetVersions {
+		select {
+		case probed <- time.Now():
+		default:
+		}
+		return chclient.FleetVersions{Versions: []chopt.Version{rollbackFromBuild}, Complete: true}
+	}
+	timing := reprobeTiming{steady: time.Hour, earlySpacing: 300 * time.Millisecond}
+	early := newReprobeTrigger()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	started := time.Now()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reprobeCHOptimizations(ctx, quietLogger(), cfg, live, chOptConsumers{}, timing, early, "", probe)
+	}()
+
+	// The node keeps rejecting: a request lands every few milliseconds,
+	// including right after each probe.
+	rejecting, stop := context.WithCancel(ctx)
+	go func() {
+		for rejecting.Err() == nil {
+			early.request(chclient.UnknownNameRejection{Kind: "function", Name: "argAndMax"})
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	prev := started
+	for i := range wantProbes {
+		select {
+		case at := <-probed:
+			if gap := at.Sub(prev); gap < timing.earlySpacing {
+				t.Errorf("probe %d ran %s after the previous probe; want no sooner than %s", i+1, gap, timing.earlySpacing)
+			}
+			prev = at
+		case <-ctx.Done():
+			t.Fatalf("only %d early probes under a recurring rejection; want %d", i, wantProbes)
+		}
+	}
+	stop()
+	cancel()
+	<-done
+}

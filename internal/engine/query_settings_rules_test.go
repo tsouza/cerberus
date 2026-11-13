@@ -1000,11 +1000,10 @@ func TestApplyHistogramAdaptiveAggregatorOff_DisabledStampsNothing(t *testing.T)
 }
 
 // TestDroppableSettings_AreTheEngineVersionGatedStamps ties chopt's
-// droppable-setting table to what the engine stamps: every setting a
-// version-gated feature makes the engine stamp, which a server older than the
-// feature's floor does not know, is in the table under the same name, and
-// the table names nothing else. chclient's retry drops exactly the table's
-// names, so a renamed const or a new gated stamp cannot drift out of it.
+// droppable-setting table to what the engine stamps: the table lists exactly
+// the result-equivalent settings a version-gated feature makes the engine
+// stamp that a server older than the feature's floor does not know — no
+// stamp missing, no setting the engine never sends.
 func TestDroppableSettings_AreTheEngineVersionGatedStamps(t *testing.T) {
 	t.Parallel()
 	stamped := []string{
@@ -1014,6 +1013,7 @@ func TestDroppableSettings_AreTheEngineVersionGatedStamps(t *testing.T) {
 		settingMinTableRowsToUseProjectionIndex,
 		settingQueryPlanOptimizeLazyMaterialization,
 		settingQueryPlanMaxLimitForLazyMaterialization,
+		settingUseQueryConditionCache,
 	}
 	var table []string
 	for _, s := range chopt.DroppableSettings() {
