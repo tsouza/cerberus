@@ -466,7 +466,7 @@ instead (` + "`internal/engine/resource_bound_env.go`" + `,
   closed issue #2385 after 19 real production OOMs
   (` + "`internal/promql/histogram_merge_bound.go`" + `, ` + "`maxHistogramMergeCostUnits`" + `).
 - **` + "`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS`" + `** (int64, default
-  ` + "`3000000`" + `) - the classic-histogram across-series bucket-merge ceiling: the
+  ` + "`2982616`" + `) - the classic-histogram across-series bucket-merge ceiling: the
   most merged bucket entries (each collected row's finite bounds plus its +Inf
   rung) one merge group may carry
   (` + "`internal/promql/classic_bucket_merge_bound.go`" + `,
