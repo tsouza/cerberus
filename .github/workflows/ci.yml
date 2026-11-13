@@ -1143,6 +1143,12 @@ jobs:
       - name: Assert the chDB round-trip legs are bounded and diagnosable
         run: node .github/scripts/run-node-tests.mjs .github/scripts/chdb-roundtrip.test.mjs
 
+      # The weight ledger generator the promql roundtrip legs are balanced
+      # with: only top-level passing tests are weighed, and a red or
+      # unfinished run never becomes the ledger. Pure in-process, ~100ms.
+      - name: Assert the chDB round-trip weight ledger generator folds only green runs
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/chdb-roundtrip-weights.test.mjs
+
       # `just test-chdb` (the `probe` lane) runs its go test through this
       # fan-out: the partitions of a split package must run every listed test
       # exactly once, and every process must keep the recipe's own -timeout.

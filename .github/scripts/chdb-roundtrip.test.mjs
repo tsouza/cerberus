@@ -20,10 +20,19 @@ import { fileURLToPath } from 'node:url';
 import {
   legCommands,
   warmupCommand,
+  FANOUT,
   GO_TEST_TIMEOUT_MINUTES,
   HEADS,
+  LEG_BINARY_BUDGET_SECONDS,
+  SELF_SHARDING_TESTS,
+  ledgerDrift,
   partitionTestNames,
+  predictLegSeconds,
+  promqlLegCount,
+  readLedger,
+  rosterPackages,
   runFilterFor,
+  selfShardLoads,
 } from './chdb-roundtrip.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -386,51 +395,175 @@ test('roundtrip-promql aggregator posts exactly `roundtrip (promql)`, always run
   assert.doesNotMatch(job, /continue-on-error/, 'continue-on-error turns the aggregator into decoration');
 });
 
-// --- cerberus#2737: partitioning internal/promql's own hand-written suite ---
+// --- cerberus#2737 / #4001: partitioning internal/promql's own hand-written suite ---
 
-// A synthetic corpus standing in for a real `go test -list` enumeration —
-// large enough (500) that a hash-based partition's own statistical spread
-// is meaningfully exercised, cheap enough to run in milliseconds.
+// A synthetic corpus standing in for a real `go test -list` enumeration and
+// its ledger, shaped like the real one: most tests measure 0.0s, a band takes
+// around a second, and every 50th is two orders of magnitude heavier. One
+// self-sharding test splits its cases unevenly, loading leg 1 hardest.
 const SYNTHETIC_NAMES = Array.from({ length: 500 }, (_, i) => `TestSynthetic_${i}`);
+const SYNTHETIC_LEGS = 9;
+const HEAVY_EVERY = 50;
+const HEAVY_SECONDS = 200;
+const SECOND_BAND_EVERY = 4;
+const SKEWED_SELF_SHARD = [400, 120, 110, 100, 100, 90, 80, 80, 70];
 
-test('partitionTestNames is a true partition: every name assigned to exactly one leg', () => {
-  const count = 9;
-  const seen = new Map();
+function syntheticSeconds(i) {
+  if (i % HEAVY_EVERY === 0) return HEAVY_SECONDS + i;
+  if (i % SECOND_BAND_EVERY === 0) return 1 + (i % 7) / 10;
+  return 0;
+}
+
+const SYNTHETIC_LEDGER = {
+  legs: SYNTHETIC_LEGS,
+  selfShardLegs: { 'internal/promql': { TestLower: SKEWED_SELF_SHARD } },
+  tests: { 'internal/promql': Object.fromEntries(SYNTHETIC_NAMES.map((n, i) => [n, syntheticSeconds(i)])) },
+};
+
+/** Every leg's partition of `names`, as name -> 1-based leg. */
+function legsOf(names, count, ledger) {
+  const legOf = new Map();
   for (let index = 1; index <= count; index++) {
-    for (const n of partitionTestNames(SYNTHETIC_NAMES, index, count)) {
-      assert.ok(!seen.has(n), `${n} was assigned to leg ${seen.get(n)} AND leg ${index}`);
-      seen.set(n, index);
+    for (const n of partitionTestNames(names, index, count, ledger)) {
+      assert.ok(!legOf.has(n), `${n} was assigned to leg ${legOf.get(n)} AND leg ${index}`);
+      legOf.set(n, index);
     }
   }
+  return legOf;
+}
+
+/** How many of `names` each of `count` legs holds. */
+function namesPerLeg(legOf, names, count) {
+  const per = Array(count).fill(0);
+  for (const n of names) per[legOf.get(n) - 1]++;
+  return per;
+}
+
+test('partitionTestNames is a true partition: every name assigned to exactly one leg', () => {
+  const names = [...SYNTHETIC_NAMES, 'TestNotInTheLedger'];
+  const legOf = legsOf(names, SYNTHETIC_LEGS, SYNTHETIC_LEDGER);
   assert.deepStrictEqual(
-    [...seen.keys()].sort(),
-    [...SYNTHETIC_NAMES].sort(),
+    [...legOf.keys()].sort(),
+    [...names].sort(),
     'the union of every leg must recover the exact input set — a name missing from every leg silently walks nothing',
   );
 });
 
-test('partitionTestNames determinism: the SAME name always lands on the SAME leg', () => {
-  const count = 9;
-  for (const n of SYNTHETIC_NAMES) {
-    const leg = [1, 2, 3, 4, 5, 6, 7, 8, 9].find((i) => partitionTestNames([n], i, count).length === 1);
-    assert.ok(leg !== undefined, `${n} matched no leg`);
-    // Re-partitioning the full corpus must place it on the SAME leg it
-    // matched alone — a name's shard cannot depend on who else is present.
-    assert.deepStrictEqual(partitionTestNames(SYNTHETIC_NAMES, leg, count).includes(n), true);
+test('partitionTestNames is deterministic for a given name set and ledger, whatever the input order', () => {
+  const forward = legsOf(SYNTHETIC_NAMES, SYNTHETIC_LEGS, SYNTHETIC_LEDGER);
+  const reversed = legsOf([...SYNTHETIC_NAMES].reverse(), SYNTHETIC_LEGS, SYNTHETIC_LEDGER);
+  for (const n of SYNTHETIC_NAMES) assert.equal(reversed.get(n), forward.get(n), `${n} moved legs with the input order`);
+});
+
+test('every leg ends within one test of the mean, or at its own self-sharding load', () => {
+  // Heaviest-first onto the lightest leg: a leg that received any test was the
+  // lightest when it took its last one, so it ends at most one test above the
+  // mean; a leg that received none ends at its starting load.
+  const legOf = legsOf(SYNTHETIC_NAMES, SYNTHETIC_LEGS, SYNTHETIC_LEDGER);
+  const predicted = predictLegSeconds(legOf, SYNTHETIC_LEGS, SYNTHETIC_LEDGER)['internal/promql'];
+  const mean = predicted.reduce((a, b) => a + b, 0) / SYNTHETIC_LEGS;
+  const heaviest = Math.max(...Object.values(SYNTHETIC_LEDGER.tests['internal/promql']));
+  for (const [i, seconds] of predicted.entries()) {
+    assert.ok(
+      seconds <= Math.max(SKEWED_SELF_SHARD[i], mean + heaviest),
+      `leg ${i + 1} is predicted at ${seconds.toFixed(1)}s against a mean of ${mean.toFixed(1)}s, one test ` +
+        `(${heaviest}s) and a self-sharding load of ${SKEWED_SELF_SHARD[i]}s`,
+    );
   }
 });
 
-test('partitionTestNames spreads roughly evenly: no leg starves or hoards', () => {
-  const count = 9;
-  const sizes = Array.from({ length: count }, (_, i) => partitionTestNames(SYNTHETIC_NAMES, i + 1, count).length);
-  const total = sizes.reduce((a, b) => a + b, 0);
-  assert.strictEqual(total, SYNTHETIC_NAMES.length);
-  const expected = SYNTHETIC_NAMES.length / count;
-  for (const [i, size] of sizes.entries()) {
+test('a leg whose self-sharding slices run long receives less of the partitioned suite', () => {
+  const count = SYNTHETIC_LEGS;
+  const legOf = legsOf(SYNTHETIC_NAMES, count, SYNTHETIC_LEDGER);
+  const partitioned = Array(count).fill(0);
+  for (const [n, leg] of legOf) partitioned[leg - 1] += SYNTHETIC_LEDGER.tests['internal/promql'][n];
+  const others = partitioned.slice(1);
+  assert.ok(
+    partitioned[0] < Math.min(...others),
+    `leg 1 starts ${SKEWED_SELF_SHARD[0]}s into its self-sharding slices, yet received ` +
+      `${partitioned[0].toFixed(1)}s of partitioned tests against ${others.map((x) => x.toFixed(1)).join(' ')}`,
+  );
+});
+
+test('tests the ledger weighs at zero, or does not list, spread across legs instead of piling onto one', () => {
+  const count = SYNTHETIC_LEGS;
+  const fresh = Array.from({ length: 4 * count }, (_, i) => `TestAddedAfterTheLedger_${i}`);
+  const zero = SYNTHETIC_NAMES.filter((_, i) => syntheticSeconds(i) === 0);
+  const legOf = legsOf([...SYNTHETIC_NAMES, ...fresh], count, SYNTHETIC_LEDGER);
+  for (const [what, names] of [
+    ['unlisted', fresh],
+    ['zero-weight', zero],
+  ]) {
+    const per = namesPerLeg(legOf, names, count);
+    const mean = names.length / count;
     assert.ok(
-      size > expected * 0.5 && size < expected * 1.5,
-      `leg ${i + 1} got ${size} of ${SYNTHETIC_NAMES.length} names, expected roughly ${expected.toFixed(1)}`,
+      Math.max(...per) <= 2 * mean,
+      `${what} tests per leg ${per.join(' ')}: one leg holds more than twice the mean of ${mean.toFixed(1)}`,
     );
+  }
+});
+
+test('the committed ledger plus new tests: the new tests reach most legs', () => {
+  const ledger = readLedger('promql');
+  const count = ledger.legs;
+  const always = new Set(SELF_SHARDING_TESTS.promql);
+  const fresh = Array.from({ length: 2 * count }, (_, i) => `TestAddedAfterTheLedger_${i}`);
+  const measured = Object.values(ledger.tests).flatMap((byName) => Object.keys(byName));
+  const legOf = legsOf([...measured.filter((n) => !always.has(n)), ...fresh], count, ledger);
+  const per = namesPerLeg(legOf, fresh, count);
+  assert.ok(
+    per.filter((x) => x > 0).length >= count / 2,
+    `${fresh.length} new tests landed on ${per.filter((x) => x > 0).length} of ${count} legs (${per.join(' ')})`,
+  );
+});
+
+test('ledgerDrift names unmeasured tests and stale entries, and a stale entry is never selected', () => {
+  const ledger = { legs: 2, selfShardLegs: {}, tests: { 'internal/promql': { TestKept: 5, TestGone: 9 } } };
+  assert.deepStrictEqual(ledgerDrift(['TestKept', 'TestNew'], ledger), { unmeasured: ['TestNew'], stale: ['TestGone'] });
+  const legOf = legsOf(['TestKept', 'TestNew'], 2, ledger);
+  assert.deepStrictEqual([...legOf.keys()].sort(), ['TestKept', 'TestNew']);
+});
+
+test('a ledger measured at another leg count spreads each self-sharding total evenly', () => {
+  const ledger = { legs: 3, selfShardLegs: { 'internal/promql': { TestLower: [30, 0, 0] } }, tests: { 'internal/promql': {} } };
+  assert.deepStrictEqual(selfShardLoads(ledger, 3)['internal/promql'], [30, 0, 0]);
+  assert.deepStrictEqual(selfShardLoads(ledger, 2)['internal/promql'], [15, 15]);
+});
+
+test('the committed ledger covers exactly the promql legs: their packages, their self-sharding tests, their leg count', () => {
+  const ledger = readLedger('promql');
+  assert.deepStrictEqual(Object.keys(ledger.tests).sort(), rosterPackages('promql').sort());
+  assert.ok(
+    Object.keys(ledger.selfShardLegs).every((pkg) => rosterPackages('promql').includes(pkg)),
+    `self-sharding timings name a package the legs do not run: ${Object.keys(ledger.selfShardLegs).join(', ')}`,
+  );
+  const timed = Object.values(ledger.selfShardLegs).flatMap((byName) => Object.keys(byName));
+  assert.deepStrictEqual(timed.sort(), [...SELF_SHARDING_TESTS.promql].sort());
+  assert.equal(ledger.legs, promqlLegCount(workflow), 'regenerate the ledger at the leg count chdb.yml runs');
+  for (const perLeg of Object.values(ledger.selfShardLegs).flatMap((byName) => Object.values(byName))) {
+    assert.equal(perLeg.length, ledger.legs);
+  }
+});
+
+test('every promql leg\'s slowest test binary stays within LEG_BINARY_BUDGET_SECONDS on the committed ledger', () => {
+  const ledger = readLedger('promql');
+  const count = promqlLegCount(workflow);
+  const always = new Set(SELF_SHARDING_TESTS.promql);
+  const names = Object.values(ledger.tests)
+    .flatMap((byName) => Object.keys(byName))
+    .filter((n) => !always.has(n));
+  const legOf = legsOf(names, count, ledger);
+  assert.deepStrictEqual([...legOf.keys()].sort(), [...names].sort(), 'every ledger test must land on one leg');
+
+  // The prediction is taken from the slices partitionTestNames hands each leg.
+  for (const [pkg, binary] of Object.entries(predictLegSeconds(legOf, count, ledger))) {
+    for (const [i, seconds] of binary.entries()) {
+      assert.ok(
+        seconds <= LEG_BINARY_BUDGET_SECONDS,
+        `${pkg} on leg ${i + 1} of ${count} is predicted at ${seconds.toFixed(0)}s, over the ` +
+          `${LEG_BINARY_BUDGET_SECONDS.toFixed(0)}s budget; per-leg predictions: ${binary.map((x) => x.toFixed(0)).join(' ')}`,
+      );
+    }
   }
 });
 
@@ -438,7 +571,7 @@ test('runFilterFor includes every SELF_SHARDING_TESTS entry in EVERY leg uncondi
   const count = 9;
   const names = [...SYNTHETIC_NAMES, 'TestLower', 'TestRoundTripChDB'];
   for (let index = 1; index <= count; index++) {
-    const filter = runFilterFor(names, 'promql', index, count);
+    const filter = runFilterFor(names, 'promql', index, count, SYNTHETIC_LEDGER);
     assert.match(filter, /[(|]TestLower[|)]/, `leg ${index}'s filter must always include TestLower`);
     assert.match(filter, /[(|]TestRoundTripChDB[|)]/, `leg ${index}'s filter must always include TestRoundTripChDB`);
   }
@@ -460,7 +593,7 @@ test('runFilterFor never assigns a SELF_SHARDING_TESTS entry to the partitioned 
 test('runFilterFor produces a valid, anchored regex for every leg', () => {
   const count = 9;
   for (let index = 1; index <= count; index++) {
-    const filter = runFilterFor(SYNTHETIC_NAMES, 'promql', index, count);
+    const filter = runFilterFor(SYNTHETIC_NAMES, 'promql', index, count, SYNTHETIC_LEDGER);
     assert.match(filter, /^\^\(.*\)\$$/, 'must be anchored on both ends');
     // Must compile as a real regex (the -run value go test itself compiles).
     assert.doesNotThrow(() => new RegExp(filter));
@@ -468,12 +601,19 @@ test('runFilterFor produces a valid, anchored regex for every leg', () => {
 });
 
 test('a head with no SELF_SHARDING_TESTS entry (logql/traceql) still partitions cleanly', () => {
-  const filter = runFilterFor(SYNTHETIC_NAMES, 'logql', 1, 9);
+  const filter = runFilterFor(SYNTHETIC_NAMES, 'logql', 1, 9, SYNTHETIC_LEDGER);
   assert.match(filter, /^\^\(.*\)\$$/);
 });
 
 test('legCommands with testNames wires a -run filter into every leg, before the package args', () => {
-  const legs = legCommands({ ql: 'promql', tags: 'chdb', testNames: SYNTHETIC_NAMES, outerIndex: 1, outerCount: 3 });
+  const legs = legCommands({
+    ql: 'promql',
+    tags: 'chdb',
+    testNames: SYNTHETIC_NAMES,
+    ledger: SYNTHETIC_LEDGER,
+    outerIndex: 1,
+    outerCount: 3,
+  });
   for (const leg of legs) {
     const runIdx = leg.argv.findIndex((a) => a.startsWith('-run='));
     assert.ok(runIdx !== -1, `${leg.name}: no -run flag`);

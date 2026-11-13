@@ -149,6 +149,15 @@ test/perf/nightly-baseline.json              -merge
 #   increase is genuinely intended.
 test/perf/metadata-query-size-baseline.json  -merge
 
+# Regenerate: `just update-chdb-roundtrip-weights`
+#   (node .github/scripts/chdb-roundtrip-weights.mjs — times test/spec/promql
+#    and internal/promql under `go test -json` with the chdb.roundtrip-promql
+#    lane's tags, the self-sharding tests once per leg; needs libchdb.so,
+#    takes hours). The per-test seconds chdb-roundtrip.mjs balances the promql
+#   roundtrip legs with. A blended merge pairs test names with other tests'
+#   weights and still parses.
+test/chdb-roundtrip/promql-weights-baseline.json -merge
+
 # Regenerate: `just update-coverage-floor`
 #   (COVERAGE_UPDATE_FLOORS=1 node .github/scripts/coverage-summary.mjs, reading
 #    the cover-merged.out `just coverage` leaves behind — needs libchdb.so so the

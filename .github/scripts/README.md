@@ -3874,6 +3874,32 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     both-or-neither), `GO` (test seam; default `go`).
   - Exit: `0` when every leg passed, `1` on a failed leg, bad input, or a
     half-declared outer shard.
+  - Partition of the head's own top-level tests: every `SELF_SHARDING_TESTS`
+    entry runs on every leg and takes its own slice of its cases; every other
+    test runs whole on one leg. Each leg's package binaries start from their
+    measured self-sharding slices, and the tests the committed weight ledger
+    `WEIGHTS_LEDGER` (`test/chdb-roundtrip/promql-weights-baseline.json`)
+    weighs above zero are placed heaviest first, each on the leg where its
+    package's binary is lightest so far. A test the ledger weighs at zero or
+    does not list is placed by a hash of its name. The leg notices every test
+    the ledger does not list and every ledger entry naming no live test; a
+    stale entry is ignored.
+    `chdb-roundtrip.test.mjs` holds every promql leg's predicted slowest test
+    binary within `LEG_BINARY_BUDGET_SECONDS`: on a runner
+    `CI_RUNNER_SLOWDOWN` x `SLOW_RUNNER_FACTOR` times slower than the host the
+    ledger was measured on, it still finishes inside `TIMEOUT_HEADROOM_SHARE`
+    of the `-timeout`.
+
+- **`chdb-roundtrip-weights.mjs`** — `just update-chdb-roundtrip-weights`.
+  Regenerates the promql weight ledger with serial `go test -json` runs of
+  `test/spec/promql` and `internal/promql`, under the `chdb.roundtrip-promql`
+  lane's tags from `.github/ci-lanes.json`: one run times every
+  non-self-sharding top-level test whole, then one run per global leg (the leg
+  count `chdb.yml` runs) times each `SELF_SHARDING_TESTS` entry's slice under
+  that leg's `SPEC_SHARD_INDEX` / `SPEC_SHARD_COUNT`. A run with a failing test
+  writes nothing.
+  - Env: `GO` (default `go`).
+  - Exit: `0` once the ledger is written, `1` on a failed or incomplete run.
 
 - **`go-test-fanout.mjs`** — `chdb.yml`, the `probe` job, through `just
   test-chdb`. Runs the `go test` invocation it is handed as arguments, with

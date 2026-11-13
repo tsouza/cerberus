@@ -123,6 +123,7 @@ var generatedArtifacts = []generatedArtifact{
 	{"test/perf/perf-smoke-baseline.json", "just update-perf-smoke-baseline"},
 	{"test/perf/nightly-baseline.json", "just update-nightly-perf-baseline"},
 	{"test/perf/metadata-query-size-baseline.json", "just update-metadata-query-size-baseline"},
+	{"test/chdb-roundtrip/promql-weights-baseline.json", "just update-chdb-roundtrip-weights"},
 
 	{"compatibility/loki/upstream-skip-baseline.txt", "-regen-baseline"},
 
