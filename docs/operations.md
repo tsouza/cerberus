@@ -515,8 +515,9 @@ the cap is raised.
 **Breaking change:** the ceiling was previously named
 `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` and counted a different
 unit, so its values do not carry over. A deployment that still sets the old name
-**fails boot** with an error naming the replacement. Remove the old variable
-and, if the default does not fit, set
+starts, ignores its value, and logs one startup warning naming the replacement:
+the ceiling is `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` when set, the
+default otherwise. Remove the old variable and, if the default does not fit, set
 `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to an entry count.
 
 ### Prometheus resource-attribute labels

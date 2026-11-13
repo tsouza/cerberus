@@ -197,21 +197,51 @@ func TestEnvVarNames(t *testing.T) {
 	}
 }
 
-// TestResourceBoundsFromEnv_RetiredClassicMergeNameFailsFast pins the rename
+// TestResourceBoundsFromEnv_RetiredClassicMergeNameIsIgnored pins the rename
 // of the classic bucket-merge ceiling: its old name counted a different unit,
-// so any value under it — even one that parses — fails startup with an error
-// naming the replacement, instead of being read as an entry count.
-func TestResourceBoundsFromEnv_RetiredClassicMergeNameFailsFast(t *testing.T) {
-	for _, v := range []string{"50000000", "10000000"} {
-		t.Run(v, func(t *testing.T) {
-			t.Setenv(EnvClassicBucketMergeMaxCostUnitsRetired, v)
-			_, err := ResourceBoundsFromEnv()
-			if err == nil {
-				t.Fatalf("ResourceBoundsFromEnv() error = nil with %s=%s, want a startup failure", EnvClassicBucketMergeMaxCostUnitsRetired, v)
+// so a value under it is never read as an entry count. Alone it leaves the
+// default ceiling and yields a warning naming the replacement; beside the new
+// name the new value applies and the warning is still reported; the new name
+// alone yields no warning.
+func TestResourceBoundsFromEnv_RetiredClassicMergeNameIsIgnored(t *testing.T) {
+	const pinned = 1234
+	for _, tc := range []struct {
+		name        string
+		retired     string
+		current     string
+		wantCeiling int64
+		wantWarning bool
+	}{
+		{"retired alone", "50000000", "", maxClassicBucketMergeEntries, true},
+		{"both set", "50000000", "1234", pinned, true},
+		{"current alone", "", "1234", pinned, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{
+				EnvClassicBucketMergeMaxCostUnitsRetired: tc.retired,
+				EnvClassicBucketMergeMaxEntries:          tc.current,
 			}
-			for _, name := range []string{EnvClassicBucketMergeMaxCostUnitsRetired, EnvClassicBucketMergeMaxEntries} {
-				if !strings.Contains(err.Error(), name) {
-					t.Fatalf("ResourceBoundsFromEnv() error %q does not name %s", err, name)
+			get := func(k string) string { return env[k] }
+			got, err := ResourceBoundsFrom(get)
+			if err != nil {
+				t.Fatalf("ResourceBoundsFrom: %v", err)
+			}
+			if got.ClassicBucketMergeMaxEntries != tc.wantCeiling {
+				t.Fatalf("ClassicBucketMergeMaxEntries = %d, want %d", got.ClassicBucketMergeMaxEntries, tc.wantCeiling)
+			}
+			warnings := RetiredSettingWarnings(get)
+			if !tc.wantWarning {
+				if len(warnings) != 0 {
+					t.Fatalf("RetiredSettingWarnings = %q, want none", warnings)
+				}
+				return
+			}
+			if len(warnings) != 1 {
+				t.Fatalf("RetiredSettingWarnings = %q, want one warning", warnings)
+			}
+			for _, want := range []string{EnvClassicBucketMergeMaxCostUnitsRetired, EnvClassicBucketMergeMaxEntries, "ignored"} {
+				if !strings.Contains(warnings[0], want) {
+					t.Fatalf("warning %q does not mention %q", warnings[0], want)
 				}
 			}
 		})

@@ -472,7 +472,8 @@ instead (` + "`internal/engine/resource_bound_env.go`" + `,
   (` + "`internal/promql/classic_bucket_merge_bound.go`" + `,
   ` + "`maxClassicBucketMergeEntries`" + `). It replaces
   ` + "`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS`" + `, which counted a
-  different unit; setting the old name fails startup.
+  different unit; the old name is ignored, and setting it logs a startup warning
+  naming this one.
 - **` + "`CERBERUS_CH_MAX_EMITTED_SQL_BYTES`" + `** (int64, default ` + "`262144`" + `) -
   the bytes of SQL cerberus will emit for one statement
   (` + "`internal/chsql/emit_size_bound.go`" + `, ` + "`maxEmittedSQLBytes`" + `).

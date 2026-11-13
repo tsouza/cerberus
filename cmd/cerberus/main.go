@@ -182,6 +182,16 @@ func resolveBoundOverrides(cfg config.Config) (engine.ResourceBoundOverrides, pr
 	return resourceBounds, promResourceBounds, nil
 }
 
+// warnRetiredSettings logs one startup warning per retired setting the
+// configuration still sets. A retired setting is ignored rather than
+// rejected: the process starts on its replacement, or on the replacement's
+// default when that is unset.
+func warnRetiredSettings(logger *slog.Logger, cfg config.Config) {
+	for _, w := range promql.RetiredSettingWarnings(cfg.Settings.String) {
+		logger.Warn(w)
+	}
+}
+
 // mountAPIHeads builds and mounts ONLY the query heads enabled by
 // CERBERUS_ENABLED_HEADS (default: all three) onto traceMux. A disabled head's
 // handler, per-head Client view, engine, and admit limiter are NEVER built and
@@ -639,6 +649,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	warnRetiredSettings(logger, cfg)
 
 	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, chOpts.queryLogUnion, limiters, logger, resourceBounds, promResourceBounds, probes)
 	if err != nil {

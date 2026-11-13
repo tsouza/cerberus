@@ -49,8 +49,9 @@ const (
 
 	// EnvClassicBucketMergeMaxCostUnitsRetired is the name the classic
 	// bucket-merge ceiling had while it counted merge width times bucket
-	// volume. Its values are not entry counts, so it is not read as one:
-	// [ResourceBoundsFrom] fails when it is set and names
+	// volume. Its values are not entry counts, so [ResourceBoundsFrom]
+	// ignores it, and [RetiredSettingWarnings] reports it so the boot path
+	// can warn that it is ignored and name
 	// [EnvClassicBucketMergeMaxEntries] as the replacement.
 	EnvClassicBucketMergeMaxCostUnitsRetired = "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS"
 
@@ -191,14 +192,6 @@ func ResourceBoundsFrom(get func(string) string) (ResourceBounds, error) {
 	if cfg.HistogramMergeMaxCostUnits, err = settingInt64(get, EnvHistogramMergeMaxCostUnits, cfg.HistogramMergeMaxCostUnits); err != nil {
 		return ResourceBounds{}, err
 	}
-	if get(EnvClassicBucketMergeMaxCostUnitsRetired) != "" {
-		return ResourceBounds{}, fmt.Errorf(
-			"%s is no longer read: the classic-histogram bucket-merge ceiling now counts merged bucket entries, "+
-				"not merge width times bucket volume, so its old values do not carry over; "+
-				"unset it and set %s instead (default %d)",
-			EnvClassicBucketMergeMaxCostUnitsRetired, EnvClassicBucketMergeMaxEntries, int64(maxClassicBucketMergeEntries),
-		)
-	}
 	if cfg.ClassicBucketMergeMaxEntries, err = settingInt64(get, EnvClassicBucketMergeMaxEntries, cfg.ClassicBucketMergeMaxEntries); err != nil {
 		return ResourceBounds{}, err
 	}
@@ -208,6 +201,22 @@ func ResourceBoundsFrom(get func(string) string) (ResourceBounds, error) {
 		return ResourceBounds{}, err
 	}
 	return cfg, nil
+}
+
+// RetiredSettingWarnings returns one warning per retired setting get
+// resolves to a non-empty value. A retired setting is never read:
+// [ResourceBoundsFrom] applies its replacement, or the default when the
+// replacement is unset. The caller logs each warning at startup.
+func RetiredSettingWarnings(get func(string) string) []string {
+	if get(EnvClassicBucketMergeMaxCostUnitsRetired) == "" {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"%s is ignored: the classic-histogram bucket-merge ceiling now counts merged bucket entries, "+
+			"not merge width times bucket volume, so its old values do not carry over; "+
+			"the ceiling comes from %s (default %d)",
+		EnvClassicBucketMergeMaxCostUnitsRetired, EnvClassicBucketMergeMaxEntries, int64(maxClassicBucketMergeEntries),
+	)}
 }
 
 // settingInt64 parses a 64-bit int setting through get, returning def when
