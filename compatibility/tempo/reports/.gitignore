@@ -1,5 +1,4 @@
-# Runtime artefacts only; the dir itself is tracked (via .gitkeep) so
-# the docker-compose `:/reports` bind mount has a valid target.
+# Runtime artefacts only; the dir itself is tracked through this file so the
+# docker-compose `:/reports` bind mount has a valid target.
 *
 !.gitignore
-!.gitkeep
