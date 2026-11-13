@@ -1,0 +1,26 @@
+# A regex label matcher with a metacharacter keeps match(), which ClickHouse
+# runs as a substring search, so the pattern is anchored as `^(?:a.i)$`:
+# 'api' matches, while 'apiserver' and 'xapi', which contain a match, do not.
+
+-- query.promql --
+up{job=~"a.i"}
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'apiserver'), toDateTime64('2026-01-01 00:00:00', 9), 2.0),
+    ('up', map('job', 'xapi'), toDateTime64('2026-01-01 00:00:00', 9), 3.0);
+-- expected_rows --
+[
+  ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 1.0]
+]
+-- sql --
