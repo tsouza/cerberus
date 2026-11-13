@@ -105,6 +105,9 @@ type scenario struct {
 	// keyValuesMode is the server's asynchronous_metrics_key_values_mode; ""
 	// leaves the server default.
 	keyValuesMode string
+	// perCoreFamily marks a scenario whose assertions inspect perCoreFamily:
+	// its collector starts only once the server publishes the family.
+	perCoreFamily bool
 }
 
 func TestAsyncMetricsReceiverAcrossKeyedSchema(t *testing.T) {
@@ -112,13 +115,13 @@ func TestAsyncMetricsReceiverAcrossKeyedSchema(t *testing.T) {
 	collectorImage := quickstartImage(t, "otel/opentelemetry-collector-contrib")
 	boardNames := dashboardScalarNames(t)
 
-	prior := runScenario(t, scenario{image: priorServerImage}, queries, collectorImage)
+	prior := runScenario(t, scenario{image: priorServerImage, perCoreFamily: true}, queries, collectorImage)
 	older := []scenarioResult{
 		runScenario(t, scenario{image: oldestReceiverImage}, queries, collectorImage),
 		runScenario(t, scenario{image: preFormatSettingsLTSImage}, queries, collectorImage),
 	}
-	keyed := runScenario(t, scenario{image: keyedServerImage}, queries, collectorImage)
-	both := runScenario(t, scenario{image: keyedServerImage, keyValuesMode: legacyMode}, queries, collectorImage)
+	keyed := runScenario(t, scenario{image: keyedServerImage, perCoreFamily: true}, queries, collectorImage)
+	both := runScenario(t, scenario{image: keyedServerImage, keyValuesMode: legacyMode, perCoreFamily: true}, queries, collectorImage)
 
 	t.Run("prior server exports legacy per-key scalars and no keyed series", func(t *testing.T) {
 		for _, s := range prior.scrapes {
@@ -259,6 +262,9 @@ func runScenario(t *testing.T, sc scenario, queries []any, collectorImage string
 	}
 	t.Cleanup(func() { _ = ch.Terminate(context.Background()) })
 	conn := dial(ctx, t, ch)
+	if sc.perCoreFamily {
+		waitForPerCoreFamily(ctx, t, label, conn)
+	}
 
 	out := t.TempDir()
 	// The contrib image runs as an unprivileged user; the bind-mounted output
@@ -597,6 +603,35 @@ func keyedIDs(s scrape) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// waitForPerCoreFamily returns once the server publishes perCoreFamily, under
+// its keyed name or its legacy spelling for core 0. The family is a CPU-time
+// delta between two asynchronous-metrics updates, so the update that runs at
+// startup publishes scalars such as scalarProbe without it; a collector
+// started before the second update would export a first scrape that lacks
+// the family the assertions inspect.
+func waitForPerCoreFamily(ctx context.Context, t *testing.T, label string, conn driver.Conn) {
+	t.Helper()
+	query, args := chsql.NewQuery().
+		Select(chsql.Call("count")).
+		From(chsql.Qual("system", "asynchronous_metrics")).
+		Where(chsql.In(chsql.Col("metric"), chsql.Lit(perCoreFamily), chsql.Lit(perCoreFamily+"0"))).
+		Build()
+	for {
+		var n uint64
+		if err := conn.QueryRow(ctx, query, args...).Scan(&n); err != nil {
+			t.Fatalf("%s: wait for %s: %v", label, perCoreFamily, err)
+		}
+		if n > 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("%s: the server never published %s: %v", label, perCoreFamily, ctx.Err())
+		case <-time.After(scrapePoll):
+		}
+	}
 }
 
 // serverFamilyKeys reads the keys the server itself publishes for family.
