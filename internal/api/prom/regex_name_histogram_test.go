@@ -351,6 +351,122 @@ func TestExpandMetadataMatchers_FanOutStaysChunked(t *testing.T) {
 }
 
 // metadataTestWindow returns a fixed bounded metadata window.
+// TestExpandMetadataMatchers_WindowEndingNowUsesGroupedEnumeration pins the
+// Grafana request shape: `label_values(metric, label)` over a relative range
+// forwards a finite window whose end is rounded up past the wall clock. The
+// histogram base-name enumeration that classifies a bare pinned name must take
+// the grouped `HAVING max(TimeUnix) >= start` arm (served from the
+// max(TimeUnix) projections) rather than a DISTINCT over every histogram row in
+// the window, and it must still classify the names exactly as before: an
+// ordinary metric keeps its single matcher, a histogram base still expands to
+// its companions.
+func TestExpandMetadataMatchers_WindowEndingNowUsesGroupedEnumeration(t *testing.T) {
+	t.Parallel()
+
+	end := time.Now().Add(time.Minute)
+	start := end.Add(-30 * 24 * time.Hour)
+
+	cases := []struct {
+		name    string
+		matcher string
+		want    []string
+	}{
+		{
+			name:    "ordinary metric stays one matcher",
+			matcher: `{__name__="kube_pod_info"}`,
+			want:    []string{`{__name__="kube_pod_info"}`},
+		},
+		{
+			name:    "histogram base still expands to companions",
+			matcher: `{__name__="synth_latency_seconds"}`,
+			want: []string{
+				`{__name__="synth_latency_seconds"}`,
+				`{__name__="synth_latency_seconds_bucket"}`,
+				`{__name__="synth_latency_seconds_count"}`,
+				`{__name__="synth_latency_seconds_sum"}`,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &recordingQuerier{strings: []string{"synth_latency_seconds"}}
+			h := New(q, schema.DefaultOTelMetrics(), nil)
+
+			variants, err := h.expandMetadataMatchers(context.Background(), []string{tc.matcher}, start, end, false)
+			if err != nil {
+				t.Fatalf("expandMetadataMatchers: %v", err)
+			}
+			if len(q.sql) != 1 {
+				t.Fatalf("expected exactly one base-name enumeration, got %d: %v", len(q.sql), q.sql)
+			}
+			enumeration := q.sql[0]
+			if !strings.Contains(enumeration, h.Schema.HistogramTable) {
+				t.Errorf("enumeration does not read the histogram table: %s", enumeration)
+			}
+			for _, want := range []string{"GROUP BY", "HAVING max("} {
+				if !strings.Contains(enumeration, want) {
+					t.Errorf("enumeration lacks %q — not the grouped projection-served arm: %s", want, enumeration)
+				}
+			}
+			if strings.Contains(enumeration, "WHERE") {
+				t.Errorf("enumeration carries a row-level WHERE window — full histogram scan: %s", enumeration)
+			}
+			if !stringSlicesEqual(variants, tc.want) {
+				t.Fatalf("variants:\n got:  %v\n want: %v", variants, tc.want)
+			}
+		})
+	}
+}
+
+// TestExpandMetadataMatchers_PastWindowKeepsBoundedDistinct pins the other half
+// of the switch: a window that ends in the past cannot be answered from the
+// newest sample per name (a name whose samples straddle but skip the window
+// would be a false positive), so it keeps the exact WHERE-bounded DISTINCT.
+func TestExpandMetadataMatchers_PastWindowKeepsBoundedDistinct(t *testing.T) {
+	t.Parallel()
+
+	q := &recordingQuerier{strings: []string{"synth_latency_seconds"}}
+	h := New(q, schema.DefaultOTelMetrics(), nil)
+	start, end := metadataTestWindow()
+
+	if _, err := h.expandMetadataMatchers(context.Background(), []string{`{__name__="kube_pod_info"}`}, start, end, false); err != nil {
+		t.Fatalf("expandMetadataMatchers: %v", err)
+	}
+	if len(q.sql) != 1 {
+		t.Fatalf("expected exactly one base-name enumeration, got %d: %v", len(q.sql), q.sql)
+	}
+	enumeration := q.sql[0]
+	if !strings.Contains(enumeration, "WHERE") {
+		t.Errorf("past-window enumeration lost its WHERE window bound: %s", enumeration)
+	}
+	if strings.Contains(enumeration, "HAVING") {
+		t.Errorf("past-window enumeration switched to the now-anchored HAVING arm: %s", enumeration)
+	}
+}
+
+// TestWindowEndsAtOrAfterNow pins the classification the switch rests on.
+func TestWindowEndsAtOrAfterNow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	cases := []struct {
+		name string
+		end  time.Time
+		want bool
+	}{
+		{name: "zero end is not a finite window", end: time.Time{}, want: false},
+		{name: "end in the past", end: now.Add(-time.Hour), want: false},
+		{name: "end rounded up past now", end: now.Add(time.Minute), want: true},
+	}
+	for _, tc := range cases {
+		if got := windowEndsAtOrAfterNow(tc.end); got != tc.want {
+			t.Errorf("%s: windowEndsAtOrAfterNow(%v) = %v, want %v", tc.name, tc.end, got, tc.want)
+		}
+	}
+}
+
 func metadataTestWindow() (start, end time.Time) {
 	end = time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	return end.Add(-time.Hour), end
