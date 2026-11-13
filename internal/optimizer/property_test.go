@@ -220,8 +220,10 @@ var (
 // coverage sweep (coverageSweepPlans) round-trips one plan per generator
 // family, so the coverage ledger is met in both modes by construction
 // rather than by how many random plans the budget allows. The sweep
-// draws from its own rng, so the N random plans are the same in either
-// mode. Each iteration logs the plan shape on failure so reproducing
+// draws from its own rng, so running it does not change which random
+// plans follow. The full run additionally holds the random plans alone
+// to the ledger, which catches a family the random generator no longer
+// draws. Each iteration logs the plan shape on failure so reproducing
 // locally is just a matter of rerunning with the same -seed value.
 func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	const defaultN = 100
@@ -260,18 +262,20 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	ctx := context.Background()
 	opt := optimizer.Default()
 
-	// verified accumulates the node kinds of plans that actually
-	// completed a round-trip. Counting kinds at GENERATION time would
-	// credit a shape that never executes — every iteration of it takes
-	// the loop's `continue` — so coverage is measured on the plans the
-	// property really checked.
-	verified := map[string]bool{}
+	// sweepVerified and randomVerified accumulate the node kinds of plans
+	// that actually completed a round-trip, kept apart by where the plan
+	// came from. Counting kinds at GENERATION time would credit a shape
+	// that never executes — every iteration of it takes the loop's
+	// `continue` — so coverage is measured on the plans the property
+	// really checked.
+	sweepVerified := map[string]bool{}
+	randomVerified := map[string]bool{}
 
 	// roundTrip executes plan before and after the optimizer, fails the
 	// test on any divergence, and records the kinds of a plan that
-	// completed. It returns the pre-optimizer error, the one outcome a
-	// caller may treat as a drop rather than a failure.
-	roundTrip := func(plan chplan.Node, label string) error {
+	// completed into verified. It returns the pre-optimizer error, the one
+	// outcome a caller may treat as a drop rather than a failure.
+	roundTrip := func(plan chplan.Node, label string, verified map[string]bool) error {
 		gotPre, errPre := runPlan(ctx, db, executablePropertyBaseline(plan))
 		if errPre != nil {
 			return errPre
@@ -302,7 +306,7 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	sweepRng := rand.New(rand.NewSource(seed))
 	sweep := coverageSweepPlans(sweepRng)
 	for i, plan := range sweep {
-		if err := roundTrip(plan, fmt.Sprintf("sweep=%d", i)); err != nil {
+		if err := roundTrip(plan, fmt.Sprintf("sweep=%d", i), sweepVerified); err != nil {
 			t.Fatalf("coverage sweep plan %d failed its PRE-optimizer run, so its generator family "+
 				"cannot be verified: %v\n%s", i, err, dumpPlan(plan))
 		}
@@ -315,7 +319,7 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	for tried < n {
 		plan := generatePlan(rng, 0)
 
-		if errPre := roundTrip(plan, fmt.Sprintf("iter=%d", tried)); errPre != nil {
+		if errPre := roundTrip(plan, fmt.Sprintf("iter=%d", tried), randomVerified); errPre != nil {
 			// Generator produced something the emitter can't render
 			// (e.g. a degenerate Projection list). Skip — this is
 			// not what the property checks.
@@ -339,7 +343,22 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 		t.Logf("property check: %d sweep + %d random plans verified (%d dropped) against seed %d",
 			len(sweep), tried, dropped, seed)
 	}
-	assertOptimizerKindsCovered(t, verified)
+
+	verified := map[string]bool{}
+	for _, kinds := range []map[string]bool{sweepVerified, randomVerified} {
+		for kind := range kinds {
+			verified[kind] = true
+		}
+	}
+	assertOptimizerKindsCovered(t, "sweep and random plans", verified)
+
+	// The sweep alone meets the ledger, so the assertion above cannot see
+	// a family that stays in its list but is disconnected from the random
+	// generator. The full budget draws every family, so the full run also
+	// holds the random plans to the ledger on their own.
+	if !testing.Short() {
+		assertOptimizerKindsCovered(t, "random plans alone", randomVerified)
+	}
 }
 
 // maxDroppedPlansPerVerified bounds the generator's drop budget as a
