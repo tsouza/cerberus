@@ -21,3 +21,46 @@ INSERT INTO otel_logs (LogAttributes, Body) VALUES
     (map('host', 'H2'), 'none-H2');
 -- expected_rows --
 -- sql --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND match(if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]), ?) AND NOT match(if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]), ?) AND match(if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]), ?)
+-- args --
+[0] string = "job"
+[1] string = "api"
+[2] string = "region"
+[3] string = "region"
+[4] string = "region"
+[5] string = "^(?:eu|)$"
+[6] string = "zone"
+[7] string = "zone"
+[8] string = "zone"
+[9] string = "^(?:a|b)$"
+[10] string = "host"
+[11] string = "host"
+[12] string = "host"
+[13] string = "^(?:h\\.1|(?i)H2)$"
+-- args_optimized --
+[0] string = "job"
+[1] string = "api"
+[2] string = "region"
+[3] string = "region"
+[4] string = "region"
+[5] string = "^(?:eu|)$"
+[6] string = "zone"
+[7] string = "zone"
+[8] string = "zone"
+[9] string = "^(?:a|b)$"
+[10] string = "host"
+[11] string = "host"
+[12] string = "host"
+[13] string = "^(?:h\\.1|(?i)H2)$"
+-- chplan --
+Filter predicate=((((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(LogAttributes, "region"), LogAttributes["region"], ResourceAttributes["region"]) =~ "eu|")) AND (FnIf(FnMapContainsKey(LogAttributes, "zone"), LogAttributes["zone"], ResourceAttributes["zone"]) !~ "a|b")) AND (FnIf(FnMapContainsKey(LogAttributes, "host"), LogAttributes["host"], ResourceAttributes["host"]) =~ "h\\.1|(?i)H2"))
+  Scan(otel_logs)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND match(if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]), ?) AND NOT match(if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]), ?) AND match(if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]), ?)

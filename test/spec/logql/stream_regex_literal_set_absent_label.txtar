@@ -20,3 +20,30 @@ INSERT INTO otel_logs VALUES
     ('prod-web-data', map('env', 'prod', 'app', 'web', 'team', 'data'));
 -- expected_rows --
 -- sql --
+SELECT * FROM `otel_logs` WHERE match(`ResourceAttributes`[?], ?) AND match(`ResourceAttributes`[?], ?) AND NOT match(`ResourceAttributes`[?], ?)
+-- args --
+[0] string = "env"
+[1] string = "^(?:prod|stg)$"
+[2] string = "app"
+[3] string = "^(?:web|)$"
+[4] string = "team"
+[5] string = "^(?:core|edge)$"
+-- args_optimized --
+[0] string = "env"
+[1] string = "^(?:prod|stg)$"
+[2] string = "app"
+[3] string = "^(?:web|)$"
+[4] string = "team"
+[5] string = "^(?:core|edge)$"
+-- chplan --
+Filter predicate=(((ResourceAttributes["env"] =~ "prod|stg") AND (ResourceAttributes["app"] =~ "web|")) AND (ResourceAttributes["team"] !~ "core|edge"))
+  Scan(otel_logs)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql_optimized --
+SELECT * FROM `otel_logs` WHERE match(`ResourceAttributes`[?], ?) AND match(`ResourceAttributes`[?], ?) AND NOT match(`ResourceAttributes`[?], ?)
