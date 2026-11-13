@@ -1603,6 +1603,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"enabled", strings.Join(set.IDs(), ","),
 		"query_condition_cache_forced_off", client.QueryConditionCacheDisabled(),
 		"analyzer_mandatory", set.AnalyzerMandatory(),
+		"native_histogram_analyzer_faster", set.NativeHistogramAnalyzerFaster(),
 		"shape_defects", strings.Join(set.ShapeDefectIDs(), ","),
 	)
 	return chOptResolution{

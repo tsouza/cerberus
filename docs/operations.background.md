@@ -337,7 +337,13 @@ criterion):
    a single-shard/chDB copy of the same data — this is the shape most
    directly analogous to `#29332`'s own reproduction, a `WHERE`/aggregate
    wrapping a `ScalarSubquery` over a `Distributed` table under the legacy
-   analyzer.)
+   analyzer.) The `datashard` e2e lane runs ClickHouse 26.8, where the stamp
+   is withheld, so it executes this shape under the new analyzer. The
+   legacy-analyzer form runs in `test/chserver`'s
+   `TestNativeHistogram_LegacyAnalyzerOverDistributed` on 26.6 over a two-shard
+   `Distributed` table, together with `histogram_count` over the same merged
+   `rate()`; it requires `enable_analyzer=0` in `system.query_log`, a fan-out
+   to both shards, and the unsharded table's answer.
 2. **`scalar(<vector>)` PromQL queries in general**
    (`internal/promql`'s lowering into `chplan.ScalarSubquery`, e.g.
    `internal/chplan/range_window.go:210`'s range-window scalar argument) —

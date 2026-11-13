@@ -469,13 +469,14 @@ func applySharedQuerySettings(ctx context.Context, f planShapeFacts, memCap int6
 	// aggregation spills.
 	ctx = applyCompareMemoryBound(ctx, f, memCap)
 	// Native-histogram-only, while some reachable node runs a build below
-	// ClickHouse 26.8 (from which the analyzer is the faster planner on these
-	// plans) and none runs 26.9 or newer (where it is mandatory): disable ClickHouse's newer query analyzer, whose cost on the
-	// merge/window-fold machinery's deeply nested lambda/arrayMap expressions
-	// is wildly superlinear on the floor-pinned CH 24.8 relative to the older
-	// analyzer (cerberus issue #2355). rules.applyFacts below
-	// reads the same fact so its analyzer-gated rules never co-stamp
-	// enable_analyzer=1 over this fix's 0 — see that method's own doc.
+	// ClickHouse 26.8 (from which these plans run faster under the analyzer)
+	// and none runs 26.9 or newer (where the analyzer is mandatory): disable
+	// ClickHouse's newer query analyzer, whose cost on the merge/window-fold
+	// machinery's deeply nested lambda/arrayMap expressions is wildly
+	// superlinear on the floor-pinned CH 24.8 relative to the older analyzer
+	// (cerberus issue #2355). rules.applyFacts below reads the same fact so its
+	// analyzer-gated rules never co-stamp enable_analyzer=1 over this fix's 0 —
+	// see that method's own doc.
 	ctx = applyNativeHistogramAnalyzerFix(ctx, f, rules)
 	// Sorted-slab-eligible shapes only: cap max_block_size at 1 so the
 	// per-anchor arrayFilter/arrayMap intermediates the emitter builds per

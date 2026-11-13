@@ -2586,7 +2586,8 @@ func AnalyzerMandatory(server Version) bool {
 // one, so the enable_analyzer=0 stamp the engine puts on those plans no longer
 // pays off. It sits below AnalyzerMandatorySince: 26.8 still accepts
 // enable_analyzer=0, it only runs slower under it. The measurement behind the
-// line is recorded on the engine's applyNativeHistogramAnalyzerFix.
+// line is in docs/performance.background.md, "Why the native-histogram
+// legacy-analyzer stamp stops at 26.8".
 var NativeHistogramAnalyzerFasterSince = Version{Major: 26, Minor: 8}
 
 // NativeHistogramAnalyzerFaster reports whether server runs native-histogram

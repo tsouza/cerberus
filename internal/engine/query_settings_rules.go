@@ -154,9 +154,9 @@ type SettingsRules struct {
 	// feature resolves on, so this is safe whenever it fires; the eligibility
 	// check (predicateStableForConditionCache) is still conservative. A plan
 	// the native-histogram analyzer fix stamps enable_analyzer=0 on (unless
-	// AnalyzerMandatory) is never stamped: the
-	// cache is analyzer-gated and the fix's 0 must not be overwritten by this
-	// rule's co-stamp.
+	// AnalyzerMandatory or NativeHistogramAnalyzerFaster withholds it) is never
+	// stamped: the cache is analyzer-gated and the fix's 0 must not be
+	// overwritten by this rule's co-stamp.
 	ConditionCache bool
 
 	// JoinSpill, when true, stamps max_bytes_before_external_join=cap/2 on a
@@ -439,9 +439,9 @@ func (r SettingsRules) now() time.Time {
 //
 // legacyAnalyzerStamped is what keeps enable_analyzer single-valued on the
 // settings map. applyNativeHistogramAnalyzerFix stamps enable_analyzer=0 on a
-// plan carrying the hazard while the fleet still gains from it (below 26.8),
-// and the condition-cache and lazy-materialisation rules each co-stamp enable_analyzer=1 —
-// chclient.WithQuerySetting is last-write-wins on a key, and these rules run
+// plan carrying the hazard while the fleet still gains from it (a node below
+// 26.8), and the condition-cache and lazy-materialisation rules each co-stamp
+// enable_analyzer=1 — chclient.WithQuerySetting is last-write-wins on a key, and these rules run
 // after the fix, so before the hazard was read here the co-stamp silently
 // overwrote the fix on every native-histogram query that carried a Filter
 // (every real one does) on any server where condition_cache resolved in
@@ -669,41 +669,23 @@ func applySortedSlabOverTimeMemoryBound(ctx context.Context, f planShapeFacts) c
 //     node runs such a build (chopt.AnalyzerMandatory), because a query can
 //     land on that node however old the others are.
 //   - rules.NativeHistogramAnalyzerFaster: from 26.8 every measured shape runs
-//     faster under the analyzer, and the stamp saves no memory
-//     (chopt.NativeHistogramAnalyzerFasterSince). This holds only once EVERY
+//     faster under the analyzer, with no consistent memory saving from the
+//     stamp (chopt.NativeHistogramAnalyzerFasterSince). This holds only once EVERY
 //     reachable node runs 26.8 or newer: the fact is resolved against the
 //     oldest node, like the optimization ids. A mixed fleet keeps the stamp,
 //     because it still pays off on the older node and on a 26.8 node it is
 //     slower, never refused.
 //
-// Measured on real servers (26.6.8.7 and 26.8.36.3) with the production
-// lowerer wiring and settings rules, the adaptive-aggregator stamp
-// (chopt.FeatureHistogramAdaptiveAggregatorOff) applied on 26.8 where it
-// fires. Median wall ms and median peak MiB over 9 warm runs, two rounds where
-// two figures are given, stamped (legacy analyzer) against unstamped (analyzer):
+// Measured on 26.6 and 26.8 with the production lowerer wiring and settings
+// rules: on 26.8 every measured shape runs faster under the analyzer, and the
+// stamp lowers peak memory by at most 14 MiB on one round of one shape while
+// raising it by up to 61 MiB on another; on 26.6 the stamp still cuts the
+// plural quantile over rate() by about 28% wall and 21% peak. The figures are in docs/performance.background.md, "Why the
+// native-histogram legacy-analyzer stamp stops at 26.8".
 //
-//   - plural native quantile over rate(), 26.8: 3208 / 2973 ms, 172 / 164 MiB
-//     against 2255 / 2145 ms, 186 / 166 MiB.
-//   - single native quantile over rate(), 26.8: 3606 / 4863 ms, 212 / 177 MiB
-//     against 3024 / 2697 ms, 182 / 159 MiB.
-//   - 10-series exponential rate() window at 21 anchors, 26.8: 4384 / 4231 ms,
-//     96 / 95 MiB against 1136 ms, 35 MiB.
-//   - classic plus native derived sentinel, 26.8: 3286 ms, 668 MiB against
-//     3022 ms, 667 MiB.
-//   - plural native quantile over rate(), 26.6: 4888 ms, 197 MiB against
-//     6811 ms, 249 MiB.
-//   - classic plus native derived sentinel, 26.6: 2967 ms, 585 MiB against
-//     2100 ms, 598 MiB.
-//
-// On 26.8 the stamp is slower on every shape, and its peaks sit within the
-// spread between the two rounds of the analyzer's; an earlier 26.8.10.6 run agrees (2895 ms stamped against 1218 ms
-// with the analyzer at 100 series). On 26.6 the result is mixed, and the
-// plural quantile over rate() — the shape the stamp exists for — still gains
-// about 28% wall and 21% peak, so the stamp stays below 26.8.
-//
-// Below 26.8 the stamp is not gated per version, and the measurements
-// that follow are why. A single-series spot check on CH 26.5 (0.57s new analyzer vs
-// 1.2s old) suggested the trade inverts on newer servers, but at production
+// Below 26.8 the stamp is not gated per version, and the measurements that
+// follow are why. A single-series spot check on CH 26.5 (0.57s new analyzer
+// vs 1.2s old) suggested the trade inverts on newer servers, but at production
 // cardinality it does not. On chDB's embedded ClickHouse 26.x engine (the
 // substrate every chdb-tagged lane runs on) with 500 distinct series under a
 // one-label GROUP BY (the `cerb:project;agg=1;rbf` plan shape —

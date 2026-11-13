@@ -410,3 +410,38 @@ against the peer. Wall time on a shared runner varies by several times between
 runs, while the ratio of two statements planned back to back on the same server
 does not. The 4x bound leaves room for the plural statement's extra levels and
 for noise, and it sits an order of magnitude below the regressed plan.
+
+## Why the native-histogram legacy-analyzer stamp stops at 26.8
+
+The engine stamps `enable_analyzer=0` on native-histogram plans because the new
+analyzer once planned their nested lambda and array expressions far more slowly
+than the older one. On 26.8 that is no longer true, so the stamp is withheld once
+every reachable node runs 26.8 or newer
+(`chopt.NativeHistogramAnalyzerFasterSince`).
+
+Measured on 26.6.8.7 and 26.8.36.3 with the production lowerer wiring and
+settings rules. On 26.8 the adaptive-aggregator stamp
+(`histogram_adaptive_aggregator_off`) was applied where it fires. Median wall ms
+and median peak MiB over 9 warm runs; where two figures are given, they are two
+rounds:
+
+| Shape                                     | Server | Stamped (legacy analyzer)     | Unstamped (analyzer)          |
+| ----------------------------------------- | ------ | ----------------------------- | ----------------------------- |
+| plural native quantile over `rate()`      | 26.8   | 3208 / 2973 ms, 172 / 164 MiB | 2255 / 2145 ms, 186 / 166 MiB |
+| single native quantile over `rate()`      | 26.8   | 3606 / 4863 ms, 212 / 177 MiB | 3024 / 2697 ms, 182 / 159 MiB |
+| 10-series exp `rate()` window, 21 anchors | 26.8   | 4384 / 4231 ms, 96 / 95 MiB   | 1136 ms, 35 MiB               |
+| classic + native derived sentinel         | 26.8   | 3286 ms, 668 MiB              | 3022 ms, 667 MiB              |
+| plural native quantile over `rate()`      | 26.6   | 4888 ms, 197 MiB              | 6811 ms, 249 MiB              |
+| classic + native derived sentinel         | 26.6   | 2967 ms, 585 MiB              | 2100 ms, 598 MiB              |
+
+On 26.8 the analyzer is faster on every shape. Memory has no consistent winner.
+The stamp's best case is 14 MiB lower on one round of the plural quantile. Its
+worst case is 61 MiB higher on the exponential `rate()` window. An earlier
+26.8.10.6 run agrees: 2895 ms stamped against 1218 ms under the analyzer at 100
+series.
+
+On 26.6 the result is mixed. The stamp costs about 40% on the derived sentinel.
+On the plural quantile over `rate()`, the shape the stamp exists for, it still
+saves about 28% wall time and 21% peak memory. The stamp therefore stays below
+26.8. A fleet with a node below 26.8 keeps it, because there it still pays off,
+and a 26.8 node only runs slower under it, never refuses it.
