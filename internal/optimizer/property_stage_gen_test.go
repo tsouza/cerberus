@@ -332,27 +332,36 @@ func setOpArm(rng *rand.Rand) chplan.Node {
 	}
 }
 
+// tableStageBuilder pairs a stage builder with the seed table its input
+// reads.
+type tableStageBuilder struct {
+	build stageBuilder
+	table string
+}
+
+// stageBuilders is every stage shape generateStagePlan draws from, gauge
+// shapes first. The coverage sweep enumerates the same list, so a shape
+// added here is both drawn at random and round-tripped once per run.
+func stageBuilders() []tableStageBuilder {
+	var out []tableStageBuilder
+	for _, b := range gaugeStageBuilders() {
+		out = append(out, tableStageBuilder{build: b, table: propertyTable})
+	}
+	for _, b := range histogramStageBuilders() {
+		out = append(out, tableStageBuilder{build: b, table: propertyHistogramTable})
+	}
+	return out
+}
+
 // generateStagePlan draws one stage shape over Scan or Filter(Scan),
 // then optionally wraps it in one of the generic pass-through nodes.
 func generateStagePlan(rng *rand.Rand) chplan.Node {
 	if rng.Intn(4) == 0 {
 		return generateSetOpChain(rng)
 	}
-	gauge := gaugeStageBuilders()
-	histogram := histogramStageBuilders()
-
-	var (
-		build stageBuilder
-		table string
-	)
-	if pick := rng.Intn(len(gauge) + len(histogram)); pick < len(gauge) {
-		build, table = gauge[pick], propertyTable
-	} else {
-		build, table = histogram[pick-len(gauge)], propertyHistogramTable
-	}
-
-	stage := build(generateStageInput(rng, table))
-	return wrapStage(rng, stage)
+	builders := stageBuilders()
+	b := builders[rng.Intn(len(builders))]
+	return wrapStage(rng, b.build(generateStageInput(rng, b.table)))
 }
 
 // generateStageInput returns the Scan or Filter(Scan) a stage node sits
@@ -406,7 +415,14 @@ func generateStagePredicate(rng *rand.Rand) chplan.Expr {
 	}
 }
 
-// wrapStage optionally puts a generic pass-through node above the stage.
+// stageWrapper puts a node above a stage, or returns the stage itself.
+type stageWrapper func(rng *rand.Rand, stage chplan.Node) chplan.Node
+
+// stageWrapperChoices are the wrappings wrapStage draws between. The
+// outer slice is one equally weighted draw; a choice with more than one
+// wrapper draws again between them, so CrossJoin is one choice with two
+// right sides rather than two choices. The coverage sweep flattens the
+// whole table, so every wrapper is round-tripped once per run.
 //
 // These add node kinds to the property's reach without needing a seed of
 // their own, and they put the stage node mid-tree rather than always at
@@ -417,40 +433,70 @@ func generateStagePredicate(rng *rand.Rand) chplan.Expr {
 // arms stay the same width — a union of differently shaped arms is not a
 // plan any lowering builds, and ClickHouse rejects it before the
 // optimizer's behaviour could be observed.
-func wrapStage(rng *rand.Rand, stage chplan.Node) chplan.Node {
-	switch rng.Intn(5) {
-	case 0:
-		return &chplan.UnionAll{Inputs: []chplan.Node{stage, stage}}
-	case 1:
+func stageWrapperChoices() [][]stageWrapper {
+	return [][]stageWrapper{
+		{func(_ *rand.Rand, stage chplan.Node) chplan.Node {
+			return &chplan.UnionAll{Inputs: []chplan.Node{stage, stage}}
+		}},
 		// OneRow and StepGrid are the two single-arm right sides a
 		// CrossJoin gets in production; StepGrid multiplies the row
 		// count by the grid, OneRow leaves it alone.
-		if rng.Intn(2) == 0 {
-			return &chplan.CrossJoin{Left: stage, Right: &chplan.OneRow{}}
-		}
-		return &chplan.CrossJoin{Left: stage, Right: &chplan.StepGrid{
-			Start: propertyWindowStart,
-			End:   propertyWindowEnd(),
-			Step:  propertyStep,
-		}}
-	case 2:
-		return &chplan.OrderBy{
-			Input: stage,
-			Keys:  []chplan.OrderKey{{Expr: &chplan.ColumnRef{Name: propertyGroupColumn}}},
-		}
-	case 3:
+		{
+			func(_ *rand.Rand, stage chplan.Node) chplan.Node {
+				return &chplan.CrossJoin{Left: stage, Right: &chplan.OneRow{}}
+			},
+			func(_ *rand.Rand, stage chplan.Node) chplan.Node {
+				return &chplan.CrossJoin{Left: stage, Right: &chplan.StepGrid{
+					Start: propertyWindowStart,
+					End:   propertyWindowEnd(),
+					Step:  propertyStep,
+				}}
+			},
+		},
+		{func(_ *rand.Rand, stage chplan.Node) chplan.Node {
+			return &chplan.OrderBy{
+				Input: stage,
+				Keys:  []chplan.OrderKey{{Expr: &chplan.ColumnRef{Name: propertyGroupColumn}}},
+			}
+		}},
 		// Limit sits over OrderBy, never over the bare stage: an
 		// unordered LIMIT picks an arbitrary subset, and the optimized
 		// plan is a different query, so the two could legitimately
 		// return different rows and the property would flake rather
 		// than report.
-		return &chplan.Limit{
-			Input: &chplan.OrderBy{
-				Input: stage,
-				Keys:  []chplan.OrderKey{{Expr: &chplan.ColumnRef{Name: propertyGroupColumn}}},
-			},
-			Count: 1 + int64(rng.Intn(3)),
-		}
+		{func(rng *rand.Rand, stage chplan.Node) chplan.Node {
+			return &chplan.Limit{
+				Input: &chplan.OrderBy{
+					Input: stage,
+					Keys:  []chplan.OrderKey{{Expr: &chplan.ColumnRef{Name: propertyGroupColumn}}},
+				},
+				Count: 1 + int64(rng.Intn(propertyMaxLimitCount)),
+			}
+		}},
+		{func(_ *rand.Rand, stage chplan.Node) chplan.Node { return stage }},
 	}
-	return stage
+}
+
+// propertyMaxLimitCount is the largest LIMIT the Limit wrapper draws;
+// it draws a count in [1, propertyMaxLimitCount].
+const propertyMaxLimitCount = 3
+
+// stageWrappers is stageWrapperChoices flattened: every wrapper once.
+func stageWrappers() []stageWrapper {
+	var out []stageWrapper
+	for _, choice := range stageWrapperChoices() {
+		out = append(out, choice...)
+	}
+	return out
+}
+
+// wrapStage optionally puts a generic pass-through node above the stage,
+// drawn from stageWrapperChoices.
+func wrapStage(rng *rand.Rand, stage chplan.Node) chplan.Node {
+	choices := stageWrapperChoices()
+	choice := choices[rng.Intn(len(choices))]
+	if len(choice) == 1 {
+		return choice[0](rng, stage)
+	}
+	return choice[rng.Intn(len(choice))](rng, stage)
 }
