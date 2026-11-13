@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/tempo/pkg/tempopb"
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
 )
 
 // TestSearch_AttachesByteBudget_NoBypass is the gRPC no-bypass ratchet — the

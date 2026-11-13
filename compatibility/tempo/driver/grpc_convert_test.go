@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/grafana/tempo/pkg/tempopb"
-	v1 "github.com/grafana/tempo/pkg/tempopb/common/v1"
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
+	v1 "github.com/tsouza/cerberus/internal/thirdparty/tempopb/common/v1"
 )
 
 // The grpc_convert.go converters exist to make the gRPC transport produce

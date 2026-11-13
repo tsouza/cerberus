@@ -48,9 +48,11 @@ under the Apache License, Version 2.0:
 
   * Grafana Tempo — pkg/tempopb (github.com/grafana/tempo/pkg/tempopb)
     Copyright Grafana Labs.
-    The Apache-2.0 protobuf wire types for the Tempo HTTP API. (Only this
-    subtree of grafana/tempo is linked into the binary; the AGPLv3 query
-    parser is not — see above.)
+    The Apache-2.0 protobuf wire types for the Tempo HTTP and gRPC APIs,
+    copied into internal/thirdparty/tempopb from the commit named in
+    compatibility/tempo/UPSTREAM_VERSION; the subtree's own licence is
+    internal/thirdparty/tempopb/LICENSE_APACHE2. Nothing else of grafana/tempo
+    is copied or linked into the binary — see above.
 
   * OpenTelemetry Collector Contrib — ClickHouse exporter sqltemplates
     (github.com/open-telemetry/opentelemetry-collector-contrib)

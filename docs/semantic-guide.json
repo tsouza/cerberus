@@ -796,7 +796,7 @@
   "architectural_rules": [
     {
       "id": "ARCH-AGPL-BINARY-REACHABILITY",
-      "statement": "No AGPLv3 package is reachable from ./cmd/cerberus (CLAUDE.md invariant 14): `go list -deps ./cmd/cerberus`'s transitive build-dependency closure contains no import path under github.com/grafana/loki/ and no import path under github.com/grafana/tempo/ other than the Apache-2.0 github.com/grafana/tempo/pkg/tempopb subtree. The root go.mod's require on grafana/loki/v3 and grafana/tempo, and their use inside compatibility/ and behind the agpl_oracle build tag or the test/oracle nested module, is module membership for test-only oracles, never binary reachability, and carries no licence obligation for the shipped Apache-2.0 binary.",
+      "statement": "No AGPLv3 module is in ./cmd/cerberus's build graph (CLAUDE.md invariant 14): every module that provides a package in `go list -deps ./cmd/cerberus`'s transitive build-dependency closure carries a licence file at its root, and none of those licences is the GNU Affero GPL. The Tempo wire types the binary needs are an in-house copy of Tempo's Apache-2.0 pkg/tempopb (internal/thirdparty/tempopb), so neither grafana/loki/v3 nor grafana/tempo is in that graph. The root go.mod's require on grafana/loki/v3 and grafana/tempo, and their use inside compatibility/ and behind the agpl_oracle build tag or the test/oracle nested module, is module membership for test-only oracles, never binary reachability, and carries no licence obligation for the shipped Apache-2.0 binary.",
       "authority": "operational-invariant",
       "claude_md_invariant": 14,
       "anchor": "arch-agpl-binary-reachability"

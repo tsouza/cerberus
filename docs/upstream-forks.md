@@ -7,9 +7,9 @@ Cerberus parses each of its three query languages, then renders ClickHouse SQL. 
 - **TraceQL** — cerberus's own **in-house, clean-room Apache reimplementation** of the TraceQL grammar: `internal/traceql/ast`. No upstream parser library.
 - **Schema DDL** — `github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter/sqltemplates` (+ three sibling submodules). Upstream, **Apache-2.0**.
 
-The shipped `cmd/cerberus` binary additionally links the **Apache-2.0** `github.com/grafana/tempo/pkg/tempopb` protobuf wire types (Tempo's HTTP API surface), and rides the wider Grafana ecosystem (`dskit`, the forked `memberlist`) on upstream tags.
+The shipped `cmd/cerberus` binary additionally links Tempo's **Apache-2.0** protobuf wire types (Tempo's HTTP API surface) through an in-house copy, `internal/thirdparty/tempopb`, re-synced from the commit in `compatibility/tempo/UPSTREAM_VERSION` by `just tempopb-sync`, and rides the wider Grafana ecosystem (`dskit`, the forked `memberlist`) on upstream tags.
 
-> **Licence rule.** The upstream Grafana **LogQL** (`grafana/loki/v3/pkg/logql`) and **TraceQL** (`grafana/tempo/pkg/traceql`) parsers are **AGPLv3**, and the Apache-2.0 binary links neither. They appear only in **test-only oracles**: the `agpl_oracle`-tagged tests and the `compatibility/{loki,tempo}` differential harnesses. What keeps them out of the binary is **reachability, not module membership**. The root `go.mod` requires `grafana/loki/v3`, and `compatibility/` has no `go.mod` of its own, so the harnesses are root-module packages that `./cmd/cerberus` never imports; neither does it import anything behind the `agpl_oracle` build tag. The `test/oracle` nested module is a second, stronger boundary where a hard module break is wanted. The `agpl-clean` CI gate (`.github/scripts/agpl-clean.mjs`) runs `go list -deps ./cmd/cerberus` and fails the build if any AGPL package is reachable from the binary. See [`compatibility.md`](compatibility.md) and the `NOTICE` file.
+> **Licence rule.** The upstream Grafana **LogQL** (`grafana/loki/v3/pkg/logql`) and **TraceQL** (`grafana/tempo/pkg/traceql`) parsers are **AGPLv3**, and the Apache-2.0 binary links neither. They appear only in **test-only oracles**: the `agpl_oracle`-tagged tests and the `compatibility/{loki,tempo}` differential harnesses. What keeps them out of the binary is **reachability, not module membership**. The root `go.mod` requires `grafana/loki/v3`, and `compatibility/` has no `go.mod` of its own, so the harnesses are root-module packages that `./cmd/cerberus` never imports; neither does it import anything behind the `agpl_oracle` build tag. The `test/oracle` nested module is a second, stronger boundary where a hard module break is wanted. The `agpl-clean` CI gate (`.github/scripts/agpl-clean.mjs`) runs `go list -deps ./cmd/cerberus` and fails the build if any module in the binary's build graph is AGPL-licensed. See [`compatibility.md`](compatibility.md) and the `NOTICE` file.
 
 ## Forks
 
@@ -34,7 +34,7 @@ Three upstream deps route through `github.com/tsouza/*` forks. Each is wired by 
 
 `grafana/loki/v3` is a **plain upstream require** (no fork), consumed by the AGPL test-only oracles. `grafana/tempo` is required at an upstream pseudo-version and `prometheus/prometheus` at the release's library version (`v0.315.0`); each is `replace`d by its fork tag. The `require` line records the upstream base the fork sits on, which is what the version-skew gate below reads, and the fork tag is what compiles.
 
-Routing tempo through a fork does not move it into the binary: `cmd/cerberus` imports only the Apache-2.0 `pkg/tempopb` tree, and `pkg/traceql` / `tempodb/**` are reachable only from `agpl_oracle`-tagged test code.
+Routing tempo through a fork does not move it into the binary: `cmd/cerberus` imports no `grafana/tempo` package at all (its wire types are the in-house `internal/thirdparty/tempopb`), and `pkg/traceql` / `tempodb/**` are reachable only from `agpl_oracle`-tagged test code.
 
 ## In-house LogQL / TraceQL parsers
 
@@ -101,7 +101,7 @@ The Prometheus library reports `v0.(300+MINOR).PATCH` for release `v3.MINOR.PATC
 Further assertions:
 
 - **prometheus** — the `replace` points at `github.com/tsouza/prometheus` on a `-cerberus-parser` tag whose version core equals the `require`. Every other compose file that runs the reference Prometheus (the migration tier-1 and tier-2 stacks, the histogram bench) names the compatibility image byte-for-byte, and `test/oracle/go.mod` requires and replaces the parser exactly as the root module does.
-- **tempo** — `compatibility/tempo/upstream/VERSION`'s `upstream_commit` matches the go.mod pseudo-version commit, and the `replace` points at `github.com/tsouza/tempo` on a `-cerberus-accessors` tag.
+- **tempo** — `compatibility/tempo/UPSTREAM_VERSION`'s `upstream_commit` matches the go.mod pseudo-version commit, and the `replace` points at `github.com/tsouza/tempo` on a `-cerberus-accessors` tag.
 
 If the gate fails, **bump whichever side is wrong** (the reference image to match the require, or the `require` to match the image). Do not relax the assertion.
 
@@ -164,7 +164,7 @@ Collector-contrib also needs the per-submodule tags at the same SHA. [Fork-tag d
 Two kinds of `go.mod` directive sit outside the `tsouza/*` fork boundary and are not watched by the forks-monitor:
 
 - **`replace github.com/hashicorp/memberlist => github.com/grafana/memberlist`.** Loki, Tempo and `dskit` each swap `hashicorp/memberlist` for Grafana's fork through their own `replace` directives. A `replace` never propagates to a consumer module, so the root module repeats it. The pinned pseudo-version is whatever the Grafana modules in `go.mod` themselves require; bump it alongside them. Dependabot groups `hashicorp/memberlist*` with the `upstream-parsers` group.
-- **`ignore ./compatibility/tempo/upstream` and `ignore ./compatibility/loki/upstream`.** Those directories hold vendored snapshots of upstream Go source (Tempo's `pkg/httpclient`, Loki's `pkg/logql/bench`) that the compatibility harnesses read as corpus and reference code. The `ignore` directive keeps them out of every `./...` walk while leaving them on disk.
+- **`ignore ./compatibility/loki/upstream`.** That directory holds a vendored snapshot of upstream Go source (Loki's `pkg/logql/bench`) that the Loki compatibility harness reads as corpus. The `ignore` directive keeps it out of every `./...` walk while leaving it on disk.
 
 ## References
 
@@ -172,7 +172,7 @@ Two kinds of `go.mod` directive sit outside the `tsouza/*` fork boundary and are
 - `.github/dependabot.yml` — the daily `upstream-parsers` and `prometheus-release` groups.
 - `.github/workflows/auto-merge-deps.yml` — queues trusted patch-only bumps into the merge queue.
 - `.github/workflows/fork-tag-drift.yml` / `.github/scripts/fork-tag-drift.mjs` — moves `replace` targets onto new fork tags.
-- `.github/scripts/agpl-clean.mjs` — the licence gate (fails if any AGPL package reaches `cmd/cerberus`).
+- `.github/scripts/agpl-clean.mjs` — the licence gate (fails if any AGPL module is in `cmd/cerberus`'s build graph).
 - `.golangci.yml` — `forbidigo` rule blocking `unsafe.Pointer` / `reflect.Value.FieldByName` anywhere under `internal/**`.
 - `internal/logql/lsyntax`, `internal/logql/logpattern`, `internal/drain`, `internal/traceql/ast` — the in-house Apache parsers.
 - `internal/schema/ddl/` — consumes the `sqltemplates` API exposed by the collector-contrib fork.

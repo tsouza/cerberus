@@ -202,3 +202,29 @@ func TestE2EStacksRunTheLocallyBuiltGrafana(t *testing.T) {
 		t.Errorf("%s must run image %s with imagePullPolicy: Never", k3sGrafanaManifest, localTag)
 	}
 }
+
+// TestInHouseTempopbMatchesTheUpstreamPin: internal/thirdparty/tempopb was
+// synced from the grafana/tempo commit the repository tracks, the same one
+// TestForkVersionSkew holds the reference image and go.mod to.
+func TestInHouseTempopbMatchesTheUpstreamPin(t *testing.T) {
+	t.Parallel()
+
+	pin, err := os.ReadFile("../../compatibility/tempo/UPSTREAM_VERSION")
+	if err != nil {
+		t.Fatalf("read compatibility/tempo/UPSTREAM_VERSION: %v", err)
+	}
+	pinned := versionFileField(t, string(pin), "upstream_commit")
+
+	source, err := os.ReadFile("../../internal/thirdparty/tempopb/SOURCE")
+	if err != nil {
+		t.Fatalf("read internal/thirdparty/tempopb/SOURCE: %v", err)
+	}
+	mod, version, ok := strings.Cut(strings.TrimSpace(string(source)), "@")
+	if !ok || mod != "github.com/grafana/tempo/pkg/tempopb" {
+		t.Fatalf("internal/thirdparty/tempopb/SOURCE is %q, want github.com/grafana/tempo/pkg/tempopb@<version>", source)
+	}
+	if synced := pseudoVersionCommit(t, version); !commitPrefixMatch(synced, pinned) {
+		t.Errorf("internal/thirdparty/tempopb was synced from commit %s, but compatibility/tempo/UPSTREAM_VERSION "+
+			"pins %s; run `just tempopb-sync`", synced, pinned)
+	}
+}
