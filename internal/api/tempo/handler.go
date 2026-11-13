@@ -100,9 +100,21 @@ type Querier interface {
 // spansTable is the configured schema spans table; it is threaded onto the
 // guard ctx (chsql.WithSpansTable) so a non-default table name is matched even
 // though the handler request ctx is not engine-threaded with it.
+//
+// Every statement it sends also carries the engine's spill thresholds
+// (engine.Engine.WithSpillThresholds), so a high-cardinality tag-discovery
+// DISTINCT, or the exemplars and structural phase-A statements over a rooted
+// closure, spills to disk instead of aborting at the per-query memory cap
+// where the engine's own statement over the same data completes. h is read at
+// dispatch so the Engine in force when the statement runs sizes them.
 type guardedQuerier struct {
 	inner      Querier
 	spansTable string
+	h          *Handler
+}
+
+func (g *guardedQuerier) stamp(ctx context.Context) context.Context {
+	return g.h.Engine.WithSpillThresholds(ctx)
 }
 
 func (g *guardedQuerier) guard(ctx context.Context, sql string) error {
@@ -113,14 +125,14 @@ func (g *guardedQuerier) Query(ctx context.Context, sql string, args ...any) ([]
 	if err := g.guard(ctx, sql); err != nil {
 		return nil, err
 	}
-	return g.inner.Query(ctx, sql, args...)
+	return g.inner.Query(g.stamp(ctx), sql, args...)
 }
 
 func (g *guardedQuerier) QueryStrings(ctx context.Context, sql string, args ...any) ([]string, error) {
 	if err := g.guard(ctx, sql); err != nil {
 		return nil, err
 	}
-	return g.inner.QueryStrings(ctx, sql, args...)
+	return g.inner.QueryStrings(g.stamp(ctx), sql, args...)
 }
 
 // Handler implements the Tempo HTTP API endpoints cerberus speaks.
@@ -221,12 +233,12 @@ func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *
 	opt := optimizer.Default()
 	// Handlers that execute otel_traces SQL directly (string-result discovery
 	// endpoints, root lookup, exemplars) go through the guarded wrapper so the
-	// spans-scan partition-pruning invariant holds by construction. The Engine
+	// spans-scan partition-pruning invariant holds by construction and each
+	// statement carries the Engine's spill thresholds. The Engine
 	// keeps the raw client: its matrix path is already guarded at emit by
 	// chsql.Emit, and wrapping would hide the client's optional CursorQuerier /
 	// memoryCapQuerier surfaces and disable streaming.
 	h := &Handler{
-		Client:             &guardedQuerier{inner: client, spansTable: s.SpansTable},
 		Schema:             s,
 		Optimizer:          opt,
 		Logger:             logger,
@@ -234,6 +246,7 @@ func New(client Querier, s schema.Traces, version string, logger *slog.Logger) *
 		Engine:             &engine.Engine{Optimizer: opt, Client: client},
 		StructuralTwoPhase: true,
 	}
+	h.Client = &guardedQuerier{inner: client, spansTable: s.SpansTable, h: h}
 	h.lang = &traceqlLang{schema: s, strategies: h.tracesStrategies}
 	return h
 }
