@@ -14,7 +14,7 @@ import (
 // broken request in the real-ClickHouse integration lane, where a driver
 // error is much more expensive to root-cause than this unit check.
 func TestSentinels_Roster(t *testing.T) {
-	const wantCount = 6
+	const wantCount = 7
 	if len(Sentinels) != wantCount {
 		t.Fatalf("len(Sentinels) = %d, want %d", len(Sentinels), wantCount)
 	}
@@ -105,11 +105,7 @@ func TestSentinels_JoinSpillStampIsAsserted(t *testing.T) {
 // activation guard — chopt.FeatureDistinctSpill is AutoSelect: false, so the
 // tier's "auto" lane would never stamp it.
 func TestSentinels_DistinctSpillStampIsAsserted(t *testing.T) {
-	distinctSpill := SentinelsForFloor(FloorDistinctSpill)
-	if len(distinctSpill) != 1 {
-		t.Fatalf("SentinelsForFloor(FloorDistinctSpill) returned %d sentinels, want 1", len(distinctSpill))
-	}
-	s := distinctSpill[0]
+	s := distinctSpillFloorSentinel(t, "distinct_spill_structural_traceql")
 	if s.Optimizations != OptInDistinctSpill || s.RequiredFeature != chopt.FeatureDistinctSpill {
 		t.Errorf("distinct_spill sentinel resolves %q with RequiredFeature %q; want %q and %q",
 			s.Optimizations, s.RequiredFeature, OptInDistinctSpill, chopt.FeatureDistinctSpill)
@@ -124,6 +120,61 @@ func TestSentinels_DistinctSpillStampIsAsserted(t *testing.T) {
 	if len(got) != len(want) || got[settingMaxBytesBeforeExternalDistinct] != want[settingMaxBytesBeforeExternalDistinct] {
 		t.Errorf("distinct_spill sentinel RequiredSettings = %v, want %v", got, want)
 	}
+}
+
+// TestSentinels_MetadataSpillStampsAreAsserted pins what makes the
+// metadata-spill sentinel falsifiable and reachable: on a tag-name statement
+// the Tempo handler dispatches without the engine, whose DISTINCT runs over
+// attribute-map keys, it must require the GROUP BY, sort and JOIN spill
+// thresholds, each at half the live memory cap, require the DISTINCT one
+// absent, and run on the 26.9 tier's opt-in lane, where both version-gated
+// thresholds are in force.
+func TestSentinels_MetadataSpillStampsAreAsserted(t *testing.T) {
+	s := distinctSpillFloorSentinel(t, "metadata_spill_search_tags")
+	if s.Optimizations != OptInDistinctSpill || s.RequiredFeature != chopt.FeatureDistinctSpill {
+		t.Errorf("metadata_spill sentinel resolves %q with RequiredFeature %q; want %q and %q",
+			s.Optimizations, s.RequiredFeature, OptInDistinctSpill, chopt.FeatureDistinctSpill)
+	}
+	if s.Path != "/api/search/tags" {
+		t.Errorf("metadata_spill sentinel Path = %q; want the tag-discovery endpoint, which dispatches without the engine", s.Path)
+	}
+	if scope := s.Params(time.Unix(0, 0), time.Unix(0, 0).Add(sentinelWindow)).Get("scope"); scope != "span" {
+		t.Errorf("metadata_spill sentinel scope = %q; want span, the one-statement request the harness measures", scope)
+	}
+
+	const cap1GiB int64 = 1 << 30
+	const half = "536870912" // 1 GiB / 2
+	got := s.RequiredSettings(cap1GiB)
+	want := map[string]string{
+		settingMaxBytesBeforeExternalGroupBy: half,
+		settingMaxBytesBeforeExternalSort:    half,
+		settingMaxBytesBeforeExternalJoin:    half,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("metadata_spill sentinel RequiredSettings = %v, want %v", got, want)
+	}
+	for name, value := range want {
+		if got[name] != value {
+			t.Errorf("metadata_spill sentinel requires %s = %q, want %q", name, got[name], value)
+		}
+	}
+	if len(s.AbsentQuerySettings) != 1 || s.AbsentQuerySettings[0] != settingMaxBytesBeforeExternalDistinct {
+		t.Errorf("metadata_spill sentinel AbsentQuerySettings = %v; want [%s]",
+			s.AbsentQuerySettings, settingMaxBytesBeforeExternalDistinct)
+	}
+}
+
+// distinctSpillFloorSentinel returns the FloorDistinctSpill sentinel called
+// name, failing the test when the tier has none.
+func distinctSpillFloorSentinel(t *testing.T, name string) Sentinel {
+	t.Helper()
+	for _, s := range SentinelsForFloor(FloorDistinctSpill) {
+		if s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("SentinelsForFloor(FloorDistinctSpill) has no %s sentinel", name)
+	return Sentinel{}
 }
 
 // TestSentinels_SortedSlabOverTimeStampIsAsserted pins the one thing that

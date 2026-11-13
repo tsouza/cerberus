@@ -55,6 +55,9 @@ type Querier interface {
 // Handler implements the Prometheus HTTP API endpoints cerberus speaks.
 // Mount it via Handler.Mount(mux).
 type Handler struct {
+	// Client runs the statements the handler dispatches itself, outside the
+	// Engine. New wraps it so each one carries the Engine's spill thresholds
+	// (spillingQuerier).
 	Client Querier
 	Schema schema.Metrics
 	// Engine runs the shared parse → lower → optimize → emit → execute
@@ -227,14 +230,15 @@ func New(client Querier, s schema.Metrics, logger *slog.Logger) *Handler {
 		logger = slog.Default()
 	}
 	opt := optimizer.Default()
-	return &Handler{
-		Client:    client,
+	h := &Handler{
 		Schema:    s,
 		Engine:    &engine.Engine{Optimizer: opt, Client: client},
 		Optimizer: opt,
 		Logger:    logger,
 		parser:    promparse.New(),
 	}
+	h.Client = &spillingQuerier{inner: client, h: h}
+	return h
 }
 
 // SetLowerers installs table as the native-lowering dispatch table the handler

@@ -105,8 +105,8 @@ func compositionContributors() []settingsContributor {
 		{"join_spill", func(ctx context.Context, plan chplan.Node, memCap int64, rules SettingsRules) context.Context {
 			return applyJoinSpillSettings(ctx, shapeOf(plan), memCap, rules.JoinSpill)
 		}},
-		{"distinct_spill", func(ctx context.Context, _ chplan.Node, memCap int64, rules SettingsRules) context.Context {
-			return applyDistinctSpillSettings(ctx, memCap, rules.DistinctSpill)
+		{"distinct_spill", func(ctx context.Context, plan chplan.Node, memCap int64, rules SettingsRules) context.Context {
+			return applyDistinctSpillSettings(ctx, shapeOf(plan), memCap, rules.DistinctSpill)
 		}},
 		{"compare_memory_bound", func(ctx context.Context, plan chplan.Node, memCap int64, _ SettingsRules) context.Context {
 			return applyCompareMemoryBound(ctx, shapeOf(plan), memCap)

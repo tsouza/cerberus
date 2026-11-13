@@ -455,15 +455,13 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 // the decision's shard plans (decisionHasTSGridNative), so the two seams
 // genuinely need different predicates for it and each stamps it itself.
 func applySharedQuerySettings(ctx context.Context, f planShapeFacts, memCap int64, rules SettingsRules) context.Context {
-	// Always-on, result-equivalent: let any GROUP BY / sort spill to disk
-	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
-	ctx = applySpillSettings(ctx, memCap)
-	// Join-bearing plans only, and only when the join_spill feature resolved
-	// in (server >= 26.4): the same guardrail for a large join's hash build.
-	ctx = applyJoinSpillSettings(ctx, f, memCap, rules.JoinSpill)
-	// Every plan, once the distinct_spill feature resolved in (server >=
-	// 26.9): the same guardrail for a high-cardinality DISTINCT's key set.
-	ctx = applyDistinctSpillSettings(ctx, memCap, rules.DistinctSpill)
+	// The spill thresholds, result-equivalent: let any GROUP BY / sort, a
+	// join-bearing plan's hash build once join_spill resolved in (server >=
+	// 26.4), and any DISTINCT once distinct_spill resolved in (server >= 26.9)
+	// spill to disk rather than blow the per-query memory cap
+	// (MEMORY_LIMIT_EXCEEDED / 241). The engine-bypassing statements stamp the
+	// same list through Engine.WithSpillThresholds.
+	ctx = applySpillThresholds(ctx, f, memCap, rules)
 	// Compare()-only: cap read parallelism so the concurrent S3 read buffers
 	// for the wide attribute Map columns can't blow the budget even after the
 	// aggregation spills.
