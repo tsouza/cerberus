@@ -216,9 +216,13 @@ var (
 // row set when both plans are executed against the same chDB session.
 //
 // N defaults to 100; -short cuts it to 10 so a `go test -short -tags
-// chdb ./...` run stays under a minute. Each iteration logs the plan
-// shape on failure so reproducing locally is just a matter of rerunning
-// with the same -seed value.
+// chdb ./...` run stays under a minute. Before the N random plans, the
+// coverage sweep (coverageSweepPlans) round-trips one plan per generator
+// family, so the coverage ledger is met in both modes by construction
+// rather than by how many random plans the budget allows. The sweep
+// draws from its own rng, so the N random plans are the same in either
+// mode. Each iteration logs the plan shape on failure so reproducing
+// locally is just a matter of rerunning with the same -seed value.
 func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	const defaultN = 100
 	const shortN = 10
@@ -263,6 +267,47 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	// property really checked.
 	verified := map[string]bool{}
 
+	// roundTrip executes plan before and after the optimizer, fails the
+	// test on any divergence, and records the kinds of a plan that
+	// completed. It returns the pre-optimizer error, the one outcome a
+	// caller may treat as a drop rather than a failure.
+	roundTrip := func(plan chplan.Node, label string) error {
+		gotPre, errPre := runPlan(ctx, db, executablePropertyBaseline(plan))
+		if errPre != nil {
+			return errPre
+		}
+
+		optimized := opt.Run(ctx, plan)
+		gotPost, errPost := runPlan(ctx, db, optimized)
+		if errPost != nil {
+			t.Fatalf("optimized plan failed to execute (pre ran fine; seed=%d %s)\n--- pre ---\n%s\n--- post ---\n%s\n--- err ---\n%v",
+				seed, label, dumpPlan(plan), dumpPlan(optimized), errPost)
+		}
+
+		recordVerifiedKinds(verified, plan)
+		recordVerifiedKinds(verified, optimized)
+
+		if !rowsetEqual(gotPre, gotPost) {
+			t.Fatalf("semantic equivalence violated (seed=%d %s)\n--- pre ---\n%s\n--- post ---\n%s\n--- pre rows ---\n%s\n--- post rows ---\n%s",
+				seed, label, dumpPlan(plan), dumpPlan(optimized),
+				dumpRows(gotPre), dumpRows(gotPost))
+		}
+		return nil
+	}
+
+	// The sweep's shapes all execute by construction — only the leaf
+	// grammar's recursive projections can name a column their input no
+	// longer has — so a sweep plan that fails its pre-optimizer run is a
+	// broken generator family, not a drop.
+	sweepRng := rand.New(rand.NewSource(seed))
+	sweep := coverageSweepPlans(sweepRng)
+	for i, plan := range sweep {
+		if err := roundTrip(plan, fmt.Sprintf("sweep=%d", i)); err != nil {
+			t.Fatalf("coverage sweep plan %d failed its PRE-optimizer run, so its generator family "+
+				"cannot be verified: %v\n%s", i, err, dumpPlan(plan))
+		}
+	}
+
 	dropBudget := n * maxDroppedPlansPerVerified
 	tried := 0
 	dropped := 0
@@ -270,8 +315,7 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 	for tried < n {
 		plan := generatePlan(rng, 0)
 
-		gotPre, errPre := runPlan(ctx, db, executablePropertyBaseline(plan))
-		if errPre != nil {
+		if errPre := roundTrip(plan, fmt.Sprintf("iter=%d", tried)); errPre != nil {
 			// Generator produced something the emitter can't render
 			// (e.g. a degenerate Projection list). Skip — this is
 			// not what the property checks.
@@ -289,27 +333,11 @@ func TestPropertyOptimizerSemanticEquivalence(t *testing.T) {
 			}
 			continue
 		}
-
-		optimized := opt.Run(ctx, plan)
-		gotPost, errPost := runPlan(ctx, db, optimized)
-		if errPost != nil {
-			t.Fatalf("optimized plan failed to execute (pre ran fine)\n--- pre ---\n%s\n--- post ---\n%s\n--- err ---\n%v",
-				dumpPlan(plan), dumpPlan(optimized), errPost)
-		}
-
-		recordVerifiedKinds(verified, plan)
-		recordVerifiedKinds(verified, optimized)
-
-		if !rowsetEqual(gotPre, gotPost) {
-			t.Fatalf("semantic equivalence violated (seed=%d iter=%d)\n--- pre ---\n%s\n--- post ---\n%s\n--- pre rows ---\n%s\n--- post rows ---\n%s",
-				seed, tried, dumpPlan(plan), dumpPlan(optimized),
-				dumpRows(gotPre), dumpRows(gotPost))
-		}
-
 		tried++
 	}
 	if testing.Verbose() {
-		t.Logf("property check: %d plans verified (%d dropped) against seed %d", tried, dropped, seed)
+		t.Logf("property check: %d sweep + %d random plans verified (%d dropped) against seed %d",
+			len(sweep), tried, dropped, seed)
 	}
 	assertOptimizerKindsCovered(t, verified)
 }
@@ -349,8 +377,8 @@ const maxDroppedPlansPerVerified = 2
 // adjacency applyStageScan matches. See generateStagePlan. The last arm
 // draws one of the shapes that read a seed of their own — VectorJoin,
 // StructuralJoin, TraceLookupFilter and TopK — with the same weight as the
-// whole stage family, so that each of the four is drawn often enough per run for
-// the coverage ledger to pin it rather than depend on the seed's luck.
+// whole stage family, so that each of the four is drawn at random often enough
+// per full run to vary its shape, beyond the one plan coverageSweepPlans pins.
 func generatePlan(rng *rand.Rand, depth int) chplan.Node {
 	if depth >= 3 {
 		return makeScan()
@@ -390,19 +418,49 @@ func generatePlan(rng *rand.Rand, depth int) chplan.Node {
 	return makeScan()
 }
 
-// generateSeededShape draws one of the shapes that cannot be generated
-// over the leaf grammar's gauge seed and read a seed of their own.
-func generateSeededShape(rng *rand.Rand) chplan.Node {
-	switch rng.Intn(4) {
-	case 0:
-		return generateVectorJoin(rng)
-	case 1:
-		return generateStructuralJoin(rng, 0)
-	case 2:
-		return generateTraceLookupFilter(rng)
-	default:
-		return generateTopK(rng)
+// seededShapeGenerators are the shapes that cannot be generated over the
+// leaf grammar's gauge seed and read a seed of their own.
+func seededShapeGenerators() []func(*rand.Rand) chplan.Node {
+	return []func(*rand.Rand) chplan.Node{
+		generateVectorJoin,
+		func(rng *rand.Rand) chplan.Node { return generateStructuralJoin(rng, 0) },
+		generateTraceLookupFilter,
+		generateTopK,
 	}
+}
+
+// generateSeededShape draws one of seededShapeGenerators.
+func generateSeededShape(rng *rand.Rand) chplan.Node {
+	gens := seededShapeGenerators()
+	return gens[rng.Intn(len(gens))](rng)
+}
+
+// coverageSweepPlans builds the plans the property round-trips before its
+// random draws: every stage builder, every stage wrapper, the set-op
+// chain and every seeded shape, at least once each. Builders and wrappers
+// are zipped, cycling the shorter list, so each of both is used without
+// building their full product.
+//
+// These are the generator's own families, enumerated rather than drawn,
+// so every kind the generator can produce reaches the coverage ledger in
+// every run whatever the random plan budget is. The leaf grammar is not
+// swept: its kinds (Scan, Filter, Project) are the inputs every swept
+// shape already reads. A kind dropped from the generator drops out of the
+// sweep with it, so the ledger still reports it.
+func coverageSweepPlans(rng *rand.Rand) []chplan.Node {
+	builders := stageBuilders()
+	wrappers := stageWrappers()
+	var plans []chplan.Node
+	for i := range max(len(builders), len(wrappers)) {
+		b := builders[i%len(builders)]
+		wrap := wrappers[i%len(wrappers)]
+		plans = append(plans, wrap(rng, b.build(generateStageInput(rng, b.table))))
+	}
+	plans = append(plans, generateSetOpChain(rng))
+	for _, gen := range seededShapeGenerators() {
+		plans = append(plans, gen(rng))
+	}
+	return plans
 }
 
 func makeScan() chplan.Node {
