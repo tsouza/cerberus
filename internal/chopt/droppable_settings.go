@@ -6,8 +6,12 @@ import (
 )
 
 // Settings that version-gated features stamp and that only select an
-// execution strategy or a memory bound. The engine's settings rules stamp
-// them through these constants.
+// execution strategy or a memory bound. The engine stamps the
+// result-equivalent ones through these constants. It declares the three
+// memory bounds (the adaptive-aggregator switch and the two spill thresholds)
+// as its own literals, which the perf-sentinel gate classifies;
+// internal/engine's TestDroppableSettings_AreTheEngineVersionGatedStamps pins
+// those literals to the names here.
 const (
 	SettingEnableAdaptiveAggregator                = "enable_adaptive_aggregator"
 	SettingMaxBytesBeforeExternalJoin              = "max_bytes_before_external_join"

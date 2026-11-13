@@ -944,7 +944,7 @@ func applyExpHistogramTwoLevelBound(ctx context.Context, f planShapeFacts, expHi
 // the backlogs hold every in-window sample's bucket arrays until the merge, which is what
 // raised the native-histogram rate() peaks on 26.8. See
 // applyHistogramAdaptiveAggregatorOff for the measurement.
-const settingEnableAdaptiveAggregator = chopt.SettingEnableAdaptiveAggregator
+const settingEnableAdaptiveAggregator = "enable_adaptive_aggregator"
 
 // histogramAdaptiveAggregatorDisabled is the enable_adaptive_aggregator value
 // applyHistogramAdaptiveAggregatorOff stamps: the setting is a boolean, and 0

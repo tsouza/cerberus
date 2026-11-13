@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/tsouza/cerberus/internal/chclient"
-	"github.com/tsouza/cerberus/internal/chopt"
 )
 
 // settingMaxBytesBeforeExternalGroupBy / settingMaxBytesBeforeExternalSort are
@@ -33,7 +32,7 @@ const (
 //
 // perf-sentinel: memory-bounding — caps the bytes a hash join's build side may
 // hold in RAM before it spills, exactly as its group-by/sort siblings do.
-const settingMaxBytesBeforeExternalJoin = chopt.SettingMaxBytesBeforeExternalJoin
+const settingMaxBytesBeforeExternalJoin = "max_bytes_before_external_join"
 
 // settingMaxBytesBeforeExternalDistinct is the ClickHouse setting that makes a
 // DISTINCT spill its key set to disk once the query's tracked memory grows
@@ -46,7 +45,7 @@ const settingMaxBytesBeforeExternalJoin = chopt.SettingMaxBytesBeforeExternalJoi
 //
 // perf-sentinel: memory-bounding — caps the bytes a DISTINCT's key set may
 // hold in RAM before it spills, exactly as its group-by/sort/join siblings do.
-const settingMaxBytesBeforeExternalDistinct = chopt.SettingMaxBytesBeforeExternalDistinct
+const settingMaxBytesBeforeExternalDistinct = "max_bytes_before_external_distinct"
 
 // spillThresholdBytes is the byte threshold at which a GROUP BY / sort begins
 // spilling to disk when NO per-query memory cap is configured. A
