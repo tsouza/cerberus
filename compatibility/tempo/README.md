@@ -8,12 +8,8 @@ for every case in a cerberus-owned TXTAR corpus.
 
 Cerberus mirrors the posture taken by `compatibility/prometheus/` for
 PromQL parity, but the Tempo / TraceQL surface has **no upstream
-"tempo-compliance" repo**. The closest analogue is
-`cmd/tempo-vulture`, Grafana's deterministic seed + read-back canary.
-This harness vendors `cmd/tempo-vulture/` and `pkg/httpclient/` from
-`grafana/tempo` as reference material under `upstream/`,
-drives both backends from a cerberus-owned driver
-(`driver/`), and writes JSON + markdown reports whose envelope matches
+"tempo-compliance" repo**. This harness seeds both backends and
+drives them from a cerberus-owned driver (`driver/`), and writes JSON + markdown reports whose envelope matches
 the Prom harness's so one downstream analyser handles both.
 
 ## Ingest path
@@ -43,11 +39,7 @@ compatibility/tempo/
     diff.go             `diff` subcommand: HTTP fetch + assertions + report
     corpus/             TXTAR cases — search / per-id / tags / tag-values / metrics
   reports/              driver report output (gitignored)
-  upstream/             vendored grafana/tempo snapshot (read-only reference)
-    LICENSE             AGPL-3.0, copied verbatim from grafana/tempo
-    VERSION             exact upstream coordinates of the snapshot
-    cmd/tempo-vulture/  long-running canary; reused as seeder pattern
-    pkg/httpclient/     Tempo HTTP client; consumed by the driver
+  UPSTREAM_VERSION      the grafana/tempo commit the harness tracks
 ```
 
 The harness entry point (`node .github/scripts/run-tempo-compatibility.mjs`,
@@ -114,98 +106,29 @@ The tag endpoints pin three classes of subset assertion:
   backends must return an empty `tagValues` list, exercising the
   graceful-empty branches of each side's lookup code.
 
-## What's in `upstream/`
+## Upstream pin
 
-A pure, unmodified snapshot of two paths from
-`github.com/grafana/tempo` (`cmd/tempo-vulture/` and `pkg/httpclient/`),
-taken directly from the upstream commit `go.mod` pins for the Apache
-`pkg/tempopb` wire types.
+[`UPSTREAM_VERSION`](UPSTREAM_VERSION) records the `grafana/tempo` commit the
+harness tracks. The reference image (`grafana/tempo:main-<commit>` in
+`docker-compose.yml`) and the in-house wire types in
+`internal/thirdparty/tempopb` are both taken from that commit, and
+`test/regression/fork_version_skew_test.go` fails when either, or the
+`grafana/tempo` requirement in `go.mod`, names a different one.
 
-Exact coordinates live in [`upstream/VERSION`](upstream/VERSION).
-
-### Why vendor, not import via `go.mod`
-
-`github.com/grafana/tempo` is already a direct require in `go.mod` (for
-the Apache `pkg/tempopb` wire types), so we **could** just import
-`pkg/httpclient` directly. We vendor instead because:
-
-1. **Reference material, not a build dependency.** The driver imports
-   only a narrow subset of this code; vendoring lets reviewers read
-   the seeder pattern in the diff without grepping `~/go/pkg/mod/`.
-2. **`cmd/tempo-vulture` is a `package main`**, not importable.
-   Vendoring it keeps the source visible for the driver to adapt.
-3. **Snapshot stability.** A future bump of the grafana/tempo version
-   in go.mod won't silently move the seeder pattern under our feet; the
-   snapshot here is pinned and explicit.
-
-### Why the vendor isn't compiled
-
-The vendor's imports (e.g. `github.com/go-test/deep`,
-`go.uber.org/zap`, `github.com/jsternberg/zap-logfmt`,
-`github.com/grafana/tempo/integration/util`) are not in cerberus's
-`go.mod` and would pull in heavy transitive deps just to compile
-vulture's `main` package. The vendor is excluded from the module
-graph via a `go.mod` `ignore` directive:
-
-```text
-ignore ./compatibility/tempo/upstream
-```
-
-With it in place:
-
-- `go build ./...` and `go test ./...` skip the vendor entirely.
-- `go vet ./...` skips the vendor entirely.
-- The vendored sources remain on disk for reference.
-
-## Bump procedure
-
-The vendor is **not** automatically refreshed when `go.mod`'s
-`grafana/tempo` version bumps — a version bump rarely touches the
-vendored `cmd/tempo-vulture/` and `pkg/httpclient/` paths. Do a
-manual re-snapshot only when:
-
-1. Upstream Grafana adds a meaningful capability to `cmd/tempo-vulture`
-   or `pkg/httpclient` that the cerberus driver wants to mirror, **or**
-2. The cerberus driver starts depending on a specific behaviour of
-   the vendored code and we want a known-good baseline.
-
-To re-snapshot:
-
-```sh
-# 1. Read the current grafana/tempo version in go.mod.
-grep '^\s*github.com/grafana/tempo ' go.mod
-#    => github.com/grafana/tempo vX.Y.Z-0.<timestamp>-<commit>
-
-# 2. Clone grafana/tempo at that commit.
-git clone --depth=1 https://github.com/grafana/tempo /tmp/tempo-upstream
-git -C /tmp/tempo-upstream fetch --depth=1 origin <commit> && git -C /tmp/tempo-upstream checkout <commit>
-
-# 3. Wipe the existing snapshot and re-copy.
-rm -rf compatibility/tempo/upstream/{cmd,pkg,LICENSE}
-mkdir -p compatibility/tempo/upstream/{cmd,pkg}
-cp -r /tmp/tempo-upstream/cmd/tempo-vulture  compatibility/tempo/upstream/cmd/
-cp -r /tmp/tempo-upstream/pkg/httpclient     compatibility/tempo/upstream/pkg/
-cp    /tmp/tempo-upstream/LICENSE            compatibility/tempo/upstream/LICENSE
-
-# 4. Update upstream/VERSION with the new grafana/tempo commit SHA and
-#    describe.
-$EDITOR compatibility/tempo/upstream/VERSION
-
-# 5. PR the diff. Reviewer checks the bump procedure was followed
-#    verbatim; no sanitisation of vendored sources is permitted.
-```
+To move the harness to a new upstream commit, change all three together: the
+`upstream_commit` and `upstream_describe` fields, the reference image tag, and
+the `go.mod` requirement (with the `tsouza/tempo` fork rebased onto the same
+commit, see [`docs/upstream-forks.md`](../../docs/upstream-forks.md)), then
+re-sync `internal/thirdparty/tempopb` from that commit as its `README.md`
+describes.
 
 ## Licensing
 
-`grafana/tempo` was relicensed from Apache-2.0 to **AGPL-3.0** in
-[grafana/tempo#660](https://github.com/grafana/tempo/pull/660). The
-vendored snapshot inherits AGPL-3.0, and
-[`upstream/LICENSE`](upstream/LICENSE) is the verbatim copy.
-
-Cerberus itself is independently licensed (see the repo root
-`LICENSE`); the AGPL terms apply only to the vendored subtree under
-`upstream/`. The driver code under `compatibility/tempo/driver/`
-lives OUTSIDE `upstream/` and is cerberus-licensed.
+`grafana/tempo` is AGPL-3.0, except its `pkg/tempopb` wire types, which carry
+their own Apache-2.0 licence. The reference Tempo runs as an unmodified
+container image the harness pulls; no Tempo source is committed here. The
+driver under `compatibility/tempo/driver/` is cerberus code, licensed like the
+rest of the repository.
 
 ## Related docs
 
