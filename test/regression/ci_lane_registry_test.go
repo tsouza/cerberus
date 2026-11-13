@@ -294,6 +294,10 @@ func TestCILaneRegistry(t *testing.T) {
 	assertCILaneReleaseRequiredContexts(t, releaseRequiredContexts)
 	assertCILaneReleasePostureIsTheOnlyDeGate(t, registry, releaseRequiredContexts)
 
+	// A capped checkout attempt is the one continue-on-error step a gating job
+	// may carry: the retry after it has no continue-on-error, so a checkout
+	// that fails twice still fails the job (git_fetch_stall_test.go).
+	retriedCheckouts := retriedCheckoutAttempts(t)
 	for identity, laneIDs := range gatingJobs {
 		workflowPath, jobID, _ := strings.Cut(identity, "#")
 		job := workflows[workflowPath].Jobs[jobID]
@@ -303,7 +307,7 @@ func TestCILaneRegistry(t *testing.T) {
 				ciLaneSortedKeys(laneIDs), identity)
 		}
 		for stepIndex, step := range job.Steps {
-			if step.ContinueOnError.IsZero() {
+			if step.ContinueOnError.IsZero() || retriedCheckouts[identity][stepIndex] {
 				continue
 			}
 			stepName := step.Name
