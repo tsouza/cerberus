@@ -66,10 +66,18 @@ func TestComparisonGuardsAttributeExistence(t *testing.T) {
 			want:  "mapContains(`SpanAttributes`, ?) AND (`SpanAttributes`[?] != ?)",
 		},
 		{
-			name:  "span_scope_not_regex",
+			// A literal pattern renders as an inequality (see chsql's
+			// anchoredRegexLiteralSet); the guard is unchanged.
+			name:  "span_scope_not_regex_literal",
 			query: `{ span.color !~ "red" }`,
 			s:     plain,
-			want:  "mapContains(`SpanAttributes`, ?) AND NOT match(`SpanAttributes`[?], ?)",
+			want:  "mapContains(`SpanAttributes`, ?) AND (`SpanAttributes`[?] != ?)",
+		},
+		{
+			name:  "span_scope_not_regex",
+			query: `{ span.color !~ "re.*" }`,
+			s:     plain,
+			want:  "mapContains(`SpanAttributes`, ?) AND NOT " + regexMatchSQL("`SpanAttributes`[?]"),
 		},
 		{
 			name:  "resource_scope_not_equal",

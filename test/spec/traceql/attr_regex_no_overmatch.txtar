@@ -11,11 +11,11 @@
 -- query.traceql --
 { resource.service.name =~ "api" }
 -- sql --
-SELECT * FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND match(`ResourceAttributes`[?], ?)
+SELECT * FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND (`ResourceAttributes`[?] = ?)
 -- args --
 [0] string = "service.name"
 [1] string = "service.name"
-[2] string = "^(?:api)$"
+[2] string = "api"
 -- seed --
 CREATE TABLE otel_traces (
     _idx UInt64,
@@ -45,7 +45,7 @@ scope: full
 [2] string = "__cerberus_spanID"
 [3] string = "service.name"
 [4] string = "service.name"
-[5] string = "^(?:api)$"
+[5] string = "api"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
@@ -54,4 +54,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND match(`ResourceAttributes`[?], ?))
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE mapContains(`ResourceAttributes`, ?) AND (`ResourceAttributes`[?] = ?))

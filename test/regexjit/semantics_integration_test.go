@@ -80,7 +80,12 @@ var invalidUTF8Values = []string{"\xff", "a\xffb", "api\xff", "\x85", "caf\xe9",
 
 // matcherCase is a pattern the corpus lowers as a label matcher (anchored)
 // and as a line filter (unanchored). The two flags record whether ClickHouse
-// compiles the emitted form; they are observations of the pinned builds.
+// compiles the emitted form; they are observations of the pinned builds. A
+// label matcher whose anchored pattern matches a finite set of literals
+// (the empty pattern, `api`, `\s`, `(?:x(y))?api`, `api|web-3|`, `a\.b|xyz`)
+// renders as IN / NOT IN rather than match(), so its form holds no regular
+// expression to compile and anchoredJIT is false; the reference check still
+// holds its answer to Go's regexp on every build.
 type matcherCase struct {
 	pattern       string
 	anchoredJIT   bool
@@ -92,7 +97,7 @@ var matcherCases = []matcherCase{
 	{pattern: `api-[0-9]+`, anchoredJIT: true, lineFilterJIT: true},
 	{pattern: `.*`, anchoredJIT: true, lineFilterJIT: true},
 	{pattern: `.+`, anchoredJIT: true, lineFilterJIT: true},
-	{pattern: ``, anchoredJIT: true, lineFilterJIT: false},
+	{pattern: ``, anchoredJIT: false, lineFilterJIT: false},
 	{pattern: `(?i)api.*`, anchoredJIT: false, lineFilterJIT: true},
 	{pattern: `(?i)kelvin`, anchoredJIT: false, lineFilterJIT: false},
 	{pattern: `api|web.*`, anchoredJIT: false, lineFilterJIT: false},
@@ -104,15 +109,17 @@ var matcherCases = []matcherCase{
 	{pattern: `caf.`, anchoredJIT: false, lineFilterJIT: false},
 	{pattern: `\S+`, anchoredJIT: true, lineFilterJIT: true},
 	{pattern: `\s*lead`, anchoredJIT: true, lineFilterJIT: true},
-	{pattern: `\s`, anchoredJIT: true, lineFilterJIT: true},
-	{pattern: `(?:x(y))?api`, anchoredJIT: true, lineFilterJIT: true},
+	{pattern: `\s`, anchoredJIT: false, lineFilterJIT: true},
+	{pattern: `(?:x(y))?api`, anchoredJIT: false, lineFilterJIT: true},
 	{pattern: `.*\n.*`, anchoredJIT: false, lineFilterJIT: true},
 	{pattern: `(?s:.*)`, anchoredJIT: false, lineFilterJIT: false},
 	{pattern: `^api`, anchoredJIT: false, lineFilterJIT: true},
 	{pattern: `api$`, anchoredJIT: false, lineFilterJIT: true},
 	{pattern: `timeout after \d+ms`, anchoredJIT: true, lineFilterJIT: true},
 	{pattern: `status=5..`, anchoredJIT: false, lineFilterJIT: false},
-	{pattern: `api`, anchoredJIT: true, lineFilterJIT: false},
+	{pattern: `api`, anchoredJIT: false, lineFilterJIT: false},
+	{pattern: `api|web-3|`, anchoredJIT: false, lineFilterJIT: false},
+	{pattern: `a\.b|xyz`, anchoredJIT: false, lineFilterJIT: false},
 	{pattern: `\d+`, anchoredJIT: true, lineFilterJIT: true},
 }
 
