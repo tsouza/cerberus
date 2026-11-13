@@ -20,6 +20,12 @@ permissions:
 concurrency:
   group: merge-queue-requeue-${{ github.event.pull_request.number }}
 
+env:
+  # A git transfer that stalls is aborted, so actions/checkout retries it
+  # (test/regression/git_fetch_stall_test.go).
+  GIT_HTTP_LOW_SPEED_LIMIT: "1000"
+  GIT_HTTP_LOW_SPEED_TIME: "30"
+
 jobs:
   requeue:
     name: requeue
