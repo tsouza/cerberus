@@ -33,15 +33,22 @@ import (
 // Every query below is deliberately loose on VALUES (matching this
 // package's own established idiom — TestPromQueryRangeRate and its
 // siblings assert "status=success + non-empty", never a numeric pin) since
-// the point is that the shape survives the Distributed target /
-// legacy-analyzer combination at all, not a specific number — see the doc's
+// the point is that the shape survives the Distributed target at all, not
+// a specific number — see the doc's
 // own "that equality, not a specific number, is the pass criterion" line.
 
 // TestPromQueryHistogramQuantileNativeAggregate — shape 1 (priority 1):
-// `histogram_quantile(phi, sum(rate(<native histogram>[5m])))` reaches
-// internal/chplan/histogram_quantile_native.go's ScalarSubquery under
-// applyNativeHistogramAnalyzerFix's forced `enable_analyzer=0` — the exact
-// legacy-pipeline + subquery-over-Distributed combination #29332 named.
+// `histogram_quantile(phi, sum(rate(<native histogram>[5m])))` with a literal
+// phi nests the merge and window fold in derived tables (FROM (SELECT …))
+// over one read of the Distributed table, so the outer TimeUnix predicate is
+// pushed down through those levels into each shard's query. Every e2e lane
+// runs ClickHouse 26.8, where applyNativeHistogramAnalyzerFix withholds its
+// `enable_analyzer=0` stamp, so on the datashard lane this covers that
+// pushdown under the new analyzer. The legacy-analyzer combination #29332
+// named — the forced `enable_analyzer=0` with the same pushdown over
+// Distributed, which fleets below 26.8 still run — is covered by
+// test/chserver's TestNativeHistogram_LegacyAnalyzerOverDistributed on 26.6,
+// which also requires the answer to match the unsharded table's.
 // showcase_latency_exp_hist is the deterministic exponential-histogram
 // fixture every e2e seed (standard, bwc, datashard) inserts.
 func TestPromQueryHistogramQuantileNativeAggregate(t *testing.T) {

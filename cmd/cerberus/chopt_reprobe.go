@@ -306,6 +306,8 @@ func reprobeCHOptimizations(
 			"previous_query_workload", prev.QueryWorkload,
 			"analyzer_mandatory", next.Set.AnalyzerMandatory(),
 			"previous_analyzer_mandatory", prev.Set.AnalyzerMandatory(),
+			"native_histogram_analyzer_faster", next.Set.NativeHistogramAnalyzerFaster(),
+			"previous_native_histogram_analyzer_faster", prev.Set.NativeHistogramAnalyzerFaster(),
 			"shape_defects", strings.Join(next.Set.ShapeDefectIDs(), ","),
 			"previous_shape_defects", strings.Join(prev.Set.ShapeDefectIDs(), ","),
 		)

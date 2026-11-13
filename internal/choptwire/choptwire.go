@@ -433,6 +433,7 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 		ResultCache:                    set.Has(chopt.FeatureResultCache),
 		LazyMaterialization:            set.Has(chopt.FeatureLazyMaterialization),
 		AnalyzerMandatory:              set.AnalyzerMandatory(),
+		NativeHistogramAnalyzerFaster:  set.NativeHistogramAnalyzerFaster(),
 		// The fleet's shape defects gate one query shape each, whatever
 		// the selection resolved (engine.SettingsRules.applyShapeDefects).
 		ConversionConditionCacheDefect:     set.HasShapeDefect(chopt.ShapeDefectConversionConditionCache),

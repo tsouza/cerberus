@@ -154,9 +154,9 @@ type SettingsRules struct {
 	// feature resolves on, so this is safe whenever it fires; the eligibility
 	// check (predicateStableForConditionCache) is still conservative. A plan
 	// the native-histogram analyzer fix stamps enable_analyzer=0 on (unless
-	// AnalyzerMandatory) is never stamped: the
-	// cache is analyzer-gated and the fix's 0 must not be overwritten by this
-	// rule's co-stamp.
+	// AnalyzerMandatory or NativeHistogramAnalyzerFaster withholds it) is never
+	// stamped: the cache is analyzer-gated and the fix's 0 must not be
+	// overwritten by this rule's co-stamp.
 	ConditionCache bool
 
 	// JoinSpill, when true, stamps max_bytes_before_external_join=cap/2 on a
@@ -317,8 +317,18 @@ type SettingsRules struct {
 	// decides: "off" and an explicit list carry it like "auto". The zero value
 	// keeps the stamp, so an engine whose settings were never wired (a bare
 	// prom.New harness) runs these plans under the older analyzer, as every
-	// server below 26.9 does.
+	// server below 26.8 does.
 	AnalyzerMandatory bool
+
+	// NativeHistogramAnalyzerFaster, when true, also withholds that stamp:
+	// every reachable node runs ClickHouse 26.8 or newer, which still accepts
+	// enable_analyzer=0 but runs every measured native-histogram shape faster
+	// under the analyzer. Driven by the resolved set's
+	// chopt.EnabledSet.NativeHistogramAnalyzerFaster, which is resolved
+	// against the oldest reachable node, so a fleet that still has an older
+	// node keeps the stamp. Like AnalyzerMandatory it is a fleet fact, not an
+	// operator switch, and its zero value keeps the stamp.
+	NativeHistogramAnalyzerFaster bool
 
 	// ConversionConditionCacheDefect, NegatedConjunctionProjectionDefect and
 	// TraceIDProjectionReadDefect carry the resolved set's shape defects
@@ -395,7 +405,7 @@ func (r SettingsRules) enabledOpts() []string {
 	if r.LazyMaterialization {
 		opts = append(opts, "lazy_materialization")
 	}
-	if !r.AnalyzerMandatory {
+	if r.legacyAnalyzerPermitted() {
 		opts = append(opts, "native_histogram_legacy_analyzer")
 	}
 	if r.QueryWorkload != "" {
@@ -429,9 +439,9 @@ func (r SettingsRules) now() time.Time {
 //
 // legacyAnalyzerStamped is what keeps enable_analyzer single-valued on the
 // settings map. applyNativeHistogramAnalyzerFix stamps enable_analyzer=0 on a
-// plan carrying the hazard while the server still allows it (below 26.9), and the condition-cache and
-// lazy-materialisation rules each co-stamp enable_analyzer=1 —
-// chclient.WithQuerySetting is last-write-wins on a key, and these rules run
+// plan carrying the hazard while the fleet still gains from it (a node below
+// 26.8), and the condition-cache and lazy-materialisation rules each co-stamp
+// enable_analyzer=1 — chclient.WithQuerySetting is last-write-wins on a key, and these rules run
 // after the fix, so before the hazard was read here the co-stamp silently
 // overwrote the fix on every native-histogram query that carried a Filter
 // (every real one does) on any server where condition_cache resolved in
@@ -650,41 +660,50 @@ func applySortedSlabOverTimeMemoryBound(ctx context.Context, f planShapeFacts) c
 // (`enable_analyzer` / `allow_experimental_analyzer`) alias the same underlying
 // flag on every ClickHouse version below 26.9.
 //
-// From 26.9 the analyzer is mandatory: the server rejects enable_analyzer=0
-// with code 452 (SETTING_CONSTRAINT_VIOLATION), and 26.10 accepts it again but
-// ignores it. The stamp is therefore withheld under rules.AnalyzerMandatory,
-// which holds once any reachable node runs such a build
-// (chopt.AnalyzerMandatory). That is the server's own ceiling, not a
-// performance choice: on every server that can still take the stamp, the
-// stamp is applied.
+// The stamp is applied only while some reachable node runs a build below
+// ClickHouse 26.8. Two fleet facts withhold it, and either one is enough:
 //
-// Below that ceiling it is deliberately NOT version-gated, and that is a
-// measured decision rather than an untested convenience. #2358 spot-checked the same single-series query
-// on CH 26.5 (0.57s new analyzer vs 1.2s old) and read the inversion as "a
-// bounded, harmless trade on newer servers" — which invited a later removal
-// once the 24.8 floor moves. Re-measuring on the shape production actually
-// runs, at production cardinality, refutes that reading: the trade does not
-// merely stay bounded on newer servers, it reverses. On chDB's embedded
-// ClickHouse 26.x engine (the substrate every chdb-tagged lane runs on) with
-// 500 distinct series under a one-label GROUP BY (the `cerb:project;agg=1;rbf`
-// plan shape — histogram_quantile over rate() of a native histogram in a range
-// query), three alternating rounds measured 12.2-14.5s with the new analyzer
-// against 2.3-2.6s with it disabled: ~5x, in the SAME direction as the 24.8
-// floor rather than against it. Peak memory moves the same way — bisecting
-// max_memory_usage, both settings complete at 512 MiB and exceed 256 MiB, but
-// at that failure the new analyzer had already reached 317 MiB against 286 MiB
-// for the old, so it costs ~11% more, not less. EXPLAIN PLAN says why: the new
-// analyzer emits MORE arrayMap nodes on this shape (391 vs 357), so its common-
-// subexpression elimination is not collapsing the merge/window-fold's repeated
-// array walks — the emitter's own bindings (promql's hqLet) are what do that.
+//   - rules.AnalyzerMandatory: from 26.9 the analyzer is mandatory. The server
+//     rejects enable_analyzer=0 with code 452 (SETTING_CONSTRAINT_VIOLATION),
+//     and 26.10 accepts it again but ignores it. This holds once ANY reachable
+//     node runs such a build (chopt.AnalyzerMandatory), because a query can
+//     land on that node however old the others are.
+//   - rules.NativeHistogramAnalyzerFaster: from 26.8 every measured shape runs
+//     faster under the analyzer, with no consistent memory saving from the
+//     stamp (chopt.NativeHistogramAnalyzerFasterSince). This holds only once EVERY
+//     reachable node runs 26.8 or newer: the fact is resolved against the
+//     oldest node, like the optimization ids. A mixed fleet keeps the stamp,
+//     because it still pays off on the older node and on a 26.8 node it is
+//     slower, never refused.
 //
-// The 0.57s-vs-1.2s figure was real; it was just taken at a cardinality where
-// the analyzer's per-call-site planning cost still dominated its per-row
-// execution cost. So the standing instruction for whoever next touches this
-// stamp — including on a floor bump that retires 24.8 — is: a single-series
-// timing is not evidence about this shape. Re-measure at several hundred
-// distinct series under a one-label GROUP BY, on the newest server in the
-// supported range, and change the stamp only if THAT measurement says to.
+// Measured on 26.6 and 26.8 with the production lowerer wiring and settings
+// rules: on 26.8 every measured shape runs faster under the analyzer, and the
+// stamp lowers peak memory by at most 14 MiB on one round of one shape while
+// raising it by up to 61 MiB on another; on 26.6 the stamp still cuts the
+// plural quantile over rate() by about 28% wall and 21% peak. The figures are in docs/performance.background.md, "Why the
+// native-histogram legacy-analyzer stamp stops at 26.8".
+//
+// Below 26.8 the stamp is not gated per version, and the measurements that
+// follow are why. A single-series spot check on CH 26.5 (0.57s new analyzer
+// vs 1.2s old) suggested the trade inverts on newer servers, but at production
+// cardinality it does not. On chDB's embedded ClickHouse 26.x engine (the
+// substrate every chdb-tagged lane runs on) with 500 distinct series under a
+// one-label GROUP BY (the `cerb:project;agg=1;rbf` plan shape —
+// histogram_quantile over rate() of a native histogram in a range query),
+// three alternating rounds measured 12.2-14.5s with the new analyzer against
+// 2.3-2.6s with it disabled: ~5x, in the SAME direction as the 24.8 floor.
+// Peak memory moves the same way — bisecting max_memory_usage, both settings
+// complete at 512 MiB and exceed 256 MiB, but at that failure the new analyzer
+// had already reached 317 MiB against 286 MiB for the old, so it costs ~11%
+// more, not less. EXPLAIN PLAN says why: the new analyzer emits MORE arrayMap
+// nodes on this shape (391 vs 357), so its common-subexpression elimination is
+// not collapsing the merge/window-fold's repeated array walks — the emitter's
+// own bindings (promql's hqLet) are what do that. The single-series figure
+// was taken at a cardinality where the analyzer's per-call-site planning cost
+// still dominated its per-row execution cost, so a single-series timing is
+// not evidence about this shape; the figures that move the bound are
+// several-hundred-series or production-wiring measurements like the ones
+// above.
 //
 // It is an execution-PLANNER choice, not a result rewrite — RESULT-EQUIVALENT
 // like every other rule in this file — so it has no CERBERUS_* opt-in and no
@@ -764,11 +783,20 @@ func applyNativeHistogramAnalyzerFix(ctx context.Context, f planShapeFacts, rule
 
 // legacyAnalyzerStamped reports whether applyNativeHistogramAnalyzerFix
 // stamps enable_analyzer=0 on the plan f was inspected from: the plan
-// carries the hazard and the servers still let the analyzer be disabled
-// (not AnalyzerMandatory). applyFacts reads the same answer, so its
+// carries the hazard and the fleet still gains from the legacy analyzer
+// (legacyAnalyzerPermitted). applyFacts reads the same answer, so its
 // analyzer co-stamps are suppressed exactly when the fix fires.
 func (r SettingsRules) legacyAnalyzerStamped(f planShapeFacts) bool {
-	return f.nativeHistogramAnalyzerHazard && !r.AnalyzerMandatory
+	return f.nativeHistogramAnalyzerHazard && r.legacyAnalyzerPermitted()
+}
+
+// legacyAnalyzerPermitted reports whether the fleet still runs
+// native-histogram plans under the legacy analyzer: no node refuses
+// enable_analyzer=0 (AnalyzerMandatory) and at least one node runs a build
+// older than the line on which the analyzer is the faster planner
+// (NativeHistogramAnalyzerFaster).
+func (r SettingsRules) legacyAnalyzerPermitted() bool {
+	return !r.AnalyzerMandatory && !r.NativeHistogramAnalyzerFaster
 }
 
 // settingGroupByTwoLevelThresholdBytes is the ClickHouse setting naming the

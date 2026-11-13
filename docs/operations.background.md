@@ -327,17 +327,25 @@ answer exactly — that equality, not a specific number, is the pass
 criterion):
 
 1. **Priority 1 — native-histogram `histogram_quantile()` over a
-   `Distributed` table** (`internal/chplan/histogram_quantile_native.go:39`'s
-   `ScalarSubquery`, reached with `enable_analyzer=0` forced by
-   `applyNativeHistogramAnalyzerFix`): `histogram_quantile(0.9,
+   `Distributed` table** (with a literal phi, the statement nests the merge
+   and window fold in derived tables, `FROM (SELECT …)`, over one read of the
+   `Distributed` table, so the outer `TimeUnix` predicate is pushed down
+   through those levels into each shard's query, with `enable_analyzer=0`
+   forced by `applyNativeHistogramAnalyzerFix` below 26.8): `histogram_quantile(0.9,
    sum(rate(demo_exp_hist[5m])))` and the plain
    `histogram_quantile(0.9, demo_exp_hist)` selector form, both against a
    `dataShards.count: 2+` cluster with series distributed across shards by
    the sharding key. (Expected: identical quantile to the same query against
    a single-shard/chDB copy of the same data — this is the shape most
-   directly analogous to `#29332`'s own reproduction, a `WHERE`/aggregate
-   wrapping a `ScalarSubquery` over a `Distributed` table under the legacy
-   analyzer.)
+   directly analogous to `#29332`'s own reproduction, a predicate pushed
+   through derived-table levels over a `Distributed` table under the legacy
+   analyzer.) The `datashard` e2e lane runs ClickHouse 26.8, where the stamp
+   is withheld, so it executes this shape under the new analyzer. The
+   legacy-analyzer form runs in `test/chserver`'s
+   `TestNativeHistogram_LegacyAnalyzerOverDistributed` on 26.6 over a two-shard
+   `Distributed` table, together with `histogram_count` over the same merged
+   `rate()`; it requires `enable_analyzer=0` in `system.query_log`, a fan-out
+   to both shards, and the unsharded table's answer.
 2. **`scalar(<vector>)` PromQL queries in general**
    (`internal/promql`'s lowering into `chplan.ScalarSubquery`, e.g.
    `internal/chplan/range_window.go:210`'s range-window scalar argument) —
