@@ -98,3 +98,42 @@ func (*effectiveCapQuerier) Query(context.Context, string, ...any) ([]chclient.S
 }
 func (q *effectiveCapQuerier) MaxQueryMemoryBytes() int64          { return q.configured }
 func (q *effectiveCapQuerier) EffectiveMaxQueryMemoryBytes() int64 { return q.effective }
+
+// TestWithSpillThresholds_WithholdsDistinctOverMapKeys pins the one shape
+// fact a handler supplies: a statement whose DISTINCT runs over attribute-map
+// keys carries every spill threshold but the DISTINCT one, which makes such a
+// DISTINCT outgrow the memory it needs unspilled; a statement with no shape
+// attached, or the zero shape, carries all four.
+func TestWithSpillThresholds_WithholdsDistinctOverMapKeys(t *testing.T) {
+	t.Parallel()
+
+	const capBytes int64 = 6 * gib
+	e := &Engine{Client: &effectiveCapQuerier{effective: capBytes}}
+	rules := compositionBaseRules()
+	rules.JoinSpill = true
+	rules.DistinctSpill = true
+	e.SetSettings(rules)
+
+	for _, tc := range []struct {
+		name         string
+		ctx          context.Context
+		wantDistinct bool
+	}{
+		{"no shape attached", context.Background(), true},
+		{"zero shape", WithStatementShape(context.Background(), StatementShape{}), true},
+		{"DISTINCT over map keys", WithStatementShape(context.Background(), StatementShape{DistinctOverMapKeys: true}), false},
+	} {
+		got := chclient.QuerySettingsFromContext(e.WithSpillThresholds(tc.ctx))
+		for _, name := range []string{
+			settingMaxBytesBeforeExternalGroupBy, settingMaxBytesBeforeExternalSort, settingMaxBytesBeforeExternalJoin,
+		} {
+			if got[name] != capBytes/spillCapDenominator {
+				t.Errorf("%s: %s = %v; want %d", tc.name, name, got[name], capBytes/spillCapDenominator)
+			}
+		}
+		_, distinct := got[settingMaxBytesBeforeExternalDistinct]
+		if distinct != tc.wantDistinct {
+			t.Errorf("%s: max_bytes_before_external_distinct stamped = %v; want %v", tc.name, distinct, tc.wantDistinct)
+		}
+	}
+}

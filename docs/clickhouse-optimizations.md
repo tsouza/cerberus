@@ -530,7 +530,14 @@ Notes:
   ([ClickHouse#116569](https://github.com/ClickHouse/ClickHouse/pull/116569)).
   It stamps `max_bytes_before_external_distinct = spillThreshold(cap)` on
   every data-plane query, on both dispatch routes, and on every statement a
-  head's handler dispatches outside the engine, with no plan-shape gate.
+  head's handler dispatches outside the engine, with one exception: a
+  statement whose `DISTINCT` runs over attribute-map keys (label-name and
+  tag-name discovery, marked by the handler with `engine.StatementShape`)
+  carries no `DISTINCT` threshold. The map keys are `LowCardinality`, so the
+  unspilled set holds a fixed-size hash per key, while a spilled one writes
+  every key out whole: 1M unique 256-byte keys answer in about 107 MB
+  unspilled and abort with code 241 under a 160 MiB cap once spilled at
+  80 MiB.
   ClickHouse compares the threshold with the whole query's tracked memory,
   and only a `DISTINCT` reads it. **Version floor is 26.9**: 26.8 rejects the
   setting name with code 115. `Stability` is `experimental` and `AutoSelect`

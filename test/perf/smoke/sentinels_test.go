@@ -123,10 +123,12 @@ func TestSentinels_DistinctSpillStampIsAsserted(t *testing.T) {
 }
 
 // TestSentinels_MetadataSpillStampsAreAsserted pins what makes the
-// metadata-spill sentinel falsifiable and reachable: it must require every
-// spill threshold the engine stamps, each at half the live memory cap, on a
-// statement the Tempo handler dispatches without the engine, and run on the
-// 26.9 tier's opt-in lane, where both version-gated thresholds are in force.
+// metadata-spill sentinel falsifiable and reachable: on a tag-name statement
+// the Tempo handler dispatches without the engine, whose DISTINCT runs over
+// attribute-map keys, it must require the GROUP BY, sort and JOIN spill
+// thresholds, each at half the live memory cap, require the DISTINCT one
+// absent, and run on the 26.9 tier's opt-in lane, where both version-gated
+// thresholds are in force.
 func TestSentinels_MetadataSpillStampsAreAsserted(t *testing.T) {
 	s := distinctSpillFloorSentinel(t, "metadata_spill_search_tags")
 	if s.Optimizations != OptInDistinctSpill || s.RequiredFeature != chopt.FeatureDistinctSpill {
@@ -144,10 +146,9 @@ func TestSentinels_MetadataSpillStampsAreAsserted(t *testing.T) {
 	const half = "536870912" // 1 GiB / 2
 	got := s.RequiredSettings(cap1GiB)
 	want := map[string]string{
-		settingMaxBytesBeforeExternalGroupBy:  half,
-		settingMaxBytesBeforeExternalSort:     half,
-		settingMaxBytesBeforeExternalJoin:     half,
-		settingMaxBytesBeforeExternalDistinct: half,
+		settingMaxBytesBeforeExternalGroupBy: half,
+		settingMaxBytesBeforeExternalSort:    half,
+		settingMaxBytesBeforeExternalJoin:    half,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("metadata_spill sentinel RequiredSettings = %v, want %v", got, want)
@@ -156,6 +157,10 @@ func TestSentinels_MetadataSpillStampsAreAsserted(t *testing.T) {
 		if got[name] != value {
 			t.Errorf("metadata_spill sentinel requires %s = %q, want %q", name, got[name], value)
 		}
+	}
+	if len(s.AbsentQuerySettings) != 1 || s.AbsentQuerySettings[0] != settingMaxBytesBeforeExternalDistinct {
+		t.Errorf("metadata_spill sentinel AbsentQuerySettings = %v; want [%s]",
+			s.AbsentQuerySettings, settingMaxBytesBeforeExternalDistinct)
 	}
 }
 

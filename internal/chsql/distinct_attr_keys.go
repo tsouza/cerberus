@@ -24,8 +24,14 @@ package chsql
 // DISTINCT is part of the SELECT list (CH's flavour), not a separate
 // keyword, so it folds into the Frag for the QueryBuilder slot.
 func DistinctAttrKeys(strategies AttrStrategies, col string) Frag {
-	if strategies.Lookup(col) == AttrStrategyJSON {
+	if !AttrKeysFromMap(strategies, col) {
 		return Distinct(Call("arrayJoin", Call("JSONAllPaths", Col(col))))
 	}
 	return Distinct(Call("arrayJoin", Qual(col, "keys")))
+}
+
+// AttrKeysFromMap reports whether DistinctAttrKeys enumerates col's keys from
+// a Map column's `.keys` subcolumn rather than from JSON paths.
+func AttrKeysFromMap(strategies AttrStrategies, col string) bool {
+	return strategies.Lookup(col) != AttrStrategyJSON
 }

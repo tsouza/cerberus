@@ -280,6 +280,11 @@ type Sentinel struct {
 	// those two would pass just as green with the mechanism deleted. This
 	// field is what makes the mechanism's ABSENCE fail.
 	RequiredQuerySettings func(memoryCapBytes int64) map[string]string
+	// AbsentQuerySettings names the per-query ClickHouse settings the harness
+	// must find ABSENT from system.query_log's Settings map for every repeat
+	// of this sentinel: a setting the mechanism withholds from the statement,
+	// whose presence is as much a regression as a required stamp's absence.
+	AbsentQuerySettings []string
 }
 
 // Sentinels is the single source of truth for the perf-smoke real-ClickHouse
@@ -439,19 +444,25 @@ var Sentinels = []Sentinel{
 	},
 	{
 		// Engine-bypassing statements: Engine.WithSpillThresholds (spill.go)
-		// stamps every spill threshold the engine stamps on the statements a
-		// head's handler dispatches through its own client, and each head's
-		// handler client calls it on every statement. Tag discovery is one
-		// such statement, a `SELECT DISTINCT arrayJoin(SpanAttributes.keys)`
-		// over the window's spans; `scope=span` keeps the request to that one
+		// stamps the engine's spill thresholds on the statements a head's
+		// handler dispatches through its own client, and each head's handler
+		// client calls it on every statement. Tag discovery is one such
+		// statement, a `SELECT DISTINCT arrayJoin(SpanAttributes.keys)` over
+		// the window's spans; `scope=span` keeps the request to that one
 		// statement. It runs on the distinct-spill lane so every threshold,
 		// the two version-gated ones included, is in force.
 		//
-		// RequiredQuerySettings is the load-bearing assertion, as it is for
-		// distinct_spill_structural_traceql: at this scale the DISTINCT stays
-		// under spillThreshold(cap), so peak memory alone measures the same
-		// with the stamp deleted. Spilling itself is pinned against a real
-		// build by test/chserver's TestMetadataSpill_SearchTagsUnderCappedMemory.
+		// The statement's DISTINCT runs over attribute-map keys, which the
+		// handler marks (engine.StatementShape), so the DISTINCT threshold is
+		// withheld and the other three are stamped: RequiredQuerySettings and
+		// AbsentQuerySettings together are the load-bearing assertion, as
+		// RequiredQuerySettings is for distinct_spill_structural_traceql. At
+		// this scale no operator crosses spillThreshold(cap), so peak memory
+		// alone measures the same with either half broken. Both shapes are
+		// pinned against a real build by test/chserver's
+		// TestMetadataSpill_TagValuesUnderCappedMemory (values spill and
+		// complete) and TestMetadataSpill_TagNamesKeepAnswering (keys answer
+		// where a spilled DISTINCT aborts).
 		Name:            "metadata_spill_search_tags",
 		Mechanism:       "Engine.WithSpillThresholds (internal/engine/spill.go) via the Tempo handler's client",
 		Floor:           FloorDistinctSpill,
@@ -466,12 +477,12 @@ var Sentinels = []Sentinel{
 		RequiredQuerySettings: func(memoryCapBytes int64) map[string]string {
 			threshold := strconv.FormatInt(memoryCapBytes/spillCapDenominator, 10)
 			return map[string]string{
-				settingMaxBytesBeforeExternalGroupBy:  threshold,
-				settingMaxBytesBeforeExternalSort:     threshold,
-				settingMaxBytesBeforeExternalJoin:     threshold,
-				settingMaxBytesBeforeExternalDistinct: threshold,
+				settingMaxBytesBeforeExternalGroupBy: threshold,
+				settingMaxBytesBeforeExternalSort:    threshold,
+				settingMaxBytesBeforeExternalJoin:    threshold,
 			}
 		},
+		AbsentQuerySettings: []string{settingMaxBytesBeforeExternalDistinct},
 	},
 	{
 		// Sorted-slab memory bound, opt-in-only: applySortedSlabOverTimeMemoryBound

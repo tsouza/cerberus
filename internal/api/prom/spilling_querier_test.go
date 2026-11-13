@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -19,20 +20,29 @@ import (
 // reports; every spill threshold is half of it.
 const spillCapBytes int64 = 3 << 30
 
+// recordedStatement is one statement a spillSettingsRecorder saw: its SQL,
+// where the dispatch path passes it through, and its per-query settings.
+type recordedStatement struct {
+	sql      string
+	settings map[string]any
+}
+
 // spillSettingsRecorder is a Querier that records the per-query settings
 // every statement reaches the client with, and answers each with no rows.
 type spillSettingsRecorder struct {
 	mu    sync.Mutex
-	calls []map[string]any
+	calls []recordedStatement
 }
 
-func (r *spillSettingsRecorder) record(ctx context.Context) {
+func (r *spillSettingsRecorder) record(ctx context.Context) { r.recordSQL(ctx, "") }
+
+func (r *spillSettingsRecorder) recordSQL(ctx context.Context, sql string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, chclient.QuerySettingsFromContext(ctx))
+	r.calls = append(r.calls, recordedStatement{sql: sql, settings: chclient.QuerySettingsFromContext(ctx)})
 }
 
-func (r *spillSettingsRecorder) taken() []map[string]any {
+func (r *spillSettingsRecorder) taken() []recordedStatement {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	calls := r.calls
@@ -52,8 +62,8 @@ func (r *spillSettingsRecorder) QueryCursor(ctx context.Context, _ string, _ ...
 	return newSliceCursor(nil), nil
 }
 
-func (r *spillSettingsRecorder) QueryStrings(ctx context.Context, _ string, _ ...any) ([]string, error) {
-	r.record(ctx)
+func (r *spillSettingsRecorder) QueryStrings(ctx context.Context, sql string, _ ...any) ([]string, error) {
+	r.recordSQL(ctx, sql)
 	return nil, nil
 }
 
@@ -74,23 +84,31 @@ func (r *spillSettingsRecorder) QueryExemplars(ctx context.Context, _ string, _ 
 
 // wantSpillThresholds is every spill threshold the engine stamps with both
 // version-gated features resolved in, at half spillCapBytes, as the string
-// the settings map renders.
-func wantSpillThresholds() map[string]string {
+// the settings map renders. The DISTINCT one is withheld from a statement
+// whose DISTINCT runs over attribute-map keys (mapKeys).
+func wantSpillThresholds(mapKeys bool) map[string]string {
 	half := strconv.FormatInt(spillCapBytes/2, 10)
-	return map[string]string{
-		"max_bytes_before_external_group_by":        half,
-		"max_bytes_before_external_sort":            half,
-		chopt.SettingMaxBytesBeforeExternalJoin:     half,
-		chopt.SettingMaxBytesBeforeExternalDistinct: half,
+	want := map[string]string{
+		"max_bytes_before_external_group_by":    half,
+		"max_bytes_before_external_sort":        half,
+		chopt.SettingMaxBytesBeforeExternalJoin: half,
 	}
+	if !mapKeys {
+		want[chopt.SettingMaxBytesBeforeExternalDistinct] = half
+	}
+	return want
 }
 
 // TestHandlerDispatches_CarryEngineSpillThresholds drives every Prom endpoint
 // that dispatches through the handler's own client rather than the engine,
 // and requires each statement to reach the client with the engine's spill
 // thresholds: without them a high-cardinality metadata DISTINCT aborts at the
-// memory cap where an engine query of the same size spills. It also replaces
-// the Engine after New, as cmd/cerberus does, and requires the replacement's
+// memory cap where an engine query of the same size spills. A label-name
+// statement, whose DISTINCT runs over attribute-map keys, carries every
+// threshold but the DISTINCT one, and every other statement carries all four;
+// a label-name endpoint must dispatch at least one such statement, so the
+// withholding is exercised rather than vacuously absent. It also replaces the
+// Engine after New, as cmd/cerberus does, and requires the replacement's
 // rules to size the thresholds.
 func TestHandlerDispatches_CarryEngineSpillThresholds(t *testing.T) {
 	rec := &spillSettingsRecorder{}
@@ -100,15 +118,19 @@ func TestHandlerDispatches_CarryEngineSpillThresholds(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
-	for _, path := range []string{
-		"/api/v1/labels",
-		"/api/v1/labels?match[]=up",
-		"/api/v1/label/job/values",
-		"/api/v1/label/job/values?match[]=up",
-		"/api/v1/series?match[]=up",
-		"/api/v1/metadata",
-		"/api/v1/query_exemplars?query=up&start=0&end=60",
+	for _, tc := range []struct {
+		path    string
+		mapKeys bool
+	}{
+		{"/api/v1/labels", true},
+		{"/api/v1/labels?match[]=up", true},
+		{"/api/v1/label/job/values", false},
+		{"/api/v1/label/job/values?match[]=up", false},
+		{"/api/v1/series?match[]=up", false},
+		{"/api/v1/metadata", false},
+		{"/api/v1/query_exemplars?query=up&start=0&end=60", false},
 	} {
+		path := tc.path
 		t.Run(path, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
@@ -116,13 +138,35 @@ func TestHandlerDispatches_CarryEngineSpillThresholds(t *testing.T) {
 			if len(calls) == 0 {
 				t.Fatalf("GET %s dispatched no statement (HTTP %d: %s)", path, w.Code, w.Body.String())
 			}
-			for i, got := range calls {
-				for name, want := range wantSpillThresholds() {
-					if v, ok := got[name].(int64); !ok || strconv.FormatInt(v, 10) != want {
-						t.Errorf("statement %d of GET %s: %s = %v; want %s", i, path, name, got[name], want)
+			sawMapKeys := false
+			for i, call := range calls {
+				mapKeys := isMapKeyDistinct(call.sql)
+				sawMapKeys = sawMapKeys || mapKeys
+				got := call.settings
+				want := wantSpillThresholds(mapKeys)
+				for name, value := range want {
+					if v, ok := got[name].(int64); !ok || strconv.FormatInt(v, 10) != value {
+						t.Errorf("statement %d of GET %s: %s = %v; want %s", i, path, name, got[name], value)
+					}
+				}
+				if _, ok := want[chopt.SettingMaxBytesBeforeExternalDistinct]; !ok {
+					if v, stamped := got[chopt.SettingMaxBytesBeforeExternalDistinct]; stamped {
+						t.Errorf("statement %d of GET %s: %s = %v on a DISTINCT over map keys; want it withheld",
+							i, path, chopt.SettingMaxBytesBeforeExternalDistinct, v)
 					}
 				}
 			}
+			if sawMapKeys != tc.mapKeys {
+				t.Errorf("GET %s dispatched a DISTINCT over map keys = %t; want %t", path, sawMapKeys, tc.mapKeys)
+			}
 		})
 	}
+}
+
+// isMapKeyDistinct reports whether sql takes its DISTINCT over attribute-map
+// keys, the statement shape the handler marks to withhold the DISTINCT spill
+// threshold.
+func isMapKeyDistinct(sql string) bool {
+	return strings.Contains(sql, "DISTINCT") &&
+		(strings.Contains(sql, "mapKeys(") || strings.Contains(sql, ".`keys`"))
 }
