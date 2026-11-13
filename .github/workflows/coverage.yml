@@ -222,8 +222,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # A git transfer that stalls is aborted, so actions/checkout retries it
-  # (test/regression/git_fetch_stall_test.go).
+  # A git transfer that stalls is aborted, so actions/checkout retries it. A
+  # stall before the transfer starts (TCP connect, TLS handshake) is bounded
+  # by each Ubicloud checkout's step cap instead, and the checkout runs once
+  # more (test/regression/git_fetch_stall_test.go).
   GIT_HTTP_LOW_SPEED_LIMIT: "1000"
   GIT_HTTP_LOW_SPEED_TIME: "30"
 
@@ -318,7 +320,14 @@ jobs:
     # inside the aggregator's own budget.
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v7
+      - id: checkout
+        uses: actions/checkout@v7
+        timeout-minutes: 3
+        continue-on-error: true
+      - name: Retry the checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
+        timeout-minutes: 3
 
       - uses: ./.github/actions/setup-go
 

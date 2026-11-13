@@ -40,7 +40,9 @@ import (
 //   - a job running Go tests declares a budget at all;
 //   - each `go test` in such a recipe declares its own `-timeout`; and
 //   - that `-timeout` fits inside the smallest job budget that runs it, with
-//     room for the abort to be written down.
+//     room for the abort to be written down and for the job's capped checkout
+//     steps (cappedCheckoutBudget, git_fetch_stall_test.go) run to their caps
+//     ahead of it.
 //
 // The last one is the point. Go's timeout is the useful one: it panics and
 // dumps every goroutine's stack, which is the difference between "the perf
@@ -66,7 +68,9 @@ var (
 	// a name, a colon, nothing else. Steps and `with:` keys sit deeper.
 	jobHeaderRe = regexp.MustCompile(`^  ([A-Za-z0-9_-]+):\s*$`)
 
-	timeoutMinutesRe = regexp.MustCompile(`^\s+timeout-minutes:\s*(\S+)`)
+	// timeoutMinutesRe matches a job's own `timeout-minutes`, four spaces
+	// deep; a step's sits deeper and is not the job's budget.
+	timeoutMinutesRe = regexp.MustCompile(`^    timeout-minutes:\s*(\S+)`)
 
 	// justInvocationRe matches a `just <recipe>` call. The recipe name is
 	// checked against the Justfile's own recipe set afterwards, so a `just`
@@ -96,7 +100,10 @@ type workflowJob struct {
 	// is not in the file. Such a job still has to see a `-timeout`; only
 	// the fits-inside comparison is unavailable.
 	budgetIsExpression bool
-	recipes            []string
+	// checkoutBudget is cappedCheckoutBudget for the job: the time its
+	// capped checkout steps can take before the tests start.
+	checkoutBudget time.Duration
+	recipes        []string
 }
 
 // TestGoTestTimeoutFitsItsJobBudget is the whole gate. It fails with one line
@@ -176,11 +183,11 @@ func checkGoTestCommand(t *testing.T, job workflowJob, recipe, cmd string, justV
 		return []string{fmt.Sprintf("%s: cannot read the declared `-timeout` %q: %v.\n      %s",
 			where, match[1], err, strings.TrimSpace(cmd))}
 	}
-	if declared+abortReportingMargin > job.budget {
-		return []string{fmt.Sprintf("%s: `-timeout %s` leaves less than %s under the job's %s budget, so "+
-			"the runner can kill the container mid-panic and the goroutine dump — the only artefact that "+
-			"says WHERE it hung — never reaches the log.\n      %s",
-			where, declared, abortReportingMargin, job.budget, strings.TrimSpace(cmd))}
+	if job.checkoutBudget+declared+abortReportingMargin > job.budget {
+		return []string{fmt.Sprintf("%s: %s of capped checkout steps plus `-timeout %s` leaves less than %s "+
+			"under the job's %s budget, so the runner can kill the container mid-panic and the goroutine "+
+			"dump — the only artefact that says WHERE it hung — never reaches the log.\n      %s",
+			where, job.checkoutBudget, declared, abortReportingMargin, job.budget, strings.TrimSpace(cmd))}
 	}
 	return nil
 }
@@ -209,13 +216,21 @@ func workflowJobsRunningJust(t *testing.T, recipeNames map[string]bool) []workfl
 		t.Fatalf("read %s: %v", workflowsDir, err)
 	}
 
+	parsed := readStallWorkflows(t)
 	var jobs []workflowJob
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || (!strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml")) {
 			continue
 		}
-		jobs = append(jobs, jobsInWorkflow(readFileString(t, filepath.Join(workflowsDir, name)), name, recipeNames)...)
+		wf, ok := parsed[filepath.ToSlash(filepath.Join(".github/workflows", name))]
+		if !ok {
+			t.Fatalf("%s was not parsed for its checkout steps", name)
+		}
+		for _, job := range jobsInWorkflow(readFileString(t, filepath.Join(workflowsDir, name)), name, recipeNames) {
+			job.checkoutBudget = cappedCheckoutBudget(wf.Jobs[job.name].Steps)
+			jobs = append(jobs, job)
+		}
 	}
 	return jobs
 }
