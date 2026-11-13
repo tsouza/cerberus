@@ -28,6 +28,9 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
+// testReprobeTiming probes as fast as a test can observe it.
+var testReprobeTiming = reprobeTiming{steady: time.Millisecond, earlySpacing: time.Millisecond}
+
 // resolutionAt builds a resolution carrying the named features, as chopt.Resolve
 // would return for a server at version.
 func resolutionAt(t *testing.T, version chopt.Version, ids ...string) chOptResolution {
@@ -249,7 +252,7 @@ func TestReprobeCHOptimizations_SwapsWhenTheAnswerChanges(t *testing.T) {
 	go func() {
 		defer close(done)
 		reprobeCHOptimizations(ctx, quietLogger(), cfg, live,
-			chOptConsumers{engines: []*engine.Engine{e}}, time.Millisecond, "", liveFleetProber(cfg))
+			chOptConsumers{engines: []*engine.Engine{e}}, testReprobeTiming, nil, "", liveFleetProber(cfg))
 	}()
 
 	deadline := time.Now().Add(20 * time.Second)
@@ -284,7 +287,7 @@ func TestReprobeCHOptimizations_StopsOnContextCancel(t *testing.T) {
 	go func() {
 		defer close(done)
 		reprobeCHOptimizations(ctx, quietLogger(), config.Config{}, newCHOptLive(chOptResolution{}),
-			chOptConsumers{}, time.Hour, "", liveFleetProber(config.Config{}))
+			chOptConsumers{}, reprobeTiming{steady: time.Hour, earlySpacing: time.Hour}, nil, "", liveFleetProber(config.Config{}))
 	}()
 
 	select {

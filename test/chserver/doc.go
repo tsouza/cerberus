@@ -4,7 +4,9 @@
 // CPU-bound expressions cerberus emits, the read-back of an aggregation
 // that spills its GROUP BY over cerberus's canonical series key, the
 // query-analyzer posture native-histogram queries run under on each release
-// line, the first release accepting each defect gate's setting, and the
+// line, the first release accepting each defect gate's setting, the first
+// release knowing each droppable setting and the client's answer to a node
+// too old for a setting or function it sends, and the
 // external DISTINCT a structural TraceQL query spills through once the
 // distinct_spill threshold is stamped. Every test boots pinned
 // clickhouse/clickhouse-server builds — the supported floor, builds a known

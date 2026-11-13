@@ -195,6 +195,53 @@ func nextReprobeDelay(res chOptResolution, steady time.Duration) time.Duration {
 	return steady
 }
 
+// chOptEarlyReprobeSpacing is the least time between two capability probes
+// when a query rejection asks for one before the cadence above is due.
+//
+// A ClickHouse node that does not know a setting or function cerberus sent is
+// evidence that the fleet holds a node older than the set in force was
+// resolved against, and the probe is what moves the set; waiting out the
+// steady interval leaves every such query to the retry (a droppable setting)
+// or to failure (anything else) for up to five minutes. But a rejection can
+// recur on every query while the probe cannot see the node behind it — a
+// replica reached only through a load balancer — and a probe per rejection
+// would then run back to back. Ten seconds keeps that worst case at the floor
+// fallback's own retry rate (chOptFloorRetryInterval), the rate this loop is
+// already priced to run at while it wants to leave a state, and puts the
+// first early probe within one dashboard refresh of the rollback.
+const chOptEarlyReprobeSpacing = 10 * time.Second
+
+// reprobeTiming is when reprobeCHOptimizations probes: every steady interval
+// (chOptReprobeInterval, or chOptFloorRetryInterval on the floor), and early
+// on request, never closer than earlySpacing to the previous probe.
+type reprobeTiming struct {
+	steady       time.Duration
+	earlySpacing time.Duration
+}
+
+// productionReprobeTiming is the timing the serving process runs.
+var productionReprobeTiming = reprobeTiming{steady: chOptReprobeInterval, earlySpacing: chOptEarlyReprobeSpacing}
+
+// reprobeTrigger carries requests for an early capability probe from the
+// query path to reprobeCHOptimizations. It holds at most one pending request:
+// a burst of rejections while one is pending adds nothing, so the burst asks
+// for one probe.
+type reprobeTrigger chan chclient.UnknownNameRejection
+
+// newReprobeTrigger returns an empty trigger.
+func newReprobeTrigger() reprobeTrigger {
+	return make(reprobeTrigger, 1)
+}
+
+// request asks for an early probe on behalf of rej, without blocking: it is
+// the chclient unknown-name hook, and runs on the rejected query's goroutine.
+func (t reprobeTrigger) request(rej chclient.UnknownNameRejection) {
+	select {
+	case t <- rej:
+	default:
+	}
+}
+
 // reprobeCHOptimizations re-resolves the ClickHouse capability set on a fixed
 // cadence and swaps a changed result into the query path, so a cluster upgraded
 // under a running cerberus starts using the newly-available native paths without
@@ -224,6 +271,13 @@ func nextReprobeDelay(res chOptResolution, steady time.Duration) time.Duration {
 // upgrade sees the transition rather than having to find it in a stream of
 // repetitions.
 //
+// A request on early moves the next probe forward to earlySpacing after the
+// previous one (or to now, if that has passed), unless the timer is due
+// sooner. A burst of requests therefore yields one probe, and a request that
+// queued while a probe ran is discarded once it finishes: it was raised by a
+// query planned under the set that probe has just re-decided. Each early
+// probe is logged once, with the rejection that asked for it.
+//
 // rawQueryWorkload is the ORIGINAL operator-configured CERBERUS_CH_QUERY_
 // WORKLOAD, captured by the caller BEFORE boot's resolveCHOptimizations
 // mutates cfg.CHQueryWorkload down to "" on a rejected/unreachable boot
@@ -239,20 +293,49 @@ func reprobeCHOptimizations(
 	cfg config.Config,
 	live *chOptLive,
 	consumers chOptConsumers,
-	interval time.Duration,
+	timing reprobeTiming,
+	early reprobeTrigger,
 	rawQueryWorkload string,
 	probeFleet fleetProber,
 ) {
 	// A timer rather than a ticker: the delay is re-derived from the
 	// resolution in force after every attempt, so a pod pinned to the floor
 	// retries at chOptFloorRetryInterval and drops back to the steady cadence
-	// the moment a probe answers.
-	timer := time.NewTimer(nextReprobeDelay(live.get(), interval))
+	// the moment a probe answers. due mirrors the timer's deadline, so an
+	// early request can tell whether it moves the probe forward. Boot has
+	// just probed, so the loop starts as if a probe ran now.
+	lastProbe := time.Now()
+	due := lastProbe.Add(nextReprobeDelay(live.get(), timing.steady))
+	timer := time.NewTimer(time.Until(due))
 	defer timer.Stop()
+	schedule := func(res chOptResolution) {
+		lastProbe = time.Now()
+		due = lastProbe.Add(nextReprobeDelay(res, timing.steady))
+		timer.Reset(time.Until(due))
+		select {
+		case <-early:
+		default:
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case rej := <-early:
+			at := lastProbe.Add(timing.earlySpacing)
+			if !at.Before(due) {
+				continue
+			}
+			due = at
+			timer.Reset(time.Until(due))
+			logger.Warn(
+				"clickhouse node rejected a "+rej.Kind+" cerberus sent; re-probing the fleet early",
+				"name", rej.Name,
+				"node_version", rej.NodeVersion,
+				"retried_without_droppable_settings", rej.Retried,
+				"reprobe_in", time.Until(due).Round(time.Millisecond).String(),
+			)
+			continue
 		case <-timer.C:
 		}
 
@@ -275,7 +358,7 @@ func reprobeCHOptimizations(
 				// The resolution in force is unchanged, so the delay is
 				// derived from it: still on the floor means still retrying
 				// fast.
-				timer.Reset(nextReprobeDelay(inForce, interval))
+				schedule(inForce)
 				continue
 			}
 			// The resolution failed, but the fleet moved the analyzer or
@@ -284,7 +367,7 @@ func reprobeCHOptimizations(
 		}
 		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory).WithShapeDefects(shapeDefects)
 		prev := live.get()
-		timer.Reset(nextReprobeDelay(next, interval))
+		schedule(next)
 		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion && next.QueryWorkload == prev.QueryWorkload {
 			continue
 		}

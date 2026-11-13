@@ -538,6 +538,11 @@ type Client struct {
 	// data-plane query; see SetQueryConditionCacheDisabled. A pointer so every
 	// ForHead view shares the one switch the capability re-probe flips.
 	conditionCacheDisabled *atomic.Bool
+
+	// rejections reports every query a node rejects for an unknown setting
+	// or function (see SetUnknownNameHook). A pointer so every ForHead view
+	// shares the one hook cmd/cerberus installs.
+	rejections *rejectionReporter
 }
 
 // buildBreakers constructs the per-head breaker registry shared by all of a
@@ -846,6 +851,7 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 		queryTimeout:        cfg.QueryTimeout,
 
 		conditionCacheDisabled: new(atomic.Bool),
+		rejections:             newGlobalRejectionReporter(),
 	}
 	// Resolve the cursor-decode strategy ONCE, here at construction. The
 	// default is the concrete row path; when Config.ColumnarMatrixDecode is set
@@ -1080,8 +1086,7 @@ func (c *Client) queryContext(ctx context.Context) context.Context {
 		intent.tracker.MarkPacketObserved(queryID)
 	}
 	ctx = hiddenDeadlineContext(ctx)
-	opts := make([]clickhouse.QueryOption, 0, 3)
-	opts = append(opts, clickhouse.WithSettings(s))
+	opts := make([]clickhouse.QueryOption, 0, 2)
 	if resultCacheStamped(s) {
 		// This dispatch is one the engine's result-cache rule marked
 		// eligible (SettingUseQueryCache=1 on the settings map just
@@ -1096,7 +1101,29 @@ func (c *Client) queryContext(ctx context.Context) context.Context {
 	if queryID != "" {
 		opts = append(opts, clickhouse.WithQueryID(queryID))
 	}
-	return clickhouse.Context(ctx, opts...)
+	return withDriverSettings(ctx, s, opts...)
+}
+
+// driverSettingsKeyType keys, on a context, the settings withDriverSettings
+// handed clickhouse-go.
+type driverSettingsKeyType struct{}
+
+// withDriverSettings hands s to clickhouse-go as the statement's settings,
+// together with opts, and records s on the context too: clickhouse-go keeps
+// its options under an unexported key with no getter, so
+// driverSettingsFromContext is the only way to read back what a statement
+// opened under ctx sends. Every settings map cerberus gives the row path goes
+// through here.
+func withDriverSettings(ctx context.Context, s clickhouse.Settings, opts ...clickhouse.QueryOption) context.Context {
+	ctx = clickhouse.Context(ctx, append([]clickhouse.QueryOption{clickhouse.WithSettings(s)}, opts...)...)
+	return context.WithValue(ctx, driverSettingsKeyType{}, s)
+}
+
+// driverSettingsFromContext returns the settings a statement opened under ctx
+// sends, as withDriverSettings handed them to clickhouse-go, or nil.
+func driverSettingsFromContext(ctx context.Context) clickhouse.Settings {
+	s, _ := ctx.Value(driverSettingsKeyType{}).(clickhouse.Settings)
+	return s
 }
 
 // deliversProgressPackets reports whether c's transport streams the Progress
@@ -1318,7 +1345,11 @@ func newWithConn(conn driver.Conn) *Client {
 	// tests. nil metrics = the no-telemetry path (these tests assert breaker
 	// state via currentState(), not via the metric label).
 	def, registry := buildBreakers(false, 0, 0, 0, nil)
-	c := &Client{conn: conn, br: def, breakers: registry, conditionCacheDisabled: new(atomic.Bool)}
+	c := &Client{
+		conn: conn, br: def, breakers: registry,
+		conditionCacheDisabled: new(atomic.Bool),
+		rejections:             newRejectionReporter(nil),
+	}
 	// The cursor-decode strategy is ALWAYS non-nil — the row path is the
 	// default, matching production New with the columnar flag off. QueryCursor
 	// dispatches to it unconditionally, so the seam must wire it too.

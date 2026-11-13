@@ -225,7 +225,12 @@ func chPoolOptions(cfg Config) chpool.Options {
 // shape was not the matrix projection (the caller falls back to the row path),
 // with err nil. A non-nil err is a real failure already classified + recorded
 // against the breaker, exactly as the row path's QueryCursor open failure.
-func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql string, args ...any) (Cursor, bool, error) {
+//
+// narrowed is non-nil when a node rejected a droppable setting and the
+// statement ran again without some (openWithDroppableRetry): it is the
+// per-query settings map the node took, which a row-path fallback must send
+// instead of the caller's.
+func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql string, args ...any) (cur Cursor, ok bool, narrowed clickhouse.Settings, err error) {
 	// A caller that has DECLARED a non-matrix ResponseShape has already told us
 	// this query is not the prom query_range matrix, and it said so on the ctx —
 	// before any dial. Decline here, where the verdict is free, rather than in
@@ -239,7 +244,7 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	// the defense-in-depth it was added as (#1429); this only stops the dispatch
 	// its verdict was always going to waste.
 	if shape := ResponseShapeFromContext(ctx); shape != "" && shape != ResponseShapeMatrix {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 
 	// Bind the positional `?` args into the raw SQL body ch-go sends. An
@@ -248,13 +253,13 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	// columnar decode is an optimisation, never a correctness gamble.
 	body, ok := bindArgs(sql, args)
 	if !ok {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 
 	pool, err := d.matrix.acquirePool()
 	if err != nil {
 		c.br.record(ctx, err)
-		return nil, false, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
+		return nil, false, nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 
 	// queryContext must run BEFORE the fan-out gate acquire below, unlike the
@@ -280,7 +285,7 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	release, err := c.acquireDataShardFanout(ctx)
 	if err != nil {
 		c.br.record(ctx, err)
-		return nil, true, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
+		return nil, true, nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, err))
 	}
 
 	ctx, span := startExecuteSpan(ctx, sql, c.addr)
@@ -302,10 +307,9 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	// server-side work to kill (dispatchRelease).
 	var answered atomic.Bool
 	q := ch.Query{
-		Body:     body,
-		QueryID:  queryID,
-		Result:   dec.results.Auto(),
-		Settings: chSettings(c.querySettings(ctx)),
+		Body:    body,
+		QueryID: queryID,
+		Result:  dec.results.Auto(),
 		OnResult: func(ctx context.Context, b chproto.Block) error {
 			answered.Store(true)
 			return dec.onResult(ctx, b)
@@ -323,7 +327,39 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 		},
 	}
 
-	runErr := pool.Do(ctx, q)
+	// run sends the statement on a pooled connection, under the settings
+	// ctx derives (the statement's own, or a retry's). A server that rejects
+	// the statement before answering any packet — an unknown setting, for
+	// one — leaves that connection unusable: a 26.6 or newer server drops
+	// it, an older one reads the next statement out of step and answers
+	// garbage. ch-go's pool cannot tell, and would hand it to the next
+	// statement, so such a connection is closed instead of released.
+	run := func(ctx context.Context) (struct{}, error) {
+		q.Settings = chSettings(c.querySettings(ctx))
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			return struct{}{}, err
+		}
+		err = conn.Do(ctx, q)
+		if _, rejected := ch.AsException(err); rejected && !answered.Load() {
+			_ = conn.Close()
+			return struct{}{}, err
+		}
+		conn.Release()
+		return struct{}{}, err
+	}
+	// A node too old for a droppable setting the statement carries rejects it
+	// before answering any packet; the row path's retry without the droppable
+	// settings that node cannot know (openWithDroppableRetry) applies here
+	// too, inside the same fan-out admission. A statement the server already
+	// answered is never sent again: its blocks are in dec.
+	_, ranCtx, runErr := openWithDroppableRetry(c, ctx, run, func() bool { return !answered.Load() })
+	if ranCtx != ctx {
+		narrowed = querySettingsFromContext(ranCtx)
+		if narrowed == nil {
+			narrowed = clickhouse.Settings{}
+		}
+	}
 	// pool.Do is synchronous, so the fan-out weight releases here, before any
 	// branch below. Only a clean return means the statement finished on the
 	// server; any error — the server's own abort, a declined block, a broken
@@ -335,7 +371,7 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	// budget rejection is NOT a CH failure, a transport/server error is.
 	if isMatrixMismatch(runErr) {
 		span.End()
-		return nil, false, nil
+		return nil, false, narrowed, nil
 	}
 	// A result column whose type ch-go's Auto inference does not construct —
 	// most consequentially the real OTel-CH exporter's
@@ -347,7 +383,7 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	// an otherwise-working query into a 502 on every stock OTel-CH deployment.
 	if isUnsupportedColumnInference(runErr) {
 		span.End()
-		return nil, false, nil
+		return nil, false, narrowed, nil
 	}
 	// Surface the accumulated ProfileEvents inline on the execute span (both the
 	// error and success paths below keep the span). A shape-mismatch returns
@@ -370,7 +406,7 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	if runErr != nil && !isBudgetErr(runErr) {
 		span.RecordError(runErr)
 		span.End()
-		return nil, false, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, translateCHGoErr(runErr)))
+		return nil, false, nil, fmt.Errorf("chclient: query: %w", c.classifyDriverErr(ctx, translateCHGoErr(runErr)))
 	}
 
 	// Stream is fully drained into dec.samples, bounded on BOTH axes: the same
@@ -380,7 +416,7 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	// surfaces the identical *TooManySamplesError / *DrainByteBudgetError on
 	// the same Next() boundary the row path would.
 	dec.span = span
-	return dec, true, nil
+	return dec, true, nil, nil
 }
 
 // columnarCursor is the Cursor returned by the columnar matrix path. It holds

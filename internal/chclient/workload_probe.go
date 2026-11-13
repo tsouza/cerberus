@@ -45,7 +45,7 @@ const workloadCapabilityProbeName = "cerberus_probe"
 // FATAL (enforcing) vs WARN-and-skip (permissive) on a Forbidden/Unreachable
 // verdict.
 func (c *Client) ProbeQueryWorkloadCapability(ctx context.Context, workloadName string) chopt.Capability {
-	ctx = WithWorkloadSetting(ctx, workloadProbeName(workloadName))
+	ctx = WithWorkloadSetting(withCapabilityCanary(ctx), workloadProbeName(workloadName))
 	_, err := c.QueryStrings(ctx, workloadCapabilityProbeSQL)
 	return classifyCapabilityFromProbeErr(err)
 }

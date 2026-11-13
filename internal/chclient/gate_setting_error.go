@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
-
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
@@ -37,28 +35,26 @@ func (e *GateSettingUnsupportedError) Error() string {
 	)
 }
 
-// Unwrap exposes the sentinel and the underlying ClickHouse exception.
+// Unwrap exposes the sentinels and the underlying ClickHouse exception.
 func (e *GateSettingUnsupportedError) Unwrap() []error {
 	if e.Cause == nil {
-		return []error{ErrGateSettingUnsupported}
+		return []error{ErrGateSettingUnsupported, ErrNodeTooOld}
 	}
-	return []error{ErrGateSettingUnsupported, e.Cause}
+	return []error{ErrGateSettingUnsupported, ErrNodeTooOld, e.Cause}
 }
 
 // wrapGateSettingUnsupported converts an UNKNOWN_SETTING exception naming a
 // defect-gate setting into a *GateSettingUnsupportedError. An UNKNOWN_SETTING
 // for any other setting, and every other error, passes through untouched.
-// The code is matched typed; the setting is read off the exception's message,
-// which quotes it, because ClickHouse reports it nowhere else.
+// The code is matched typed; the setting is read off the exception's message
+// (parseUnknownName), because ClickHouse reports it nowhere else.
 func wrapGateSettingUnsupported(err error) error {
-	var ex *clickhouse.Exception
-	if err == nil || !errors.As(err, &ex) || ex.Code != chCodeUnknownSetting {
+	u, ok := parseUnknownName(err)
+	if !ok || u.kind != unknownNameSetting {
 		return err
 	}
-	for _, g := range chopt.GateSettings() {
-		if strings.Contains(ex.Message, "'"+g.Name+"'") {
-			return &GateSettingUnsupportedError{Gate: g, Cause: err}
-		}
+	if g, ok := chopt.GateSettingByName(u.name); ok {
+		return &GateSettingUnsupportedError{Gate: g, Cause: err}
 	}
 	return err
 }
