@@ -135,6 +135,44 @@ func applySpillSettings(ctx context.Context, maxMemory int64) context.Context {
 	return ctx
 }
 
+// applySpillThresholds stamps every spill threshold a statement carries: the
+// group_by/sort pair always, the join threshold on a statement whose facts say
+// it may join once join_spill resolved in, and the DISTINCT threshold once distinct_spill
+// resolved in, each sized from memCap. It is the one list the engine's
+// dispatch seam (applySharedQuerySettings) and the statements dispatched
+// outside it (Engine.WithSpillThresholds) both read, so the two cannot stamp
+// different thresholds for the same cap.
+func applySpillThresholds(ctx context.Context, f planShapeFacts, memCap int64, rules SettingsRules) context.Context {
+	ctx = applySpillSettings(ctx, memCap)
+	ctx = applyJoinSpillSettings(ctx, f, memCap, rules.JoinSpill)
+	return applyDistinctSpillSettings(ctx, memCap, rules.DistinctSpill)
+}
+
+// WithSpillThresholds stamps on ctx the spill thresholds for a statement a
+// head's handler dispatches through its own client rather than the engine —
+// the metadata endpoints, and the statements a handler emits itself beside an
+// engine query (the Tempo exemplars, for one). Each head's handler client
+// calls it on every statement it sends. Such a statement still runs under the
+// client's max_memory_usage, so without them a high-cardinality DISTINCT,
+// GROUP BY or sort aborts with MEMORY_LIMIT_EXCEEDED (code 241) where an
+// engine query of the same size spills and completes.
+//
+// The thresholds are applySpillThresholds', sized from the cap the statement
+// runs under (queryMemoryCap) and gated on the settings rules in force, so a
+// re-resolved feature set reaches these statements exactly as it reaches the
+// engine's. A statement built outside the engine has no plan to inspect, so
+// it is stamped with statementWithoutPlan's facts. A node too old for a version-gated
+// threshold rejects it and chclient sends the statement again without it
+// (chopt.DroppableSettings).
+func (e *Engine) WithSpillThresholds(ctx context.Context) context.Context {
+	return applySpillThresholds(ctx, statementWithoutPlan, e.queryMemoryCap(), e.settings())
+}
+
+// statementWithoutPlan is the shape a statement built outside the engine is
+// stamped as. Whether it joins is unknown, so it counts as one that may: the
+// join threshold rides whenever join_spill is in, and only a join reads it.
+var statementWithoutPlan = planShapeFacts{hasJoin: true}
+
 // applyJoinSpillSettings stamps the external-join spill threshold on ctx,
 // mirroring applySpillSettings' cap/2 arithmetic (spillThreshold), but ONLY
 // when BOTH:
@@ -146,11 +184,11 @@ func applySpillSettings(ctx context.Context, maxMemory int64) context.Context {
 //     to stamp unconditionally: the setting itself does not exist before
 //     26.4, and an unknown setting name errors the whole query rather than
 //     no-op'ing.
-//   - the plan contains a join-bearing node (f.hasJoin, chplan.HasJoin's
-//     answer) — join memory is otherwise protected only by throwIf
-//     cardinality guards and structural shape restrictions, never a memory
-//     backstop, so any plan that lowers to a real ClickHouse JOIN can build
-//     an unbounded hash table.
+//   - the statement may join (f.hasJoin: chplan.HasJoin's answer for an
+//     engine plan, true for statementWithoutPlan) — join memory is
+//     otherwise protected only by throwIf cardinality guards and structural
+//     shape restrictions, never a memory backstop, so any plan that lowers
+//     to a real ClickHouse JOIN can build an unbounded hash table.
 //
 // Like its group_by/sort sibling this is RESULT-EQUIVALENT and
 // THRESHOLD-GATED: a join whose build side stays under spillThreshold(cap)

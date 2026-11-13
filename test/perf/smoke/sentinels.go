@@ -121,6 +121,15 @@ const settingMaxBytesBeforeExternalJoin = "max_bytes_before_external_join"
 // reason settingMaxBytesBeforeExternalJoin above gives.
 const settingMaxBytesBeforeExternalDistinct = "max_bytes_before_external_distinct"
 
+// settingMaxBytesBeforeExternalGroupBy / settingMaxBytesBeforeExternalSort
+// are the ClickHouse settings internal/engine's applySpillSettings stamps on
+// every statement. Named here for the reason settingMaxBytesBeforeExternalJoin
+// above gives.
+const (
+	settingMaxBytesBeforeExternalGroupBy = "max_bytes_before_external_group_by"
+	settingMaxBytesBeforeExternalSort    = "max_bytes_before_external_sort"
+)
+
 // OptInDistinctSpill is the explicit CERBERUS_CH_OPTIMIZATIONS listing the
 // distinct-spill sentinel resolves against: chopt.FeatureDistinctSpill is
 // AutoSelect: false until the quickstart's ClickHouse reaches its 26.9 floor
@@ -402,9 +411,9 @@ var Sentinels = []Sentinel{
 		// Hence Floor: FloorDistinctSpill and the OptInDistinctSpill lane.
 		//
 		// The instant endpoint, not query_range: a range metrics query also
-		// runs its exemplars statement under the same query_id, outside the
-		// engine and so without the stamp, and the measured QueryFinish row
-		// would be that statement rather than the closure's.
+		// runs its exemplars statement under the same query_id, so the
+		// request leaves two QueryFinish rows and the measured one would be
+		// the exemplars statement's rather than the closure's.
 		//
 		// RequiredQuerySettings is the load-bearing assertion, as it is for
 		// join_spill_vector_join: at this scale the closure's DISTINCT stays
@@ -425,6 +434,42 @@ var Sentinels = []Sentinel{
 		RequiredQuerySettings: func(memoryCapBytes int64) map[string]string {
 			return map[string]string{
 				settingMaxBytesBeforeExternalDistinct: strconv.FormatInt(memoryCapBytes/spillCapDenominator, 10),
+			}
+		},
+	},
+	{
+		// Engine-bypassing statements: Engine.WithSpillThresholds (spill.go)
+		// stamps every spill threshold the engine stamps on the statements a
+		// head's handler dispatches through its own client, and each head's
+		// handler client calls it on every statement. Tag discovery is one
+		// such statement, a `SELECT DISTINCT arrayJoin(SpanAttributes.keys)`
+		// over the window's spans; `scope=span` keeps the request to that one
+		// statement. It runs on the distinct-spill lane so every threshold,
+		// the two version-gated ones included, is in force.
+		//
+		// RequiredQuerySettings is the load-bearing assertion, as it is for
+		// distinct_spill_structural_traceql: at this scale the DISTINCT stays
+		// under spillThreshold(cap), so peak memory alone measures the same
+		// with the stamp deleted. Spilling itself is pinned against a real
+		// build by test/chserver's TestMetadataSpill_SearchTagsUnderCappedMemory.
+		Name:            "metadata_spill_search_tags",
+		Mechanism:       "Engine.WithSpillThresholds (internal/engine/spill.go) via the Tempo handler's client",
+		Floor:           FloorDistinctSpill,
+		Path:            "/api/search/tags",
+		Optimizations:   OptInDistinctSpill,
+		RequiredFeature: chopt.FeatureDistinctSpill,
+		Params: func(start, end time.Time) url.Values {
+			return url.Values{"scope": {"span"}}
+		},
+		Window: sentinelWindow,
+		Step:   0,
+		RequiredQuerySettings: func(memoryCapBytes int64) map[string]string {
+			threshold := strconv.FormatInt(memoryCapBytes/spillCapDenominator, 10)
+			return map[string]string{
+				settingMaxBytesBeforeExternalGroupBy:  threshold,
+				settingMaxBytesBeforeExternalSort:     threshold,
+				settingMaxBytesBeforeExternalJoin:     threshold,
+				settingMaxBytesBeforeExternalDistinct: threshold,
 			}
 		},
 	},

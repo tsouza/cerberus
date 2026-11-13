@@ -513,7 +513,12 @@ Notes:
   memory cap (`spillThreshold`, `internal/engine/spill.go`); with no cap
   configured (`CERBERUS_CH_QUERY_MAX_MEMORY=0`) it is 512 MiB, half the
   1 GiB default cap, so an uncapped deployment spills exactly where a
-  default-capped one does rather than never. Known
+  default-capped one does rather than never. The statements a head's handler
+  dispatches outside the engine — the metadata endpoints of every head and the
+  Tempo exemplars statement — carry the same thresholds, sized from the same
+  cap and gated on the same resolved features (`Engine.WithSpillThresholds`);
+  with no plan to inspect, such a statement carries the `join` threshold
+  whenever `join_spill` is in. Known
   cost (verified, from the issue): on 26.4-26.7, configuring join spill loses
   some post-build join optimisations (`tryRerangeRightTableData`,
   `FixedHashMap` conversion, shared runtime filters) — a cost the ratio-
@@ -524,7 +529,8 @@ Notes:
   with an external `DISTINCT`
   ([ClickHouse#116569](https://github.com/ClickHouse/ClickHouse/pull/116569)).
   It stamps `max_bytes_before_external_distinct = spillThreshold(cap)` on
-  every data-plane query, on both dispatch routes, with no plan-shape gate.
+  every data-plane query, on both dispatch routes, and on every statement a
+  head's handler dispatches outside the engine, with no plan-shape gate.
   ClickHouse compares the threshold with the whole query's tracked memory,
   and only a `DISTINCT` reads it. **Version floor is 26.9**: 26.8 rejects the
   setting name with code 115. `Stability` is `experimental` and `AutoSelect`
