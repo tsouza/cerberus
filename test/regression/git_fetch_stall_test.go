@@ -272,6 +272,22 @@ func checkoutAttemptProblems(steps []stallStep, i int) []string {
 	return problems
 }
 
+// cappedCheckoutBudget is the longest a job's checkout steps can take before
+// its own work starts: every checkout step that carries a step-level cap, run
+// to that cap. For a capped attempt and its retry that is checkoutStepRuns
+// caps. Both budgets that a job's timeout must hold read it from here: the
+// checkout share in TestUbicloudCheckoutsRetryAStalledCheckout, and the work
+// ahead of a `go test` in TestGoTestTimeoutFitsItsJobBudget.
+func cappedCheckoutBudget(steps []stallStep) time.Duration {
+	var budget time.Duration
+	for _, s := range steps {
+		if m, ok := s.TimeoutMinutes.(int); ok && isCheckoutStep(s) {
+			budget += time.Duration(m) * time.Minute
+		}
+	}
+	return budget
+}
+
 // retriedCheckoutAttempts indexes, by "<workflow path>#<job id>", the step
 // indices that are capped checkout attempts with a conforming retry after them.
 // Such a step's continue-on-error cannot report a failed checkout as success:
@@ -341,12 +357,15 @@ func TestUbicloudCheckoutsRetryAStalledCheckout(t *testing.T) {
 					where, job.TimeoutMinutes)
 				continue
 			}
-			checkoutSeconds := jobSites * checkoutStepRuns * capSeconds
-			budget := float64(m*int(time.Minute/time.Second)) * checkoutTimeoutShare
-			if float64(checkoutSeconds) > budget {
-				t.Errorf("%s: %d checkout step(s) capped at %d minutes take up to %ds; the job's %d-minute "+
-					"timeout leaves %.0fs for checkout", where, jobSites*checkoutStepRuns,
-					checkoutStepTimeoutMinutes, checkoutSeconds, m, budget)
+			checkout := cappedCheckoutBudget(job.Steps)
+			if want := time.Duration(jobSites*checkoutStepRuns*capSeconds) * time.Second; checkout < want {
+				t.Errorf("%s: its capped checkout steps add up to %s; %d site(s) need %s", where, checkout, jobSites, want)
+			}
+			budget := time.Duration(float64(time.Duration(m)*time.Minute) * checkoutTimeoutShare)
+			if checkout > budget {
+				t.Errorf("%s: %d checkout step(s) capped at %d minutes take up to %s; the job's %d-minute "+
+					"timeout leaves %s for checkout", where, jobSites*checkoutStepRuns,
+					checkoutStepTimeoutMinutes, checkout, m, budget)
 			}
 		}
 	}

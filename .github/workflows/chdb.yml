@@ -273,9 +273,12 @@ jobs:
     # concurrent test binaries, so about eight libchdb sessions are busy at
     # once. Eight dedicated vCPUs give each its own core; more would sit idle.
     runs-on: ubicloud-standard-8
-    # The suite's own `-timeout 10m` plus checkout, toolchain, libchdb
-    # install and the chdb-tagged compile ahead of it.
-    timeout-minutes: 15
+    # The suite's own `-timeout 10m` and the 3m abort-reporting margin
+    # (test/regression/go_test_timeout_budget_test.go), plus the work ahead
+    # of it: two capped checkout steps run to their 3m caps
+    # (test/regression/git_fetch_stall_test.go), then toolchain, libchdb
+    # install and the chdb-tagged compile, which take under 2m.
+    timeout-minutes: 21
     steps:
       - name: gate on the changes job
         if: needs.changes.result != 'success'

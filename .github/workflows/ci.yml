@@ -108,12 +108,14 @@ jobs:
     # `just test-unit`'s own `-timeout` (just/test.just), deliberately
     # shorter so a hang is a Go panic with every goroutine's stack rather
     # than a killed job with no artefact — see that recipe's comment for the
-    # value this scales with. 20m = that 15m inner bound plus room for
-    # checkout, Go setup and `just test-chaos-sleep` ahead of it. An
-    # undeclared budget here would be GitHub's 360-minute default, which
-    # says nothing.
+    # value this scales with. 28m = that 15m inner bound and the 3m
+    # abort-reporting margin (test/regression/go_test_timeout_budget_test.go),
+    # plus the work ahead of the suite: two capped checkout steps run to
+    # their 3m caps (test/regression/git_fetch_stall_test.go), Go setup (2m)
+    # and `just test-chaos-sleep` (its own `-timeout 2m`). An undeclared
+    # budget here would be GitHub's 360-minute default, which says nothing.
     runs-on: ubicloud-standard-8
-    timeout-minutes: 20
+    timeout-minutes: 28
     steps:
       - id: checkout
         uses: actions/checkout@v7
@@ -141,11 +143,11 @@ jobs:
     # The full build, three tagged `go vet` passes and the oracle module's
     # tests are CPU-parallel compilation work, so this half runs on the same
     # 8-vCPU Ubicloud runner as `check-test`, for the same per-vCPU-minute
-    # reason. Settles in a few minutes; same 20m budget as `check-test`
+    # reason. Settles in a few minutes; same 28m budget as `check-test`
     # because the two halves are interchangeable in what a stall costs, and
     # a single number is one fewer thing to keep in sync.
     runs-on: ubicloud-standard-8
-    timeout-minutes: 20
+    timeout-minutes: 28
     steps:
       - id: checkout
         uses: actions/checkout@v7
