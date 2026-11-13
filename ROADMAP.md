@@ -107,7 +107,6 @@ fast and within its memory limit.
 - Grow the contributor base: documented paths from first issue to maintainer
   ([GOVERNANCE.md](GOVERNANCE.md)), and issues labelled for newcomers.
 - Apply to the CNCF as a Sandbox project.
-- An adopters list, as deployments become public.
 
 ## Out of scope
 
