@@ -1,0 +1,23 @@
+# A case-insensitive alternation is not a plain literal set: it keeps
+# match(), which selects every spelling the case folding admits.
+
+-- query.promql --
+up{job=~"(?i)api|web"}
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'API'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'Web'), toDateTime64('2026-01-01 00:00:00', 9), 2.0),
+    ('up', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 3.0),
+    ('up', map('job', 'database'), toDateTime64('2026-01-01 00:00:00', 9), 4.0);
+-- expected_rows --
+-- sql --

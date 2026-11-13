@@ -1,0 +1,24 @@
+# A label matcher whose regex is a set of literals renders as IN over the
+# set. An empty alternative puts '' in the set, and an absent label reads
+# as '', so `job=~"api|"` selects the series with no job label exactly as
+# Prometheus does, and never the 'web' series.
+
+-- query.promql --
+up{job=~"api|"}
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 2.0),
+    ('up', map('instance', 'i-1'), toDateTime64('2026-01-01 00:00:00', 9), 3.0);
+-- expected_rows --
+-- sql --

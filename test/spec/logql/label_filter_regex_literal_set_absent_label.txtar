@@ -1,0 +1,23 @@
+# A label-filter matcher whose regex is a set of literals renders as IN
+# (NOT IN when negated) over the set, with an absent label reading as '':
+# `region=~"eu|"` selects the line with no region, and `zone!~"a|b"` keeps
+# it. An escaped dot is a literal, and a case-insensitive alternative keeps
+# match().
+
+-- query.logql --
+{job="api"} | region=~"eu|" | zone!~"a|b" | host=~"h\\.1|(?i)H2"
+-- seed --
+CREATE TABLE otel_logs (
+    LogAttributes Map(String, String),
+    Body String,
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+) ENGINE = Memory;
+INSERT INTO otel_logs (LogAttributes, Body) VALUES
+    (map('region', 'eu', 'zone', 'c', 'host', 'h.1'), 'eu-c-h.1'),
+    (map('host', 'h2'), 'none-h2'),
+    (map('region', 'us', 'host', 'h.1'), 'us-h.1'),
+    (map('region', 'eu', 'zone', 'a', 'host', 'h.1'), 'eu-a-h.1'),
+    (map('region', 'eu', 'host', 'hx1'), 'eu-hx1'),
+    (map('host', 'H2'), 'none-H2');
+-- expected_rows --
+-- sql --

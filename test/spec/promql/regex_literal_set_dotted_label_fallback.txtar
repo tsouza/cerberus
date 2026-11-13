@@ -1,0 +1,25 @@
+# An underscored label resolves through the dotted-key fallback chain
+# (k8s_namespace reads k8s.namespace too), and an absent one reads as ''.
+# The literal set {prod, ''} therefore selects the dotted 'prod' row and the
+# row with neither spelling, and not the 'dev' rows of either spelling.
+
+-- query.promql --
+up{k8s_namespace=~"prod|"}
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('up', map('k8s.namespace', 'prod'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('up', map('k8s_namespace', 'dev'), toDateTime64('2026-01-01 00:00:00', 9), 2.0),
+    ('up', map('k8s.namespace', 'dev'), toDateTime64('2026-01-01 00:00:00', 9), 3.0),
+    ('up', map('instance', 'i-1'), toDateTime64('2026-01-01 00:00:00', 9), 4.0);
+-- expected_rows --
+-- sql --

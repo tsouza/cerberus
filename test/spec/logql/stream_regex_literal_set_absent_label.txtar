@@ -1,0 +1,22 @@
+# A stream-selector matcher whose regex is a set of literals renders as IN
+# (NOT IN when negated) over the set. An absent label reads as '': the
+# empty alternative of `app=~"web|"` selects the stream with no app label,
+# and `team!~"core|edge"` keeps it, as Loki does.
+
+-- query.logql --
+{env=~"prod|stg", app=~"web|", team!~"core|edge"}
+-- seed --
+CREATE TABLE otel_logs (
+    Body String,
+    ResourceAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs VALUES
+    ('prod-web', map('env', 'prod', 'app', 'web')),
+    ('stg-noapp', map('env', 'stg')),
+    ('prod-api', map('env', 'prod', 'app', 'api')),
+    ('dev-web', map('env', 'dev', 'app', 'web')),
+    ('production-web', map('env', 'production', 'app', 'web')),
+    ('prod-web-core', map('env', 'prod', 'app', 'web', 'team', 'core')),
+    ('prod-web-data', map('env', 'prod', 'app', 'web', 'team', 'data'));
+-- expected_rows --
+-- sql --
