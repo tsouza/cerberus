@@ -156,12 +156,13 @@
 //     tracking issue as won't-fix with the reasoning recorded there, or
 //     make a deliberate, acknowledged bump. This is expected to
 //     eventually fire on a divergence that is real, correct, and
-//     genuinely expensive to close — see #1768, where closing the
-//     label_replace duplicate-capture-group gap likely means moving
-//     regex expansion from ClickHouse's extractGroups to Go — and that
-//     is the point: the cap does not dispute the divergence, it only
-//     refuses to let it become permanent without someone looking at it
-//     again.
+//     genuinely expensive to close — see #1768, the label_replace
+//     duplicate-capture-group gap, which closes only through a lowering
+//     that makes ClickHouse observe which capture groups took part in a
+//     match (cerberus never evaluates a query in Go) — and
+//     that is the point: the cap does not dispute the divergence, it
+//     only refuses to let it become permanent without someone looking
+//     at it again.
 //
 // # Why `internal` is not an allow-list either: the evidence block
 //

@@ -518,13 +518,11 @@ bound` before ClickHouse runs the merge. The default keeps the merge within 75%
 of the 1 GiB `CERBERUS_CH_QUERY_MAX_MEMORY` default. Scale it with that cap when
 the cap is raised.
 
-**Breaking change:** the ceiling was previously named
-`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` and counted a different
-unit, so its values do not carry over. A deployment that still sets the old name
-starts, ignores its value, and logs one startup warning naming the replacement:
-the ceiling is `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` when set, the
-default otherwise. Remove the old variable and, if the default does not fit, set
-`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to an entry count.
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` is ignored: a deployment
+that sets it starts and logs one startup warning naming
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES`. Remove it, and set
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to an entry count when the
+default does not fit; a value of the ignored variable is not an entry count.
 
 ### Prometheus resource-attribute labels
 

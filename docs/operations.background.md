@@ -299,6 +299,18 @@ by apportioning route A's own base cap by `DataShardCount` ALONE, in
 formula, sharing its divide-and-floor arithmetic with `executor.go` via
 `chclient.ApportionMemoryBytes` so the two sites cannot independently drift.
 
+## Why the classic-histogram bucket-merge ceiling ignores its old name
+
+The classic-histogram bucket-merge ceiling was first named
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` and counted cost units, a
+different unit from the merged bucket entries
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` counts. A value set under the
+old name has no meaning as an entry count, so it is not translated: carrying it
+over would bound the merge at an arbitrary entry count. Refusing to start would
+take down a deployment over a variable that only tuned a ceiling, so cerberus
+starts, applies the new variable or the default, and warns once at startup so
+the stale variable is visible.
+
 ## The Distributed error taxonomy's third named code
 
 **A note on the issue's own third named code.** The issue's Problem
