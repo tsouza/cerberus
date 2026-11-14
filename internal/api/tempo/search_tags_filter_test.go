@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // This file pins the optional `?q=<TraceQL>` narrowing filter on the
@@ -326,4 +327,44 @@ func argsBind(args []any, want ...string) bool {
 		}
 	}
 	return true
+}
+
+// TestSearchTagsQuery_PerTraceCohortReadsWidenedWindow pins the per-trace
+// bound on the `q` filter: a trace-scoped intrinsic compared with a literal
+// lowers to a membership subquery over the spans table, and that subquery
+// reads the request window widened by the maximum trace duration on both
+// sides, so it is bounded and resolves a root span that starts before the
+// window.
+func TestSearchTagsQuery_PerTraceCohortReadsWidenedWindow(t *testing.T) {
+	t.Parallel()
+
+	lookback := schema.DefaultOTelTraces().MaxTraceDuration
+	if lookback <= 0 {
+		t.Fatalf("default maximum trace duration %s: the two windows cannot be told apart", lookback)
+	}
+	status, body, gotSQL, gotArgs := tagsLookup(t, `{ rootName = "checkout" }`, true, tagsRouteV2Path, nil)
+	if status != http.StatusOK {
+		t.Fatalf("filtered lookup: status=%d body=%s", status, body)
+	}
+	if !strings.Contains(gotSQL, "`ParentSpanId`") {
+		t.Fatalf("q filter carries no membership subquery over the root span: %s", gotSQL)
+	}
+	for _, want := range []int64{
+		tagsFilterStart.Add(-lookback).UnixNano(),
+		tagsFilterEnd.Add(lookback).UnixNano(),
+	} {
+		if !argsBindInt(gotArgs, want) {
+			t.Errorf("args do not bind the widened window instant %d: %v\n--- sql ---\n%s", want, gotArgs, gotSQL)
+		}
+	}
+}
+
+// argsBindInt reports whether args binds want as an int64 parameter.
+func argsBindInt(args []any, want int64) bool {
+	for _, a := range args {
+		if v, ok := a.(int64); ok && v == want {
+			return true
+		}
+	}
+	return false
 }

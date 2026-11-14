@@ -1,5 +1,7 @@
 package chplan
 
+import "time"
+
 // MetricsHistogramOverTime is the lowered form of TraceQL's
 // `| histogram_over_time(<attr>)` metrics aggregator.
 //
@@ -67,6 +69,12 @@ type MetricsHistogramOverTime struct {
 	BucketAlias         string
 	ValueAlias          string
 	Inner               Node
+	// PerTraceLookback is how far beyond the wrapping RangeWindow's input
+	// span, on each side, a per-trace subquery under this node reads the
+	// spans of its traces: the configured maximum trace duration
+	// (schema.Traces.MaxTraceDuration), stamped by the lowering. Zero reads
+	// the input span alone. See PerTraceWindowBound.
+	PerTraceLookback time.Duration
 }
 
 func (*MetricsHistogramOverTime) planNode() {}
@@ -80,7 +88,8 @@ func (m *MetricsHistogramOverTime) Equal(other Node) bool {
 	}
 	if m.IsDuration != o.IsDuration ||
 		m.BucketAlias != o.BucketAlias ||
-		m.ValueAlias != o.ValueAlias {
+		m.ValueAlias != o.ValueAlias ||
+		m.PerTraceLookback != o.PerTraceLookback {
 		return false
 	}
 	if (m.Attr == nil) != (o.Attr == nil) {

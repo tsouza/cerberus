@@ -1,23 +1,25 @@
 # A metrics pipeline over a trace-scoped intrinsic reads each trace's value
-# from the spans inside the window the metric reads: the RangeWindow input
-# span (start - step, end], here (00:00:00, 00:02:00]. The per-trace lookup
-# and the span rows it is joined onto both carry that bound, so a trace that
-# straddles either edge is measured from its in-window spans alone, as
-# /api/search measures it inside its request window.
+# from its spans inside the window the metric reads widened by the maximum
+# trace duration (1h) on both sides: the per-trace lookup reads the
+# RangeWindow input span (start - step, end], here (00:00:00, 00:02:00],
+# widened to (23:00:00, 01:02:00], while the span rows it is joined onto stay
+# inside (00:00:00, 00:02:00]. A trace that straddles either edge is measured
+# whole, as /api/search measures every trace that overlaps its request window.
 #
 #   trace ...01  inside the window, traceDuration 2s
 #     0001 root  00:00:30 +2s
 #     0002       00:00:31 +0.5s   matches (0.5s < 2s)
-#   trace ...02  straddles the lower edge; in-window traceDuration 1s
-#     0010       23:59:50 +1s     outside the window
-#     0011       00:00:40 +1s     no match (1s = 1s)
-#   trace ...03  straddles the upper edge; in-window traceDuration 1s
-#     0020       00:01:50 +1s     no match (1s = 1s)
-#     0021       00:02:30 +1s     outside the window
+#   trace ...02  straddles the lower edge, traceDuration 51s
+#     0010       23:59:50 +1s     outside the window: not counted
+#     0011       00:00:40 +1s     matches (1s < 51s)
+#   trace ...03  straddles the upper edge, traceDuration 41s
+#     0020       00:01:50 +1s     matches (1s < 41s)
+#     0021       00:02:30 +1s     outside the window: not counted
 #
-# One match, in the (00:00:00, 00:01:00] bucket. Read across full retention,
-# traces ...02 and ...03 would last 51s and 41s, and 0011 and 0020 would match
-# too.
+# Two matches in the (00:00:00, 00:01:00] bucket and one in the
+# (00:01:00, 00:02:00] bucket. Measured inside the metric's own window alone,
+# traces ...02 and ...03 would last 1s each and neither 0011 nor 0020 would
+# match.
 -- query.traceql --
 { traceDuration > duration } | count_over_time()
 -- metrics_window --
@@ -48,8 +50,8 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, Spa
     ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:02:30', 9), 1000000000, 'c');
 -- expected_rows --
 [
-  ["2024-01-01T00:01:00Z", 1],
-  ["2024-01-01T00:02:00Z", 0]
+  ["2024-01-01T00:01:00Z", 2],
+  ["2024-01-01T00:02:00Z", 1]
 ]
 -- parity_exempt --
 reason: no-comparable-oracle
@@ -57,16 +59,16 @@ detail: `{ traceDuration > duration } | count_over_time()` answers with a time s
 -- args --
 [0] int64 = 1704067200000000000
 [1] int64 = 1704067320000000000
-[2] int64 = 1704067200000000000
-[3] int64 = 1704067320000000000
+[2] int64 = 1704063600000000000
+[3] int64 = 1704070920000000000
 -- args_optimized --
 [0] int64 = 1704067200000000000
 [1] int64 = 1704067320000000000
-[2] int64 = 1704067200000000000
-[3] int64 = 1704067320000000000
+[2] int64 = 1704063600000000000
+[3] int64 = 1704070920000000000
 -- chplan --
 RangeWindow func= range=1m0s step=1m0s ts=Timestamp start=2024-01-01T00:01:00Z end=2024-01-01T00:02:00Z
-  MetricsAggregate op=count_over_time valueAlias=Value
+  MetricsAggregate op=count_over_time valueAlias=Value perTraceLookback=1h0m0s
     TraceLookupFilter lookups=1 predicate=(_cerb_trace_duration > Duration)
       Scan(otel_traces)
       Project [_cerb_lookup_trace_id AS _cerb_lookup_trace_id, (_cerb_trace_end_ns - _cerb_trace_start_ns) AS _cerb_trace_duration]
