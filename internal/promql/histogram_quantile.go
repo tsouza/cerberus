@@ -1312,13 +1312,16 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	if pred != nil {
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
+	// The stage below reads the scan through its own memory bound, checked
+	// before it collects a sample — see classic_bucket_window_bound.go.
+	input = classicBucketWindowInputGuard(input, s, ctx.resourceBounds.ClassicBucketWindowMaxCostUnits)
 	input = classicBucketLeRestriction(input, leMatchers, s)
 
 	// Stage 1: reduce each SERIES' in-window samples to one row, applying
 	// the range-vector function's own reduction and its per-series sample
 	// floor. Without it the stage below would fold across time and series
 	// at once — see histogram_quantile_window.go.
-	perSeries := classicBucketWindowStage(input, shape, rangeStart, rangeEnd, s)
+	perSeries := classicBucketWindowStage(input, shape, rangeStart, rangeEnd, s, ctx.resourceBounds.ClassicBucketWindowSeriesMaxEntries)
 
 	// Stage 2: the user's aggregation across those per-series rows.
 	// GroupBy comes from the surrounding `sum` clause (dropping `le` from
