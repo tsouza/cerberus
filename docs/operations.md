@@ -435,9 +435,13 @@ that cluster. Any one of them on an affected build keeps the override on for
 all queries; it is lifted only once every one of them answers from a fixed
 build. The optimization set is resolved against the same nodes, using the
 lowest build among them, so a feature the oldest node lacks stays off. A
-replica hidden behind a load balancer that neither setting names is seen only
-when a probe lands on it, so list every address or set the cluster when builds
-can differ across nodes.
+replica hidden behind a load balancer that neither setting names is read only
+when a probe lands on it; cerberus remembers each server a probe read and
+decides across all of them
+([Replicas behind a load balancer](clickhouse-optimizations.md#replicas-behind-a-load-balancer)).
+List every address, or set the cluster, when builds can differ across nodes:
+the whole fleet is then read on every probe, including the first one after
+cerberus starts.
 
 A server reporting a non-upstream version string (a vendor suffix such as
 `.altinitystable`, or an extra version field) is judged by its `major.minor`

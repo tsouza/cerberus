@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -32,6 +31,10 @@ import (
 // two.
 type chOptLive struct {
 	res atomic.Pointer[chOptResolution]
+	// probeFleet is the fleet prober boot resolved over, set once before
+	// the re-probe loop starts. The loop probes with it, so the servers boot
+	// reached stay in its fleet memory.
+	probeFleet fleetProber
 }
 
 // newCHOptLive seeds the holder with the boot resolution.
@@ -183,14 +186,23 @@ const chOptReprobeInterval = 5 * time.Minute
 // version and the defect gates hold the posture a missed node may need
 // (fleetResolutionVersion, gatesInForce) until a pass reaches every node, so
 // the loop runs at this cadence until one does.
+//
+// So is a fleet holding a build no server the pass reached runs (FleetHeld):
+// a replica behind a load balancer that a pass reached earlier and the fleet
+// memory still holds, whose build may be holding the version down or a defect
+// gate on. Each pass that lands on it refreshes its entry and is the pass that
+// sees it roll forward, and the memory forgets a server after a count of
+// passes that miss it (chclient.FleetMemory), so this cadence keeps both the
+// roll-forward and the forgetting of a replica that left within the time the
+// memory's retention is priced at.
 const chOptFloorRetryInterval = 10 * time.Second
 
 // nextReprobeDelay is how long to wait before the next resolution attempt,
 // given the one currently in force: chOptFloorRetryInterval while it is a
-// floor fallback or came from a pass that could not reach every node, the
-// steady cadence otherwise.
+// floor fallback, came from a pass that could not reach every node, or rests on
+// a build no server the pass reached runs; the steady cadence otherwise.
 func nextReprobeDelay(res chOptResolution, steady time.Duration) time.Duration {
-	if res.VersionFallback || res.FleetIncomplete {
+	if res.VersionFallback || res.FleetIncomplete || res.FleetHeld {
 		floor := chOptFloorRetryInterval
 		// Never wait LONGER than the steady cadence just because a caller
 		// configured an interval shorter than the fast-retry constant.
@@ -275,10 +287,10 @@ func (t reprobeTrigger) request(rej chclient.UnknownNameRejection) {
 // next pass at chOptFloorRetryInterval.
 //
 // Only a GENUINE transition is logged and swapped. The steady state — the
-// overwhelming majority of ticks — compares equal and does nothing, so the log
-// carries one line per real capability change and an operator watching an
-// upgrade sees the transition rather than having to find it in a stream of
-// repetitions.
+// overwhelming majority of ticks — compares equal and only records the pass's
+// fleet flags on the resolution in force, so the log carries one line per real
+// capability change and an operator watching an upgrade sees the transition
+// rather than having to find it in a stream of repetitions.
 //
 // A request on early moves the next probe forward to earlySpacing after the
 // previous one (or to now, if that has passed), unless the timer is due
@@ -366,21 +378,24 @@ func reprobeCHOptimizations(
 		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload, fleet, &inForce)
 		if !ok {
 			// The resolution failed, so the resolution in force stays,
-			// marked with this pass's completeness: a pass still short of a
-			// node, like one still on the floor, keeps retrying fast.
+			// marked with this pass's fleet: a pass still short of a node,
+			// or resting on a build it did not reach, keeps retrying fast
+			// like one still on the floor. The analyzer and shape-defect
+			// decisions below still follow the fleet.
 			next = inForce
 			next.FleetIncomplete = !fleet.Complete
-			if analyzerMandatory == inForce.Set.AnalyzerMandatory() && slices.Equal(shapeDefects, inForce.Set.ShapeDefectIDs()) {
-				schedule(next)
-				continue
-			}
-			// The fleet moved the analyzer or shape-defect decision:
-			// install it on the resolution in force.
+			next.FleetHeld = fleet.Held
 		}
 		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory).WithShapeDefects(shapeDefects)
 		prev := live.get()
 		schedule(next)
 		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion && next.QueryWorkload == prev.QueryWorkload {
+			// No capability moved, so no consumer is swapped and nothing is
+			// logged. The pass's own flags still replace the ones in force —
+			// whether it fell back to the floor, reached every node, or rests
+			// on a build it did not reach — because /readyz,
+			// /info and the next pass read them from the live resolution.
+			live.store(next)
 			continue
 		}
 		// Publish BEFORE swapping the consumers: /info then never reports a
@@ -473,6 +488,7 @@ func resolveCHOptimizationsOnce(
 		ResolvedVersion: resolvedVersion,
 		VersionFallback: versionFallback,
 		FleetIncomplete: !fleet.Complete,
+		FleetHeld:       fleet.Held,
 		QueryWorkload:   queryWorkload,
 	}, true
 }

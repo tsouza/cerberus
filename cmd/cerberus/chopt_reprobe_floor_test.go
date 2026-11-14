@@ -78,3 +78,15 @@ func TestNextReprobeDelay_IncompleteFleetRetriesFast(t *testing.T) {
 		t.Errorf("incomplete pass: next re-probe in %v; want %v", got, chOptFloorRetryInterval)
 	}
 }
+
+// TestNextReprobeDelay_HeldFleetRetriesFast: a resolution resting on a build
+// no server the pass reached runs — a replica behind a load balancer the
+// fleet memory still holds — runs the next pass at the fast cadence, so the
+// memory sees that replica roll forward, or forgets one that left, within the
+// time its retention is priced at.
+func TestNextReprobeDelay_HeldFleetRetriesFast(t *testing.T) {
+	t.Parallel()
+	if got := nextReprobeDelay(chOptResolution{FleetHeld: true}, chOptReprobeInterval); got != chOptFloorRetryInterval {
+		t.Errorf("held fleet: next re-probe in %v; want %v", got, chOptFloorRetryInterval)
+	}
+}
