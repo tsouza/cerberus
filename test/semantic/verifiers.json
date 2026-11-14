@@ -194,15 +194,16 @@
     {
       "id": "VERIFIER-ADMISSION-WIRING-TEST",
       "name": "Admission wiring test",
-      "description": "A Go test that mounts a head's real HTTP handler (Mount) — or, for the /tail route, drives an actual WebSocket upgrade and frame exchange — onto a live httptest.Server with a real *admit.Limiter, and observes end-to-end admission behavior (the HTTP status/header or close frame a genuine client receives) rather than testing the Limiter type in isolation.",
+      "description": "A Go test that mounts a head's real HTTP handler (Mount) onto a live httptest.Server, drives an actual WebSocket upgrade and frame exchange for the /tail route, or serves a head's real *grpc.Server (NewServer) over an in-memory bufconn listener to a dialed gRPC client, always with a real *admit.Limiter, and observes end-to-end admission behavior (the HTTP status/header, close frame or gRPC status a genuine client receives) rather than testing the Limiter type in isolation.",
       "detects": [
         "a head's own mux wiring failing to invoke the limiter it was constructed with",
         "a route mounted on the wrong budget (e.g. /tail drawing on the request budget instead of its own tail budget)",
-        "the wrong HTTP status, header, or WebSocket close code reaching a real client on rejection"
+        "the wrong HTTP status, header, WebSocket close code, or gRPC status code reaching a real client on rejection",
+        "a head's *grpc.Server built without the limiter's stream interceptor in its chain"
       ],
       "cannot_detect": [
         "a defect in the underlying semaphore's own concurrency guarantees — that is VERIFIER-GO-UNIT-TEST's job against the admit package directly",
-        "gRPC transport wiring: this verifier only ever exercises a head's HTTP mux, never a real *grpc.Server"
+        "behaviour of a real network transport (TCP, TLS, HTTP/2 flow control): the gRPC form dials an in-memory bufconn listener"
       ],
       "complemented_by": ["VERIFIER-GO-UNIT-TEST"],
       "substrate": "runner",
@@ -214,10 +215,11 @@
     {
       "id": "VERIFIER-REAL-CLICKHOUSE-INTEGRATION",
       "name": "Real ClickHouse integration test",
-      "description": "An integration-tagged (`//go:build integration`) Go test that dials a real ClickHouse server via testcontainers-go and observes server-side state — connection pool statistics and the server's own native-protocol session census — that no fake, chDB, or mocked substrate can produce, because the behavior under test depends on a live TCP session and clickhouse-go's real driver internals.",
+      "description": "An integration-tagged (`//go:build integration`) Go test that dials a real ClickHouse server via testcontainers-go and observes server-side state — connection pool statistics, the server's own native-protocol session census, and the server's own system.processes — that no fake, chDB, or mocked substrate can produce, because the behavior under test depends on a live TCP session and clickhouse-go's real driver internals.",
       "detects": [
         "whether a pooled ClickHouse connection survives or is destroyed by a given teardown ordering",
-        "a real driver/pool regression invisible to chDB (which has no connection pool) or to a fake cursor"
+        "a real driver/pool regression invisible to chDB (which has no connection pool) or to a fake cursor",
+        "a KILL QUERY the server does not honor, leaving the query listed in system.processes"
       ],
       "cannot_detect": [
         "anything about cerberus's own in-process admission semaphore — this verifier never constructs an *admit.Limiter, so it proves nothing about admission-slot recovery, only about the separate ClickHouse connection a request's handler may have held"
