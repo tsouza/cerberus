@@ -45,7 +45,8 @@ const mixedFleetAffectedImage = "clickhouse/clickhouse-server:26.3.17.56-alpine"
 // native protocol. A build below a floor does not ignore the setting: it
 // rejects the whole query with UNKNOWN_SETTING, which chclient reports as a
 // *GateSettingUnsupportedError for that setting. A build at or above the floor
-// accepts it.
+// accepts it. On each build it also checks the engine's stamped-setting
+// classes against system.settings (assertStampSettingClasses).
 func TestShapeDefectGates_SettingFloors(t *testing.T) {
 	for _, image := range settingFloorBuilds {
 		t.Run(image, func(t *testing.T) {
@@ -53,6 +54,7 @@ func TestShapeDefectGates_SettingFloors(t *testing.T) {
 			defer cancel()
 			s := startServer(ctx, t, image)
 			c := s.client(t, adminUser, adminPassword, chclient.Config{})
+			assertStampSettingClasses(ctx, t, s)
 			for _, g := range chopt.GateSettings() {
 				_, err := c.QueryStrings(chclient.WithQuerySetting(ctx, g.Name, 0), "SELECT toString(1)")
 				if !s.version.Less(g.Since) {
@@ -70,6 +72,40 @@ func TestShapeDefectGates_SettingFloors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// assertStampSettingClasses checks the classes of the settings the engine
+// stamps against s's system.settings: every engine.FloorKnownStampSettings
+// entry is known, s being at or above the supported floor, and each
+// chopt.DroppableSettings and chopt.GateSettings entry is known exactly when
+// s is at or above its Since.
+func assertStampSettingClasses(ctx context.Context, t *testing.T, s *server) {
+	t.Helper()
+	names, err := s.admin.QueryStrings(ctx, "SELECT name FROM system.settings")
+	if err != nil {
+		t.Fatalf("%s: read system.settings: %v", s.version, err)
+	}
+	known := map[string]bool{}
+	for _, n := range names {
+		known[n] = true
+	}
+	for _, name := range engine.FloorKnownStampSettings() {
+		if !known[name] {
+			t.Errorf("%s: floor-known stamped setting %s is not in system.settings", s.version, name)
+		}
+	}
+	since := map[string]chopt.Version{}
+	for _, d := range chopt.DroppableSettings() {
+		since[d.Name] = d.Since
+	}
+	for _, g := range chopt.GateSettings() {
+		since[g.Name] = g.Since
+	}
+	for name, v := range since {
+		if want := !s.version.Less(v); known[name] != want {
+			t.Errorf("%s: %s in system.settings = %v; want %v (first known in %s)", s.version, name, known[name], want, v)
+		}
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chclient"
-	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -996,32 +995,5 @@ func TestApplyHistogramAdaptiveAggregatorOff_DisabledStampsNothing(t *testing.T)
 
 	if got := settingValue(ctx, settingEnableAdaptiveAggregator); got != nil {
 		t.Errorf("feature disabled: enable_adaptive_aggregator = %v; want absent", got)
-	}
-}
-
-// TestDroppableSettings_AreTheEngineVersionGatedStamps ties chopt's
-// droppable-setting table to what the engine stamps: the table lists exactly
-// the result-equivalent settings a version-gated feature makes the engine
-// stamp that a server older than the feature's floor does not know — no
-// stamp missing, no setting the engine never sends.
-func TestDroppableSettings_AreTheEngineVersionGatedStamps(t *testing.T) {
-	t.Parallel()
-	stamped := []string{
-		settingEnableAdaptiveAggregator,
-		settingMaxBytesBeforeExternalJoin,
-		settingMaxBytesBeforeExternalDistinct,
-		settingMinTableRowsToUseProjectionIndex,
-		settingQueryPlanOptimizeLazyMaterialization,
-		settingQueryPlanMaxLimitForLazyMaterialization,
-		settingUseQueryConditionCache,
-	}
-	var table []string
-	for _, s := range chopt.DroppableSettings() {
-		table = append(table, s.Name)
-	}
-	slices.Sort(stamped)
-	slices.Sort(table)
-	if !slices.Equal(stamped, table) {
-		t.Errorf("chopt.DroppableSettings() = %v; want the engine's version-gated stamps %v", table, stamped)
 	}
 }
