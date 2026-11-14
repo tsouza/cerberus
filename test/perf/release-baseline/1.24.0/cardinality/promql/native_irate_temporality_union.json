@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/native_irate_temporality_union",
+  "fan_factor": 4.0625,
+  "scan_rows": 16,
+  "peak_intermediate": 65,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
