@@ -18,31 +18,64 @@ import (
 // chplan.BoundMetricsPerTraceSubqueries each of those GROUP BY TraceId
 // subqueries reads the spans table across full retention. Every statement a
 // metrics request sends — the matrix statement, the exemplar statement and the
-// compare root leg — must carry the RangeWindow input bound
-// (Start - Range, End] on each one.
+// compare root leg — must carry, on each per-trace subquery, the RangeWindow
+// input span (Start - Range, End] widened by the maximum trace duration on
+// both sides, and on the plain span rows each one filters, the input span
+// itself.
 
 // perTraceWindowStep is the step of the matrix RangeWindow these tests wrap.
 const perTraceWindowStep = time.Minute
 
-// Bounded-site counts of one render of a per-trace shape: a lookup or a
-// membership subquery, plus the plain span rows it filters.
+// boundSites counts the renders of a per-trace shape's bounds in one
+// statement: perTrace counts the per-trace subqueries (a lookup or a
+// membership subquery), each bound by the widened input span; rows counts the
+// plain span rows they filter, each bound by the input span itself.
+type boundSites struct {
+	perTrace, rows int
+}
+
+// plus returns the site counts of rendering both a and b.
+func (a boundSites) plus(b boundSites) boundSites {
+	return boundSites{perTrace: a.perTrace + b.perTrace, rows: a.rows + b.rows}
+}
+
+// times returns the site counts of rendering a n times.
+func (a boundSites) times(n int) boundSites {
+	return boundSites{perTrace: a.perTrace * n, rows: a.rows * n}
+}
+
+// Bounded sites of one render of a per-trace shape, and the renders of the
+// metrics input each statement makes.
+var (
+	lookupSites     = boundSites{perTrace: 1, rows: 1} // the lookup and the span rows joined onto it
+	membershipSites = boundSites{perTrace: 1, rows: 1} // the membership subquery and the span rows it filters
+	selectionSites  = boundSites{perTrace: 1}          // a compare() selection's membership subquery
+	noSites         = boundSites{}
+)
+
 const (
-	lookupSites           = 2 // the lookup and the span rows joined onto it
-	membershipSites       = 2 // the membership subquery and the span rows it filters
-	selectionSites        = 1 // a compare() selection's membership subquery
-	noOwnBinds            = 0
 	inputRendersHistogram = 2 // the sample arm and the zero-fill bucket discovery arm
 	inputRendersGrouped   = 2 // the sample arm and the zero-fill group discovery arm
 	inputRendersCompare   = 2 // the span leg and the root lookup's trace-id seed
-	// compareRootSeedBinds counts the binds of the RangeWindow input bound's
-	// instants the compare emitter makes for the root lookup's own seed
-	// window.
-	compareRootSeedBinds = 1
 )
 
-// windowedBoundPair is the SQL of chplan.RangeWindowInputBound: an exclusive
-// lower and an inclusive upper conjunct, as the emitter's own
-// `(anchor - range, anchor]` window is.
+// ownBinds counts the binds of the bound instants an emitter makes for a
+// bound of its own, outside the per-trace subqueries and their span rows.
+type ownBinds struct {
+	perTrace, rows int
+}
+
+// noOwnBinds is a statement whose emitter binds neither bound for itself.
+var noOwnBinds = ownBinds{}
+
+// compareRootBinds counts the compare emitter's own binds for the root lookup:
+// the trace-id seed reads the input span itself, and the root scan its
+// widened form, since a non-root selection's root may precede the window.
+var compareRootBinds = ownBinds{perTrace: 1, rows: 1}
+
+// windowedBoundPair is the SQL both bounds render as: an exclusive lower and
+// an inclusive upper conjunct, as the emitter's own `(anchor - range, anchor]`
+// window is.
 const windowedBoundPair = "(`Timestamp` > fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))"
 
 // perTraceWindowStart / perTraceWindowEnd are the request window the cases
@@ -52,26 +85,28 @@ var (
 	perTraceWindowEnd   = perTraceWindowStart.Add(time.Hour)
 )
 
-// perTraceWindowLowerNanos / perTraceWindowUpperNanos are the bound arguments
-// every bounded per-trace subquery binds.
-func perTraceWindowLowerNanos() int64 {
-	return perTraceWindowStart.Add(-perTraceWindowStep).UnixNano()
+// perTraceLookback is the maximum trace duration the lowered plans carry.
+func perTraceLookback() time.Duration { return tracesSchema().MaxTraceDuration }
+
+// inputSpanNanos returns the bound instants of the RangeWindow input span
+// widened by lookback on both sides.
+func inputSpanNanos(lookback time.Duration) (lower, upper int64) {
+	return perTraceWindowStart.Add(-perTraceWindowStep - lookback).UnixNano(), perTraceWindowEnd.Add(lookback).UnixNano()
 }
 
-func perTraceWindowUpperNanos() int64 { return perTraceWindowEnd.UnixNano() }
-
-// countBoundArgs returns how many times the lower and the upper RangeWindow
-// input bound nanos are bound in args.
-func countBoundArgs(args []any) (lower, upper int) {
+// countBoundArgs returns how many times the lower and the upper instant of the
+// input span widened by lookback are bound in args.
+func countBoundArgs(args []any, lookback time.Duration) (lower, upper int) {
+	lo, hi := inputSpanNanos(lookback)
 	for _, a := range args {
 		v, ok := a.(int64)
 		if !ok {
 			continue
 		}
 		switch v {
-		case perTraceWindowLowerNanos():
+		case lo:
 			lower++
-		case perTraceWindowUpperNanos():
+		case hi:
 			upper++
 		}
 	}
@@ -103,19 +138,33 @@ func emitSpans(t *testing.T, plan chplan.Node) (string, []any) {
 	return sql, args
 }
 
-// assertWindowedSites fails unless the statement renders the RangeWindow input
-// bound exactly sites times — once per per-trace subquery and per plain row
-// source it filters, each time the statement renders them — and binds the
-// bound's instants sites + ownBinds times, ownBinds counting the binds of the
-// same instants an emitter makes for a bound of its own.
-func assertWindowedSites(t *testing.T, sql string, args []any, sites, ownBinds int) {
+// assertWindowedSites fails unless the statement renders a bound once per
+// per-trace subquery and per plain row source it filters, each time the
+// statement renders them; binds the widened input span's instants once per
+// per-trace subquery plus own.perTrace; and binds the input span's own
+// instants once per plain row source plus own.rows — so each per-trace
+// subquery carries the widened bound and each row source the unwidened one.
+func assertWindowedSites(t *testing.T, sql string, args []any, sites boundSites, own ownBinds) {
 	t.Helper()
-	if got := strings.Count(sql, windowedBoundPair); got != sites {
-		t.Fatalf("RangeWindow input bound %q rendered %d times, want %d\n--- sql ---\n%s", windowedBoundPair, got, sites, sql)
+	if lookback := perTraceLookback(); lookback <= 0 {
+		t.Fatalf("maximum trace duration %s: the widened and the unwidened bound cannot be told apart", lookback)
 	}
-	lower, upper := countBoundArgs(args)
-	if want := sites + ownBinds; lower != want || upper != want {
-		t.Fatalf("RangeWindow input bound instants bound %d (lower) / %d (upper) times, want %d each\n--- sql ---\n%s", lower, upper, want, sql)
+	if got, want := strings.Count(sql, windowedBoundPair), sites.perTrace+sites.rows; got != want {
+		t.Fatalf("bound %q rendered %d times, want %d\n--- sql ---\n%s", windowedBoundPair, got, want, sql)
+	}
+	for _, tc := range []struct {
+		name     string
+		lookback time.Duration
+		want     int
+	}{
+		{"per-trace (widened)", perTraceLookback(), sites.perTrace + own.perTrace},
+		{"row source (input span)", 0, sites.rows + own.rows},
+	} {
+		lower, upper := countBoundArgs(args, tc.lookback)
+		if lower != tc.want || upper != tc.want {
+			t.Fatalf("%s bound instants bound %d (lower) / %d (upper) times, want %d each\n--- sql ---\n%s",
+				tc.name, lower, upper, tc.want, sql)
+		}
 	}
 }
 
@@ -126,9 +175,9 @@ func TestMetricsPerTraceSubqueriesWindowed(t *testing.T) {
 	cases := []struct {
 		name  string
 		query string
-		// sites counts the bounded per-trace subqueries plus the plain row
+		// sites counts the bounded per-trace subqueries and the plain row
 		// sources they filter, times the renders of the metrics input.
-		sites int
+		sites boundSites
 	}{
 		// The lookup and the span rows it is joined onto.
 		{"root_name_span_operand", `{ rootName = name } | rate()`, lookupSites},
@@ -139,9 +188,9 @@ func TestMetricsPerTraceSubqueriesWindowed(t *testing.T) {
 		{"root_name_literal_negated", `{ rootName != "x" } | count_over_time()`, membershipSites},
 		// The lookup, the membership subquery in the conjunct below the join,
 		// and the span rows both of them filter.
-		{"lookup_and_membership", `{ rootName = name && traceDuration > 1s } | rate()`, lookupSites + membershipSites - 1},
+		{"lookup_and_membership", `{ rootName = name && traceDuration > 1s } | rate()`, boundSites{perTrace: 2, rows: 1}},
 		{"quantile", `{ rootName = name } | quantile_over_time(duration, .9)`, lookupSites},
-		{"grouped", `{ rootName = name } | rate() by (resource.service.name)`, inputRendersGrouped * lookupSites},
+		{"grouped", `{ rootName = name } | rate() by (resource.service.name)`, lookupSites.times(inputRendersGrouped)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -163,7 +212,7 @@ func TestMetricsPerTraceSubqueriesWindowedHistogram(t *testing.T) {
 		t.Fatalf("plan is not a histogram: %T", plan)
 	}
 	sql, args := emitSpans(t, wrapHistogramForSample(perTraceRangeWindow(plan), hist))
-	assertWindowedSites(t, sql, args, inputRendersHistogram*lookupSites, noOwnBinds)
+	assertWindowedSites(t, sql, args, lookupSites.times(inputRendersHistogram), noOwnBinds)
 }
 
 // TestMetricsPerTraceSubqueriesWindowedCompare pins the bound on the compare()
@@ -178,7 +227,7 @@ func TestMetricsPerTraceSubqueriesWindowedCompare(t *testing.T) {
 	}
 	rw := perTraceRangeWindow(plan)
 	sql, args := emitSpans(t, wrapCompareForSample(rw, cmp))
-	assertWindowedSites(t, sql, args, selectionSites+inputRendersCompare*lookupSites, compareRootSeedBinds)
+	assertWindowedSites(t, sql, args, selectionSites.plus(lookupSites.times(inputRendersCompare)), compareRootBinds)
 
 	ctx := chsql.WithSpansTable(context.Background(), tracesSchema().SpansTable)
 	legSQL, legArgs, _, err := chsql.EmitCompareRootLeg(ctx, rw)
@@ -186,7 +235,7 @@ func TestMetricsPerTraceSubqueriesWindowedCompare(t *testing.T) {
 		t.Fatalf("EmitCompareRootLeg: %v", err)
 	}
 	// The root leg seeds itself from Inner: the lookup and the span rows.
-	assertWindowedSites(t, legSQL, legArgs, lookupSites, compareRootSeedBinds)
+	assertWindowedSites(t, legSQL, legArgs, lookupSites, compareRootBinds)
 }
 
 // TestMetricsPerTraceSubqueriesWindowedExemplars pins the bound on the
@@ -219,6 +268,5 @@ func TestMetricsPerTraceWindowLeavesPlainMetricsUnchanged(t *testing.T) {
 		t.Fatalf("BoundMetricsPerTraceSubqueries rewrote a plan with no per-trace subquery: %T", got)
 	}
 	sql, args := emitSpans(t, wrapMetricsMatrix(t, plan, perTraceWindowStart, perTraceWindowEnd))
-	const noSites = 0
 	assertWindowedSites(t, sql, args, noSites, noOwnBinds)
 }

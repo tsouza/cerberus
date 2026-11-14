@@ -74,6 +74,11 @@ func compareNode() *chplan.MetricsCompare {
 	}
 }
 
+// compareTestLookback is the maximum trace duration compareNodeWithRoot's
+// node carries: a non-root-scoped root lookup reads its roots within the
+// input span widened by it on both sides.
+const compareTestLookback = time.Hour
+
 // compareNodeWithRoot extends compareNode with the per-trace root
 // lookup leg (the LEFT JOIN shape that the production traceql
 // drilldown compare emits). It mirrors internal/traceql's
@@ -85,6 +90,7 @@ func compareNode() *chplan.MetricsCompare {
 func compareNodeWithRoot() *chplan.MetricsCompare {
 	m := compareNode()
 	m.TraceIDColumn = "TraceId"
+	m.PerTraceLookback = compareTestLookback
 	m.RootLookup = &chplan.Aggregate{
 		Input: &chplan.Filter{
 			Input: &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{
@@ -205,8 +211,9 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 	// `TraceId IN (<bounded cohort>)` conjunct, seeding the scan directly
 	// — BELOW the GROUP BY that follows it — so the predicate scopes the
 	// aggregate's inputs rather than filtering its output. This non-root shape
-	// has no direct Timestamp bound, so the scan itself is NOT pruned (that is
-	// #1214's lossless tradeoff; only the root-scoped arm prunes).
+	// also carries the input span widened by the maximum trace duration, the
+	// direct Timestamp bound that prunes the scan while keeping every root of
+	// a trace no longer than that setting.
 	// PREWHERE promotion in the chsql emitter
 	// splits the two conjuncts of the Filter across PREWHERE/WHERE rather
 	// than AND-ing them into one clause; either placement still lands the
@@ -214,7 +221,8 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 	// (tsBoundExprs) renders as fromUnixTimestamp64Nano(?) — the same
 	// parameterized shape the search lowering's tsBound uses — not the
 	// inlined parseDateTime64BestEffort(...) literal the 's' leg's lo/hi above use.
-	rSeededScan := "PREWHERE (`ParentSpanId` = ?) WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` " +
+	rSeededScan := "PREWHERE (`ParentSpanId` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND " +
+		"`TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` " +
 		"WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)))))"
 	if !strings.Contains(sql, rSeededScan) {
 		t.Errorf("matrix join SQL must seed the 'r' root leg's own scan by bounded trace-ids (want %q):\n%s", rSeededScan, sql)
@@ -244,6 +252,13 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 	}
 	if containsInt64Arg(args, rw.Start.UnixNano()) {
 		t.Errorf("seed lower bound must be Start-range, not raw Start (found raw Start.UnixNano()=%d in args %v)", rw.Start.UnixNano(), args)
+	}
+	// The root scan's own bound is that window widened by the lookback.
+	if lo := wantSeedLoNano - compareTestLookback.Nanoseconds(); !containsInt64Arg(args, lo) {
+		t.Errorf("root scan lower bound arg %d (Start - range - lookback) not found in emitted args %v", lo, args)
+	}
+	if hi := wantSeedHiNano + compareTestLookback.Nanoseconds(); !containsInt64Arg(args, hi) {
+		t.Errorf("root scan upper bound arg %d (End + lookback) not found in emitted args %v", hi, args)
 	}
 
 	// Regression guard: once the scan-level seed lands, boundedRootLeg's
@@ -383,16 +398,24 @@ func TestEmitRangeWindowCompare_RootScopedEnrichmentTimestampBound(t *testing.T)
 		t.Errorf("root-scoped: upper bound arg = %v, want %d (End-Offset)", rootBoundArgs[1], wantRootHiNano)
 	}
 
-	// Negative arm (regression discriminator): a non-root selection must NOT gain
-	// the direct bound — the prefix before the seed is only the ParentSpanId
-	// filter. This is what makes the test fail if the emitter half is reverted.
+	// Non-root arm (regression discriminator): a non-root selection's root may
+	// precede the window, so its bound is the same window widened by the
+	// maximum trace duration on both sides, never the window itself.
 	// compareNodeWithRoot leaves the trace_id_ts lookup fields empty, so the
 	// envelope of TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound is
-	// off too: asserting on the Timestamp column rather than on one bound's
-	// rendering pins that NEITHER bound shape reaches this scan.
-	nonRootPrefix, _ := prefixBeforeSeed(t, false)
-	if strings.Contains(nonRootPrefix, "`Timestamp`") {
-		t.Errorf("non-root: root scan must stay unbounded (no Timestamp bound before the seed), got prefix:\n%s", nonRootPrefix)
+	// off: the widened pair is the only bound on this scan.
+	nonRootPrefix, nonRootBoundArgs := prefixBeforeSeed(t, false)
+	if strings.Contains(nonRootPrefix, chplan.TraceIDTsEnvelopeAlias) {
+		t.Errorf("non-root: no trace_id_ts envelope is configured, got prefix:\n%s", nonRootPrefix)
+	}
+	if len(nonRootBoundArgs) != 2 {
+		t.Fatalf("non-root: expected exactly 2 args bound within the scan-filter prefix, got %v", nonRootBoundArgs)
+	}
+	if want := wantRootLoNano - compareTestLookback.Nanoseconds(); nonRootBoundArgs[0] != want {
+		t.Errorf("non-root: lower bound arg = %v, want %d (Start-Offset-Range-lookback)", nonRootBoundArgs[0], want)
+	}
+	if want := wantRootHiNano + compareTestLookback.Nanoseconds(); nonRootBoundArgs[1] != want {
+		t.Errorf("non-root: upper bound arg = %v, want %d (End-Offset+lookback)", nonRootBoundArgs[1], want)
 	}
 }
 
@@ -492,10 +515,16 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 			t.Errorf("non-root root scan must carry %q before its exact seed:\n%s", want, prefix)
 		}
 	}
-	// Only the root scan's direct predicate is forbidden from using the request
-	// window; the seeds nested below it are request-windowed, as they must be.
-	if strings.Contains(prefix, "fromUnixTimestamp64Nano") {
-		t.Errorf("non-root root scan must not use the request window directly:\n%s", prefix)
+	// The envelope narrows the widened input span, which the scan carries
+	// too: the trace_id_ts envelope is conjoined onto the bound #4037 widens,
+	// never in place of it.
+	for _, want := range []string{
+		"`Timestamp` >= fromUnixTimestamp64Nano(?)",
+		"`Timestamp` <= fromUnixTimestamp64Nano(?)",
+	} {
+		if !strings.Contains(prefix, want) {
+			t.Errorf("non-root root scan must carry the widened input span %q:\n%s", want, prefix)
+		}
 	}
 
 	// addSeconds() alone does not prove the upper bound is actually widened —
@@ -652,8 +681,9 @@ func TestEmitCompareRootLeg(t *testing.T) {
 // trace_id_ts readiness triple is all-or-nothing. A schema override can name
 // the table but leave a column blank; emitting `min()` over an empty
 // identifier would be a broken query, not a looser envelope, so each
-// half-configured triple must fall back to the unbounded-but-lossless shape.
-// Each row also discriminates one clause of the readiness guard.
+// half-configured triple must fall back to the shape with no envelope, which
+// the widened input span alone bounds. Each row also discriminates one clause
+// of the readiness guard.
 func TestEmitRangeWindowCompare_NonRootTraceIDTsPartialConfig(t *testing.T) {
 	t.Parallel()
 
@@ -696,8 +726,13 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsPartialConfig(t *testing.T) {
 			if start < 0 || seed < 0 || seed <= start {
 				t.Fatalf("expected root scan filter then TraceId seed:\n%s", rLeg)
 			}
-			if prefix := rLeg[start:seed]; strings.Contains(prefix, "`Timestamp`") {
-				t.Errorf("half-configured trace_id_ts must not bound the root scan, got prefix:\n%s", prefix)
+			prefix := rLeg[start:seed]
+			if strings.Contains(prefix, chplan.TraceIDTsEnvelopeAlias) || strings.Contains(prefix, "tupleElement") {
+				t.Errorf("half-configured trace_id_ts must not put an envelope on the root scan, got prefix:\n%s", prefix)
+			}
+			// The widened input span still bounds it.
+			if strings.Count(prefix, "fromUnixTimestamp64Nano(?)") != 2 {
+				t.Errorf("root scan must carry the widened input span, got prefix:\n%s", prefix)
 			}
 		})
 	}

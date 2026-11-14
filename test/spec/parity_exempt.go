@@ -263,13 +263,27 @@ const (
 	// decides the answer outright. Where the two disagree they disagree
 	// about what was READ, not about the query.
 	//
-	// Four shapes fall in this class:
+	// Five shapes fall in this class:
 	//
-	//   - `search_window:` and `search_limit:`, which bound which rows
-	//     cerberus reads and how many it returns. Upstream applies both
-	//     before the pipeline runs. parity_tempo_chdb_agpl_oracle.go's
-	//     rejectNarrowingSections already refuses this combination
-	//     outright rather than comparing across the difference.
+	//   - a `search_limit:` that binds on the reference answer: one
+	//     smaller than the number of traces the reference names. Upstream
+	//     truncates to the limit in its fetch layer, which the oracle does
+	//     not model, so the two answers would differ about how many traces
+	//     were RETURNED, not about the query.
+	//     parity_tempo_chdb_agpl_oracle.go's rejectBindingLimit refuses
+	//     that fixture outright rather than comparing across the
+	//     difference. A `search_window:` is not in this class: the harness
+	//     models its fetch-layer half, handing the oracle every span of each
+	//     trace whose time range overlaps the window (selectTraces).
+	//
+	//   - a trace longer than the maximum trace duration
+	//     (schema.Traces.MaxTraceDuration), whose per-trace values —
+	//     rootName, rootServiceName, traceDuration — cerberus reads from
+	//     the request window widened by that setting on both sides.
+	//     Upstream's fetch layer reads the whole stored trace, so for a
+	//     root span or a trace edge beyond the widened window the two
+	//     answers differ about what was READ: cerberus clips the trace to
+	//     the setting, upstream does not.
 	//
 	//   - `{ !(<expr>) }` as the whole spanset filter, and a NOT operand
 	//     of a logical AND/OR wrapping a single comparison. Reference
@@ -311,7 +325,7 @@ const (
 	//     real Tempo matches on the other event.
 	//     test/spec/parityoracle/traceql's validateChildRecords refuses
 	//     that span outright rather than guessing, for the same reason
-	//     rejectNarrowingSections refuses the first shape.
+	//     rejectBindingLimit refuses the first shape.
 	//
 	// This is NOT a reason for an ordinary disagreement about a query
 	// both layers evaluate the same way. It requires a NAMED mechanism

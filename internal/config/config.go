@@ -232,7 +232,8 @@ type Config struct {
 	Logs schema.Logs
 	// Traces is the OTel traces schema (table + columns the Tempo API
 	// reads). Defaults to schema.DefaultOTelTraces() with any
-	// CERBERUS_SCHEMA_TRACES_* env overrides applied.
+	// CERBERUS_SCHEMA_TRACES_* env overrides applied, and MaxTraceDuration
+	// resolved from CERBERUS_TEMPO_MAX_TRACE_DURATION.
 	Traces schema.Traces
 
 	// AutoCreateSchema, when true, instructs cerberus to run the OTel
@@ -1043,6 +1044,7 @@ const (
 	envRBGNMaxDensityUnits          = "CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS"
 	envDebugPProf                   = "CERBERUS_DEBUG_PPROF"
 	envTempoStructuralTwoPhase      = "CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE"
+	envTempoMaxTraceDuration        = "CERBERUS_TEMPO_MAX_TRACE_DURATION"
 	envAutoCreateSchema             = "CERBERUS_AUTO_CREATE_SCHEMA"
 	envAutoCreateDatabase           = "CERBERUS_AUTO_CREATE_DATABASE"
 	envSchemaCluster                = "CERBERUS_SCHEMA_CLUSTER"
@@ -1310,6 +1312,10 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	traces := schema.DefaultOTelTracesFrom(file.String)
+	if traces.MaxTraceDuration, err = getNonNegativeDuration(v, envTempoMaxTraceDuration); err != nil {
+		return Config{}, err
+	}
 	resultCacheIngestLag, resultCacheTTL, err := resultCacheDurationsFromEnv(v)
 	if err != nil {
 		return Config{}, err
@@ -1414,7 +1420,7 @@ func FromEnv() (Config, error) {
 		// enter the viper registry above.
 		Schema:                  schema.DefaultOTelMetricsFrom(file.String),
 		Logs:                    schema.DefaultOTelLogsFrom(file.String),
-		Traces:                  schema.DefaultOTelTracesFrom(file.String),
+		Traces:                  traces,
 		Settings:                file,
 		AutoCreateSchema:        flags.AutoCreate,
 		AutoCreateDatabase:      flags.AutoCreateDatabase,
@@ -1497,6 +1503,7 @@ var allEnvKeys = []string{
 	envRBGNMaxDensityUnits,
 	envDebugPProf,
 	envTempoStructuralTwoPhase,
+	envTempoMaxTraceDuration,
 	envAutoCreateSchema,
 	envAutoCreateDatabase,
 	envSchemaCluster,
@@ -1677,6 +1684,9 @@ func newDefaults() *viper.Viper {
 	// pprof is OFF by default — the profiling surface is opt-in only.
 	v.SetDefault(envDebugPProf, false)
 	v.SetDefault(envTempoStructuralTwoPhase, true)
+	// internal/schema owns the default (DefaultOTelTraces carries it to every
+	// caller that builds a traces schema without this loader).
+	v.SetDefault(envTempoMaxTraceDuration, schema.DefaultMaxTraceDuration.String())
 	v.SetDefault(envAutoCreateSchema, defaultAutoCreateSchema)
 	// Schema-provisioning bool + duration knobs need a non-empty default so
 	// the getBool / getDuration parsers don't reject an unset value. The

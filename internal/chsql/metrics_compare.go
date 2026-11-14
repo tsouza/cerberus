@@ -91,9 +91,10 @@ const (
 // IN-membership (the residual prod OOM — ~1.4B rows). The scan is pruned
 // only by a DIRECT Timestamp predicate. For root-scoped selections, the seed
 // additionally conjoins the request window because every root is in-window.
-// For non-root selections, an enabled trace_id_ts lookup supplies a wider,
-// selected-trace envelope that retains older roots; without that opt-in lookup,
-// the scan keeps TraceId-IN alone, unpruned but lossless. rootSeeded records
+// For non-root selections, it conjoins the window widened by the maximum trace
+// duration (MetricsCompare.PerTraceLookback), which retains every root of a
+// trace no longer than that setting; an enabled trace_id_ts lookup
+// additionally conjoins its selected-trace envelope. rootSeeded records
 // when the push succeeded, so
 // compareBaseQuery can skip boundedRootLeg's now-redundant wrap instead
 // of re-filtering an already-seeded result by the same trace-id set.
@@ -330,26 +331,27 @@ func rootLookupSpansTable(root chplan.Node) string {
 // decide whether boundedRootLeg's post-aggregate wrap is still needed as a
 // correctness fallback.
 //
-// tsLo/tsHi, when non-nil, additionally conjoin a lossless Timestamp envelope
-// onto the same scan Filter. The TraceId-IN seed alone bounds the cohort
+// tsBound, when non-nil, additionally conjoins a Timestamp bound onto the
+// same scan Filter. The TraceId-IN seed alone bounds the cohort
 // but cannot PRUNE the scan: TraceId is not the spans table's MergeTree sort
 // key, so CH reads every root span across full retention to test membership
 // (the compare OOM/timeout — read_rows ~1.4B in prod). A direct Timestamp bound
 // prunes by partition/PK, but it is only LOSSLESS to add when the caller has
 // established the seed's roots all fall inside the window (root-scoped
 // selection — gated on m.InnerRootScoped in emitRangeWindowCompare). For a
-// non-root selection, the caller may instead pass a trace_id_ts-derived
-// envelope; it contains each selected trace's full span lifetime. Without the
-// opt-in lookup, the caller passes nil tsLo/tsHi and keeps #1214's
-// unbounded-but-lossless behavior.
-func windowRootLookupTraceIDSeed(root chplan.Node, traceIDCol string, seed *chplan.Project, tsLo, tsHi chplan.Expr) (windowed chplan.Node, seeded bool) {
+// non-root selection, the caller instead passes the window widened by the
+// maximum trace duration on both sides, lossless for every trace no longer
+// than that setting, conjoined with a trace_id_ts-derived envelope when that
+// opt-in lookup is enabled; the envelope contains each selected trace's full
+// span lifetime.
+func windowRootLookupTraceIDSeed(root chplan.Node, traceIDCol string, seed *chplan.Project, tsBound chplan.Expr) (windowed chplan.Node, seeded bool) {
 	spansTable := rootLookupSpansTable(root)
 	if spansTable == "" {
 		return root, false
 	}
 	clone := chplan.CloneNode(root)
 	in := &chplan.InSubquery{Left: &chplan.ColumnRef{Name: traceIDCol}, Subquery: seed}
-	pred := conjoinExpr(conjoinExpr(tsLo, tsHi), in)
+	pred := conjoinExpr(tsBound, in)
 	if pushPredicateToSpansScanFilter(clone, spansTable, pred) {
 		return clone, true
 	}
@@ -714,9 +716,11 @@ func (e *emitter) compareWindowedScanBound(
 	// for a non-root selection — it silently drops root-name/root-service
 	// enrichment for any trace whose root started before the window. The
 	// root-scoped shape uses that direct bound because its roots are in-window;
-	// a non-root shape instead uses the enabled trace_id_ts envelope, which
-	// contains every selected trace's root, while letting CH partition/PK-prune
-	// (TraceId-IN alone cannot: TraceId is not the sort key). That
+	// a non-root shape instead uses the window widened by the maximum trace
+	// duration, which contains the root of every selected trace no longer than
+	// that, conjoined with the enabled trace_id_ts envelope, while letting CH
+	// partition/PK-prune (TraceId-IN alone cannot: TraceId is not the sort
+	// key). That
 	// root-scoped shape is exactly the traces-drilldown "Comparison" whose
 	// unpruned root scan reads full retention and OOMs.
 	// windowRootLookupTraceIDSeed derives the spans
@@ -724,7 +728,7 @@ func (e *emitter) compareWindowedScanBound(
 	// e.ctxSpansTable, so this fires uniformly on every emit path — no
 	// context-threading gate needed here.
 	// envelope is the trace_id_ts cohort envelope's scalar-binding body, set by
-	// the non-root-scoped arm below. It travels to compareBaseQuery on the
+	// the non-root-scoped arm below when the trace_id_ts lookup is enabled. It travels to compareBaseQuery on the
 	// bound, which declares it on the root-lookup relation itself — the same
 	// statement whose scan filter carries the bounds that read it (see
 	// bindRootLookupTraceIDTsEnvelope).
@@ -741,18 +745,27 @@ func (e *emitter) compareWindowedScanBound(
 		lo, hi := tsBoundExprs(inputTS, r.Start.UnixNano()-offsetNS-rangeNS, r.End.UnixNano()-offsetNS)
 		seed := compareSeedNode(m.Inner, m.TraceIDColumn, lo, hi)
 		windowed := *m
-		// A root-scoped selection can use the request window directly. For a
-		// non-root selection, use the enabled trace_id_ts relation instead: its
-		// selected-trace envelope retains roots older than the request window.
-		var rootLo, rootHi chplan.Expr
+		// A root-scoped selection can use the request window directly: its
+		// roots are the in-window spans themselves. A non-root selection reads
+		// its traces' roots within the window widened by the maximum trace
+		// duration on both sides (m.PerTraceLookback), so a root older than
+		// the window still resolves for a trace no longer than that; the
+		// enabled trace_id_ts relation's selected-trace envelope, when there
+		// is one, narrows that read further.
+		var rootBound chplan.Expr
 		var envelope *QueryBuilder
 		switch {
 		case m.InnerRootScoped:
-			rootLo, rootHi = tsBoundExprs(rootTS, r.Start.UnixNano()-offsetNS-rangeNS, r.End.UnixNano()-offsetNS)
+			rootBound = conjoinExpr(tsBoundExprs(rootTS, r.Start.UnixNano()-offsetNS-rangeNS, r.End.UnixNano()-offsetNS))
 		default:
-			rootLo, rootHi, envelope = rootLookupTraceIDTsBounds(m, seed, rootTS)
+			lookbackNS := m.PerTraceLookback.Nanoseconds()
+			widened := conjoinExpr(tsBoundExprs(rootTS,
+				r.Start.UnixNano()-offsetNS-rangeNS-lookbackNS, r.End.UnixNano()-offsetNS+lookbackNS))
+			var envelopeLo, envelopeHi chplan.Expr
+			envelopeLo, envelopeHi, envelope = rootLookupTraceIDTsBounds(m, seed, rootTS)
+			rootBound = conjoinExpr(widened, conjoinExpr(envelopeLo, envelopeHi))
 		}
-		rootLookup, seeded := windowRootLookupTraceIDSeed(m.RootLookup, m.TraceIDColumn, seed, rootLo, rootHi)
+		rootLookup, seeded := windowRootLookupTraceIDSeed(m.RootLookup, m.TraceIDColumn, seed, rootBound)
 		windowed.RootLookup = rootLookup
 		boundCopy := *bound
 		boundCopy.rootSeeded = seeded

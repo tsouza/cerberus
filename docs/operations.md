@@ -575,6 +575,43 @@ The e2e manifest (`test/e2e/k3s/cerberus-values.yaml`) sizes the pod at 2560Mi /
 `GOMEMLIMIT=2048MiB` for the promote-all default under the full dashboard
 sweep; a tighter allowlist lets you run leaner.
 
+### Maximum trace duration
+
+The TraceQL head reads every per-trace value from a window wider than the
+query's own. `CERBERUS_TEMPO_MAX_TRACE_DURATION` (default `1h`) is the longest
+trace it assumes, and each per-trace lookup reads the trace's spans inside the
+query window widened by that duration on both sides:
+
+| Endpoint                                           | Window the matched spans come from   | Window each per-trace lookup reads   |
+| -------------------------------------------------- | ------------------------------------ | ------------------------------------ |
+| `/api/search`                                      | `[start, end]`                       | `[start - L, end + L]`               |
+| `/api/metrics/query_range`, `/api/metrics/query`   | `(start - step, end]`                | `(start - step - L, end + L]`        |
+
+`L` is the configured duration. The per-trace values are `rootName`,
+`rootServiceName` and `traceDuration`, in every form a query uses them — a
+comparison with a literal, with a span operand, and inside a spanset operation —
+plus the per-trace cohort behind a spanset aggregate and the non-root selection
+of `compare()`. The spans a query returns or counts still come from the query
+window itself.
+
+A trace no longer than `L` reads the same values reference Tempo reads, which
+measures the whole stored trace of every trace that overlaps the window: a root
+span that starts before the window resolves `rootName` and `rootServiceName`,
+and a trace that ends after the window is measured to its last span.
+
+A trace longer than `L` is clipped at the widened edges:
+
+- a root span that starts before `start - L` is not read, so `rootName` and
+  `rootServiceName` read `""`, as for a trace with no root span;
+- `traceDuration` covers only the trace's spans inside the widened window.
+
+Set `L` at or above the longest trace the instrumented services emit. Every
+per-trace scan reads `2 × L` more of the time axis than the query window, so a
+15-minute search reads 2 hours 15 minutes for its per-trace lookups at the
+default; raising `L` raises that cost in proportion. `0` reads per-trace values
+from the query window alone, which clips every trace that crosses a window
+edge.
+
 ## Backing services
 
 **ClickHouse** is the only mandatory backing service, reached

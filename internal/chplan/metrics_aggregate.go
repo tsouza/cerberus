@@ -1,5 +1,7 @@
 package chplan
 
+import "time"
+
 // MetricsOp is the TraceQL metrics-pipeline operator that produced a
 // MetricsAggregate node. Carries the semantic distinction collapsed by
 // the previous lowering (which used a bare chplan.Aggregate and mapped
@@ -147,6 +149,12 @@ type MetricsAggregate struct {
 	IsDuration bool
 	ValueAlias string
 	Inner      Node
+	// PerTraceLookback is how far beyond the wrapping RangeWindow's input
+	// span, on each side, a per-trace subquery under this node reads the
+	// spans of its traces: the configured maximum trace duration
+	// (schema.Traces.MaxTraceDuration), stamped by the lowering. Zero reads
+	// the input span alone. See PerTraceWindowBound.
+	PerTraceLookback time.Duration
 }
 
 func (*MetricsAggregate) planNode() {}
@@ -158,7 +166,8 @@ func (m *MetricsAggregate) Equal(other Node) bool {
 	if !ok {
 		return false
 	}
-	if m.Op != o.Op || m.ValueAlias != o.ValueAlias || m.IsDuration != o.IsDuration {
+	if m.Op != o.Op || m.ValueAlias != o.ValueAlias || m.IsDuration != o.IsDuration ||
+		m.PerTraceLookback != o.PerTraceLookback {
 		return false
 	}
 	if (m.Attr == nil) != (o.Attr == nil) {

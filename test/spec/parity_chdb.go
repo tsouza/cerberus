@@ -148,8 +148,8 @@ const (
 	// in-process querier never shows its engine (LogAttributes,
 	// SeverityText).
 	refusalOpaqueColumn refusalClass = "opaque-column-seeded"
-	// refusalNarrowingSection: the TraceQL fixture carries `search_window:`
-	// or `search_limit:`, which the reference applies in its fetch layer.
+	// refusalNarrowingSection: the TraceQL fixture's `search_limit:` binds on
+	// the reference answer, which upstream truncates in its fetch layer.
 	refusalNarrowingSection refusalClass = "narrowing-section"
 	// refusalEmptySpanSeed: the traces seed produced no readable span.
 	refusalEmptySpanSeed refusalClass = "empty-span-seed"

@@ -115,8 +115,9 @@ func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) err
 	if !ok {
 		return fmt.Errorf("fixture %s: `parity:` with oracle tempo requires a query.traceql section", c.Name)
 	}
-	if err := rejectNarrowingSections(c); err != nil {
-		return parityRefusal(refusalNarrowingSection, err)
+	fetch, err := referenceFetchOf(c)
+	if err != nil {
+		return err
 	}
 
 	// Cerberus's answer shape is a structural fact about the fixture, read
@@ -157,6 +158,13 @@ func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) err
 				"trivially agree with any answer", c.Name,
 		))
 	}
+	spans = fetch.selectTraces(spans)
+	if len(spans) == 0 {
+		return parityRefusal(refusalEmptySpanSeed, fmt.Errorf(
+			"fixture %s: no seeded trace overlaps the search window, so the reference engine "+
+				"would trivially agree with any answer", c.Name,
+		))
+	}
 	if hasDuplicateSpanIdentity(spans) {
 		return parityRefusal(refusalDuplicateSpanIdentity, errors.New(
 			"seed contains more than one span with the same trace and span identity, so neither engine has a stable row to compare",
@@ -184,6 +192,9 @@ func runTempoParity(t *testing.T, c *Case, p *Parity, rt *RoundTripSections) err
 		}
 		return fmt.Errorf("fixture %s: %w", c.Name, err)
 	}
+	if err := fetch.rejectBindingLimit(c, got); err != nil {
+		return parityRefusal(refusalNarrowingSection, err)
+	}
 
 	return compareSpanSets(t, c, p, got, want)
 }
@@ -200,30 +211,96 @@ func hasDuplicateSpanIdentity(spans []oracle.Span) bool {
 	return false
 }
 
-// rejectNarrowingSections refuses to run a fixture whose scan cerberus
-// narrows in a way the reference engine's pipeline never sees.
-//
-// `search_window:` bounds which rows cerberus reads and `search_limit:`
-// truncates how many it returns; both are storage-layer concerns Tempo
-// applies in its FETCH layer, not in the pipeline this oracle evaluates.
-// Comparing across that difference would report a disagreement about the
-// query where there is only a difference in what each side was asked to
-// read. Failing loudly is the point: silently ignoring the section would
-// enrol a fixture that then proves nothing.
-func rejectNarrowingSections(c *Case) error {
-	for _, section := range []string{"search_window", "search_limit"} {
-		if _, ok := c.Section(section); ok {
-			return fmt.Errorf(
-				"fixture %s carries both `parity:` and `%s:`. The reference oracle evaluates the "+
-					"spanset pipeline over every seeded span; %s narrows cerberus's scan in the "+
-					"storage layer, which upstream applies before the pipeline the oracle runs. "+
-					"The two answers would differ about what was READ, not about the query. "+
-					"Remove the `parity:` section from this fixture",
-				c.Name, section, section,
-			)
+// referenceFetch is what a fixture's `search_window:` and `search_limit:`
+// sections ask of reference `/api/search`'s FETCH layer, which runs before the
+// spanset pipeline the oracle evaluates.
+type referenceFetch struct {
+	// windowed reports a `search_window:`; start and end are its bounds in
+	// Unix nanoseconds.
+	windowed   bool
+	start, end uint64
+	// limit is the `search_limit:` trace limit, 0 when there is none.
+	limit int
+}
+
+// referenceFetchOf reads c's fetch-layer sections.
+func referenceFetchOf(c *Case) (referenceFetch, error) {
+	var f referenceFetch
+	start, end, windowed, err := c.SearchWindow()
+	if err != nil {
+		return f, err
+	}
+	if windowed {
+		f.windowed = true
+		f.start, f.end = uint64(start.UnixNano()), uint64(end.UnixNano())
+	}
+	limit, limited, err := c.SearchLimit()
+	if err != nil {
+		return f, err
+	}
+	if limited {
+		f.limit = limit
+	}
+	return f, nil
+}
+
+// selectTraces returns the spans of every trace the reference fetch layer
+// reads for the search window: a trace whose time range — its earliest span
+// start to its latest span end — overlaps [start, end], every span of it,
+// including spans outside the window. That is vparquet4's trace-level
+// predicate (createTraceIterator: StartTimeUnixNano <= end and
+// EndTimeUnixNano >= start), applied to the trace row a block stores whole.
+// Without a window every span is read.
+func (f referenceFetch) selectTraces(spans []oracle.Span) []oracle.Span {
+	if !f.windowed {
+		return spans
+	}
+	type traceRange struct{ first, last uint64 }
+	ranges := map[string]traceRange{}
+	for _, s := range spans {
+		end := s.StartUnixNano + s.DurationNanos
+		r, seen := ranges[s.TraceID]
+		if !seen {
+			r = traceRange{first: s.StartUnixNano, last: end}
+		}
+		r.first = min(r.first, s.StartUnixNano)
+		r.last = max(r.last, end)
+		ranges[s.TraceID] = r
+	}
+	var out []oracle.Span
+	for _, s := range spans {
+		if r := ranges[s.TraceID]; r.first <= f.end && r.last >= f.start {
+			out = append(out, s)
 		}
 	}
-	return nil
+	return out
+}
+
+// rejectBindingLimit refuses a fixture whose `search_limit:` binds on the
+// reference answer: one naming more traces than the limit. The fetch layer's
+// truncation to the limit is not modelled here, so where it would drop a
+// trace the two answers would differ about how many traces were RETURNED,
+// not about the query. A limit at or above the reference's trace count
+// truncates nothing, so the comparison stands.
+func (f referenceFetch) rejectBindingLimit(c *Case, got []oracle.Result) error {
+	if f.limit <= 0 {
+		return nil
+	}
+	traces := map[string]struct{}{}
+	for _, r := range got {
+		traces[r.TraceID] = struct{}{}
+	}
+	if len(traces) <= f.limit {
+		return nil
+	}
+	return fmt.Errorf(
+		"fixture %s carries both `parity:` and a `%s:` of %d that binds: the reference "+
+			"answer names %d traces. Upstream truncates to the limit in its fetch layer, "+
+			"which this oracle does not model, so the two answers would differ about how "+
+			"many traces were RETURNED, not about the query. Raise the limit above the "+
+			"answer's trace count, or remove the `parity:` section from this fixture",
+		c.Name, SectionSearchLimit, f.limit, len(traces),
+	)
 }
 
 // --- reading the seeded spans back ------------------------------------
