@@ -492,9 +492,9 @@ instead (` + "`internal/engine/resource_bound_env.go`" + `,
   instant classic-histogram query (every in-window sample's finite bounds plus
   its +Inf rung) (` + "`internal/promql/classic_bucket_window_bound.go`" + `,
   ` + "`ClassicBucketWindowSeriesEntriesForMemory`" + `). Unset, the ceiling is
-  derived from ` + "`CERBERUS_CH_QUERY_MAX_MEMORY`" + ` as the quarter of the cap
-  the window ceiling above leaves free, at 880 bytes per entry (so
-  ` + "`305040`" + ` at the 1 GiB default, and the 1 GiB value when the cap is
+  derived from ` + "`CERBERUS_CH_QUERY_MAX_MEMORY`" + ` as half of the quarter of
+  the cap the window ceiling above leaves free, at 880 bytes per entry (so
+  ` + "`152520`" + ` at the 1 GiB default, and the 1 GiB value when the cap is
   ` + "`0`" + `). Setting a positive value pins it and opts out of the derivation.
 - **` + "`CERBERUS_CH_MAX_EMITTED_SQL_BYTES`" + `** (int64, default ` + "`262144`" + `) -
   the bytes of SQL cerberus will emit for one statement

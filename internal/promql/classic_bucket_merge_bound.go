@@ -100,6 +100,12 @@ const (
 	percentDenominator = 100
 )
 
+// percentOf is percent percent of n, split into whole hundreds and a
+// remainder so the product never overflows for any int64 n.
+func percentOf(n, percent int64) int64 {
+	return (n/percentDenominator)*percent + (n%percentDenominator)*percent/percentDenominator
+}
+
 // ClassicBucketMergeEntriesForMemory derives the classic-histogram
 // cross-series merge ceiling from a ClickHouse per-query memory cap:
 // classicBucketMergeCapSharePercent of the cap at
@@ -130,10 +136,7 @@ func ClassicBucketMergeEntriesForMemory(chQueryMaxMemory int64) int64 {
 	if chQueryMaxMemory <= 0 {
 		chQueryMaxMemory = bytesPerGiB
 	}
-	// The cap's share, split into whole hundreds and a remainder so the
-	// product never overflows for any int64 cap.
-	share := (chQueryMaxMemory/percentDenominator)*classicBucketMergeCapSharePercent +
-		(chQueryMaxMemory%percentDenominator)*classicBucketMergeCapSharePercent/percentDenominator
+	share := percentOf(chQueryMaxMemory, classicBucketMergeCapSharePercent)
 	return share / classicBucketMergeBytesPerEntry
 }
 

@@ -40,8 +40,7 @@ func classicWindowGuardSQL(t *testing.T, query string) string {
 // enumerates the instant classic-histogram shapes that reach the per-series
 // window stage — every window function the idiom accepts, aggregated with
 // and without a grouping, and the bare-selector form — and requires both
-// window checks in each emitted statement. It is keyed on query shapes, so a
-// new route to the stage that skips the guard fails here.
+// window checks in each emitted statement.
 func TestClassicBucketWindowGuard_EveryInstantWindowShapeCarriesBothChecks(t *testing.T) {
 	t.Parallel()
 	for _, query := range []string{
@@ -53,6 +52,8 @@ func TestClassicBucketWindowGuard_EveryInstantWindowShapeCarriesBothChecks(t *te
 		`histogram_quantile(0.5, rate(req_bucket[5m]))`,
 		`histogram_quantile(0.5, sum by (le) (req_bucket))`,
 		`histogram_quantile(0.5, sum by (le) (rate(req_bucket[5m] @ 1767268800)))`,
+		`histogram_quantile(0.5, sum without (job) (rate(req_bucket[5m] offset 1h)))`,
+		`histogram_quantile(0.5, sum by (le) (rate(req_bucket{le=~"0.5|1|\\+Inf"}[5m])))`,
 	} {
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
@@ -94,45 +95,19 @@ func TestClassicBucketWindowGuard_PreCountReadsTheScanOnce(t *testing.T) {
 	}
 }
 
-// TestClassicBucketWindowGuard_IdentityColumnsCoverTheGroupKey pins that the
-// pre-count's series count reads every column the stage's group key reads,
-// so two rows the stage puts in separate groups are never counted as one.
-func TestClassicBucketWindowGuard_IdentityColumnsCoverTheGroupKey(t *testing.T) {
-	t.Parallel()
-	s := schema.DefaultOTelMetrics()
-	var key []string
-	chplan.InspectExpr(histogramIdentityExpr(s), func(e chplan.Expr) bool {
-		if c, ok := e.(*chplan.ColumnRef); ok {
-			key = append(key, c.Name)
-		}
-		return true
-	})
-	if len(key) == 0 {
-		t.Fatal("the group key reads no column")
-	}
-	got := map[string]bool{}
-	for _, e := range classicBucketWindowIdentityColumns(s) {
-		got[e.(*chplan.ColumnRef).Name] = true
-	}
-	for _, name := range key {
-		if !got[name] {
-			t.Fatalf("group key reads %q, which the series count does not hash: %v", name, got)
-		}
-	}
-}
-
 // TestClassicBucketWindowCeilings_DerivedFromCHQueryMaxMemory pins both
 // window ceilings to the per-query memory cap: three-quarters of the cap for
-// the query-wide estimate, the remaining quarter over the fold's per-entry
-// working set on two threads for the per-series ceiling, the one-GiB values
-// for an unset cap, and an explicit ceiling winning over the derivation.
+// the query-wide estimate, half the remaining quarter over the fold's
+// per-entry working set on two threads for the per-series ceiling, the
+// one-GiB values for an unset cap, and an explicit ceiling winning over the
+// derivation.
 func TestClassicBucketWindowCeilings_DerivedFromCHQueryMaxMemory(t *testing.T) {
 	t.Parallel()
 	// The values docs/operations.md and docs/configuration.md state for the
 	// 1 GiB default cap.
 	const (
 		shippedCostCeiling   int64 = 805_306_368
-		shippedSeriesCeiling int64 = 305_040
+		shippedSeriesCeiling int64 = 152_520
 	)
 	const halfGiB = config.DefaultCHQueryMaxMemory / 2
 	at := func(capBytes int64) ResourceBounds {
@@ -149,8 +124,8 @@ func TestClassicBucketWindowCeilings_DerivedFromCHQueryMaxMemory(t *testing.T) {
 		capBytes            int64
 		wantCost, wantEntry int64
 	}{
-		{halfGiB, 402_653_184, 152_520},
-		{2 * config.DefaultCHQueryMaxMemory, 1_610_612_736, 610_080},
+		{halfGiB, 402_653_184, 76_260},
+		{2 * config.DefaultCHQueryMaxMemory, 1_610_612_736, 305_040},
 		{0, shippedCostCeiling, shippedSeriesCeiling},
 	} {
 		got := at(tc.capBytes)

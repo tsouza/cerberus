@@ -10,12 +10,12 @@ import (
 // classic_bucket_window_bound.go bounds the instant classic-histogram
 // per-series window stage (classicBucketWindowStage) — the Aggregate that
 // collects each series' in-window samples and the fold that reduces them to
-// one bucket ladder per series — before that stage reads a row.
+// one bucket ladder per series — with two checks, both of which refuse before
+// the fold runs.
 //
 // # What the stage costs
 //
-// The stage's memory has three parts, and the guard estimates each from a
-// pre-count over the filtered scan:
+// The stage's memory has four parts:
 //
 //   - every series it groups: the group key and aggregate states, the row
 //     the stage emits for it, and that row held by the bucket-merge guard
@@ -29,27 +29,34 @@ import (
 //   - the fold's working set: proportional to the entries of the series it
 //     is folding, on each thread folding one at once.
 //
-// The pre-count reads the scan once more, through a scalar subquery over a
-// copy of the filtered scan: sum(length(ExplicitBounds) + 1) — the scanned
-// entries E, read from the ExplicitBounds.size0 subcolumn — count() — the
-// scanned rows R — and an approximate count of the distinct series N, read
-// from the columns the stage's group key is built from. The per-series
-// ladder entries are estimated as N × E / R: the series count times the
-// mean entries a scanned row carries, which is exact when every series
-// keeps one layout across the window. The fold is charged at the mean series
-// size E / N; a series far larger than the mean is held to the per-series
-// ceiling instead, which the stage checks on each series' own count before
-// folding it (classicBucketWindowSeriesGuard) and which is sized so that
-// one such series on every folding thread fits in the share of the cap the
-// query-wide ceiling leaves free.
+// # The checks
+//
+// The query-wide check (classicBucketWindowInputGuard) estimates all four
+// from a pre-count: a scalar subquery over a copy of the stage's input — the
+// filtered scan, after any `le` matcher has narrowed its rows — reading
+// sum(length(ExplicitBounds) + 1), the scanned entries E; count(), the
+// scanned rows R; and an approximate count of the distinct series N over the
+// columns the stage's group key is built from. The per-series ladder entries
+// are estimated as M = N × E / R, the series count times the mean entries a
+// scanned row carries, which is exact when every series keeps one layout
+// across the window. The fold is charged at the mean series size E / N.
+//
+// The mean is what a query of many small series and a few large ones hides:
+// many small series pull E / N down while the large ones still fold. The
+// per-series check (classicBucketWindowSeriesGuard) bounds that remainder. It
+// counts each series' collected entries on the stage's Aggregate and refuses
+// a series past its ceiling before the fold reads it, and that ceiling is
+// sized so the fold of the largest admitted series, on every folding thread
+// at once, uses at most classicBucketWindowFoldHeadroomPercent of the
+// headroom the query-wide ceiling leaves below the cap.
 //
 // # Ordering
 //
 // The query-wide check is a conjunct of the filter the stage reads through,
 // and ClickHouse evaluates its scalar subquery before that filter passes a
 // block, so a refused query aborts with the check's message before the stage
-// collects a sample. The per-series check reads each series' count from the
-// stage's Aggregate and refuses before the fold runs on that series.
+// collects a sample. The per-series check runs after the stage has collected
+// each series and before the fold.
 //
 // # Calibration
 //
@@ -69,13 +76,14 @@ import (
 //	58,000 × 14                            41.4M    689    638
 //	58,000 × 28                            82.8M    775    638
 //	58,000 × 56                            165.6M   840    OOM
-//	58,000 × 112 (shared or disjoint;      331.4M   OOM    OOM
+//	58,000 × 112 (shared or disjoint;      331.3M   OOM    OOM
 //	  rate, increase, sum_over_time, bare)
 //	1,000,000 × 1, disjoint, sum_over_time 51.0M    OOM    OOM
 //	20,000 × 62                            63.2M    740    554
 //	2,000 × 620                            63.2M    749    574
 //	200 × 3,100                            31.6M    586    567
 //	200 × 6,200                            63.2M    OOM    661
+//	60 × 9,800                             30.0M    597    574
 //	120 × 9,800                            60.0M    952    575
 //	1 × 7,500                              0.38M    158    -
 //	1 × 30,000                             1.53M    624    -
@@ -93,7 +101,10 @@ import (
 //     collection at few, long series, where the external GROUP BY sheds the
 //     least: 60 × 9,800 to 120 × 9,800 adds 30.0M entries and 355 MiB on
 //     26.8, 12.4 B per entry. Many short series cost less per entry
-//     (58,000 × 14 to 58,000 × 28 adds 41.4M entries and 86 MiB).
+//     (58,000 × 14 to 58,000 × 28 adds 41.4M entries and 86 MiB). It is
+//     rounded down to 12, not up: at 13, 58,000 × 20 — a [5m] range at a
+//     15-second scrape, which answers at 757 MiB — estimates past the
+//     ceiling. The headroom the fold does not use absorbs the difference.
 //   - classicBucketWindowFoldEntryBytes is the fold of one long series:
 //     1 × 7,500 peaks at 433 B per entry of the series, 1 × 30,000 at 428 B,
 //     rounded up to 440. Two series fold at once on two threads: 2 × 6,200
@@ -101,24 +112,27 @@ import (
 //     of the same E peaks at 749 MiB.
 //
 // With the shipped constants (estimate ceiling 805,306,368, per-series
-// ceiling 305,040 entries at the 1 GiB cap), peaks on 26.8 / 26.6:
+// ceiling 152,520 entries at the 1 GiB cap), peaks on 26.8 / 26.6:
 //
 //	58,000 × 112, shared and disjoint, rate, increase,  refused, 18-31 MiB
 //	  sum_over_time and bare (estimate 4.1G)
 //	1,000,000 × 1, disjoint (estimate 2.2G)             refused, 26 / 26
 //	120 × 9,800 (estimate 1.2G)                         refused, 24 / 26
-//	1 × 6,000 (306,000 entries in one series)           refused, 30 / 26
+//	420 × 2,980 (estimate 900.4M)                       refused, 24 / 27
+//	1 × 3,000 (153,000 entries in one series)           refused, 20 / 16
 //	1 × 60,000 (3,060,000 entries in one series)        refused, 169 / 166
 //	58,000 × 20 (estimate 802.9M)                       answers, 757 / 639
-//	350 × 3,100 (estimate 803.7M)                       answers, 649 / 569
-//	145 × 5,900 (estimate 788.6M)                       answers, 812 / 582
-//	20,000 × 62 and 2 × 5,900 in one query (800.7M)     answers, 676 / 557
-//	2 × 5,900 (300,900 entries per series)              answers, 270 / 228
+//	420 × 2,980 and 3,000 × 2 in one query (793.2M)     answers, 754 / 604
+//	2 × 2,950 (150,450 entries per series)              answers, 111 / 117
 //
-// 26.6.8.7, the upgrade floor, answers and refuses the same way at the same
-// shapes (58,000 × 20 at 640 MiB, 145 × 5,900 at 584 MiB, every refusal
-// below 28 MiB). The fold runs one series per thread, so these figures hold
-// for two threads; 145 × 5,900 at max_threads 8 runs out of memory on 26.8
+// The second answered row is the case the per-series ceiling exists for:
+// 3,000 two-sample series pull the mean series size from 151,980 entries to
+// 21,379, taking 115M out of the fold's charge, and the query still answers
+// 270 MiB below the cap. 26.6.8.7, the upgrade floor, answers and refuses
+// the same way (58,000 × 20 at 640 MiB, every query-wide refusal below
+// 28 MiB). The fold runs one series per thread, so these figures hold for
+// two threads: 145 × 5,900, which peaks at 784 MiB on two threads, runs out
+// of memory at max_threads 8 on 26.8
 // (https://github.com/tsouza/cerberus/issues/4128).
 const (
 	// classicBucketWindowSeriesBytes is the measured cost of one series the
@@ -143,9 +157,14 @@ const (
 	classicBucketWindowFoldConcurrency = 2
 
 	// classicBucketWindowCapSharePercent is the share of the query cap the
-	// estimated stage may use. The rest is the headroom the per-series
-	// ceiling is sized to.
+	// estimated stage may use. The rest is headroom.
 	classicBucketWindowCapSharePercent = 75
+
+	// classicBucketWindowFoldHeadroomPercent is the share of that headroom
+	// the fold of the largest series the per-series ceiling admits may use,
+	// on every folding thread at once. The rest absorbs the estimate's own
+	// error.
+	classicBucketWindowFoldHeadroomPercent = 50
 )
 
 // ClassicBucketWindowCostUnitsForMemory derives the window stage's ceiling, in
@@ -158,8 +177,7 @@ func ClassicBucketWindowCostUnitsForMemory(chQueryMaxMemory int64) int64 {
 	if chQueryMaxMemory <= 0 {
 		chQueryMaxMemory = bytesPerGiB
 	}
-	return (chQueryMaxMemory/percentDenominator)*classicBucketWindowCapSharePercent +
-		(chQueryMaxMemory%percentDenominator)*classicBucketWindowCapSharePercent/percentDenominator
+	return percentOf(chQueryMaxMemory, classicBucketWindowCapSharePercent)
 }
 
 // classicBucketRowEntryCountExpr is one classic-histogram row's bucket entries:
@@ -319,15 +337,15 @@ func classicBucketWindowSeriesGuard(group chplan.Node, maxEntries int64) chplan.
 
 // ClassicBucketWindowSeriesEntriesForMemory derives the per-series window
 // ceiling from a ClickHouse per-query memory cap: the largest series whose
-// fold, on every concurrently folding thread at once, fits in the headroom
-// [ClassicBucketWindowCostUnitsForMemory] leaves below the cap. The query-wide
-// estimate charges the fold at the mean series size; this ceiling is what
-// keeps a few series far larger than the mean inside that headroom. A
+// fold, on every concurrently folding thread at once, fits in
+// classicBucketWindowFoldHeadroomPercent of the headroom
+// [ClassicBucketWindowCostUnitsForMemory] leaves below the cap. A
 // non-positive cap derives the one-GiB ceiling.
 func ClassicBucketWindowSeriesEntriesForMemory(chQueryMaxMemory int64) int64 {
 	if chQueryMaxMemory <= 0 {
 		chQueryMaxMemory = bytesPerGiB
 	}
 	headroom := chQueryMaxMemory - ClassicBucketWindowCostUnitsForMemory(chQueryMaxMemory)
-	return headroom / (classicBucketWindowFoldEntryBytes * classicBucketWindowFoldConcurrency)
+	return percentOf(headroom, classicBucketWindowFoldHeadroomPercent) /
+		(classicBucketWindowFoldEntryBytes * classicBucketWindowFoldConcurrency)
 }

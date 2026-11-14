@@ -1042,10 +1042,15 @@ func windowSampleCountAgg(s schema.Metrics) chplan.AggFunc {
 // through (timeBoundExpr / stalenessLowerBoundExpr) — threaded down so
 // the `rate` / `increase` fold can apply Prometheus's boundary-
 // extrapolation correction (see histogramWindowFold).
-func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, maxSeriesEntries int64) chplan.Node {
+//
+// bounds carries the stage's two memory ceilings, both checked before the
+// fold runs (classic_bucket_window_bound.go): the query-wide estimate over
+// input, before the stage collects a sample, and each series' collected
+// entries, before that series is folded.
+func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, bounds ResourceBounds) chplan.Node {
 	group := &chplan.Aggregate{
 		Roles:          metricRoles(s),
-		Input:          input,
+		Input:          classicBucketWindowInputGuard(input, s, bounds.ClassicBucketWindowMaxCostUnits),
 		GroupBy:        []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases: []string{s.AttributesColumn},
 		AggFuncs: append(classicBucketWindowAggs(s, shape.windowFn),
@@ -1053,7 +1058,7 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeS
 		DropEmptyOnNoGroup: true,
 	}
 	return classicBucketWindowReshape(
-		minSamplesFilter(classicBucketWindowSeriesGuard(group, maxSeriesEntries), shape.minSamples()),
+		minSamplesFilter(classicBucketWindowSeriesGuard(group, bounds.ClassicBucketWindowSeriesMaxEntries), shape.minSamples()),
 		// countValues=nil: classicBucketWindowRunsExpr folds one `le`
 		// rung's own cumulative values per call, so histogramWindowFold's
 		// durationToZero clamp reads THAT rung's own (values, order) —

@@ -22,11 +22,11 @@ import (
 
 // classicWindowRefusedPeakBytes bounds the peak memory of a probe the window
 // guards refuse. The query-wide check refuses before the stage collects a
-// sample (18-31 MiB on both builds), and the per-series check refuses a
-// series of a few thousand samples once it is collected and before it is
-// folded (26-31 MiB); an unguarded shape of these sizes peaks above 600 MiB
-// or runs out of memory.
-const classicWindowRefusedPeakBytes = 128 << 20
+// sample (18-31 MiB on both builds), and the per-series check refuses
+// classicWindowWideSeries once it is collected and before it is folded
+// (16-20 MiB). Folding that series alone takes about 63 MiB at the fold's
+// 433 B per entry, and the unguarded 58,000 × 112 shapes run out of memory.
+const classicWindowRefusedPeakBytes = 48 << 20
 
 // classicWindowShape is one seed: series series of one shared 50-bucket
 // layout, or of disjoint per-series layouts, each carrying samples samples
@@ -71,12 +71,12 @@ FROM numbers(%d)`,
 var (
 	classicWindowShared   = classicWindowShape{series: 58_000, samples: 112, spacing: 2 * time.Second}
 	classicWindowDisjoint = classicWindowShape{series: 58_000, samples: 112, spacing: 2 * time.Second, disjoint: true}
-	// classicWindowWideSeries carries 6,000 x 51 = 306,000 entries in one
-	// series, past the 305,040 per-series ceiling the 1 GiB cap derives.
-	classicWindowWideSeries = classicWindowShape{series: 1, samples: 6_000, spacing: 45 * time.Millisecond}
-	// classicWindowNarrowSeries carries 5,900 x 51 = 300,900 entries in
+	// classicWindowWideSeries carries 3,000 x 51 = 153,000 entries in one
+	// series, past the 152,520 per-series ceiling the 1 GiB cap derives.
+	classicWindowWideSeries = classicWindowShape{series: 1, samples: 3_000, spacing: 100 * time.Millisecond}
+	// classicWindowNarrowSeries carries 2,950 x 51 = 150,450 entries in
 	// each of two series, within that ceiling.
-	classicWindowNarrowSeries = classicWindowShape{series: 2, samples: 5_900, spacing: 50 * time.Millisecond}
+	classicWindowNarrowSeries = classicWindowShape{series: 2, samples: 2_950, spacing: 100 * time.Millisecond}
 )
 
 // classicWindowAdmittedRange selects the newest 20 samples of
@@ -95,7 +95,8 @@ const (
 // query-wide check, and one series past the per-series ceiling by the
 // per-series check, each with its own message and at a peak far below the
 // cap. A shape just within each ceiling answers with the quantile its seed
-// implies, and the same shape one sample per series wider is refused.
+// implies: 58,000 series of 20 samples, refused at 21, and two series of
+// 2,950 samples, where one series of 3,000 is refused.
 func TestClassicBucketWindow_CeilingsAcrossBuilds(t *testing.T) {
 	seriesCeiling := promql.ClassicBucketWindowSeriesEntriesForMemory(classicMergeQueryMemoryBytes)
 	if got := classicWindowWideSeries.samples * (classicWindowWidth + 1); int64(got) <= seriesCeiling {

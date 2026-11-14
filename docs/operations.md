@@ -537,33 +537,34 @@ default does not fit; a value of the ignored variable is not an entry count.
 ### Classic-histogram window ceilings
 
 An instant `histogram_quantile` over a classic histogram — over `rate`,
-`increase`, a `*_over_time` function or a bare bucket selector, aggregated by
-`le` — first reduces each series' in-window samples to one bucket ladder, then
-merges the ladders under the bucket-merge ceiling above. Two ceilings bound
-that per-series window stage, and both are checked before the stage collects a
-sample:
+`increase` or `sum_over_time` of a bucket selector, or over the bare selector,
+with or without an aggregation around it — first reduces each series'
+in-window samples to one bucket ladder, then merges the ladders under the
+bucket-merge ceiling above. Two ceilings bound that per-series window stage,
+and both refuse a query before the stage folds anything:
 
-- **The query-wide ceiling.** A pre-count reads the scan once more — its
-  bucket-entry total (every row's finite bounds plus its `+Inf` bucket), its
-  row count and an approximate count of its series — and estimates the stage's
-  memory in bytes: 160 per series, 40 per entry of each series' bucket ladder,
-  12 per further scanned entry, and 880 per entry of the mean series for the
-  fold. A query whose estimate exceeds the ceiling is refused with HTTP 422 and
-  the message `classic-histogram window exceeds the estimated-memory resource
+- **The query-wide ceiling**, checked before the stage collects a sample. A
+  pre-count reads the scan once more — its bucket-entry total (every row's
+  finite bounds plus its `+Inf` bucket, after any `le` matcher), its row count
+  and an approximate count of its series — and estimates the stage's memory in
+  bytes: 160 per series, 40 per entry of each series' bucket ladder, 12 per
+  further scanned entry, and 880 per entry of the mean series for the fold. A
+  query whose estimate exceeds the ceiling is refused with HTTP 422 and the
+  message `classic-histogram window exceeds the estimated-memory resource
   bound`. Unset, the ceiling is derived from `CERBERUS_CH_QUERY_MAX_MEMORY` as
   75% of the cap: `805306368` at the 1 GiB default, linear in the cap, and the
   1 GiB value when the cap is `0`. Setting
   `CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_MAX_COST_UNITS` to a positive value
   pins it.
-- **The per-series ceiling.** Each series' window may collect at most this
-  many bucket entries; a series past it refuses the query with HTTP 422 and
-  the message `classic-histogram window exceeds the bucket-entries-per-series
-  resource bound`, before that series is folded. Unset, it is derived from
-  `CERBERUS_CH_QUERY_MAX_MEMORY` as the quarter of the cap the query-wide
-  ceiling leaves free, at 880 bytes per entry: `305040` at the 1 GiB default
-  (for example 5,980 samples of a 50-bucket layout). Setting
-  `CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES` to a positive
-  entry count pins it.
+- **The per-series ceiling**, checked once the stage has collected each
+  series and before it folds it. A series whose window holds more bucket
+  entries than the ceiling refuses the query with HTTP 422 and the message
+  `classic-histogram window exceeds the bucket-entries-per-series resource
+  bound`. Unset, it is derived from `CERBERUS_CH_QUERY_MAX_MEMORY` as half of
+  the quarter of the cap the query-wide ceiling leaves free, at 880 bytes per
+  entry: `152520` at the 1 GiB default, which is 2,990 samples of a 50-bucket
+  layout. Setting `CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES` to
+  a positive entry count pins it.
 
 At the 1 GiB default, 58,000 series of one 50-bucket layout are admitted with
 up to 20 samples each in the window — a `[5m]` range at a 15-second scrape —
