@@ -84,7 +84,11 @@ jobs:
 
       - uses: ./.github/actions/setup-buildx
 
+      # The README starts the stack with `--profile grafana`; the pre-pull
+      # reads the same model.
       - name: pre-pull root Compose images
+        env:
+          COMPOSE_PROFILES: grafana
         run: node .github/scripts/compose-pull-images.mjs docker-compose.yml
 
       - name: run the published root Compose quickstart
@@ -102,12 +106,12 @@ jobs:
       - name: capture Compose diagnostics on failure
         if: failure()
         run: |
-          docker compose ps --all
-          docker compose logs --no-color --tail=300
+          docker compose --profile grafana ps --all
+          docker compose --profile grafana logs --no-color --tail=300
 
       - name: tear down the quickstart stack
         if: always()
-        run: docker compose down -v --remove-orphans
+        run: docker compose --profile grafana down -v --remove-orphans
 
   quickstart:
     name: quickstart

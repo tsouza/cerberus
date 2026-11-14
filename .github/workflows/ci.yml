@@ -1700,7 +1700,6 @@ jobs:
             --include-fragments \
             --root-dir "$GITHUB_WORKSPACE" \
             --exclude-path compatibility/prometheus/upstream \
-            --exclude-path compatibility/tempo/upstream \
             --exclude-path compatibility/loki/upstream \
             --exclude-path node_modules \
             "**/*.md"
@@ -1708,25 +1707,24 @@ jobs:
   # `agpl-clean` is the provably-clean-build licence gate. Cerberus ships
   # under Apache-2.0. Its LogQL / TraceQL parsers are in-house clean-room
   # Apache reimplementations (internal/logql/lsyntax, internal/logql/logpattern,
-  # internal/drain, internal/traceql/ast), and PromQL uses the upstream Apache
-  # prometheus parser — so no AGPLv3 grafana/loki or grafana/tempo code reaches
-  # the binary. The only grafana/tempo subtree the binary may link is the
-  # Apache-licensed pkg/tempopb wire types.
+  # internal/drain, internal/traceql/ast), PromQL uses the upstream Apache
+  # prometheus parser, and the Tempo wire types are an in-house copy of Tempo's
+  # Apache-licensed pkg/tempopb (internal/thirdparty/tempopb) — so no AGPLv3
+  # module is in the binary's build graph.
   #
   # Where the AGPL actually lives, precisely: the root go.mod DOES require
-  # grafana/loki/v3, and compatibility/ has no go.mod of its own, so the
-  # compatibility harnesses are ROOT-MODULE packages — not, as this comment
-  # previously claimed, quarantined in test/oracle. What keeps the binary
-  # clean is REACHABILITY, not module membership: nothing under
-  # compatibility/ or behind the agpl_oracle build tag is imported from
-  # ./cmd/cerberus. The test/oracle nested module is a second, stronger
-  # boundary used where a hard module break is wanted, not the only one.
+  # grafana/loki/v3 and grafana/tempo, for the agpl_oracle-tagged oracles and
+  # the compatibility harnesses, which are ROOT-MODULE packages. What keeps
+  # the binary clean is REACHABILITY: nothing under compatibility/ or behind
+  # the agpl_oracle build tag is imported from ./cmd/cerberus.
   #
-  # ENFORCING: the gate runs `go list -deps ./cmd/cerberus` and FAILS (exit 1)
-  # if any AGPL package is reachable from the binary (grafana/loki/* or
-  # grafana/tempo/* except pkg/tempopb). Logic lives in
-  # .github/scripts/agpl-clean.mjs (node: builtins only). Add to branch
-  # protection as a required status check.
+  # ENFORCING: the gate runs `go list -deps` over ./cmd/cerberus and every
+  # package a tracked Dockerfile builds, reads the licence file at the root of
+  # every module that provides one of those packages, and FAILS (exit 1) if any
+  # is AGPL or carries no licence file, or if a Dockerfile runs a bare
+  # `go mod download` (which fetches every go.mod requirement). Logic lives in
+  # .github/scripts/agpl-clean.mjs (node: builtins only), self-tested by
+  # agpl-clean.test.mjs in the same job.
   agpl-clean:
     name: agpl-clean
     needs: changes
@@ -1739,8 +1737,9 @@ jobs:
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
-    # `go list -deps` reads module metadata and compiles nothing, so the
-    # smallest Ubicloud runner. Settles in about a minute and a half; 12m
+    # `go list -deps` reads module metadata and compiles nothing, and the
+    # tempopb drift check compiles only the two formatters, so the smallest
+    # Ubicloud runner. Settles in a few minutes; 12m
     # holds two capped checkout attempts (test/regression/git_fetch_stall_test.go)
     # and a cold module fetch without leaving a hang unbounded.
     runs-on: ubicloud-standard-2
@@ -1770,5 +1769,24 @@ jobs:
         with:
           cache: false
 
+      - name: Self-test the AGPL clean-build gate
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/agpl-clean.test.mjs
+
+      - name: Self-test the in-house tempopb sync
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/tempopb-sync.test.mjs
+
       - name: AGPL clean-build gate
         run: node .github/scripts/agpl-clean.mjs
+
+      # The in-house tempopb copy must be exactly what `just tempopb-sync`
+      # produces from the pinned upstream commit: a hand edit to the generated
+      # code (a renumbered field, a dropped case) changes the wire format
+      # without failing any round-trip test, since marshal and unmarshal come
+      # from the same file.
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2  # v2.90.2
+        with:
+          tool: just@1.46.0
+      - name: Install the pinned Go formatters
+        run: just install-formatters
+      - name: tempopb copy matches the pinned upstream
+        run: just tempopb-sync-check

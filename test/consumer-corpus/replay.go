@@ -12,7 +12,8 @@ import (
 	"strings"
 
 	"github.com/gogo/protobuf/proto"
-	"github.com/grafana/tempo/pkg/tempopb"
+
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
 )
 
 // Replay sends entry e against baseURL (an httptest server hosting the

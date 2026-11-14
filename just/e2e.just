@@ -3,6 +3,12 @@
 K3D_CLUSTER := "cerberus-e2e"
 CERBERUS_IMAGE := "cerberus:e2e"
 
+# The Grafana image every e2e stack runs: deploy/grafana/Dockerfile, built on
+# the host that runs the lane and never pushed to a registry. The k3d recipes
+# import it next to CERBERUS_IMAGE; the compose lanes select it through
+# test/e2e/grafana/compose/maintained-grafana.yml.
+GRAFANA_E2E_IMAGE := "cerberus-grafana:e2e"
+
 # Chart deployment topology the e2e stack installs: `monolith` (default — one
 # Deployment/Service serving all three heads) or `split` (three per-head
 # Deployments + bare-named Services, each pinned via CERBERUS_ENABLED_HEADS).
@@ -38,7 +44,7 @@ CERBERUS_BUILD_TAGS := env_var_or_default("CERBERUS_BUILD_TAGS", "")
 # because the convention it replaces had already failed silently: #1263 moved the
 # k3d ClickHouse to 26.6-alpine and left this line on 26.5-alpine, so for ten days
 # the one image the pre-pull was written for was the one it did not cover (#1461).
-E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.8.36.3-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 ghcr.io/tsouza/cerberus@sha256:37306fa251ae7e82d71b9179907782c30d9321c5a601c18dd1ac00362a79654e otel/opentelemetry-collector-contrib:0.152.1 busybox:1.37"
+E2E_EXTERNAL_IMAGES := "clickhouse/clickhouse-server:26.8.36.3-alpine ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.116.0 otel/opentelemetry-collector-contrib:0.152.1 busybox:1.37"
 
 # Extra images the bundled-ClickHouse ("bwc") object-storage lane needs on top
 # of E2E_EXTERNAL_IMAGES: the MinIO object store + its `mc` client (the
@@ -115,12 +121,19 @@ _e2e-k3d-cluster-create:
         {{K3D_EXTRA_ARGS}} \
         --wait
 
+# Build the maintained Grafana image (deploy/grafana) the e2e stacks run, locally.
+e2e-grafana-image:
+    node .github/scripts/build-with-registry-retry.mjs \
+        docker build -t {{GRAFANA_E2E_IMAGE}} --build-arg NODE_IMAGE --build-arg GRAFANA_BASE_IMAGE -f deploy/grafana/Dockerfile .
+
 # Boot the k3d cluster, build and import the cerberus image, apply manifests, wait for pods.
 e2e-up: e2e-down
     @just _e2e-k3d-cluster-create
     @echo "==> building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
     node .github/scripts/build-with-registry-retry.mjs \
         docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" --build-arg GO_IMAGE -f Dockerfile.local .
+    @echo "==> building the maintained Grafana image"
+    @just e2e-grafana-image
     @echo "==> pre-pulling external images on host docker (retry)"
     @just _pull-retry {{E2E_EXTERNAL_IMAGES}}
     @echo "==> importing images into k3d ({{K3D_CLUSTER}}) — one at a time, with retry+verify"
@@ -142,7 +155,7 @@ e2e-up: e2e-down
     @# glob-pattern parameter and an arbitrary argv image list, so
     @# `e2e-bwc-up` (sub-issue #3097) reuses it unchanged, only varying its
     @# own image list and exclusion filter at the call site.
-    @K3D_CLUSTER={{K3D_CLUSTER}} node .github/scripts/k3d-image-import.mjs {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}}
+    @K3D_CLUSTER={{K3D_CLUSTER}} node .github/scripts/k3d-image-import.mjs {{CERBERUS_IMAGE}} {{GRAFANA_E2E_IMAGE}} {{E2E_EXTERNAL_IMAGES}}
     @echo "==> applying fixture manifests (CH, Grafana, collector, sample apps)"
     kubectl apply -k test/e2e/k3s/
     @# In split mode the chart-managed datasource hostnames change (each head

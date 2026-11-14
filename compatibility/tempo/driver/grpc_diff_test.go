@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/tempo/pkg/tempopb"
-	v1 "github.com/grafana/tempo/pkg/tempopb/common/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
+	v1 "github.com/tsouza/cerberus/internal/thirdparty/tempopb/common/v1"
 )
 
 // The gRPC transport's whole claim is that it is a transport-only

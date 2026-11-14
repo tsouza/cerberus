@@ -1,0 +1,14 @@
+# Compose override for the e2e lanes: the `grafana` service runs the
+# maintained image built from deploy/grafana/Dockerfile instead of the official
+# release. Build it first with `just e2e-grafana-image`; compose never pulls or
+# pushes it. Select both files and the `grafana` profile:
+#
+#   COMPOSE_FILE=docker-compose.yml:test/e2e/grafana/compose/maintained-grafana.yml
+#   COMPOSE_PROFILES=grafana
+services:
+  grafana:
+    image: cerberus-grafana:e2e
+    pull_policy: never
+    environment:
+      # The maintained image carries its plugins; nothing is fetched at startup.
+      GF_PLUGINS_PREINSTALL_SYNC: ""

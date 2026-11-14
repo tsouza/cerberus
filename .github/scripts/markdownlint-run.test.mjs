@@ -24,7 +24,7 @@
 
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, copyFileSync, writeFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,7 +103,12 @@ test('chooseEngine refuses an absent binary', () => {
 });
 
 test('GLOBS excludes every vendored upstream corpus', () => {
-  for (const head of ['prometheus', 'tempo', 'loki']) {
+  // The heads are read from the tree, so a corpus vendored under a new
+  // compatibility/<head>/upstream/ is covered without editing this test.
+  const compat = join(REPO_ROOT, 'compatibility');
+  const heads = readdirSync(compat).filter((head) => existsSync(join(compat, head, 'upstream')));
+  assert.ok(heads.length > 0, 'no compatibility/*/upstream/ directory found; the check below would be vacuous');
+  for (const head of heads) {
     assert.ok(
       GLOBS.includes(`!compatibility/${head}/upstream/**`),
       `${head}'s vendored upstream Markdown must stay out of the lint set`,

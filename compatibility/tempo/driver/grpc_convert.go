@@ -39,8 +39,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/grafana/tempo/pkg/tempopb"
-	v1 "github.com/grafana/tempo/pkg/tempopb/common/v1"
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
+	v1 "github.com/tsouza/cerberus/internal/thirdparty/tempopb/common/v1"
 )
 
 // marshalDiffBody marshals one of the differ-local response structs

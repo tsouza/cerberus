@@ -118,7 +118,10 @@ spec:
     spec:
       containers:
         - name: grafana
-          image: ghcr.io/tsouza/cerberus@sha256:37306fa251ae7e82d71b9179907782c30d9321c5a601c18dd1ac00362a79654e
+          # deploy/grafana/Dockerfile, built on the host by `just
+          # e2e-grafana-image` and imported into k3d; never pulled.
+          image: cerberus-grafana:e2e
+          imagePullPolicy: Never
           ports:
             - name: http
               containerPort: 3000

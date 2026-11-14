@@ -10,8 +10,9 @@ import (
 
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/proto"
-	"github.com/grafana/tempo/pkg/tempopb"
-	v11 "github.com/grafana/tempo/pkg/tempopb/trace/v1"
+
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
+	v11 "github.com/tsouza/cerberus/internal/thirdparty/tempopb/trace/v1"
 )
 
 // makeSpan returns a Span with the given 16-byte trace ID and 8-byte

@@ -25,7 +25,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/grafana/tempo/pkg/tempopb"
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
 
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/reqctx"

@@ -4058,7 +4058,7 @@ stay available; only the future-hotfix branch is removed.
 ## Dev / prod parity
 
 Local development reads the same env vars and connects to the same
-ClickHouse / OTel collector shapes as production. `docker compose up`
+ClickHouse / OTel collector shapes as production. `docker compose --profile grafana up`
 or `just e2e-up` (k3d) spin up the full stack — ClickHouse, the OTel
 collector, and Grafana — so the development feedback loop exercises
 the same code

@@ -37,6 +37,8 @@ e2e-bwc-up scenario="object-storage": e2e-down
     @echo "==> [bwc] building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
     node .github/scripts/build-with-registry-retry.mjs \
         docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" --build-arg GO_IMAGE -f Dockerfile.local .
+    @echo "==> [bwc] building the maintained Grafana image"
+    @just e2e-grafana-image
     @echo "==> [bwc] pre-pulling external + bwc images on host docker"
     @# The standalone-CH image (the *-alpine tag in E2E_EXTERNAL_IMAGES) backs
     @# test/e2e/k3s/clickhouse.yaml, which the bwc kustomization EXCLUDES — this
@@ -52,7 +54,7 @@ e2e-bwc-up scenario="object-storage": e2e-down
     @# *-alpine ClickHouse image the bwc kustomization never applies) differ.
     @IMAGE_IMPORT_EXCLUDE="clickhouse/clickhouse-server:*-alpine" \
     K3D_CLUSTER={{K3D_CLUSTER}} node .github/scripts/k3d-image-import.mjs \
-        {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_BWC_IMAGES}}
+        {{CERBERUS_IMAGE}} {{GRAFANA_E2E_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_BWC_IMAGES}}
     @echo "==> [bwc] phase 1: namespace + MinIO + bucket-create Job (before ClickHouse)"
     kubectl apply -f test/e2e/k3s/namespace.yaml
     kubectl apply -f test/e2e/k3s-bwc/minio.yaml -f test/e2e/k3s-bwc/bucket-job.yaml
@@ -197,6 +199,8 @@ e2e-datashard-up count="2" replicas="1": e2e-down
     @echo "==> [datashard] building cerberus image (build tags: '{{CERBERUS_BUILD_TAGS}}')"
     node .github/scripts/build-with-registry-retry.mjs \
         docker build -t {{CERBERUS_IMAGE}} --build-arg GO_BUILD_TAGS="{{CERBERUS_BUILD_TAGS}}" --build-arg GO_IMAGE -f Dockerfile.local .
+    @echo "==> [datashard] building the maintained Grafana image"
+    @just e2e-grafana-image
     @echo "==> [datashard] pre-pulling external + bundled-CH images on host docker"
     @IMAGE_PULL_EXCLUDE="clickhouse/clickhouse-server:*-alpine" \
     just _pull-retry {{E2E_EXTERNAL_IMAGES}} {{E2E_BUNDLED_CH_IMAGES}}
@@ -208,7 +212,7 @@ e2e-datashard-up count="2" replicas="1": e2e-down
     @# (cerberus issue #3107).
     @IMAGE_IMPORT_EXCLUDE="clickhouse/clickhouse-server:*-alpine" \
     K3D_CLUSTER={{K3D_CLUSTER}} node .github/scripts/k3d-image-import.mjs \
-        {{CERBERUS_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_BUNDLED_CH_IMAGES}}
+        {{CERBERUS_IMAGE}} {{GRAFANA_E2E_IMAGE}} {{E2E_EXTERNAL_IMAGES}} {{E2E_BUNDLED_CH_IMAGES}}
     @echo "==> [datashard] phase 1: namespace"
     kubectl apply -f test/e2e/k3s/namespace.yaml
     @echo "==> [datashard] phase 2: installing cerberus + bundled ClickHouse (dataShards.count={{count}}, replicas={{replicas}}) via Helm"

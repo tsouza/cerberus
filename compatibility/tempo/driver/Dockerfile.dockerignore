@@ -53,9 +53,8 @@ test/e2e/grafana/
 
 # Narrow the compatibility/ exclusion: keep compatibility/tempo/driver/
 # in the build context (needed for `go build`), but skip the heavy
-# upstream/ vendor + sibling harnesses to keep the image small.
+# sibling harnesses to keep the image small.
 compatibility/prometheus/
 compatibility/loki/
-compatibility/tempo/upstream/
 compatibility/tempo/reports/
 compatibility/tempo/scripts/

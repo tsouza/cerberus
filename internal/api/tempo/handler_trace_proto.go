@@ -4,10 +4,10 @@ import (
 	"encoding/hex"
 	"strings"
 
-	"github.com/grafana/tempo/pkg/tempopb"
-	commonv1 "github.com/grafana/tempo/pkg/tempopb/common/v1"
-	resourcev1 "github.com/grafana/tempo/pkg/tempopb/resource/v1"
-	tracev1 "github.com/grafana/tempo/pkg/tempopb/trace/v1"
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
+	commonv1 "github.com/tsouza/cerberus/internal/thirdparty/tempopb/common/v1"
+	resourcev1 "github.com/tsouza/cerberus/internal/thirdparty/tempopb/resource/v1"
+	tracev1 "github.com/tsouza/cerberus/internal/thirdparty/tempopb/trace/v1"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 )

@@ -8,12 +8,9 @@
 // silently returned JSON to a client that asked for proto, Grafana
 // failed to decode the body, the trace view went blank).
 //
-// The vendored upstream pkg/httpclient already picks
-// `application/protobuf` for QueryTraceEndpoint / QueryTraceV2Endpoint
-// (see compatibility/tempo/upstream/pkg/httpclient/client.go), but the
-// upstream subtree is `go.mod ignore`d on purpose — it's reference
-// material, not consumable. We therefore implement a small sibling
-// fetcher here that mirrors upstream's content-type negotiation:
+// Upstream Tempo's own HTTP client asks for `application/protobuf` on
+// its trace-by-id endpoints. This fetcher makes the same content-type
+// negotiation:
 //
 //   - set Accept: application/protobuf
 //   - read the body up to the same 16 MB limit as fetchJSON
@@ -50,7 +47,8 @@ import (
 	"strings"
 
 	"github.com/gogo/protobuf/proto"
-	"github.com/grafana/tempo/pkg/tempopb"
+
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
 )
 
 // fetchProto GETs a URL with the Accept: application/protobuf header

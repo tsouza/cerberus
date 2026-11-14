@@ -98,7 +98,6 @@ export const PINNED_MARKDOWNLINT_VERSION = '0.41.1';
 export const GLOBS = [
   '**/*.md',
   '!compatibility/prometheus/upstream/**',
-  '!compatibility/tempo/upstream/**',
   '!compatibility/loki/upstream/**',
   '!**/node_modules/**',
 ];

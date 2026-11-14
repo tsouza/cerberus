@@ -1,0 +1,8 @@
+# The grafana/tempo commit the Tempo compatibility harness tracks: the
+# reference image (docker-compose.yml, grafana/tempo:main-<commit7>) and the
+# in-house wire types (internal/thirdparty/tempopb) are both taken from it.
+# test/regression/fork_version_skew_test.go holds this, the image tag and the
+# go.mod requirement on one commit.
+upstream_repo:    github.com/grafana/tempo
+upstream_commit:  2f74ea818de1377e6ac9dd15117fa284c9c6ba36
+upstream_describe: v3.0.0-rc.1-7-g2f74ea818

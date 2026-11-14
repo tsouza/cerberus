@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	commonv1 "github.com/grafana/tempo/pkg/tempopb/common/v1"
-	tracev1 "github.com/grafana/tempo/pkg/tempopb/trace/v1"
+	commonv1 "github.com/tsouza/cerberus/internal/thirdparty/tempopb/common/v1"
+	tracev1 "github.com/tsouza/cerberus/internal/thirdparty/tempopb/trace/v1"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"

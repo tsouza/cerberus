@@ -157,7 +157,7 @@ func TestForkVersionSkew(t *testing.T) {
 		// Tempo is pinned by commit on every side:
 		//   - go.mod require is a pseudo-version vX-0.<ts>-<commit12>.
 		//   - the compat reference image is grafana/tempo:main-<commit7>.
-		//   - compatibility/tempo/upstream/VERSION records upstream_commit.
+		//   - compatibility/tempo/UPSTREAM_VERSION records upstream_commit.
 		// Compare on the shortest available commit prefix.
 		lib := requireVersion(t, goMod, "github.com/grafana/tempo")
 		libCommit := pseudoVersionCommit(t, lib)
@@ -196,16 +196,16 @@ func TestForkVersionSkew(t *testing.T) {
 				tempoForkReplace)
 		}
 
-		// Cross-check the committed VERSION file too: it records the same
+		// Cross-check the committed pin file too: it records the same
 		// upstream commit and must not drift from go.mod either.
-		verBuf, err := os.ReadFile("../../compatibility/tempo/upstream/VERSION")
+		verBuf, err := os.ReadFile("../../compatibility/tempo/UPSTREAM_VERSION")
 		if err != nil {
-			t.Fatalf("read compatibility/tempo/upstream/VERSION: %v", err)
+			t.Fatalf("read compatibility/tempo/UPSTREAM_VERSION: %v", err)
 		}
 		verCommit := versionFileField(t, string(verBuf), "upstream_commit")
 		if !commitPrefixMatch(libCommit, verCommit) {
 			t.Fatalf("tempo version skew: go.mod fork base is at commit %s, but "+
-				"compatibility/tempo/upstream/VERSION records upstream_commit %s. "+
+				"compatibility/tempo/UPSTREAM_VERSION records upstream_commit %s. "+
 				"Align the two (see docs/upstream-forks.md § version-skew gate).",
 				libCommit, verCommit)
 		}

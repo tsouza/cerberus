@@ -70,7 +70,6 @@ jobs:
             --format json \
             --output ./lychee.json \
             --exclude-path compatibility/prometheus/upstream \
-            --exclude-path compatibility/tempo/upstream \
             --exclude-path compatibility/loki/upstream \
             --exclude-path node_modules \
             --exclude 'https://slsa\.dev' \

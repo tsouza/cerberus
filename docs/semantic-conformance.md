@@ -1151,7 +1151,7 @@ One deterministic OTel resource — a simple undotted resource-attribute key (\`
 
 ### ARCH-AGPL-BINARY-REACHABILITY
 
-No AGPLv3 package is reachable from ./cmd/cerberus (CLAUDE.md invariant 14): \`go list -deps ./cmd/cerberus\`'s transitive build-dependency closure contains no import path under github.com/grafana/loki/ and no import path under github.com/grafana/tempo/ other than the Apache-2.0 github.com/grafana/tempo/pkg/tempopb subtree. The root go.mod's require on grafana/loki/v3 and grafana/tempo, and their use inside compatibility/ and behind the agpl\_oracle build tag or the test/oracle nested module, is module membership for test-only oracles, never binary reachability, and carries no licence obligation for the shipped Apache-2.0 binary.
+No AGPLv3 module is in ./cmd/cerberus's build graph (CLAUDE.md invariant 14): every module that provides a package in \`go list -deps ./cmd/cerberus\`'s transitive build-dependency closure carries a licence file at its root, and none of those licences is the GNU Affero GPL. The Tempo wire types the binary needs are an in-house copy of Tempo's Apache-2.0 pkg/tempopb (internal/thirdparty/tempopb), so neither grafana/loki/v3 nor grafana/tempo is in that graph. The root go.mod's require on grafana/loki/v3 and grafana/tempo, and their use inside compatibility/ and behind the agpl\_oracle build tag or the test/oracle nested module, is module membership for test-only oracles, never binary reachability, and carries no licence obligation for the shipped Apache-2.0 binary.
 
 - scope: `architecture` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`, `HEAD-TRACEQL`
 - authority: `operational-invariant` · status: `active` · owner: `cerberus-core`
@@ -1170,7 +1170,7 @@ No AGPLv3 package is reachable from ./cmd/cerberus (CLAUDE.md invariant 14): \`g
 **Blind spots:**
 
 - agpl-clean.mjs checks build deps only (\`go list -deps\`, which excludes test imports by construction) of exactly one target, ./cmd/cerberus (AGPL\_CLEAN\_PACKAGE). A second binary entrypoint added anywhere else in the tree is not checked unless AGPL\_CLEAN\_PACKAGE is pointed at it or a second gate invocation is added — a new cmd/\* package needing its own check is reviewer discipline to catch.
-- The gate matches on import PATH PREFIX (github.com/grafana/loki/, github.com/grafana/tempo/ minus pkg/tempopb); it cannot detect AGPL logic vendored under a different import path or copied directly into an Apache-licensed file — that is a licence-review judgment, not something a dependency-graph scan can see.
+- The gate reads each module's ROOT licence file; it cannot detect AGPL logic vendored inside this repository's own module or copied directly into an Apache-licensed file — that is a licence-review judgment, not something a dependency-graph scan can see.
 - The wire-compatibility error strings this repo deliberately matches to grafana/loki / grafana/tempo (documented at each call site per this gate's own header) are verbatim text, not code reachability, and sit outside what this contract or its binding evaluates at all.
 
 ### ARCH-CAP-FILTER-001
