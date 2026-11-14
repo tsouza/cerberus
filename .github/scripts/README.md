@@ -1227,15 +1227,21 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     expressions agree; `1` on any drift. `main-coalescing.test.mjs` carries the
     event/ref decision table and structural negative controls.
 - **`agpl-clean.mjs`** — `ci.yml`, the `agpl-clean` job. The provably-clean-build
-  licence gate: runs `go list -deps ./cmd/cerberus` and reports any AGPLv3
-  package the Apache-2.0 binary links (`github.com/grafana/loki/*`, or
-  `github.com/grafana/tempo/*` except the Apache-licensed `pkg/tempopb`). The
-  test-only AGPL importers are quarantined into the `test/oracle` nested module
-  (a hard module boundary `go list -deps` does not cross), so only production
-  imports can surface here. The binary is licence-clean: LogQL / TraceQL parse
-  with in-house Apache reimplementations and PromQL with the upstream Apache
-  prometheus parser.
-  - Env: `AGPL_CLEAN_PACKAGE` (optional; default `./cmd/cerberus`).
+  licence gate: runs `go list -deps` over `./cmd/cerberus` and every package a
+  tracked Dockerfile builds, once per build configuration — each GOOS/GOARCH
+  pair of `.goreleaser.yml`'s cerberus build crossed with each build-tag set the
+  tree builds those binaries with (untagged, a Dockerfile's literal `-tags`, and
+  a `-tags "${ARG}"` variable's default plus every value a just recipe's
+  `--build-arg` passes it, resolved through `env_var_or_default` to the values
+  workflows and recipes assign the env var) — and fails when any module of
+  those graphs is licensed AGPLv3, has no licence file, or a Dockerfile runs a
+  bare `go mod download`. A Go command argument or tag source of a shape the
+  scan cannot classify (a package that is not a `./` path, an unknown flag) is a
+  failure, not a skip. `agpl-clean.test.mjs` pins the parsers and runs the gate
+  over a fixture module whose AGPL imports sit behind `darwin` and
+  `chaos_sleep` build constraints.
+  - Env: `AGPL_CLEAN_PACKAGE` (optional; scans that one package instead of the
+    Dockerfile-built set).
   - Exit: `0` clean; `1` on a violation. ENFORCING (a violation fails CI) and a
     required status check on `main`.
 - **`go-fix-check.mjs`** — `ci.yml`, the `lint` job step "go fix fixed-point
