@@ -1718,9 +1718,11 @@ jobs:
   # the binary clean is REACHABILITY: nothing under compatibility/ or behind
   # the agpl_oracle build tag is imported from ./cmd/cerberus.
   #
-  # ENFORCING: the gate runs `go list -deps ./cmd/cerberus`, reads the licence
-  # file at the root of every module that provides one of those packages, and
-  # FAILS (exit 1) if any is AGPL or carries no licence file. Logic lives in
+  # ENFORCING: the gate runs `go list -deps` over ./cmd/cerberus and every
+  # package a tracked Dockerfile builds, reads the licence file at the root of
+  # every module that provides one of those packages, and FAILS (exit 1) if any
+  # is AGPL or carries no licence file, or if a Dockerfile runs a bare
+  # `go mod download` (which fetches every go.mod requirement). Logic lives in
   # .github/scripts/agpl-clean.mjs (node: builtins only), self-tested by
   # agpl-clean.test.mjs in the same job.
   agpl-clean:
@@ -1735,8 +1737,9 @@ jobs:
     if: >-
       always() &&
       (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')
-    # `go list -deps` reads module metadata and compiles nothing, so the
-    # smallest Ubicloud runner. Settles in about a minute and a half; 12m
+    # `go list -deps` reads module metadata and compiles nothing, and the
+    # tempopb drift check compiles only the two formatters, so the smallest
+    # Ubicloud runner. Settles in a few minutes; 12m
     # holds two capped checkout attempts (test/regression/git_fetch_stall_test.go)
     # and a cold module fetch without leaving a hang unbounded.
     runs-on: ubicloud-standard-2
@@ -1774,3 +1777,16 @@ jobs:
 
       - name: AGPL clean-build gate
         run: node .github/scripts/agpl-clean.mjs
+
+      # The in-house tempopb copy must be exactly what `just tempopb-sync`
+      # produces from the pinned upstream commit: a hand edit to the generated
+      # code (a renumbered field, a dropped case) changes the wire format
+      # without failing any round-trip test, since marshal and unmarshal come
+      # from the same file.
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2  # v2.90.2
+        with:
+          tool: just@1.46.0
+      - name: Install the pinned Go formatters
+        run: just install-formatters
+      - name: tempopb copy matches the pinned upstream
+        run: just tempopb-sync-check

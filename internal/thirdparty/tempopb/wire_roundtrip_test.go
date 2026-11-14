@@ -86,16 +86,16 @@ func labels() []commonv1.KeyValue {
 	return []commonv1.KeyValue{*strKV("resource.service.name", "checkout")}
 }
 
-// TestWireRoundTrip encodes each message the Tempo head serves or accepts,
-// populated across every field, decodes it into a fresh value, and requires the
-// result to equal the input and the encoded length to equal Size().
-func TestWireRoundTrip(t *testing.T) {
-	t.Parallel()
+// wireCase is one message the Tempo head serves or accepts, populated across
+// every field, with a constructor for an empty value of the same type.
+type wireCase struct {
+	in    wireMessage
+	fresh func() wireMessage
+}
 
-	cases := map[string]struct {
-		in    wireMessage
-		fresh func() wireMessage
-	}{
+// wireCases is the message set the wire tests run over, keyed by type name.
+func wireCases() map[string]wireCase {
+	return map[string]wireCase{
 		"Trace": {fullTrace(), func() wireMessage { return &tempopb.Trace{} }},
 		"TraceByIDResponse": {&tempopb.TraceByIDResponse{
 			Trace: fullTrace(), Metrics: &tempopb.TraceByIDMetrics{InspectedBytes: 99},
@@ -146,8 +146,15 @@ func TestWireRoundTrip(t *testing.T) {
 			Metrics: searchMetrics(), Status: tempopb.PartialStatus_PARTIAL, Message: "m",
 		}, func() wireMessage { return &tempopb.QueryInstantResponse{} }},
 	}
+}
 
-	for name, tc := range cases {
+// TestWireRoundTrip encodes each wire case, decodes it into a fresh value, and
+// requires the result to equal the input and the encoded length to equal
+// Size().
+func TestWireRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range wireCases() {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
