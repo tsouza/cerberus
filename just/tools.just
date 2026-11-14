@@ -28,7 +28,11 @@ hooks-install:
     lefthook install
 
 
+# goimports is a `tool` of the root go.mod, so it installs at the
+# golang.org/x/tools version go.mod requires — the one Dependabot's gomod
+# updates bump.
+
 # Install the pinned Go formatters (gofumpt, goimports) into $GOBIN.
 install-formatters:
     go install mvdan.cc/gofumpt@{{GOFUMPT_VERSION}}
-    go install golang.org/x/tools/cmd/goimports@{{GOIMPORTS_VERSION}}
+    go install golang.org/x/tools/cmd/goimports
