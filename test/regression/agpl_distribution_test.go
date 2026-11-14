@@ -28,7 +28,65 @@ const (
 	// grafanaLabsHubNamespace is the Docker Hub namespace of Grafana Labs'
 	// server images (grafana, loki, tempo, mimir, pyroscope), all AGPL-3.0.
 	grafanaLabsHubNamespace = "grafana/"
+	// publishedGrafanaRepository and publishedGrafanaTagPrefix name the
+	// maintained Grafana image this repository once published to GHCR.
+	publishedGrafanaRepository   = "ghcr.io/tsouza/cerberus"
+	publishedGrafanaTagPrefix    = "grafana-"
+	e2eWorkflowPath              = "../../.github/workflows/e2e.yml"
+	rootComposeFileName          = "docker-compose.yml"
+	maintainedGrafanaOverrideRel = "test/e2e/grafana/compose/maintained-grafana.yml"
 )
+
+// normaliseImageRef returns an image reference's repository with Docker Hub's
+// implicit parts spelled out the short way: `docker.io/`, `index.docker.io/`
+// and `registry-1.docker.io/` hosts and the `library/` namespace are dropped,
+// so `docker.io/grafana/grafana` and `grafana/grafana` compare equal. Any other
+// registry host is kept. The tag is returned separately; a digest is dropped.
+func normaliseImageRef(ref string) (repo, tag string) {
+	ref, _, _ = strings.Cut(strings.TrimSpace(ref), "@")
+	repo = ref
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		repo, tag = ref[:i], ref[i+1:]
+	}
+	for _, host := range []string{"docker.io/", "index.docker.io/", "registry-1.docker.io/"} {
+		repo = strings.TrimPrefix(repo, host)
+	}
+	repo = strings.TrimPrefix(repo, "library/")
+	return repo, tag
+}
+
+// agplImage reports why an image reference is a known AGPL-3.0 image, or "".
+func agplImage(ref string) string {
+	repo, tag := normaliseImageRef(ref)
+	switch {
+	case strings.HasPrefix(repo, grafanaLabsHubNamespace):
+		return "a Grafana Labs server image (AGPL-3.0)"
+	case repo == publishedGrafanaRepository && strings.HasPrefix(tag, publishedGrafanaTagPrefix):
+		return "the maintained Grafana image (Grafana and its Drilldown apps are AGPL-3.0)"
+	default:
+		return ""
+	}
+}
+
+func TestAGPLImageRecognisesRegistrySpellings(t *testing.T) {
+	t.Parallel()
+
+	for ref, agpl := range map[string]bool{
+		"grafana/grafana:12.2.9":                        true,
+		"docker.io/grafana/grafana:12.2.9":              true,
+		"index.docker.io/grafana/loki:3.7.1":            true,
+		"registry-1.docker.io/grafana/tempo@sha256:abc": true,
+		"ghcr.io/tsouza/cerberus:grafana-1a2b3c4":       true,
+		"ghcr.io/tsouza/cerberus:v1.21.0":               false,
+		"example.org/team/app:1.0":                      false,
+		"docker.io/library/app:2":                       false,
+		"localhost:5000/cerberus:e2e":                   false,
+	} {
+		if got := agplImage(ref) != ""; got != agpl {
+			t.Errorf("agplImage(%q) flagged=%v, want %v", ref, got, agpl)
+		}
+	}
+}
 
 type agplComposeService struct {
 	Image      string   `yaml:"image"`
@@ -81,10 +139,10 @@ func TestQuickstartDefaultProfileStartsNoAGPLImage(t *testing.T) {
 		if len(svc.Profiles) > 0 {
 			continue
 		}
-		if strings.HasPrefix(svc.Image, grafanaLabsHubNamespace) {
-			t.Errorf("%s service %q runs %s in the default profile; Grafana Labs' server images are AGPL-3.0, "+
-				"so a plain `docker compose up` must not start one — give it a profile",
-				rootComposePath, name, svc.Image)
+		if why := agplImage(svc.Image); why != "" {
+			t.Errorf("%s service %q runs %s, %s, in the default profile; a plain `docker compose up` "+
+				"must not start an AGPL image — give it a profile",
+				rootComposePath, name, svc.Image, why)
 		}
 		if buildsMaintainedGrafana(svc.Build) {
 			t.Errorf("%s service %q builds %s in the default profile", rootComposePath, name, maintainedGrafanaDockerfile)
@@ -99,7 +157,7 @@ func TestQuickstartDefaultProfileStartsNoAGPLImage(t *testing.T) {
 		t.Errorf("%s grafana service profiles are %v, want [%s]: Grafana is AGPL-3.0 and is started only on request",
 			rootComposePath, grafana.Profiles, quickstartGrafanaProfile)
 	}
-	if repo, _, _ := strings.Cut(grafana.Image, ":"); repo != officialGrafanaRepository {
+	if repo, _ := normaliseImageRef(grafana.Image); repo != officialGrafanaRepository {
 		t.Errorf("%s grafana service runs %q, want the official %s release; the project distributes no Grafana image",
 			rootComposePath, grafana.Image, officialGrafanaRepository)
 	}
@@ -109,7 +167,10 @@ func TestQuickstartDefaultProfileStartsNoAGPLImage(t *testing.T) {
 }
 
 // pushFlag matches a docker CLI push: `--push`, `--push=true`, or `docker push`.
-var pushFlag = regexp.MustCompile(`(^|\s)--push(\s|=true|$)|docker\s+(image\s+)?push\s`)
+var pushFlag = regexp.MustCompile(`(^|\s)--push(\s|=true|$)|docker\s+(image\s+)?push\b`)
+
+// retagCommand matches a docker CLI retag, the step before a push to a registry.
+var retagCommand = regexp.MustCompile(`docker\s+(image\s+)?tag\b`)
 
 type agplWorkflowStep struct {
 	Name string         `yaml:"name"`
@@ -120,30 +181,71 @@ type agplWorkflowStep struct {
 
 type agplWorkflowFile struct {
 	Jobs map[string]struct {
+		Env   map[string]string  `yaml:"env"`
 		Steps []agplWorkflowStep `yaml:"steps"`
 	} `yaml:"jobs"`
 }
 
-// TestNoWorkflowPublishesTheMaintainedGrafanaImage: a workflow may build
-// deploy/grafana/Dockerfile only into the local daemon, under the tag the e2e
-// stacks run.
+// shellLines splits a script into logical lines, joining `\`-continued ones.
+func shellLines(src string) []string {
+	return strings.Split(regexp.MustCompile(`\\\r?\n`).ReplaceAllString(src, " "), "\n")
+}
+
+// TestNoWorkflowPublishesTheMaintainedGrafanaImage: the maintained Grafana
+// image is built only into the local daemon, under the tag the e2e stacks run.
+// No workflow, recipe or CI script pushes it or retags it, and no workflow
+// step builds it with push enabled.
 func TestNoWorkflowPublishesTheMaintainedGrafanaImage(t *testing.T) {
 	t.Parallel()
 
 	localTag := justDump(t).resolvedStringAssignments()["GRAFANA_E2E_IMAGE"]
 	if localTag == "" {
-		t.Errorf("%s does not define GRAFANA_E2E_IMAGE, the tag the e2e stacks run", justfilePath)
+		t.Fatalf("%s does not define GRAFANA_E2E_IMAGE, the tag the e2e stacks run", justfilePath)
+	}
+	localRepo, _ := normaliseImageRef(localTag)
+	// A line refers to the maintained image when it names its Dockerfile, its
+	// tag's repository, or the Just variable holding the tag.
+	markers := []string{maintainedGrafanaDockerfile, localRepo, "GRAFANA_E2E_IMAGE"}
+	mentions := func(line string) bool {
+		return slices.ContainsFunc(markers, func(m string) bool { return strings.Contains(line, m) })
 	}
 
-	paths, err := filepath.Glob("../../.github/workflows/*.yml")
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("glob workflows: %v (found %d)", err, len(paths))
+	var files []string
+	for _, pattern := range []string{
+		"../../.github/workflows/*.yml", "../../.github/scripts/*.mjs", "../../.github/scripts/lib/*.mjs",
+		"../../just/*.just", justfilePath,
+	} {
+		matched, err := filepath.Glob(pattern)
+		if err != nil || len(matched) == 0 {
+			t.Fatalf("glob %s: %v (found %d)", pattern, err, len(matched))
+		}
+		files = append(files, matched...)
 	}
-	builds := 0
-	for _, path := range paths {
+
+	builds, mentioned := 0, 0
+	for _, path := range files {
 		src, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
+		}
+		for i, line := range shellLines(string(src)) {
+			if !mentions(line) {
+				continue
+			}
+			mentioned++
+			if pushFlag.MatchString(line) || retagCommand.MatchString(line) {
+				t.Errorf("%s:%d pushes or retags the maintained Grafana image; it carries AGPL-3.0 software "+
+					"and is built only into the local daemon:\n%s", path, i+1, strings.TrimSpace(line))
+			}
+			if strings.Contains(line, maintainedGrafanaDockerfile) && regexp.MustCompile(`docker\s+(buildx\s+)?build\b`).MatchString(line) {
+				builds++
+				if !strings.Contains(line, "-t "+localTag+" ") && !strings.Contains(line, "-t {{GRAFANA_E2E_IMAGE}} ") {
+					t.Errorf("%s:%d builds the maintained Grafana image under a tag other than %s", path, i+1, localTag)
+				}
+			}
+		}
+		if !strings.HasSuffix(path, ".yml") {
+			continue
 		}
 		var wf agplWorkflowFile
 		if err := yaml.Unmarshal(src, &wf); err != nil {
@@ -152,27 +254,55 @@ func TestNoWorkflowPublishesTheMaintainedGrafanaImage(t *testing.T) {
 		for _, jobID := range slices.Sorted(maps.Keys(wf.Jobs)) {
 			for _, step := range wf.Jobs[jobID].Steps {
 				file, _ := step.With["file"].(string)
-				if !strings.Contains(step.Run, maintainedGrafanaDockerfile) && file != maintainedGrafanaDockerfile {
+				if file != maintainedGrafanaDockerfile {
 					continue
 				}
 				builds++
-				if pushFlag.MatchString(step.Run) {
-					t.Errorf("%s job %q step %q pushes the maintained Grafana image; it carries AGPL-3.0 "+
-						"software and is built only into the local daemon", path, jobID, step.Name)
-				}
 				if push, _ := step.With["push"].(bool); push {
 					t.Errorf("%s job %q step %q sets push: true for the maintained Grafana image", path, jobID, step.Name)
-				}
-				if localTag != "" && step.Run != "" && !strings.Contains(step.Run, "-t "+localTag+" ") {
-					t.Errorf("%s job %q step %q builds the maintained Grafana image under a tag other than %s",
-						path, jobID, step.Name, localTag)
 				}
 			}
 		}
 	}
-	if builds == 0 {
-		t.Errorf("no workflow builds %s; the compose e2e lanes run it and must build it locally",
-			maintainedGrafanaDockerfile)
+	if builds == 0 || mentioned == 0 {
+		t.Errorf("nothing builds %s (builds=%d, mentions=%d); the e2e lanes run it and must build it locally — "+
+			"this guard would inspect nothing", maintainedGrafanaDockerfile, builds, mentioned)
+	}
+}
+
+// TestE2EComposeJobsLayerTheMaintainedGrafana: every e2e.yml job that starts
+// the compose stack's grafana profile layers the maintained-Grafana override on
+// the root compose file, so the compose lanes test the patched image the k3d
+// lanes run, not the quickstart's stock one.
+func TestE2EComposeJobsLayerTheMaintainedGrafana(t *testing.T) {
+	t.Parallel()
+
+	src, err := os.ReadFile(e2eWorkflowPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", e2eWorkflowPath, err)
+	}
+	var wf agplWorkflowFile
+	if err := yaml.Unmarshal(src, &wf); err != nil {
+		t.Fatalf("parse %s: %v", e2eWorkflowPath, err)
+	}
+	if _, err := os.Stat("../../" + maintainedGrafanaOverrideRel); err != nil {
+		t.Fatalf("%s: %v", maintainedGrafanaOverrideRel, err)
+	}
+	jobs := 0
+	for _, jobID := range slices.Sorted(maps.Keys(wf.Jobs)) {
+		env := wf.Jobs[jobID].Env
+		if !strings.Contains(env["COMPOSE_PROFILES"], quickstartGrafanaProfile) {
+			continue
+		}
+		jobs++
+		files := strings.Split(env["COMPOSE_FILE"], ":")
+		if len(files) < 2 || files[0] != rootComposeFileName || !slices.Contains(files[1:], maintainedGrafanaOverrideRel) {
+			t.Errorf("%s job %q starts the grafana profile with COMPOSE_FILE %q; want %s first and %s layered on it",
+				e2eWorkflowPath, jobID, env["COMPOSE_FILE"], rootComposeFileName, maintainedGrafanaOverrideRel)
+		}
+	}
+	if jobs == 0 {
+		t.Errorf("no %s job sets COMPOSE_PROFILES with %q; the compose e2e lanes must start Grafana", e2eWorkflowPath, quickstartGrafanaProfile)
 	}
 }
 
