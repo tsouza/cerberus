@@ -1143,6 +1143,44 @@ leads the key) and peak memory overlaps (131.8–138.9 MB against
 `TestDeployedMetricsSortingKeyDecidesAggregationInOrder` rather than by a
 sentinel.
 
+## Why a probe that missed a node starts the defect gates on
+
+The defect gates follow the builds a probe reached. A node the probe missed —
+a configured address that did not answer, a replica the cluster read could not
+list — may run any build, including one inside a wrong-result range no
+reached node carries. A probe that keeps the gates already in force relies on
+an earlier probe having seen that node. At boot no probe has, and a floor
+fallback records that none answered, so the gates in force say nothing about
+the missed node. Resolving from the reached nodes alone there left the
+condition-cache override and every shape gate off while the missed node,
+inside `25.3`–`26.9` (ClickHouse#119168) or `25.11`–`26.10`
+(ClickHouse#120286), answered those shapes with wrong rows and no error.
+
+Starting every gate costs speed, not correctness: each gate's setting returns
+the same rows on a node outside the defect's range. A gate whose setting the
+lowest reached build does not know stays off, because every reached node on
+that build would then reject every query the gate stamps — a known outage on
+the nodes that answered, traded for a possible defect on one that did not.
+
+The analyzer decision is not started the same way. A node whose analyzer is
+mandatory refuses `enable_analyzer=0` with an error, never a wrong answer, and
+that refusal requests the early re-probe. Withholding the stamp on every
+reached node instead would give up the native-histogram speed-up it buys
+below 26.8 (`docs/performance.background.md`) on the nodes that answered.
+
+A probe that reaches only part of the fleet re-runs every 10 seconds rather
+than every 5 minutes because the posture it leaves is one the process wants to
+leave, exactly like a floor fallback: the gates stay on, and the version stays
+held down, until a probe sees every node.
+
+The refusal that requests the early re-probe was captured from
+`26.9.1.1629` and `26.9.25.15`, over the native protocol and over HTTP, with
+the same text for `enable_analyzer` and its alias
+`allow_experimental_analyzer`: code 452, `Setting 'enable_analyzer' cannot be
+disabled: the analyzer is mandatory since v26.9 and the old query analysis is
+no longer supported.` A hardened profile's constraint answers code 452 too,
+with a different message, so the message decides.
+
 ## Why a node older than the set in force is answered the way it is
 
 A ClickHouse server never ignores a setting or function it does not know: it
