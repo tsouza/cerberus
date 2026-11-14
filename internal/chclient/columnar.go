@@ -2,6 +2,7 @@ package chclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -846,8 +847,12 @@ func (d *columnarCursor) Close() error {
 // *clickhouse.Exception shape classifyDriverErr already classifies, so a
 // memory-limit (code 241) or timeout (code 159) from the columnar dial
 // surfaces as the IDENTICAL typed error (*MemoryLimitError / *QueryTimeoutError)
-// the row path produces. Any other error passes through untouched.
+// the row path produces. A *DroppableRetryInvariantError, whose cause is
+// already translated, and any other error pass through untouched.
 func translateCHGoErr(err error) error {
+	if errors.Is(err, ErrDroppableRetryInvariant) {
+		return err
+	}
 	ex, ok := ch.AsException(err)
 	if !ok {
 		return err

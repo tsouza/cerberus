@@ -503,28 +503,32 @@ healthy), and the k3d e2e substrate is pinned to the bundled 26.8 build.
 
 `histogram_quantile` over an aggregated classic histogram (`sum by (le)`,
 `avg by (le)`, and the other aggregations) merges every series' bucket layout
-into one. `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` (default
-`2982616`) caps the bucket entries one query may merge on every path that runs
-that merge: every series' finite bounds plus its `+Inf` bucket, counted once per
-evaluated step and summed across every output group.
+into one. A ceiling caps the bucket entries one query may merge on every path
+that runs that merge: every series' finite bounds plus its `+Inf` bucket, counted
+once per evaluated step and summed across every output group. Unset, the ceiling
+is derived from `CERBERUS_CH_QUERY_MAX_MEMORY`: 75% of the per-query memory cap at
+270 bytes per entry, which is `2982616` at the 1 GiB default and scales linearly
+with the cap (`1491308` at `512Mi`, `5965232` at `2Gi`). With the memory cap set
+to `0`, the ceiling is the 1 GiB one. Setting
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to a positive entry count pins
+the ceiling regardless of the memory cap.
 
 The ceiling does not apply when the aggregated input is a `rate` that ClickHouse's
 native time-series grid functions evaluate: `ts_grid_range` for a range query,
 `ts_grid_instant` for an instant query, each selected at boot on a server that
 supports it. That path takes the quantile over per-bucket rates and runs no
-layout merge. A query past the cap is refused with HTTP 422 and the
+layout merge. A query past the ceiling is refused with HTTP 422 and the
 message `classic-histogram bucket merge exceeds the merged-bucket-entry resource
-bound` before ClickHouse runs the merge. The default keeps the merge within 75%
-of the 1 GiB `CERBERUS_CH_QUERY_MAX_MEMORY` default. Scale it with that cap when
-the cap is raised.
+bound` before ClickHouse runs the merge. Small merges carry a fixed memory
+overhead on top of the per-entry cost, so under a memory cap well below 1 GiB a
+merge within the derived ceiling can still exceed the cap; ClickHouse then
+refuses it with the memory-limit error (HTTP 422).
 
-**Breaking change:** the ceiling was previously named
-`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` and counted a different
-unit, so its values do not carry over. A deployment that still sets the old name
-starts, ignores its value, and logs one startup warning naming the replacement:
-the ceiling is `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` when set, the
-default otherwise. Remove the old variable and, if the default does not fit, set
-`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to an entry count.
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` is ignored: a deployment
+that sets it starts and logs one startup warning naming
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES`. Remove it, and set
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to an entry count when the
+default does not fit; a value of the ignored variable is not an entry count.
 
 ### Prometheus resource-attribute labels
 
@@ -1768,9 +1772,9 @@ filter cannot use a projection), which ClickHouse 26.x routes to the
 matching projection, reading a sub-megabyte pre-aggregated part instead of
 the fact table. Without the projection these enumerations full-scan the
 metrics tables — on a real deployment ~4 billion rows / ~140 GiB / ~10 s for
-a single refresh. The result set is identical: because samples are never
-future-dated, `max(TimeUnix) >= lookback` is true for exactly the
-names / values with a sample in `[lookback, now]`. A routing regression on a
+a single refresh. The result set is identical: the window has no upper
+bound, so `max(TimeUnix) >= lookback` is true for exactly the names / values
+with a sample at or after `lookback`, future-dated ones included. A routing regression on a
 ClickHouse upgrade is caught by the EXPLAIN + `read_rows` guard in
 `internal/api/prom/metadata_scan_bound_explain_chdb_test.go` (the routed read
 must stay orders below the unprojected baseline), so a silent fall-back to

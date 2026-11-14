@@ -152,12 +152,13 @@ const nightlySentinelRepeats = 5
 const nightlyPlanningSamples = 3
 
 // maxPlanningPeerRatio bounds how much longer a sentinel's statement may take
-// to plan than its planning peer's (Sentinel.PlanningPeer). The plural native
-// quantile over a rate()-folded native histogram plans in 1.2-1.4x the time
-// of the single-phi quantile over the same input, and in 20-45x when it
-// reaches ClickHouse under the analyzer the native-histogram analyzer fix
-// turns off — measured on 24.8, 25.9 and 26.6. 4x leaves the first a wide
-// margin and sits far below the second.
+// to plan than its planning peer's (Sentinel.PlanningPeer). Under
+// planningStatement, the plural native quantile over a rate()-folded native
+// histogram plans in 1.1-1.5x the time of the single-phi quantile over the
+// same input on 24.8, 25.9, 26.8 and 26.9, and in 63x (93.3 s against 1.48 s,
+// on 25.9) when it reaches ClickHouse under the analyzer the native-histogram
+// analyzer fix turns off. 4x leaves the first a wide margin and sits far
+// below the second.
 const maxPlanningPeerRatio = 4.0
 
 func TestPerfNightlyRealCH(t *testing.T) {
@@ -788,9 +789,18 @@ func pipelineSteps(ctx context.Context, conn driver.Conn, queryID string) (strin
 	return pipeline.String(), rows.Err()
 }
 
+// planningStatement is the EXPLAIN form the planning prong times. EXPLAIN
+// PIPELINE analyses the statement, builds its query plan and builds the
+// pipeline from it without executing anything or rendering the plan's
+// steps. EXPLAIN PLAN is not used: on ClickHouse 26.8 under the query
+// analyzer, rendering the plan of a native-histogram quantile asks for
+// several GiB — more than the statement itself uses to run — so its time
+// and its memory measure the renderer, not planning.
+const planningStatement = "EXPLAIN PIPELINE "
+
 // planningTime is the wall time ClickHouse takes to plan the statement
-// cerberus dispatched under queryID — EXPLAIN PLAN of its text under the
-// settings it ran with, which analyses and plans the statement without
+// cerberus dispatched under queryID — planningStatement over its text under
+// the settings it ran with, which analyses and plans the statement without
 // executing it. A positive limit abandons the sample once it runs that long
 // and reports the limit itself with over set: a plan that blew through its
 // bound costs the run the bound, not the minutes the regressed plan takes.
@@ -807,7 +817,7 @@ func planningTime(ctx context.Context, conn driver.Conn, queryID string, limit t
 	}
 	began := time.Now()
 	explain := func() error {
-		rows, err := conn.Query(clickhouse.Context(sampleCtx, clickhouse.WithSettings(stamped)), "EXPLAIN PLAN "+query)
+		rows, err := conn.Query(clickhouse.Context(sampleCtx, clickhouse.WithSettings(stamped)), planningStatement+query)
 		if err != nil {
 			return err
 		}
@@ -827,7 +837,7 @@ func planningTime(ctx context.Context, conn driver.Conn, queryID string, limit t
 		if deadline, ok := sampleCtx.Deadline(); ok && limit > 0 && ctx.Err() == nil && !time.Now().Before(deadline) {
 			return limit, true, nil
 		}
-		return 0, false, fmt.Errorf("EXPLAIN PLAN of %q: %w", queryID, err)
+		return 0, false, fmt.Errorf("%sof %q: %w", planningStatement, queryID, err)
 	}
 	return time.Since(began), false, nil
 }

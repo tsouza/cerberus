@@ -84,8 +84,7 @@ regressions that change what it can safely enable. Each optimization records the
 is enabled on, in [docs/clickhouse-optimizations.md](docs/clickhouse-optimizations.md).
 
 - Release-by-release capability audits: [`ch-capability-audit`][audit].
-- Move the bundled ClickHouse in the Helm chart and quickstart to the current long-term-support line,
-  26.8 ([#3985](https://github.com/tsouza/cerberus/issues/3985)), and keep it on one.
+- Keep the bundled ClickHouse in the Helm chart and quickstart on the current long-term-support line.
 
 ## Performance and resource safety
 

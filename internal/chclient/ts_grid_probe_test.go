@@ -10,13 +10,11 @@ import (
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
-// ClickHouse server error codes a hardened profile raises when cerberus stamps
-// the constrained / change-forbidden experimental setting. Named so the test
-// pins the exact mapping (these codes -> Forbidden).
-const (
-	chCodeSettingConstraintViolation = 452
-	chCodeReadonly                   = 164
-)
+// chCodeReadonly is the ClickHouse server error code a readonly user raises
+// when cerberus stamps the experimental setting; with
+// chCodeSettingConstraintViolation, the codes a hardened profile raises. Named
+// so the test pins the exact mapping (these codes -> Forbidden).
+const chCodeReadonly = 164
 
 // TestClassifyTSGridCapability_AllStates pins the tri-state error mapping the
 // boot capability canary relies on:

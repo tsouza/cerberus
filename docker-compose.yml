@@ -481,7 +481,10 @@ services:
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/cerberus/cerberus.json
       # The four Drilldown apps, installed from the Grafana plugin catalogue
       # before Grafana starts, at fixed versions so a catalogue release cannot
-      # change the stack under the user.
+      # change the stack under the user. Metrics Drilldown 2.5.1 from the
+      # catalogue lacks the group-by guard deploy/grafana/metrics-drilldown.patch
+      # adds, so a slow label discovery can make its Breakdown tab send an
+      # empty label matcher (HTTP 400, #3762); #4082 tracks the fix.
       GF_PLUGINS_PREINSTALL_SYNC: grafana-metricsdrilldown-app@2.5.1,grafana-lokiexplore-app@2.5.0,grafana-exploretraces-app@2.1.0,grafana-pyroscope-app@2.2.0
     volumes:
       - ./test/e2e/grafana/compose/datasources:/etc/grafana/provisioning/datasources:ro

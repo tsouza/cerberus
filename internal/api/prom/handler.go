@@ -112,10 +112,11 @@ type Handler struct {
 	// CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS /
 	// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES). Wired at boot
 	// in cmd/cerberus from promql.ResourceBoundsFromEnv; the zero value
-	// resolves to promql.DefaultResourceBounds() at the lowering-entry
-	// seam (promql.LowerOpts.ResourceBounds -> ResourceBounds.withDefaults),
-	// so a Handler that never wires this (every test that builds one
-	// directly) keeps the shipped, calibrated defaults. Unlike Lowerers,
+	// resolves at the lowering-entry seam
+	// (promql.LowerOpts.ResourceBounds -> ResourceBounds.withDefaults) to
+	// promql.DefaultResourceBounds() plus the ceilings derived for no
+	// ClickHouse memory cap, so a Handler that never wires this (every test
+	// that builds one directly) keeps the shipped, calibrated defaults. Unlike Lowerers,
 	// both the instant and the range-streaming query paths consult it —
 	// the histogram-merge budget guards apply to both.
 	ResourceBounds promql.ResourceBounds

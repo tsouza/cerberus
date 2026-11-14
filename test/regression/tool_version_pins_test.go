@@ -99,3 +99,41 @@ func TestJustVersionIsAReleaseNumber(t *testing.T) {
 		t.Fatalf("JUST_VERSION = %q carries a v prefix; install-action's `just@<version>` takes the bare number", v)
 	}
 }
+
+// goimportsTool is the package `just install-formatters` installs as
+// goimports. tempopb-sync.mjs formats the generated tempopb copy with it, so
+// its version decides whether `just tempopb-sync-check` passes.
+const goimportsTool = "golang.org/x/tools/cmd/goimports"
+
+// TestGoimportsVersionComesFromGoMod keeps goimports at one exact version per
+// commit, the one Dependabot bumps: the root go.mod declares it a `tool`, so
+// its golang.org/x/tools requirement is the version, and install-formatters
+// installs it with no `@version` suffix, which resolves through that
+// requirement. A suffix — `@latest` above all — would install whatever the
+// module proxy serves the day the recipe runs.
+func TestGoimportsVersionComesFromGoMod(t *testing.T) {
+	t.Parallel()
+
+	goMod := readFileString(t, filepath.Join(repoRoot, "go.mod"))
+	if !regexp.MustCompile(`(?m)^tool\s+` + regexp.QuoteMeta(goimportsTool) + `\s*$`).MatchString(goMod) {
+		t.Errorf("go.mod does not declare `tool %s`; without it go.mod pins no goimports version and "+
+			"`go install %s` has no go.sum entries to build from", goimportsTool, goimportsTool)
+	}
+	require := regexp.MustCompile(`(?m)^\s*golang\.org/x/tools\s+(v\d+\.\d+\.\d+)\s*(//.*)?$`).FindStringSubmatch(goMod)
+	if require == nil {
+		t.Errorf("go.mod has no exact golang.org/x/tools requirement for goimports to resolve through")
+	} else if strings.Contains(require[2], "indirect") {
+		t.Errorf("go.mod requires golang.org/x/tools %s as indirect; Dependabot bumps direct requirements only", require[1])
+	}
+
+	recipes := readFileString(t, filepath.Join(repoRoot, "just", "tools.just"))
+	installs := regexp.MustCompile(`go install `+regexp.QuoteMeta(goimportsTool)+`(\S*)`).FindAllStringSubmatch(recipes, -1)
+	if len(installs) == 0 {
+		t.Fatalf("just/tools.just never installs %s; the pin would be vacuous", goimportsTool)
+	}
+	for _, m := range installs {
+		if m[1] != "" {
+			t.Errorf("just/tools.just installs %s%s; drop the suffix so the version is go.mod's", goimportsTool, m[1])
+		}
+	}
+}

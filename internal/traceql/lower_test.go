@@ -11,6 +11,7 @@ import (
 
 	tempo "github.com/tsouza/cerberus/internal/traceql/ast"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/traceql"
@@ -79,9 +80,25 @@ func TestLower(t *testing.T) {
 			}
 			ctx = traceql.WithSearchWindow(ctx, time.Unix(startSec, 0).UTC(), time.Unix(endSec, 0).UTC())
 		}
+		// Optional `metrics_window:` section (Unix-second start and end, step in
+		// seconds) wraps a metrics pipeline in the matrix RangeWindow the
+		// /api/metrics/query_range handler builds around it, after threading
+		// the same [start, end] into lowering, so a fixture pins the windowed
+		// metrics statement rather than the windowless metrics node. Absent ⇒
+		// the bare lowered plan.
+		mw, hasMetricsWindow := metricsWindowSection(t, c)
+		if hasMetricsWindow {
+			if _, ok := c.Section("search_window"); ok {
+				t.Fatalf("fixture %s: metrics_window and search_window are exclusive", c.Name)
+			}
+			ctx = traceql.WithSearchWindow(ctx, mw.start, mw.end)
+		}
 		plan, err := traceql.Lower(ctx, expr, s)
 		if err != nil {
 			t.Fatalf("Lower(%q): %v", query, err)
+		}
+		if hasMetricsWindow {
+			plan = mw.wrap(t, plan, s)
 		}
 		sqlStr, args, err := chsql.Emit(context.Background(), plan)
 		if err != nil {
@@ -144,6 +161,68 @@ func TestLower(t *testing.T) {
 		// evaluation instant or step participates in the comparison.
 		spec.RunParity(t, c, spec.ParityEval{}, roundTripResult)
 	})
+}
+
+// metricsWindow is a fixture's `metrics_window:` section: the request window
+// and step the /api/metrics/query_range handler wraps a metrics pipeline in.
+type metricsWindow struct {
+	start, end time.Time
+	step       time.Duration
+}
+
+// metricsWindowFieldCount is the number of whitespace-separated fields a
+// `metrics_window:` section carries: start, end (Unix seconds) and step
+// (seconds).
+const metricsWindowFieldCount = 3
+
+// metricsWindowSection parses c's `metrics_window:` section; ok is false when
+// c carries none.
+func metricsWindowSection(t *testing.T, c *spec.Case) (w metricsWindow, ok bool) {
+	t.Helper()
+	v, ok := c.Section("metrics_window")
+	if !ok {
+		return metricsWindow{}, false
+	}
+	fields := strings.Fields(v)
+	if len(fields) != metricsWindowFieldCount {
+		t.Fatalf("fixture %s: metrics_window wants start, end (Unix seconds) and step (seconds), got %q", c.Name, v)
+	}
+	var secs [metricsWindowFieldCount]int64
+	for i, f := range fields {
+		n, err := strconv.ParseInt(f, 10, 64)
+		if err != nil {
+			t.Fatalf("fixture %s: bad metrics_window field %q: %v", c.Name, f, err)
+		}
+		secs[i] = n
+	}
+	if secs[2] <= 0 {
+		t.Fatalf("fixture %s: metrics_window step must be positive, got %d", c.Name, secs[2])
+	}
+	return metricsWindow{
+		start: time.Unix(secs[0], 0).UTC(),
+		end:   time.Unix(secs[1], 0).UTC(),
+		step:  time.Duration(secs[2]) * time.Second,
+	}, true
+}
+
+// wrap wraps plan — a lowered metrics pipeline with no second stage — in the
+// step-sized matrix RangeWindow over w, the node the metrics handlers build
+// (internal/api/tempo/metrics_exec.go execMetricsRange).
+func (w metricsWindow) wrap(t *testing.T, plan chplan.Node, s schema.Traces) chplan.Node {
+	t.Helper()
+	switch plan.(type) {
+	case *chplan.MetricsAggregate, *chplan.MetricsHistogramOverTime, *chplan.MetricsCompare:
+	default:
+		t.Fatalf("metrics_window needs a metrics pipeline with no second stage, lowered %T", plan)
+	}
+	return &chplan.RangeWindow{
+		Input:           plan,
+		Range:           w.step,
+		Step:            w.step,
+		Start:           w.start,
+		End:             w.end,
+		TimestampColumn: s.TimestampColumn,
+	}
 }
 
 func formatArgs(args []any) string {

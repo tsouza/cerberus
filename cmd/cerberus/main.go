@@ -162,8 +162,9 @@ type apiHeads struct {
 //
 // cfg.ClickHouse.MaxQueryMemoryBytes is the loaded ClickHouse per-query
 // memory cap. It is not itself a bound: it is the byte budget cerberus issue
-// #3252's samples-per-series-per-window ceiling is DERIVED from when no
-// explicit override pins it, in the same sentinel-0 shape
+// #3252's samples-per-series-per-window ceiling and the classic-histogram
+// bucket-merge ceiling are DERIVED from when no explicit override pins them,
+// in the same sentinel-0 shape
 // CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS already uses. Passing
 // it here rather than re-reading the env keeps ONE resolution of the cap —
 // the loader's, which also applies the nested-YAML alias and the byte-size
@@ -1385,6 +1386,10 @@ type chOptResolution struct {
 	Set             chopt.EnabledSet
 	ResolvedVersion chopt.Version
 	VersionFallback bool
+	// FleetIncomplete records that the fleet probe pass behind the
+	// resolution could not reach every node, so the next pass runs at
+	// chOptFloorRetryInterval (nextReprobeDelay).
+	FleetIncomplete bool
 	// QueryWorkload is the EFFECTIVE CERBERUS_CH_QUERY_WORKLOAD (cerberus
 	// issue #2785): the configured name when the capability probe found the
 	// server accepts it, else "" (unconfigured, or a rejected/unreachable
@@ -1524,8 +1529,19 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// decision reads the whole pass (analyzerMandatoryOnFleet).
 	set = set.WithAnalyzerMandatory(analyzerMandatoryOnFleet(fleet, set.AnalyzerMandatory()))
 	// Likewise one node on a build carrying a shape defect is enough for the
-	// engine to gate that shape (shapeDefectsOnFleet).
-	set = set.WithShapeDefects(shapeDefectsOnFleet(fleet, set))
+	// engine to gate that shape (shapeDefectsOnFleet). Nothing is in force
+	// yet, so a pass that missed a node starts every gate the reached nodes
+	// accept on (gatesInForce) until a complete pass clears them.
+	gates, conditionCacheOff := gatesInForce(fleet, nil, client.QueryConditionCacheDisabled())
+	set = set.WithShapeDefects(shapeDefectsOnFleet(fleet, gates))
+	if !fleet.Complete && !versionFallback {
+		logger.Warn(
+			"clickhouse fleet probe did not reach every node; every defect gate the reached nodes accept starts on "+
+				"until a probe reaches every node",
+			"fleet_versions", fleetVersionStrings(fleet),
+			"reprobe_every", chOptFloorRetryInterval.String(),
+		)
+	}
 	for _, w := range warnings {
 		logger.Warn("ch_opt: " + w)
 	}
@@ -1604,9 +1620,10 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// A server build with a known query-condition-cache wrong-result defect
 	// enables the cache by default, so leaving the setting unstamped would
 	// still expose every query to it: force it off client-wide whenever any
-	// node the fleet probe reaches runs such a build. The re-probe refreshes
-	// this on every pass.
-	refreshConditionCacheOverride(logger, client, fleet)
+	// node the fleet probe reaches runs such a build, or — on a pass that
+	// missed a node — whenever the reached nodes accept the setting
+	// (gatesInForce). The re-probe refreshes this on every pass.
+	refreshConditionCacheOverride(logger, client, fleet, conditionCacheOff)
 	if !versionFallback {
 		logCancellationGaps(logger, resolvedVersion)
 		logVendorBuild(logger, resolvedVersion)
@@ -1634,6 +1651,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		Set:              set,
 		ResolvedVersion:  resolvedVersion,
 		VersionFallback:  versionFallback,
+		FleetIncomplete:  !fleet.Complete,
 		QueryWorkload:    resolvedQueryWorkload,
 		RawQueryWorkload: rawQueryWorkload,
 	}, nil

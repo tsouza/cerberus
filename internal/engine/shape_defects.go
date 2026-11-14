@@ -8,32 +8,49 @@ import (
 )
 
 // shapeDefectFacts are the plan facts the shape-defect gates read, all taken
-// off Filter predicates: the WHERE / PREWHERE text ClickHouse's condition
-// cache keys on and its projection index analyses. Expressions outside a
-// Filter (a projection, an aggregate's argument) are never a granule filter,
-// so they carry neither.
+// off granule-filter predicates (granuleFilterPredicate): the WHERE /
+// PREWHERE text ClickHouse's condition cache keys on and its projection index
+// analyses. Expressions outside one (a projection, an aggregate's argument)
+// are never a granule filter, so they carry neither.
 type shapeDefectFacts struct {
-	// filterStringToFloat: a Filter parses a String to a float
+	// filterStringToFloat: a granule filter parses a String to a float
 	// (filterParsesStringToFloat).
 	filterStringToFloat bool
-	// negatedMixedConjunction: a Filter negates a conjunction reading a
-	// column other than the trace-id column (negatesMixedConjunction).
+	// negatedMixedConjunction: a granule filter negates a conjunction
+	// reading a column other than the trace-id column
+	// (negatesMixedConjunction).
 	negatedMixedConjunction bool
 }
 
-// inspectShapeDefectFacts walks every Filter of plan, embedded subquery plans
-// included, for the shape-defect facts.
+// granuleFilterPredicate returns the WHERE predicate n carries, if any: a
+// Filter's, and a TraceLookupFilter's. A TraceLookupFilter's WHERE sits above
+// the LEFT JOIN of its lookups, but ClickHouse can push each conjunct that
+// reads only the joined input's columns down through the join into that
+// input's MergeTree read, where the condition cache and the projection index
+// see it the way they see a Filter's.
+func granuleFilterPredicate(n chplan.Node) (chplan.Expr, bool) {
+	switch v := n.(type) {
+	case *chplan.Filter:
+		return v.Predicate, true
+	case *chplan.TraceLookupFilter:
+		return v.Predicate, true
+	}
+	return nil, false
+}
+
+// inspectShapeDefectFacts walks every granule-filter predicate of plan,
+// embedded subquery plans included, for the shape-defect facts.
 func inspectShapeDefectFacts(plan chplan.Node, traceIDColumn string) shapeDefectFacts {
 	var d shapeDefectFacts
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		flt, ok := n.(*chplan.Filter)
+		pred, ok := granuleFilterPredicate(n)
 		if !ok {
 			return true
 		}
-		if !d.filterStringToFloat && filterParsesStringToFloat(flt.Predicate) {
+		if !d.filterStringToFloat && filterParsesStringToFloat(pred) {
 			d.filterStringToFloat = true
 		}
-		if traceIDColumn != "" && !d.negatedMixedConjunction && negatesMixedConjunction(flt.Predicate, traceIDColumn) {
+		if traceIDColumn != "" && !d.negatedMixedConjunction && negatesMixedConjunction(pred, traceIDColumn) {
 			d.negatedMixedConjunction = true
 		}
 		return true

@@ -92,11 +92,6 @@ const (
 	// file's header) rather than trusted from either figure.
 	classicBucketMergeBytesPerEntry = 270
 
-	// classicBucketMergeQueryMemoryBytes is the per-query memory cap the
-	// ceiling is sized against: CERBERUS_CH_QUERY_MAX_MEMORY's 1 GiB
-	// default.
-	classicBucketMergeQueryMemoryBytes = 1 << 30
-
 	// classicBucketMergeCapSharePercent is the share of the query cap the
 	// merge may use at the ceiling. The rest is headroom for the step the
 	// peak takes between calibration points (75,000 x 50 peaks at 733 MiB,
@@ -109,21 +104,44 @@ const (
 	// percentDenominator turns classicBucketMergeCapSharePercent into a
 	// fraction.
 	percentDenominator = 100
-
-	// maxClassicBucketMergeEntries bounds the bucket entries one query's
-	// classic-histogram cross-series merge may read: the sum, over every
-	// row the merge Aggregate reads, of that row's finite bound count plus
-	// its +Inf rung. It is classicBucketMergeCapSharePercent of the 1 GiB
-	// cap at classicBucketMergeBytesPerEntry: 2,982,616 entries.
-	//
-	// It is the compile-time default of
-	// [ResourceBounds.ClassicBucketMergeMaxEntries], which an operator
-	// overrides through [EnvClassicBucketMergeMaxEntries]
-	// (CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES) — see
-	// resource_bounds_env.go. The guard checks the resolved value.
-	maxClassicBucketMergeEntries = classicBucketMergeQueryMemoryBytes * classicBucketMergeCapSharePercent /
-		percentDenominator / classicBucketMergeBytesPerEntry
 )
+
+// ClassicBucketMergeEntriesForMemory derives the classic-histogram
+// cross-series merge ceiling from a ClickHouse per-query memory cap:
+// classicBucketMergeCapSharePercent of the cap at
+// classicBucketMergeBytesPerEntry, rounded down. It counts the bucket entries
+// one query's merge may read — the sum, over every row the merge Aggregate
+// reads, of that row's finite bound count plus its +Inf rung — so the
+// ceiling is 2,982,616 entries at CERBERUS_CH_QUERY_MAX_MEMORY's 1 GiB
+// default and scales linearly with the cap.
+//
+// It is the default of [ResourceBounds.ClassicBucketMergeMaxEntries]:
+// [ResourceBounds.withDefaults] derives it from
+// [ResourceBounds.CHQueryMaxMemory] unless an operator pins the ceiling
+// through [EnvClassicBucketMergeMaxEntries]
+// (CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES). The guard checks the
+// resolved value.
+//
+// A non-positive cap means CERBERUS_CH_QUERY_MAX_MEMORY is unset and
+// cerberus stamps no `max_memory_usage`, so there is no cap to divide; the
+// ceiling is then the one a one-GiB cap derives, the shipped default, as
+// [ExpHistogramWindowCostUnitsForMemory] does for its own ceiling.
+//
+// The calibration's per-entry ratio is the one the largest shapes settle at;
+// smaller shapes carry a fixed overhead on top of it (this file's header), so
+// at a cap well below 1 GiB a merge the ceiling admits can use more than the
+// cap share, and one that exceeds the cap is refused by ClickHouse's own
+// `max_memory_usage` rather than by this guard.
+func ClassicBucketMergeEntriesForMemory(chQueryMaxMemory int64) int64 {
+	if chQueryMaxMemory <= 0 {
+		chQueryMaxMemory = bytesPerGiB
+	}
+	// The cap's share, split into whole hundreds and a remainder so the
+	// product never overflows for any int64 cap.
+	share := (chQueryMaxMemory/percentDenominator)*classicBucketMergeCapSharePercent +
+		(chQueryMaxMemory%percentDenominator)*classicBucketMergeCapSharePercent/percentDenominator
+	return share / classicBucketMergeBytesPerEntry
+}
 
 // classicBucketMergeInputGate returns perSeries — the per-series stage the
 // merge Aggregate reads — with its ExplicitBounds and BucketCounts columns

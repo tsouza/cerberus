@@ -144,6 +144,13 @@ func EmitCounted(ctx context.Context, n chplan.Node) (sql string, args []any, ph
 	// SQL still prunes granules. Single mechanism, derived once in
 	// chplan — emitters no longer remember it.
 	n = chplan.AttachInstantScanTimeBounds(n)
+	// Bound the per-trace subqueries of a TraceQL metrics pipeline (a
+	// trace-scoped intrinsic's lookup or membership test, a spanset-aggregate
+	// cohort) by the input span of the RangeWindow wrapped around it. The
+	// metrics emitters bound the metrics input only in the SELECT around it,
+	// which reaches neither a subquery behind an Expr slot nor a join's lookup
+	// side. No-op for every plan without a RangeWindow over a metrics node.
+	n = chplan.BoundMetricsPerTraceSubqueries(n)
 	// Enforce the spans-scan resource-bound invariant at the emit chokepoint.
 	// spansTableFromCtx is "" for PromQL / metrics matrix emission (no spans
 	// table under enforcement), so this is a table-scoped no-op for those

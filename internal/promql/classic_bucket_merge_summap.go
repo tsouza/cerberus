@@ -95,7 +95,7 @@ import (
 // shared layout, whose sumMap state holds one key per distinct bound. Under
 // the 1 GiB cap with the default guard, 58,000 x 50 disjoint completes at
 // 747.0 / 746.4 MiB (26.8 / 26.6), inside the cap share the ceiling is sized
-// for, so [maxClassicBucketMergeEntries] bounds this path too and no second
+// for, so [ResourceBounds.ClassicBucketMergeMaxEntries] bounds this path too and no second
 // ceiling exists. The guard counts the entries before the sumMap aggregate
 // reads a row (classicBucketMergeInputGate), so 60,000 x 50 is refused at
 // 128.1 / 127.7 MiB and 100,000 x 50 at 246.0 / 245.4 MiB, before the

@@ -40,7 +40,7 @@ func bindWalk(over chplan.Node) *chplan.NestedSetAnnotate {
 }
 
 // gatedLeaf is one row-source leaf scoped by gate — the shape
-// traceql.pushLeafPredicate produces at every leaf of a bounded search plan.
+// chplan.PushLeafPredicate produces at every leaf of a bounded search plan.
 func gatedLeaf(gate *chplan.BoundedTraceScope) chplan.Node {
 	return &chplan.Filter{Input: &chplan.Scan{Table: "otel_traces"}, Predicate: gate}
 }

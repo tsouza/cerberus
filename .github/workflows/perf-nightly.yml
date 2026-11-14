@@ -11,9 +11,11 @@ name: perf-nightly
 # The sentinels run once per ClickHouse server of the matrix below, each leg
 # against the bound set calibrated on its own server. The servers are the
 # supported floor (versions.yaml min_clickhouse), the deployment pin
-# (quickstart_clickhouse) and one server inside chopt's move_to_prewhere auto
-# range: auto leaves the PREWHERE split to ClickHouse only inside that range,
-# so the two PREWHERE paths are each measured. clickhouse-version-sync.mjs
+# (quickstart_clickhouse), one server inside chopt's move_to_prewhere auto
+# range — auto leaves the PREWHERE split to ClickHouse only inside that range,
+# so the two PREWHERE paths are each measured — and the first line whose
+# analyzer is mandatory (chopt.AnalyzerMandatorySince), where no plan can be
+# sent to the legacy analyzer. clickhouse-version-sync.mjs
 # (check h) holds the matrix to those pins and to the bound sets in
 # nightly-baseline.json.
 #
@@ -70,7 +72,7 @@ jobs:
       # `cancelled`: every server's verdict is reported.
       fail-fast: false
       matrix:
-        clickhouse: ['24.8', '25.9', '26.8']
+        clickhouse: ['24.8', '25.9', '26.8', '26.9']
     # Pulls one ClickHouse image, loads ~4.3M real rows across 3 tables plus
     # the exporter-keyed copies, and issues the sentinel corpus five times.
     timeout-minutes: 30

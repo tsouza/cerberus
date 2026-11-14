@@ -68,3 +68,13 @@ func TestCapabilitiesResolved_TracksTheLiveResolution(t *testing.T) {
 		t.Error("readiness must clear once a probe answers, without a restart")
 	}
 }
+
+// TestNextReprobeDelay_IncompleteFleetRetriesFast: a resolution from a pass
+// that could not reach every node holds the posture a missed node may need, so
+// the next pass runs at the fast cadence until one reaches every node.
+func TestNextReprobeDelay_IncompleteFleetRetriesFast(t *testing.T) {
+	t.Parallel()
+	if got := nextReprobeDelay(chOptResolution{FleetIncomplete: true}, chOptReprobeInterval); got != chOptFloorRetryInterval {
+		t.Errorf("incomplete pass: next re-probe in %v; want %v", got, chOptFloorRetryInterval)
+	}
+}

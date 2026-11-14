@@ -25,8 +25,9 @@ const divergenceCeilingPath = "divergence-ceiling.json"
 // before TestDivergenceEntriesRespectAgeCap forces a conscious re-decision.
 // 90 days is long enough to cover a normal fix-it-properly cycle (file,
 // design, implement, land — the kind of change #1768's label_replace
-// duplicate-capture-group divergence needs, since closing it means moving
-// regex expansion from ClickHouse's extractGroups to Go) but short enough
+// duplicate-capture-group divergence needs, since closing it means a
+// lowering that makes ClickHouse observe which capture groups took part in a
+// match, which extractGroups cannot) but short enough
 // that an entry cannot quietly become permanent: at the 90-day mark a human
 // has to look at it again and choose fix, won't-fix, or a deliberate,
 // acknowledged ceiling bump — never a silent extension.
@@ -120,7 +121,8 @@ func NextDivergenceCeiling(count, existing int) (int, error) {
 // can be real, correct, and expensive to close (see #1768: ClickHouse's
 // extractGroups cannot distinguish "group did not participate" from
 // "participated but matched empty", the exact semantic Go's ExpandString
-// relies on — closing it means moving the computation to Go); the cap does
+// relies on — closing it means a ClickHouse lowering that observes group
+// participation, since cerberus never evaluates a query in Go); the cap does
 // not dispute that, it only forces the decision to stay conscious.
 func CheckDivergenceAge(e Entry, now time.Time) error {
 	since, err := time.Parse(divergenceDateLayout, e.Since)

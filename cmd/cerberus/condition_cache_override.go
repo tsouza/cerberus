@@ -19,7 +19,8 @@ type fleetProber func(ctx context.Context) chclient.FleetVersions
 // known-unsafe build keeps the override on, because a query can land on that
 // node however healthy the others are. The override is lifted only when every
 // known node answered from a build outside the unsafe ranges; a pass that could
-// not reach every node and saw no unsafe build leaves the decision unchanged.
+// not reach every node and saw no unsafe build leaves the decision in force
+// (current, as gatesInForce derives it) unchanged.
 func conditionCacheOverride(fv chclient.FleetVersions, current bool) bool {
 	for _, v := range fv.Versions {
 		if chopt.KnownUnsafe(chopt.FeatureConditionCache, v) {
@@ -32,15 +33,16 @@ func conditionCacheOverride(fv chclient.FleetVersions, current bool) bool {
 	return false
 }
 
-// refreshConditionCacheOverride installs the override decision fv implies on
-// client, logging when the decision changes. It is deliberately independent
-// of the optimization resolution: the server's own default engages the cache
-// whether or not cerberus asks for it, so neither the selection nor a failed
-// or unchanged resolution may stop the override from following the fleet.
-func refreshConditionCacheOverride(logger *slog.Logger, client *chclient.Client, fv chclient.FleetVersions) {
-	current := client.QueryConditionCacheDisabled()
-	next := conditionCacheOverride(fv, current)
-	if next == current {
+// refreshConditionCacheOverride installs on client the override decision fv
+// implies given inForce, the decision the pass is judged against
+// (gatesInForce), logging when the installed decision changes. It is
+// deliberately independent of the optimization resolution: the server's own
+// default engages the cache whether or not cerberus asks for it, so neither
+// the selection nor a failed or unchanged resolution may stop the override
+// from following the fleet.
+func refreshConditionCacheOverride(logger *slog.Logger, client *chclient.Client, fv chclient.FleetVersions, inForce bool) {
+	next := conditionCacheOverride(fv, inForce)
+	if next == client.QueryConditionCacheDisabled() {
 		return
 	}
 	client.SetQueryConditionCacheDisabled(next)
@@ -114,8 +116,16 @@ func fleetResolutionVersion(fv chclient.FleetVersions, inForce *chOptResolution)
 	if !ok {
 		return chopt.Version{}, errNoFleetVersion
 	}
-	if !fv.Complete && inForce != nil && !inForce.VersionFallback && inForce.ResolvedVersion.Less(lowest) {
+	if !fv.Complete && inForce.describesFleet() && inForce.ResolvedVersion.Less(lowest) {
 		return inForce.ResolvedVersion, nil
 	}
 	return lowest, nil
+}
+
+// describesFleet reports whether r is a posture a pass that could not reach
+// every node keeps: a resolution in force that some node answered for. It is
+// false at boot (r nil), where nothing is in force yet, and for a floor
+// fallback, which records that no node answered.
+func (r *chOptResolution) describesFleet() bool {
+	return r != nil && !r.VersionFallback
 }

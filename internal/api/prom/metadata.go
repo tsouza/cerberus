@@ -265,8 +265,10 @@ func parseMetadataWindow(r *http.Request) (start, end time.Time, err error) {
 // unionLabelValuesSQL) emit no WHERE at all: the horizon rides as
 // `GROUP BY <series keys> HAVING max(TimeUnix) >= start`, an aggregate
 // predicate ClickHouse serves from the proj_series aggregating projection
-// instead of the fact table. `end` is unused there — it is "now", and
-// samples are never future-dated. The one exception is the resource-label
+// instead of the fact table. `end` is unused there: a request without one
+// has no upper bound (Prometheus reads a missing end as its maximum time), so
+// a sample at any time at or after start counts, future-dated ones included.
+// The one exception is the resource-label
 // arm (unionResourceLabelNamesSQL), which has no now-anchored form and
 // takes the derived [start,end] as a literal WHERE — that arm, and the
 // !nowAnchored path where a request supplies its own finite range, are
@@ -402,9 +404,9 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	// nowAnchored is true when the request supplies no explicit upper bound,
 	// so the effective window's end is "now or open" — the case where the
 	// metric-name enumeration can answer exactly from the max(TimeUnix)
-	// aggregating projection (max(TimeUnix) >= start ⇔ a sample exists in
-	// [start, now], since samples are never future-dated). A user-supplied
-	// finite end stays on the exact WHERE-bounded scan.
+	// aggregating projection (max(TimeUnix) >= start ⇔ a sample exists at or
+	// after start, the window having no upper bound). A user-supplied finite
+	// end stays on the exact WHERE-bounded scan.
 	nowAnchored := endT.IsZero()
 	startT, endT = h.boundMetadataWindow(startT, endT)
 
@@ -565,9 +567,9 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string, start,
 //
 //   - nowAnchored (the /api/v1/metadata listing, which takes no time params, so
 //     its window always ends "now"): the bound is an aggregate-only
-//     `HAVING max(TimeUnix) >= <start>`. Because samples are never future-dated,
-//     the metric-NAME set this returns is exactly the WHERE-bounded form's — a
-//     name passes iff it has a sample in [start, now]. The description/unit pick
+//     `HAVING max(TimeUnix) >= <start>`. The window has no upper bound, so the
+//     metric-NAME set this returns is exact — a name passes iff it has a
+//     sample at or after start, future-dated ones included. The description/unit pick
 //     is the honest caveat: unlike the WHERE-bounded form, this `GROUP BY
 //     MetricName` carries no time filter (the HAVING gates which names pass, not
 //     which rows the aggregate sees), so any(MetricDescription) / any(MetricUnit)
@@ -953,26 +955,30 @@ func (h *Handler) fetchMetricNameValues(ctx context.Context, start, end time.Tim
 // boundMetadataWindow) — so it partition-prunes exactly like every other
 // metadata arm. It returns nil when no distinct histogram table is configured.
 //
-// A finite window whose end is not in the past is enumerated with the
-// now-anchored grouped arm of [Handler.metricNamesSQL], exactly as a
-// windowless request is. Grafana forwards the dashboard range on every
-// metadata call and rounds its end up to the next snap boundary, so a
-// relative range such as `now-30d .. now` arrives with an end at or after the
-// server's wall clock and nowAnchored false. Because samples are never
-// future-dated, "a sample in [start, end]" and "max(TimeUnix) >= start" select
-// the same names whenever end >= now, so the answer is identical while the
-// aggregate-only predicate is served from the metric tables' max(TimeUnix)
-// projections instead of a DISTINCT over every histogram row in the window.
-// A window that ends in the past keeps the exact WHERE-bounded DISTINCT.
+// A finite window whose end is not in the past is enumerated with
+// [Handler.metricNamesUpToEndSQL], which reads the newest sample per name
+// from the metric tables' max(TimeUnix) projections and rechecks against the
+// raw rows only the names whose newest sample lies after end. Grafana
+// forwards the dashboard range on every metadata call and rounds its end up
+// to the next snap boundary, so a relative range such as `now-30d .. now`
+// arrives with an end at or after the server's wall clock and nowAnchored
+// false. A sample after such an end is one a producer timestamped ahead of
+// the server's clock, so the recheck's name set is usually empty. A window
+// that ends in the past keeps the WHERE-bounded DISTINCT, where nearly every
+// live name has a sample after end and the recheck would cover them all.
+// Both shapes return exactly the names with a sample in [start, end].
 func (h *Handler) histogramBaseNames(ctx context.Context, start, end time.Time, nowAnchored bool) ([]string, error) {
 	_, histogramTable := h.catalogNameTables()
 	if histogramTable == "" {
 		return nil, nil
 	}
-	grouped := nowAnchored || windowEndsAtOrAfterNow(end)
+	upToEnd := !nowAnchored && windowEndsAtOrAfterNow(end)
 	names, err := timeCH(ctx, func() ([]string, error) {
 		return h.queryStringsDegradingUnknownTable(ctx, []string{histogramTable}, func(tables []string) (string, []any, int) {
-			sql, physicalScans := h.metricNamesSQL(ctx, tables, start, end, grouped)
+			if upToEnd {
+				return h.metricNamesUpToEndSQL(ctx, tables, start, end)
+			}
+			sql, physicalScans := h.metricNamesSQL(ctx, tables, start, end, nowAnchored)
 			return sql, nil, physicalScans
 		})
 	})
@@ -983,9 +989,10 @@ func (h *Handler) histogramBaseNames(ctx context.Context, start, end time.Time, 
 }
 
 // windowEndsAtOrAfterNow reports whether a finite metadata window's upper
-// bound is at or after the current wall clock, so no stored sample can lie
-// beyond it. A zero end is not finite and reports false; callers treat that
-// case through their own nowAnchored flag.
+// bound is at or after the current wall clock. A sample can still lie after
+// such an end — its producer sets its timestamp — but only one stamped ahead
+// of the server's clock. A zero end is not finite and reports false; callers
+// treat that case through their own nowAnchored flag.
 func windowEndsAtOrAfterNow(end time.Time) bool {
 	return !end.IsZero() && !end.Before(time.Now())
 }
@@ -1741,8 +1748,9 @@ func (h *Handler) metadataWindowPred(ctx context.Context, start, end time.Time) 
 }
 
 // metadataSincePred builds the `max(TimeUnix) >= start` HAVING bound the
-// now-anchored discovery arms carry: a series or name has a sample in
-// [start, now] exactly when its latest sample is at or after start. It
+// now-anchored discovery arms carry: a series or name has a sample at or
+// after start, in a window with no upper bound, exactly when its latest
+// sample is at or after start. It
 // takes the exact form [chplan.AtLeastBound] gives it, and it is nil when
 // start is zero or no stored sample can lie before it.
 func (h *Handler) metadataSincePred(ctx context.Context, start time.Time) chsql.Frag {
@@ -1763,10 +1771,10 @@ func (h *Handler) metadataSincePred(ctx context.Context, start time.Time) chsql.
 //   - nowAnchored (the Grafana metric-picker case: no explicit end, so the
 //     window ends "now" or is open-ended): each arm is
 //     `SELECT MetricName AS value FROM <t> GROUP BY MetricName
-//     HAVING max(TimeUnix) >= <start>`. Because samples are never
-//     future-dated, max(TimeUnix) >= start ⇔ the name has a sample in
-//     [start, now] — byte-for-byte the same name set as the WHERE-bounded
-//     DISTINCT, but the aggregate-only predicate is served from the
+//     HAVING max(TimeUnix) >= <start>`. The window has no upper bound, so
+//     max(TimeUnix) >= start ⇔ the name has a sample at or after start —
+//     the same name set as `WHERE TimeUnix >= <start>` DISTINCT, future-dated
+//     samples included, but the aggregate-only predicate is served from the
 //     `proj_series` aggregating projection (GROUP BY MetricName, Attributes
 //     carrying max(TimeUnix)) instead of full-scanning the fact table.
 //     ClickHouse re-aggregates the finer (MetricName, Attributes) projection
@@ -1813,6 +1821,67 @@ func (h *Handler) metricNamesSQL(ctx context.Context, tables []string, start, en
 		OrderBy(chsql.Col("value"), false)
 	sql, _, physicalScans = outer.BuildCounted()
 	return sql, physicalScans
+}
+
+// metricNamesUpToEndSQL returns the distinct MetricName values with a sample
+// in [start, end] across the given tables, reading the per-name newest sample
+// from the max(TimeUnix) aggregating projections wherever it decides the
+// answer. Each table contributes two arms:
+//
+//   - `SELECT MetricName AS value FROM <t> GROUP BY MetricName
+//     HAVING max(TimeUnix) >= <start> AND max(TimeUnix) <= <end>`: a name
+//     whose newest sample lies in [start, end] has that sample in the window.
+//     The predicate is aggregate-only, so the projection serves it.
+//   - `SELECT DISTINCT MetricName AS value FROM <t> WHERE <start <= TimeUnix
+//     <= end> AND MetricName GLOBAL IN (SELECT MetricName FROM <t> GROUP BY
+//     MetricName HAVING NOT max(TimeUnix) <= <end>)`: a name whose newest
+//     sample lies after end may or may not have one in the window — its
+//     samples can sit after end alone, or before start and after end with
+//     none between, which neither max nor min(TimeUnix) tells apart from a
+//     name with a sample inside — so the WHERE-bounded DISTINCT decides it
+//     over the raw rows, restricted to those names.
+//
+// A name whose newest sample is before start has no sample in the window and
+// passes neither arm. When end is at or past the last instant a timestamp can
+// hold, no sample lies after it and the first arm alone carries no upper
+// bound, which is the now-anchored form of [Handler.metricNamesSQL].
+func (h *Handler) metricNamesUpToEndSQL(ctx context.Context, tables []string, start, end time.Time) (sql string, args []any, physicalScans int) {
+	upper, ok := chplan.AtMostBound(end)
+	if !ok {
+		sql, physicalScans = h.metricNamesSQL(ctx, tables, start, end, true)
+		return sql, nil, physicalScans
+	}
+	metricCol := h.Schema.MetricNameColumn
+	strategies := h.metricsStrategies(ctx)
+	newest := chsql.Call("max", chsql.Col(h.Schema.TimestampColumn))
+	newestAtMostEnd := chsql.UnderSchemaStrategies(strategies, chsql.TimeBound(newest, upper))
+	window := h.metadataWindowPred(ctx, start, end)
+	parts := make([]chsql.Frag, 0, 2*len(tables))
+	for _, t := range tables {
+		decided := chsql.NewQuery().
+			Select(chsql.As(chsql.Col(metricCol), "value")).
+			From(chsql.PhysicalTable(t)).
+			GroupBy(chsql.Col(metricCol)).
+			Having(newestAtMostEnd)
+		if since := h.metadataSincePred(ctx, start); since != nil {
+			decided = decided.Having(since)
+		}
+		newerThanEnd := chsql.NewQuery().
+			Select(chsql.Col(metricCol)).
+			From(chsql.PhysicalTable(t)).
+			GroupBy(chsql.Col(metricCol)).
+			Having(chsql.Not(newestAtMostEnd))
+		rechecked := chsql.NewQuery().
+			Select(chsql.As(distinctIdent(metricCol), "value")).
+			From(chsql.PhysicalTable(t)).
+			Where(window, chsql.InSubquery(chsql.Col(metricCol), newerThanEnd.Frag()))
+		parts = append(parts, decided.Frag(), rechecked.Frag())
+	}
+	outer := chsql.NewQuery().
+		Select(chsql.As(distinctIdent("value"), "")).
+		From(chsql.Paren(chsql.UnionAll(parts...))).
+		OrderBy(chsql.Col("value"), false)
+	return outer.BuildCounted()
 }
 
 // unionLabelValuesSQL returns the distinct Attributes[?] values across

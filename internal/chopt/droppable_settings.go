@@ -10,8 +10,10 @@ import (
 // result-equivalent ones through these constants. It declares the three
 // memory bounds (the adaptive-aggregator switch and the two spill thresholds)
 // as its own literals, which the perf-sentinel gate classifies;
-// internal/engine's TestDroppableSettings_AreTheEngineVersionGatedStamps pins
-// those literals to the names here.
+// internal/engine's TestStampedSettings_AreEachClassifiedOnce reads every
+// setting the engine stamps and fails unless each one, these literals among
+// them, is in exactly one class: this table, GateSettings, or the engine's
+// function-required or floor-known sets.
 const (
 	SettingEnableAdaptiveAggregator                = "enable_adaptive_aggregator"
 	SettingMaxBytesBeforeExternalJoin              = "max_bytes_before_external_join"

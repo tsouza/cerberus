@@ -369,3 +369,81 @@ func TestCapabilityCanaries_RejectionIsNotReported(t *testing.T) {
 		})
 	}
 }
+
+// TestQueryStrings_RejectionOfEveryAttemptIsBounded: a node that rejects a
+// droppable setting whatever the statement carries gets at most
+// maxDroppableAttempts statements, and the query is answered with the typed
+// rejection of the setting.
+func TestQueryStrings_RejectionOfEveryAttemptIsBounded(t *testing.T) {
+	t.Parallel()
+	for _, d := range chopt.DroppableSettings() {
+		t.Run(d.Name, func(t *testing.T) {
+			t.Parallel()
+			c, conn := newRolledBackClient(d.Name)
+			conn.rejectAlways = true
+			_, err := c.QueryStrings(withEveryDroppableSetting(context.Background()), "SELECT 1")
+			if got, limit := int(conn.calls.Load()), maxDroppableAttempts(); got > limit {
+				t.Errorf("statements sent = %d; want at most %d", got, limit)
+			}
+			var unknown *UnknownNameError
+			if !errors.As(err, &unknown) || unknown.Name != d.Name {
+				t.Fatalf("err = %#v; want an *UnknownNameError for %s", err, d.Name)
+			}
+		})
+	}
+}
+
+// TestRunDroppableRetry_NonConvergingRetryIsBounded: a classifier that keeps
+// asking for a retry, the shape of a broken drop rule, stops after
+// maxDroppableAttempts statements with a *DroppableRetryInvariantError naming
+// the setting and the count. The last rejection is reported as surfaced, and
+// the error reaches the caller unchanged through classifyDriverErr.
+func TestRunDroppableRetry_NonConvergingRetryIsBounded(t *testing.T) {
+	t.Parallel()
+	c := newWithConn(&staleConn{})
+	rec, reader := withObservedRejections(c)
+	rejection := &clickhouse.Exception{Code: chCodeUnknownSetting, Message: "Unknown setting '" + chopt.SettingEnableAdaptiveAggregator + "'"}
+	opens := 0
+	open := func(context.Context) (struct{}, error) {
+		opens++
+		return struct{}{}, rejection
+	}
+	stuck := func(ctx context.Context, _ error) (context.Context, UnknownNameRejection, bool) {
+		return ctx, UnknownNameRejection{Kind: unknownNameSetting, Name: chopt.SettingEnableAdaptiveAggregator, Retried: true}, true
+	}
+
+	_, _, err := runDroppableRetry(c.rejections, context.Background(), open, stuck, nil)
+	limit := maxDroppableAttempts()
+	if opens != limit {
+		t.Errorf("statements sent = %d; want %d", opens, limit)
+	}
+	var inv *DroppableRetryInvariantError
+	if !errors.As(err, &inv) || inv.Setting != chopt.SettingEnableAdaptiveAggregator || inv.Attempts != limit {
+		t.Fatalf("err = %#v; want a *DroppableRetryInvariantError for %s after %d statements", err, chopt.SettingEnableAdaptiveAggregator, limit)
+	}
+	for _, want := range []string{chopt.SettingEnableAdaptiveAggregator, fmt.Sprint(limit), "invariant"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message %q does not name %q", err, want)
+		}
+	}
+	if !errors.Is(err, ErrDroppableRetryInvariant) {
+		t.Error("the error does not unwrap to ErrDroppableRetryInvariant")
+	}
+	var cause *clickhouse.Exception
+	if !errors.As(err, &cause) || cause != rejection {
+		t.Error("the node's last rejection is not reachable through the error")
+	}
+	if got := c.classifyDriverErr(context.Background(), err); got != err {
+		t.Errorf("classifyDriverErr = %#v; want the invariant error unchanged", got)
+	}
+	got := rec.all()
+	if len(got) != limit || got[len(got)-1].Retried {
+		t.Fatalf("hook received %+v; want %d rejections, the last one not retried", got, limit)
+	}
+	for action, n := range map[string]int64{rejectionActionRetried: int64(limit - 1), rejectionActionSurfaced: 1} {
+		series := map[string]string{"name": chopt.SettingEnableAdaptiveAggregator, "action": action}
+		if sum, _, _ := counterSum(t, reader, unknownNameCounter, series); sum != n {
+			t.Errorf("%s series = %d; want %d", action, sum, n)
+		}
+	}
+}

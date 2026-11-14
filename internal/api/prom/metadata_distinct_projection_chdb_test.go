@@ -17,9 +17,9 @@ package prom_test
 //   - a value whose newest sample is older than the lookback is excluded,
 //     exactly as the `WHERE TimeUnix >= <lookback>` DISTINCT excluded it.
 //
-// Because samples are never future-dated, max(TimeUnix) >= lookback ⇔ a
-// sample exists in [lookback, now], so the two shapes are byte-for-byte the
-// same answer. The tables carry the projection (materialized) so the result is
+// The window has no upper bound, so max(TimeUnix) >= lookback ⇔ a sample
+// exists at or after lookback, future-dated ones included: the two shapes
+// are the same answer. The tables carry the projection (materialized) so the result is
 // also proven correct when served from the projection, not just the base table.
 
 import (

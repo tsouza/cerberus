@@ -109,6 +109,15 @@ func TestFilterParsesStringToFloat(t *testing.T) {
 			true,
 		},
 		{
+			"parse in a trace-lookup filter's predicate",
+			&chplan.TraceLookupFilter{
+				Input:     &chplan.Scan{Table: "otel_logs"},
+				Lookups:   []chplan.Node{&chplan.Scan{Table: "otel_traces"}},
+				Predicate: gtTwo(parseFloat(chplan.FnToFloat64OrZero, logAttr("v"))),
+			},
+			true,
+		},
+		{
 			"numeric toFloat64 cast in a filter",
 			&chplan.Filter{
 				Input:     &chplan.Scan{Table: "otel_metrics_sum"},
@@ -164,6 +173,14 @@ func TestNegatesMixedConjunction(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := inspectShapeDefectFacts(traceFilter(tc.pred), "TraceId").negatedMixedConjunction; got != tc.want {
 				t.Errorf("negatedMixedConjunction = %v; want %v", got, tc.want)
+			}
+			lookup := &chplan.TraceLookupFilter{
+				Input:     &chplan.Scan{Table: "otel_traces"},
+				Lookups:   []chplan.Node{&chplan.Scan{Table: "otel_traces"}},
+				Predicate: tc.pred,
+			}
+			if got := inspectShapeDefectFacts(lookup, "TraceId").negatedMixedConjunction; got != tc.want {
+				t.Errorf("trace-lookup filter: negatedMixedConjunction = %v; want %v", got, tc.want)
 			}
 		})
 	}
