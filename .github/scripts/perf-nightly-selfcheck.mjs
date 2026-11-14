@@ -83,11 +83,12 @@
 //      (partitionPrewhere) bypassed, so the emitter's explicit PREWHERE
 //      holds every conjunct of the filtered scan, the label matcher on the
 //      attribute maps included, instead of only the narrow ones. On the
-//      servers where the emitter places PREWHERE (24.8 and 26.8 in the
-//      matrix) the nightly rate_by_route_matcher_stock_key sentinel decodes
+//      servers where the emitter places PREWHERE (24.8, 26.8 and 26.9 in
+//      the matrix) the nightly rate_by_route_matcher_stock_key sentinel decodes
 //      both maps for every row of the metric's granules ahead of any
-//      filtering — measured 696 MB on 24.8 and 416 MB on 26.6 against
-//      58 MB and 40 MB unmutated — and goes red on its committed ceiling.
+//      filtering — measured 696 MB on 24.8, 416 MB on 26.6 and 389 MB on
+//      26.9 against 58 MB, 40 MB and 34 MB unmutated — and goes red on its
+//      committed ceiling.
 //
 //   4c. move-to-prewhere-auto-range-widened — internal/chopt/registry.go's
 //      move_to_prewhere AutoRange, its upper end lifted past 26.8, so auto
@@ -235,7 +236,7 @@ export const MUTATIONS = [
   },
   {
     id: 'prewhere-split-partition-bypassed',
-    clickhouse: ['24.8', '26.8'],
+    clickhouse: ['24.8', '26.8', '26.9'],
     description:
       "Bypass internal/chsql/emit_node.go's PREWHERE partition, so the emitter's explicit PREWHERE holds every " +
       'conjunct of a filtered scan, the label matcher on the attribute maps included. The nightly ' +

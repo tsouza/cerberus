@@ -1121,15 +1121,15 @@ filtered scans project no wide column, so neither choice changes a Loki
 statement.
 
 The perf-nightly corpus measures both sides of the decision: it runs on
-24.8, 25.9 and 26.6, so the server places PREWHERE on one of its servers and
-the emitter does on the other two. Its label-values sentinels on the stock
+24.8, 25.9, 26.8 and 26.9, so the server places PREWHERE on one of its servers
+and the emitter does on the other three. Its label-values sentinels on the stock
 key and the renamed tables and its rate-by-route sentinel on the stock key
 run with the query condition cache off, where the server has it, so a repeat
 cannot read what an earlier one cached. Its self-check breaks the decision on
 each side: forcing the emitter's split on 25.9 (label values 39 MB against a
 31 MB ceiling), bypassing the emitter's partition so its PREWHERE holds the
-attribute matcher on 24.8 and 26.6 (rate by route 696 MB and 416 MB against
-58 MB and 40 MB unmutated), and widening the auto range past 26.6 (rate by
+attribute matcher on 24.8, 26.6 and 26.9 (rate by route 696 MB, 416 MB and
+389 MB against 58 MB, 40 MB and 34 MB unmutated), and widening the auto range past 26.6 (rate by
 route 296 MB against 40 MB). The
 in-order aggregation stamp is a neighbouring decision that peak memory does
 not separate: on cerberus's key a hash aggregation of the instant selector
