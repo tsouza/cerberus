@@ -9,6 +9,12 @@ All notable changes to cerberus will be documented in this file. The format roug
 ### BREAKING
 
 - **promql:** merge classic buckets by sort-and-split and bound the merge per query (#4081)
+  - `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` is retired and ignored. A deployment that still sets it starts and logs one startup warning. Remove it, and set `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to an entry count only when the default does not fit; a value of the retired variable is not an entry count.
+  - Unset, the ceiling is derived from `CERBERUS_CH_QUERY_MAX_MEMORY`: `2982616` entries at the 1 GiB default, scaling linearly with the cap (#4098). A query past it is refused with HTTP 422.
+
+### Known issues
+
+- The quickstart's `grafana` profile installs the catalogue Metrics Drilldown 2.5.1, which lacks the group-by guard in `deploy/grafana/metrics-drilldown.patch`: when label discovery is slow, opening a metric's Breakdown tab can send a query with an empty label matcher that fails with HTTP 400 (#3762). Moving to a plugin release that carries the guard is tracked in #4082.
 
 ### Fixed
 
