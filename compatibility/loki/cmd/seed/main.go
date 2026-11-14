@@ -21,7 +21,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/golang/snappy"
 
-	"github.com/grafana/loki/v3/pkg/logproto"
+	"github.com/grafana/loki/pkg/push"
 
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
@@ -886,7 +886,7 @@ func severityNumber(level string) uint8 {
 }
 
 func pushLoki(ctx context.Context, baseURL string, streams []stream) error {
-	pushReq := logproto.PushRequest{}
+	pushReq := push.PushRequest{}
 
 	for _, s := range streams {
 		labelPairs := make([]string, 0, len(s.labels))
@@ -896,12 +896,12 @@ func pushLoki(ctx context.Context, baseURL string, streams []stream) error {
 		sort.Strings(labelPairs)
 		labels := "{" + strings.Join(labelPairs, ", ") + "}"
 
-		entries := make([]logproto.Entry, 0, len(s.entries))
+		entries := make([]push.Entry, 0, len(s.entries))
 		for _, e := range s.entries {
-			var sm []logproto.LabelAdapter
+			var sm []push.LabelAdapter
 			lvl := strings.ToLower(e.level)
 			if lvl != "" {
-				sm = append(sm, logproto.LabelAdapter{Name: "detected_level", Value: lvl})
+				sm = append(sm, push.LabelAdapter{Name: "detected_level", Value: lvl})
 			}
 			// request_id is the generic-structured-metadata twin of
 			// detected_level (see generateRequestID / issue #1498):
@@ -909,16 +909,16 @@ func pushLoki(ctx context.Context, baseURL string, streams []stream) error {
 			// stay in lockstep with insertCHLogs' logAttrs so the
 			// /detected_fields differential compares like-for-like.
 			if e.requestID != "" {
-				sm = append(sm, logproto.LabelAdapter{Name: "request_id", Value: e.requestID})
+				sm = append(sm, push.LabelAdapter{Name: "request_id", Value: e.requestID})
 			}
-			entries = append(entries, logproto.Entry{
+			entries = append(entries, push.Entry{
 				Timestamp:          e.ts,
 				Line:               e.line,
 				StructuredMetadata: sm,
 			})
 		}
 
-		pushReq.Streams = append(pushReq.Streams, logproto.Stream{
+		pushReq.Streams = append(pushReq.Streams, push.Stream{
 			Labels:  labels,
 			Entries: entries,
 		})

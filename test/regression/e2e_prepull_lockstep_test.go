@@ -72,18 +72,25 @@ var manifestImage = regexp.MustCompile(`^\s*-?\s*image:\s*["']?([^"'\s#]+)["']?\
 // pre-pulled by the other lane fails loudly at pod start instead
 // (`ImagePullBackOff` against `pullPolicy: Never`, then a rollout timeout), so
 // it cannot hide.
+//
+// localImagePins name the images a k3d lane builds on the host and imports
+// rather than pulls (`pullPolicy: Never` in the manifest). They cover a
+// manifest ref exactly as a pre-pull list does, and are held to the same
+// reverse direction.
 var (
-	manifestTrees = []string{"../../test/e2e/k3s", "../../test/e2e/k3s-bwc"}
-	prePullPins   = []string{"E2E_EXTERNAL_IMAGES", "E2E_BWC_IMAGES", "E2E_BUNDLED_CH_IMAGES"}
+	manifestTrees  = []string{"../../test/e2e/k3s", "../../test/e2e/k3s-bwc"}
+	prePullPins    = []string{"E2E_EXTERNAL_IMAGES", "E2E_BWC_IMAGES", "E2E_BUNDLED_CH_IMAGES"}
+	localImagePins = []string{"GRAFANA_E2E_IMAGE"}
 )
 
-// prePulledImages is the union of the pre-pull lists.
+// prePulledImages is the union of the pre-pull lists and the locally built
+// images.
 func prePulledImages(t *testing.T) map[string]bool {
 	t.Helper()
 
 	pins := justfilePins(t)
 	union := map[string]bool{}
-	for _, pin := range prePullPins {
+	for _, pin := range append(append([]string{}, prePullPins...), localImagePins...) {
 		set, ok := pins[pin]
 		if !ok {
 			t.Fatalf("%s no longer defines %s, so this guard cannot tell what the k3d lanes pre-pull",
@@ -210,7 +217,7 @@ func TestE2EPrePullListsNameOnlyManifestImages(t *testing.T) {
 	pins := justfilePins(t)
 	named := manifestImages(t)
 
-	for _, pin := range prePullPins {
+	for _, pin := range append(append([]string{}, prePullPins...), localImagePins...) {
 		set, ok := pins[pin]
 		if !ok {
 			t.Fatalf("%s no longer defines %s", justfilePath, pin)

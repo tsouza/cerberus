@@ -154,7 +154,7 @@ services:
 
   tempo:
     # Commit-pinned on every side: go.mod pseudo-version, compat reference
-    # image, and compatibility/tempo/upstream/VERSION. fork_version_skew_test
+    # image, and compatibility/tempo/UPSTREAM_VERSION. fork_version_skew_test
     # binds this tag to the compat one, which is bound to go.mod.
     image: grafana/tempo:main-2f74ea8
     command: ["-config.file=/etc/tempo.yaml"]

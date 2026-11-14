@@ -1,8 +1,9 @@
 name: agpl-oracle
 
 # Differential oracle lane for the in-house LogQL and TraceQL parser
-# reimplementations, plus the drift-check regeneration tests for the
-# surface-parity package's pinned reference-verdict artifacts.
+# reimplementations and the in-house copy of Tempo's wire types, plus the
+# drift-check regeneration tests for the surface-parity package's pinned
+# reference-verdict artifacts.
 #
 # The test files in the root module that carry `//go:build agpl_oracle`
 # compare cerberus's own clean-room parsers against the upstream AGPL
@@ -20,6 +21,7 @@ name: agpl-oracle
 #   internal/logql/parse_permissive_agpl_test.go
 #   internal/logql/lsyntax/oracle_agpl_test.go
 #   test/agpl_oracle/oracle_test.go
+#   internal/thirdparty/tempopb/wire_tempo_agpl_test.go
 #   test/surface-parity/logql_reference_agpl_test.go
 #   test/surface-parity/traceql_reference_agpl_test.go
 #   test/property/oracle/logql/evaluator.go

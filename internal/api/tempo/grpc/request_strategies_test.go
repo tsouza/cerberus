@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/tempo/pkg/tempopb"
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	tempogrpc "github.com/tsouza/cerberus/internal/api/tempo/grpc"

@@ -9,13 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/tempo/pkg/tempopb"
-	v1 "github.com/grafana/tempo/pkg/tempopb/common/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
+	v1 "github.com/tsouza/cerberus/internal/thirdparty/tempopb/common/v1"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	tempogrpc "github.com/tsouza/cerberus/internal/api/tempo/grpc"

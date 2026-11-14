@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/grafana/tempo/pkg/tempopb"
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
 )
 
 // This pins #3182. Reference Tempo serialises tempopb through gogo/protobuf

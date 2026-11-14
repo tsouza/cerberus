@@ -18,7 +18,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/golang/snappy"
-	"github.com/grafana/loki/v3/pkg/logproto"
+	"github.com/grafana/loki/pkg/push"
 )
 
 // seedEnvKeys are the environment variables parseConfig falls back to.
@@ -291,7 +291,7 @@ func (f *fakeLoki) server(t *testing.T) *httptest.Server {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		var req logproto.PushRequest
+		var req push.PushRequest
 		if err := req.Unmarshal(raw); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

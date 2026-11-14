@@ -147,6 +147,13 @@ components:
   # handler. Imports the HTTP handler so the gRPC RPCs can route to the
   # same engine + chsql + chplan layers (no duplicated lowering).
   api-tempo-grpc: { in: api/tempo/grpc }
+  # Tempo's Apache-2.0 protobuf wire types, copied from grafana/tempo's
+  # pkg/tempopb (internal/thirdparty/tempopb/README.md). Third-party leaves:
+  # they import only one another and the protobuf/gRPC libraries.
+  tempopb:          { in: thirdparty/tempopb }
+  tempopb-common:   { in: thirdparty/tempopb/common/v1 }
+  tempopb-resource: { in: thirdparty/tempopb/resource/v1 }
+  tempopb-trace:    { in: thirdparty/tempopb/trace/v1 }
   # Cross-cutting utility packages — see commonComponents below.
   schema:         { in: schema }
   schema-ddl:     { in: schema/ddl }
@@ -543,6 +550,10 @@ deps:
       - traceql
       - traceql-ast
       - api-reqctx
+      - tempopb
+      - tempopb-common
+      - tempopb-resource
+      - tempopb-trace
   # api-reqctx: the gRPC RPCs install the same per-query budget every HTTP
   # entrypoint does (reqctx.WithQueryBudget) on the stream's context.
   api-tempo-grpc:
@@ -555,6 +566,26 @@ deps:
       - optimizer
       - traceql
       - api-reqctx
+      - tempopb
+      - tempopb-common
+
+  # The copied wire types import only one another (the generated imports of
+  # tempo.proto and the OTLP trace/resource protos). The one edge out is the
+  # deep scan's view of dependency injection: api-tempo-grpc hands its
+  # StreamingQuerierServer implementation to the generated
+  # RegisterStreamingQuerierServer, which is how a gRPC service is mounted.
+  tempopb:
+    mayDependOn:
+      - tempopb-common
+      - tempopb-trace
+      - api-tempo-grpc
+  tempopb-resource:
+    mayDependOn:
+      - tempopb-common
+  tempopb-trace:
+    mayDependOn:
+      - tempopb-common
+      - tempopb-resource
 
   # Utility components — `cerbtrace` pulls in `chplan`, `chclienttest`
   # is a build-tagged (`chdb`) test helper that wraps chclient so each

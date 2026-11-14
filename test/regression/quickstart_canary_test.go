@@ -191,7 +191,7 @@ func TestQuickstartCanaryBindsThePublishedRootCommand(t *testing.T) {
 		t.Fatalf("%s Quick start must begin with one repository clone-and-cd command; parsed commands: %q",
 			quickstartReadmePath, commands)
 	}
-	if got, want := commands[1], "docker compose up --wait"; got != want {
+	if got, want := commands[1], "docker compose --profile grafana up --wait"; got != want {
 		t.Fatalf("%s Quick start starts the root stack with %q, want exact command %q",
 			quickstartReadmePath, got, want)
 	}
@@ -203,7 +203,7 @@ func TestQuickstartCanaryBindsThePublishedRootCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", quickstartScriptPath, err)
 	}
-	commandLiteral := regexp.MustCompile(`(?s)QUICKSTART_UP_COMMAND\s*=\s*Object\.freeze\(\[\s*["']docker["'],\s*["']compose["'],\s*["']up["'],\s*["']--wait["']\s*,?\s*\]\)`)
+	commandLiteral := regexp.MustCompile(`(?s)QUICKSTART_UP_COMMAND\s*=\s*Object\.freeze\(\[\s*["']docker["'],\s*["']compose["'],\s*["']--profile["'],\s*["']grafana["'],\s*["']up["'],\s*["']--wait["']\s*,?\s*\]\)`)
 	if !commandLiteral.Match(script) {
 		t.Fatalf("%s must declare QUICKSTART_UP_COMMAND as the exact argv represented by README's %q command",
 			quickstartScriptPath, commands[1])
@@ -346,6 +346,10 @@ func TestQuickstartCanaryIsOneBoundedStackWithoutBrowserDepth(t *testing.T) {
 		t.Errorf("%s pre-pull command is %q, want root Compose model command %q",
 			quickstartWorkflowPath, got, want)
 	}
+	if got, want := quickstartValue(pull.Env, "COMPOSE_PROFILES"), "grafana"; got != want {
+		t.Errorf("%s pre-pull COMPOSE_PROFILES is %q, want %q, the profile the README starts",
+			quickstartWorkflowPath, got, want)
+	}
 	if pullIndex >= upIndex {
 		t.Errorf("%s pre-pulls Compose images after MODE=up (steps %d and %d)", quickstartWorkflowPath, pullIndex, upIndex)
 	}
@@ -452,15 +456,15 @@ func TestQuickstartCanaryProbesThenAlwaysTearsDownAndReports(t *testing.T) {
 	}
 	diagnosticsIndex, diagnostics := quickstartStepByName(t, "run", runJob, "diagnostics")
 	if !strings.Contains(diagnostics.If, "failure()") ||
-		!strings.Contains(diagnostics.Run, "docker compose ps") ||
-		!strings.Contains(diagnostics.Run, "docker compose logs") {
+		!strings.Contains(diagnostics.Run, "docker compose --profile grafana ps") ||
+		!strings.Contains(diagnostics.Run, "docker compose --profile grafana logs") {
 		t.Errorf("%s diagnostics step must capture Compose state and logs on failure", quickstartWorkflowPath)
 	}
 	teardownIndex, teardown := quickstartStepByName(t, "run", runJob, "tear down")
 	if got, want := strings.TrimSpace(teardown.If), "always()"; got != want {
 		t.Errorf("%s teardown condition is %q, want %q", quickstartWorkflowPath, got, want)
 	}
-	if got, want := strings.TrimSpace(teardown.Run), "docker compose down -v --remove-orphans"; got != want {
+	if got, want := strings.TrimSpace(teardown.Run), "docker compose --profile grafana down -v --remove-orphans"; got != want {
 		t.Errorf("%s teardown command is %q, want %q", quickstartWorkflowPath, got, want)
 	}
 	if upIndex >= probeIndex || probeIndex >= diagnosticsIndex || diagnosticsIndex >= teardownIndex {

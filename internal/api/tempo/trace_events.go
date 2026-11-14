@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strconv"
 
-	tracev1 "github.com/grafana/tempo/pkg/tempopb/trace/v1"
+	tracev1 "github.com/tsouza/cerberus/internal/thirdparty/tempopb/trace/v1"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )

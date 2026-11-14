@@ -209,9 +209,9 @@ func directBuildSites(t *testing.T) []directBuildSite {
 
 // dockerfilesThisRepoBuilds is the in-scope set, derived rather than listed: a
 // Dockerfile is in scope exactly when some build site in this tree names it.
-// That is what keeps the vendored upstream snapshot under
-// compatibility/tempo/upstream/ out of scope — nothing builds it — WITHOUT an
-// exclusion list, which would also hide a real Dockerfile added there later.
+// That is what keeps a Dockerfile inside a vendored upstream snapshot out of
+// scope — nothing builds it — WITHOUT an exclusion list, which would also hide
+// a real Dockerfile added there later.
 func dockerfilesThisRepoBuilds(t *testing.T) map[string][]string {
 	t.Helper()
 
