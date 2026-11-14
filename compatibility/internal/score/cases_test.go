@@ -141,6 +141,52 @@ func TestWriteCasesRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWriteCasesCarriesLabels — the readable label of an opaque ID
+// survives sorting and disambiguation, and a case without one writes no
+// label key at all.
+func TestWriteCasesCarriesLabels(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compat-cases.json")
+	if err := WriteCases(path, "loki", []Case{
+		{ID: "upstream:bb", Passed: true, Label: "second"},
+		{ID: "upstream:aa", Passed: true, Label: "first"},
+		{ID: "upstream:aa", Passed: false, Label: "first again"},
+		{ID: "owned", Passed: true},
+	}); err != nil {
+		t.Fatalf("WriteCases: %v", err)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // test-controlled temp path
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	var got CaseSet
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := []Case{
+		{ID: "owned", Passed: true},
+		{ID: "upstream:aa", Passed: true, Label: "first"},
+		{ID: "upstream:aa #2", Passed: false, Label: "first again"},
+		{ID: "upstream:bb", Passed: true, Label: "second"},
+	}
+	if len(got.Cases) != len(want) {
+		t.Fatalf("cases = %+v, want %+v", got.Cases, want)
+	}
+	for i := range want {
+		if got.Cases[i] != want[i] {
+			t.Fatalf("case %d = %+v, want %+v", i, got.Cases[i], want[i])
+		}
+	}
+	var rawDoc struct {
+		Cases []map[string]any `json:"cases"`
+	}
+	if err := json.Unmarshal(data, &rawDoc); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if _, has := rawDoc.Cases[0]["label"]; has {
+		t.Fatalf("an unlabelled case wrote a label key: %v", rawDoc.Cases[0])
+	}
+}
+
 func TestWriteCasesRequiresHead(t *testing.T) {
 	// The ratchet rejects a cases file whose head does not match the job
 	// it is gating; an empty head would make that check vacuous.

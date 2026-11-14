@@ -12,9 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logproto"
-
-	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
+	"github.com/tsouza/cerberus/compatibility/loki/corpus"
 )
 
 // compareOne is where a pair of HTTP responses becomes a parity verdict,
@@ -54,25 +52,25 @@ const (
 		`{"metric":{"level":"info"},"value":[1700000000,"3"]}]}}`
 )
 
-func logTestCase(tags ...string) bench.TestCase {
-	return bench.TestCase{
+func logTestCase(tags ...string) corpus.Case {
+	return corpus.Case{
 		Query:     `{service_name="api"}`,
 		Start:     time.Unix(1700000000, 0).UTC(),
 		End:       time.Unix(1700000060, 0).UTC(),
-		Direction: logproto.BACKWARD,
-		QueryDesc: "log case",
+		Direction: corpus.Backward,
+		Description: "log case",
 		Tags:      tags,
 	}
 }
 
-func metricTestCase() bench.TestCase {
-	return bench.TestCase{
+func metricTestCase() corpus.Case {
+	return corpus.Case{
 		Query:     `sum(count_over_time({service_name="api"}[5m]))`,
 		Start:     time.Unix(1700000000, 0).UTC(),
 		End:       time.Unix(1700000060, 0).UTC(),
-		Direction: logproto.FORWARD,
+		Direction: corpus.Forward,
 		Step:      time.Minute,
-		QueryDesc: "metric case",
+		Description: "metric case",
 	}
 }
 
@@ -407,7 +405,7 @@ func TestCompareAll_ExpansionErrorsBypassTheWire(t *testing.T) {
 
 	cases := []loadedCase{
 		{
-			def: bench.QueryDefinition{
+			def: corpus.Definition{
 				Query:       `{bad="selector"}`,
 				Source:      "fast/broken.yaml:9",
 				Description: "unexpandable",
@@ -416,7 +414,7 @@ func TestCompareAll_ExpansionErrorsBypassTheWire(t *testing.T) {
 			},
 			expandErr: errUnexpandable{},
 		},
-		{def: bench.QueryDefinition{Source: "fast/basic.yaml:1"}, tc: logTestCase()},
+		{def: corpus.Definition{Source: "fast/basic.yaml:1"}, tc: logTestCase()},
 	}
 	results := compareAll(cases, flagsFor(srv.URL, srv.URL), false)
 	if len(results) != 2 {

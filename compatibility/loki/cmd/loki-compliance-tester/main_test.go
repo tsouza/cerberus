@@ -1,15 +1,17 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logproto"
-
-	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
+	"github.com/tsouza/cerberus/compatibility/loki/corpus"
 )
 
 // TestIsExpectedEmptyCase pins the corpus-tag contract that powers
@@ -34,7 +36,7 @@ func TestIsExpectedEmptyCase(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := isExpectedEmptyCase(bench.TestCase{Tags: tc.tags})
+			got := isExpectedEmptyCase(corpus.Case{Tags: tc.tags})
 			if got != tc.want {
 				t.Fatalf("isExpectedEmptyCase(tags=%v) = %v, want %v", tc.tags, got, tc.want)
 			}
@@ -89,7 +91,7 @@ func TestScoreCounts_Empty(t *testing.T) {
 // — invisible to both the score denominator and the skip baseline.
 func TestCheckExpansion(t *testing.T) {
 	t.Parallel()
-	def := bench.QueryDefinition{
+	def := corpus.Definition{
 		Description: "ghost query",
 		Source:      "exhaustive/aggregations.yaml:177",
 		Kind:        "log",
@@ -110,113 +112,205 @@ func TestCheckExpansion(t *testing.T) {
 	}
 }
 
-// TestLoadCases_FullCorpusExpansion loads the real vendored corpus +
-// the real cerberus-queries/ additive corpus + dataset metadata
-// through the same path the driver uses and pins the honest
-// denominator: every runnable definition expands to at least one
-// case, and the eight kind-less metric-shaped definitions in
-// exhaustive/aggregations.yaml each contribute exactly one forward
-// metric case carrying the YAML's 1m step. Before the registry's
-// kind-before-directions defaulting fix the corpus expanded to 78
-// cases with those eight silently absent; the vendored-only total was
-// 86. loadCerberusQueries (issue #1611) then merges in
-// cerberus-queries/regression/unpack.yaml's 2 `directions: both` log
-// query definitions (2 cases each) — for a total of 90.
-// cerberus-queries/regression/structured-metadata-generic.yaml
-// (issue #1498) then adds a 5th definition set: one `directions: both`
-// log query (2 cases) plus TWO `directions: backward` log queries — the
-// structured-metadata key absent and present (1 case each; the
-// "present" case pins log-query stream identity over a generic
-// structured-metadata key, issue #1684) — plus one metric query (1
-// case), for +5, a total of 95.
-// cerberus-queries/regression/anchored-regex-matcher.yaml (issue #1741)
-// then adds a 6th definition set: one `directions: both` log query (2
-// cases) plus one `directions: backward` log query (1 case) — for +3,
-// a total of 98. unpack.yaml's metric-mode case (issue #1652) — `sum by
-// (category)` over `| unpack`, the arm that only passes when the label
-// map the GROUP BY reads is built in SQL — contributes one forward
-// metric case, for a total of 99.
-func TestLoadCases_FullCorpusExpansion(t *testing.T) {
-	t.Parallel()
-	f := flags{
-		corpusDir:          filepath.Join("..", "..", "upstream", "loki-bench", "queries"),
+// The expanded-case identity of the full corpus — upstream plus
+// cerberus-queries/, seed 42, against the committed dataset metadata —
+// as caseIdentity computes it, one digest per lane. These digests were
+// recorded from the loader the harness used before this one, so they
+// pin that the current loader expands the corpus into exactly the same
+// cases: same queries, windows, directions, steps, kinds, sources,
+// descriptions and tags.
+const (
+	fullCorpusRangeCases       = 99
+	fullCorpusRangeIdentity    = "bae65080643e2c0c36babcb31a73d0b448e72465653414b61fd315c59f5761a7"
+	fullCorpusInstantCases     = 71
+	fullCorpusInstantIdentity  = "a57eea66427951ac042100b205678e5d0ec42adbdda698061eba4e7580e09e3f"
+	fullCorpusIdentitySeed     = 42
+	kindlessMetricDefinitions  = 8
+	kindlessMetricSourceFile   = "exhaustive/aggregations.yaml"
+	kindlessMetricExpectedStep = time.Minute
+)
+
+// kindlessMetricKeys are the skip-baseline-style opaque keys of the
+// definitions in exhaustive/aggregations.yaml that declare no `kind:`
+// and are metric-shaped. Each must expand to one forward metric case.
+var kindlessMetricKeys = []string{
+	"upstream:a2fe120755aa3ea1",
+	"upstream:135c2024b7b833cf",
+	"upstream:93ddc31178a37475",
+	"upstream:43e79f1e8ce3fd23",
+	"upstream:61c90f8ea068118b",
+	"upstream:d3c1f81481677bf2",
+	"upstream:52e7891e0757e4ca",
+	"upstream:f6de3f370e99021d",
+}
+
+// caseIdentity is the SHA-256 of the sorted wire form of every expanded
+// case: the JSON of the report's TestCase, one per line.
+func caseIdentity(t *testing.T, cases []loadedCase, isInstant bool) string {
+	t.Helper()
+	lines := make([]string, 0, len(cases))
+	for _, lc := range cases {
+		if lc.expandErr != nil {
+			t.Fatalf("expansion error for %s: %v", lc.def.Source, lc.expandErr)
+		}
+		b, err := json.Marshal(newTestCase(lc.tc, lc.def.File(), isInstant))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		lines = append(lines, string(b))
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n") + "\n"))
+	return hex.EncodeToString(sum[:])
+}
+
+// fullCorpusFlags points the loader at the real corpora: the upstream
+// one resolved from the module cache (corpusDir left empty, exactly as
+// the driver runs) and the committed cerberus-queries/ and metadata.
+func fullCorpusFlags() flags {
+	return flags{
 		cerberusQueriesDir: filepath.Join("..", "..", "cerberus-queries"),
 		metadataDir:        filepath.Join("..", ".."),
-		seed:               42,
+		seed:               fullCorpusIdentitySeed,
 	}
-	cases, err := loadCases(f, false)
+}
+
+// TestLoadCases_FullCorpusExpansion loads the upstream corpus from the
+// module cache, the cerberus-queries/ additive corpus and the dataset
+// metadata through the same path the driver uses, and requires the
+// recorded case count and identity digest on both lanes. It also pins
+// the kind inference directly: the eight kind-less metric-shaped
+// definitions in exhaustive/aggregations.yaml each contribute exactly
+// one forward metric case carrying the YAML's 1m step — a loader that
+// defaulted their directions before their kind expanded them to zero
+// cases.
+func TestLoadCases_FullCorpusExpansion(t *testing.T) {
+	t.Parallel()
+	for _, lane := range []struct {
+		instant  bool
+		count    int
+		identity string
+	}{
+		{false, fullCorpusRangeCases, fullCorpusRangeIdentity},
+		{true, fullCorpusInstantCases, fullCorpusInstantIdentity},
+	} {
+		cases, err := loadCases(fullCorpusFlags(), lane.instant)
+		if err != nil {
+			t.Fatalf("loadCases(instant=%v): %v", lane.instant, err)
+		}
+		if len(cases) != lane.count {
+			t.Fatalf("instant=%v: corpus expanded to %d cases, want %d", lane.instant, len(cases), lane.count)
+		}
+		if got := caseIdentity(t, cases, lane.instant); got != lane.identity {
+			t.Fatalf("instant=%v: expanded-case identity = %s, want %s", lane.instant, got, lane.identity)
+		}
+	}
+
+	cases, err := loadCases(fullCorpusFlags(), false)
 	if err != nil {
 		t.Fatalf("loadCases: %v", err)
 	}
-	if len(cases) != 99 {
-		t.Fatalf("corpus expanded to %d cases, want 99", len(cases))
-	}
-
-	revived := []string{
-		"Loki duration unwrap with logfmt",
-		"Max of min duration by level",
-		"Avg duration by level",
-		"Max avg duration without grouping",
-		"Max avg duration by level without service_name",
-		"Max sum without grouping modifier",
-		"Avg duration without grouping",
-		"Sum duration without outer aggregation",
-	}
-	byDesc := make(map[string][]bench.TestCase)
+	byKey := make(map[string][]corpus.Case)
 	for _, lc := range cases {
-		if lc.expandErr != nil {
-			t.Fatalf("expansion error for %q: %v", lc.def.Description, lc.expandErr)
-		}
-		if strings.HasPrefix(lc.def.Source, "exhaustive/aggregations.yaml") {
-			byDesc[lc.def.Description] = append(byDesc[lc.def.Description], lc.tc)
+		if lc.def.File() == kindlessMetricSourceFile {
+			byKey[baselineKey(lc.def)] = append(byKey[baselineKey(lc.def)], lc.tc)
 		}
 	}
-	for _, desc := range revived {
-		tcs := byDesc[desc]
+	if len(kindlessMetricKeys) != kindlessMetricDefinitions {
+		t.Fatalf("kindlessMetricKeys lists %d keys, want %d", len(kindlessMetricKeys), kindlessMetricDefinitions)
+	}
+	for _, key := range kindlessMetricKeys {
+		tcs := byKey[key]
 		if len(tcs) != 1 {
-			t.Fatalf("definition %q expanded to %d cases, want exactly 1 (metric, forward)", desc, len(tcs))
+			t.Fatalf("definition %s expanded to %d cases, want exactly 1 (metric, forward)", key, len(tcs))
 		}
 		tc := tcs[0]
-		if got := tc.Kind(); got != "metric" {
-			t.Fatalf("definition %q resolved to kind %q, want metric (query=%s)", desc, got, tc.Query)
+		if got := tc.Kind(); got != corpus.KindMetric {
+			t.Fatalf("definition %s resolved to kind %q, want metric (query=%s)", key, got, tc.Query)
 		}
-		if tc.Direction != logproto.FORWARD {
-			t.Fatalf("definition %q direction = %v, want FORWARD", desc, tc.Direction)
+		if tc.Direction != corpus.Forward {
+			t.Fatalf("definition %s direction = %v, want FORWARD", key, tc.Direction)
 		}
-		if tc.Step != time.Minute {
-			t.Fatalf("definition %q step = %v, want 1m (from the YAML time_range.step)", desc, tc.Step)
+		if tc.Step != kindlessMetricExpectedStep {
+			t.Fatalf("definition %s step = %v, want %v (from the YAML time_range.step)", key, tc.Step, kindlessMetricExpectedStep)
 		}
 	}
 }
 
-// TestBaselineKey pins the wire-format key the baseline file + the
-// overlay both index on. Drift here would silently break the sanity
-// rail's name-to-corpus mapping.
+// TestCaseSet_UpstreamCasesAreOpaque pins the ledger contract: an
+// upstream corpus case enters compat-cases.json under its opaque ID with
+// its readable identity as the label, and a cerberus-owned case keeps
+// its readable ID and carries no label.
+func TestCaseSet_UpstreamCasesAreOpaque(t *testing.T) {
+	t.Parallel()
+	upstream := TestCase{Source: "fast/a.yaml", Kind: "log", Direction: "FORWARD", Query: `{a="b"}`, Description: "d", upstream: true}
+	owned := TestCase{Source: "regression/own.yaml", Kind: "log", Direction: "FORWARD", Query: `{a="b"}`, Description: "d"}
+	got := caseSet([]Result{{TestCase: upstream}, {TestCase: owned, Diff: "x"}})
+	if len(got) != 2 {
+		t.Fatalf("caseSet returned %d cases, want 2", len(got))
+	}
+	if got[0].ID != corpus.OpaqueID(upstream.id()) || got[0].Label != upstream.id() || !got[0].Passed {
+		t.Fatalf("upstream case = %+v, want ID %q labelled %q, passed", got[0], corpus.OpaqueID(upstream.id()), upstream.id())
+	}
+	if got[1].ID != owned.id() || got[1].Label != "" || got[1].Passed {
+		t.Fatalf("cerberus-owned case = %+v, want readable ID %q, no label, failed", got[1], owned.id())
+	}
+}
+
+// TestLoadCases_MarksOnlyUpstreamCases — every case expanded from the
+// upstream corpus is marked upstream, and no cerberus-queries/ case is,
+// so the opaque-ID split in caseSet follows provenance exactly.
+func TestLoadCases_MarksOnlyUpstreamCases(t *testing.T) {
+	t.Parallel()
+	upstreamDefs, err := loadUpstreamQueries(fullCorpusFlags())
+	if err != nil {
+		t.Fatalf("loadUpstreamQueries: %v", err)
+	}
+	upstreamSources := make(map[string]bool, len(upstreamDefs))
+	for _, def := range upstreamDefs {
+		upstreamSources[def.Source] = true
+	}
+	cases, err := loadCases(fullCorpusFlags(), false)
+	if err != nil {
+		t.Fatalf("loadCases: %v", err)
+	}
+	var upstream, owned int
+	for _, lc := range cases {
+		if lc.upstream {
+			upstream++
+		} else {
+			owned++
+		}
+		if lc.upstream != upstreamSources[lc.def.Source] {
+			t.Fatalf("case from %s marked upstream=%v, but the upstream corpus %s that source", lc.def.Source, lc.upstream, map[bool]string{true: "has", false: "does not have"}[upstreamSources[lc.def.Source]])
+		}
+	}
+	if upstream == 0 || owned == 0 {
+		t.Fatalf("upstream cases = %d, cerberus-owned cases = %d; both corpora must contribute", upstream, owned)
+	}
+}
+
+// TestBaselineKey pins the committed key of a skipped definition: the
+// opaque ID of `<suite>/<file>#<description>`, with the line suffix
+// stripped so a reordering of the YAML does not move the key, and with
+// no corpus text left in it.
 func TestBaselineKey(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		name string
-		def  bench.QueryDefinition
-		want string
-	}{
-		{
-			name: "strips-line-suffix",
-			def:  bench.QueryDefinition{Source: "fast/basic-selectors.yaml:12", Description: "Basic label selector"},
-			want: "fast/basic-selectors.yaml#Basic label selector",
-		},
-		{
-			name: "no-line-suffix",
-			def:  bench.QueryDefinition{Source: "regression/metric-queries.yaml", Description: "HTTP status code distribution"},
-			want: "regression/metric-queries.yaml#HTTP status code distribution",
-		},
+	withLine := corpus.Definition{Source: "fast/a.yaml:12", Description: "first definition"}
+	moved := corpus.Definition{Source: "fast/a.yaml:40", Description: "first definition"}
+	other := corpus.Definition{Source: "fast/a.yaml:12", Description: "second definition"}
+	key := baselineKey(withLine)
+	if key != corpus.OpaqueID("fast/a.yaml#first definition") {
+		t.Fatalf("baselineKey = %q, want the opaque ID of the readable key", key)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := baselineKey(tc.def); got != tc.want {
-				t.Fatalf("baselineKey() = %q, want %q", got, tc.want)
-			}
-		})
+	if strings.Contains(key, "first definition") || strings.Contains(key, "a.yaml") {
+		t.Fatalf("baselineKey %q carries corpus text", key)
+	}
+	if baselineKey(moved) != key {
+		t.Fatalf("moving a definition within its file changed its key")
+	}
+	if baselineKey(other) == key {
+		t.Fatalf("two descriptions in one file share the key %q", key)
 	}
 }
 
@@ -263,13 +357,13 @@ func TestCheckSkipBaseline_MatchPasses(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "baseline.txt")
-	body := "fast/a.yaml#one\nregression/b.yaml#two\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write tmp: %v", err)
-	}
-	defs := []bench.QueryDefinition{
+	defs := []corpus.Definition{
 		{Source: "fast/a.yaml:3", Description: "one"},
 		{Source: "regression/b.yaml:7", Description: "two"},
+	}
+	body := baselineKey(defs[0]) + "\n" + baselineKey(defs[1]) + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write tmp: %v", err)
 	}
 	if err := checkSkipBaseline(path, defs); err != nil {
 		t.Fatalf("checkSkipBaseline returned err: %v", err)
@@ -282,20 +376,24 @@ func TestCheckSkipBaseline_DetectsAddition(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "baseline.txt")
-	body := "fast/a.yaml#one\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write tmp: %v", err)
-	}
-	defs := []bench.QueryDefinition{
+	defs := []corpus.Definition{
 		{Source: "fast/a.yaml:3", Description: "one"},
 		{Source: "regression/new.yaml:11", Description: "fresh entry"},
+	}
+	body := baselineKey(defs[0]) + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write tmp: %v", err)
 	}
 	err := checkSkipBaseline(path, defs)
 	if err == nil {
 		t.Fatalf("checkSkipBaseline = nil, want drift error")
 	}
-	if !strings.Contains(err.Error(), "regression/new.yaml#fresh entry") {
-		t.Fatalf("error %q missing added key", err.Error())
+	// The added entry is named by its key and, for the operator, by its
+	// readable identity; the removed direction can only name the key.
+	for _, want := range []string{baselineKey(defs[1]), "regression/new.yaml#fresh entry"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err.Error(), want)
+		}
 	}
 }
 
@@ -305,18 +403,19 @@ func TestCheckSkipBaseline_DetectsRemoval(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "baseline.txt")
-	body := "fast/a.yaml#one\nregression/gone.yaml#two\n"
+	gone := baselineKey(corpus.Definition{Source: "regression/gone.yaml:5", Description: "two"})
+	defs := []corpus.Definition{
+		{Source: "fast/a.yaml:3", Description: "one"},
+	}
+	body := baselineKey(defs[0]) + "\n" + gone + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write tmp: %v", err)
-	}
-	defs := []bench.QueryDefinition{
-		{Source: "fast/a.yaml:3", Description: "one"},
 	}
 	err := checkSkipBaseline(path, defs)
 	if err == nil {
 		t.Fatalf("checkSkipBaseline = nil, want drift error")
 	}
-	if !strings.Contains(err.Error(), "regression/gone.yaml#two") {
+	if !strings.Contains(err.Error(), gone) {
 		t.Fatalf("error %q missing removed key", err.Error())
 	}
 }
@@ -328,7 +427,7 @@ func TestWriteSkipBaseline_RoundTripsThroughRead(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "baseline.txt")
-	defs := []bench.QueryDefinition{
+	defs := []corpus.Definition{
 		{Source: "regression/b.yaml:7", Description: "two"},
 		{Source: "fast/a.yaml:3", Description: "one"},
 		{Source: "exhaustive/c.yaml:99", Description: "three"},
@@ -340,11 +439,8 @@ func TestWriteSkipBaseline_RoundTripsThroughRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readSkipBaseline: %v", err)
 	}
-	want := []string{
-		"exhaustive/c.yaml#three",
-		"fast/a.yaml#one",
-		"regression/b.yaml#two",
-	}
+	want := []string{baselineKey(defs[0]), baselineKey(defs[1]), baselineKey(defs[2])}
+	sort.Strings(want)
 	if len(got) != len(want) {
 		t.Fatalf("len = %d, want %d (got=%v)", len(got), len(want), got)
 	}

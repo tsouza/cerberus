@@ -44,6 +44,12 @@ type Case struct {
 	// backend, using that harness's own success predicate — the same
 	// one feeding Score.Passed.
 	Passed bool `json:"passed"`
+
+	// Label is the readable identity behind an opaque ID, for a case
+	// whose identity is built from upstream corpus text. It travels only
+	// in the run's compat-cases.json, where the ratchet prints it beside
+	// the ID; the committed baseline records the ID alone.
+	Label string `json:"label,omitempty"`
 }
 
 // CaseSet is the compat-cases.json envelope. Head names the harness so
@@ -96,7 +102,7 @@ func normaliseCases(cases []Case) ([]Case, error) {
 		if n := seen[id]; n > 1 {
 			id += fmt.Sprintf(caseIDOccurrenceSuffix, n)
 		}
-		out = append(out, Case{ID: id, Passed: c.Passed})
+		out = append(out, Case{ID: id, Passed: c.Passed, Label: c.Label})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	for i := 1; i < len(out); i++ {

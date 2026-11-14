@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=../../upstream/loki-bench/queries/schema.json
+# yaml-language-server: $schema=../schema.json
 ---
 # Generic (non-detected_level) structured-metadata differential
 # coverage — see issue #1498.
@@ -77,7 +77,7 @@ queries:
     kind: log
     time_range:
       length: 24h
-    directions: backward # forward log queries over structured metadata unsupported by v2 engine (mirrors the detected_level cases in upstream/loki-bench/queries/fast/structured-metadata.yaml)
+    directions: backward # forward log queries over structured metadata unsupported by v2 engine (mirrors the detected_level cases in the upstream corpus file fast/structured-metadata.yaml)
     tags:
       - structured-metadata
       - generic

@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
+	"github.com/tsouza/cerberus/compatibility/loki/corpus"
 )
 
 // detectedFieldValuesWire is the BARE top-level response body. Upstream
@@ -39,7 +39,7 @@ type detectedFieldValuesWire struct {
 
 // compareDetectedFieldValuesAll runs the per-service, per-field values
 // differential and returns one Result per (service, field) pair.
-func compareDetectedFieldValuesAll(c *http.Client, f flags, metadata *bench.DatasetMetadata) []Result {
+func compareDetectedFieldValuesAll(c *http.Client, f flags, metadata *corpus.Metadata) []Result {
 	services := make([]string, 0, len(metadata.ByServiceName))
 	for svc := range metadata.ByServiceName {
 		services = append(services, svc)

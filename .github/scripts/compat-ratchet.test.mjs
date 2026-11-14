@@ -22,7 +22,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { baselineRoster, runRoster, verdicts } from './compat-ratchet.mjs';
+import { baselineRoster, listCases, runRoster, verdicts } from './compat-ratchet.mjs';
 import {
   SUPPORTED_HEADS,
   loadParityBaseline,
@@ -258,6 +258,30 @@ test('runRoster rejects a malformed run roster', () => {
       .err,
     /appears twice/,
   );
+});
+
+test('runRoster returns the optional labels and rejects a malformed one', () => {
+  const { cases, labels, err } = runRoster(
+    {
+      head: HEAD,
+      cases: [
+        { id: 'upstream:aa', passed: true, label: 'fast/a.yaml | log | range | FORWARD | q | d' },
+        { id: 'owned', passed: false },
+      ],
+    },
+    HEAD,
+  );
+  assert.equal(err, undefined);
+  assert.deepEqual([...cases], [['upstream:aa', true], ['owned', false]]);
+  assert.deepEqual([...labels], [['upstream:aa', 'fast/a.yaml | log | range | FORWARD | q | d']]);
+  assert.match(runRoster({ head: HEAD, cases: [{ id: 'a', passed: true, label: '' }] }, HEAD).err, /label/);
+  assert.match(runRoster({ head: HEAD, cases: [{ id: 'a', passed: true, label: 7 }] }, HEAD).err, /label/);
+});
+
+test('listCases names a labelled ID by its label', () => {
+  const out = listCases(['owned', 'upstream:aa'], new Map([['upstream:aa', 'readable identity']]));
+  assert.equal(out, '    - owned\n    - upstream:aa  (readable identity)');
+  assert.equal(listCases(['x']), '    - x');
 });
 
 test('verdicts partitions every movement into exactly one bucket', () => {

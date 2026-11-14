@@ -32,7 +32,7 @@ import (
 	"strings"
 	"time"
 
-	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
+	"github.com/tsouza/cerberus/compatibility/loki/corpus"
 )
 
 // detectedFieldsLineLimit must exceed entriesPerService (1440 — see
@@ -62,7 +62,7 @@ type detectedFieldsWire struct {
 // compareDetectedFieldsAll runs the per-service detected-fields
 // differential and returns one Result per seeded service. Results feed
 // the same report + score pipeline as the corpus cases.
-func compareDetectedFieldsAll(c *http.Client, f flags, metadata *bench.DatasetMetadata) []Result {
+func compareDetectedFieldsAll(c *http.Client, f flags, metadata *corpus.Metadata) []Result {
 	services := make([]string, 0, len(metadata.ByServiceName))
 	for svc := range metadata.ByServiceName {
 		services = append(services, svc)
