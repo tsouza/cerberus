@@ -66,8 +66,8 @@ export const BINARY_PACKAGE = './cmd/cerberus';
 // `.dockerignore`.
 const DOCKERFILE = /(^|\/)Dockerfile(\.[^/]+)?$/;
 const DOCKERIGNORE = /\.dockerignore$/;
-// A Go command that fetches the modules of the packages it names.
-const GO_PACKAGE_COMMAND = /\bgo\s+(build|list|install)\b/;
+// The `go` subcommands that fetch the modules of the packages they name.
+const GO_PACKAGE_SUBCOMMAND = /^(build|list|install)$/;
 // A package argument: a relative path into the module.
 const PACKAGE_ARG = /^\.\/[\w./-]+$/;
 // The go build / list / install flags that take the next token as their value
@@ -229,7 +229,7 @@ export function scanDockerfile(text) {
     if (BARE_MOD_DOWNLOAD.test(step)) bareDownload = true;
     for (const command of step.split(/;|&&|\|\|/)) {
       const words = shellTokens(command);
-      const at = words.findIndex((w, i) => w === 'go' && /^(build|list|install)$/.test(words[i + 1] ?? ''));
+      const at = words.findIndex((w, i) => w === 'go' && GO_PACKAGE_SUBCOMMAND.test(words[i + 1] ?? ''));
       if (at === -1) continue;
       const found = goCommandArgs(words.slice(at + 2));
       for (const pkg of found.packages) packages.add(pkg);
