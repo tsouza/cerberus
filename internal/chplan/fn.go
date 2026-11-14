@@ -36,6 +36,15 @@ const (
 	// input.
 	FnArrayCumSum Fn = "arrayCumSum"
 
+	// arrayCumSumNonNegative(arr) — the running sum of a numeric array, reset to
+	// zero whenever it would go negative: out[i] = max(0, out[i-1] + arr[i]).
+	// Same length as the input.
+	FnArrayCumSumNonNegative Fn = "arrayCumSumNonNegative"
+
+	// arrayDifference(arr) — the differences between adjacent elements,
+	// out[1] = 0 and out[i] = arr[i] - arr[i-1]. Same length as the input.
+	FnArrayDifference Fn = "arrayDifference"
+
 	// arrayDistinct(arr) — arr with duplicate elements removed, order of first
 	// occurrence preserved.
 	FnArrayDistinct Fn = "arrayDistinct"
@@ -51,6 +60,11 @@ const (
 	// arrayExists(lambda, arr) — true if the lambda predicate holds for at least
 	// one element.
 	FnArrayExists Fn = "arrayExists"
+
+	// arrayFill(lambda, arr, ...) — arr with every element the lambda answers 0
+	// for replaced by the element before it, scanning left to right; the first
+	// element is never replaced. Same length as arr.
+	FnArrayFill Fn = "arrayFill"
 
 	// arrayFilter(lambda, arr) — the subsequence of arr whose elements satisfy the
 	// lambda predicate.
@@ -122,12 +136,20 @@ const (
 	// derived sort key.
 	FnArraySort Fn = "arraySort"
 
+	// arraySplit(lambda, arr, ...) — arr cut into consecutive sub-arrays, a new
+	// one starting at every element the lambda answers non-zero for (never
+	// before the first element). An empty arr yields an empty array.
+	FnArraySplit Fn = "arraySplit"
+
 	// arrayStringConcat(arr[, sep]) — the elements of a string array joined with
 	// sep (default '').
 	FnArrayStringConcat Fn = "arrayStringConcat"
 
 	// arraySum(arr) — the sum of a numeric array's elements.
 	FnArraySum Fn = "arraySum"
+
+	// arrayWithConstant(n, x) — an array of n copies of x.
+	FnArrayWithConstant Fn = "arrayWithConstant"
 
 	// arrayZip(arr1, arr2, ...) — same-length arrays zipped into an array of
 	// tuples.

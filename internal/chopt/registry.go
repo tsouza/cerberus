@@ -346,22 +346,24 @@ const (
 	// range-mode classic-histogram quantile idiom
 	// `histogram_quantile(phi, <agg> by(le) (rate(<bucket>[range])))` onto a
 	// native timeSeriesRateToGrid ladder, retiring the array-expression fold
-	// (internal/promql.classicBucketWindowLadderExpr).
+	// (internal/promql.classicBucketWindowRunsExpr).
 	//
-	// The fold it replaces is not merely slow, it is QUADRATIC in a way no
-	// rewrite of the expression can fix: it walks the union bucket bounds with
-	// `arrayMap(u -> …)` over a body that READS the group's bounds / counts
-	// groupArrays, and ClickHouse materialises a lambda's captured columns once
-	// per outer-array element (upstream issue #54967), so the fold builds one
-	// copy of the whole per-series bucket matrix per rung. The
-	// timeSeries*ToGrid family are AGGREGATE functions — they consume rows
-	// through addBatch and never construct that replica — so expressing the
-	// same arithmetic as an aggregate over the UNNESTED ladder (one scalar
-	// counter series per `le` rung, which is exactly what reference Prometheus
-	// models `<name>_bucket{le="X"}` as) removes the replication entirely.
-	// Measured against a real ClickHouse 26.6 at realistic scale, same rows
-	// read (~88-89k), 121 anchors, 5m window: 4,123 ms / 3.411 GB peak /
-	// 51.5 CPU-s for the array fold against 148 ms / 0.130 GB peak / 0.4 CPU-s
+	// The fold it replaces is the sort-and-split array fold
+	// (internal/promql/classic_bucket_bound_runs.go), linear in the bucket
+	// entries it reads but still an array expression: it collects every
+	// in-window sample's bound and count arrays per series into one array
+	// and sorts them. The timeSeries*ToGrid family are AGGREGATE functions
+	// that consume rows through addBatch, so expressing the same arithmetic
+	// as an aggregate over the UNNESTED ladder (one scalar counter series
+	// per `le` rung, which is exactly what reference Prometheus models
+	// `<name>_bucket{le="X"}` as) keeps one scalar state per rung instead of
+	// the collected arrays. The measurement below predates the sort-and-split
+	// fold: it compares the native aggregate with the earlier per-rung
+	// `arrayMap(u -> …)` rescan, which ClickHouse's per-element replication
+	// of a lambda's captured columns (upstream issue #54967) made quadratic.
+	// Against a real ClickHouse 26.6 at realistic scale, same rows read
+	// (~88-89k), 121 anchors, 5m window: 4,123 ms / 3.411 GB peak /
+	// 51.5 CPU-s for that rescan against 148 ms / 0.130 GB peak / 0.4 CPU-s
 	// for the native aggregate — 28x faster, 26x less memory, 129x less CPU.
 	//
 	// The 25.9 floor is INHERITED from the rest of the timeSeries*ToGrid
@@ -1275,11 +1277,11 @@ const (
 	// lowerHistogramQuantileAgg / histogram_quantile_range.go's
 	// lowerHistogramQuantileClassicAggRange) onto a linear
 	// sumMap(bounds, counts) + arrayCumSum reshape for the SUM fold ONLY —
-	// see internal/promql/classic_bucket_merge_summap.go — retiring the
-	// groupArray + per-rung arrayFilter-rescan fold
-	// (classicBucketMergedLadderExpr) that classic_bucket_merge_bound.go's
-	// own audited doc identifies as quadratic in (merge width x total
-	// bucket-element volume). avg/min/max/count/group/stddev/stdvar/quantile
+	// see internal/promql/classic_bucket_merge_summap.go — in place of the
+	// groupArray sort-and-split merge (classicBucketMergeRunsExpr,
+	// internal/promql/classic_bucket_bound_runs.go). Both constructions are
+	// linear in the bucket entries the merge reads, and the same
+	// merged-entry guard bounds both. avg/min/max/count/group/stddev/stdvar/quantile
 	// folds are untouched — every non-sum operator keeps the existing
 	// groupArray-fold shaping unconditionally, chopt feature or not.
 	//
@@ -1294,7 +1296,7 @@ const (
 	// per-BUCKET counts followed by arrayCumSum along the union sums, at each
 	// union bound u, every row's own sub-cumulative count over its OWN
 	// buckets <= u, while reference Prometheus's sum by(le) — and the
-	// has-filter fold that reproduces it — sums only the rows whose OWN
+	// groupArray merge that reproduces it — sums only the rows whose OWN
 	// layout contains u. Cerberus issue #2817 closed that at the source: each
 	// ROW now cumulates over its own buckets BEFORE the key-wise sumMap, so
 	// the merged rung is "sum over the rows carrying u of that row's
@@ -1305,29 +1307,20 @@ const (
 	// and partially-overlapping layouts, and by a Prometheus-parity-enrolled
 	// spec fixture on a heterogeneous seed.
 	//
-	// What kept AutoSelect false was a MEASUREMENT question, settled by
-	// https://github.com/tsouza/cerberus/issues/2923: this feature's own
-	// ~50x figure was an estimate taken against the superseded
-	// construction. A real-ClickHouse re-measurement against the SHIPPED
-	// (post-#2817) construction — internal/promql/classic_bucket_merge_summap.go's
-	// header has the full table — found its real cost within ~1% of the
-	// fold's at every controlled point, converging to statistical parity
-	// as volume grows rather than the estimated 50x win: the per-row
-	// arraySort/arrayCumSum #2817 added to fix correctness erased the
-	// speedup this feature existed for. AutoSelect STAYS false — this
-	// repo's own established pattern for a feature whose real-world
-	// recalibration turns up no measurable win (#2768, #2750) — and
-	// [maxClassicBucketMergeCostUnits]'s existing guard needs no
-	// recalibration either: the re-measurement confirms (not merely
-	// assumes) it protects this path within the same ~1% margin, so no
-	// second, sumMap-specific ceiling is needed. The feature remains
-	// reachable, byte-identical-correct (per #2817), by explicit
-	// CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap listing for an
-	// operator who wants it without expecting a resource win.
+	// AutoSelect stays false. Its cost against the linear groupArray merge
+	// — internal/promql/classic_bucket_merge_summap.go's header has the
+	// table — is within 0.1% at 25,000 x 50 disjoint on both builds, 3-7%
+	// lower per entry on 26.8 and 11-16% higher on 26.6 on the larger
+	// disjoint layouts, and far lower on a shared one; whether that earns
+	// AutoSelect is
+	// https://github.com/tsouza/cerberus/issues/4079. The bucket-merge
+	// guard ([maxClassicBucketMergeEntries]) bounds this path too, so no
+	// second, sumMap-specific ceiling exists. The feature is reachable by
+	// explicit CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap listing.
 	//
 	// The NaN asymmetry #2756 documented as a second, accepted risk is gone
 	// with the same change: arrayCumSum now runs over ONE ROW's own buckets,
-	// the same reach the fold's arraySum gives a NaN, and the repair layer
+	// the same reach the groupArray merge's per-row reduction gives a NaN, and the repair layer
 	// both paths share answers a poisoned rung identically. See
 	// internal/promql/classic_bucket_merge_summap.go's header.
 	FeatureClassicBucketMergeSumMap = "classic_bucket_merge_summap"

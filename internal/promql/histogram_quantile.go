@@ -168,7 +168,7 @@ type phiArg struct {
 //     position and is dropped from the by-clause silently), then merge
 //     them over the UNION of their bounds in the cumulative per-`le`
 //     domain, reducing each rung with the aggregation's fold — see
-//     classicBucketMergedLadderExpr and classicBucketLadderFold.
+//     classicBucketMergeRunsExpr and classicBucketLadderFold.
 //
 // The native (exp-histogram) path requires a bare VectorSelector; the
 // `rate(...)`-wrapped idiom is not modelled on the native side.
@@ -477,8 +477,8 @@ func lowerHistogramQuantileClassicBare(
 	// literal non-finite value out of the row's own storage
 	// ExplicitBounds. classicBucketFiniteBoundsRestriction closes that
 	// gap unconditionally — see its own doc comment for why the
-	// aggregated/merge path (classicBucketUnionBoundsExpr,
-	// classicBucketRowCumulativeExpr, #2495) already had this and the
+	// aggregated/merge path (classicBucketRowEntriesExpr, #2495) already
+	// had this and the
 	// bare-selector path here did not.
 	input = classicBucketFiniteBoundsRestriction(input, s)
 
@@ -913,7 +913,7 @@ const promGroupSampleValue = 1.0
 // collapse is only sound for reducers that commute with the running
 // total (`sum`, and `avg` by scale-invariance); folding in the cumulative
 // domain has no such restriction because the ladder is built BEFORE the
-// reduction. See classicBucketMergedLadderExpr for that construction.
+// reduction. See classicBucketMergeRunsExpr for that construction.
 //
 // `quantile(phi, ...)` is the one PARAMETERISED aggregation with an
 // entry: it reduces each `le` group to a single value exactly as `min` /
@@ -1332,23 +1332,18 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	shaping := ctx.lowerers.ClassicBucketMerge.LowerClassicBucketMerge(shape.classicFold, shape.classicFoldIsSum, s)
 	agg := &chplan.Aggregate{
 		Roles:              metricRoles(s),
-		Input:              perSeries,
+		Input:              classicBucketMergeInputGate(perSeries, s, ctx.resourceBounds.ClassicBucketMergeMaxEntries),
 		GroupBy:            userGroupBy,
 		GroupByAliases:     userAliases,
 		AggFuncs:           shaping.aggs,
 		DropEmptyOnNoGroup: true,
 	}
-	// Bound the cross-series merge before the union/ladder Projects below
-	// ever read it — issue #2408's own audited "Proposed next step": this
-	// stage is the shared, previously-unguarded dominant cost regardless of
-	// which per-series mechanism fed perSeries. See classic_bucket_merge_bound.go.
-	guardedAgg := wrapClassicBucketMergeBudgetGuard(agg, ctx.resourceBounds.ClassicBucketMergeMaxCostUnits)
-
 	// Inner Projects re-shape the aggregate output back into the
 	// histogram-row contract HistogramQuantile expects: an Attributes
 	// column (rebuilt from the gkey aliases) plus the merged
-	// BucketCounts + ExplicitBounds pair.
-	rebuilt, cumulative := shaping.reshape(guardedAgg, []chplan.Projection{
+	// BucketCounts + ExplicitBounds pair. The Aggregate reads the per-series
+	// rows through the bucket-merge guard — see classic_bucket_merge_bound.go.
+	rebuilt, cumulative := shaping.reshape(agg, []chplan.Projection{
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
 	}, s)
 
@@ -1390,38 +1385,26 @@ const (
 	// groupArray of each row's ExplicitBounds / BucketCounts array.
 	hqAggBoundsListAlias = "_hq_bounds_list"
 	hqAggCountsListAlias = "_hq_counts_list"
-	// hqAggLadderAlias holds the merged, not-yet-repaired cumulative
-	// ladder. It gets its own Project layer because the monotonic repair
-	// reads the ladder twice and inlining it would square the SQL.
-	hqAggLadderAlias = "_hq_ladder"
+	// hqAggMergedAlias holds the group's merged layout and its
+	// not-yet-repaired cumulative ladder, as tuple(bounds, ladder). One
+	// sort-and-split pass produces both, so they share one Project layer and
+	// the repair layer above reads them by position.
+	hqAggMergedAlias = "_hq_merged"
 )
 
-// Lambda parameter names for the layout-merge expressions. `u` is the
-// union bound currently being folded; `bs` / `cs` are one row's
-// ExplicitBounds / BucketCounts; `b` / `c` are one bucket's bound and
-// count inside a row; `v` / `pbs` pair a row's cumulative count with the
-// bounds array it came from; `i` indexes the ladder during the repair.
+// Lambda parameter names for the layout-merge expressions. `bs` / `cs`
+// are one row's ExplicitBounds / BucketCounts; `b` / `c` are one bucket's
+// bound and count inside a row.
 const (
-	paramUnionBound  = "u"
 	paramRowBounds   = "bs"
 	paramRowCounts   = "cs"
 	paramBucketBound = "b"
 	paramBucketCount = "c"
-	paramRowCum      = "v"
-	paramRowLayout   = "pbs"
-	paramLadderIdx   = "i"
 	// paramSortedRungs / paramQuantileRank are promQuantileRungFold's
 	// single-evaluation bindings: one rung group sorted ascending, and
 	// the interpolation rank `phi * (n - 1)` over it.
 	paramSortedRungs  = "qs"
 	paramQuantileRank = "qr"
-	// paramFiniteBound is the single-bound-value parameter of the
-	// isFinite filter lambda #2495's fix threads through
-	// classicBucketUnionBoundsExpr and classicBucketRowCumulativeExpr.
-	// Kept distinct from paramBucketBound (the (bound, count) pairing
-	// lambda's own bound param) so the two scopes never share a name,
-	// even though CH lambdas scope correctly either way.
-	paramFiniteBound = "fb"
 )
 
 // classicBucketFiniteExpr reports whether v is neither NaN nor +/-Inf.
@@ -1449,8 +1432,7 @@ func classicBucketFiniteExpr(v chplan.Expr) chplan.Expr {
 // classicBucketFiniteBoundsRestriction narrows a classic-histogram row's
 // BucketCounts x ExplicitBounds arrays to drop any INTERIOR non-finite
 // bound (and its paired per-bucket count) — the bare-selector sibling of
-// #2495's fix (classicBucketUnionBoundsExpr / classicBucketRowCumulativeExpr
-// above), a pre-release audit finding: `histogram_quantile(0.9, m_bucket)`
+// #2495's fix (classicBucketRowEntriesExpr, classic_bucket_bound_runs.go), a pre-release audit finding: `histogram_quantile(0.9, m_bucket)`
 // (no `le` matcher, routed through lowerHistogramQuantileClassicBare) had
 // no finite-filtering at all, while `histogram_quantile(0.9, sum by(le)
 // (rate(m_bucket[5m])))` (the aggregated/merge path) already did — a real
@@ -1466,7 +1448,7 @@ func classicBucketFiniteExpr(v chplan.Expr) chplan.Expr {
 // repo's own tests, tooling and the rest of this file do NOT treat that as
 // the only legal shape: readSeededClassicHistograms (test/spec/parity_chdb.go)
 // documents and reconstructs an EQUAL-length row as "no overflow bucket",
-// classicBucketRowCumulativeExpr's `arraySlice(cs, 1, length(bs))` already
+// classicBucketRowEntriesExpr's `arraySlice(cs, 1, length(bs))` already
 // tolerates it (an equal-length `cs` yields every element, same as an N+1
 // one clipped to N), and classicBucketLeStringExpr's `idx > length(bounds)`
 // mapping only ever synthesises "+Inf" when a genuine overflow position
@@ -1546,10 +1528,10 @@ type classicBucketShaping struct {
 	// groupArray-fold branch applies. Unused (but still set) when sumMap is
 	// true — see classicBucketMergeShapingSumMap's own doc.
 	fold classicBucketRungFold
-	// sumMap selects classic_bucket_merge_summap.go's linear sumMap ladder
-	// (over per-row cumulative counts) instead of the groupArray + per-rung
-	// arrayFilter-rescan fold. The two ladders share the monotonic repair
-	// layer and answer identically; only their cost differs. Only
+	// sumMap selects classic_bucket_merge_summap.go's sumMap ladder (over
+	// per-row cumulative counts) instead of the groupArray sort-and-split
+	// fold. The two ladders share the monotonic repair layer and answer
+	// identically; only their cost differs. Only
 	// classicBucketMergeShapingSumMap ever sets it, and only ever for the
 	// SUM fold — see ClassicBucketMergeLowerer (lower_strategy.go).
 	sumMap bool
@@ -1580,6 +1562,10 @@ func classicBucketMergeShaping(fold classicBucketRungFold, s schema.Metrics) cla
 // carrying `passthrough` through every layer it adds. It reports whether
 // the resulting BucketCounts is an already-cumulative ladder, which the
 // caller hands to chplan.HistogramQuantile.BucketCountsCumulative.
+//
+// A layout-merge group must read its rows through
+// classicBucketMergeInputGate (classic_bucket_merge_bound.go), which bounds
+// the merge before the Aggregate runs.
 func (sh classicBucketShaping) reshape(
 	group chplan.Node,
 	passthrough []chplan.Projection,
@@ -1596,34 +1582,34 @@ func (sh classicBucketShaping) reshape(
 		return &chplan.Project{Roles: metricScanRoles(s, s.HistogramTable), Input: group, Projections: projections}, false
 	}
 
-	// Layer 1: the merged layout (union of every row's bounds) and the
-	// per-`le` ladder folded across the group's rows. Both constructions
-	// answer the same question — the cumulative count at each union bound,
-	// summed over the rows whose OWN layout carries it — and both produce it
-	// one rung at a time rather than by accumulating, so both owe Layer 2's
-	// repair. See classic_bucket_merge_summap.go's header.
-	ladder := classicBucketMergedLadderExpr(sh.fold)
+	// Layer 1: the merged layout (every distinct bound any row carried)
+	// and the per-`le` ladder folded across the group's rows, as one
+	// tuple. Both constructions answer the same question — the cumulative
+	// count at each union bound, folded over the rows whose OWN layout
+	// carries it — and both produce it one rung at a time rather than by
+	// accumulating, so both owe Layer 2's repair. See
+	// classic_bucket_bound_runs.go and classic_bucket_merge_summap.go.
+	mergedExpr := classicBucketMergeRunsExpr(sh.fold,
+		&chplan.ColumnRef{Name: hqAggBoundsListAlias},
+		&chplan.ColumnRef{Name: hqAggCountsListAlias})
 	if sh.sumMap {
-		ladder = classicBucketSumMapLadderExpr()
+		mergedExpr = classicBucketSumMapMergedExpr()
 	}
-	merged := make([]chplan.Projection, 0, len(passthrough)+2)
+	merged := make([]chplan.Projection, 0, len(passthrough)+1)
 	merged = append(merged, passthrough...)
-	merged = append(
-		merged,
-		chplan.Projection{Expr: ladder, Alias: hqAggLadderAlias},
-		chplan.Projection{Expr: classicBucketUnionBoundsExpr(), Alias: s.ExplicitBoundsColumn},
-	)
+	merged = append(merged, chplan.Projection{Expr: mergedExpr, Alias: hqAggMergedAlias})
 
 	// Layer 2: Prometheus's ensureMonotonicAndIgnoreSmallDeltas over that
 	// ladder, aliased into the BucketCounts slot HistogramQuantile reads.
+	mergedRef := chplan.Expr(&chplan.ColumnRef{Name: hqAggMergedAlias})
 	repaired := make([]chplan.Projection, 0, len(passthrough)+2)
 	for _, p := range passthrough {
 		repaired = append(repaired, chplan.Projection{Expr: &chplan.ColumnRef{Name: p.Alias}, Alias: p.Alias})
 	}
 	repaired = append(
 		repaired,
-		chplan.Projection{Expr: classicBucketMonotonicLadderExpr(), Alias: s.BucketCountsColumn},
-		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
+		chplan.Projection{Expr: classicBucketMonotonicExpr(tupleAt(mergedRef, runsTupleValues)), Alias: s.BucketCountsColumn},
+		chplan.Projection{Expr: tupleAt(mergedRef, runsTupleBounds), Alias: s.ExplicitBoundsColumn},
 	)
 
 	return &chplan.Project{
@@ -1633,231 +1619,21 @@ func (sh classicBucketShaping) reshape(
 	}, true
 }
 
-// classicBucketUnionBoundsExpr renders the merged bucket layout: every
-// distinct upper bound any row in the group carried, ascending.
-//
-// This is the output layout, and it is what makes the merged quantile
-// match Prometheus. Prometheus never sees a "layout" at all — a classic
-// histogram reaches it as one float series per `le`, so `sum by(le)`
-// over two producers with different boundaries yields the UNION of their
-// `le` values, each rung summed over whichever series actually reported
-// it. Keying the group on the layout instead (one output row per layout)
-// answers a question nobody asked: the caller asked for one series per
-// group, not one per boundary set.
-//
-// Each row's own ExplicitBounds is narrowed to arrayFilter(isFinite, ...)
-// BEFORE the flatten: a literal +Inf or NaN entry in a row's raw bounds
-// (real OTLP data can produce either) would otherwise survive into this
-// union verbatim and become the node's own output ExplicitBounds, letting
-// emitHistogramQuantile's overflow-bucket clamp answer it directly as the
-// quantile instead of the highest genuine finite bound (#2495).
-func classicBucketUnionBoundsExpr() chplan.Expr {
-	finiteRowBounds := &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{paramFiniteBound},
-			Body:   classicBucketFiniteExpr(&chplan.BareIdent{Name: paramFiniteBound}),
-		},
-		&chplan.BareIdent{Name: paramRowBounds},
-	}}
-	return &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
-		&chplan.FuncCall{Fn: chplan.FnArrayDistinct, Args: []chplan.Expr{
-			&chplan.FuncCall{Fn: chplan.FnArrayFlatten, Args: []chplan.Expr{
-				&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-					&chplan.Lambda{Params: []string{paramRowBounds}, Body: finiteRowBounds},
-					&chplan.ColumnRef{Name: hqAggBoundsListAlias},
-				}},
-			}},
-		}},
-	}}
-}
-
-// classicBucketMergedLadderExpr renders the group's cumulative per-`le`
-// ladder over the merged layout: one rung per union bound, plus the
-// trailing +Inf rung, each reduced across the group's rows by `fold`.
-//
-// The merge happens in the CUMULATIVE domain because that is the only
-// domain in which rows carrying different layouts can be combined at all.
-// A per-bucket count is meaningless without the bounds array it indexes —
-// position i of a `[0.1, 0.5, 1]` row and position i of a `[1, 10, 100]`
-// row measure different things — whereas a cumulative count at a bound is
-// a self-contained quantity: "observations at or below u". That is
-// exactly Prometheus's own representation (one already-cumulative float
-// per `le`), so folding there reproduces its answer rung for rung.
-//
-// Per union bound u:
-//
-//	fold(arrayFilter((v, pbs) -> has(pbs, u),
-//	     arrayMap((bs, cs) -> <cumulative count at u>, BL, CL), BL))
-//
-// The arrayFilter is load-bearing, not an optimisation: a row whose
-// layout does not contain u contributes NO `{le=u}` series in
-// Prometheus's model, so it must be absent from the reduction rather than
-// contribute a zero. Under `sum` the distinction is invisible; under
-// `min` / `avg` / `count` it is the whole answer.
-//
-// The +Inf rung folds over every row unconditionally — the overflow
-// bucket exists in every layout, so `{le="+Inf"}` is reported by all of
-// them.
-// classicBucketRowCumulativeExpr renders ONE row's cumulative count at
-// the union bound bound to paramUnionBound: the sum of every bucket whose
-// upper bound is <= it. The row's layout and counts are bound to
-// paramRowBounds / paramRowCounts by the caller's lambda.
-//
-// BucketCounts runs one element longer than ExplicitBounds (the trailing
-// +Inf overflow), so the pairing slices that rung off — it belongs to no
-// finite bound.
-//
-// Shared by both merge stages: the per-series window reduction and the
-// across-series aggregation read a row's cumulative count identically,
-// and the two would silently disagree about the +Inf slice if each kept
-// its own copy.
-//
-// The pairing predicate below guards on isFinite(b) as well as b <= u:
-// b is one bucket's OWN raw upper bound, unfiltered (filtering it here
-// would desynchronise it from its paired count at the same index, unlike
-// classicBucketUnionBoundsExpr's union where filtering is safe because
-// the union has already been deduplicated). A literal +Inf or NaN bound
-// is harmless against b <= u for a finite u (both comparisons are false
-// under IEEE 754), but a literal -Inf bound is NOT: -Inf <= u holds for
-// every finite u, so without the guard a malformed row's -Inf-bound
-// bucket would fold its count into every rung of the merged ladder
-// (#2495).
-func classicBucketRowCumulativeExpr() chplan.Expr {
-	return &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{
-		&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramBucketBound, paramBucketCount},
-				Body: &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
-					&chplan.Binary{
-						Op:   chplan.OpAnd,
-						Left: classicBucketFiniteExpr(&chplan.BareIdent{Name: paramBucketBound}),
-						Right: &chplan.Binary{
-							Op:    chplan.OpLe,
-							Left:  &chplan.BareIdent{Name: paramBucketBound},
-							Right: &chplan.BareIdent{Name: paramUnionBound},
-						},
-					},
-					// The ladder is a FLOAT domain throughout. Stored
-					// counts are unsigned, and the per-series stage
-					// differences its ladder into per-bucket counts, so
-					// leaving them unsigned makes a legitimate negative
-					// difference underflow — and makes CH infer a
-					// Variant(Int64, UInt64) that no array aggregate
-					// accepts. Prometheus's classic buckets are float
-					// samples anyway.
-					&chplan.FuncCall{
-						Fn:   chplan.FnToFloat64,
-						Args: []chplan.Expr{&chplan.BareIdent{Name: paramBucketCount}},
-					},
-					&chplan.LitFloat{V: 0},
-				}},
-			},
-			&chplan.BareIdent{Name: paramRowBounds},
-			&chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
-				&chplan.BareIdent{Name: paramRowCounts},
-				&chplan.LitInt{V: 1},
-				&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.BareIdent{Name: paramRowBounds}}},
-			}},
-		}},
-	}}
-}
-
 // classicBucketRowTotalExpr renders ONE row's +Inf rung — its total
 // observation count — from the row's counts array bound to
-// paramRowCounts. Float64 for the same reason
-// classicBucketRowCumulativeExpr is.
+// paramRowCounts.
+//
+// The ladder is a FLOAT domain throughout. Stored counts are unsigned, and
+// the per-series stage differences its ladder into per-bucket counts, so
+// leaving them unsigned makes a legitimate negative difference underflow —
+// and makes CH infer a Variant(Int64, UInt64) that no array aggregate
+// accepts. Prometheus's classic buckets are float samples anyway.
 func classicBucketRowTotalExpr() chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{
 		&chplan.FuncCall{
 			Fn:   chplan.FnArraySum,
 			Args: []chplan.Expr{&chplan.BareIdent{Name: paramRowCounts}},
 		},
-	}}
-}
-
-func classicBucketMergedLadderExpr(fold classicBucketRungFold) chplan.Expr {
-	boundsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggBoundsListAlias})
-	countsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggCountsListAlias})
-
-	rowCumulativeAtBound := classicBucketRowCumulativeExpr()
-
-	contributingRungs := &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{paramRowCum, paramRowLayout},
-			Body: &chplan.FuncCall{Fn: chplan.FnArrayHas, Args: []chplan.Expr{
-				&chplan.BareIdent{Name: paramRowLayout},
-				&chplan.BareIdent{Name: paramUnionBound},
-			}},
-		},
-		&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramRowBounds, paramRowCounts},
-				Body:   rowCumulativeAtBound,
-			},
-			boundsList,
-			countsList,
-		}},
-		boundsList,
-	}}
-
-	infRungs := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{paramRowCounts},
-			Body:   classicBucketRowTotalExpr(),
-		},
-		countsList,
-	}}
-
-	return &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{
-		&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-			&chplan.Lambda{Params: []string{paramUnionBound}, Body: fold(contributingRungs)},
-			classicBucketUnionBoundsExpr(),
-		}},
-		&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{fold(infRungs)}},
-	}}
-}
-
-// classicBucketMonotonicLadderExpr renders Prometheus's
-// ensureMonotonicAndIgnoreSmallDeltas (promql/quantile.go) over the
-// merged ladder in hqAggLadderAlias, as a prefix maximum.
-//
-// The repair is mandatory here, not defensive. A ladder accumulated from
-// non-negative per-bucket counts is non-decreasing by construction, but
-// this one is not accumulated — each rung is folded independently over
-// whichever rows reported that bound, so a bound only one producer
-// carries can sit BELOW the rung beneath it. The mixed-layout case makes
-// it concrete: bounds [1,2,3] with counts [10,0,0,0] and bounds
-// [100,200,300] with counts [0,0,0,10] sum to the ladder
-// [10,10,10,0,0,0,20], which the repair lifts to [10,10,10,10,10,10,20] —
-// exactly what upstream produces for the same two series.
-//
-// Upstream also smooths deltas within a 1e-12 relative tolerance, which
-// exists to absorb float error accumulated by ITS callers' repeated
-// additions; the prefix maximum already subsumes every case where that
-// smoothing changes a value (it can only raise a dip back to the running
-// maximum), so there is nothing left for a tolerance to do.
-func classicBucketMonotonicLadderExpr() chplan.Expr {
-	return classicBucketMonotonicExpr(&chplan.ColumnRef{Name: hqAggLadderAlias})
-}
-
-// classicBucketMonotonicExpr is the repair itself over an arbitrary ladder
-// expression — a prefix maximum, so every rung is at least as high as the
-// one below it. Both cumulative-input producers owe it, and both derive
-// their rungs independently rather than by accumulating non-negative
-// counts, so both can hand up a ladder that dips.
-func classicBucketMonotonicExpr(ladder chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{paramLadderIdx},
-			Body: &chplan.FuncCall{Fn: chplan.FnArrayMax, Args: []chplan.Expr{
-				&chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
-					ladder,
-					&chplan.LitInt{V: 1},
-					&chplan.BareIdent{Name: paramLadderIdx},
-				}},
-			}},
-		},
-		&chplan.FuncCall{Fn: chplan.FnArrayEnumerate, Args: []chplan.Expr{ladder}},
 	}}
 }
 

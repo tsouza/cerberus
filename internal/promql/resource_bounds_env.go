@@ -10,7 +10,7 @@ import (
 // resource_bounds_env.go closes cerberus issue #2667: the two cross-series
 // histogram-merge resource-bound cost ceilings
 // (maxHistogramMergeCostUnits, histogram_merge_bound.go;
-// maxClassicBucketMergeCostUnits, classic_bucket_merge_bound.go) were
+// maxClassicBucketMergeEntries, classic_bucket_merge_bound.go) were
 // hardcoded Go constants with no operator-facing override, the same problem
 // class #2651/#2653/#2665 fixed for internal/chsql's
 // range_bucket_grid_native_bound.go: a wrong calibration for real production
@@ -40,11 +40,20 @@ const (
 	// own doc for the calibration the shipped default protects.
 	EnvHistogramMergeMaxCostUnits = "CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS"
 
-	// EnvClassicBucketMergeMaxCostUnits overrides
-	// maxClassicBucketMergeCostUnits (classic_bucket_merge_bound.go): the
-	// classic-histogram across-series bucket-merge cost ceiling. See that
-	// constant's own doc for the calibration the shipped default protects.
-	EnvClassicBucketMergeMaxCostUnits = "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS"
+	// EnvClassicBucketMergeMaxEntries overrides
+	// maxClassicBucketMergeEntries (classic_bucket_merge_bound.go): the most
+	// bucket entries one query's classic-histogram across-series merge may
+	// read. See that constant's own doc for the calibration the shipped
+	// default protects.
+	EnvClassicBucketMergeMaxEntries = "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES"
+
+	// EnvClassicBucketMergeMaxCostUnitsRetired is the name the classic
+	// bucket-merge ceiling had while it counted merge width times bucket
+	// volume. Its values are not entry counts, so [ResourceBoundsFrom]
+	// ignores it, and [RetiredSettingWarnings] reports it so the boot path
+	// can warn that it is ignored and name
+	// [EnvClassicBucketMergeMaxEntries] as the replacement.
+	EnvClassicBucketMergeMaxCostUnitsRetired = "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS"
 
 	// EnvExpHistogramWindowMaxCostUnits overrides the
 	// samples-per-series-per-window pre-rejection's ceiling
@@ -60,8 +69,8 @@ const (
 	//
 	// One deliberate difference from that sibling: an EXPLICIT `0` is
 	// rejected at startup here (envInt64's non-positive check, the rule
-	// every CERBERUS_PROMQL_*_MAX_COST_UNITS knob in this file shares —
-	// docs/configuration.md's "all seven reject a non-positive override"),
+	// every CERBERUS_PROMQL_* ceiling in this file shares —
+	// docs/configuration.md's "reject a malformed or non-positive override at startup"),
 	// where the density-units sibling reads `0` as "derive". Only an UNSET
 	// variable derives here. The two are not aligned because the rule is
 	// per-file: the sibling's loader treats 0 as its documented default,
@@ -73,7 +82,7 @@ const (
 // ResourceBounds carries the operator-tunable cost ceilings for promql's
 // cross-series histogram-merge resource-bound guards. The zero value is NOT
 // a safe "unlimited" sentinel — histogramMergeCostOverBudgetExpr and
-// classicBucketMergeCostOverBudgetExpr both reject whenever the emitted cost
+// classicBucketMergeInputGate both reject whenever the emitted cost
 // EXCEEDS the configured ceiling, so a zero-valued field rejects nearly
 // every real merge rather than admitting every one. Callers should build a
 // ResourceBounds through [DefaultResourceBounds] or
@@ -93,13 +102,14 @@ type ResourceBounds struct {
 	// issue #2385's 19-real-OOM history the default must not regress.
 	HistogramMergeMaxCostUnits int64
 
-	// ClassicBucketMergeMaxCostUnits bounds `totalBucketVolume x
-	// widestRowBucketWidth` for the classic-histogram across-series bucket
-	// merge (classicBucketMergeCostOverBudgetExpr,
-	// classic_bucket_merge_bound.go). Defaults to
-	// maxClassicBucketMergeCostUnits — see that constant's own doc for the
-	// real-ClickHouse calibration behind the default.
-	ClassicBucketMergeMaxCostUnits int64
+	// ClassicBucketMergeMaxEntries bounds the bucket entries (every
+	// per-series row's finite bounds plus its +Inf rung) one query's
+	// classic-histogram across-series bucket merge may read, summed across
+	// every merge group and step (classicBucketMergeInputGate,
+	// classic_bucket_merge_bound.go).
+	// Defaults to maxClassicBucketMergeEntries — see that file's header for
+	// the real-ClickHouse calibration behind the default.
+	ClassicBucketMergeMaxEntries int64
 
 	// ExpHistogramWindowMaxCostUnits bounds `S x W x (S + W)` for one
 	// exponential-histogram window group — S samples, W widest stored
@@ -120,7 +130,7 @@ type ResourceBounds struct {
 }
 
 // DefaultResourceBounds returns the shipped, load-bearing defaults —
-// maxHistogramMergeCostUnits and maxClassicBucketMergeCostUnits, the same
+// maxHistogramMergeCostUnits and maxClassicBucketMergeEntries, the same
 // named Go constants every lowering path used before this file existed.
 // Every caller that does not opt into [ResourceBoundsFromEnv] (the spec
 // harness, [Lower] / [LowerAt] / [LowerAtRange], and any [LowerOpts] built
@@ -128,8 +138,8 @@ type ResourceBounds struct {
 // byte-identical to the pre-config-knob guards.
 func DefaultResourceBounds() ResourceBounds {
 	return ResourceBounds{
-		HistogramMergeMaxCostUnits:     maxHistogramMergeCostUnits,
-		ClassicBucketMergeMaxCostUnits: maxClassicBucketMergeCostUnits,
+		HistogramMergeMaxCostUnits:   maxHistogramMergeCostUnits,
+		ClassicBucketMergeMaxEntries: maxClassicBucketMergeEntries,
 	}
 }
 
@@ -145,8 +155,8 @@ func (b ResourceBounds) withDefaults() ResourceBounds {
 	if b.HistogramMergeMaxCostUnits == 0 {
 		b.HistogramMergeMaxCostUnits = def.HistogramMergeMaxCostUnits
 	}
-	if b.ClassicBucketMergeMaxCostUnits == 0 {
-		b.ClassicBucketMergeMaxCostUnits = def.ClassicBucketMergeMaxCostUnits
+	if b.ClassicBucketMergeMaxEntries == 0 {
+		b.ClassicBucketMergeMaxEntries = def.ClassicBucketMergeMaxEntries
 	}
 	if b.ExpHistogramWindowMaxCostUnits == 0 {
 		// Derived, not defaulted: see [EnvExpHistogramWindowMaxCostUnits].
@@ -182,7 +192,7 @@ func ResourceBoundsFrom(get func(string) string) (ResourceBounds, error) {
 	if cfg.HistogramMergeMaxCostUnits, err = settingInt64(get, EnvHistogramMergeMaxCostUnits, cfg.HistogramMergeMaxCostUnits); err != nil {
 		return ResourceBounds{}, err
 	}
-	if cfg.ClassicBucketMergeMaxCostUnits, err = settingInt64(get, EnvClassicBucketMergeMaxCostUnits, cfg.ClassicBucketMergeMaxCostUnits); err != nil {
+	if cfg.ClassicBucketMergeMaxEntries, err = settingInt64(get, EnvClassicBucketMergeMaxEntries, cfg.ClassicBucketMergeMaxEntries); err != nil {
 		return ResourceBounds{}, err
 	}
 	// Left at 0 unless explicitly pinned: [withDefaults] derives it from
@@ -193,6 +203,22 @@ func ResourceBoundsFrom(get func(string) string) (ResourceBounds, error) {
 	return cfg, nil
 }
 
+// RetiredSettingWarnings returns one warning per retired setting get
+// resolves to a non-empty value. A retired setting is never read:
+// [ResourceBoundsFrom] applies its replacement, or the default when the
+// replacement is unset. The caller logs each warning at startup.
+func RetiredSettingWarnings(get func(string) string) []string {
+	if get(EnvClassicBucketMergeMaxCostUnitsRetired) == "" {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"%s is ignored: the classic-histogram bucket-merge ceiling now counts merged bucket entries, "+
+			"not merge width times bucket volume, so its old values do not carry over; "+
+			"the ceiling comes from %s (default %d)",
+		EnvClassicBucketMergeMaxCostUnitsRetired, EnvClassicBucketMergeMaxEntries, int64(maxClassicBucketMergeEntries),
+	)}
+}
+
 // settingInt64 parses a 64-bit int setting through get, returning def when
 // unset and a wrapped error when malformed OR non-positive (fail-fast at
 // startup) — a self-contained cousin of internal/solver/config_env.go's own
@@ -201,7 +227,7 @@ func ResourceBoundsFrom(get func(string) string) (ResourceBounds, error) {
 // for cerberus issue #2667's chsql-side siblings
 // (CERBERUS_CH_*_MAX_ROWS): a cost-unit ceiling of zero or less is never a
 // legitimate operator override — histogramMergeCostOverBudgetExpr /
-// classicBucketMergeCostOverBudgetExpr both reject once the emitted cost
+// classicBucketMergeInputGate both reject once the emitted cost
 // EXCEEDS the ceiling, so zero would reject nearly every real merge and a
 // negative value would reject all of them — so an operator who sets one to
 // 0 or below almost certainly meant something else, and this fails fast at

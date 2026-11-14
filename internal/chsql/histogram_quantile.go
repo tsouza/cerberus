@@ -25,7 +25,7 @@ import (
 // each quantity into its own stage makes the single evaluation a
 // property of the emitted SQL rather than of an optimiser setting.
 const (
-	hqClassicKeptIdxColumn      = "_cerb_hqc_kept_idx"
+	hqClassicKeptMaskColumn     = "_cerb_hqc_kept_mask"
 	hqClassicBucketsColumn      = "_cerb_hqc_buckets"
 	hqClassicBoundsColumn       = "_cerb_hqc_bounds"
 	hqClassicCumColumn          = "_cerb_hqc_cum"
@@ -39,7 +39,7 @@ const (
 // which is what each materialising stage itself needs, since a stage can
 // only read the columns the stages beneath it produced.
 type hqClassicHelperColumns struct {
-	keptIdx      string
+	keptMask     string
 	buckets      string
 	bounds       string
 	cum          string
@@ -118,23 +118,23 @@ func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
 	}
 
 	// Stage 1 — the two derivations that read only base columns: the
-	// coalescing index walk over ExplicitBounds and the Float64 cast of
-	// BucketCounts. Both coalesced arrays are built from the index walk,
-	// so staging it first keeps its arrayFilter to a single evaluation.
+	// coalescing keep mask over ExplicitBounds and the Float64 cast of
+	// BucketCounts. Both coalesced arrays are filtered by the mask, so
+	// staging it first keeps its comparison walk to a single evaluation.
 	rawW := newHQClassicWriters(h, hqClassicHelperColumns{})
 	scanned := NewQuery().
 		Select(
 			Star(),
-			As(rawW.keptBoundIdx(), hqClassicKeptIdxColumn),
+			As(rawW.keptBoundMask(), hqClassicKeptMaskColumn),
 			As(rawW.buckets(), hqClassicBucketsColumn),
 		).
 		From(materializeHistogramInput(sub, h.Input.RowType()))
 
 	// Stage 2 — the coalesced bound array and the coalesced cumulative
-	// ladder, both over the staged index walk and the staged bucket array.
+	// ladder, both over the staged keep mask and the staged bucket array.
 	scan := hqClassicHelperColumns{
-		keptIdx: hqClassicKeptIdxColumn,
-		buckets: hqClassicBucketsColumn,
+		keptMask: hqClassicKeptMaskColumn,
+		buckets:  hqClassicBucketsColumn,
 	}
 	scanW := newHQClassicWriters(h, scan)
 	coalesced := NewQuery().
@@ -244,7 +244,7 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile, helpers hqClassicHe
 	// SAME length as ExplicitBounds — the OTel-canonical shape always
 	// carries one more count than bound (the overflow rung above the
 	// highest boundary, folded in unconditionally by
-	// classicBucketMergedLadderExpr on the cumulative path too), but the
+	// classicBucketMergeRunsExpr on the cumulative path too), but the
 	// corpus also seeds the equal-length shape that simply omits it (see
 	// readSeededClassicHistograms). There idx landing on the LAST rung is
 	// the highest FINITE bucket, not an overflow one beyond it — its
@@ -332,19 +332,19 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile, helpers hqClassicHe
 // its own `?` placeholders, matching the legacy emitter's per-position
 // re-emission.
 type hqClassicWriters struct {
-	phi          func() Frag
-	keptBoundIdx func() Frag
-	buckets      func() Frag
-	bounds       func() Frag
-	cum          func() Frag
-	observations func() Frag
-	target       func() Frag
-	idx          func() Frag
-	cumAt        func(offsetMinusOne bool) Frag
-	boundAt      func(offsetMinusOne bool) Frag
-	lengthBC     func() Frag
-	boundCount   func() Frag
-	cumCount     func() Frag
+	phi           func() Frag
+	keptBoundMask func() Frag
+	buckets       func() Frag
+	bounds        func() Frag
+	cum           func() Frag
+	observations  func() Frag
+	target        func() Frag
+	idx           func() Frag
+	cumAt         func(offsetMinusOne bool) Frag
+	boundAt       func(offsetMinusOne bool) Frag
+	lengthBC      func() Frag
+	boundCount    func() Frag
+	cumCount      func() Frag
 }
 
 // newHQClassicWriters builds the writer set for one emission stage.
@@ -422,38 +422,36 @@ func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperCol
 	// coalesced arrays are element-wise identical to the raw ones and the
 	// quantile is unchanged.
 	//
-	// keptBoundIdx: the first index of every run of equal bounds.
-	// keptCumIdx extends it with every cumulative entry past the bounds
+	// keptBoundMask: the keep mask over ExplicitBounds, set on the first
+	// element of every run of equal bounds. It compares each bound with
+	// the one before it by zipping the array against itself shifted right
+	// by one (a leading NaN, which compares unequal to everything, stands
+	// in front of the first bound), so no lambda reads the bounds through
+	// a capture: ClickHouse replicates a captured array once per element
+	// of the array being mapped, which made the index-walk form of this
+	// coalescing — and the two gathers below it — quadratic in the row's
+	// bucket count.
+	//
+	// keptCum extends the mask with every cumulative entry past the bounds
 	// array, untouched. That tail is the overflow rung the schema carries
 	// when BucketCounts runs one longer than ExplicitBounds; rebuilding it
 	// from arraySum instead would ADD a rung whenever the two arrays are
 	// the same length, so it is carried across verbatim and the ladder's
-	// height is preserved exactly.
-	w.keptBoundIdx = func() Frag {
-		if helpers.keptIdx != "" {
-			return Col(helpers.keptIdx)
+	// height is preserved exactly. A counts array SHORTER than the bounds
+	// is zero-padded to the bounds' length first, which is what reading
+	// past its end answered.
+	w.keptBoundMask = func() Frag {
+		if helpers.keptMask != "" {
+			return Col(helpers.keptMask)
 		}
-		return Call(
-			"arrayFilter",
-			Lambda1("i", Or(
-				Eq(BareIdent("i"), InlineLit(1)),
-				Neq(Subscript(Col(eb), BareIdent("i")), Subscript(Col(eb), Sub(BareIdent("i"), InlineLit(1)))),
-			)),
-			Call("range", InlineLit(1), Add(w.boundCount(), InlineLit(1))),
-		)
-	}
-	keptCumIdx := func() Frag {
-		return Call(
-			"arrayConcat",
-			w.keptBoundIdx(),
-			Call("range", Add(w.boundCount(), InlineLit(1)), Add(w.cumCount(), InlineLit(1))),
-		)
+		shifted := Call("arraySlice", Call("arrayPushFront", Col(eb), verbatim("nan")), InlineLit(1), w.boundCount())
+		return Call("arrayMap", Lambda2("b", "p", Neq(BareIdent("b"), BareIdent("p"))), Col(eb), shifted)
 	}
 	w.bounds = func() Frag {
 		if helpers.bounds != "" {
 			return Col(helpers.bounds)
 		}
-		return Call("arrayMap", Lambda1("i", Subscript(Col(eb), BareIdent("i"))), w.keptBoundIdx())
+		return Call("arrayFilter", Lambda2("b", "k", BareIdent("k")), Col(eb), w.keptBoundMask())
 	}
 	w.cum = func() Frag {
 		if helpers.cum != "" {
@@ -463,7 +461,11 @@ func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperCol
 		if h.BucketCountsCumulative {
 			rawCumSum = w.buckets()
 		}
-		return Call("arrayMap", Lambda1("i", Subscript(rawCumSum, BareIdent("i"))), keptCumIdx())
+		padded := Call("arrayResize", rawCumSum, Call("greatest", w.cumCount(), w.boundCount()))
+		overflow := Call("arrayWithConstant",
+			Call("greatest", Sub(w.cumCount(), w.boundCount()), InlineLit(0)), InlineLit(1))
+		keptCum := Call("arrayConcat", w.keptBoundMask(), overflow)
+		return Call("arrayFilter", Lambda2("c", "k", BareIdent("k")), padded, keptCum)
 	}
 
 	// observations is Prometheus's `observations` (quantile.go): the

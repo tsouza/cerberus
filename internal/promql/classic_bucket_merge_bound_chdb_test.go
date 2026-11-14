@@ -58,14 +58,24 @@ CREATE OR REPLACE TABLE otel_metrics_histogram (
 // read a sibling fixture's rows.
 const classicBucketMergeBoundMetric = "classic_bucket_merge_bound_test_metric"
 
-// classicBucketMergeBoundSampleTS is the single sample timestamp every
+// classicBucketMergeBoundSampleTS is the newest sample timestamp every
 // seeded series carries; classicBucketMergeBoundEvalTS (instant path) and
 // the range-mode grid (below) both read it inside their lookback window.
 var classicBucketMergeBoundSampleTS = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // classicBucketMergeBoundEvalTS is the instant eval time — one second after
-// the sample, well inside the sum_over_time(...[5m]) window.
+// the newest sample, well inside the sum_over_time(...[5m]) window.
 var classicBucketMergeBoundEvalTS = classicBucketMergeBoundSampleTS.Add(time.Second)
+
+// classicBucketMergeBoundSampleSpacingSeconds separates one series'
+// consecutive samples. With at most classicBucketMergeBoundMaxSamples
+// samples a series spans under two minutes, so every sample sits inside the
+// [5m] window of the instant eval time and of every range-grid anchor.
+const classicBucketMergeBoundSampleSpacingSeconds = 10
+
+// classicBucketMergeBoundMaxSamples is the most samples per series a seed
+// may carry and keep every sample inside every evaluated window.
+const classicBucketMergeBoundMaxSamples = 10
 
 // classicBucketMergeBoundQuery is the aggregated classic-histogram idiom
 // that reaches classicBucketMergeShaping in both the instant and range
@@ -75,30 +85,83 @@ var classicBucketMergeBoundEvalTS = classicBucketMergeBoundSampleTS.Add(time.Sec
 const classicBucketMergeBoundQuery = "histogram_quantile(0.5, sum by(le)(sum_over_time(" +
 	classicBucketMergeBoundMetric + "_bucket[5m])))"
 
-// seedClassicBucketMergeBoundRows renders seriesCount INSERT tuples, each
-// carrying a disjoint width-wide ExplicitBounds layout — see this file's
-// header doc.
-func seedClassicBucketMergeBoundRows(seriesCount, width int) string {
-	var b strings.Builder
-	b.WriteString("INSERT INTO otel_metrics_histogram (MetricName, Attributes, TimeUnix, BucketCounts, ExplicitBounds) VALUES ")
-	for i := range seriesCount {
-		if i > 0 {
-			b.WriteString(",")
-		}
-		bounds := make([]string, width)
-		for j := range bounds {
-			bounds[j] = fmt.Sprintf("%d.0", i*width+j+1)
-		}
-		counts := make([]string, width+1)
-		for j := range counts {
-			counts[j] = "1"
-		}
-		fmt.Fprintf(&b, "('%s', map('svc', 'svc-%d'), toDateTime64('%s', 9), [%s], [%s])",
-			classicBucketMergeBoundMetric, i,
-			classicBucketMergeBoundSampleTS.Format("2006-01-02 15:04:05"),
-			strings.Join(counts, ","), strings.Join(bounds, ","))
+// classicBucketMergeBoundGroupedQuery is classicBucketMergeBoundQuery merged
+// per `grp` label: one merge group per value the seed spreads its series
+// over.
+const classicBucketMergeBoundGroupedQuery = "histogram_quantile(0.5, sum by(le, grp)(sum_over_time(" +
+	classicBucketMergeBoundMetric + "_bucket[5m])))"
+
+// classicBucketMergeBoundRangeAnchors is the number of range-grid anchors
+// runClassicBucketMergeBoundRangeQuery evaluates. Every seeded sample sits
+// inside every anchor's [5m] window, so each series reaches the merge once
+// per anchor.
+const classicBucketMergeBoundRangeAnchors = 3
+
+// classicBucketMergeBoundShape is one seed: series series, each with its own
+// disjoint width-wide layout, each carrying samples in-window samples, spread
+// round-robin over groups values of the `grp` label (one value when groups
+// is zero).
+type classicBucketMergeBoundShape struct {
+	series, width, samples, groups int
+}
+
+// mergeEntries is the bucket-entry count the guard charges one evaluation of
+// this shape: one row per series reaches the cross-series merge (the
+// per-series window has already folded its samples), each carrying width
+// finite bounds plus the +Inf rung, summed across every merge group.
+func (sh classicBucketMergeBoundShape) mergeEntries() int64 {
+	return int64(sh.series) * int64(sh.width+1)
+}
+
+// groupEntries is the bucket-entry count of the largest merge group under
+// classicBucketMergeBoundGroupedQuery.
+func (sh classicBucketMergeBoundShape) groupEntries() int64 {
+	groups := max(sh.groups, 1)
+	return int64((sh.series+groups-1)/groups) * int64(sh.width+1)
+}
+
+// seedClassicBucketMergeBoundRows renders an INSERT of shape: series i's
+// bounds are `[i*width+1 .. i*width+width]` (see this file's header doc),
+// one observation per bucket per sample.
+func seedClassicBucketMergeBoundRows(t *testing.T, shape classicBucketMergeBoundShape) string {
+	t.Helper()
+	if shape.samples < 1 || shape.samples > classicBucketMergeBoundMaxSamples {
+		t.Fatalf("seed %+v: samples must lie in [1, %d]", shape, classicBucketMergeBoundMaxSamples)
 	}
-	return b.String()
+	return fmt.Sprintf(`INSERT INTO otel_metrics_histogram (MetricName, Attributes, TimeUnix, BucketCounts, ExplicitBounds)
+SELECT '%s', map('svc', toString(intDiv(number, %d)), 'grp', toString(intDiv(number, %d) %% %d)),
+  toDateTime64('%s', 9) - toIntervalSecond((number %% %d) * %d),
+  arrayWithConstant(%d, toUInt64(1)),
+  arrayMap(j -> toFloat64(intDiv(number, %d) * %d + j), range(1, %d))
+FROM numbers(%d)`,
+		classicBucketMergeBoundMetric, shape.samples, shape.samples, max(shape.groups, 1),
+		classicBucketMergeBoundSampleTS.Format("2006-01-02 15:04:05"), shape.samples, classicBucketMergeBoundSampleSpacingSeconds,
+		shape.width+1,
+		shape.samples, shape.width, shape.width+1,
+		shape.series*shape.samples)
+}
+
+// newClassicBucketMergeBoundFixture seeds shape into a fresh fixture.
+func newClassicBucketMergeBoundFixture(t *testing.T, shape classicBucketMergeBoundShape) *chdbFixture {
+	t.Helper()
+	return newChDBFixture(t, classicBucketMergeBoundSeedDDL+seedClassicBucketMergeBoundRows(t, shape)+";\n")
+}
+
+// boundsWithMergeBudget resolves the resource bounds an operator gets by
+// setting CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES to budget, and
+// checks the override took.
+func boundsWithMergeBudget(t *testing.T, budget int64) promql.ResourceBounds {
+	t.Helper()
+	t.Setenv(promql.EnvClassicBucketMergeMaxEntries, strconv.FormatInt(budget, 10))
+	bounds, err := promql.ResourceBoundsFromEnv()
+	if err != nil {
+		t.Fatalf("ResourceBoundsFromEnv: %v", err)
+	}
+	if bounds.ClassicBucketMergeMaxEntries != budget {
+		t.Fatalf("ResourceBoundsFromEnv().ClassicBucketMergeMaxEntries = %d, want %d (the %s override)",
+			bounds.ClassicBucketMergeMaxEntries, budget, promql.EnvClassicBucketMergeMaxEntries)
+	}
+	return bounds
 }
 
 // runClassicBucketMergeBoundInstantQuery lowers + emits the instant-mode
@@ -121,19 +184,26 @@ func runClassicBucketMergeBoundInstantQuery(t *testing.T, fixture *chdbFixture) 
 // TestClassicBucketMergeBudget_ChDB_EnvOverrideLowersBudget.
 func runClassicBucketMergeBoundInstantQueryWithOpts(t *testing.T, fixture *chdbFixture, opts promql.LowerOpts) error {
 	t.Helper()
+	return runClassicBucketMergeBoundInstant(t, fixture, classicBucketMergeBoundQuery, opts)
+}
+
+// runClassicBucketMergeBoundInstant lowers + emits query in instant mode and
+// runs it against fixture — see runClassicBucketMergeBoundInstantQuery.
+func runClassicBucketMergeBoundInstant(t *testing.T, fixture *chdbFixture, query string, opts promql.LowerOpts) error {
+	t.Helper()
 	s := schema.DefaultOTelMetrics()
 	p := promparser.NewParser(promparser.Options{})
-	expr, err := p.ParseExpr(classicBucketMergeBoundQuery)
+	expr, err := p.ParseExpr(query)
 	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", classicBucketMergeBoundQuery, err)
+		t.Fatalf("ParseExpr(%q): %v", query, err)
 	}
 	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, s, classicBucketMergeBoundEvalTS, classicBucketMergeBoundEvalTS, 0, opts)
 	if err != nil {
-		t.Fatalf("LowerAtRangeOpts(%q): %v", classicBucketMergeBoundQuery, err)
+		t.Fatalf("LowerAtRangeOpts(%q): %v", query, err)
 	}
 	sqlStr, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
-		t.Fatalf("Emit(%q): %v", classicBucketMergeBoundQuery, err)
+		t.Fatalf("Emit(%q): %v", query, err)
 	}
 	if err := testsql.CheckSeedCoversFanOut(fixture.seed, sqlStr); err != nil {
 		t.Fatalf("seed does not cover the emitted fan-out: %v\nSQL: %s", err, sqlStr)
@@ -163,7 +233,7 @@ func runClassicBucketMergeBoundInstantQueryWithOpts(t *testing.T, fixture *chdbF
 // reaching lowerHistogramQuantileClassicAggRange — the exact function
 // issue #2408's own audit names as the shared, unguarded merge's caller in
 // range mode.
-func runClassicBucketMergeBoundRangeQuery(t *testing.T, fixture *chdbFixture) error {
+func runClassicBucketMergeBoundRangeQuery(t *testing.T, fixture *chdbFixture, opts promql.LowerOpts) error {
 	t.Helper()
 	s := schema.DefaultOTelMetrics()
 	p := promparser.NewParser(promparser.Options{})
@@ -172,9 +242,9 @@ func runClassicBucketMergeBoundRangeQuery(t *testing.T, fixture *chdbFixture) er
 		t.Fatalf("ParseExpr(%q): %v", classicBucketMergeBoundQuery, err)
 	}
 	gridStart := classicBucketMergeBoundSampleTS
-	gridEnd := gridStart.Add(2 * time.Minute)
 	const gridStep = time.Minute
-	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, s, gridStart, gridEnd, gridStep, promql.LowerOpts{})
+	gridEnd := gridStart.Add((classicBucketMergeBoundRangeAnchors - 1) * gridStep)
+	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, s, gridStart, gridEnd, gridStep, opts)
 	if err != nil {
 		t.Fatalf("LowerAtRangeOpts(%q): %v", classicBucketMergeBoundQuery, err)
 	}
@@ -200,194 +270,139 @@ func runClassicBucketMergeBoundRangeQuery(t *testing.T, fixture *chdbFixture) er
 	return rows.Err()
 }
 
-// TestClassicBucketMergeBudget_ChDB_Instant_Exceeded seeds 2,000 series with
-// disjoint 100-wide ExplicitBounds layouts — totalBucketVolume (T) =
-// 200,000, widestRowBucketWidth = 100, cost = T x 100 = 20,000,000, twice
-// maxClassicBucketMergeCostUnits (10,000,000) — and asserts the instant
-// query aborts with the budget guard's own throwIf. This is the exact
-// (series=2000, width=100) point classic_bucket_merge_bound.go's own header
-// doc measured on real ClickHouse 25.9-alpine: a genuine
-// MEMORY_LIMIT_EXCEEDED abort, which this guard now rejects before
-// ClickHouse ever allocates for it.
-func TestClassicBucketMergeBudget_ChDB_Instant_Exceeded(t *testing.T) {
-	const seriesOverBudget = 2000
-	const widthOverBudget = 100
+// classicBucketMergeBoundaryShapes are the seeds the guard-boundary test
+// pins, chosen so a cost model other than the merged entry count misplaces
+// the boundary on at least one of them: a single-sample and a multi-sample
+// seed with identical merge volume (a model that charges samples rejects the
+// second at the first's ceiling), a one-bound-per-series seed (a model that
+// drops the +Inf rung halves its count) and a few wide rows (a model that
+// multiplies by the row width rejects it at the ceiling).
+var classicBucketMergeBoundaryShapes = []struct {
+	name  string
+	shape classicBucketMergeBoundShape
+}{
+	{"single-sample", classicBucketMergeBoundShape{series: 40, width: 20, samples: 1}},
+	{"multi-sample", classicBucketMergeBoundShape{series: 40, width: 20, samples: 6}},
+	{"one-bound-rows", classicBucketMergeBoundShape{series: 200, width: 1, samples: 3}},
+	{"wide-rows", classicBucketMergeBoundShape{series: 4, width: 300, samples: 2}},
+}
 
-	var b strings.Builder
-	b.WriteString(classicBucketMergeBoundSeedDDL)
-	b.WriteString(seedClassicBucketMergeBoundRows(seriesOverBudget, widthOverBudget) + ";\n")
-	fixture := newChDBFixture(t, b.String())
+// classicBucketMergeBoundaryModes runs one shape through each call site that
+// wraps a merge Aggregate in the guard.
+// evaluations is how many times one series reaches the merge: once per
+// evaluated instant. The sumMap modes select
+// NativeClassicBucketMergeLowerer, whose merge runs inside the Aggregate.
+var classicBucketMergeBoundaryModes = []struct {
+	name        string
+	evaluations int64
+	sumMap      bool
+	run         func(*testing.T, *chdbFixture, promql.LowerOpts) error
+}{
+	{"instant", 1, false, runClassicBucketMergeBoundInstantQueryWithOpts},
+	{"range", classicBucketMergeBoundRangeAnchors, false, runClassicBucketMergeBoundRangeQuery},
+	{"instant-summap", 1, true, runClassicBucketMergeBoundInstantQueryWithOpts},
+	{"range-summap", classicBucketMergeBoundRangeAnchors, true, runClassicBucketMergeBoundRangeQuery},
+}
 
+// classicBucketMergeBoundOpts is the lowering options for a merge budget,
+// selecting the sumMap merge when sumMap is set.
+func classicBucketMergeBoundOpts(t *testing.T, budget int64, sumMap bool) promql.LowerOpts {
+	t.Helper()
+	opts := promql.LowerOpts{ResourceBounds: boundsWithMergeBudget(t, budget)}
+	if sumMap {
+		opts.Lowerers = promql.RangeLowerers{
+			ClassicBucketMerge: promql.NativeClassicBucketMergeLowerer{Fallback: promql.FanoutClassicBucketMergeLowerer{}},
+		}
+	}
+	return opts
+}
+
+// TestClassicBucketMergeBudget_ChDB_BoundaryIsTheMergedEntryCount pins the
+// guard's cost model at its exact boundary, through the operator override:
+// with the budget set to the query's merged entry count (series x
+// (width + 1), once per evaluated instant) the query is admitted in instant
+// and range mode, through both merge constructions, and one entry lower it
+// is refused with the guard's own message. The admitted runs go first:
+// chDB's Parquet output after a throwIf error is malformed (cerberus #3761).
+func TestClassicBucketMergeBudget_ChDB_BoundaryIsTheMergedEntryCount(t *testing.T) {
+	for _, tc := range classicBucketMergeBoundaryShapes {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newClassicBucketMergeBoundFixture(t, tc.shape)
+			for _, mode := range classicBucketMergeBoundaryModes {
+				entries := tc.shape.mergeEntries() * mode.evaluations
+				if err := mode.run(t, fixture, classicBucketMergeBoundOpts(t, entries, mode.sumMap)); err != nil {
+					t.Fatalf("%s %+v: a budget of exactly %d merged entries must admit the merge: %v",
+						mode.name, tc.shape, entries, err)
+				}
+			}
+			for _, mode := range classicBucketMergeBoundaryModes {
+				entries := tc.shape.mergeEntries() * mode.evaluations
+				err := mode.run(t, fixture, classicBucketMergeBoundOpts(t, entries-1, mode.sumMap))
+				if err == nil || !strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) {
+					t.Fatalf("%s %+v: a budget of %d, one below the %d merged entries, must be refused by the guard: %v",
+						mode.name, tc.shape, entries-1, entries, err)
+				}
+			}
+		})
+	}
+}
+
+// TestClassicBucketMergeBudget_ChDB_BoundCountsEveryGroup pins that the
+// ceiling bounds the whole query, not one merge group: six `grp` groups,
+// each of whose entries sits well under a budget their sum exceeds, are
+// refused under `sum by (le, grp)`, through both merge constructions. The
+// admitted run at the total goes first (cerberus #3761).
+func TestClassicBucketMergeBudget_ChDB_BoundCountsEveryGroup(t *testing.T) {
+	shape := classicBucketMergeBoundShape{series: 60, width: 20, samples: 1, groups: 6}
+	fixture := newClassicBucketMergeBoundFixture(t, shape)
+	total := shape.mergeEntries()
+	budget := total - 1
+	if group := shape.groupEntries(); group*2 > budget {
+		t.Fatalf("seed %+v: largest group carries %d entries; want it well under the %d budget", shape, group, budget)
+	}
+	for _, sumMap := range []bool{false, true} {
+		if err := runClassicBucketMergeBoundInstant(t, fixture, classicBucketMergeBoundGroupedQuery,
+			classicBucketMergeBoundOpts(t, total, sumMap)); err != nil {
+			t.Fatalf("sumMap=%v %+v: a budget of exactly the query's %d entries must admit it: %v", sumMap, shape, total, err)
+		}
+	}
+	for _, sumMap := range []bool{false, true} {
+		err := runClassicBucketMergeBoundInstant(t, fixture, classicBucketMergeBoundGroupedQuery,
+			classicBucketMergeBoundOpts(t, budget, sumMap))
+		if err == nil || !strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) {
+			t.Fatalf("sumMap=%v %+v: groups of at most %d entries summing to %d must be refused under a %d budget: %v",
+				sumMap, shape, shape.groupEntries(), total, budget, err)
+		}
+	}
+}
+
+// TestClassicBucketMergeBudget_ChDB_DefaultRejectsPastCeiling seeds three
+// series of one-million-bound disjoint layouts — 3,000,003 merged entries,
+// past the shipped ceiling of 2,982,616 — and asserts the default budget refuses
+// the instant query with the guard's own message. Few wide rows keep the
+// seed cheap: the guard counts entries before the merge Aggregate reads a
+// row, so it refuses before any merge array is built.
+func TestClassicBucketMergeBudget_ChDB_DefaultRejectsPastCeiling(t *testing.T) {
+	shape := classicBucketMergeBoundShape{series: 3, width: 1_000_000, samples: 1}
+	fixture := newClassicBucketMergeBoundFixture(t, shape)
+	if got, ceiling := shape.mergeEntries(), promql.DefaultResourceBounds().ClassicBucketMergeMaxEntries; got <= ceiling {
+		t.Fatalf("seed %+v carries %d merged entries; want past the default ceiling %d", shape, got, ceiling)
+	}
 	err := runClassicBucketMergeBoundInstantQuery(t, fixture)
-	if err == nil {
-		t.Fatal("expected the classic-bucket merge budget guard to abort the query " +
-			"(2,000 series x width 100, disjoint layouts, exceeds the cost budget), got no error")
-	}
-	// Mirrors histogram_merge_bound_chdb_test.go's own rationale: this test
-	// drives chdb-go's raw driver handle directly, never through chclient,
-	// so a raw substring check against chdb-go's own exception text is what
-	// proves the emitted SQL's throwIf fired, carrying the right message.
-	if !strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) {
-		t.Fatalf("query failed, but not with the classic-bucket merge budget guard's throwIf: %v", err)
+	if err == nil || !strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) {
+		t.Fatalf("seed %+v: the default budget must refuse the merge with the guard's message: %v", shape, err)
 	}
 }
 
-// TestClassicBucketMergeBudget_ChDB_Instant_WithinBudget seeds a small,
-// legitimate merge (50 series, disjoint 20-wide layouts — cost = 50x20 x 20
-// = 20,000, comfortably under budget) and asserts the query succeeds.
-func TestClassicBucketMergeBudget_ChDB_Instant_WithinBudget(t *testing.T) {
-	const seriesUnderBudget = 50
-	const widthUnderBudget = 20
-
-	var b strings.Builder
-	b.WriteString(classicBucketMergeBoundSeedDDL)
-	b.WriteString(seedClassicBucketMergeBoundRows(seriesUnderBudget, widthUnderBudget) + ";\n")
-	fixture := newChDBFixture(t, b.String())
-
-	if err := runClassicBucketMergeBoundInstantQuery(t, fixture); err != nil {
-		t.Fatalf("a legitimate 50-series merge must not trip the budget guard: %v", err)
-	}
-}
-
-// TestClassicBucketMergeBudget_ChDB_Range_Exceeded is
-// TestClassicBucketMergeBudget_ChDB_Instant_Exceeded's range-mode
-// counterpart, proving the over-budget shape is rejected by a resource
-// bound through lowerHistogramQuantileClassicAggRange
-// (histogram_quantile_range.go) — the function issue #2408's own audit
-// names as the range-mode caller of the shared, previously-unguarded
-// merge.
-//
-// In range mode TWO bounds sit on this shape, and the classic-bucket merge
-// guard is never the one that fires. The per-(anchor, series) window fold
-// is a RangeBucketFanout whose collapse carries groupArray accumulators, so
-// the collapse-output fold-cost probe (internal/chsql/range_bucket_fanout.go,
-// rangeBucketFanoutFoldCostUnitsPerGiB) wraps it — and ClickHouse evaluates
-// that probe as a scalar subquery BEFORE the guarded read streams into the
-// cross-series merge the classic guard sits on. The probe's cost is also
-// strictly the tighter of the two for every disjoint-layout seed: per
-// (anchor, series) group it charges `E + (E/S)^2` with `E = S x (2W+1)`
-// elements (the bounds and counts ladders of S in-window samples), i.e.
-// more than `4 x W^2`, against the classic guard's `W^2` per series — with
-// a 15,000,000-unit ceiling against 10,000,000. No seed can clear the probe
-// and still trip the merge guard, so the assertion accepts either guard's
-// own throwIf message: what it pins is that the shape never reaches the
-// merge unbounded. The instant-mode test above is where the classic guard
-// itself is proven to fire.
-func TestClassicBucketMergeBudget_ChDB_Range_Exceeded(t *testing.T) {
-	const seriesOverBudget = 2000
-	const widthOverBudget = 100
-
-	var b strings.Builder
-	b.WriteString(classicBucketMergeBoundSeedDDL)
-	b.WriteString(seedClassicBucketMergeBoundRows(seriesOverBudget, widthOverBudget) + ";\n")
-	fixture := newChDBFixture(t, b.String())
-
-	err := runClassicBucketMergeBoundRangeQuery(t, fixture)
-	if err == nil {
-		t.Fatal("expected a resource bound to abort the range query " +
-			"(2,000 series x width 100, disjoint layouts, exceeds both the fold-cost and the merge cost budget), got no error")
-	}
-	if !strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) &&
-		!strings.Contains(err.Error(), chsql.RangeBucketFanoutGroupBudgetMessage) {
-		t.Fatalf("range query failed, but with neither the fold-cost probe's nor the classic-bucket merge budget guard's throwIf: %v", err)
-	}
-}
-
-// TestClassicBucketMergeBudget_ChDB_Range_WithinBudget is the range-mode
-// negative control, mirroring TestClassicBucketMergeBudget_ChDB_Instant_WithinBudget.
-func TestClassicBucketMergeBudget_ChDB_Range_WithinBudget(t *testing.T) {
-	const seriesUnderBudget = 50
-	const widthUnderBudget = 20
-
-	var b strings.Builder
-	b.WriteString(classicBucketMergeBoundSeedDDL)
-	b.WriteString(seedClassicBucketMergeBoundRows(seriesUnderBudget, widthUnderBudget) + ";\n")
-	fixture := newChDBFixture(t, b.String())
-
-	if err := runClassicBucketMergeBoundRangeQuery(t, fixture); err != nil {
-		t.Fatalf("a legitimate 50-series range merge must not trip the budget guard: %v", err)
-	}
-}
-
-// TestClassicBucketMergeBudget_ChDB_EnvOverrideRaisesBudget proves the full
-// operator-override plumbing end to end (cerberus issue #2667): it seeds two
-// disjoint 2,500-bucket series and proves the compiled-in 10,000,000 default
-// rejects their 12,500,000-unit merge cost,
-// sets CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS above that real
-// cost, confirms promql.ResourceBoundsFromEnv actually picked up the
-// override, and asserts the SAME instant query now SUCCEEDS once that
-// resolved ResourceBounds is threaded through promql.LowerOpts — same
-// query, same seed, opposite outcome, purely from the operator override
-// reaching the emitted SQL's throwIf threshold. Keeping the union to 5,000
-// bounds avoids the 200,000-bound fixture's multi-GiB allocation while still
-// crossing the real default budget; this tests admission, not host capacity.
-func TestClassicBucketMergeBudget_ChDB_EnvOverrideRaisesBudget(t *testing.T) {
-	const seriesOverDefaultBudget = 2
-	const widthOverDefaultBudget = 2500
-	const raisedBudget = 30_000_000 // > 12,500,000 (2 x 2500 x 2500 real cost), > the 10M default
-
-	var b strings.Builder
-	b.WriteString(classicBucketMergeBoundSeedDDL)
-	b.WriteString(seedClassicBucketMergeBoundRows(seriesOverDefaultBudget, widthOverDefaultBudget) + ";\n")
-	fixture := newChDBFixture(t, b.String())
-	t.Setenv(promql.EnvClassicBucketMergeMaxCostUnits, strconv.FormatInt(raisedBudget, 10))
-	bounds, err := promql.ResourceBoundsFromEnv()
-	if err != nil {
-		t.Fatalf("ResourceBoundsFromEnv: %v", err)
-	}
-	if bounds.ClassicBucketMergeMaxCostUnits != raisedBudget {
-		t.Fatalf("ResourceBoundsFromEnv().ClassicBucketMergeMaxCostUnits = %d, want %d (the %s override)",
-			bounds.ClassicBucketMergeMaxCostUnits, raisedBudget, promql.EnvClassicBucketMergeMaxCostUnits)
-	}
-
-	if err := runClassicBucketMergeBoundInstantQueryWithOpts(t, fixture, promql.LowerOpts{ResourceBounds: bounds}); err != nil {
-		t.Fatalf("the same merge rejected by the default budget must succeed once %s raises the budget to %d: %v",
-			promql.EnvClassicBucketMergeMaxCostUnits, raisedBudget, err)
-	}
-	// Decode the admitted result before the deliberate rejection: chDB's
-	// Parquet output after a throwIf error is malformed (cerberus #3761).
-	// Both outcomes use the same seeded rows and emitted merge shape.
-	if err := runClassicBucketMergeBoundInstantQuery(t, fixture); err == nil ||
-		!strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) {
-		t.Fatalf("the default budget must reject this merge with its own guard: %v", err)
-	}
-}
-
-// TestClassicBucketMergeBudget_ChDB_EnvOverrideLowersBudget is the mirror
-// direction: it seeds the SAME small, legitimate 50-series merge
-// TestClassicBucketMergeBudget_ChDB_Instant_WithinBudget proves the
-// 10,000,000 default admits, narrows
-// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS to a value below any
-// real merge's cost, and asserts the identical instant query now FAILS
-// with the budget guard's own throwIf — proving the override is not merely
-// parsed but actually enforced at real ClickHouse execution, in both
-// directions.
-func TestClassicBucketMergeBudget_ChDB_EnvOverrideLowersBudget(t *testing.T) {
-	const seriesUnderDefaultBudget = 50
-	const widthUnderDefaultBudget = 20
-	const loweredBudget = 1 // far below any real merge's cost
-
-	t.Setenv(promql.EnvClassicBucketMergeMaxCostUnits, strconv.FormatInt(loweredBudget, 10))
-	bounds, err := promql.ResourceBoundsFromEnv()
-	if err != nil {
-		t.Fatalf("ResourceBoundsFromEnv: %v", err)
-	}
-	if bounds.ClassicBucketMergeMaxCostUnits != loweredBudget {
-		t.Fatalf("ResourceBoundsFromEnv().ClassicBucketMergeMaxCostUnits = %d, want %d (the %s override)",
-			bounds.ClassicBucketMergeMaxCostUnits, loweredBudget, promql.EnvClassicBucketMergeMaxCostUnits)
-	}
-
-	var b strings.Builder
-	b.WriteString(classicBucketMergeBoundSeedDDL)
-	b.WriteString(seedClassicBucketMergeBoundRows(seriesUnderDefaultBudget, widthUnderDefaultBudget) + ";\n")
-	fixture := newChDBFixture(t, b.String())
-
-	err = runClassicBucketMergeBoundInstantQueryWithOpts(t, fixture, promql.LowerOpts{ResourceBounds: bounds})
-	if err == nil {
-		t.Fatalf("the same 50-series merge TestClassicBucketMergeBudget_ChDB_Instant_WithinBudget proves the "+
-			"default admits must fail once %s narrows the budget to %d", promql.EnvClassicBucketMergeMaxCostUnits, loweredBudget)
-	}
-	if !strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) {
-		t.Fatalf("query failed, but not with the classic-bucket merge budget guard's throwIf: %v", err)
+// TestClassicBucketMergeBudget_ChDB_DefaultAdmitsOrdinaryMerge is the
+// negative control: a small merge (50 series, disjoint 20-wide layouts,
+// four samples each) answers under the default budget in both modes.
+func TestClassicBucketMergeBudget_ChDB_DefaultAdmitsOrdinaryMerge(t *testing.T) {
+	shape := classicBucketMergeBoundShape{series: 50, width: 20, samples: 4}
+	fixture := newClassicBucketMergeBoundFixture(t, shape)
+	for _, mode := range classicBucketMergeBoundaryModes {
+		if err := mode.run(t, fixture, promql.LowerOpts{}); err != nil {
+			t.Fatalf("%s %+v: an ordinary merge must not trip the guard: %v", mode.name, shape, err)
+		}
 	}
 }

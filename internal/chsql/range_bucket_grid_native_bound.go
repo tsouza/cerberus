@@ -443,9 +443,7 @@ func bucketGridGroupCountGuardFrag(probeCount *QueryBuilder, numAnchors, maxRows
 // Real ExplicitBounds length can vary row-to-row (a `by(route)` group can
 // mix producers with different bucket configurations) — bucketGridDensityBoundedSourceFrag's
 // own probe reads `max(length(ExplicitBounds))` over the ACTUAL scanned
-// rows, the same "widest row governs" generalisation classic_bucket_merge_bound.go's
-// widestRowBucketWidthExpr already established for the cross-series merge
-// stage: `rawRows x maxWidth^2 >= rawRows x avgWidth^2` for any real
+// rows, so the widest row governs: `rawRows x maxWidth^2 >= rawRows x avgWidth^2` for any real
 // distribution of per-row widths, so a heterogeneous scan is judged AT
 // LEAST as costly as its average-width equivalent, never less.
 //

@@ -499,6 +499,33 @@ requirements check instead **warns** when it
 sees a 26.5 server (it does not refuse to start — the rest of the gateway is
 healthy), and the k3d e2e substrate is pinned to the bundled 26.8 build.
 
+### Classic-histogram bucket-merge ceiling
+
+`histogram_quantile` over an aggregated classic histogram (`sum by (le)`,
+`avg by (le)`, and the other aggregations) merges every series' bucket layout
+into one. `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` (default
+`2982616`) caps the bucket entries one query may merge on every path that runs
+that merge: every series' finite bounds plus its `+Inf` bucket, counted once per
+evaluated step and summed across every output group.
+
+The ceiling does not apply when the aggregated input is a `rate` that ClickHouse's
+native time-series grid functions evaluate: `ts_grid_range` for a range query,
+`ts_grid_instant` for an instant query, each selected at boot on a server that
+supports it. That path takes the quantile over per-bucket rates and runs no
+layout merge. A query past the cap is refused with HTTP 422 and the
+message `classic-histogram bucket merge exceeds the merged-bucket-entry resource
+bound` before ClickHouse runs the merge. The default keeps the merge within 75%
+of the 1 GiB `CERBERUS_CH_QUERY_MAX_MEMORY` default. Scale it with that cap when
+the cap is raised.
+
+**Breaking change:** the ceiling was previously named
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` and counted a different
+unit, so its values do not carry over. A deployment that still sets the old name
+starts, ignores its value, and logs one startup warning naming the replacement:
+the ceiling is `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` when set, the
+default otherwise. Remove the old variable and, if the default does not fit, set
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to an entry count.
+
 ### Prometheus resource-attribute labels
 
 The Prometheus head projects each metric row's OTel `ResourceAttributes` map as

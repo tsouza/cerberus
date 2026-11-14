@@ -2,302 +2,185 @@ package promql
 
 import (
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// classic_bucket_merge_bound.go closes issue #2408's own audited "Proposed
-// next step": classicBucketMergeShaping's cross-series groupArray-based
-// merge (histogram_quantile.go / histogram_quantile_range.go — the shaping
-// classicBucketMergeShaping builds, consumed by classicBucketUnionBoundsExpr
-// and classicBucketMergedLadderExpr) runs identically regardless of which
-// per-series lowering mechanism feeds it — fan-out or the native rate ladder
-// (#2401) — and had NO resource bound of its own. A real, independently
-// audited benchmark (real ClickHouse 25.9-alpine via testcontainers,
-// production-shaped data) found this stage is why memory barely moves
-// before/after either shipped per-series fix at realistic query width: the
-// per-series mechanism's own savings are invisible once this shared merge's
-// fixed cost dominates.
+// classic_bucket_merge_bound.go bounds the classic-histogram cross-series
+// bucket merge — the Aggregate that classicBucketMergeShaping or
+// classicBucketMergeShapingSumMap builds, and classicBucketShaping.reshape
+// above it — by the number of bucket entries one query's merge reads.
 //
-// # What the merge actually costs
+// # What the merge costs
 //
-// classicBucketMergeShaping's Aggregate collects two groupArrays per output
-// group — hqAggBoundsListAlias (one ExplicitBounds array per row) and
-// hqAggCountsListAlias (the paired BucketCounts) — one row per series (the
-// instant-mode path, histogram_quantile.go) or per (anchor, series) window
-// (the range-mode path, histogram_quantile_range.go's
-// lowerHistogramQuantileClassicAggRange). classicBucketUnionBoundsExpr then
-// flattens every row's bounds into one merged layout, and
-// classicBucketMergedLadderExpr re-scans EVERY row's own bounds/counts pair
-// once PER merged rung to fold a cumulative count at that rung — the same
-// "per-target-element rescan of every contributing row" shape
-// histogram_merge_bound.go's own doc found for the exponential-histogram
-// merge, just over classic (bucket-array) histograms instead of
-// exponential-scale ladders.
+// Both merge constructions, classic_bucket_bound_runs.go's sort-and-split
+// fold and classic_bucket_merge_summap.go's sumMap, are linear in the bucket
+// entries they read: every per-series row's finite bounds plus its +Inf
+// rung. The guard counts exactly that, sum(length(ExplicitBounds) + 1), over
+// every row the merge Aggregate reads — across every merge group and, on the
+// range path, every step — because the merge's memory is held per query:
+// the Aggregate keeps every group's collected rows until it finishes, and
+// ClickHouse evaluates the merge over blocks holding many groups at once.
+// Six `grp` groups of 40,000 disjoint 50-bucket series (2.04M entries each,
+// 12.24M in all) run out of the 1 GiB cap inside the merge on 26.8 under a
+// per-group count of the same ceiling. The count needs no model of the
+// layout: disjoint, shared and overlapping layouts cost the same per entry.
 //
-// Reading the emitted expression tree alone suggests a
-// `(merged width) x (total bucket-element volume)` cost — quadratic in the
-// fully-disjoint-layout case, since the merged width itself then equals the
-// total volume. Real measurement (below) shows that is NOT what the real
-// cost tracks, mirroring exactly the lesson histogram_merge_bound.go's own
-// header draws for the exponential-histogram case ("NOT the (width) x
-// (series) product #2385 assumed"): here too, the real driver is one factor
-// short of the naive expression-tree read.
+// # Ordering
 //
-// # Calibration (real ClickHouse 25.9-alpine, 1 GiB cap — the
-// # CERBERUS_CH_QUERY_MAX_MEMORY default)
+// The guard runs before the merge Aggregate reads a row, for both merge
+// constructions; see classicBucketMergeInputGate.
 //
-// A throwaway harness (deleted before this fix merged, per
-// rate_window_fanout_bound.go's own precedent) lowered + emitted the real
-// `histogram_quantile(0.5, sum by(le)(sum_over_time(<bucket>[5m])))` SQL and
-// ran it against a real `clickhouse/clickhouse-server:25.9-alpine` container
-// with `max_memory_usage` set to the 1 GiB default, seeding series with
-// DISJOINT ExplicitBounds layouts (series i's bounds are `[i*W+1 ..
-// i*W+W]`) — the worst case for the merge, where every rung the union
-// produces is contributed by exactly one row, maximising both the merged
-// width and the per-rung rescan cost at once:
+// # Calibration (real ClickHouse 26.6.8.7 and 26.8.36.3)
 //
-//	series(G)  width(W)  T=GxW    GxW^2       peak memory (real server)
-//	    1000        20    20,000       400,000    28.8 MB
-//	    2000        20    40,000       800,000    56.0 MB
-//	    3741        12    44,892       538,704    49.4 MB  (this issue's own
-//	                                                         reference series
-//	                                                         count/rung width)
-//	    2000        50   100,000     5,000,000   376.0 MB
-//	    4000        50   200,000    10,000,000   749.0 MB  (70% of cap)
-//	    6000        50   300,000    15,000,000   892.0 MB  (83% of cap)
-//	    8000        50   400,000    20,000,000   REJECTED: real ClickHouse
-//	                                              code-241 MEMORY_LIMIT_EXCEEDED
-//	    3000       100   300,000    30,000,000   REJECTED (same code)
-//	    5000       100   500,000    50,000,000   REJECTED (same code)
-//	    8000       100   800,000    80,000,000   REJECTED (same code)
+// `histogram_quantile(0.5, sum by (le) (sum_over_time(<bucket>[5m])))` was
+// served through the production Prometheus handler (lowerer, emitter,
+// engine settings) against clickhouse/clickhouse-server containers capped
+// at 8 GiB, with the guard lifted and max_memory_usage at 6 GiB, so each
+// peak is the query's real need rather than the point an abort stopped at.
+// Peak memory_usage was read from system.query_log after SYSTEM FLUSH LOGS
+// and a settle delay. Series i carries one sample with W bounds
+// `[i*W+1 .. i*W+W]` (disjoint) or the same W bounds as every other series
+// (shared):
 //
-// Every completed (non-rejected) point above fits `G x W^2 x ~75 bytes/unit`
-// to within ~5%: doubling G alone (2000->4000 series, W fixed at 50) almost
-// exactly doubles peak memory (376.0 -> 749.0 MB), not the 4x a
-// `G^2 x W^2` (equivalently `(merged width) x (total volume)`) model would
-// predict — the real cost is LINEAR in series count at fixed width, one
-// factor short of the naive expression-tree reading, exactly the "read the
-// real emitted SQL and measure, don't guess from the shape" lesson this
-// repo's own resource-bound family keeps re-learning (see
-// histogram_merge_bound.go's identical caveat for the exponential-histogram
-// case, and range_bucket_grid_native_bound.go's for the native ladder).
+//	layout    series x W     entries     peak 26.8    peak 26.6
+//	disjoint  25,000 x  50   1,275,000    448.4 MiB    379.8 MiB
+//	disjoint  50,000 x  50   2,550,000    624.4 MiB    517.5 MiB
+//	disjoint  75,000 x  50   3,825,000    733.3 MiB    603.0 MiB
+//	disjoint 100,000 x  50   5,100,000   1246.9 MiB   1028.8 MiB
+//	disjoint 150,000 x  50   7,650,000   1463.1 MiB   1201.0 MiB
+//	shared    50,000 x  50   2,550,000    624.5 MiB    515.8 MiB
+//	shared   100,000 x  50   5,100,000   1246.9 MiB   1028.7 MiB
+//	shared   200,000 x  50  10,200,000   2620.9 MiB   2178.0 MiB
+//	disjoint  10,000 x 250   2,510,000    648.8 MiB    539.7 MiB
+//	disjoint  20,000 x 250   5,020,000   1291.6 MiB   1076.1 MiB
 //
-// The rejected points' own recorded memory_usage (offered by ClickHouse's
-// exception at the exact allocation chunk that finally tripped the cap) sit
-// BELOW what the query would have needed to complete — an aborted query's
-// memory reading is a lower bound on the true peak, not the peak itself —
-// so they are consistent with, not contradicting, the same `G x W^2` model
-// extrapolated past 1 GiB.
+// Peak memory follows the entry count alone — the disjoint and shared
+// layouts at 50,000 and 100,000 series match to the tenth of a MiB, and
+// width 250 matches width 50 at equal entries — and grows in steps (buffer
+// growth doubles). Small shapes carry a fixed overhead, so their ratio of
+// peak to entries is higher (368.8 B per entry on 26.8 at 25,000 x 50,
+// 312.4 B on 26.6) while their absolute peak is low. At the largest shapes
+// the ratio settles near 270 B per entry on 26.8 — 269.4 B at 200,000 x 50
+// and 269.8 B at 20,000 x 250 — which is classicBucketMergeBytesPerEntry.
+// It is a ratio of peak to entries, not a slope: the increment between
+// 100,000 x 50 and 200,000 x 50 is 282.5 B per added entry on 26.8. 26.6
+// sits below 26.8 at every point.
 //
-// 15,000,000 units (6000 series x 50-width, 83% of cap) is the last
-// confirmed-safe point measured; 20,000,000 (8000 series x 50-width) is the
-// first confirmed rejection. [maxClassicBucketMergeCostUnits] is set well
-// below that boundary — at 10,000,000 units, landing almost exactly on the
-// 4000-series x 50-width point's own real 749 MB (70% of cap) — rather than
-// at the edge of the measured-safe range, leaving real margin for concurrent
-// load and for the guard's own generalisation to heterogeneous per-row
-// widths (below) rather than the calibration's uniform-width seed.
+// The ceiling is checked directly rather than inferred from the slope, with
+// the default guard under the 1 GiB cap: 58,000 x 50 (2,958,000 entries,
+// one group) completes at 703.9 MiB (26.8) and 603.8 MiB (26.6) through the
+// groupArray merge and at 747.0 / 746.4 MiB through the sumMap merge; the
+// same entries split over six groups complete at 283.9 / 269.9 MiB, so one
+// group is the worst case. 60,000 x 50 (3,060,000 entries) is refused with
+// the guard's message at 128.3 / 128.0 MiB, before the merge ran.
 //
-// # Generalising to heterogeneous per-row widths
-//
-// The calibration above seeds every row in a group with the SAME width W,
-// so `G x W^2` and `(total volume T) x (widest single row's own width)` are
-// identical (T = GxW, so TxW = GxW^2). Real production data need not share
-// one width across every row in a group — a `by(route)` group can mix rows
-// from producers with different bucket configurations. [totalBucketVolumeExpr]
-// / [widestRowBucketWidthExpr] compute T and the ACTUAL per-group maximum row
-// width directly from the same hqAggBoundsListAlias groupArray the merge
-// itself reads, so `T x maxRowWidth` is the real calibrated formula whenever
-// widths are uniform, and a safe (never smaller) generalisation otherwise:
-// `T x maxRowWidth >= T x avgRowWidth = G x avgRowWidth^2`, the same
-// per-row-average form the calibration measured, for any actual distribution
-// of per-row widths — so a heterogeneous group can only be judged MORE
-// costly than its average-width equivalent, never less, by this formula.
-//
-// # Overflow safety
-//
-// [maxClassicBucketMergeClampedComponent] clamps BOTH T and maxRowWidth
-// before the multiply — unlike histogram_merge_bound.go's rows x width^3
-// formula, this one has only ONE data-derived shape (a product of two
-// components, each individually clamped), so no separate overflow-only
-// disjunct is needed: clamping every operand that reaches the multiply
-// already bounds the product on its own. 100,000,000 x 100,000,000 = 10^16,
-// three orders of magnitude below Int64's ~9.2x10^18 ceiling, while sitting
-// many orders of magnitude above any real T or maxRowWidth this calibration
-// or any legitimate production workload reaches — a query anywhere near that
-// scale is already rejected by [maxClassicBucketMergeCostUnits] long before
-// the clamp would matter.
-//
-// # Placement
-//
-// Wired via [wrapClassicBucketMergeBudgetGuard] as a [chplan.Filter]
-// wrapping the raw groupArray-collecting Aggregate — BEFORE
-// classicBucketShaping.reshape's own Projects render the union/ladder
-// expressions this guard is protecting — at both call sites that build a
-// classicBucketMergeShaping-shaped Aggregate: lowerHistogramQuantileAgg
-// (histogram_quantile.go, instant mode) and
-// lowerHistogramQuantileClassicAggRange (histogram_quantile_range.go, range
-// mode — the exact function issue #2408's own audit names). The
-// newest-row/argMax bare-selector shaping (classicBucketShaping{fold: nil})
-// is never wrapped: its accumulator is fixed-size (one row per group), with
-// no groupArray merge to bound.
-//
-// Both call sites apply this SAME guard/formula regardless of WHICH
-// merge shaping built the Aggregate — the groupArray-fold shaping
-// (classicBucketMergeShaping) or classic_bucket_merge_summap.go's sumMap
-// shaping (classicBucketMergeShapingSumMap, chopt.FeatureClassicBucketMergeSumMap).
-// That is intentional, not merely untested: classic_bucket_merge_summap.go's
-// own "Cost re-measurement" section (cerberus issue #2923) found the
-// sumMap construction's real cost tracks this formula within ~1% at every
-// controlled point, so this single ceiling already protects an operator
-// who opts into that feature — no second, sumMap-specific formula exists.
+// The per-series window stage that feeds the merge (classicBucketWindowStage)
+// runs before this guard and is not bounded by it. Its memory grows with
+// the samples the query scans: `rate` over 58,000 series with one shared
+// 50-bucket layout and 56 samples each — 2,958,000 merge entries, admitted —
+// peaks at 851.1 MiB (26.8) and 767.6 MiB (26.6) under the 1 GiB cap. On the
+// instant path no other bound covers that stage: CERBERUS_QUERY_MAX_SAMPLES
+// bounds the result cerberus drains, not what ClickHouse scans. See
+// https://github.com/tsouza/cerberus/issues/4084.
 const (
-	// maxClassicBucketMergeCostUnits bounds `totalBucketVolume x
-	// widestRowBucketWidth` — see this file's header doc for the real
-	// ClickHouse 25.9-alpine calibration this was picked against.
-	// Recalibrate by binary search against a real ClickHouse server (not
-	// chDB — see rate_window_fanout_bound.go and histogram_merge_bound.go's
-	// own notes on why an in-process engine does not reliably surface a
-	// real max_memory_usage abort) if this drifts; preserve the `T x
-	// maxRowWidth` model unless a new measurement shows the real cost
-	// driver has moved again.
-	//
-	// # Operator override (cerberus issue #2667)
-	//
-	// This value is a compile-time DEFAULT, not the only admissible
-	// value: [ResourceBounds.ClassicBucketMergeMaxCostUnits], resolved
-	// from [EnvClassicBucketMergeMaxCostUnits]
-	// (CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS) via
-	// [ResourceBoundsFromEnv] and threaded down through
-	// [LowerOpts.ResourceBounds] / lowerCtx.resourceBounds to both
-	// budget-guard call sites, is what the guard actually checks at
-	// runtime — see resource_bounds_env.go. This constant remains the
-	// value [DefaultResourceBounds] returns and every non-opted-in caller
-	// still enforces, so a deployment that never sets the env var keeps
-	// this exact calibration; an operator override exists to correct a
-	// wrong calibration for real traffic without a code change, mirroring
-	// [maxHistogramMergeCostUnits]'s own override (histogram_merge_bound.go).
-	maxClassicBucketMergeCostUnits = 10_000_000
+	// classicBucketMergeBytesPerEntry is the merge's peak memory per bucket
+	// entry at the largest calibrated shapes on 26.8: 2620.9 MiB over
+	// 10,200,000 entries at 200,000 x 50 (269.4 B) and 1291.6 MiB over
+	// 5,020,000 at 20,000 x 250 (269.8 B), rounded to 270. The marginal cost
+	// between 100,000 x 50 and 200,000 x 50 is higher, 282.5 B per entry,
+	// which is why the ceiling is checked directly at its value (this
+	// file's header) rather than trusted from either figure.
+	classicBucketMergeBytesPerEntry = 270
 
-	// maxClassicBucketMergeClampedComponent is NOT a behavioral threshold —
-	// see this file's header doc's Overflow safety section. It exists
-	// purely so the `T x maxRowWidth` multiply can never overflow Int64
-	// arithmetic; a query anywhere near this scale is already rejected by
-	// maxClassicBucketMergeCostUnits long before this clamp matters.
-	maxClassicBucketMergeClampedComponent = 100_000_000
+	// classicBucketMergeQueryMemoryBytes is the per-query memory cap the
+	// ceiling is sized against: CERBERUS_CH_QUERY_MAX_MEMORY's 1 GiB
+	// default.
+	classicBucketMergeQueryMemoryBytes = 1 << 30
+
+	// classicBucketMergeCapSharePercent is the share of the query cap the
+	// merge may use at the ceiling. The rest is headroom for the step the
+	// peak takes between calibration points (75,000 x 50 peaks at 733 MiB,
+	// 100,000 x 50 at 1247 MiB on 26.8) and for the scan feeding the merge.
+	// It does not bound the per-series window stage, which runs before the
+	// guard and can by itself exceed the cap (this file's header and
+	// https://github.com/tsouza/cerberus/issues/4084).
+	classicBucketMergeCapSharePercent = 75
+
+	// percentDenominator turns classicBucketMergeCapSharePercent into a
+	// fraction.
+	percentDenominator = 100
+
+	// maxClassicBucketMergeEntries bounds the bucket entries one query's
+	// classic-histogram cross-series merge may read: the sum, over every
+	// row the merge Aggregate reads, of that row's finite bound count plus
+	// its +Inf rung. It is classicBucketMergeCapSharePercent of the 1 GiB
+	// cap at classicBucketMergeBytesPerEntry: 2,982,616 entries.
+	//
+	// It is the compile-time default of
+	// [ResourceBounds.ClassicBucketMergeMaxEntries], which an operator
+	// overrides through [EnvClassicBucketMergeMaxEntries]
+	// (CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES) — see
+	// resource_bounds_env.go. The guard checks the resolved value.
+	maxClassicBucketMergeEntries = classicBucketMergeQueryMemoryBytes * classicBucketMergeCapSharePercent /
+		percentDenominator / classicBucketMergeBytesPerEntry
 )
 
-// classicBucketMergeRowWidthParam names the lambda parameter
-// classicBucketMergeRowWidthsExpr binds while reducing hqAggBoundsListAlias's
-// per-row arrays down to their lengths — distinct from histogram_quantile.go's
-// own paramRowBounds (a per-ROW bounds ARRAY, bound while folding the merge
-// itself) since this file's lambda binds a per-row LENGTH, a different value
-// at a different scope.
-const classicBucketMergeRowWidthParam = "cbmw"
-
-// classicBucketMergeRowWidthsExpr renders one array holding every row's own
-// ExplicitBounds length in the group — the same per-row width
-// classicBucketRowCumulativeExpr's O(row width) rescan pays for once per
-// merged rung. Called fresh (a new Go expression tree) by both
-// totalBucketVolumeExpr and widestRowBucketWidthExpr below: unlike
-// histogram_native_count_values.go's hqLet users, this reduction is only
-// O(group size) — reading array lengths, not re-deriving anything — so
-// rendering it twice costs nothing worth a let-binding for.
-func classicBucketMergeRowWidthsExpr() chplan.Expr {
-	return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{classicBucketMergeRowWidthParam},
-			Body: &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{
-				&chplan.BareIdent{Name: classicBucketMergeRowWidthParam},
-			}},
-		},
-		&chplan.ColumnRef{Name: hqAggBoundsListAlias},
-	}}
-}
-
-// totalBucketVolumeExpr renders T: the sum, across every row in the group,
-// of that row's own ExplicitBounds length — the total bucket-element volume
-// classicBucketUnionBoundsExpr's flatten reads and classicBucketMergedLadderExpr's
-// per-rung rescan pays for repeatedly.
-func totalBucketVolumeExpr() chplan.Expr {
-	return &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{classicBucketMergeRowWidthsExpr()}}
-}
-
-// widestRowBucketWidthExpr renders the group's single widest row (by
-// ExplicitBounds length) — see this file's header doc for why `T x
-// widestRowWidth`, not `T` alone or `T^2`, is the calibrated cost model.
-func widestRowBucketWidthExpr() chplan.Expr {
-	return &chplan.FuncCall{Fn: chplan.FnArrayMax, Args: []chplan.Expr{classicBucketMergeRowWidthsExpr()}}
-}
-
-// classicBucketMergeCostOverBudgetExpr renders the `<cost> > maxCostUnits`
-// condition this file's header doc's calibration backs: `totalBucketVolume
-// x widestRowBucketWidth`. Both operands are clamped to
-// maxClassicBucketMergeClampedComponent first — see that constant's own
-// doc and this file's Overflow safety section for why clamping both
-// components (rather than a separate business-threshold disjunct, as
-// histogram_merge_bound.go's rows x width^3 model needs) is enough to keep
-// the multiply Int64-safe here.
+// classicBucketMergeInputGate returns perSeries — the per-series stage the
+// merge Aggregate reads — with its ExplicitBounds and BucketCounts columns
+// replaced in place by copies computed through the guard:
 //
-// maxCostUnits is the caller-resolved ceiling — [DefaultResourceBounds]'s
-// ClassicBucketMergeMaxCostUnits (== [maxClassicBucketMergeCostUnits], the
-// shipped, calibrated default) unless an operator has overridden it via
-// [EnvClassicBucketMergeMaxCostUnits] (cerberus issue #2667). Threaded as
-// an explicit parameter rather than read from the environment here — this
-// package may not depend on internal/config (.go-arch-lint.yml) — and
-// never re-defaulted inside this function; see
-// histogram_merge_bound.go's identical note on
-// [histogramMergeCostOverBudgetExpr] for why the resolution happens once,
-// at the lowering-entry seam, rather than per call.
-// maxClassicBucketMergeClampedComponent itself stays a fixed Go constant,
-// not an operator knob — cerberus issue #2667 explicitly excludes it as
-// pure overflow-prevention arithmetic dominated by whichever maxCostUnits
-// value is in force, never an independently tuned threshold.
-func classicBucketMergeCostOverBudgetExpr(maxCostUnits int64) chplan.Expr {
-	clampedTotal := &chplan.FuncCall{Fn: chplan.FnLeast, Args: []chplan.Expr{
-		totalBucketVolumeExpr(), &chplan.LitInt{V: maxClassicBucketMergeClampedComponent},
-	}}
-	clampedWidest := &chplan.FuncCall{Fn: chplan.FnLeast, Args: []chplan.Expr{
-		widestRowBucketWidthExpr(), &chplan.LitInt{V: maxClassicBucketMergeClampedComponent},
-	}}
-	cost := mulExpr(clampedTotal, clampedWidest)
-	return gtLit(cost, maxCostUnits)
-}
-
-// classicBucketMergeBudgetGuardExpr renders the throwIf(...) = 0 predicate
-// that bounds the shared classic-histogram cross-series merge. It reads the
-// SAME hqAggBoundsListAlias groupArray classicBucketMergeShaping collects,
-// so it must be attached directly above the Aggregate that produces it —
-// see wrapClassicBucketMergeBudgetGuard.
+//	arraySlice(col, 1, length(col) + throwIf(total > maxEntries, message))
+//	total = sum(length(ExplicitBounds) + 1) OVER ()
 //
-// maxCostUnits — see [classicBucketMergeCostOverBudgetExpr]'s doc — is the
-// caller-resolved ceiling, threaded down from [wrapClassicBucketMergeBudgetGuard].
-func classicBucketMergeBudgetGuardExpr(maxCostUnits int64) chplan.Expr {
-	return &chplan.Binary{
-		Op: chplan.OpEq,
-		Left: &chplan.FuncCall{
+// total is the query's merged-entry count: every per-series row's finite
+// bounds plus the +Inf rung its trailing count carries, summed over every
+// row the merge will read — across every merge group and, on the range
+// path, every step. The merge's memory is held per query, not per group:
+// ClickHouse evaluates the merge over blocks of groups and keeps every
+// group's collected rows until the aggregation finishes, so a per-group
+// bound admits a query whose groups each sit under the ceiling while their
+// sum does not.
+//
+// throwIf answers 0 within the ceiling, so each column is unchanged; past
+// it the query aborts with the guard's message. The window function cannot
+// answer before it has read every row of its input, and the merge
+// Aggregate cannot read a row without these columns, so the guard runs
+// after the per-series stage and before the Aggregate collects or merges
+// anything. This holds for both merge constructions: the groupArray merge
+// in the Projects above the Aggregate and the sumMap merge inside it. The
+// ordering is guaranteed by that data dependency rather than observed in a
+// plan, which is why the guard is not a Filter: a Filter beneath the merge
+// leaves the order of the predicate and the merge to the server.
+//
+// maxEntries is the caller-resolved ceiling
+// ([ResourceBounds.ClassicBucketMergeMaxEntries]); it is threaded in rather
+// than read from the environment here because this package may not depend
+// on internal/config (.go-arch-lint.yml).
+func classicBucketMergeInputGate(perSeries chplan.Node, s schema.Metrics, maxEntries int64) chplan.Node {
+	total := &chplan.WindowExpr{Fn: chplan.FnSum, Args: []chplan.Expr{addExpr(
+		&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}}},
+		&chplan.LitInt{V: 1},
+	)}}
+	gated := func(column string) chplan.Projection {
+		col := &chplan.ColumnRef{Name: column}
+		guard := &chplan.FuncCall{
 			Fn: chplan.FnThrowIf,
 			Args: []chplan.Expr{
-				classicBucketMergeCostOverBudgetExpr(maxCostUnits),
+				gtLit(total, maxEntries),
 				&chplan.InlineString{V: chplan.ClassicBucketMergeBudgetMessage},
 			},
-		},
-		Right: &chplan.LitInt{V: 0},
+		}
+		return chplan.Projection{
+			Expr: &chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
+				col,
+				&chplan.LitInt{V: firstPosition},
+				addExpr(&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{col}}, guard),
+			}},
+			Alias: column,
+		}
 	}
-}
-
-// wrapClassicBucketMergeBudgetGuard wraps agg — the raw
-// classicBucketMergeShaping Aggregate (collecting hqAggBoundsListAlias /
-// hqAggCountsListAlias) — in the budget guard's Filter. Both callers that
-// build a classicBucketMergeShaping-shaped Aggregate
-// (lowerHistogramQuantileAgg, histogram_quantile.go; and
-// lowerHistogramQuantileClassicAggRange, histogram_quantile_range.go) call
-// this before handing the Aggregate to classicBucketShaping.reshape, so a
-// group this guard rejects never pays for the union/ladder Projects
-// reshape adds either.
-//
-// maxCostUnits is the caller-resolved ceiling ([ResourceBounds]
-// .ClassicBucketMergeMaxCostUnits, cerberus issue #2667) — both callers
-// read it from their own ctx.resourceBounds and pass it straight through.
-func wrapClassicBucketMergeBudgetGuard(agg chplan.Node, maxCostUnits int64) chplan.Node {
-	return &chplan.Filter{Input: agg, Predicate: classicBucketMergeBudgetGuardExpr(maxCostUnits)}
+	return &chplan.Project{
+		Input:        perSeries,
+		Replacements: []chplan.Projection{gated(s.ExplicitBoundsColumn), gated(s.BucketCountsColumn)},
+	}
 }

@@ -55,9 +55,11 @@ const (
 	// be stored more than once at one instant, and the rule is about how
 	// many scrapes the window spans.
 	hqWindowSampleCountAlias = "_hq_samples"
-	// hqWindowLadderAlias holds the per-series cumulative ladder before
-	// it is differenced back into per-bucket counts. It gets its own
-	// Project layer because the differencing reads it twice.
+	// hqWindowLadderAlias holds the per-series layout and cumulative
+	// ladder, as tuple(bounds, ladder), before the ladder is differenced
+	// back into per-bucket counts. It gets its own Project layer because
+	// one sort-and-split pass produces both and the differencing reads the
+	// ladder twice.
 	hqWindowLadderAlias = "_hq_window_ladder"
 	// hqWindowTemporalityAlias holds the group's `any(AggregationTemporality)`
 	// read — a single OTel time series has ONE temporality for its
@@ -70,12 +72,11 @@ const (
 
 // Lambda parameter names for the per-series window fold. `p` / `c` are a
 // consecutive (previous, current) pair of one bucket's cumulative counts;
-// `t` is a row's timestamp; `j` indexes the ladder during differencing.
+// `t` is a row's timestamp.
 const (
-	paramPrevCum   = "p"
-	paramCurrCum   = "c"
-	paramRowTime   = "t"
-	paramLadderPos = "j"
+	paramPrevCum = "p"
+	paramCurrCum = "c"
+	paramRowTime = "t"
 	// paramPairReset binds that same pair's entry of the per-series
 	// counter-reset mask, for the folds that read one — see
 	// counterIncreaseFold and hqWindowResetsAlias.
@@ -118,8 +119,10 @@ const (
 // histogram fixture on text that denotes one evaluation.
 //
 // The body may still read enclosing lambda parameters — CH lambdas capture
-// their outer scope, which classicBucketWindowLadderExpr's own nested
-// arrayFilter already relies on.
+// their outer scope. A capture inside the binding's own lambda is cheap: the
+// one-element array replicates the captured value once, not once per
+// element, which is why classic_bucket_bound_runs.go binds every shared value
+// this way rather than reading it from inside a lambda over a long array.
 func hqLet(param string, val chplan.Expr, body func(ref chplan.Expr) chplan.Expr) chplan.Expr {
 	return &chplan.Subscript{
 		Container: &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
@@ -597,8 +600,8 @@ const histogramExtrapolationThresholdFactor = 1.1
 // `rate(hist_bucket{le="2"}[5m])` extrapolate independently. In the
 // common case (a series' bucket layout is stable across the window) every
 // rung sees the same sample set and the factor is the same for all of
-// them; classicBucketWindowLadderExpr's per-rung `order` (filtered to the
-// rows that actually reported that bound) only diverges from the
+// them; classicBucketWindowRunsExpr's per-rung `order` (the timestamps of
+// the rows that actually reported that bound) only diverges from the
 // series-wide list on the rarer layout-change case, and diverging THERE
 // is exactly what matches reference rather than what would flatten it.
 // The exponential-histogram fold passes the full per-series timestamp
@@ -776,7 +779,7 @@ func secondsBetweenTsBeyondExpr(from, to chplan.Expr, beyond time.Duration) chpl
 // histograms (a series' ExplicitBounds essentially never changes between
 // scrapes). The rarer case of a genuine mid-window layout change is
 // handled the same best-effort way sum_over_time / rate already handle
-// it: classicBucketWindowLadderExpr's union-of-bounds construction, not
+// it: classicBucketWindowRunsExpr's union-of-bounds construction, not
 // this fold.
 func latestSampleFold(values, order chplan.Expr) chplan.Expr {
 	sorted := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
@@ -1050,7 +1053,7 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeS
 	}
 	return classicBucketWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
-		// countValues=nil: classicBucketWindowLadderExpr folds one `le`
+		// countValues=nil: classicBucketWindowRunsExpr folds one `le`
 		// rung's own cumulative values per call, so histogramWindowFold's
 		// durationToZero clamp reads THAT rung's own (values, order) —
 		// matching reference Prometheus's per-rung float-series
@@ -1074,78 +1077,12 @@ func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeS
 	)
 }
 
-// classicBucketWindowLadderExpr renders one SERIES' cumulative per-`le`
-// ladder over that series' own union of bucket layouts: one rung per
-// distinct bound the series reported in the window, plus the trailing
-// +Inf rung, each reduced across the series' in-window rows by `fold`.
-//
-// The construction mirrors classicBucketMergedLadderExpr — the merge is
-// in the cumulative domain for the same reason (a per-bucket count is
-// meaningless without the bounds array indexing it, a cumulative count at
-// a bound is self-contained) — and differs only in what it folds over:
-// the rows of ONE series across TIME, carrying their timestamps so the
-// fold can order them.
-func classicBucketWindowLadderExpr(fold histogramWindowTimeFold) chplan.Expr {
-	boundsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggBoundsListAlias})
-	countsList := chplan.Expr(&chplan.ColumnRef{Name: hqAggCountsListAlias})
-	tsList := chplan.Expr(&chplan.ColumnRef{Name: hqWindowTsListAlias})
-
-	// The rows whose layout carries this bound, and their timestamps.
-	// Both filters share one predicate so the two arrays stay aligned —
-	// a fold that sorts values by order would otherwise pair a count
-	// with another row's timestamp.
-	contributing := func(vals chplan.Expr, param string) chplan.Expr {
-		return &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{param, paramRowLayout},
-				Body: &chplan.FuncCall{Fn: chplan.FnArrayHas, Args: []chplan.Expr{
-					&chplan.BareIdent{Name: paramRowLayout},
-					&chplan.BareIdent{Name: paramUnionBound},
-				}},
-			},
-			vals,
-			boundsList,
-		}}
-	}
-
-	rowCums := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{paramRowBounds, paramRowCounts},
-			Body:   classicBucketRowCumulativeExpr(),
-		},
-		boundsList,
-		countsList,
-	}}
-
-	// The +Inf rung exists in every layout — every row reports
-	// `{le="+Inf"}` — so it folds over the whole window unfiltered.
-	infCums := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{paramRowCounts},
-			Body:   classicBucketRowTotalExpr(),
-		},
-		countsList,
-	}}
-
-	return &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{
-		&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramUnionBound},
-				Body: fold(
-					contributing(rowCums, paramRowCum),
-					contributing(tsList, paramRowTime),
-				),
-			},
-			classicBucketUnionBoundsExpr(),
-		}},
-		&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{fold(infCums, tsList)}},
-	}}
-}
-
 // classicBucketWindowCountsExpr differences the per-series ladder back
 // into the per-bucket counts every downstream consumer of a classic
 // histogram row expects: `counts[i] = ladder[i] - ladder[i-1]`, with the
-// first rung passing through unchanged.
+// first rung passing through unchanged. arrayDifference computes the same
+// subtraction per adjacent pair without reading the ladder through a
+// capture.
 //
 // The round trip through the cumulative domain is exact — the stage that
 // consumes these counts re-accumulates them, and a sum of differences
@@ -1154,25 +1091,14 @@ func classicBucketWindowLadderExpr(fold histogramWindowTimeFold) chplan.Expr {
 // negative count, re-accumulates to the same dipped ladder, and is
 // repaired once, at the end, by the merge's monotonic envelope.
 func classicBucketWindowCountsExpr() chplan.Expr {
-	ladder := chplan.Expr(&chplan.ColumnRef{Name: hqWindowLadderAlias})
-	pos := chplan.Expr(&chplan.BareIdent{Name: paramLadderPos})
-	return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{paramLadderPos},
-			Body: &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
-				&chplan.Binary{Op: chplan.OpEq, Left: pos, Right: &chplan.LitInt{V: 1}},
-				&chplan.Subscript{Container: ladder, Key: pos},
-				&chplan.Binary{
-					Op:   chplan.OpSub,
-					Left: &chplan.Subscript{Container: ladder, Key: pos},
-					Right: &chplan.Subscript{
-						Container: ladder,
-						Key:       &chplan.Binary{Op: chplan.OpSub, Left: pos, Right: &chplan.LitInt{V: 1}},
-					},
-				},
-			}},
-		},
-		&chplan.FuncCall{Fn: chplan.FnArrayEnumerate, Args: []chplan.Expr{ladder}},
+	ladder := tupleAt(&chplan.ColumnRef{Name: hqWindowLadderAlias}, runsTupleValues)
+	return &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
+			ladder, &chplan.LitInt{V: firstPosition}, &chplan.LitInt{V: 1},
+		}},
+		&chplan.FuncCall{Fn: chplan.FnArrayPopFront, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnArrayDifference, Args: []chplan.Expr{ladder}},
+		}},
 	}}
 }
 
@@ -1186,13 +1112,9 @@ func classicBucketWindowReshape(
 	passthrough []chplan.Projection,
 	s schema.Metrics,
 ) chplan.Node {
-	ladder := make([]chplan.Projection, 0, len(passthrough)+2)
+	ladder := make([]chplan.Projection, 0, len(passthrough)+1)
 	ladder = append(ladder, passthrough...)
-	ladder = append(
-		ladder,
-		chplan.Projection{Expr: classicBucketWindowLadderExpr(fold), Alias: hqWindowLadderAlias},
-		chplan.Projection{Expr: classicBucketUnionBoundsExpr(), Alias: s.ExplicitBoundsColumn},
-	)
+	ladder = append(ladder, chplan.Projection{Expr: classicBucketWindowRunsExpr(fold), Alias: hqWindowLadderAlias})
 
 	counts := make([]chplan.Projection, 0, len(passthrough)+2)
 	for _, p := range passthrough {
@@ -1205,7 +1127,7 @@ func classicBucketWindowReshape(
 		counts,
 		chplan.Projection{Expr: classicBucketWindowCountsExpr(), Alias: s.BucketCountsColumn},
 		chplan.Projection{
-			Expr:  &chplan.ColumnRef{Name: s.ExplicitBoundsColumn},
+			Expr:  tupleAt(&chplan.ColumnRef{Name: hqWindowLadderAlias}, runsTupleBounds),
 			Alias: s.ExplicitBoundsColumn,
 		},
 	)

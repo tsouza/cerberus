@@ -197,7 +197,7 @@ const nativeHistogramOverflowBoundMultiplier = 2
 // # The conversion
 //
 // otel_metrics_histogram.BucketCounts is the raw, NON-cumulative per-bucket
-// count OTel stores per row (see classicBucketRowCumulativeExpr's own
+// count OTel stores per row (see classicBucketRowEntriesExpr's own
 // comment in internal/promql/histogram_quantile.go for why cerberus itself
 // computes a cumulative ladder from it rather than reading one off the
 // wire): row BucketCounts[i] holds the count of observations in

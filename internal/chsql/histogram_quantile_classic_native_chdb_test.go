@@ -206,7 +206,7 @@ func hqNativeCases() []hqNativeCase {
 			// bucketGridRungsFrag used to compute each rung's cumulative
 			// count via a POSITIONAL arrayCumSum, which silently answers a
 			// DIFFERENT number than the fan-out's reference-correct
-			// filter-sum (classicBucketRowCumulativeExpr) the moment a
+			// per-row reduction (classicBucketRowEntriesExpr) the moment a
 			// row's own bounds are out of order — confirmed in the issue:
 			// unsorted bounds [5.0, 1.0] gave native=0.857 vs
 			// fan-out=3.667 for this exact query shape. Every row here

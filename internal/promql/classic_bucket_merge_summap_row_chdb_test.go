@@ -1,24 +1,24 @@
 //go:build chdb
 
-// Row-level differential for the per-row half of classic_bucket_merge_summap.go.
+// Row-level differential for the per-row reduction every classic-histogram
+// layout merge shares (classicBucketRowEntriesExpr, classic_bucket_bound_runs.go),
+// executed through the sumMap path's own per-row argument.
 //
 // classic_bucket_merge_summap_chdb_test.go compares the two merge strategies
 // END TO END, through the lowering entry point — which is the right layer for
 // the merge's own answer, but cannot reach this half: at BOTH call sites the
 // rows handed to the merge come from a per-series stage that already projects
-// classicBucketUnionBoundsExpr (arraySort + arrayDistinct + finite-filtered)
-// as their ExplicitBounds, so no query shape can seed the merge a row whose
-// stored layout repeats a bound, is not ascending, or carries a non-finite
-// entry.
+// a sorted, distinct, finite layout as their ExplicitBounds, so no query
+// shape can seed the merge a row whose stored layout repeats a bound, is not
+// ascending, or carries a non-finite entry.
 //
-// classicBucketSumMapRowArgs still has to answer such a row the way
-// classicBucketRowCumulativeExpr does — the two constructions read the SAME
-// rows and are meant to be interchangeable, and which per-series strategy
-// feeds them is a boot-time feature decision (lower_strategy.go), not a
-// property this file's expressions may assume. So the pair is executed
-// DIRECTLY here, against deliberately malformed rows, and compared with the
-// fold's own `b <= u` reading of the same row transcribed into plain
-// ClickHouse.
+// The reduction still has to answer such a row the way the has-filter fold
+// reads it — "sum every bucket whose OWN bound is finite and <= u", at every
+// distinct finite bound u the row carries — because which per-series strategy
+// feeds the merge is a boot-time feature decision (lower_strategy.go), not a
+// property the expression may assume. So it is executed DIRECTLY here,
+// against deliberately malformed rows, and compared with that reading
+// transcribed into plain ClickHouse.
 package promql
 
 import (
@@ -58,7 +58,7 @@ INSERT INTO ` + summapRowProbeTable + ` VALUES
     ('single bucket', [5], [1.0]);
 `
 
-// summapRowFoldReadingSQL is classicBucketRowCumulativeExpr's definition —
+// summapRowFoldReadingSQL is the has-filter fold's per-row reading —
 // "sum every bucket whose OWN bound is finite and <= u" — transcribed into
 // plain ClickHouse and evaluated at every distinct finite bound the row
 // carries, paired as a (bound, cumulative count) map. It is deliberately
@@ -77,11 +77,16 @@ const summapRowFoldReadingSQL = `arrayReduce('sumMap',
                                      arraySlice(BucketCounts, 1, length(ExplicitBounds)))),
               arraySort(arrayDistinct(arrayFilter(b -> isFinite(b), ExplicitBounds))))])`
 
-// TestClassicBucketSumMapRowArgs_MatchesFoldReading executes
-// classicBucketSumMapRowArgs over every row in summapRowProbeSeed and
+// summapRowDistinctBoundsSQL is the bound set the reduction must key the row
+// by: every distinct finite bound it carries, ascending.
+const summapRowDistinctBoundsSQL = `arraySort(arrayDistinct(arrayFilter(b -> isFinite(b), ExplicitBounds)))`
+
+// TestClassicBucketSumMapRowEntries_MatchesFoldReading executes
+// classicBucketSumMapRowEntriesExpr over every row in summapRowProbeSeed and
 // asserts its (bound -> cumulative count) map is the one the has-filter
-// fold reads off the same row.
-func TestClassicBucketSumMapRowArgs_MatchesFoldReading(t *testing.T) {
+// fold reads off the same row, that it keys the row by exactly its distinct
+// finite bounds in ascending order, and that each entry counts once.
+func TestClassicBucketSumMapRowEntries_MatchesFoldReading(t *testing.T) {
 	db, err := sql.Open("chdb", "")
 	if err != nil {
 		t.Fatalf("open chdb: %v", err)
@@ -97,13 +102,12 @@ func TestClassicBucketSumMapRowArgs_MatchesFoldReading(t *testing.T) {
 	}
 
 	s := schema.DefaultOTelMetrics()
-	bounds, counts := classicBucketSumMapRowArgs(s)
+	entries := classicBucketSumMapRowEntriesExpr(s)
 	plan := &chplan.Project{
 		Input: &chplan.Scan{Table: summapRowProbeTable},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: "Case"}, Alias: "Case"},
-			{Expr: bounds, Alias: "sm_bounds"},
-			{Expr: counts, Alias: "sm_counts"},
+			{Expr: entries, Alias: "sm_entries"},
 			{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
 			{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
 		},
@@ -114,9 +118,10 @@ func TestClassicBucketSumMapRowArgs_MatchesFoldReading(t *testing.T) {
 	}
 
 	rows, err := db.Query(`SELECT Case, `+
-		`toString(arrayReduce('sumMap', [sm_bounds], [sm_counts])), `+
+		`toString(arrayReduce('sumMap', [sm_entries.1], [sm_entries.2])), `+
 		`toString(`+summapRowFoldReadingSQL+`), `+
-		`toString(length(sm_bounds) = length(sm_counts)) FROM (`+inner+`)`, args...)
+		`toString(sm_entries.1), toString(`+summapRowDistinctBoundsSQL+`), `+
+		`toString(sm_entries.3) FROM (`+inner+`)`, args...)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -124,21 +129,24 @@ func TestClassicBucketSumMapRowArgs_MatchesFoldReading(t *testing.T) {
 
 	seen := 0
 	for rows.Next() {
-		var name, got, want, equalLengths string
-		if err := rows.Scan(&name, &got, &want, &equalLengths); err != nil {
+		var name, got, want, keys, wantKeys, ones string
+		if err := rows.Scan(&name, &got, &want, &keys, &wantKeys, &ones); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
 		seen++
 		if got != want {
-			t.Errorf("%s: classicBucketSumMapRowArgs reads %s, the has-filter fold reads %s",
+			t.Errorf("%s: the row reduction reads %s, the has-filter fold reads %s",
 				name, got, want)
 		}
-		// sumMap requires equal-length key/value arrays per row; a
-		// mismatch is a runtime exception on a real query, not a wrong
-		// answer, so it is worth pinning where it is cheap to see.
-		// ClickHouse renders the UInt8 a comparison yields as 1 / 0.
-		if equalLengths != "1" {
-			t.Errorf("%s: bounds and counts arrays differ in length", name)
+		if keys != wantKeys {
+			t.Errorf("%s: the row reduction keys the row by %s, want its distinct finite bounds %s",
+				name, keys, wantKeys)
+		}
+		// One count per entry: sumMap keys the merged layout by them, and
+		// an entry counted twice would double a bound's weight nowhere the
+		// ladder shows, while a missing one would let sumMap drop the key.
+		if wantOnes := entryOnes(wantKeys); ones != wantOnes {
+			t.Errorf("%s: per-entry counts %s, want %s", name, ones, wantOnes)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -147,4 +155,14 @@ func TestClassicBucketSumMapRowArgs_MatchesFoldReading(t *testing.T) {
 	if want := strings.Count(summapRowProbeSeed, "\n    ('"); seen != want {
 		t.Fatalf("compared %d rows, seed carries %d — the probe is not reading what it seeded", seen, want)
 	}
+}
+
+// entryOnes renders the all-ones array ClickHouse prints for a row whose
+// distinct finite bounds render as keys (`[1,2,5]` -> `[1,1,1]`).
+func entryOnes(keys string) string {
+	inner := strings.TrimSuffix(strings.TrimPrefix(keys, "["), "]")
+	if inner == "" {
+		return "[]"
+	}
+	return "[" + strings.TrimSuffix(strings.Repeat("1,", strings.Count(inner, ",")+1), ",") + "]"
 }

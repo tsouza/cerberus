@@ -423,7 +423,7 @@ func bucketGridGroupKeyFrag(expr chplan.Expr) Frag {
 //
 // Each finite rung's cumulative reading is a FILTER-SUM over every one of
 // THIS ROW's own (bound, count) pairs whose bound is <= the rung being
-// evaluated — internal/promql's classicBucketRowCumulativeExpr applied to
+// evaluated — internal/promql's classicBucketRowEntriesExpr applied to
 // the row's own bounds as their own union set — never a positional
 // `arrayCumSum`. This is issue #2492's fix: a positional
 // cumulative sum assumes ExplicitBounds is strictly ascending, and while
@@ -460,7 +460,7 @@ func bucketGridRungsFrag(bucketCounts, explicitBounds string) Frag {
 		Col(bucketCounts))
 	bounds := Col(explicitBounds)
 	finiteCounts := Call("arraySlice", countsF, InlineLit(int64(1)), Call("length", bounds))
-	// cumAtBound mirrors internal/promql's classicBucketRowCumulativeExpr
+	// cumAtBound mirrors internal/promql's classicBucketRowEntriesExpr
 	// exactly (see this function's own doc): a filter-sum over every one of
 	// the row's own (bound, count) pairs, evaluated once per bound in the
 	// row's own layout.

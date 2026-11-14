@@ -5,15 +5,12 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// classic_bucket_merge_summap.go implements issue #2756's SUM-fold-only
-// alternative to classicBucketMergeShaping's groupArray + per-rung
-// arrayFilter rescan (classic_bucket_merge_bound.go's own audited cost
-// finding — see that file's header). It replaces the per-rung rescan with
-// one ClickHouse sumMap aggregate: a single linear key-wise pass over every
-// row's (bound, that row's CUMULATIVE count at that bound) pairs, whose
-// key-wise sums ARE the merged per-`le` ladder. It is selected ONLY for the
-// SUM fold — see ClassicBucketMergeLowerer (lower_strategy.go) and
-// chopt.FeatureClassicBucketMergeSumMap.
+// classic_bucket_merge_summap.go implements the SUM-fold-only alternative to
+// classicBucketMergeShaping's groupArray merge: one ClickHouse sumMap
+// aggregate over every row's (bound, that row's CUMULATIVE count at that
+// bound) entries, whose key-wise sums ARE the merged per-`le` ladder. It is
+// selected ONLY for the SUM fold — see ClassicBucketMergeLowerer
+// (lower_strategy.go) and chopt.FeatureClassicBucketMergeSumMap.
 //
 // # Why each ROW cumulates before the merge, not the GROUP after it
 //
@@ -21,242 +18,91 @@ import (
 // reaches it as one already-cumulative float series per `le`, so
 // `sum by(le)` sums, at each bound u, ONLY the series that actually report
 // `{le=u}` — a producer whose own layout has no u contributes nothing to
-// rung u, however close its neighbouring bounds sit.
-// classicBucketMergedLadderExpr reproduces that with its `has(pbs, u)`
-// filter, and this file has to answer identically or it is a second, quieter
-// answer to the same query.
+// rung u, however close its neighbouring bounds sit. The groupArray merge
+// (classicBucketMergeRunsExpr) reproduces that by folding, per distinct
+// bound, only the entries of the rows that carry it, and this file has to
+// answer identically or it is a second, quieter answer to the same query.
 //
 // Cumulating each ROW over its own buckets first and keying the result by
 // that row's OWN bounds is exactly that semantic, expressed as a key-wise
 // sum: the row offers its cumulative count at u to key u for every u IT
-// carries, and offers nothing at all at a union bound it does not carry. So
+// carries, and nothing at a union bound it does not carry. So
 //
 //	rung(u) = sum over the rows carrying u of that row's cumulative count at u
 //
-// which is classicBucketMergedLadderExpr's own definition, term for term,
-// for ANY mix of layouts — homogeneous or not.
+// for ANY mix of layouts. Cumulating the GROUP afterward instead — sumMap
+// over per-BUCKET counts, then arrayCumSum along the union — sums, at each
+// union bound u, EVERY row's count over its own buckets <= u, including rows
+// with no u at all; the two agree only when every row carries every union
+// bound (cerberus issue #2817's counterexample: bounds [1,2,3]/counts
+// [10,5,0] merged with bounds [1,5]/counts [7,0] answers 1.78 where
+// Prometheus answers 5.0).
 //
-// Cumulating the GROUP afterward instead — sumMap over per-BUCKET counts,
-// then arrayCumSum along the union, which is how this file first shipped —
-// is a different quantity: it sums, at each union bound u, EVERY row's
-// sub-cumulative count over its own buckets <= u, including rows with no u
-// at all. The two agree only when every row carries every union bound.
-// Cerberus issue #2817's worked case is the counterexample: for bounds
-// [1,2,3]/counts [10,5,0] merged with bounds [1,5]/counts [7,0],
-// histogram_quantile(0.95, sum by(le)(...)) answered 1.78 where Prometheus
-// (and the has-filter fold) answers 5.0.
+// The per-row reduction is classicBucketRowEntriesExpr — the one the
+// groupArray merge and the per-series window stage apply — so a row whose
+// stored bounds repeat, are not ascending, or carry a non-finite entry is
+// read identically on every path: one entry per distinct finite bound,
+// holding every bucket at or below it.
 //
-// The quadratic term the old fold pays is its per-RUNG rescan of every
-// contributing row; a per-row prefix sum is one pass over that row's own
-// buckets, so moving the cumulation here keeps the linear cost this feature
-// exists for.
+// # Keys sumMap would drop
+//
+// sumMap drops a key only when EVERY value column sums to zero there. The
+// cumulative count is exactly zero at every bound below a row's smallest
+// observation, which real traffic produces constantly, so each entry also
+// carries a count of one (classicBucketSumMapRowEntriesExpr): a key some row
+// carries sums to at least one in that column and is never dropped. sumMap's
+// keys are therefore the merged layout and its first value column the merged
+// ladder, with no separate union construction or lookup.
 //
 // # The merged ladder still owes the monotonic repair
 //
 // Rungs folded independently per bound can DIP — a bound only one narrow
 // producer carries sits below the rung beneath it — so this ladder, exactly
-// like classicBucketMergedLadderExpr's, is handed to
-// classicBucketMonotonicLadderExpr (Prometheus's own
-// ensureMonotonicAndIgnoreSmallDeltas). classicBucketShaping.reshape runs
-// BOTH ladders through that one repair layer rather than either path keeping
-// its own copy.
+// like the groupArray merge's, is handed to classicBucketMonotonicExpr
+// (Prometheus's ensureMonotonicAndIgnoreSmallDeltas) by
+// classicBucketShaping.reshape.
 //
-// # Bound ORDER and repeated bounds inside one row
+// # -0.0 / 0.0 and NaN
 //
-// The has-filter fold defines a row's contribution by `b <= u` over that
-// row's raw (bound, count) pairs: independent of the order the row stores
-// its bounds in, and counting a repeated bound's buckets exactly once. A
-// prefix sum is neither, so the row's kept indices are ordered BY BOUND
-// (classicBucketSumMapRowOrderedIndicesExpr) before the prefix sum, and
-// every position but the LAST of an equal-bound run contributes 0
-// (classicBucketSumMapRowCumulativeExpr). sumMap merges a row's repeated
-// keys by SUMMING them (confirmed against chDB: sumMap([1,1,2],[3,4,5]) =
-// ([1,2],[7,5])), so zeroing all but the last of a run is what makes the
-// merged key hold that row's cumulative count at the repeated bound rather
-// than a prefix of it counted several times.
+// sumMap merges -0.0 and 0.0 as ONE key, as the groupArray merge's runs do,
+// and the quantile emitter coalesces equal adjacent bounds anyway. A NaN
+// count poisons the row's cumulative counts at and above its bucket through
+// arrayCumSum — the same reach the groupArray merge's per-row reduction
+// gives it — and the repair answers poisoned rungs identically on both
+// paths.
 //
-// Neither step is defensive: the spec corpus carries a
-// Prometheus-parity-enrolled fixture whose row reports the bound 1.0 twice
-// (histogram_quantile_classic_duplicate_bounds), and the merge's own output
-// layout is arraySort-ed (classicBucketUnionBoundsExpr) precisely because
-// the fold it must match answers a row whose stored bounds are not
-// ascending.
+// # Cost (real ClickHouse 26.6.8.7 and 26.8.36.3)
 //
-// # A real ClickHouse quirk this design works around
+// Measured exactly as classic_bucket_merge_bound.go's calibration —
+// `histogram_quantile(0.5, sum by (le) (sum_over_time(<bucket>[5m])))`
+// through the production handler, guard lifted, 6 GiB query cap, peak from
+// system.query_log — with this feature enabled:
 //
-// sumMap(keys, values) DROPS any key whose summed value across the group is
-// exactly zero — confirmed against real chDB execution (sumMap([1,2,3],
-// [0,0,5]) over a single row returns keys=[3], NOT [1,2,3]). In the
-// cumulative domain that is a LEADING run of empty buckets, which real
-// traffic produces constantly: every bound below the smallest observation
-// carries a cumulative count of exactly zero. Left alone the bound would
-// vanish from the node's own output layout, and ExplicitBounds is the
-// interpolation GEOMETRY HistogramQuantile walks.
+//	layout    series x W     entries     peak 26.8    peak 26.6
+//	disjoint  25,000 x  50   1,275,000    448.1 MiB    379.4 MiB
+//	disjoint  50,000 x  50   2,550,000    603.3 MiB    599.0 MiB
+//	disjoint 100,000 x  50   5,100,000   1201.3 MiB   1197.8 MiB
+//	shared   100,000 x  50   5,100,000    149.9 MiB    149.8 MiB
+//	disjoint  10,000 x 250   2,510,000    602.1 MiB    601.3 MiB
 //
-// The fix keeps a SEPARATE, independent union-of-bounds construction (the
-// existing linear groupArray + arrayFlatten + arrayDistinct + arraySort —
-// classicBucketUnionBoundsExpr, UNCHANGED, and never the quadratic part of
-// the old cost: the quadratic term was always the per-rung RESCAN, not this
-// one-pass flatten) and reconstructs each union bound's value with an
-// indexOf lookup into sumMap's own (compact, W-sized) key/value pair,
-// defaulting to zero for a key sumMap dropped:
+// Against the groupArray merge's calibration (classic_bucket_merge_bound.go)
+// the two are within 0.1% of each other at 25,000 x 50 disjoint on both
+// builds (448.1 against 448.4 MiB on 26.8, 379.4 against 379.8 MiB on
+// 26.6). On the larger disjoint layouts sumMap costs 3-7% less per entry on
+// 26.8 and 11-16% more on 26.6 (599.0 against 517.5 MiB at 50,000 x 50,
+// 1197.8 against 1028.8 MiB at 100,000 x 50, 601.3 against 539.7 MiB at
+// 10,000 x 250), and far less on a
+// shared layout, whose sumMap state holds one key per distinct bound. Under
+// the 1 GiB cap with the default guard, 58,000 x 50 disjoint completes at
+// 747.0 / 746.4 MiB (26.8 / 26.6), inside the cap share the ceiling is sized
+// for, so [maxClassicBucketMergeEntries] bounds this path too and no second
+// ceiling exists. The guard counts the entries before the sumMap aggregate
+// reads a row (classicBucketMergeInputGate), so 60,000 x 50 is refused at
+// 128.1 / 127.7 MiB and 100,000 x 50 at 246.0 / 245.4 MiB, before the
+// aggregate runs.
 //
-//	arrayConcat([0.0], sm.values)[indexOf(sm.keys, u) + 1]
-//
-// indexOf returns 0 (not found), and the leading zero pad shifts every
-// found position by one, so a miss reads the pad's 0.0 and a hit reads
-// sm.values at its true position — one indexOf call, no branch. Zero is also
-// the RIGHT value for a dropped key, not merely a safe one: sumMap drops it
-// only when every row carrying that bound reports a cumulative count of
-// zero there, which is precisely what the has-filter fold sums to.
-//
-// This costs O(W) per union bound (W = merged bucket-ladder width) against
-// sumMap's own compact output, never against the T contributing rows — the
-// quadratic T-row rescan classic_bucket_merge_bound.go's own doc audited is
-// gone.
-//
-// # -0.0 / 0.0 key identity
-//
-// sumMap merges -0.0 and 0.0 as ONE aggregate key while arrayDistinct — the
-// union-bounds dedup — keeps both (both confirmed against chDB by
-// TestClassicBucketMergeSumMap_ZeroKeyIdentity), so a group whose rows
-// report -0.0 from one row and 0.0 from another surfaces two union rungs
-// resolving, via indexOf's own -0.0/0.0 equality, to the SAME sumMap entry.
-// In the cumulative domain that is not a defect and needs no normalisation:
-// two rungs at the same bound carrying the same cumulative count is exactly
-// what the has-filter fold produces for that input (`has` matches both), and
-// emitHistogramQuantile's own adjacent-duplicate-bound dedup collapses them
-// downstream. It WAS a defect for the per-bucket-then-arrayCumSum shape this
-// file first shipped, where the shared entry was ADDED once per duplicate
-// rung — which is why the zero-canonicalising step that guarded it went away
-// with the arrayCumSum it guarded.
-//
-// # NaN
-//
-// arrayCumSum propagates a NaN forward through the rest of the ROW it
-// appears in (confirmed: arrayCumSum([1, nan, 2, 3]) = [1, nan, nan, nan]),
-// which is the same reach classicBucketRowCumulativeExpr's arraySum gives it
-// on the fold path: both poison that row's rungs at and above the NaN
-// bucket, and neither reaches a bound the row does not carry. The repair
-// layer both paths now share then answers the poisoned rungs identically
-// (arrayMax ignores NaN — confirmed: arrayMax([1, nan, 2]) = 2). The
-// asymmetric NaN reach #2756 documented as an accepted risk belonged to the
-// union-wide arrayCumSum this file no longer performs.
-//
-// # Cost re-measurement against the SHIPPED (post-#2817) construction
-// # (cerberus issue #2923, real ClickHouse 26.6.4-alpine via a standalone
-// # `docker run clickhouse/clickhouse-server:26.6-alpine` container — not
-// # chDB — max_memory_usage pinned to the 1 GiB
-// # CERBERUS_CH_QUERY_MAX_MEMORY default, real peak read from
-// # system.query_log.memory_usage after `SYSTEM FLUSH LOGS`, matching
-// # classic_bucket_merge_bound.go's own calibration methodology exactly)
-//
-// #2756's original "~50x faster" figure was an ESTIMATE against the
-// pre-#2817 construction (arrayCumSum along the union AFTER a plain
-// per-bucket sumMap — the shape #2817 replaced for correctness). The
-// shipped construction this file now builds pays a per-row arraySort
-// (classicBucketSumMapRowOrderedIndicesExpr) plus a per-row arrayCumSum
-// (classicBucketSumMapRowCumulativeExpr) BEFORE the sumMap aggregate ever
-// runs, and both ladders — this one and classicBucketMergedLadderExpr's —
-// now pay the SAME monotonic-repair layer. A throwaway harness (deleted
-// before this fix merged, same precedent classic_bucket_merge_bound.go's
-// own calibration cites) lowered + emitted the REAL
-// `histogram_quantile(0.5, sum by(le)(sum_over_time(<bucket>[5m])))` SQL
-// for both [FanoutClassicBucketMergeLowerer] (the fold) and
-// [NativeClassicBucketMergeLowerer] (this file), ran each against the SAME
-// seeded table, and compared real peak memory:
-//
-//	series  width  T=GxW    fold peak    sumMap peak   sumMap vs fold
-//	  1000     20    20,000    26.2 MiB      26.5 MiB   +1.16%
-//	  2000     20    40,000    51.0 MiB      51.5 MiB   +0.84%
-//	  3741     12    44,892    41.0 MiB      41.3 MiB   +0.74%
-//	  2000     50   100,000   307.9 MiB     308.2 MiB   +0.10%
-//	  4000     50   200,000   614.4 MiB     614.7 MiB   +0.05%
-//	  6000     50   300,000   827.0 MiB     827.3 MiB   +0.04%
-//	  8000     50   400,000   REJECTED (946.8 MiB attained)   REJECTED (947.1 MiB attained)   +0.03%
-//	  3000    100   300,000   REJECTED (976.5 MiB attained)   REJECTED (976.8 MiB attained)   +0.03%
-//
-// Every row above seeds DISJOINT ExplicitBounds layouts (series i's bounds
-// are `[i*W+1 .. i*W+W]`) — classic_bucket_merge_bound.go's own worst-case
-// calibration seed — and the REJECTED rows are genuine real-server
-// `MEMORY_LIMIT_EXCEEDED` aborts at the SAME (series, width) points that
-// file's own header table records for the fold, confirming this harness
-// reproduces that published calibration before trusting its fold-vs-sumMap
-// DELTA. Of the 8 rows above, 6 have an attained-byte figure in BOTH
-// tables (the 2 REJECTED rows only report a bare "REJECTED" in
-// classic_bucket_merge_bound.go's table, with no comparable number).
-// Converting this file's fold-peak MiB figures to MB (x1.048576, the same
-// convention classic_bucket_merge_bound.go's table already uses) and
-// comparing against that table's peak-memory column at the identical
-// (series, width) points: this file's absolute numbers run ~3-14% lower
-// (2.8% at 6000x50, 4.5-4.6% at the two 20-width points, ~13-14% at the
-// 3741x12 and both 50-width points at 100,000/200,000 T) — attributable to
-// the newer 26.6.4 server vs that table's 25.9-alpine, not to a
-// methodology difference.
-//
-// Two things fall out of this table:
-//
-//  1. sumMap is NOT cheaper at any point measured — it is marginally MORE
-//     expensive everywhere, by a near-constant ~307-512 KiB absolute
-//     overhead (consistent with a small, T-independent per-query
-//     construction cost: the extra arraySort/arrayCumSum lambda setup this
-//     file's header already names, not a term that scales with volume).
-//  2. That overhead SHRINKS in relative terms as T grows (1.16% at
-//     T=20,000 down to 0.03% at T=400,000) because the dominant cost term
-//     is the SAME for both constructions (confirmed by the REJECTED rows
-//     aborting within 0.3 MiB of each other) — the two constructions have
-//     CONVERGED to statistically the same real cost post-#2817, not
-//     diverged in sumMap's favour.
-//
-// A separate, uncontrolled sweep at HOMOGENEOUS layouts (every row sharing
-// one ExplicitBounds — the shape #2756's original estimate assumed) and
-// much larger series counts (50,000-400,000) surfaced a real but
-// CONFOUNDING ClickHouse behaviour: peak memory for BOTH constructions
-// dropped sharply and non-monotonically above roughly 20,000-50,000
-// distinct `Attributes` groups (20,000 series: both OOM near 983 MiB;
-// 50,000 series: both succeed at 134-165 MiB — an order of magnitude
-// LESS, despite 2.5x more data), tracking each other closely at every
-// point (fold/sumMap within ~20% of each other, never a clean multiple).
-// This is almost certainly the classic_bucket_merge_summap.go-external
-// per-series `GROUP BY Attributes` stage (histogram_quantile.go's own
-// per-series collection, upstream of anything this file or
-// classic_bucket_merge_bound.go's guard covers) crossing ClickHouse's
-// two-level hash-aggregation threshold, not a merge-stage effect either
-// construction controls — the same class of real-server planner
-// sensitivity exp_histogram_merge_summap_bound.go's own "Range-mode
-// calibration" section flags (its ~1,400-step nondeterminism) without
-// resolving it. It is recorded here, not smoothed over, but it is NOT
-// treated as evidence either way for this file's own cost comparison: the
-// controlled, DISJOINT, REPRODUCIBLE sweep above — which isolates the
-// merge stage alone and cleanly reproduces the existing published fold
-// baseline — is what this decision rests on.
-//
-// # Verdict: AutoSelect stays false
-//
-// The measured real-world speedup is gone: post-#2817's per-row
-// arraySort/arrayCumSum cost erased #2756's original ~50x estimate down to
-// a near-zero real delta at every controlled point tested — sumMap is
-// consistently, marginally MORE expensive than the fold (never negative,
-// never cheaper), converging toward parity in relative terms as T grows
-// (see the table above) — this repo's own established pattern for a
-// feature that looked like an obvious win before recalibration (#2768's
-// codec measurement, #2750's ts_tag_groups measurement). [chopt.FeatureClassicBucketMergeSumMap]
-// keeps `AutoSelect: false`; the feature stays reachable only via explicit
-// `CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap` listing for an
-// operator who wants BYTE-IDENTICAL correctness (pinned since #2817) with
-// no expectation of a resource win.
-//
-// The re-measurement DOES settle classic_bucket_merge_bound.go's own open
-// question for this path: since sumMap's real cost tracks the fold's own
-// `totalBucketVolume x widestRowBucketWidth` model within ~1% at every
-// controlled point (including both REJECTED points, which abort within
-// 0.3 MiB of each other), [maxClassicBucketMergeCostUnits] — UNCHANGED —
-// already correctly protects an operator who opts into this feature via
-// the env override; no second, sumMap-specific guard formula is needed
-// (contrast [expHistogramMergeSumMapCostOverBudgetExpr]
-// (exp_histogram_merge_summap_bound.go), whose design DOES need one,
-// because that merge's own cost model is genuinely rows-independent in a
-// way this one's real measurement shows it is not).
+// The feature keeps `AutoSelect: false`; it stays reachable through
+// `CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap`.
 const (
 	// hqAggSumMapAlias holds the group's sumMap(bounds, counts) result — a
 	// Tuple(Array(Float64) keys sorted ascending, Array(Float64) values),
@@ -271,17 +117,8 @@ const (
 	hqAggInfTotalAlias = "_hq_inf_total"
 )
 
-// Lambda parameter names for this file's per-row expressions. `i` indexes a
-// row's own ExplicitBounds / BucketCounts (the role paramLadderIdx plays over
-// the merged ladder, one scope down); `smb` / `smc` are the
-// single-evaluation bindings of one row's bound-ordered bounds and its
-// prefix-summed counts; `smp` indexes those two in lockstep.
-const (
-	paramBucketIndex     = "i"
-	paramSumMapRowBounds = "smb"
-	paramSumMapRowCum    = "smc"
-	paramSumMapRowPos    = "smp"
-)
+// paramBucketIndex indexes one row's own ExplicitBounds / BucketCounts.
+const paramBucketIndex = "i"
 
 // classicBucketFiniteBoundKeptIndicesExpr returns the 1-based positions in
 // eb (an ExplicitBounds-shaped expression) whose bound is finite (see
@@ -303,115 +140,29 @@ func classicBucketFiniteBoundKeptIndicesExpr(eb chplan.Expr) chplan.Expr {
 	}}
 }
 
-// classicBucketSumMapRowOrderedIndicesExpr returns the same kept (finite-
-// bound) 1-based positions classicBucketFiniteBoundKeptIndicesExpr selects,
-// permuted into ASCENDING BOUND order rather than stored-array order.
+// classicBucketSumMapRowEntriesExpr renders the per-row argument of the
+// sumMap aggregate: tuple(bounds, cumulative counts, ones), one entry per
+// distinct finite bound the raw row carries — classicBucketRowEntriesExpr's
+// reduction, the same one the groupArray fold and the per-series window
+// stage apply, so all three read a row identically — plus a count of one per
+// entry.
 //
-// The has-filter fold reads a row through `b <= u`, which does not care what
-// order the row stores its bounds in; a prefix sum does, so this is what
-// makes the two agree for a row whose ExplicitBounds is not ascending. It is
-// also what puts an equal-bound run in ADJACENT positions, which is the
-// precondition classicBucketSumMapRowCumulativeExpr's run collapse reads.
-func classicBucketSumMapRowOrderedIndicesExpr(eb chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{paramBucketIndex},
-			Body: &chplan.Subscript{
-				Container: eb, Key: &chplan.BareIdent{Name: paramBucketIndex},
-			},
-		},
-		classicBucketFiniteBoundKeptIndicesExpr(eb),
-	}}
-}
-
-// classicBucketSumMapRowCumulativeExpr renders ONE row's per-bound
-// CUMULATIVE counts — the values sumMap keys by that row's own bounds — from
-// its already bound-ordered bounds and per-bucket counts.
-//
-// It is a plain prefix sum with one correction: every position but the LAST
-// of an equal-bound run contributes 0 instead of its own prefix. sumMap sums
-// a row's repeated keys, so a run whose entries sum to the run's FINAL
-// prefix is what makes the merged key hold "this row's count at or below
-// that bound" once, rather than a prefix of it counted once per repeat. See
-// this file's header.
-//
-// Both arrays are bound once (hqLet) because the run test reads the bounds
-// twice and the prefix sum is read once per position: inlining either inside
-// the arrayMap lambda would re-derive the whole per-row expression tree per
-// element.
-func classicBucketSumMapRowCumulativeExpr(orderedBounds, orderedCounts chplan.Expr) chplan.Expr {
-	return hqLet(paramSumMapRowBounds, orderedBounds, func(bounds chplan.Expr) chplan.Expr {
-		prefix := &chplan.FuncCall{Fn: chplan.FnArrayCumSum, Args: []chplan.Expr{orderedCounts}}
-		return hqLet(paramSumMapRowCum, prefix, func(cum chplan.Expr) chplan.Expr {
-			pos := chplan.Expr(&chplan.BareIdent{Name: paramSumMapRowPos})
-			// pos < length(bounds) guards the lookahead: at the last
-			// position bounds[pos+1] reads past the end, which ClickHouse
-			// answers with the element type's default rather than an error
-			// (confirmed against chDB), and that default is 0 — a real bound
-			// value a row's highest bucket can legitimately carry.
-			repeatsNext := &chplan.Binary{
-				Op: chplan.OpAnd,
-				Left: &chplan.Binary{
-					Op:    chplan.OpLt,
-					Left:  pos,
-					Right: &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{bounds}},
-				},
-				Right: &chplan.Binary{
-					Op:    chplan.OpEq,
-					Left:  &chplan.Subscript{Container: bounds, Key: pos},
-					Right: &chplan.Subscript{Container: bounds, Key: addExpr(pos, &chplan.LitInt{V: 1})},
-				},
-			}
-			return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-				&chplan.Lambda{
-					Params: []string{paramSumMapRowPos},
-					Body: &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
-						repeatsNext,
-						&chplan.LitFloat{V: 0},
-						&chplan.Subscript{Container: cum, Key: pos},
-					}},
-				},
-				&chplan.FuncCall{Fn: chplan.FnArrayEnumerate, Args: []chplan.Expr{bounds}},
-			}}
-		})
-	})
-}
-
-// classicBucketSumMapRowArgs renders the per-row (bounds, cumulative counts)
-// pair fed to the sumMap aggregate — the bounds half also feeding the
-// union-bounds groupArray. Every INTERIOR non-finite bound is dropped (its
-// paired count dropped in lockstep, preserving the #2495 -Inf guard the
-// has-filter path applies at read time instead), the surviving pairs are put
-// in ascending-bound order, and counts are cast to Float64 (the ladder is
-// float-domain throughout — see classicBucketRowCumulativeExpr's identical
-// reasoning) before the per-row prefix sum. The trailing overflow element
-// BucketCounts may carry (one longer than ExplicitBounds) is excluded here —
-// sumMap requires equal-length key/value arrays per row — and folded
-// separately into hqAggInfTotalAlias via the RAW, unfiltered column instead.
-func classicBucketSumMapRowArgs(s schema.Metrics) (bounds, counts chplan.Expr) {
-	eb := chplan.Expr(&chplan.ColumnRef{Name: s.ExplicitBoundsColumn})
-	bc := chplan.Expr(&chplan.ColumnRef{Name: s.BucketCountsColumn})
-	orderedIdx := classicBucketSumMapRowOrderedIndicesExpr(eb)
-
-	bounds = &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{paramBucketIndex},
-			Body: &chplan.Subscript{
-				Container: eb, Key: &chplan.BareIdent{Name: paramBucketIndex},
-			},
-		},
-		orderedIdx,
-	}}
-	orderedCounts := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{paramBucketIndex},
-			Body: toFloat64Expr(&chplan.Subscript{
-				Container: bc, Key: &chplan.BareIdent{Name: paramBucketIndex},
-			}),
-		},
-		orderedIdx,
-	}}
-	return bounds, classicBucketSumMapRowCumulativeExpr(bounds, orderedCounts)
+// The count column is what keeps the merged keys equal to the union layout.
+// sumMap drops a key only when EVERY value column sums to zero there, and a
+// key some row carries always counts at least that row, so no carried bound
+// is dropped — not even one below the smallest observation, whose cumulative
+// count is exactly zero. sumMap's key-wise result is therefore the merged
+// layout and its first value column the merged ladder, with no separate
+// union construction or per-bound lookup.
+func classicBucketSumMapRowEntriesExpr(s schema.Metrics) chplan.Expr {
+	ones := func(n chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnArrayWithConstant, Args: []chplan.Expr{n, &chplan.LitInt{V: 1}}}
+	}
+	return classicBucketRowEntriesExpr(
+		&chplan.ColumnRef{Name: s.ExplicitBoundsColumn},
+		&chplan.ColumnRef{Name: s.BucketCountsColumn},
+		ones,
+	)
 }
 
 // classicBucketRowTotalColumnExpr renders ONE row's +Inf rung — its total
@@ -427,49 +178,26 @@ func classicBucketRowTotalColumnExpr(s schema.Metrics) chplan.Expr {
 	})
 }
 
-// classicBucketSumMapLookupExpr reconstructs the merged ladder's rung at
-// union bound u from the group's sumMap result: sm.1 (keys) / sm.2 (values),
-// via arrayConcat([0.0], sm.2)[indexOf(sm.1, u) + 1] — see this file's
-// header for why a plain subscript into sm.2 at indexOf(sm.1, u) is unsafe
-// (indexOf returns 0, an invalid subscript, on a miss — which sumMap's own
-// zero-value key drop makes a real, expected case, not a defensive-only
-// branch) and why 0.0 is the rung's correct value on such a miss.
-func classicBucketSumMapLookupExpr(u chplan.Expr) chplan.Expr {
-	sm := chplan.Expr(&chplan.ColumnRef{Name: hqAggSumMapAlias})
-	keys := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{sm, &chplan.LitInt{V: 1}}}
-	vals := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{sm, &chplan.LitInt{V: 2}}}
-	paddedVals := &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{
-		&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{&chplan.LitFloat{V: 0}}},
-		vals,
-	}}
-	pos := addExpr(
-		&chplan.FuncCall{Fn: chplan.FnIndexOf, Args: []chplan.Expr{keys, u}},
-		&chplan.LitInt{V: 1},
-	)
-	return &chplan.Subscript{Container: paddedVals, Key: pos}
-}
-
-// classicBucketSumMapLadderExpr renders the group's merged, NOT-yet-repaired
-// cumulative per-`le` ladder over the union layout — one rung per union
-// bound, read straight out of the sumMap result, plus the trailing +Inf rung
-// (hqAggInfTotalAlias, an independent unconditional sum — see that alias'
-// doc comment for why it needs no separate "add the last cumulative rung"
-// step).
+// classicBucketSumMapMergedExpr renders the group's merged layout and its
+// not-yet-repaired cumulative ladder as tuple(bounds, ladder), straight off
+// the sumMap result: its keys are the union layout (see
+// classicBucketSumMapRowEntriesExpr for why no carried key is dropped), its
+// first value column the per-bound ladder, and the trailing +Inf rung is
+// hqAggInfTotalAlias, an independent unconditional sum.
 //
-// This is classicBucketMergedLadderExpr's counterpart and stands in exactly
-// the same place: classicBucketShaping.reshape aliases it to
-// hqAggLadderAlias and hands it to classicBucketMonotonicLadderExpr, because
-// per-bound rungs folded independently can dip. See this file's header.
-func classicBucketSumMapLadderExpr() chplan.Expr {
-	unionBounds := classicBucketUnionBoundsExpr()
-	perBound := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
-		&chplan.Lambda{Params: []string{paramUnionBound}, Body: classicBucketSumMapLookupExpr(&chplan.BareIdent{Name: paramUnionBound})},
-		unionBounds,
-	}}
-	return &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{
-		perBound,
+// This is classicBucketMergeRunsExpr's counterpart and stands in exactly the
+// same place: classicBucketShaping.reshape aliases it to hqAggMergedAlias and
+// hands its ladder to classicBucketMonotonicExpr, because per-bound rungs
+// folded independently can dip. See this file's header.
+func classicBucketSumMapMergedExpr() chplan.Expr {
+	sm := chplan.Expr(&chplan.ColumnRef{Name: hqAggSumMapAlias})
+	keys := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{sm, &chplan.LitInt{V: runsTupleBounds}}}
+	vals := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{sm, &chplan.LitInt{V: runsTupleValues}}}
+	ladder := &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{
+		vals,
 		&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: hqAggInfTotalAlias}}},
 	}}
+	return &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{keys, ladder}}
 }
 
 // classicBucketMergeShapingSumMap is the sumMap-based shaping for the
@@ -478,17 +206,11 @@ func classicBucketSumMapLadderExpr() chplan.Expr {
 // chopt.FeatureClassicBucketMergeSumMap is enabled; every other fold keeps
 // using classicBucketMergeShaping unconditionally.
 func classicBucketMergeShapingSumMap(s schema.Metrics) classicBucketShaping {
-	bounds, counts := classicBucketSumMapRowArgs(s)
 	return classicBucketShaping{
 		aggs: []chplan.AggFunc{
 			{
-				Fn:    chplan.FnGroupArray,
-				Args:  []chplan.Expr{bounds},
-				Alias: hqAggBoundsListAlias,
-			},
-			{
 				Fn:    chplan.FnSumMap,
-				Args:  []chplan.Expr{bounds, counts},
+				Args:  []chplan.Expr{classicBucketSumMapRowEntriesExpr(s)},
 				Alias: hqAggSumMapAlias,
 			},
 			{
@@ -498,7 +220,7 @@ func classicBucketMergeShapingSumMap(s schema.Metrics) classicBucketShaping {
 			},
 		},
 		// fold is never invoked when sumMap is set — classicBucketShaping
-		// .reshape swaps in classicBucketSumMapLadderExpr for the ladder it
+		// .reshape swaps in classicBucketSumMapMergedExpr for the ladder it
 		// would otherwise build. It is set purely so that reshape's nil
 		// check (the argMax newest-row path, which has no layouts to merge)
 		// keeps routing this shaping through the merge branch, exactly as

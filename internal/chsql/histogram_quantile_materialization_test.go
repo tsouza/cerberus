@@ -11,7 +11,7 @@ import (
 
 // TestEmitHistogramQuantile_MaterialisesEveryArrayWalkOnce pins the
 // classic-quantile emitter's staging contract: each expensive per-row
-// array walk it needs — the coalescing index scan, the Float64 bucket
+// array walk it needs — the coalescing keep mask, the Float64 bucket
 // cast, the coalesced bound array, the cumulative ladder, the
 // observation total and the rank-walk stop index — appears EXACTLY ONCE
 // in the emitted SQL, materialised into its own derived-query column.
@@ -61,25 +61,25 @@ func TestEmitHistogramQuantile_MaterialisesEveryArrayWalkOnce(t *testing.T) {
 			name:       "per-bucket counts",
 			cumulative: false,
 			want: map[string]int{
-				"arrayFilter(":     1, // the coalescing index scan
-				"arrayConcat(":     1, // that scan extended over the overflow rung
+				"arrayFilter(":     2, // coalesced bounds + coalesced ladder
+				"arrayConcat(":     1, // the keep mask extended over the overflow rung
 				"arrayCumSum(":     1, // the ladder
 				"arraySum(":        1, // the observation total
 				"arrayFirstIndex(": 1, // the rank walk
-				// bucket cast + coalesced bounds + coalesced ladder.
-				"arrayMap(": 3,
+				// the coalescing keep mask + the bucket cast.
+				"arrayMap(": 2,
 			},
 		},
 		{
 			name:       "already-cumulative ladder",
 			cumulative: true,
 			want: map[string]int{
-				"arrayFilter(":     1,
+				"arrayFilter(":     2,
 				"arrayConcat(":     1,
 				"arrayCumSum(":     0, // the input IS the ladder
 				"arraySum(":        0, // the total is the ladder's top rung
 				"arrayFirstIndex(": 1,
-				"arrayMap(":        3,
+				"arrayMap(":        2,
 			},
 		},
 	}

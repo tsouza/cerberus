@@ -353,7 +353,7 @@ func hqFloatGuardedLadderExpr() chplan.Expr {
 // invariant expects, silently misaligning every downstream interpolated
 // rung against the wrong bound (cerberus pre-release audit finding, the
 // float-domain sibling of #2495's array-domain fix in histogram_quantile.go's
-// classicBucketRowCumulativeExpr/classicBucketUnionBoundsExpr).
+// classicBucketRowEntriesExpr).
 //
 // The trailing +Inf overflow's OWN count is carried through
 // UNCONDITIONALLY via `arraySlice(sorted, -1)` — CH's negative-offset

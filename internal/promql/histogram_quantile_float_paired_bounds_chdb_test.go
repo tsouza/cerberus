@@ -5,8 +5,8 @@
 // index-for-index after filtering out non-finite `le` bounds, rather than
 // filtering only the bounds side and leaving the ladder unfiltered — a
 // pre-release audit finding (the float-domain sibling of #2495's
-// array-domain fix, histogram_quantile.go's
-// classicBucketRowCumulativeExpr/classicBucketUnionBoundsExpr).
+// array-domain fix, classic_bucket_bound_runs.go's
+// classicBucketRowEntriesExpr).
 //
 // A real OTLP classic-histogram row can carry a malformed non-finite
 // entry INSIDE its ExplicitBounds array (not just the synthetic trailing

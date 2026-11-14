@@ -210,7 +210,7 @@ func TestConfigDocsPreambleDefaultsMatchBinary(t *testing.T) {
 
 	pb := promql.DefaultResourceBounds()
 	assertDocumented(t, doc, "CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS", pb.HistogramMergeMaxCostUnits)
-	assertDocumented(t, doc, "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS", pb.ClassicBucketMergeMaxCostUnits)
+	assertDocumented(t, doc, "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES", pb.ClassicBucketMergeMaxEntries)
 
 	// internal/chsql may not be imported for its unexported ceilings; the
 	// constant declarations are the source of truth the engine's env

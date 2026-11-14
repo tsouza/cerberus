@@ -24,10 +24,10 @@ func (e *emitter) emitHistogramQuantileRankWalkNative(h *chplan.HistogramQuantil
 	raw := newHQClassicWriters(h, hqClassicHelperColumns{})
 	scanned := NewQuery().Select(
 		Star(),
-		As(raw.keptBoundIdx(), hqClassicKeptIdxColumn),
+		As(raw.keptBoundMask(), hqClassicKeptMaskColumn),
 		As(raw.buckets(), hqClassicBucketsColumn),
 	).From(materializeHistogramInput(sub, h.Input.RowType()))
-	helpers := hqClassicHelperColumns{keptIdx: hqClassicKeptIdxColumn, buckets: hqClassicBucketsColumn}
+	helpers := hqClassicHelperColumns{keptMask: hqClassicKeptMaskColumn, buckets: hqClassicBucketsColumn}
 	coalescing := newHQClassicWriters(h, helpers)
 	coalesced := NewQuery().Select(
 		Star(),

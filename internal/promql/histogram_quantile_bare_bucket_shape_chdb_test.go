@@ -10,9 +10,9 @@
 // own long-standing "no overflow bucket" convention — BucketCounts and
 // ExplicitBounds the SAME length, which readSeededClassicHistograms
 // (test/spec/parity_chdb.go) documents and reconstructs explicitly, and
-// which classicBucketRowCumulativeExpr's `arraySlice(cs, 1, length(bs))`
-// (the aggregated/merge path, a few hundred lines above in this same
-// file) already tolerated by construction. This test pins BOTH shapes
+// which classicBucketRowEntriesExpr's `arraySlice(cs, 1, length(bs))`
+// (the aggregated/merge path, classic_bucket_bound_runs.go) already
+// tolerated by construction. This test pins BOTH shapes
 // against the SAME bounds and a proportionally similar bucket ladder, so
 // a future change that reintroduces an equal-length assumption (in
 // either direction — over-strict again, or silently dropping the

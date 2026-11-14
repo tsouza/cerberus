@@ -139,7 +139,7 @@ func expHistogramWindowTemporalityExpr(s schema.Metrics, windowFn string) chplan
 // out of — would underflow an unsigned subtraction into a colossal
 // positive count. It would also make ClickHouse infer a
 // Variant(Int64, UInt64) that no array aggregate accepts. This is the
-// same float domain classicBucketRowCumulativeExpr moves the classic
+// same float domain classicBucketRowEntriesExpr moves the classic
 // ladder into, for the same two reasons; Prometheus's native-histogram
 // buckets are float counts anyway.
 func expHistogramWindowFloatsExpr(contribs chplan.Expr) chplan.Expr {
