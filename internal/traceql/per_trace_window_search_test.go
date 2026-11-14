@@ -1,12 +1,13 @@
 package traceql
 
 import (
+	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
+	tempoql "github.com/tsouza/cerberus/internal/traceql/ast"
 )
 
 // leafWindow is the request-window bound one leaf Filter(Scan) of a lowered
@@ -139,14 +140,95 @@ func TestSearchPerTraceSubqueriesReadWidenedWindow(t *testing.T) {
 }
 
 // TestSearchPerTraceWindowZeroLookback pins the setting's zero: with no
-// maximum trace duration, a per-trace subquery reads the request window
-// itself.
+// maximum trace duration, every per-trace subquery of a lowered search reads
+// the request window itself, as the span rows do.
 func TestSearchPerTraceWindowZeroLookback(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelTraces()
 	s.MaxTraceDuration = 0
-	start, end := time.Unix(1782571392, 0).UTC(), time.Unix(1782573192, 0).UTC()
-	if got, want := perTraceWindow(start, end, s), andWindow(nil, start, end, s.TimestampColumn); !got.Equal(want) {
-		t.Fatalf("perTraceWindow with no lookback = %#v, want the request window %#v", got, want)
+	const searchLimit = 20
+	expr, err := tempoql.Parse(`{ rootName = name || traceDuration > 2s } && { kind = server }`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ctx := WithSearchWindow(WithSearchTraceLimit(context.Background(), searchLimit), winStart, winEnd)
+	plan, err := Lower(ctx, expr, s)
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	var leaves []leafWindow
+	collectLeafWindows(plan, false, s.TimestampColumn, &leaves)
+	var perTraceLeaves int
+	want := []int64{winStart.UnixNano(), winEnd.UnixNano()}
+	for i, leaf := range leaves {
+		if leaf.perTrace {
+			perTraceLeaves++
+		}
+		if !slices.Equal(leaf.instants, want) {
+			t.Errorf("leaf %d (per-trace %v) window instants %v, want %v", i, leaf.perTrace, leaf.instants, want)
+		}
+	}
+	if perTraceLeaves == 0 {
+		t.Fatal("no per-trace leaf; the query must exercise one")
+	}
+}
+
+// collectStructuralWindows records the [WindowStartNano, WindowEndNano] of
+// every StructuralJoin in n, split by whether it sits inside a trace-cohort
+// subquery (behind an Expr slot of a Filter or a TraceLookupFilter predicate).
+func collectStructuralWindows(n chplan.Node, inCohort bool, cohort, rows *[][2]int64) {
+	descend := func(e chplan.Expr) {
+		for _, in := range chplan.CohortSubqueries(e) {
+			collectStructuralWindows(in.Subquery, true, cohort, rows)
+		}
+	}
+	switch v := n.(type) {
+	case nil:
+		return
+	case *chplan.StructuralJoin:
+		out := rows
+		if inCohort {
+			out = cohort
+		}
+		*out = append(*out, [2]int64{v.WindowStartNano, v.WindowEndNano})
+	case *chplan.Filter:
+		descend(v.Predicate)
+	case *chplan.TraceLookupFilter:
+		descend(v.Predicate)
+	}
+	for _, c := range n.Children() {
+		collectStructuralWindows(c, inCohort, cohort, rows)
+	}
+}
+
+// TestSearchCohortStructuralClosureReadsWidenedWindow pins the per-trace
+// window on a structural closure's recursive arm: a closure inside a
+// spanset-aggregate operand's cohort is part of that per-trace subquery and
+// reads [start - L, end + L], while a closure on the span rows the search
+// matches reads [start, end].
+func TestSearchCohortStructuralClosureReadsWidenedWindow(t *testing.T) {
+	t.Parallel()
+	lookback := schema.DefaultOTelTraces().MaxTraceDuration
+	if lookback <= 0 {
+		t.Fatalf("default maximum trace duration %s: the two windows cannot be told apart", lookback)
+	}
+	const searchLimit = 20
+	plan := lowerSearchWindowed(t,
+		`({ span.a = "1" } >> { span.b = "2" } | count() > 1) || ({ span.c = "3" } >> { span.d = "4" })`,
+		searchLimit, winStart, winEnd)
+	var cohort, rows [][2]int64
+	collectStructuralWindows(plan, false, &cohort, &rows)
+	if len(cohort) == 0 || len(rows) == 0 {
+		t.Fatalf("%d cohort and %d row closures; the query must exercise both", len(cohort), len(rows))
+	}
+	for _, w := range cohort {
+		if want := [2]int64{winStart.Add(-lookback).UnixNano(), winEnd.Add(lookback).UnixNano()}; w != want {
+			t.Errorf("cohort closure window %v, want %v", w, want)
+		}
+	}
+	for _, w := range rows {
+		if want := [2]int64{winStart.UnixNano(), winEnd.UnixNano()}; w != want {
+			t.Errorf("row closure window %v, want %v", w, want)
+		}
 	}
 }

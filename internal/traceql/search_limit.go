@@ -245,10 +245,10 @@ func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string,
 // Filter/Scan of a compound search row source (`&&` / `||`, structural
 // >>/<</&>>, select(nestedSet*)) so it scans only [start, end] instead of full
 // retention, and the widened per-trace window (perTraceWindow) into every
-// per-trace subquery the row source carries. The plain-search shape is ALREADY windowed by stampSearchTraceLimit
-// (which wraps it in a SearchTraceLimit node), and this pass runs AFTER it and
-// does not descend SearchTraceLimit, so plain search stays byte-identical (no
-// double-fold).
+// per-trace subquery the row source carries. The plain-search shape is ALREADY
+// windowed by stampSearchTraceLimit (which wraps it in a SearchTraceLimit
+// node), and this pass runs AFTER it and does not descend SearchTraceLimit,
+// so plain search stays byte-identical (no double-fold).
 //
 // Gated on limit > 0 — the exact "this is /api/search, not a metrics pipeline"
 // discriminator (only the HTTP + gRPC search handlers set WithSearchTraceLimit;
@@ -594,6 +594,18 @@ func perTraceWindow(start, end time.Time, s schema.Traces) chplan.Expr {
 		end = end.Add(s.MaxTraceDuration)
 	}
 	return andWindow(nil, start, end, s.TimestampColumn)
+}
+
+// BoundPerTraceCohorts ANDs the per-trace window — the request window
+// widened by the maximum trace duration on both sides (perTraceWindow) — into
+// every per-trace cohort subquery pred carries, in place. It serves a caller
+// that lifts a lowered span predicate out of its plan and so runs outside the
+// search stamps: tag discovery's `q` narrowing filter. A zero start and end
+// leave pred unchanged.
+func BoundPerTraceCohorts(pred chplan.Expr, start, end time.Time, s schema.Traces) {
+	if window := perTraceWindow(start, end, s); window != nil {
+		chplan.PushLeafPredicateIntoCohort(pred, window)
+	}
 }
 
 // widenWindowNanos is perTraceWindow's widening over a nanosecond window, as

@@ -590,9 +590,11 @@ query window widened by that duration on both sides:
 `L` is the configured duration. The per-trace values are `rootName`,
 `rootServiceName` and `traceDuration`, in every form a query uses them — a
 comparison with a literal, with a span operand, and inside a spanset operation —
-plus the per-trace cohort behind a spanset aggregate and the non-root selection
-of `compare()`. The spans a query returns or counts still come from the query
-window itself.
+plus the per-trace cohort behind a spanset aggregate used as an operand of a
+spanset operation (`({ … } | count() > 1) && { … }`) and the non-root
+selection of `compare()`. The spans a query returns or counts still come from
+the query window itself, and so does a top-level spanset aggregate
+(`{ … } | count() > 1`), which aggregates the matched span rows.
 
 A trace no longer than `L` reads the same values reference Tempo reads, which
 measures the whole stored trace of every trace that overlaps the window: a root

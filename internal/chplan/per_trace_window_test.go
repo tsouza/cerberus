@@ -125,8 +125,13 @@ func TestPerTraceWindowBound(t *testing.T) {
 	if got := PerTraceWindowBound(rw, "Timestamp", perTraceTestLookback); got == nil || !got.Equal(want) {
 		t.Fatalf("PerTraceWindowBound = %#v, want %#v", got, want)
 	}
-	if got := PerTraceWindowBound(rw, "Timestamp", 0); got == nil || !got.Equal(RangeWindowInputBound(rw, "Timestamp")) {
-		t.Fatalf("PerTraceWindowBound with no lookback = %#v, want RangeWindowInputBound", got)
+	inputSpan := &Binary{
+		Op:    OpAnd,
+		Left:  TimestampBound(OpGt, start.Add(-offset-2*time.Minute), "Timestamp"),
+		Right: TimestampBound(OpLe, end.Add(-offset), "Timestamp"),
+	}
+	if got := PerTraceWindowBound(rw, "Timestamp", 0); got == nil || !got.Equal(inputSpan) {
+		t.Fatalf("PerTraceWindowBound with no lookback = %#v, want the input span %#v", got, inputSpan)
 	}
 	if got := PerTraceWindowBound(&RangeWindow{Step: time.Minute, End: end}, "Timestamp", perTraceTestLookback); got != nil {
 		t.Fatalf("no start: PerTraceWindowBound = %#v, want nil", got)

@@ -144,6 +144,10 @@ func (h *Handler) tagQueryFilter(ctx context.Context, route TagsRoute, raw strin
 	if literal, ok := pred.(*chplan.LitBool); ok && literal.V {
 		return nil, nil
 	}
+	// A trace-scoped intrinsic compared with a literal lowers to a membership
+	// subquery over the spans table; it reads the request window widened by
+	// the maximum trace duration, as the search path's per-trace subqueries do.
+	traceql_lower.BoundPerTraceCohorts(pred, start, end, h.Schema)
 	return spanPredicateFrag(pred)
 }
 

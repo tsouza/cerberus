@@ -204,7 +204,9 @@ func carriesPerTraceSubquery(n Node) bool {
 		case *TraceLookupFilter:
 			found = true
 		case *Filter:
-			found = len(CohortSubqueries(v.Predicate)) > 0
+			if len(CohortSubqueries(v.Predicate)) > 0 {
+				found = true
+			}
 		}
 		return !found
 	})

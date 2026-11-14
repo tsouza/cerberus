@@ -233,7 +233,8 @@ type exemptionEvidence struct {
 //     provokes in the engine as well as by a disagreement;
 //   - a reason whose obstacle is that the two engines answer DIFFERENTLY
 //     (reference-fetch-layer, reference-sharded-path-only,
-//     oracle-untyped-attributes, nondeterministic-selection,
+//     trace-longer-than-lookback, oracle-untyped-attributes,
+//     nondeterministic-selection,
 //     structured-metadata-unobservable's detected_level face) by an actual
 //     disagreement, plus the refusals that same mechanism produces first.
 var exemptionEvidenceByReason = map[string]exemptionEvidence{
@@ -257,8 +258,9 @@ var exemptionEvidenceByReason = map[string]exemptionEvidence{
 		disagreement: true,
 		refusals:     []refusalClass{refusalNarrowingSection, refusalUnrepresentableSpan},
 	},
-	ReasonEmittedSQLOnly:    {refusals: []refusalClass{refusalNoRoundTrip}},
-	ReasonDuplicateSpanSeed: {refusals: []refusalClass{refusalDuplicateSpanIdentity}},
+	ReasonTraceLongerThanLookback: {disagreement: true},
+	ReasonEmittedSQLOnly:          {refusals: []refusalClass{refusalNoRoundTrip}},
+	ReasonDuplicateSpanSeed:       {refusals: []refusalClass{refusalDuplicateSpanIdentity}},
 	ReasonOracleUntypedAttributes: {
 		disagreement: true, refusals: []refusalClass{refusalReferenceEvaluation},
 	},

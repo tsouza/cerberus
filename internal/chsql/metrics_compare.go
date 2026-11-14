@@ -728,10 +728,10 @@ func (e *emitter) compareWindowedScanBound(
 	// e.ctxSpansTable, so this fires uniformly on every emit path — no
 	// context-threading gate needed here.
 	// envelope is the trace_id_ts cohort envelope's scalar-binding body, set by
-	// the non-root-scoped arm below when the trace_id_ts lookup is enabled. It travels to compareBaseQuery on the
-	// bound, which declares it on the root-lookup relation itself — the same
-	// statement whose scan filter carries the bounds that read it (see
-	// bindRootLookupTraceIDTsEnvelope).
+	// the non-root-scoped arm below when the trace_id_ts lookup is enabled. It
+	// travels to compareBaseQuery on the bound, which declares it on the
+	// root-lookup relation itself — the same statement whose scan filter
+	// carries the bounds that read it (see bindRootLookupTraceIDTsEnvelope).
 	if bound != nil && m.RootLookup != nil {
 		// The seed must bound Inner by the SAME (Start-Offset-range, End-Offset]
 		// window the 's' leg's own scan uses (innerScanTsBoundsFrags above) —
@@ -758,9 +758,7 @@ func (e *emitter) compareWindowedScanBound(
 		case m.InnerRootScoped:
 			rootBound = conjoinExpr(tsBoundExprs(rootTS, r.Start.UnixNano()-offsetNS-rangeNS, r.End.UnixNano()-offsetNS))
 		default:
-			lookbackNS := m.PerTraceLookback.Nanoseconds()
-			widened := conjoinExpr(tsBoundExprs(rootTS,
-				r.Start.UnixNano()-offsetNS-rangeNS-lookbackNS, r.End.UnixNano()-offsetNS+lookbackNS))
+			widened := chplan.PerTraceWindowBound(r, rootTS, m.PerTraceLookback)
 			var envelopeLo, envelopeHi chplan.Expr
 			envelopeLo, envelopeHi, envelope = rootLookupTraceIDTsBounds(m, seed, rootTS)
 			rootBound = conjoinExpr(widened, conjoinExpr(envelopeLo, envelopeHi))

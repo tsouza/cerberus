@@ -263,7 +263,7 @@ const (
 	// decides the answer outright. Where the two disagree they disagree
 	// about what was READ, not about the query.
 	//
-	// Five shapes fall in this class:
+	// Four shapes fall in this class:
 	//
 	//   - a `search_limit:` that binds on the reference answer: one
 	//     smaller than the number of traces the reference names. Upstream
@@ -275,15 +275,6 @@ const (
 	//     difference. A `search_window:` is not in this class: the harness
 	//     models its fetch-layer half, handing the oracle every span of each
 	//     trace whose time range overlaps the window (selectTraces).
-	//
-	//   - a trace longer than the maximum trace duration
-	//     (schema.Traces.MaxTraceDuration), whose per-trace values —
-	//     rootName, rootServiceName, traceDuration — cerberus reads from
-	//     the request window widened by that setting on both sides.
-	//     Upstream's fetch layer reads the whole stored trace, so for a
-	//     root span or a trace edge beyond the widened window the two
-	//     answers differ about what was READ: cerberus clips the trace to
-	//     the setting, upstream does not.
 	//
 	//   - `{ !(<expr>) }` as the whole spanset filter, and a NOT operand
 	//     of a logical AND/OR wrapping a single comparison. Reference
@@ -331,6 +322,23 @@ const (
 	// both layers evaluate the same way. It requires a NAMED mechanism
 	// outside the pipeline that accounts for the difference.
 	ReasonReferenceFetchLayer = "reference-fetch-layer"
+
+	// ReasonTraceLongerThanLookback covers a TraceQL fixture whose seed holds
+	// a trace longer than the maximum trace duration
+	// (schema.Traces.MaxTraceDuration) and which pins cerberus's answer for
+	// it. Cerberus reads every per-trace value — rootName, rootServiceName,
+	// traceDuration — from the request window widened by that setting on
+	// both sides and clips the trace beyond it; the reference reads the
+	// stored trace whole. The two answers differ by that bound, which is
+	// cerberus's own documented contract (docs/operations.md, "Maximum trace
+	// duration"), not a gap in the oracle: the harness hands the oracle every
+	// span of each trace that overlaps the window, as the reference fetch
+	// layer reads it.
+	//
+	// It is proven only by an actual disagreement. A fixture under it whose
+	// trace fits the setting agrees with the reference, so the exemption
+	// goes stale and the fixture must be enrolled instead.
+	ReasonTraceLongerThanLookback = "trace-longer-than-lookback"
 
 	// ReasonEmittedSQLOnly covers a fixture that carries neither `seed:`
 	// nor `expected_rows:`. What it pins is the emitted SQL — that a
@@ -474,6 +482,7 @@ var parityExemptReasons = []string{
 	ReasonStructuredMetadataUnobservable,
 	ReasonReferenceShardedPathOnly,
 	ReasonReferenceFetchLayer,
+	ReasonTraceLongerThanLookback,
 	ReasonEmittedSQLOnly,
 	ReasonDuplicateSpanSeed,
 	ReasonOracleUntypedAttributes,

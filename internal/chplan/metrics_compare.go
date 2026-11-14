@@ -109,9 +109,10 @@ type MetricsCompare struct {
 	InnerRootScoped bool
 	// PerTraceLookback is how far beyond the wrapping RangeWindow's input
 	// span, on each side, a per-trace subquery under this node — the
-	// non-root-scoped RootLookup among them — reads the spans of its traces: the configured maximum trace duration
-	// (schema.Traces.MaxTraceDuration), stamped by the lowering. Zero reads
-	// the input span alone. See PerTraceWindowBound.
+	// non-root-scoped RootLookup among them — reads the spans of its traces:
+	// the configured maximum trace duration (schema.Traces.MaxTraceDuration),
+	// stamped by the lowering. Zero reads the input span alone. See
+	// PerTraceWindowBound.
 	PerTraceLookback time.Duration
 }
 

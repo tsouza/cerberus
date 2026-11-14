@@ -221,7 +221,7 @@ func TestEmitRangeWindowCompare_JoinScanPushdown(t *testing.T) {
 	// (tsBoundExprs) renders as fromUnixTimestamp64Nano(?) — the same
 	// parameterized shape the search lowering's tsBound uses — not the
 	// inlined parseDateTime64BestEffort(...) literal the 's' leg's lo/hi above use.
-	rSeededScan := "PREWHERE (`ParentSpanId` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND " +
+	rSeededScan := "PREWHERE (`ParentSpanId` = ?) WHERE (`Timestamp` > fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND " +
 		"`TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` " +
 		"WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)))))"
 	if !strings.Contains(sql, rSeededScan) {
@@ -516,10 +516,10 @@ func TestEmitRangeWindowCompare_NonRootTraceIDTsEnrichmentBound(t *testing.T) {
 		}
 	}
 	// The envelope narrows the widened input span, which the scan carries
-	// too: the trace_id_ts envelope is conjoined onto the bound #4037 widens,
+	// too: the trace_id_ts envelope is conjoined onto the widened bound,
 	// never in place of it.
 	for _, want := range []string{
-		"`Timestamp` >= fromUnixTimestamp64Nano(?)",
+		"`Timestamp` > fromUnixTimestamp64Nano(?)",
 		"`Timestamp` <= fromUnixTimestamp64Nano(?)",
 	} {
 		if !strings.Contains(prefix, want) {

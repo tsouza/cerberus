@@ -51,8 +51,8 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, Spa
   ["pay", {"__cerberus_parentSpanID": "0000000000000001", "__cerberus_spanID": "0000000000000003", "__cerberus_traceID": "d0000000000000000000000000000001"}, "2026-01-01T00:03:00Z", 1000000000]
 ]
 -- parity_exempt --
-reason: reference-fetch-layer
-detail: `{ rootName != name }` reads a trace whose root span starts 2h before `search_window:`, beyond the 1h maximum trace duration cerberus widens each per-trace lookup by; upstream's fetch layer reads the whole stored trace and resolves the rootName cerberus clips to empty
+reason: trace-longer-than-lookback
+detail: `{ rootName != name }` reads a trace whose root span starts 2h before `search_window:`, beyond the 1h maximum trace duration cerberus widens each per-trace lookup by; cerberus clips the trace and reads an empty rootName where the reference, reading the whole stored trace, resolves `checkout`
 -- args --
 [0] int64 = 1767225600000000000
 [1] int64 = 1767226200000000000
