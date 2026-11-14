@@ -121,7 +121,7 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, start, end time.Tim
 				WindowStartNano:    startNano,
 				WindowEndNano:      endNano,
 			}
-			v.Input = pushLeafPredicate(v.Input, gate)
+			v.Input = chplan.PushLeafPredicate(v.Input, gate)
 		}
 		return plan
 	default:
@@ -217,12 +217,12 @@ func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string)
 		v.Right = windowRecursiveScans(v.Right, startNano, endNano, tsCol)
 		return v
 	case *chplan.Filter:
-		// Same Expr-slot blind spot pushLeafPredicate documents: the trace-cohort
-		// subquery of a spanset-aggregate operand (`({A} >> {B} | count() > 1)`)
-		// can itself hold a structural closure, and RewriteChildren cannot reach a
-		// Node behind an Expr. Descend it explicitly; the input recurse below is
+		// Same Expr-slot blind spot chplan.PushLeafPredicate documents: the
+		// trace-cohort subquery of a spanset-aggregate operand
+		// (`({A} >> {B} | count() > 1)`) can itself hold a structural closure,
+		// and RewriteChildren cannot reach a Node behind an Expr. Descend it explicitly; the input recurse below is
 		// what the generic default would have done.
-		for _, in := range cohortSubqueries(v.Predicate) {
+		for _, in := range chplan.CohortSubqueries(v.Predicate) {
 			in.Subquery = windowRecursiveScans(in.Subquery, startNano, endNano, tsCol)
 		}
 		v.Input = windowRecursiveScans(v.Input, startNano, endNano, tsCol)
@@ -233,117 +233,6 @@ func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string)
 		})
 		return out
 	}
-}
-
-// pushLeafPredicate ANDs pred into every leaf Filter/Scan of a search row
-// source, descending the full node spine a TraceQL search plan can produce (the
-// union / structural / project / limit / nested-set / AGGREGATE spine over
-// Filter(Scan) / Scan leaves). A bare Scan is wrapped in a Filter; a Filter(Scan)
-// gets pred conjoined; every interior node recurses into all children via the
-// exhaustively-tested chplan.RewriteChildren. The pass is kept off the metrics
-// families NOT by node-type filtering but by its single gate: stampSearchWindow
-// (and the BoundedTraceScope caller) early-return when searchTraceLimit(ctx) <= 0,
-// which is exactly the metrics path — so this only ever runs on span search
-// plans, and an Aggregate-topped search (`| count() > N`) gets its leaf scan
-// windowed instead of silently scanning all retention (GAP-3).
-//
-// Two callers share it, both pushing an immutable shared Expr into the leaves
-// so every leaf emits identical SQL:
-//   - the #1109/#1110 BoundedTraceScope gate (`TraceId IN topN`), which bounds
-//     the structural closures (seeded via the #77 seed re-render of their leaf
-//     subtree) to the top-N traces; and
-//   - the #1109 stampSearchWindow fold (`Timestamp BETWEEN start AND end`),
-//     which bounds every compound/structural/nested-set search leaf to the
-//     request window instead of scanning full retention.
-//
-// The generic recurse descends NestedSetAnnotate.Input (the row source) so a
-// `select(nestedSet*)` compound search gets its leaves gated/windowed; the
-// numbering CTE the emitter synthesises from NestedSetAnnotate is NOT a chplan
-// child, so this leaf pass never reaches it — the sibling stampRecursiveScanWindow
-// pass windows that synthetic anchor/step scan directly instead. isRootSpanFilter
-// looks through a passthrough Project, so recursing Project.Input reaches the
-// re-projected bare-root arm.
-func pushLeafPredicate(n chplan.Node, pred chplan.Expr) chplan.Node {
-	switch v := n.(type) {
-	case *chplan.Scan:
-		// Leaf: wrap in a Filter carrying the predicate.
-		return &chplan.Filter{Input: v, Predicate: pred}
-	case *chplan.Filter:
-		// A spanset-aggregate operand carries its trace cohort in an
-		// InSubquery predicate (see spanset_operand.go) — a Node reachable
-		// only through an Expr slot, which RewriteChildren cannot see by
-		// construction (chplan/in_subquery.go). Descend it explicitly, or the
-		// cohort aggregation scans full retention behind an inert membership
-		// test: GAP-3, one level down.
-		pushLeafPredicateIntoCohort(v.Predicate, pred)
-		// A Filter directly on a Scan conjoins (one Filter); otherwise recurse.
-		if _, ok := v.Input.(*chplan.Scan); ok {
-			v.Predicate = conjoin(v.Predicate, pred)
-			return v
-		}
-		v.Input = pushLeafPredicate(v.Input, pred)
-		return v
-	case *chplan.TraceLookupFilter:
-		// Same Expr-slot blind spot as the Filter arm: a trace-scoped
-		// comparison against a literal, OR'd with a row comparison
-		// (`{ rootName = name || traceDuration > 1s }`), keeps its per-trace
-		// membership subquery in this predicate. The children — the row
-		// source and every lookup relation — take the generic recurse.
-		pushLeafPredicateIntoCohort(v.Predicate, pred)
-		out, _ := chplan.RewriteChildren(v, func(c chplan.Node) (chplan.Node, bool) {
-			return pushLeafPredicate(c, pred), true
-		})
-		return out
-	case *chplan.SearchTraceLimit:
-		// Already fully windowed: stampSearchTraceLimit creates this node and
-		// folds the window onto its plain-search leaves at
-		// lower.go:`plan = stampSearchTraceLimit(plan, searchTraceLimit(ctx), start, end, s)`,
-		// before lower.go:`plan = stampSearchWindow(plan, searchTraceLimit(ctx), start, end, s)`
-		// runs. Recursing here would double-fold the
-		// predicate (TestSearchWindow_PlainNotDoubleFolded). This is an explicit
-		// "already handled", not a silent drop — every OTHER node still recurses.
-		return n
-	default:
-		// Every interior node recurses into ALL its children via the
-		// exhaustively-tested generic rewrite, so no node type — Aggregate
-		// (a `| count() > N` search), joins, unions, or a future addition —
-		// can hit a silent default that drops the window onto an all-time
-		// scan (GAP-3). This pass only runs for searchTraceLimit(ctx) > 0
-		// (stampSearchWindow early-returns otherwise), i.e. only on span
-		// search plans, so every child it reaches is a span row source whose
-		// leaves correctly take the window.
-		out, _ := chplan.RewriteChildren(n, func(c chplan.Node) (chplan.Node, bool) {
-			return pushLeafPredicate(c, pred), true
-		})
-		return out
-	}
-}
-
-// pushLeafPredicateIntoCohort ANDs pred into the leaves of every trace-cohort
-// subquery predicate carries, so a spanset-aggregate operand's cohort
-// aggregation is bounded by the same window / top-N gate as the span rows it
-// selects.
-func pushLeafPredicateIntoCohort(predicate, pred chplan.Expr) {
-	for _, in := range cohortSubqueries(predicate) {
-		in.Subquery = pushLeafPredicate(in.Subquery, pred)
-	}
-}
-
-// cohortSubqueries collects every InSubquery reachable from e — the trace-cohort
-// membership test a spanset-aggregate operand carries (spanset_operand.go).
-// Both stamping walks recurse through the collected Subquery nodes because a
-// Node behind an Expr slot is invisible to chplan.RewriteChildren by
-// construction; chplan.InspectExpr is the maintained, exhaustive Expr walk, so
-// a cohort nested under any future Expr shape is still found.
-func cohortSubqueries(e chplan.Expr) []*chplan.InSubquery {
-	var out []*chplan.InSubquery
-	chplan.InspectExpr(e, func(x chplan.Expr) bool {
-		if in, ok := x.(*chplan.InSubquery); ok && in.Subquery != nil {
-			out = append(out, in)
-		}
-		return true
-	})
-	return out
 }
 
 // stampSearchWindow folds the /api/search request window into every leaf
@@ -379,7 +268,7 @@ func stampSearchWindow(plan chplan.Node, limit int64, start, end time.Time, s sc
 	if window == nil {
 		return plan
 	}
-	return pushLeafPredicate(plan, window)
+	return chplan.PushLeafPredicate(plan, window)
 }
 
 // inputGuaranteesRootInResult reports whether every trace n emits is
@@ -561,9 +450,9 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 		if window := andWindow(nil, start, end, s.TimestampColumn); window != nil {
 			bounded.Lookups = make([]chplan.Node, len(lookup.Lookups))
 			for i, l := range lookup.Lookups {
-				bounded.Lookups[i] = pushLeafPredicate(l, window)
+				bounded.Lookups[i] = chplan.PushLeafPredicate(l, window)
 			}
-			pushLeafPredicateIntoCohort(bounded.Predicate, window)
+			chplan.PushLeafPredicateIntoCohort(bounded.Predicate, window)
 		}
 		return &chplan.SearchTraceLimit{Input: &bounded, TraceLimit: limit}
 	}
@@ -599,7 +488,7 @@ func boundPlainSearchSource(plan chplan.Node, alsoRead chplan.Expr, start, end t
 	// Stamp it before the outer fold, using the same leaf push the
 	// spanset-aggregate cohort already goes through.
 	if window := andWindow(nil, start, end, s.TimestampColumn); window != nil {
-		pushLeafPredicateIntoCohort(pred, window)
+		chplan.PushLeafPredicateIntoCohort(pred, window)
 	}
 
 	// Fold the request window into the predicate so both the inner ranking
@@ -674,10 +563,10 @@ func plainSearchSource(plan chplan.Node) (scan *chplan.Scan, predicate chplan.Ex
 // and pred is nil, the result is nil (the caller emits a bare Scan).
 func andWindow(pred chplan.Expr, start, end time.Time, tsCol string) chplan.Expr {
 	if !start.IsZero() {
-		pred = conjoin(pred, tsBound(chplan.OpGe, start, tsCol))
+		pred = conjoin(pred, chplan.TimestampBound(chplan.OpGe, start, tsCol))
 	}
 	if !end.IsZero() {
-		pred = conjoin(pred, tsBound(chplan.OpLe, end, tsCol))
+		pred = conjoin(pred, chplan.TimestampBound(chplan.OpLe, end, tsCol))
 	}
 	return pred
 }
@@ -689,18 +578,4 @@ func conjoin(left, right chplan.Expr) chplan.Expr {
 		return right
 	}
 	return &chplan.Binary{Op: chplan.OpAnd, Left: left, Right: right}
-}
-
-// tsBound builds `<tsCol> <op> fromUnixTimestamp64Nano(<t.UnixNano()>)` — a
-// nanosecond-precision comparison against the DateTime64(9) timestamp column,
-// matching the precision the OTel-CH traces schema stores.
-func tsBound(op chplan.BinaryOp, t time.Time, tsCol string) chplan.Expr {
-	return &chplan.Binary{
-		Op:   op,
-		Left: &chplan.ColumnRef{Name: tsCol},
-		Right: &chplan.FuncCall{
-			Fn:   chplan.FnFromUnixNanos,
-			Args: []chplan.Expr{&chplan.LitInt{V: t.UnixNano()}},
-		},
-	}
 }

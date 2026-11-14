@@ -819,7 +819,7 @@ func EmitCompareRootLeg(ctx context.Context, r *chplan.RangeWindow) (string, []a
 	// so this leg is the one Emit's statement embeds rather than a near-miss
 	// rendered from an unprepared tree.
 	spansTable := spansTableFromCtx(ctx)
-	prepared := chplan.AttachInstantScanTimeBounds(r)
+	prepared := chplan.BoundMetricsPerTraceSubqueries(chplan.AttachInstantScanTimeBounds(r))
 	if berr := chplan.RequireSpansScansBounded(spansTable, prepared); berr != nil {
 		return fail(berr)
 	}

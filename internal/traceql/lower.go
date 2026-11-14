@@ -57,9 +57,9 @@ func Lower(ctx context.Context, expr *traceql.RootExpr, s schema.Traces) (chplan
 	// /api/metrics/query_range handler's RangeWindow wrap, never from these
 	// stamps — and its leaves must NOT take the request window even if the query
 	// is (mis)routed through /api/search with a limit. Gating here keeps the
-	// "only span plans reach pushLeafPredicate" invariant enforced rather than
-	// conventional, so the generic leaf recurse can never fold a window onto a
-	// metrics-pipeline leaf.
+	// "only span plans reach these stamps' chplan.PushLeafPredicate" invariant
+	// enforced rather than conventional, so the generic leaf recurse can never
+	// fold the request window onto a metrics-pipeline leaf.
 	if expr.MetricsPipeline == nil && expr.MetricsSecondStage == nil {
 		// Bound the nested-set numbering walk to the N traces /api/search will
 		// return, ranked within the request window (no-op unless the request set

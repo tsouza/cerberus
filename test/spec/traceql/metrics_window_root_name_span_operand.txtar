@@ -1,0 +1,53 @@
+# A metrics pipeline comparing rootName with a span operand reads each
+# trace's root from the spans inside the window the metric reads: the
+# RangeWindow input span (start - step, end], here (00:00:00, 00:02:00]. A
+# trace whose root span lies outside it has no root in the window and reads
+# an empty rootName, as /api/search reads it inside its request window.
+#
+#   trace ...01  root 'r' inside the window
+#     0001 root  'r' 00:00:30     matches
+#     0002       'r' 00:00:31     matches
+#     0003       'x' 00:00:32     no match
+#   trace ...02  root 'b' before the window: in-window rootName ''
+#     0010 root  'b' 23:59:50     outside the window
+#     0011       'b' 00:00:40     no match ('b' != '')
+#   trace ...03  root 'd' inside the window
+#     0020 root  'd' 00:01:30     matches
+#     0021       'd' 00:01:40     matches
+#
+# Two matches in each bucket. Read across full retention, trace ...02 would
+# resolve rootName 'b' and 0011 would match too.
+-- query.traceql --
+{ rootName = name } | count_over_time()
+-- metrics_window --
+1704067260 1704067320 60
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:30', 9), 1000000000, 'r'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:31', 9), 1000000000, 'r'),
+    ('a0000000000000000000000000000001', '0000000000000003', '0000000000000001', toDateTime64('2024-01-01 00:00:32', 9), 1000000000, 'x'),
+    ('a0000000000000000000000000000002', '0000000000000010', '',                 toDateTime64('2023-12-31 23:59:50', 9), 1000000000, 'b'),
+    ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:00:40', 9), 1000000000, 'b'),
+    ('a0000000000000000000000000000003', '0000000000000020', '',                 toDateTime64('2024-01-01 00:01:30', 9), 1000000000, 'd'),
+    ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:01:40', 9), 1000000000, 'd');
+-- expected_rows --
+[]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ rootName = name } | count_over_time()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

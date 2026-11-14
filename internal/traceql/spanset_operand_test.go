@@ -144,7 +144,7 @@ func TestSpansetAggregateOperandIsSpanGranular(t *testing.T) {
 // TestSpansetAggregateOperandCohortIsWindowed pins that the request
 // window reaches the cohort subquery's leaf scan. The cohort hangs off an
 // Expr slot (chplan.InSubquery), which chplan.RewriteChildren cannot see,
-// so without the explicit descent in pushLeafPredicate the aggregation
+// so without the explicit descent in chplan.PushLeafPredicate the aggregation
 // would scan full retention behind an inert membership test.
 func TestSpansetAggregateOperandCohortIsWindowed(t *testing.T) {
 	t.Parallel()
