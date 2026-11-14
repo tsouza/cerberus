@@ -355,7 +355,7 @@ func runDroppableRetry[T any](rep *rejectionReporter, ctx context.Context, open 
 		retryCtx, classified, ok := classify(ctx, err)
 		if !ok {
 			if rej, ok := analyzerMandatoryRejection(ctx, err); ok {
-				c.rejections.notify(rej)
+				rep.notify(rej)
 			}
 			return res, ctx, err
 		}
