@@ -357,9 +357,10 @@ func TestExpandMetadataMatchers_FanOutStaysChunked(t *testing.T) {
 // histogram base-name enumeration that classifies a bare pinned name must take
 // the grouped `HAVING max(TimeUnix) >= start` arm (served from the
 // max(TimeUnix) projections) rather than a DISTINCT over every histogram row in
-// the window, and it must still classify the names exactly as before: an
-// ordinary metric keeps its single matcher, a histogram base still expands to
-// its companions.
+// the window. Its one row-level WHERE window is the recheck restricted to the
+// names whose newest sample lies after end. It must still classify the names
+// exactly as before: an ordinary metric keeps its single matcher, a histogram
+// base still expands to its companions.
 func TestExpandMetadataMatchers_WindowEndingNowUsesGroupedEnumeration(t *testing.T) {
 	t.Parallel()
 
@@ -410,8 +411,15 @@ func TestExpandMetadataMatchers_WindowEndingNowUsesGroupedEnumeration(t *testing
 					t.Errorf("enumeration lacks %q — not the grouped projection-served arm: %s", want, enumeration)
 				}
 			}
-			if strings.Contains(enumeration, "WHERE") {
-				t.Errorf("enumeration carries a row-level WHERE window — full histogram scan: %s", enumeration)
+			// The recheck's WHERE window is the only one, and it is ANDed with
+			// the restriction to names whose newest sample lies after end.
+			const recheckRestriction = " AND `MetricName` GLOBAL IN (SELECT `MetricName` FROM `otel_metrics_histogram` " +
+				"GROUP BY `MetricName` HAVING NOT max(`TimeUnix`) <= "
+			if n := strings.Count(enumeration, " WHERE "); n != 1 {
+				t.Errorf("enumeration carries %d row-level WHERE windows, want only the restricted recheck: %s", n, enumeration)
+			}
+			if !strings.Contains(enumeration, recheckRestriction) {
+				t.Errorf("enumeration's WHERE window is not restricted to names newer than end — full histogram scan: %s", enumeration)
 			}
 			if !stringSlicesEqual(variants, tc.want) {
 				t.Fatalf("variants:\n got:  %v\n want: %v", variants, tc.want)

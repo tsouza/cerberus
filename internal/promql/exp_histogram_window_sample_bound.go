@@ -91,9 +91,12 @@ const (
 )
 
 // bytesPerGiB is the divisor [ExpHistogramWindowCostUnitsForMemory] reads
-// the cap in. internal/promql may not import internal/config
-// (.go-arch-lint.yml), so the constant is restated here rather than
-// shared.
+// the cap in, and the cap [ClassicBucketMergeEntriesForMemory] sizes against
+// when none is set: one GiB is also CERBERUS_CH_QUERY_MAX_MEMORY's shipped
+// default (config.DefaultCHQueryMaxMemory), which
+// TestClassicBucketMergeMaxEntries_DerivedFromCHQueryMaxMemory pins.
+// internal/promql may not import internal/config (.go-arch-lint.yml), so the
+// constant is restated here rather than shared.
 const bytesPerGiB int64 = 1 << 30
 
 // ExpHistogramWindowCostUnitsForMemory derives the samples-per-window cost
