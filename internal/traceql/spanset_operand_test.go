@@ -141,11 +141,13 @@ func TestSpansetAggregateOperandIsSpanGranular(t *testing.T) {
 	})
 }
 
-// TestSpansetAggregateOperandCohortIsWindowed pins that the request
-// window reaches the cohort subquery's leaf scan. The cohort hangs off an
-// Expr slot (chplan.InSubquery), which chplan.RewriteChildren cannot see,
-// so without the explicit descent in chplan.PushLeafPredicate the aggregation
-// would scan full retention behind an inert membership test.
+// TestSpansetAggregateOperandCohortIsWindowed pins that the per-trace
+// window — the request window widened by the maximum trace duration on both
+// sides — reaches the cohort subquery's leaf scan, and the unwidened request
+// window does not. The cohort hangs off an Expr slot (chplan.InSubquery),
+// which chplan.RewriteChildren cannot see, so without the explicit descent in
+// chplan.PushLeafWindow the aggregation would scan full retention behind an
+// inert membership test.
 func TestSpansetAggregateOperandCohortIsWindowed(t *testing.T) {
 	t.Parallel()
 
@@ -161,8 +163,12 @@ func TestSpansetAggregateOperandCohortIsWindowed(t *testing.T) {
 		t.Fatalf("plan is %T, want *chplan.SetOperation", plan)
 	}
 	cohort := semiJoinCohort(t, so.Left, s)
-	if got := countWindowBounds(cohort, s.TimestampColumn, start, end); got != 2 {
-		t.Fatalf("cohort carries %d window bounds, want 2 (start + end)", got)
+	widenedStart, widenedEnd := start.Add(-s.MaxTraceDuration), end.Add(s.MaxTraceDuration)
+	if got := countWindowBounds(cohort, s.TimestampColumn, widenedStart, widenedEnd); got != 2 {
+		t.Fatalf("cohort carries %d per-trace window bounds, want 2 (start - L + end + L)", got)
+	}
+	if got := countWindowBounds(cohort, s.TimestampColumn, start, end); got != 0 {
+		t.Fatalf("cohort carries %d request window bounds, want 0: a per-trace subquery reads the widened window", got)
 	}
 }
 

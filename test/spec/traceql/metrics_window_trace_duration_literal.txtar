@@ -1,18 +1,21 @@
 # A metrics pipeline comparing traceDuration with a literal keeps the traces
-# whose duration, measured from their spans inside the window the metric
-# reads, satisfies it: the membership subquery reads the RangeWindow input
-# span (start - step, end], here (00:00:00, 00:02:00], as /api/search reads
-# its request window.
+# whose duration satisfies it, measured from their spans inside the window the
+# metric reads widened by the maximum trace duration (1h) on both sides: the
+# membership subquery reads the RangeWindow input span (start - step, end],
+# here (00:00:00, 00:02:00], widened to (23:00:00, 01:02:00], as /api/search
+# measures the whole trace of every trace that overlaps its request window.
+# The span rows counted stay inside (00:00:00, 00:02:00].
 #
 #   trace ...01  inside the window, traceDuration 2s: both spans match
 #     0001 root  00:00:30 +2s
 #     0002       00:00:31 +0.5s
-#   trace ...02  straddles the lower edge; in-window traceDuration 0.5s
-#     0010       23:59:50 +1s     outside the window
-#     0011       00:00:40 +0.5s   no match
+#   trace ...02  straddles the lower edge, traceDuration 50.5s
+#     0010       23:59:50 +1s     outside the window: not counted
+#     0011       00:00:40 +0.5s   matches
 #
-# Two matches, in the (00:00:00, 00:01:00] bucket. Read across full
-# retention, trace ...02 would last 50.5s and 0011 would match too.
+# Three matches, in the (00:00:00, 00:01:00] bucket. Measured inside the
+# metric's own window alone, trace ...02 would last 0.5s and 0011 would not
+# match.
 -- query.traceql --
 { traceDuration > 1s } | count_over_time()
 -- metrics_window --
@@ -41,7 +44,7 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, Spa
     ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:00:40', 9), 500000000,  'c');
 -- expected_rows --
 [
-  ["2024-01-01T00:01:00Z", 2],
+  ["2024-01-01T00:01:00Z", 3],
   ["2024-01-01T00:02:00Z", 0]
 ]
 -- parity_exempt --
@@ -50,18 +53,18 @@ detail: `{ traceDuration > 1s } | count_over_time()` answers with a time series 
 -- args --
 [0] int64 = 1704067200000000000
 [1] int64 = 1704067320000000000
-[2] int64 = 1704067200000000000
-[3] int64 = 1704067320000000000
+[2] int64 = 1704063600000000000
+[3] int64 = 1704070920000000000
 [4] int64 = 1000000000
 -- args_optimized --
 [0] int64 = 1704067200000000000
 [1] int64 = 1704067320000000000
-[2] int64 = 1704067200000000000
-[3] int64 = 1704067320000000000
+[2] int64 = 1704063600000000000
+[3] int64 = 1704070920000000000
 [4] int64 = 1000000000
 -- chplan --
 RangeWindow func= range=1m0s step=1m0s ts=Timestamp start=2024-01-01T00:01:00Z end=2024-01-01T00:02:00Z
-  MetricsAggregate op=count_over_time valueAlias=Value
+  MetricsAggregate op=count_over_time valueAlias=Value perTraceLookback=1h0m0s
     Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_scoped_val > 1000000000) ; Project [TraceId AS TraceId, (_cerb_trace_end_ns - _cerb_trace_start_ns) AS _cerb_trace_scoped_val] ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnMin(FnToUnixNanos(Timestamp)) AS _cerb_trace_start_ns, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS _cerb_trace_end_ns] ; Scan(otel_traces)})
       Scan(otel_traces)
 -- settings --

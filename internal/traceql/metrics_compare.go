@@ -144,6 +144,10 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 		ValAlias:   compareValAlias,
 		ValueAlias: metricsValueAlias,
 		Inner:      prev,
+		// The compare({...}) selection's membership subqueries and the
+		// non-root-scoped root lookup read their traces' spans within the
+		// input span widened by the maximum trace duration.
+		PerTraceLookback: s.MaxTraceDuration,
 	}
 
 	// rootName / rootServiceName are trace-level columns in vparquet;

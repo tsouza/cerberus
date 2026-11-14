@@ -106,27 +106,137 @@ func TestRangeWindowInputBound(t *testing.T) {
 	}
 }
 
+// perTraceTestLookback is the PerTraceLookback the metrics nodes under test
+// carry: the maximum trace duration a per-trace subquery reads beyond the
+// RangeWindow input span.
+const perTraceTestLookback = time.Hour
+
+func TestPerTraceWindowBound(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	const offset = 5 * time.Minute
+	rw := &RangeWindow{Range: 2 * time.Minute, Step: time.Minute, Offset: offset, Start: start, End: end}
+	want := &Binary{
+		Op:    OpAnd,
+		Left:  TimestampBound(OpGt, start.Add(-offset-2*time.Minute-perTraceTestLookback), "Timestamp"),
+		Right: TimestampBound(OpLe, end.Add(-offset+perTraceTestLookback), "Timestamp"),
+	}
+	if got := PerTraceWindowBound(rw, "Timestamp", perTraceTestLookback); got == nil || !got.Equal(want) {
+		t.Fatalf("PerTraceWindowBound = %#v, want %#v", got, want)
+	}
+	inputSpan := &Binary{
+		Op:    OpAnd,
+		Left:  TimestampBound(OpGt, start.Add(-offset-2*time.Minute), "Timestamp"),
+		Right: TimestampBound(OpLe, end.Add(-offset), "Timestamp"),
+	}
+	if got := PerTraceWindowBound(rw, "Timestamp", 0); got == nil || !got.Equal(inputSpan) {
+		t.Fatalf("PerTraceWindowBound with no lookback = %#v, want the input span %#v", got, inputSpan)
+	}
+	if got := PerTraceWindowBound(&RangeWindow{Step: time.Minute, End: end}, "Timestamp", perTraceTestLookback); got != nil {
+		t.Fatalf("no start: PerTraceWindowBound = %#v, want nil", got)
+	}
+}
+
+// scanBound is one spans Scan of a bounded plan: the Timestamp bound its
+// enclosing Filter carries (nil when there is none), and whether the scan sits
+// inside a per-trace subquery — a lookup relation or a cohort subquery —
+// rather than in a plain row source.
+type scanBound struct {
+	bound    Expr
+	perTrace bool
+}
+
+// collectScanBounds records a scanBound for every Scan reachable from n,
+// through Expr slots too. A MetricsCompare's RootLookup is the compare
+// emitter's to bound, so it is not descended.
+func collectScanBounds(n Node, perTrace bool, tsCol string, out *[]scanBound) {
+	cohorts := func(e Expr) {
+		for _, in := range CohortSubqueries(e) {
+			collectScanBounds(in.Subquery, true, tsCol, out)
+		}
+	}
+	switch v := n.(type) {
+	case nil:
+		return
+	case *Scan:
+		*out = append(*out, scanBound{perTrace: perTrace})
+		return
+	case *Filter:
+		cohorts(v.Predicate)
+		if _, ok := v.Input.(*Scan); ok {
+			*out = append(*out, scanBound{bound: timestampBoundOf(v.Predicate, tsCol), perTrace: perTrace})
+			return
+		}
+		collectScanBounds(v.Input, perTrace, tsCol, out)
+		return
+	case *TraceLookupFilter:
+		cohorts(v.Predicate)
+		for _, lookup := range v.Lookups {
+			collectScanBounds(lookup, true, tsCol, out)
+		}
+		collectScanBounds(v.Input, perTrace, tsCol, out)
+		return
+	case *MetricsCompare:
+		cohorts(v.Selection)
+		collectScanBounds(v.Inner, perTrace, tsCol, out)
+		return
+	}
+	for _, c := range n.Children() {
+		collectScanBounds(c, perTrace, tsCol, out)
+	}
+}
+
+// timestampBoundOf rebuilds the `tsCol > … AND tsCol <= …` window pred
+// carries among its top-level conjuncts, or nil when it carries none. It
+// fails the caller's expectations, rather than picking one, when pred carries
+// the window twice: the same predicate rendered twice is a defect too.
+func timestampBoundOf(pred Expr, tsCol string) Expr {
+	var lower, upper []Expr
+	for _, c := range flattenConjuncts(pred) {
+		switch {
+		case isTsBound(c, OpGt, tsCol):
+			lower = append(lower, c)
+		case isTsBound(c, OpLe, tsCol):
+			upper = append(upper, c)
+		}
+	}
+	if len(lower) != 1 || len(upper) != 1 {
+		return nil
+	}
+	return &Binary{Op: OpAnd, Left: lower[0], Right: upper[0]}
+}
+
 // TestBoundMetricsPerTraceSubqueriesBoundsEveryPerTraceScan pins that every
-// spans scan behind a per-trace subquery — each lookup, each membership
-// subquery, and the plain row source each one filters — takes the RangeWindow
-// input bound, and that the input plan is left as it was.
+// spans scan behind a per-trace subquery — each lookup and each membership
+// subquery — takes the RangeWindow input bound widened by the metrics node's
+// PerTraceLookback, that the plain row source each one filters takes the
+// unwidened input bound exactly once, and that the input plan is left as it
+// was.
 func TestBoundMetricsPerTraceSubqueriesBoundsEveryPerTraceScan(t *testing.T) {
 	t.Parallel()
 	cases := map[string]func() Node{
-		"lookup": func() Node { return &MetricsAggregate{Inner: perTraceTestLookupFilter()} },
+		"lookup": func() Node {
+			return &MetricsAggregate{Inner: perTraceTestLookupFilter(), PerTraceLookback: perTraceTestLookback}
+		},
 		"membership": func() Node {
-			return &MetricsAggregate{Inner: &Filter{Input: perTraceTestScan(), Predicate: perTraceTestCohort()}}
+			return &MetricsAggregate{
+				Inner:            &Filter{Input: perTraceTestScan(), Predicate: perTraceTestCohort()},
+				PerTraceLookback: perTraceTestLookback,
+			}
 		},
 		// A membership conjunct below the join, as traceScopedFilter places
 		// one: the shared plain row source is bounded once, not twice.
 		"lookup_over_membership": func() Node {
 			lookup := perTraceTestLookupFilter()
 			lookup.Input = &Filter{Input: perTraceTestScan(), Predicate: perTraceTestCohort()}
-			return &MetricsAggregate{Inner: lookup}
+			return &MetricsAggregate{Inner: lookup, PerTraceLookback: perTraceTestLookback}
 		},
-		"histogram": func() Node { return &MetricsHistogramOverTime{Inner: perTraceTestLookupFilter()} },
+		"histogram": func() Node {
+			return &MetricsHistogramOverTime{Inner: perTraceTestLookupFilter(), PerTraceLookback: perTraceTestLookback}
+		},
 		"compare_selection": func() Node {
-			return &MetricsCompare{Inner: perTraceTestScan(), Selection: perTraceTestCohort()}
+			return &MetricsCompare{Inner: perTraceTestScan(), Selection: perTraceTestCohort(), PerTraceLookback: perTraceTestLookback}
 		},
 	}
 	for name, build := range cases {
@@ -142,26 +252,39 @@ func TestBoundMetricsPerTraceSubqueriesBoundsEveryPerTraceScan(t *testing.T) {
 			if !ok || bounded == rw {
 				t.Fatalf("BoundMetricsPerTraceSubqueries returned %T (same node: %v), want a new RangeWindow", out, out == Node(rw))
 			}
-			tsCol := "Timestamp"
-			window := findWindow(bounded.Input, tsCol)
-			if window == nil {
-				t.Fatal("no RangeWindow input bound in the bounded plan")
+			const tsCol = "Timestamp"
+			rows := RangeWindowInputBound(rw, tsCol)
+			perTrace := PerTraceWindowBound(rw, tsCol, perTraceTestLookback)
+			if rows.Equal(perTrace) {
+				t.Fatal("the widened bound equals the input bound; the case cannot tell them apart")
 			}
-			if !window.Equal(RangeWindowInputBound(rw, tsCol)) {
-				t.Fatalf("bound %#v, want RangeWindowInputBound %#v", window, RangeWindowInputBound(rw, tsCol))
-			}
-			n, total := boundedScans(perTraceSubtrees(bounded.Input), window)
-			if n != total || total == 0 {
-				t.Fatalf("%d of %d per-trace scans bounded", n, total)
-			}
-			// The bound reaches each Filter once: a second conjunct of it
-			// would be the same predicate rendered twice.
-			WalkDeep(bounded.Input, func(x Node) bool {
-				if f, ok := x.(*Filter); ok && countReferences(f.Predicate, window) > 1 {
-					t.Fatalf("Filter carries the bound %d times", countReferences(f.Predicate, window))
+			var scans []scanBound
+			collectScanBounds(bounded.Input, false, tsCol, &scans)
+			// A compare() Inner that carries no per-trace subquery of its
+			// own is the RangeWindow emitter's to bound, not this pass's.
+			_, isCompare := bounded.Input.(*MetricsCompare)
+			var perTraceScans, rowScans int
+			for i, sc := range scans {
+				if isCompare && !sc.perTrace {
+					continue
 				}
-				return true
-			})
+				want := rows
+				if sc.perTrace {
+					want = perTrace
+					perTraceScans++
+				} else {
+					rowScans++
+				}
+				if sc.bound == nil || !sc.bound.Equal(want) {
+					t.Fatalf("scan %d (per-trace %v) carries bound %#v, want %#v", i, sc.perTrace, sc.bound, want)
+				}
+			}
+			if perTraceScans == 0 {
+				t.Fatal("no per-trace scan reached")
+			}
+			if !isCompare && rowScans == 0 {
+				t.Fatal("no plain row source reached")
+			}
 		})
 	}
 }
@@ -175,7 +298,7 @@ func TestWindowPerTraceSubqueriesLeavesNonPlainSourcesAlone(t *testing.T) {
 	lookup := perTraceTestLookupFilter()
 	lookup.Input = &StructuralJoin{Left: perTraceTestScan(), Right: perTraceTestScan(), Op: StructuralDescendant}
 	window := RangeWindowInputBound(perTraceTestWindow(nil), "Timestamp")
-	out, ok := WindowPerTraceSubqueries(lookup, window).(*TraceLookupFilter)
+	out, ok := WindowPerTraceSubqueries(lookup, window, window).(*TraceLookupFilter)
 	if !ok {
 		t.Fatalf("WindowPerTraceSubqueries returned %T", out)
 	}
@@ -196,73 +319,21 @@ func TestWindowPerTraceSubqueriesNoOp(t *testing.T) {
 	t.Parallel()
 	window := RangeWindowInputBound(perTraceTestWindow(nil), "Timestamp")
 	plain := &Filter{Input: perTraceTestScan(), Predicate: &LitBool{V: true}}
-	if got := WindowPerTraceSubqueries(plain, window); got != Node(plain) {
+	if got := WindowPerTraceSubqueries(plain, window, window); got != Node(plain) {
 		t.Fatalf("plain filter rewritten to %T", got)
 	}
 	lookup := perTraceTestLookupFilter()
-	if got := WindowPerTraceSubqueries(lookup, nil); got != Node(lookup) {
-		t.Fatalf("nil window rewrote the lookup filter to %T", got)
+	if got := WindowPerTraceSubqueries(lookup, nil, window); got != Node(lookup) {
+		t.Fatalf("nil row window rewrote the lookup filter to %T", got)
+	}
+	if got := WindowPerTraceSubqueries(lookup, window, nil); got != Node(lookup) {
+		t.Fatalf("nil per-trace window rewrote the lookup filter to %T", got)
 	}
 	windowless := perTraceTestWindow(&MetricsAggregate{Inner: perTraceTestLookupFilter()})
 	windowless.Start = time.Time{}
 	if got := BoundMetricsPerTraceSubqueries(windowless); got != Node(windowless) {
 		t.Fatalf("windowless RangeWindow rewritten to %T", got)
 	}
-}
-
-// perTraceSubtrees collects, under one Project, every per-trace subquery of n
-// and the plain row source each filters — the scans the bound must reach.
-func perTraceSubtrees(n Node) Node {
-	var parts []Node
-	WalkDeep(n, func(x Node) bool {
-		switch v := x.(type) {
-		case *TraceLookupFilter:
-			parts = append(parts, v.Lookups...)
-			parts = append(parts, v.Input)
-		case *Filter:
-			if len(CohortSubqueries(v.Predicate)) > 0 {
-				parts = append(parts, v)
-				return false
-			}
-		case *MetricsCompare:
-			for _, in := range CohortSubqueries(v.Selection) {
-				parts = append(parts, in.Subquery)
-			}
-		}
-		return true
-	})
-	if len(parts) == 0 {
-		return nil
-	}
-	out := parts[0]
-	for _, p := range parts[1:] {
-		out = &CrossJoin{Left: out, Right: p}
-	}
-	return out
-}
-
-// findWindow returns the first `tsCol > … AND tsCol <= …` predicate conjunct
-// pair a Filter in n carries.
-func findWindow(n Node, tsCol string) Expr {
-	var found Expr
-	WalkDeep(n, func(x Node) bool {
-		if found != nil {
-			return false
-		}
-		f, ok := x.(*Filter)
-		if !ok {
-			return true
-		}
-		InspectExpr(f.Predicate, func(e Expr) bool {
-			b, ok := e.(*Binary)
-			if found == nil && ok && b.Op == OpAnd && isTsBound(b.Left, OpGt, tsCol) && isTsBound(b.Right, OpLe, tsCol) {
-				found = b
-			}
-			return found == nil
-		})
-		return found == nil
-	})
-	return found
 }
 
 func isTsBound(e Expr, op BinaryOp, tsCol string) bool {
@@ -272,15 +343,4 @@ func isTsBound(e Expr, op BinaryOp, tsCol string) bool {
 	}
 	col, ok := b.Left.(*ColumnRef)
 	return ok && col.Name == tsCol
-}
-
-func countReferences(e, target Expr) int {
-	n := 0
-	InspectExpr(e, func(x Expr) bool {
-		if x == target {
-			n++
-		}
-		return true
-	})
-	return n
 }

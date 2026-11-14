@@ -190,21 +190,23 @@ func stampRecursiveScanWindow(plan chplan.Node, start, end time.Time, s schema.T
 	if startNano == 0 && endNano == 0 {
 		return plan
 	}
-	return windowRecursiveScans(plan, startNano, endNano, s.TimestampColumn)
+	return windowRecursiveScans(plan, startNano, endNano, s.TimestampColumn, s.MaxTraceDuration)
 }
 
 // windowRecursiveScans is stampRecursiveScanWindow's in-place walk. It stamps
 // the window onto every NestedSetAnnotate / StructuralJoin it reaches and
 // recurses generically through every other node so deeply-nested closures are
-// covered.
-func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string) chplan.Node {
+// covered. A closure inside a trace-cohort subquery is part of that per-trace
+// subquery, so it takes the window widened by lookback on each set side, the
+// window the cohort's own leaves read (perTraceWindow).
+func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string, lookback time.Duration) chplan.Node {
 	switch v := n.(type) {
 	case *chplan.NestedSetAnnotate:
 		// TimestampColumn is already set by the select / group / aggregate
 		// lowering; only the window bounds need stamping here.
 		v.WindowStartNano = startNano
 		v.WindowEndNano = endNano
-		v.Input = windowRecursiveScans(v.Input, startNano, endNano, tsCol)
+		v.Input = windowRecursiveScans(v.Input, startNano, endNano, tsCol, lookback)
 		return v
 	case *chplan.StructuralJoin:
 		// Lowering leaves TimestampColumn "" on the structural join; setting it
@@ -213,8 +215,8 @@ func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string)
 		v.TimestampColumn = tsCol
 		v.WindowStartNano = startNano
 		v.WindowEndNano = endNano
-		v.Left = windowRecursiveScans(v.Left, startNano, endNano, tsCol)
-		v.Right = windowRecursiveScans(v.Right, startNano, endNano, tsCol)
+		v.Left = windowRecursiveScans(v.Left, startNano, endNano, tsCol, lookback)
+		v.Right = windowRecursiveScans(v.Right, startNano, endNano, tsCol, lookback)
 		return v
 	case *chplan.Filter:
 		// Same Expr-slot blind spot chplan.PushLeafPredicate documents: the
@@ -222,14 +224,18 @@ func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string)
 		// (`({A} >> {B} | count() > 1)`) can itself hold a structural closure,
 		// and RewriteChildren cannot reach a Node behind an Expr. Descend it explicitly; the input recurse below is
 		// what the generic default would have done.
+		// The cohort's window is already widened, so a cohort nested inside
+		// it reads the same window (zero further lookback).
+		const alreadyWidened time.Duration = 0
+		cohortStart, cohortEnd := widenWindowNanos(startNano, endNano, lookback)
 		for _, in := range chplan.CohortSubqueries(v.Predicate) {
-			in.Subquery = windowRecursiveScans(in.Subquery, startNano, endNano, tsCol)
+			in.Subquery = windowRecursiveScans(in.Subquery, cohortStart, cohortEnd, tsCol, alreadyWidened)
 		}
-		v.Input = windowRecursiveScans(v.Input, startNano, endNano, tsCol)
+		v.Input = windowRecursiveScans(v.Input, startNano, endNano, tsCol, lookback)
 		return v
 	default:
 		out, _ := chplan.RewriteChildren(n, func(c chplan.Node) (chplan.Node, bool) {
-			return windowRecursiveScans(c, startNano, endNano, tsCol), true
+			return windowRecursiveScans(c, startNano, endNano, tsCol, lookback), true
 		})
 		return out
 	}
@@ -238,10 +244,11 @@ func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string)
 // stampSearchWindow folds the /api/search request window into every leaf
 // Filter/Scan of a compound search row source (`&&` / `||`, structural
 // >>/<</&>>, select(nestedSet*)) so it scans only [start, end] instead of full
-// retention. The plain-search shape is ALREADY windowed by stampSearchTraceLimit
-// (which wraps it in a SearchTraceLimit node), and this pass runs AFTER it and
-// does not descend SearchTraceLimit, so plain search stays byte-identical (no
-// double-fold).
+// retention, and the widened per-trace window (perTraceWindow) into every
+// per-trace subquery the row source carries. The plain-search shape is ALREADY
+// windowed by stampSearchTraceLimit (which wraps it in a SearchTraceLimit
+// node), and this pass runs AFTER it and does not descend SearchTraceLimit,
+// so plain search stays byte-identical (no double-fold).
 //
 // Gated on limit > 0 — the exact "this is /api/search, not a metrics pipeline"
 // discriminator (only the HTTP + gRPC search handlers set WithSearchTraceLimit;
@@ -268,7 +275,7 @@ func stampSearchWindow(plan chplan.Node, limit int64, start, end time.Time, s sc
 	if window == nil {
 		return plan
 	}
-	return chplan.PushLeafPredicate(plan, window)
+	return chplan.PushLeafWindow(plan, window, perTraceWindow(start, end, s))
 }
 
 // inputGuaranteesRootInResult reports whether every trace n emits is
@@ -443,11 +450,11 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 		}
 		// The per-trace lookups and any membership subquery in the joined
 		// predicate scan the spans table too; stampSearchWindow does not
-		// enter the SearchTraceLimit built here, so they take the request
+		// enter the SearchTraceLimit built here, so they take the per-trace
 		// window now, as the plain shape's cohort does below.
 		bounded := *lookup
 		bounded.Input = input
-		if window := andWindow(nil, start, end, s.TimestampColumn); window != nil {
+		if window := perTraceWindow(start, end, s); window != nil {
 			bounded.Lookups = make([]chplan.Node, len(lookup.Lookups))
 			for i, l := range lookup.Lookups {
 				bounded.Lookups[i] = chplan.PushLeafPredicate(l, window)
@@ -486,8 +493,10 @@ func boundPlainSearchSource(plan chplan.Node, alsoRead chplan.Expr, start, end t
 	// unbounded-scan class.
 	//
 	// Stamp it before the outer fold, using the same leaf push the
-	// spanset-aggregate cohort already goes through.
-	if window := andWindow(nil, start, end, s.TimestampColumn); window != nil {
+	// spanset-aggregate cohort already goes through. The cohort reads its
+	// traces' spans in the per-trace window; the span rows below stay in the
+	// request window.
+	if window := perTraceWindow(start, end, s); window != nil {
 		chplan.PushLeafPredicateIntoCohort(pred, window)
 	}
 
@@ -569,6 +578,47 @@ func andWindow(pred chplan.Expr, start, end time.Time, tsCol string) chplan.Expr
 		pred = conjoin(pred, chplan.TimestampBound(chplan.OpLe, end, tsCol))
 	}
 	return pred
+}
+
+// perTraceWindow is the request window a per-trace subquery reads its traces'
+// spans in: [start - L, end + L], where L is s.MaxTraceDuration, the
+// configured maximum trace duration. A trace no longer than L that overlaps
+// [start, end] lies wholly inside it, so its root span and full extent
+// resolve even when they lie outside the request window. A zero start/end
+// contributes no bound, as in andWindow.
+func perTraceWindow(start, end time.Time, s schema.Traces) chplan.Expr {
+	if !start.IsZero() {
+		start = start.Add(-s.MaxTraceDuration)
+	}
+	if !end.IsZero() {
+		end = end.Add(s.MaxTraceDuration)
+	}
+	return andWindow(nil, start, end, s.TimestampColumn)
+}
+
+// BoundPerTraceCohorts ANDs the per-trace window — the request window
+// widened by the maximum trace duration on both sides (perTraceWindow) — into
+// every per-trace cohort subquery pred carries, in place. It serves a caller
+// that lifts a lowered span predicate out of its plan and so runs outside the
+// search stamps: tag discovery's `q` narrowing filter. A zero start and end
+// leave pred unchanged.
+func BoundPerTraceCohorts(pred chplan.Expr, start, end time.Time, s schema.Traces) {
+	if window := perTraceWindow(start, end, s); window != nil {
+		chplan.PushLeafPredicateIntoCohort(pred, window)
+	}
+}
+
+// widenWindowNanos is perTraceWindow's widening over a nanosecond window, as
+// the recursive-scan stamps carry it: each set (non-zero) side moves outward
+// by lookback, and an unset side stays 0.
+func widenWindowNanos(startNano, endNano int64, lookback time.Duration) (int64, int64) {
+	if startNano != 0 {
+		startNano -= lookback.Nanoseconds()
+	}
+	if endNano != 0 {
+		endNano += lookback.Nanoseconds()
+	}
+	return startNano, endNano
 }
 
 // conjoin ANDs two predicates, dropping a nil left arm so the first bound

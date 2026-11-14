@@ -1,5 +1,7 @@
 package schema
 
+import "time"
+
 // TagCatalogTable / TagCatalogScopeColumn / TagCatalogKeyColumn /
 // TagCatalogTopValuesStateColumn name the Tempo tag-catalog table
 // (cerberus issue #2771, the Tempo sibling of the loki_label_catalog
@@ -120,6 +122,19 @@ type Traces struct {
 	// probe (a layering violation). With the gate off, lowerTraceByID emits
 	// today's plain `TraceId = ?` filter unchanged.
 	TraceIDTsEnabled bool
+
+	// MaxTraceDuration is the longest trace the TraceQL head assumes. Every
+	// per-trace subquery — the lookup behind rootName / rootServiceName /
+	// traceDuration and a spanset-aggregate operand's trace cohort, on the
+	// search and the metrics path — reads its traces' spans inside the query
+	// window widened by MaxTraceDuration on both sides, so a trace no longer
+	// than it resolves its root identity and duration from the whole trace
+	// even when the root span or the trace's end lies outside the window. A
+	// longer trace is read only within the widened window. The spans a query
+	// matches or counts still come from the window itself. Zero widens
+	// nothing. Defaults to DefaultMaxTraceDuration; the operator sets it with
+	// CERBERUS_TEMPO_MAX_TRACE_DURATION (internal/config).
+	MaxTraceDuration time.Duration
 
 	// TraceIDColumn names the trace-id column. Upstream `traces_table.sql`
 	// types it `String`, not FixedString: the OTel ClickHouse Exporter
@@ -389,6 +404,13 @@ func DefaultMaterializedResourceAttributeColumns() map[string]string {
 	return materializedAttributeColumns(defaultMaterializedResourceAttributeKeys)
 }
 
+// DefaultMaxTraceDuration is Traces.MaxTraceDuration's default: one hour,
+// the default of Tempo's compaction_window (tempodb.Config.MaxCompactionRange)
+// — the window across which Tempo's compactor combines the parts of one trace
+// into the single trace row whose root identity and duration its search
+// reads.
+const DefaultMaxTraceDuration = time.Hour
+
 // DefaultOTelTraces returns the schema produced by the upstream OTel
 // ClickHouse Exporter for traces.
 func DefaultOTelTraces() Traces {
@@ -398,6 +420,7 @@ func DefaultOTelTraces() Traces {
 		TraceIDTsStartColumn:     "Start",
 		TraceIDTsEndColumn:       "End",
 		TraceIDTsEnabled:         false,
+		MaxTraceDuration:         DefaultMaxTraceDuration,
 		TraceIDColumn:            "TraceId",
 		SpanIDColumn:             "SpanId",
 		ParentSpanIDColumn:       "ParentSpanId",
