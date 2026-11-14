@@ -195,8 +195,8 @@ type Sentinel struct {
 	// PlanningPeer, when set, is the request parameters of the sentinel's
 	// planning peer: a query over the same data whose statement plans in a
 	// comparable time. The planning prong requires the time ClickHouse takes
-	// to plan the sentinel's dispatched statement (EXPLAIN PLAN of its text
-	// and settings, read back from system.query_log) to stay within a fixed
+	// to plan the sentinel's dispatched statement (EXPLAIN PIPELINE of its
+	// text and settings, read back from system.query_log) to stay within a fixed
 	// multiple of the time it takes to plan the peer's. It is the check for a
 	// mechanism whose cost is planning time, which peak memory does not
 	// measure; the ratio cancels the speed of the host running it.

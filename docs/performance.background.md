@@ -411,6 +411,32 @@ runs, while the ratio of two statements planned back to back on the same server
 does not. The 4x bound leaves room for the plural statement's extra levels and
 for noise, and it sits an order of magnitude below the regressed plan.
 
+The planning prong times `EXPLAIN PIPELINE`, not `EXPLAIN PLAN`. Under the
+analyzer, `EXPLAIN PLAN` of the plural statement spends its time rendering the
+plan, not building it. On the nightly data with the stamp withheld,
+`EXPLAIN PLAN` of the plural statement took 20–27 s on 26.8 and 25–26 s on
+26.9, and failed with `MEMORY_LIMIT_EXCEEDED` (it asked for 8 GiB against the
+1 GiB cap) on 26.8, 26.9 and 26.10, while the statement itself executed in
+about 5 s. `EXPLAIN PIPELINE` analyses the statement and builds both the plan
+and the pipeline without rendering the plan's steps; it took 0.7–1.8 s for the
+plural statement and 0.5–1.4 s for its peer on 26.8. Minimum-of-three ratios
+on the nightly data:
+
+| Server  | Stamp    | Plural  | Peer    | Ratio |
+| ------- | -------- | ------- | ------- | ----- |
+| 24.8    | applied  | 1.58 s  | 1.38 s  | 1.15x |
+| 25.9    | applied  | 1.50 s  | 1.35 s  | 1.11x |
+| 26.8    | withheld | 1.36 s  | 1.23 s  | 1.11x |
+| 26.8    | withheld | 0.68 s  | 0.46 s  | 1.46x |
+| 26.8    | applied  | 1.57 s  | 1.22 s  | 1.29x |
+| 26.9    | withheld | 1.70 s  | 1.25 s  | 1.35x |
+| 26.10   | withheld | 0.66 s  | 0.40 s  | 1.66x |
+
+With the analyzer hazard blind to the plural node on 25.9 (the self-check's
+`plural-native-quantile-analyzer-hazard-lost` mutation), `EXPLAIN PIPELINE` of
+the plural statement took 93.3 s against 1.48 s for the peer, 63x. The 4x bound
+still sits between the two by a wide margin under `EXPLAIN PIPELINE`.
+
 ## Why the native-histogram legacy-analyzer stamp stops at 26.8
 
 The engine stamps `enable_analyzer=0` on native-histogram plans because the new

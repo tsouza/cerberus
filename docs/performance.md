@@ -268,7 +268,7 @@ every PR) to *broad* (corpus-wide, nightly).
    the statement it dispatched, rebuilt from `system.query_log`, must contain
    on every repeat. A nightly sentinel whose mechanism is planning cost names
    a planning peer (`Sentinel.PlanningPeer`): a query over the same data whose
-   statement plans in a comparable time. `EXPLAIN PLAN` of the sentinel's
+   statement plans in a comparable time. `EXPLAIN PIPELINE` of the sentinel's
    dispatched statement, minimum of three samples interleaved with the
    peer's, must take at most `maxPlanningPeerRatio` (4x) the peer's minimum.
 

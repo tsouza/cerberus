@@ -109,8 +109,8 @@
 //      chplan.HistogramQuantilesNative node again. histogram_quantiles over
 //      rate() of a native histogram then reaches ClickHouse under the analyzer
 //      the native-histogram analyzer fix turns off, and its statement plans
-//      for about 110 s against about 2.5 s for the single-phi quantile over the
-//      same input. Peak memory does not rise, so the nightly
+//      (EXPLAIN PIPELINE) for about 93 s against about 1.5 s for the
+//      single-phi quantile over the same input on 25.9. Peak memory does not rise, so the nightly
 //      native_histogram_quantiles_rate sentinel goes red on its planning prong.
 //
 // Each mutation names the perf-nightly ClickHouse release lines whose
