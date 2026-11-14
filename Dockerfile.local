@@ -17,34 +17,6 @@
 ARG GO_IMAGE=golang:1.26
 FROM ${GO_IMAGE} AS build
 WORKDIR /src
-COPY go.mod go.sum ./
-# `go mod download` occasionally fails with a transient
-# `proxy.golang.org` HTTP/2 `stream error ... INTERNAL_ERROR; received
-# from peer` mid-stream (observed on compatibility/loki run
-# 26306912141 against `grpc-ecosystem/grpc-gateway/v2`). The Go module
-# resolver does not retry past that frame — it surfaces the error and
-# exits non-zero, taking the whole compat job with it. Wrap the fetch
-# in a bounded retry loop so a single bad TCP frame from the public
-# proxy can't take down a compat run, and mount BuildKit caches for
-# `/go/pkg/mod` + `/root/.cache/go-build` so warm runners skip the
-# fetch entirely on subsequent builds. The `,sharing=locked` is
-# required because the three compat harnesses (prom/loki/tempo) build
-# this same Dockerfile in parallel on the same runner via separate
-# `docker compose build` invocations.
-RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
-    --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
-    set -eu; \
-    for attempt in 1 2 3 4 5; do \
-        if go mod download; then \
-            break; \
-        fi; \
-        if [ "$attempt" = "5" ]; then \
-            echo "go mod download failed after 5 attempts" >&2; \
-            exit 1; \
-        fi; \
-        echo "go mod download attempt $attempt failed, retrying after backoff" >&2; \
-        sleep $(( attempt * 3 )); \
-    done
 COPY . .
 # GO_BUILD_TAGS injects extra `go build -tags` into the cerberus binary
 # only. It defaults to EMPTY, so a normal `docker build` (compose-smoke,
@@ -54,6 +26,34 @@ COPY . .
 # deterministic-sleep injection (see internal/chsql/chaos_sleep.go +
 # internal/api/prom/chaos_sleep.go). The seed binary never gets the tag.
 ARG GO_BUILD_TAGS=""
+# Fetch exactly the modules the two binaries below compile from: `go list
+# -deps` over the built packages downloads the modules that provide a package
+# in their build graph and nothing else. A bare `go mod download` would fetch
+# every requirement in go.mod, including the AGPL-3.0 modules the test-only
+# oracles use, onto the machine of anyone running the quickstart.
+# The `agpl-clean` gate (.github/scripts/agpl-clean.mjs) checks the licence of
+# every module the packages built here pull, and fails on a bare download.
+#
+# The fetch retries because `proxy.golang.org` occasionally drops an HTTP/2
+# stream mid-download (`stream error ... INTERNAL_ERROR; received from peer`)
+# and the Go module resolver surfaces that frame without retrying. The
+# BuildKit cache mounts keep `/go/pkg/mod` and the build cache warm across
+# builds; `,sharing=locked` is required because the three compat harnesses
+# (prom/loki/tempo) build this same Dockerfile in parallel on one runner.
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
+    set -eu; \
+    for attempt in 1 2 3 4 5; do \
+        if go list -tags "${GO_BUILD_TAGS}" -deps ./cmd/cerberus ./test/e2e/seed/cmd/seed >/dev/null; then \
+            break; \
+        fi; \
+        if [ "$attempt" = "5" ]; then \
+            echo "module fetch failed after 5 attempts" >&2; \
+            exit 1; \
+        fi; \
+        echo "module fetch attempt $attempt failed, retrying after backoff" >&2; \
+        sleep $(( attempt * 3 )); \
+    done
 RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
     CGO_ENABLED=0 go build -trimpath -tags "${GO_BUILD_TAGS}" -ldflags="-s -w -X main.Version=e2e" -o /out/cerberus ./cmd/cerberus && \

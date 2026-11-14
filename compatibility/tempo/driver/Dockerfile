@@ -29,12 +29,10 @@ FROM ${GO_IMAGE} AS build
 WORKDIR /src
 
 # Build context is the cerberus repo root (set in docker-compose.yml's
-# `context: ../..`). We copy go.mod / go.sum first so module download
-# caches across iterative builds, then the rest of the tree, then
-# compile only the driver package — fast and self-contained.
-COPY go.mod go.sum ./
-RUN go mod download
-
+# `context: ../..`). `go build` of the driver package fetches only the
+# modules in that package's build graph; a bare `go mod download` would
+# fetch every requirement in go.mod, the AGPL-3.0 test-only oracles' modules
+# included.
 COPY . .
 
 RUN CGO_ENABLED=0 go build \

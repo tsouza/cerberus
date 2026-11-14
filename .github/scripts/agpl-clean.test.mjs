@@ -1,5 +1,6 @@
 // Self-test for agpl-clean.mjs's classification and parsing. The live gate
-// runs in ci.yml's `agpl-clean` job over ./cmd/cerberus.
+// runs in ci.yml's `agpl-clean` job over ./cmd/cerberus and every package a
+// tracked Dockerfile builds.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -8,9 +9,11 @@ import { join } from 'node:path';
 
 import {
   classifyLicence,
+  isDockerfile,
   licenceSummary,
   parseModuleRows,
   readModuleLicence,
+  scanDockerfile,
 } from './agpl-clean.mjs';
 
 const AGPL_HEAD = '                    GNU AFFERO GENERAL PUBLIC LICENSE\n                       Version 3, 19 November 2007\n';
@@ -56,4 +59,43 @@ test('module rows parse, deduplicate and sort by path', () => {
     { path: 'b.example/m', version: 'v1.0.0', dir: '/mod/b' },
   ]);
   assert.throws(() => parseModuleRows('only-a-path\n'), /malformed/);
+});
+
+test('tracked Dockerfiles are recognised by name, their ignore files are not', () => {
+  assert.ok(isDockerfile('Dockerfile'));
+  assert.ok(isDockerfile('Dockerfile.local'));
+  assert.ok(isDockerfile('compatibility/tempo/driver/Dockerfile'));
+  assert.ok(!isDockerfile('compatibility/tempo/driver/Dockerfile.dockerignore'));
+  assert.ok(!isDockerfile('docs/Dockerfile-notes.md'));
+});
+
+test('a Dockerfile yields the packages its RUN steps build, across continuation lines', () => {
+  const text = [
+    'FROM golang AS build',
+    'COPY . .',
+    'RUN for a in 1 2; do \\',
+    '      if go list -tags "${TAGS}" -deps ./cmd/cerberus ./test/e2e/seed/cmd/seed >/dev/null; then break; fi; \\',
+    '    done',
+    'RUN CGO_ENABLED=0 go build \\',
+    '    -trimpath -o /out/driver \\',
+    '    ./compatibility/tempo/driver',
+    'RUN cp ./not/a/go/package /tmp',
+  ].join('\n');
+  assert.deepEqual(scanDockerfile(text), {
+    packages: ['./cmd/cerberus', './compatibility/tempo/driver', './test/e2e/seed/cmd/seed'],
+    bareDownload: false,
+  });
+});
+
+test('a bare go mod download is caught, with or without flags or a retry wrapper', () => {
+  for (const step of [
+    'RUN go mod download',
+    'RUN go mod download -x',
+    'RUN for a in 1 2; do \\\n  if go mod download; then break; fi; \\\n done',
+    'RUN go mod download && go build ./cmd/cerberus',
+  ]) {
+    assert.equal(scanDockerfile(`FROM golang\n${step}\n`).bareDownload, true, step);
+  }
+  assert.equal(scanDockerfile('FROM golang\nRUN go mod download github.com/x/y@v1.0.0\n').bareDownload, false);
+  assert.equal(scanDockerfile('FROM golang\n# a comment naming go mod download\n').bareDownload, false);
 });

@@ -11,11 +11,19 @@
 // (the agpl_oracle-tagged tests and the compatibility harnesses), never in
 // the shipped binary or its module graph.
 //
-// What it does: `go list -deps ./cmd/cerberus` gives the transitive package
-// closure the linker pulls into the binary (build deps only; test imports are
-// not included), and with it every module that provides one of those
-// packages — exactly the modules an empty-cache build of the binary
-// downloads. Each such module must carry a licence file at its root, and the
+// What it scans: ./cmd/cerberus, plus every Go package a tracked Dockerfile
+// builds — read from each Dockerfile's `go build` / `go list` / `go install`
+// RUN steps — because building one of those images (the quickstart's
+// `docker compose build` among them) fetches that package's modules onto the
+// builder's machine. A Dockerfile that runs a bare `go mod download` fetches
+// every requirement in go.mod, the AGPL test-only oracles' modules included,
+// so the gate fails on that too: an image build fetches its packages' graphs
+// and nothing more.
+//
+// What it does: `go list -deps <packages>` gives the transitive package
+// closure the linker pulls into those binaries (build deps only; test imports
+// are not included), and with it every module that provides one of those
+// packages — exactly the modules an empty-cache build downloads. Each such module must carry a licence file at its root, and the
 // gate FAILS if any of them is the GNU Affero GPL. The licence is read from
 // the module's own files, so a module is caught by what it is licensed under,
 // not by its name: an Apache file inside an AGPL module (Tempo's
@@ -23,7 +31,10 @@
 // roster and each module's licence are printed on every run.
 //
 // Env contract:
-//   AGPL_CLEAN_PACKAGE     the `go list` target. Default `./cmd/cerberus`.
+//   AGPL_CLEAN_PACKAGE     overrides the package set with one `go list`
+//                          target, and skips the Dockerfile scan. Default
+//                          unset: ./cmd/cerberus plus the Dockerfile-built
+//                          packages.
 //
 // Exit 0 = clean; exit 1 = an AGPL module is in the binary's graph, a module's licence cannot be read, or `go list` fails. Offenders are
 // always printed. This gate is ENFORCING and is a required status check on
@@ -34,6 +45,19 @@ import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { assertSafeArg, capture, error, notice, log } from './lib/gh.mjs';
+
+// The binary the release ships, scanned whatever the Dockerfiles say.
+export const BINARY_PACKAGE = './cmd/cerberus';
+// A tracked Dockerfile: `Dockerfile` or `Dockerfile.<variant>`, never its
+// `.dockerignore`.
+const DOCKERFILE = /(^|\/)Dockerfile(\.[^/]+)?$/;
+const DOCKERIGNORE = /\.dockerignore$/;
+// A Go command that fetches the modules of the packages it names.
+const GO_PACKAGE_COMMAND = /\bgo\s+(build|list|install)\b/;
+// A package argument: a relative path into the module.
+const PACKAGE_ARG = /^\.\/[\w./-]+$/;
+// `go mod download` with no module argument (flags aside): every requirement.
+const BARE_MOD_DOWNLOAD = /\bgo\s+mod\s+download((\s+-\S+)*)\s*($|;|&|\||\))/m;
 
 export const LICENCE_FILE = /^(licen[cs]e|copying)(\.(md|txt))?$/i;
 // The AGPL's own title line, upper case as the licence text prints it. Case
@@ -83,6 +107,39 @@ export function readModuleLicence(dir) {
   return { file, kind: classifyLicence(text), summary: licenceSummary(text) };
 }
 
+// isDockerfile — whether a tracked path is a Dockerfile.
+export function isDockerfile(file) {
+  return DOCKERFILE.test(file) && !DOCKERIGNORE.test(file);
+}
+
+// runSteps — the Dockerfile's RUN instructions, continuation lines joined.
+function runSteps(text) {
+  return text
+    .replace(/\\\r?\n/g, ' ')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => /^RUN\b/i.test(l));
+}
+
+// scanDockerfile — { packages, bareDownload } for one Dockerfile: the Go
+// package paths its RUN steps build, list or install, and whether any RUN step
+// is a bare `go mod download`.
+export function scanDockerfile(text) {
+  const packages = new Set();
+  let bareDownload = false;
+  for (const step of runSteps(text)) {
+    if (BARE_MOD_DOWNLOAD.test(step)) bareDownload = true;
+    for (const command of step.split(/;|&&|\|\|/)) {
+      if (!GO_PACKAGE_COMMAND.test(command)) continue;
+      for (const token of command.split(/\s+/)) {
+        const arg = token.replace(/^["']|["']$/g, '');
+        if (PACKAGE_ARG.test(arg)) packages.add(arg);
+      }
+    }
+  }
+  return { packages: [...packages].sort(), bareDownload };
+}
+
 function goList(args) {
   const res = capture('go', ['list', ...args]);
   if (res.status !== 0) {
@@ -94,13 +151,35 @@ function goList(args) {
 }
 
 function main() {
-  const target = assertSafeArg(process.env.AGPL_CLEAN_PACKAGE || './cmd/cerberus', 'AGPL_CLEAN_PACKAGE');
   const problems = [];
+  const override = process.env.AGPL_CLEAN_PACKAGE;
+  const targets = new Set([assertSafeArg(override || BINARY_PACKAGE, 'AGPL_CLEAN_PACKAGE')]);
+  if (!override) {
+    const listed = capture('git', ['ls-files']);
+    if (listed.status !== 0) {
+      error('agpl-clean: `git ls-files` failed', { title: 'agpl-clean' });
+      process.exit(1);
+    }
+    const dockerfiles = listed.stdout.split('\n').filter(isDockerfile);
+    if (dockerfiles.length === 0) problems.push('no tracked Dockerfile found; the image scan inspected nothing');
+    for (const file of dockerfiles) {
+      const { packages, bareDownload } = scanDockerfile(readFileSync(file, 'utf8'));
+      log(`${file}: builds ${packages.length === 0 ? '(no Go package)' : packages.join(' ')}`);
+      if (bareDownload) {
+        problems.push(
+          `${file} runs a bare \`go mod download\`, which fetches every go.mod requirement (the AGPL ` +
+            'test-only modules included); fetch with `go list -deps <the built packages>` or let `go build` fetch',
+        );
+      }
+      for (const pkg of packages) targets.add(assertSafeArg(pkg, file));
+    }
+  }
+  const target = [...targets].join(' ');
 
   const moduleTemplate =
     '{{with .Module}}{{if not .Main}}{{.Path}}\t{{.Version}}\t' +
     '{{if .Replace}}{{.Replace.Dir}}{{else}}{{.Dir}}{{end}}{{end}}{{end}}';
-  const modules = parseModuleRows(goList(['-deps', '-f', moduleTemplate, target]));
+  const modules = parseModuleRows(goList(['-deps', '-f', moduleTemplate, ...targets]));
   if (modules.length === 0) problems.push(`no third-party module found in ${target}'s graph; the scan inspected nothing`);
 
   log(`Modules in ${target}'s build graph (${modules.length}):`);
@@ -118,8 +197,8 @@ function main() {
 
   if (problems.length === 0) {
     notice(
-      `agpl-clean: ${target} builds from ${modules.length} third-party modules, none AGPL-licensed — ` +
-        'binary is licence-clean',
+      `agpl-clean: ${target} builds from ${modules.length} third-party modules, none AGPL-licensed, and no ` +
+        'Dockerfile fetches beyond its build graph',
       { title: 'agpl-clean' },
     );
     return;
@@ -128,7 +207,7 @@ function main() {
   for (const p of problems) log(`  ${p}`);
   error(
     `agpl-clean: ${target}'s build graph is not licence-clean (${problems.length} problem(s), listed above). ` +
-      'The Apache-2.0 cerberus binary must not compile AGPLv3 code or pull an AGPLv3 module.',
+      'Neither the Apache-2.0 binary nor an image build may compile AGPLv3 code or fetch an AGPLv3 module.',
     { title: 'agpl-clean' },
   );
   process.exit(1);
