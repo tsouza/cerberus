@@ -1,0 +1,45 @@
+# Two spanset-aggregate filters in a row: each one reads the spans of the
+# spansets the one before it passed, and the metrics function counts the
+# spans of the spansets both pass, as reference Tempo evaluates the chain.
+#
+#   trace ...01  2s at 00:00:30, 2s at 00:01:30  count 2, avg 2s     passes both
+#   trace ...02  1s at 00:00:40, 0.5s 00:00:50   count 2, avg 0.75s  dropped by avg
+#   trace ...03  5s at 00:01:40                  count 1             dropped by count
+#
+# One span in each bucket. avg(duration) over trace ...03 alone would pass,
+# so the second filter must read the first filter's spans.
+-- query.traceql --
+{ } | count() > 1 | avg(duration) > 1s | count_over_time()
+-- metrics_window --
+1704067260 1704067320 60
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '', toDateTime64('2024-01-01 00:00:30', 9), 2000000000, 'a'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:01:30', 9), 2000000000, 'a'),
+    ('a0000000000000000000000000000002', '0000000000000016', '', toDateTime64('2024-01-01 00:00:40', 9), 1000000000, 'b'),
+    ('a0000000000000000000000000000002', '0000000000000017', '0000000000000016', toDateTime64('2024-01-01 00:00:50', 9), 500000000, 'b'),
+    ('a0000000000000000000000000000003', '0000000000000032', '', toDateTime64('2024-01-01 00:01:40', 9), 5000000000, 'c');
+-- expected_rows --
+[
+  ["2024-01-01T00:01:00Z", 1],
+  ["2024-01-01T00:02:00Z", 1]
+]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ } | count() > 1 | avg(duration) > 1s | count_over_time()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

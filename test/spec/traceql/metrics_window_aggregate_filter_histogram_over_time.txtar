@@ -1,0 +1,49 @@
+# histogram_over_time() after a spanset-aggregate filter buckets the spans
+# of each passing spanset. Durations round up to a power of two
+# nanoseconds, read in seconds: 1s lands in 2^30 ns = 1.073741824s and 2s in
+# 2^31 ns = 2.147483648s.
+#
+#   trace ...01  1s at 00:00:30, 1s at 00:01:30  passes
+#   trace ...02  1s at 00:00:40                  dropped
+#   trace ...03  2s at 00:01:10, 2s at 00:01:20  passes
+#
+# First bucket: one span in 1.073741824 (and the empty 2.147483648 series).
+# Second bucket: one span in 1.073741824 and two in 2.147483648. Without the
+# filter the first bucket would count two spans in 1.073741824.
+-- query.traceql --
+{ } | count() > 1 | histogram_over_time(duration)
+-- metrics_window --
+1704067260 1704067320 60
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '', toDateTime64('2024-01-01 00:00:30', 9), 1000000000, 'a'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:01:30', 9), 1000000000, 'a'),
+    ('a0000000000000000000000000000002', '0000000000000016', '', toDateTime64('2024-01-01 00:00:40', 9), 1000000000, 'b'),
+    ('a0000000000000000000000000000003', '0000000000000032', '', toDateTime64('2024-01-01 00:01:10', 9), 2000000000, 'c'),
+    ('a0000000000000000000000000000003', '0000000000000033', '0000000000000032', toDateTime64('2024-01-01 00:01:20', 9), 2000000000, 'c');
+-- expected_rows --
+[
+  [1.073741824, "2024-01-01T00:01:00Z", 1],
+  [1.073741824, "2024-01-01T00:02:00Z", 1],
+  [2.147483648, "2024-01-01T00:01:00Z", 0],
+  [2.147483648, "2024-01-01T00:02:00Z", 2]
+]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ } | count() > 1 | histogram_over_time(duration)` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

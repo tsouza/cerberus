@@ -8,8 +8,11 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// spanGranularOperand re-expresses a spanset-aggregate sub-pipeline
-// operand (`({ … } | count() > 1)`) as the SPANS it stands for.
+// spanGranularOperand re-expresses a spanset aggregate (`{ … } |
+// count() > 1`) as the SPANS it stands for, wherever something downstream
+// reads spans: a spanset-operation operand (`({ … } | count() > 1) &&
+// (…)`), a following pipeline stage (lowerPipeline) and a metrics function
+// (`{ … } | count() > 1 | rate()`, lowerRoot).
 //
 // Reference Tempo evaluates a spanset aggregate as an annotation, not a
 // reduction: `Aggregate.evaluate` clones the per-trace spanset, sets
@@ -17,27 +20,28 @@ import (
 // then forwards that spanset unchanged when the comparison holds
 // (grafana/tempo pkg/traceql/ast_execute.go). Both set operators go on
 // to combine SPANS — `OpSpansetUnion` emits `uniqueSpans(lhs, rhs)` —
-// so an aggregate operand contributes the spans its inner selector
-// matched, restricted to the traces whose aggregate passed. It does not
-// contribute one row per trace.
+// a following stage evaluates over the same spanset, and the metrics
+// evaluator observes every span of each spanset the pipeline returns
+// (`MetricsEvaluator.Do`, pkg/traceql/engine_metrics.go). So an aggregate
+// contributes the spans its inner selector matched, restricted to the
+// traces whose aggregate passed. It does not contribute one row per trace.
 //
 // Cerberus's lowerAggregate collapses to one row per trace (GROUP BY
 // TraceId). That is right for a top-level `| count() > N` search, where
-// the /api/search envelope is per trace, and wrong inside a spanset
-// operation: the union emitter matches arms positionally (ClickHouse
-// rejects a column-count mismatch with code 258) and keys its identity
-// dedup on SpanId, which the grouped row shape does not carry. So an
-// aggregate arm beside a plain span arm is a user-reachable CH error
-// today, and an aggregate arm beside another aggregate arm resolves
-// `L.SpanId` against a relation that has none.
+// the /api/search envelope is per trace, and wrong for every span reader:
+// the union emitter matches arms positionally (ClickHouse rejects a
+// column-count mismatch with code 258) and keys its identity dedup on
+// SpanId, which the grouped row shape does not carry; a following
+// aggregate would count per-trace rows rather than spans; and a metrics
+// node needs the span timestamp the per-trace row no longer has.
 //
-// Un-collapsing restores both at once: the arm becomes the span rows
-// the aggregate consumed, semi-joined against the trace cohort the
-// aggregate admits. The rows are Tempo's spans and the column list is
-// the same `SELECT *` every plain arm exposes.
+// Un-collapsing restores all of them at once: the aggregate becomes the
+// span rows it consumed, semi-joined against the trace cohort it admits.
+// The rows are Tempo's spans and the column list is the same `SELECT *`
+// every plain selector exposes.
 //
-// Any other operand shape — a bare selector, a nested set operation, a
-// structural join, a `| by(…)` grouping — is returned untouched.
+// Any other shape — a bare selector, a nested set operation, a structural
+// join, a `| by(…)` grouping — is returned untouched.
 func spanGranularOperand(n chplan.Node, s schema.Traces) chplan.Node {
 	agg := traceGranularAggregate(n, s)
 	if agg == nil {

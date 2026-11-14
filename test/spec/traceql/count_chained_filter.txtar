@@ -1,0 +1,45 @@
+# A spanset-aggregate filter after another one reads the spans of the
+# spansets the first passed, not the first's per-trace row, as reference
+# Tempo evaluates every stage over the same spanset. Only trace ...01 has
+# more than two spans. The spans share one name and one (empty) parent so
+# the per-trace envelope's any() picks are deterministic.
+#
+#   trace ...01  3 spans  passes both
+#   trace ...02  2 spans  passes count() > 1, dropped by count() > 2
+#   trace ...03  1 span   dropped by count() > 1
+#
+# Counting the first filter's per-trace rows would read 1 for every trace
+# and drop all three.
+-- query.traceql --
+{ } | count() > 1 | count() > 2
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '', toDateTime64('2024-01-01 00:00:30', 9), 1000000000, 'a'),
+    ('a0000000000000000000000000000001', '0000000000000002', '', toDateTime64('2024-01-01 00:00:31', 9), 1000000000, 'a'),
+    ('a0000000000000000000000000000001', '0000000000000003', '', toDateTime64('2024-01-01 00:00:32', 9), 1000000000, 'a'),
+    ('a0000000000000000000000000000002', '0000000000000016', '', toDateTime64('2024-01-01 00:00:40', 9), 1000000000, 'b'),
+    ('a0000000000000000000000000000002', '0000000000000017', '', toDateTime64('2024-01-01 00:00:41', 9), 1000000000, 'b'),
+    ('a0000000000000000000000000000003', '0000000000000032', '', toDateTime64('2024-01-01 00:00:50', 9), 1000000000, 'c');
+-- expected_rows --
+[
+  ["a", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "3000000000", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2024-01-01T00:00:30Z", 3]
+]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ } | count() > 1 | count() > 2` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares
