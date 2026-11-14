@@ -46,10 +46,21 @@
 // changes). This is unavoidable: `.Release.IsUpgrade` reflects Helm's action
 // (install vs. upgrade) applied to a release Helm's storage backend already
 // knows about, and no flag fakes that.
+//
+// `helm install` returns success once the release's resources exist, even
+// when its final write of the release record (pending-install -> deployed)
+// fails: Helm only logs that failure at debug level. An upgrade of a release
+// whose record still reads pending-install is refused with "another
+// operation (install/upgrade/rollback) is in progress", so the throwaway
+// release is polled until its record reads deployed (RELEASE_SETTLE_TIMEOUT_MS)
+// before the upgrade runs, and a release whose record never settles is
+// replaced by a fresh one, up to THROWAWAY_INSTALL_ATTEMPTS installs.
 // Exit 1 on any failed assertion, 0 when all pass.
 
 import { execFileSync } from 'node:child_process'
-import { error as ghError, notice as ghNotice } from './lib/gh.mjs'
+import process from 'node:process'
+import { pathToFileURL } from 'node:url'
+import { error as ghError, notice as ghNotice, warning as ghWarning } from './lib/gh.mjs'
 
 const CHART_DIR = process.env.CHART_DIR || 'deploy/helm/cerberus'
 const NAMESPACE = process.env.NAMESPACE || 'default'
@@ -78,105 +89,157 @@ function notesFor(setArgs) {
   return extractNotes(out, `helm install --dry-run (args: ${setArgs.join(' ')})`)
 }
 
-function notesForUpgrade(setArgs) {
-  const relName = `notes-upg-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
-  execFileSync('helm', ['install', relName, CHART_DIR, '--namespace', NAMESPACE, '--wait=false'], {
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-  })
+// RELEASE_SETTLE_TIMEOUT_MS bounds how long the throwaway release's record
+// may read anything but deployed after `helm install` returned.
+export const RELEASE_SETTLE_TIMEOUT_MS = 60_000
+
+// RELEASE_POLL_INTERVAL_MS is the pause between two reads of that record.
+export const RELEASE_POLL_INTERVAL_MS = 1_000
+
+// THROWAWAY_INSTALL_ATTEMPTS is how many throwaway releases are installed
+// before the upgrade scenario gives up on getting one whose record settles.
+export const THROWAWAY_INSTALL_ATTEMPTS = 2
+
+// DEPLOYED is the release status `helm upgrade` accepts as the last release.
+const DEPLOYED = 'deployed'
+
+function runHelm(args) {
+  return execFileSync('helm', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+// releaseStatus reads the status Helm's storage records for relName.
+function releaseStatus(helm, relName) {
+  return JSON.parse(helm(['status', relName, '--namespace', NAMESPACE, '-o', 'json'])).info.status
+}
+
+// awaitDeployed polls relName's recorded status until it reads deployed or
+// timeoutMs passes, and returns the last status read.
+export function awaitDeployed(relName, { helm = runHelm, sleep = sleepSync, now = Date.now, timeoutMs = RELEASE_SETTLE_TIMEOUT_MS, pollMs = RELEASE_POLL_INTERVAL_MS } = {}) {
+  const deadline = now() + timeoutMs
+  for (;;) {
+    const status = releaseStatus(helm, relName)
+    if (status === DEPLOYED || now() >= deadline) return status
+    sleep(pollMs)
+  }
+}
+
+function uninstall(helm, relName) {
   try {
-    const out = execFileSync(
-      'helm',
-      ['upgrade', relName, CHART_DIR, '--dry-run', '--namespace', NAMESPACE, ...setArgs],
-      { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
-    )
-    return extractNotes(out, `helm upgrade --dry-run (args: ${setArgs.join(' ')})`)
-  } finally {
+    helm(['uninstall', relName, '--namespace', NAMESPACE, '--wait=false'])
+  } catch {
+    // best-effort cleanup; a leaked throwaway release in a throwaway/e2e
+    // cluster is harmless and the cluster is torn down with the job anyway.
+  }
+}
+
+// notesForUpgrade renders NOTES for `helm upgrade --dry-run` with setArgs
+// against a real throwaway release whose record reads deployed.
+export function notesForUpgrade(setArgs, opts = {}) {
+  const { helm = runHelm, attempts = THROWAWAY_INSTALL_ATTEMPTS } = opts
+  for (let attempt = 1; ; attempt++) {
+    const relName = `notes-upg-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
+    helm(['install', relName, CHART_DIR, '--namespace', NAMESPACE, '--wait=false'])
     try {
-      execFileSync('helm', ['uninstall', relName, '--namespace', NAMESPACE, '--wait=false'], { encoding: 'utf8' })
-    } catch {
-      // best-effort cleanup; a leaked throwaway release in a throwaway/e2e
-      // cluster is harmless and the cluster is torn down with the job anyway.
+      const status = awaitDeployed(relName, opts)
+      if (status !== DEPLOYED) {
+        const message = `throwaway release ${relName}'s record still reads ${status}, not ${DEPLOYED}, ` +
+          `after helm install returned (attempt ${attempt} of ${attempts})`
+        if (attempt >= attempts) throw new Error(message)
+        ghWarning(`${message}; installing a fresh one`)
+        continue
+      }
+      const out = helm(['upgrade', relName, CHART_DIR, '--dry-run', '--namespace', NAMESPACE, ...setArgs])
+      return extractNotes(out, `helm upgrade --dry-run (args: ${setArgs.join(' ')})`)
+    } finally {
+      uninstall(helm, relName)
     }
   }
 }
 
-let ok = true
-function check(cond, msg) {
-  if (cond) {
-    ghNotice(`PASS: ${msg}`)
-  } else {
-    ghError(`FAIL: ${msg}`)
-    ok = false
+function main() {
+  let ok = true
+  function check(cond, msg) {
+    if (cond) {
+      ghNotice(`PASS: ${msg}`)
+    } else {
+      ghError(`FAIL: ${msg}`)
+      ok = false
+    }
   }
+
+  const WARNING_NEEDLE = 'WARNING: clickhouse.bundled.hotVolume.enabled is true'
+  const MULTIPLIER_NEEDLE = 'MULTIPLIES by clickhouse.bundled.replicas'
+
+  // --- 1 + 2. hotVolume on, no dedicated persistence: base warning, and the
+  // replica-count multiplier ONLY once replicas > 1. ---
+  {
+    const single = notesFor([...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=true'])
+    check(single.includes(WARNING_NEEDLE), 'hotVolume enabled + no dedicated persistence: capacity warning renders')
+    check(single.includes('persistence.size'), 'capacity warning names persistence.size')
+    check(!single.includes(MULTIPLIER_NEEDLE), 'replicas=1 (default): no replica-count multiplier line')
+
+    const multi = notesFor([
+      ...BUNDLED,
+      '--set', 'clickhouse.bundled.hotVolume.enabled=true',
+      '--set', 'clickhouse.bundled.replicas=3',
+    ])
+    check(multi.includes(WARNING_NEEDLE), 'replicas=3: base capacity warning still renders')
+    check(multi.includes(MULTIPLIER_NEEDLE), 'replicas=3: replica-count multiplier line renders, naming the count')
+    check(multi.includes('(3)'), 'replica-count multiplier line names the actual replica count')
+  }
+
+  // --- 3. Dedicated hot-volume persistence: no capacity warning. ---
+  {
+    const dedicated = notesFor([
+      ...BUNDLED,
+      '--set', 'clickhouse.bundled.hotVolume.enabled=true',
+      '--set', 'clickhouse.bundled.hotVolume.persistence.enabled=true',
+    ])
+    check(!dedicated.includes(WARNING_NEEDLE), 'hotVolume.persistence.enabled: no capacity warning (dedicated PVC)')
+  }
+
+  // --- 4. hotVolume disabled entirely: no capacity warning. hotVolume.enabled
+  // defaults to true since #3075 (hot-cold is the chart's default storage
+  // mode), so this scenario needs an EXPLICIT false, not the bare default. ---
+  {
+    const off = notesFor([...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=false'])
+    check(!off.includes(WARNING_NEEDLE), 'hotVolume disabled: no capacity warning')
+  }
+
+  // --- 5. Upgrade hazard: the hot-cold-default warning fires ONLY on an
+  // upgrade (never a fresh install) of a bundled release resolving to
+  // hot-cold, and never fires for object-store/hot-only modes. ---
+  {
+    const UPGRADE_WARNING_NEEDLE = 'WARNING — UPGRADE:';
+
+    const freshHotCold = notesFor([...BUNDLED]);
+    check(!freshHotCold.includes(UPGRADE_WARNING_NEEDLE), 'fresh install (hot-cold, bare default): no upgrade-hazard warning');
+
+    const upgradeHotCold = notesForUpgrade([...BUNDLED]);
+    check(upgradeHotCold.includes(UPGRADE_WARNING_NEEDLE), 'upgrade + hot-cold (bare default): upgrade-hazard warning renders');
+    check(upgradeHotCold.includes('hotVolume.enabled=false'), 'upgrade-hazard warning names the fix (hotVolume.enabled=false)');
+
+    const upgradeObjectStore = notesForUpgrade([...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=false']);
+    check(!upgradeObjectStore.includes(UPGRADE_WARNING_NEEDLE), 'upgrade + explicit object-store mode: no upgrade-hazard warning (already pinned)');
+
+    const upgradeHotOnly = notesForUpgrade([
+      ...BUNDLED,
+      '--set', 'clickhouse.bundled.objectStorage.enabled=false',
+      '--set', 'schema.ttl=30d',
+    ]);
+    check(!upgradeHotOnly.includes(UPGRADE_WARNING_NEEDLE), 'upgrade + hot-only mode: no upgrade-hazard warning (not the hot-cold default)');
+  }
+
+  if (!ok) {
+    ghError('chart-notes-assert FAILED')
+    process.exit(1)
+  }
+  ghNotice('chart-notes-assert: all assertions passed')
+  process.exit(0)
 }
 
-const WARNING_NEEDLE = 'WARNING: clickhouse.bundled.hotVolume.enabled is true'
-const MULTIPLIER_NEEDLE = 'MULTIPLIES by clickhouse.bundled.replicas'
-
-// --- 1 + 2. hotVolume on, no dedicated persistence: base warning, and the
-// replica-count multiplier ONLY once replicas > 1. ---
-{
-  const single = notesFor([...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=true'])
-  check(single.includes(WARNING_NEEDLE), 'hotVolume enabled + no dedicated persistence: capacity warning renders')
-  check(single.includes('persistence.size'), 'capacity warning names persistence.size')
-  check(!single.includes(MULTIPLIER_NEEDLE), 'replicas=1 (default): no replica-count multiplier line')
-
-  const multi = notesFor([
-    ...BUNDLED,
-    '--set', 'clickhouse.bundled.hotVolume.enabled=true',
-    '--set', 'clickhouse.bundled.replicas=3',
-  ])
-  check(multi.includes(WARNING_NEEDLE), 'replicas=3: base capacity warning still renders')
-  check(multi.includes(MULTIPLIER_NEEDLE), 'replicas=3: replica-count multiplier line renders, naming the count')
-  check(multi.includes('(3)'), 'replica-count multiplier line names the actual replica count')
-}
-
-// --- 3. Dedicated hot-volume persistence: no capacity warning. ---
-{
-  const dedicated = notesFor([
-    ...BUNDLED,
-    '--set', 'clickhouse.bundled.hotVolume.enabled=true',
-    '--set', 'clickhouse.bundled.hotVolume.persistence.enabled=true',
-  ])
-  check(!dedicated.includes(WARNING_NEEDLE), 'hotVolume.persistence.enabled: no capacity warning (dedicated PVC)')
-}
-
-// --- 4. hotVolume disabled entirely: no capacity warning. hotVolume.enabled
-// defaults to true since #3075 (hot-cold is the chart's default storage
-// mode), so this scenario needs an EXPLICIT false, not the bare default. ---
-{
-  const off = notesFor([...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=false'])
-  check(!off.includes(WARNING_NEEDLE), 'hotVolume disabled: no capacity warning')
-}
-
-// --- 5. Upgrade hazard: the hot-cold-default warning fires ONLY on an
-// upgrade (never a fresh install) of a bundled release resolving to
-// hot-cold, and never fires for object-store/hot-only modes. ---
-{
-  const UPGRADE_WARNING_NEEDLE = 'WARNING — UPGRADE:';
-
-  const freshHotCold = notesFor([...BUNDLED]);
-  check(!freshHotCold.includes(UPGRADE_WARNING_NEEDLE), 'fresh install (hot-cold, bare default): no upgrade-hazard warning');
-
-  const upgradeHotCold = notesForUpgrade([...BUNDLED]);
-  check(upgradeHotCold.includes(UPGRADE_WARNING_NEEDLE), 'upgrade + hot-cold (bare default): upgrade-hazard warning renders');
-  check(upgradeHotCold.includes('hotVolume.enabled=false'), 'upgrade-hazard warning names the fix (hotVolume.enabled=false)');
-
-  const upgradeObjectStore = notesForUpgrade([...BUNDLED, '--set', 'clickhouse.bundled.hotVolume.enabled=false']);
-  check(!upgradeObjectStore.includes(UPGRADE_WARNING_NEEDLE), 'upgrade + explicit object-store mode: no upgrade-hazard warning (already pinned)');
-
-  const upgradeHotOnly = notesForUpgrade([
-    ...BUNDLED,
-    '--set', 'clickhouse.bundled.objectStorage.enabled=false',
-    '--set', 'schema.ttl=30d',
-  ]);
-  check(!upgradeHotOnly.includes(UPGRADE_WARNING_NEEDLE), 'upgrade + hot-only mode: no upgrade-hazard warning (not the hot-cold default)');
-}
-
-if (!ok) {
-  ghError('chart-notes-assert FAILED')
-  process.exit(1)
-}
-ghNotice('chart-notes-assert: all assertions passed')
-process.exit(0)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main()
