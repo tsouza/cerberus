@@ -37,7 +37,7 @@ CREATE TABLE otel_traces (
     SpanKind String DEFAULT '',
     ScopeName String DEFAULT '',
     ScopeVersion String DEFAULT ''
-) ENGINE = Memory;
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
 INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName) VALUES
     ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:30', 9), 1000000000, 'r'),
     ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:31', 9), 1000000000, 'r'),
