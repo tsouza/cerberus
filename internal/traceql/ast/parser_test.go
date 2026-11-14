@@ -540,6 +540,69 @@ func TestParseRejections(t *testing.T) {
 	}
 }
 
+// TestParseRejectsPipeAfterWrappedPipeline pins that a parenthesised
+// pipeline cannot be followed by `|`, at the top level or inside another
+// pair of parentheses, with the reference parser's own message and column.
+// A parenthesised pipeline is one whose parentheses hold a `|` or a
+// non-spanset stage (a scalar filter, `by(...)`, `select(...)`), alone or
+// as a spanset-operation operand at any depth.
+func TestParseRejectsPipeAfterWrappedPipeline(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ query, want string }{
+		{`({ } | count() > 1) | rate()`, "parse error at line 1, col 21: syntax error: unexpected |, expecting with"},
+		{`({ } | count() > 1) | { }`, "parse error at line 1, col 21: syntax error: unexpected |, expecting with"},
+		{`({ } | count() > 1) | count() > 2`, "parse error at line 1, col 21: syntax error: unexpected |, expecting with"},
+		{`({ } | count() > 1) | select(name)`, "parse error at line 1, col 21: syntax error: unexpected |, expecting with"},
+		{`({ } | count() > 1) | compare({ })`, "parse error at line 1, col 21: syntax error: unexpected |, expecting with"},
+		{`({ } | count() > 1)|rate()`, "parse error at line 1, col 20: syntax error: unexpected |, expecting with"},
+		{`(({ } | count() > 1)) | rate()`, "parse error at line 1, col 23: syntax error: unexpected |, expecting with"},
+		{`(({ }) | count() > 1) | rate()`, "parse error at line 1, col 23: syntax error: unexpected |, expecting with"},
+		{`({ } | by(name)) | rate()`, "parse error at line 1, col 18: syntax error: unexpected |, expecting with"},
+		{`(count() > 1) | rate()`, "parse error at line 1, col 15: syntax error: unexpected |, expecting with"},
+		{`((count() > 1)) | rate()`, "parse error at line 1, col 17: syntax error: unexpected |, expecting with"},
+		{`(by(name)) | rate()`, "parse error at line 1, col 12: syntax error: unexpected |, expecting with"},
+		{`(select(name)) | rate()`, "parse error at line 1, col 16: syntax error: unexpected |, expecting with"},
+		{`({ } | count() > 1) && ({ } | count() > 1) | rate()`, "parse error at line 1, col 44: syntax error: unexpected |, expecting with"},
+		{`(({ } | count() > 1) && ({ })) | rate()`, "parse error at line 1, col 32: syntax error: unexpected |, expecting with"},
+		{`(({ } | count() > 1) | count() > 2)`, "parse error at line 1, col 22: syntax error: unexpected |"},
+		{`(({ } | count() > 1) && ({ }) | count() > 2)`, "parse error at line 1, col 31: syntax error: unexpected |"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			_, err := Parse(tc.query)
+			if err == nil {
+				t.Fatalf("Parse(%q): expected a syntax error, got nil", tc.query)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("Parse(%q) = %q, want %q", tc.query, err, tc.want)
+			}
+		})
+	}
+
+	// Parentheses holding a spanset expression proper are not a pipeline,
+	// and a parenthesised pipeline with no `|` after it stays valid.
+	accepted := []string{
+		`({ }) | rate()`,
+		`(({ })) | rate()`,
+		`({ } && { }) | count() > 1`,
+		`({ } >> { }) | rate()`,
+		`({ } | count() > 1)`,
+		`(count() > 1)`,
+		`({ } | count() > 1) && ({ } | count() > 1)`,
+		`(({ } | count() > 1) && ({ }))`,
+		`({ } | count() > 1) with (sample=true)`,
+	}
+	for _, q := range accepted {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			if _, err := Parse(q); err != nil {
+				t.Errorf("Parse(%q) = %v, want it accepted", q, err)
+			}
+		})
+	}
+}
+
 // TestParseIdentifier pins the single-attribute parse entry point.
 func TestParseIdentifier(t *testing.T) {
 	t.Parallel()
