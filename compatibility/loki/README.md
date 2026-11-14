@@ -8,14 +8,13 @@ diffing the wire responses for every query in the corpus.
 
 Cerberus mirrors the posture taken by `compatibility/prometheus/` for
 PromQL parity, but the Loki / LogQL surface has no upstream
-`loki-conformance` repo. The closest analogue is
-`grafana/loki:pkg/logql/bench/` — a YAML query corpus plus a
-`TestRemoteStorageEquality` build-tagged Go test driver. This harness
-vendors that snapshot verbatim under `upstream/loki-bench/`, drives
-both backends from a cerberus-owned compliance tester
-(`cmd/loki-compliance-tester/`), and emits a JSON report whose
-envelope matches the Prom harness's so one downstream analyser handles
-both.
+`loki-conformance` repo. The closest analogue is the query corpus of
+`grafana/loki`'s `pkg/logql/bench/` — YAML query definitions that a
+build-tagged upstream Go test runs against two Loki instances. This
+harness reads that corpus from the pinned module, drives both backends
+from a cerberus-owned compliance tester (`cmd/loki-compliance-tester/`),
+and emits a JSON report whose envelope matches the Prom harness's so one
+downstream analyser handles both.
 
 ## Layout
 
@@ -26,30 +25,13 @@ compatibility/loki/
   loki-config.yaml                reference Loki single-binary config
   cerberus-test-queries.yml       overlay schema placeholder (no skip consumer)
   cerberus-queries/               cerberus-owned ADDITIVE query corpus (see below)
-  upstream-skip-baseline.txt      pinned set of upstream `skip: true` keys (sanity rail; see "Upstream-skip baseline")
-  dataset_metadata.json           pinned dataset metadata for ${SELECTOR}/${LABEL_*}
+  upstream-skip-baseline.txt      pinned opaque IDs of upstream `skip: true` definitions (sanity rail; see "Upstream-skip baseline")
+  dataset_metadata.json           pinned dataset metadata for ${SELECTOR}/${LABEL_*}/${RANGE}
   reports/                        diff output + live fixture handshake (gitignored)
+  corpus/                         query-file loader, template resolver, upstream module pin
   cmd/
     seed/                         deterministic OTel-shape log seeder
     loki-compliance-tester/       cerberus-owned diff driver
-  upstream/
-    loki-bench/                   vendored grafana/loki:pkg/logql/bench snapshot
-      LICENSE                     AGPL-3.0, copied verbatim from grafana/loki
-      VERSION                     exact upstream coordinates of the snapshot
-      query_registry.go           YAML loader + template-variable expander
-      remote_test.go              upstream TestRemoteStorageEquality (vestigial)
-      metadata.go                 DatasetMetadata + LoadMetadata + bounded sets
-      metadata_resolver.go        ${SELECTOR}/${LABEL_*}/${RANGE} resolver
-      testcase.go                 TestCase shape consumed by the registry
-      assertions_test.go          assertResultNotEmpty + tolerance comparators
-      convert_test.go             loghttp -> promql/parser.Value conversions
-      generator.go                GeneratorConfig + StreamMetadata
-      faker.go                    LogFormat type + helper data
-      queries/
-        schema.json               JSON schema for query YAMLs
-        fast/*.yaml               minimal corpus (basic-selectors, simple-metrics, structured-metadata)
-        regression/*.yaml         regression slice
-        exhaustive/*.yaml         exhaustive slice
 ```
 
 The harness entry point (`node .github/scripts/run-loki-compatibility.mjs`,
@@ -60,77 +42,66 @@ directory's own `scripts/`.
 
 ## Upstream corpus
 
-The snapshot pins `grafana/loki` directly, at the tag recorded in
-`upstream/loki-bench/VERSION` (`v3.7.0`). It is frozen there and is the
-LogQL corpus of record: upstream deleted `pkg/logql/bench` on `main`
-(commit `d1c3d8c3ac8370032c4e32a8029d7633c1f5cf49`), so there is no
-newer source to track, and cerberus-owned cases go in
-`cerberus-queries/` rather than into the snapshot. This vendored
-`pkg/logql/bench/` corpus is reference test material only — it is never
-linked into `cmd/cerberus`; the shipped LogQL parser is cerberus's own
-in-house reimplementation (`internal/logql/lsyntax`).
+The upstream corpus is the `pkg/logql/bench/queries/{fast,regression,exhaustive}`
+tree of the `github.com/grafana/loki/v3` module, at the version and
+`go.sum` hash `corpus/upstream.go` pins (`UpstreamModule`,
+`UpstreamVersion`, `UpstreamSum`). The repository carries none of it.
+`corpus.UpstreamQueriesDir` runs `go mod download -json` for that exact
+version, which answers from the module cache when the module is already
+there (it is: the root `go.mod` requires the same version, and CI's
+`setup-go` action warms the cache) and otherwise fetches it through the
+configured module proxy; it refuses a module whose hash differs from the
+pin. The tester reads it when `-corpus` is unset; `-corpus=<dir>` points
+it at any directory with the same suite layout instead.
 
-Vendored paths (the authoritative inventory is in
-`upstream/loki-bench/VERSION`):
+The corpus is fixed at that pin. `grafana/loki` deleted `pkg/logql/bench`
+on `main` (commit `d1c3d8c3ac8370032c4e32a8029d7633c1f5cf49`), so there is
+no newer source to track, and new cases go in `cerberus-queries/`.
 
-- `pkg/logql/bench/queries/fast/*.yaml`, `regression/*.yaml`,
-  `exhaustive/*.yaml` — the query corpus.
-- `pkg/logql/bench/queries/schema.json` — JSON Schema the YAMLs
-  validate against.
-- `pkg/logql/bench/query_registry.go` — `QueryRegistry` plus the
-  `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template
-  expander.
-- `pkg/logql/bench/remote_test.go` — upstream
-  `TestRemoteStorageEquality`, build-tagged `remote_correctness`.
-  Preserved verbatim as upstream reference; the cerberus-owned driver
-  is now the active entry point.
-- `metadata.go`, `metadata_resolver.go`, `testcase.go`,
-  `assertions_test.go`, `convert_test.go`, `generator.go`, `faker.go`
-  — support files `remote_test.go` transitively depends on.
-- `LICENSE` — AGPL-3.0 from upstream, scoped to this subtree only.
+The corpus is AGPL-3.0 test input only. Nothing under
+`compatibility/` is linked into `cmd/cerberus`, and the shipped LogQL
+parser is cerberus's own in-house reimplementation
+(`internal/logql/lsyntax`).
 
-### Why vendor, not import via `go.mod`
+### How the corpus is loaded
 
-1. **Reference material, not a build dependency.** The driver wiring
-   reads the vendored sources directly. Vendoring lets reviewers see
-   the corpus and driver shape in the diff without cloning
-   grafana/loki.
-2. **`remote_test.go` is build-tagged `remote_correctness`.** It's a
-   test driver, not library code; cerberus's main build doesn't need
-   it.
-3. **Snapshot stability.** A Loki transitive-dep bump cannot silently
-   move the corpus shape — the snapshot is pinned explicitly here.
+`compatibility/loki/corpus` is cerberus's own loader, written against the
+file format `cerberus-queries/schema.json` documents:
 
-### How the vendor builds
+- `corpus.Load` reads every `*.yaml` / `*.yml` file of the named suites,
+  in suite, file-name and in-file order, and rejects an unknown key. A
+  definition without `kind` gets one inferred from the query shape (a
+  query `lsyntax` parses as a sample expression is `metric`, anything
+  else `log`), and a log definition without `directions` runs in both.
+  A definition that names neither still expands to cases.
+- `corpus.LoadMetadata` reads `dataset_metadata.json`.
+- `corpus.NewResolver(md, seed).Expand` resolves `${SELECTOR}`,
+  `${LABEL_NAME}`, `${LABEL_VALUE}` and `${RANGE}` per definition and
+  emits one case per direction (log) or one forward case (metric), with
+  the window drawn inside the dataset span. The tester's `-seed`
+  (default `42`) makes the expansion deterministic.
 
-The cerberus-owned driver (`cmd/loki-compliance-tester/`) imports the
-vendored `bench` package for corpus loading (`QueryRegistry`,
-`LoadMetadata`, `MetadataVariableResolver`, `TestCase`). The
-transitive deps `bench` carries (`logproto`, `logql/syntax`,
-`yaml.v3`) are already direct entries in the root `go.mod`, so the
-driver builds with a plain `go build`.
-
-The `ignore ./compatibility/loki/upstream` directive in `go.mod`
-keeps `go build ./...`, `go test ./...`, and `go vet ./...` from
-walking the vendored path as a build target; the bench package is
-still resolvable when imported by path.
+`cmd/loki-compliance-tester/main_test.go` pins the identity of the full
+expanded case set — a hash over every case's query, window, step,
+direction and source, for the range and the instant lane — so a loader or
+resolver change that moves any case fails there before it reaches a
+compatibility run. The tester's zero-expansion rail (`checkExpansion`)
+fails a run in which a definition expanded to no case.
 
 ## Cerberus overlay files
 
-Files at the harness root capture cerberus-specific configuration
-that lives OUTSIDE the AGPL `upstream/` boundary:
+Files at the harness root capture cerberus-specific configuration:
 
 - `cerberus-queries/` — a cerberus-owned, **additive** query corpus
-  mirroring the vendored suite/file layout
-  (`fast/|regression/|exhaustive/*.yaml`, same
-  `queries/schema.json` shape). `cmd/loki-compliance-tester/main.go`'s
-  `loadCerberusQueries` points a second `bench.QueryRegistry` instance
-  at this directory (`-cerberus-queries`, default `./cerberus-queries`)
-  and merges its cases into the vendored corpus's before either set is
-  expanded and run — every case here runs and is graded exactly like a
-  vendored one, through the same pipeline, with no skip/tolerance
-  semantics of its own. Every new LogQL case goes here: the vendored
-  snapshot is frozen (see "Snapshot maintenance"). See
+  with the upstream suite/file layout
+  (`fast/|regression/|exhaustive/*.yaml`, described by
+  `cerberus-queries/schema.json`). `cmd/loki-compliance-tester/main.go`'s
+  `loadCerberusQueries` loads this directory (`-cerberus-queries`,
+  default `./cerberus-queries`) with the same `corpus.Load` and merges
+  its definitions after the upstream corpus's before either set is
+  expanded and run — every case here runs and is graded exactly like an
+  upstream one, through the same pipeline, with no skip/tolerance
+  semantics of its own. Every new LogQL case goes here. See
   `cerberus-queries/README.md` for the layout and YAML shape.
 - `cerberus-test-queries.yml` — schema placeholder only. The driver
   carries no `should_skip:` consumer code, so any entry would be
@@ -138,34 +109,24 @@ that lives OUTSIDE the AGPL `upstream/` boundary:
   as a real bug to fix at the source (cerberus code, seeder, or
   loki-config.yaml). The CI gate at `.github/workflows/ci.yml`
   rejects any non-empty `should_skip:` block.
-- `upstream-skip-baseline.txt` — pinned set of corpus entries the
-  vendored YAML marks `skip: true`, one
-  `<suite>/<file>.yaml#<description>` key per line. The driver loads
+- `upstream-skip-baseline.txt` — pinned set of upstream corpus
+  definitions marked `skip: true`, one opaque ID per line (see
+  [Upstream-skip baseline](#upstream-skip-baseline)). The driver loads
   the full corpus on every run and asserts the skipped set matches this
   file exactly; drift in either direction is a hard error. This is not
   a failure-tolerance list — it never suppresses a cerberus diff; it
-  pins what the vendored corpus itself declines to run, so no change to
-  the snapshot's recorded local patch can move the scored boundary
-  unnoticed. Regenerate it with
-  `loki-compliance-tester -regen-baseline -skip-baseline=...`, only
-  together with such a change and after auditing the skip-set diff. See
-  [Upstream-skip baseline](#upstream-skip-baseline) for the procedure.
+  pins what the upstream corpus itself declines to run, so a change to
+  the pinned corpus cannot move the scored boundary unnoticed.
 - `dataset_metadata.json` — pinned dataset metadata that maps
-  `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` template vars to
-  concrete values produced by the seeder under `cmd/seed/`.
-  **Hand-authored, and it must stay that way.** It carries a `_comment`
-  key recording how each pinned selector was derived, and
-  `bench.DatasetMetadata` does not model that key. The vendored
-  `bench.SaveMetadata` writes a file named `dataset_metadata.json` into
-  whichever directory it is handed, so pointing it here overwrites the
-  curated file and drops the provenance — while returning no error.
-  Read it with `bench.LoadMetadata` and never write back;
+  `${SELECTOR}` / `${LABEL_NAME}` / `${LABEL_VALUE}` / `${RANGE}`
+  template vars to concrete values produced by the seeder under
+  `cmd/seed/`. **Hand-authored, and it must stay that way.** It carries a
+  `_comment` key recording how each pinned selector was derived, which
+  `corpus.Metadata` does not model. Read it with `corpus.LoadMetadata`;
+  nothing in the tree writes it.
   `test/regression/loki_dataset_metadata_hand_authored_test.go` fails the
-  build if any cerberus-licensed code reaches for the writer, or if the
-  `_comment` key goes missing. `SaveMetadata` itself stays in the vendored
-  snapshot untouched: it is upstream's code, unused only in the subset
-  cerberus vendors, and `metadata.go` must stay byte-identical to the
-  pinned tag (see "Snapshot maintenance").
+  build if the `_comment` key goes missing or if `corpus.Metadata` starts
+  modelling it.
 
 The `/patterns` differential does not use `dataset_metadata.json`.
 Reference Loki serves recent patterns from a wall-clock-retained in-memory
@@ -309,30 +270,32 @@ requires full parity from every entry it carries.
 
 ## Upstream-skip baseline
 
-The vendored corpus contains ~15 queries upstream marks `skip: true`
+The upstream corpus contains 15 definitions it marks `skip: true`
 (quantile/stddev unwrap aggregations, structured-metadata numeric label
-filters, a JSON parser regression). The cerberus driver calls
-`registry.GetQueries(includeSkip=false, ...)` so these never reach the
-wire, and that filtering is invisible to the compat score.
+filters, a JSON parser regression). The driver partitions them out
+(`corpus.Partition`) so they never reach the wire unless it runs with
+`-include-skipped`, and that filtering is invisible to the compat score.
 
-`upstream-skip-baseline.txt` pins that boundary. The driver loads the
-full corpus (`includeSkipped=true`), partitions it into runnable +
+`upstream-skip-baseline.txt` pins that boundary. Each entry is an opaque
+ID, `upstream:` followed by 16 hex digits of the SHA-256 of the
+definition's readable identity `<suite>/<file>#<description>`
+(`corpus.OpaqueID`), so the committed file carries no upstream text. The
+driver loads the full corpus, partitions it into runnable +
 upstream-skipped, and diffs the upstream-skipped set against the file.
 Drift either way fails the run:
 
 - Added keys (the corpus marks `skip: true` but the baseline does not)
-  would drop queries from the scored set.
+  would drop queries from the scored set. The failure prints each added
+  key with its readable identity.
 - Removed keys (the baseline expects `skip: true` but the corpus no
   longer carries it) would add queries to the scored set that nobody
   triaged.
 
-The snapshot is frozen (see "Snapshot maintenance"), so the skipped set
-can move only with a change to the recorded local patch. Regenerate
-together with such a change:
+The corpus is fixed at its pin, so the skipped set can move only with a
+change to `UpstreamVersion`. Regenerate together with such a change:
 
 ```sh
 go run ./compatibility/loki/cmd/loki-compliance-tester \
-    -corpus=compatibility/loki/upstream/loki-bench/queries \
     -skip-baseline=compatibility/loki/upstream-skip-baseline.txt \
     -regen-baseline
 ```
@@ -376,9 +339,9 @@ whose envelope matches `compatibility/prometheus/report.json`:
   "results": [
     {
       "testCase": {
-        "query": "{service=\"checkout\"}",
-        "source": "fast/basic-selectors.yaml",
-        "description": "Basic label selector",
+        "query": "{service_name=\"packed-source\"} | unpack | __error__=\"\"",
+        "source": "regression/unpack.yaml",
+        "description": "unpack happy path - only successfully unpacked lines",
         "kind": "log", "direction": "backward",
         "start": "2026-05-15T00:00:00Z", "end": "2026-05-15T00:10:00Z",
         "instant": false
@@ -399,42 +362,13 @@ both reports.
 
 `grafana/loki` is **AGPL-3.0**
 ([upstream LICENSE](https://github.com/grafana/loki/blob/main/LICENSE)).
-The vendored snapshot inherits AGPL-3.0, and
-[`upstream/loki-bench/LICENSE`](upstream/loki-bench/LICENSE) is the
-verbatim copy.
-
-Cerberus itself is independently licensed (see the repo root
-`LICENSE`); the AGPL terms apply only to the vendored subtree under
-`upstream/loki-bench/`. The driver code (`cmd/`)
-lives OUTSIDE `upstream/` and is cerberus-licensed.
-
-## Snapshot maintenance
-
-The snapshot is never bumped and never edited — the one exception is the
-local patch `upstream/loki-bench/VERSION` records under
-`local_patches:`. A new LogQL case goes in `cerberus-queries/`
-(see "Cerberus overlay files").
-
-The vendored bytes are reproducible from the pinned tag, which is how a
-reviewer confirms nothing but the recorded local patch differs from
-upstream:
-
-```sh
-# 1. Shallow clone at the pinned tag (upstream_tag in upstream/loki-bench/VERSION).
-git clone --depth=1 -b v3.7.0 https://github.com/grafana/loki /tmp/loki-upstream
-
-# 2. Compare every vendored path. The `vendored_paths:` block in
-#    upstream/loki-bench/VERSION is the canonical inventory; only the
-#    files listed under `local_patches:` may differ.
-diff -r /tmp/loki-upstream/pkg/logql/bench/queries \
-        compatibility/loki/upstream/loki-bench/queries
-for f in query_registry remote_test metadata metadata_resolver testcase \
-         assertions_test convert_test generator faker; do
-    diff "/tmp/loki-upstream/pkg/logql/bench/${f}.go" \
-         "compatibility/loki/upstream/loki-bench/${f}.go"
-done
-diff /tmp/loki-upstream/LICENSE compatibility/loki/upstream/loki-bench/LICENSE
-```
+The harness reads the upstream query corpus from the module cache at run
+time and the repository carries no copy of it, so no file in this
+directory is under the AGPL. Everything here — the loader in `corpus/`,
+the driver and seeder in `cmd/`, `cerberus-queries/` and the pinned
+ledgers — is cerberus-authored and Apache-2.0 (the repository root
+`LICENSE`). The parity roster and the skip baseline key upstream cases by
+opaque ID.
 
 ## Related docs
 

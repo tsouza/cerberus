@@ -1010,9 +1010,10 @@ type logDirection int
 
 const (
 	// directionBackward returns the most-recent N entries — Loki's
-	// default and the only direction the loki-bench harness exercises
+	// default and the only direction the upstream bench harness exercises
 	// for log queries (forward log queries are unsupported by Loki's
-	// v2 engine, see fast/basic-selectors.yaml).
+	// v2 engine, as the upstream LogQL corpus's fast/basic-selectors.yaml
+	// records).
 	directionBackward logDirection = iota
 	directionForward
 )

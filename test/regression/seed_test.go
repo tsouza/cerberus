@@ -3,11 +3,13 @@ package regression
 import (
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tsouza/cerberus/compatibility/loki/corpus"
 	"github.com/tsouza/cerberus/test/e2e/seed/cadence"
 )
 
@@ -169,38 +171,41 @@ func TestSeedMakesDistributedInsertsVisibleBeforeCleanup(t *testing.T) {
 	}
 }
 
-// TestLokiBenchTagsImpossibleFilterAsEmptyResult guards against an
-// upstream re-vendor of grafana/loki:pkg/logql/bench/queries/ that
-// drops the `empty-result` tag on the
-// `fast/basic-selectors.yaml#Log query with impossible filter ...`
-// entry. The cerberus diff driver
+// lokiImpossibleFilterCase is the opaque identity (corpus.OpaqueID of
+// `<suite>/<file>#<description>`) of the upstream LogQL corpus's one
+// definition built to return no rows: a log query whose line filter no
+// seeded line can match.
+const lokiImpossibleFilterCase = "upstream:d9a7a6009f1cee56"
+
+// TestLokiUpstreamCorpusTagsImpossibleFilterAsEmptyResult guards the
+// `empty-result` tag on the upstream corpus's impossible-filter definition.
+// The cerberus diff driver
 // (compatibility/loki/cmd/loki-compliance-tester/main.go) keys its
 // "baseline-empty is the expected outcome" branch on that tag — losing
 // it would silently flip the case back into a `baseline returned empty`
 // row in the compat report, masking real parity drift behind a
-// harness-shape false positive. See PR introducing this regression.
-func TestLokiBenchTagsImpossibleFilterAsEmptyResult(t *testing.T) {
+// harness-shape false positive. A change to the pinned corpus version
+// that renames the definition or drops its tag fails here.
+func TestLokiUpstreamCorpusTagsImpossibleFilterAsEmptyResult(t *testing.T) {
 	t.Parallel()
 
-	const corpusPath = "../../compatibility/loki/upstream/loki-bench/queries/fast/basic-selectors.yaml"
-	buf, err := os.ReadFile(corpusPath)
+	dir, err := corpus.UpstreamQueriesDir()
 	if err != nil {
-		t.Fatalf("read %s: %v", corpusPath, err)
+		t.Fatalf("UpstreamQueriesDir: %v", err)
 	}
-	content := string(buf)
-
-	// The impossible-filter entry — pinned by both the description and the
-	// `empty-result` tag literal the driver reads at runtime. An upstream
-	// rename of either drops parity for this case, so we require both.
-	const (
-		description = "Log query with impossible filter (guarantees empty results, exercises log result cache)"
-		tagLiteral  = "- empty-result"
-	)
-	if !strings.Contains(content, description) {
-		t.Errorf("%s: expected description %q — corpus may have been re-vendored under a different label", corpusPath, description)
+	defs, err := corpus.Load(dir, corpus.AllSuites...)
+	if err != nil {
+		t.Fatalf("load the upstream LogQL corpus: %v", err)
 	}
-	if !strings.Contains(content, tagLiteral) {
-		t.Errorf("%s: expected `%s` tag — the diff driver relies on it to treat baseline-empty as the parity-expected outcome (otherwise the case shows up as `baseline returned empty`)", corpusPath, tagLiteral)
+	var tagged []string
+	for _, def := range defs {
+		if !def.Skip && slices.Contains(def.Tags, "empty-result") {
+			tagged = append(tagged, corpus.OpaqueID(def.File()+"#"+def.Description))
+		}
+	}
+	if !slices.Equal(tagged, []string{lokiImpossibleFilterCase}) {
+		t.Fatalf("runnable upstream definitions tagged empty-result = %v, want [%s] — the diff driver relies on the tag to treat baseline-empty as the parity-expected outcome (otherwise the case shows up as `baseline returned empty`)",
+			tagged, lokiImpossibleFilterCase)
 	}
 }
 

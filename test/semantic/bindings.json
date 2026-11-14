@@ -493,7 +493,7 @@
       "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
       "evidence_class": "reference",
       "independence_group": "range-aggregation-reference-differential",
-      "test_ref": "compatibility/loki/upstream/loki-bench/queries/exhaustive/aggregations.yaml",
+      "test_ref": "compatibility/loki",
       "status": "active"
     },
     {

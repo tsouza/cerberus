@@ -7409,7 +7409,7 @@
       "replaced_by": null,
       "blind_spots": [
         "The anchoring fix is centralized at the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL; this contract claims coverage for LogQL only — the mechanism's PromQL correctness is PROMQL-LABEL-MATCHER-REGEX-ANCHORING's job and TraceQL's is its own head's, not re-proven here.",
-        "compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml is a cerberus-authored addition under cerberus-queries/, not part of the vendored loki-bench corpus — see LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE and the compat harness README's third-party-vs-cerberus-owned distinction; this contract's reference evidence discriminates only cerberus's own lowering, since reference Loki has nothing to diverge on for an already-anchored matcher."
+        "compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml is a cerberus-authored addition under cerberus-queries/, not part of the upstream loki-bench corpus — see LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE and the compat harness README's third-party-vs-cerberus-owned distinction; this contract's reference evidence discriminates only cerberus's own lowering, since reference Loki has nothing to diverge on for an already-anchored matcher."
       ],
       "required_evidence_classes": [
         "execution",
@@ -8384,7 +8384,7 @@
     },
     {
       "id": "LOGQL-STREAM-ROW-REFERENCE-AUTHORITY-BOUNDARY",
-      "statement": "For a log-stream (non-metric) LogQL query, cerberus's own in-process reference-differential oracle (test/spec/parityoracle/logql, ARCH-HEAD-WIRE-001's wire-parity binding) is structurally exempted from every log-kind spec fixture (`parity_exempt: reason: log-query-answer`) because Loki's logqlmodel.Streams response has no element-wise correspondence with the row-shaped SELECT * output cerberus's own fixtures assert against — so passing wire-parity evidence for a log-stream query never comes from that in-process oracle. Genuine stream-row-body authority for a log-stream query instead comes only from the real external reference-Loki differential the compatibility/loki harness runs (the vendored loki-bench corpus, the cerberus-owned additive corpus, and the wrong-rejection burndown pass) or from the from-scratch property oracle (LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE). The harness's separate status-parity pass (status_parity.go) is narrower still — it asserts only that both backends agree on an HTTP REJECTION's status code for a fixed, uncontroversial set of invalid requests, never on a passing stream-row body, and must never be read as evidence of the latter.",
+      "statement": "For a log-stream (non-metric) LogQL query, cerberus's own in-process reference-differential oracle (test/spec/parityoracle/logql, ARCH-HEAD-WIRE-001's wire-parity binding) is structurally exempted from every log-kind spec fixture (`parity_exempt: reason: log-query-answer`) because Loki's logqlmodel.Streams response has no element-wise correspondence with the row-shaped SELECT * output cerberus's own fixtures assert against — so passing wire-parity evidence for a log-stream query never comes from that in-process oracle. Genuine stream-row-body authority for a log-stream query instead comes only from the real external reference-Loki differential the compatibility/loki harness runs (the upstream loki-bench corpus read from the pinned grafana/loki module, the cerberus-owned additive corpus, and the wrong-rejection burndown pass) or from the from-scratch property oracle (LOGQL-STREAM-PIPELINE-PROPERTY-COVERAGE). The harness's separate status-parity pass (status_parity.go) is narrower still — it asserts only that both backends agree on an HTTP REJECTION's status code for a fixed, uncontroversial set of invalid requests, never on a passing stream-row body, and must never be read as evidence of the latter.",
       "scope": "head",
       "applicable_heads": [
         "HEAD-LOGQL"
@@ -8403,7 +8403,7 @@
       "replaced_by": null,
       "blind_spots": [
         "The parity_exempt reason is hand-authored prose per fixture; nothing mechanically proves EVERY log-kind fixture that should carry this exemption actually does — a newly added log-kind fixture that omits `-- parity_exempt --` would attempt the in-process comparison and presumably fail loudly rather than silently, but that failure mode is not itself independently pinned by a binding here.",
-        "compatibility/loki's real reference-Loki differential is the actual body-level authority for stream-row correctness, but it runs only in the compat-logql CI lane (needs a live Docker reference stack — CLAUDE.md invariant 5's own real-substrate carve-out) and is scored, not chDB-executed; a wrong answer confined to a query shape neither the vendored nor the cerberus-owned corpus happens to draw carries no evidence here."
+        "compatibility/loki's real reference-Loki differential is the actual body-level authority for stream-row correctness, but it runs only in the compat-logql CI lane (needs a live Docker reference stack — CLAUDE.md invariant 5's own real-substrate carve-out) and is scored, not chDB-executed; a wrong answer confined to a query shape neither the upstream nor the cerberus-owned corpus happens to draw carries no evidence here."
       ],
       "required_evidence_classes": [
         "manual-review",
@@ -8735,7 +8735,7 @@
           },
           "evidence_class": "reference",
           "independence_group": "range-aggregation-reference-differential",
-          "test_ref": "compatibility/loki/upstream/loki-bench/queries/exhaustive/aggregations.yaml",
+          "test_ref": "compatibility/loki",
           "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
@@ -9028,7 +9028,7 @@
     },
     {
       "id": "LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE",
-      "statement": "compatibility/loki/upstream-skip-baseline.txt pins the exact set of <suite>/<file>.yaml#<description> corpus entries the VENDORED grafana/loki:pkg/logql/bench snapshot itself marks skip: true (roughly 15 queries: quantile/stddev unwrap aggregations, structured-metadata numeric label filters, a JSON parser regression) — it records what the upstream corpus itself declines to run, not a cerberus-side tolerance list. The driver loads the full corpus every run (includeSkipped=true), partitions it, and fails the run on any drift between the file and the corpus's actual skip: true set in either direction, so a silent upstream flip cannot move the scored boundary unnoticed. It never suppresses a cerberus-vs-reference diff for any query cerberus and the vendored corpus both attempt.",
+      "statement": "compatibility/loki/upstream-skip-baseline.txt pins, as opaque IDs (corpus.OpaqueID of <suite>/<file>#<description>, so the file carries no upstream text), the exact set of corpus entries the pinned grafana/loki:pkg/logql/bench corpus itself marks skip: true (roughly 15 queries: quantile/stddev unwrap aggregations, structured-metadata numeric label filters, a JSON parser regression) — it records what the upstream corpus itself declines to run, not a cerberus-side tolerance list. The driver loads the full corpus every run, partitions it, and fails the run on any drift between the file and the corpus's actual skip: true set in either direction, so a silent upstream flip cannot move the scored boundary unnoticed. It never suppresses a cerberus-vs-reference diff for any query cerberus and the upstream corpus both attempt.",
       "scope": "head",
       "applicable_heads": [
         "HEAD-LOGQL"
@@ -9046,7 +9046,7 @@
       "replaced_by": null,
       "blind_spots": [
         "The trip-wire only catches drift relative to this pinned file; if a corpus re-snapshot both changes an entry's skip: true status and is manually re-pinned via -regen-baseline in the same change without genuine triage, this contract's evidence would show the baseline as internally consistent while a real upstream regression or newly-available query went unexamined — the README's own regen procedure calls this out as a reviewer-discipline step, not something the trip-wire itself enforces.",
-        "This is distinct from CLAUDE.md invariant 7's blanket \"no allow-lists, no tolerance files\" rule: the file records what upstream's OWN corpus declines to run (a fact about the vendored snapshot), never a cerberus-side exemption for a query cerberus and Loki both attempt — cerberus-test-queries.yml's complete absence of a should_skip: consumer, and the forbid-deferral-adjacent CI gate rejecting any non-empty should_skip: block, is the mechanism that keeps the two concepts from being conflated in practice."
+        "This is distinct from CLAUDE.md invariant 7's blanket \"no allow-lists, no tolerance files\" rule: the file records what upstream's OWN corpus declines to run (a fact about the pinned upstream corpus), never a cerberus-side exemption for a query cerberus and Loki both attempt — cerberus-test-queries.yml's complete absence of a should_skip: consumer, and the forbid-deferral-adjacent CI gate rejecting any non-empty should_skip: block, is the mechanism that keeps the two concepts from being conflated in practice."
       ],
       "required_evidence_classes": [
         "manual-review"

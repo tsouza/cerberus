@@ -54,22 +54,22 @@ const (
 
 func logTestCase(tags ...string) corpus.Case {
 	return corpus.Case{
-		Query:     `{service_name="api"}`,
-		Start:     time.Unix(1700000000, 0).UTC(),
-		End:       time.Unix(1700000060, 0).UTC(),
-		Direction: corpus.Backward,
+		Query:       `{service_name="api"}`,
+		Start:       time.Unix(1700000000, 0).UTC(),
+		End:         time.Unix(1700000060, 0).UTC(),
+		Direction:   corpus.Backward,
 		Description: "log case",
-		Tags:      tags,
+		Tags:        tags,
 	}
 }
 
 func metricTestCase() corpus.Case {
 	return corpus.Case{
-		Query:     `sum(count_over_time({service_name="api"}[5m]))`,
-		Start:     time.Unix(1700000000, 0).UTC(),
-		End:       time.Unix(1700000060, 0).UTC(),
-		Direction: corpus.Forward,
-		Step:      time.Minute,
+		Query:       `sum(count_over_time({service_name="api"}[5m]))`,
+		Start:       time.Unix(1700000000, 0).UTC(),
+		End:         time.Unix(1700000060, 0).UTC(),
+		Direction:   corpus.Forward,
+		Step:        time.Minute,
 		Description: "metric case",
 	}
 }

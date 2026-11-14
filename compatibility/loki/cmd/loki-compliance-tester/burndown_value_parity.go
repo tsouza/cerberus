@@ -4,7 +4,7 @@ package main
 // burndown (mirrors the detected_fields pass pattern in
 // detected_fields.go).
 //
-// The vendored loki-bench corpus exercises none of the operator
+// The upstream bench corpus exercises none of the operator
 // shapes cerberus historically 422'd — vector set ops, the `bool`
 // modifier on arithmetic, ip() line/label filters, `|>` / `!>`
 // pattern filters, first/last_over_time, absent_over_time,
@@ -168,13 +168,13 @@ func burndownCases(metadata *corpus.Metadata) ([]corpus.Case, error) {
 	cases := make([]corpus.Case, 0, len(queries))
 	for _, def := range queries {
 		tc := corpus.Case{
-			Query:     def.query,
-			Start:     start,
-			End:       end,
-			Direction: corpus.Forward,
-			Source:    burndownSource,
+			Query:       def.query,
+			Start:       start,
+			End:         end,
+			Direction:   corpus.Forward,
+			Source:      burndownSource,
 			Description: def.desc,
-			Tags:      []string{"wrong-rejection-burndown"},
+			Tags:        []string{"wrong-rejection-burndown"},
 		}
 		if def.kind == "metric" {
 			tc.Step = burndownStep

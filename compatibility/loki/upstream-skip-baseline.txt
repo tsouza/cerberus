@@ -7,7 +7,7 @@
 # splits it into runnable + upstream-skipped, and diffs the upstream-skipped
 # set against this file. Any drift (new skipped entries that aren't here,
 # or expected entries that disappeared) fails the harness, and the failure
-# names each moved definition by suite, file and description.
+# names each newly skipped definition by suite, file and description.
 #
 # Regenerate via:
 #

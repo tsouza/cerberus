@@ -10,7 +10,7 @@ import (
 )
 
 // The burndown pass is the only value-level coverage the wrong-rejection
-// operators have: the vendored corpus exercises none of them. Its case
+// operators have: the upstream corpus exercises none of them. Its case
 // list is therefore load-bearing in a way a query list usually is not —
 // a selector picked non-deterministically, a window that drifts off the
 // seed grid, or a metric case that lost its step all turn a real

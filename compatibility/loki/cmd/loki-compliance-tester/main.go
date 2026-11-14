@@ -1,7 +1,9 @@
 // Command loki-compliance-tester runs the LogQL compatibility corpus
-// (vendored from grafana/loki:pkg/logql/bench/) against two live Loki
-// HTTP endpoints, diffs the responses with float tolerance, and emits a
-// JSON report whose shape matches compatibility/prometheus's
+// (grafana/loki's pkg/logql/bench query definitions, read from the pinned
+// module in the Go module cache, plus the cerberus-owned
+// compatibility/loki/cerberus-queries/) against two live Loki HTTP
+// endpoints, diffs the responses with float tolerance, and emits a JSON
+// report whose shape matches compatibility/prometheus's
 // promql-compliance-tester (i.e. the `prometheus/compliance` reference
 // driver). It also emits a shields.io endpoint-badge score JSON when
 // `-score` is set.
@@ -14,16 +16,13 @@
 //
 // Lifecycle:
 //
-//  1. Loads the upstream bench package's QueryRegistry + DatasetMetadata
-//     resolver. Reuses upstream code so template-variable expansion
-//     (`${SELECTOR}` / `${LABEL_NAME}` / `${RANGE}`) tracks Grafana's
-//     reference semantics exactly — cerberus-side divergence here would
-//     defeat the differential test. A second QueryRegistry instance
-//     then loads the cerberus-owned additive corpus at
-//     `-cerberus-queries` (compatibility/loki/cerberus-queries/ by
-//     default — same suite/file layout, never edits the vendored
-//     upstream/loki-bench/ tree) and its cases are merged in; see
-//     loadCerberusQueries.
+//  1. Loads the query definitions and the dataset metadata through
+//     compatibility/loki/corpus, cerberus's own loader and
+//     template-variable resolver (`${SELECTOR}` / `${LABEL_NAME}` /
+//     `${LABEL_VALUE}` / `${RANGE}`). The upstream definitions come from
+//     the checksum-pinned module (or from `-corpus` when set); the
+//     cerberus-owned definitions at `-cerberus-queries` are merged in
+//     before expansion; see loadCases.
 //  2. For each expanded test case, fans out parallel `/loki/api/v1/query`
 //     or `/query_range` calls against both endpoints, decodes the
 //     responses into a typed value, normalises ordering, and diffs with
@@ -39,6 +38,11 @@
 //     `unexpectedSuccess`, `unsupported`. When `-score` is set, also
 //     writes a shields.io endpoint-badge JSON to that path.
 //
+// Committed artefacts never carry upstream text: an upstream case is
+// keyed in the parity roster and in the skip baseline by an opaque
+// identity (corpus.OpaqueID) and labelled with its readable identity only
+// in the run's own output.
+//
 // No allow-list / `should_skip` overlay: every diff against reference
 // Loki is a real bug. The corresponding YAML carrier
 // (cerberus-test-queries.yml) is kept as a schema placeholder; the
@@ -47,14 +51,6 @@
 // (above): that mechanism only ever ADDS cases that run and are
 // graded like any other — it has no skip/tolerate semantics of its
 // own.
-//
-// The binary imports the vendored upstream/loki-bench/ package; the
-// root go.mod marks that path `ignore` so it's excluded from
-// `go build ./...` walks, but the package itself is reachable via its
-// import path because every transitive dep (`logproto`, `logql/syntax`,
-// `yaml.v3`) is already a direct entry in cerberus's go.mod. A plain
-// `go build` resolves the binary without needing the `-mod=mod`
-// promotion the PR 3 `go test -c` build relied on.
 package main
 
 import (
@@ -120,9 +116,9 @@ func parseFlags() flags {
 	flag.StringVar(&f.casesPath, "cases", "", "per-case parity roster JSON output path; empty means do not write")
 	flag.StringVar(&f.skipBaselinePath, "skip-baseline", "", "Path to the upstream-skip-baseline.txt file; when set, the harness asserts the upstream YAML `skip: true` set matches this file and fails on drift")
 	flag.BoolVar(&f.regenBaseline, "regen-baseline", false, "Regenerate -skip-baseline from the current corpus and exit (writes the file, then returns 0 without contacting any Loki endpoint)")
-	flag.Float64Var(&f.tolerance, "tolerance", 1e-5, "Float comparison tolerance (matches upstream remote_test.go default)")
+	flag.Float64Var(&f.tolerance, "tolerance", 1e-5, "Float comparison tolerance (the upstream bench harness's default)")
 	flag.StringVar(&f.rangeType, "range-type", "range", "Query range type: 'range' or 'instant'")
-	flag.Int64Var(&f.seed, "seed", 42, "Random seed for query template resolution (matches upstream default)")
+	flag.Int64Var(&f.seed, "seed", 42, "Random seed for query template resolution (the upstream bench harness's default)")
 	flag.IntVar(&f.parallelism, "parallelism", 8, "Maximum number of comparison queries to run in parallel")
 	flag.BoolVar(&f.includeSkip, "include-skipped", false, "Include queries the upstream YAML marks `skip: true`")
 	flag.DurationVar(&f.timeout, "timeout", 30*time.Second, "Per-request HTTP timeout for each Loki endpoint")
@@ -574,7 +570,7 @@ const skipBaselineHeader = `# Upstream ` + "`skip: true`" + ` baseline for the u
 # splits it into runnable + upstream-skipped, and diffs the upstream-skipped
 # set against this file. Any drift (new skipped entries that aren't here,
 # or expected entries that disappeared) fails the harness, and the failure
-# names each moved definition by suite, file and description.
+# names each newly skipped definition by suite, file and description.
 #
 # Regenerate via:
 #
@@ -792,10 +788,9 @@ func compareOne(c *http.Client, f flags, tc corpus.Case, suiteFile string, isIns
 
 	expected := normaliseTypedResult(out[0].value)
 	actual := normaliseTypedResult(out[1].value)
-	// Cases tagged `empty-result` in the upstream YAML are designed to
-	// return no rows (e.g. `${SELECTOR} |= "this will not hit any line"`
-	// in fast/basic-selectors.yaml — the filter literal can never match
-	// a seeded log line by construction). For those cases a baseline-
+	// Cases tagged `empty-result` are designed to return no rows (a line
+	// filter whose literal no seeded log line contains, by construction).
+	// For those cases a baseline-
 	// empty response is the expected outcome, so we treat
 	// baseline-empty + actual-empty as a parity pass and flip the
 	// diff direction: actual-non-empty means cerberus returned rows

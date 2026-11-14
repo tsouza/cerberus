@@ -28,7 +28,7 @@
 # earlier revision that stamped request_id on every service turned 41
 # previously-passing cases into diffs). metadata-probe mirrors
 # packed-source's isolation trick (an unmatched `log_format`, so the
-# vendored corpus's `${SELECTOR}` resolver never picks it) precisely so
+# corpus's `${SELECTOR}` resolver never picks it) precisely so
 # the cases below are the only queries in the whole differential corpus
 # that ever observe request_id.
 #
