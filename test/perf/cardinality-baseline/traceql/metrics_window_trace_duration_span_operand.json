@@ -1,0 +1,11 @@
+{
+  "fixture": "traceql/metrics_window_trace_duration_span_operand",
+  "fan_factor": 0.8,
+  "scan_rows": 5,
+  "peak_intermediate": 4,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}

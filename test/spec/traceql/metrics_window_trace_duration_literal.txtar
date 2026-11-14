@@ -40,7 +40,42 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, Spa
     ('a0000000000000000000000000000002', '0000000000000010', '',                 toDateTime64('2023-12-31 23:59:50', 9), 1000000000, 'r'),
     ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:00:40', 9), 500000000,  'c');
 -- expected_rows --
-[]
+[
+  ["2024-01-01T00:01:00Z", 2],
+  ["2024-01-01T00:02:00Z", 0]
+]
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{ traceDuration > 1s } | count_over_time()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare
+-- args --
+[0] int64 = 1704067200000000000
+[1] int64 = 1704067320000000000
+[2] int64 = 1704067200000000000
+[3] int64 = 1704067320000000000
+[4] int64 = 1000000000
+-- args_optimized --
+[0] int64 = 1704067200000000000
+[1] int64 = 1704067320000000000
+[2] int64 = 1704067200000000000
+[3] int64 = 1704067320000000000
+[4] int64 = 1000000000
+-- chplan --
+RangeWindow func= range=1m0s step=1m0s ts=Timestamp start=2024-01-01T00:01:00Z end=2024-01-01T00:02:00Z
+  MetricsAggregate op=count_over_time valueAlias=Value
+    Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_scoped_val > 1000000000) ; Project [TraceId AS TraceId, (_cerb_trace_end_ns - _cerb_trace_start_ns) AS _cerb_trace_scoped_val] ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnMin(FnToUnixNanos(Timestamp)) AS _cerb_trace_start_ns, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS _cerb_trace_end_ns] ; Scan(otel_traces)})
+      Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:rw;rw
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+min_table_rows_to_use_projection_index=0
+query_cache_nondeterministic_function_handling=ignore
+query_cache_ttl=300
+use_query_cache=1
+use_query_condition_cache=1
+-- sql --
+SELECT `anchor_ts`, toFloat64(sum(in_window)) AS `Value` FROM ((SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(2, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts`, 1 AS `in_window` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` > fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_scoped_val` FROM (SELECT `TraceId` AS `TraceId`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` > fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId`)) WHERE (`_cerb_trace_scoped_val` > ?)))) WHERE `Timestamp` > parseDateTime64BestEffort('2024-01-01 00:01:00.000000000Z', 9) - toIntervalNanosecond(60000000000) AND `Timestamp` <= parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) UNION ALL (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(0, 2))) AS `anchor_ts`, 0 AS `in_window` FROM (SELECT 1 FROM `system`.`one`))) GROUP BY `anchor_ts`
+-- sql_optimized --
+SELECT `anchor_ts`, toFloat64(sum(in_window)) AS `Value` FROM ((SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(2, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts`, 1 AS `in_window` FROM (SELECT `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`Timestamp` > fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_scoped_val` FROM (SELECT `TraceId` AS `TraceId`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` > fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId`)) WHERE (`_cerb_trace_scoped_val` > ?)))) WHERE `Timestamp` > parseDateTime64BestEffort('2024-01-01 00:01:00.000000000Z', 9) - toIntervalNanosecond(60000000000) AND `Timestamp` <= parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) UNION ALL (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(0, 2))) AS `anchor_ts`, 0 AS `in_window` FROM (SELECT 1 FROM `system`.`one`))) GROUP BY `anchor_ts`
