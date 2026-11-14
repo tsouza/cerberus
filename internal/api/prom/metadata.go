@@ -265,8 +265,10 @@ func parseMetadataWindow(r *http.Request) (start, end time.Time, err error) {
 // unionLabelValuesSQL) emit no WHERE at all: the horizon rides as
 // `GROUP BY <series keys> HAVING max(TimeUnix) >= start`, an aggregate
 // predicate ClickHouse serves from the proj_series aggregating projection
-// instead of the fact table. `end` is unused there — it is "now", and
-// samples are never future-dated. The one exception is the resource-label
+// instead of the fact table. `end` is unused there: a request without one
+// has no upper bound (Prometheus reads a missing end as its maximum time), so
+// a sample at any time at or after start counts, future-dated ones included.
+// The one exception is the resource-label
 // arm (unionResourceLabelNamesSQL), which has no now-anchored form and
 // takes the derived [start,end] as a literal WHERE — that arm, and the
 // !nowAnchored path where a request supplies its own finite range, are
@@ -402,9 +404,9 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 	// nowAnchored is true when the request supplies no explicit upper bound,
 	// so the effective window's end is "now or open" — the case where the
 	// metric-name enumeration can answer exactly from the max(TimeUnix)
-	// aggregating projection (max(TimeUnix) >= start ⇔ a sample exists in
-	// [start, now], since samples are never future-dated). A user-supplied
-	// finite end stays on the exact WHERE-bounded scan.
+	// aggregating projection (max(TimeUnix) >= start ⇔ a sample exists at or
+	// after start, the window having no upper bound). A user-supplied finite
+	// end stays on the exact WHERE-bounded scan.
 	nowAnchored := endT.IsZero()
 	startT, endT = h.boundMetadataWindow(startT, endT)
 
@@ -565,9 +567,9 @@ func (h *Handler) fetchMetricMeta(ctx context.Context, metricName string, start,
 //
 //   - nowAnchored (the /api/v1/metadata listing, which takes no time params, so
 //     its window always ends "now"): the bound is an aggregate-only
-//     `HAVING max(TimeUnix) >= <start>`. Because samples are never future-dated,
-//     the metric-NAME set this returns is exactly the WHERE-bounded form's — a
-//     name passes iff it has a sample in [start, now]. The description/unit pick
+//     `HAVING max(TimeUnix) >= <start>`. The window has no upper bound, so the
+//     metric-NAME set this returns is exact — a name passes iff it has a
+//     sample at or after start, future-dated ones included. The description/unit pick
 //     is the honest caveat: unlike the WHERE-bounded form, this `GROUP BY
 //     MetricName` carries no time filter (the HAVING gates which names pass, not
 //     which rows the aggregate sees), so any(MetricDescription) / any(MetricUnit)
@@ -1746,8 +1748,9 @@ func (h *Handler) metadataWindowPred(ctx context.Context, start, end time.Time) 
 }
 
 // metadataSincePred builds the `max(TimeUnix) >= start` HAVING bound the
-// now-anchored discovery arms carry: a series or name has a sample in
-// [start, now] exactly when its latest sample is at or after start. It
+// now-anchored discovery arms carry: a series or name has a sample at or
+// after start, in a window with no upper bound, exactly when its latest
+// sample is at or after start. It
 // takes the exact form [chplan.AtLeastBound] gives it, and it is nil when
 // start is zero or no stored sample can lie before it.
 func (h *Handler) metadataSincePred(ctx context.Context, start time.Time) chsql.Frag {
@@ -1768,10 +1771,10 @@ func (h *Handler) metadataSincePred(ctx context.Context, start time.Time) chsql.
 //   - nowAnchored (the Grafana metric-picker case: no explicit end, so the
 //     window ends "now" or is open-ended): each arm is
 //     `SELECT MetricName AS value FROM <t> GROUP BY MetricName
-//     HAVING max(TimeUnix) >= <start>`. Because samples are never
-//     future-dated, max(TimeUnix) >= start ⇔ the name has a sample in
-//     [start, now] — byte-for-byte the same name set as the WHERE-bounded
-//     DISTINCT, but the aggregate-only predicate is served from the
+//     HAVING max(TimeUnix) >= <start>`. The window has no upper bound, so
+//     max(TimeUnix) >= start ⇔ the name has a sample at or after start —
+//     the same name set as `WHERE TimeUnix >= <start>` DISTINCT, future-dated
+//     samples included, but the aggregate-only predicate is served from the
 //     `proj_series` aggregating projection (GROUP BY MetricName, Attributes
 //     carrying max(TimeUnix)) instead of full-scanning the fact table.
 //     ClickHouse re-aggregates the finer (MetricName, Attributes) projection

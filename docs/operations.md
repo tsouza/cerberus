@@ -1772,9 +1772,9 @@ filter cannot use a projection), which ClickHouse 26.x routes to the
 matching projection, reading a sub-megabyte pre-aggregated part instead of
 the fact table. Without the projection these enumerations full-scan the
 metrics tables — on a real deployment ~4 billion rows / ~140 GiB / ~10 s for
-a single refresh. The result set is identical: because samples are never
-future-dated, `max(TimeUnix) >= lookback` is true for exactly the
-names / values with a sample in `[lookback, now]`. A routing regression on a
+a single refresh. The result set is identical: the window has no upper
+bound, so `max(TimeUnix) >= lookback` is true for exactly the names / values
+with a sample at or after `lookback`, future-dated ones included. A routing regression on a
 ClickHouse upgrade is caught by the EXPLAIN + `read_rows` guard in
 `internal/api/prom/metadata_scan_bound_explain_chdb_test.go` (the routed read
 must stay orders below the unprojected baseline), so a silent fall-back to
