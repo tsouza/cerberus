@@ -162,8 +162,9 @@ type apiHeads struct {
 //
 // cfg.ClickHouse.MaxQueryMemoryBytes is the loaded ClickHouse per-query
 // memory cap. It is not itself a bound: it is the byte budget cerberus issue
-// #3252's samples-per-series-per-window ceiling is DERIVED from when no
-// explicit override pins it, in the same sentinel-0 shape
+// #3252's samples-per-series-per-window ceiling and the classic-histogram
+// bucket-merge ceiling are DERIVED from when no explicit override pins them,
+// in the same sentinel-0 shape
 // CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS already uses. Passing
 // it here rather than re-reading the env keeps ONE resolution of the cap —
 // the loader's, which also applies the nested-YAML alias and the byte-size

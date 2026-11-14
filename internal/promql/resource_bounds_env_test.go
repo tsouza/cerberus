@@ -3,13 +3,15 @@ package promql
 import (
 	"strings"
 	"testing"
+
+	"github.com/tsouza/cerberus/internal/config"
 )
 
 // TestResourceBoundsFromEnv_DefaultsUnset confirms that with neither
 // CERBERUS_PROMQL_*_MAX_COST_UNITS var set, ResourceBoundsFromEnv returns
-// exactly DefaultResourceBounds — the same maxHistogramMergeCostUnits /
-// maxClassicBucketMergeEntries constants every lowering path enforced
-// before cerberus issue #2667 added this override surface.
+// exactly DefaultResourceBounds — the maxHistogramMergeCostUnits constant,
+// with the classic bucket-merge ceiling left unset for withDefaults to
+// derive from the ClickHouse memory cap.
 func TestResourceBoundsFromEnv_DefaultsUnset(t *testing.T) {
 	t.Setenv(EnvHistogramMergeMaxCostUnits, "")
 	t.Setenv(EnvClassicBucketMergeMaxEntries, "")
@@ -26,17 +28,16 @@ func TestResourceBoundsFromEnv_DefaultsUnset(t *testing.T) {
 		t.Fatalf("HistogramMergeMaxCostUnits = %d, want the maxHistogramMergeCostUnits constant %d",
 			got.HistogramMergeMaxCostUnits, maxHistogramMergeCostUnits)
 	}
-	if got.ClassicBucketMergeMaxEntries != maxClassicBucketMergeEntries {
-		t.Fatalf("ClassicBucketMergeMaxEntries = %d, want the maxClassicBucketMergeEntries constant %d",
-			got.ClassicBucketMergeMaxEntries, maxClassicBucketMergeEntries)
+	if got.ClassicBucketMergeMaxEntries != 0 {
+		t.Fatalf("ClassicBucketMergeMaxEntries = %d, want 0: unset, it is derived from CHQueryMaxMemory",
+			got.ClassicBucketMergeMaxEntries)
 	}
 }
 
 // TestResourceBoundsFromEnv_HistogramMergeOverride confirms
 // CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS overrides
-// HistogramMergeMaxCostUnits alone, leaving ClassicBucketMergeMaxEntries at
-// its own default — the two knobs are independent (cerberus issue #2667
-// covers two DISJOINT constants, not one shared ceiling).
+// HistogramMergeMaxCostUnits alone, leaving ClassicBucketMergeMaxEntries
+// unset for its own derivation — the two knobs are independent.
 func TestResourceBoundsFromEnv_HistogramMergeOverride(t *testing.T) {
 	t.Setenv(EnvHistogramMergeMaxCostUnits, "123456789")
 	t.Setenv(EnvClassicBucketMergeMaxEntries, "")
@@ -48,9 +49,9 @@ func TestResourceBoundsFromEnv_HistogramMergeOverride(t *testing.T) {
 	if got.HistogramMergeMaxCostUnits != 123456789 {
 		t.Fatalf("HistogramMergeMaxCostUnits = %d, want 123456789 (the env override)", got.HistogramMergeMaxCostUnits)
 	}
-	if got.ClassicBucketMergeMaxEntries != maxClassicBucketMergeEntries {
-		t.Fatalf("ClassicBucketMergeMaxEntries = %d, want the untouched default %d",
-			got.ClassicBucketMergeMaxEntries, maxClassicBucketMergeEntries)
+	if got.ClassicBucketMergeMaxEntries != 0 {
+		t.Fatalf("ClassicBucketMergeMaxEntries = %d, want it left unset (0) for the derivation",
+			got.ClassicBucketMergeMaxEntries)
 	}
 }
 
@@ -117,9 +118,9 @@ func TestResourceBoundsFromEnv_NonPositiveFailsFast(t *testing.T) {
 	}
 }
 
-// TestResourceBounds_WithDefaults confirms the zero value resolves each
+// TestResourceBounds_WithDefaults confirms the zero value resolves the
 // constant-defaulted field from DefaultResourceBounds, that the DERIVED
-// field resolves from CHQueryMaxMemory instead (it is deliberately absent
+// fields resolve from CHQueryMaxMemory instead (they are deliberately absent
 // from DefaultResourceBounds, so the two are not field-by-field equal), and
 // that a fully-populated value passes through unchanged — the resolution
 // [Lower] / [LowerAt] / [LowerAtRange] / [LowerAtRangeOpts] /
@@ -129,8 +130,11 @@ func TestResourceBounds_WithDefaults(t *testing.T) {
 	if got, want := zero.HistogramMergeMaxCostUnits, int64(maxHistogramMergeCostUnits); got != want {
 		t.Fatalf("HistogramMergeMaxCostUnits = %d, want the shipped default %d", got, want)
 	}
-	if got, want := zero.ClassicBucketMergeMaxEntries, int64(maxClassicBucketMergeEntries); got != want {
-		t.Fatalf("ClassicBucketMergeMaxEntries = %d, want the shipped default %d", got, want)
+	if got, want := zero.ClassicBucketMergeMaxEntries, ClassicBucketMergeEntriesForMemory(0); got != want {
+		t.Fatalf("ClassicBucketMergeMaxEntries = %d for an unset cap, want the derived %d", got, want)
+	}
+	if DefaultResourceBounds().ClassicBucketMergeMaxEntries != 0 {
+		t.Fatal("DefaultResourceBounds must leave ClassicBucketMergeMaxEntries unset: it is derived from CHQueryMaxMemory, not a shipped constant")
 	}
 	// The exp-histogram ceiling is derived from the deployment's ClickHouse
 	// cap rather than defaulted from a constant, so it is absent from
@@ -170,9 +174,9 @@ func TestResourceBounds_WithDefaults(t *testing.T) {
 	if got.HistogramMergeMaxCostUnits != 7 {
 		t.Fatalf("HistogramMergeMaxCostUnits = %d, want the explicit 7 preserved", got.HistogramMergeMaxCostUnits)
 	}
-	if got.ClassicBucketMergeMaxEntries != maxClassicBucketMergeEntries {
-		t.Fatalf("ClassicBucketMergeMaxEntries = %d, want the unset field filled with the default %d",
-			got.ClassicBucketMergeMaxEntries, maxClassicBucketMergeEntries)
+	if want := ClassicBucketMergeEntriesForMemory(0); got.ClassicBucketMergeMaxEntries != want {
+		t.Fatalf("ClassicBucketMergeMaxEntries = %d, want the unset field derived as %d",
+			got.ClassicBucketMergeMaxEntries, want)
 	}
 }
 
@@ -200,7 +204,8 @@ func TestEnvVarNames(t *testing.T) {
 // TestResourceBoundsFromEnv_RetiredClassicMergeNameIsIgnored pins the rename
 // of the classic bucket-merge ceiling: its old name counted a different unit,
 // so a value under it is never read as an entry count. Alone it leaves the
-// default ceiling and yields a warning naming the replacement; beside the new
+// ceiling unset for the derivation from the ClickHouse memory cap and yields
+// a warning naming the replacement; beside the new
 // name the new value applies and the warning is still reported; the new name
 // alone yields no warning.
 func TestResourceBoundsFromEnv_RetiredClassicMergeNameIsIgnored(t *testing.T) {
@@ -212,7 +217,7 @@ func TestResourceBoundsFromEnv_RetiredClassicMergeNameIsIgnored(t *testing.T) {
 		wantCeiling int64
 		wantWarning bool
 	}{
-		{"retired alone", "50000000", "", maxClassicBucketMergeEntries, true},
+		{"retired alone", "50000000", "", 0, true},
 		{"both set", "50000000", "1234", pinned, true},
 		{"current alone", "", "1234", pinned, false},
 	} {
@@ -245,5 +250,52 @@ func TestResourceBoundsFromEnv_RetiredClassicMergeNameIsIgnored(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestClassicBucketMergeMaxEntries_DerivedFromCHQueryMaxMemory pins the
+// classic bucket-merge ceiling to the ClickHouse per-query memory cap the
+// merge runs under: unset, the ceiling at a 512 MiB cap is half the ceiling at
+// the 1 GiB default and the one at a 2 GiB cap twice it, an unset cap sizes it
+// against the shipped default cap, and an explicit ceiling wins over the
+// derivation at any cap.
+func TestClassicBucketMergeMaxEntries_DerivedFromCHQueryMaxMemory(t *testing.T) {
+	// shippedDefaultCeiling is the ceiling docs/operations.md and
+	// docs/configuration.md state for the 1 GiB default cap.
+	const shippedDefaultCeiling int64 = 2_982_616
+	const halfGiB = config.DefaultCHQueryMaxMemory / 2
+	ceilingAt := func(chQueryMaxMemory int64) int64 {
+		return ResourceBounds{CHQueryMaxMemory: chQueryMaxMemory}.withDefaults().ClassicBucketMergeMaxEntries
+	}
+
+	atDefault := ceilingAt(config.DefaultCHQueryMaxMemory)
+	if atDefault != shippedDefaultCeiling {
+		t.Fatalf("ceiling at the %d-byte default cap = %d, want %d", config.DefaultCHQueryMaxMemory, atDefault, shippedDefaultCeiling)
+	}
+	if got, want := ceilingAt(halfGiB), atDefault/2; got != want {
+		t.Fatalf("ceiling at a %d-byte cap = %d, want half the default cap's %d: %d", halfGiB, got, atDefault, want)
+	}
+	if got, want := ceilingAt(2*config.DefaultCHQueryMaxMemory), 2*atDefault; got != want {
+		t.Fatalf("ceiling at a %d-byte cap = %d, want twice the default cap's %d: %d", 2*config.DefaultCHQueryMaxMemory, got, atDefault, want)
+	}
+	if got := ceilingAt(0); got != atDefault {
+		t.Fatalf("ceiling for an unset cap = %d, want the default cap's %d", got, atDefault)
+	}
+
+	const pinned int64 = 42
+	explicit := ResourceBounds{ClassicBucketMergeMaxEntries: pinned, CHQueryMaxMemory: halfGiB}.withDefaults()
+	if explicit.ClassicBucketMergeMaxEntries != pinned {
+		t.Fatalf("ceiling with an explicit %d at a %d-byte cap = %d, want the explicit value", pinned, halfGiB, explicit.ClassicBucketMergeMaxEntries)
+	}
+
+	// The boot path resolves through ResourceBoundsFrom and then sets the
+	// cap; an unset override must leave the derivation to the cap.
+	booted, err := ResourceBoundsFrom(func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("ResourceBoundsFrom: %v", err)
+	}
+	booted.CHQueryMaxMemory = halfGiB
+	if got, want := booted.withDefaults().ClassicBucketMergeMaxEntries, atDefault/2; got != want {
+		t.Fatalf("boot-resolved ceiling at a %d-byte cap = %d, want %d", halfGiB, got, want)
 	}
 }

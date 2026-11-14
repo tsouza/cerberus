@@ -2356,7 +2356,7 @@ const defaultCHQueryMaxMemory int64 = DefaultCHQueryMaxMemory
 // but it excludes _test.go, so the derivation is pinned where it belongs,
 // in engine's own test, against this constant instead of a local literal
 // that a bump to the default would leave behind.
-const DefaultCHQueryMaxMemory int64 = 1 << 30 // 1073741824 bytes
+const DefaultCHQueryMaxMemory int64 = bytesPerGiB // 1073741824 bytes
 
 // ClickHouse connection-pool defaults (#81). MaxIdleConns / MaxOpenConns
 // reproduce clickhouse-go/v2's previously-implicit defaults verbatim so the

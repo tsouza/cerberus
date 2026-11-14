@@ -63,9 +63,9 @@ type lang struct {
 	// promql.ResourceBoundsFromEnv) and into the offline explain langs
 	// (NewExplainLang / NewExplainLangRange) from the same resolution, so
 	// the preview lowers under the bounds the server does. The zero value
-	// resolves to promql.DefaultResourceBounds() at
-	// promql.LowerAtRangeOpts's own entry seam — mirroring how a zero
-	// Lowerers keeps the all-fan-out default.
+	// resolves to promql.DefaultResourceBounds() plus the ceilings derived
+	// for no ClickHouse memory cap at promql.LowerAtRangeOpts's own entry
+	// seam — mirroring how a zero Lowerers keeps the all-fan-out default.
 	ResourceBounds promql.ResourceBounds
 
 	// TagGroups threads chopt.FeatureTSGridTagGroups's resolved verdict

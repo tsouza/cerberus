@@ -465,12 +465,15 @@ instead (` + "`internal/engine/resource_bound_env.go`" + `,
   ` + "`60000000`" + `) - the native-histogram across-series merge cost ceiling that
   closed issue #2385 after 19 real production OOMs
   (` + "`internal/promql/histogram_merge_bound.go`" + `, ` + "`maxHistogramMergeCostUnits`" + `).
-- **` + "`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES`" + `** (int64, default
-  ` + "`2982616`" + `) - the classic-histogram across-series bucket-merge ceiling: the
+- **` + "`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES`" + `** (int64, no
+  fixed default) - the classic-histogram across-series bucket-merge ceiling: the
   most bucket entries one query may merge (every per-series row's finite bounds
   plus its +Inf rung, summed across every group and step)
   (` + "`internal/promql/classic_bucket_merge_bound.go`" + `,
-  ` + "`maxClassicBucketMergeEntries`" + `). It replaces
+  ` + "`ClassicBucketMergeEntriesForMemory`" + `). Unset, the ceiling is derived from
+  ` + "`CERBERUS_CH_QUERY_MAX_MEMORY`" + ` as 75% of the cap at 270 bytes per entry
+  (so ` + "`2982616`" + ` at the 1 GiB default, and the 1 GiB value when the cap is
+  ` + "`0`" + `). Setting a positive value pins it and opts out of the derivation. It replaces
   ` + "`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS`" + `, which counted a
   different unit; the old name is ignored, and setting it logs a startup warning
   naming this one.
@@ -488,7 +491,8 @@ instead (` + "`internal/engine/resource_bound_env.go`" + `,
   ` + "`S`" + ` is how many samples one series contributes to one window and
   ` + "`W`" + ` its widest stored bucket array
   (` + "`internal/promql/exp_histogram_window_sample_bound.go`" + `).
-  Unlike the seven above it has **no fixed default**: unset, the ceiling is
+  Like the fan-out fold-cost and classic bucket-merge ceilings above it has
+  **no fixed default**: unset, the ceiling is
   derived from ` + "`CERBERUS_CH_QUERY_MAX_MEMORY`" + `, because the units it
   counts are a proxy for bytes and the byte budget is itself configurable -
   the same reasoning

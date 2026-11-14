@@ -846,7 +846,7 @@ within 0.1% at 25,000 x 50 disjoint series on both builds, costs 3-7% less per
 entry on 26.8 and 11-16% more on 26.6 on the larger disjoint layouts, and costs
 far less on a shared one, and whether that earns AutoSelect is
 [#4079](https://github.com/tsouza/cerberus/issues/4079). The
-`maxClassicBucketMergeEntries` guard bounds this path too, so no second
+`ClassicBucketMergeMaxEntries` guard bounds this path too, so no second
 ceiling exists.
 
 `exp_histogram_merge_summap`'s reconstruction step is width-squared in the

@@ -1314,7 +1314,7 @@ const (
 	// disjoint layouts, and far lower on a shared one; whether that earns
 	// AutoSelect is
 	// https://github.com/tsouza/cerberus/issues/4079. The bucket-merge
-	// guard ([maxClassicBucketMergeEntries]) bounds this path too, so no
+	// guard (promql's ResourceBounds.ClassicBucketMergeMaxEntries) bounds this path too, so no
 	// second, sumMap-specific ceiling exists. The feature is reachable by
 	// explicit CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap listing.
 	//
