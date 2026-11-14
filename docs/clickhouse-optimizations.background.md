@@ -1243,6 +1243,104 @@ back to back. Ten seconds keeps that worst case at the floor fallback's own
 retry rate, and puts the first early probe within one dashboard refresh of the
 rollback.
 
+## Why replicas behind a load balancer are remembered by identity
+
+ClickHouse replicas can sit behind one load-balanced address with no cluster
+named to enumerate them. Each probe opens a new connection, the balancer picks
+the replica, and the probe reports every configured address reached. Before
+cerberus remembered servers, the fleet was whichever replica the last probe
+landed on. During a rolling rollback the version therefore followed the
+probes: a probe that landed on the rolled-back replica withdrew the
+version-gated functions (`argAndMax`, `timeSeriesThrowDuplicateSeriesIf`, the
+`timeSeries*ToGrid` family), and the next probe that landed on a newer replica
+brought them back. Every function rejection requested an early probe, so the
+resolution flapped every few probes, and the rolled-back replica answered
+HTTP 502 to every such query in between for as long as the fleet stayed mixed.
+A droppable setting never showed this, because the client retries without it.
+
+Three other designs were rejected:
+
+- **Read the replica list from `system.clusters`.** A `remote_servers` entry
+  describes the topology an operator configured for distributed queries, not
+  the set of servers a load balancer fronts. Replicas behind a balancer are
+  often in no cluster at all, and when they are, naming that cluster in
+  `CERBERUS_SCHEMA_CLUSTER` already enumerates them.
+- **Treat a pass through one address as incomplete, able to lower the version
+  but never raise it.** Cerberus cannot tell a balancer from a single server by
+  its address. Every single-address deployment would then stay on the oldest
+  build it ever saw, and a rolling upgrade would never be picked up without a
+  restart.
+- **Hold the lower build for a while after a function rejection.** Once the
+  set no longer carries the function, the replica stops rejecting, so a timer
+  has no evidence that the replica still serves. It either expires while the
+  replica serves on the old build, and the 502s return, or outlives the
+  rollback and holds the version down for nothing. Without an identity it
+  also cannot see the replica roll forward.
+
+Remembering each server by identity gives positive evidence both ways. A
+replica that rolls forward reports the newer build under the same identity, so
+the fleet rises on the first probe that lands on it, with no wait. A replica
+that serves keeps being reached, so its entry keeps being refreshed.
+
+**Why `serverUUID()` rather than `hostName()`.** The server generates the UUID
+on first start and keeps it in its data directory, so it names one server
+across restarts and builds. A host name can be shared: two servers on one host,
+reached through one balancer on different ports, would collapse into one entry
+that flips between their builds, which is the flapping memory exists to stop.
+A server whose data directory does not survive a restart gets a new UUID, and
+its old entry is forgotten like a server that left. Servers cloned from one
+data directory share a UUID too. Within one probe the older build of a shared
+UUID is kept, so the cluster read stays as exact as the version-only read it
+replaced; behind a balancer, clones still overwrite each other's entry from
+probe to probe, which brings the flapping back for them alone.
+
+**Why the retention counts probes, and scales with the fleet.** The chance
+that a serving replica goes unreached depends on how many probes landed
+elsewhere, not on how long they took. Under uniform random routing across N
+replicas, a fixed count of probes leaks as N grows: with 360, a run of misses
+on one replica has probability ((N-1)/N)^360, about 1e-5 for 32 replicas, and
+across a day of 10-second probes a rolled-back replica among 50 would be
+forgotten about one day in eight. Scaling the count to 40 per remembered
+server makes the chance of one run (1-1/N)^(40·N), below e^-40 (about 4e-18)
+for every N, so a year of probes leaves it negligible however large the
+fleet. The remembered count includes servers that have left, which only makes
+the bound more conservative. The cost of the retention falls only on a server
+that left the fleet: its build keeps counting until it is forgotten, which is
+slower, never wrong.
+
+**Why a held fleet probes every 10 seconds.** While cerberus remembers a build
+no server the last probe reached runs, the probes are what refresh that
+server's entry, see it roll forward, or forget it once it leaves. Its build can
+hold the version down, and a newer one can keep a defect gate, the
+condition-cache override or the analyzer decision in force. At the steady
+5-minute cadence a departed server would keep counting for over three hours
+per remembered server. At 10 seconds that is under seven minutes, at the rate
+the loop already runs while a probe misses a node or sits on the floor. A
+fleet whose remembered servers all run builds the last probe reached gains
+nothing from probing faster, and stays at the steady cadence.
+
+**Why an incomplete probe counts no miss.** The server it missed may sit behind
+the address that failed, so the miss says nothing about that server.
+
+**Why a complete probe that read the cluster's replica list replaces the
+memory.** That probe enumerated the fleet, so a server it did not list has
+left. Keeping it for its full retention would delay, for no evidence, the
+raise a scale-down of an old replica allows. This takes the configured
+addresses to front the cluster's replicas; a load balancer over servers the
+named cluster does not list would have them forgotten on every such probe.
+
+**Why a probe that reached no server ignores the memory.** A floor fallback
+holds the pod out of its Service until a probe answers. Resolving against
+remembered builds while no server answers would report a fleet nobody
+reached and lift that hold.
+
+**Why an unchanged pass still records its flags.** A pass whose set, version
+and workload match the resolution in force swaps nothing, and used to store
+nothing either. Its flags were then lost: a floor fallback whose next probe
+answered on the floor's own build kept `/readyz` failing, and a resolution from
+an incomplete or held probe kept that mark after a probe that reached every
+node and every remembered build.
+
 ## Audited, not adopted
 
 Not every settings family the audit epic (#2778) reviews earns a registry
