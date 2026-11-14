@@ -9,7 +9,7 @@ Security fixes land on the current minor release line only — see [`docs/operat
 **Do not open a public PR, GitHub Issue, or GitHub Discussion** for a security report — public disclosure before a patch is ready helps attackers. The secure channels are:
 
 1. **GitHub private vulnerability reporting** — preferred. Click the `Security` tab on <https://github.com/tsouza/cerberus> and use "Report a vulnerability". This routes through GitHub's [private advisory flow](https://docs.github.com/en/code-security/security-advisories) and stays confidential until a fix ships.
-2. **Email** — `maintainers@cerberus.foo` with `[cerberus security]` in the subject if you can't use the GitHub flow.
+2. **Email** — `security@cerberus.foo` with `[cerberus security]` in the subject if you can't use the GitHub flow.
 
 Please include:
 
