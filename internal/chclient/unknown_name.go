@@ -266,21 +266,87 @@ func (c *Client) SetUnknownNameHook(fn func(UnknownNameRejection)) {
 // open the statement under the context it is given; the context returned is
 // the last attempt's, whose per-query settings are the ones the node took.
 func openWithDroppableRetry[T any](c *Client, ctx context.Context, open func(context.Context) (T, error), mayRetry func() bool) (T, context.Context, error) {
-	for {
-		res, err := open(ctx)
-		retryCtx, rej, ok := c.droppableRetryContext(ctx, err)
+	return runDroppableRetry(c.rejections, ctx, open, c.droppableRetryContext, mayRetry)
+}
+
+// maxDroppableAttempts bounds the statements one query sends through
+// runDroppableRetry: the first, and one retry per droppable setting, since
+// every retry drops at least the setting the node rejected.
+func maxDroppableAttempts() int {
+	return len(chopt.DroppableSettings()) + 1
+}
+
+// droppableRetryClassifier is droppableRetryContext's signature: it decides
+// whether err is a rejection of an unknown name, and whether and under which
+// context the statement is sent again.
+type droppableRetryClassifier func(ctx context.Context, err error) (retryCtx context.Context, rej UnknownNameRejection, ok bool)
+
+// runDroppableRetry is openWithDroppableRetry's loop over an injected
+// classifier. It sends at most maxDroppableAttempts statements. A rejection
+// still marked for retry after the last of them means the classifier broke
+// the invariant that every retry carries fewer droppable settings: it is
+// reported as surfaced and answered with a *DroppableRetryInvariantError
+// instead of another round-trip.
+func runDroppableRetry[T any](rep *rejectionReporter, ctx context.Context, open func(context.Context) (T, error), classify droppableRetryClassifier, mayRetry func() bool) (T, context.Context, error) {
+	limit := maxDroppableAttempts()
+	var (
+		res T
+		err error
+		rej UnknownNameRejection
+	)
+	for attempt := 1; attempt <= limit; attempt++ {
+		res, err = open(ctx)
+		retryCtx, classified, ok := classify(ctx, err)
 		if !ok {
 			return res, ctx, err
 		}
+		rej = classified
 		if rej.Retried && mayRetry != nil && !mayRetry() {
 			rej.Retried = false
 		}
-		c.rejections.report(rej)
+		if rej.Retried && attempt == limit {
+			break
+		}
+		rep.report(rej)
 		if !rej.Retried {
 			return res, ctx, err
 		}
 		ctx = retryCtx
 	}
+	rej.Retried = false
+	rep.report(rej)
+	return res, ctx, &DroppableRetryInvariantError{Setting: rej.Name, Attempts: limit, Cause: translateCHGoErr(err)}
+}
+
+// ErrDroppableRetryInvariant is the sentinel a *DroppableRetryInvariantError
+// unwraps to.
+var ErrDroppableRetryInvariant = errors.New("chclient: internal invariant broken: the droppable-setting retry did not converge")
+
+// DroppableRetryInvariantError is a query the droppable-setting retry gave up
+// on because the node still rejected a droppable setting after
+// maxDroppableAttempts statements. Every retry drops at least the rejected
+// setting, so reaching the bound is a cerberus bug, never a node's answer;
+// Cause is the node's last rejection.
+type DroppableRetryInvariantError struct {
+	Setting  string
+	Attempts int
+	Cause    error
+}
+
+func (e *DroppableRetryInvariantError) Error() string {
+	return fmt.Sprintf(
+		"chclient: internal invariant broken: a ClickHouse node still rejected droppable setting %s after %d statements, "+
+			"although every retry drops at least the rejected setting; the query was not sent again",
+		e.Setting, e.Attempts,
+	)
+}
+
+// Unwrap exposes the sentinel and the node's last rejection.
+func (e *DroppableRetryInvariantError) Unwrap() []error {
+	if e.Cause == nil {
+		return []error{ErrDroppableRetryInvariant}
+	}
+	return []error{ErrDroppableRetryInvariant, e.Cause}
 }
 
 // capabilityCanaryKeyType keys the capability-canary mark on a context.

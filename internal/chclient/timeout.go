@@ -227,9 +227,14 @@ func QueryTimeoutFromContext(ctx context.Context) (time.Duration, bool) {
 // It is the single wrap site every data-plane query method routes its
 // open-time and drain-time errors through, replacing the bare
 // wrapMemoryLimit call so the memory + throwIf + distributed-shard +
-// timeout classifications stay in lock-step across all of them.
+// timeout classifications stay in lock-step across all of them. A
+// *DroppableRetryInvariantError is returned as is: it is a cerberus bug, not
+// the node's rejection its cause records.
 func (c *Client) classifyDriverErr(ctx context.Context, err error) error {
-	return wrapQueryTimeout(wrapThrowIf(wrapUnknownName(wrapGateSettingUnsupported(wrapDistributedShardErr(wrapMemoryLimit(err, c.maxMemory))))), c.effectiveQueryTimeout(ctx))
+	if errors.Is(err, ErrDroppableRetryInvariant) {
+		return err
+	}
+	return wrapQueryTimeout(wrapThrowIf(wrapUnknownName(wrapGateSettingUnsupported(wrapDistributedShardErr(wrapMemoryLimit(err, c.maxMemory)), c.querySettings(ctx)))), c.effectiveQueryTimeout(ctx))
 }
 
 // hiddenDeadlineContext hides ctx's own Deadline() from anything reading it
