@@ -119,11 +119,11 @@ func TestRefreshConditionCacheOverride_SharedByHeadViews(t *testing.T) {
 		return chclient.FleetVersions{Versions: []chopt.Version{v}, Complete: true}
 	}
 
-	refreshConditionCacheOverride(quietLogger(), client, probe(ccUnsafeBuild))
+	refreshConditionCacheOverride(quietLogger(), client, probe(ccUnsafeBuild), client.QueryConditionCacheDisabled())
 	if !view.QueryConditionCacheDisabled() {
 		t.Fatal("override off on a head view after an unsafe fleet probe")
 	}
-	refreshConditionCacheOverride(quietLogger(), client, probe(ccFixedBuild))
+	refreshConditionCacheOverride(quietLogger(), client, probe(ccFixedBuild), client.QueryConditionCacheDisabled())
 	if view.QueryConditionCacheDisabled() {
 		t.Fatal("override still on on a head view after every node answered from a fixed build")
 	}

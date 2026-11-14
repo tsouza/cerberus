@@ -807,6 +807,26 @@ lifted by any answer. A probe that reaches no node falls back to the supported
 floor. The boot log lists every build the probe read (`fleet_versions`) and
 whether it reached every node (`fleet_probe_complete`).
 
+A probe that reaches only some of the nodes keeps every
+[defect gate](#known-defective-server-builds) already in force. When nothing
+is in force to keep — at boot, or on the first probe after a floor fallback —
+it starts every defect gate whose setting the lowest reached build accepts
+([Mixed-version fleets](#mixed-version-fleets)), on top of what the reached
+builds carry themselves:
+
+| Gate                                                 | Started on when the lowest reached build is |
+| ---------------------------------------------------- | ------------------------------------------- |
+| The `use_query_condition_cache=0` override           | `25.3` or later                             |
+| [ClickHouse#119168](#shape-scoped-defects)'s gate    | `25.3` or later                             |
+| The two `optimize_use_projection_filtering` gates    | `25.6` or later                             |
+
+The analyzer decision gets no such start: at boot it follows the reached
+builds alone. Boot logs a `WARN`
+(`clickhouse fleet probe did not reach every node`) naming the builds it read.
+Until a probe reaches every node, the [re-probe](#re-probe) runs every 10
+seconds; the first probe that reaches every node decides every gate from the
+whole fleet, which lifts each one no node needs.
+
 Feature floors are bare `major.minor` values, so every build of a floor's minor
 meets it. [Known-defective build](#known-defective-server-builds) ranges are
 the one place patch and build decide the answer, because an upstream fix
@@ -972,6 +992,16 @@ behind a load balancer that neither the configured addresses nor
 `CERBERUS_SCHEMA_CLUSTER` name — keeps rejecting, and keeps requesting a probe
 at most every 10 seconds.
 
+A node newer than the set in force accounts for can reject a query too: a
+node on 26.9 refuses the `enable_analyzer=0` cerberus stamps on
+native-histogram plans while no reached node runs 26.9 or later, with
+`SETTING_CONSTRAINT_VIOLATION` (code 452) and the message `Setting
+'enable_analyzer' cannot be disabled: the analyzer is mandatory`. That
+rejection requests the same early re-probe, which withholds the stamp once it
+reaches the node. The query is answered with HTTP 502 and is not retried, and
+the rejection is not counted on `cerberus_ch_unknown_name_rejections_total`;
+its early-probe log line carries `analyzer_mandatory=true`.
+
 What the rejected query itself returns depends on the name:
 
 | Name rejected                                  | The rejected query                                                                                                                                  |
@@ -1017,7 +1047,8 @@ each early probe a rejection moves forward is logged once:
 
 ```text
 level=WARN msg="clickhouse node rejected a setting cerberus sent; re-probing the fleet early"
-  name=enable_adaptive_aggregator node_version="" retried_without_droppable_settings=true reprobe_in=0s
+  name=enable_adaptive_aggregator node_version="" retried_without_droppable_settings=true analyzer_mandatory=false
+  reprobe_in=0s
 ```
 
 ## Known-defective server builds
@@ -1054,8 +1085,9 @@ and, when `CERBERUS_SCHEMA_CLUSTER` is set, every replica of that cluster
 [re-probe](#re-probe) pass, independently of whether that pass's resolution
 succeeded or changed anything. It lifts only once every node answers from a
 fixed build; a pass that could not reach every node and saw no affected build
-leaves it as it was. A change is logged (`query condition cache override
-changed`).
+leaves it as it was, or — at boot and after a floor fallback — engages it
+([Runtime version probe](#runtime-version-probe)). A change is logged (`query
+condition cache override changed`).
 
 A node that predates `use_query_condition_cache` (below `25.3`) rejects every
 query the override stamps
@@ -1107,8 +1139,10 @@ The defects in force are logged with the resolution (`shape_defects` on the
 boot line and on a re-probe transition) and decided across the fleet the same
 way as the analyzer posture: one reachable node on an affected build puts a
 defect in force; it lifts only once a complete pass finds no node inside its
-range. Each in-force defect also appears in a dispatched query's recorded
-optimization posture as `shape_defect.<id>`.
+range. A pass that could not reach every node starts it at boot and after a
+floor fallback ([Runtime version probe](#runtime-version-probe)). Each
+in-force defect also appears in a dispatched query's recorded optimization
+posture as `shape_defect.<id>`.
 
 ### Mixed-version fleets
 

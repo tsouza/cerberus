@@ -20,6 +20,10 @@ import (
 // know a function the statement calls, and rejects the whole query.
 const chCodeUnknownFunction = 46
 
+// chCodeSettingConstraintViolation is ClickHouse's
+// SETTING_CONSTRAINT_VIOLATION: the server refuses a value the query sets.
+const chCodeSettingConstraintViolation = 452
+
 // The two kinds of name a node can be too old for.
 const (
 	unknownNameSetting  = "setting"
@@ -44,6 +48,14 @@ var (
 		regexp.MustCompile("Function with name [`']([^`']+)[`'] does not exist"),
 		regexp.MustCompile(`Unknown function ([A-Za-z0-9_]+)`),
 	}
+	// analyzerMandatoryPattern reads the setting a node on a build whose
+	// analyzer is mandatory (chopt.AnalyzerMandatorySince) refuses to set to
+	// 0, off its SETTING_CONSTRAINT_VIOLATION. 26.9 answers it with the same
+	// wording over both protocols: "Setting 'enable_analyzer' cannot be
+	// disabled: the analyzer is mandatory since v26.9 and the old query
+	// analysis is no longer supported. ..." (allow_experimental_analyzer, its
+	// alias, is named the same way).
+	analyzerMandatoryPattern = regexp.MustCompile(`Setting '([^']+)' cannot be disabled: the analyzer is mandatory`)
 	// serverVersionPattern reads the build ClickHouse appends to an exception
 	// it answers over HTTP, "(version 26.6.8.7 (official build))". The native
 	// protocol carries no build in the exception.
@@ -85,6 +97,25 @@ func parseUnknownName(err error) (unknownName, bool) {
 		}
 	}
 	return unknownName{}, false
+}
+
+// parseAnalyzerMandatory reports the setting a ClickHouse exception refused
+// because the node's analyzer is mandatory, with the node's build when the
+// exception carries one. ok is false for every other error.
+func parseAnalyzerMandatory(err error) (unknownName, bool) {
+	var ex *clickhouse.Exception
+	if err == nil || !errors.As(err, &ex) || ex.Code != chCodeSettingConstraintViolation {
+		return unknownName{}, false
+	}
+	m := analyzerMandatoryPattern.FindStringSubmatch(ex.Message)
+	if m == nil {
+		return unknownName{}, false
+	}
+	u := unknownName{kind: unknownNameSetting, name: m[1]}
+	if v := serverVersionPattern.FindStringSubmatch(ex.Message); v != nil {
+		u.nodeVersion = v[1]
+	}
+	return u, true
 }
 
 // ErrNodeTooOld is the sentinel every rejection of a setting or function a
@@ -144,7 +175,8 @@ func wrapUnknownName(err error) error {
 }
 
 // UnknownNameRejection describes one query a ClickHouse node rejected because
-// it does not know a setting or function cerberus sent.
+// it does not know a setting or function cerberus sent, or — AnalyzerMandatory
+// — because it refuses the enable_analyzer=0 cerberus sent.
 type UnknownNameRejection struct {
 	// Kind is "setting" or "function".
 	Kind string
@@ -155,6 +187,11 @@ type UnknownNameRejection struct {
 	// query carried, so the query was sent again without the droppable
 	// settings released at or after it.
 	Retried bool
+	// AnalyzerMandatory reports that the node knows the setting Name but
+	// refused to disable the analyzer with it: the node runs a build whose
+	// analyzer is mandatory (chopt.AnalyzerMandatory), which the set in force
+	// does not account for. The query is not retried.
+	AnalyzerMandatory bool
 }
 
 // Actions an UnknownNameRejection ends in, the action attribute of
@@ -224,6 +261,12 @@ func (r *rejectionReporter) report(rej UnknownNameRejection) {
 	if r == nil {
 		return
 	}
+	r.count(rej)
+	r.notify(rej)
+}
+
+// count adds rej to cerberus_ch_unknown_name_rejections_total.
+func (r *rejectionReporter) count(rej UnknownNameRejection) {
 	if r.rejections != nil {
 		action := rejectionActionSurfaced
 		if rej.Retried {
@@ -235,6 +278,13 @@ func (r *rejectionReporter) report(rej UnknownNameRejection) {
 			attrRejectionAction.String(action),
 		))
 	}
+}
+
+// notify hands rej to the hook.
+func (r *rejectionReporter) notify(rej UnknownNameRejection) {
+	if r == nil {
+		return
+	}
 	if fn := r.hook.Load(); fn != nil {
 		(*fn)(rej)
 	}
@@ -242,9 +292,12 @@ func (r *rejectionReporter) report(rej UnknownNameRejection) {
 
 // SetUnknownNameHook installs fn, called once for every query a ClickHouse
 // node rejects because it does not know a setting or function the query
-// carried, whether or not the query was retried. cmd/cerberus installs the
-// capability re-probe's early trigger here. fn runs on the query's goroutine
-// and must not block. The hook is shared by every ForHead view of the client.
+// carried, whether or not the query was retried, and once for every query a
+// node rejects because its analyzer is mandatory and the query set
+// enable_analyzer=0 (UnknownNameRejection.AnalyzerMandatory). cmd/cerberus
+// installs the capability re-probe's early trigger here. fn runs on the
+// query's goroutine and must not block. The hook is shared by every ForHead
+// view of the client.
 func (c *Client) SetUnknownNameHook(fn func(UnknownNameRejection)) {
 	if c.rejections == nil {
 		return
@@ -259,7 +312,10 @@ func (c *Client) SetUnknownNameHook(fn func(UnknownNameRejection)) {
 // keep riding. Each further attempt carries strictly fewer droppable
 // settings, so the attempts end once the node accepts what is left, rejects
 // something else, or rejects a setting the attempt no longer carries. Every
-// rejection of an unknown name is reported (rejectionReporter.report).
+// rejection of an unknown name is reported (rejectionReporter.report). A
+// rejection of enable_analyzer=0 by a node whose analyzer is mandatory is
+// handed to the hook alone (rejectionReporter.notify): it is not a name the
+// node does not know, so it is neither retried nor counted.
 //
 // mayRetry, when non-nil, vetoes another attempt after a rejection: the
 // columnar path refuses once the server has answered any packet. open must
@@ -270,6 +326,9 @@ func openWithDroppableRetry[T any](c *Client, ctx context.Context, open func(con
 		res, err := open(ctx)
 		retryCtx, rej, ok := c.droppableRetryContext(ctx, err)
 		if !ok {
+			if rej, ok := analyzerMandatoryRejection(ctx, err); ok {
+				c.rejections.notify(rej)
+			}
 			return res, ctx, err
 		}
 		if rej.Retried && mayRetry != nil && !mayRetry() {
@@ -299,6 +358,17 @@ func withCapabilityCanary(ctx context.Context) context.Context {
 func isCapabilityCanary(ctx context.Context) bool {
 	marked, _ := ctx.Value(capabilityCanaryKeyType{}).(bool)
 	return marked
+}
+
+// analyzerMandatoryRejection classifies err as a node refusing the
+// enable_analyzer=0 a statement that is not a capability canary's carried,
+// because the node's analyzer is mandatory.
+func analyzerMandatoryRejection(ctx context.Context, err error) (UnknownNameRejection, bool) {
+	u, ok := parseAnalyzerMandatory(translateCHGoErr(err))
+	if !ok || isCapabilityCanary(ctx) {
+		return UnknownNameRejection{}, false
+	}
+	return UnknownNameRejection{Kind: u.kind, Name: u.name, NodeVersion: u.nodeVersion, AnalyzerMandatory: true}, true
 }
 
 // droppableRetryContext classifies err. ok is false unless err rejects an

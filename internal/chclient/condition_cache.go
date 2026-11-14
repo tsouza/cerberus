@@ -24,7 +24,9 @@ const SettingOptimizeUseProjectionFiltering = chopt.SettingOptimizeUseProjection
 // cmd/cerberus turns the override on whenever a node its fleet probe reaches
 // runs a build inside chopt.FeatureConditionCache's UnsafeBuilds, where a
 // cached verdict written by another query can make a later read silently drop
-// rows, and re-evaluates it on every capability re-probe.
+// rows — and, when a probe at boot or after a floor fallback misses a node,
+// whenever every reached node accepts the setting — and re-evaluates it on
+// every capability re-probe.
 //
 // The setting does not exist below ClickHouse 25.3. Every known-unsafe build
 // is at or above 25.3, so the override never engages on a fleet of older

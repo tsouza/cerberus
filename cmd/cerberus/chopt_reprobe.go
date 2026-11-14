@@ -178,12 +178,19 @@ const chOptReprobeInterval = 5 * time.Minute
 // short-lived connections and two trivial statements, and it only runs at this
 // rate while the process is in a state it wants to leave. As soon as a probe
 // answers, the loop returns to the steady cadence.
+//
+// A pass that reached only part of the fleet is the same kind of state: the
+// version and the defect gates hold the posture a missed node may need
+// (fleetResolutionVersion, gatesInForce) until a pass reaches every node, so
+// the loop runs at this cadence until one does.
 const chOptFloorRetryInterval = 10 * time.Second
 
 // nextReprobeDelay is how long to wait before the next resolution attempt,
-// given the one currently in force.
+// given the one currently in force: chOptFloorRetryInterval while it is a
+// floor fallback or came from a pass that could not reach every node, the
+// steady cadence otherwise.
 func nextReprobeDelay(res chOptResolution, steady time.Duration) time.Duration {
-	if res.VersionFallback {
+	if res.VersionFallback || res.FleetIncomplete {
 		floor := chOptFloorRetryInterval
 		// Never wait LONGER than the steady cadence just because a caller
 		// configured an interval shorter than the fast-retry constant.
@@ -263,7 +270,9 @@ func (t reprobeTrigger) request(rej chclient.UnknownNameRejection) {
 // ClickHouse was down pinned itself to the floor, and this is the path that
 // lifts it off the floor once the server answers, with no restart. A probe
 // that reaches only part of the fleet never raises the version above the one
-// in force (fleetResolutionVersion).
+// in force (fleetResolutionVersion), keeps the defect gates in force — or,
+// after a floor fallback, starts them (gatesInForce) — and is followed by the
+// next pass at chOptFloorRetryInterval.
 //
 // Only a GENUINE transition is logged and swapped. The steady state — the
 // overwhelming majority of ticks — compares equal and does nothing, so the log
@@ -333,37 +342,40 @@ func reprobeCHOptimizations(
 				"name", rej.Name,
 				"node_version", rej.NodeVersion,
 				"retried_without_droppable_settings", rej.Retried,
+				"analyzer_mandatory", rej.AnalyzerMandatory,
 				"reprobe_in", time.Until(due).Round(time.Millisecond).String(),
 			)
 			continue
 		case <-timer.C:
 		}
 
-		// One fleet probe feeds every decision. The condition-cache override
-		// and the analyzer decision follow it on every pass, regardless of
-		// the resolution: a resolve error, a floor fallback, or an unchanged
-		// set must never leave a known-unsafe build serving from its cache,
-		// nor keep stamping enable_analyzer=0 once a node runs a build that
-		// refuses it.
+		// One fleet probe feeds every decision. The condition-cache override,
+		// the shape defects and the analyzer decision follow it on every pass,
+		// regardless of the resolution: a resolve error, a floor fallback, or
+		// an unchanged set must never leave a known-unsafe build serving from
+		// its cache, nor keep stamping enable_analyzer=0 once a node runs a
+		// build that refuses it.
 		fleet := probeFleet(ctx)
-		if consumers.client != nil {
-			refreshConditionCacheOverride(logger, consumers.client, fleet)
-		}
 		inForce := live.get()
+		gates, conditionCacheOff := gatesInForce(fleet, &inForce, consumers.client != nil && consumers.client.QueryConditionCacheDisabled())
+		if consumers.client != nil {
+			refreshConditionCacheOverride(logger, consumers.client, fleet, conditionCacheOff)
+		}
 		analyzerMandatory := analyzerMandatoryOnFleet(fleet, inForce.Set.AnalyzerMandatory())
-		shapeDefects := shapeDefectsOnFleet(fleet, inForce.Set)
+		shapeDefects := shapeDefectsOnFleet(fleet, gates)
 		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload, fleet, &inForce)
 		if !ok {
+			// The resolution failed, so the resolution in force stays,
+			// marked with this pass's completeness: a pass still short of a
+			// node, like one still on the floor, keeps retrying fast.
+			next = inForce
+			next.FleetIncomplete = !fleet.Complete
 			if analyzerMandatory == inForce.Set.AnalyzerMandatory() && slices.Equal(shapeDefects, inForce.Set.ShapeDefectIDs()) {
-				// The resolution in force is unchanged, so the delay is
-				// derived from it: still on the floor means still retrying
-				// fast.
-				schedule(inForce)
+				schedule(next)
 				continue
 			}
-			// The resolution failed, but the fleet moved the analyzer or
-			// shape-defect decision: install it on the resolution in force.
-			next = inForce
+			// The fleet moved the analyzer or shape-defect decision:
+			// install it on the resolution in force.
 		}
 		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory).WithShapeDefects(shapeDefects)
 		prev := live.get()
@@ -460,6 +472,7 @@ func resolveCHOptimizationsOnce(
 		Set:             set,
 		ResolvedVersion: resolvedVersion,
 		VersionFallback: versionFallback,
+		FleetIncomplete: !fleet.Complete,
 		QueryWorkload:   queryWorkload,
 	}, true
 }
