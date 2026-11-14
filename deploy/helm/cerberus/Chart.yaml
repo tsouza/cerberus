@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.19.1
+version: 0.20.0
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.23.1"
+appVersion: "1.24.0"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,9 +45,25 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.23.1
+      image: ghcr.io/tsouza/cerberus:v1.24.0
   artifacthub.io/changes: |
     - kind: fixed
-      description: "engine: keep the legacy-analyzer stamp on unwired settings rules (#3992)"
+      description: "v1.24.0 release audit fixes (#4098)"
     - kind: fixed
-      description: "engine: stop stamping enable_analyzer=0 on ClickHouse 26.9+ (#3989)"
+      description: "promql: merge classic buckets by sort-and-split and bound the merge per query (#4081)"
+    - kind: fixed
+      description: "ci: read the deferral gates' file set from git; drop redundant .gitkeep (#4063)"
+    - kind: fixed
+      description: "chclient: recover from a rolled-back ClickHouse node rejecting a version-gated name (#4060)"
+    - kind: fixed
+      description: "engine: withhold native-histogram enable_analyzer=0 stamp on ClickHouse 26.8+ (#4052)"
+    - kind: fixed
+      description: "engine: disable 26.8 adaptive aggregator on histogram sample windows (#4033)"
+    - kind: fixed
+      description: "traceql: join per-trace value for trace-scoped vs span-operand comparisons (#4028)"
+    - kind: fixed
+      description: "chopt: gate ClickHouse wrong-result defects per query shape (#4016)"
+    - kind: fixed
+      description: "traceql: drop attribute-less steps from *_over_time metrics (#4010)"
+    - kind: fixed
+      description: "tempo: return status message, span events and links on trace-by-id (#4007)"

@@ -4,6 +4,53 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.24.0] — 2026-11-14
+
+### BREAKING
+
+- **promql:** merge classic buckets by sort-and-split and bound the merge per query (#4081)
+  - `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` is retired and ignored. A deployment that still sets it starts and logs one startup warning. Remove it, and set `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to an entry count only when the default does not fit; a value of the retired variable is not an entry count.
+  - Unset, the ceiling is derived from `CERBERUS_CH_QUERY_MAX_MEMORY`: `2982616` entries at the 1 GiB default, scaling linearly with the cap (#4098). A query past it is refused with HTTP 422.
+
+### Known issues
+
+- The quickstart's `grafana` profile installs the catalogue Metrics Drilldown 2.5.1, which lacks the group-by guard in `deploy/grafana/metrics-drilldown.patch`: when label discovery is slow, opening a metric's Breakdown tab can send a query with an empty label matcher that fails with HTTP 400 (#3762). Moving to a plugin release that carries the guard is tracked in #4082.
+
+### Fixed
+
+- v1.24.0 release audit fixes (#4098)
+- **promql:** merge classic buckets by sort-and-split and bound the merge per query (#4081)
+- **ci:** read the deferral gates' file set from git; drop redundant .gitkeep (#4063)
+- **chclient:** recover from a rolled-back ClickHouse node rejecting a version-gated name (#4060)
+- **engine:** withhold native-histogram enable_analyzer=0 stamp on ClickHouse 26.8+ (#4052)
+- **engine:** disable 26.8 adaptive aggregator on histogram sample windows (#4033)
+- **traceql:** join per-trace value for trace-scoped vs span-operand comparisons (#4028)
+- **chopt:** gate ClickHouse wrong-result defects per query shape (#4016)
+- **traceql:** drop attribute-less steps from *_over_time metrics (#4010)
+- **tempo:** return status message, span events and links on trace-by-id (#4007)
+
+### Performance
+
+- **api:** stamp the engine's spill thresholds on engine-bypassing statements (#4064)
+- **chsql:** render literal-set regex label matchers as IN instead of match() (#4058)
+- **prom:** serve histogram base-name enumeration from projection when window ends now (#4047)
+- **traceql:** aggregate root-scoped intrinsics over root spans only (#4013)
+- **engine:** stamp max_bytes_before_external_distinct on ClickHouse 26.9+ (#4015)
+
+### CI
+
+- cap and retry every Ubicloud checkout so a stalled connect fails and reruns (#4077)
+- **chdb:** balance the promql roundtrip legs by measured test weight (#4062)
+- never cancel a Mergify merge-queue draft's runs (#4070)
+- abort a stalled git fetch so actions/checkout retries it (#4065)
+- **strict-scan:** run the real-ClickHouse steps on five parallel shards (#4025)
+- **chdb:** make the heaviest internal/promql chDB tests self-shard (#4011)
+
+### Documentation
+
+- add an adopters list (#4050)
+- **governance:** add maintainers, governance, roadmap and DCO sign-off (#4018)
+
 ## [v1.23.1] — 2026-10-24
 
 ### Fixed

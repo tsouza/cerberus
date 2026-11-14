@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/stale_marker_native_hq_bare_range_step",
+  "fan_factor": 5.323529411764706,
+  "scan_rows": 34,
+  "peak_intermediate": 181,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
