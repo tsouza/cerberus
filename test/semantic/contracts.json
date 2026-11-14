@@ -901,10 +901,10 @@
         "tail-budget-isolation",
         "grpc-transport-rejection",
         "semaphore-capacity-recovery",
-        "real-network-connection-teardown-boundary"
+        "real-network-connection-teardown-boundary",
+        "traceql-grpc-server-admission-wiring"
       ],
       "blind_spots": [
-        "HEAD-TRACEQL's admission is exposed over both HTTP and gRPC (internal/api/tempo/grpc.NewServer's grpc.ChainStreamInterceptor(service.Limiter.StreamInterceptor(), ...)); the traceql-admission-wiring group's binding covers the HTTP surface only, and grpc-transport-rejection's binding proves admit.Limiter.StreamInterceptor()'s own behavior against a fake grpc.ServerStream, not that NewServer's real *grpc.Server actually invokes it end to end for a dialed client — that specific wiring gap is tracked as cerberus issue #3485, filed rather than silently widened into an existing binding's claim.",
         "cross-head-budget-isolation is proven at the generic admit.Limiter level (internal/api/admit/chaos_test.go constructs two Limiter values directly and shows one's saturation does not touch the other); it does not itself prove cerberus's own process wiring never passes the SAME *admit.Limiter pointer to two heads — that risk is guarded by cmd/cerberus/main.go's admitLimiters struct (its own doc comment names the exact bug a positional 4-tuple of same-typed pointers would let compile and silently mount /tail on the query budget), not by an executable binding in this contract.",
         "tail-budget-isolation's evidence proves the direction 'a saturated tail budget leaves the request budget fully admitting' (TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted) and the tail budget's own rejection shape (TestConformance_LokiTailRejectedAtTailCap); the symmetric direction — a saturated request budget still admits a fresh /tail upgrade — is internal/api/loki/conformance_test.go's TestConformance_LokiFullQueryBudgetLeavesTailAdmitted, cited here for completeness but not separately required, since it exercises the same underlying semaphore-independence claim this group already covers.",
         "The semaphore-capacity-recovery group and the real-network-connection-teardown-boundary group prove two DIFFERENT resources' recovery on two DIFFERENT substrates, and neither implies the other: the admit package's own semaphore is an in-process integer counter released by a Go defer with no I/O at all (chaos_test.go's evidence, substrate runner, no chDB and no real ClickHouse), while the pooled ClickHouse connection a request's handler may have held is released — or destroyed — by clickhouse-go's real driver internals against a live TCP session, provable only against a genuine server (conn_teardown_integration_test.go's evidence, substrate real-clickhouse, gated behind the `integration` build tag and Docker, run via `just chclient-integration`). A request whose admission slot is proven to recover here can still have destroyed its underlying ClickHouse connection, and vice versa; this contract does not claim the two recover together.",
@@ -999,9 +999,8 @@
       "applicable_capabilities": [],
       "authority": "operational-invariant",
       "required_evidence_classes": ["execution"],
-      "required_independence_groups": ["gate-allocation-floor", "gate-concurrency-cap", "gate-cancel-kill-ordering", "gate-denial-breaker-neutral"],
+      "required_independence_groups": ["gate-allocation-floor", "gate-concurrency-cap", "gate-cancel-kill-ordering", "gate-denial-breaker-neutral", "real-server-kill-query"],
       "blind_spots": [
-        "Every assertion here runs against a fake driver.Conn; whether a REAL ClickHouse server actually honors the issued KILL QUERY and frees its own resources promptly is unproven — no real-clickhouse-substrate binding exists for this specific claim today (tracked as cerberus issue #3489, filed rather than silently widened into an existing binding's claim).",
         "This is a DIFFERENT fan-out axis from Layer 12's SQL-plan compute fan-out (peak intermediate rows versus leaf scan rows inside one dispatch, ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001's own claim): this contract bounds concurrent DISPATCH COUNT to ClickHouse, Layer 12 bounds ROW CARDINALITY inside one dispatch. A deployment can satisfy one while violating the other.",
         "DataShardCount>1 with a custom multiplier is a configuration surface no deployment currently ships in production (cerberus issue #3081/#3128's own 'zero behavior change' framing); the concurrency-cap and multiplier-scaling evidence is exercised only synthetically, never against a real multi-shard ClickHouse cluster."
       ],

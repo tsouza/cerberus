@@ -18,8 +18,8 @@
     },
     "bindings": {
       "draft": 0,
-      "active": 122,
-      "total": 122
+      "active": 125,
+      "total": 125
     },
     "executions": {
       "total": 0
@@ -45,7 +45,7 @@
     "surface-parity-symbol": 0,
     "rejection-parity-site": 1,
     "oracle-inventory-case": 0,
-    "source-path": 75,
+    "source-path": 78,
     "unclassified": 0
   },
   "lane_inventory": {
@@ -65,6 +65,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
           "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
           "BINDING-ARCH-NO-CACHING-STATIC",
@@ -79,6 +80,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
         ],
         "id": "ci.agpl-clean"
@@ -201,6 +204,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-GOLDEN-MERGE-GATE",
           "BINDING-ARCH-GOLDEN-SHARD-COVERAGE",
           "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
@@ -255,6 +259,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO",
           "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB",
@@ -302,6 +308,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
           "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
           "BINDING-ARCH-NO-CACHING-STATIC",
@@ -316,6 +323,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
         ],
         "id": "chdb.ch-server-safety"
@@ -338,6 +347,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
           "BINDING-ARCH-HEAD-EMIT-STRUCTURAL",
           "BINDING-ARCH-HEAD-LOWER-LOGQL",
@@ -375,6 +385,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
@@ -402,6 +414,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
           "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
@@ -412,6 +425,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
         ],
         "id": "chdb.probe"
@@ -428,6 +443,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-NO-CACHING-STATIC",
           "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY"
@@ -448,6 +464,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
           "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
           "BINDING-ARCH-NO-CACHING-STATIC",
@@ -462,6 +479,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
         ],
         "id": "chdb.regex-jit"
@@ -483,6 +502,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
           "BINDING-ARCH-HEAD-EMIT-STRUCTURAL",
           "BINDING-ARCH-HEAD-LOWER-LOGQL",
@@ -520,6 +540,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
@@ -557,6 +579,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-GOLDEN-MERGE-GATE",
           "BINDING-ARCH-GOLDEN-SHARD-COVERAGE",
           "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
@@ -597,6 +620,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
@@ -625,6 +650,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
           "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
           "BINDING-ARCH-NO-CACHING-STATIC",
@@ -639,6 +665,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-SUBSTRATE",
@@ -659,6 +687,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION",
@@ -667,6 +696,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
         ],
         "id": "e2e.compose-crawl"
@@ -684,6 +715,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION",
@@ -692,6 +724,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
         ],
         "id": "e2e.compose-smoke"
@@ -710,6 +744,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
           "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
           "BINDING-ARCH-NO-CACHING-STATIC",
@@ -724,6 +759,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
         ],
         "id": "e2e.quickstart"
@@ -742,6 +779,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
           "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
           "BINDING-ARCH-NO-CACHING-STATIC",
@@ -756,6 +794,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
         ],
         "id": "e2e.startup-bench"
@@ -775,6 +815,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
           "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
           "BINDING-ARCH-NO-CACHING-STATIC",
@@ -791,6 +832,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
         ],
         "id": "performance.benchmark"
@@ -813,6 +856,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
           "BINDING-ARCH-HEAD-EMIT-STRUCTURAL",
           "BINDING-ARCH-HEAD-LOWER-LOGQL",
@@ -850,6 +894,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
@@ -879,6 +925,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
           "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
           "BINDING-ARCH-NO-CACHING-STATIC",
@@ -893,6 +940,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
         ],
         "id": "quality.coverage-enrollment"
@@ -921,6 +970,7 @@
           "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+          "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
           "BINDING-ARCH-GOLDEN-MERGE-GATE",
           "BINDING-ARCH-GOLDEN-SHARD-COVERAGE",
           "BINDING-ARCH-HEAD-EMIT-ROUNDTRIP",
@@ -972,6 +1022,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-ROUTE-MEMO",
           "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB",
@@ -1042,6 +1094,8 @@
           "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
           "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-SUBSTRATE",
@@ -1238,6 +1292,8 @@
         "release_required": true,
         "binding_ids": [
           "BINDING-ARCH-HEAD-WIRE-TRACEQL-COMPAT",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-LIVE-REFERENCE",
           "BINDING-TRACEQL-TRANSPORT-ARM-GRPC",
@@ -2332,7 +2388,8 @@
             "relative_cost": "high",
             "detects": [
               "whether a pooled ClickHouse connection survives or is destroyed by a given teardown ordering",
-              "a real driver/pool regression invisible to chDB (which has no connection pool) or to a fake cursor"
+              "a real driver/pool regression invisible to chDB (which has no connection pool) or to a fake cursor",
+              "a KILL QUERY the server does not honor, leaving the query listed in system.processes"
             ],
             "cannot_detect": [
               "anything about cerberus's own in-process admission semaphore — this verifier never constructs an *admit.Limiter, so it proves nothing about admission-slot recovery, only about the separate ClickHouse connection a request's handler may have held"
@@ -2610,7 +2667,6 @@
       "replaces": null,
       "replaced_by": null,
       "blind_spots": [
-        "Every assertion here runs against a fake driver.Conn; whether a REAL ClickHouse server actually honors the issued KILL QUERY and frees its own resources promptly is unproven — no real-clickhouse-substrate binding exists for this specific claim today (tracked as cerberus issue #3489, filed rather than silently widened into an existing binding's claim).",
         "This is a DIFFERENT fan-out axis from Layer 12's SQL-plan compute fan-out (peak intermediate rows versus leaf scan rows inside one dispatch, ARCH-COMPUTE-FANOUT-CARDINALITY-BOUND-001's own claim): this contract bounds concurrent DISPATCH COUNT to ClickHouse, Layer 12 bounds ROW CARDINALITY inside one dispatch. A deployment can satisfy one while violating the other.",
         "DataShardCount>1 with a custom multiplier is a configuration surface no deployment currently ships in production (cerberus issue #3081/#3128's own 'zero behavior change' framing); the concurrency-cap and multiplier-scaling evidence is exercised only synthetically, never against a real multi-shard ClickHouse cluster."
       ],
@@ -2621,7 +2677,8 @@
         "gate-allocation-floor",
         "gate-concurrency-cap",
         "gate-cancel-kill-ordering",
-        "gate-denial-breaker-neutral"
+        "gate-denial-breaker-neutral",
+        "real-server-kill-query"
       ],
       "bound_evidence": {
         "covered_evidence_classes": [
@@ -2631,7 +2688,8 @@
           "gate-allocation-floor",
           "gate-cancel-kill-ordering",
           "gate-concurrency-cap",
-          "gate-denial-breaker-neutral"
+          "gate-denial-breaker-neutral",
+          "real-server-kill-query"
         ],
         "missing_evidence_classes": [],
         "missing_independence_groups": [],
@@ -2645,7 +2703,8 @@
               "BINDING-ARCH-FANOUT-BOUND-ALLOCATION-FLOOR",
               "BINDING-ARCH-FANOUT-BOUND-CANCEL-KILL-ORDER",
               "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
-              "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL"
+              "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
+              "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL"
             ]
           }
         },
@@ -2672,6 +2731,12 @@
             "status": "unknown",
             "binding_ids": [
               "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL"
+            ]
+          },
+          "real-server-kill-query": {
+            "status": "unknown",
+            "binding_ids": [
+              "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL"
             ]
           }
         },
@@ -3123,6 +3188,145 @@
           "evidence_class": "execution",
           "independence_group": "gate-denial-breaker-neutral",
           "test_ref": "internal/chclient/fanout_gate_test.go:TestQueryCursor_DataShardFanoutGate_DeniedIsBreakerNeutral",
+          "evidence_system": "source-path",
+          "observed": {
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0
+          },
+          "obligations": [
+            {
+              "lane_id": "chdb.ch-server-safety",
+              "context_name": "ch-server-safety",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.probe",
+              "context_name": "probe",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.query-log-union",
+              "context_name": "query-log-union",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.agpl-clean",
+              "context_name": "agpl-clean",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.chaos",
+              "context_name": "chaos",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-crawl",
+              "context_name": "crawl-terminal",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-smoke",
+              "context_name": "compose-smoke",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.quickstart",
+              "context_name": "quickstart",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.startup-bench",
+              "context_name": "startup-bench",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "performance.benchmark",
+              "context_name": "benchstat diff (baseline vs ref)",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-enrollment",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            }
+          ]
+        },
+        {
+          "id": "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
+          "verifier": {
+            "id": "VERIFIER-REAL-CLICKHOUSE-INTEGRATION",
+            "name": "Real ClickHouse integration test",
+            "substrate": "real-clickhouse",
+            "relative_cost": "high",
+            "detects": [
+              "whether a pooled ClickHouse connection survives or is destroyed by a given teardown ordering",
+              "a real driver/pool regression invisible to chDB (which has no connection pool) or to a fake cursor",
+              "a KILL QUERY the server does not honor, leaving the query listed in system.processes"
+            ],
+            "cannot_detect": [
+              "anything about cerberus's own in-process admission semaphore — this verifier never constructs an *admit.Limiter, so it proves nothing about admission-slot recovery, only about the separate ClickHouse connection a request's handler may have held"
+            ],
+            "complemented_by": []
+          },
+          "evidence_class": "execution",
+          "independence_group": "real-server-kill-query",
+          "test_ref": "internal/chclient/fanout_gate_kill_query_integration_test.go:TestAcquireDataShardFanout_CancelledDispatch_ServerActuallyKillsQuery",
           "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
@@ -10768,7 +10972,6 @@
       "replaces": null,
       "replaced_by": null,
       "blind_spots": [
-        "HEAD-TRACEQL's admission is exposed over both HTTP and gRPC (internal/api/tempo/grpc.NewServer's grpc.ChainStreamInterceptor(service.Limiter.StreamInterceptor(), ...)); the traceql-admission-wiring group's binding covers the HTTP surface only, and grpc-transport-rejection's binding proves admit.Limiter.StreamInterceptor()'s own behavior against a fake grpc.ServerStream, not that NewServer's real *grpc.Server actually invokes it end to end for a dialed client — that specific wiring gap is tracked as cerberus issue #3485, filed rather than silently widened into an existing binding's claim.",
         "cross-head-budget-isolation is proven at the generic admit.Limiter level (internal/api/admit/chaos_test.go constructs two Limiter values directly and shows one's saturation does not touch the other); it does not itself prove cerberus's own process wiring never passes the SAME *admit.Limiter pointer to two heads — that risk is guarded by cmd/cerberus/main.go's admitLimiters struct (its own doc comment names the exact bug a positional 4-tuple of same-typed pointers would let compile and silently mount /tail on the query budget), not by an executable binding in this contract.",
         "tail-budget-isolation's evidence proves the direction 'a saturated tail budget leaves the request budget fully admitting' (TestConformance_LokiFullTailBudgetLeavesQueriesAdmitted) and the tail budget's own rejection shape (TestConformance_LokiTailRejectedAtTailCap); the symmetric direction — a saturated request budget still admits a fresh /tail upgrade — is internal/api/loki/conformance_test.go's TestConformance_LokiFullQueryBudgetLeavesTailAdmitted, cited here for completeness but not separately required, since it exercises the same underlying semaphore-independence claim this group already covers.",
         "The semaphore-capacity-recovery group and the real-network-connection-teardown-boundary group prove two DIFFERENT resources' recovery on two DIFFERENT substrates, and neither implies the other: the admit package's own semaphore is an in-process integer counter released by a Go defer with no I/O at all (chaos_test.go's evidence, substrate runner, no chDB and no real ClickHouse), while the pooled ClickHouse connection a request's handler may have held is released — or destroyed — by clickhouse-go's real driver internals against a live TCP session, provable only against a genuine server (conn_teardown_integration_test.go's evidence, substrate real-clickhouse, gated behind the `integration` build tag and Docker, run via `just chclient-integration`). A request whose admission slot is proven to recover here can still have destroyed its underlying ClickHouse connection, and vice versa; this contract does not claim the two recover together.",
@@ -10785,7 +10988,8 @@
         "tail-budget-isolation",
         "grpc-transport-rejection",
         "semaphore-capacity-recovery",
-        "real-network-connection-teardown-boundary"
+        "real-network-connection-teardown-boundary",
+        "traceql-grpc-server-admission-wiring"
       ],
       "bound_evidence": {
         "covered_evidence_classes": [
@@ -10799,7 +11003,8 @@
           "real-network-connection-teardown-boundary",
           "semaphore-capacity-recovery",
           "tail-budget-isolation",
-          "traceql-admission-wiring"
+          "traceql-admission-wiring",
+          "traceql-grpc-server-admission-wiring"
         ],
         "missing_evidence_classes": [],
         "missing_independence_groups": [],
@@ -10818,6 +11023,8 @@
               "BINDING-SIGNAL-ADMISSION-PROMQL-WIRING",
               "BINDING-SIGNAL-ADMISSION-TAIL-CLOSE-SHAPE",
               "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
+              "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+              "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
               "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
             ]
           }
@@ -10870,6 +11077,13 @@
             "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY"
+            ]
+          },
+          "traceql-grpc-server-admission-wiring": {
+            "status": "unknown",
+            "binding_ids": [
+              "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+              "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING"
             ]
           }
         },
@@ -11024,7 +11238,8 @@
             "relative_cost": "high",
             "detects": [
               "whether a pooled ClickHouse connection survives or is destroyed by a given teardown ordering",
-              "a real driver/pool regression invisible to chDB (which has no connection pool) or to a fake cursor"
+              "a real driver/pool regression invisible to chDB (which has no connection pool) or to a fake cursor",
+              "a KILL QUERY the server does not honor, leaving the query listed in system.processes"
             ],
             "cannot_detect": [
               "anything about cerberus's own in-process admission semaphore — this verifier never constructs an *admit.Limiter, so it proves nothing about admission-slot recovery, only about the separate ClickHouse connection a request's handler may have held"
@@ -11441,11 +11656,12 @@
             "detects": [
               "a head's own mux wiring failing to invoke the limiter it was constructed with",
               "a route mounted on the wrong budget (e.g. /tail drawing on the request budget instead of its own tail budget)",
-              "the wrong HTTP status, header, or WebSocket close code reaching a real client on rejection"
+              "the wrong HTTP status, header, WebSocket close code, or gRPC status code reaching a real client on rejection",
+              "a head's *grpc.Server built without the limiter's stream interceptor in its chain"
             ],
             "cannot_detect": [
               "a defect in the underlying semaphore's own concurrency guarantees — that is VERIFIER-GO-UNIT-TEST's job against the admit package directly",
-              "gRPC transport wiring: this verifier only ever exercises a head's HTTP mux, never a real *grpc.Server"
+              "behaviour of a real network transport (TCP, TLS, HTTP/2 flow control): the gRPC form dials an in-memory bufconn listener"
             ],
             "complemented_by": [
               "VERIFIER-GO-UNIT-TEST"
@@ -11595,11 +11811,12 @@
             "detects": [
               "a head's own mux wiring failing to invoke the limiter it was constructed with",
               "a route mounted on the wrong budget (e.g. /tail drawing on the request budget instead of its own tail budget)",
-              "the wrong HTTP status, header, or WebSocket close code reaching a real client on rejection"
+              "the wrong HTTP status, header, WebSocket close code, or gRPC status code reaching a real client on rejection",
+              "a head's *grpc.Server built without the limiter's stream interceptor in its chain"
             ],
             "cannot_detect": [
               "a defect in the underlying semaphore's own concurrency guarantees — that is VERIFIER-GO-UNIT-TEST's job against the admit package directly",
-              "gRPC transport wiring: this verifier only ever exercises a head's HTTP mux, never a real *grpc.Server"
+              "behaviour of a real network transport (TCP, TLS, HTTP/2 flow control): the gRPC form dials an in-memory bufconn listener"
             ],
             "complemented_by": [
               "VERIFIER-GO-UNIT-TEST"
@@ -11749,11 +11966,12 @@
             "detects": [
               "a head's own mux wiring failing to invoke the limiter it was constructed with",
               "a route mounted on the wrong budget (e.g. /tail drawing on the request budget instead of its own tail budget)",
-              "the wrong HTTP status, header, or WebSocket close code reaching a real client on rejection"
+              "the wrong HTTP status, header, WebSocket close code, or gRPC status code reaching a real client on rejection",
+              "a head's *grpc.Server built without the limiter's stream interceptor in its chain"
             ],
             "cannot_detect": [
               "a defect in the underlying semaphore's own concurrency guarantees — that is VERIFIER-GO-UNIT-TEST's job against the admit package directly",
-              "gRPC transport wiring: this verifier only ever exercises a head's HTTP mux, never a real *grpc.Server"
+              "behaviour of a real network transport (TCP, TLS, HTTP/2 flow control): the gRPC form dials an in-memory bufconn listener"
             ],
             "complemented_by": [
               "VERIFIER-GO-UNIT-TEST"
@@ -11903,11 +12121,12 @@
             "detects": [
               "a head's own mux wiring failing to invoke the limiter it was constructed with",
               "a route mounted on the wrong budget (e.g. /tail drawing on the request budget instead of its own tail budget)",
-              "the wrong HTTP status, header, or WebSocket close code reaching a real client on rejection"
+              "the wrong HTTP status, header, WebSocket close code, or gRPC status code reaching a real client on rejection",
+              "a head's *grpc.Server built without the limiter's stream interceptor in its chain"
             ],
             "cannot_detect": [
               "a defect in the underlying semaphore's own concurrency guarantees — that is VERIFIER-GO-UNIT-TEST's job against the admit package directly",
-              "gRPC transport wiring: this verifier only ever exercises a head's HTTP mux, never a real *grpc.Server"
+              "behaviour of a real network transport (TCP, TLS, HTTP/2 flow control): the gRPC form dials an in-memory bufconn listener"
             ],
             "complemented_by": [
               "VERIFIER-GO-UNIT-TEST"
@@ -12048,6 +12267,304 @@
           ]
         },
         {
+          "id": "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+          "verifier": {
+            "id": "VERIFIER-ADMISSION-WIRING-TEST",
+            "name": "Admission wiring test",
+            "substrate": "runner",
+            "relative_cost": "low",
+            "detects": [
+              "a head's own mux wiring failing to invoke the limiter it was constructed with",
+              "a route mounted on the wrong budget (e.g. /tail drawing on the request budget instead of its own tail budget)",
+              "the wrong HTTP status, header, WebSocket close code, or gRPC status code reaching a real client on rejection",
+              "a head's *grpc.Server built without the limiter's stream interceptor in its chain"
+            ],
+            "cannot_detect": [
+              "a defect in the underlying semaphore's own concurrency guarantees — that is VERIFIER-GO-UNIT-TEST's job against the admit package directly",
+              "behaviour of a real network transport (TCP, TLS, HTTP/2 flow control): the gRPC form dials an in-memory bufconn listener"
+            ],
+            "complemented_by": [
+              "VERIFIER-GO-UNIT-TEST"
+            ]
+          },
+          "evidence_class": "execution",
+          "independence_group": "traceql-grpc-server-admission-wiring",
+          "test_ref": "internal/api/tempo/grpc/server_test.go:TestNewServer_StreamInterceptorAdmitsUnderCap",
+          "evidence_system": "source-path",
+          "observed": {
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0
+          },
+          "obligations": [
+            {
+              "lane_id": "chdb.ch-server-safety",
+              "context_name": "ch-server-safety",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.probe",
+              "context_name": "probe",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.agpl-clean",
+              "context_name": "agpl-clean",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "compatibility.tempo",
+              "context_name": "compatibility/tempo",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.chaos",
+              "context_name": "chaos",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-crawl",
+              "context_name": "crawl-terminal",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-smoke",
+              "context_name": "compose-smoke",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.dashboard",
+              "context_name": "dashboard",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.quickstart",
+              "context_name": "quickstart",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.startup-bench",
+              "context_name": "startup-bench",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "performance.benchmark",
+              "context_name": "benchstat diff (baseline vs ref)",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-enrollment",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            }
+          ]
+        },
+        {
+          "id": "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
+          "verifier": {
+            "id": "VERIFIER-ADMISSION-WIRING-TEST",
+            "name": "Admission wiring test",
+            "substrate": "runner",
+            "relative_cost": "low",
+            "detects": [
+              "a head's own mux wiring failing to invoke the limiter it was constructed with",
+              "a route mounted on the wrong budget (e.g. /tail drawing on the request budget instead of its own tail budget)",
+              "the wrong HTTP status, header, WebSocket close code, or gRPC status code reaching a real client on rejection",
+              "a head's *grpc.Server built without the limiter's stream interceptor in its chain"
+            ],
+            "cannot_detect": [
+              "a defect in the underlying semaphore's own concurrency guarantees — that is VERIFIER-GO-UNIT-TEST's job against the admit package directly",
+              "behaviour of a real network transport (TCP, TLS, HTTP/2 flow control): the gRPC form dials an in-memory bufconn listener"
+            ],
+            "complemented_by": [
+              "VERIFIER-GO-UNIT-TEST"
+            ]
+          },
+          "evidence_class": "execution",
+          "independence_group": "traceql-grpc-server-admission-wiring",
+          "test_ref": "internal/api/tempo/grpc/server_test.go:TestNewServer_StreamInterceptorRejectsAtCap",
+          "evidence_system": "source-path",
+          "observed": {
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0
+          },
+          "obligations": [
+            {
+              "lane_id": "chdb.ch-server-safety",
+              "context_name": "ch-server-safety",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.probe",
+              "context_name": "probe",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.agpl-clean",
+              "context_name": "agpl-clean",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "compatibility.tempo",
+              "context_name": "compatibility/tempo",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.chaos",
+              "context_name": "chaos",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-crawl",
+              "context_name": "crawl-terminal",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-smoke",
+              "context_name": "compose-smoke",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.dashboard",
+              "context_name": "dashboard",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.quickstart",
+              "context_name": "quickstart",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.startup-bench",
+              "context_name": "startup-bench",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "performance.benchmark",
+              "context_name": "benchstat diff (baseline vs ref)",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-enrollment",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            }
+          ]
+        },
+        {
           "id": "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "verifier": {
             "id": "VERIFIER-ADMISSION-WIRING-TEST",
@@ -12057,11 +12574,12 @@
             "detects": [
               "a head's own mux wiring failing to invoke the limiter it was constructed with",
               "a route mounted on the wrong budget (e.g. /tail drawing on the request budget instead of its own tail budget)",
-              "the wrong HTTP status, header, or WebSocket close code reaching a real client on rejection"
+              "the wrong HTTP status, header, WebSocket close code, or gRPC status code reaching a real client on rejection",
+              "a head's *grpc.Server built without the limiter's stream interceptor in its chain"
             ],
             "cannot_detect": [
               "a defect in the underlying semaphore's own concurrency guarantees — that is VERIFIER-GO-UNIT-TEST's job against the admit package directly",
-              "gRPC transport wiring: this verifier only ever exercises a head's HTTP mux, never a real *grpc.Server"
+              "behaviour of a real network transport (TCP, TLS, HTTP/2 flow control): the gRPC form dials an in-memory bufconn listener"
             ],
             "complemented_by": [
               "VERIFIER-GO-UNIT-TEST"

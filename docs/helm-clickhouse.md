@@ -374,11 +374,14 @@ back to 26.6 rejects those until a probe reaches it:
 The window lasts one probe, about 10 seconds, and every affected query in it is
 answered through the retry. A replica the probe cannot reach individually — not
 among the configured addresses, and `CERBERUS_SCHEMA_CLUSTER` unset — is
-re-resolved against only when a probe connection lands on it. Until then, its
+re-resolved against when a probe connection first lands on it. Until then, its
 droppable-setting queries keep going through the retry, and a query that calls
-a function it lacks answers HTTP 502. List every replica, or set the cluster,
-when rolling back
-([Runtime version probe](clickhouse-optimizations.md#runtime-version-probe)).
+a function it lacks answers HTTP 502. From then on cerberus remembers the
+replica, and probes that land on the other replicas do not raise the
+resolution back above its build while it serves
+([Replicas behind a load balancer](clickhouse-optimizations.md#replicas-behind-a-load-balancer)).
+Listing every replica, or setting the cluster, reads the rolled-back replica
+on the first early probe.
 
 ### Mixed clusters with a 26.2–26.5 server
 

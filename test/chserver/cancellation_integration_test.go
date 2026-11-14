@@ -253,8 +253,8 @@ func TestCancellation_CPUBoundEmittedShapesAcrossBuilds(t *testing.T) {
 
 			// The fleet probe's cluster arm reads every replica's build
 			// through clusterAllReplicas; this cluster's one replica is s.
-			if versions, err := s.admin.ProbeClusterVersions(ctx, shardCluster); err != nil || len(versions) != 1 || versions[0] != s.version {
-				t.Fatalf("ProbeClusterVersions(%q) = %v, %v; want [%s]", shardCluster, versions, err, s.version)
+			if nodes, err := s.admin.ProbeClusterNodes(ctx, shardCluster); err != nil || len(nodes) != 1 || nodes[0].Version != s.version {
+				t.Fatalf("ProbeClusterNodes(%q) = %v, %v; want one node on %s", shardCluster, nodes, err, s.version)
 			}
 
 			set := chopttest.ResolveEnabledSet(ctx, t, s.admin, chopt.SelectionAuto)

@@ -15,8 +15,9 @@ type fleetProber func(ctx context.Context) chclient.FleetVersions
 
 // conditionCacheOverride decides whether the client must force
 // use_query_condition_cache=0, given what the fleet probe saw and the decision
-// in force. It is conservative across nodes: any reached node on a
-// known-unsafe build keeps the override on, because a query can land on that
+// in force. fv is the remembered fleet (rememberingFleetProber). It is
+// conservative across nodes: any node of the fleet on a known-unsafe build
+// keeps the override on, because a query can land on that
 // node however healthy the others are. The override is lifted only when every
 // known node answered from a build outside the unsafe ranges; a pass that could
 // not reach every node and saw no unsafe build leaves the decision in force
@@ -54,7 +55,7 @@ func refreshConditionCacheOverride(logger *slog.Logger, client *chclient.Client,
 	)
 }
 
-// fleetVersionStrings renders every build a fleet probe pass reached, for logs.
+// fleetVersionStrings renders every build of the remembered fleet, for logs.
 func fleetVersionStrings(fv chclient.FleetVersions) []string {
 	versions := make([]string, 0, len(fv.Versions))
 	for _, v := range fv.Versions {
@@ -63,12 +64,29 @@ func fleetVersionStrings(fv chclient.FleetVersions) []string {
 	return versions
 }
 
+// fleetPassProber runs one pass of the fleet probe and reports what it read.
+type fleetPassProber func(ctx context.Context) chclient.FleetPass
+
+// rememberingFleetProber is the fleetProber over probe: every pass is folded
+// into one chclient.FleetMemory, and the fleet the memory then describes is
+// what feature resolution, the defect gates and the analyzer decision read. A
+// replica a pass through a load-balanced address did not land on therefore
+// still counts in each of them until it reports another build or is
+// forgotten. Boot and the re-probe loop share the returned prober, so they
+// share the memory.
+func rememberingFleetProber(probe fleetPassProber) fleetProber {
+	memory := chclient.NewFleetMemory()
+	return func(ctx context.Context) chclient.FleetVersions {
+		return memory.Observe(probe(ctx))
+	}
+}
+
 // liveFleetProber probes the deployment's real fleet over short-lived
 // bootstrap connections: every configured ClickHouse address and — when
 // CERBERUS_SCHEMA_CLUSTER names a cluster — every replica of that cluster
-// (chclient.ProbeFleetVersions). A node behind a load balancer that neither
-// list names cannot be reached individually; its build is seen only when a
-// probe happens to land on it (docs/clickhouse-optimizations.md).
+// (chclient.ProbeFleet). A node behind a load balancer that neither list
+// names is read only when a probe lands on it, and the memory holds it
+// between those passes (rememberingFleetProber).
 //
 // The connections bind to ClickHouse's always-present `default` database, not
 // the configured one: the probe runs at boot before setupSchema creates that
@@ -76,9 +94,9 @@ func fleetVersionStrings(fv chclient.FleetVersions) []string {
 // a session whose default database is absent (code 81, UNKNOWN_DATABASE),
 // which would mask a reachable server as a failed probe pinned to the floor.
 func liveFleetProber(cfg config.Config) fleetProber {
-	return func(ctx context.Context) chclient.FleetVersions {
-		return chclient.ProbeFleetVersions(ctx, bootstrapClickHouseConfig(cfg.ClickHouse, versionProbePool), cfg.SchemaProvisioning.Cluster)
-	}
+	return rememberingFleetProber(func(ctx context.Context) chclient.FleetPass {
+		return chclient.ProbeFleet(ctx, bootstrapClickHouseConfig(cfg.ClickHouse, versionProbePool), cfg.SchemaProvisioning.Cluster)
+	})
 }
 
 // logVendorBuild warns when the server reports a non-upstream version string:
@@ -102,11 +120,12 @@ var errNoFleetVersion = errors.New("no clickhouse node answered the version prob
 
 // fleetResolutionVersion is the build feature resolution runs against, given
 // one fleet probe pass and the resolution in force (nil at boot). It is the
-// lowest build the pass reached, because a query can land on any reachable
-// node and a feature the oldest one lacks fails there.
+// lowest build of the fleet the pass describes — the servers it reached and
+// those earlier passes reached (rememberingFleetProber) — because a query can
+// land on any of them and a feature the oldest one lacks fails there.
 //
 // A pass that could not reach every node keeps the posture in force: it may
-// lower the version (an older build it did reach is real evidence), but never
+// lower the version (an older build in the fleet is real evidence), but never
 // raise it above the version in force, because the node it missed may be the
 // one holding the version down. A floor fallback is not a posture to keep —
 // it records that no node answered — so an incomplete pass lifts it. It
