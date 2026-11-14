@@ -1212,10 +1212,12 @@ const ROUTE_MEMO_LIVE_EDGE_MARGIN_STEPS = 2;
 // to kEff=1, the FULL cap per shard) are both different from what
 // CERBERUS_SHARD_PARALLEL's default might suggest.
 const ROUTE_MEMO_EXPR = 'sum by (probe_shard) (rate(route_memo_probe_requests_total[5m]))';
-// 60s: issue #2670's real cap recalibration (chaos-overlay.env) made route A
-// fail RELIABLY instead of sporadically, so minCorroboratingFailures(2)
-// consecutive failures now lands within the first two ~5s polls — two
-// independent real dispatches activated in ~19-27s each. 60s keeps
+// 60s: the overlay's CERBERUS_CH_QUERY_MAX_MEMORY (chaos-overlay.env) is
+// sized so route A fails RELIABLY instead of sporadically, so
+// minCorroboratingFailures(2) consecutive failures lands within the first
+// two ~5s polls — two independent real dispatches activated in ~19-27s
+// each. A route-A 200 in this scenario's log means the cap no longer
+// separates route A from its shards on the lane's ClickHouse. 60s keeps
 // generous (~2x) headroom over that observed range without carrying
 // forward the original 180s budget the OLD, mis-calibrated cap needed to
 // paper over sporadic (non-consecutive) 422s.
