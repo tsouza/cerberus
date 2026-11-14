@@ -9,8 +9,9 @@ import (
 
 // shapeDefectsOnFleet decides which shape defects (chopt.ShapeDefects) the
 // engine must gate queries against, given what the fleet probe saw and the
-// set in force. It is conservative across nodes, like the analyzer decision:
-// a query of the defect's shape can land on any reached node, so one node on
+// set in force. fv is the remembered fleet (rememberingFleetProber). It is
+// conservative across nodes, like the analyzer decision: a query of the
+// defect's shape can land on any node of the fleet, so one node on
 // an affected build is enough to carry the defect. A complete pass with every
 // node outside its ranges clears it; a pass that could not reach every node
 // and saw no affected build leaves the decision in force (current, as

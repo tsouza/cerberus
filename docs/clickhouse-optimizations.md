@@ -780,8 +780,9 @@ the measurements that settled each one — are recorded in
 
 ## Runtime version probe
 
-At boot cerberus reads `SELECT version()` from every ClickHouse node it can
-reach and parses each answer to a comparable `major.minor.patch.build` version
+At boot cerberus reads `SELECT toString(serverUUID()), version()` from every
+ClickHouse node it can reach — the server's identity and its build — and parses
+each build to a comparable `major.minor.patch.build` version
 (`26.3.17.56`; a trailing suffix such as `-lts` is dropped, and absent fields
 read as zero). The preflight version floor parses the same way.
 
@@ -792,15 +793,14 @@ The reachable nodes are:
 - when `CERBERUS_SCHEMA_CLUSTER` is set, every replica of that cluster, read
   through `clusterAllReplicas` on the first address that answers.
 
-Resolution runs against the **lowest** build among them, because a query can
-land on any of them and a feature the oldest one lacks fails there
-(`UNKNOWN_FUNCTION`, `UNKNOWN_SETTING`). A replica hidden behind a load
-balancer that neither setting names is not enumerated: its build is seen only
-when a connection happens to land on it. List every address, or set the
-cluster, when builds can differ across nodes.
+Resolution runs against the **lowest** build among them, and among the
+servers earlier probes reached that cerberus still remembers
+([Replicas behind a load balancer](#replicas-behind-a-load-balancer)), because
+a query can land on any of them and a feature the oldest one lacks fails there
+(`UNKNOWN_FUNCTION`, `UNKNOWN_SETTING`).
 
 A probe that reaches only some of the nodes resolves against the lowest build
-it did reach, but never above the version already in force: a missed node may
+among the servers it reached and the ones remembered, but never above the version already in force: a missed node may
 be the one holding the version down. The one exception is a
 [floor fallback](#re-probe), which records that no node answered at all and is
 lifted by any answer. A probe that reaches no node falls back to the supported
@@ -831,12 +831,59 @@ Feature floors are bare `major.minor` values, so every build of a floor's minor
 meets it. [Known-defective build](#known-defective-server-builds) ranges are
 the one place patch and build decide the answer, because an upstream fix
 reaches each maintained release line at its own patch release. The resolved
-server version — the lowest build across the reachable nodes — is reported at
+server version — the lowest build across those servers — is reported at
 full precision (`/info`, the boot log).
 
 The probe repeats on the [re-probe](#re-probe) cadence, so a rolling ClickHouse
 upgrade that crosses a feature floor is picked up by a running cerberus without
 a restart.
+
+### Replicas behind a load balancer
+
+A replica behind a load balancer that neither the configured addresses nor
+`CERBERUS_SCHEMA_CLUSTER` name is not enumerated: a probe reads it only when
+its connection lands on it, and that probe still reports every node reached.
+Cerberus therefore remembers every server a probe has read, by its
+`serverUUID()`, and resolves against every server it remembers rather than
+only the ones the last probe reached:
+
+- A server a probe reaches takes the build it reports, so a replica that rolls
+  forward raises its own entry on the first probe that lands on it.
+- A probe that reaches every node it knows of and misses a remembered server
+  counts one miss against that server. After 40 such probes in a row per
+  remembered server — 80 with two servers remembered, 400 with ten — the
+  server is forgotten.
+- A probe that could not reach every node counts no miss and clears none.
+- A probe that reaches every node and reads the `CERBERUS_SCHEMA_CLUSTER`
+  replica list replaces what is remembered with exactly the servers it read.
+  The configured addresses are then taken to front that cluster's replicas: a
+  server reached through them that the cluster does not list is not kept.
+- A probe that reads one `serverUUID()` on two builds — servers cloned from
+  one data directory — keeps the older build for it.
+- A probe that reaches no server falls back to the supported floor; what is
+  remembered is kept for the next probe that answers.
+
+During a rolling rollback behind one load-balanced address, the first probe
+that lands on the rolled-back replica lowers the resolution to that replica's
+build, and the resolution stays there while the replica serves on it: probes
+that land on the other replicas do not raise it. The defect gates, the
+condition-cache override and the analyzer decision follow the remembered
+servers the same way. While cerberus remembers a build no server the last
+probe reached runs, the [re-probe](#re-probe) runs every 10 seconds. A replica
+that leaves the fleet keeps counting for 40 complete probes per remembered
+server, under seven minutes per server at that cadence, and one that rolls
+forward lifts the version on the first probe that lands on it.
+
+A server whose data directory does not survive a restart (no persistent
+volume) comes back under a new `serverUUID()`. Its previous entry keeps its
+old build until it is forgotten, so after a rolling upgrade of such servers
+the version rises once the old entries expire rather than on the first probe
+that reaches each server.
+
+Memory starts empty at boot, and behind a load balancer the fleet is learned
+one probe at a time. Naming every address, or the cluster, reads the whole
+fleet on every probe. `fleet_versions` in the boot log lists every remembered
+build.
 
 ## Capability probe (experimental ts_grid setting)
 
@@ -933,8 +980,8 @@ booted while ClickHouse was down pinned itself to the supported floor. So the
 resolution is re-run every **5 minutes** for the life of the process, and a
 changed answer is swapped into the query path in place.
 
-Each pass repeats exactly the boot resolution — probe `version()` across the
-reachable nodes, run the capability canary, resolve the *same* configured selection against both — so a
+Each pass repeats exactly the boot resolution — probe each node's identity
+and `version()`, run the capability canary, resolve the *same* configured selection against both — so a
 running process can never reach a posture boot could not have produced. The
 selection itself is fixed for the life of the process, which is what makes the
 loop safe to run unattended: a re-resolve cannot introduce an unknown feature id
@@ -943,9 +990,12 @@ not change under a running process. Consequently a re-probe never exits the
 process; a failed probe or resolve is logged and the set already in force is
 kept.
 
-Only a genuine transition is acted on. A pass whose resolved set and server
-version both match the current ones does nothing at all, so the steady state is
-silent and the log carries one line per real capability change:
+Only a genuine transition is acted on. A pass whose resolved set, server
+version and workload verdict all match the current ones swaps nothing and logs
+nothing; it only records on the resolution in force whether it fell back to the
+floor, reached every node, and rests on a remembered build it did not reach,
+which `/readyz` and the re-probe cadence read. The steady state is silent, and
+the log carries one line per real capability change:
 
 ```text
 level=INFO msg="clickhouse optimizations re-resolved" server_version=25.9
@@ -987,10 +1037,12 @@ such rejection requests an early re-probe, which runs 10 seconds after the
 previous probe at the earliest (immediately, when that has already passed)
 instead of waiting for the 5-minute cadence; a burst of rejections requests one
 probe. Once that probe reaches the node, the set is re-resolved against it and
-later queries carry only what it knows. A node the probe cannot reach — one
-behind a load balancer that neither the configured addresses nor
-`CERBERUS_SCHEMA_CLUSTER` name — keeps rejecting, and keeps requesting a probe
-at most every 10 seconds.
+later queries carry only what it knows. A node behind a load balancer that
+neither the configured addresses nor `CERBERUS_SCHEMA_CLUSTER` name keeps
+rejecting, and keeps requesting a probe at most every 10 seconds, until a probe
+lands on it; from then on cerberus remembers it, and the set stays resolved
+against its build
+([Replicas behind a load balancer](#replicas-behind-a-load-balancer)).
 
 A node newer than the set in force accounts for can reject a query too: a
 node on 26.9 refuses the `enable_analyzer=0` cerberus stamps on
