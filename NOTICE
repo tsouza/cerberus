@@ -26,14 +26,17 @@ to identify the query languages and wire formats Cerberus is compatible with.
 Cerberus is not affiliated with, sponsored by, or endorsed by Grafana Labs, the
 Prometheus project, or the OpenTelemetry project.
 
-The reference Grafana Loki (github.com/grafana/loki) and Grafana Tempo
-(github.com/grafana/tempo) query parsers are licensed under the GNU Affero
-General Public License v3.0 (AGPLv3). Cerberus does NOT link or distribute those
-parsers in its binary. They are referenced only by build-tagged, test-only
-fidelity oracles and the differential compatibility harnesses, which are
-isolated in the test/oracle nested Go module and never compiled into the
-shipped cmd/cerberus binary. The agpl-clean CI gate
-(.github/scripts/agpl-clean.mjs) enforces this.
+The Grafana Loki (github.com/grafana/loki) and Grafana Tempo
+(github.com/grafana/tempo) modules are licensed under the GNU Affero General
+Public License v3.0 (AGPLv3). Cerberus does NOT link or distribute them. Only
+test code uses them: the build-tagged (agpl_oracle) fidelity oracles and the
+differential compatibility harnesses under compatibility/, which are packages
+of the root Go module (so the root go.mod requires both modules), and the LogQL
+inventory in the nested test/oracle Go module. None of that code is reachable
+from cmd/cerberus or from any package a repository Dockerfile builds, so neither
+the shipped binary nor an image build compiles or fetches an AGPLv3 module. The
+agpl-clean CI gate (.github/scripts/agpl-clean.mjs) enforces this by checking
+the licence of every module in those build graphs.
 
 ================================================================================
 Third-party components (Apache License 2.0)
@@ -51,8 +54,17 @@ under the Apache License, Version 2.0:
     The Apache-2.0 protobuf wire types for the Tempo HTTP and gRPC APIs,
     copied into internal/thirdparty/tempopb from the commit named in
     compatibility/tempo/UPSTREAM_VERSION; the subtree's own licence is
-    internal/thirdparty/tempopb/LICENSE_APACHE2. Nothing else of grafana/tempo
-    is copied or linked into the binary — see above.
+    internal/thirdparty/tempopb/LICENSE_APACHE2. The copied Go files are
+    modified (import paths and protobuf registry names rewritten), and each
+    carries a notice saying so. Nothing else of grafana/tempo is copied or
+    linked into the binary — see above.
+
+  * OpenTelemetry protocol definitions
+    (github.com/open-telemetry/opentelemetry-proto)
+    Copyright The OpenTelemetry Authors.
+    internal/thirdparty/tempopb/common/v1, resource/v1 and trace/v1 are
+    generated from these protocol definitions; they reach this product
+    through the Grafana Tempo copy above.
 
   * OpenTelemetry Collector Contrib — ClickHouse exporter sqltemplates
     (github.com/open-telemetry/opentelemetry-collector-contrib)

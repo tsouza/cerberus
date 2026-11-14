@@ -126,9 +126,12 @@ describes.
 
 `grafana/tempo` is AGPL-3.0, except its `pkg/tempopb` wire types, which carry
 their own Apache-2.0 licence. The reference Tempo runs as an unmodified
-container image the harness pulls; no Tempo source is committed here. The
+container image the harness pulls; no Tempo source code is committed here. The
 driver under `compatibility/tempo/driver/` is cerberus code, licensed like the
-rest of the repository.
+rest of the repository, with one exception: the "Upstream-mined" cases in
+`driver/corpus/smoke.txtar` are TraceQL query strings taken from the table
+tests in `grafana/tempo`'s AGPL-3.0 `pkg/traceql`, each citing the test it came
+from.
 
 ## Related docs
 
