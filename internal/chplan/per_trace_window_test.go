@@ -331,61 +331,6 @@ func TestWindowPerTraceSubqueriesNoOp(t *testing.T) {
 	}
 }
 
-// perTraceSubtrees collects, under one Project, every per-trace subquery of n
-// and the plain row source each filters — the scans the bound must reach.
-func perTraceSubtrees(n Node) Node {
-	var parts []Node
-	WalkDeep(n, func(x Node) bool {
-		switch v := x.(type) {
-		case *TraceLookupFilter:
-			parts = append(parts, v.Lookups...)
-			parts = append(parts, v.Input)
-		case *Filter:
-			if len(CohortSubqueries(v.Predicate)) > 0 {
-				parts = append(parts, v)
-				return false
-			}
-		case *MetricsCompare:
-			for _, in := range CohortSubqueries(v.Selection) {
-				parts = append(parts, in.Subquery)
-			}
-		}
-		return true
-	})
-	if len(parts) == 0 {
-		return nil
-	}
-	out := parts[0]
-	for _, p := range parts[1:] {
-		out = &CrossJoin{Left: out, Right: p}
-	}
-	return out
-}
-
-// findWindow returns the first `tsCol > … AND tsCol <= …` predicate conjunct
-// pair a Filter in n carries.
-func findWindow(n Node, tsCol string) Expr {
-	var found Expr
-	WalkDeep(n, func(x Node) bool {
-		if found != nil {
-			return false
-		}
-		f, ok := x.(*Filter)
-		if !ok {
-			return true
-		}
-		InspectExpr(f.Predicate, func(e Expr) bool {
-			b, ok := e.(*Binary)
-			if found == nil && ok && b.Op == OpAnd && isTsBound(b.Left, OpGt, tsCol) && isTsBound(b.Right, OpLe, tsCol) {
-				found = b
-			}
-			return found == nil
-		})
-		return found == nil
-	})
-	return found
-}
-
 func isTsBound(e Expr, op BinaryOp, tsCol string) bool {
 	b, ok := e.(*Binary)
 	if !ok || b.Op != op {
@@ -393,15 +338,4 @@ func isTsBound(e Expr, op BinaryOp, tsCol string) bool {
 	}
 	col, ok := b.Left.(*ColumnRef)
 	return ok && col.Name == tsCol
-}
-
-func countReferences(e, target Expr) int {
-	n := 0
-	InspectExpr(e, func(x Expr) bool {
-		if x == target {
-			n++
-		}
-		return true
-	})
-	return n
 }
