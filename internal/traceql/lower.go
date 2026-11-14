@@ -124,7 +124,10 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 	}
 
 	if mp != nil {
-		plan, err = lowerMetricsPipeline(plan, mp, s)
+		// A metrics function observes spans, so a trailing spanset aggregate
+		// (`{ } | count() > 1 | rate()`) feeds it the spans of each spanset
+		// that passed, never the per-trace row (spanGranularOperand).
+		plan, err = lowerMetricsPipeline(spanGranularOperand(plan, s), mp, s)
 		if err != nil {
 			return nil, err
 		}
@@ -144,6 +147,12 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 // select) layers onto the previous result. Shared by lowerRoot and by
 // lowerSpansetExpr, which lowers a parenthesised sub-pipeline operand of
 // a spanset set operation (`({…} | count() > 1) && ({…} | count() > 1)`).
+//
+// A stage reads the spans of the spansets the stage before it passed, so a
+// spanset aggregate with another stage after it (`{ } | count() > 1 |
+// count() > 2`) hands that stage its spans rather than its per-trace row
+// (spanGranularOperand). Only the last stage may stay per trace, where the
+// /api/search envelope reads it.
 func lowerPipeline(p traceql.Pipeline, s schema.Traces) (chplan.Node, error) {
 	if len(p.Elements) == 0 {
 		return nil, fmt.Errorf("traceql: empty pipeline")
@@ -153,7 +162,7 @@ func lowerPipeline(p traceql.Pipeline, s schema.Traces) (chplan.Node, error) {
 		return nil, err
 	}
 	for _, el := range p.Elements[1:] {
-		next, err := lowerFollowingElement(plan, el, s)
+		next, err := lowerFollowingElement(spanGranularOperand(plan, s), el, s)
 		if err != nil {
 			return nil, err
 		}

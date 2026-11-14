@@ -1,0 +1,87 @@
+# A metrics function after a spanset-aggregate filter observes the spans of
+# each spanset the filter passes, as reference Tempo's metrics evaluator
+# observes every span of each spanset its pipeline returns. `count() > 1`
+# passes traces ...01 and ...03 and drops ...02, whose only span would
+# otherwise land in the first bucket.
+#
+#   trace ...01  3 spans  passes   00:00:30, 00:00:31, 00:01:30
+#   trace ...02  1 span   dropped  00:00:40
+#   trace ...03  2 spans  passes   00:01:10, 00:01:20
+#
+# Buckets (anchor - 60s, anchor]: 00:01:00 holds 2 spans (rate 2/60),
+# 00:02:00 holds 3 spans (rate 3/60). Without the filter the first bucket
+# would hold 3.
+-- query.traceql --
+{ } | count() > 1 | rate()
+-- metrics_window --
+1704067260 1704067320 60
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '', toDateTime64('2024-01-01 00:00:30', 9), 1000000000, 'a'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:31', 9), 1000000000, 'a'),
+    ('a0000000000000000000000000000001', '0000000000000003', '0000000000000001', toDateTime64('2024-01-01 00:01:30', 9), 1000000000, 'a'),
+    ('a0000000000000000000000000000002', '0000000000000016', '', toDateTime64('2024-01-01 00:00:40', 9), 1000000000, 'b'),
+    ('a0000000000000000000000000000003', '0000000000000032', '', toDateTime64('2024-01-01 00:01:10', 9), 1000000000, 'c'),
+    ('a0000000000000000000000000000003', '0000000000000033', '0000000000000032', toDateTime64('2024-01-01 00:01:20', 9), 1000000000, 'c');
+-- expected_rows --
+[
+  ["2024-01-01T00:01:00Z", 0.03333333333333333],
+  ["2024-01-01T00:02:00Z", 0.05]
+]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ } | count() > 1 | rate()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare
+-- args --
+[0] bool = true
+[1] int64 = 1704067200000000000
+[2] int64 = 1704067320000000000
+[3] int64 = 1
+[4] bool = true
+[5] int64 = 1704067200000000000
+[6] int64 = 1704067320000000000
+[7] int64 = 1
+-- args_optimized --
+[0] int64 = 1704067200000000000
+[1] int64 = 1704067320000000000
+[2] int64 = 1
+[3] bool = true
+[4] int64 = 1704067200000000000
+[5] int64 = 1704067320000000000
+[6] int64 = 1
+-- chplan --
+RangeWindow func= range=1m0s step=1m0s ts=Timestamp start=2024-01-01T00:01:00Z end=2024-01-01T00:02:00Z
+  MetricsAggregate op=rate valueAlias=Value
+    Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(Value > 1) ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnCount(1) AS Value] ; Filter predicate=true ; Scan(otel_traces)})
+      Filter predicate=true
+        Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:rw;rw
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+min_table_rows_to_use_projection_index=0
+query_cache_nondeterministic_function_handling=ignore
+query_cache_ttl=300
+use_query_cache=1
+use_query_condition_cache=1
+-- sql --
+SELECT `anchor_ts`, toFloat64(sum(in_window)) / 60 AS `Value` FROM ((SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(2, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts`, 1 AS `in_window` FROM (SELECT * FROM (SELECT * FROM `otel_traces` PREWHERE ? WHERE (`Timestamp` > fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` PREWHERE ? WHERE (`Timestamp` > fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId`) WHERE (`Value` > ?)))) WHERE `Timestamp` > parseDateTime64BestEffort('2024-01-01 00:01:00.000000000Z', 9) - toIntervalNanosecond(60000000000) AND `Timestamp` <= parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) UNION ALL (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(0, 2))) AS `anchor_ts`, 0 AS `in_window` FROM (SELECT 1 FROM `system`.`one`))) GROUP BY `anchor_ts`
+-- sql_optimized --
+SELECT `anchor_ts`, toFloat64(sum(in_window)) / 60 AS `Value` FROM ((SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(2, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts`, 1 AS `in_window` FROM (SELECT `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`Timestamp` > fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` PREWHERE ? WHERE (`Timestamp` > fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId`) WHERE (`Value` > ?)))) WHERE `Timestamp` > parseDateTime64BestEffort('2024-01-01 00:01:00.000000000Z', 9) - toIntervalNanosecond(60000000000) AND `Timestamp` <= parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) UNION ALL (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(0, 2))) AS `anchor_ts`, 0 AS `in_window` FROM (SELECT 1 FROM `system`.`one`))) GROUP BY `anchor_ts`
