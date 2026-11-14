@@ -89,8 +89,8 @@ func (l *explainLang) Parse(ctx context.Context, query string) (chplan.Node, eng
 // aggregate with a step-sized chplan.RangeWindow bounded to the explain window,
 // then project into the Sample matrix shape. The RangeWindow is what bounds the
 // metrics inner spans scan (the top-level RequireSpansScansBounded chokepoint
-// skips the metrics-emitter subtree, deferring to the emitter's own per-site
-// bound), so a windowless preview would otherwise emit an unbounded scan.
+// leaves a metrics node's input spine to the emitter's own per-site bound),
+// so a windowless preview would otherwise emit an unbounded scan.
 func (l *explainLang) parseMetrics(ctx context.Context, expr *traceql.RootExpr) (chplan.Node, engine.Meta, error) {
 	if l.step <= 0 {
 		return nil, engine.Meta{}, fmt.Errorf("%w: metrics explain needs a positive step", errLowerStage)

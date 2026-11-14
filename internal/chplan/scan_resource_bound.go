@@ -295,6 +295,23 @@ func (e *ScanResourceBoundViolation) Error() string {
 // A spans Scan with no enclosing filter predicate — or a predicate that proves
 // no bound — yields a ScanResourceBoundViolation.
 //
+// Each relation that reads the spans table on its own is checked with a
+// fresh context — the outer spine's window, top-N and emitter window do not
+// govern what it reads, so it must carry its own bound:
+//
+//   - a plan embedded in an Expr slot (an InSubquery's or a ScalarSubquery's
+//     input), which Children() does not reach;
+//   - each lookup relation of a TraceLookupFilter, which is LEFT JOINed
+//     beside the filter's input rather than read through it.
+//
+// The input spine of a metrics node (MetricsAggregate, MetricsCompare,
+// MetricsHistogramOverTime) is the one place a spans Scan may reach emit
+// with no bound in the IR: the matrix emitters bound it from the enclosing
+// RangeWindow at emit time (maybePushInnerScanTimeBounds), enforced
+// fail-closed by the per-site chsql requireInnerSpansScanBound gate. Every
+// other relation under a metrics node — its Expr subqueries and its
+// lookups — is checked here like any other.
+//
 // spansTable == "" (PromQL / metrics emission, where the caller never sets a
 // spans table on the emit context) makes this a pure no-op: the invariant is
 // table-scoped to the TraceQL spans table. The descent only sees Node-tree
@@ -307,25 +324,28 @@ func RequireSpansScansBounded(spansTable string, root Node) error {
 	}
 	cols := deriveScanBoundCols(root)
 	var firstErr error
-	var descend func(n Node, pred Expr, underLimit bool)
-	descend = func(n Node, pred Expr, underLimit bool) {
+	// emitWindowed: n lies on the input spine of a metrics node, whose spans
+	// scan the emitter bounds from the RangeWindow.
+	var descend func(n Node, pred Expr, underLimit, emitWindowed bool)
+	descend = func(n Node, pred Expr, underLimit, emitWindowed bool) {
 		if firstErr != nil || n == nil {
 			return
 		}
 		switch v := n.(type) {
 		case *MetricsAggregate, *MetricsCompare, *MetricsHistogramOverTime:
-			// The metrics matrix emitters bound their own inner spans scan at
-			// emit time (maybePushInnerScanTimeBounds), enforced fail-closed by
-			// the per-site chsql requireInnerSpansScanBound gate. Their inner
-			// carries no window in the IR, so classifying it here would
-			// false-reject a correct prod query — skip the subtree and let the
-			// per-site gate own it.
-			return
+			for _, c := range n.Children() {
+				descend(c, pred, underLimit, true)
+			}
 		case *Filter:
 			// Accumulate conjuncts down the spine so an outer-window +
 			// inner-attribute leaf (Filter_window(Filter_attr(Scan))) is still
 			// recognised as windowed.
-			descend(v.Input, conjoinScanPred(pred, v.Predicate), underLimit)
+			descend(v.Input, conjoinScanPred(pred, v.Predicate), underLimit, emitWindowed)
+		case *TraceLookupFilter:
+			descend(v.Input, pred, underLimit, emitWindowed)
+			for _, l := range v.Lookups {
+				descend(l, nil, false, false)
+			}
 		case *Limit:
 			// A `LIMIT N` (Count > 0) bounds the output to a top-N: over an
 			// ORDER BY / Filter / Project chain it is a bounded-N priority queue
@@ -333,7 +353,7 @@ func RequireSpansScansBounded(spansTable string, root Node) error {
 			// partitions but cannot buffer full retention into memory — a
 			// memory-streaming bound. It does NOT survive an intervening
 			// Aggregate (handled below).
-			descend(v.Input, pred, underLimit || v.Count > 0)
+			descend(v.Input, pred, underLimit || v.Count > 0, emitWindowed)
 		case *Aggregate:
 			// A GROUP BY hash table is materialised in full before an outer
 			// LIMIT applies, so a top-N Limit above an Aggregate does NOT bound
@@ -343,13 +363,13 @@ func RequireSpansScansBounded(spansTable string, root Node) error {
 			// `| count() > N` leaf is bounded by its own stampSearchWindow,
 			// not the outer top-N Limit).
 			for _, c := range n.Children() {
-				descend(c, pred, false)
+				descend(c, pred, false, emitWindowed)
 			}
 		case *Scan:
 			if v.Table != spansTable {
 				return
 			}
-			if SpansScanResourceBound(pred, cols) != boundNone || underLimit {
+			if SpansScanResourceBound(pred, cols) != boundNone || underLimit || emitWindowed {
 				return
 			}
 			firstErr = &ScanResourceBoundViolation{Table: spansTable}
@@ -358,7 +378,7 @@ func RequireSpansScansBounded(spansTable string, root Node) error {
 			// through non-Filter nodes so a Scan beneath an intervening
 			// Project / Aggregate still sees its governing bounds.
 			for _, c := range n.Children() {
-				descend(c, pred, underLimit)
+				descend(c, pred, underLimit, emitWindowed)
 			}
 		}
 
@@ -375,11 +395,11 @@ func RequireSpansScansBounded(spansTable string, root Node) error {
 		// with a FRESH context and must carry its own bound.
 		nodeExprs(n, func(e Expr) {
 			InspectExprNodes(e, func(Expr) bool { return true }, func(sub Node) {
-				descend(sub, nil, false)
+				descend(sub, nil, false, false)
 			})
 		})
 	}
-	descend(root, nil, false)
+	descend(root, nil, false, false)
 	return firstErr
 }
 

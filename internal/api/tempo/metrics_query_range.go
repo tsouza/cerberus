@@ -198,9 +198,10 @@ func (metricsLang) Name() string { return "traceql" }
 
 // SpansTable exposes the spans table so the engine threads it onto the emit
 // context. The metrics matrix inner scan is bounded at emit time and gated by
-// the per-site requireInnerSpansScanBound (RequireSpansScansBounded skips the
-// metrics-emitter subtree), but threading it means the chokepoint still runs
-// over the rest of a metrics plan.
+// the per-site requireInnerSpansScanBound, which RequireSpansScansBounded
+// leaves the metrics node's input spine to; the chokepoint checks every other
+// spans scan of a metrics plan, its per-trace subqueries and lookups among
+// them.
 func (l metricsLang) SpansTable() string { return l.spansTable }
 
 // EmitSchemaStrategies reports the strategies the metrics-pipeline plan
