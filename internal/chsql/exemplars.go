@@ -85,6 +85,10 @@ func EmitMetricsExemplars(
 	// column would render Map syntax and fail at query time (issue #3186).
 	// spansTable stays explicit because the caller resolves it, and the
 	// handler ctx is not always engine-threaded with WithSpansTable.
+	// This statement renders m.Inner outside Emit, so it takes here the
+	// per-trace subquery bound Emit gives the matrix statement over the same
+	// RangeWindow (chplan.BoundMetricsPerTraceSubqueries).
+	m = chplan.WindowMetricsAggregatePerTraceSubqueries(rw, m)
 	e := newEmitter(ctx)
 	e.spansTable = spansTable
 	if err := e.emitMetricsExemplars(rw, m, traceIDCol, spanIDCol, maxPerSeries, spansTable); err != nil {

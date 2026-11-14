@@ -154,7 +154,7 @@ func collectBoundedTraceScopes(root Node) []*BoundedTraceScope {
 //
 // It reads the IR through nodeExprs, the single enumeration of the Expr slots
 // each Node carries, rather than naming the node types that can hold a gate.
-// The traceql stamping pass (pushLeafPredicate) conjoins the gate into leaf
+// The traceql stamping pass (PushLeafPredicate) conjoins the gate into leaf
 // [Filter].Predicate slots and into the [InSubquery] cohort subplans hanging
 // off them, so the enumerated superset finds exactly those today; sharing the
 // enumeration means a gate that reaches any other slot is bound rather than

@@ -1,0 +1,46 @@
+# A metrics pipeline comparing traceDuration with a literal keeps the traces
+# whose duration, measured from their spans inside the window the metric
+# reads, satisfies it: the membership subquery reads the RangeWindow input
+# span (start - step, end], here (00:00:00, 00:02:00], as /api/search reads
+# its request window.
+#
+#   trace ...01  inside the window, traceDuration 2s: both spans match
+#     0001 root  00:00:30 +2s
+#     0002       00:00:31 +0.5s
+#   trace ...02  straddles the lower edge; in-window traceDuration 0.5s
+#     0010       23:59:50 +1s     outside the window
+#     0011       00:00:40 +0.5s   no match
+#
+# Two matches, in the (00:00:00, 00:01:00] bucket. Read across full
+# retention, trace ...02 would last 50.5s and 0011 would match too.
+-- query.traceql --
+{ traceDuration > 1s } | count_over_time()
+-- metrics_window --
+1704067260 1704067320 60
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:30', 9), 2000000000, 'r'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:31', 9), 500000000,  'c'),
+    ('a0000000000000000000000000000002', '0000000000000010', '',                 toDateTime64('2023-12-31 23:59:50', 9), 1000000000, 'r'),
+    ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:00:40', 9), 500000000,  'c');
+-- expected_rows --
+[]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ traceDuration > 1s } | count_over_time()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

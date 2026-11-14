@@ -12,7 +12,7 @@ import (
 )
 
 // countWindowBounds walks the plan and counts Filter predicates that carry a
-// time-window bound (a fromUnixTimestamp64Nano call — what tsBound emits). Used
+// time-window bound (a fromUnixTimestamp64Nano call — what chplan.TimestampBound emits). Used
 // to assert stampSearchWindow folds the window onto the right leaves and never
 // double-folds.
 func countWindowBounds(n chplan.Node) int {
@@ -357,7 +357,7 @@ func TestSearchWindow_TraceScopedCohortWindowed(t *testing.T) {
 	if !ok {
 		t.Fatalf("SearchTraceLimit input = %T, want *chplan.Filter", stl.Input)
 	}
-	cohorts := cohortSubqueries(f.Predicate)
+	cohorts := chplan.CohortSubqueries(f.Predicate)
 	if len(cohorts) != 1 {
 		t.Fatalf("got %d cohort subqueries, want 1", len(cohorts))
 	}
@@ -407,7 +407,7 @@ func TestSearchTraceLimit_SpanOperandLookupBounded(t *testing.T) {
 	if got := countWindowBounds(lookup.Lookups[0]); got != 2 {
 		t.Errorf("lookup window bounds = %d, want 2", got)
 	}
-	cohorts := cohortSubqueries(lookup.Predicate)
+	cohorts := chplan.CohortSubqueries(lookup.Predicate)
 	if len(cohorts) != 1 {
 		t.Fatalf("got %d membership subqueries in the joined predicate, want 1", len(cohorts))
 	}

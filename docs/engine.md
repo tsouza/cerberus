@@ -445,7 +445,15 @@ flagged in the IR — by design, not by default):
 
 - Matrix shapes (`OuterRange > 0`) and the `MetricsAggregate` /
   `MetricsHistogramOverTime` / `MetricsCompare` emitters bound via
-  `maybePushInnerScanTimeBounds` (gated on `Start && End`).
+  `maybePushInnerScanTimeBounds` (gated on `Start && End`). The per-trace
+  subqueries inside a TraceQL metrics input — each `TraceLookupFilter`
+  lookup, each membership subquery in a `Filter` predicate or a
+  `compare()` selection, and the plain span scan each one filters — take
+  the same `(Start - Offset - Range, End - Offset]` bound
+  (`chplan.RangeWindowInputBound`) from
+  `chplan.BoundMetricsPerTraceSubqueries`, run at the top of `chsql.Emit`
+  and of the compare root-leg statement; the exemplar statement applies it
+  to the metrics node it renders.
 - `RangeLWR`, `RangeBucketFanout`, and `AbsentOverTime` are separate IR
   node types with their own `maybePushRangeScanTimeBound` / inner-scan
   bounds.

@@ -3,8 +3,8 @@ package chplan
 // This file hosts the single generic "recurse into a node's children and
 // rebuild on change" tree operation. It lives in chplan (not optimizer) because
 // it is a pure plan-tree rewrite that more than one layer needs: the optimizer's
-// applyToTree drives every rule through it, and the TraceQL search-window fold
-// (pushLeafPredicate) delegates to it so NO node type can silently swallow the
+// applyToTree drives every rule through it, and the TraceQL leaf-predicate push
+// (PushLeafPredicate) delegates to it so NO node type can silently swallow the
 // window. TestRewriteChildren_Exhaustive is the lock-step guard.
 
 // rewriteSingleInput is the shared clone-on-change shape for nodes
