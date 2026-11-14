@@ -1,9 +1,10 @@
 package grpc
 
 import (
-	"github.com/grafana/tempo/pkg/tempopb"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
+
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
 
 	"github.com/tsouza/cerberus/internal/telemetry"
 )

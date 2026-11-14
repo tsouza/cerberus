@@ -1,7 +1,10 @@
 # One-command local dev stack for cerberus.
 #
-#   docker compose up --wait
+#   docker compose --profile grafana up --wait
 #   open http://localhost:3000   # Grafana (anonymous auto-login as Admin)
+#
+# Without `--profile grafana` the stack is cerberus, ClickHouse and the
+# collector only, with cerberus's Prometheus / Loki / Tempo APIs on :8080.
 #
 # Services:
 #   clickhouse      single-node CH server, OTel-aware (db=otel,
@@ -36,7 +39,8 @@
 #                   cerberus -> otel-collector -> ClickHouse -> back into
 #                   cerberus via its own Prom/Loki/Tempo heads, populating
 #                   the provisioned dashboard within a minute of stack start.
-#   grafana         pre-provisioned with cerberus as three datasources
+#   grafana         (profile `grafana`) the official grafana/grafana image,
+#                   pre-provisioned with cerberus as three datasources
 #                   (Prometheus / Loki / Tempo) and the `cerberus`
 #                   dashboard (self-obs; set as home dashboard) under the
 #                   "Cerberus" folder. Provisioning files live under
@@ -442,8 +446,13 @@ services:
       retries: 12
       start_period: 5s
 
+  # Opt-in: `docker compose --profile grafana up --wait`. The image is the
+  # official, unmodified Grafana release, which is licensed AGPL-3.0; a plain
+  # `docker compose up` starts no Grafana at all, and cerberus on :8080 serves
+  # any Grafana the user already runs.
   grafana:
-    image: ghcr.io/tsouza/cerberus@sha256:37306fa251ae7e82d71b9179907782c30d9321c5a601c18dd1ac00362a79654e
+    image: grafana/grafana:12.2.9
+    profiles: [grafana]
     networks: [cerberus-dev]
     environment:
       GF_SECURITY_ADMIN_USER: admin
@@ -470,7 +479,10 @@ services:
       # home page. Path is the in-container mount location of the JSON,
       # not a Grafana URL or UID.
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/cerberus/cerberus.json
-      # Drilldown versions and the initialization guard ship in the image.
+      # The four Drilldown apps, installed from the Grafana plugin catalogue
+      # before Grafana starts, at fixed versions so a catalogue release cannot
+      # change the stack under the user.
+      GF_PLUGINS_PREINSTALL_SYNC: grafana-metricsdrilldown-app@2.5.1,grafana-lokiexplore-app@2.5.0,grafana-exploretraces-app@2.1.0,grafana-pyroscope-app@2.2.0
     volumes:
       - ./test/e2e/grafana/compose/datasources:/etc/grafana/provisioning/datasources:ro
       # Dashboard provider config tells Grafana to scan the `cerberus`

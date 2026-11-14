@@ -90,6 +90,7 @@ var agplOracleLanes = []agplOracleLane{
 		tags:   []string{"agpl_oracle"},
 		packages: []string{
 			"./test/agpl_oracle/...",
+			"./internal/thirdparty/tempopb/...",
 			"./test/spec/parityoracle/logql/...",
 			"./test/spec/parityoracle/traceql/...",
 			"./test/property/oracle/logql/...",

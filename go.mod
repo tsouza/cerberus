@@ -18,6 +18,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/grafana/dskit v0.0.0-20260427162712-0457a92dacc3
+	github.com/grafana/loki/pkg/push v0.0.0-20250630054201-94c0ba7b0952
 	github.com/grafana/loki/v3 v3.7.1
 	github.com/grafana/tempo v1.5.1-0.20260508211128-2f74ea818de1
 	github.com/moby/moby/api v1.56.1
@@ -170,7 +171,6 @@ require (
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/grafana/gomemcache v0.0.0-20251127154401-74f93547077b // indirect
 	github.com/grafana/jsonparser v0.0.0-20241004153430-023329977675 // indirect
-	github.com/grafana/loki/pkg/push v0.0.0-20250630054201-94c0ba7b0952 // indirect
 	github.com/grafana/otel-profiling-go v0.5.1 // indirect
 	github.com/grafana/pyroscope-go/godeltaprof v0.1.9 // indirect
 	github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853 // indirect
@@ -362,12 +362,12 @@ replace github.com/hashicorp/memberlist => github.com/grafana/memberlist v0.3.1-
 // Neither LogQL nor TraceQL is PARSED through a fork: cerberus parses both
 // with its own clean-room Apache reimplementations (internal/logql/lsyntax,
 // internal/logql/logpattern, internal/drain, internal/traceql/ast). The
-// shipped binary reaches into grafana/tempo only for the Apache-licensed
-// grafana/tempo/pkg/tempopb wire types; every AGPL package of either
-// upstream is referenced solely by test-only oracles (agpl_oracle-tagged
-// tests, the test/oracle nested module, and the compatibility harnesses),
-// and the agpl-clean gate fails the build if one becomes reachable from
-// ./cmd/cerberus.
+// Tempo wire types are an in-house copy of the Apache-licensed
+// grafana/tempo/pkg/tempopb (internal/thirdparty/tempopb), so the shipped
+// binary's module graph holds neither grafana/loki/v3 nor grafana/tempo.
+// Both are required here only by test-only oracles (agpl_oracle-tagged
+// tests and the compatibility harnesses), and the agpl-clean gate fails the
+// build if an AGPL-licensed module enters ./cmd/cerberus's graph.
 
 // prometheus: zero source patches. The fork tag is cut on the upstream
 // release commit the compat reference image runs (v0.315.0-cerberus-parser
@@ -399,7 +399,5 @@ replace (
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils => github.com/tsouza/opentelemetry-collector-contrib/pkg/core/xidutils v0.0.5-cerberus-ddl
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.5-cerberus-ddl
 )
-
-ignore ./compatibility/tempo/upstream
 
 ignore ./compatibility/loki/upstream

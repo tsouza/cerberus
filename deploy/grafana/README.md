@@ -1,6 +1,12 @@
 # Grafana image
 
-The Cerberus Grafana image contains Grafana 12.2.9 and these fixed plugin versions:
+The maintained Grafana image is the Grafana the e2e lanes run. It is built on
+the host that runs the lane (`just e2e-grafana-image`, tag
+`cerberus-grafana:e2e`) and is never pushed to a registry. The root
+`docker-compose.yml` quickstart runs the official `grafana/grafana` release
+instead, under its opt-in `grafana` profile.
+
+The image contains Grafana 12.2.9 and these fixed plugin versions:
 
 | Plugin             | Version                                      |
 | ------------------ | -------------------------------------------- |
@@ -21,9 +27,14 @@ Runtime plugin preinstallation is disabled; it must not replace the installed ve
 Build from the repository root:
 
 ```sh
-node .github/scripts/build-with-registry-retry.mjs docker build \
-  --build-arg NODE_IMAGE --build-arg GRAFANA_BASE_IMAGE \
-  -f deploy/grafana/Dockerfile -t cerberus-grafana:local .
+just e2e-grafana-image
+```
+
+A compose stack runs it with the override that selects it:
+
+```sh
+COMPOSE_FILE=docker-compose.yml:test/e2e/grafana/compose/maintained-grafana.yml \
+  docker compose --profile grafana up --wait
 ```
 
 The AGPL-3.0 Metrics Drilldown source archive and patch are included in the image under

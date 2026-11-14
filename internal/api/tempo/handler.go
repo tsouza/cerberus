@@ -15,9 +15,10 @@ import (
 
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/proto"
-	"github.com/grafana/tempo/pkg/tempopb"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
 
 	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
@@ -1462,7 +1463,8 @@ func traceByIDProjections(s schema.Traces) []chplan.Projection {
 	// schema that does not declare one simply leaves the matching span
 	// field empty, the same as a span that carried none.
 	if s.StatusMessageColumn != "" {
-		metaKVPairs = append(metaKVPairs,
+		metaKVPairs = append(
+			metaKVPairs,
 			&chplan.LitString{V: traceByIDKeyStatusMessage},
 			&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.StatusMessageColumn}}},
 		)

@@ -322,8 +322,14 @@ jobs:
     # `down` orphaning the containers it started. Empty for every shard that
     # wants only the default services, which is what an unset COMPOSE_PROFILES
     # already means to compose.
+    #
+    # Every shard also boots the `grafana` profile (compose-smoke-matrix.mjs
+    # STACK_PROFILES) with the maintained Grafana image the job builds locally:
+    # COMPOSE_FILE layers test/e2e/grafana/compose/maintained-grafana.yml on the
+    # root stack, so every compose command in the job sees the same model.
     env:
-      COMPOSE_PROFILES: ${{ matrix.composeProfiles }}
+      COMPOSE_PROFILES: ${{ matrix.composeProfiles && format('grafana,{0}', matrix.composeProfiles) || 'grafana' }}
+      COMPOSE_FILE: docker-compose.yml:test/e2e/grafana/compose/maintained-grafana.yml
     concurrency:
       # Per-run and per-shard: sibling shards stay independent, and release or
       # manual qualification from separate runs can never replace one another.
@@ -359,7 +365,10 @@ jobs:
           # step above wrote: it spends the anonymous per-runner-IP quota and
           # is refused as UNAUTHENTICATED seconds after a `docker pull` of the
           # same image in the same job succeeded. See compose-pull-images.mjs.
-          node .github/scripts/compose-pull-images.mjs docker-compose.yml
+          node .github/scripts/compose-pull-images.mjs docker-compose.yml test/e2e/grafana/compose/maintained-grafana.yml
+
+      - name: build the maintained Grafana image (local, never pushed)
+        run: node .github/scripts/build-with-registry-retry.mjs docker build -t cerberus-grafana:e2e --build-arg NODE_IMAGE --build-arg GRAFANA_BASE_IMAGE -f deploy/grafana/Dockerfile .
 
       - name: compose up --wait (retried on registry faults)
         run: |
@@ -546,8 +555,14 @@ jobs:
     # wired anyway because both matrices come from the SAME shardEntry(), and
     # leaving it off here is how a future profile-carrying coverage shard would
     # boot the default stack and report green having exercised nothing.
+    #
+    # Every shard also boots the `grafana` profile (compose-smoke-matrix.mjs
+    # STACK_PROFILES) with the maintained Grafana image the job builds locally:
+    # COMPOSE_FILE layers test/e2e/grafana/compose/maintained-grafana.yml on the
+    # root stack, so every compose command in the job sees the same model.
     env:
-      COMPOSE_PROFILES: ${{ matrix.composeProfiles }}
+      COMPOSE_PROFILES: ${{ matrix.composeProfiles && format('grafana,{0}', matrix.composeProfiles) || 'grafana' }}
+      COMPOSE_FILE: docker-compose.yml:test/e2e/grafana/compose/maintained-grafana.yml
     concurrency:
       group: compose-smoke-info-${{ github.run_id }}-${{ matrix.name }}
       cancel-in-progress: false
@@ -574,7 +589,10 @@ jobs:
       # as UNAUTHENTICATED seconds after a `docker pull` of the same image in
       # the same job succeeded. See compose-pull-images.mjs.
       - name: pre-pull compose images (authenticated pull path)
-        run: node .github/scripts/compose-pull-images.mjs docker-compose.yml
+        run: node .github/scripts/compose-pull-images.mjs docker-compose.yml test/e2e/grafana/compose/maintained-grafana.yml
+
+      - name: build the maintained Grafana image (local, never pushed)
+        run: node .github/scripts/build-with-registry-retry.mjs docker build -t cerberus-grafana:e2e --build-arg NODE_IMAGE --build-arg GRAFANA_BASE_IMAGE -f deploy/grafana/Dockerfile .
 
       # `up` builds the cerberus service from Dockerfile.local, so it resolves
       # `FROM golang:1.26` against Docker Hub; the wrapper retries that on

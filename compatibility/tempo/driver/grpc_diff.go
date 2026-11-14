@@ -61,11 +61,12 @@ import (
 	"sort"
 	"time"
 
-	"github.com/grafana/tempo/pkg/tempopb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	grpcstatus "google.golang.org/grpc/status"
+
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
 
 	"github.com/tsouza/cerberus/compatibility/internal/score"
 )

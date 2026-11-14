@@ -5,9 +5,10 @@ import (
 	"errors"
 	"time"
 
-	"github.com/grafana/tempo/pkg/tempopb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
 )

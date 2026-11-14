@@ -8,11 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/tempo/pkg/tempopb"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"google.golang.org/grpc/codes"
+
+	"github.com/tsouza/cerberus/internal/thirdparty/tempopb"
 
 	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/api/tempo"

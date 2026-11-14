@@ -15,7 +15,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -30,6 +30,7 @@ import {
   CRAWL_FRONTIER_SHARD_COUNT,
   crawlShardEntries,
   SHARDS,
+  STACK_PROFILES,
 } from './compose-smoke-matrix.mjs';
 import {
   CRAWL_SHARD_TIMEOUT_FULL_MIN,
@@ -207,6 +208,37 @@ test('two shards booting one profile is flagged (wasted duplicate stack)', () =>
     violations.some((v) => v.includes('double-booted')),
     `expected a double-booted violation; got:\n${violations.join('\n')}`,
   );
+});
+
+test('a shard naming a stack profile is flagged: every shard already boots it', () => {
+  const violations = collectProfileViolations(new Set(['grafana']), [
+    { name: 'shard-a', specs: ['x.spec.ts'], composeProfiles: 'grafana' },
+  ]);
+  assert.ok(
+    violations.some((v) => v.includes('stack compose profile grafana')),
+    `expected a stack-profile violation; got:\n${violations.join('\n')}`,
+  );
+});
+
+test('a stack profile compose does not define is flagged PHANTOM', () => {
+  const violations = collectProfileViolations(new Set(), []);
+  assert.ok(
+    violations.some((v) => v.includes('phantom stack compose profile') && v.includes('grafana')),
+    `expected a phantom stack-profile violation; got:\n${violations.join('\n')}`,
+  );
+});
+
+test('e2e.yml boots every stack profile on every compose-smoke job', () => {
+  // The stack profiles are not on any matrix entry; the job environment adds
+  // them. A job that dropped one would boot a stack with no Grafana.
+  const workflow = readFileSync(new URL('../workflows/e2e.yml', import.meta.url), 'utf8');
+  const lines = workflow.split('\n').filter((line) => /^\s*COMPOSE_PROFILES:/.test(line));
+  assert.ok(lines.length >= 2, `expected the compose-smoke jobs to set COMPOSE_PROFILES; found ${lines.length}`);
+  for (const line of lines) {
+    for (const profile of STACK_PROFILES) {
+      assert.match(line, new RegExp(`'${profile}`), `${line.trim()} must boot the ${profile} profile`);
+    }
+  }
 });
 
 test('composeProfilesDefined reads both YAML sequence spellings', () => {

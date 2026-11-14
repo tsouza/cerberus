@@ -216,6 +216,12 @@ export const discover = discoverSpecs;
 // ---------------------------------------------------------------------------
 export const COMPOSE_FILE = process.env.COMPOSE_FILE_PATH || 'docker-compose.yml';
 
+// STACK_PROFILES — profiles every compose-smoke shard boots, because every spec
+// drives the UI they provide. `grafana` is opt-in for a user of the root
+// quickstart; e2e.yml adds it to COMPOSE_PROFILES for every shard, so no shard
+// names it and each must still be defined in COMPOSE_FILE.
+export const STACK_PROFILES = Object.freeze(['grafana']);
+
 // composeProfilesDefined() — the profile names docker-compose.yml declares.
 //
 // Deliberately a text scan rather than `docker compose config`: this rule runs
@@ -265,13 +271,22 @@ export function composeProfilesDefined(composeFile = COMPOSE_FILE) {
 }
 
 // collectProfileViolations() — the profile cover, both directions.
-export function collectProfileViolations(defined, shards = SHARDS) {
+export function collectProfileViolations(defined, shards = SHARDS, stackProfiles = STACK_PROFILES) {
   const v = [];
   const bootedBy = new Map();
   for (const s of shards) {
     if (!s.composeProfiles) continue;
     for (const p of s.composeProfiles.split(',').map((x) => x.trim()).filter(Boolean)) {
+      if (stackProfiles.includes(p)) {
+        v.push(`stack compose profile ${p} named by shard ${s.name}: every shard already boots it`);
+        continue;
+      }
       bootedBy.set(p, [...(bootedBy.get(p) || []), s.name]);
+    }
+  }
+  for (const profile of stackProfiles) {
+    if (!defined.has(profile)) {
+      v.push(`phantom stack compose profile (booted by every shard but not defined in ${COMPOSE_FILE}): ${profile}`);
     }
   }
   for (const [profile, who] of bootedBy) {
@@ -285,7 +300,7 @@ export function collectProfileViolations(defined, shards = SHARDS) {
     }
   }
   for (const profile of defined) {
-    if (!bootedBy.has(profile)) {
+    if (!bootedBy.has(profile) && !stackProfiles.includes(profile)) {
       v.push(
         `UNBOOTED compose profile (silent coverage gap): ${profile} — its services are defined in ` +
           `${COMPOSE_FILE} but no shard starts them, so nothing they exist for runs; give a shard ` +
