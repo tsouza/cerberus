@@ -48,6 +48,12 @@ OTEL_COLLECTOR_CONTRIB_IMAGE := "otel/opentelemetry-collector-contrib:0.152.1"
 # check (h)).
 CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.8-alpine"
 
+# CH_PERF_NIGHTLY_ANALYZER_MANDATORY_IMAGE is the server perf-nightly's leg on
+# the first analyzer-mandatory line boots (chopt.AnalyzerMandatorySince, 26.9):
+# that line refuses enable_analyzer=0, so every plan runs under the analyzer
+# there whatever the engine stamps (clickhouse-version-sync.mjs check (h)).
+CH_PERF_NIGHTLY_ANALYZER_MANDATORY_IMAGE := "clickhouse/clickhouse-server:26.9-alpine"
+
 # CH_PERF_SMOKE_JOIN_SPILL_IMAGE is the server the perf-smoke corpus's
 # join-spill tier boots (test/perf/smoke's perfSmokeJoinSpillCHImage):
 # chopt.FeatureJoinSpill floors at 26.4, above CH_TEST_IMAGE. Its own pin, so

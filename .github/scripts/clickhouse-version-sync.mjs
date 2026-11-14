@@ -65,7 +65,10 @@
 //       min_clickhouse (the supported floor) and quickstart_clickhouse (the
 //       deployment pin), at least one server inside move_to_prewhere's
 //       AutoRange (read from the registry, where ClickHouse places PREWHERE)
-//       and one outside it (where the emitter does). Each server's image,
+//       and one outside it (where the emitter does), and one at or past
+//       chopt.AnalyzerMandatorySince (read from the registry), the first line
+//       that refuses enable_analyzer=0, so the plans that line runs under the
+//       analyzer only are measured too. Each server's image,
 //       `clickhouse/clickhouse-server:<server>-alpine`, is one just/common.just
 //       pins; the self-check's matrix is the same list; and
 //       test/perf/nightly-baseline.json carries one bound set per server and
@@ -448,6 +451,13 @@ function readJustImages(text) {
   return images;
 }
 
+// readAnalyzerMandatorySince — the release line chopt.AnalyzerMandatorySince
+// names, or null when the registry declares it in another form.
+function readAnalyzerMandatorySince(text) {
+  const m = /\bAnalyzerMandatorySince\s*=\s*Version\{Major:\s*(\d+),\s*Minor:\s*(\d+)\}/.exec(text);
+  return m ? { major: Number(m[1]), minor: Number(m[2]) } : null;
+}
+
 // (h) — see the header.
 function checkPerfNightlyMatrix(sources, { minCH, quickstart, registry }, failures, notes) {
   const failuresBefore = failures.length;
@@ -494,6 +504,16 @@ function checkPerfNightlyMatrix(sources, { minCH, quickstart, registry }, failur
           `auto range ${bounds}, so the emitter's explicit PREWHERE split is measured nowhere`,
       );
     }
+  }
+
+  const mandatory = readAnalyzerMandatorySince(sources.registry);
+  if (!mandatory) {
+    failures.push('(h) internal/chopt/registry.go: could not read AnalyzerMandatorySince');
+  } else if (!servers.some((v) => atLeast(v, mandatory))) {
+    failures.push(
+      `(h) perf-nightly's clickhouse matrix [${matrix}] has no server at or past AnalyzerMandatorySince ` +
+        `${vstr(mandatory)}, so a plan that line can only run under the analyzer is measured nowhere`,
+    );
   }
 
   const pinned = readJustImages(sources.justCommon);
@@ -602,7 +622,8 @@ var registry = []Feature{
   { ID: FeatureColumnarResultDecode, MinVersion: AlwaysAvailable, AutoSelect: false, },
   { ID: FeatureMoveToPrewhere, MinVersion: AlwaysAvailable, AutoSelect: true,
     AutoRange:  VersionRange{From: Version{Major: 24, Minor: 11}, Until: Version{Major: 26, Minor: 2}}, },
-}`;
+}
+var AnalyzerMandatorySince = Version{Major: 26, Minor: 9}`;
   const entries = readRegistryEntries(fakeRegistry);
   ok(
     'registry ts_grid_range floor 25.6',
@@ -705,19 +726,21 @@ var registry = []Feature{
     compatibilityWorkflow:
       'jobs:\n  prometheus-floor:\n    steps:\n      - run: echo seed\n        env:\n          CH_IMAGE: "clickhouse/clickhouse-server:24.8"\n',
     // perf-nightly runs the floor, one server inside move_to_prewhere's auto
-    // range and the quickstart, each pinned in just/common.just and each with
-    // a bound set.
+    // range, the quickstart and the first analyzer-mandatory line, each pinned
+    // in just/common.just and each with a bound set.
     perfNightlyWorkflow:
-      "jobs:\n  perf-nightly-sentinels:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '25.9', '26.5']\n" +
+      "jobs:\n  perf-nightly-sentinels:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '25.9', '26.5', '26.9']\n" +
       '  perf-nightly:\n    steps: []\n',
-    selfcheckWorkflow: "jobs:\n  perf-nightly-selfcheck:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '25.9', '26.5']\n",
+    selfcheckWorkflow:
+      "jobs:\n  perf-nightly-selfcheck:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '25.9', '26.5', '26.9']\n",
     nightlyBaseline: JSON.stringify({
-      versions: [{ clickhouse: '24.8' }, { clickhouse: '25.9' }, { clickhouse: '26.5' }],
+      versions: [{ clickhouse: '24.8' }, { clickhouse: '25.9' }, { clickhouse: '26.5' }, { clickhouse: '26.9' }],
     }),
     justCommon:
       'CH_TEST_IMAGE := "clickhouse/clickhouse-server:25.9-alpine"\n' +
       'CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"\n' +
-      'CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.5-alpine"\n',
+      'CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.5-alpine"\n' +
+      'CH_PERF_NIGHTLY_ANALYZER_MANDATORY_IMAGE := "clickhouse/clickhouse-server:26.9-alpine"\n',
   };
   ok('consistent fixtures => no failures', runChecks(goodSources).failures.length === 0);
 
@@ -824,7 +847,7 @@ var registry = []Feature{
   const hFails = (mutate) => drift(mutate).filter((f) => f.startsWith('(h)'));
   ok(
     'readClickHouseMatrix reads the sentinel job\'s list',
-    readClickHouseMatrix(goodSources.perfNightlyWorkflow, PERF_NIGHTLY_JOB)?.join() === '24.8,25.9,26.5',
+    readClickHouseMatrix(goodSources.perfNightlyWorkflow, PERF_NIGHTLY_JOB)?.join() === '24.8,25.9,26.5,26.9',
   );
   ok('readClickHouseMatrix missing job -> null', readClickHouseMatrix('jobs:\n  other:\n', PERF_NIGHTLY_JOB) === null);
   ok(
@@ -854,6 +877,20 @@ var registry = []Feature{
       s.registry = s.registry.replace('Until: Version{Major: 26, Minor: 2}', 'Until: Version{Major: 99, Minor: 0}');
       s.registry = s.registry.replace('From: Version{Major: 24, Minor: 11}', 'From: Version{Major: 24, Minor: 1}');
     }).some((f) => f.includes('outside')),
+  );
+  ok(
+    '(h) a matrix with no analyzer-mandatory server is caught',
+    hFails((s) => {
+      s.perfNightlyWorkflow = s.perfNightlyWorkflow.replace(", '26.9'", '');
+      s.selfcheckWorkflow = s.selfcheckWorkflow.replace(", '26.9'", '');
+      s.nightlyBaseline = JSON.stringify({ versions: [{ clickhouse: '24.8' }, { clickhouse: '25.9' }, { clickhouse: '26.5' }] });
+    }).some((f) => f.includes('AnalyzerMandatorySince')),
+  );
+  ok(
+    '(h) an unreadable AnalyzerMandatorySince is caught',
+    hFails((s) => (s.registry = s.registry.replace('var AnalyzerMandatorySince', 'var Other'))).some((f) =>
+      f.includes('could not read AnalyzerMandatorySince'),
+    ),
   );
   ok(
     '(h) a server whose image just/common.just does not pin is caught',

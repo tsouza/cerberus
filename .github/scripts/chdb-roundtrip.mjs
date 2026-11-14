@@ -266,9 +266,11 @@ export const TIMEOUT_HEADROOM_SHARE = 0.75;
  * the total [predictLegSeconds] gives for the partition that run used: 1.016
  * for the committed ledger, over chdb.yml run 43423154952. Individual runners
  * in that run ranged from 0.70x to 1.28x the ledger host; SLOW_RUNNER_FACTOR
- * covers the runners slower than typical. The ledger host's own speed drifts
- * between regenerations, so this is re-derived every time the ledger is
- * regenerated.
+ * covers the runners slower than typical. It is a hand-set constant: neither
+ * `just update-chdb-roundtrip-weights` nor chdb-roundtrip-weights.mjs computes
+ * it, because the CI run it is measured on can only use the ledger after the
+ * ledger is committed. After a regeneration on a different host, re-derive it
+ * the same way from a chdb.yml run that partitioned with the new ledger.
  */
 export const CI_RUNNER_SLOWDOWN = 1.02;
 

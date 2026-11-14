@@ -97,6 +97,9 @@ export const mirroredImages = [
   // line.
   'clickhouse/clickhouse-server:26.8.36.3',
   'clickhouse/clickhouse-server:26.8-alpine',
+  // perf-nightly's leg on the first analyzer-mandatory line
+  // (CH_PERF_NIGHTLY_ANALYZER_MANDATORY_IMAGE).
+  'clickhouse/clickhouse-server:26.9-alpine',
   'clickhouse/clickhouse-server:26.6.1.1193-alpine',
   // test/regexjit's exact builds (CH_REGEX_JIT_IMAGES): one release of each
   // line that compiles regular expressions to native code.
