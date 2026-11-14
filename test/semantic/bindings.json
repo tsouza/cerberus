@@ -821,6 +821,24 @@
       "status": "active"
     },
     {
+      "id": "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
+      "contract": "SIGNAL-ADMISSION-001",
+      "verifier": "VERIFIER-ADMISSION-WIRING-TEST",
+      "evidence_class": "execution",
+      "independence_group": "traceql-grpc-server-admission-wiring",
+      "test_ref": "internal/api/tempo/grpc/server_test.go:TestNewServer_StreamInterceptorRejectsAtCap",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
+      "contract": "SIGNAL-ADMISSION-001",
+      "verifier": "VERIFIER-ADMISSION-WIRING-TEST",
+      "evidence_class": "execution",
+      "independence_group": "traceql-grpc-server-admission-wiring",
+      "test_ref": "internal/api/tempo/grpc/server_test.go:TestNewServer_StreamInterceptorAdmitsUnderCap",
+      "status": "active"
+    },
+    {
       "id": "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
       "contract": "SIGNAL-ADMISSION-001",
       "verifier": "VERIFIER-GO-UNIT-TEST",
@@ -971,6 +989,15 @@
       "evidence_class": "execution",
       "independence_group": "gate-cancel-kill-ordering",
       "test_ref": "internal/chclient/fanout_gate_test.go:TestAcquireDataShardFanout_CancelledDispatch_IssuesKillQueryBeforeRelease",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
+      "contract": "ARCH-CH-DATA-SHARD-FANOUT-BOUND-001",
+      "verifier": "VERIFIER-REAL-CLICKHOUSE-INTEGRATION",
+      "evidence_class": "execution",
+      "independence_group": "real-server-kill-query",
+      "test_ref": "internal/chclient/fanout_gate_kill_query_integration_test.go:TestAcquireDataShardFanout_CancelledDispatch_ServerActuallyKillsQuery",
       "status": "active"
     },
     {
