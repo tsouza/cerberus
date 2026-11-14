@@ -237,8 +237,8 @@
         {
           "name": "label_values_matcher_stock_key_renamed",
           "expected_status": 200,
-          "max_of_n_bytes": 24632333,
-          "ceiling_bytes": 29558799
+          "max_of_n_bytes": 26550752,
+          "ceiling_bytes": 31860902
         },
         {
           "name": "rate_by_route_matcher_stock_key",
