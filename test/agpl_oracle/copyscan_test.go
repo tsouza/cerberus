@@ -25,62 +25,62 @@ package agpl_oracle
 // language as keywords do; it reports a copy whatever its function and
 // identifier names. Keywords, operators and literals are kept by both.
 //
-// Matching. An in-house function matches an upstream function when at
-// least minShared of its evidence shingles occur in that upstream function
-// and either they make up at least minShare of its evidence shingles (a
-// short function copied whole) or they number at least minSection (a
-// copied section inside a longer function). The thresholds are per pass
-// (passRules).
+// Interface facts. A reimplementation of a query language shares some
+// text with every other implementation by necessity: the operator and
+// keyword spellings, the enum and wire names, and the error strings
+// matched for parity. A line is an interface fact by its shape alone,
+// never by its location:
 //
-// Evidence. A shingle is evidence unless one of the following holds.
-//
-//   - It is an interface fact on either side. A reimplementation of a
-//     query language shares some text with every other implementation by
-//     necessity: the operator and keyword spellings, the enum and wire
-//     names, and the error strings matched for parity. A line is an
-//     interface fact by its shape alone, never by its location:
-//
-//   - a spelling table line — a `case` clause, a `key: value,` element
-//     or a lone `value,` element whose operands are all names and
-//     literals, or a `return` of one literal — is an operator or keyword
-//     spelling when every string literal on it is punctuation, and an
-//     enum or wire name otherwise;
-//
+//   - a spelling table line — a `case` clause, a `key: value,` element or
+//     a lone `value,` element whose operands are all names and literals,
+//     or a `return` of one literal — is an operator or keyword spelling
+//     when every string literal on it is punctuation, and an enum or wire
+//     name otherwise;
 //   - a line that hands a string literal to an error constructor
 //     (`errors.New`, `fmt.Errorf`, or a function whose name ends in
 //     `error`) is a matched error string.
 //
-//     A spelling table written as a switch also has frame lines — the
-//     `switch v {` header, `default:`, and `return true` / `return false`
-//     arms. They join an accepted shingle without making it counted, but
-//     a shingle of frame lines alone is counted. A shingle made only of
-//     facts and frames is an interface fact; so is any in-house shingle
-//     whose normalised text an upstream function states as one, because
-//     the kind belongs to the text and, in the abstracted pass, the names
-//     that classified it upstream are gone from it.
+// A spelling table written as a switch also has frame lines — the
+// `switch v {` header, `default:`, and `return true` / `return false`
+// arms. They join an accepted shingle without making it counted, but a
+// shingle of frame lines alone is counted. A shingle made only of facts
+// and frames is accepted, and so is an in-house shingle whose normalised
+// text some upstream function's shingle is accepted as: the kind belongs
+// to the text, and in the abstracted pass the names that classified the
+// upstream line are gone from it.
 //
-//   - In the abstracted pass, it is a lookup-table shingle: every line is a
-//     `case` clause or a `return` statement (or a frame line), as in a
-//     switch mapping one enum to another. With names abstracted, what
-//     such a shingle keeps is only the alternation every lookup table has.
+// Evidence. The shingles that count towards a match are the ones not
+// accepted. The abstracted pass sets two more kinds aside:
 //
-//   - In the abstracted pass, more than copyScanAbstractMaxHolders upstream
-//     functions hold it. A statement sequence that two independently
-//     written upstream functions both hold is an idiom of the language (a
-//     sorted-keys loop, a locked setter), not a trace of one
-//     implementation.
+//   - a lookup-table shingle, every line of which is a `case` clause or a
+//     `return` statement (or a frame line), as in a switch mapping one
+//     enum to another: with the names abstracted, such a shingle keeps
+//     only the alternation every lookup table has;
+//   - an idiom, a shingle more than copyScanAbstractMaxHolders upstream
+//     functions hold: a statement sequence several upstream functions
+//     share (a sorted-keys loop, a locked setter) is a habit of the
+//     language, not a trace of one implementation.
 //
-// The abstracted pass's thresholds are measured, not chosen:
+// Matching. An in-house function matches an upstream function when at
+// least minShared of its evidence shingles occur in that upstream function
+// and either they make up at least minShare of its evidence shingles (a
+// short function copied whole) or they number at least minSection (a
+// copied section inside a longer function). Each pass has its own
+// thresholds (passRules).
+//
+// Calibration. The abstracted pass's thresholds come from measurement.
 // TestCopyScan_UnrelatedCodeIsNotReported scans every in-house package
 // outside the query-language trees — code with no Loki or Tempo
-// counterpart, so whatever it reports is chance — and each threshold is
-// the first value at which that corpus reports nothing. At the time of
-// measurement it held 5296 functions; one step below each constant it
-// reported a match (a holder limit of 2: `nonEmpty` 3 of 4; a minimum of
-// 2 shared: `qualify` 2 of 2; a section of 5: `concatLiteralSet` 5 of 10),
-// and the closest pair under a share rule shared 4 of 7 shingles (57%),
-// below copyScanAbstractMinShare. TestCopyScan_DetectsARenamedCopy bounds
-// the thresholds from the other side.
+// counterpart, so whatever it reports is chance — and must stay clean.
+// Measured over its 5296 functions, the holder limit, the minimum shared
+// and the section are each the loosest value that leaves it clean: a
+// holder limit of 2 reports `nonEmpty` (3 of 4 shingles), a minimum of 2
+// reports `qualify` (2 of 2) and a section of 5 reports `concatLiteralSet`
+// (5 of 10). The closest chance pair under the share rule shares 4 of 7
+// shingles (57%); the share is set at three quarters, clear of it.
+// TestCopyScan_DetectsARenamedCopy bounds the thresholds from the other
+// side: renamed copies of two upstream packages must be reported function
+// for function.
 
 import (
 	"bytes"
@@ -93,6 +93,7 @@ import (
 	"go/types"
 	"hash/fnv"
 	"io/fs"
+	"maps"
 	"math"
 	"os"
 	"os/exec"
@@ -574,9 +575,7 @@ func upstreamCorpus(t *testing.T) *upstream {
 				for h := range f.passes[pass].counted {
 					idx.counted[h] = append(idx.counted[h], i)
 				}
-				for h, kind := range f.passes[pass].accepted {
-					idx.accepted[h] = kind
-				}
+				maps.Copy(idx.accepted, f.passes[pass].accepted)
 			}
 			up.index[pass] = idx
 		}
