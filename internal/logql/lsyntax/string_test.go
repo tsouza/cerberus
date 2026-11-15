@@ -1,6 +1,10 @@
 package lsyntax
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/prometheus/prometheus/model/labels"
+)
 
 // The String methods back `/loki/api/v1/format_query`, so their output is
 // a wire contract: a rendered AST must be re-parseable and must render
@@ -369,5 +373,29 @@ func TestLabelFiltererString(t *testing.T) {
 				t.Errorf("String() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestMatchersExprString pins the selector rendering: braces around the
+// matchers, separated by a comma and a space, in their original order.
+func TestMatchersExprString(t *testing.T) {
+	t.Parallel()
+
+	eq := labels.MustNewMatcher(labels.MatchEqual, "app", "x")
+	re := labels.MustNewMatcher(labels.MatchRegexp, "env", "prod|dev")
+	nre := labels.MustNewMatcher(labels.MatchNotRegexp, "host", "a.*")
+	cases := []struct {
+		mts  []*labels.Matcher
+		want string
+	}{
+		{nil, `{}`},
+		{[]*labels.Matcher{eq}, `{app="x"}`},
+		{[]*labels.Matcher{eq, re, nre}, `{app="x", env=~"prod|dev", host!~"a.*"}`},
+		{[]*labels.Matcher{nre, eq}, `{host!~"a.*", app="x"}`},
+	}
+	for _, tc := range cases {
+		if got := (&MatchersExpr{Mts: tc.mts}).String(); got != tc.want {
+			t.Errorf("MatchersExpr%v.String() = %s, want %s", tc.mts, got, tc.want)
+		}
 	}
 }

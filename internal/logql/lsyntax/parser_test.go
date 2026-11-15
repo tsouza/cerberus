@@ -46,7 +46,7 @@ func TestParseExpr_InputSizeGuard(t *testing.T) {
 	}
 }
 
-// --- validateExpr / validateSampleExpr error propagation ------------------
+// --- validation-walk / validateSampleExpr error propagation ------------------
 
 func TestParseExpr_VectorAggregationErrorPropagates(t *testing.T) {
 	// mustNewVectorAggregationExpr stashes a construction error (invalid

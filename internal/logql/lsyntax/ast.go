@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 
@@ -110,66 +111,62 @@ type LineFilterExpr struct {
 	IsOrChild bool
 }
 
-func newLineFilterExpr(ty LineMatchType, op, match string) *LineFilterExpr {
-	return &LineFilterExpr{
-		LineFilter: LineFilter{Ty: ty, Match: match, Op: op},
+// lineFilterClause is one line-filter operator with its operands: the
+// first operand and then every `or` alternate, in source order.
+type lineFilterClause struct {
+	ty       LineMatchType
+	operands []LineFilter
+}
+
+// excludes reports whether the clause's operator drops the lines its
+// operands match (`!=`, `!~`, `!>`) rather than keeping them.
+func (c lineFilterClause) excludes() bool {
+	switch c.ty {
+	case LineMatchNotEqual, LineMatchNotRegexp, LineMatchNotPattern:
+		return true
+	default:
+		return false
 	}
 }
 
-// newOrLineFilterExpr joins two line filters with `or`. The head
-// clause's match type propagates down the alternate chain. For positive
-// match operators (`|=`, `|~`, `|>`) the alternates form an Or chain;
-// for negated operators De Morgan applies — `!= "a" or "b"` means
-// `!= "a" != "b"` — so the alternate folds into a nested (AND) chain.
-func newOrLineFilterExpr(left, right *LineFilterExpr) *LineFilterExpr {
-	right.Ty = left.Ty
-	// Propagate the resolved match type down the alternate chain (it is
-	// parsed right-to-left, so deeper nodes default to LineMatchEqual
-	// until the head operator is known).
-	tmp := right
-	for tmp.Or != nil {
-		tmp.Or.Ty = left.Ty
-		tmp = tmp.Or
+// attach appends the clause to the filters parsed before it in the same
+// stage (prev, nil for the first clause) and returns the new last node.
+//
+// An excluding clause drops a line that matches ANY operand, which is the
+// conjunction of one excluding filter per operand: each operand becomes
+// its own node on the Left chain. A keeping clause is a single node whose
+// alternates hang off Or; see keptAlternates for which of them the
+// predicate carries.
+func (c lineFilterClause) attach(prev *LineFilterExpr) *LineFilterExpr {
+	if c.excludes() {
+		for _, operand := range c.operands {
+			prev = &LineFilterExpr{LineFilter: operand, Left: prev}
+		}
+		return prev
 	}
-	if left.Ty == LineMatchEqual ||
-		left.Ty == LineMatchRegexp ||
-		left.Ty == LineMatchPattern {
-		left.Or = right
-		right.IsOrChild = true
-		return left
-	}
-	// !(left or r1 or r2 ...) == !left AND !r1 AND !r2 ...
-	//
-	// De Morgan distributes over the WHOLE alternate chain, not just its
-	// head. The alternates arrive here as an Or chain because
-	// parseOrFilter builds them before the head operator is known: they
-	// default to LineMatchEqual and so take the positive branch above,
-	// and the loop over Or at the top of this function only retypes them.
-	// Folding just `right` and leaving `right.Or` attached emitted
-	// `!a AND (!b OR !c)`, which admits a line containing "b" but not
-	// "c" — a row the reference engine drops. An alternate never carries
-	// a Left of its own (newLineFilterExpr sets none, and the positive
-	// branch returns the head it hung the alternate off), so flattening
-	// the Or chain is the whole rewrite.
-	node := left
-	for cur := right; cur != nil; {
-		next := cur.Or
-		cur.Or = nil
-		cur.IsOrChild = false
-		node = newNestedLineFilterExpr(node, cur)
-		cur = next
+	node := &LineFilterExpr{LineFilter: c.operands[0], Left: prev}
+	link := &node.Or
+	for _, alt := range c.keptAlternates() {
+		*link = &LineFilterExpr{LineFilter: alt, IsOrChild: true}
+		link = &(*link).Or
 	}
 	return node
 }
 
-// newNestedLineFilterExpr chains right after left in the same pipeline
-// (older filters live on Left).
-func newNestedLineFilterExpr(left, right *LineFilterExpr) *LineFilterExpr {
-	return &LineFilterExpr{
-		LineFilter: right.LineFilter,
-		Left:       left,
-		Or:         right.Or,
+// keptAlternates returns the `or` alternates a keeping clause matches on.
+// The reference evaluates only the alternates after the last `ip(...)`
+// alternate that another alternate follows; that alternate and the ones
+// before it are not part of its predicate, so they are not part of
+// cerberus's either.
+func (c lineFilterClause) keptAlternates() []LineFilter {
+	alts := c.operands[1:]
+	from := 0
+	for i := range len(alts) - 1 {
+		if alts[i].Op == OpFilterIP {
+			from = i + 1
+		}
 	}
+	return alts[from:]
 }
 
 // -------------------------------------------------------------------
@@ -184,16 +181,14 @@ type LogfmtParserExpr struct {
 }
 
 func newLogfmtParserExpr(flags []string) *LogfmtParserExpr {
-	e := &LogfmtParserExpr{}
-	for _, f := range flags {
-		switch f {
-		case OpStrict:
-			e.Strict = true
-		case OpKeepEmpty:
-			e.KeepEmpty = true
-		}
-	}
-	return e
+	strict, keepEmpty := logfmtFlags(flags)
+	return &LogfmtParserExpr{Strict: strict, KeepEmpty: keepEmpty}
+}
+
+// logfmtFlags reports whether `--strict` and `--keep-empty` are among a
+// logfmt stage's flags. Any other flag is ignored.
+func logfmtFlags(flags []string) (strict, keepEmpty bool) {
+	return slices.Contains(flags, OpStrict), slices.Contains(flags, OpKeepEmpty)
 }
 
 // LineParserExpr is a `| json` / `| regexp "..."` / `| unpack` /
@@ -278,16 +273,8 @@ type LogfmtExpressionParserExpr struct {
 }
 
 func newLogfmtExpressionParser(expressions []LabelExtractionExpr, flags []string) *LogfmtExpressionParserExpr {
-	e := &LogfmtExpressionParserExpr{Expressions: expressions}
-	for _, f := range flags {
-		switch f {
-		case OpStrict:
-			e.Strict = true
-		case OpKeepEmpty:
-			e.KeepEmpty = true
-		}
-	}
-	return e
+	strict, keepEmpty := logfmtFlags(flags)
+	return &LogfmtExpressionParserExpr{Expressions: expressions, Strict: strict, KeepEmpty: keepEmpty}
 }
 
 // -------------------------------------------------------------------
@@ -410,11 +397,11 @@ type LogRangeExpr struct {
 }
 
 func newLogRange(left LogSelectorExpr, interval time.Duration, u *UnwrapExpr, o *OffsetExpr) *LogRangeExpr {
-	var offset time.Duration
+	r := &LogRangeExpr{Left: left, Interval: interval, Unwrap: u}
 	if o != nil {
-		offset = o.Offset
+		r.Offset = o.Offset
 	}
-	return &LogRangeExpr{Left: left, Interval: interval, Unwrap: u, Offset: offset}
+	return r
 }
 
 // OffsetExpr carries an `offset <duration>` modifier.
@@ -514,10 +501,26 @@ func (e *RangeAggregationExpr) validate() error {
 func (e *RangeAggregationExpr) isExpr()       {}
 func (e *RangeAggregationExpr) isSampleExpr() {}
 func (e *RangeAggregationExpr) Selector() (LogSelectorExpr, error) {
-	if e.err != nil {
-		return nil, e.err
+	return selectorBeneath(e.err, e.Left)
+}
+
+// selectorSource is a node that resolves the log selector a sample
+// expression reads.
+type selectorSource interface {
+	Selector() (LogSelectorExpr, error)
+}
+
+// Selector returns the ranged selector.
+func (r *LogRangeExpr) Selector() (LogSelectorExpr, error) { return r.Left, nil }
+
+// selectorBeneath resolves the selector under a node whose construction may
+// have failed. The error stashed at construction wins, so a failed node
+// never reaches its operand, which may be unset.
+func selectorBeneath(stashed error, operand selectorSource) (LogSelectorExpr, error) {
+	if stashed != nil {
+		return nil, stashed
 	}
-	return e.Left.Left, nil
+	return operand.Selector()
 }
 
 // -------------------------------------------------------------------
@@ -565,10 +568,7 @@ func mustNewVectorAggregationExpr(left SampleExpr, operation string, gr *Groupin
 func (e *VectorAggregationExpr) isExpr()       {}
 func (e *VectorAggregationExpr) isSampleExpr() {}
 func (e *VectorAggregationExpr) Selector() (LogSelectorExpr, error) {
-	if e.err != nil {
-		return nil, e.err
-	}
-	return e.Left.Selector()
+	return selectorBeneath(e.err, e.Left)
 }
 
 // -------------------------------------------------------------------
@@ -702,11 +702,15 @@ func (e *LiteralExpr) isSampleExpr()                      {}
 func (e *LiteralExpr) isLogSelectorExpr()                 {}
 func (e *LiteralExpr) Matchers() []*labels.Matcher        { return nil }
 func (e *LiteralExpr) Selector() (LogSelectorExpr, error) { return e, e.err }
-func (e *LiteralExpr) Value() (float64, error) {
-	if e.err != nil {
-		return 0, e.err
+func (e *LiteralExpr) Value() (float64, error)            { return scalarValue(e.Val, e.err) }
+
+// scalarValue is the value of a scalar literal, or zero and the parse
+// error when its text did not parse as a float.
+func scalarValue(parsed float64, stashed error) (float64, error) {
+	if stashed != nil {
+		return 0, stashed
 	}
-	return e.Val, nil
+	return parsed, nil
 }
 
 // LabelReplaceExpr is `label_replace(v, dst, repl, src, regex)`.
@@ -720,30 +724,23 @@ type LabelReplaceExpr struct {
 	err         error
 }
 
+// mustNewLabelReplaceExpr builds label_replace. Its regex matches the
+// whole source value, so it is anchored at both ends; a regex that does
+// not compile leaves a node carrying only the parse error.
 func mustNewLabelReplaceExpr(left SampleExpr, dst, replacement, src, regex string) *LabelReplaceExpr {
-	re, err := regexp.Compile("^(?:" + regex + ")$")
-	if err != nil {
-		return &LabelReplaceExpr{
-			err: NewParseError(fmt.Sprintf("invalid regex in label_replace: %s", err.Error()), 0, 0),
-		}
+	e := &LabelReplaceExpr{Left: left, Dst: dst, Replacement: replacement, Src: src, Regex: regex}
+	anchored, err := regexp.Compile("^(?:" + regex + ")$")
+	if err == nil {
+		e.Re = anchored
+		return e
 	}
-	return &LabelReplaceExpr{
-		Left:        left,
-		Dst:         dst,
-		Replacement: replacement,
-		Src:         src,
-		Regex:       regex,
-		Re:          re,
-	}
+	return &LabelReplaceExpr{err: NewParseError("invalid regex in label_replace: "+err.Error(), 0, 0)}
 }
 
 func (e *LabelReplaceExpr) isExpr()       {}
 func (e *LabelReplaceExpr) isSampleExpr() {}
 func (e *LabelReplaceExpr) Selector() (LogSelectorExpr, error) {
-	if e.err != nil {
-		return nil, e.err
-	}
-	return e.Left.Selector()
+	return selectorBeneath(e.err, e.Left)
 }
 
 // VectorExpr is `vector(<scalar>)`.
@@ -767,12 +764,7 @@ func (e *VectorExpr) isLogSelectorExpr()                 {}
 func (e *VectorExpr) Err() error                         { return e.err }
 func (e *VectorExpr) Matchers() []*labels.Matcher        { return nil }
 func (e *VectorExpr) Selector() (LogSelectorExpr, error) { return e, e.err }
-func (e *VectorExpr) Value() (float64, error) {
-	if e.err != nil {
-		return 0, e.err
-	}
-	return e.Val, nil
-}
+func (e *VectorExpr) Value() (float64, error)            { return scalarValue(e.Val, e.err) }
 
 // -------------------------------------------------------------------
 // Multi-variant

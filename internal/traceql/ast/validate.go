@@ -152,9 +152,10 @@ func newValidationError(format string, args ...any) *ValidationError {
 	return &ValidationError{msg: fmt.Sprintf(format, args...)}
 }
 
-// isMatchingOperand reports whether two statically-known operand types may
-// meet under a binary operator. It is deliberately permissive: the rule
-// exists to reject the provably impossible, not to demand exact types.
+// comparableWith reports whether operands of the statically-known types t
+// and other may meet under a binary operator. It is deliberately
+// permissive: the rule exists to reject the provably impossible, not to
+// demand exact types.
 //
 //   - TypeAttribute is the "resolved at query time" type a scoped
 //     attribute carries. Its real type varies span by span, so no static
@@ -162,9 +163,10 @@ func newValidationError(format string, args ...any) *ValidationError {
 //     turns out to be incomparable simply does not match the filter (see
 //     coerceNumericFieldAccess in the lowering for how that per-span
 //     "no match" is produced in SQL).
-//   - The numeric family (int / float / duration) is inter-comparable.
 //   - nil compares against anything — `{ span.foo != nil }` is the
 //     existence idiom.
+//   - The numeric family (int / float / duration) is inter-comparable;
+//     every other type meets only itself.
 //
 // The array types need no case of their own. The grammar has no array
 // literal — the only producer is the OR-to-IN fold in rewrite.go, which
@@ -172,24 +174,32 @@ func newValidationError(format string, args ...any) *ValidationError {
 // family. A chain that would fold into a mismatched array comparison
 // therefore always contains a mismatched SCALAR comparison, and is
 // rejected on that one first.
-func (t StaticType) isMatchingOperand(otherT StaticType) bool {
-	if t == TypeAttribute || otherT == TypeAttribute {
+func (t StaticType) comparableWith(other StaticType) bool {
+	if t.meetsAnyOperand() || other.meetsAnyOperand() {
 		return true
 	}
-	if t == otherT {
-		return true
+	return t.comparisonFamily() == other.comparisonFamily()
+}
+
+// meetsAnyOperand reports whether t is one of the two types that compare
+// against every other: nil and the query-time-typed attribute.
+func (t StaticType) meetsAnyOperand() bool { return t == TypeNil || t == TypeAttribute }
+
+// comparisonFamily maps every numeric type onto one representative, so
+// int, float and duration compare as one family; any other type is its
+// own family.
+func (t StaticType) comparisonFamily() StaticType {
+	if t.isNumeric() {
+		return TypeFloat
 	}
-	if t.isNumeric() && otherT.isNumeric() {
-		return true
-	}
-	return t == TypeNil || otherT == TypeNil
+	return t
 }
 
 // binaryTypesValid reports whether op accepts both lhsT and rhsT as
 // operands — the reference's second static-typing rule, checked only
-// after isMatchingOperand has already confirmed the two sides are
+// after comparableWith has already confirmed the two sides are
 // statically compatible with EACH OTHER. The two rules catch different
-// mistakes: `{ name > 3 }` fails isMatchingOperand (String vs Int, no
+// mistakes: `{ name > 3 }` fails comparableWith (String vs Int, no
 // sensible comparison exists at all); `{ .foo && 3 }` passes it (Int
 // matches nothing else at play except itself, but TypeAttribute matches
 // anything) and fails this rule instead, because `&&` never accepts an
@@ -201,7 +211,7 @@ func (op Operator) binaryTypesValid(lhsT, rhsT StaticType) bool {
 // binaryTypeValid reports whether op accepts a single operand of type t,
 // independent of the other side. TypeAttribute is query-time typed, so it
 // is always valid — a per-span mismatch is a per-span "no match", not a
-// static error (see isMatchingOperand).
+// static error (see comparableWith).
 func binaryTypeValid(op Operator, t StaticType) bool {
 	if t == TypeAttribute {
 		return true
@@ -241,27 +251,28 @@ var (
 	equalityOnlyBinaryOperators = []Operator{OpEqual, OpNotEqual}
 )
 
-// unaryTypesValid reports whether op accepts an operand of type t —
+// acceptsUnaryOperand reports whether op accepts an operand of type t —
 // `{ -name = "a" }`: unary `-` requires a numeric operand, and `name` is
-// always a String. TypeAttribute is query-time typed and always valid, and
-// the two existence operators (produced only by the nil-comparison fold in
-// makeFieldBinary, never by surface syntax) accept anything, mirroring the
-// reference.
-func (op Operator) unaryTypesValid(t StaticType) bool {
-	if t == TypeAttribute {
-		return true
-	}
-	switch op {
-	case OpSub:
-		return t.isNumeric()
-	case OpNot:
-		return t == TypeBoolean
-	case OpExists, OpNotExists:
-		return true
-	default:
-		return false
-	}
+// always a String. TypeAttribute is query-time typed, so any operator
+// accepts it; an operator with no entry in unaryOperandRules accepts
+// nothing else.
+func (op Operator) acceptsUnaryOperand(t StaticType) bool {
+	accepts, unary := unaryOperandRules[op]
+	return t == TypeAttribute || (unary && accepts(t))
 }
+
+// unaryOperandRules holds, per unary operator, the operand types it
+// accepts. The two existence operators are produced only by the
+// nil-comparison fold in makeFieldBinary, never by surface syntax, and
+// accept any operand, as the reference does.
+var unaryOperandRules = map[Operator]func(StaticType) bool{
+	OpSub:       StaticType.isNumeric,
+	OpNot:       func(t StaticType) bool { return t == TypeBoolean },
+	OpExists:    anyOperandType,
+	OpNotExists: anyOperandType,
+}
+
+func anyOperandType(StaticType) bool { return true }
 
 // validate reports the first static rule violation in r, or nil when the
 // whole tree validates.
@@ -540,14 +551,14 @@ func validateFieldExpr(fe FieldExpression) error {
 
 // matchOperands applies the two operand-type rules to one binary node,
 // naming node in the message so the client sees which sub-expression is
-// ill-typed. isMatchingOperand runs first — a mismatch there means no
+// ill-typed. comparableWith runs first — a mismatch there means no
 // operator could ever relate the two operands, which is the more
 // fundamental complaint; binaryTypesValid then asks whether THIS operator
 // accepts operands of this (now mutually compatible) type.
 func matchOperands(op Operator, lhs, rhs typedExpression, node Element) error {
 	lhsT := lhs.impliedType()
 	rhsT := rhs.impliedType()
-	if !lhsT.isMatchingOperand(rhsT) {
+	if !lhsT.comparableWith(rhsT) {
 		return newValidationError(typeMismatchFormat, node.String())
 	}
 	if isParentMarker(lhs) || isParentMarker(rhs) {
@@ -556,7 +567,7 @@ func matchOperands(op Operator, lhs, rhs typedExpression, node Element) error {
 		// `{ parent && ... }` lowers to a ParentSpanId existence check
 		// (edge_intr_parent_with_attrs.txtar). Its TypeNil implied type
 		// exists only so it compares against anything (`parent = "<hex>"`
-		// in isMatchingOperand above); reference's Nil-restricted-to-
+		// in comparableWith above); reference's Nil-restricted-to-
 		// Equal/NotEqual operator rule was never designed with this
 		// extension in mind and must not constrain which operators it
 		// may compose under.
@@ -586,7 +597,7 @@ func validateUnaryOperand(o UnaryOperation) error {
 		return err
 	}
 	t := o.Expression.impliedType()
-	if !o.Op.unaryTypesValid(t) {
+	if !o.Op.acceptsUnaryOperand(t) {
 		return newValidationError(illegalOperationTypeFormat, o.String())
 	}
 	return nil

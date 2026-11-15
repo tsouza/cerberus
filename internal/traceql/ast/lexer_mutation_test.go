@@ -84,9 +84,8 @@ func TestDurationPrometheusUnits(t *testing.T) {
 
 // TestDurationSuffixConsumesExactly pins that scanning a duration consumes
 // exactly the suffix runes and no more: the token immediately after a
-// space-free duration must still be lexable. Shifting the
-// `for i := 0; i < consumed; i++` scanner-advance bound to `<=` swallows one
-// extra rune (here the closing `}`), breaking the parse.
+// space-free duration must still be lexable. Advancing the scanner one rune
+// past the suffix swallows the closing `}`, breaking the parse.
 func TestDurationSuffixConsumesExactly(t *testing.T) {
 	t.Parallel()
 	// No whitespace between the duration and the closing brace, so an
@@ -149,13 +148,3 @@ func TestParentScopedAttribute(t *testing.T) {
 // `0, false` having advanced nothing (the scanner is a value copy). An
 // exhaustive check of keywordTokens confirms no key mapping to tokSpanDot or
 // tokResourceDot exceeds longestScopePrefix.
-//
-// lexer.go:`r == scanner.EOF || unicode.IsSpace(r)` (INVERT_LOGICAL, `||` ->
-// `&&`). This arm is subsumed by the character test on
-// the next branch: `!unicode.IsNumber(r) && !isDurationRune(r) && r != '.'`
-// breaks for every rune the EOF/space arm catches, because no rune is at once
-// a space and a digit, one of isDurationRune's nine letters, or '.'. Under
-// `&&` the loop leaves one branch later having consumed nothing extra, so
-// `consumed`, `sb` and the scanner are identical. Enumerating every rune in
-// [-1, 0x10FFFF] and comparing the composite break decision of the two forms
-// yields zero distinguishing inputs.
