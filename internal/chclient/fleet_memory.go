@@ -62,13 +62,24 @@ func retentionPasses(servers int) int {
 //     data directory share a serverUUID() — keeps the older build for it, so
 //     the clone on the older build still holds the fleet down. Two verdicts
 //     on one canary for one identity keep the more conservative one.
+//   - A canary verdict the pass could not tie to a server
+//     (FleetPass.Unattributed) is held as the verdict of a server the memory
+//     cannot name: each distinct verdict on each canary is kept, and counts
+//     toward the fleet's verdict, until retentionPasses consecutive complete
+//     passes have not read it again. Behind an HTTP balancer that routes
+//     requests one by one, a replica that refuses a canary keeps the fleet's
+//     verdict at its refusal for as long as it keeps answering the canary,
+//     whichever server the pass's identity read named.
 //
 // The zero value is not usable; build one with NewFleetMemory. It is safe for
 // concurrent use.
 type FleetMemory struct {
-	mu     sync.Mutex
-	nodes  map[string]*rememberedNode
-	passes int
+	mu    sync.Mutex
+	nodes map[string]*rememberedNode
+	// unattributed holds every verdict a pass read without tying it to a
+	// server, with how many complete passes in a row have not read it since.
+	unattributed map[CanaryReading]int
+	passes       int
 }
 
 // rememberedNode is one server FleetMemory holds: the build it reported the
@@ -84,7 +95,7 @@ type rememberedNode struct {
 
 // NewFleetMemory returns a memory that holds no server yet.
 func NewFleetMemory() *FleetMemory {
-	return &FleetMemory{nodes: make(map[string]*rememberedNode)}
+	return &FleetMemory{nodes: make(map[string]*rememberedNode), unattributed: make(map[CanaryReading]int)}
 }
 
 // CanaryOrder orders pending for the server named id: the canaries no pass has
@@ -112,9 +123,10 @@ func (m *FleetMemory) CanaryOrder(id string, pending []FleetCanary) []FleetCanar
 
 // Observe folds pass into the memory and returns the fleet the memory now
 // describes: the build of every server it holds, sorted oldest first, the
-// most conservative verdict they gave on each canary, pass's completeness,
-// and Held set when one of those builds is one no server pass reached runs,
-// or the verdict in force on a canary is one no server pass reached holds.
+// most conservative verdict they and the unattributed verdicts it holds gave
+// on each canary, pass's completeness, and Held set when one of those builds
+// is one no server pass reached runs, or the verdict in force on a canary is
+// one neither a server pass reached holds nor pass read unattributed.
 func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 	if len(pass.Nodes) == 0 {
 		return FleetVersions{Complete: pass.Complete}
@@ -180,6 +192,7 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 			}
 		}
 	}
+	readUnattributed := m.observeUnattributed(pass)
 
 	fv := FleetVersions{Versions: make([]chopt.Version, 0, len(m.nodes)), Complete: pass.Complete}
 	for _, n := range m.nodes {
@@ -192,11 +205,49 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 			fv.Verdicts[canary] = fv.Verdicts[canary].Conservative(v)
 		}
 	}
+	for r := range m.unattributed {
+		if fv.Verdicts == nil {
+			fv.Verdicts = make(map[string]chopt.Capability, len(m.unattributed))
+		}
+		fv.Verdicts[r.Canary] = fv.Verdicts[r.Canary].Conservative(r.Verdict)
+	}
 	for canary, v := range fv.Verdicts {
-		fv.Held = fv.Held || !reachedHolds(reached, ranCanary, canary, v)
+		fv.Held = fv.Held || !(reachedHolds(reached, ranCanary, canary, v) || readUnattributed[CanaryReading{Canary: canary, Verdict: v}])
 	}
 	slices.SortFunc(fv.Versions, chopt.Version.Compare)
 	return fv
+}
+
+// observeUnattributed folds pass's unattributed verdicts into the memory and
+// returns the ones it read. A verdict read again is held anew. On a complete
+// pass, every held verdict pass did not read counts a miss, and
+// retentionPasses consecutive misses, for the servers the memory now holds,
+// forget it: the server that gave it is one of them, and a complete pass that
+// does not read its verdict may simply not have reached it. An unreachable
+// reading says nothing about any server and is not held. m.mu must be held.
+func (m *FleetMemory) observeUnattributed(pass FleetPass) map[CanaryReading]bool {
+	read := make(map[CanaryReading]bool, len(pass.Unattributed))
+	for _, r := range pass.Unattributed {
+		if r.Verdict == chopt.CapabilityUnreachable {
+			continue
+		}
+		read[r] = true
+		m.unattributed[r] = 0
+	}
+	if pass.Complete {
+		limit := retentionPasses(len(m.nodes))
+		for r, missed := range m.unattributed {
+			if read[r] {
+				continue
+			}
+			if missed+1 >= limit {
+				delete(m.unattributed, r)
+				continue
+			}
+			m.unattributed[r] = missed + 1
+		}
+	}
+	return read
 }
 
 // verdictOn returns the verdict n remembers on canary, ok=false when n is nil

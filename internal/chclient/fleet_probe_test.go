@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
+
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
@@ -17,7 +19,13 @@ const canaryProbeDialTimeout = 100 * time.Millisecond
 // unreachableCanaryClient is a client whose every statement fails to dial.
 func unreachableCanaryClient(t *testing.T) *Client {
 	t.Helper()
-	c, err := New(Config{Addr: "127.0.0.1:1", DialTimeout: canaryProbeDialTimeout, BreakerDisabled: true})
+	return unreachableCanaryClientOver(t, clickhouse.Native)
+}
+
+// unreachableCanaryClientOver is unreachableCanaryClient over protocol.
+func unreachableCanaryClientOver(t *testing.T, protocol clickhouse.Protocol) *Client {
+	t.Helper()
+	c, err := New(Config{Addr: "127.0.0.1:1", DialTimeout: canaryProbeDialTimeout, BreakerDisabled: true, Protocol: protocol})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -57,7 +65,7 @@ func TestProbeCanaries_AttributesEachVerdictToTheServerThatGaveIt(t *testing.T) 
 	ran := map[string]int{}
 	first := FleetNode{ID: replicaA, Version: memoryNewBuild}
 	onB := FleetNode{ID: replicaB, Version: memoryNewBuild}
-	nodes, read := probeCanaries(context.Background(), unreachableCanaryClient(t), first, nil, []FleetCanary{
+	nodes, _, read := probeCanaries(context.Background(), unreachableCanaryClient(t), first, nil, []FleetCanary{
 		scriptedCanary("accepted on B", canaryAnswer{verdict: chopt.CapabilityAvailable, node: onB, identified: true}, ran),
 		scriptedCanary("unnamed", canaryAnswer{verdict: chopt.CapabilityAvailable}, ran),
 	})
@@ -79,7 +87,7 @@ func TestProbeCanaries_NoVerdictWithoutAnIdentityRead(t *testing.T) {
 	c := unreachableCanaryClient(t)
 	ran := map[string]int{}
 	first := FleetNode{ID: replicaA, Version: memoryNewBuild}
-	nodes, read := probeCanaries(context.Background(), c, first, nil, []FleetCanary{
+	nodes, _, read := probeCanaries(context.Background(), c, first, nil, []FleetCanary{
 		scriptedCanary("refused", canaryAnswer{verdict: chopt.CapabilityForbidden}, ran),
 		scriptedCanary("next", canaryAnswer{verdict: chopt.CapabilityAvailable}, ran),
 	})
@@ -94,7 +102,7 @@ func TestProbeCanaries_NoVerdictWithoutAnIdentityRead(t *testing.T) {
 		t.Errorf("canary runs = %v; want the first once and the next never", ran)
 	}
 
-	if nodes, read := probeCanaries(context.Background(), c, first, nil, nil); !read || len(nodes) != 1 || nodes[0].Verdicts != nil {
+	if nodes, _, read := probeCanaries(context.Background(), c, first, nil, nil); !read || len(nodes) != 1 || nodes[0].Verdicts != nil {
 		t.Errorf("probeCanaries with no canaries = %+v, %v; want the first node alone, unchanged, read", nodes, read)
 	}
 }
@@ -106,7 +114,7 @@ func TestProbeCanaries_NoVerdictWithoutAnIdentityRead(t *testing.T) {
 func TestProbeCanaries_FailedReadIsReadAgain(t *testing.T) {
 	t.Parallel()
 	ran := map[string]int{}
-	_, read := probeCanaries(context.Background(), unreachableCanaryClient(t), FleetNode{ID: replicaA, Version: memoryNewBuild}, nil, []FleetCanary{
+	_, _, read := probeCanaries(context.Background(), unreachableCanaryClient(t), FleetNode{ID: replicaA, Version: memoryNewBuild}, nil, []FleetCanary{
 		scriptedCanary("failed", canaryAnswer{verdict: chopt.CapabilityUnreachable}, ran),
 		scriptedCanary("next", canaryAnswer{verdict: chopt.CapabilityAvailable}, ran),
 	})
@@ -138,7 +146,7 @@ func TestProbeCanaries_OrdersForTheServerItRunsOn(t *testing.T) {
 		}
 		return c
 	}
-	nodes, read := probeCanaries(context.Background(), unreachableCanaryClient(t), FleetNode{ID: replicaA, Version: memoryNewBuild}, order, []FleetCanary{
+	nodes, _, read := probeCanaries(context.Background(), unreachableCanaryClient(t), FleetNode{ID: replicaA, Version: memoryNewBuild}, order, []FleetCanary{
 		record("x", canaryAnswer{verdict: chopt.CapabilityAvailable}),
 		record("y", canaryAnswer{verdict: chopt.CapabilityAvailable, node: onB, identified: true}),
 	})
@@ -148,5 +156,33 @@ func TestProbeCanaries_OrdersForTheServerItRunsOn(t *testing.T) {
 	want := map[string]map[string]chopt.Capability{replicaA: {}, replicaB: {"y": chopt.CapabilityAvailable, "x": chopt.CapabilityAvailable}}
 	if got := verdictsByServer(nodes); !maps.EqualFunc(got, want, maps.Equal) {
 		t.Fatalf("verdicts %v; want %v", got, want)
+	}
+}
+
+// TestProbeCanaries_HTTPLeavesUnnamedVerdictsUnattributed: over HTTP, an
+// accepted canary that names its server is attributed to it, but a refusal
+// and an answer that names no server are returned unattributed — each was its
+// own request, which a balancer may have routed to a server no identity read
+// named. No identity read follows the refusal (the client here cannot dial,
+// so one would end the pass), and every canary runs.
+func TestProbeCanaries_HTTPLeavesUnnamedVerdictsUnattributed(t *testing.T) {
+	t.Parallel()
+	ran := map[string]int{}
+	onB := FleetNode{ID: replicaB, Version: memoryNewBuild}
+	nodes, unattributed, read := probeCanaries(context.Background(), unreachableCanaryClientOver(t, clickhouse.HTTP), FleetNode{ID: replicaA, Version: memoryNewBuild}, nil, []FleetCanary{
+		scriptedCanary("refused", canaryAnswer{verdict: chopt.CapabilityForbidden}, ran),
+		scriptedCanary("accepted on B", canaryAnswer{verdict: chopt.CapabilityAvailable, node: onB, identified: true}, ran),
+		scriptedCanary("unnamed", canaryAnswer{verdict: chopt.CapabilityAvailable}, ran),
+	})
+	if !read {
+		t.Fatalf("probeCanaries over HTTP: read = false; want every canary run")
+	}
+	want := map[string]map[string]chopt.Capability{replicaA: {}, replicaB: {"accepted on B": chopt.CapabilityAvailable}}
+	if got := verdictsByServer(nodes); !maps.EqualFunc(got, want, maps.Equal) {
+		t.Errorf("attributed verdicts = %v; want %v", got, want)
+	}
+	wantUnattributed := []CanaryReading{{Canary: "refused", Verdict: chopt.CapabilityForbidden}, {Canary: "unnamed", Verdict: chopt.CapabilityAvailable}}
+	if !slices.Equal(unattributed, wantUnattributed) {
+		t.Errorf("unattributed = %v; want %v", unattributed, wantUnattributed)
 	}
 }

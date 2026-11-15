@@ -403,3 +403,94 @@ func TestFleetMemory_ARealReadingBeatsAnUnreachableOneInAPass(t *testing.T) {
 		}
 	}
 }
+
+// overHTTP is a complete pass through one HTTP address whose identity read
+// landed on server id, and whose canary verdict, if any, no statement tied to
+// a server.
+func overHTTP(id string, verdicts ...chopt.Capability) FleetPass {
+	pass := landed(id, memoryNewBuild)
+	for _, v := range verdicts {
+		pass.Unattributed = append(pass.Unattributed, CanaryReading{Canary: memoryCanary, Verdict: v})
+	}
+	return pass
+}
+
+// TestFleetMemory_UnattributedRefusalHoldsWhileItIsRead: behind an HTTP
+// balancer, the refusing replica's verdict reaches the memory unattributed,
+// whichever server the pass's identity read named, and a permitting
+// replica's unattributed verdict does not displace it. The fleet refuses on
+// every pass from the first refusal on, and Held marks exactly the passes
+// that did not read the refusal.
+func TestFleetMemory_UnattributedRefusalHoldsWhileItIsRead(t *testing.T) {
+	t.Parallel()
+	m := NewFleetMemory()
+	if fv := m.Observe(overHTTP(replicaA, chopt.CapabilityAvailable)); fv.Capability(memoryCanary) != chopt.CapabilityAvailable || fv.Held {
+		t.Fatalf("first pass = %+v; want the permitting verdict, not held", fv)
+	}
+	for i := range 2 * twoServerRetention {
+		readRefusal := i%2 == 0
+		// The identity read and the canary land on different replicas: the
+		// refusal arrives on passes whose identity read named A.
+		pass := overHTTP(replicaB, chopt.CapabilityAvailable)
+		if readRefusal {
+			pass = overHTTP(replicaA, chopt.CapabilityForbidden)
+		}
+		fv := m.Observe(pass)
+		if got := fv.Capability(memoryCanary); got != chopt.CapabilityForbidden {
+			t.Fatalf("pass %d (read the refusal: %v): verdict %s; want %s", i+2, readRefusal, got, chopt.CapabilityForbidden)
+		}
+		if fv.Held == readRefusal {
+			t.Fatalf("pass %d (read the refusal: %v): held=%v; want held exactly when the pass did not read it", i+2, readRefusal, fv.Held)
+		}
+	}
+}
+
+// TestFleetMemory_UnattributedRefusalIsForgottenAfterTheRetentionPasses: an
+// unattributed refusal no complete pass reads again counts toward the fleet's
+// verdict for retentionPasses(servers held) - 1 passes and is forgotten on the
+// next. Incomplete passes count no miss, and an unreachable reading neither
+// holds a verdict nor refreshes one.
+func TestFleetMemory_UnattributedRefusalIsForgottenAfterTheRetentionPasses(t *testing.T) {
+	t.Parallel()
+	m := NewFleetMemory()
+	m.Observe(overHTTP(replicaA, chopt.CapabilityForbidden))
+	m.Observe(landed(replicaB, memoryNewBuild))
+	incomplete := overHTTP(replicaA, chopt.CapabilityAvailable)
+	incomplete.Complete = false
+	// The pass that brought B in counted the first miss.
+	for i := range twoServerRetention - 2 {
+		pass := overHTTP(replicaA, chopt.CapabilityAvailable, chopt.CapabilityUnreachable)
+		if i == 0 {
+			if fv := m.Observe(incomplete); fv.Capability(memoryCanary) != chopt.CapabilityForbidden {
+				t.Fatalf("incomplete pass: verdict %s; want the held refusal", fv.Capability(memoryCanary))
+			}
+		}
+		fv := m.Observe(pass)
+		if got := fv.Capability(memoryCanary); got != chopt.CapabilityForbidden || !fv.Held {
+			t.Fatalf("miss %d: verdict %s held=%v; want the held refusal until %d misses", i+2, got, fv.Held, twoServerRetention)
+		}
+	}
+	if fv := m.Observe(overHTTP(replicaA, chopt.CapabilityAvailable)); fv.Capability(memoryCanary) != chopt.CapabilityAvailable || fv.Held {
+		t.Fatalf("after %d misses: %+v; want the refusal forgotten and the fleet permitting, not held", twoServerRetention, fv)
+	}
+	if fv := m.Observe(overHTTP(replicaA, chopt.CapabilityUnreachable)); fv.Capability(memoryCanary) != chopt.CapabilityAvailable {
+		t.Fatalf("an unreachable unattributed reading: verdict %s; want the held permit", fv.Capability(memoryCanary))
+	}
+}
+
+// TestFleetMemory_UnattributedRefusalOutweighsAnAttributedPermit: a server's
+// own permit and an unattributed refusal combine to the refusal, which the
+// server's later permits do not clear — the refusal may come from another
+// replica behind the same address.
+func TestFleetMemory_UnattributedRefusalOutweighsAnAttributedPermit(t *testing.T) {
+	t.Parallel()
+	m := NewFleetMemory()
+	pass := landedWith(replicaA, chopt.CapabilityAvailable)
+	pass.Unattributed = []CanaryReading{{Canary: memoryCanary, Verdict: chopt.CapabilityForbidden}}
+	m.Observe(pass)
+	for i := range 3 {
+		if fv := m.Observe(landedWith(replicaA, chopt.CapabilityAvailable)); fv.Capability(memoryCanary) != chopt.CapabilityForbidden || !fv.Held {
+			t.Fatalf("permit %d from A: %+v; want the unattributed refusal held", i+1, fv)
+		}
+	}
+}

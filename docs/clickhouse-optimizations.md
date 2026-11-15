@@ -904,12 +904,19 @@ address, and each verdict is attributed to the server that gave it:
 - The ts_grid, `result_cache` and workload canaries stamp their settings on
   the identity read itself (`SELECT toString(serverUUID()), version()`), so
   an accepted canary names the server that accepted it.
-- A refused canary, and the query-log union canary, are attributed to the
-  server the identity read just before it on the same client named. A refusal
-  closes the connection, so the identity is read again before the next
-  canary. A canary whose statement fails on a broken connection is not
-  retried: its verdict is **unreachable**, and the identity is read again
-  before the next canary as after a refusal.
+- Over the native protocol, a refused canary, and the query-log union canary,
+  are attributed to the server the identity read just before it on the same
+  client named. A refusal closes the connection, so the identity is read
+  again before the next canary. A canary whose statement fails on a broken
+  connection is not retried: its verdict is **unreachable**, and the identity
+  is read again before the next canary as after a refusal.
+- Over `CERBERUS_CH_PROTOCOL=http`, a refused canary and the query-log union
+  canary's verdict are not attributed to a server: each statement is its own
+  request, which a balancer may route to a server the identity read did not
+  reach. Each distinct verdict a probe reads this way is held as the verdict of
+  a server cerberus cannot name, and counts toward the verdict in force until
+  40 complete probes per remembered server have not read it again. An
+  **unreachable** verdict read this way is not held.
 - On each server, the canaries run in the order of how long ago a probe last
   ran them there: a canary never run on that server first, then the one run
   there longest ago. A probe that lands on a replica refusing its first
@@ -921,34 +928,31 @@ address, and each verdict is attributed to the server that gave it:
   **unreachable** one; a canary the probe did not run on it keeps the verdict
   remembered for it.
 - The verdict in force for each canary is the most conservative one across
-  the remembered servers: **forbidden** if any server refused, else
+  the remembered servers and the held unattributed verdicts: **forbidden** if
+  any of them refused, else
   **unreachable** if any server's canary failed, else **available**.
 - A replica read only through the `CERBERUS_SCHEMA_CLUSTER` replica list runs
   no canary and adds no verdict.
-- When no remembered server gave a verdict on a canary, its verdict is
-  **unreachable**.
+- When neither a remembered server nor a held unattributed verdict gave a
+  verdict on a canary, its verdict is **unreachable**.
 
 Behind one load-balanced address whose replicas disagree — a `CREATE WORKLOAD`
 defined on one replica only, or a profile that forbids the experimental
 setting on one replica only — the first probe that lands on the refusing
 replica turns the feature off, and it stays off while that replica serves:
-probes that land on the other replicas do not turn it back on. The `forbidden`
-verdict clears on the first probe that lands on that replica and gets
-**available**, or once the replica is forgotten. While no server the last
-probe ran a canary on holds the verdict in force on a canary — read by that
-probe or remembered for it — the [re-probe](#re-probe) runs every 10 seconds.
+probes that land on the other replicas do not turn it back on. Over the native
+protocol, the `forbidden` verdict clears on the first probe that lands on that
+replica and gets **available**, or once the replica is forgotten; over HTTP, an
+unattributed `forbidden` clears once 40 complete probes per remembered server
+have not read it. While no server the last probe ran a canary on holds the
+verdict in force on a canary — read by that probe or remembered for it — and
+the last probe did not read it unattributed, the [re-probe](#re-probe) runs
+every 10 seconds.
 A server read only through the cluster replica list, or one whose identity
 read failed before any canary, does not count. The boot log reports each
 canary's verdict in force (`server_ts_grid_capability`,
 `server_result_cache_capability`, `server_query_log_union_capability`,
 `server_query_workload_capability`).
-
-Attributing a refusal, or a query-log union verdict, needs the canary and the
-identity read before it to reach the same server. Over the native protocol
-they share one connection. Over `CERBERUS_CH_PROTOCOL=http` they are separate
-requests, and a balancer that routes each request on its own can attribute
-the verdict to another server, so a disagreeing replica's refusal can come
-and go there ([#4148](https://github.com/tsouza/cerberus/issues/4148)).
 
 ## Capability probe (experimental ts_grid setting)
 

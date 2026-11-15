@@ -66,8 +66,9 @@ func QueryWorkloadCanary(workload string) FleetCanary {
 
 // QueryLogUnionCanary probes the query-log union table
 // (ProbeQueryLogUnionCapability). Its statement is the reader's own record
-// selection, which returns no row naming the server, so its verdict belongs to
-// the server the connection's last identity read named.
+// selection, which returns no row naming the server, so over the native
+// protocol its verdict belongs to the server the connection's last identity
+// read named, and over HTTP it belongs to no named server (probeCanaries).
 func QueryLogUnionCanary() FleetCanary {
 	return FleetCanary{Name: CanaryQueryLogUnion, probe: func(ctx context.Context, c *Client) canaryAnswer {
 		return canaryAnswer{verdict: c.ProbeQueryLogUnionCapability(ctx)}

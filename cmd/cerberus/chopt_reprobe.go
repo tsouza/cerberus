@@ -155,8 +155,8 @@ func logCancellationGaps(logger *slog.Logger, server chopt.Version) {
 // ClickHouse server's capabilities. It is a compromise between two costs that
 // pull in opposite directions: a shorter interval spends the fleet probe — one
 // short-lived connection per configured address, its identity read, one
-// trivial statement per capability canary and an identity re-read after each
-// canary the server does not accept — more often against servers whose answer
+// trivial statement per capability canary and, over the native protocol, an
+// identity re-read after each canary the server does not accept — more often against servers whose answer
 // almost never changes, and a longer one leaves a pod emitting the
 // fallback shape for longer after an upgrade has already made the native shape
 // available. Five minutes bounds the post-upgrade blind window to well under

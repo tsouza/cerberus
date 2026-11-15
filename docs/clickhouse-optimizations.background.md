@@ -1437,7 +1437,8 @@ through a connection the balancer re-dialled, or through an HTTP balancer
 that routes requests one by one. A refusal
 is an exception and returns no row, and the query-log union canary's
 statement is the reader's own record selection, so neither can name its
-server that way. Both fall back to the identity read on the same client.
+server that way. Over the native protocol both fall back to the identity read
+on the same client; over HTTP neither is attributed (below).
 
 **Why an identity read after every refusal.** The driver closes a connection
 on any error, so the statement after a canary the server refused dials a new
@@ -1446,6 +1447,32 @@ server. Reading the identity again before the next canary ties the next
 refusal to the server the new connection reached, at the cost of one trivial
 statement per canary that was not accepted, per address. An accepted canary keeps the connection,
 and its own row is the latest identity.
+
+**Why a verdict over HTTP is held unattributed rather than attributed.**
+Attributing a refusal, or a query-log union verdict, to the server the identity
+read named needs the canary and that read to reach the same server. Over the
+native protocol they share one connection. Over HTTP each statement is its own
+request, and a balancer that routes requests one by one (chproxy, an nginx
+`http` upstream, a cloud L7 balancer) can send them to different servers. A
+refusal filed under the wrong server was then cleared by that server's next
+accepted canary, while the server that refused never held the refusal, so a
+disagreeing replica's refusal came and went with the routing. Holding the
+verdict as an unnamed server's keeps it in force while the replica that gives
+it keeps answering the canary, under the same retention as a remembered
+server, and a server's own accepted canaries cannot clear it. The cost is that
+an unattributed refusal outlives a replica's fix: it clears only once 40
+complete probes per remembered server have not read it, rather than on the
+first probe that lands on the fixed replica.
+
+Tying each statement to one server with an HTTP session (`session_id` on the
+identity read, `session_check=1` on the canary, which a server without the
+session refuses with `SESSION_NOT_FOUND`) was rejected for two reasons. The
+driver redials after every error, and the hello request a redial sends carries
+the statement's parameters, so a session-creating statement can create the
+session on two servers, and a canary on the second would be attributed to the
+first. And a balancer that alternates requests sends the request after the
+session-creating one to another server every time, so no canary would ever
+land on its session's server.
 
 **Why each server runs the canary it ran longest ago first.** After a
 refusal, the remaining canaries run on whichever server the next connection
