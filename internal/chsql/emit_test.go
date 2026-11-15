@@ -291,8 +291,8 @@ var plans = map[string]chplan.Node{
 	// the emitter must render the bare map, never a degenerate
 	// `mapFilter((k, v) -> NOT (k IN ()), ...)` (ClickHouse rejects the
 	// empty IN list with "Function 'in' is supported only if second
-	// argument is constant or table expression" — loki-compat
-	// exhaustive/aggregations.yaml#Max sum without grouping modifier).
+	// argument is constant or table expression" — the loki-compat
+	// `max without ()` case in exhaustive/aggregations.yaml).
 	"aggregate_sum_without_empty": &chplan.Aggregate{
 		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
 		GroupBy: []chplan.Expr{

@@ -3,6 +3,7 @@
   "head": "tempo-grpc",
   "bucket": "17",
   "cases": [
+    "search | scoped_span_name_regex_child",
     "search | spansets_select_nested_set"
   ]
 }

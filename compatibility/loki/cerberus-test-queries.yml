@@ -1,7 +1,4 @@
-# Cerberus overlay for the vendored grafana/loki:pkg/logql/bench corpus.
-#
-# This file lives OUTSIDE compatibility/loki/upstream/loki-bench/ so
-# cerberus-side curation doesn't leak into the AGPL-3.0 vendor subtree.
+# Cerberus overlay for the LogQL compatibility corpus.
 #
 # The overlay is empty by policy: cerberus carries NO `should_skip`
 # escape hatch. Every diff against reference Loki is a real bug to fix

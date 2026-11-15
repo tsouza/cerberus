@@ -1,7 +1,9 @@
 // Command loki-compliance-tester runs the LogQL compatibility corpus
-// (vendored from grafana/loki:pkg/logql/bench/) against two live Loki
-// HTTP endpoints, diffs the responses with float tolerance, and emits a
-// JSON report whose shape matches compatibility/prometheus's
+// (grafana/loki's pkg/logql/bench query definitions, read from the pinned
+// module in the Go module cache, plus the cerberus-owned
+// compatibility/loki/cerberus-queries/) against two live Loki HTTP
+// endpoints, diffs the responses with float tolerance, and emits a JSON
+// report whose shape matches compatibility/prometheus's
 // promql-compliance-tester (i.e. the `prometheus/compliance` reference
 // driver). It also emits a shields.io endpoint-badge score JSON when
 // `-score` is set.
@@ -14,16 +16,13 @@
 //
 // Lifecycle:
 //
-//  1. Loads the upstream bench package's QueryRegistry + DatasetMetadata
-//     resolver. Reuses upstream code so template-variable expansion
-//     (`${SELECTOR}` / `${LABEL_NAME}` / `${RANGE}`) tracks Grafana's
-//     reference semantics exactly — cerberus-side divergence here would
-//     defeat the differential test. A second QueryRegistry instance
-//     then loads the cerberus-owned additive corpus at
-//     `-cerberus-queries` (compatibility/loki/cerberus-queries/ by
-//     default — same suite/file layout, never edits the vendored
-//     upstream/loki-bench/ tree) and its cases are merged in; see
-//     loadCerberusQueries.
+//  1. Loads the query definitions and the dataset metadata through
+//     compatibility/loki/corpus, cerberus's own loader and
+//     template-variable resolver (`${SELECTOR}` / `${LABEL_NAME}` /
+//     `${LABEL_VALUE}` / `${RANGE}`). The upstream definitions come from
+//     the checksum-pinned module (or from `-corpus` when set); the
+//     cerberus-owned definitions at `-cerberus-queries` are merged in
+//     before expansion; see loadCases.
 //  2. For each expanded test case, fans out parallel `/loki/api/v1/query`
 //     or `/query_range` calls against both endpoints, decodes the
 //     responses into a typed value, normalises ordering, and diffs with
@@ -39,6 +38,11 @@
 //     `unexpectedSuccess`, `unsupported`. When `-score` is set, also
 //     writes a shields.io endpoint-badge JSON to that path.
 //
+// Committed artefacts never carry upstream text: an upstream case is
+// keyed in the parity roster and in the skip baseline by an opaque
+// identity (corpus.OpaqueID) and labelled with its readable identity only
+// in the run's own output.
+//
 // No allow-list / `should_skip` overlay: every diff against reference
 // Loki is a real bug. The corresponding YAML carrier
 // (cerberus-test-queries.yml) is kept as a schema placeholder; the
@@ -47,14 +51,6 @@
 // (above): that mechanism only ever ADDS cases that run and are
 // graded like any other — it has no skip/tolerate semantics of its
 // own.
-//
-// The binary imports the vendored upstream/loki-bench/ package; the
-// root go.mod marks that path `ignore` so it's excluded from
-// `go build ./...` walks, but the package itself is reachable via its
-// import path because every transitive dep (`logproto`, `logql/syntax`,
-// `yaml.v3`) is already a direct entry in cerberus's go.mod. A plain
-// `go build` resolves the binary without needing the `-mod=mod`
-// promotion the PR 3 `go test -c` build relied on.
 package main
 
 import (
@@ -77,7 +73,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/compatibility/internal/score"
-	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
+	"github.com/tsouza/cerberus/compatibility/loki/corpus"
 )
 
 func main() {
@@ -111,8 +107,8 @@ func parseFlags() flags {
 	var f flags
 	flag.StringVar(&f.addr1, "addr-1", "", "Address of baseline (reference) Loki instance, e.g. http://localhost:23100")
 	flag.StringVar(&f.addr2, "addr-2", "", "Address of test (cerberus) Loki-API instance, e.g. http://localhost:29092")
-	flag.StringVar(&f.corpusDir, "corpus", "./queries", "Path to the vendored bench/queries/ directory (suite subdirs: fast/, regression/, exhaustive/)")
-	flag.StringVar(&f.cerberusQueriesDir, "cerberus-queries", "./cerberus-queries", "Path to the cerberus-owned additive query directory (same suite subdirs: fast/, regression/, exhaustive/); merged into the corpus loaded from -corpus. Never edits the AGPL vendor snapshot.")
+	flag.StringVar(&f.corpusDir, "corpus", "", "Upstream corpus root (suite subdirs: fast/, regression/, exhaustive/); empty reads it from the checksum-pinned upstream Go module in the module cache")
+	flag.StringVar(&f.cerberusQueriesDir, "cerberus-queries", "./cerberus-queries", "Path to the cerberus-owned additive query directory (same suite subdirs: fast/, regression/, exhaustive/); merged into the upstream corpus")
 	flag.StringVar(&f.metadataDir, "metadata-dir", ".", "Directory containing dataset_metadata.json")
 	flag.StringVar(&f.livePatternsPath, "live-patterns-metadata", "", "Path to the seeder's now-anchored /patterns fixture handshake (required for range runs)")
 	flag.StringVar(&f.reportPath, "report", "", "Report output path; empty writes to stdout")
@@ -120,9 +116,9 @@ func parseFlags() flags {
 	flag.StringVar(&f.casesPath, "cases", "", "per-case parity roster JSON output path; empty means do not write")
 	flag.StringVar(&f.skipBaselinePath, "skip-baseline", "", "Path to the upstream-skip-baseline.txt file; when set, the harness asserts the upstream YAML `skip: true` set matches this file and fails on drift")
 	flag.BoolVar(&f.regenBaseline, "regen-baseline", false, "Regenerate -skip-baseline from the current corpus and exit (writes the file, then returns 0 without contacting any Loki endpoint)")
-	flag.Float64Var(&f.tolerance, "tolerance", 1e-5, "Float comparison tolerance (matches upstream remote_test.go default)")
+	flag.Float64Var(&f.tolerance, "tolerance", 1e-5, "Float comparison tolerance (the upstream bench harness's default)")
 	flag.StringVar(&f.rangeType, "range-type", "range", "Query range type: 'range' or 'instant'")
-	flag.Int64Var(&f.seed, "seed", 42, "Random seed for query template resolution (matches upstream default)")
+	flag.Int64Var(&f.seed, "seed", 42, "Random seed for query template resolution (the upstream bench harness's default)")
 	flag.IntVar(&f.parallelism, "parallelism", 8, "Maximum number of comparison queries to run in parallel")
 	flag.BoolVar(&f.includeSkip, "include-skipped", false, "Include queries the upstream YAML marks `skip: true`")
 	flag.DurationVar(&f.timeout, "timeout", 30*time.Second, "Per-request HTTP timeout for each Loki endpoint")
@@ -196,7 +192,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("load live patterns metadata: %w", err)
 		}
-		metadata, err := bench.LoadMetadata(f.metadataDir)
+		metadata, err := corpus.LoadMetadata(f.metadataDir)
 		if err != nil {
 			return fmt.Errorf("LoadMetadata(%s) for detected-fields pass: %w", f.metadataDir, err)
 		}
@@ -310,11 +306,17 @@ const headName = "loki"
 
 // caseSet reduces the results to (identity, agreed) pairs for the
 // parity ratchet. Diverging cases are included — the ratchet gates on
-// WHICH cases failed, not just how many.
+// WHICH cases failed, not just how many. An upstream corpus case is
+// recorded under its opaque ID, with its readable identity as the label.
 func caseSet(results []Result) []score.Case {
 	cases := make([]score.Case, 0, len(results))
 	for _, r := range results {
-		cases = append(cases, score.Case{ID: r.TestCase.id(), Passed: r.success()})
+		c := score.Case{ID: r.TestCase.id(), Passed: r.success()}
+		if r.TestCase.upstream {
+			c.Label = c.ID
+			c.ID = corpus.OpaqueID(c.ID)
+		}
+		cases = append(cases, c)
 	}
 	return cases
 }
@@ -332,60 +334,69 @@ func scoreCounts(results []Result) (passed, total int) {
 	return passed, total
 }
 
-// loadCases reuses the upstream bench loader so template expansion
-// stays in lock-step with grafana/loki:pkg/logql/bench/. Instant mode
-// mirrors remote_test.go: keep only metric queries, collapse range to
-// a point.
+// loadCases loads both corpora, expands every definition against the
+// dataset metadata, and returns the cases in corpus order: the upstream
+// corpus first, then the cerberus-owned one, both expanded by ONE seeded
+// resolver so every run draws the same streams and windows. Instant mode
+// keeps only metric queries and collapses each to a point.
 //
-// Expansion errors are recorded as `loadErr` against the originating
-// QueryDefinition rather than bubbled up — a single corpus-wide failure
+// Expansion errors are recorded as `expandErr` against the originating
+// definition rather than bubbled up — a single corpus-wide failure
 // (e.g. one query template referencing a label the seeded fixture
 // doesn't carry) would otherwise abort the whole run. The caller
-// converts each loadErr into an `UnexpectedFailure` result so the
+// converts each expandErr into an `UnexpectedFailure` result so the
 // report still emits and the operator can triage per-query.
 func loadCases(f flags, isInstant bool) ([]loadedCase, error) {
-	metadata, err := bench.LoadMetadata(f.metadataDir)
-	if err != nil {
-		return nil, fmt.Errorf("LoadMetadata(%s): %w", f.metadataDir, err)
-	}
-
-	registry := bench.NewQueryRegistry(f.corpusDir)
-	suites := []bench.Suite{bench.SuiteFast, bench.SuiteRegression, bench.SuiteExhaustive}
-	if err := registry.Load(suites...); err != nil {
-		return nil, fmt.Errorf("registry.Load: %w", err)
-	}
-
-	resolver := bench.NewMetadataVariableResolver(metadata, f.seed)
-	defs := registry.GetQueries(f.includeSkip, suites...)
-
-	cerberusDefs, err := loadCerberusQueries(f, suites)
+	metadata, err := corpus.LoadMetadata(f.metadataDir)
 	if err != nil {
 		return nil, err
 	}
-	defs = append(defs, cerberusDefs...)
 
+	upstreamDefs, err := loadUpstreamQueries(f)
+	if err != nil {
+		return nil, err
+	}
+	cerberusDefs, err := loadCerberusQueries(f)
+	if err != nil {
+		return nil, err
+	}
+
+	type sourcedDef struct {
+		def      corpus.Definition
+		upstream bool
+	}
+	defs := make([]sourcedDef, 0, len(upstreamDefs)+len(cerberusDefs))
+	for _, def := range upstreamDefs {
+		defs = append(defs, sourcedDef{def: def, upstream: true})
+	}
+	for _, def := range cerberusDefs {
+		defs = append(defs, sourcedDef{def: def})
+	}
+
+	resolver := corpus.NewResolver(metadata, f.seed)
 	var cases []loadedCase
-	for _, def := range defs {
-		expanded, err := registry.ExpandQuery(def, resolver, isInstant)
+	for _, sd := range defs {
+		expanded, err := resolver.Expand(sd.def, isInstant)
 		if err != nil {
 			cases = append(cases, loadedCase{
-				def:       def,
-				expandErr: fmt.Errorf("expand %q: %w", def.Description, err),
+				def:       sd.def,
+				upstream:  sd.upstream,
+				expandErr: fmt.Errorf("expand %q: %w", sd.def.Description, err),
 			})
 			continue
 		}
-		if err := checkExpansion(def, len(expanded)); err != nil {
+		if err := checkExpansion(sd.def, len(expanded)); err != nil {
 			return nil, err
 		}
 		for _, tc := range expanded {
-			cases = append(cases, loadedCase{def: def, tc: tc})
+			cases = append(cases, loadedCase{def: sd.def, tc: tc, upstream: sd.upstream})
 		}
 	}
 
 	if isInstant {
 		filtered := cases[:0]
 		for _, lc := range cases {
-			if lc.expandErr != nil || lc.tc.Kind() == "metric" {
+			if lc.expandErr != nil || lc.tc.Kind() == corpus.KindMetric {
 				if lc.expandErr == nil {
 					lc.tc.Start = lc.tc.End
 					lc.tc.Step = 0
@@ -398,37 +409,76 @@ func loadCases(f flags, isInstant bool) ([]loadedCase, error) {
 	return cases, nil
 }
 
+// upstreamCorpusDir is the upstream corpus root: -corpus when given,
+// otherwise the corpus directory of the checksum-pinned upstream module
+// in the Go module cache.
+func upstreamCorpusDir(f flags) (string, error) {
+	if f.corpusDir != "" {
+		return f.corpusDir, nil
+	}
+	dir, err := corpus.UpstreamQueriesDir()
+	if err != nil {
+		return "", fmt.Errorf("locating the upstream corpus: %w", err)
+	}
+	return dir, nil
+}
+
+// loadUpstreamQueries loads the upstream corpus in corpus order, keeping
+// the definitions it marks `skip: true` only under -include-skipped.
+func loadUpstreamQueries(f flags) ([]corpus.Definition, error) {
+	defs, err := loadUpstreamCorpus(f)
+	if err != nil || f.includeSkip {
+		return defs, err
+	}
+	runnable, _ := corpus.Partition(defs)
+	return runnable, nil
+}
+
+// loadUpstreamCorpus loads every definition of every suite of the
+// upstream corpus, skipped ones included.
+func loadUpstreamCorpus(f flags) ([]corpus.Definition, error) {
+	dir, err := upstreamCorpusDir(f)
+	if err != nil {
+		return nil, err
+	}
+	defs, err := corpus.Load(dir, corpus.AllSuites...)
+	if err != nil {
+		return nil, fmt.Errorf("upstream corpus %s: %w", dir, err)
+	}
+	return defs, nil
+}
+
 // loadCerberusQueries loads the cerberus-owned additive query corpus
 // under -cerberus-queries (compatibility/loki/cerberus-queries/ by
 // default). This is the ONLY supported mechanism for cerberus to
-// contribute extra differential cases on top of the vendored
-// grafana/loki:pkg/logql/bench corpus (see issue #1611): a second
-// bench.QueryRegistry instance loading from a cerberus-owned directory
-// that mirrors the vendored suite/file layout
-// (fast/|regression/|exhaustive/*.yaml, same schema.json shape). It
-// never edits upstream/loki-bench/ — a verbatim AGPL-3.0 vendor
-// snapshot — and it carries no should_skip-shaped escape hatch: every
-// definition loaded here runs and is graded exactly like a vendored
+// contribute extra differential cases on top of the upstream corpus
+// (see issue #1611): a second corpus root in the same file format and
+// suite layout. It carries no should_skip-shaped escape hatch: every
+// definition loaded here runs and is graded exactly like an upstream
 // one, through the same compareAll / score / cases pipeline.
-func loadCerberusQueries(f flags, suites []bench.Suite) ([]bench.QueryDefinition, error) {
-	registry := bench.NewQueryRegistry(f.cerberusQueriesDir)
-	if err := registry.Load(suites...); err != nil {
-		return nil, fmt.Errorf("cerberus query registry.Load(%s): %w", f.cerberusQueriesDir, err)
+func loadCerberusQueries(f flags) ([]corpus.Definition, error) {
+	defs, err := corpus.Load(f.cerberusQueriesDir, corpus.AllSuites...)
+	if err != nil {
+		return nil, fmt.Errorf("cerberus query corpus %s: %w", f.cerberusQueriesDir, err)
 	}
-	return registry.GetQueries(f.includeSkip, suites...), nil
+	if f.includeSkip {
+		return defs, nil
+	}
+	runnable, _ := corpus.Partition(defs)
+	return runnable, nil
 }
 
 // checkExpansion is the zero-expansion rail: a corpus query definition
 // that expands to zero test cases would silently vanish from the score
-// denominator — exactly what happened when the vendored registry
-// defaulted Directions before Kind and eight metric-shaped definitions
-// in exhaustive/aggregations.yaml expanded to nothing, invisible to
-// both the score and the upstream-skip baseline. Every definition the
-// driver loads (runnable by default; upstream-skipped too under
+// denominator — exactly what happened when a loader defaulted Directions
+// before Kind and eight metric-shaped definitions in
+// exhaustive/aggregations.yaml expanded to nothing, invisible to both
+// the score and the upstream-skip baseline. Every definition the driver
+// loads (runnable by default; upstream-skipped too under
 // -include-skipped) must contribute at least one case, so a regression
 // here is a hard error naming the definition, not a quietly smaller
 // total.
-func checkExpansion(def bench.QueryDefinition, n int) error {
+func checkExpansion(def corpus.Definition, n int) error {
 	if n > 0 {
 		return nil
 	}
@@ -438,35 +488,27 @@ func checkExpansion(def bench.QueryDefinition, n int) error {
 	)
 }
 
-// loadAllQueriesAndSplit reuses the bench registry to load every
-// suite, then partitions the result into runnable (`Skip == false`)
-// and upstream-skipped (`Skip == true`) slices. The runnable slice is
-// what the normal compareAll path operates on; the skipped slice
-// feeds the sanity rail (baseline diff, baseline regen). Loading once
-// and splitting locally keeps the bench-package call surface small —
-// `GetQueries(true, ...)` returns the full corpus.
-func loadAllQueriesAndSplit(f flags) (runnable, upstreamSkipped []bench.QueryDefinition, err error) {
-	registry := bench.NewQueryRegistry(f.corpusDir)
-	suites := []bench.Suite{bench.SuiteFast, bench.SuiteRegression, bench.SuiteExhaustive}
-	if loadErr := registry.Load(suites...); loadErr != nil {
-		return nil, nil, fmt.Errorf("registry.Load: %w", loadErr)
+// loadAllQueriesAndSplit loads every suite of the upstream corpus and
+// partitions it into runnable (`skip` unset) and upstream-skipped
+// (`skip: true`) definitions. The runnable slice is what the normal
+// compareAll path operates on; the skipped slice feeds the sanity rail
+// (baseline diff, baseline regen).
+func loadAllQueriesAndSplit(f flags) (runnable, upstreamSkipped []corpus.Definition, err error) {
+	defs, err := loadUpstreamCorpus(f)
+	if err != nil {
+		return nil, nil, err
 	}
-	all := registry.GetQueries(true, suites...)
-	for _, def := range all {
-		if def.Skip {
-			upstreamSkipped = append(upstreamSkipped, def)
-		} else {
-			runnable = append(runnable, def)
-		}
-	}
+	runnable, upstreamSkipped = corpus.Partition(defs)
 	return runnable, upstreamSkipped, nil
 }
 
-// baselineKey derives the stable lookup key for a QueryDefinition. The
-// shape matches the overlay key (`<suite>/<file>.yaml#<description>`)
-// so a reviewer can search either file by the same string.
-func baselineKey(def bench.QueryDefinition) string {
-	return stripSourceLine(def.Source) + "#" + def.Description
+// baselineKey is the committed key of a skipped definition: the opaque
+// ID of its readable identity ([corpus.Definition.Identity]), so the
+// baseline names the definition without carrying upstream corpus text.
+// The readable identity appears only in drift messages, so an operator
+// can see which definition moved.
+func baselineKey(def corpus.Definition) string {
+	return corpus.OpaqueID(def.Identity())
 }
 
 // readSkipBaseline parses the baseline file. Lines beginning with `#`
@@ -490,10 +532,10 @@ func readSkipBaseline(path string) ([]string, error) {
 }
 
 // writeSkipBaseline rewrites the baseline file from the given
-// QueryDefinition slice. The header preserves the rationale block + the
-// regen incantation so the file is self-documenting after a regen
-// flips its content. Entries are sorted lexically.
-func writeSkipBaseline(path string, defs []bench.QueryDefinition) error {
+// definitions. The header preserves the rationale block + the regen
+// incantation so the file is self-documenting after a regen flips its
+// content. Entries are sorted lexically.
+func writeSkipBaseline(path string, defs []corpus.Definition) error {
 	keys := make([]string, 0, len(defs))
 	for _, def := range defs {
 		keys = append(keys, baselineKey(def))
@@ -513,22 +555,20 @@ func writeSkipBaseline(path string, defs []bench.QueryDefinition) error {
 // writeSkipBaseline. It documents the file's purpose + the regen
 // procedure so a reviewer doesn't need to cross-reference the README to
 // understand what the entries represent.
-const skipBaselineHeader = `# Upstream ` + "`skip: true`" + ` baseline for the vendored grafana/loki bench corpus.
+const skipBaselineHeader = `# Upstream ` + "`skip: true`" + ` baseline for the upstream LogQL corpus.
 #
-# Each non-comment line is a ` + "`<suite>/<file>.yaml#<description>`" + ` key
-# identifying a corpus entry whose YAML carries ` + "`skip: true`" + `. The
-# loki-compliance-tester's sanity rail loads the full corpus
-# (includeSkipped=true), splits it into runnable + upstream-skipped, and
-# diffs the upstream-skipped set against this file. Any drift (new
-# skipped entries that aren't here, or expected entries that disappeared)
-# fails the harness — so an upstream YAML flipping ` + "`skip: true`" + ` →
-# ` + "`skip: false`" + ` cannot silently reintroduce a query cerberus is not yet
-# compatible with.
+# Each non-comment line is the opaque ID of one upstream corpus definition
+# whose YAML carries ` + "`skip: true`" + `: ` + "`upstream:`" + ` followed by the
+# leading hex digits of the SHA-256 of ` + "`<suite>/<file>#<description>`" + `.
+# The loki-compliance-tester's sanity rail loads the full upstream corpus,
+# splits it into runnable + upstream-skipped, and diffs the upstream-skipped
+# set against this file. Any drift (new skipped entries that aren't here,
+# or expected entries that disappeared) fails the harness, and the failure
+# names each newly skipped definition by suite, file and description.
 #
-# Regenerate after a corpus re-snapshot via:
+# Regenerate via:
 #
-#     loki-compliance-tester \
-#         -corpus=compatibility/loki/upstream/loki-bench/queries \
+#     go run ./compatibility/loki/cmd/loki-compliance-tester \
 #         -skip-baseline=compatibility/loki/upstream-skip-baseline.txt \
 #         -regen-baseline
 #
@@ -541,15 +581,18 @@ const skipBaselineHeader = `# Upstream ` + "`skip: true`" + ` baseline for the v
 // the pinned baseline file. Drift is reported as a structured error
 // naming every added / removed key so the operator can land a
 // matching baseline update (via -regen-baseline) — or, more often,
-// confront the corpus drift the upstream re-snapshot introduced.
-func checkSkipBaseline(path string, upstreamSkipped []bench.QueryDefinition) error {
+// confront the corpus drift an upstream pin bump introduced.
+func checkSkipBaseline(path string, upstreamSkipped []corpus.Definition) error {
 	want, err := readSkipBaseline(path)
 	if err != nil {
 		return fmt.Errorf("reading skip baseline %q: %w", path, err)
 	}
+	readable := make(map[string]string, len(upstreamSkipped))
 	got := make([]string, 0, len(upstreamSkipped))
 	for _, def := range upstreamSkipped {
-		got = append(got, baselineKey(def))
+		k := baselineKey(def)
+		readable[k] = def.Identity()
+		got = append(got, k)
 	}
 	sort.Strings(got)
 
@@ -578,7 +621,7 @@ func checkSkipBaseline(path string, upstreamSkipped []bench.QueryDefinition) err
 	}
 
 	var msg strings.Builder
-	msg.WriteString("upstream-skip baseline drift detected (vendored corpus no longer matches ")
+	msg.WriteString("upstream-skip baseline drift detected (the upstream corpus no longer matches ")
 	msg.WriteString(path)
 	msg.WriteString(")\n")
 	if len(added) > 0 {
@@ -586,7 +629,9 @@ func checkSkipBaseline(path string, upstreamSkipped []bench.QueryDefinition) err
 		for _, k := range added {
 			msg.WriteString("    + ")
 			msg.WriteString(k)
-			msg.WriteByte('\n')
+			msg.WriteString("  (")
+			msg.WriteString(readable[k])
+			msg.WriteString(")\n")
 		}
 	}
 	if len(removed) > 0 {
@@ -602,12 +647,14 @@ func checkSkipBaseline(path string, upstreamSkipped []bench.QueryDefinition) err
 }
 
 // loadedCase carries either a fully-expanded TestCase or an expansion
-// failure (with the originating QueryDefinition for context). Carrying
-// both via the same slot lets compareAll emit a result row even for
-// queries that never reached the wire.
+// failure (with the originating definition for context). Carrying both
+// via the same slot lets compareAll emit a result row even for queries
+// that never reached the wire. upstream marks a case from the upstream
+// corpus, whose parity-ledger ID is opaque (see caseSet).
 type loadedCase struct {
-	def       bench.QueryDefinition
-	tc        bench.TestCase
+	def       corpus.Definition
+	tc        corpus.Case
+	upstream  bool
 	expandErr error
 }
 
@@ -663,7 +710,7 @@ func compareAll(cases []loadedCase, f flags, isInstant bool) []Result {
 
 	for i, lc := range cases {
 
-		suiteFile := stripSourceLine(lc.def.Source)
+		suiteFile := lc.def.File()
 
 		// Expansion failures: emit a synthetic TestCase from the
 		// upstream QueryDefinition (no time range available) and
@@ -675,6 +722,7 @@ func compareAll(cases []loadedCase, f flags, isInstant bool) []Result {
 				Description: lc.def.Description,
 				Kind:        lc.def.Kind,
 				Direction:   string(lc.def.Directions),
+				upstream:    lc.upstream,
 			}
 			results[i] = Result{TestCase: tc, UnexpectedFailure: "expansion: " + lc.expandErr.Error()}
 			continue
@@ -687,6 +735,7 @@ func compareAll(cases []loadedCase, f flags, isInstant bool) []Result {
 			defer func() { <-workCh }()
 
 			results[i] = compareOne(httpClient, f, lc.tc, suiteFile, isInstant)
+			results[i].TestCase.upstream = lc.upstream
 		}()
 	}
 
@@ -696,7 +745,7 @@ func compareAll(cases []loadedCase, f flags, isInstant bool) []Result {
 
 // compareOne performs the per-case differential: fans out concurrent
 // requests to both endpoints, decodes, normalises, diffs.
-func compareOne(c *http.Client, f flags, tc bench.TestCase, suiteFile string, isInstant bool) Result {
+func compareOne(c *http.Client, f flags, tc corpus.Case, suiteFile string, isInstant bool) Result {
 	tcOut := newTestCase(tc, suiteFile, isInstant)
 	result := Result{TestCase: tcOut}
 
@@ -733,10 +782,9 @@ func compareOne(c *http.Client, f flags, tc bench.TestCase, suiteFile string, is
 
 	expected := normaliseTypedResult(out[0].value)
 	actual := normaliseTypedResult(out[1].value)
-	// Cases tagged `empty-result` in the upstream YAML are designed to
-	// return no rows (e.g. `${SELECTOR} |= "this will not hit any line"`
-	// in fast/basic-selectors.yaml — the filter literal can never match
-	// a seeded log line by construction). For those cases a baseline-
+	// Cases tagged `empty-result` are designed to return no rows (a line
+	// filter whose literal no seeded log line contains, by construction).
+	// For those cases a baseline-
 	// empty response is the expected outcome, so we treat
 	// baseline-empty + actual-empty as a parity pass and flip the
 	// diff direction: actual-non-empty means cerberus returned rows
@@ -783,31 +831,15 @@ func compareOne(c *http.Client, f flags, tc bench.TestCase, suiteFile string, is
 // would flag every such case as `baseline returned empty`, turning
 // an honest differential ("both endpoints agree on empty") into a
 // false-positive row.
-func isExpectedEmptyCase(tc bench.TestCase) bool {
+func isExpectedEmptyCase(tc corpus.Case) bool {
 	return slices.Contains(tc.Tags, "empty-result")
 }
 
-// stripSourceLine strips the trailing `:<line>` from a bench source path.
-// Upstream stores `Source` as `fast/basic-selectors.yaml:6`; the overlay
-// keys + the report's `testCase.source` field use the line-less form so
-// they stay stable across upstream re-orderings.
-func stripSourceLine(src string) string {
-	if i := strings.LastIndex(src, ":"); i >= 0 {
-		// Validate the suffix is a number; otherwise leave the string
-		// untouched. Source paths shouldn't carry a colon other than
-		// the line suffix, so this is purely defensive.
-		if _, err := strconv.Atoi(src[i+1:]); err == nil {
-			return src[:i]
-		}
-	}
-	return src
-}
-
-func newTestCase(tc bench.TestCase, suiteFile string, isInstant bool) TestCase {
+func newTestCase(tc corpus.Case, suiteFile string, isInstant bool) TestCase {
 	out := TestCase{
 		Query:       tc.Query,
 		Source:      suiteFile,
-		Description: tc.QueryDesc,
+		Description: tc.Description,
 		Kind:        tc.Kind(),
 		Direction:   tc.Direction.String(),
 		Start:       tc.Start.UTC().Format(time.RFC3339Nano),
@@ -843,7 +875,7 @@ func isUnsupportedErr(err error) bool {
 // only when the TestCase represents one (metric query collapsed to a
 // point); everything else routes to /query_range, matching the
 // upstream test's queryRemote() function.
-func queryOne(c *http.Client, addr string, tc bench.TestCase, isInstant bool) (typedResult, error) {
+func queryOne(c *http.Client, addr string, tc corpus.Case, isInstant bool) (typedResult, error) {
 	const limit = 1000
 	base := strings.TrimRight(addr, "/")
 
@@ -1362,4 +1394,9 @@ type TestCase struct {
 	Step        string   `json:"step,omitempty"`
 	Instant     bool     `json:"instant"`
 	Tags        []string `json:"tags,omitempty"`
+
+	// upstream marks a case from the upstream corpus. Its readable
+	// identity is upstream text, so the parity ratchet records it under
+	// corpus.OpaqueID (see caseSet). It is not part of the report.
+	upstream bool
 }

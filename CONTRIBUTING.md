@@ -139,7 +139,7 @@ just e2e-down          # tear down
 - [ ] CI green
 ```
 
-If you're touching the compatibility harness, include the before/after pass rate (`compat-score.json`) in the body — and if a Loki corpus re-snapshot moved `compatibility/loki/upstream-skip-baseline.txt`, include that diff too.
+If you're touching the compatibility harness, include the before/after pass rate (`compat-score.json`) in the body — and if a change to the pinned Loki corpus version moved `compatibility/loki/upstream-skip-baseline.txt`, include that diff too.
 
 ## Testing layers
 

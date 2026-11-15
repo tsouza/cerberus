@@ -3,6 +3,9 @@
   "head": "loki",
   "bucket": "2d",
   "cases": [
-    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | detected_field values parity: service=tempo field=bytes"
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | detected_field values parity: service=tempo field=bytes",
+    "upstream:5f2cdf90e3610d01",
+    "upstream:8e7588be1a9958ec",
+    "upstream:a76900af4d5114a0"
   ]
 }

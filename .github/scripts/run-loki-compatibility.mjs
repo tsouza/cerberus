@@ -12,9 +12,10 @@
 //      corpus index from its object store, and the seeder then pushes the
 //      now-anchored /patterns fixture and asserts /labels is non-empty on
 //      both targets (-stage=live).
-//   3. Builds the cerberus-owned diff driver (cmd/loki-compliance-tester);
-//      the binary imports the vendored upstream/loki-bench/ corpus loader,
-//      so a `-mod=mod` build is required.
+//   3. Builds the cerberus-owned diff driver (cmd/loki-compliance-tester).
+//      The driver reads the upstream LogQL query corpus from the pinned
+//      github.com/grafana/loki/v3 module in the Go module cache (see
+//      compatibility/loki/corpus), so the repository carries none of it.
 //   4. The driver runs against -addr-1 (reference Loki :23100) and
 //      -addr-2 (cerberus :29092); it emits a structured JSON report
 //      matching the prometheus-compliance harness's shape into
@@ -69,9 +70,9 @@
 //   DRIVER_SKIP_BASELINE
 //                       Path to the upstream `skip: true` baseline file
 //                       (default: compatibility/loki/upstream-skip-baseline.txt).
-//                       When set, the driver asserts the upstream YAML's
-//                       skipped set matches this file; drift is a hard
-//                       error (sanity rail per task #269).
+//                       When set, the driver asserts the upstream corpus's
+//                       skipped set matches this file, keyed by opaque case
+//                       identity; drift is a hard error.
 
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
@@ -160,13 +161,9 @@ function main() {
     process.exit(0);
   }
 
-  // Build the cerberus-owned diff driver. The driver imports the vendored
-  // bench package for corpus loading + cerberus's existing Loki / yaml deps
-  // for the HTTP + decode path. The root go.mod marks `ignore
-  // ./compatibility/loki/upstream`, which keeps `go build ./...` from
-  // walking the bench tree as a build target; importing the package by path
-  // is still permitted because every transitive dep is already a direct
-  // entry in go.mod.
+  // Build the cerberus-owned diff driver. With no -corpus flag it reads the
+  // upstream query corpus out of the pinned module in the Go module cache,
+  // fetching and checksum-verifying the module when the cache lacks it.
   log('==> building diff driver (cmd/loki-compliance-tester)');
   const driverBin = join(scratchDir, 'loki-compliance-tester');
   exitOnSpawnFailure(
@@ -184,7 +181,6 @@ function main() {
     [
       '-addr-1=http://localhost:23100',
       '-addr-2=http://localhost:29092',
-      `-corpus=${ROOT_DIR}/upstream/loki-bench/queries`,
       `-cerberus-queries=${ROOT_DIR}/cerberus-queries`,
       `-metadata-dir=${ROOT_DIR}`,
       `-live-patterns-metadata=${LIVE_PATTERNS_METADATA}`,

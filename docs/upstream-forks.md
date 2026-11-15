@@ -159,12 +159,11 @@ Collector-contrib also needs the per-submodule tags at the same SHA. [Fork-tag d
 6. Extend the `upstream-parsers` group in cerberus's `.github/dependabot.yml`, and the allow-list in `.github/workflows/auto-merge-deps.yml` when a patch bump of the `require` can merge on its own.
 7. Add a `replace` directive in cerberus's `go.mod`.
 
-## Transitive replaces and ignored trees
+## Transitive replaces
 
-Two kinds of `go.mod` directive sit outside the `tsouza/*` fork boundary and are not watched by the forks-monitor:
+One kind of `go.mod` directive sits outside the `tsouza/*` fork boundary and is not watched by the forks-monitor:
 
 - **`replace github.com/hashicorp/memberlist => github.com/grafana/memberlist`.** Loki, Tempo and `dskit` each swap `hashicorp/memberlist` for Grafana's fork through their own `replace` directives. A `replace` never propagates to a consumer module, so the root module repeats it. The pinned pseudo-version is whatever the Grafana modules in `go.mod` themselves require; bump it alongside them. Dependabot groups `hashicorp/memberlist*` with the `upstream-parsers` group.
-- **`ignore ./compatibility/loki/upstream`.** That directory holds a vendored snapshot of upstream Go source (Loki's `pkg/logql/bench`) that the Loki compatibility harness reads as corpus. The `ignore` directive keeps it out of every `./...` walk while leaving it on disk.
 
 ## References
 

@@ -123,9 +123,13 @@ function fail(message, props) {
 }
 
 // listCases renders IDs for a log line, one per row, truncated at
-// maxListedCases so a wholesale corpus change stays readable.
-export function listCases(ids) {
-  const shown = ids.slice(0, maxListedCases).map((id) => `    - ${id}`);
+// maxListedCases so a wholesale corpus change stays readable. An ID the
+// run labelled (an opaque ID standing for upstream corpus text, see
+// runRoster) is followed by its label so the log names the case.
+export function listCases(ids, labels = new Map()) {
+  const shown = ids
+    .slice(0, maxListedCases)
+    .map((id) => (labels.has(id) ? `    - ${id}  (${labels.get(id)})` : `    - ${id}`));
   if (ids.length > maxListedCases) {
     shown.push(`    … and ${ids.length - maxListedCases} more (see the compat-cases.json artefact)`);
   }
@@ -180,7 +184,9 @@ export function baselineRoster(entry, headName) {
 }
 
 // runRoster validates the run's compat-cases.json and returns its cases
-// as an id -> passed Map.
+// as an id -> passed Map, plus an id -> label Map for the entries that
+// carry the optional readable `label` of an opaque ID. Labels exist only
+// in the run's artefact; the committed baseline records IDs alone.
 export function runRoster(doc, headName) {
   if (!doc || typeof doc !== 'object') {
     return { err: 'expected a JSON object' };
@@ -194,16 +200,21 @@ export function runRoster(doc, headName) {
     return { err: 'expected a `cases` array of {id, passed} objects' };
   }
   const cases = new Map();
+  const labels = new Map();
   for (const c of doc.cases) {
     if (!c || typeof c.id !== 'string' || c.id.trim() === '' || typeof c.passed !== 'boolean') {
       return { err: 'every entry must be {id: non-empty string, passed: boolean}' };
+    }
+    if (c.label !== undefined && (typeof c.label !== 'string' || c.label.trim() === '')) {
+      return { err: `case ID ${JSON.stringify(c.id)} carries a label that is not a non-empty string` };
     }
     if (cases.has(c.id)) {
       return { err: `case ID ${JSON.stringify(c.id)} appears twice` };
     }
     cases.set(c.id, c.passed);
+    if (c.label !== undefined) labels.set(c.id, c.label);
   }
-  return { cases };
+  return { cases, labels };
 }
 
 // verdicts partitions the run against the baseline roster. Every
@@ -297,7 +308,7 @@ function main() {
   }
 
   const casesDoc = readJson(casesPath, 'compat-cases.json');
-  const { cases: runCases, err: runErr } = runRoster(casesDoc, head);
+  const { cases: runCases, labels: runLabels, err: runErr } = runRoster(casesDoc, head);
   if (runErr) {
     fail(`compat-ratchet: bad ${casesPath}: ${runErr}`, {
       title: `compatibility/${head} ratchet: malformed cases`,
@@ -325,7 +336,7 @@ function main() {
     if (regressed.length) {
       lines.push(
         `  REGRESSED — ${regressed.length} case(s) the baseline records as agreeing with the ` +
-          `reference now diverge:\n${listCases(regressed)}`,
+          `reference now diverge:\n${listCases(regressed, runLabels)}`,
       );
     }
     if (vanished.length) {
@@ -339,13 +350,13 @@ function main() {
       lines.push(
         `  ARRIVED-FAILING — ${arrivedFailing.length} case(s) new to the corpus diverge from the ` +
           `reference on arrival. New is not an excuse: this is a real parity bug the corpus ` +
-          `change surfaced:\n${listCases(arrivedFailing)}`,
+          `change surfaced:\n${listCases(arrivedFailing, runLabels)}`,
       );
     }
     if (unrecorded.length) {
       lines.push(
         `  UNRECORDED — ${unrecorded.length} case(s) new to the corpus passed but are not in the ` +
-          `baseline, so no future run is gated on them:\n${listCases(unrecorded)}`,
+          `baseline, so no future run is gated on them:\n${listCases(unrecorded, runLabels)}`,
       );
     }
     lines.push(

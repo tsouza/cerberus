@@ -2908,7 +2908,8 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
 - **`grafana-plugin-build.mjs`** — `deploy/grafana/Dockerfile`, built
   locally by the e2e lanes (`just e2e-grafana-image`) and never pushed to a
   registry. Downloads the Metrics Drilldown source archive at a pinned
-  commit, verifies its SHA-256, applies `metrics-drilldown.patch`, builds the
+  commit, verifies its SHA-256, applies the zero-context `metrics-drilldown.patch`
+  by line number (`git apply --unidiff-zero`), builds the
   plugin with `pnpm` / `rspack`, and checks the built `plugin.json` names the
   pinned plugin ID and version. The archive and patch stay in the build
   directory.

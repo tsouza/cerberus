@@ -6,13 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logproto"
-
-	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
+	"github.com/tsouza/cerberus/compatibility/loki/corpus"
 )
 
 // The burndown pass is the only value-level coverage the wrong-rejection
-// operators have: the vendored corpus exercises none of them. Its case
+// operators have: the upstream corpus exercises none of them. Its case
 // list is therefore load-bearing in a way a query list usually is not —
 // a selector picked non-deterministically, a window that drifts off the
 // seed grid, or a metric case that lost its step all turn a real
@@ -21,18 +19,18 @@ import (
 // burndownMetadata builds the minimal dataset metadata burndownCases
 // reads: a web-server selector for the ip()/pattern arms and a logfmt
 // selector carrying an unwrappable `duration` for the first/last arms.
-func burndownMetadata() *bench.DatasetMetadata {
-	return &bench.DatasetMetadata{
+func burndownMetadata() *corpus.Metadata {
+	return &corpus.Metadata{
 		ByServiceName: map[string][]string{
 			"web-server": {`{service_name="web-server"}`, `{service_name="web-server", env="b"}`},
 		},
-		ByFormat: map[bench.LogFormat][]string{
-			bench.LogFormatLogfmt: {`{service_name="zeta"}`, `{service_name="alpha"}`, `{service_name="unrelated"}`},
+		ByFormat: map[corpus.LogFormat][]string{
+			corpus.LogFormatLogfmt: {`{service_name="zeta"}`, `{service_name="alpha"}`, `{service_name="unrelated"}`},
 		},
 		ByUnwrappableField: map[string][]string{
 			"duration": {`{service_name="alpha"}`, `{service_name="zeta"}`},
 		},
-		TimeRange: bench.TimeRange{
+		TimeRange: corpus.Window{
 			Start: time.Unix(1700000000, 0).UTC(),
 			End:   time.Unix(1700086400, 0).UTC(),
 		},
@@ -91,43 +89,43 @@ func TestBurndownCases_Shape(t *testing.T) {
 	var metrics, logs int
 	for _, tc := range cases {
 		if tc.Source != burndownSource {
-			t.Fatalf("case %q source = %q, want %q", tc.QueryDesc, tc.Source, burndownSource)
+			t.Fatalf("case %q source = %q, want %q", tc.Description, tc.Source, burndownSource)
 		}
 		if len(tc.Tags) != 1 || tc.Tags[0] != "wrong-rejection-burndown" {
-			t.Fatalf("case %q tags = %v", tc.QueryDesc, tc.Tags)
+			t.Fatalf("case %q tags = %v", tc.Description, tc.Tags)
 		}
-		if tc.QueryDesc == "" {
+		if tc.Description == "" {
 			t.Fatalf("case with query %q carries no description", tc.Query)
 		}
 		switch tc.Kind() {
 		case "metric":
 			metrics++
 			if tc.Step != burndownStep {
-				t.Fatalf("metric case %q step = %v, want %v", tc.QueryDesc, tc.Step, burndownStep)
+				t.Fatalf("metric case %q step = %v, want %v", tc.Description, tc.Step, burndownStep)
 			}
 			if !tc.Start.Equal(start) || !tc.End.Equal(start.Add(burndownLength)) {
-				t.Fatalf("metric case %q window = [%v, %v], want the anchor-aligned [start, start+%v]", tc.QueryDesc, tc.Start, tc.End, burndownLength)
+				t.Fatalf("metric case %q window = [%v, %v], want the anchor-aligned [start, start+%v]", tc.Description, tc.Start, tc.End, burndownLength)
 			}
-			if tc.Direction != logproto.FORWARD {
-				t.Fatalf("metric case %q direction = %v, want FORWARD", tc.QueryDesc, tc.Direction)
+			if tc.Direction != corpus.Forward {
+				t.Fatalf("metric case %q direction = %v, want FORWARD", tc.Description, tc.Direction)
 			}
 		case "log":
 			logs++
 			if tc.Step != 0 {
-				t.Fatalf("log case %q carries step %v; a log query has no step grid", tc.QueryDesc, tc.Step)
+				t.Fatalf("log case %q carries step %v; a log query has no step grid", tc.Description, tc.Step)
 			}
 			// The log window is the SAME seed-grid-aligned window the
 			// metric cases use, so an entry sits exactly on `end` and
 			// reference Loki's exclusive entry bound is exercised rather
 			// than stepped around.
 			if !tc.Start.Equal(start) || !tc.End.Equal(start.Add(burndownLength)) {
-				t.Fatalf("log case %q window = [%v, %v], want the anchor-aligned [start, start+%v]", tc.QueryDesc, tc.Start, tc.End, burndownLength)
+				t.Fatalf("log case %q window = [%v, %v], want the anchor-aligned [start, start+%v]", tc.Description, tc.Start, tc.End, burndownLength)
 			}
-			if tc.Direction != logproto.BACKWARD {
-				t.Fatalf("log case %q direction = %v, want BACKWARD", tc.QueryDesc, tc.Direction)
+			if tc.Direction != corpus.Backward {
+				t.Fatalf("log case %q direction = %v, want BACKWARD", tc.Description, tc.Direction)
 			}
 		default:
-			t.Fatalf("case %q has kind %q; the query does not parse: %s", tc.QueryDesc, tc.Kind(), tc.Query)
+			t.Fatalf("case %q has kind %q; the query does not parse: %s", tc.Description, tc.Kind(), tc.Query)
 		}
 	}
 	if metrics == 0 || logs == 0 {
@@ -221,7 +219,7 @@ func TestBurndownCases_MissingPreconditions(t *testing.T) {
 // contribute zero rows to a denominator nobody re-checks.
 func TestCompareBurndownValueParity_ReportsBrokenPreconditions(t *testing.T) {
 	t.Parallel()
-	results := compareBurndownValueParity(&http.Client{Timeout: time.Second}, flags{}, &bench.DatasetMetadata{})
+	results := compareBurndownValueParity(&http.Client{Timeout: time.Second}, flags{}, &corpus.Metadata{})
 	if len(results) != 1 {
 		t.Fatalf("results = %d, want exactly 1 construction-failure row", len(results))
 	}

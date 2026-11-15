@@ -1,8 +1,7 @@
-# yaml-language-server: $schema=../../upstream/loki-bench/queries/schema.json
+# yaml-language-server: $schema=../schema.json
 ---
 # `| unpack` differential coverage — see issue #1611. Before this file
-# the vendored corpus never queried `| unpack` at all (zero hits
-# outside its LICENSE text) and the seeder never emitted a
+# the upstream corpus never queried `| unpack` at all and the seeder never emitted a
 # Promtail-pack-shaped payload for it to run against, so the stage
 # shipped guarded only by cerberus's own unit tests reading upstream's
 # source rather than a real differential run — exactly the gap #1447
