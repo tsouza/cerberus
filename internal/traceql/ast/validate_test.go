@@ -129,8 +129,8 @@ func TestIsMatchingOperandSymmetry(t *testing.T) {
 	}
 	for _, a := range all {
 		for _, b := range all {
-			if a.isMatchingOperand(b) != b.isMatchingOperand(a) {
-				t.Errorf("isMatchingOperand asymmetric for %v / %v", a, b)
+			if a.comparableWith(b) != b.comparableWith(a) {
+				t.Errorf("comparableWith asymmetric for %v / %v", a, b)
 			}
 		}
 	}
@@ -253,7 +253,7 @@ func TestParseRejectsAggregateNonNumeric(t *testing.T) {
 // can still fail because the OPERATOR itself never accepts one of the
 // operand's types — `.foo && 3`: `&&` only accepts boolean operands, and
 // `TypeInt` is not one, even though `TypeAttribute` on the other side would
-// have matched isMatchingOperand for anything.
+// have matched comparableWith for anything.
 func TestParseRejectsIllegalBinaryOperatorTypes(t *testing.T) {
 	cases := []string{
 		`{ .foo && 3 }`,
@@ -297,7 +297,7 @@ func TestParseRejectsNonBooleanCompareFilter(t *testing.T) {
 }
 
 // TestParseRejectsIllegalUnaryOperand pins the reference's unary
-// operand-type rule (issue #2035, `Operator.unaryTypesValid`): unary `-`
+// operand-type rule (issue #2035, `Operator.acceptsUnaryOperand`): unary `-`
 // requires a numeric operand, and `name` is always a String.
 func TestParseRejectsIllegalUnaryOperand(t *testing.T) {
 	cases := []string{
@@ -371,26 +371,25 @@ func TestParseAcceptsNewRuleEdgeCases(t *testing.T) {
 // TestUnaryTypesValidSymmetryWithAttribute pins that TypeAttribute is
 // always a valid unary operand regardless of operator, and that the two
 // existence operators (OpExists / OpNotExists) accept every type —
-// mirroring the reference's own unaryTypesValid, which never rejects on
-// those two axes.
+// mirroring the reference, which never rejects on those two axes.
 func TestUnaryTypesValidSymmetryWithAttribute(t *testing.T) {
 	all := []StaticType{
 		TypeNil, TypeAttribute, TypeInt, TypeFloat, TypeString, TypeBoolean,
 		TypeDuration, TypeStatus, TypeKind,
 	}
 	for _, ty := range all {
-		if !OpExists.unaryTypesValid(ty) {
-			t.Errorf("OpExists.unaryTypesValid(%v) = false, want true", ty)
+		if !OpExists.acceptsUnaryOperand(ty) {
+			t.Errorf("OpExists.acceptsUnaryOperand(%v) = false, want true", ty)
 		}
-		if !OpNotExists.unaryTypesValid(ty) {
-			t.Errorf("OpNotExists.unaryTypesValid(%v) = false, want true", ty)
+		if !OpNotExists.acceptsUnaryOperand(ty) {
+			t.Errorf("OpNotExists.acceptsUnaryOperand(%v) = false, want true", ty)
 		}
 	}
-	if !OpSub.unaryTypesValid(TypeAttribute) {
-		t.Error("OpSub.unaryTypesValid(TypeAttribute) = false, want true")
+	if !OpSub.acceptsUnaryOperand(TypeAttribute) {
+		t.Error("OpSub.acceptsUnaryOperand(TypeAttribute) = false, want true")
 	}
-	if !OpNot.unaryTypesValid(TypeAttribute) {
-		t.Error("OpNot.unaryTypesValid(TypeAttribute) = false, want true")
+	if !OpNot.acceptsUnaryOperand(TypeAttribute) {
+		t.Error("OpNot.acceptsUnaryOperand(TypeAttribute) = false, want true")
 	}
 }
 

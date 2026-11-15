@@ -196,9 +196,12 @@ func (a Aggregate) impliedType() StaticType {
 	return a.e.impliedType()
 }
 
+// String renders `op(operand)`, with empty parentheses when there is no
+// operand (`count()`).
 func (a Aggregate) String() string {
-	if a.e == nil {
-		return a.op.String() + "()"
+	operand := ""
+	if a.e != nil {
+		operand = a.e.String()
 	}
-	return a.op.String() + "(" + a.e.String() + ")"
+	return a.op.String() + "(" + operand + ")"
 }

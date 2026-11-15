@@ -137,18 +137,14 @@ func NewOrLabelFilter(left, right LabelFilterer) *BinaryLabelFilter {
 
 func (b *BinaryLabelFilter) isLabelFilterer() {}
 
+// String renders the pair parenthesised, joined by ` , ` for `and` and by
+// ` or ` for `or`.
 func (b *BinaryLabelFilter) String() string {
-	var sb strings.Builder
-	sb.WriteString("( ")
-	sb.WriteString(b.Left.String())
+	joiner := " or "
 	if b.And {
-		sb.WriteString(" , ")
-	} else {
-		sb.WriteString(" or ")
+		joiner = " , "
 	}
-	sb.WriteString(b.Right.String())
-	sb.WriteString(" )")
-	return sb.String()
+	return "( " + b.Left.String() + joiner + b.Right.String() + " )"
 }
 
 // StringLabelFilter matches a label value against a string matcher
@@ -246,14 +242,17 @@ func NewIPLabelFilter(pattern, label string, ty LabelFilterType) *IPLabelFilter 
 
 func (f *IPLabelFilter) isLabelFilterer() {}
 
+// String renders `label=ip("pattern")` or `label!=ip("pattern")`. The
+// equal case is a single `=`, not `==`: that is the on-the-wire form.
 func (f *IPLabelFilter) String() string {
-	// Upstream renders ip() label filters with a single `=` for the equal
-	// case (not `==`), keeping the on-the-wire form `addr=ip("...")`.
-	eq := "="
-	if f.Ty == LabelFilterNotEqual {
-		eq = LabelFilterNotEqual.String()
+	return f.Label + ipFilterComparator(f.Ty) + OpFilterIP + "(" + strconv.Quote(f.Pattern) + ")"
+}
+
+func ipFilterComparator(ty LabelFilterType) string {
+	if ty == LabelFilterNotEqual {
+		return ty.String()
 	}
-	return fmt.Sprintf("%s%sip(%q)", f.Label, eq, f.Pattern)
+	return "="
 }
 
 // LabelExtractionExpr is one `identifier="expression"` pair in a typed

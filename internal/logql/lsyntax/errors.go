@@ -20,11 +20,12 @@ type ParseError struct {
 	line, col int
 }
 
+// Error renders the message, prefixed with its position when it has one.
 func (p ParseError) Error() string {
-	if p.col == 0 && p.line == 0 {
-		return fmt.Sprintf("parse error : %s", p.msg)
+	if p.line != 0 || p.col != 0 {
+		return fmt.Sprintf("parse error at line %d, col %d: %s", p.line, p.col, p.msg)
 	}
-	return fmt.Sprintf("parse error at line %d, col %d: %s", p.line, p.col, p.msg)
+	return "parse error : " + p.msg
 }
 
 // Is lets errors.Is(err, ErrParse) match any ParseError.

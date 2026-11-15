@@ -1,14 +1,12 @@
-// Package logpattern is a clean-room reimplementation of grafana/loki's
-// pkg/logql/log/pattern (AGPLv3), so the cerberus binary stays
-// Apache-only. It parses Loki "pattern" expressions — alternating
-// literal runs and `<name>` / `<_>` captures — used by the `| pattern`
-// parser stage and the `|>` / `!>` line filters.
+// Package logpattern implements the LogQL pattern language used by the
+// `| pattern` parser stage and the `|>` / `!>` line filters, as an
+// Apache-2.0 package written from the language's documented syntax and the
+// reference engine's observable behaviour.
 //
-// A capture is `<` then an identifier (`[A-Za-z_][A-Za-z0-9_]*`) then
-// `>`; `<_>` is the unnamed capture. Any `<` not forming a valid capture
-// is an ordinary literal. Consecutive non-capture runes merge into one
-// literal node. The tokenisation and node shape match upstream
-// byte-for-byte (asserted by the agpl_oracle A/B test).
+// A pattern is a sequence of literal text and captures. A capture is `<`,
+// an identifier (`[A-Za-z_][A-Za-z0-9_]*`) and `>`; `<_>` is the unnamed
+// capture, which matches without extracting. A `<` that does not open a
+// capture is literal text, and adjacent literal text forms one run.
 package logpattern
 
 import (
@@ -18,290 +16,290 @@ import (
 	"unicode/utf8"
 )
 
-// Validation errors, matching upstream's exported error values.
+// Validation errors. Their text is the reference's, which clients see in
+// a rejected query's error message.
 var (
 	ErrNoCapture         = errors.New("at least one capture is required")
 	ErrCaptureNotAllowed = errors.New("named captures are not allowed")
 	ErrInvalidExpr       = errors.New("invalid expression")
 )
 
-type node interface {
-	fmt.Stringer
-}
-
-type capture string
-
-func (c capture) String() string  { return "<" + string(c) + ">" }
-func (c capture) Name() string    { return string(c) }
-func (c capture) isUnnamed() bool { return c == "_" }
-
-type literals []byte
-
-func (l literals) String() string { return string(l) }
-
-type expr []node
-
-func (e expr) captures() (out []string) {
-	for _, n := range e {
-		if c, ok := n.(capture); ok && !c.isUnnamed() {
-			out = append(out, c.Name())
-		}
-	}
-	return out
-}
-
-func (e expr) captureCount() int { return len(e.captures()) }
-
-// hasCapture reports whether the pattern carries at least one NAMED
-// capture. Upstream treats a pattern with only unnamed `<_>` captures as
-// having no captures (captures() excludes unnamed), so `| pattern "<_>"`
-// is rejected by New.
-func (e expr) hasCapture() bool { return e.captureCount() != 0 }
-
-func (e expr) validate() error {
-	if !e.hasCapture() {
-		return ErrNoCapture
-	}
-	if err := e.validateNoConsecutiveCaptures(); err != nil {
-		return err
-	}
-	uniq := map[string]struct{}{}
-	for _, c := range e.captures() {
-		if _, ok := uniq[c]; ok {
-			return fmt.Errorf("duplicate capture name (%s): %w", c, ErrInvalidExpr)
-		}
-		uniq[c] = struct{}{}
-	}
-	return nil
-}
-
-func (e expr) validateNoConsecutiveCaptures() error {
-	for i, n := range e {
-		if i+1 >= len(e) {
-			break
-		}
-		if _, ok := n.(capture); ok {
-			if next, ok := e[i+1].(capture); ok {
-				return fmt.Errorf("found consecutive capture '%s': %w", n.String()+next.String(), ErrInvalidExpr)
-			}
-		}
-	}
-	return nil
-}
-
-func (e expr) validateNoNamedCaptures() error {
-	for _, n := range e {
-		if c, ok := n.(capture); ok && !c.isUnnamed() {
-			return fmt.Errorf("%w: found '%s'", ErrCaptureNotAllowed, n.String())
-		}
-	}
-	return nil
-}
-
-// errEmptyPattern mirrors upstream's grammar rejecting an empty token
-// stream (its `expr` production requires at least one node).
+// errEmptyPattern rejects a pattern with no text at all.
 var errEmptyPattern = errors.New("syntax error: empty pattern")
 
-// parse tokenises the pattern into an alternating sequence of literal
-// runs and captures. It errors only on empty input (zero nodes), matching
-// upstream's grammar; otherwise validation is the caller's job.
-func parse(input []byte) (expr, error) {
-	var nodes []node
-	var run []rune
-	flush := func() {
-		if len(run) == 0 {
-			return
-		}
-		nodes = append(nodes, runesToLiterals(run))
-		run = run[:0]
+// unnamedCapture is the capture name that matches without extracting.
+const unnamedCapture = "_"
+
+// part is one element of a scanned pattern: a capture when name is set,
+// otherwise a run of literal text.
+type part struct {
+	name string
+	text []byte
+}
+
+func (p part) isCapture() bool { return p.name != "" }
+
+// extracts reports whether the part is a capture whose value is returned.
+func (p part) extracts() bool { return p.isCapture() && p.name != unnamedCapture }
+
+// source renders the part as it is written in a pattern.
+func (p part) source() string {
+	if p.isCapture() {
+		return "<" + p.name + ">"
 	}
-	for i := 0; i < len(input); {
-		if input[i] == '<' {
-			if name, consumed, ok := matchCapture(input[i:]); ok {
-				flush()
-				nodes = append(nodes, capture(name))
-				i += consumed
-				continue
-			}
+	return string(p.text)
+}
+
+// scan splits a pattern into literal runs and captures, in order. A byte
+// that is not valid UTF-8 becomes U+FFFD in its literal run. Only an empty
+// pattern is an error; every other rule is checked by the callers.
+func scan(src []byte) ([]part, error) {
+	var parts []part
+	var run []byte
+	endRun := func() {
+		if len(run) > 0 {
+			parts = append(parts, part{text: run})
+			run = nil
 		}
-		r, size := utf8.DecodeRune(input[i:])
-		run = append(run, r)
-		i += size
 	}
-	flush()
-	if len(nodes) == 0 {
+	for len(src) > 0 {
+		if name, width := captureAt(src); width > 0 {
+			endRun()
+			parts = append(parts, part{name: name})
+			src = src[width:]
+			continue
+		}
+		r, size := utf8.DecodeRune(src)
+		run = utf8.AppendRune(run, r)
+		src = src[size:]
+	}
+	endRun()
+	if len(parts) == 0 {
 		return nil, errEmptyPattern
 	}
-	return expr(nodes), nil
+	return parts, nil
 }
 
-// matchCapture reports whether s (which starts with '<') opens a valid
-// `<identifier>` capture, returning the inner name and the number of
-// bytes consumed (through the closing '>').
-func matchCapture(s []byte) (name string, consumed int, ok bool) {
-	if len(s) < 2 || !isIdentStart(s[1]) {
-		return "", 0, false
+// captureAt returns the name of the capture src opens and the number of
+// bytes it spans, or a zero width when src does not open one.
+func captureAt(src []byte) (string, int) {
+	const shortestCapture = len("<a>")
+	if len(src) < shortestCapture || src[0] != '<' || !isNameStart(src[1]) {
+		return "", 0
 	}
-	j := 2
-	for j < len(s) && isIdentCont(s[j]) {
-		j++
+	closer := 2
+	for closer < len(src) && isNamePart(src[closer]) {
+		closer++
 	}
-	if j < len(s) && s[j] == '>' {
-		return string(s[1:j]), j + 1, true
+	if closer == len(src) || src[closer] != '>' {
+		return "", 0
 	}
-	return "", 0, false
+	return string(src[1:closer]), closer + 1
 }
 
-func isIdentStart(b byte) bool {
-	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_'
+func isNameStart(b byte) bool {
+	return b == '_' || ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z')
 }
 
-func isIdentCont(b byte) bool {
-	return isIdentStart(b) || (b >= '0' && b <= '9')
-}
+func isNamePart(b byte) bool { return isNameStart(b) || ('0' <= b && b <= '9') }
 
-// runesToLiterals re-encodes a rune run to its byte form, matching
-// upstream (invalid bytes decode to utf8.RuneError, which re-encodes to
-// the replacement character).
-func runesToLiterals(rs []rune) literals {
-	res := make([]byte, len(rs)*utf8.UTFMax)
-	count := 0
-	for _, r := range rs {
-		count += utf8.EncodeRune(res[count:], r)
+// rejectAdjacentCaptures fails on the first two captures with no literal
+// text between them: nothing would decide where one ends.
+func rejectAdjacentCaptures(parts []part) error {
+	for i := 1; i < len(parts); i++ {
+		if parts[i-1].isCapture() && parts[i].isCapture() {
+			pair := parts[i-1].source() + parts[i].source()
+			return fmt.Errorf("found consecutive capture '%s': %w", pair, ErrInvalidExpr)
+		}
 	}
-	return res[:count]
+	return nil
 }
 
-// Matcher is a compiled pattern. It exposes the capture names and runs
-// the line-extraction the `| pattern` stage needs.
+// extractedNames lists the names of the extracting captures, in order.
+func extractedNames(parts []part) []string {
+	var names []string
+	for _, p := range parts {
+		if p.extracts() {
+			names = append(names, p.name)
+		}
+	}
+	return names
+}
+
+// rejectRepeatedName fails on the first name that occurs twice.
+func rejectRepeatedName(names []string) error {
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		if seen[n] {
+			return fmt.Errorf("duplicate capture name (%s): %w", n, ErrInvalidExpr)
+		}
+		seen[n] = true
+	}
+	return nil
+}
+
+// hole is a capture together with the literal text that ends it. until is
+// empty for a capture that ends the pattern.
+type hole struct {
+	name  string
+	until []byte
+}
+
+// Matcher is a compiled pattern: an optional leading literal, then
+// captures, each followed by the literal that ends it.
 type Matcher struct {
-	e        expr
-	captures [][]byte
-	names    []string
+	lead  []byte
+	holes []hole
+	names []string
+	// out is the reusable result buffer for Matches, sized to names.
+	out [][]byte
 }
 
-// New compiles a `| pattern` expression. It requires at least one
-// capture, rejects consecutive captures, and rejects duplicate names.
+// compile builds the matcher of a pattern that has no adjacent captures.
+func compile(parts []part) *Matcher {
+	m := &Matcher{}
+	if len(parts) > 0 && !parts[0].isCapture() {
+		m.lead = parts[0].text
+		parts = parts[1:]
+	}
+	for i := 0; i < len(parts); i += 2 {
+		h := hole{name: parts[i].name}
+		if i+1 < len(parts) {
+			h.until = parts[i+1].text
+		}
+		m.holes = append(m.holes, h)
+	}
+	return m
+}
+
+func (m *Matcher) empty() bool { return len(m.lead) == 0 && len(m.holes) == 0 }
+
+// New compiles a `| pattern` expression. It requires at least one named
+// capture, and rejects adjacent captures and a repeated name.
 func New(in string) (*Matcher, error) {
-	e, err := parse([]byte(in))
+	parts, err := scan([]byte(in))
 	if err != nil {
 		return nil, err
 	}
-	if err := e.validate(); err != nil {
+	names := extractedNames(parts)
+	if len(names) == 0 {
+		return nil, ErrNoCapture
+	}
+	if err := rejectAdjacentCaptures(parts); err != nil {
 		return nil, err
 	}
-	return &Matcher{
-		e:        e,
-		captures: make([][]byte, 0, e.captureCount()),
-		names:    e.captures(),
-	}, nil
+	if err := rejectRepeatedName(names); err != nil {
+		return nil, err
+	}
+	m := compile(parts)
+	m.names = names
+	m.out = make([][]byte, 0, len(names))
+	return m, nil
 }
 
-// ParseLineFilter compiles a `|>` / `!>` line-filter pattern: captures
-// may not be consecutive and may only be the unnamed `<_>`.
+// ParseLineFilter compiles a `|>` / `!>` line-filter pattern. The empty
+// pattern is a valid filter; otherwise captures may not be adjacent and
+// may only be the unnamed `<_>`.
 func ParseLineFilter(in []byte) (*Matcher, error) {
 	if len(in) == 0 {
-		return new(Matcher), nil
+		return &Matcher{}, nil
 	}
-	e, err := parse(in)
+	parts, err := scan(in)
 	if err != nil {
 		return nil, err
 	}
-	if err := e.validateNoConsecutiveCaptures(); err != nil {
+	if err := rejectAdjacentCaptures(parts); err != nil {
 		return nil, err
 	}
-	if err := e.validateNoNamedCaptures(); err != nil {
-		return nil, err
+	for _, p := range parts {
+		if p.extracts() {
+			return nil, fmt.Errorf("%w: found '%s'", ErrCaptureNotAllowed, p.source())
+		}
 	}
-	return &Matcher{e: e}, nil
+	return compile(parts), nil
 }
 
 // ParseLiterals returns the pattern's literal runs in order.
 func ParseLiterals(in string) ([][]byte, error) {
-	e, err := parse([]byte(in))
+	parts, err := scan([]byte(in))
 	if err != nil {
 		return nil, err
 	}
-	lit := make([][]byte, 0, len(e))
-	for _, n := range e {
-		if l, ok := n.(literals); ok {
-			lit = append(lit, l)
+	runs := make([][]byte, 0, len(parts))
+	for _, p := range parts {
+		if !p.isCapture() {
+			runs = append(runs, p.text)
 		}
 	}
-	return lit, nil
+	return runs, nil
 }
 
 // Names returns the named captures, in order.
 func (m *Matcher) Names() []string { return m.names }
 
-// Matches extracts the named-capture values from in, or nil if the
-// pattern cannot be anchored. The returned slice is invalidated by the
-// next call.
-func (m *Matcher) Matches(in []byte) [][]byte {
-	if len(in) == 0 || len(m.e) == 0 {
+// Matches returns the value of each named capture in line, or nil when the
+// line is empty, the pattern has no capture, or the line does not start
+// with the pattern's leading literal. Each capture extends to the first
+// occurrence of the literal after it; when that literal is absent, or the
+// capture ends the pattern, it takes the rest of the line and matching
+// stops. The returned slice is reused by the next call.
+func (m *Matcher) Matches(line []byte) [][]byte {
+	if len(line) == 0 || m.empty() {
 		return nil
 	}
-	captures := m.captures[:0]
-	e := m.e
-	if ls, ok := e[0].(literals); ok {
-		if bytes.Index(in, ls) != 0 {
-			return nil
-		}
-		in = in[len(ls):]
-		e = e[1:]
-	}
-	if len(e) == 0 {
+	rest, ok := bytes.CutPrefix(line, m.lead)
+	if !ok || len(m.holes) == 0 {
 		return nil
 	}
-	for len(e) != 0 {
-		if len(e) == 1 { // ending on a capture
-			if !e[0].(capture).isUnnamed() {
-				captures = append(captures, in)
-			}
-			return captures
+	out := m.out[:0]
+	for _, h := range m.holes {
+		value, after, closed := cutAtLiteral(rest, h.until)
+		if h.name != unnamedCapture {
+			out = append(out, value)
 		}
-		capt := e[0].(capture)
-		ls := e[1].(literals)
-		e = e[2:]
-		i := bytes.Index(in, ls)
-		if i == -1 {
-			if !capt.isUnnamed() {
-				captures = append(captures, in)
-			}
-			return captures
+		if !closed {
+			break
 		}
-		if capt.isUnnamed() {
-			in = in[len(ls)+i:]
-			continue
-		}
-		captures = append(captures, in[:i])
-		in = in[len(ls)+i:]
+		rest = after
 	}
-	return captures
+	return out
 }
 
-// Test reports whether in matches the pattern, with the greedy,
-// first-occurrence, no-empty-capture semantics of upstream's filter form.
-func (m *Matcher) Test(in []byte) bool {
-	if len(in) == 0 || len(m.e) == 0 {
-		return len(in) == 0 && len(m.e) == 0
+// cutAtLiteral splits s around the first occurrence of lit. closed is false
+// when lit is empty or absent, in which case value is all of s.
+func cutAtLiteral(s, lit []byte) (value, after []byte, closed bool) {
+	if len(lit) == 0 {
+		return s, nil, false
 	}
-	var off int
-	for i := 0; i < len(m.e); i++ {
-		lit, ok := m.e[i].(literals)
-		if !ok {
-			continue
-		}
-		j := bytes.Index(in[off:], lit)
-		if j == -1 {
+	return bytes.Cut(s, lit)
+}
+
+// Test reports whether line matches the pattern as a line filter. The
+// leading literal may occur anywhere; every capture must match at least
+// one byte, up to the first occurrence of the literal after it; and the
+// line must end where the pattern does. The empty pattern matches only
+// the empty line.
+func (m *Matcher) Test(line []byte) bool {
+	if len(line) == 0 || m.empty() {
+		return len(line) == 0 && m.empty()
+	}
+	pos := 0
+	if len(m.lead) > 0 {
+		at := bytes.Index(line, m.lead)
+		if at < 0 {
 			return false
 		}
-		if i != 0 && j == 0 {
+		pos = at + len(m.lead)
+	}
+	for _, h := range m.holes {
+		if len(h.until) == 0 {
+			return pos < len(line)
+		}
+		at := bytes.Index(line[pos:], h.until)
+		if at <= 0 {
 			return false
 		}
-		off += j + len(lit)
+		pos += at + len(h.until)
 	}
-	_, reqRem := m.e[len(m.e)-1].(capture)
-	hasRem := off != len(in)
-	return reqRem == hasRem
+	return pos == len(line)
 }
