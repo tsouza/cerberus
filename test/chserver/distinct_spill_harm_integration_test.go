@@ -5,6 +5,7 @@ package chserver
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -116,9 +117,7 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 			run := func(ctx context.Context, memCap int64) (int, string) {
 				client := s.client(t, adminUser, adminPassword, chclient.Config{MaxQueryMemoryBytes: memCap})
 				params := url.Values{}
-				for k, v := range shape.params {
-					params[k] = v
-				}
+				maps.Copy(params, shape.params)
 				return runTempoProbeOn(ctx, t, client, rules, traces, shape.path, params)
 			}
 
