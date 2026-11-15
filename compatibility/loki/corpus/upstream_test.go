@@ -124,8 +124,8 @@ func TestSchema_MatchesTheLoader(t *testing.T) {
 	def := decode(schema.Defs["definition"])
 	checkKeys := func(what string, props map[string]json.RawMessage, ty reflect.Type) {
 		var want []string
-		for i := range ty.NumField() {
-			name, _, _ := strings.Cut(ty.Field(i).Tag.Get("yaml"), ",")
+		for field := range ty.Fields() {
+			name, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
 			if name != "-" {
 				want = append(want, name)
 			}

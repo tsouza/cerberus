@@ -55,11 +55,11 @@ func TestMetadata_ModelsEveryKeyTheResolverReads(t *testing.T) {
 	}
 	modelled := map[string]bool{}
 	ty := reflect.TypeFor[Metadata]()
-	for i := range ty.NumField() {
-		name, _, _ := strings.Cut(ty.Field(i).Tag.Get("json"), ",")
+	for field := range ty.Fields() {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
 		modelled[name] = true
 		if _, ok := doc[name]; !ok {
-			t.Errorf("Metadata.%s reads key %q, which the committed file does not carry", ty.Field(i).Name, name)
+			t.Errorf("Metadata.%s reads key %q, which the committed file does not carry", field.Name, name)
 		}
 	}
 	unread := []string{"_comment", "statistics"}

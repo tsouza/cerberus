@@ -74,15 +74,15 @@ func TestHandAuthoredLokiMetadataOutlivesTheMarshaller(t *testing.T) {
 	if ty.NumField() == 0 {
 		t.Fatal("corpus.Metadata declares no fields, so this test proves nothing")
 	}
-	for i := range ty.NumField() {
-		name, _, _ := strings.Cut(ty.Field(i).Tag.Get("json"), ",")
+	for field := range ty.Fields() {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
 		if name == handAuthoredProvenanceKey {
 			t.Fatalf("corpus.Metadata.%s now models %q.\n"+
 				"That makes the file machine-writable, which contradicts the\n"+
 				"hand-authored record for %s in .gitattributes. Reconcile the two:\n"+
 				"either revert the struct change, or reclassify the file as\n"+
 				"generated and give it a regeneration command.",
-				ty.Field(i).Name, handAuthoredProvenanceKey, lokiDatasetMetadataPath)
+				field.Name, handAuthoredProvenanceKey, lokiDatasetMetadataPath)
 		}
 	}
 }

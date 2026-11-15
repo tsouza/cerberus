@@ -36,7 +36,7 @@ func TestNoTrackedFileCarriesTheAGPLLicenceText(t *testing.T) {
 		t.Fatalf("git grep: %v", err)
 	}
 	var carriers []string
-	for _, file := range strings.Fields(string(out)) {
+	for file := range strings.FieldsSeq(string(out)) {
 		if !slices.Contains(agplTitleReaders, file) {
 			carriers = append(carriers, file)
 		}
