@@ -81,15 +81,17 @@ func Lower(ctx context.Context, expr *traceql.RootExpr, s schema.Traces) (chplan
 	}
 	// RECURSIVE-ARM stamping is UNIVERSAL — search AND metrics. The
 	// EMITTER-SYNTHETIC recursive spans scans (the nested-set numbering CTE on
-	// NestedSetAnnotate, the structural-closure step arm on StructuralJoin) scan
-	// the physical spans table directly inside a WITH RECURSIVE, BELOW where the
-	// metrics RangeWindow wrap can reach. So a metrics pipeline over a structural
-	// / nested-set source (`{ } >> { } | rate()`,
-	// `{ nestedSetParent<0 } | by(nestedSetParent) | rate()`) would otherwise emit
-	// a windowless recursive arm that reads full retention behind the inert
-	// `TraceId IN (<seed>)`. The stamp needs only a non-zero [start,end] + tsCol,
-	// independent of the response trace limit, so it runs for every plan; a zero
-	// window no-ops, keeping non-windowed callers byte-identical.
+	// NestedSetAnnotate, the structural closure's anchor and step arms on
+	// StructuralJoin) scan the physical spans table directly inside a WITH
+	// RECURSIVE, where no leaf predicate reaches. The stamp arms their window
+	// with the request window; on the metrics path the emitter then sets it to
+	// the span the RangeWindow reads (chplan.BoundMetricsPerTraceSubqueries), so
+	// a metrics pipeline over a structural / nested-set source
+	// (`{ } >> { } | rate()`) neither reads full retention behind the inert
+	// `TraceId IN (<seed>)` nor misses a parent that precedes start. The stamp
+	// needs only a non-zero [start,end] + tsCol, independent of the response
+	// trace limit, so it runs for every plan; a zero window no-ops, keeping
+	// non-windowed callers byte-identical.
 	plan = stampRecursiveScanWindow(plan, start, end, s)
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil

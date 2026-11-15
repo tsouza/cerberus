@@ -614,7 +614,7 @@ func structuralDirectOnFrag(j *chplan.StructuralJoin, rel Frag) Frag {
 // working trace set (every c.TraceId originates in the anchor seed), so the IN
 // was redundant with the join. The step scan is instead bounded by the
 // stamped request window (a direct `Timestamp` partition-prune predicate; see
-// stampRecursiveScanWindow) and, on the two-phase phase-B path, by the top-N
+// chplan.StampRecursiveScanWindow) and, on the two-phase phase-B path, by the top-N
 // trace-id literal set (TraceIDRestriction). The ANCHOR arm takes the same
 // stamped window (structuralAnchorWindowFrags) — it is a CTE arm too, so nothing
 // outside the closure prunes its seed scan — plus, where the plan sets them, the

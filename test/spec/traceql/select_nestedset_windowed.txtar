@@ -1,7 +1,7 @@
 GAP-3 (#1109): a select(nestedSet*) compound search windows the row-source
 leaves (under NestedSetAnnotate.Input) AND the nested-set numbering CTE
 (_cerberus_ns_paths). The CTE's anchor/step scans are emitter-synthetic, so the
-leaf-window pass cannot reach them; windowRecursiveScans stamps them directly,
+leaf-window pass cannot reach them; StampRecursiveScanWindow stamps them directly,
 landing a bare `Timestamp >= ... AND <= ...` conjunct on both the anchor
 (`ParentSpanId = ''`) and the recursive step scan of the physical `otel_traces`.
 That Timestamp predicate is what prunes the toDate(Timestamp) partitions — the

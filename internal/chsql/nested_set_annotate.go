@@ -274,8 +274,10 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 	// ClickHouse partition-prunes them — the `TraceId IN (scope)` membership
 	// alone never prunes the toDate(Timestamp) partitions, so without these the
 	// walk reads full retention to satisfy the IN. Omitted (no-op) when the node
-	// was not window-stamped (Window* / TimestampColumn unset on the
-	// metrics / spec / unbounded paths), keeping that output byte-identical.
+	// was not window-stamped (Window* / TimestampColumn unset on the spec and
+	// unbounded paths), keeping that output byte-identical. On a metrics path
+	// the window is the RangeWindow's input span
+	// (chplan.BoundMetricsPerTraceSubqueries).
 	// On the windowed search path the numbering walk traverses only [start,end]
 	// spans: a trace whose intermediate spans straddle the window edge degrades
 	// to a partial numbering, the same residual approximation boundedRootScopeFrag
