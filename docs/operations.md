@@ -572,10 +572,12 @@ and refused from 21. The calibration and its measurements are recorded with the
 constants in `internal/promql/classic_bucket_window_bound.go`.
 
 Both window ceilings and the bucket-merge ceiling are calibrated on ClickHouse
-running each statement on two threads. Cerberus stamps `max_threads=2` on
-every statement that carries one of their checks, so the ceilings hold on a
-server whose own `max_threads` is higher; those statements read with two
-threads whatever the server's core count.
+running each statement on two threads. Every statement that carries one of
+their checks runs with `max_threads=2`, whatever the server's own
+`max_threads` or core count. A profile that sets `max_threads` to 1 is raised
+to 2 on these statements, and a settings constraint whose maximum for
+`max_threads` is below 2 refuses them with code 452
+(`SETTING_CONSTRAINT_VIOLATION`).
 
 ### Prometheus resource-attribute labels
 

@@ -36,7 +36,7 @@ const ClassicBucketWindowSeriesBudgetMessage = "classic-histogram window exceeds
 
 // ClassicBucketGuardMaxThreads is the ClickHouse thread count the
 // classic-histogram memory ceilings are calibrated at: the bucket-merge
-// ceiling and the two per-series window ceilings, each measured on a server
+// ceiling and the two window ceilings, each measured on a server
 // running the statement on two threads. A statement carrying one of their
 // checks ([IsClassicBucketBudgetMessage]) runs on at most this many threads,
 // because the engine stamps `max_threads` to it (internal/engine,

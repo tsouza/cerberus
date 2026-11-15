@@ -96,8 +96,8 @@ func TestSentinels_HistogramShapesWantAdaptiveAggregatorOff(t *testing.T) {
 
 // TestSentinels_ClassicHistogramShapesWantTwoThreads pins which sentinels
 // require the max_threads=2 stamp the classic-histogram memory ceilings run
-// under: the classic-histogram quantile, on every line it runs on, and no
-// other sentinel.
+// under: the classic-histogram quantile, on each line below (the stamp
+// carries no version floor), and no other sentinel.
 func TestSentinels_ClassicHistogramShapesWantTwoThreads(t *testing.T) {
 	want := map[string]bool{
 		"classic_histogram_quantile_by_route": true,

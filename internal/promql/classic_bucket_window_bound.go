@@ -146,15 +146,16 @@ import (
 //	58,000 × 20        715         719        -         720
 //	360 × 2,950        702         687        -         681
 //
-// The peaks above two threads are uneven from run to run, but they reach
-// the cap, while the same queries on two threads stay where the
-// calibration put them. A range query merging 20,000 × 14 disjoint series
-// over two steps goes from 701 MiB on two threads to 899 MiB on eight, so
-// the bucket-merge ceiling depends on the thread count as well. A ceiling
-// sized on two threads therefore holds only on two threads, and the engine
-// stamps max_threads = chplan.ClassicBucketGuardMaxThreads on every
-// statement that carries one of these checks, whatever the server's own
-// max_threads.
+// Shapes dominated by the query-wide stage (58,000 × 20, 20,000 × 28,
+// 360 × 2,950) stay flat. Shapes near the per-series ceiling peak higher
+// above two threads, unevenly from run to run, and 185 × 2,950 runs out of
+// the cap on sixteen; on two threads every one stays where the calibration
+// put it. A range query merging 20,000 × 14 disjoint series over two steps
+// goes from 701 MiB on two threads to 899 MiB on eight, so the bucket-merge
+// peak grows with the thread count too. Above two threads the peaks are
+// not bounded by the calibration, so the engine stamps max_threads =
+// chplan.ClassicBucketGuardMaxThreads on every statement that carries one
+// of these checks, whatever the server's own max_threads.
 const (
 	// classicBucketWindowSeriesBytes is the measured cost of one series the
 	// stage groups, independent of its width.

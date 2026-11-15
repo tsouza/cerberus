@@ -311,6 +311,29 @@ take down a deployment over a variable that only tuned a ceiling, so cerberus
 starts, applies the new variable or the default, and warns once at startup so
 the stale variable is visible.
 
+## Why classic-histogram statements run on two threads
+
+The classic-histogram bucket-merge ceiling and the two window ceilings are
+sized from peaks measured on ClickHouse containers of two CPUs, so every
+calibration statement ran on two threads. A server sizes `max_threads` from
+its own cores, and these statements' peaks are not bounded above two threads.
+Shapes near the per-series window ceiling peak higher, and unevenly, on more
+threads: 185 series of 2,950 samples peak at 738 MiB on two threads and run out
+of the 1 GiB cap on sixteen. A range query merging 20,000 × 14 disjoint series
+goes from 701 MiB on two threads to 899 MiB on eight. Shapes dominated by the
+query-wide stage stay flat. The measurement table is with the constants in
+`internal/promql/classic_bucket_window_bound.go`.
+
+Pinning the threads to the calibration was chosen over scaling each ceiling by
+the thread count. The growth is uneven from shape to shape, so a per-thread
+term would need its own calibration at every thread count a server can report,
+and TraceQL `compare()` already bounds its threads the same way.
+
+The cost is wall-clock on large statements. On a six-CPU 26.8 container, an
+instant `sum by (le) (rate(...[5m]))` quantile over 2,000 series of 20 samples
+answers in 1.6–2.1 s on six threads and 1.9–2.4 s on two. Over 20,000 series
+it answers in 6.5–6.8 s on six threads and 8.3–9.0 s on two.
+
 ## The Distributed error taxonomy's third named code
 
 **A note on the issue's own third named code.** The issue's Problem

@@ -554,8 +554,7 @@ func applyCompareMemoryBound(ctx context.Context, f planShapeFacts, maxMemory in
 // applyClassicBucketThreadBound stamps max_threads =
 // chplan.ClassicBucketGuardMaxThreads on a plan carrying a classic-histogram
 // memory check (f.classicBucketGuard): the bucket-merge ceiling or the
-// per-series window ceilings of internal/promql's classic-histogram
-// lowerings. Every plain query keeps the server's own read parallelism and
+// two window ceilings of internal/promql's classic-histogram lowerings. Every plain query keeps the server's own read parallelism and
 // is byte-unchanged.
 //
 // Those ceilings are sized from peaks measured on a server running the
