@@ -1366,8 +1366,8 @@ step with the first.
 **Why a settings canary reads the identity in its own statement.** A canary
 the server accepts returns a row, and a row that holds `serverUUID()` names
 the server that accepted the settings however the statement was routed:
-through a connection the balancer re-dialled, through the driver's transport
-retry, or through an HTTP balancer that routes requests one by one. A refusal
+through a connection the balancer re-dialled, or through an HTTP balancer
+that routes requests one by one. A refusal
 is an exception and returns no row, and the query-log union canary's
 statement is the reader's own record selection, so neither can name its
 server that way. Both fall back to the identity read on the same client.
@@ -1399,8 +1399,12 @@ as many of its probes as there are canaries.
 transport retry dials a new connection, which behind a load balancer can
 reach a server other than the one the identity read named, and the retry's
 refusal would be attributed to the wrong server. An unretried failure is an
-unreachable verdict, which decides nothing on its own (see below), so the
-cost is at most one probe without that canary's verdict.
+unreachable verdict. On a server with a remembered verdict it changes nothing
+(see below); on a server with none — every server at boot, since the memory
+starts empty — it keeps the feature off until a later probe reads a verdict,
+as a failed retry would have. The connection is the probe's own, dialled for
+it moments earlier, so the stale pooled connection the transport retry exists
+for is not the case it gives up.
 
 **Why an unreachable verdict keeps the remembered one.** A canary that got no
 verdict carries no evidence about the server: the failure belongs to the
@@ -1428,8 +1432,8 @@ a cluster.
 **Why a remembered verdict in force holds the fast cadence.** A server's
 verdict can keep a feature off as long as the memory holds it, exactly like
 its build can hold the version down. When the verdict in force on a canary is
-one no server the last probe reached holds — read by that probe or remembered
-for it — the fleet is held, so the re-probe
+one no server the last probe ran a canary on holds — read by that probe or
+remembered for it — the fleet is held, so the re-probe
 runs every 10 seconds and the memory sees the replica's verdict change, or
 forgets a replica that left, within the time its retention is priced at. Only
 the verdict in force counts, unlike builds, where every remembered build
@@ -1442,7 +1446,11 @@ the probes that miss it. The remembered verdicts of a reached server count
 because a replica that refuses several canaries gives only one refusal per
 probe — the refusal closes the connection — so a probe that lands on it reads
 one of its refusals and remembers the others; counting only the verdicts read
-would hold the fleet on every probe, including the ones that reach it.
+would hold the fleet on every probe, including the ones that reach it. A server the probe read without running a canary on it — through the
+cluster replica list, or after a failed identity read — does not count, since
+that probe could not have seen its verdict change: counting it would keep a
+deployment that names a cluster on the steady cadence while a replica's
+refusal it cannot re-read stays in force.
 
 ## Audited, not adopted
 

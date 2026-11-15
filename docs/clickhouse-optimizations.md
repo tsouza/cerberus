@@ -873,8 +873,8 @@ that land on the other replicas do not raise it. The defect gates, the
 condition-cache override, the analyzer decision and the capability canary
 verdicts follow the remembered servers the same way. While cerberus remembers
 a build no server the last probe reached runs, or a canary verdict in force
-that no server the last probe reached gave, the [re-probe](#re-probe) runs
-every 10 seconds. A replica
+that no server the last probe ran a canary on holds, the [re-probe](#re-probe)
+runs every 10 seconds. A replica
 that leaves the fleet keeps counting for 40 complete probes per remembered
 server, under seven minutes per server at that cadence, and one that rolls
 forward lifts the version on the first probe that lands on it.
@@ -915,8 +915,10 @@ address, and each verdict is attributed to the server that gave it:
   canary therefore runs another canary first on that replica the next time
   one lands there.
 - A server a probe ran a canary on takes the verdict it gave, except that an
-  **unreachable** verdict leaves the verdict remembered for it in place; a
-  canary the probe did not run on it keeps the verdict remembered for it.
+  **unreachable** verdict leaves the verdict remembered for it in place, and
+  a server read twice in one probe takes a real verdict over an
+  **unreachable** one; a canary the probe did not run on it keeps the verdict
+  remembered for it.
 - The verdict in force for each canary is the most conservative one across
   the remembered servers: **forbidden** if any server refused, else
   **unreachable** if any server's canary failed, else **available**.
@@ -932,8 +934,10 @@ replica turns the feature off, and it stays off while that replica serves:
 probes that land on the other replicas do not turn it back on. The `forbidden`
 verdict clears on the first probe that lands on that replica and gets
 **available**, or once the replica is forgotten. While no server the last
-probe reached holds the verdict in force on a canary — read by that probe or
-remembered for it — the [re-probe](#re-probe) runs every 10 seconds. The boot log reports each
+probe ran a canary on holds the verdict in force on a canary — read by that
+probe or remembered for it — the [re-probe](#re-probe) runs every 10 seconds.
+A server read only through the cluster replica list, or one whose identity
+read failed before any canary, does not count. The boot log reports each
 canary's verdict in force (`server_ts_grid_capability`,
 `server_result_cache_capability`, `server_query_log_union_capability`,
 `server_query_workload_capability`).
@@ -971,8 +975,10 @@ The verdict is tri-state:
   readonly profile); a *definitive* "no". The native family is **dropped to the
   fan-out path**.
 - **unreachable** — the canary got no server verdict (a transport failure); an
-  *inconclusive* result. Native stays off until a later re-probe gets a verdict,
-  matching the version probe's connectivity fallback.
+  *inconclusive* result. On a server with no remembered verdict, native stays
+  off until a later re-probe gets a verdict, matching the version probe's
+  connectivity fallback; a server with a remembered verdict keeps it (see
+  [Capability canaries across servers](#capability-canaries-across-servers)).
 
 A verdict is therefore either **definitive** (`available` permits, `forbidden`
 refuses) or **inconclusive** (`unreachable`, or `unknown` when the probe never
@@ -1056,8 +1062,8 @@ kept.
 Only a genuine transition is acted on. A pass whose resolved set, server
 version and workload verdict all match the current ones swaps nothing and logs
 nothing; it only records on the resolution in force whether it fell back to the
-floor, reached every node, and rests on a remembered build it did not reach,
-which `/readyz` and the re-probe cadence read. The steady state is silent, and
+floor, reached every node, and rests on a remembered build or canary verdict
+it did not reach, which `/readyz` and the re-probe cadence read. The steady state is silent, and
 the log carries one line per real capability change:
 
 ```text

@@ -92,7 +92,7 @@ func NewFleetMemory() *FleetMemory {
 // among equals. A canary the server refuses closes the connection, so a pass
 // that reaches a server runs it only up to its first refusal; ordering by the
 // server's own history runs every canary on it within as many passes that
-// reach it as there are canaries, however a load balancer hands out
+// land on it first as there are canaries, however a load balancer hands out
 // connections. It is a CanaryOrder for ProbeFleet.
 func (m *FleetMemory) CanaryOrder(id string, pending []FleetCanary) []FleetCanary {
 	m.mu.Lock()
@@ -121,6 +121,7 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 	}
 	reached := make(map[string]*rememberedNode, len(pass.Nodes))
 	reachedBuilds := make(map[chopt.Version]bool, len(pass.Nodes))
+	ranCanary := make(map[string]bool, len(pass.Nodes))
 	for _, n := range pass.Nodes {
 		reachedBuilds[n.Version] = true
 		r, dup := reached[n.ID]
@@ -131,7 +132,10 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 			r.version = n.Version
 		}
 		for canary, v := range n.Verdicts {
-			r.verdicts[canary] = r.verdicts[canary].Conservative(v)
+			r.verdicts[canary] = foldReading(r.verdicts, canary, v)
+		}
+		if len(n.Verdicts) > 0 {
+			ranCanary[n.ID] = true
 		}
 	}
 
@@ -189,7 +193,7 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 		}
 	}
 	for canary, v := range fv.Verdicts {
-		fv.Held = fv.Held || !reachedHolds(reached, canary, v)
+		fv.Held = fv.Held || !reachedHolds(reached, ranCanary, canary, v)
 	}
 	slices.SortFunc(fv.Versions, chopt.Version.Compare)
 	return fv
@@ -205,10 +209,32 @@ func (n *rememberedNode) verdictOn(canary string) (chopt.Capability, bool) {
 	return v, ok
 }
 
-// reachedHolds reports whether a server the pass reached holds verdict on
-// canary, read this pass or remembered for it.
-func reachedHolds(reached map[string]*rememberedNode, canary string, verdict chopt.Capability) bool {
-	for _, r := range reached {
+// foldReading folds one reading v of canary on a server into the verdicts the
+// pass has read from it so far. An unreachable reading carries no evidence
+// about the server, so a real verdict read from it wins over it; between real
+// verdicts the more conservative one wins.
+func foldReading(verdicts map[string]chopt.Capability, canary string, v chopt.Capability) chopt.Capability {
+	was, ok := verdicts[canary]
+	switch {
+	case !ok || was == chopt.CapabilityUnreachable:
+		return v
+	case v == chopt.CapabilityUnreachable:
+		return was
+	default:
+		return was.Conservative(v)
+	}
+}
+
+// reachedHolds reports whether a server the pass reached and ran a canary on
+// (ranCanary) holds verdict on canary, read this pass or remembered for it. A
+// server the pass read without running a canary on it — through the cluster
+// arm, or after a failed identity read — cannot show its verdict changing, so
+// it does not count.
+func reachedHolds(reached map[string]*rememberedNode, ranCanary map[string]bool, canary string, verdict chopt.Capability) bool {
+	for id, r := range reached {
+		if !ranCanary[id] {
+			continue
+		}
 		if v, ok := r.verdicts[canary]; ok && v == verdict {
 			return true
 		}

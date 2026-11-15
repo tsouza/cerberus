@@ -60,7 +60,8 @@ const (
 	// server at all (a dial / timeout / breaker-open transport failure, not a
 	// typed answer). Treated conservatively like Forbidden — the native family
 	// stays off until a re-probe reaches a server that answers, matching the
-	// version probe's connectivity fallback.
+	// version probe's connectivity fallback — except where the fleet memory
+	// (chclient.FleetMemory) keeps the verdict it remembers for the server.
 	CapabilityUnreachable
 )
 

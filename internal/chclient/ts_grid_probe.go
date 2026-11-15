@@ -83,9 +83,9 @@ func (c *Client) ProbeTSGridCapability(ctx context.Context) chopt.Capability {
 // setting, so it is Forbidden (the ts-grid canary's constraint 452 / readonly
 // 164 codes are the expected shapes, and any other typed answer is treated
 // the same: the server will not run the setting). Anything else is a
-// transport failure with no server verdict -- Unreachable, the conservative
-// state that leaves the gated feature off until a later re-probe gets a
-// verdict.
+// transport failure with no server verdict -- Unreachable, which keeps the
+// verdict the fleet memory remembers for the server and, when it remembers
+// none, leaves the gated feature off until a later re-probe gets a verdict.
 func classifyCapabilityFromProbeErr(err error) chopt.Capability {
 	if err == nil {
 		return chopt.CapabilityAvailable

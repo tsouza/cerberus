@@ -38,10 +38,10 @@ type FleetVersions struct {
 	Verdicts map[string]chopt.Capability
 	Complete bool
 	// Held reports that Versions holds a build no server the pass reached
-	// runs, or that Verdicts holds a verdict no server the pass reached holds
-	// on that canary, read this pass or remembered for it: a server only an
-	// earlier pass reached, which the memory has not forgotten, gave it. Every decision read off the fleet may then rest
-	// on that server.
+	// runs, or that Verdicts holds a verdict no server the pass ran a canary
+	// on holds on that canary, read this pass or remembered for it: a server
+	// no canary of this pass ran on, which the memory has not forgotten, gave
+	// it. Every decision read off the fleet may then rest on that server.
 	Held bool
 }
 
