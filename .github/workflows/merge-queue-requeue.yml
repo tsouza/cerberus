@@ -8,10 +8,10 @@ name: merge-queue-requeue
 #   (.github/scripts/merge-queue-requeue.mjs).
 # - `requeue-dequeued`: Mergify keeps an entry it dequeued at an unchanged
 #   head out of the queue until it is sent `@mergifyio queue`. The job posts
-#   that command when the `dequeued` label marks an entry that left for an
-#   interrupted check, a bounded number of times per head, and when someone
-#   re-applies the `queue` label to an entry that was taken out of the queue
-#   (.github/scripts/merge-queue-requeue-dequeued.mjs).
+#   that command when Mergify adds `dequeued` or removes `queued` from an
+#   entry that left for an interrupted check, a bounded number of times per
+#   head, and when someone re-applies the `queue` label to an entry that was
+#   taken out of the queue (.github/scripts/merge-queue-requeue-dequeued.mjs).
 #
 # `pull_request_target` gives a token that can write labels, comments and
 # statuses on a pull request from a fork too. Each job checks out the BASE
@@ -25,7 +25,7 @@ name: merge-queue-requeue
 
 on:
   pull_request_target:
-    types: [synchronize, labeled]
+    types: [synchronize, labeled, unlabeled]
 
 permissions: {}
 
@@ -81,7 +81,9 @@ jobs:
 
   requeue-dequeued:
     name: requeue-dequeued
-    if: github.event.action == 'labeled' && (github.event.label.name == 'dequeued' || github.event.label.name == 'queue')
+    if: >-
+      (github.event.action == 'labeled' && (github.event.label.name == 'dequeued' || github.event.label.name == 'queue'))
+      || (github.event.action == 'unlabeled' && github.event.label.name == 'queued')
     permissions:
       contents: read
       pull-requests: write
@@ -116,7 +118,7 @@ jobs:
       - name: Requeue a dequeued entry
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          TRIGGER_LABEL: ${{ github.event.label.name }}
+          TRIGGER: ${{ github.event.action }}:${{ github.event.label.name }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

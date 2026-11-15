@@ -9,10 +9,12 @@ import {
   MAX_INTERRUPTED_REQUEUES_PER_HEAD,
   REQUEUE_AUTHOR,
   REQUEUE_COMMAND,
+  RELABEL_REQUEUE_REASONS,
   REQUEUE_STATUS_CONTEXT,
   STATUS_READ_ATTEMPTS,
   TRIGGER_DEQUEUED,
   TRIGGER_RELABELLED,
+  answeredAfter,
   decide,
   queueStatus,
   requeueAttempts,
@@ -21,12 +23,27 @@ import {
 } from './merge-queue-requeue-dequeued.mjs';
 import { QUEUE_LABEL } from './merge-queue-requeue.mjs';
 
-const dequeued = (code) => ({ state: 'dequeued', dequeue_reason: code ? { code } : undefined });
-const labelledOpen = { open: true, labelled: true };
+const LEFT_AT = '2026-11-13T14:08:21.468433+00:00';
+const dequeued = (code) => ({ state: 'dequeued', left_at: LEFT_AT, dequeue_reason: code ? { code } : undefined });
+const labelledOpen = { open: true, labelled: true, answered: false };
 
-// Every dequeue reason Mergify reports that is a verdict on the pull request
-// or its batch, from the configuration schema's dequeue-reason enum.
-const VERDICTS = ['CHECKS_FAILED', 'CHECKS_TIMEOUT', 'BATCH_MAX_FAILURE_RESOLUTION_ATTEMPTS', 'CONFLICT_WITH_BASE_BRANCH'];
+// Every dequeue reason code in the `queue-dequeue-reason` enum of Mergify's
+// configuration schema (https://docs.mergify.com/mergify-configuration-schema.json).
+const DEQUEUE_REASONS = [
+  'NONE', 'PR_MERGED', 'PR_MERGED_INTERMEDIATE_RESULTS_SKIPPED', 'PR_DEQUEUED', 'PR_DEQUEUED_FROM_PARTITION',
+  'PR_AHEAD_DEQUEUED', 'BATCH_AHEAD_FAILED', 'PR_WITH_HIGHER_PRIORITY_QUEUED', 'SCHEDULED_FREEZE_STATUS_CHANGED',
+  'SPECULATIVE_CHECK_NUMBER_REDUCED', 'CHECKS_TIMEOUT', 'CHECKS_FAILED', 'DROPPED_BY_BISECTION_ELIMINATION',
+  'QUEUE_RULE_MISSING', 'BASE_BRANCH_MISSING', 'BASE_BRANCH_CHANGED', 'PR_UNEXPECTEDLY_FAILED_TO_MERGE',
+  'BATCH_MAX_FAILURE_RESOLUTION_ATTEMPTS', 'PR_CHECKS_STOPPED_BECAUSE_MERGE_QUEUE_PAUSE', 'CONFLICT_WITH_BASE_BRANCH',
+  'CONFLICT_WITH_PULL_AHEAD', 'BRANCH_UPDATE_FAILED', 'DRAFT_PULL_REQUEST_CHANGED', 'BATCH_PULL_REQUEST_CLOSED',
+  'PULL_REQUEST_UPDATED', 'MERGE_QUEUE_RESET', 'INCOMPATIBILITY_WITH_BRANCH_PROTECTIONS', 'PR_MANUALLY_MERGED',
+  'DRAFT_PULL_REQUEST_CREATION_FAILED', 'DRAFT_PULL_REQUEST_CREATION_BRANCH_NOT_INDEXED', 'CONFIGURATION_CHANGED',
+  'UNPROCESSABLE_PULL_REQUEST', 'PR_MANUALLY_DEQUEUED', 'STACK_PREDECESSOR_DEQUEUED', 'INTERMEDIATE_RESULTS_SKIPPED',
+  'CHECKS_RETRIED', 'SCHEDULE_BLOCKED_AHEAD_YIELDED', 'BASE_REF_ALIGNMENT_TIMEOUT',
+  'GITHUB_STACKED_PULL_REQUEST_MERGE_UNSUPPORTED', 'BATCH_SCOPES_CHANGED', 'BATCH_AHEAD_BRANCH_EDITED',
+  'CHECKS_INTERRUPTED', 'GITHUB_WORKFLOWS_PERMISSION_MISSING', 'BATCH_REBUILT', 'BATCH_AHEAD_REBUILT',
+  'GITHUB_REBASE_MERGE_REFUSED',
+];
 
 test('an entry dequeued for an interrupted check is requeued until the per-head bound', () => {
   for (let attempts = 0; attempts < MAX_INTERRUPTED_REQUEUES_PER_HEAD; attempts++) {
@@ -43,8 +60,9 @@ test('an entry dequeued for an interrupted check is requeued until the per-head 
   assert.equal(spent.requeue, false, 'the bound is reached; a person has to look');
 });
 
-test('an entry dequeued for a failed check is never requeued, whatever the attempt count', () => {
-  for (const code of [...VERDICTS, 'PR_DEQUEUED', undefined]) {
+test('the dequeue path requeues no reason but an interruption, whatever the attempt count', () => {
+  assert.ok(DEQUEUE_REASONS.includes('CHECKS_FAILED') && DEQUEUE_REASONS.includes(CHECKS_INTERRUPTED));
+  for (const code of [...DEQUEUE_REASONS.filter((c) => c !== CHECKS_INTERRUPTED), undefined]) {
     for (const attempts of [0, 1, MAX_INTERRUPTED_REQUEUES_PER_HEAD]) {
       const d = decide({ trigger: TRIGGER_DEQUEUED, ...labelledOpen, status: dequeued(code), attempts });
       assert.equal(d.requeue, false, `${code} at ${attempts} attempts must stay out: ${d.why}`);
@@ -65,8 +83,10 @@ test('a re-applied queue label requeues an entry taken out of the queue or inter
   }
 });
 
-test('a re-applied queue label does not requeue a failed check', () => {
-  for (const code of VERDICTS) {
+test('a re-applied queue label requeues no reason outside its set, a failed check above all', () => {
+  const outside = DEQUEUE_REASONS.filter((c) => !RELABEL_REQUEUE_REASONS.has(c));
+  assert.ok(outside.includes('CHECKS_FAILED'));
+  for (const code of outside) {
     const d = decide({ trigger: TRIGGER_RELABELLED, ...labelledOpen, status: dequeued(code), attempts: 0 });
     assert.equal(d.requeue, false, `${code}: ${d.why}`);
   }
@@ -86,10 +106,39 @@ test('an entry that is not dequeued, unlabelled, or closed is left alone', () =>
   }
 });
 
-test('the trigger comes from the label that was added', () => {
-  assert.equal(triggerFor('dequeued'), TRIGGER_DEQUEUED);
-  assert.equal(triggerFor(QUEUE_LABEL), TRIGGER_RELABELLED);
-  assert.throws(() => triggerFor('queued'), /neither/);
+test('a dequeue already answered by a queue command is not answered again', () => {
+  for (const trigger of [TRIGGER_DEQUEUED, TRIGGER_RELABELLED]) {
+    const d = decide({ trigger, ...labelledOpen, answered: true, status: dequeued(CHECKS_INTERRUPTED), attempts: 0 });
+    assert.equal(d.requeue, false, `${trigger}: ${d.why}`);
+  }
+});
+
+test('the trigger comes from the label event', () => {
+  assert.equal(triggerFor('labeled:dequeued'), TRIGGER_DEQUEUED);
+  assert.equal(triggerFor('unlabeled:queued'), TRIGGER_DEQUEUED);
+  assert.equal(triggerFor(`labeled:${QUEUE_LABEL}`), TRIGGER_RELABELLED);
+  for (const other of ['labeled:queued', 'unlabeled:dequeued', `unlabeled:${QUEUE_LABEL}`, 'labeled:bug']) {
+    assert.throws(() => triggerFor(other), /is not one of/, other);
+  }
+});
+
+const botCommand = (createdAt, body = REQUEUE_COMMAND, user = { login: REQUEUE_AUTHOR, type: 'Bot' }) => ({
+  id: 50,
+  user,
+  body,
+  created_at: createdAt,
+});
+
+test('only a queue command from the workflow posted after the dequeue answers it', () => {
+  assert.equal(answeredAfter([botCommand('2026-11-13T14:08:30Z')], LEFT_AT), true);
+  assert.equal(answeredAfter([botCommand('2026-11-13T14:08:00Z')], LEFT_AT), false, 'posted before it left');
+  assert.equal(answeredAfter([botCommand('2026-11-13T14:08:30Z', 'hello')], LEFT_AT), false, 'not the command');
+  assert.equal(
+    answeredAfter([botCommand('2026-11-13T14:08:30Z', REQUEUE_COMMAND, { login: 'tsouza', type: 'User' })], LEFT_AT),
+    false,
+    'a person',
+  );
+  assert.equal(answeredAfter([botCommand('2026-11-13T14:08:30Z')], undefined), false, 'no left_at');
 });
 
 const payloadComment = (id, payload, user = { login: 'mergify[bot]', type: 'Bot' }) => ({
@@ -139,7 +188,7 @@ const API = 'https://api.github.test';
 const REPO = 'tsouza/cerberus';
 const HEAD = 'abc123';
 
-function fakeApi({ labels = [QUEUE_LABEL], state = 'open', statusSequence, priorAttempts = 0 }) {
+function fakeApi({ labels = [QUEUE_LABEL], state = 'open', statusSequence, priorAttempts = 0, extraComments = [] }) {
   const calls = [];
   let commentReads = 0;
   const fetchImpl = async (url, init = {}) => {
@@ -151,7 +200,7 @@ function fakeApi({ labels = [QUEUE_LABEL], state = 'open', statusSequence, prior
     } else if (method === 'GET' && url.startsWith(`${API}/repos/${REPO}/issues/7/comments`)) {
       const s = statusSequence[Math.min(commentReads, statusSequence.length - 1)];
       commentReads++;
-      json = s ? [payloadComment(1, s)] : [];
+      json = [...(s ? [payloadComment(1, s)] : []), ...extraComments];
     } else if (method === 'GET' && url.startsWith(`${API}/repos/${REPO}/commits/${HEAD}/statuses`)) {
       json = Array.from({ length: priorAttempts }, () => ({
         context: REQUEUE_STATUS_CONTEXT,
@@ -225,4 +274,21 @@ test('a failed write fails the run', async () => {
     return fakeApi({ statusSequence: [dequeued(CHECKS_INTERRUPTED)] }).fetchImpl(url, init);
   };
   await assert.rejects(run({ fetchImpl }, TRIGGER_DEQUEUED), /HTTP 403/);
+});
+
+test('a closed or unlabelled pull request produces no write', async () => {
+  for (const live of [{ state: 'closed' }, { labels: [] }]) {
+    const api = fakeApi({ ...live, statusSequence: [dequeued(CHECKS_INTERRUPTED)] });
+    assert.equal((await run(api, TRIGGER_DEQUEUED)).requeue, false, JSON.stringify(live));
+    assert.deepEqual(writes(api), [], JSON.stringify(live));
+  }
+});
+
+test('a second event for a dequeue already answered produces no write', async () => {
+  const api = fakeApi({
+    statusSequence: [dequeued(CHECKS_INTERRUPTED)],
+    extraComments: [botCommand('2026-11-13T14:08:45Z')],
+  });
+  assert.equal((await run(api, TRIGGER_DEQUEUED)).requeue, false);
+  assert.deepEqual(writes(api), []);
 });

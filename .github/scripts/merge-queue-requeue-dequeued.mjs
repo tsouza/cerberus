@@ -8,14 +8,20 @@
 // leaves the entry where it is. So both paths that should requeue an entry at
 // the same head post the command:
 //
-//   - `dequeued` labelled (Mergify just dequeued the entry). The entry is
-//     requeued only when the dequeue reason is CHECKS_INTERRUPTED: a required
-//     check was cancelled before it reported, which says nothing about the
-//     pull request. At most MAX_INTERRUPTED_REQUEUES_PER_HEAD times per head
-//     commit, so a check that is cancelled on every run cannot cycle the queue.
-//     Each attempt is recorded as a commit status (REQUEUE_STATUS_CONTEXT) on
-//     the head commit before the command is posted, and the attempts are
-//     counted from those statuses, so the bound is per head SHA.
+//   - Mergify just dequeued the entry: it added the `dequeued` label, or it
+//     removed the `queued` label. The second event covers a dequeue that comes
+//     while `dequeued` is still on from the previous one (Mergify removes it
+//     about half a minute after a requeue), when adding it again fires no
+//     event. The entry is requeued only when the dequeue reason is
+//     CHECKS_INTERRUPTED: a required check was cancelled before it reported.
+//     The reason is Mergify's own classification; a required check that was
+//     cancelled because something else failed is requeued too, and fails
+//     again on its own run. At most MAX_INTERRUPTED_REQUEUES_PER_HEAD times per
+//     head commit, so a check that is cancelled on every run cannot cycle the
+//     queue. Each attempt is recorded as a commit status
+//     (REQUEUE_STATUS_CONTEXT) on the head commit before the command is
+//     posted, and the attempts are counted from those statuses, so the bound
+//     is per head SHA.
 //   - `queue` labelled (someone re-applied the label to a dequeued entry). The
 //     entry is requeued when it left for an interruption or because it was
 //     taken out of the queue (RELABEL_REQUEUE_REASONS); the bound does not
@@ -25,16 +31,23 @@
 // and every other failure reason are a verdict, and an entry they removed
 // waits for a push or for a person to post the command.
 //
+// One dequeue gets at most one command. Mergify re-adds `dequeued` after a
+// relabel, and one dequeue fires both of the events above, so a dequeue
+// already answered by a command from REQUEUE_AUTHOR posted after its
+// `left_at` is left alone.
+//
 // The queue status is read from the payload block of Mergify's newest status
-// comment on the pull request. Mergify writes that comment before it adds the
-// `dequeued` label, but a status that does not read `dequeued` yet is re-read
-// up to STATUS_READ_ATTEMPTS times before the run gives up.
+// comment on the pull request. Its `left_at` precedes the label change in
+// every dequeue on record, but when the comment itself is rewritten cannot be
+// observed, so on the dequeue path a status that does not read `dequeued` yet
+// is re-read up to STATUS_READ_ATTEMPTS times before the run gives up.
 //
 // Env:
 //   GITHUB_REPOSITORY  REQUIRED. `owner/repo`.
 //   GITHUB_TOKEN       REQUIRED. Needs `pull-requests: write` and `statuses: write`.
-//   PR_NUMBER          REQUIRED. The pull request that was labelled.
-//   TRIGGER_LABEL      REQUIRED. The label that was added: DEQUEUED_LABEL or QUEUE_LABEL.
+//   PR_NUMBER          REQUIRED. The pull request whose label changed.
+//   TRIGGER            REQUIRED. `<action>:<label>` of the event: one of the
+//                      keys of TRIGGERS.
 //   GITHUB_API_URL     API base (runner-provided; default https://api.github.com).
 
 import process from 'node:process';
@@ -49,6 +62,10 @@ import { QUEUE_LABEL } from './merge-queue-requeue.mjs';
 // DEQUEUED_LABEL is the label Mergify adds when an entry leaves the queue
 // (merge_queue.dequeued_label, left at its default in .github/mergify.yml).
 export const DEQUEUED_LABEL = 'dequeued';
+
+// QUEUED_LABEL is the label Mergify keeps on an entry while it is in the queue
+// and removes when it leaves (merge_queue.queued_label, left at its default).
+export const QUEUED_LABEL = 'queued';
 
 // REQUEUE_COMMAND puts the pull request back in the queue at its current head.
 export const REQUEUE_COMMAND = '@mergifyio queue';
@@ -89,15 +106,16 @@ export const STATUS_READ_INTERVAL_MS = 15_000;
 export const TRIGGER_DEQUEUED = 'dequeued';
 export const TRIGGER_RELABELLED = 'relabelled';
 
-const TRIGGERS = new Map([
-  [DEQUEUED_LABEL, TRIGGER_DEQUEUED],
-  [QUEUE_LABEL, TRIGGER_RELABELLED],
+// TRIGGERS maps the `<action>:<label>` of the label event to the path it takes.
+export const TRIGGERS = new Map([
+  [`labeled:${DEQUEUED_LABEL}`, TRIGGER_DEQUEUED],
+  [`unlabeled:${QUEUED_LABEL}`, TRIGGER_DEQUEUED],
+  [`labeled:${QUEUE_LABEL}`, TRIGGER_RELABELLED],
 ]);
 
-// triggerFor maps the label that was added to the path it takes.
-export function triggerFor(label) {
-  const trigger = TRIGGERS.get(label);
-  if (!trigger) throw new Error(`TRIGGER_LABEL ${JSON.stringify(label)} is neither ${DEQUEUED_LABEL} nor ${QUEUE_LABEL}`);
+export function triggerFor(event) {
+  const trigger = TRIGGERS.get(event);
+  if (!trigger) throw new Error(`TRIGGER ${JSON.stringify(event)} is not one of ${[...TRIGGERS.keys()].join(', ')}`);
   return trigger;
 }
 
@@ -120,6 +138,22 @@ export function queueStatus(comments) {
   return null;
 }
 
+// answeredAfter reports whether REQUEUE_AUTHOR posted REQUEUE_COMMAND after
+// `leftAt`, the time the entry left the queue. Without a readable `leftAt` no
+// command can be matched to the dequeue, and the per-head bound is what limits
+// the automatic path.
+export function answeredAfter(comments, leftAt) {
+  const left = Date.parse(leftAt ?? '');
+  if (Number.isNaN(left)) return false;
+  return comments.some(
+    (c) =>
+      c?.user?.login === REQUEUE_AUTHOR &&
+      c?.user?.type === 'Bot' &&
+      (c.body ?? '').trim() === REQUEUE_COMMAND &&
+      Date.parse(c.created_at ?? '') > left,
+  );
+}
+
 // requeueAttempts counts the automatic requeues already made for a head
 // commit, from that commit's statuses.
 export function requeueAttempts(statuses) {
@@ -130,11 +164,14 @@ export function requeueAttempts(statuses) {
 // decide returns { requeue, counted, why }: whether to post REQUEUE_COMMAND,
 // whether the requeue counts against MAX_INTERRUPTED_REQUEUES_PER_HEAD, and
 // the reason, for the run's notice.
-export function decide({ trigger, open, labelled, status, attempts }) {
+export function decide({ trigger, open, labelled, status, answered, attempts }) {
   if (!open) return { requeue: false, counted: false, why: 'the pull request is not open' };
   if (!labelled) return { requeue: false, counted: false, why: `the pull request has no ${QUEUE_LABEL} label` };
   if (status?.state !== STATE_DEQUEUED) {
     return { requeue: false, counted: false, why: `the queue status is ${status?.state ?? 'absent'}, not ${STATE_DEQUEUED}` };
+  }
+  if (answered) {
+    return { requeue: false, counted: false, why: `a ${REQUEUE_COMMAND} was already posted after this dequeue` };
   }
   const reason = status.dequeue_reason?.code ?? 'unknown';
   if (trigger === TRIGGER_DEQUEUED) {
@@ -190,8 +227,9 @@ export async function requeueDequeued({
   const labelled = (pr.labels ?? []).some((l) => l?.name === QUEUE_LABEL);
 
   let status = null;
+  let comments = [];
   for (let attempt = 1; attempt <= STATUS_READ_ATTEMPTS; attempt++) {
-    const comments = await ghPaginate({
+    comments = await ghPaginate({
       url: `${api}/issues/${number}/comments`,
       token,
       what: `read the comments of #${number}`,
@@ -208,7 +246,14 @@ export async function requeueDequeued({
     what: `read the statuses of ${head}`,
     fetchImpl,
   });
-  const decision = decide({ trigger, open, labelled, status, attempts: requeueAttempts(statuses) });
+  const decision = decide({
+    trigger,
+    open,
+    labelled,
+    status,
+    answered: answeredAfter(comments, status?.left_at),
+    attempts: requeueAttempts(statuses),
+  });
   if (!decision.requeue) return decision;
 
   if (decision.counted) {
@@ -234,7 +279,7 @@ async function main() {
     repo: requireEnv('GITHUB_REPOSITORY'),
     number,
     token: requireEnv('GITHUB_TOKEN'),
-    trigger: triggerFor(requireEnv('TRIGGER_LABEL')),
+    trigger: triggerFor(requireEnv('TRIGGER')),
     apiBase: process.env.GITHUB_API_URL || DEFAULT_API_BASE,
   });
   notice(

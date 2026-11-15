@@ -37,6 +37,7 @@ type mergifyConfig struct {
 	MergeQueue struct {
 		MaxParallelChecks *int   `yaml:"max_parallel_checks"`
 		DequeuedLabel     string `yaml:"dequeued_label"`
+		QueuedLabel       string `yaml:"queued_label"`
 	} `yaml:"merge_queue"`
 	CommandsRestrictions map[string]struct {
 		Conditions yaml.Node `yaml:"conditions"`
@@ -153,6 +154,13 @@ func TestNoWorkflowMergesAroundTheQueue(t *testing.T) {
 	}
 }
 
+// requeueWorkflowPath runs the requeue scripts.
+const requeueWorkflowPath = ".github/workflows/merge-queue-requeue.yml"
+
+// requeueDequeuedJob is the job in requeueWorkflowPath that runs
+// requeueDequeuedScript.
+const requeueDequeuedJob = "requeue-dequeued"
+
 // requeueDequeuedScript posts `@mergifyio queue` for an entry dequeued at an
 // unchanged head; the restriction below has to let its account run it.
 const requeueDequeuedScript = ".github/scripts/merge-queue-requeue-dequeued.mjs"
@@ -203,19 +211,53 @@ func TestMergifyAcceptsTheRequeueCommandFromTheWorkflow(t *testing.T) {
 			"could no longer requeue by hand. Got %v", mergifyConfigPath, verb, conditions)
 	}
 
-	label := requeueScriptConst(t, "DEQUEUED_LABEL")
-	if got := cfg.MergeQueue.DequeuedLabel; got != "" && got != label {
-		t.Errorf("%s: merge_queue.dequeued_label is %q, but %s triggers on %q", mergifyConfigPath, got, requeueDequeuedScript, label)
+	for variable, got := range map[string]string{
+		"DEQUEUED_LABEL": cfg.MergeQueue.DequeuedLabel,
+		"QUEUED_LABEL":   cfg.MergeQueue.QueuedLabel,
+	} {
+		if want := requeueScriptConst(t, variable); got != "" && got != want {
+			t.Errorf("%s: merge_queue sets the label %s names to %q, but %s triggers on %q",
+				mergifyConfigPath, variable, got, requeueDequeuedScript, want)
+		}
 	}
 
-	// The job has to run on both labels the script maps to a path.
-	workflow := readFileString(t, filepath.Join(repoRoot, requeueWorkflowPath))
-	for _, l := range []string{label, queueLabel} {
-		if !strings.Contains(workflow, "github.event.label.name == '"+l+"'") {
-			t.Errorf("%s does not run the requeue on the %q label, which %s acts on", requeueWorkflowPath, l, requeueDequeuedScript)
+	// The job has to receive every label event the script maps to a path: the
+	// event type in `on:` and the action/label pair in the job's `if:`.
+	var workflow struct {
+		On struct {
+			PullRequestTarget struct {
+				Types []string `yaml:"types"`
+			} `yaml:"pull_request_target"`
+		} `yaml:"on"`
+		Jobs map[string]struct {
+			If string `yaml:"if"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(readFileString(t, filepath.Join(repoRoot, requeueWorkflowPath))), &workflow); err != nil {
+		t.Fatalf("parse %s: %v", requeueWorkflowPath, err)
+	}
+	job, ok := workflow.Jobs[requeueDequeuedJob]
+	if !ok {
+		t.Fatalf("%s has no %s job", requeueWorkflowPath, requeueDequeuedJob)
+	}
+	for _, event := range []struct{ action, labelConst string }{
+		{"labeled", "DEQUEUED_LABEL"},
+		{"unlabeled", "QUEUED_LABEL"},
+		{"labeled", "QUEUE_LABEL"},
+	} {
+		label := queueLabel
+		if event.labelConst != "QUEUE_LABEL" {
+			label = requeueScriptConst(t, event.labelConst)
+		}
+		if !slices.Contains(workflow.On.PullRequestTarget.Types, event.action) {
+			t.Errorf("%s: pull_request_target types %v lack %q, so the %s:%s event never runs the requeue",
+				requeueWorkflowPath, workflow.On.PullRequestTarget.Types, event.action, event.action, label)
+		}
+		pair := "github.event.action == '" + event.action + "'"
+		name := "github.event.label.name == '" + label + "'"
+		if !strings.Contains(job.If, pair) || !strings.Contains(job.If, name) {
+			t.Errorf("%s: the %s job's `if:` does not admit %s:%s, which %s acts on; got %q",
+				requeueWorkflowPath, requeueDequeuedJob, event.action, label, requeueDequeuedScript, job.If)
 		}
 	}
 }
-
-// requeueWorkflowPath runs the requeue scripts.
-const requeueWorkflowPath = ".github/workflows/merge-queue-requeue.yml"
