@@ -11,7 +11,7 @@ const golangciInstallModeInput = "install-mode"
 
 // golangciInstallModeBinary is the action's default install mode: download the
 // release archive and extract it with `tar --overwrite` into a path derived
-// from $HOME and the version alone.
+// from $HOME, the version and the platform.
 const golangciInstallModeBinary = "binary"
 
 // golangciInstallModeNone makes the action run the `golangci-lint` already on
@@ -29,6 +29,11 @@ const golangciInstallModeNone = "none"
 // execution, and `tar` failed with `Text file busy` before anything was
 // analysed — a red required check unrelated to the commit. A step that does not
 // install never opens the binary for writing, so it cannot race it.
+//
+// The rule is deliberately stricter than the hazard: two installs of different
+// versions land in different directories and could not race, and a
+// `goinstall` step writes GOBIN rather than $HOME, but one installing step per
+// job is the shape that keeps every pass on the same binary.
 func TestGolangciLintInstallsOncePerJob(t *testing.T) {
 	t.Parallel()
 
@@ -44,7 +49,8 @@ func TestGolangciLintInstallsOncePerJob(t *testing.T) {
 			if label == "" {
 				label = "step " + toString(i)
 			}
-			mode := strings.TrimSpace(toString(step.With[golangciInstallModeInput]))
+			// The action lowercases the input before comparing it.
+			mode := strings.ToLower(strings.TrimSpace(toString(step.With[golangciInstallModeInput])))
 			if mode == "" {
 				mode = golangciInstallModeBinary
 			}
@@ -57,11 +63,15 @@ func TestGolangciLintInstallsOncePerJob(t *testing.T) {
 				continue
 			}
 			if installer != "" {
-				t.Errorf("%s: %q installs golangci-lint (`%s: %s`) after %q already did. Both "+
-					"extract into the same $HOME path, and the second `tar --overwrite` fails with "+
-					"`Text file busy` while the first binary is still mapped. Set `%s: %s` on every "+
-					"step after the first.",
-					where, label, golangciInstallModeInput, mode, installer,
+				hazard := ""
+				if mode == golangciInstallModeBinary {
+					hazard = " Two binary installs of one version extract into the same $HOME path, and " +
+						"the second `tar --overwrite` fails with `Text file busy` while the first binary " +
+						"is still mapped."
+				}
+				t.Errorf("%s: %q installs golangci-lint (`%s: %s`) after %q already did; a job installs "+
+					"it once.%s Set `%s: %s` on every step after the first.",
+					where, label, golangciInstallModeInput, mode, installer, hazard,
 					golangciInstallModeInput, golangciInstallModeNone)
 			}
 			installer = label
