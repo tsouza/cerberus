@@ -221,3 +221,25 @@ func TestAttrLiteralOperandsBehaviour(t *testing.T) {
 		}
 	}
 }
+
+// TestParseErrorText pins ParseError's text: the position is left out only
+// when neither the line nor the column is known, so an error with either
+// one states both.
+func TestParseErrorText(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		line, col int
+		want      string
+	}{
+		{0, 0, "parse error : boom"},
+		{1, 7, "parse error at line 1, col 7: boom"},
+		{0, 19, "parse error at line 0, col 19: boom"},
+		{3, 0, "parse error at line 3, col 0: boom"},
+	}
+	for _, c := range cases {
+		if got := newParseError("boom", c.line, c.col).Error(); got != c.want {
+			t.Errorf("ParseError at line %d, col %d = %q, want %q", c.line, c.col, got, c.want)
+		}
+	}
+}
