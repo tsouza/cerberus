@@ -117,6 +117,21 @@ test('a family shard runs and owns exactly the tests its prefix names and pulls 
   assert.ok(re.test(familyA));
   assert.ok(!re.test(`TestX${family.prefix}`));
   assert.deepEqual(familyTests(family, ['TestX', familyB, familyA]), [familyB, familyA]);
+  assert.deepEqual(familyTests(family, [`TestX${family.prefix}`]), []);
+});
+
+// A family's membership is computed twice: familyTests decides which tests
+// the shard owns, and familyPattern is what `go test -run` / `-skip` match.
+// They must agree on every name, or a test is owned by one shard and run by
+// another.
+test("a family's -run pattern selects exactly the tests familyTests assigns it", () => {
+  const names = [...tests, `TestX${family.prefix}`, ...readPackage(process.cwd()).tests];
+  for (const f of [family, ...FAMILY_SHARDS]) {
+    const re = new RegExp(familyPattern(f));
+    for (const name of names) {
+      assert.equal(re.test(name), familyTests(f, [name]).length > 0, `${f.id} disagrees on ${name}`);
+    }
+  }
 });
 
 test("a family's images are the ones its defining sources name, and no other source's", () => {

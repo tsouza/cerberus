@@ -633,8 +633,7 @@ jobs:
   # dominate the package's run time, so each build is its own parallel shard.
   # Each test family the planner's FAMILY_SHARDS names (the classic-histogram
   # ceiling tests) is a shard of its own too, and a `rest` shard runs
-  # everything else (the condition-cache builds and the fleet probe) as the
-  # complement of those selections. The shard plan is derived from
+  # every other test as the complement of those selections. The shard plan is derived from
   # test/chserver's own build table and test names by
   # .github/scripts/ch-server-safety-shards.mjs, so a new test or build is
   # never left unselected. `ch-server-safety` is the one status context; it
@@ -661,7 +660,7 @@ jobs:
       # empty selection or a failed shard cannot pass.
       - name: Guard the shard planner
         run: node .github/scripts/run-node-tests.mjs .github/scripts/ch-server-safety-shards.test.mjs
-      - name: Plan the shards from test/chserver's build table
+      - name: Plan the shards from test/chserver's build table and test names
         id: plan
         run: node .github/scripts/ch-server-safety-shards.mjs plan
 
@@ -697,7 +696,8 @@ jobs:
       # `rest` boots every pinned image: fourteen ClickHouse images plus their
       # running containers outgrow the runner's ~14 GB of free root fs.
       # Reclaim the unused pre-baked toolchains first; Docker's own images are
-      # kept. A cancellation shard boots one image and needs no reclaim.
+      # kept. A cancellation shard boots one image and a family shard only the
+      # images its own tests name, so neither needs the reclaim.
       - if: matrix.kind == 'rest'
         uses: ./.github/actions/free-disk-space
 
