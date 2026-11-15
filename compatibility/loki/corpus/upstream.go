@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -63,7 +64,7 @@ func downloadUpstreamQueries() (string, error) {
 
 	var info downloadInfo
 	if err := json.Unmarshal(out, &info); err != nil {
-		return "", fmt.Errorf("go mod download %s: %v (stderr: %s)", coord, runErr, bytes.TrimSpace(stderr.Bytes()))
+		return "", fmt.Errorf("go mod download %s: %w (stderr: %s)", coord, errors.Join(runErr, err), bytes.TrimSpace(stderr.Bytes()))
 	}
 	if info.Error != "" {
 		return "", fmt.Errorf("go mod download %s: %s", coord, info.Error)
