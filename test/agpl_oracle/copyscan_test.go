@@ -8,47 +8,79 @@ package agpl_oracle
 // with an upstream one.
 //
 // Method. Each function (or method) is tokenised with go/scanner, which
-// drops comments and whitespace; identifiers are lower-cased and every
-// other token is kept verbatim, so neither spacing nor identifier case
-// takes part in the comparison while every name and literal does. The
-// tokens of one source line form one normalised line, and a line holding
-// no identifier, keyword or literal (a lone `}` or `)`) is dropped. Three
-// consecutive normalised lines form a shingle. Function declarations and
-// the function literals of package-level declarations are compared; every
-// non-test Go file under the in-house trees is scanned, generated or not,
-// while an upstream file that is generated or does not parse on this
-// toolchain is left out and counted in the log. An in-house function matches an upstream function when at
-// least copyScanMinShared of its shingles occur in that upstream function
-// and either they make up at least copyScanMinShare of its shingles (a
-// short function copied whole) or they number at least
-// copyScanMinSection (a copied section inside a longer function).
+// drops comments and whitespace. The tokens of one source line form one
+// normalised line, and a line holding no identifier, keyword or literal (a
+// lone `}` or `)`) is dropped. Three consecutive normalised lines form a
+// shingle. Function declarations and the function literals of
+// package-level declarations are compared; every non-test Go file under the
+// in-house trees is scanned, generated or not, while an upstream file that
+// is generated or does not parse on this toolchain is left out and counted
+// in the log.
 //
-// Interface facts. A reimplementation of a query language shares some
-// text with every other implementation by necessity: the operator and
-// keyword spellings, the enum and wire names, and the error strings
-// matched for parity. A shingle made only of such lines is an accepted
-// overlap and does not count towards a match; the test logs how many
-// shingles each kind accounts for. A line is an interface fact by its
-// shape alone, never by its location:
+// Two passes. The named pass lower-cases identifiers and keeps them, so
+// neither spacing nor identifier case takes part in the comparison while
+// every name and literal does. The identifier-abstracted pass replaces
+// every identifier with one placeholder, except Go's predeclared
+// identifiers (`string`, `len`, `nil`, `true`, …), which belong to the
+// language as keywords do; it reports a copy whatever its function and
+// identifier names. Keywords, operators and literals are kept by both.
 //
-//   - a spelling table line — a `case` clause, a `key: value,` element or
-//     a lone `value,` element whose operands are all names and literals,
-//     or a `return` of one literal — is an operator or keyword spelling
-//     when every string literal on it is punctuation, and an enum or wire
-//     name otherwise;
+// Matching. An in-house function matches an upstream function when at
+// least minShared of its evidence shingles occur in that upstream function
+// and either they make up at least minShare of its evidence shingles (a
+// short function copied whole) or they number at least minSection (a
+// copied section inside a longer function). The thresholds are per pass
+// (passRules).
+//
+// Evidence. A shingle is evidence unless one of the following holds.
+//
+//   - It is an interface fact on either side. A reimplementation of a
+//     query language shares some text with every other implementation by
+//     necessity: the operator and keyword spellings, the enum and wire
+//     names, and the error strings matched for parity. A line is an
+//     interface fact by its shape alone, never by its location:
+//
+//   - a spelling table line — a `case` clause, a `key: value,` element
+//     or a lone `value,` element whose operands are all names and
+//     literals, or a `return` of one literal — is an operator or keyword
+//     spelling when every string literal on it is punctuation, and an
+//     enum or wire name otherwise;
+//
 //   - a line that hands a string literal to an error constructor
 //     (`errors.New`, `fmt.Errorf`, or a function whose name ends in
 //     `error`) is a matched error string.
 //
-// A spelling table written as a switch also has frame lines — the
-// `switch v {` header, `default:`, and `return true` / `return false` arms.
-// They join an accepted shingle without making it counted, but a shingle
-// of frame lines alone is counted.
+//     A spelling table written as a switch also has frame lines — the
+//     `switch v {` header, `default:`, and `return true` / `return false`
+//     arms. They join an accepted shingle without making it counted, but
+//     a shingle of frame lines alone is counted. A shingle made only of
+//     facts and frames is an interface fact; so is any in-house shingle
+//     whose normalised text an upstream function states as one, because
+//     the kind belongs to the text and, in the abstracted pass, the names
+//     that classified it upstream are gone from it.
 //
-// Scope. Because names take part in the comparison, the scan reports a
-// function copied with its names kept; a copy whose identifiers were all
-// renamed is not reported. An identifier-abstracted pass is tracked in
-// #4137.
+//   - In the abstracted pass, it is a lookup-table shingle: every line is a
+//     `case` clause or a `return` statement (or a frame line), as in a
+//     switch mapping one enum to another. With names abstracted, what
+//     such a shingle keeps is only the alternation every lookup table has.
+//
+//   - In the abstracted pass, more than copyScanAbstractMaxHolders upstream
+//     functions hold it. A statement sequence that two independently
+//     written upstream functions both hold is an idiom of the language (a
+//     sorted-keys loop, a locked setter), not a trace of one
+//     implementation.
+//
+// The abstracted pass's thresholds are measured, not chosen:
+// TestCopyScan_UnrelatedCodeIsNotReported scans every in-house package
+// outside the query-language trees — code with no Loki or Tempo
+// counterpart, so whatever it reports is chance — and each threshold is
+// the first value at which that corpus reports nothing. At the time of
+// measurement it held 5296 functions; one step below each constant it
+// reported a match (a holder limit of 2: `nonEmpty` 3 of 4; a minimum of
+// 2 shared: `qualify` 2 of 2; a section of 5: `concatLiteralSet` 5 of 10),
+// and the closest pair under a share rule shared 4 of 7 shingles (57%),
+// below copyScanAbstractMinShare. TestCopyScan_DetectsARenamedCopy bounds
+// the thresholds from the other side.
 
 import (
 	"bytes"
@@ -58,12 +90,15 @@ import (
 	"go/parser"
 	"go/scanner"
 	"go/token"
+	"go/types"
 	"hash/fnv"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -81,6 +116,15 @@ var copyScanRoots = []string{
 	"internal/api/tempo",
 }
 
+// copyScanUnrelatedParents are the repository directories whose packages,
+// outside copyScanRoots and copyScanCopiedTree, make up the corpus of
+// unrelated in-house code.
+var copyScanUnrelatedParents = []string{"internal", "cmd"}
+
+// copyScanCopiedTree holds sources copied from upstream under their own
+// licence, so it is neither query-language code nor unrelated code.
+const copyScanCopiedTree = "internal/thirdparty"
+
 // copyScanUpstreamModules are the upstream modules the scan compares
 // against, at the versions (and replacements) go.mod pins.
 var copyScanUpstreamModules = []string{
@@ -88,19 +132,93 @@ var copyScanUpstreamModules = []string{
 	"github.com/grafana/tempo",
 }
 
+// controlPackage is one upstream package the positive controls disguise or
+// rename and compare against its own source.
+type controlPackage struct {
+	module int    // index into copyScanUpstreamModules
+	dir    string // package directory inside the module
+}
+
+// copyScanControlPackages are the upstream packages the positive controls
+// use: Loki's pattern package and Tempo's TraceQL package.
+var copyScanControlPackages = []controlPackage{
+	{module: 0, dir: "pkg/logql/log/pattern"},
+	{module: 1, dir: "pkg/traceql"},
+}
+
 const (
 	// copyScanShingleLines is the number of consecutive normalised lines
 	// in one shingle.
 	copyScanShingleLines = 3
-	// copyScanMinShared is the fewest shared shingles that make a match.
+
+	// copyScanMinShared is the named pass's fewest shared shingles that
+	// make a match.
 	copyScanMinShared = 2
-	// copyScanMinShare is the smallest fraction of a function's counted
-	// shingles that, shared with one upstream function, makes a match.
+	// copyScanMinShare is the named pass's smallest fraction of a
+	// function's evidence shingles that, shared with one upstream
+	// function, makes a match.
 	copyScanMinShare = 0.5
-	// copyScanMinSection is the number of shared shingles that makes a
-	// match whatever fraction of the function they are.
+	// copyScanMinSection is the named pass's number of shared shingles
+	// that makes a match whatever fraction of the function they are.
 	copyScanMinSection = 5
+
+	// copyScanAbstractMinShared, copyScanAbstractMinShare and
+	// copyScanAbstractMinSection are the abstracted pass's counterparts,
+	// measured on unrelated in-house code (see the file comment).
+	copyScanAbstractMinShared  = 3
+	copyScanAbstractMinShare   = 0.75
+	copyScanAbstractMinSection = 6
+	// copyScanAbstractMaxHolders is the most upstream functions that may
+	// hold a shingle for it to count as evidence in the abstracted pass.
+	copyScanAbstractMaxHolders = 1
 )
+
+// scanPass names how a pass of the scan normalises identifiers.
+type scanPass int
+
+const (
+	// namedPass lower-cases identifiers and keeps them, so a match shares
+	// names as well as statements.
+	namedPass scanPass = iota
+	// abstractPass replaces every identifier but the predeclared ones
+	// with identPlaceholder, so a match shares a statement sequence
+	// whatever its names.
+	abstractPass
+	scanPassCount
+)
+
+func (p scanPass) String() string {
+	if p == abstractPass {
+		return "identifier-abstracted"
+	}
+	return "named"
+}
+
+// identPlaceholder stands for every identifier in the abstracted pass.
+const identPlaceholder = "_"
+
+// passRule is one pass's match thresholds.
+type passRule struct {
+	minShared  int
+	minShare   float64
+	minSection int
+	maxHolders int
+}
+
+var passRules = [scanPassCount]passRule{
+	namedPass: {
+		minShared:  copyScanMinShared,
+		minShare:   copyScanMinShare,
+		minSection: copyScanMinSection,
+		maxHolders: math.MaxInt,
+	},
+	abstractPass: {
+		minShared:  copyScanAbstractMinShared,
+		minShare:   copyScanAbstractMinShare,
+		minSection: copyScanAbstractMinSection,
+		maxHolders: copyScanAbstractMaxHolders,
+	},
+}
 
 // overlapKind names a kind of interface fact.
 type overlapKind string
@@ -116,19 +234,30 @@ const (
 	// made only of frame lines is counted; it never turns an accepted
 	// shingle into a counted one.
 	kindTableFrame overlapKind = "table frame"
+	// kindLookupTable is an abstracted-pass shingle of switch arms.
+	kindLookupTable overlapKind = "lookup table"
+	// kindIdiom is an abstracted-pass shingle held by more than
+	// copyScanAbstractMaxHolders upstream functions.
+	kindIdiom overlapKind = "idiom held by several upstream functions"
 )
 
 // scanLine is one normalised source line.
 type scanLine struct {
 	text string
 	kind overlapKind
+	arm  bool // a `case` clause header or a `return` statement
 }
 
-// scanFunc is one function's shingles.
-type scanFunc struct {
-	id       string // path:Receiver.Name
+// shingleSet is one function's shingles under one pass.
+type shingleSet struct {
 	counted  map[uint64]string
 	accepted map[uint64]overlapKind
+}
+
+// scanFunc is one function's shingles under every pass.
+type scanFunc struct {
+	id     string // path:Receiver.Name
+	passes [scanPassCount]shingleSet
 }
 
 func TestCopyScan_NoUpstreamImplementationMatch(t *testing.T) {
@@ -143,37 +272,143 @@ func TestCopyScan_NoUpstreamImplementationMatch(t *testing.T) {
 	if len(ours) == 0 {
 		t.Fatal("the scan found no in-house function")
 	}
+	assertNoMatch(t, ours, upstreamCorpus(t))
+}
 
-	up := upstreamCorpus(t)
-	matches, accepted := compareFuncs(ours, up)
+// TestCopyScan_UnrelatedCodeIsNotReported is the scan's negative control
+// and the measurement behind the abstracted pass's thresholds: in-house
+// code outside the query-language trees implements nothing Loki or Tempo
+// implement, so a match there is chance, and neither pass may report one.
+func TestCopyScan_UnrelatedCodeIsNotReported(t *testing.T) {
+	t.Parallel()
 
-	kinds := make([]string, 0, len(accepted))
-	for k, n := range accepted {
-		kinds = append(kinds, fmt.Sprintf("%s: %d", k, n))
+	root := repoRoot(t)
+	trees := unrelatedTrees(t, root)
+	unrelated, _ := scanTrees(t, root, trees, inHouseTree)
+	if len(unrelated) == 0 {
+		t.Fatal("the scan found no unrelated in-house function")
 	}
-	sort.Strings(kinds)
-	t.Logf("scanned %d in-house and %d upstream functions (%d generated or unparsable upstream files left out); "+
-		"accepted interface-fact overlap by kind: %s",
-		len(ours), len(up.funcs), up.leftOut, strings.Join(kinds, ", "))
+	assertNoMatch(t, unrelated, upstreamCorpus(t))
+}
 
-	for _, m := range matches {
-		t.Errorf("implementation match: %s", m)
+// assertNoMatch fails for every function in ours that either pass reports.
+func assertNoMatch(t *testing.T, ours []*scanFunc, up *upstream) {
+	t.Helper()
+	t.Logf("scanned %d in-house and %d upstream functions (%d generated or unparsable upstream files left out)",
+		len(ours), len(up.funcs), up.leftOut)
+	for pass := range scanPassCount {
+		matches, accepted := compareFuncs(ours, up, pass)
+		kinds := make([]string, 0, len(accepted))
+		for k, n := range accepted {
+			kinds = append(kinds, fmt.Sprintf("%s: %d", k, n))
+		}
+		sort.Strings(kinds)
+		t.Logf("%s pass: accepted overlap by kind: %s", pass, strings.Join(kinds, ", "))
+		for _, m := range matches {
+			t.Errorf("%s pass: implementation match: %s", pass, m)
+		}
 	}
 }
 
-// TestCopyScan_DetectsACopy is the scan's positive control: an upstream
-// package's hand-written files, disguised the way the method claims not
-// to be fooled by (comments dropped, every identifier upper-cased and
-// every line re-spaced) and scanned as an in-house tree, must match
-// function for function, so a
-// scan that silently stopped detecting a copy fails here rather than
-// passing the test above.
+// unrelatedTrees lists every directory and Go file under
+// copyScanUnrelatedParents that is neither inside nor above a scanned root
+// nor inside copyScanCopiedTree; a directory above a root is descended.
+func unrelatedTrees(t *testing.T, root string) []string {
+	t.Helper()
+	excluded := append([]string{copyScanCopiedTree}, copyScanRoots...)
+	var trees []string
+	var visit func(rel string)
+	visit = func(rel string) {
+		entries, err := os.ReadDir(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		for _, e := range entries {
+			child := filepath.ToSlash(filepath.Join(rel, e.Name()))
+			switch {
+			case !e.IsDir():
+				if strings.HasSuffix(child, ".go") {
+					trees = append(trees, filepath.Join(root, child))
+				}
+			case slices.Contains(excluded, child):
+			case slices.ContainsFunc(excluded, func(x string) bool { return isWithin(x, child) }):
+				visit(child)
+			default:
+				trees = append(trees, filepath.Join(root, child))
+			}
+		}
+	}
+	for _, parent := range copyScanUnrelatedParents {
+		visit(parent)
+	}
+	return trees
+}
+
+// isWithin reports whether the slash path p lies strictly inside dir.
+func isWithin(p, dir string) bool {
+	return strings.HasPrefix(p, dir+"/")
+}
+
+// TestCopyScan_DetectsACopy is the named pass's positive control: each
+// control package's hand-written files, disguised the way the method
+// claims not to be fooled by (comments dropped, every identifier
+// upper-cased and every line re-spaced) and scanned as an in-house tree,
+// must match function for function, so a scan that silently stopped
+// detecting a copy fails here rather than passing the test above.
 func TestCopyScan_DetectsACopy(t *testing.T) {
 	t.Parallel()
 
 	up := upstreamCorpus(t)
-	control := filepath.Join(up.dirs[0], filepath.FromSlash(copyScanControlPackage))
-	disguised := t.TempDir()
+	for _, pkg := range copyScanControlPackages {
+		dir := writeControl(t, up, pkg, func(src []byte) []byte {
+			return respell(src, strings.ToUpper)
+		})
+		copied, _ := scanTrees(t, dir, []string{dir}, inHouseTree)
+		checked, missed := detected(copied, up, namedPass)
+		for _, id := range missed {
+			t.Errorf("%s, a disguised copy of %s, is not reported as a match", id, pkg.dir)
+		}
+		if checked == 0 {
+			t.Errorf("the control package %s has no function large enough to compare", pkg.dir)
+		}
+	}
+}
+
+// TestCopyScan_DetectsARenamedCopy is the abstracted pass's positive
+// control: each control package's hand-written files, with every
+// identifier renamed (all but the predeclared ones and `_`, each name
+// replaced consistently with a fresh one) and scanned as an in-house
+// tree, must be reported function for function. The named pass must miss some of them, so the rename defeats the
+// names this control means to take away.
+func TestCopyScan_DetectsARenamedCopy(t *testing.T) {
+	t.Parallel()
+
+	up := upstreamCorpus(t)
+	for _, pkg := range copyScanControlPackages {
+		var names renamer
+		dir := writeControl(t, up, pkg, func(src []byte) []byte {
+			return respell(src, names.rename)
+		})
+		renamed, _ := scanTrees(t, dir, []string{dir}, inHouseTree)
+		checked, missed := detected(renamed, up, abstractPass)
+		for _, id := range missed {
+			t.Errorf("%s, a renamed copy of %s, is not reported as a match", id, pkg.dir)
+		}
+		if checked == 0 {
+			t.Errorf("the control package %s has no function large enough to compare", pkg.dir)
+		}
+		if namedChecked, namedMissed := detected(renamed, up, namedPass); len(namedMissed) == 0 {
+			t.Errorf("the named pass reports all %d renamed functions of %s, so the rename hides no name", namedChecked, pkg.dir)
+		}
+	}
+}
+
+// writeControl writes the hand-written files of a control package,
+// rewritten by respellFile, into a fresh directory.
+func writeControl(t *testing.T, up *upstream, pkg controlPackage, respellFile func([]byte) []byte) string {
+	t.Helper()
+	control := filepath.Join(up.dirs[pkg.module], filepath.FromSlash(pkg.dir))
+	out := t.TempDir()
 	entries, err := os.ReadDir(control)
 	if err != nil {
 		t.Fatalf("read the control package: %v", err)
@@ -194,42 +429,68 @@ func TestCopyScan_DetectsACopy(t *testing.T) {
 		if ast.IsGenerated(header) {
 			continue // the upstream corpus leaves generated files out
 		}
-		if bytes.Equal(disguise(src), src) {
-			t.Fatalf("disguising %s left it unchanged", name)
+		rewritten := respellFile(src)
+		if bytes.Equal(rewritten, src) {
+			t.Fatalf("rewriting %s left it unchanged", name)
 		}
-		if err := os.WriteFile(filepath.Join(disguised, name), disguise(src), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(out, name), rewritten, 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
-	copied, _ := scanTrees(t, disguised, []string{disguised}, inHouseTree)
-	matched := map[string]bool{}
-	matches, _ := compareFuncs(copied, up)
+	return out
+}
+
+// detected compares a control copy with upstream under one pass and
+// returns how many of its functions carry enough evidence to be compared,
+// and the ids of those not reported as a match.
+func detected(copied []*scanFunc, up *upstream, pass scanPass) (checked int, missed []string) {
+	reported := map[string]bool{}
+	matches, _ := compareFuncs(copied, up, pass)
 	for _, m := range matches {
-		matched[m.ours] = true
+		reported[m.ours] = true
 	}
-	checked := 0
 	for _, f := range copied {
-		if len(f.counted) < copyScanMinShared {
+		if len(up.evidence(f.passes[pass], pass)) < passRules[pass].minShared {
 			continue
 		}
 		checked++
-		if !matched[f.id] {
-			t.Errorf("%s, a disguised copy of its upstream source, is not reported as a match", f.id)
+		if !reported[f.id] {
+			missed = append(missed, f.id)
 		}
 	}
-	if checked == 0 {
-		t.Fatalf("the control package %s has no function large enough to compare", copyScanControlPackage)
-	}
+	return checked, missed
 }
 
-// copyScanControlPackage is the upstream Loki package the positive control
-// disguises and compares against its own source.
-const copyScanControlPackage = "pkg/logql/log/pattern"
+// renamer gives every identifier it is shown a fresh name, the same one
+// each time.
+type renamer struct {
+	mu sync.Mutex
+	to map[string]string
+}
 
-// disguise re-emits Go source with its comments dropped, every identifier
-// upper-cased and the tokens of each line separated by single spaces, line
-// breaks kept so the result still parses.
-func disguise(src []byte) []byte {
+// rename returns the fresh name for id, leaving the predeclared
+// identifiers and `_` as they are.
+func (r *renamer) rename(id string) string {
+	if id == "_" || types.Universe.Lookup(id) != nil {
+		return id
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.to == nil {
+		r.to = map[string]string{}
+	}
+	fresh, ok := r.to[id]
+	if !ok {
+		fresh = fmt.Sprintf("renamed%d", len(r.to))
+		r.to[id] = fresh
+	}
+	return fresh
+}
+
+// respell re-emits Go source with its comments dropped, every identifier
+// passed through ident and the tokens of each line separated by single
+// spaces, line breaks kept so the result still parses.
+func respell(src []byte, ident func(string) string) []byte {
 	fset := token.NewFileSet()
 	file := fset.AddFile("", -1, len(src))
 	var s scanner.Scanner
@@ -249,7 +510,7 @@ func disguise(src []byte) []byte {
 		}
 		switch {
 		case tok == token.IDENT:
-			out.WriteString(strings.ToUpper(lit))
+			out.WriteString(ident(lit))
 		case lit != "":
 			out.WriteString(lit)
 			line += strings.Count(lit, "\n")
@@ -276,13 +537,19 @@ func (m match) String() string {
 		strings.Join(m.sample, "\n    ---\n"))
 }
 
+// shingleIndex maps the shingles of the upstream corpus under one pass to
+// the functions holding them.
+type shingleIndex struct {
+	counted  map[uint64][]int       // counted shingle -> indexes into upstream.funcs
+	accepted map[uint64]overlapKind // accepted shingle -> its kind
+}
+
 // upstream is the scanned upstream corpus with its shingle indexes.
 type upstream struct {
-	dirs     []string
-	funcs    []*scanFunc
-	counted  map[uint64][]int // counted shingle -> indexes into funcs
-	accepted map[uint64]bool  // accepted shingles anywhere upstream
-	leftOut  int              // generated or unparsable files left out
+	dirs    []string
+	funcs   []*scanFunc
+	index   [scanPassCount]shingleIndex
+	leftOut int // generated or unparsable files left out
 }
 
 var (
@@ -294,20 +561,24 @@ var (
 func upstreamCorpus(t *testing.T) *upstream {
 	t.Helper()
 	upstreamOnce.Do(func() {
-		up := &upstream{counted: map[uint64][]int{}, accepted: map[uint64]bool{}}
+		up := &upstream{}
 		up.dirs = upstreamModuleDirs(t, repoRoot(t))
 		for _, dir := range up.dirs {
 			funcs, left := scanTrees(t, dir, []string{dir}, upstreamTree)
 			up.funcs = append(up.funcs, funcs...)
 			up.leftOut += left
 		}
-		for i, f := range up.funcs {
-			for h := range f.counted {
-				up.counted[h] = append(up.counted[h], i)
+		for pass := range scanPassCount {
+			idx := shingleIndex{counted: map[uint64][]int{}, accepted: map[uint64]overlapKind{}}
+			for i, f := range up.funcs {
+				for h := range f.passes[pass].counted {
+					idx.counted[h] = append(idx.counted[h], i)
+				}
+				for h, kind := range f.passes[pass].accepted {
+					idx.accepted[h] = kind
+				}
 			}
-			for h := range f.accepted {
-				up.accepted[h] = true
-			}
+			up.index[pass] = idx
 		}
 		upstreamScan = up
 	})
@@ -317,24 +588,50 @@ func upstreamCorpus(t *testing.T) *upstream {
 	return upstreamScan
 }
 
+// evidence returns the shingles of f that count towards a match under
+// pass: those no upstream function states as an interface fact and, under
+// the pass's holder limit, no idiom.
+func (up *upstream) evidence(f shingleSet, pass scanPass) []uint64 {
+	idx := up.index[pass]
+	var out []uint64
+	for h := range f.counted {
+		if _, fact := idx.accepted[h]; fact || len(idx.counted[h]) > passRules[pass].maxHolders {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
 // compareFuncs reports every function in ours that matches an upstream
-// function, and counts the accepted interface-fact shingles ours shares
-// with upstream, by kind.
-func compareFuncs(ours []*scanFunc, up *upstream) ([]match, map[overlapKind]int) {
+// function under one pass, and counts by kind the accepted shingles ours
+// shares with upstream.
+func compareFuncs(ours []*scanFunc, up *upstream, pass scanPass) ([]match, map[overlapKind]int) {
+	idx := up.index[pass]
+	rule := passRules[pass]
 	accepted := map[overlapKind]int{}
 	var matches []match
-	for _, f := range ours {
+	for _, of := range ours {
+		f := of.passes[pass]
 		for h, kind := range f.accepted {
-			if up.accepted[h] {
+			if _, ok := idx.accepted[h]; ok {
 				accepted[kind]++
 			}
 		}
-		if len(f.counted) < copyScanMinShared {
+		for h := range f.counted {
+			if kind, ok := idx.accepted[h]; ok {
+				accepted[kind]++
+			} else if len(idx.counted[h]) > rule.maxHolders {
+				accepted[kindIdiom]++
+			}
+		}
+		evidence := up.evidence(f, pass)
+		if len(evidence) < rule.minShared {
 			continue
 		}
 		shared := map[int][]uint64{}
-		for h := range f.counted {
-			for _, i := range up.counted[h] {
+		for _, h := range evidence {
+			for _, i := range idx.counted[h] {
 				shared[i] = append(shared[i], h)
 			}
 		}
@@ -348,11 +645,11 @@ func compareFuncs(ours []*scanFunc, up *upstream) ([]match, map[overlapKind]int)
 			continue
 		}
 		n := len(shared[best])
-		share := float64(n) / float64(len(f.counted))
-		if n < copyScanMinShared || (share < copyScanMinShare && n < copyScanMinSection) {
+		share := float64(n) / float64(len(evidence))
+		if n < rule.minShared || (share < rule.minShare && n < rule.minSection) {
 			continue
 		}
-		m := match{ours: f.id, theirs: up.funcs[best].id, shared: n, total: len(f.counted)}
+		m := match{ours: of.id, theirs: up.funcs[best].id, shared: n, total: len(evidence)}
 		for _, h := range shared[best] {
 			m.sample = append(m.sample, "      "+strings.ReplaceAll(f.counted[h], "\n", "\n      "))
 		}
@@ -500,14 +797,19 @@ func scanFile(base, path string, kind treeKind) (funcs []*scanFunc, leftOut bool
 	if err != nil {
 		return nil, false, err
 	}
-	body := func(n ast.Node) []scanLine {
-		return normaliseLines(src[fset.Position(n.Pos()).Offset:fset.Position(n.End()).Offset])
+	scan := func(id string, n ast.Node) *scanFunc {
+		text := src[fset.Position(n.Pos()).Offset:fset.Position(n.End()).Offset]
+		f := &scanFunc{id: id}
+		for pass := range scanPassCount {
+			f.passes[pass] = shingle(normaliseLines(text, pass), pass)
+		}
+		return f
 	}
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
 			if d.Body != nil {
-				funcs = append(funcs, shingle(rel+":"+funcName(d), body(d)))
+				funcs = append(funcs, scan(rel+":"+funcName(d), d))
 			}
 		case *ast.GenDecl:
 			literal := 0
@@ -517,7 +819,7 @@ func scanFile(base, path string, kind treeKind) (funcs []*scanFunc, leftOut bool
 					return true
 				}
 				literal++
-				funcs = append(funcs, shingle(fmt.Sprintf("%s:func literal %d at line %d", rel, literal, fset.Position(lit.Pos()).Line), body(lit)))
+				funcs = append(funcs, scan(fmt.Sprintf("%s:func literal %d at line %d", rel, literal, fset.Position(lit.Pos()).Line), lit))
 				return false
 			})
 		}
@@ -554,10 +856,10 @@ type lineToken struct {
 	lit string
 }
 
-// normaliseLines tokenises src (one function) into its normalised lines,
-// dropping comments, automatic semicolons and lines with no identifier,
-// keyword or literal.
-func normaliseLines(src []byte) []scanLine {
+// normaliseLines tokenises src (one function) into its normalised lines
+// under pass, dropping comments, automatic semicolons and lines with no
+// identifier, keyword or literal.
+func normaliseLines(src []byte, pass scanPass) []scanLine {
 	fset := token.NewFileSet()
 	file := fset.AddFile("", -1, len(src))
 	var s scanner.Scanner
@@ -567,7 +869,7 @@ func normaliseLines(src []byte) []scanLine {
 	var cur []lineToken
 	curLine := 0
 	flush := func() {
-		if l, ok := renderLine(cur); ok {
+		if l, ok := renderLine(cur, pass); ok {
 			lines = append(lines, l)
 		}
 		cur = cur[:0]
@@ -590,13 +892,16 @@ func normaliseLines(src []byte) []scanLine {
 	return lines
 }
 
-// renderLine joins a line's tokens and classifies it; ok is false for a
-// line that carries nothing but punctuation.
-func renderLine(toks []lineToken) (scanLine, bool) {
+// renderLine joins a line's tokens under pass and classifies it; ok is
+// false for a line that carries nothing but punctuation.
+func renderLine(toks []lineToken, pass scanPass) (scanLine, bool) {
 	var parts []string
 	meaningful := false
 	for _, tk := range toks {
 		switch {
+		case tk.tok == token.IDENT && pass == abstractPass && types.Universe.Lookup(tk.lit) == nil:
+			parts = append(parts, identPlaceholder)
+			meaningful = true
 		case tk.tok == token.IDENT:
 			parts = append(parts, strings.ToLower(tk.lit))
 			meaningful = true
@@ -613,7 +918,14 @@ func renderLine(toks []lineToken) (scanLine, bool) {
 	if !meaningful {
 		return scanLine{}, false
 	}
-	return scanLine{text: strings.Join(parts, " "), kind: classifyLine(toks)}, true
+	return scanLine{text: strings.Join(parts, " "), kind: classifyLine(toks), arm: isSwitchArm(toks)}, true
+}
+
+// isSwitchArm recognises a `case …:` clause header and a `return`
+// statement.
+func isSwitchArm(toks []lineToken) bool {
+	first, last := toks[0].tok, toks[len(toks)-1].tok
+	return first == token.RETURN || (first == token.CASE && last == token.COLON)
 }
 
 // classifyLine names the kind of interface fact a line states, kindTableFrame
@@ -724,9 +1036,10 @@ func handsStringToErrorConstructor(toks []lineToken) bool {
 	return false
 }
 
-// shingle builds a function's shingle sets from its normalised lines.
-func shingle(id string, lines []scanLine) *scanFunc {
-	f := &scanFunc{id: id, counted: map[uint64]string{}, accepted: map[uint64]overlapKind{}}
+// shingle builds a function's shingle sets under pass from its normalised
+// lines.
+func shingle(lines []scanLine, pass scanPass) shingleSet {
+	f := shingleSet{counted: map[uint64]string{}, accepted: map[uint64]overlapKind{}}
 	for i := 0; i+copyScanShingleLines <= len(lines); i++ {
 		window := lines[i : i+copyScanShingleLines]
 		texts := make([]string, len(window))
@@ -734,6 +1047,9 @@ func shingle(id string, lines []scanLine) *scanFunc {
 			texts[j] = l.text
 		}
 		kind := shingleKind(window)
+		if kind == kindNone && pass == abstractPass && isLookupTable(window) {
+			kind = kindLookupTable
+		}
 		text := strings.Join(texts, "\n")
 		h := fnv.New64a()
 		h.Write([]byte(text))
@@ -767,6 +1083,21 @@ func shingleKind(window []scanLine) overlapKind {
 		}
 	}
 	return kind
+}
+
+// isLookupTable reports whether every line of a shingle is a switch arm or
+// a table frame line, and at least one is an arm.
+func isLookupTable(window []scanLine) bool {
+	arm := false
+	for _, l := range window {
+		switch {
+		case l.arm:
+			arm = true
+		case l.kind != kindTableFrame:
+			return false
+		}
+	}
+	return arm
 }
 
 // kindJoiner joins the kinds of a shingle whose lines state facts of more
