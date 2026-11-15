@@ -77,9 +77,9 @@ func toString(v any) string {
 	}
 }
 
-// buildxWorkflowSteps returns `<workflow>:<job>` -> steps for every workflow under
+// workflowJobSteps returns `<workflow>:<job>` -> steps for every workflow under
 // .github/workflows.
-func buildxWorkflowSteps(t *testing.T) map[string][]workflowStep {
+func workflowJobSteps(t *testing.T) map[string][]workflowStep {
 	t.Helper()
 
 	const workflowDir = "../../.github/workflows"
@@ -123,7 +123,7 @@ func TestWorkflowsSetUpBuildxThroughTheRetryingComposite(t *testing.T) {
 	t.Parallel()
 
 	viaComposite := 0
-	for where, steps := range buildxWorkflowSteps(t) {
+	for where, steps := range workflowJobSteps(t) {
 		for _, s := range steps {
 			switch {
 			case strings.HasPrefix(s.Uses, buildxUpstreamAction+"@"):
@@ -400,7 +400,7 @@ func TestBuildxJobsAuthenticateBeforeBootstrapping(t *testing.T) {
 	const loginAction = "docker/login-action"
 
 	checked := 0
-	for where, steps := range buildxWorkflowSteps(t) {
+	for where, steps := range workflowJobSteps(t) {
 		buildx := -1
 		for i, s := range steps {
 			if s.Uses == buildxComposite {
