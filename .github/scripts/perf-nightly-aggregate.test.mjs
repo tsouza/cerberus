@@ -4,18 +4,21 @@
 // asserted by test/perf/nightly/calibration_test.go in the unit lane.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import process from 'node:process';
 import test from 'node:test';
 
 import { PERF_NIGHTLY_JOB, PERF_NIGHTLY_WORKFLOW, readCalibrationRunners } from './lib/perf-nightly-matrix.mjs';
 import {
   calibrationFailures,
   COMBINE_PACKAGE,
-  COMMITTED_BASELINE,
   combineArgs,
+  combineRounds,
   formatDuration,
+  missingLegs,
   roundsFiles,
   verdict,
   wallTimeTable,
@@ -78,22 +81,82 @@ test('roundsFiles finds every leg\'s rounds file under the download directory, s
   assert.deepEqual(roundsFiles(undefined), []);
 });
 
-test('combineArgs runs the combine over the committed file and every rounds file', () => {
+test('combineArgs runs the combine over every rounds file into out', () => {
   assert.deepEqual(combineArgs(['a.json', 'b.json'], '/tmp/out.json'), [
-    'run', COMBINE_PACKAGE, '-baseline', COMMITTED_BASELINE, '-out', '/tmp/out.json', 'a.json', 'b.json',
+    'run', COMBINE_PACKAGE, '-out', '/tmp/out.json', 'a.json', 'b.json',
   ]);
 });
 
-test('a recalibration fails on no rounds, on a refusal, and on a combine that wrote nothing', () => {
-  assert.deepEqual(calibrationFailures({ files: ['a.json'], status: 0, written: true }), []);
-  assert.equal(calibrationFailures({ files: [], status: 0, written: false }).length, 1);
-  assert.match(calibrationFailures({ files: ['a.json'], status: 1, written: true })[0], /refused/);
-  assert.match(calibrationFailures({ files: ['a.json'], status: 1, written: false })[0], /wrote no bound file/);
+test('a recalibration fails on a missing leg, on no rounds, on a refusal, and on a combine that wrote nothing', () => {
+  assert.deepEqual(calibrationFailures({ files: ['a.json'], missing: [], status: 0, written: true }), []);
+  assert.equal(calibrationFailures({ files: [], missing: [], status: 0, written: false }).length, 1);
+  assert.match(calibrationFailures({ files: ['a.json'], missing: [], status: 1, written: true })[0], /refused/);
+  assert.match(calibrationFailures({ files: ['a.json'], missing: [], status: 1, written: false })[0], /wrote no bound file/);
+  assert.deepEqual(calibrationFailures({ files: ['a.json'], missing: ['nightly-rounds-24.8-2'], status: 0, written: true }), [
+    'calibration: no nightly-rounds-24.8-2 rounds were uploaded',
+  ]);
 });
 
-// The workflow's calibrate fan-out is the runner count the derivation
-// requires: fewer legs and every bound is refused, more and the extra legs
-// buy nothing the constant was justified by.
+test('missingLegs names every server-runner leg with no rounds file', () => {
+  const files = ['/d/nightly-rounds-24.8-1/r.json', '/d/nightly-rounds-24.8-2/r.json', '/d/nightly-rounds-26.9-2/r.json'];
+  assert.deepEqual(missingLegs(files, ['24.8', '26.9', '25.9'], [1, 2]), [
+    'nightly-rounds-26.9-1',
+    'nightly-rounds-25.9-1',
+    'nightly-rounds-25.9-2',
+  ]);
+  assert.deepEqual(missingLegs(files.slice(0, 2), ['24.8'], [1, 2]), []);
+});
+
+// combineRounds over a two-server, two-runner matrix, with the combine
+// replaced: what the job uploads (`written`) and fails on follows what the
+// combine exited with and left on disk.
+test('combineRounds sets written from the file the combine left, and fails on its exit and on missing legs', () => {
+  const workflowText =
+    `jobs:\n  ${PERF_NIGHTLY_JOB}:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '26.9']\n` +
+    "        runner: ${{ fromJSON(inputs.calibrate && '[1, 2]' || '[1]') }}\n  perf-nightly:\n    steps: []\n";
+  const dir = mkdtempSync(join(tmpdir(), 'nightly-combine-'));
+  try {
+    const roundsDir = join(dir, 'rounds');
+    for (const leg of ['nightly-rounds-24.8-1', 'nightly-rounds-24.8-2', 'nightly-rounds-26.9-1', 'nightly-rounds-26.9-2']) {
+      mkdirSync(join(roundsDir, leg), { recursive: true });
+      writeFileSync(join(roundsDir, leg, 'perf-nightly-rounds.json'), '{}');
+    }
+    const out = join(dir, 'nightly-baseline.json');
+    const env = { ROUNDS_DIR: roundsDir, BASELINE_OUT: out };
+    const outcome = (combine) => {
+      const outputs = {};
+      writeFileSync(out, 'stale'); // a file the combine did not write is never uploaded
+      const failures = combineRounds(env, { workflowText, combine, output: (k, v) => (outputs[k] = v) });
+      return { failures, written: outputs.written };
+    };
+    const writes = (status) => (files, path) => {
+      assert.equal(files.length, 4);
+      writeFileSync(path, '{}');
+      return status;
+    };
+    assert.deepEqual(outcome(writes(0)), { failures: [], written: 'true' });
+    const refused = outcome(writes(1));
+    assert.equal(refused.written, 'true');
+    assert.match(refused.failures.join('\n'), /refused/);
+    const nothing = outcome(() => 1);
+    assert.equal(nothing.written, 'false');
+    assert.match(nothing.failures.join('\n'), /wrote no bound file/);
+
+    rmSync(join(roundsDir, 'nightly-rounds-26.9-2'), { recursive: true });
+    const short = outcome((files, path) => {
+      writeFileSync(path, '{}');
+      return 0;
+    });
+    assert.deepEqual(short, { failures: ['calibration: no nightly-rounds-26.9-2 rounds were uploaded'], written: 'true' });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.match(combineRounds({ BASELINE_OUT: '/tmp/x.json' }, { workflowText: 'jobs: {}\n' })[0], /no calibrate matrix/);
+});
+
+// The workflow's calibrate fan-out is held to the runner count the
+// derivation in calibration.go and docs/performance.background.md justifies:
+// with fewer legs every bound is refused.
 test('the calibrate matrix runs nightlyCalibrationRunners legs per server, each uploading its own rounds', () => {
   const workflow = readFileSync(PERF_NIGHTLY_WORKFLOW, 'utf8');
   const source = readFileSync('test/perf/nightly/calibration.go', 'utf8');
@@ -116,4 +179,27 @@ test('readCalibrationRunners reads only the gate-once, calibrate-many runner lin
   assert.equal(readCalibrationRunners(job("        runner: ${{ fromJSON(inputs.calibrate && '[1, 2]' || '[1, 2]') }}")), null);
   assert.equal(readCalibrationRunners(job('        runner: [1, 2]')), null);
   assert.equal(readCalibrationRunners('jobs:\n  other:\n    steps: []\n'), null);
+});
+
+// The script itself: a recalibration whose combine cannot run fails the
+// verdict even when every leg succeeded and the replays were skipped.
+test('a recalibration dispatch runs the combine into the verdict', () => {
+  const run = (env) =>
+    spawnSync(process.execPath, ['.github/scripts/perf-nightly-aggregate.mjs'], {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        SENTINELS_RESULT: 'success',
+        REPLAYS_RESULT: 'skipped',
+        GITHUB_API_URL: 'http://127.0.0.1:1',
+        REPO: 'o/r',
+        RUN_ID: '1',
+        RUN_ATTEMPT: '1',
+        ...env,
+      },
+    });
+  const calibrating = run({ CALIBRATE: 'true' });
+  assert.equal(calibrating.status, 1, calibrating.stdout + calibrating.stderr);
+  assert.match(calibrating.stdout + calibrating.stderr, /BASELINE_OUT names no file/);
+  assert.equal(run({ CALIBRATE: 'false', REPLAYS_RESULT: 'success' }).status, 0);
 });

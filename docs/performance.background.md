@@ -68,25 +68,42 @@ Part of the CI spread comes with the runner or the run rather than the query:
 five passes on one local 26.9 server over the whole corpus measured this
 sentinel at 28.1M-29.5M, a 1.05x range, where separate CI runs spread 1.26x.
 Rounds taken inside one run do not sample that part, so a calibration takes
-its rounds on several independent runners. Each round is a whole pass over
-the corpus, so a sentinel's rounds run in the corpus order its gating runs do;
-passes after the first run on a server the earlier passes have warmed, which a
-gating run never measures.
+its rounds on several runners. The rounds still sample the per-query part,
+the 22.5M-26.2M a sentinel's repeats spread over on one server, so a runner's
+highest round is less likely to sit low than a single max-of-5. Each round
+is a whole pass over the corpus, so a sentinel's rounds run in the corpus
+order its gating runs do; passes after the first run on a server the earlier
+passes have warmed, which a gating run never measures.
 
 The runner count, `nightlyCalibrationRunners`, is four. A runner is in the low
 tail when a ceiling anchored on its highest round is one an ordinary run of
 the same code crosses: for this sentinel, a max-of-5 below the highest
 measured run (32,643,773) divided by its 1.20 headroom, about 27.2M. Five of
 the seventeen 26.9 runs measured — the two calibrations and three of the
-fifteen gating runs — landed there, a rate of about 0.29. The committed max-of-N
-is the highest round of any runner, so it is set by the low tail only when
-every runner lands there: on independent runners that is 0.29 for one, 0.087
-for two, 0.025 for three and 0.0073 for four, the first count under one
+fifteen gating runs — landed there, a rate of 5/17, about 0.29. The committed
+max-of-N is the highest round of any runner, so it is set by the low tail only
+when every runner lands there: on independent runners that is 0.29 for one,
+0.087 for two, 0.025 for three and 0.0075 for four, the first count under one
 calibration in a hundred. The rate is an upper estimate for a runner's
 highest round, which is the highest of five passes rather than one, and a
 rough one from seventeen draws. A fifth runner would take that to 0.002 for
 a quarter more legs on every server of the matrix, each about an hour of
 runner time.
+
+The arithmetic assumes the runners land independently, and the legs of one
+dispatch are not fully independent: they run the same commit within the same
+minutes, on the same runner image and under the same time-of-day load. Both
+single-run calibrations landed low while three of fifteen gating runs did,
+which a factor shared by one dispatch would explain as well as chance (0.087).
+Whatever part of the low tail is shared by a dispatch, its legs do not
+sample, and four runners guard against it less than the figures above say.
+The spread check is what limits the damage in that case: a dispatch whose
+legs all land low commits a ceiling the next ordinary run can cross, but it
+does so only when the rounds' own spread fits inside the margin. More runners
+also widen the measured spread, which raises the chance the check refuses;
+for `label_values_matcher_stock_key_renamed` on 26.9 the spread already
+measured across gating runs exceeds the 1.20x margin, so a calibration is
+more likely to refuse it than to commit a low ceiling (#4151).
 
 A max-of-5 is one draw from that distribution, and a ceiling anchored on one
 draw is anchored on wherever that draw landed. The highest of several rounds

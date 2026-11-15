@@ -6,7 +6,8 @@
 // one-line flow sequence `clickhouse: ['24.8', '25.9', '26.8']` under
 // `strategy.matrix`; this module reads it back for the checks that hold the
 // list to its sources (clickhouse-version-sync.mjs check h) and to the
-// self-check's mutations (perf-nightly-selfcheck.test.mjs).
+// self-check's mutations (perf-nightly-selfcheck.test.mjs), and for the legs
+// a calibrate dispatch's combine expects rounds from (perf-nightly-aggregate.mjs).
 //
 // Exports:
 //   PERF_NIGHTLY_WORKFLOW / PERF_NIGHTLY_JOB

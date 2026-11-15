@@ -101,8 +101,10 @@ jobs:
       # `ubuntu-latest` runner, never committed to the checkout.
       PERF_NIGHTLY_RESULTS_JSON: /tmp/perf-nightly-results.json
       # Where a calibration leg writes its rounds (calibration.go), under
-      # /tmp for the same reason.
+      # /tmp for the same reason, and the runner the file names, so the
+      # combine can refuse one leg's rounds counted twice.
       PERF_NIGHTLY_ROUNDS_JSON: /tmp/perf-nightly-rounds.json
+      PERF_NIGHTLY_CALIBRATION_RUNNER: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.clickhouse }}-${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -139,8 +141,9 @@ jobs:
       # Also after a failed measurement: a run whose sentinel failed still
       # writes the rounds it measured, and the combine refuses any sentinel
       # short of a round, so it keeps its committed bound. A run that failed
-      # before writing leaves no file, and the combine refuses every sentinel
-      # of its server for the runner it is missing.
+      # before writing leaves no file: the combine refuses every sentinel of
+      # its server for the runner it is missing, and the perf-nightly job
+      # names the missing leg.
       - name: Upload the calibration rounds
         if: ${{ inputs.calibrate && !cancelled() }}
         uses: actions/upload-artifact@v7

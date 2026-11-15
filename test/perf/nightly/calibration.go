@@ -25,9 +25,12 @@ import (
 // runner measures each sentinel over. Each round is one whole pass over the
 // sentinel corpus, as a gating run makes, on the runner's one server and one
 // sample load, so a runner's rounds sample the variance that arises per query
-// — how a multi-threaded read's per-stream buffers happen to overlap
-// (docs/performance.background.md). Five rounds per runner give
-// calibratedBound a measured within-run range on every runner.
+// — how a multi-threaded read's per-stream buffers happen to overlap, which
+// spread one sentinel's repeats on one server over 22.5M-26.2M
+// (docs/performance.background.md). The runners sample the variance that
+// comes with the run; the rounds sample the variance a single max-of-N draws
+// from within it, so a runner's highest round is less likely to sit low than
+// its first.
 const nightlyCalibrationRounds = 5
 
 // nightlyCalibrationRunners is how many independent runners a calibration
@@ -133,10 +136,20 @@ const nightlyRoundsJSONEnv = "PERF_NIGHTLY_ROUNDS_JSON"
 // the max-of-N peak of each pass that measured it in full. A selected
 // sentinel no pass measured in full is listed with no rounds, so the combine
 // refuses it rather than mistaking it for one the calibration left alone.
+//
+// Runner identifies the run that measured the file, so the combine can refuse
+// the same run counted twice as two runners. perf-nightly.yml names each leg
+// by its workflow run, attempt, server and runner index
+// (nightlyRunnerEnv); a run without it is named after its host and start time.
 type calibrationRun struct {
 	ClickHouse string           `json:"clickhouse"`
+	Runner     string           `json:"runner"`
 	Sentinels  []sentinelRounds `json:"sentinels"`
 }
+
+// nightlyRunnerEnv names the calibration run a rounds file records as its
+// runner.
+const nightlyRunnerEnv = "PERF_NIGHTLY_CALIBRATION_RUNNER"
 
 type sentinelRounds struct {
 	Name          string   `json:"name"`
@@ -149,8 +162,14 @@ type sentinelRounds struct {
 func combineCalibration(baseline nightlyBaseline, runs []calibrationRun) (nightlyBaseline, []error, error) {
 	byVersion := make(map[string]map[string][][]uint64)
 	var versions []string
+	seen := make(map[[2]string]bool, len(runs))
 	for _, run := range runs {
-		if _, seen := byVersion[run.ClickHouse]; !seen {
+		key := [2]string{run.ClickHouse, run.Runner}
+		if seen[key] {
+			return nightlyBaseline{}, nil, fmt.Errorf("ClickHouse %s: two rounds files name runner %q — one run's rounds cannot count as two runners", run.ClickHouse, run.Runner)
+		}
+		seen[key] = true
+		if _, known := byVersion[run.ClickHouse]; !known {
 			byVersion[run.ClickHouse] = make(map[string][][]uint64)
 			versions = append(versions, run.ClickHouse)
 		}
@@ -220,8 +239,8 @@ func readCalibrationRun(path string) (calibrationRun, error) {
 	if err := json.Unmarshal(buf, &run); err != nil {
 		return calibrationRun{}, fmt.Errorf("parse calibration rounds %s: %w", path, err)
 	}
-	if run.ClickHouse == "" {
-		return calibrationRun{}, fmt.Errorf("calibration rounds %s name no ClickHouse release line", path)
+	if run.ClickHouse == "" || run.Runner == "" {
+		return calibrationRun{}, fmt.Errorf("calibration rounds %s name no ClickHouse release line or no runner", path)
 	}
 	return run, nil
 }

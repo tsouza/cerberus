@@ -22,8 +22,9 @@
 // every runner's rounds of its server through calibratedBound). The step
 // output `written` says whether that file exists to upload, which it does
 // also when the combine refused a sentinel (it kept its committed bound); a
-// refusal, a combine that wrote nothing, and a dispatch that uploaded no
-// rounds each fail the verdict.
+// refusal, a combine that wrote nothing, and a leg of the calibrate matrix
+// (lib/perf-nightly-matrix.mjs) whose rounds are missing each fail the
+// verdict.
 //
 // Env:
 //   SENTINELS_RESULT  needs.perf-nightly-sentinels.result
@@ -41,13 +42,19 @@
 // Exit: 0 when both results are success (and, recalibrating, the combine
 // wrote the bound file with no refusal), 1 otherwise.
 
-import { existsSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import { DEFAULT_API_BASE, ghPaginate } from './lib/gh-api.mjs';
 import { appendStepSummary, capture, error, notice, setOutput, warning } from './lib/gh.mjs';
+import {
+  PERF_NIGHTLY_JOB,
+  PERF_NIGHTLY_WORKFLOW,
+  readCalibrationRunners,
+  readClickHouseMatrix,
+} from './lib/perf-nightly-matrix.mjs';
 
 // JOB_PREFIX selects the jobs this workflow runs out of the run's job list.
 const JOB_PREFIX = 'perf-nightly';
@@ -55,10 +62,13 @@ const JOB_PREFIX = 'perf-nightly';
 const SECOND_MS = 1000;
 const MINUTE_S = 60;
 
-// COMMITTED_BASELINE is the bound file the combine starts from, and
-// COMBINE_PACKAGE the command that combines every runner's rounds into it.
-export const COMMITTED_BASELINE = 'test/perf/nightly-baseline.json';
+// COMBINE_PACKAGE combines every runner's rounds into the committed bound
+// file, which it reads from the checkout.
 export const COMBINE_PACKAGE = './test/perf/nightly/calibrate';
+
+// ROUNDS_ARTIFACT_PREFIX names each calibration leg's rounds artifact,
+// `nightly-rounds-<clickhouse>-<runner>` (perf-nightly.yml).
+export const ROUNDS_ARTIFACT_PREFIX = 'nightly-rounds-';
 
 // roundsFiles — every rounds file under dir, sorted: download-artifact puts
 // each artifact in its own directory, named after it. A missing dir has none.
@@ -70,41 +80,63 @@ export function roundsFiles(dir) {
     .sort();
 }
 
-// combineArgs — the `go` argv that combines files into out.
-export function combineArgs(files, out) {
-  return ['run', COMBINE_PACKAGE, '-baseline', COMMITTED_BASELINE, '-out', out, ...files];
+// missingLegs — the rounds artifacts the calibrate matrix (servers x
+// runners) should have uploaded and files does not hold, by name. A server
+// with no leg at all is otherwise silent: the combine leaves its bound set as
+// it is, and the refusals it reports are per sentinel of a server it saw.
+export function missingLegs(files, servers, runners) {
+  const uploaded = new Set(files.map((f) => basename(dirname(f))));
+  return servers.flatMap((server) =>
+    runners.map((runner) => `${ROUNDS_ARTIFACT_PREFIX}${server}-${runner}`).filter((name) => !uploaded.has(name)),
+  );
 }
 
-// calibrationFailures — what fails a recalibration's verdict: no rounds to
-// combine, or a combine that exited non-zero (a refused sentinel, or no file
-// written at all — `written` tells the two apart).
-export function calibrationFailures({ files, status, written }) {
-  if (files.length === 0) return ['calibration: no leg uploaded calibration rounds'];
-  if (status === 0) return [];
-  return [
+// combineArgs — the `go` argv that combines files into out.
+export function combineArgs(files, out) {
+  return ['run', COMBINE_PACKAGE, '-out', out, ...files];
+}
+
+// calibrationFailures — what fails a recalibration's verdict: a leg whose
+// rounds are missing, no rounds to combine, or a combine that exited non-zero
+// (a refused sentinel, or no file written at all — `written` tells the two
+// apart).
+export function calibrationFailures({ files, missing, status, written }) {
+  const failures = missing.map((name) => `calibration: no ${name} rounds were uploaded`);
+  if (files.length === 0) return [...failures, 'calibration: no leg uploaded calibration rounds'];
+  if (status === 0) return failures;
+  failures.push(
     written
       ? 'calibration: the combine refused at least one sentinel, which kept its committed bound (see its ::error:: lines)'
       : 'calibration: the combine wrote no bound file',
-  ];
+  );
+  return failures;
+}
+
+// runGoCombine — run the combine over files into out; its output streams to
+// this job's log.
+function runGoCombine(files, out) {
+  const res = capture('go', combineArgs(files, out));
+  process.stdout.write(res.stdout);
+  process.stderr.write(res.stderr);
+  return res.status;
 }
 
 // combineRounds — combine every rounds file under env.ROUNDS_DIR into
 // env.BASELINE_OUT, set the `written` output, and return the failures.
-function combineRounds(env) {
+// workflowText is perf-nightly.yml, whose calibrate matrix names the legs
+// expected; combine runs the combine and returns its exit status.
+export function combineRounds(env, { workflowText, combine = runGoCombine, output = setOutput } = {}) {
   const out = env.BASELINE_OUT;
   if (!out) return ['calibration: BASELINE_OUT names no file to write'];
+  const servers = readClickHouseMatrix(workflowText, PERF_NIGHTLY_JOB);
+  const runners = readCalibrationRunners(workflowText);
+  if (!servers || !runners) return [`calibration: ${PERF_NIGHTLY_WORKFLOW} names no calibrate matrix to expect legs from`];
   rmSync(out, { force: true });
   const files = roundsFiles(env.ROUNDS_DIR);
-  let status = 0;
-  if (files.length > 0) {
-    const res = capture('go', combineArgs(files, out));
-    process.stdout.write(res.stdout);
-    process.stderr.write(res.stderr);
-    status = res.status;
-  }
+  const status = files.length > 0 ? combine(files, out) : 0;
   const written = existsSync(out);
-  setOutput('written', String(written));
-  return calibrationFailures({ files, status, written });
+  output('written', String(written));
+  return calibrationFailures({ files, missing: missingLegs(files, servers, runners), status, written });
 }
 
 // verdict — the failures of the two `needs` results, empty when both passed.
@@ -163,7 +195,9 @@ async function main() {
     replays: process.env.REPLAYS_RESULT,
     calibrate,
   });
-  if (calibrate) failures.push(...combineRounds(process.env));
+  if (calibrate) {
+    failures.push(...combineRounds(process.env, { workflowText: readFileSync(PERF_NIGHTLY_WORKFLOW, 'utf8') }));
+  }
   try {
     await reportWallTimes(process.env);
   } catch (e) {

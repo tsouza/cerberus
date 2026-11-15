@@ -718,16 +718,18 @@ calibrate-nightly-perf-rounds image out *sentinels:
 # bound. A sentinel measured by fewer than nightlyCalibrationRunners runners,
 # or whose rounds span more than the margin its ceiling leaves above the
 # highest round, keeps its committed bound and fails the recipe
-# (calibratedBound, test/perf/nightly/calibration.go). Run this — and REVIEW
-# THE DIFF — only when a bound move is genuinely intended (a real, justified
-# memory-cost increase, or a deliberate change to which sentinels are
-# expected to be rejected by a resource bound); a silent loosen is exactly the
-# regression this lane exists to catch. The gating assertion is
+# (calibratedBound, test/perf/nightly/calibration.go); the file is written
+# before the recipe fails, so `git diff` shows it. Rounds files measured one
+# after another on one host are not the independent runners the runner count
+# assumes. Run this — and REVIEW THE DIFF — only when a bound move is
+# genuinely intended (a real, justified memory-cost increase, or a deliberate
+# change to which sentinels are expected to be rejected by a resource bound);
+# a silent loosen is exactly the regression this lane exists to catch. The gating assertion is
 # TestPerfNightlyRealCH, wired into .github/workflows/perf-nightly.yml.
 
 # Regenerate the nightly per-sentinel memory ceilings from calibration rounds files. Review the diff.
 update-nightly-perf-baseline +rounds:
-    go run ./test/perf/nightly/calibrate -baseline test/perf/nightly-baseline.json -out test/perf/nightly-baseline.json {{rounds}}
+    go run ./test/perf/nightly/calibrate {{rounds}}
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/nightly-baseline.json
 
 # Run #2437's periodic self-check: deliberately breaks each mechanism its

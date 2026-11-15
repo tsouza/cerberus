@@ -278,13 +278,16 @@ every PR) to *broad* (corpus-wide, nightly).
    `calibrate_sentinels`). It runs `nightlyCalibrationRunners` (4) legs per
    server, each on its own runner; each leg makes `nightlyCalibrationRounds`
    (5) such passes over one sample load (`just calibrate-nightly-perf-rounds
-   <image> <rounds.json> [sentinel...]`) and uploads every sentinel's round
-   maxima as `nightly-rounds-<clickhouse>-<runner>`. The `perf-nightly` job
-   combines every leg's rounds (`just update-nightly-perf-baseline
-   <rounds.json>...` does the same over local files) and uploads the result
-   as `nightly-baseline`: each listed sentinel commits the highest round of
-   any runner of its server as `max_of_n_bytes`, with the ceiling derived from
-   it. Every pass still runs the whole corpus. A sentinel whose rounds, across
+   <image> <rounds.json> [sentinel...]`) and uploads the round maxima of
+   every sentinel it calibrates as `nightly-rounds-<clickhouse>-<runner>`.
+   The `perf-nightly` job combines every leg's rounds and uploads the result
+   as `nightly-baseline`, failing on any leg whose rounds are missing: each
+   listed sentinel commits the highest round of any runner of its server as
+   `max_of_n_bytes`, with the ceiling derived from it. `just
+   update-nightly-perf-baseline <rounds.json>...` runs the same combine over
+   local rounds files; each file names its runner, and the combine refuses
+   one runner named twice, but rounds measured one after another on one host
+   are not the independent runners the runner count assumes. Every pass still runs the whole corpus. A sentinel whose rounds, across
    all of its runners, span more bytes than the margin its ceiling leaves
    above that highest round, or that fewer than four runners measured in five
    full passes each, is refused: it keeps its committed bound, the

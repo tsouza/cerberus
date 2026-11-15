@@ -484,7 +484,7 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	}
 
 	if update {
-		run := calibrationRun{ClickHouse: version}
+		run := calibrationRun{ClickHouse: version, Runner: calibrationRunnerName(t)}
 		for _, sentinel := range SentinelsFor(version) {
 			if !calibrate(sentinel.Name) {
 				continue
@@ -903,6 +903,21 @@ func planningRatio(ctx context.Context, conn driver.Conn, queryID, peerID string
 		}
 	}
 	return float64(query) / float64(peer), query, peer, abandoned, nil
+}
+
+// calibrationRunnerName is the runner this calibration's rounds file records:
+// the name perf-nightly.yml gives the leg, or this host and the time the
+// rounds were written.
+func calibrationRunnerName(t *testing.T) string {
+	t.Helper()
+	if name := os.Getenv(nightlyRunnerEnv); name != "" {
+		return name
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("name this calibration's runner: %v", err)
+	}
+	return host + "@" + time.Now().UTC().Format(time.RFC3339Nano)
 }
 
 // calibrationSelection reports which sentinels a calibration run commits new

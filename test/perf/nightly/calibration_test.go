@@ -40,11 +40,15 @@ func runnerSets(rounds []uint64) [][]uint64 {
 
 // TestCalibratedBound_LowTailRunnerCannotSetTheCeiling is the single-run
 // calibration failure: one run landed in the low tail of the run-to-run
-// distribution — its rounds all sat low, because what moves the max-of-N most
-// is the run, not the round — and the ceiling derived from it alone sat below
-// what ordinary gating runs measure. calibratedBound must anchor the ceiling on
-// the highest round of any runner, wherever the low-tail runner falls among
-// them, so the gating runs held out of the calibration clear it.
+// distribution — its rounds all sat low — and the ceiling derived from it
+// alone sat below what ordinary gating runs measure. calibratedBound must
+// anchor the ceiling on the highest round of any runner, wherever the
+// low-tail runner falls among them, so the gating runs held out of the
+// calibration clear it. The low-tail runner is built around the low
+// calibration's 24,632,333 and the other runners' rounds are chosen to sit
+// inside the 1.20x margin, so this pins the anchoring alone: the measured 26.9
+// gating spread is wider than that margin, and the next test shows it refused
+// (#4151).
 func TestCalibratedBound_LowTailRunnerCannotSetTheCeiling(t *testing.T) {
 	const headroom = labelValuesBaselineHeadroom
 	lowTail := []uint64{23_800_000, 24_100_000, labelValuesRenamedCalibrationLow, 24_300_000, 24_450_000}
@@ -287,6 +291,7 @@ func TestCombineCalibrationFiles_CombinesEveryRunnersRounds(t *testing.T) {
 		}
 		paths = append(paths, writeRounds(t, dir, fmt.Sprintf("runner-%d.json", i), calibrationRun{
 			ClickHouse: version,
+			Runner:     fmt.Sprintf("runner-%d", i),
 			Sentinels: []sentinelRounds{
 				{Name: labelValuesRenamed, RoundMaxBytes: rounds},
 				// No pass measured this one in full: refused.
@@ -297,7 +302,9 @@ func TestCombineCalibrationFiles_CombinesEveryRunnersRounds(t *testing.T) {
 	// Another server's runner, far higher: it must not reach 26.9's bound.
 	paths = append(paths, writeRounds(t, dir, "other.json", calibrationRun{
 		ClickHouse: other,
-		Sentinels:  []sentinelRounds{{Name: labelValuesRenamed, RoundMaxBytes: slices.Repeat([]uint64{40_000_000}, nightlyCalibrationRounds)}},
+		// The same runner name as a 26.9 file: a runner is one per server.
+		Runner:    "runner-0",
+		Sentinels: []sentinelRounds{{Name: labelValuesRenamed, RoundMaxBytes: slices.Repeat([]uint64{40_000_000}, nightlyCalibrationRounds)}},
 	}))
 
 	out := filepath.Join(dir, "nightly-baseline.json")
@@ -339,15 +346,25 @@ func TestCombineCalibrationFiles_CombinesEveryRunnersRounds(t *testing.T) {
 }
 
 // TestCombineCalibrationFiles_WritesNothingItCannotStandBehind: no rounds
-// file, an unreadable one, one that names no server, and one naming a
-// sentinel outside its server's set all fail with no file written.
+// file, an unreadable one, one that names no server or no runner, one naming
+// a sentinel outside its server's set, and one run's rounds passed as two
+// runners all fail with no file written.
 func TestCombineCalibrationFiles_WritesNothingItCannotStandBehind(t *testing.T) {
 	dir := t.TempDir()
+	rounds := []sentinelRounds{{Name: labelValuesRenamed, RoundMaxBytes: slices.Repeat([]uint64{29_000_000}, nightlyCalibrationRounds)}}
 	unknown := writeRounds(t, dir, "unknown.json", calibrationRun{
 		ClickHouse: "26.9",
+		Runner:     "runner-0",
 		Sentinels:  []sentinelRounds{{Name: "no_such_sentinel", RoundMaxBytes: slices.Repeat([]uint64{1}, nightlyCalibrationRounds)}},
 	})
-	unnamed := writeRounds(t, dir, "unnamed.json", calibrationRun{})
+	unnamed := writeRounds(t, dir, "unnamed.json", calibrationRun{Runner: "runner-0", Sentinels: rounds})
+	noRunner := writeRounds(t, dir, "no-runner.json", calibrationRun{ClickHouse: "26.9", Sentinels: rounds})
+	var twice []string
+	for i := range nightlyCalibrationRunners {
+		// Every runner distinct but the last, which repeats the first.
+		runner := fmt.Sprintf("runner-%d", i%(nightlyCalibrationRunners-1))
+		twice = append(twice, writeRounds(t, dir, fmt.Sprintf("twice-%d.json", i), calibrationRun{ClickHouse: "26.9", Runner: runner, Sentinels: rounds}))
+	}
 	garbled := filepath.Join(dir, "garbled.json")
 	if err := os.WriteFile(garbled, []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
@@ -357,7 +374,9 @@ func TestCombineCalibrationFiles_WritesNothingItCannotStandBehind(t *testing.T) 
 		"a missing file":   {filepath.Join(dir, "missing.json")},
 		"a garbled file":   {garbled},
 		"no server":        {unnamed},
+		"no runner":        {noRunner},
 		"unknown sentinel": {unknown},
+		"a runner twice":   twice,
 	} {
 		out := filepath.Join(dir, "out.json")
 		if _, err := CombineCalibrationFiles(nightlyBaselinePath, out, paths); err == nil {
@@ -372,7 +391,7 @@ func TestCombineCalibrationFiles_WritesNothingItCannotStandBehind(t *testing.T) 
 // TestCalibrationRun_RoundTripsThroughItsFile pins the rounds file's format
 // the harness writes and the combine reads.
 func TestCalibrationRun_RoundTripsThroughItsFile(t *testing.T) {
-	run := calibrationRun{ClickHouse: "26.9", Sentinels: []sentinelRounds{
+	run := calibrationRun{ClickHouse: "26.9", Runner: "runner-0", Sentinels: []sentinelRounds{
 		{Name: labelValuesRenamed, RoundMaxBytes: []uint64{1, 2, 3, 4, 5}},
 		{Name: "label_values_matcher_stock_key"},
 	}}
