@@ -61,10 +61,15 @@ jobs:
   # available for an edit that would.
   #
   # `pull-requests: write` is granted to this job alone, which runs only for
-  # Dependabot's own pull requests. It checks out the BASE commit's scripts,
-  # without persisted credentials, so the code holding the write token is
-  # never the pull request's. The title is read from the REST API inside the
-  # script and never interpolated into a shell line.
+  # Dependabot's own pull requests. It checks out the scripts of the base
+  # branch's current tip (`base.ref`, a branch name), without persisted
+  # credentials, so the code holding the write token is never the pull
+  # request's. Neither `github.sha`, which on `pull_request` is the merge
+  # commit holding the pull request's code, nor `base.sha`, the base recorded
+  # when the head last moved, which can predate the script
+  # (test/regression/workflow_checkout_ref_test.go). The title is read
+  # from the REST API inside the script and never interpolated into a shell
+  # line.
   dependabot-title:
     name: dependabot title
     if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
@@ -80,7 +85,7 @@ jobs:
       - id: checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
           sparse-checkout: .github/scripts
           persist-credentials: false
         timeout-minutes: 3
@@ -89,7 +94,7 @@ jobs:
         if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
           sparse-checkout: .github/scripts
           persist-credentials: false
         timeout-minutes: 3

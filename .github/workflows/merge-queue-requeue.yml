@@ -20,7 +20,7 @@ name: merge-queue-requeue
 # request's own code. `github.event.pull_request.base.sha` is not that commit:
 # it is the base recorded when the pull request's head last moved, which can
 # predate a script this workflow runs
-# (test/regression/pull_request_target_checkout_test.go).
+# (test/regression/workflow_checkout_ref_test.go).
 #
 # Each job holds its own per-pull-request concurrency group. A workflow-level
 # group would put every `labeled` event of the pull request in one group, and
