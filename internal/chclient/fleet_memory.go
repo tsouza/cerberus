@@ -221,7 +221,7 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 		fold(r.Canary, r.Verdict)
 	}
 	for canary, v := range fv.Verdicts {
-		fv.Held = fv.Held || !(reachedHolds(reached, ranCanary, canary, v) || readUnattributed[CanaryReading{Canary: canary, Verdict: v}])
+		fv.Held = fv.Held || !reachedHolds(reached, ranCanary, canary, v) && !readUnattributed[CanaryReading{Canary: canary, Verdict: v}]
 	}
 	slices.SortFunc(fv.Versions, chopt.Version.Compare)
 	return fv
