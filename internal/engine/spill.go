@@ -138,8 +138,8 @@ func applySpillSettings(ctx context.Context, maxMemory int64) context.Context {
 // applySpillThresholds stamps every spill threshold a statement carries: the
 // group_by/sort pair always, the join threshold on a statement whose facts say
 // it may join once join_spill resolved in, and the DISTINCT threshold once
-// distinct_spill resolved in unless the facts say its DISTINCT runs over
-// attribute-map keys, each sized from memCap. It is the one list the engine's
+// distinct_spill resolved in unless the facts say a spill harms its
+// DISTINCT, each sized from memCap. It is the one list the engine's
 // dispatch seam (applySharedQuerySettings) and the statements dispatched
 // outside it (Engine.WithSpillThresholds) both read, so the two cannot stamp
 // different thresholds for the same cap.
@@ -175,10 +175,13 @@ func (e *Engine) WithSpillThresholds(ctx context.Context) context.Context {
 // builds itself, standing in for the plan facts the engine reads off a plan.
 // The zero value is a statement with no fact to report.
 type StatementShape struct {
-	// DistinctOverMapKeys reports that the statement's DISTINCT runs over the
-	// keys of an attribute map — label-name and tag-name discovery. See
-	// applyDistinctSpillSettings for why such a DISTINCT is not stamped.
-	DistinctOverMapKeys bool
+	// DistinctSpillHarmful reports that the statement is one whose DISTINCT
+	// a spill was measured to make abort where it completes unspilled. The
+	// Tempo handler's tag-discovery classifier (attributeTagScopes,
+	// tagValuesStatementShape) is the one place that names those shapes.
+	// See applyDistinctSpillSettings for why such a statement is not stamped
+	// with the DISTINCT threshold.
+	DistinctSpillHarmful bool
 }
 
 // statementShapeKey keys a StatementShape on a context.
@@ -193,11 +196,11 @@ func WithStatementShape(ctx context.Context, shape StatementShape) context.Conte
 // statementFacts returns the plan facts a statement built outside the engine
 // is stamped as. Whether it joins is unknown, so it counts as one that may:
 // the join threshold rides whenever join_spill is in, and only a join reads
-// it. Whether its DISTINCT runs over attribute-map keys is the
-// StatementShape its handler attached.
+// it. Whether a spill harms its DISTINCT is the StatementShape its handler
+// attached.
 func statementFacts(ctx context.Context) planShapeFacts {
 	shape, _ := ctx.Value(statementShapeKey{}).(StatementShape)
-	return planShapeFacts{hasJoin: true, distinctOverMapKeys: shape.DistinctOverMapKeys}
+	return planShapeFacts{hasJoin: true, distinctSpillHarmful: shape.DistinctSpillHarmful}
 }
 
 // applyJoinSpillSettings stamps the external-join spill threshold on ctx,
@@ -245,24 +248,28 @@ func applyJoinSpillSettings(ctx context.Context, f planShapeFacts, maxMemory int
 // The stamp is inert where it does not apply: only a DISTINCT transform reads
 // it, and only once the query's tracked memory passes spillThreshold(cap).
 //
-// The one exception is a DISTINCT over attribute-map keys
-// (f.distinctOverMapKeys), the label-name and tag-name discovery statements.
-// The keys are LowCardinality(String) in cerberus's DDL, and in memory such a
-// DISTINCT holds a fixed-size entry per key whatever the key's length, while
-// a spilled one writes the whole strings and reads them back to merge. With
-// long keys the merge outgrows the in-memory set: on ClickHouse 26.9, 1M
-// distinct 256-byte keys peak at 107 MB in memory, yet the same DISTINCT
-// spilled at 80 MiB aborts at a 160 MiB cap. Withholding the threshold keeps
-// that statement as it runs without distinct_spill. No engine plan emits a
-// DISTINCT over map keys (inspectPlanShape never sets the fact); only a
-// handler's StatementShape does.
+// The one exception is a statement whose DISTINCT a spill was measured to
+// harm (f.distinctSpillHarmful), the Tempo tag-discovery shapes the handler
+// marks through StatementShape: on ClickHouse 26.9, over 1M distinct
+// 256-byte values, each completes unspilled under a cap just above its
+// unspilled peak and aborts with MEMORY_LIMIT_EXCEEDED under that cap once
+// the threshold is stamped at half of it. The set is a measured one, not a
+// shape rule: other LowCardinality(String) DISTINCTs, the Prom label-name
+// and __name__-value and Loki label statements, measured the same with and
+// without the threshold, the plain-map tag-value DISTINCT over short values
+// completes with it where it aborts without, and the event and link tag
+// names completed with it at every cap tried
+// (docs/clickhouse-optimizations.background.md has the measurements). Every
+// statement the fact does not mark keeps the threshold. No engine
+// plan carries one of those shapes (inspectPlanShape never sets the fact);
+// only a handler's StatementShape does.
 //
 // Result-equivalent for every key cerberus distinguishes (strings, maps,
 // timestamps); see chopt.FeatureDistinctSpill for the float-key caveat
 // upstream documents for a spilled DISTINCT, and for what the stamp does and
 // does not bound inside a recursive CTE.
 func applyDistinctSpillSettings(ctx context.Context, f planShapeFacts, maxMemory int64, distinctSpillEnabled bool) context.Context {
-	if !distinctSpillEnabled || f.distinctOverMapKeys {
+	if !distinctSpillEnabled || f.distinctSpillHarmful {
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalDistinct, spillThreshold(maxMemory))

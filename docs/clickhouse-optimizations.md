@@ -530,14 +530,17 @@ Notes:
   ([ClickHouse#116569](https://github.com/ClickHouse/ClickHouse/pull/116569)).
   It stamps `max_bytes_before_external_distinct = spillThreshold(cap)` on
   every data-plane query, on both dispatch routes, and on every statement a
-  head's handler dispatches outside the engine, with one exception: a
-  statement whose `DISTINCT` runs over attribute-map keys (label-name and
-  tag-name discovery, marked by the handler with `engine.StatementShape`)
-  carries no `DISTINCT` threshold. The map keys are `LowCardinality`, so the
-  unspilled set holds a fixed-size hash per key, while a spilled one writes
-  every key out whole: 1M unique 256-byte keys answer in about 107 MB
-  unspilled and abort with code 241 under a 160 MiB cap once spilled at
-  80 MiB.
+  head's handler dispatches outside the engine, with one exception: a Tempo
+  tag-discovery statement whose `DISTINCT` a spill harms carries no
+  `DISTINCT` threshold. Those are the `name`, `kind` and `status` intrinsic
+  values, the values of a `LowCardinality(String)` materialized span or
+  resource attribute column, and the span and resource tag names read off a
+  Map column's keys, over HTTP and gRPC alike. The handler marks each such
+  statement with `engine.StatementShape`. Every other statement keeps the
+  threshold: the event and link tag names, the plain-map, auto-scope, event,
+  link and numeric-materialized tag values, every other intrinsic's values,
+  the instrumentation-scope and JSON-path tag names, every Prom and Loki
+  statement, and every data-plane statement.
   ClickHouse compares the threshold with the whole query's tracked memory,
   and only a `DISTINCT` reads it. **Version floor is 26.9**: 26.8 rejects the
   setting name with code 115. `Stability` is `experimental` and `AutoSelect`
@@ -556,10 +559,8 @@ Notes:
     in their bits (`0.` and `-0.`, NaN payloads) collapse to one row. The
     only cerberus `DISTINCT` with a float key is the lag-adjacency sample
     dedup over `(series, timestamp, value)`.
-  - Metadata routes (`/api/v1/series`, `/api/search/tags`, label values)
-    and the Tempo metrics exemplars statement dispatch through
-    `chclient.Client` directly and carry none of the spill thresholds
-    ([#4017](https://github.com/tsouza/cerberus/issues/4017)).
+  - A withheld Tempo tag-discovery statement whose unspilled set outgrows the
+    cap aborts with code 241.
 - **`result_cache`** ([#2781](https://github.com/tsouza/cerberus/issues/2781))
   stamps `use_query_cache=1` on a query the ENGINE proves is safe to cache,
   together with `query_cache_nondeterministic_function_handling=ignore`. The

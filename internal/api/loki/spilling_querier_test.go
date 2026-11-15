@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,14 +93,18 @@ func (r *spillSettingsRecorder) QueryLabelCardinalities(ctx context.Context, sql
 	return nil, nil
 }
 
-// TestHandlerDispatches_CarryEngineSpillThresholds drives every Loki endpoint
-// that dispatches through the handler's own client rather than the engine,
-// and requires each statement to reach the client with the engine's spill
-// thresholds: without them a high-cardinality metadata DISTINCT aborts at the
-// memory cap where an engine query of the same size spills. A statement
-// whose DISTINCT runs over attribute-map keys carries every threshold but the
-// DISTINCT one, and the label-name endpoint must dispatch at least one such
-// statement, so the withholding is exercised rather than vacuously absent.
+// TestHandlerDispatches_CarryEngineSpillThresholds drives every Loki
+// metadata route, and the data-plane routes beside them, and requires each
+// statement to reach the client with the engine's spill thresholds: without
+// them a high-cardinality metadata DISTINCT, GROUP BY or sort aborts at the
+// memory cap where an engine query of the same size spills. No Loki
+// statement is one whose DISTINCT a spill harms, so every one carries the
+// DISTINCT threshold: the statements through the handler's own client carry
+// all four, and an instant and a range metric query through the engine carry
+// all but the join one, which the engine stamps only on a plan that joins. A
+// route marked distinct must dispatch a DISTINCT — the label-name lookup, and
+// the set operation — so its keeping the threshold is checked rather than
+// vacuously absent.
 func TestHandlerDispatches_CarryEngineSpillThresholds(t *testing.T) {
 	rec := &spillSettingsRecorder{}
 	h := loki.New(rec, schema.DefaultOTelLogs(), nil)
@@ -108,44 +113,53 @@ func TestHandlerDispatches_CarryEngineSpillThresholds(t *testing.T) {
 	h.Mount(mux)
 
 	selector := url.QueryEscape(`{service_name="api"}`)
+	setOp := url.QueryEscape(`sum by (level) (count_over_time({service_name="api"}[1m])) unless on(level) ` +
+		`sum by (level) (count_over_time({service_name="web"}[1m]))`)
+	window := "&start=1700000000&end=1700003600"
 	for _, tc := range []struct {
-		path    string
-		mapKeys bool
+		method string
+		path   string
+		// viaEngine: the statements dispatch through the engine, which
+		// stamps the join threshold only on a plan that joins.
+		viaEngine bool
+		// distinct: the route dispatches a DISTINCT the test must see.
+		distinct bool
 	}{
-		{"/loki/api/v1/labels", true},
-		{"/loki/api/v1/label/service_name/values", false},
-		{"/loki/api/v1/series?match[]=" + selector, false},
-		{"/loki/api/v1/index/stats?query=" + selector, false},
-		{"/loki/api/v1/index/volume?query=" + selector, false},
-		{"/loki/api/v1/detected_fields?query=" + selector, false},
-		{"/loki/api/v1/detected_field/level/values?query=" + selector, false},
-		{"/loki/api/v1/detected_labels?query=" + selector, false},
-		{"/loki/api/v1/patterns?query=" + selector, false},
+		{method: http.MethodGet, path: "/loki/api/v1/labels", distinct: true},
+		{method: http.MethodPost, path: "/loki/api/v1/labels?query=" + selector, distinct: true},
+		{method: http.MethodGet, path: "/loki/api/v1/label/service_name/values"},
+		{method: http.MethodPost, path: "/loki/api/v1/label/service_name/values?query=" + selector},
+		{method: http.MethodGet, path: "/loki/api/v1/series?match[]=" + selector},
+		{method: http.MethodPost, path: "/loki/api/v1/series?match[]=" + selector},
+		{method: http.MethodGet, path: "/loki/api/v1/detected_fields?query=" + selector},
+		{method: http.MethodGet, path: "/loki/api/v1/detected_field/level/values?query=" + selector},
+		{method: http.MethodGet, path: "/loki/api/v1/detected_labels?query=" + selector},
+		{method: http.MethodGet, path: "/loki/api/v1/patterns?query=" + selector},
+		{method: http.MethodGet, path: "/loki/api/v1/index/stats?query=" + selector},
+		{method: http.MethodPost, path: "/loki/api/v1/index/volume?query=" + selector},
+		{method: http.MethodGet, path: "/loki/api/v1/query_range?step=60&query=" + setOp + window, viaEngine: true, distinct: true},
+		{method: http.MethodPost, path: "/loki/api/v1/query?time=1700003600&query=" + setOp, viaEngine: true, distinct: true},
 	} {
-		path := tc.path
-		t.Run(path, func(t *testing.T) {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+			mux.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
 			calls := rec.taken()
 			if len(calls) == 0 {
-				t.Fatalf("GET %s dispatched no statement (HTTP %d: %s)", path, w.Code, w.Body.String())
+				t.Fatalf("%s %s dispatched no statement (HTTP %d: %s)", tc.method, tc.path, w.Code, w.Body.String())
 			}
-			sawMapKeys := false
+			if tc.distinct && !slices.ContainsFunc(calls, func(c recordedStatement) bool { return strings.Contains(c.sql, "DISTINCT") }) {
+				t.Fatalf("%s %s dispatched no DISTINCT, so no DISTINCT keeping its threshold is checked", tc.method, tc.path)
+			}
+			want := wantSpillThresholds()
+			if tc.viaEngine {
+				delete(want, chopt.SettingMaxBytesBeforeExternalJoin)
+			}
 			for i, call := range calls {
-				mapKeys := isMapKeyDistinct(call.sql)
-				sawMapKeys = sawMapKeys || mapKeys
-				for name, value := range wantSpillThresholds(mapKeys) {
+				for name, value := range want {
 					if v, ok := call.settings[name].(int64); !ok || strconv.FormatInt(v, 10) != value {
-						t.Errorf("statement %d of GET %s: %s = %v; want %s", i, path, name, call.settings[name], value)
+						t.Errorf("statement %d of %s %s: %s = %v; want %s", i, tc.method, tc.path, name, call.settings[name], value)
 					}
 				}
-				if v, stamped := call.settings[chopt.SettingMaxBytesBeforeExternalDistinct]; mapKeys && stamped {
-					t.Errorf("statement %d of GET %s: %s = %v on a DISTINCT over map keys; want it withheld",
-						i, path, chopt.SettingMaxBytesBeforeExternalDistinct, v)
-				}
-			}
-			if sawMapKeys != tc.mapKeys {
-				t.Errorf("GET %s dispatched a DISTINCT over map keys = %t; want %t", path, sawMapKeys, tc.mapKeys)
 			}
 		})
 	}
@@ -153,27 +167,15 @@ func TestHandlerDispatches_CarryEngineSpillThresholds(t *testing.T) {
 
 // wantSpillThresholds is every spill threshold the engine stamps with both
 // version-gated features resolved in, at half spillCapBytes, as the string
-// the settings map renders. The DISTINCT one is withheld from a statement
-// whose DISTINCT runs over attribute-map keys (mapKeys).
-func wantSpillThresholds(mapKeys bool) map[string]string {
+// the settings map renders.
+func wantSpillThresholds() map[string]string {
 	half := strconv.FormatInt(spillCapBytes/2, 10)
-	want := map[string]string{
-		"max_bytes_before_external_group_by":    half,
-		"max_bytes_before_external_sort":        half,
-		chopt.SettingMaxBytesBeforeExternalJoin: half,
+	return map[string]string{
+		"max_bytes_before_external_group_by":        half,
+		"max_bytes_before_external_sort":            half,
+		chopt.SettingMaxBytesBeforeExternalJoin:     half,
+		chopt.SettingMaxBytesBeforeExternalDistinct: half,
 	}
-	if !mapKeys {
-		want[chopt.SettingMaxBytesBeforeExternalDistinct] = half
-	}
-	return want
-}
-
-// isMapKeyDistinct reports whether sql takes its DISTINCT over attribute-map
-// keys, the statement shape the handler marks to withhold the DISTINCT spill
-// threshold.
-func isMapKeyDistinct(sql string) bool {
-	return strings.Contains(sql, "DISTINCT") &&
-		(strings.Contains(sql, "mapKeys(") || strings.Contains(sql, ".`keys`"))
 }
 
 // tailFirstPollBudget bounds the wait for the tail loop's first poll, which
@@ -205,7 +207,7 @@ func TestTailDispatch_CarriesEngineSpillThresholds(t *testing.T) {
 		t.Fatalf("the tail loop dispatched no statement within %s", tailFirstPollBudget)
 	}
 	for i, call := range calls {
-		for name, value := range wantSpillThresholds(false) {
+		for name, value := range wantSpillThresholds() {
 			if v, ok := call.settings[name].(int64); !ok || strconv.FormatInt(v, 10) != value {
 				t.Errorf("tail poll %d: %s = %v; want %s", i, name, call.settings[name], value)
 			}

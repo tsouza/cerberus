@@ -7,6 +7,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
@@ -168,7 +169,10 @@ func (h *Handler) FetchTagValues(
 	// Engine bypass: stamp the data-shard fan-out weight from the emitted
 	// statement's own scan count, exactly as the HTTP tag-values path does
 	// (the auto-scope shape unions two arms over the same spans table).
-	raw, err := h.Client.QueryStrings(chclient.WithDataShardFanoutMultiplier(ctx, physicalScans), sqlStr, args...)
+	shape := tagValuesStatementShape(h.Schema, resolvedTagName{
+		IsIntrinsic: r.IsIntrinsic, IntrinsicCol: r.IntrinsicCol, IntrinsicName: r.IntrinsicName, Key: r.Key, MapScope: r.mapScope,
+	})
+	raw, err := h.Client.QueryStrings(engine.WithStatementShape(chclient.WithDataShardFanoutMultiplier(ctx, physicalScans), shape), sqlStr, args...)
 	if err != nil {
 		return nil, "", err
 	}
