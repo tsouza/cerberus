@@ -337,7 +337,13 @@ func (in histogramWindowInputs) withLowerers(l RangeLowerers) histogramWindowInp
 // There's no window to reduce — the shape means "ordinary instant-vector
 // selector", which resolves to at most the single newest sample per
 // series in the staleness lookback — so it gets its own fold rather than
-// falling into the sum_over_time default.
+// falling into the sum_over_time default. last_over_time shares that fold:
+// it is the same newest sample, read over the call's own `[range]`.
+//
+// avg_over_time, max_over_time and min_over_time read a rung's samples as
+// plain values, the way Prometheus reads each `le` series of a classic
+// histogram: the rung's mean, largest and smallest in-window cumulative
+// count.
 //
 // countValues is the series-wide "total observation count" time series
 // histogramExtrapolationFactorExpr's durationToZero clamp reads (see that
@@ -431,12 +437,34 @@ func histogramWindowFold(fn string, in histogramWindowInputs) histogramWindowTim
 		return func(values, order chplan.Expr) chplan.Expr {
 			return instantHistogramFold(fn, values, order, in.temporality, in.resets)
 		}
-	case "":
+	case "", lastOverTimeWindowFn:
 		return latestSampleFold
+	case avgOverTimeWindowFn:
+		return plainWindowFold(chplan.FnArrayAvg)
+	case maxOverTimeWindowFn:
+		return plainWindowFold(chplan.FnArrayMax)
+	case minOverTimeWindowFn:
+		return plainWindowFold(chplan.FnArrayMin)
 	default:
 		return func(values, _ chplan.Expr) chplan.Expr {
 			return &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{values}}
 		}
+	}
+}
+
+// maxOverTimeWindowFn and minOverTimeWindowFn are the range-vector
+// functions histogramWindowFold reduces to a rung's largest and smallest
+// in-window value.
+const (
+	maxOverTimeWindowFn = "max_over_time"
+	minOverTimeWindowFn = "min_over_time"
+)
+
+// plainWindowFold reduces one rung's in-window values with the array
+// function fn, ignoring their order: the rung's mean, maximum or minimum.
+func plainWindowFold(fn chplan.Fn) histogramWindowTimeFold {
+	return func(values, _ chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Fn: fn, Args: []chplan.Expr{values}}
 	}
 }
 
