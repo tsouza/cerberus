@@ -560,8 +560,7 @@ Notes:
     only cerberus `DISTINCT` with a float key is the lag-adjacency sample
     dedup over `(series, timestamp, value)`.
   - A withheld Tempo tag-discovery statement whose unspilled set outgrows the
-    cap aborts with code 241, as it does under the same cap with the
-    threshold stamped.
+    cap aborts with code 241.
 - **`result_cache`** ([#2781](https://github.com/tsouza/cerberus/issues/2781))
   stamps `use_query_cache=1` on a query the ENGINE proves is safe to cache,
   together with `query_cache_nondeterministic_function_handling=ignore`. The

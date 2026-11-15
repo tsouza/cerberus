@@ -64,8 +64,10 @@ func (r *spillSettingsRecorder) QueryStrings(ctx context.Context, _ string, _ ..
 // routes' statements do. A statement whose DISTINCT a spill harms (the span
 // and resource tag names, the name intrinsic's values) carries every
 // threshold but the DISTINCT one; the event and link tag names, the plain-map
-// tag values and the exemplars statement, which runs after the engine's
-// matrix statement, carry all four.
+// tag values, the auto-scope and numeric materialized values and the
+// exemplars statement, which runs after the engine's matrix statement, carry
+// all four. The materialized cases also pin that the shape survives the
+// gRPC path's conversion of tempo.ResolvedTagName.
 func TestRPCs_CarryEngineSpillThresholds(t *testing.T) {
 	rec := &spillSettingsRecorder{}
 	handler := tempo.New(rec, schema.DefaultOTelTraces(), "test-grpc", nil)
@@ -153,6 +155,46 @@ func TestRPCs_CarryEngineSpillThresholds(t *testing.T) {
 			}
 			for i, got := range calls {
 				checkSpillThresholds(t, tc.name, i, got, tc.harmful)
+			}
+		})
+	}
+
+	// A handler reading the default materialized attribute columns: a
+	// span- or resource-scoped lookup of a string-typed one reads the
+	// column, a shape a spill harms; the auto-scope lookup of the same key
+	// does not withhold the threshold.
+	materialized := schema.DefaultOTelTraces()
+	materialized.MaterializedSpanAttributeColumns = schema.DefaultMaterializedSpanAttributeColumns()
+	materialized.MaterializedResourceAttributeColumns = schema.DefaultMaterializedResourceAttributeColumns()
+	matHandler := tempo.New(rec, materialized, "test-grpc", nil)
+	matHandler.Engine.SetSettings(engine.SettingsRules{JoinSpill: true, DistinctSpill: true})
+	matClient, matCleanup := newServiceTestServer(t, tempogrpc.NewService(matHandler, nil, nil))
+	t.Cleanup(matCleanup)
+	for _, tc := range []struct {
+		tag     string
+		harmful bool
+	}{
+		{"span.rpc.method", true},
+		{"resource.k8s.namespace.name", true},
+		{"span.http.status_code", false},
+		{".rpc.method", false},
+	} {
+		t.Run("SearchTagValuesV2 materialized "+tc.tag, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), spillRPCBudget)
+			defer cancel()
+			stream, err := matClient.SearchTagValuesV2(ctx, &tempopb.SearchTagValuesRequest{TagName: tc.tag, Start: start, End: end})
+			if err != nil {
+				t.Fatalf("open stream: %v", err)
+			}
+			if _, err := recvAll[tempopb.SearchTagValuesV2Response](t, stream); err != nil {
+				t.Fatalf("SearchTagValuesV2 %s: %v", tc.tag, err)
+			}
+			calls := rec.taken()
+			if len(calls) == 0 {
+				t.Fatalf("SearchTagValuesV2 %s dispatched no statement", tc.tag)
+			}
+			for i, got := range calls {
+				checkSpillThresholds(t, "SearchTagValuesV2 "+tc.tag, i, got, tc.harmful)
 			}
 		})
 	}

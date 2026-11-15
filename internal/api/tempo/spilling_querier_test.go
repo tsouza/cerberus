@@ -65,15 +65,14 @@ func (r *spillSettingsRecorder) QueryStrings(ctx context.Context, sql string, _ 
 }
 
 // tempoSpillHandler is the handler configuration one case of
-// TestHandlerDispatches_CarryEngineSpillThresholds runs under.
+// TestHandlerDispatches_CarryEngineSpillThresholds runs under. The zero
+// value serves the upstream OTel-CH traces schema.
 type tempoSpillHandler int
 
 const (
-	// defaultHandler serves the upstream OTel-CH traces schema.
-	defaultHandler tempoSpillHandler = iota
 	// materializedHandler adds the default materialized span and resource
 	// attribute columns.
-	materializedHandler
+	materializedHandler tempoSpillHandler = iota + 1
 	// scopeAttrsHandler adds an instrumentation-scope attribute map.
 	scopeAttrsHandler
 	// jsonSpanAttrsHandler reads SpanAttributes under the JSON strategy, so

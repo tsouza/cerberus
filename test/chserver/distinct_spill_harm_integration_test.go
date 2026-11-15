@@ -42,8 +42,15 @@ const (
 // harmCapFactors are the caps, as multiples of a shape's unspilled peak, at
 // which TestDistinctSpill_WithheldShapesAnswer looks for the spilled
 // DISTINCT aborting, in the order it tries them. Every one lies between the
-// peak and twice it, the band in which a spill of each withheld shape aborts.
-var harmCapFactors = []float64{1.11, 1.4, 1.2, 1.6}
+// peak and twice it. 1.11 comes first because every withheld shape has
+// aborted spilled there; the rest widen the search across the band, nearest
+// the peak first.
+var harmCapFactors = []float64{1.11, 1.2, 1.4, 1.6}
+
+// harmCalibrationRuns is how many times a shape's unspilled peak is
+// measured; the probe sizes its caps from the largest, since one statement's
+// peak varies from run to run.
+const harmCalibrationRuns = 3
 
 // harmedShape is one Tempo tag-discovery request whose statement's DISTINCT
 // a spill harms, so the handler withholds the DISTINCT threshold from it.
@@ -76,9 +83,10 @@ func tagNamesAnswers(t *testing.T, body string) int {
 // unique 256-byte values, through the production handler on ClickHouse 26.9
 // with the engine's settings rules resolved from "auto,distinct_spill". For
 // each shape it measures the statement's unspilled peak P under a cap far
-// above it, then finds a cap between P and 2P at which the DISTINCT threshold
-// forced onto the statement at half the cap makes it abort with
-// MEMORY_LIMIT_EXCEEDED (code 241) — failing if there is none, since a shape a
+// above it, the largest of harmCalibrationRuns runs, then finds a cap between
+// P and 2P at which the DISTINCT threshold forced onto the statement at half
+// the cap makes it abort with MEMORY_LIMIT_EXCEEDED (code 241) while carrying
+// that threshold — failing if there is none, since a shape a
 // spill no longer harms must not go without the threshold — and requires the
 // request as dispatched to answer every seeded value under that same cap,
 // running with the group_by/sort/join thresholds at cap/2 and without the
@@ -114,20 +122,23 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 				return runTempoProbeOn(ctx, t, client, rules, traces, shape.path, params)
 			}
 
-			qid := fmt.Sprintf("harm-peak-%d", time.Now().UnixNano())
-			code, body := run(chclient.WithQueryID(ctx, qid), harmCalibrationCap)
-			if code != http.StatusOK {
-				t.Fatalf("under the %d-byte calibration cap the probe answered HTTP %d: %.500s", harmCalibrationCap, code, body)
+			peak := int64(0)
+			for range harmCalibrationRuns {
+				qid := fmt.Sprintf("harm-peak-%d", time.Now().UnixNano())
+				code, body := run(chclient.WithQueryID(ctx, qid), harmCalibrationCap)
+				if code != http.StatusOK {
+					t.Fatalf("under the %d-byte calibration cap the probe answered HTTP %d: %.500s", harmCalibrationCap, code, body)
+				}
+				if got := shape.answers(t, body); got != shape.want {
+					t.Fatalf("under the calibration cap the probe returned %d values; want %d", got, shape.want)
+				}
+				peak = max(peak, int64(s.peakMemory(ctx, t, qid)))
 			}
-			if got := shape.answers(t, body); got != shape.want {
-				t.Fatalf("under the calibration cap the probe returned %d values; want %d", got, shape.want)
-			}
-			peak := int64(s.peakMemory(ctx, t, qid))
 
 			memCap := int64(0)
 			for _, factor := range harmCapFactors {
 				candidate := int64(factor * float64(peak))
-				qid = fmt.Sprintf("harm-forced-%d", time.Now().UnixNano())
+				qid := fmt.Sprintf("harm-forced-%d", time.Now().UnixNano())
 				forced := chclient.WithQuerySetting(chclient.WithQueryID(ctx, qid), chopt.SettingMaxBytesBeforeExternalDistinct, candidate/2)
 				if code, _ := run(forced, candidate); code == http.StatusOK {
 					t.Logf("at %.2f x the %d-byte peak (%d bytes) the forced-spill probe completed", factor, peak, candidate)
@@ -138,6 +149,10 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 					t.Fatalf("at %.2f x the peak the forced-spill probe failed with server code %d (%s); want code %d",
 						factor, got, msg, memoryLimitExceeded)
 				}
+				if !s.abortedCarrying(ctx, t, qid, chopt.SettingMaxBytesBeforeExternalDistinct) {
+					t.Fatalf("at %.2f x the peak the forced-spill probe aborted without carrying %s, so its abort says nothing about a spill",
+						factor, chopt.SettingMaxBytesBeforeExternalDistinct)
+				}
 				t.Logf("at %.2f x the %d-byte peak (%d bytes) the forced-spill probe aborted: %.200s", factor, peak, candidate, msg)
 				memCap = candidate
 				break
@@ -147,8 +162,8 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 					harmCapFactors, peak)
 			}
 
-			qid = fmt.Sprintf("harm-dispatched-%d", time.Now().UnixNano())
-			code, body = run(chclient.WithQueryID(ctx, qid), memCap)
+			qid := fmt.Sprintf("harm-dispatched-%d", time.Now().UnixNano())
+			code, body := run(chclient.WithQueryID(ctx, qid), memCap)
 			if code != http.StatusOK {
 				t.Fatalf("as dispatched under the %d-byte cap the probe answered HTTP %d: %.500s", memCap, code, body)
 			}
@@ -167,6 +182,26 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 				memCap, float64(memCap)/float64(peak), peak, s.peakMemory(ctx, t, qid))
 		})
 	}
+}
+
+// abortedCarrying reports whether the statement query qid aborted with
+// carried the setting name explicitly.
+func (s *server) abortedCarrying(ctx context.Context, t *testing.T, qid, name string) bool {
+	t.Helper()
+	s.flushLogs(ctx, t)
+	var (
+		present uint8
+		rows    uint64
+	)
+	if err := s.admin.Conn().QueryRow(ctx,
+		"SELECT max(mapContains(Settings, ?)), count() FROM system.query_log WHERE type = 'ExceptionWhileProcessing' AND query_id = ?",
+		name, qid).Scan(&present, &rows); err != nil {
+		t.Fatalf("read query_log for %s: %v", qid, err)
+	}
+	if rows == 0 {
+		t.Fatalf("query_log has no aborted query %s", qid)
+	}
+	return present != 0
 }
 
 // seedHarmProbe applies cerberus's traces DDL with the default materialized

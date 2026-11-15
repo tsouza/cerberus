@@ -175,13 +175,12 @@ func (e *Engine) WithSpillThresholds(ctx context.Context) context.Context {
 // builds itself, standing in for the plan facts the engine reads off a plan.
 // The zero value is a statement with no fact to report.
 type StatementShape struct {
-	// DistinctSpillHarmful reports that the statement is one of the Tempo
-	// tag-discovery shapes whose DISTINCT a spill measurably makes abort
-	// where it completes unspilled: the intrinsic name, kind and status
-	// values; the values of a LowCardinality(String) materialized span or
-	// resource attribute column; and the span and resource tag names read
-	// off a Map column's keys. See applyDistinctSpillSettings for why such a
-	// statement is not stamped with the DISTINCT threshold.
+	// DistinctSpillHarmful reports that the statement is one whose DISTINCT
+	// a spill was measured to make abort where it completes unspilled. The
+	// Tempo handler's tag-discovery classifier (attributeTagScopes,
+	// tagValuesStatementShape) is the one place that names those shapes.
+	// See applyDistinctSpillSettings for why such a statement is not stamped
+	// with the DISTINCT threshold.
 	DistinctSpillHarmful bool
 }
 
@@ -249,21 +248,19 @@ func applyJoinSpillSettings(ctx context.Context, f planShapeFacts, maxMemory int
 // The stamp is inert where it does not apply: only a DISTINCT transform reads
 // it, and only once the query's tracked memory passes spillThreshold(cap).
 //
-// The one exception is a statement whose DISTINCT a spill measurably harms
-// (f.distinctSpillHarmful): one of the Tempo tag-discovery shapes listed on
-// StatementShape.DistinctSpillHarmful. Each takes its DISTINCT over a single
-// LowCardinality(String) column of tag names or values. In memory such a
-// DISTINCT holds a fixed-size entry per value whatever the value's length,
-// while a spilled one writes the whole values out and reads them back to
-// merge, and with long values that merge outgrows the in-memory set: on
-// ClickHouse 26.9, over 1M distinct 256-byte values, each of those
-// statements completes unspilled under a cap above its unspilled peak and
-// aborts with MEMORY_LIMIT_EXCEEDED there once the threshold is stamped
-// (docs/clickhouse-optimizations.background.md has the measurements).
-// Spilling is not harmful as such: the plain-map tag-value DISTINCT over
-// short values completes with the threshold where it aborts without, and the
-// event and link tag names complete either way, so every statement the fact
-// does not mark keeps the threshold. No engine
+// The one exception is a statement whose DISTINCT a spill was measured to
+// harm (f.distinctSpillHarmful), the Tempo tag-discovery shapes the handler
+// marks through StatementShape: on ClickHouse 26.9, over 1M distinct
+// 256-byte values, each completes unspilled under a cap just above its
+// unspilled peak and aborts with MEMORY_LIMIT_EXCEEDED under that cap once
+// the threshold is stamped at half of it. The set is a measured one, not a
+// shape rule: other LowCardinality(String) DISTINCTs, the Prom label-name
+// and __name__-value and Loki label statements, measured the same with and
+// without the threshold, the plain-map tag-value DISTINCT over short values
+// completes with it where it aborts without, and the event and link tag
+// names completed with it at every cap tried
+// (docs/clickhouse-optimizations.background.md has the measurements). Every
+// statement the fact does not mark keeps the threshold. No engine
 // plan carries one of those shapes (inspectPlanShape never sets the fact);
 // only a handler's StatementShape does.
 //

@@ -128,6 +128,7 @@ func TestHandlerDispatches_CarryEngineSpillThresholds(t *testing.T) {
 		distinct bool
 	}{
 		{method: http.MethodGet, path: "/api/v1/labels", distinct: true},
+		{method: http.MethodGet, path: "/api/v1/labels?match[]=up", distinct: true},
 		{method: http.MethodPost, path: "/api/v1/labels?match[]=up", distinct: true},
 		{method: http.MethodGet, path: "/api/v1/label/job/values"},
 		{method: http.MethodGet, path: "/api/v1/label/job/values?match[]=up"},
