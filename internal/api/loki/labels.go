@@ -9,7 +9,6 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/chsql"
-	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/telemetry"
 )
@@ -54,12 +53,6 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := h.metadataContext(r)
 	defer cancel()
-	// A DISTINCT over Map keys holds a fixed-size entry per key and outgrows
-	// it once spilled, so the handler client withholds the DISTINCT spill
-	// threshold from it (engine.StatementShape).
-	ctx = engine.WithStatementShape(ctx, engine.StatementShape{
-		DistinctOverMapKeys: chsql.AttrKeysFromMap(strategies.Attrs, h.Schema.ResourceAttributesColumn),
-	})
 	vals, err := h.Client.QueryStrings(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus loki labels CH query failed", "err", err, "sql", sqlStr)

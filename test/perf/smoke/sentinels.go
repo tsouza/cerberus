@@ -452,17 +452,17 @@ var Sentinels = []Sentinel{
 		// statement. It runs on the distinct-spill lane so every threshold,
 		// the two version-gated ones included, is in force.
 		//
-		// The statement's DISTINCT runs over attribute-map keys, which the
-		// handler marks (engine.StatementShape), so the DISTINCT threshold is
-		// withheld and the other three are stamped: RequiredQuerySettings and
-		// AbsentQuerySettings together are the load-bearing assertion, as
+		// The span tag names are a shape whose DISTINCT a spill harms, which
+		// the handler marks (engine.StatementShape), so the DISTINCT threshold
+		// is withheld and the other three are stamped: RequiredQuerySettings
+		// and AbsentQuerySettings together are the load-bearing assertion, as
 		// RequiredQuerySettings is for distinct_spill_structural_traceql. At
 		// this scale no operator crosses spillThreshold(cap), so peak memory
-		// alone measures the same with either half broken. Both shapes are
-		// pinned against a real build by test/chserver's
-		// TestMetadataSpill_TagValuesUnderCappedMemory (values spill and
-		// complete) and TestMetadataSpill_TagNamesKeepAnswering (keys answer
-		// where a spilled DISTINCT aborts).
+		// alone measures the same with either half broken. Against a real
+		// build, test/chserver's TestDistinctSpill_WithheldShapesAnswer pins
+		// the tag names (and every other withheld shape) answering where a
+		// spilled DISTINCT aborts, and TestMetadataSpill_TagValuesUnderCappedMemory
+		// pins plain-map tag values spilling and completing.
 		Name:            "metadata_spill_search_tags",
 		Mechanism:       "Engine.WithSpillThresholds (internal/engine/spill.go) via the Tempo handler's client",
 		Floor:           FloorDistinctSpill,
