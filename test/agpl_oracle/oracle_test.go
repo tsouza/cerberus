@@ -122,6 +122,72 @@ var metricsCorpus = []string{
 	`{ .a = 1 } | rate() | bottomk(3)`,
 }
 
+// spansetShapeCorpus holds queries on the edges of the grammar's two
+// spanset-operand families (spanset expressions and parenthesised
+// pipelines), of the scalar-filter stage and of a leading coalesce, whose
+// rejections carry the same message and column in both parsers.
+var spansetShapeCorpus = []string{
+	`({ } | count() > 1) && { }`,
+	`{ } && ({ } | count() > 1)`,
+	`({ }) && ({ } | count() > 1)`,
+	`({ .a = 1 } | count() > 1) >> { .b = 2 }`,
+	`({ } >> ({ } | count() > 1)) | rate()`,
+	`(max(duration) > 1s) >> { .x = 1 }`,
+	`({ } | count() > 1) && ({ }) && { }`,
+	`{ } && ({ }) && ({ } | count() > 1)`,
+	`(({ } | count() > 1) && { })`,
+	`({ } | by(.a)) && { }`,
+	`({ } | select(.a)) >> { }`,
+	`(count() > 1) || { }`,
+	`{ } >> ({ } | by(.a))`,
+	`{ } || (count() > 1)`,
+	`{ } | ({ } | count() > 1)`,
+	`{ } | by(.a) | ({ } | count() > 1)`,
+	`({ } | count() > 1) && ({ })`,
+	`({ } | count() > 1) && ({ } && { })`,
+	`({ .a = 1 } | count() > 1) >> ({ .b = 2 } | count() > 1)`,
+	`(max(duration) > 1s) >> ({ .x = 1 })`,
+	`({ }) && { }`,
+	`{ } && ({ } && { })`,
+	`{ } | ({ }) | count() > 1`,
+	`{ } | ({ } && { })`,
+	`{ } | count()`,
+	`{ } | avg(duration)`,
+	`{ } | sum(duration)`,
+	`{ } | count() | rate()`,
+	`{ } | count() | by(.a)`,
+	`{ } | count() with (sample=true)`,
+	`{ } && { } | count()`,
+	`{ } | count() > 1 | count()`,
+	`{ } | count() + 1`,
+	`{ } | max(duration) + 1`,
+	`{ } | 1 + max(duration)`,
+	`{ } | 1`,
+	`{ } | 1 > 2`,
+	`coalesce()`,
+	`coalesce() | { }`,
+	`(coalesce()) ~ { }`,
+	`{ } | count() > 1 | coalesce()`,
+}
+
+// TestParserSpansetShapeErrors_AB pins that both parsers give every query
+// of spansetShapeCorpus the same verdict and, for a rejection, the same
+// message.
+func TestParserSpansetShapeErrors_AB(t *testing.T) {
+	for _, q := range spansetShapeCorpus {
+		t.Run(q, func(t *testing.T) {
+			_, refErr := tempo.Parse(q)
+			_, gotErr := ast.Parse(q)
+			if (refErr == nil) != (gotErr == nil) {
+				t.Fatalf("accept/reject divergence: tempo err=%v, in-house err=%v", refErr, gotErr)
+			}
+			if refErr != nil && refErr.Error() != gotErr.Error() {
+				t.Fatalf("message divergence:\n tempo: %v\n  ours: %v", refErr, gotErr)
+			}
+		})
+	}
+}
+
 // TestParserAcceptReject_AB pins accept/reject parity across the full grammar.
 func TestParserAcceptReject_AB(t *testing.T) {
 	for _, q := range append(append([]string{}, structuralCorpus...), metricsCorpus...) {

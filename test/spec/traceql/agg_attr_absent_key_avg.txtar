@@ -1,5 +1,5 @@
 -- query.traceql --
-{} | avg(span.size)
+{} | avg(span.size) > 0
 -- seed --
 CREATE TABLE otel_traces (
     TraceId String,
@@ -22,7 +22,7 @@ INSERT INTO otel_traces VALUES
 ]
 -- parity_exempt --
 reason: no-comparable-oracle
-detail: `{} | avg(span.size)` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares
+detail: `{} | avg(span.size) > 0` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares
 -- args --
 [0] string = "size"
 [1] bool = true

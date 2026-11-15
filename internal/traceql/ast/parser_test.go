@@ -603,6 +603,123 @@ func TestParseRejectsPipeAfterWrappedPipeline(t *testing.T) {
 	}
 }
 
+// TestParseRejectsMixedSpansetOperands pins that the operands of a spanset
+// operation are either both spanset expressions or both parenthesised
+// pipelines, with the reference parser's own message and column. The first
+// operand decides: after a parenthesised pipeline the next operand must
+// open with `(`, and after a spanset expression a parenthesis holds a
+// spanset expression, in which a `|` is a syntax error. A parenthesis after
+// a pipeline's `|` likewise holds a spanset expression.
+func TestParseRejectsMixedSpansetOperands(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ query, want string }{
+		{`({ } | count() > 1) && { }`, "parse error at line 1, col 24: syntax error: unexpected {, expecting ("},
+		{`{ } && ({ } | count() > 1)`, "parse error at line 1, col 13: syntax error: unexpected |"},
+		{`({ }) && ({ } | count() > 1)`, "parse error at line 1, col 15: syntax error: unexpected |"},
+		{`({ .a = 1 } | count() > 1) >> { .b = 2 }`, "parse error at line 1, col 31: syntax error: unexpected {, expecting ("},
+		{`({ } >> ({ } | count() > 1)) | rate()`, "parse error at line 1, col 14: syntax error: unexpected |"},
+		{`(max(duration) > 1s) >> { .x = 1 }`, "parse error at line 1, col 25: syntax error: unexpected {, expecting ("},
+		{`({ } | count() > 1) && ({ }) && { }`, "parse error at line 1, col 33: syntax error: unexpected {, expecting ("},
+		{`{ } && ({ }) && ({ } | count() > 1)`, "parse error at line 1, col 22: syntax error: unexpected |"},
+		{`(({ } | count() > 1) && { })`, "parse error at line 1, col 25: syntax error: unexpected {, expecting ("},
+		{`({ } | by(.a)) && { }`, "parse error at line 1, col 19: syntax error: unexpected {, expecting ("},
+		{`({ } | select(.a)) >> { }`, "parse error at line 1, col 23: syntax error: unexpected {, expecting ("},
+		{`(count() > 1) || { }`, "parse error at line 1, col 18: syntax error: unexpected {, expecting ("},
+		{`{ } >> ({ } | by(.a))`, "parse error at line 1, col 13: syntax error: unexpected |"},
+		{`{ } || (count() > 1)`, "parse error at line 1, col 9: syntax error: unexpected count, expecting { or ("},
+		{`{ } | ({ } | count() > 1)`, "parse error at line 1, col 12: syntax error: unexpected |"},
+		{`{ } | by(.a) | ({ } | count() > 1)`, "parse error at line 1, col 21: syntax error: unexpected |"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			_, err := Parse(tc.query)
+			if err == nil {
+				t.Fatalf("Parse(%q): expected a syntax error, got nil", tc.query)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("Parse(%q) = %q, want %q", tc.query, err, tc.want)
+			}
+		})
+	}
+
+	accepted := []string{
+		`({ } | count() > 1) && ({ })`,
+		`({ } | count() > 1) && ({ } && { })`,
+		`({ .a = 1 } | count() > 1) >> ({ .b = 2 } | count() > 1)`,
+		`(max(duration) > 1s) >> ({ .x = 1 })`,
+		`({ }) && { }`,
+		`{ } && ({ } && { })`,
+		`{ } | ({ }) | count() > 1`,
+		`{ } | ({ } && { })`,
+	}
+	for _, q := range accepted {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+			if _, err := Parse(q); err != nil {
+				t.Errorf("Parse(%q) = %v, want it accepted", q, err)
+			}
+		})
+	}
+}
+
+// TestParseRejectsBareAggregateStage pins that an aggregate or a literal
+// leading a pipeline stage begins a scalar filter, so the stage must go on
+// to a comparison, with the reference parser's own message and column.
+func TestParseRejectsBareAggregateStage(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ query, want string }{
+		{`{ } | count()`, "parse error at line 1, col 14: syntax error: unexpected $end"},
+		{`{ } | avg(duration)`, "parse error at line 1, col 20: syntax error: unexpected $end"},
+		{`{ } | sum(duration)`, "parse error at line 1, col 20: syntax error: unexpected $end"},
+		{`{ } | count() | rate()`, "parse error at line 1, col 15: syntax error: unexpected |"},
+		{`{ } | count() | by(.a)`, "parse error at line 1, col 15: syntax error: unexpected |"},
+		{`{ } | count() with (sample=true)`, "parse error at line 1, col 15: syntax error: unexpected with"},
+		{`{ } && { } | count()`, "parse error at line 1, col 21: syntax error: unexpected $end"},
+		{`{ } | count() > 1 | count()`, "parse error at line 1, col 28: syntax error: unexpected $end"},
+		{`{ } | count() + 1`, "parse error at line 1, col 18: syntax error: unexpected $end"},
+		{`{ } | max(duration) + 1`, "parse error at line 1, col 24: syntax error: unexpected $end"},
+		{`{ } | 1 + max(duration)`, "parse error at line 1, col 24: syntax error: unexpected $end"},
+		{`{ } | 1`, "parse error at line 1, col 8: syntax error: unexpected $end"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			_, err := Parse(tc.query)
+			if err == nil {
+				t.Fatalf("Parse(%q): expected a syntax error, got nil", tc.query)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("Parse(%q) = %q, want %q", tc.query, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseRejectsLeadingCoalesce pins that coalesce() may follow a `|` but
+// may not lead a pipeline, at the top level or inside parentheses, with the
+// reference parser's own message and column.
+func TestParseRejectsLeadingCoalesce(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ query, want string }{
+		{`coalesce()`, "parse error at line 1, col 1: syntax error: unexpected coalesce"},
+		{`coalesce() | { }`, "parse error at line 1, col 1: syntax error: unexpected coalesce"},
+		{`(coalesce()) ~ { }`, "parse error at line 1, col 2: syntax error: unexpected coalesce"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			_, err := Parse(tc.query)
+			if err == nil {
+				t.Fatalf("Parse(%q): expected a syntax error, got nil", tc.query)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("Parse(%q) = %q, want %q", tc.query, err, tc.want)
+			}
+		})
+	}
+}
+
 // TestParseIdentifier pins the single-attribute parse entry point.
 func TestParseIdentifier(t *testing.T) {
 	t.Parallel()

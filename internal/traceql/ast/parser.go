@@ -246,7 +246,7 @@ func scalarFilterOp(k tokenKind) Operator {
 // =====================================================================
 
 func (c *cursor) parseRoot() *RootExpr {
-	first := c.parsePipelineStage()
+	first := c.parsePipelineStage(leadingStage)
 	if c.kind() == tokPipe && carriesWrappedPipeline(first) {
 		c.fail("syntax error: unexpected %s, expecting %s", tokPipe, tokWith)
 	}
@@ -263,7 +263,7 @@ func (c *cursor) parseRoot() *RootExpr {
 			break
 		}
 		c.advance() // consume PIPE
-		elems = append(elems, c.parsePipelineStage())
+		elems = append(elems, c.parsePipelineStage(laterStage))
 	}
 
 	var lead PipelineElement
@@ -318,15 +318,32 @@ func asPipeline(e PipelineElement) Pipeline {
 // Pipeline stages
 // =====================================================================
 
+// stagePosition says where in a pipeline a stage sits.
+type stagePosition bool
+
+const (
+	// leadingStage is a pipeline's first stage, which may be a
+	// parenthesised pipeline or an operation over parenthesised pipelines,
+	// and may not be coalesce.
+	leadingStage stagePosition = true
+	// laterStage follows a `|`; a parenthesis there does not open a
+	// pipeline.
+	laterStage stagePosition = false
+)
+
 // parsePipelineStage parses one stage of a spanset pipeline. Every stage
-// permits the same forms (the grammar's only difference is that coalesce may
-// not lead; accepting it everywhere is harmless over-acceptance, so the
-// position of the stage does not affect parsing).
-func (c *cursor) parsePipelineStage() PipelineElement {
+// permits the same scalar-filter, grouping and selection forms. Only a later
+// stage may be coalesce, and only a leading stage may open a parenthesised
+// pipeline. A parenthesised scalar expression is not parsed in either
+// position (#4178).
+func (c *cursor) parsePipelineStage(at stagePosition) PipelineElement {
 	switch c.kind() {
 	case tokBy:
 		return c.parseGroupOperation()
 	case tokCoalesce:
+		if at == leadingStage {
+			c.fail("syntax error: unexpected %s", tokCoalesce)
+		}
 		return c.parseCoalesceOperation()
 	case tokSelect:
 		return c.parseSelectOperation()
@@ -339,24 +356,24 @@ func (c *cursor) parsePipelineStage() PipelineElement {
 		// A leading literal can only begin a scalar filter (e.g. `2 > count()`).
 		return c.parseScalarStage()
 	default:
-		return c.parseSpansetExpr(2)
+		if at == leadingStage {
+			return c.parseSpansetExpr(2, eitherOperands)
+		}
+		return c.parseSpansetExpr(2, filterOperands)
 	}
 }
 
-// parseScalarStage parses an aggregate-or-literal-led stage that is either a
-// bare aggregate (valid as a scalar pipeline tail) or a scalar filter.
+// parseScalarStage parses an aggregate-or-literal-led stage, which is a
+// scalar filter: a scalar expression, a comparison operator, and a second
+// scalar expression.
 func (c *cursor) parseScalarStage() PipelineElement {
 	lhs := c.parseScalarExpr(0)
-	if isScalarFilterOp(c.kind()) {
-		op := scalarFilterOp(c.advance().kind)
-		rhs := c.parseScalarExpr(0)
-		return ScalarFilter{Op: op, LHS: lhs, RHS: rhs}
+	if !isScalarFilterOp(c.kind()) {
+		c.fail("syntax error: unexpected %s", c.kind())
 	}
-	if agg, ok := lhs.(Aggregate); ok {
-		return agg
-	}
-	c.fail("syntax error: expected comparison after scalar expression")
-	return nil
+	op := scalarFilterOp(c.advance().kind)
+	rhs := c.parseScalarExpr(0)
+	return ScalarFilter{Op: op, LHS: lhs, RHS: rhs}
 }
 
 func (c *cursor) parseGroupOperation() PipelineElement {
@@ -386,8 +403,34 @@ func (c *cursor) parseSelectOperation() PipelineElement {
 // Spanset expressions (structural + set operators over spanset operands)
 // =====================================================================
 
-func (c *cursor) parseSpansetExpr(minPrec int) SpansetExpression {
-	left := c.parseSpansetPrimary()
+// spansetOperands says which operands a spanset operation may combine. The
+// grammar keeps two families apart: spanset expressions (spanset filters, the
+// operators over them, and parenthesised spanset expressions) and wrapped
+// pipelines (parenthesised pipelines and the operators over them). Both
+// operands of an operation belong to the same family, and the first operand
+// decides which.
+type spansetOperands int
+
+const (
+	// eitherOperands is the start of a leading stage, where a parenthesis
+	// may open either family.
+	eitherOperands spansetOperands = iota
+	// filterOperands admits spanset expressions only: a parenthesis opens a
+	// spanset expression, and a `|` inside it is a syntax error.
+	filterOperands
+	// wrappedOperands admits wrapped pipelines only: each operand opens
+	// with a parenthesis.
+	wrappedOperands
+)
+
+func (c *cursor) parseSpansetExpr(minPrec int, operands spansetOperands) SpansetExpression {
+	left := c.parseSpansetPrimary(operands)
+	if operands == eitherOperands {
+		operands = filterOperands
+		if carriesWrappedPipeline(left) {
+			operands = wrappedOperands
+		}
+	}
 	for {
 		k := c.kind()
 		prec := spansetBinPrec(k)
@@ -395,25 +438,39 @@ func (c *cursor) parseSpansetExpr(minPrec int) SpansetExpression {
 			break
 		}
 		c.advance()
-		right := c.parseSpansetExpr(prec + 1)
+		right := c.parseSpansetExpr(prec+1, operands)
 		left = SpansetOperation{Op: spansetBinOp(k), LHS: left, RHS: right}
 	}
 	return left
 }
 
-func (c *cursor) parseSpansetPrimary() SpansetExpression {
-	switch c.kind() {
-	case tokOpenBrace:
+func (c *cursor) parseSpansetPrimary(operands spansetOperands) SpansetExpression {
+	switch {
+	case c.kind() == tokOpenBrace && operands != wrappedOperands:
 		return c.parseSpansetFilter()
-	case tokOpenParen:
+	case c.kind() == tokOpenParen && operands == filterOperands:
+		c.advance()
+		inner := c.parseSpansetExpr(2, filterOperands)
+		if c.kind() == tokPipe {
+			c.fail("syntax error: unexpected %s", tokPipe)
+		}
+		c.expect(tokCloseParen)
+		return inner
+	case c.kind() == tokOpenParen:
 		c.advance()
 		inner := c.parseParenPipeline()
 		c.expect(tokCloseParen)
 		return inner
+	}
+	switch operands {
+	case filterOperands:
+		c.fail("syntax error: unexpected %s, expecting %s or %s", c.kind(), tokOpenBrace, tokOpenParen)
+	case wrappedOperands:
+		c.fail("syntax error: unexpected %s, expecting %s", c.kind(), tokOpenParen)
 	default:
 		c.fail("syntax error: unexpected %s, expecting a spanset", c.kind())
-		return nil
 	}
+	return nil
 }
 
 // parseParenPipeline parses the contents of a parenthesised spanset, which may
@@ -427,7 +484,7 @@ func (c *cursor) parseSpansetPrimary() SpansetExpression {
 // rate()`. ScalarFilter has to be named: it is a SpansetExpression too, so the
 // type assertion alone would unwrap it.
 func (c *cursor) parseParenPipeline() SpansetExpression {
-	first := c.parsePipelineStage()
+	first := c.parsePipelineStage(leadingStage)
 	if c.kind() == tokPipe && carriesWrappedPipeline(first) {
 		c.fail("syntax error: unexpected %s", tokPipe)
 	}
@@ -442,7 +499,7 @@ func (c *cursor) parseParenPipeline() SpansetExpression {
 	elems := []PipelineElement{first}
 	for c.kind() == tokPipe {
 		c.advance()
-		elems = append(elems, c.parsePipelineStage())
+		elems = append(elems, c.parsePipelineStage(laterStage))
 	}
 	return Pipeline{Elements: elems}
 }

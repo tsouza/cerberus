@@ -166,8 +166,10 @@ func (o SelectOperation) String() string {
 	return "select(" + strings.Join(parts, ", ") + ")"
 }
 
-// Aggregate is a `| count()` / `| sum(<expr>)` style stage. The op and
-// inner expression are private and exposed through Op and InnerExpr.
+// Aggregate is an aggregate over a spanset (`count()`, `sum(<expr>)` and the
+// like), which a parsed query holds as an operand of a scalar filter
+// (`{ } | count() > 1`). The op and inner expression are private and
+// exposed through Op and InnerExpr.
 type Aggregate struct {
 	op AggregateOp
 	e  FieldExpression
