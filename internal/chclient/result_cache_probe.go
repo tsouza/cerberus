@@ -52,8 +52,8 @@ const resultCacheProbeTTLSeconds = 1
 // use_query_cache, or a server whose query cache is disabled entirely
 // (query_cache_max_size_in_bytes=0) — either of which answers with a typed
 // rejection rather than silently ignoring the stamped settings. cmd/cerberus
-// calls this over the bootstrap connection alongside ProbeTSGridCapability
-// and hands the verdict to chopt.Resolve as Config.ResultCacheCapability.
+// runs it as a fleet canary (ProbeFleet) alongside ProbeTSGridCapability and
+// hands the fleet's verdict to chopt.Resolve as Config.ResultCacheCapability.
 //
 // Because the canary stamps the SAME use_query_cache=1 setting a real
 // eligible query does, queryContext's generic resultCacheStamped detection

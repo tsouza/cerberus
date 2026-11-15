@@ -4,7 +4,11 @@ package chserver
 
 import (
 	"context"
+	"io"
+	"maps"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/testcontainers/testcontainers-go"
@@ -141,5 +145,226 @@ func TestFleetProbe_ClusterArmReadsEveryReplicasIdentity(t *testing.T) {
 	lowest, ok := chclient.NewFleetMemory().Observe(pass).Lowest()
 	if !ok || lowest != older.version {
 		t.Fatalf("lowest fleet build = %v (ok=%v); want the older replica's %v", lowest, ok, older.version)
+	}
+}
+
+// Credentials and settings profile of the canary user below: on one server
+// its profile pins the experimental time-series setting, so the ts_grid
+// canary's stamp is a constraint violation there.
+const (
+	canaryUser     = "fleet_canary"
+	canaryPassword = "fleet_canary"
+	canaryProfile  = "fleet_canary_pinned"
+)
+
+// canaryServerUUID reads s's own serverUUID(), as the fleet probe renders it.
+func canaryServerUUID(ctx context.Context, t *testing.T, s *server) string {
+	t.Helper()
+	rows, err := s.admin.QueryStrings(ctx, "SELECT toString(serverUUID())")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("%s: read serverUUID() = %v, %v", s.image, rows, err)
+	}
+	return rows[0]
+}
+
+// fleetCanaryNames are the canaries the tests below run.
+const (
+	tsGridCanary      = "ts_grid"
+	resultCacheCanary = "result_cache"
+)
+
+// fleetCanaries runs the real ts_grid and result_cache canaries.
+var fleetCanaries = []chclient.FleetCanary{
+	{Name: tsGridCanary, Probe: func(ctx context.Context, c *chclient.Client) chopt.Capability {
+		return c.ProbeTSGridCapability(ctx)
+	}},
+	{Name: resultCacheCanary, Probe: func(ctx context.Context, c *chclient.Client) chopt.Capability {
+		return c.ProbeResultCacheCapability(ctx)
+	}},
+}
+
+// startCanaryPair boots two servers on one build, each with the canary user:
+// on pinned the user's profile pins the experimental time-series setting, so
+// the ts_grid canary's stamp is refused there; on open nothing is pinned.
+func startCanaryPair(ctx context.Context, t *testing.T) (pinned, open *server) {
+	t.Helper()
+	pinned = startServer(ctx, t, fleetNewImage)
+	open = startServer(ctx, t, fleetNewImage)
+	pinned.exec(ctx, t, "CREATE SETTINGS PROFILE "+canaryProfile+" SETTINGS "+chclient.SettingExperimentalTSGridAggregate+" = 0 CONST")
+	pinned.exec(ctx, t, "CREATE USER "+canaryUser+" IDENTIFIED BY '"+canaryPassword+"' SETTINGS PROFILE "+canaryProfile)
+	open.exec(ctx, t, "CREATE USER "+canaryUser+" IDENTIFIED BY '"+canaryPassword+"'")
+	return pinned, open
+}
+
+// canaryConfig is the canary user's bootstrap config over addrs.
+func canaryConfig(addrs ...string) chclient.Config {
+	return chclient.Config{
+		Addr:            addrs[0],
+		Addrs:           addrs,
+		Database:        serverDB,
+		Username:        canaryUser,
+		Password:        canaryPassword,
+		BreakerDisabled: true,
+	}
+}
+
+// passVerdicts collects, per server identity, the verdict of every canary a
+// pass ran on it, failing on a canary run twice on one server.
+func passVerdicts(t *testing.T, pass chclient.FleetPass) map[string]map[string]chopt.Capability {
+	t.Helper()
+	got := map[string]map[string]chopt.Capability{}
+	for _, n := range pass.Nodes {
+		if got[n.ID] == nil {
+			got[n.ID] = map[string]chopt.Capability{}
+		}
+		for canary, v := range n.Verdicts {
+			if prev, dup := got[n.ID][canary]; dup {
+				t.Fatalf("server %s gave %s twice in one pass (%s, %s); want each canary run once per address", n.ID, canary, prev, v)
+			}
+			got[n.ID][canary] = v
+		}
+	}
+	return got
+}
+
+// TestFleetProbe_CanaryVerdictsBelongToTheServerThatGaveThem probes two
+// servers behind one multi-address config with the real ts_grid and
+// result_cache canaries. The pinned server refuses the ts_grid stamp — an
+// error, which closes the connection — so its result_cache verdict is read
+// over a new connection, and must still be attributed to it. The fleet the
+// memory describes then refuses ts_grid and permits result_cache.
+func TestFleetProbe_CanaryVerdictsBelongToTheServerThatGaveThem(t *testing.T) {
+	ctx := context.Background()
+	pinned, open := startCanaryPair(ctx, t)
+	cfg := canaryConfig(pinned.addr, open.addr)
+	pass := chclient.ProbeFleet(ctx, cfg, "", fleetCanaries...)
+	if !pass.Complete {
+		t.Fatalf("fleet probe over %v = %+v; want a complete pass", cfg.Addrs, pass)
+	}
+
+	want := map[string]map[string]chopt.Capability{
+		canaryServerUUID(ctx, t, pinned): {tsGridCanary: chopt.CapabilityForbidden, resultCacheCanary: chopt.CapabilityAvailable},
+		canaryServerUUID(ctx, t, open):   {tsGridCanary: chopt.CapabilityAvailable, resultCacheCanary: chopt.CapabilityAvailable},
+	}
+	if got := passVerdicts(t, pass); !maps.EqualFunc(got, want, maps.Equal) {
+		t.Fatalf("pass verdicts by server = %v; want %v", got, want)
+	}
+	fv := chclient.NewFleetMemory().Observe(pass)
+	if fv.Capability(tsGridCanary) != chopt.CapabilityForbidden || fv.Capability(resultCacheCanary) != chopt.CapabilityAvailable {
+		t.Fatalf("fleet verdicts = %v; want ts_grid forbidden by the pinned server, result_cache available", fv.Verdicts)
+	}
+}
+
+// switchingBalancer is a TCP load balancer in front of ClickHouse servers.
+// It sends each connection it accepts to the server address route names for
+// that connection's index since route was set.
+type switchingBalancer struct {
+	addr  string
+	mu    sync.Mutex
+	route func(conn int) string
+	conns int
+}
+
+// startSwitchingBalancer listens on a loopback port and forwards every
+// connection it accepts until the test ends.
+func startSwitchingBalancer(t *testing.T) *switchingBalancer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("balancer listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	b := &switchingBalancer{addr: ln.Addr().String()}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			b.mu.Lock()
+			backend := b.route(b.conns)
+			b.conns++
+			b.mu.Unlock()
+			go forward(c, backend)
+		}
+	}()
+	return b
+}
+
+// routeEach makes route decide every later connection, counted from zero.
+func (b *switchingBalancer) routeEach(route func(conn int) string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.route, b.conns = route, 0
+}
+
+// forward pipes c to backend both ways until either side closes.
+func forward(c net.Conn, backend string) {
+	defer func() { _ = c.Close() }()
+	d, err := net.Dial("tcp", backend)
+	if err != nil {
+		return
+	}
+	defer func() { _ = d.Close() }()
+	go func() {
+		_, _ = io.Copy(d, c)
+		_ = d.Close()
+	}()
+	_, _ = io.Copy(c, d)
+}
+
+// canaryBalancedPasses is how many passes the load-balanced test alternates
+// between the two servers.
+const canaryBalancedPasses = 6
+
+// TestFleetProbe_LoadBalancedCanaryHoldsTheRefusingReplica puts the two
+// servers behind one load-balanced address. First, one pass whose first
+// connection reaches the pinned server and every later one the open server:
+// the ts_grid refusal closes the first connection, the result_cache canary
+// runs on the open server, and each verdict must be attributed to the server
+// that gave it. Then passes alternate between the servers, every connection
+// of a pass reaching one of them; from the first pass on the pinned server,
+// the fleet's ts_grid verdict must stay forbidden on every pass, including
+// the ones that land on the open server.
+func TestFleetProbe_LoadBalancedCanaryHoldsTheRefusingReplica(t *testing.T) {
+	ctx := context.Background()
+	pinned, open := startCanaryPair(ctx, t)
+	pinnedID, openID := canaryServerUUID(ctx, t, pinned), canaryServerUUID(ctx, t, open)
+	balancer := startSwitchingBalancer(t)
+	cfg := canaryConfig(balancer.addr)
+
+	balancer.routeEach(func(conn int) string {
+		if conn == 0 {
+			return pinned.addr
+		}
+		return open.addr
+	})
+	pass := chclient.ProbeFleet(ctx, cfg, "", fleetCanaries...)
+	want := map[string]map[string]chopt.Capability{
+		pinnedID: {tsGridCanary: chopt.CapabilityForbidden},
+		openID:   {resultCacheCanary: chopt.CapabilityAvailable},
+	}
+	if got := passVerdicts(t, pass); !pass.Complete || !maps.EqualFunc(got, want, maps.Equal) {
+		t.Fatalf("pass switching servers after the refusal: complete=%v, verdicts by server = %v; want complete, %v",
+			pass.Complete, got, want)
+	}
+
+	memory := chclient.NewFleetMemory()
+	for n := range canaryBalancedPasses {
+		onPinned := n%2 == 1
+		backend := open.addr
+		if onPinned {
+			backend = pinned.addr
+		}
+		balancer.routeEach(func(int) string { return backend })
+		fv := memory.Observe(chclient.ProbeFleet(ctx, cfg, "", fleetCanaries...))
+		want := chopt.CapabilityAvailable
+		if n > 0 {
+			want = chopt.CapabilityForbidden
+		}
+		if got := fv.Capability(tsGridCanary); got != want || fv.Capability(resultCacheCanary) != chopt.CapabilityAvailable {
+			t.Errorf("pass %d (landed on the pinned server: %v): ts_grid %s, result_cache %s; want %s, %s",
+				n+1, onPinned, got, fv.Capability(resultCacheCanary), want, chopt.CapabilityAvailable)
+		}
 	}
 }

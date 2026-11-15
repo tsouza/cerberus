@@ -863,13 +863,17 @@ only the ones the last probe reached:
 - A probe that reaches no server falls back to the supported floor; what is
   remembered is kept for the next probe that answers.
 
+Every [capability canary](#capability-canaries-across-servers) verdict is
+remembered the same way, with the server that gave it.
+
 During a rolling rollback behind one load-balanced address, the first probe
 that lands on the rolled-back replica lowers the resolution to that replica's
 build, and the resolution stays there while the replica serves on it: probes
 that land on the other replicas do not raise it. The defect gates, the
-condition-cache override and the analyzer decision follow the remembered
-servers the same way. While cerberus remembers a build no server the last
-probe reached runs, the [re-probe](#re-probe) runs every 10 seconds. A replica
+condition-cache override, the analyzer decision and the capability canary
+verdicts follow the remembered servers the same way. While cerberus remembers
+a build or a canary verdict no server the last probe reached gave, the
+[re-probe](#re-probe) runs every 10 seconds. A replica
 that leaves the fleet keeps counting for 40 complete probes per remembered
 server, under seven minutes per server at that cadence, and one that rolls
 forward lifts the version on the first probe that lands on it.
@@ -884,6 +888,38 @@ Memory starts empty at boot, and behind a load balancer the fleet is learned
 one probe at a time. Naming every address, or the cluster, reads the whole
 fleet on every probe. `fleet_versions` in the boot log lists every remembered
 build.
+
+### Capability canaries across servers
+
+The capability canaries — the
+[experimental ts_grid setting](#capability-probe-experimental-ts_grid-setting),
+the `result_cache` settings, the
+[query-log union](#capability-probe-query-log-union) table when the selection
+lists `query_log_union`, and `CERBERUS_CH_QUERY_WORKLOAD` when it is set — run
+inside the version probe, on every server it reads through a configured
+address. Each canary runs right after a `serverUUID()` read on the same
+connection, and its verdict belongs to that server:
+
+- A server a probe ran a canary on takes the verdict it gave; a canary the
+  probe did not run on it keeps the verdict remembered for it.
+- The verdict in force for each canary is the most conservative one across
+  the remembered servers: **forbidden** if any server refused, else
+  **unreachable** if any server's canary failed, else **available**.
+- A replica read only through the `CERBERUS_SCHEMA_CLUSTER` replica list runs
+  no canary and adds no verdict.
+- When no remembered server gave a verdict on a canary, its verdict is
+  **unreachable**.
+
+Behind one load-balanced address whose replicas disagree — a `CREATE WORKLOAD`
+defined on one replica only, or a profile that forbids the experimental
+setting on one replica only — the first probe that lands on the refusing
+replica turns the feature off, and it stays off while that replica serves:
+probes that land on the other replicas do not turn it back on. The `forbidden`
+verdict clears on the first probe that lands on that replica and gets
+**available**, or once the replica is forgotten. The boot log reports each
+canary's verdict in force (`server_ts_grid_capability`,
+`server_result_cache_capability`, `server_query_log_union_capability`,
+`server_query_workload_capability`).
 
 ## Capability probe (experimental ts_grid setting)
 
@@ -901,7 +937,9 @@ So auto-selection of the native family is gated on **two** axes, not just the
 version floor: alongside `SELECT version()`, cerberus runs a cheap
 **capability canary** that stamps the experimental setting on a trivial query
 over the always-present `default` database (independent of whether the
-configured database exists yet). The verdict is tri-state:
+configured database exists yet), on every server the version probe reads
+([Capability canaries across servers](#capability-canaries-across-servers)).
+The verdict is tri-state:
 
 - **available** — the server accepted the setting; the native family resolves
   per its version floor.
@@ -955,8 +993,9 @@ re-probe.
 [`solver.md`](solver.md#query-log-source)). It is gated on a probe, never on
 the version, and only when the selection lists it: cerberus runs the
 reconciler's own record-selection query against `system.all_query_log` for an
-empty page, over the bootstrap connection, at boot and on every
-[re-probe](#re-probe).
+empty page, on every server the version probe reads
+([Capability canaries across servers](#capability-canaries-across-servers)),
+at boot and on every [re-probe](#re-probe).
 
 - **available** — the table exists, every union member has the selected
   columns, and cerberus's user may `SELECT` it: the feature resolves in.
@@ -981,7 +1020,7 @@ resolution is re-run every **5 minutes** for the life of the process, and a
 changed answer is swapped into the query path in place.
 
 Each pass repeats exactly the boot resolution — probe each node's identity
-and `version()`, run the capability canary, resolve the *same* configured selection against both — so a
+and `version()`, run the capability canaries, resolve the *same* configured selection against both — so a
 running process can never reach a posture boot could not have produced. The
 selection itself is fixed for the life of the process, which is what makes the
 loop safe to run unattended: a re-resolve cannot introduce an unknown feature id

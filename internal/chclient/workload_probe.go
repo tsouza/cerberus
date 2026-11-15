@@ -38,7 +38,7 @@ const workloadCapabilityProbeName = "cerberus_probe"
 // Mirrors ProbeTSGridCapability / ProbeResultCacheCapability exactly: the
 // same tri-state classification (classifyCapabilityFromProbeErr) over the
 // same trivial canary body, and the same "never returns an error" contract.
-// cmd/cerberus calls this over the bootstrap connection, ONLY when
+// cmd/cerberus runs it as a fleet canary (ProbeFleet), ONLY when
 // CERBERUS_CH_QUERY_WORKLOAD is non-empty (an unconfigured deployment skips
 // the probe entirely — the knob's mere absence is already the full gate),
 // and combines the verdict with CERBERUS_CH_OPTIMIZATIONS_MODE to decide

@@ -1,5 +1,7 @@
 package chopt
 
+import "slices"
+
 // Capability is the boot-time, tri-state verdict on whether the connected
 // ClickHouse server will actually accept a particular setting (or setting
 // family) cerberus wants to use. It is a REUSABLE shape: three independent
@@ -90,3 +92,20 @@ func (c Capability) String() string {
 		return "unknown"
 	}
 }
+
+// Conservative returns whichever of c and other permits less, for combining
+// the verdicts several servers gave on one canary: a query can land on any of
+// them, so the fleet permits a setting only when every server that answered
+// permits it. Forbidden, a server's definitive refusal, outranks Unreachable,
+// and Unreachable outranks Available. Unknown is no verdict at all, so it
+// yields the other value.
+func (c Capability) Conservative(other Capability) Capability {
+	if slices.Index(permissiveFirst, other) > slices.Index(permissiveFirst, c) {
+		return other
+	}
+	return c
+}
+
+// permissiveFirst orders the verdicts for Conservative, from no verdict to the
+// definitive refusal.
+var permissiveFirst = []Capability{CapabilityUnknown, CapabilityAvailable, CapabilityUnreachable, CapabilityForbidden}

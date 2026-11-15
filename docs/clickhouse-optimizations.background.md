@@ -1341,6 +1341,58 @@ answered on the floor's own build kept `/readyz` failing, and a resolution from
 an incomplete or held probe kept that mark after a probe that reached every
 node and every remembered build.
 
+## Why capability canaries run inside the version probe
+
+Each capability canary used to open its own short-lived connection to the
+configured address and read the verdict of whichever server that connection
+reached. The version probe remembered every server it had read, but the
+canaries did not. Behind a load balancer whose replicas disagreed on a canary,
+the verdict in force followed the last canary's replica. A `CREATE WORKLOAD`
+defined on one replica only made the effective workload flip between the
+configured name and `""`, and while it was set, a query that landed on a
+replica without the definition was rejected. A profile that forbade the
+experimental time-series setting on one replica only made the native
+`ts_grid_*` features flip on and off. While the remembered fleet held a build
+the last probe did not reach, the re-probe ran every 10 seconds, so a flip
+repeated at that rate during a mixed-build period.
+
+A verdict needs the identity of the server that gave it before the memory can
+hold it. Running each canary inside the version probe, on a connection whose
+`serverUUID()` was just read, gives it one, and the fleet memory that already
+keys builds by identity keeps verdicts the same way. A second store keyed some
+other way would have had its own retention and forgetting rules to keep in
+step with the first.
+
+**Why an identity read before every canary.** The driver closes a connection
+on any error, so the statement after a canary the server refused dials a new
+connection, and behind a load balancer that connection can reach a different
+server. Reading the identity again before each canary keeps each verdict tied
+to the server that gave it, at the cost of one trivial statement per canary
+per address. A canary body cannot carry the identity itself: a refusal comes
+back as an exception, with no row.
+
+**Why the order is forbidden, then unreachable, then available.** A query can
+land on any remembered server, so the fleet permits a setting only when every
+server that answered permits it. A refusal is definitive evidence and the
+failure to read a verdict is not, so a refusal wins: under `enforcing`, an
+explicitly listed feature stays a fatal configuration fault at boot when any
+reached server refuses it, rather than being softened by another server's
+transport failure.
+
+**Why a cluster replica adds no verdict.** The cluster arm reads every
+replica's build in one `clusterAllReplicas` statement on one address. A canary
+run that way fails as one statement, and the exception names no replica, so
+the refusal could not be tied to a server. Treating the missing verdict as a
+refusal would turn every capability feature off for any deployment that names
+a cluster.
+
+**Why a remembered verdict holds the fast cadence.** A server's verdict can
+keep a feature off as long as the memory holds it, exactly like its build can
+hold the version down. A verdict no server the last probe reached gave marks
+the fleet held, so the re-probe runs every 10 seconds and the memory sees the
+replica's verdict change, or forgets a replica that left, within the time its
+retention is priced at.
+
 ## Audited, not adopted
 
 Not every settings family the audit epic (#2778) reviews earns a registry

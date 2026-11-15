@@ -37,9 +37,10 @@ const tsGridCapabilityProbeSQL = "SELECT '1'"
 
 // ProbeTSGridCapability runs the boot-time capability canary once and classifies
 // whether the connected ClickHouse server will run the experimental
-// timeSeries*ToGrid aggregate family. It mirrors ProbeVersion: cmd/cerberus
-// calls it over the bootstrap/default-DB connection after building the client,
-// then hands the verdict straight to chopt.Resolve as Config.Capability.
+// timeSeries*ToGrid aggregate family. cmd/cerberus runs it as a fleet canary
+// (ProbeFleet) on every server the fleet probe reads over its
+// bootstrap/default-DB connection, then hands the fleet's verdict to
+// chopt.Resolve as Config.Capability.
 //
 // The probe stamps WithTSGridSetting's settings —
 // allow_experimental_time_series_aggregate_functions=1 and the

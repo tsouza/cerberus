@@ -187,20 +187,23 @@ const chOptReprobeInterval = 5 * time.Minute
 // (fleetResolutionVersion, gatesInForce) until a pass reaches every node, so
 // the loop runs at this cadence until one does.
 //
-// So is a fleet holding a build no server the pass reached runs (FleetHeld):
-// a replica behind a load balancer that a pass reached earlier and the fleet
-// memory still holds, whose build may be holding the version down or a defect
-// gate on. Each pass that lands on it refreshes its entry and is the pass that
-// sees it roll forward, and the memory forgets a server after a count of
-// passes that miss it (chclient.FleetMemory), so this cadence keeps both the
-// roll-forward and the forgetting of a replica that left within the time the
+// So is a fleet holding a build or a canary verdict no server the pass
+// reached gave (FleetHeld): a replica behind a load balancer that a pass
+// reached earlier and the fleet memory still holds, whose build may be holding
+// the version down or a defect gate on, or whose verdict may be keeping a
+// capability off. Each pass that lands on it refreshes its entry and is the
+// pass that sees it roll forward or change its verdict, and the memory
+// forgets a server after a count of passes that miss it
+// (chclient.FleetMemory), so this cadence keeps the roll-forward, the changed
+// verdict and the forgetting of a replica that left within the time the
 // memory's retention is priced at.
 const chOptFloorRetryInterval = 10 * time.Second
 
 // nextReprobeDelay is how long to wait before the next resolution attempt,
 // given the one currently in force: chOptFloorRetryInterval while it is a
 // floor fallback, came from a pass that could not reach every node, or rests on
-// a build no server the pass reached runs; the steady cadence otherwise.
+// a build or canary verdict no server the pass reached gave; the steady
+// cadence otherwise.
 func nextReprobeDelay(res chOptResolution, steady time.Duration) time.Duration {
 	if res.VersionFallback || res.FleetIncomplete || res.FleetHeld {
 		floor := chOptFloorRetryInterval
@@ -375,7 +378,7 @@ func reprobeCHOptimizations(
 		}
 		analyzerMandatory := analyzerMandatoryOnFleet(fleet, inForce.Set.AnalyzerMandatory())
 		shapeDefects := shapeDefectsOnFleet(fleet, gates)
-		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload, fleet, &inForce)
+		next, ok := resolveCHOptimizationsOnce(logger, cfg, rawQueryWorkload, fleet, &inForce)
 		if !ok {
 			// The resolution failed, so the resolution in force stays,
 			// marked with this pass's fleet: a pass still short of a node,
@@ -424,10 +427,10 @@ func reprobeCHOptimizations(
 	}
 }
 
-// resolveCHOptimizationsOnce runs one probe-and-resolve pass and reports the
+// resolveCHOptimizationsOnce resolves one fleet probe pass and reports the
 // result, or ok=false when the resolution failed and the caller must keep the
 // set already in force. It is the re-probe's half of resolveCHOptimizations:
-// the same fleet version decision, the same capability canaries, and the same
+// the same fleet version decision, the same fleet canary verdicts, and the same
 // resolver against the same configured selection — but with none of boot's side effects
 // (no config back-fill, no columnar-decode swap, no fatal exit), because those
 // are decisions a process makes once and the re-probe must not re-make.
@@ -438,9 +441,9 @@ func reprobeCHOptimizations(
 // that boot may already have zeroed.
 //
 // fleet is this pass's fleet probe and inForce the resolution it may replace;
-// fleetResolutionVersion derives the version to resolve against from both.
+// fleetResolutionVersion derives the version to resolve against from both,
+// and fleetResolveConfig reads the canary verdicts off fleet.
 func resolveCHOptimizationsOnce(
-	ctx context.Context,
 	logger *slog.Logger,
 	cfg config.Config,
 	rawQueryWorkload string,
@@ -453,14 +456,7 @@ func resolveCHOptimizationsOnce(
 		resolvedVersion = supportedFloorVersion
 	}
 
-	set, _, err := chopt.Resolve(chopt.Config{
-		Optimizations:           cfg.CHOptimizations,
-		Mode:                    cfg.CHOptimizationsMode,
-		LegacyTSGrid:            cfg.LegacyTSGridFlag,
-		Capability:              probeTSGridCapabilityOverBootstrap(ctx, cfg.ClickHouse),
-		ResultCacheCapability:   probeResultCacheCapabilityOverBootstrap(ctx, cfg.ClickHouse),
-		QueryLogUnionCapability: probeQueryLogUnionCapabilityOverBootstrap(ctx, cfg.ClickHouse, cfg.CHOptimizations),
-	}, resolvedVersion)
+	set, _, err := chopt.Resolve(fleetResolveConfig(cfg, fleet), resolvedVersion)
 	if err != nil {
 		// The selection resolved at boot, but the server it resolved against
 		// can change under a running process: under enforcing, an explicit
@@ -479,7 +475,7 @@ func resolveCHOptimizationsOnce(
 	// The error return is always nil here by construction (fatalOnReject
 	// false means resolveQueryWorkload's only error branch is unreachable),
 	// so it is intentionally discarded rather than threaded into ok.
-	queryWorkload, _, _ := resolveQueryWorkload(ctx, logger, cfg.ClickHouse, rawQueryWorkload, cfg.CHOptimizationsMode, false)
+	queryWorkload, _, _ := resolveQueryWorkload(logger, fleet, rawQueryWorkload, cfg.CHOptimizationsMode, false)
 	// The resolver's warnings are boot-time operator guidance (permissive skips,
 	// the legacy-alias deprecation) about a selection that has not changed, so
 	// re-logging them every tick would say nothing new.

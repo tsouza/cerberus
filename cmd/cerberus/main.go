@@ -1391,8 +1391,9 @@ type chOptResolution struct {
 	// chOptFloorRetryInterval (nextReprobeDelay).
 	FleetIncomplete bool
 	// FleetHeld records that the fleet behind the resolution holds a build
-	// no server that pass reached runs (chclient.FleetVersions.Held), so the
-	// next pass runs at chOptFloorRetryInterval (nextReprobeDelay).
+	// or a canary verdict no server that pass reached gave
+	// (chclient.FleetVersions.Held), so the next pass runs at
+	// chOptFloorRetryInterval (nextReprobeDelay).
 	FleetHeld bool
 	// QueryWorkload is the EFFECTIVE CERBERUS_CH_QUERY_WORKLOAD (cerberus
 	// issue #2785): the configured name when the capability probe found the
@@ -1481,8 +1482,9 @@ func startCHOptReprobe(ctx context.Context, logger *slog.Logger, cfg config.Conf
 func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config, probeFleet fleetProber) (chOptResolution, error) {
 	rawQueryWorkload := cfg.CHQueryWorkload
 	// The fleet probe reads every node cerberus can reach; resolution runs
-	// against the oldest of them, and the analyzer decision and the
-	// condition-cache override below read the same pass.
+	// against the oldest of them and the canary verdicts it carries, and the
+	// analyzer decision and the condition-cache override below read the same
+	// pass.
 	fleet := probeFleet(ctx)
 	resolvedVersion, err := fleetResolutionVersion(fleet, nil)
 	versionFallback := err != nil
@@ -1499,39 +1501,18 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		)
 	}
 
-	// Capability canary: a server may meet the native ts_grid version floor yet
-	// still FORBID the experimental setting cerberus stamps on the native node (a
-	// hardened/constrained profile, or a readonly user). Auto-selecting the
-	// native node there would only earn a SETTING_CONSTRAINT_VIOLATION at query
-	// time, breaking a deployment that worked on fan-out. The canary probes the
-	// setting at boot over the same bootstrap/default-DB connection the version
-	// probe uses, and the verdict gates the four RequiresExperimentalTSGrid
-	// features in Resolve. A failed/unreachable canary is conservative (native
-	// stays off), never fatal here.
-	capability := probeTSGridCapabilityOverBootstrap(ctx, cfg.ClickHouse)
-
-	// A SECOND, independent capability canary for the result_cache feature
-	// (cerberus issue #2781): the query-result-cache setting family predates
-	// cerberus's own 24.8 floor, so there is no version gate to check here —
-	// what this catches is a hardened/constrained profile that pins or
-	// forbids use_query_cache, or a server whose query cache is disabled
-	// entirely. Probed unconditionally alongside the ts-grid canary, over the
-	// same bootstrap/default-DB connection, never fatal here.
-	resultCacheCapability := probeResultCacheCapabilityOverBootstrap(ctx, cfg.ClickHouse)
-
-	// The query-log union canary, run only when query_log_union is listed
-	// (probeQueryLogUnionCapabilityOverBootstrap). A block degrades the
-	// actuals reconciler to the local system.query_log and is never fatal.
-	queryLogUnionCapability := probeQueryLogUnionCapabilityOverBootstrap(ctx, cfg.ClickHouse, cfg.CHOptimizations)
-
-	set, warnings, err := chopt.Resolve(chopt.Config{
-		Optimizations:           cfg.CHOptimizations,
-		Mode:                    cfg.CHOptimizationsMode,
-		LegacyTSGrid:            cfg.LegacyTSGridFlag,
-		Capability:              capability,
-		ResultCacheCapability:   resultCacheCapability,
-		QueryLogUnionCapability: queryLogUnionCapability,
-	}, resolvedVersion)
+	// Capability canaries: a server may meet a feature's version floor yet
+	// still refuse what the feature stamps — a hardened profile or a
+	// readonly user forbidding the experimental ts_grid setting or the
+	// query-cache settings, or a query-log union table that is absent or not
+	// granted. Selecting the feature there would only earn a typed rejection
+	// at query time. The canaries ran on every server the fleet probe read
+	// (fleetCanaries), and the fleet carries the most conservative verdict
+	// each one got across the servers it remembers (fleetResolveConfig). A
+	// failed or unreachable canary is conservative (the gated features stay
+	// off), never fatal here.
+	resolveCfg := fleetResolveConfig(*cfg, fleet)
+	set, warnings, err := chopt.Resolve(resolveCfg, resolvedVersion)
 	if err != nil {
 		return chOptResolution{}, fmt.Errorf("resolve clickhouse optimizations: %w", err)
 	}
@@ -1562,7 +1543,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// resolveQueryWorkload's own doc for the full fatal-vs-skip contract;
 	// boot is the ONE caller allowed to fail startup (fatalOnReject=true).
 	resolvedQueryWorkload, queryWorkloadCapability, err := resolveQueryWorkload(
-		ctx, logger, cfg.ClickHouse, cfg.CHQueryWorkload, cfg.CHOptimizationsMode, true,
+		logger, fleet, cfg.CHQueryWorkload, cfg.CHOptimizationsMode, true,
 	)
 	if err != nil {
 		return chOptResolution{}, err
@@ -1647,9 +1628,9 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"server_version", resolvedVersion.String(),
 		"fleet_versions", fleetVersionStrings(fleet),
 		"fleet_probe_complete", fleet.Complete,
-		"server_ts_grid_capability", capability.String(),
-		"server_result_cache_capability", resultCacheCapability.String(),
-		"server_query_log_union_capability", queryLogUnionCapability.String(),
+		"server_ts_grid_capability", resolveCfg.Capability.String(),
+		"server_result_cache_capability", resolveCfg.ResultCacheCapability.String(),
+		"server_query_log_union_capability", resolveCfg.QueryLogUnionCapability.String(),
 		"query_workload", cfg.CHQueryWorkload,
 		"server_query_workload_capability", queryWorkloadCapability.String(),
 		"enabled", strings.Join(set.IDs(), ","),
@@ -1671,8 +1652,9 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 
 // resolveQueryWorkload decides the EFFECTIVE ClickHouse `workload` name to
 // stamp on cerberus's own queries (cerberus issue #2785): "" when configured
-// is empty (the default — no probe runs, no extra boot/reprobe round trip),
-// else the boot-time capability canary's verdict on configured.
+// is empty (the default — the canary does not run, fleetCanaries), else the
+// fleet's verdict on configured: the most conservative one the workload
+// canary got across the servers the fleet probe remembers.
 //
 // fatalOnReject distinguishes boot (true) from a live reprobe (false):
 // boot is allowed to fail startup on a definitive Forbidden verdict under
@@ -1686,9 +1668,8 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 // NEVER fatal in either caller, mirroring blockIsNonFatal's treatment
 // of Unreachable elsewhere in the chopt resolver.
 func resolveQueryWorkload(
-	ctx context.Context,
 	logger *slog.Logger,
-	chCfg chclient.Config,
+	fleet chclient.FleetVersions,
 	configured string,
 	mode chopt.Mode,
 	fatalOnReject bool,
@@ -1696,7 +1677,7 @@ func resolveQueryWorkload(
 	if configured == "" {
 		return "", chopt.CapabilityUnknown, nil
 	}
-	capability = probeQueryWorkloadCapabilityOverBootstrap(ctx, chCfg, configured)
+	capability = fleet.Capability(queryWorkloadCanary)
 	resolved, err = decideQueryWorkload(configured, capability, mode, fatalOnReject)
 	if err != nil {
 		return "", capability, err
@@ -1734,86 +1715,6 @@ func decideQueryWorkload(configured string, capability chopt.Capability, mode ch
 	default: // chopt.CapabilityUnreachable
 		return "", nil
 	}
-}
-
-// probeTSGridCapabilityOverBootstrap runs the experimental-setting capability
-// canary over a short-lived client bound to ClickHouse's always-present
-// `default` database, exactly like the fleet version probe. The canary must
-// not depend on the configured (otel) database existing -- it runs at boot
-// BEFORE setupSchema creates it, and ClickHouse rejects every statement on a
-// session whose default database is absent (code 81), which would masquerade as
-// a capability rejection. Binding to `default` keeps the verdict about the
-// SETTING, not the missing database. A failure to even open the client is
-// itself an unreachable verdict (conservative: native stays off), never fatal.
-func probeTSGridCapabilityOverBootstrap(ctx context.Context, chCfg chclient.Config) chopt.Capability {
-	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, tsGridProbePool))
-	if err != nil {
-		return chopt.CapabilityUnreachable
-	}
-	defer func() {
-		_ = bootClient.Close()
-	}()
-	return bootClient.ProbeTSGridCapability(ctx)
-}
-
-// probeResultCacheCapabilityOverBootstrap runs the query-result-cache
-// capability canary over a short-lived client bound to ClickHouse's
-// always-present `default` database, exactly like
-// probeTSGridCapabilityOverBootstrap — same reasoning for binding to
-// `default` (the canary must not depend on the configured otel database
-// existing yet). A failure to even open the client is itself an unreachable
-// verdict (conservative: result_cache stays off), never fatal.
-func probeResultCacheCapabilityOverBootstrap(ctx context.Context, chCfg chclient.Config) chopt.Capability {
-	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, resultCacheProbePool))
-	if err != nil {
-		return chopt.CapabilityUnreachable
-	}
-	defer func() {
-		_ = bootClient.Close()
-	}()
-	return bootClient.ProbeResultCacheCapability(ctx)
-}
-
-// probeQueryLogUnionCapabilityOverBootstrap runs the query-log union canary
-// (chclient.ProbeQueryLogUnionCapability) over a short-lived bootstrap
-// client, like probeResultCacheCapabilityOverBootstrap. It contacts the server
-// only when selection names query_log_union explicitly: the feature is never
-// auto-selected, so an unrequested verdict decides nothing, and the canary
-// reaches every member of a cluster-wide union table. Unrequested, it returns
-// CapabilityUnknown. A failure to even open the client is Unreachable.
-func probeQueryLogUnionCapabilityOverBootstrap(ctx context.Context, chCfg chclient.Config, selection string) chopt.Capability {
-	if !chopt.ExplicitlyRequested(selection, chopt.FeatureQueryLogUnion) {
-		return chopt.CapabilityUnknown
-	}
-	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, queryLogUnionProbePool))
-	if err != nil {
-		return chopt.CapabilityUnreachable
-	}
-	defer func() {
-		_ = bootClient.Close()
-	}()
-	return bootClient.ProbeQueryLogUnionCapability(ctx)
-}
-
-// probeQueryWorkloadCapabilityOverBootstrap runs the `workload` setting
-// capability canary over a short-lived client bound to ClickHouse's
-// always-present `default` database, exactly like
-// probeResultCacheCapabilityOverBootstrap — same reasoning for binding to
-// `default`. Unlike the other canaries it stamps the OPERATOR'S OWN
-// configured workload name (workloadName), not a fixed sentinel — see
-// ProbeQueryWorkloadCapability's own doc for why. A failure to even open the
-// client is itself an unreachable verdict (conservative: the knob is
-// dropped, never fatal from this function alone — resolveCHOptimizations
-// decides fatal-vs-skip from the verdict plus CHOptimizationsMode).
-func probeQueryWorkloadCapabilityOverBootstrap(ctx context.Context, chCfg chclient.Config, workloadName string) chopt.Capability {
-	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, queryWorkloadProbePool))
-	if err != nil {
-		return chopt.CapabilityUnreachable
-	}
-	defer func() {
-		_ = bootClient.Close()
-	}()
-	return bootClient.ProbeQueryWorkloadCapability(ctx, workloadName)
 }
 
 // maxOptCorpusSourceTimeout caps the per-scan wall-clock bound derived from
@@ -2191,12 +2092,8 @@ func bootstrapClickHouseConfig(chCfg chclient.Config, pool string) chclient.Conf
 
 // Bootstrap pool names, one per short-lived startup connection.
 const (
-	versionProbePool       = "version-probe"
-	tsGridProbePool        = "tsgrid-probe"
-	resultCacheProbePool   = "result-cache-probe"
-	queryWorkloadProbePool = "query-workload-probe"
-	queryLogUnionProbePool = "query-log-union-probe"
-	schemaApplyPool        = "schema-apply"
+	versionProbePool = "version-probe"
+	schemaApplyPool  = "schema-apply"
 )
 
 // runRequirementsCheck runs the boot-time requirements check (gated ON by

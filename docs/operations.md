@@ -880,11 +880,16 @@ Then tell cerberus to tag its own query traffic with the workload it should
 ride: `CERBERUS_CH_QUERY_WORKLOAD=cerberus_queries` (see
 [`configuration.md`](configuration.md)). Cerberus stamps the ClickHouse
 `workload` per-query setting on every dispatched query when this is set —
-boot-probed against the connected server (a server too old to know the
-`workload` setting, or a hardened profile that pins/forbids it, degrades to
-FATAL under the default `CERBERUS_CH_OPTIMIZATIONS_MODE=enforcing`, or a
-`WARN` + no-op under `permissive`; the knob's mere absence is already a full,
-byte-identical-to-before no-op).
+boot-probed against every server the version probe reads (a server too old to
+know the `workload` setting, or a hardened profile that pins/forbids it,
+degrades to FATAL under the default `CERBERUS_CH_OPTIMIZATIONS_MODE=enforcing`,
+or a `WARN` + no-op under `permissive`; the knob's mere absence is already a
+full, byte-identical-to-before no-op). Behind a load balancer, one replica that
+refuses the workload — its `CREATE WORKLOAD` missing there — drops the setting
+for every query while cerberus remembers that replica
+([Capability canaries across servers](clickhouse-optimizations.md#capability-canaries-across-servers)).
+Define the workload on every replica, or replicate the access storage that
+holds it.
 
 **The weighting footgun** (the issue's own risk note: "misconfigured shares
 can starve merges" — this is the concrete shape of that). Stock ClickHouse,

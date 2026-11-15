@@ -54,7 +54,7 @@ func TestReprobeCHOptimizations_UnchangedPassRecordsItsFlags(t *testing.T) {
 			// produces, with the analyzer and shape-defect decisions the
 			// pass's fleet implies and the flags of an earlier pass on top.
 			fleet := chclient.FleetVersions{Versions: []chopt.Version{tc.pass}, Complete: true}
-			inForce, ok := resolveCHOptimizationsOnce(ctx, quietLogger(), cfg, "",
+			inForce, ok := resolveCHOptimizationsOnce(quietLogger(), cfg, "",
 				chclient.FleetVersions{Versions: []chopt.Version{tc.inForce}, Complete: true}, nil)
 			if !ok {
 				t.Fatalf("premise: resolve against %s failed", tc.inForce)

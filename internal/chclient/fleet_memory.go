@@ -1,6 +1,7 @@
 package chclient
 
 import (
+	"maps"
 	"slices"
 	"sync"
 
@@ -37,11 +38,15 @@ func retentionPasses(servers int) int {
 // connection landed on, and reports itself complete because it reached every
 // address. Without memory the fleet would be whichever replica the last pass
 // landed on, and during a rolling rollback the version would follow it up and
-// down. With it, the fleet is every server a pass has reached and not yet
+// down; so would every capability canary verdict on which the replicas
+// disagree. With it, the fleet is every server a pass has reached and not yet
 // forgotten:
 //
 //   - A reached server's entry takes the build it reported, so a replica that
 //     rolls forward raises its own entry on the first pass that reaches it.
+//   - A reached server's entry takes the verdict of every canary the pass ran
+//     on it, and keeps the remembered verdict of a canary the pass did not
+//     run on it.
 //   - A complete pass that does not reach a remembered server counts a miss
 //     against it; retentionPasses consecutive misses forget it.
 //   - A complete pass that read the named cluster's replica list
@@ -54,7 +59,8 @@ func retentionPasses(servers int) int {
 //     before any pass ran.
 //   - A pass that reads one identity on two builds — servers cloned from one
 //     data directory share a serverUUID() — keeps the older build for it, so
-//     the clone on the older build still holds the fleet down.
+//     the clone on the older build still holds the fleet down. Two verdicts
+//     on one canary for one identity keep the more conservative one.
 //
 // The zero value is not usable; build one with NewFleetMemory. It is safe for
 // concurrent use.
@@ -64,11 +70,18 @@ type FleetMemory struct {
 }
 
 // rememberedNode is one server FleetMemory holds: the build it reported the
-// last time a pass reached it, and how many complete passes in a row have
-// missed it since.
+// last time a pass reached it, the last verdict it gave on each canary a pass
+// ran on it, and how many complete passes in a row have missed it since.
 type rememberedNode struct {
-	version chopt.Version
-	missed  int
+	version  chopt.Version
+	verdicts map[string]chopt.Capability
+	missed   int
+}
+
+// canaryVerdict is one verdict a server gave on one canary.
+type canaryVerdict struct {
+	canary  string
+	verdict chopt.Capability
 }
 
 // NewFleetMemory returns a memory that holds no server yet.
@@ -77,31 +90,50 @@ func NewFleetMemory() *FleetMemory {
 }
 
 // Observe folds pass into the memory and returns the fleet the memory now
-// describes: the build of every server it holds, sorted oldest first, with
-// pass's completeness, and Held set when one of those builds is a build no
-// server pass reached runs.
+// describes: the build of every server it holds, sorted oldest first, the
+// most conservative verdict they gave on each canary, pass's completeness,
+// and Held set when one of those builds or verdicts is one no server pass
+// reached gave.
 func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 	if len(pass.Nodes) == 0 {
 		return FleetVersions{Complete: pass.Complete}
 	}
-	reached := make(map[string]chopt.Version, len(pass.Nodes))
+	reached := make(map[string]*rememberedNode, len(pass.Nodes))
 	reachedBuilds := make(map[chopt.Version]bool, len(pass.Nodes))
+	reachedVerdicts := make(map[canaryVerdict]bool)
 	for _, n := range pass.Nodes {
 		reachedBuilds[n.Version] = true
-		if v, dup := reached[n.ID]; dup && v.Less(n.Version) {
-			continue
+		r, dup := reached[n.ID]
+		if !dup {
+			r = &rememberedNode{version: n.Version, verdicts: make(map[string]chopt.Capability, len(n.Verdicts))}
+			reached[n.ID] = r
+		} else if n.Version.Less(r.version) {
+			r.version = n.Version
 		}
-		reached[n.ID] = n.Version
+		for canary, v := range n.Verdicts {
+			if v == chopt.CapabilityUnknown {
+				continue
+			}
+			reachedVerdicts[canaryVerdict{canary, v}] = true
+			r.verdicts[canary] = r.verdicts[canary].Conservative(v)
+		}
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for id, r := range reached {
+		if prev, ok := m.nodes[id]; ok {
+			for canary, v := range prev.verdicts {
+				if _, read := r.verdicts[canary]; !read {
+					r.verdicts[canary] = v
+				}
+			}
+		}
+	}
 	if pass.Complete && pass.Enumerated {
 		clear(m.nodes)
 	}
-	for id, v := range reached {
-		m.nodes[id] = &rememberedNode{version: v}
-	}
+	maps.Copy(m.nodes, reached)
 	if pass.Complete && !pass.Enumerated {
 		limit := retentionPasses(len(m.nodes))
 		for id, n := range m.nodes {
@@ -119,6 +151,13 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 	for _, n := range m.nodes {
 		fv.Versions = append(fv.Versions, n.version)
 		fv.Held = fv.Held || !reachedBuilds[n.version]
+		for canary, v := range n.verdicts {
+			if fv.Verdicts == nil {
+				fv.Verdicts = make(map[string]chopt.Capability, len(n.verdicts))
+			}
+			fv.Verdicts[canary] = fv.Verdicts[canary].Conservative(v)
+			fv.Held = fv.Held || !reachedVerdicts[canaryVerdict{canary, v}]
+		}
 	}
 	slices.SortFunc(fv.Versions, chopt.Version.Compare)
 	return fv
