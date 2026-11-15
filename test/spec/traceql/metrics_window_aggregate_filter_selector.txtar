@@ -53,8 +53,8 @@ detail: `{ name = "q" } | count() > 1 | count_over_time()` answers with a time s
 [2] int64 = 1704067320000000000
 [3] int64 = 1
 [4] string = "q"
-[5] int64 = 1704067200000000000
-[6] int64 = 1704067320000000000
+[5] int64 = 1704063600000000000
+[6] int64 = 1704070920000000000
 [7] int64 = 1
 -- args_optimized --
 [0] string = "q"
@@ -62,12 +62,12 @@ detail: `{ name = "q" } | count() > 1 | count_over_time()` answers with a time s
 [2] int64 = 1704067320000000000
 [3] int64 = 1
 [4] string = "q"
-[5] int64 = 1704067200000000000
-[6] int64 = 1704067320000000000
+[5] int64 = 1704063600000000000
+[6] int64 = 1704070920000000000
 [7] int64 = 1
 -- chplan --
 RangeWindow func= range=1m0s step=1m0s ts=Timestamp start=2024-01-01T00:01:00Z end=2024-01-01T00:02:00Z
-  MetricsAggregate op=count_over_time valueAlias=Value
+  MetricsAggregate op=count_over_time valueAlias=Value perTraceLookback=1h0m0s
     Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(Value > 1) ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnCount(1) AS Value] ; Filter predicate=(SpanName = "q") ; Scan(otel_traces)})
       Filter predicate=(SpanName = "q")
         Scan(otel_traces)

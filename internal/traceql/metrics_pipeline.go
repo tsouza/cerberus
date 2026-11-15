@@ -138,6 +138,7 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 		IsDuration:          isDuration,
 		ValueAlias:          metricsValueAlias,
 		Inner:               prev,
+		PerTraceLookback:    s.MaxTraceDuration,
 	}, nil
 }
 
@@ -175,6 +176,7 @@ func lowerAverageOverTime(prev chplan.Node, agg *traceql.AverageOverTimeAggregat
 		GroupByDisplayNames: groupDisplay,
 		ValueAlias:          metricsValueAlias,
 		Inner:               prev,
+		PerTraceLookback:    s.MaxTraceDuration,
 	}, nil
 }
 
@@ -368,6 +370,7 @@ func lowerMetricsHistogramOverTime(prev chplan.Node, agg *traceql.MetricsAggrega
 		BucketAlias:         histogramBucketAlias,
 		ValueAlias:          metricsValueAlias,
 		Inner:               prev,
+		PerTraceLookback:    s.MaxTraceDuration,
 	}, nil
 }
 

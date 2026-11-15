@@ -1,5 +1,7 @@
 package chplan
 
+import "time"
+
 // MetricsCompare is the lowered form of TraceQL's
 // `| compare({<selection>}, topN[, start, end])` metrics first-stage
 // operator (Grafana Traces Drilldown's "Comparison" tab).
@@ -105,6 +107,13 @@ type MetricsCompare struct {
 	// request-window Timestamp losslessly — the seed's roots are then in-window
 	// by construction. Only meaningful when RootLookup != nil.
 	InnerRootScoped bool
+	// PerTraceLookback is how far beyond the wrapping RangeWindow's input
+	// span, on each side, a per-trace subquery under this node — the
+	// non-root-scoped RootLookup among them — reads the spans of its traces:
+	// the configured maximum trace duration (schema.Traces.MaxTraceDuration),
+	// stamped by the lowering. Zero reads the input span alone. See
+	// PerTraceWindowBound.
+	PerTraceLookback time.Duration
 }
 
 // InputTimestampColumn resolves the physical timestamp owned by the compare
@@ -180,6 +189,7 @@ func (m *MetricsCompare) Equal(other Node) bool {
 	}
 	if m.TopN != o.TopN || m.StartNs != o.StartNs || m.EndNs != o.EndNs ||
 		m.InnerRootScoped != o.InnerRootScoped ||
+		m.PerTraceLookback != o.PerTraceLookback ||
 		m.RootLookupTraceIDTsTable != o.RootLookupTraceIDTsTable ||
 		m.RootLookupTraceIDTsStartColumn != o.RootLookupTraceIDTsStartColumn ||
 		m.RootLookupTraceIDTsEndColumn != o.RootLookupTraceIDTsEndColumn ||

@@ -1,23 +1,30 @@
 // perf-nightly-matrix.mjs — the ClickHouse servers perf-nightly runs on.
 //
 // perf-nightly.yml runs its sentinels once per server of the
-// `perf-nightly-sentinels` job's matrix, and perf-nightly-selfcheck.yml runs
-// one self-check leg per server of the same list. Both declare it as the
+// `perf-nightly-sentinels` job's matrix, its calibration legs
+// (`perf-nightly-calibrate`) on the same list, and perf-nightly-selfcheck.yml
+// runs one self-check leg per server of the same list. Each declares it as the
 // one-line flow sequence `clickhouse: ['24.8', '25.9', '26.8']` under
 // `strategy.matrix`; this module reads it back for the checks that hold the
 // list to its sources (clickhouse-version-sync.mjs check h) and to the
-// self-check's mutations (perf-nightly-selfcheck.test.mjs).
+// self-check's mutations (perf-nightly-selfcheck.test.mjs), and for the legs
+// a calibrate dispatch's combine expects rounds from (perf-nightly-aggregate.mjs).
 //
 // Exports:
-//   PERF_NIGHTLY_WORKFLOW / PERF_NIGHTLY_JOB
+//   PERF_NIGHTLY_WORKFLOW / PERF_NIGHTLY_JOB / PERF_NIGHTLY_CALIBRATE_JOB
 //   SELFCHECK_WORKFLOW / SELFCHECK_JOB
 //                         where each matrix lives.
 //   readClickHouseMatrix(workflowText, jobName)
 //                         the job's `clickhouse` matrix values, in order, or
 //                         null when the job or the line is missing.
+//   readCalibrationRunners(workflowText)
+//                         the `runner` matrix values of perf-nightly's
+//                         calibration job, in order, or null when the job
+//                         or the line is missing.
 
 export const PERF_NIGHTLY_WORKFLOW = '.github/workflows/perf-nightly.yml';
 export const PERF_NIGHTLY_JOB = 'perf-nightly-sentinels';
+export const PERF_NIGHTLY_CALIBRATE_JOB = 'perf-nightly-calibrate';
 export const SELFCHECK_WORKFLOW = '.github/workflows/perf-nightly-selfcheck.yml';
 export const SELFCHECK_JOB = 'perf-nightly-selfcheck';
 
@@ -38,4 +45,16 @@ export function readClickHouseMatrix(workflowText, jobName) {
     .split(',')
     .map((v) => v.trim().replace(/^['"]|['"]$/g, ''))
     .filter((v) => v.length > 0);
+}
+
+export function readCalibrationRunners(workflowText) {
+  const block = jobBlock(workflowText, PERF_NIGHTLY_CALIBRATE_JOB);
+  if (block === null) return null;
+  const m = /\n\s+runner:\s*\[([^\]\n]*)\]/.exec(block);
+  if (!m) return null;
+  return m[1]
+    .split(',')
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0)
+    .map(Number);
 }

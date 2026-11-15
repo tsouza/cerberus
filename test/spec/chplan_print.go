@@ -610,6 +610,7 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		if v.ValueAlias != "" {
 			fmt.Fprintf(b, " valueAlias=%s", v.ValueAlias)
 		}
+		printPerTraceLookback(b, v.PerTraceLookback)
 		b.WriteString("\n")
 		if v.Inner != nil {
 			printChild(b, visited, v.Inner, depth+1)
@@ -659,6 +660,7 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		if v.ValueAlias != "" {
 			fmt.Fprintf(b, " valueAlias=%s", v.ValueAlias)
 		}
+		printPerTraceLookback(b, v.PerTraceLookback)
 		b.WriteString("\n")
 		if v.Inner != nil {
 			printChild(b, visited, v.Inner, depth+1)
@@ -678,6 +680,7 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		if v.InnerRootScoped {
 			b.WriteString(" innerRootScoped")
 		}
+		printPerTraceLookback(b, v.PerTraceLookback)
 		b.WriteString("\n")
 		if v.Inner != nil {
 			printChild(b, visited, v.Inner, depth+1)
@@ -1292,6 +1295,16 @@ func printVectorCard(c chplan.VectorCard) string {
 		return "one-to-many"
 	}
 	return "unknown"
+}
+
+// printPerTraceLookback renders a TraceQL metrics node's PerTraceLookback —
+// the widening its per-trace subqueries read beyond the RangeWindow input
+// span — when it is set. The bound itself is applied at emit time, so the
+// lookback is the only trace of it the IR carries.
+func printPerTraceLookback(b *strings.Builder, lookback time.Duration) {
+	if lookback != 0 {
+		fmt.Fprintf(b, " perTraceLookback=%s", lookback)
+	}
 }
 
 // formatGroupByEntry renders one MetricsAggregate / MetricsHistogramOverTime

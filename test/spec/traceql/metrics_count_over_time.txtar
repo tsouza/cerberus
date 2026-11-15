@@ -21,7 +21,7 @@ INSERT INTO otel_traces (ResourceAttributes, TraceId, SpanId) VALUES
   [2]
 ]
 -- chplan --
-MetricsAggregate op=count_over_time valueAlias=Value
+MetricsAggregate op=count_over_time valueAlias=Value perTraceLookback=1h0m0s
   Filter predicate=(ResourceAttributes["service.name"] = "frontend")
     Scan(otel_traces)
 -- parity_exempt --

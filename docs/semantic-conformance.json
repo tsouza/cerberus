@@ -1324,6 +1324,17 @@
         "id": "perf-nightly-selfcheck.perf-nightly-selfcheck-health-notify"
       },
       {
+        "lane_id": "perf-nightly.calibrate",
+        "context_name": "perf-nightly-calibrate (",
+        "merge_required": false,
+        "release_required": false,
+        "binding_ids": [
+          "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
+          "BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING"
+        ],
+        "id": "perf-nightly.calibrate"
+      },
+      {
         "lane_id": "perf-nightly.classic-histogram-report",
         "context_name": "perf-nightly",
         "merge_required": false,
@@ -6333,6 +6344,12 @@
               "release_required": false
             },
             {
+              "lane_id": "perf-nightly.calibrate",
+              "context_name": "perf-nightly-calibrate (",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
               "lane_id": "perf-nightly.classic-histogram-report",
               "context_name": "perf-nightly",
               "merge_required": false,
@@ -6444,6 +6461,12 @@
             {
               "lane_id": "perf-nightly-selfcheck.perf-nightly-selfcheck-health-notify",
               "context_name": "perf-nightly-selfcheck-health-notify",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "perf-nightly.calibrate",
+              "context_name": "perf-nightly-calibrate (",
               "merge_required": false,
               "release_required": false
             },

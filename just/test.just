@@ -690,24 +690,46 @@ histogram-dashboard-unit:
 	go test -race -timeout 3m -count=1 -run 'TestResourceBoundClassification_Exhaustive' ./internal/engine
 	go test -race -timeout 3m -count=1 -run 'TestChplanPrint' ./test/spec
 
-# Regenerate one ClickHouse release line's bound set in nightly-baseline.json
-# (the line of the image named; every other line's set is left unchanged):
-# for each #2370 nightly sentinel the calibration-time max-of-N peak
-# memory_usage plus the headroom-multiplied ceiling (Sentinel.BaselineHeadroom)
-# the gate actually asserts against, and the HTTP status it was calibrated to
-# expect. Naming sentinels after the image recalibrates only those. Requires Docker and (once,
-# if not already fetched) `git lfs pull` for the trimmed sample parquet
-# files. Run this — and REVIEW THE DIFF — only when a bound move is
-# genuinely intended (a real, justified memory-cost increase, or a
-# deliberate change to which sentinels are expected to be rejected by a
-# resource bound); a silent loosen is exactly the regression this lane
-# exists to catch. The gating assertion is TestPerfNightlyRealCH, wired
-# into .github/workflows/perf-nightly.yml.
+# Measure one calibration runner's rounds for the #2370 nightly sentinels on
+# the ClickHouse image named, into the rounds file `out`: the max-of-N peak
+# memory_usage of each of nightlyCalibrationRounds whole-corpus passes, per
+# sentinel (test/perf/nightly/calibration.go). Naming sentinels after `out`
+# lists only those in the file, and every pass still runs the whole corpus.
+# The go test timeout is nightlyCalibrationRounds (5) times
+# perf-nightly-integration's 15m. Writes no committed file: one runner's
+# rounds are not enough to derive a bound from — a perf-nightly.yml calibrate
+# dispatch runs nightlyCalibrationRunners of these per server and combines
+# them, and `update-nightly-perf-baseline` combines rounds files measured
+# here. Requires Docker and (once, if not already fetched) `git lfs pull` for
+# the trimmed sample parquet files.
 
-# Regenerate the nightly per-sentinel memory ceilings of one ClickHouse image. Needs Docker; review the diff.
-update-nightly-perf-baseline image *sentinels:
+# Measure one runner's nightly calibration rounds on one ClickHouse image into a rounds file. Needs Docker.
+calibrate-nightly-perf-rounds image out *sentinels:
     @just _pull-retry {{image}}
-    PERF_NIGHTLY_CH_IMAGE={{image}} UPDATE_NIGHTLY_PERF_BASELINE=1 UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS="{{replace(sentinels, ' ', ',')}}" go test -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
+    PERF_NIGHTLY_CH_IMAGE={{image}} UPDATE_NIGHTLY_PERF_BASELINE=1 PERF_NIGHTLY_ROUNDS_JSON={{absolute_path(out)}} UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS="{{replace(sentinels, ' ', ',')}}" go test -v -timeout 75m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
+
+# Regenerate nightly-baseline.json from calibration rounds files
+# (`calibrate-nightly-perf-rounds`, or the nightly-rounds-* artifacts of a
+# perf-nightly.yml calibrate dispatch): for every ClickHouse line the files
+# measured, each sentinel they list gets the highest max-of-N of every
+# runner's rounds together plus the headroom-multiplied ceiling
+# (Sentinel.BaselineHeadroom) the gate asserts against, and the HTTP status it
+# was calibrated to expect; every other sentinel and line keeps its committed
+# bound. A sentinel measured by fewer than nightlyCalibrationRunners runners,
+# or whose rounds span more than the margin its ceiling leaves above the
+# highest round, keeps its committed bound and fails the recipe
+# (calibratedBound, test/perf/nightly/calibration.go); the file is written
+# before the recipe fails, so `git diff` shows it. Rounds files measured one
+# after another on one host are not the independent runners the runner count
+# assumes. Run this — and REVIEW THE DIFF — only when a bound move is
+# genuinely intended (a real, justified memory-cost increase, or a deliberate
+# change to which sentinels are expected to be rejected by a resource bound);
+# a silent loosen is exactly the regression this lane exists to catch. The gating assertion is
+# TestPerfNightlyRealCH, wired into .github/workflows/perf-nightly.yml.
+
+# Regenerate the nightly per-sentinel memory ceilings from calibration rounds files. Review the diff.
+update-nightly-perf-baseline +rounds:
+    go run ./test/perf/nightly/calibrate {{rounds}}
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/nightly-baseline.json
 
 # Run #2437's periodic self-check: deliberately breaks each mechanism its

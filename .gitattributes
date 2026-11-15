@@ -131,14 +131,16 @@ test/perf/scale-wall-baseline.json           -merge
 #   memory-cost increase is genuinely intended.
 test/perf/perf-smoke-baseline.json           -merge
 
-# Regenerate: `just update-nightly-perf-baseline`
-#   (UPDATE_NIGHTLY_PERF_BASELINE=1 go test -timeout 15m -tags=integration
-#    -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/... — needs
-#    Docker + the trimmed sample parquet files via `git lfs pull`). NOT
-#    chained into `just update-golden`: like perf-smoke-baseline.json it
-#    records a measured per-sentinel memory ceiling (and the HTTP status
-#    each sentinel is calibrated to expect), so it moves only when a
-#    memory-cost increase or an outcome-class change is genuinely intended.
+# Regenerate: a perf-nightly.yml dispatch with `calibrate`, whose
+#   `nightly-baseline` artifact is the regenerated file; or
+#   `just update-nightly-perf-baseline <rounds.json>...` over rounds files
+#   measured by `just calibrate-nightly-perf-rounds` (go test -timeout 75m
+#   -tags=integration — needs Docker + the trimmed sample parquet files via
+#   `git lfs pull`). NOT chained into `just update-golden`: like
+#   perf-smoke-baseline.json it records a measured per-sentinel memory
+#   ceiling (and the HTTP status each sentinel is calibrated to expect), so
+#   it moves only when a memory-cost increase or an outcome-class change is
+#   genuinely intended.
 test/perf/nightly-baseline.json              -merge
 
 # Regenerate: `just update-metadata-query-size-baseline`
