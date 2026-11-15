@@ -278,13 +278,15 @@ every PR) to *broad* (corpus-wide, nightly).
    dispatched with `calibrate`) makes `nightlyCalibrationRounds` (5) such
    passes over one sample load and commits each sentinel's highest round as
    `max_of_n_bytes`, with the ceiling derived from it. Naming sentinels
-   commits only theirs; every pass still runs the whole corpus. A sentinel whose rounds
-   span more bytes than the margin its ceiling leaves above that highest round
-   is refused: it keeps its committed bound, the calibration fails naming it,
-   and every other sentinel's new bound is still written and uploaded. A
-   refusal means the sentinel's headroom (`Sentinel.BaselineHeadroom`) does
-   not cover its run-to-run noise; it is resolved in the headroom, not by
-   calibrating again.
+   commits only theirs; every pass still runs the whole corpus. A sentinel
+   whose rounds span more bytes than the margin its ceiling leaves above that
+   highest round, or that fewer than five passes measured in full, is refused:
+   it keeps its committed bound, the calibration fails naming it, and every
+   other sentinel's new bound is still written and uploaded. A refused
+   sentinel with no committed bound to keep fails the calibration without
+   writing anything. A spread refusal means the sentinel's headroom
+   (`Sentinel.BaselineHeadroom`) does not cover its run-to-run noise; it is
+   resolved in the headroom, not by calibrating again.
 
 The static fan-out lint is the per-PR gate (in the required `check` job); the
 scaling harness and cardinality ratchet are release-gate checks that no-op on

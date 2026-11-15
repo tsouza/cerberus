@@ -39,12 +39,13 @@ sentinel's headroom. On ClickHouse 26.9, `label_values_matcher_stock_key_renamed
 calibrated at 24,632,333 bytes (ceiling 29,558,799), and the next two gating
 runs measured 30,693,646 and 30,301,384. A second calibration landed at
 26,550,752 (ceiling 31,860,902), and a later gating run measured 32,643,773.
-Across fifteen gating runs of unchanged code its max-of-5 spanned 25.9M-33.0M
-bytes, a 1.28x range against a 1.20x headroom; its twin
+Across fifteen gating runs of unchanged code its max-of-5 spanned 25.9M-32.6M
+bytes, a 1.26x range; a 1.20x headroom covers rounds whose highest is at most
+1/(2-1.20) = 1.25x their lowest. Its twin
 `label_values_matcher_stock_key`, measured seconds apart on the same server
 over the same data, did not move with it.
 
-The spread is per query. On a local 26.9 server limited to four CPUs, five
+Locally the spread is per query. On a local 26.9 server limited to four CPUs, five
 fresh containers gave round maxima of 22.4M-26.2M, and the five repeats inside
 one container ranged as widely as 22.5M-26.2M over the same part. The statement
 runs on five threads (`peak_threads_usage`), and its peak `memory_usage` is the
@@ -59,13 +60,15 @@ the readings by about 4M and left the spread in place, so the per-thread
 tracking granularity is not the source either. The single-thread outliers
 were not traced further.
 
-On CI the spread is wider than locally (1.28x across gating runs against about
+On CI the spread is wider than locally (1.26x across gating runs against about
 1.17x across local containers), and both calibration runs that set this
-sentinel's bounds sat at the bottom of the gating distribution. Part of the CI
-spread may come with the runner or the run rather than the query; calibration
-rounds taken inside one run do not sample that part. Each round is therefore a
-whole pass over the corpus, so a sentinel's rounds follow the same preceding
-workload its gating runs do, rather than repeats of the sentinel alone.
+sentinel's bounds sat at the bottom of the gating distribution — one of them
+calibrated every sentinel, so it ran the same corpus order a gating run does.
+Part of the CI spread may come with the runner or the run rather than the
+query, and calibration rounds taken inside one run do not sample that part.
+Each round is a whole pass over the corpus, so a sentinel's rounds run in the
+corpus order its gating runs do; passes after the first run on a server the
+earlier passes have warmed, which a gating run never measures.
 
 A max-of-5 is one draw from that distribution, and a ceiling anchored on one
 draw is anchored on wherever that draw landed. The highest of several rounds

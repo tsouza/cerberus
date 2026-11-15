@@ -702,17 +702,17 @@ histogram-dashboard-unit:
 # perf-nightly-integration's 15m: the calibration makes that many passes over
 # the corpus. Naming sentinels after the image recalibrates only those, and
 # every pass still runs the whole corpus. Requires Docker and (once, if not
-# already fetched) `git lfs pull` for the trimmed sample parquet files. Run this — and REVIEW THE DIFF — only when a bound move is
-# genuinely intended (a real, justified memory-cost increase, or a
-# deliberate change to which sentinels are expected to be rejected by a
-# resource bound); a silent loosen is exactly the regression this lane
+# already fetched) `git lfs pull` for the trimmed sample parquet files. Run
+# this — and REVIEW THE DIFF — only when a bound move is genuinely intended
+# (a real, justified memory-cost increase, or a deliberate change to which
+# sentinels are expected to be rejected by a resource bound); a silent loosen is exactly the regression this lane
 # exists to catch. The gating assertion is TestPerfNightlyRealCH, wired
 # into .github/workflows/perf-nightly.yml.
 
 # Regenerate the nightly per-sentinel memory ceilings of one ClickHouse image. Needs Docker; review the diff.
 update-nightly-perf-baseline image *sentinels:
     @just _pull-retry {{image}}
-    PERF_NIGHTLY_CH_IMAGE={{image}} UPDATE_NIGHTLY_PERF_BASELINE=1 UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS="{{replace(sentinels, ' ', ',')}}" go test -timeout 75m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
+    PERF_NIGHTLY_CH_IMAGE={{image}} UPDATE_NIGHTLY_PERF_BASELINE=1 UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS="{{replace(sentinels, ' ', ',')}}" go test -v -timeout 75m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/nightly-baseline.json
 
 # Run #2437's periodic self-check: deliberately breaks each mechanism its

@@ -188,6 +188,57 @@ func TestCalibratedBound_RefusesRoundsItCannotDeriveFrom(t *testing.T) {
 	}
 }
 
+// TestMergeCalibration_RefusedSentinelKeepsItsCommittedBound drives which
+// bound a calibration writes for each sentinel: a new one for an accepted,
+// selected sentinel; the committed one for an unselected sentinel, for one
+// calibratedBound refuses, and for one no pass measured in full — the last
+// two reported as refusals — and an error, not a partial file, for a
+// sentinel left with no bound at all.
+func TestMergeCalibration_RefusedSentinelKeepsItsCommittedBound(t *testing.T) {
+	const headroom = 1.5 // 1.5x of 100 leaves a 50-byte margin
+	sentinel := func(name string) Sentinel {
+		return Sentinel{Name: name, ExpectedStatus: http.StatusOK, BaselineHeadroom: headroom}
+	}
+	committedBound := func(name string) nightlyBound {
+		return nightlyBound{Name: name, ExpectedStatus: http.StatusOK, MaxOfNBytes: 7, CeilingBytes: 10}
+	}
+	set := []Sentinel{sentinel("accepted"), sentinel("refused"), sentinel("unmeasured"), sentinel("unselected")}
+	committed := nightlyVersionBaseline{ClickHouse: "26.9", Sentinels: []nightlyBound{
+		committedBound("unselected"), committedBound("unmeasured"), committedBound("refused"), committedBound("accepted"),
+	}}
+	settled := []uint64{60, 70, 80, 90, 100}
+	roundMaxes := map[string][]uint64{
+		"accepted":   settled,
+		"refused":    {10, 70, 80, 90, 100},
+		"unmeasured": {90, 100},
+		"unselected": settled,
+	}
+	selected := func(name string) bool { return name != "unselected" }
+
+	bounds, refusals, err := mergeCalibration(committed, set, selected, roundMaxes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []nightlyBound{
+		{Name: "accepted", ExpectedStatus: http.StatusOK, MaxOfNBytes: 100, CeilingBytes: 150},
+		committedBound("refused"),
+		committedBound("unmeasured"),
+		committedBound("unselected"),
+	}
+	if !slices.Equal(bounds, want) {
+		t.Fatalf("bounds %+v, want %+v", bounds, want)
+	}
+	if len(refusals) != 2 {
+		t.Fatalf("refusals %v, want one each for the refused and the unmeasured sentinel", refusals)
+	}
+
+	// The same calibration on a server with no committed bounds: the refused
+	// sentinel has nothing to keep.
+	if bounds, _, err := mergeCalibration(nightlyVersionBaseline{ClickHouse: "26.9"}, set[:2], selected, roundMaxes); err == nil {
+		t.Fatalf("a refused sentinel with no committed bound was written as %+v", bounds)
+	}
+}
+
 // TestNightlyBaseline_ProngBIsNeverLooserThanProngA asserts, over the COMMITTED
 // baseline rather than over arithmetic alone, that every sentinel's PRONG (b)
 // ceiling on every calibrated server is one PRONG (a) can actually let a

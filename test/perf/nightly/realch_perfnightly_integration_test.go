@@ -173,7 +173,7 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	// to gate, nightlyCalibrationRounds times to calibrate. Each pass is what
 	// a gating run does — warm-up, planning prong, one max-of-N round per
 	// sentinel, in corpus order — so every calibration round of a sentinel
-	// follows the same preceding workload a gating run's does.
+	// runs in the corpus order a gating run's does.
 	passes := 1
 	if update {
 		passes = nightlyCalibrationRounds
@@ -265,7 +265,6 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	baseline := loadNightlyBaseline(t)
 	versionBaseline, _ := baseline.forVersion(version)
 	calibrate := calibrationSelection(t, update)
-	updated := make(map[string]nightlyBound, len(Sentinels))
 	// roundMaxes collects, per sentinel, the max-of-N of every calibration
 	// pass that measured it in full; calibratedBound derives its bound from
 	// them once every pass has run.
@@ -481,35 +480,20 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	}
 
 	if update {
-		// A sentinel calibratedBound refuses keeps its committed bound and
-		// fails the run; every other measured sentinel's new bound is still
-		// written, so one refusal does not discard the rest of the server's
-		// calibration.
-		refused := make(map[string]bool)
-		// Every pass ran the whole corpus, so a named sentinel's rounds follow
-		// the same preceding workload a gating run's do; only the named ones
-		// are committed.
 		for _, sentinel := range SentinelsFor(version) {
-			rounds, measured := roundMaxes[sentinel.Name]
-			if !measured || !calibrate(sentinel.Name) {
-				continue
-			}
-			t.Logf("%s: max-of-%d peak memory_usage of each calibration pass: %v",
-				sentinel.Name, nightlySentinelRepeats, rounds)
-			bound, err := calibratedBound(sentinel.Name, sentinel.ExpectedStatus, rounds, sentinel.BaselineHeadroom)
-			if err != nil {
-				t.Errorf("%v — %s keeps its committed bound", err, sentinel.Name)
-				refused[sentinel.Name] = true
-				continue
-			}
-			updated[sentinel.Name] = bound
-		}
-		for _, bound := range versionBaseline.Sentinels {
-			if _, measured := updated[bound.Name]; !measured && (!calibrate(bound.Name) || refused[bound.Name]) {
-				updated[bound.Name] = bound
+			if rounds, measured := roundMaxes[sentinel.Name]; measured && calibrate(sentinel.Name) {
+				t.Logf("%s: max-of-%d peak memory_usage of each calibration pass: %v",
+					sentinel.Name, nightlySentinelRepeats, rounds)
 			}
 		}
-		writeNightlyBaseline(t, baseline, version, updated)
+		bounds, refusals, err := mergeCalibration(versionBaseline, SentinelsFor(version), calibrate, roundMaxes)
+		for _, refusal := range refusals {
+			t.Errorf("%v — the sentinel keeps its committed bound", refusal)
+		}
+		if err != nil {
+			t.Fatalf("%v", err)
+		}
+		writeNightlyBaseline(t, baseline, version, bounds)
 	}
 }
 
@@ -954,23 +938,12 @@ func loadNightlyBaseline(t *testing.T) nightlyBaseline {
 	return b
 }
 
-// writeNightlyBaseline orders updated (keyed by sentinel name) by version's
-// sentinel set (SentinelsFor),
-// files it as version's bound set in baseline, and hands the result to
-// writeNightlyBaselineFile — this is the ONLY code path that writes
-// nightly-baseline.json, gated on UPDATE_NIGHTLY_PERF_BASELINE=1. Every other
-// version's bound set is written back unchanged.
-func writeNightlyBaseline(t *testing.T, baseline nightlyBaseline, version string, updated map[string]nightlyBound) {
+// writeNightlyBaseline files bounds as version's bound set in baseline and
+// hands the result to writeNightlyBaselineFile — this is the ONLY code path
+// that writes nightly-baseline.json, gated on UPDATE_NIGHTLY_PERF_BASELINE=1.
+// Every other version's bound set is written back unchanged.
+func writeNightlyBaseline(t *testing.T, baseline nightlyBaseline, version string, bounds []nightlyBound) {
 	t.Helper()
-	set := SentinelsFor(version)
-	bounds := make([]nightlyBound, 0, len(set))
-	for _, s := range set {
-		bound, ok := updated[s.Name]
-		if !ok {
-			t.Fatalf("writeNightlyBaseline: no measurement for sentinel %q", s.Name)
-		}
-		bounds = append(bounds, bound)
-	}
 	next, err := baseline.withVersion(version, bounds)
 	if err != nil {
 		t.Fatalf("write baseline: %v", err)

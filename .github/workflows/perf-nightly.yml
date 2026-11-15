@@ -129,7 +129,8 @@ jobs:
 
       # Also after a failed recalibration: a sentinel whose rounds the
       # calibration refused keeps its committed bound in the file, and every
-      # other sentinel's new bound is still in it.
+      # other sentinel's new bound is still in it. A run that failed before
+      # writing uploads the committed file unchanged.
       - name: Upload the recalibrated baseline
         if: ${{ inputs.calibrate && !cancelled() }}
         uses: actions/upload-artifact@v7

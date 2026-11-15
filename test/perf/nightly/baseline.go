@@ -118,8 +118,8 @@ const nightlyCalibrationRounds = 5
 // would set the bound).
 func calibratedBound(name string, expectedStatus int, roundMaxes []uint64, headroom float64) (nightlyBound, error) {
 	if len(roundMaxes) < nightlyCalibrationRounds {
-		return nightlyBound{}, fmt.Errorf("%s: calibrated from %d max-of-N rounds, want at least %d — "+
-			"one round's max-of-N is a single draw of the run-to-run distribution the ceiling has to clear",
+		return nightlyBound{}, fmt.Errorf("%s: %d calibration rounds measured in full, want at least %d — "+
+			"fewer rounds measure less of the run-to-run distribution the ceiling has to clear",
 			name, len(roundMaxes), nightlyCalibrationRounds)
 	}
 	lowest, highest := slices.Min(roundMaxes), slices.Max(roundMaxes)
@@ -143,6 +143,37 @@ func calibratedBound(name string, expectedStatus int, roundMaxes []uint64, headr
 			name, spread, lowest, highest, roundMaxes, margin, ceiling, headroom)
 	}
 	return nightlyBound{Name: name, ExpectedStatus: expectedStatus, MaxOfNBytes: highest, CeilingBytes: ceiling}, nil
+}
+
+// mergeCalibration is the bound set a calibration writes for one server: for
+// each sentinel of set, in set order, a new bound from its calibration rounds
+// (roundMaxes) when selected names it, and its committed bound (committed)
+// otherwise. A selected sentinel whose rounds calibratedBound refuses — or
+// that no pass measured in full — keeps its committed bound, and the refusal
+// is returned so the calibration fails naming it while every other
+// sentinel's new bound is still written. A sentinel left with no bound at all,
+// refused or unselected without a committed one, is an error: no file can be
+// written that omits it.
+func mergeCalibration(committed nightlyVersionBaseline, set []Sentinel, selected func(name string) bool,
+	roundMaxes map[string][]uint64,
+) (bounds []nightlyBound, refusals []error, err error) {
+	bounds = make([]nightlyBound, 0, len(set))
+	for _, sentinel := range set {
+		if selected(sentinel.Name) {
+			bound, refusal := calibratedBound(sentinel.Name, sentinel.ExpectedStatus, roundMaxes[sentinel.Name], sentinel.BaselineHeadroom)
+			if refusal == nil {
+				bounds = append(bounds, bound)
+				continue
+			}
+			refusals = append(refusals, refusal)
+		}
+		bound, ok := baselineFor(committed, sentinel.Name)
+		if !ok {
+			return nil, refusals, fmt.Errorf("%s has neither a new bound nor a committed one to keep, so no bound set can be written", sentinel.Name)
+		}
+		bounds = append(bounds, bound)
+	}
+	return bounds, refusals, nil
 }
 
 // exceedsCapCeiling reports whether a measured peak trips PRONG (a), the
